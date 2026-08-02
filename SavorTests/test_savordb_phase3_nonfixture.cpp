@@ -342,61 +342,42 @@ namespace savordb {
                         "job population");
                 }
 
-                savor::db::PublishWorksetReceipt workset{};
-                if (!execution_db_->PublishWorkset(
+                savor::db::PublishWorksetWaveReceipt wave{};
+                if (!execution_db_->PublishWorksetWave(
                     {
                         .job_set_id = job_set.job_set_id,
-                        .workset_key =
-                            materialization_key + ".workset",
-                        .program_kind = 1,
-                        .program_version = 1,
-                        .compatibility = {
-                            .compatibility_key =
-                                "workflow-coordinator-test",
-                            .module_canonical_id =
-                                "workflow.coordinator.test",
-                            .module_version = 1,
-                            .module_sha256 =
-                                std::string(64, '1'),
-                            .entrypoint = "execute",
-                            .verified_dependency_sha256 =
-                                std::string(64, '2'),
-                            .runtime_profile_sha256 =
-                                std::string(64, '3'),
-                            .required_capability_mask = 0,
-                            .estimated_payload_bytes = 1,
-                        },
-                        .priority =
-                            context.step.step_priority,
-                        .ordered_job_ids = {job_id},
+                        .expected_job_count = 1,
+                        .worksets = {{
+                            .job_set_id = job_set.job_set_id,
+                            .workset_key = materialization_key + ".workset",
+                            .program_kind = 1,
+                            .program_version = 1,
+                            .compatibility = {
+                                .compatibility_key = "workflow-coordinator-test",
+                                .module_canonical_id = "workflow.coordinator.test",
+                                .module_version = 1,
+                                .module_sha256 = std::string(64, '1'),
+                                .entrypoint = "execute",
+                                .verified_dependency_sha256 = std::string(64, '2'),
+                                .runtime_profile_sha256 = std::string(64, '3'),
+                                .required_capability_mask = 0,
+                                .estimated_payload_bytes = 1,
+                            },
+                            .priority = context.step.step_priority,
+                            .ordered_job_ids = {job_id},
+                            .requested_by = "WorkflowCoordinatorServiceTest",
+                        }},
                         .requested_by =
                             "WorkflowCoordinatorServiceTest",
                     },
-                    &workset,
+                    &wave,
                     error_out)
-                    || !accepted(workset.disposition)
-                    || workset.workset_id <= 0) {
+                    || !accepted(wave.disposition)
+                    || wave.worksets.size() != 1
+                    || wave.worksets.front().workset_id <= 0) {
                     return fail(
                         "failed publishing workflow coordinator test "
                         "workset");
-                }
-
-                savor::db::CompleteWorksetPublicationReceipt
-                    complete{};
-                if (!execution_db_->CompleteWorksetPublication(
-                    {
-                        .job_set_id = job_set.job_set_id,
-                        .expected_workset_count = 1,
-                        .expected_job_count = 1,
-                        .requested_by =
-                            "WorkflowCoordinatorServiceTest",
-                    },
-                    &complete,
-                    error_out)
-                    || !accepted(complete.disposition)) {
-                    return fail(
-                        "failed completing workflow coordinator test "
-                        "workset publication");
                 }
 
                 set_result(job_set.job_set_id);

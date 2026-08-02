@@ -320,7 +320,7 @@
     <None Include="migration\Execution\202606181100_execution_job_event_projection_index.sql" />
     <None Include="migration\Execution\202606181200_execution_active_workflow_materialization_index.sql" />
     <None Include="migration\Execution\202607291000_execution_workset_coordination.sql" />
-    <None Include="migration\Execution\202608011000_execution_ready_workset_generation.sql" />
+    <None Include="migration\Execution\202608011000_execution_work_availability.sql" />
     <None Include="migration\State\202604051000_state_stage2_schema.sql" />
     <None Include="migration\State\202607231800_state_derivation_source_context_index.sql" />
     <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql" />

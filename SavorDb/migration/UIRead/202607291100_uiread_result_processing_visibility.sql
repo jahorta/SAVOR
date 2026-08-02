@@ -10,9 +10,6 @@ ALTER TABLE ui_job_detail
     ADD COLUMN result_processing_failures INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE ui_job_detail
-    ADD COLUMN result_processing_retry_after_utc INTEGER NULL;
-
-ALTER TABLE ui_job_detail
     ADD COLUMN result_processing_error_code TEXT NULL;
 
 ALTER TABLE ui_job_detail

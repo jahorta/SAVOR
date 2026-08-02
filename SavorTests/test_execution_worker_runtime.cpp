@@ -58,6 +58,18 @@ ExecutionRequestPolicy SessionExecutionPolicy(StateEpoch epoch)
     return policy;
 }
 
+SubmitWorksetCommand SubmitWithoutInitialCancellations(
+    WorkerWorksetDefinition definition)
+{
+    const auto workset_id = definition.workset_id;
+    return {
+        .definition = std::move(definition),
+        .initial_cancellations = {
+            .workset_id = workset_id,
+        },
+    };
+}
+
 StopSubscriptionGroupDefinition WorkerWakeGroup(std::uint32_t pc)
 {
     return {
@@ -835,6 +847,15 @@ public:
         });
     }
 
+    [[nodiscard]] bool WaitForWorksetSummaryCount(
+        std::size_t count)
+    {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(lock, 5s, [&] {
+            return WorksetSummariesLocked().size() >= count;
+        });
+    }
+
     [[nodiscard]] std::size_t TerminalCount() const
     {
         std::lock_guard lock(mutex_);
@@ -911,6 +932,13 @@ public:
         return WorksetTerminalsLocked();
     }
 
+    [[nodiscard]] std::vector<WorkerWorksetTerminalSummaryEvent>
+    WorksetSummaries() const
+    {
+        std::lock_guard lock(mutex_);
+        return WorksetSummariesLocked();
+    }
+
     [[nodiscard]] std::vector<WorkerCommandResult> CommandResults(
         WorkerCommandKind kind) const
     {
@@ -978,6 +1006,22 @@ private:
             }
         }
         return terminals;
+    }
+
+    [[nodiscard]] std::vector<WorkerWorksetTerminalSummaryEvent>
+    WorksetSummariesLocked() const
+    {
+        std::vector<WorkerWorksetTerminalSummaryEvent> summaries;
+        for (const WorkerEvent& event : events_)
+        {
+            if (const auto* summary =
+                    std::get_if<WorkerWorksetTerminalSummaryEvent>(
+                        &event))
+            {
+                summaries.push_back(*summary);
+            }
+        }
+        return summaries;
     }
 
     mutable std::mutex mutex_;
@@ -1246,7 +1290,7 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{definition})
+                SubmitWithoutInitialCancellations(definition))
             .get();
     ASSERT_EQ(
         accepted.outcome,
@@ -1409,7 +1453,7 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{first})
+                SubmitWithoutInitialCancellations(first))
             .get()
             .outcome,
         WorkerCommandOutcome::Accepted);
@@ -1473,7 +1517,7 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{second})
+                SubmitWithoutInitialCancellations(second))
             .get()
             .outcome,
         WorkerCommandOutcome::Accepted);
@@ -1572,7 +1616,7 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{workset})
+                SubmitWithoutInitialCancellations(workset))
             .get()
             .outcome,
         WorkerCommandOutcome::Accepted);
@@ -1631,7 +1675,7 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{std::move(invalid)})
+                SubmitWithoutInitialCancellations(std::move(invalid)))
             .get();
     EXPECT_EQ(
         rejected.outcome,
@@ -1670,7 +1714,7 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{corrupt})
+                SubmitWithoutInitialCancellations(corrupt))
             .get()
             .error.code,
         WorkerRejectionCode::InvalidArgument);
@@ -1683,7 +1727,7 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{wrong_policy})
+                SubmitWithoutInitialCancellations(wrong_policy))
             .get()
             .outcome,
         WorkerCommandOutcome::Rejected);
@@ -1707,7 +1751,7 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{active})
+                SubmitWithoutInitialCancellations(active))
             .get()
             .outcome,
         WorkerCommandOutcome::Accepted);
@@ -1719,7 +1763,7 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{conflicting})
+                SubmitWithoutInitialCancellations(conflicting))
             .get()
             .error.code,
         WorkerRejectionCode::InvalidArgument);
@@ -1761,6 +1805,107 @@ TEST(
 
 TEST(
     ExecutionWorkerRuntime,
+    AppliesInitialCancellationSidecarBeforePreparingInvocations)
+{
+    RuntimeHarness harness({}, {}, true);
+    ASSERT_EQ(
+        harness.Open().outcome,
+        WorkerCommandOutcome::Completed);
+    const WorkerWorksetDefinition definition =
+        harness.Workset(65, 3);
+    const InitialWorksetCancellationSidecarV1 sidecar{
+        .workset_id = definition.workset_id,
+        .item_ids = {WorkerWorksetItemId(2)},
+    };
+    const auto sidecar_sha =
+        ComputeInitialWorksetCancellationSidecarSha256(sidecar);
+
+    const WorkerCommandResult accepted =
+        harness.runtime
+            ->Submit(
+                harness.NextRequest(),
+                SubmitWorksetCommand{definition, sidecar})
+            .get();
+    ASSERT_EQ(accepted.outcome, WorkerCommandOutcome::Accepted)
+        << accepted.error.message;
+    ASSERT_TRUE(accepted.workset_submission.has_value());
+    EXPECT_EQ(
+        accepted.workset_submission->disposition,
+        WorksetSubmissionDispositionV1::Accepted);
+    EXPECT_EQ(accepted.workset_submission->applied_item_count, 1u);
+    EXPECT_EQ(
+        accepted.workset_submission->applied_sidecar_sha256,
+        sidecar_sha);
+    EXPECT_EQ(
+        accepted.snapshot.resident_cancellation_sidecar_sha256,
+        sidecar_sha);
+    ASSERT_TRUE(harness.program->WaitForStarts(1));
+    {
+        std::lock_guard lock(harness.program->mutex);
+        // Item 1 has started, item 3 remains prepared, and suppressed
+        // item 2 never acquired a template.
+        EXPECT_EQ(harness.program->prepared_templates.size(), 1u);
+    }
+
+    const WorkerCommandResult repeated =
+        harness.runtime
+            ->Submit(
+                harness.NextRequest(),
+                SubmitWorksetCommand{definition, sidecar})
+            .get();
+    ASSERT_EQ(repeated.outcome, WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(repeated.workset_submission.has_value());
+    EXPECT_EQ(
+        repeated.workset_submission->disposition,
+        WorksetSubmissionDispositionV1::AlreadyAccepted);
+    EXPECT_EQ(
+        repeated.workset_submission->applied_sidecar_sha256,
+        sidecar_sha);
+
+    auto mismatched = sidecar;
+    mismatched.item_ids = {WorkerWorksetItemId(1)};
+    const WorkerCommandResult rejected =
+        harness.runtime
+            ->Submit(
+                harness.NextRequest(),
+                SubmitWorksetCommand{definition, mismatched})
+            .get();
+    EXPECT_EQ(rejected.outcome, WorkerCommandOutcome::Rejected);
+    EXPECT_EQ(rejected.error.code, WorkerRejectionCode::InvalidArgument);
+
+    ASSERT_TRUE(harness.program->EmitTerminal(
+        InvocationTerminalStatus::Completed));
+    ASSERT_TRUE(harness.program->WaitForStarts(2));
+    ASSERT_TRUE(harness.program->EmitTerminal(
+        InvocationTerminalStatus::Completed));
+    ASSERT_TRUE(harness.events.WaitForWorksetTerminalCount(2));
+    const auto terminals = harness.events.WorksetTerminals();
+    ASSERT_EQ(terminals.size(), 2u);
+    for (const auto& terminal : terminals)
+    {
+        EXPECT_EQ(
+            harness.runtime
+                ->Submit(
+                    harness.NextRequest(),
+                    AcknowledgeTerminalCommand{terminal.correlation})
+                .get()
+                .outcome,
+            WorkerCommandOutcome::Completed);
+    }
+    ASSERT_TRUE(harness.events.WaitForWorksetSummaryCount(1));
+    const auto summaries = harness.events.WorksetSummaries();
+    ASSERT_EQ(summaries.size(), 1u);
+    EXPECT_EQ(summaries.front().item_count, 3u);
+    EXPECT_EQ(summaries.front().initially_suppressed_count, 1u);
+    EXPECT_EQ(summaries.front().completed_count, 2u);
+    EXPECT_EQ(summaries.front().unstarted_count, 0u);
+    EXPECT_EQ(
+        harness.Shutdown().outcome,
+        WorkerCommandOutcome::Completed);
+}
+
+TEST(
+    ExecutionWorkerRuntime,
     RetriesAThrownTerminalPublicationWithoutLosingTheTerminal)
 {
     RuntimeHarness harness({}, {}, true);
@@ -1771,8 +1916,8 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{
-                    harness.Workset(70, 1)})
+                SubmitWithoutInitialCancellations(
+                    harness.Workset(70, 1)))
             .get()
             .outcome,
         WorkerCommandOutcome::Accepted);
@@ -1832,8 +1977,8 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{
-                    harness.Workset(80, 2)})
+                SubmitWithoutInitialCancellations(
+                    harness.Workset(80, 2)))
             .get()
             .outcome,
         WorkerCommandOutcome::Accepted);
@@ -1883,8 +2028,8 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{
-                    harness.Workset(81, 2)})
+                SubmitWithoutInitialCancellations(
+                    harness.Workset(81, 2)))
             .get()
             .outcome,
         WorkerCommandOutcome::Accepted);
@@ -2910,8 +3055,8 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{
-                    harness.Workset(86, 2)})
+                SubmitWithoutInitialCancellations(
+                    harness.Workset(86, 2)))
             .get();
     ASSERT_EQ(
         accepted.outcome,
@@ -3003,8 +3148,8 @@ TEST(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{
-                    harness.Workset(87, 1)})
+                SubmitWithoutInitialCancellations(
+                    harness.Workset(87, 1)))
             .get();
     EXPECT_EQ(
         rejected.outcome,

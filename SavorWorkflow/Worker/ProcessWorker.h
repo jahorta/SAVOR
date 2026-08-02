@@ -239,6 +239,11 @@ public:
     ProcessWorksetSubmitOutcome submit_workset_with_outcome(
         const runtime::WorkerWorksetDefinition& workset,
         std::uint32_t timeout_ms = 0);
+    ProcessWorksetSubmitOutcome submit_workset_with_outcome(
+        const runtime::WorkerWorksetDefinition& workset,
+        const runtime::InitialWorksetCancellationSidecarV1&
+            initial_cancellations,
+        std::uint32_t timeout_ms = 0);
     bool submit_one_item_workset(
         const runtime::WorkerWorksetDefinition& workset,
         wrms::CommandResultPayload* result_out = nullptr,

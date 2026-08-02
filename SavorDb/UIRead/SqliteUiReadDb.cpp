@@ -150,21 +150,18 @@ UiJobSummary ReadJobSummaryRow(sqlite3_stmt* st) {
     row.result_processing_state = ColumnText(st, 12);
     row.result_processing_attempts = sqlite3_column_int(st, 13);
     row.result_processing_failures = sqlite3_column_int(st, 14);
-    if (sqlite3_column_type(st, 15) != SQLITE_NULL) {
-        row.result_processing_retry_after_utc = sqlite3_column_int64(st, 15);
-    }
-    row.result_processing_error_code = ColumnText(st, 16);
-    row.result_processing_error_text = ColumnText(st, 17);
+    row.result_processing_error_code = ColumnText(st, 15);
+    row.result_processing_error_text = ColumnText(st, 16);
     return row;
 }
 
 UiJobDetail ReadJobDetailRow(sqlite3_stmt* st) {
     UiJobDetail row{};
     row.summary = ReadJobSummaryRow(st);
-    row.fingerprint = ColumnText(st, 18);
-    row.claimed_by_token = ColumnTextOptional(st, 19);
-    if (sqlite3_column_type(st, 20) != SQLITE_NULL) {
-        row.lease_expires_at_utc = sqlite3_column_int64(st, 20);
+    row.fingerprint = ColumnText(st, 17);
+    row.claimed_by_token = ColumnTextOptional(st, 18);
+    if (sqlite3_column_type(st, 19) != SQLITE_NULL) {
+        row.lease_expires_at_utc = sqlite3_column_int64(st, 19);
     }
     return row;
 }
@@ -507,8 +504,7 @@ UiReadPage<UiJobSummary> SqliteUiReadDb::ListJobs(
         "s.started_at_utc,s.ended_at_utc,COALESCE(s.error_code,''),"
         "COALESCE(d.attempts,0),COALESCE(d.max_attempts,0),COALESCE(d.error_text,''),"
         "COALESCE(d.result_processing_state,''),COALESCE(d.result_processing_attempts,0),"
-        "COALESCE(d.result_processing_failures,0),d.result_processing_retry_after_utc,"
-        "COALESCE(d.result_processing_error_code,''),"
+        "COALESCE(d.result_processing_failures,0),COALESCE(d.result_processing_error_code,''),"
         "COALESCE(d.result_processing_error_text,'') "
         "FROM ui_job_summary s LEFT JOIN ui_job_detail d ON d.job_id=s.job_id "
         "WHERE (?1=0 OR s.program_kind=?2) "
@@ -599,8 +595,7 @@ std::optional<UiJobSummary> SqliteUiReadDb::GetJobSummary(std::int64_t job_id) c
         "s.started_at_utc,s.ended_at_utc,COALESCE(s.error_code,''),"
         "COALESCE(d.attempts,0),COALESCE(d.max_attempts,0),COALESCE(d.error_text,''),"
         "COALESCE(d.result_processing_state,''),COALESCE(d.result_processing_attempts,0),"
-        "COALESCE(d.result_processing_failures,0),d.result_processing_retry_after_utc,"
-        "COALESCE(d.result_processing_error_code,''),"
+        "COALESCE(d.result_processing_failures,0),COALESCE(d.result_processing_error_code,''),"
         "COALESCE(d.result_processing_error_text,'') "
         "FROM ui_job_summary s LEFT JOIN ui_job_detail d ON d.job_id=s.job_id "
         "WHERE s.job_id=?1;";
@@ -627,8 +622,7 @@ std::optional<UiJobDetail> SqliteUiReadDb::GetJobDetail(std::int64_t job_id) con
         "s.started_at_utc,s.ended_at_utc,COALESCE(s.error_code,''),"
         "COALESCE(d.attempts,0),COALESCE(d.max_attempts,0),COALESCE(d.error_text,''),"
         "COALESCE(d.result_processing_state,''),COALESCE(d.result_processing_attempts,0),"
-        "COALESCE(d.result_processing_failures,0),d.result_processing_retry_after_utc,"
-        "COALESCE(d.result_processing_error_code,''),"
+        "COALESCE(d.result_processing_failures,0),COALESCE(d.result_processing_error_code,''),"
         "COALESCE(d.result_processing_error_text,''),"
         "COALESCE(d.fingerprint,''),d.claimed_by_token,d.lease_expires_at_utc "
         "FROM ui_job_summary s LEFT JOIN ui_job_detail d ON d.job_id=s.job_id "

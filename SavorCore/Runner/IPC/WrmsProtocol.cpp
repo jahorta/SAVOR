@@ -658,6 +658,18 @@ PayloadCodecResult EncodePayload(
 {
     return EncodePayloadImpl(value, output, [](PayloadWriter& writer, const auto& payload) {
         writer.blob(payload.encoded_workset);
+        writer.string(payload.workset_sha256);
+        writer.u32(payload.cancellation_sidecar_version);
+        if (payload.initially_cancelled_item_ids.size()
+            > std::numeric_limits<std::uint32_t>::max()) {
+            writer.fail(PayloadError::FieldTooLarge);
+            return;
+        }
+        writer.u32(static_cast<std::uint32_t>(
+            payload.initially_cancelled_item_ids.size()));
+        for (const auto item_id : payload.initially_cancelled_item_ids)
+            writer.u64(item_id);
+        writer.string(payload.cancellation_sidecar_sha256);
     });
 }
 
@@ -667,6 +679,56 @@ PayloadCodecResult DecodePayload(
 {
     return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
         reader.blob(payload.encoded_workset);
+        reader.string(payload.workset_sha256);
+        reader.u32(payload.cancellation_sidecar_version);
+        std::uint32_t count = 0;
+        reader.u32(count);
+        if (count > 1024) {
+            reader.fail(PayloadError::FieldTooLarge);
+            return;
+        }
+        payload.initially_cancelled_item_ids.resize(count);
+        for (auto& item_id : payload.initially_cancelled_item_ids)
+            reader.u64(item_id);
+        reader.string(payload.cancellation_sidecar_sha256);
+    });
+}
+
+PayloadCodecResult EncodePayload(
+    const SubmitWorksetResultPayload& value,
+    std::vector<std::uint8_t>& output)
+{
+    return EncodePayloadImpl(value, output, [](PayloadWriter& writer, const auto& payload) {
+        if (payload.format_version != 1 || payload.workset_id == 0
+            || payload.sidecar_version != 1
+            || payload.applied_sidecar_sha256.size() != 64) {
+            writer.fail(PayloadError::InvalidValue);
+        }
+        writer.u32(payload.format_version);
+        writer.u64(payload.workset_id);
+        writer.u32(payload.sidecar_version);
+        writer.u32(payload.applied_item_count);
+        writer.string(payload.applied_sidecar_sha256);
+        writer.boolean(payload.already_accepted);
+    });
+}
+
+PayloadCodecResult DecodePayload(
+    std::span<const std::uint8_t> input,
+    SubmitWorksetResultPayload& output)
+{
+    return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
+        reader.u32(payload.format_version);
+        reader.u64(payload.workset_id);
+        reader.u32(payload.sidecar_version);
+        reader.u32(payload.applied_item_count);
+        reader.string(payload.applied_sidecar_sha256);
+        reader.boolean(payload.already_accepted);
+        if (payload.format_version != 1 || payload.workset_id == 0
+            || payload.sidecar_version != 1
+            || payload.applied_sidecar_sha256.size() != 64) {
+            reader.fail(PayloadError::InvalidValue);
+        }
     });
 }
 
@@ -1235,13 +1297,18 @@ PayloadCodecResult EncodePayload(
     return EncodePayloadImpl(value, output, [](PayloadWriter& writer, const auto& payload) {
         if (payload.format_version != 1
             || payload.has_resident_workset != (payload.workset_id != 0)
-            || !IsKnownWorksetState(static_cast<std::uint8_t>(payload.state))) {
+            || !IsKnownWorksetState(static_cast<std::uint8_t>(payload.state))
+            || (payload.has_resident_workset
+                && payload.cancellation_sidecar_sha256.size() != 64)
+            || (!payload.has_resident_workset
+                && !payload.cancellation_sidecar_sha256.empty())) {
             writer.fail(PayloadError::InvalidValue);
         }
         writer.u32(payload.format_version);
         writer.boolean(payload.has_resident_workset);
         writer.u64(payload.workset_id);
         writer.u8(static_cast<std::uint8_t>(payload.state));
+        writer.string(payload.cancellation_sidecar_sha256);
     });
 }
 
@@ -1257,9 +1324,14 @@ PayloadCodecResult DecodePayload(
         if (reader.u8(state)) {
             payload.state = static_cast<WorksetStateCode>(state);
         }
+        reader.string(payload.cancellation_sidecar_sha256);
         if (payload.format_version != 1
             || payload.has_resident_workset != (payload.workset_id != 0)
-            || !IsKnownWorksetState(state)) {
+            || !IsKnownWorksetState(state)
+            || (payload.has_resident_workset
+                && payload.cancellation_sidecar_sha256.size() != 64)
+            || (!payload.has_resident_workset
+                && !payload.cancellation_sidecar_sha256.empty())) {
             reader.fail(PayloadError::InvalidValue);
         }
     });
@@ -1413,6 +1485,7 @@ PayloadCodecResult EncodePayload(
         writer.u32(payload.item_count);
         writer.u32(payload.completed_count);
         writer.u32(payload.unstarted_count);
+        writer.u32(payload.initially_suppressed_count);
     });
 }
 
@@ -1426,6 +1499,7 @@ PayloadCodecResult DecodePayload(
         reader.u32(payload.item_count);
         reader.u32(payload.completed_count);
         reader.u32(payload.unstarted_count);
+        reader.u32(payload.initially_suppressed_count);
     });
 }
 

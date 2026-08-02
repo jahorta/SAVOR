@@ -28,6 +28,7 @@
 #include "Runner/Runtime/WorkerRuntime.h"
 #include "Runner/Runtime/Worksets/WorksetWireCodec.h"
 #include "Utils/Log.h"
+#include "Utils/Hash.h"
 #include "Utils/ThreadName.h"
 
 namespace {
@@ -826,6 +827,27 @@ void PublishCommandCompletion(
             .error_code = ErrorCodeString(result.error.code),
             .message = result.error.message,
         };
+        if (result.workset_submission.has_value()) {
+            const auto& submission = *result.workset_submission;
+            savor::wrms::SubmitWorksetResultPayload typed{
+                .workset_id = submission.workset_id.value(),
+                .sidecar_version = submission.sidecar_version,
+                .applied_item_count = submission.applied_item_count,
+                .applied_sidecar_sha256 =
+                    submission.applied_sidecar_sha256,
+                .already_accepted = submission.disposition
+                    == savor::runtime::WorksetSubmissionDispositionV1::
+                        AlreadyAccepted,
+            };
+            if (!savor::wrms::EncodePayload(typed, payload.result)) {
+                payload.status = savor::wrms::CommandStatus::Rejected;
+                payload.rejection_code =
+                    savor::wrms::RejectionCode::InternalFailure;
+                payload.error_code = "SubmitWorksetReceiptEncodingFailed";
+                payload.message =
+                    "failed encoding the accepted workset receipt";
+            }
+        }
         publisher.Publish(
             MessageKind::CommandResult,
             result.request_id.value(),
@@ -1021,6 +1043,8 @@ void PublishWorkerEvent(
                         .item_count = summary.item_count,
                         .completed_count = summary.completed_count,
                         .unstarted_count = summary.unstarted_count,
+                        .initially_suppressed_count =
+                            summary.initially_suppressed_count,
                     });
             },
             [&](const savor::runtime::WorkerExecutionEvent& execution_event) {
@@ -1276,9 +1300,37 @@ bool SubmitFrame(
         // The transport is authoritative for residency accounting. Never
         // accept a sender-supplied byte count.
         definition.encoded_size_bytes = actual_encoded_size;
+        savor::runtime::InitialWorksetCancellationSidecarV1 sidecar{
+            .workset_id = definition.workset_id,
+        };
+        sidecar.item_ids.reserve(
+            payload.initially_cancelled_item_ids.size());
+        for (const auto item_id : payload.initially_cancelled_item_ids) {
+            sidecar.item_ids.emplace_back(item_id);
+        }
+        if (payload.workset_sha256.size() != 64
+            || payload.workset_sha256 != ::hash::sha256(
+                payload.encoded_workset.data(),
+                payload.encoded_workset.size())
+            || payload.cancellation_sidecar_version
+                != savor::runtime::
+                    kInitialWorksetCancellationSidecarVersionV1
+            || payload.cancellation_sidecar_sha256
+                != savor::runtime::
+                    ComputeInitialWorksetCancellationSidecarSha256(sidecar)) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "SubmitWorkset identity or cancellation sidecar digest is invalid");
+            return true;
+        }
         (void)runtime.Submit(
             WireRequestId{frame.header.request_id},
-            SubmitWorksetCommand{std::move(definition)});
+            SubmitWorksetCommand{
+                std::move(definition),
+                std::move(sidecar),
+                std::move(payload.workset_sha256)});
         return true;
     }
     case MessageKind::CancelWorksetItem: {
@@ -1358,6 +1410,8 @@ bool SubmitFrame(
             residence.state = MapWorksetState(
                 snapshot.resident_workset_state.value_or(
                     savor::runtime::WorkerWorksetState::Validating));
+            residence.cancellation_sidecar_sha256 =
+                snapshot.resident_cancellation_sidecar_sha256;
         }
         std::vector<std::uint8_t> encoded_residence;
         if (!savor::wrms::EncodePayload(

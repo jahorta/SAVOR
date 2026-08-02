@@ -1338,7 +1338,9 @@ void WorkerCoordinator::QuarantineWorkerGeneration(
 
 WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
     WorkerExecutionTarget target,
-    const savor::runtime::WorkerWorksetDefinition& workset) {
+    const savor::runtime::WorkerWorksetDefinition& workset,
+    const savor::runtime::InitialWorksetCancellationSidecarV1&
+        initial_cancellations) {
     ++submit_attempts_;
     if (!IsStarted()
         || paused_.load(std::memory_order_acquire)) {
@@ -1353,7 +1355,9 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
     }
     if (!workset.workset_id
         || !workset.execution_key
-        || workset.items.empty()) {
+        || workset.items.empty()
+        || !savor::runtime::ValidateInitialWorksetCancellationSidecar(
+                workset, initial_cancellations).ok) {
         ++submit_rejected_;
         ++submit_deterministic_rejection_;
         return {
@@ -1381,6 +1385,31 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
     }
 
     const auto workset_id = workset.workset_id.value();
+    bool idempotent_retry = false;
+    {
+        std::lock_guard<std::mutex> routes_lock(routes_mutex_);
+        const auto route_it = routes_.find(workset_id);
+        if (route_it != routes_.end()) {
+            if (route_it->second.worker_id != target.worker_id
+                || route_it->second.process_generation
+                    != target.process_generation) {
+                ++submit_rejected_;
+                ++submit_deterministic_rejection_;
+                return {
+                    .disposition = WorkerSubmitDisposition::DuplicateWorkset,
+                    .worker_id = route_it->second.worker_id,
+                    .process_generation =
+                        route_it->second.process_generation,
+                    .rejection_code =
+                        savor::wrms::RejectionCode::WorksetAlreadyActive,
+                    .error_code = "DuplicateWorksetRoute",
+                    .diagnostic =
+                        "workset identity is routed to another worker generation",
+                };
+            }
+            idempotent_retry = true;
+        }
+    }
     std::unique_lock<std::mutex> submission_lock(
         slot->submission_mutex,
         std::try_to_lock);
@@ -1415,7 +1444,9 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
         }
         if (!slot->ready
             || slot->submission_in_progress
-            || slot->active_workset_id.has_value()
+            || (slot->active_workset_id.has_value()
+                && !(idempotent_retry
+                    && *slot->active_workset_id == workset_id))
             || !slot->worker
             || !slot->runtime_manifest.has_value()
             || slot->available_item_credits < requirement.item_count) {
@@ -1466,7 +1497,7 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
         slot->submitting_workset_id = workset_id;
     }
 
-    {
+    if (!idempotent_retry) {
         std::lock_guard<std::mutex> routes_lock(routes_mutex_);
         const auto [route_it, inserted] = routes_.emplace(
             workset_id,
@@ -1496,7 +1527,34 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
 
     const auto outcome = worker->submit_workset_with_outcome(
         workset,
+        initial_cancellations,
         0);
+    std::optional<savor::runtime::SubmitWorksetResultV1>
+        submission_receipt;
+    bool submission_receipt_valid = true;
+    if (outcome.disposition
+        == savor::ProcessWorksetSubmitDisposition::Accepted) {
+        savor::wrms::SubmitWorksetResultPayload payload{};
+        const auto decoded = savor::wrms::DecodePayload(
+            outcome.result.result, payload);
+        if (!decoded) {
+            submission_receipt_valid = false;
+        } else {
+            submission_receipt = savor::runtime::SubmitWorksetResultV1{
+            .workset_id = savor::runtime::WorkerWorksetId{
+                payload.workset_id},
+            .sidecar_version = payload.sidecar_version,
+            .applied_item_count = payload.applied_item_count,
+            .applied_sidecar_sha256 =
+                std::move(payload.applied_sidecar_sha256),
+            .disposition = payload.already_accepted
+                ? savor::runtime::WorksetSubmissionDispositionV1::
+                    AlreadyAccepted
+                : savor::runtime::WorksetSubmissionDispositionV1::
+                    Accepted,
+            };
+        }
+    }
     bool terminal_state_already_observed = false;
     {
         std::lock_guard<std::mutex> routes_lock(routes_mutex_);
@@ -1530,16 +1588,6 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
                     terminal_state_already_observed
                         ? WorkerStateKind::Idle
                         : WorkerStateKind::Running);
-                if (outcome.disposition
-                    == savor::ProcessWorksetSubmitDisposition::
-                        AmbiguousAfterWrite) {
-                    slot->ready = false;
-                    slot->quarantine_requested = true;
-                    slot->quarantine_diagnostic =
-                        outcome.diagnostic.empty()
-                        ? "workset submission was ambiguous after write"
-                        : outcome.diagnostic;
-                }
             }
         }
     }
@@ -1578,12 +1626,24 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
             .diagnostic = outcome.diagnostic,
         };
     }
+    if (!submission_receipt_valid) {
+        ++submit_ambiguous_;
+        return {
+            .disposition = WorkerSubmitDisposition::AmbiguousAfterWrite,
+            .worker_id = slot->id,
+            .process_generation = generation,
+            .error_code = "MalformedWorksetSubmissionReceipt",
+            .diagnostic =
+                "worker accepted SubmitWorkset without a valid typed receipt",
+        };
+    }
     ++submit_accepted_;
     return {
         .disposition = WorkerSubmitDisposition::Accepted,
         .worker_id = slot->id,
         .process_generation = generation,
         .diagnostic = outcome.diagnostic,
+        .submission_receipt = std::move(submission_receipt),
     };
 }
 

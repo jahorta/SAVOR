@@ -50,69 +50,65 @@ public:
         const SealJobPopulationCommand& command,
         SealJobPopulationReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool PublishWorkset(
-        const PublishWorksetCommand& command,
-        PublishWorksetReceipt* receipt_out = nullptr,
-        std::string* error_out = nullptr) override;
-    bool CompleteWorksetPublication(
-        const CompleteWorksetPublicationCommand& command,
-        CompleteWorksetPublicationReceipt* receipt_out = nullptr,
+    bool PublishWorksetWave(
+        const PublishWorksetWaveCommand& command,
+        PublishWorksetWaveReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
     std::vector<ClaimedPublishedWorkset> ClaimPublishedWorksetBatch(
         const ClaimPublishedWorksetBatchCommand& command,
         std::string* error_out = nullptr) override;
     std::vector<WorksetDispatchLeaseReceipt>
-    RenewWorksetDispatchLeases(
-        const RenewWorksetDispatchLeasesCommand& command,
+    RenewActiveWorksetLeases(
+        const RenewActiveWorksetLeasesCommand& command,
         std::string* error_out = nullptr) override;
-    std::optional<ReadyWorksetAvailabilitySnapshot>
-    GetReadyWorksetAvailability(
+    std::optional<ExecutionWorkAvailabilitySnapshot>
+    GetExecutionWorkAvailability(
         std::string* error_out = nullptr) const override;
-    bool MarkWorksetDispatched(
-        const MarkWorksetDispatchedCommand& command,
+    bool MarkWorksetActive(
+        const MarkWorksetActiveCommand& command,
+        WorksetDispatchMutationReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool MarkWorksetDraining(
+        const MarkWorksetDrainingCommand& command,
         WorksetDispatchMutationReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
     bool ReleaseWorksetDispatch(
         const ReleaseWorksetDispatchCommand& command,
         WorksetDispatchMutationReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool MarkWorksetJobStarted(
-        const MarkWorksetJobStartedCommand& command,
-        WorksetJobStartReceipt* receipt_out = nullptr,
+    bool PersistWorkerExecutionEventsBatch(
+        const PersistWorkerExecutionEventsBatchCommand& command,
+        PersistWorkerExecutionEventsBatchReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool StageWorkerTerminal(
-        const StageWorkerTerminalCommand& command,
-        StageWorkerTerminalReceipt* receipt_out = nullptr,
+    std::vector<ClaimedExecutionFinishedJob>
+    ClaimExecutionFinishedJobsBatch(
+        const ClaimExecutionFinishedJobsBatchCommand& command,
         std::string* error_out = nullptr) override;
-    std::optional<ClaimedExecutionFinishedJob> ClaimNextExecutionFinishedJob(
-        const ClaimExecutionFinishedJobCommand& command,
+    std::vector<InterruptedResultProcessingJob>
+    ListInterruptedResultProcessingJobs(
         std::string* error_out = nullptr) override;
-    bool RenewResultProcessingLease(
-        const RenewResultProcessingLeaseCommand& command,
+    bool ResetInterruptedResultProcessing(
+        const ResetInterruptedResultProcessingCommand& command,
         ResultProcessingReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool ParkResultProcessing(
-        const ParkResultProcessingCommand& command,
+    bool RequeueLostResultProcessing(
+        const RequeueLostResultProcessingCommand& command,
         ResultProcessingReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool CommitResultFinalization(
-        const CommitResultFinalizationCommand& command,
+    bool RecordResultProcessingFailure(
+        const RecordResultProcessingFailureCommand& command,
         ResultProcessingReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool RequestJobCancellation(
-        const RequestJobCancellationCommand& command,
-        JobCancellationReceipt* receipt_out = nullptr,
+    bool CommitResultFinalizationsBatch(
+        const CommitResultFinalizationsBatchCommand& command,
+        std::vector<ResultProcessingReceipt>* receipts_out = nullptr,
         std::string* error_out = nullptr) override;
-    std::optional<ClaimedJobCancellation> ClaimNextJobCancellation(
-        const ClaimJobCancellationCommand& command,
+    std::vector<CommittedJobCancellation>
+    ListUnresolvedJobCancellations(
         std::string* error_out = nullptr) override;
-    bool MarkJobCancellationDelivered(
-        const MarkJobCancellationDeliveredCommand& command,
-        JobCancellationReceipt* receipt_out = nullptr,
-        std::string* error_out = nullptr) override;
-    bool ResolveJobCancellation(
-        const ResolveJobCancellationCommand& command,
-        JobCancellationReceipt* receipt_out = nullptr,
+    bool MutateJobCancellationsBatch(
+        const MutateJobCancellationsBatchCommand& command,
+        std::vector<JobCancellationReceipt>* receipts_out = nullptr,
         std::string* error_out = nullptr) override;
     bool IsTempBlobTracked(
         std::string_view relative_path,
@@ -125,17 +121,8 @@ public:
         const CompleteTempBlobCleanupCommand& command,
         ExecutionDbOperationDisposition* disposition_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool RecoverExpiredWorksetDispatches(
-        int max_dispatches,
-        int* dispatches_recovered_out = nullptr,
-        std::string* error_out = nullptr) override;
-    bool RecoverExpiredResultProcessingLeases(
-        int max_jobs,
-        int* jobs_recovered_out = nullptr,
-        std::string* error_out = nullptr) override;
-    bool RecoverExpiredCancellationDeliveryLeases(
-        int max_requests,
-        int* requests_recovered_out = nullptr,
+    bool RecoverInterruptedWorksetDispatches(
+        RecoverInterruptedWorksetDispatchesReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
     std::optional<ClaimedExecutionJob> ClaimNextReadyExecutionJob(
         std::string_view claimed_by_token,
@@ -244,6 +231,34 @@ public:
         std::int64_t payload_ref_id) const override;
 
 private:
+    bool PublishWorkset(
+        const PublishWorksetCommand& command,
+        PublishWorksetReceipt* receipt_out,
+        std::string* error_out);
+    bool CompleteWorksetPublication(
+        const CompleteWorksetPublicationCommand& command,
+        CompleteWorksetPublicationReceipt* receipt_out,
+        std::string* error_out);
+    bool MarkWorksetJobStarted(
+        const MarkWorksetJobStartedCommand& command,
+        WorksetJobStartReceipt* receipt_out,
+        std::string* error_out);
+    bool StageWorkerTerminal(
+        const StageWorkerTerminalCommand& command,
+        StageWorkerTerminalReceipt* receipt_out,
+        std::string* error_out);
+    std::optional<ClaimedExecutionFinishedJob>
+    ClaimNextExecutionFinishedJob(
+        std::string* error_out);
+    bool CommitResultFinalization(
+        const CommitResultFinalizationCommand& command,
+        ResultProcessingReceipt* receipt_out,
+        std::string* error_out);
+    bool ApplyJobCancellationOutcomeInTransaction(
+        const JobCancellationOutcomeCommand& command,
+        JobCancellationReceipt* receipt_out,
+        std::string* error_out);
+
     sqlite3* db_ = nullptr;
     std::unique_ptr<SqliteWorkflowOrchestrationQueryService> query_service_;
     std::unique_ptr<SqliteWorkflowOrchestrationCommandService> command_service_;

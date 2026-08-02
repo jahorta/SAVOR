@@ -199,6 +199,8 @@ struct WorkerSubmitResult {
         savor::wrms::RejectionCode::None;
     std::string error_code;
     std::string diagnostic;
+    std::optional<savor::runtime::SubmitWorksetResultV1>
+        submission_receipt;
 
     [[nodiscard]] bool submitted() const noexcept {
         return disposition == WorkerSubmitDisposition::Accepted
@@ -298,7 +300,9 @@ public:
 
     [[nodiscard]] WorkerSubmitResult SubmitWorksetToWorker(
         WorkerExecutionTarget target,
-        const savor::runtime::WorkerWorksetDefinition& workset);
+        const savor::runtime::WorkerWorksetDefinition& workset,
+        const savor::runtime::InitialWorksetCancellationSidecarV1&
+            initial_cancellations);
     [[nodiscard]] WorkerCommandResult CancelWorksetItem(
         savor::runtime::WorkerWorksetId workset_id,
         savor::runtime::WorkerWorksetItemId item_id,

@@ -180,11 +180,6 @@ public:
                 savor::db::execution::programdb::
                     ProgramResultProcessorConfig{
                         .enabled = true,
-                        .poll_interval =
-                            std::max(
-                                poll_interval,
-                                std::chrono::milliseconds(1)),
-                        .max_total_processing_attempts = 1,
                     },
                 [this](
                     std::uint64_t commit_sequence,
@@ -221,13 +216,29 @@ public:
                                 std::chrono::milliseconds(1)),
                         .state_compatibility =
                             std::move(state_compatibility),
-                    },
-                [this]() {
-                    if (result_processor_ != nullptr) {
-                        result_processor_->Wake();
-                    }
-                });
+                    });
         job_execution_coordinator_->SetPaused(execution_paused_);
+        result_processor_->SetCancellationCallbacks(
+            [this](
+                std::uint64_t hold_id,
+                const std::vector<savor::db::
+                    ExecutionCancellationRequestSpec>& cancellations) {
+                if (job_execution_coordinator_ != nullptr) {
+                    job_execution_coordinator_
+                        ->RegisterCancellationCommitPending(
+                            hold_id, cancellations);
+                }
+            },
+            [this](
+                std::uint64_t hold_id,
+                const std::vector<savor::db::
+                    CommittedJobCancellation>& cancellations) {
+                if (job_execution_coordinator_ != nullptr) {
+                    job_execution_coordinator_
+                        ->RegisterCommittedCancellations(
+                            hold_id, cancellations);
+                }
+            });
 
         std::string error;
         if (!workflow_coordinator_->Start(&error)) {
@@ -242,13 +253,6 @@ public:
                 error_out);
         }
         cleanup_started_ = true;
-        if (!result_processor_->Start(&error)) {
-            return FailStart(
-                "program result processor startup failed: " + error,
-                error_out);
-        }
-        result_processor_started_ = true;
-
         const auto worker_start = worker_coordinator_->Start();
         if (!worker_start.started()) {
             last_fleet_startup_snapshot_ =
@@ -266,6 +270,13 @@ public:
                 error_out);
         }
         job_execution_started_ = true;
+        if (!result_processor_->Start(&error)) {
+            return FailStart(
+                "program result processor startup failed: " + error,
+                error_out);
+        }
+        result_processor_started_ = true;
+        job_execution_coordinator_->OpenCancellationAdmission();
         started_ = true;
         if (error_out != nullptr) {
             error_out->clear();
@@ -729,6 +740,26 @@ std::string FormatCoordinatorTelemetryLine(
         << telemetry.execution.worker_terminal_staging_failures
         << " terminal_retries="
         << telemetry.execution.worker_terminal_retry_attempts
+        << " worker_event_batches="
+        << telemetry.execution.worker_event_batches
+        << " worker_event_items="
+        << telemetry.execution.worker_event_batch_items
+        << " worker_event_batch_max="
+        << telemetry.execution.worker_event_batch_max_size
+        << " worker_event_batch_avg="
+        << telemetry.execution.worker_event_batch_average_size
+        << " worker_event_batch_q="
+        << telemetry.execution.worker_event_batch_queue_depth
+        << " worker_event_batch_q_hwm="
+        << telemetry.execution.worker_event_batch_queue_high_water
+        << " worker_event_batch_rollbacks="
+        << telemetry.execution.worker_event_batch_rollbacks
+        << " worker_event_full_flushes="
+        << telemetry.execution.worker_event_full_flushes
+        << " worker_event_deadline_flushes="
+        << telemetry.execution.worker_event_deadline_flushes
+        << " worker_event_barrier_flushes="
+        << telemetry.execution.worker_event_barrier_flushes
         << " blob_ready="
         << (telemetry.execution.blob_store_ready ? 1 : 0)
         << " blob_readiness_failures="
@@ -779,6 +810,44 @@ std::string FormatCoordinatorTelemetryLine(
         << telemetry.execution.pending_acknowledgements
         << " pending_cancels="
         << telemetry.execution.pending_cancellations
+        << " cancellation_holds_registered="
+        << telemetry.execution.cancellation_precommit_holds_registered
+        << " cancellation_holds_promoted="
+        << telemetry.execution.cancellation_precommit_holds_promoted
+        << " cancellation_holds_pending="
+        << telemetry.execution.cancellation_precommit_holds_pending
+        << " cancellations_indexed="
+        << telemetry.execution.committed_cancellations_indexed
+        << " cancellation_requested_canaries="
+        << telemetry.execution.unresolved_requested_cancellation_canaries
+        << " sidecar_suppressed_jobs="
+        << telemetry.execution.waiting_jobs_suppressed_by_sidecar
+        << " fully_canceled_worksets_avoided="
+        << telemetry.execution.fully_canceled_worksets_avoided
+        << " sidecar_items_submitted="
+        << telemetry.execution.sidecar_items_submitted
+        << " sidecar_receipts_accepted="
+        << telemetry.execution.sidecar_submit_receipts_accepted
+        << " sidecar_receipts_repeated="
+        << telemetry.execution.sidecar_submit_receipts_repeated
+        << " sidecar_receipts_mismatched="
+        << telemetry.execution.sidecar_submit_receipts_mismatched
+        << " post_fence_cancellations="
+        << telemetry.execution.post_fence_cancellation_commands
+        << " cancellation_mutation_batches="
+        << telemetry.execution.cancellation_mutation_batches
+        << " cancellation_mutation_items="
+        << telemetry.execution.cancellation_mutation_batch_items
+        << " cancellation_mutation_full_flushes="
+        << telemetry.execution.cancellation_mutation_full_flushes
+        << " cancellation_mutation_deadline_flushes="
+        << telemetry.execution.cancellation_mutation_deadline_flushes
+        << " cancellation_mutation_barrier_flushes="
+        << telemetry.execution.cancellation_mutation_barrier_flushes
+        << " cancellation_mutation_rollbacks="
+        << telemetry.execution.cancellation_mutation_rollbacks
+        << " cancellation_mutations_pending="
+        << telemetry.execution.pending_cancellation_mutations
         << " pause_user="
         << (telemetry.execution.user_admission_paused ? 1 : 0)
         << " pause_invariant="
@@ -789,16 +858,34 @@ std::string FormatCoordinatorTelemetryLine(
         << (telemetry.execution.claims_paused_for_terminal_staging
                 ? 1
                 : 0)
-        << " recovered_dispatches="
-        << telemetry.execution.recovered_dispatches
+        << " startup_recovered_dispatches="
+        << telemetry.execution.startup_recovered_dispatches
+        << " startup_requeued_jobs="
+        << telemetry.execution.startup_requeued_jobs
+        << " startup_recovery_attempts_granted="
+        << telemetry.execution.startup_recovery_attempts_granted
+        << " active_residence_probes="
+        << telemetry.execution.active_residence_probes
+        << " active_residence_matches="
+        << telemetry.execution.active_residence_matches
+        << " active_residence_failures="
+        << telemetry.execution.active_residence_failures
+        << " active_lease_renewal_batches="
+        << telemetry.execution.active_lease_renewal_batches
+        << " active_lease_renewal_retries="
+        << telemetry.execution.active_lease_renewal_retries
+        << " draining_transitions="
+        << telemetry.execution.draining_transitions
         << " scheduler_wakeups="
         << telemetry.execution.scheduler_wakeups
         << " ready_work_generation="
-        << telemetry.execution.ready_workset_generation
+        << telemetry.execution.availability_generation
         << " ready_work_present="
         << (telemetry.execution.ready_worksets_present ? 1 : 0)
+        << " results_present="
+        << (telemetry.execution.execution_finished_results_present ? 1 : 0)
         << " ready_work_signal_wakeups="
-        << telemetry.execution.ready_workset_signal_wakeups
+        << telemetry.execution.availability_signal_wakeups
         << " claim_backoff_stage="
         << telemetry.execution.claim_backoff_stage
         << " claim_backoff_ms="
@@ -808,7 +895,28 @@ std::string FormatCoordinatorTelemetryLine(
         << " scheduler_wake_reason="
         << telemetry.execution.last_scheduler_wake_reason
         << " results_claimed=" << telemetry.results.claims
+        << " result_claim_batches=" << telemetry.results.claim_batches
+        << " result_claim_batch_max="
+        << telemetry.results.claim_batch_max_size
+        << " result_claim_batch_avg="
+        << telemetry.results.claim_batch_average_size
         << " results_finalized=" << telemetry.results.finalized
+        << " result_finalization_batches="
+        << telemetry.results.finalization_batches
+        << " result_finalization_batch_max="
+        << telemetry.results.finalization_batch_max_size
+        << " result_finalization_batch_avg="
+        << telemetry.results.finalization_batch_average_size
+        << " result_finalization_full_flushes="
+        << telemetry.results.finalization_full_flushes
+        << " result_finalization_deadline_flushes="
+        << telemetry.results.finalization_deadline_flushes
+        << " result_finalization_barrier_flushes="
+        << telemetry.results.finalization_barrier_flushes
+        << " result_processing_canaries="
+        << telemetry.results.processing_canaries
+        << " cancellation_requested_canaries="
+        << telemetry.execution.unresolved_requested_cancellation_canaries
         << " workflow_materialized="
         << telemetry.workflow.materialization_count
         << " workflow_advanced="
@@ -906,11 +1014,16 @@ std::string FormatExecutionDbQueueLine(
             &savor::db::core::DbOperationTelemetrySnapshot::
                 execution)
         << " ready_watcher_reads="
-        << snapshot.ready_workset_watcher_reads
+        << snapshot.availability_watcher_reads
         << " ready_signal_transitions="
-        << snapshot.ready_workset_signal_transitions
+        << snapshot.availability_signal_transitions
         << " ready_callback_wakes="
-        << snapshot.ready_workset_callback_wakes;
+        << snapshot.availability_callback_wakes
+        << " workset_waves=" << snapshot.workset_waves
+        << " wave_worksets=" << snapshot.worksets_published_in_waves
+        << " wave_jobs=" << snapshot.jobs_published_in_waves
+        << " wave_ready_transitions="
+        << snapshot.workset_wave_ready_transitions;
     return out.str();
 }
 
@@ -1353,8 +1466,9 @@ bool ValidateSplitCoordinatorExecution(
         telemetry.execution.worksets_claimed
             == telemetry.execution.worksets_reconstructed
             && telemetry.execution.worksets_reconstructed
-                == telemetry.execution.worksets_submitted,
-        "JobExecutionCoordinator claim/reconstruct/submit counts differ");
+                == telemetry.execution.worksets_submitted
+                    + telemetry.execution.fully_canceled_worksets_avoided,
+        "JobExecutionCoordinator claim/reconstruct/submit-or-suppress counts differ");
     const auto execution_submission_outcomes =
         telemetry.execution.submission_accepted
         + telemetry.execution.submission_temporary_unavailable
@@ -1376,6 +1490,16 @@ bool ValidateSplitCoordinatorExecution(
         telemetry.execution.reconstruction_invariant_failures == 0,
         "JobExecutionCoordinator reported a reconstruction invariant "
         "failure");
+    require_clean(
+        telemetry.execution.cancellation_precommit_holds_pending == 0
+            && telemetry.execution
+                   .unresolved_requested_cancellation_canaries == 0
+            && telemetry.execution.pending_cancellation_mutations == 0,
+        "JobExecutionCoordinator retained unresolved cancellation state");
+    require_clean(
+        telemetry.execution.sidecar_submit_receipts_mismatched == 0
+            && telemetry.execution.cancellation_mutation_rollbacks == 0,
+        "JobExecutionCoordinator reported sidecar or cancellation-persistence anomalies");
     require_clean(
         telemetry.execution.worker_terminals_staged > 0,
         "JobExecutionCoordinator staged no worker terminals");
@@ -1405,6 +1529,18 @@ bool ValidateSplitCoordinatorExecution(
         telemetry.execution.worker_terminal_staging_failures == 0
             && telemetry.execution.worker_terminal_retry_attempts == 0,
         "JobExecutionCoordinator required worker-terminal storage recovery");
+    require_clean(
+        telemetry.execution.active_residence_probes
+                == telemetry.execution.active_residence_matches
+            && telemetry.execution.active_residence_failures == 0,
+        "JobExecutionCoordinator active workset residence evidence did not reconcile");
+    require_clean(
+        telemetry.execution.active_lease_renewal_retries == 0,
+        "JobExecutionCoordinator retried an active workset lease renewal");
+    require_clean(
+        telemetry.execution.draining_transitions
+            == telemetry.execution.worksets_submitted,
+        "JobExecutionCoordinator terminal workset-state transitions do not reconcile");
     require_clean(
         telemetry.execution.blob_store_ready
             && telemetry.execution.blob_readiness_failures == 0,
@@ -1470,7 +1606,7 @@ bool ValidateSplitCoordinatorExecution(
     require_clean(
         telemetry.results.processing_failures == 0
             && telemetry.results.descriptor_unavailable == 0
-            && telemetry.results.lease_authority_lost == 0
+            && telemetry.results.startup_recovery_canaries == 0
             && telemetry.results.last_error.empty(),
         "ProgramResultProcessor reported a processing failure: "
             + telemetry.results.last_error);
@@ -2330,6 +2466,12 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             << " terminal_retries="
             << final_telemetry.execution
                    .worker_terminal_retry_attempts
+            << " worker_event_batches="
+            << final_telemetry.execution.worker_event_batches
+            << " worker_event_items="
+            << final_telemetry.execution.worker_event_batch_items
+            << " worker_event_batch_max="
+            << final_telemetry.execution.worker_event_batch_max_size
             << " blob_ready="
             << (final_telemetry.execution.blob_store_ready ? 1 : 0)
             << " blob_readiness_failures="
@@ -2343,8 +2485,24 @@ bool RunSeedProbeRealWorkerSmokeImpl(
                         .claims_paused_for_terminal_staging
                     ? 1
                     : 0)
-            << " recovered_dispatches="
-            << final_telemetry.execution.recovered_dispatches
+            << " startup_recovered_dispatches="
+            << final_telemetry.execution.startup_recovered_dispatches
+            << " startup_requeued_jobs="
+            << final_telemetry.execution.startup_requeued_jobs
+            << " startup_recovery_attempts_granted="
+            << final_telemetry.execution.startup_recovery_attempts_granted
+            << " active_residence_probes="
+            << final_telemetry.execution.active_residence_probes
+            << " active_residence_matches="
+            << final_telemetry.execution.active_residence_matches
+            << " active_residence_failures="
+            << final_telemetry.execution.active_residence_failures
+            << " active_lease_renewal_batches="
+            << final_telemetry.execution.active_lease_renewal_batches
+            << " active_lease_renewal_retries="
+            << final_telemetry.execution.active_lease_renewal_retries
+            << " draining_transitions="
+            << final_telemetry.execution.draining_transitions
             << " worker_submissions="
             << final_telemetry.worker.submit_accepted
             << " liveness_attempts="
@@ -2355,8 +2513,26 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             << final_telemetry.worker.liveness_quarantines
             << " result_claims="
             << final_telemetry.results.claims
+            << " result_claim_batches="
+            << final_telemetry.results.claim_batches
             << " result_finalizations="
             << final_telemetry.results.finalized
+            << " result_finalization_batches="
+            << final_telemetry.results.finalization_batches
+            << " cancellation_holds_registered="
+            << final_telemetry.execution
+                   .cancellation_precommit_holds_registered
+            << " cancellation_holds_promoted="
+            << final_telemetry.execution
+                   .cancellation_precommit_holds_promoted
+            << " sidecar_suppressed_jobs="
+            << final_telemetry.execution
+                   .waiting_jobs_suppressed_by_sidecar
+            << " fully_canceled_worksets_avoided="
+            << final_telemetry.execution
+                   .fully_canceled_worksets_avoided
+            << " cancellation_mutation_batches="
+            << final_telemetry.execution.cancellation_mutation_batches
             << " workflow_materializations="
             << final_telemetry.workflow.materialization_count
             << " workflow_advancements="

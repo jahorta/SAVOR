@@ -698,6 +698,18 @@ private:
         const auto workset_count =
             (durable_jobs.size() + chunk_size - 1)
             / chunk_size;
+        std::vector<PublishWorksetCommand> worksets;
+        worksets.reserve(workset_count);
+        const auto& runtime_contract = phase_->runtime_contract();
+        const auto compatibility_key =
+            "seedprobe:v2:savestate:"
+            + std::to_string(savestate_id)
+            + ":phase:"
+            + phase_->identity().canonical_sha256;
+        const auto invocation_root_job_set_id =
+            root_job_set_id > 0
+            ? root_job_set_id
+            : ensured.job_set_id;
         for (std::size_t chunk = 0;
              chunk < workset_count;
              ++chunk) {
@@ -710,20 +722,8 @@ private:
             for (auto i = begin; i < end; ++i) {
                 job_ids.push_back(durable_jobs[i].job_id);
             }
-            PublishWorksetReceipt published{};
-            const auto& runtime_contract =
-                phase_->runtime_contract();
-            const auto compatibility_key =
-                "seedprobe:v2:savestate:"
-                + std::to_string(savestate_id)
-                + ":phase:"
-                + phase_->identity().canonical_sha256;
-            const auto invocation_root_job_set_id =
-                root_job_set_id > 0
-                ? root_job_set_id
-                : ensured.job_set_id;
-            if (!execution_db_->PublishWorkset(
-                    {
+            worksets.push_back(
+                {
                         .job_set_id =
                             ensured.job_set_id,
                         .workflow_step_id = workflow_step_id,
@@ -772,33 +772,24 @@ private:
                             std::move(job_ids),
                         .requested_by =
                             std::string(kCreatedBy),
-                    },
-                    &published,
-                    error_out)
-                || (published.disposition
-                        != ExecutionDbOperationDisposition::Applied
-                    && published.disposition
-                        != ExecutionDbOperationDisposition::AlreadyApplied)) {
-                return std::nullopt;
-            }
+                    });
         }
 
-        CompleteWorksetPublicationReceipt completed{};
-        if (!execution_db_->CompleteWorksetPublication(
+        PublishWorksetWaveReceipt published{};
+        if (!execution_db_->PublishWorksetWave(
                 {
                     .job_set_id = ensured.job_set_id,
-                    .expected_workset_count =
-                        static_cast<int>(workset_count),
                     .expected_job_count =
                         static_cast<int>(specs.size()),
+                    .worksets = std::move(worksets),
                     .requested_by =
                         std::string(kCreatedBy),
                 },
-                &completed,
+                &published,
                 error_out)
-            || (completed.disposition
+            || (published.disposition
                     != ExecutionDbOperationDisposition::Applied
-                && completed.disposition
+                && published.disposition
                     != ExecutionDbOperationDisposition::AlreadyApplied)) {
             return std::nullopt;
         }

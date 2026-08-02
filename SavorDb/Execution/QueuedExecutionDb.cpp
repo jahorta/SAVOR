@@ -304,7 +304,7 @@ bool QueuedExecutionDb::Start(std::string* error_out) {
         return false;
     }
     availability_stop_.store(false, std::memory_order_release);
-    RefreshReadyWorksetAvailability();
+    RefreshExecutionWorkAvailability();
     availability_thread_ =
         std::thread([this]() { AvailabilityWatcherLoop(); });
     return true;
@@ -352,13 +352,20 @@ ExecutionQueueTelemetrySnapshot QueuedExecutionDb::GetTelemetrySnapshot() const 
     snapshot.read_failed = snapshot.queued.read_failed;
     snapshot.sqlite_busy = snapshot.queued.sqlite_busy;
     snapshot.sqlite_locked = snapshot.queued.sqlite_locked;
-    snapshot.ready_workset_watcher_reads =
+    snapshot.availability_watcher_reads =
         availability_watcher_reads_.load(std::memory_order_relaxed);
-    snapshot.ready_workset_signal_transitions =
+    snapshot.availability_signal_transitions =
         availability_signal_transitions_.load(
             std::memory_order_relaxed);
-    snapshot.ready_workset_callback_wakes =
+    snapshot.availability_callback_wakes =
         availability_callback_wakes_.load(std::memory_order_relaxed);
+    snapshot.workset_waves = workset_waves_.load(std::memory_order_relaxed);
+    snapshot.worksets_published_in_waves =
+        worksets_published_in_waves_.load(std::memory_order_relaxed);
+    snapshot.jobs_published_in_waves =
+        jobs_published_in_waves_.load(std::memory_order_relaxed);
+    snapshot.workset_wave_ready_transitions =
+        workset_wave_ready_transitions_.load(std::memory_order_relaxed);
     return snapshot;
 }
 
@@ -450,35 +457,30 @@ bool QueuedExecutionDb::SealJobPopulation(
         error_out);
 }
 
-bool QueuedExecutionDb::PublishWorkset(
-    const PublishWorksetCommand& command,
-    PublishWorksetReceipt* receipt_out,
+bool QueuedExecutionDb::PublishWorksetWave(
+    const PublishWorksetWaveCommand& command,
+    PublishWorksetWaveReceipt* receipt_out,
     std::string* error_out) {
     const bool published = ExecuteWrite<bool>(
         [this, command, receipt_out, error_out]() {
             return inner_ != nullptr
-                ? inner_->PublishWorkset(command, receipt_out, error_out)
+                ? inner_->PublishWorksetWave(command, receipt_out, error_out)
                 : false;
         },
         false,
         error_out);
-    if (published) RefreshReadyWorksetAvailability();
+    if (published) {
+        ++workset_waves_;
+        worksets_published_in_waves_.fetch_add(command.worksets.size());
+        jobs_published_in_waves_.fetch_add(
+            static_cast<std::uint64_t>(command.expected_job_count));
+        if (receipt_out != nullptr
+            && receipt_out->ready_workset_availability_changed) {
+            ++workset_wave_ready_transitions_;
+        }
+        RefreshExecutionWorkAvailability();
+    }
     return published;
-}
-
-bool QueuedExecutionDb::CompleteWorksetPublication(
-    const CompleteWorksetPublicationCommand& command,
-    CompleteWorksetPublicationReceipt* receipt_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, receipt_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->CompleteWorksetPublication(
-                    command, receipt_out, error_out)
-                : false;
-        },
-        false,
-        error_out);
 }
 
 std::vector<ClaimedPublishedWorkset>
@@ -493,64 +495,92 @@ QueuedExecutionDb::ClaimPublishedWorksetBatch(
         },
         {},
         error_out);
-    RefreshReadyWorksetAvailability();
+    RefreshExecutionWorkAvailability();
     return claimed;
 }
 
 std::vector<WorksetDispatchLeaseReceipt>
-QueuedExecutionDb::RenewWorksetDispatchLeases(
-    const RenewWorksetDispatchLeasesCommand& command,
+QueuedExecutionDb::RenewActiveWorksetLeases(
+    const RenewActiveWorksetLeasesCommand& command,
     std::string* error_out) {
     return ExecuteWrite<std::vector<WorksetDispatchLeaseReceipt>>(
         [this, command, error_out]() {
             return inner_ != nullptr
-                ? inner_->RenewWorksetDispatchLeases(command, error_out)
+                ? inner_->RenewActiveWorksetLeases(command, error_out)
                 : std::vector<WorksetDispatchLeaseReceipt>{};
         },
         {},
         error_out);
 }
 
-std::optional<ReadyWorksetAvailabilitySnapshot>
-QueuedExecutionDb::GetReadyWorksetAvailability(
+std::optional<ExecutionWorkAvailabilitySnapshot>
+QueuedExecutionDb::GetExecutionWorkAvailability(
     std::string* error_out) const {
     return ExecuteRead<
-        std::optional<ReadyWorksetAvailabilitySnapshot>>(
+        std::optional<ExecutionWorkAvailabilitySnapshot>>(
         [this, error_out]() {
             return inner_ != nullptr
-                ? inner_->GetReadyWorksetAvailability(error_out)
+                ? inner_->GetExecutionWorkAvailability(error_out)
                 : std::nullopt;
         },
         std::nullopt,
         error_out);
 }
 
-ReadyWorksetAvailabilitySubscription
-QueuedExecutionDb::SubscribeReadyWorksetAvailability(
-    ReadyWorksetAvailabilityCallback callback) {
+ExecutionWorkAvailabilitySubscription
+QueuedExecutionDb::SubscribeExecutionWorkAvailability(
+    ExecutionWorkAvailabilityCallback callback) {
     if (!callback) return 0;
-    std::lock_guard lock(availability_mutex_);
-    auto subscription = next_availability_subscription_++;
-    if (subscription == 0) subscription = next_availability_subscription_++;
-    availability_callbacks_.insert_or_assign(
-        subscription, std::move(callback));
+    ExecutionWorkAvailabilitySubscription subscription = 0;
+    std::optional<ExecutionWorkAvailabilitySnapshot> initial;
+    ExecutionWorkAvailabilityCallback initial_callback;
+    {
+        std::lock_guard lock(availability_mutex_);
+        subscription = next_availability_subscription_++;
+        if (subscription == 0) subscription = next_availability_subscription_++;
+        availability_callbacks_.insert_or_assign(subscription, callback);
+        initial = last_execution_work_availability_;
+        initial_callback = std::move(callback);
+    }
+    if (initial.has_value()) {
+        try {
+            initial_callback(*initial);
+            ++availability_callback_wakes_;
+        } catch (...) {
+        }
+    }
     return subscription;
 }
 
-void QueuedExecutionDb::UnsubscribeReadyWorksetAvailability(
-    ReadyWorksetAvailabilitySubscription subscription) {
+void QueuedExecutionDb::UnsubscribeExecutionWorkAvailability(
+    ExecutionWorkAvailabilitySubscription subscription) {
     std::lock_guard lock(availability_mutex_);
     availability_callbacks_.erase(subscription);
 }
 
-bool QueuedExecutionDb::MarkWorksetDispatched(
-    const MarkWorksetDispatchedCommand& command,
+bool QueuedExecutionDb::MarkWorksetActive(
+    const MarkWorksetActiveCommand& command,
     WorksetDispatchMutationReceipt* receipt_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
         [this, command, receipt_out, error_out]() {
             return inner_ != nullptr
-                ? inner_->MarkWorksetDispatched(
+                ? inner_->MarkWorksetActive(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::MarkWorksetDraining(
+    const MarkWorksetDrainingCommand& command,
+    WorksetDispatchMutationReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->MarkWorksetDraining(
                     command, receipt_out, error_out)
                 : false;
         },
@@ -571,161 +601,145 @@ bool QueuedExecutionDb::ReleaseWorksetDispatch(
         },
         false,
         error_out);
-    if (released) RefreshReadyWorksetAvailability();
+    if (released) RefreshExecutionWorkAvailability();
     return released;
 }
 
-bool QueuedExecutionDb::MarkWorksetJobStarted(
-    const MarkWorksetJobStartedCommand& command,
-    WorksetJobStartReceipt* receipt_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, receipt_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->MarkWorksetJobStarted(
-                    command, receipt_out, error_out)
-                : false;
-        },
-        false,
-        error_out);
-}
-
-bool QueuedExecutionDb::StageWorkerTerminal(
-    const StageWorkerTerminalCommand& command,
-    StageWorkerTerminalReceipt* receipt_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, receipt_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->StageWorkerTerminal(
-                    command, receipt_out, error_out)
-                : false;
-        },
-        false,
-        error_out);
-}
-
-std::optional<ClaimedExecutionFinishedJob>
-QueuedExecutionDb::ClaimNextExecutionFinishedJob(
-    const ClaimExecutionFinishedJobCommand& command,
-    std::string* error_out) {
-    return ExecuteWrite<std::optional<ClaimedExecutionFinishedJob>>(
-        [this, command, error_out]() {
-            return inner_ != nullptr
-                ? inner_->ClaimNextExecutionFinishedJob(command, error_out)
-                : std::nullopt;
-        },
-        std::nullopt,
-        error_out);
-}
-
-bool QueuedExecutionDb::RenewResultProcessingLease(
-    const RenewResultProcessingLeaseCommand& command,
-    ResultProcessingReceipt* receipt_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, receipt_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->RenewResultProcessingLease(
-                    command, receipt_out, error_out)
-                : false;
-        },
-        false,
-        error_out);
-}
-
-bool QueuedExecutionDb::ParkResultProcessing(
-    const ParkResultProcessingCommand& command,
-    ResultProcessingReceipt* receipt_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, receipt_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->ParkResultProcessing(
-                    command, receipt_out, error_out)
-                : false;
-        },
-        false,
-        error_out);
-}
-
-bool QueuedExecutionDb::CommitResultFinalization(
-    const CommitResultFinalizationCommand& command,
-    ResultProcessingReceipt* receipt_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, receipt_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->CommitResultFinalization(
-                    command, receipt_out, error_out)
-                : false;
-        },
-        false,
-        error_out);
-}
-
-bool QueuedExecutionDb::RequestJobCancellation(
-    const RequestJobCancellationCommand& command,
-    JobCancellationReceipt* receipt_out,
+bool QueuedExecutionDb::PersistWorkerExecutionEventsBatch(
+    const PersistWorkerExecutionEventsBatchCommand& command,
+    PersistWorkerExecutionEventsBatchReceipt* receipt_out,
     std::string* error_out) {
     const bool applied = ExecuteWrite<bool>(
         [this, command, receipt_out, error_out]() {
             return inner_ != nullptr
-                ? inner_->RequestJobCancellation(
+                ? inner_->PersistWorkerExecutionEventsBatch(
                     command, receipt_out, error_out)
                 : false;
         },
         false,
         error_out);
-    if (applied) RefreshReadyWorksetAvailability();
+    if (applied) RefreshExecutionWorkAvailability();
     return applied;
 }
 
-std::optional<ClaimedJobCancellation>
-QueuedExecutionDb::ClaimNextJobCancellation(
-    const ClaimJobCancellationCommand& command,
+std::vector<ClaimedExecutionFinishedJob>
+QueuedExecutionDb::ClaimExecutionFinishedJobsBatch(
+    const ClaimExecutionFinishedJobsBatchCommand& command,
     std::string* error_out) {
-    return ExecuteWrite<std::optional<ClaimedJobCancellation>>(
+    auto claimed = ExecuteWrite<std::vector<ClaimedExecutionFinishedJob>>(
         [this, command, error_out]() {
             return inner_ != nullptr
-                ? inner_->ClaimNextJobCancellation(command, error_out)
-                : std::nullopt;
+                ? inner_->ClaimExecutionFinishedJobsBatch(command, error_out)
+                : std::vector<ClaimedExecutionFinishedJob>{};
         },
-        std::nullopt,
+        {},
+        error_out);
+    RefreshExecutionWorkAvailability();
+    return claimed;
+}
+
+std::vector<InterruptedResultProcessingJob>
+QueuedExecutionDb::ListInterruptedResultProcessingJobs(
+    std::string* error_out) {
+    return ExecuteRead<std::vector<InterruptedResultProcessingJob>>(
+        [this, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ListInterruptedResultProcessingJobs(error_out)
+                : std::vector<InterruptedResultProcessingJob>{};
+        },
+        {},
         error_out);
 }
 
-bool QueuedExecutionDb::MarkJobCancellationDelivered(
-    const MarkJobCancellationDeliveredCommand& command,
-    JobCancellationReceipt* receipt_out,
+bool QueuedExecutionDb::ResetInterruptedResultProcessing(
+    const ResetInterruptedResultProcessingCommand& command,
+    ResultProcessingReceipt* receipt_out,
     std::string* error_out) {
     const bool applied = ExecuteWrite<bool>(
         [this, command, receipt_out, error_out]() {
             return inner_ != nullptr
-                ? inner_->MarkJobCancellationDelivered(
+                ? inner_->ResetInterruptedResultProcessing(
                     command, receipt_out, error_out)
                 : false;
         },
         false,
         error_out);
-    if (applied) RefreshReadyWorksetAvailability();
+    if (applied) RefreshExecutionWorkAvailability();
     return applied;
 }
 
-bool QueuedExecutionDb::ResolveJobCancellation(
-    const ResolveJobCancellationCommand& command,
-    JobCancellationReceipt* receipt_out,
+bool QueuedExecutionDb::RequeueLostResultProcessing(
+    const RequeueLostResultProcessingCommand& command,
+    ResultProcessingReceipt* receipt_out,
     std::string* error_out) {
     const bool applied = ExecuteWrite<bool>(
         [this, command, receipt_out, error_out]() {
             return inner_ != nullptr
-                ? inner_->ResolveJobCancellation(
+                ? inner_->RequeueLostResultProcessing(
                     command, receipt_out, error_out)
+                : false;
+        }, false, error_out);
+    if (applied) RefreshExecutionWorkAvailability();
+    return applied;
+}
+
+bool QueuedExecutionDb::RecordResultProcessingFailure(
+    const RecordResultProcessingFailureCommand& command,
+    ResultProcessingReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->RecordResultProcessingFailure(
+                    command, receipt_out, error_out)
+                : false;
+        }, false, error_out);
+}
+
+bool QueuedExecutionDb::CommitResultFinalizationsBatch(
+    const CommitResultFinalizationsBatchCommand& command,
+    std::vector<ResultProcessingReceipt>* receipts_out,
+    std::string* error_out) {
+    const bool applied = ExecuteWrite<bool>(
+        [this, command, receipts_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->CommitResultFinalizationsBatch(
+                    command, receipts_out, error_out)
                 : false;
         },
         false,
         error_out);
-    if (applied) RefreshReadyWorksetAvailability();
+    if (applied) RefreshExecutionWorkAvailability();
+    return applied;
+}
+
+std::vector<CommittedJobCancellation>
+QueuedExecutionDb::ListUnresolvedJobCancellations(
+    std::string* error_out) {
+    return ExecuteRead<std::vector<CommittedJobCancellation>>(
+        [this, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ListUnresolvedJobCancellations(error_out)
+                : std::vector<CommittedJobCancellation>{};
+        },
+        {},
+        error_out);
+}
+
+bool QueuedExecutionDb::MutateJobCancellationsBatch(
+    const MutateJobCancellationsBatchCommand& command,
+    std::vector<JobCancellationReceipt>* receipts_out,
+    std::string* error_out) {
+    const bool applied = ExecuteWrite<bool>(
+        [this, command, receipts_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->MutateJobCancellationsBatch(
+                    command, receipts_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+    if (applied) RefreshExecutionWorkAvailability();
     return applied;
 }
 
@@ -778,51 +792,20 @@ bool QueuedExecutionDb::CompleteTempBlobCleanup(
         error_out);
 }
 
-bool QueuedExecutionDb::RecoverExpiredWorksetDispatches(
-    int max_dispatches,
-    int* dispatches_recovered_out,
+bool QueuedExecutionDb::RecoverInterruptedWorksetDispatches(
+    RecoverInterruptedWorksetDispatchesReceipt* receipt_out,
     std::string* error_out) {
     const bool recovered = ExecuteWrite<bool>(
-        [this, max_dispatches, dispatches_recovered_out, error_out]() {
+        [this, receipt_out, error_out]() {
             return inner_ != nullptr
-                ? inner_->RecoverExpiredWorksetDispatches(
-                    max_dispatches, dispatches_recovered_out, error_out)
+                ? inner_->RecoverInterruptedWorksetDispatches(
+                    receipt_out, error_out)
                 : false;
         },
         false,
         error_out);
-    if (recovered) RefreshReadyWorksetAvailability();
+    if (recovered) RefreshExecutionWorkAvailability();
     return recovered;
-}
-
-bool QueuedExecutionDb::RecoverExpiredResultProcessingLeases(
-    int max_jobs,
-    int* jobs_recovered_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, max_jobs, jobs_recovered_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->RecoverExpiredResultProcessingLeases(
-                    max_jobs, jobs_recovered_out, error_out)
-                : false;
-        },
-        false,
-        error_out);
-}
-
-bool QueuedExecutionDb::RecoverExpiredCancellationDeliveryLeases(
-    int max_requests,
-    int* requests_recovered_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, max_requests, requests_recovered_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->RecoverExpiredCancellationDeliveryLeases(
-                    max_requests, requests_recovered_out, error_out)
-                : false;
-        },
-        false,
-        error_out);
 }
 
 std::optional<ClaimedExecutionJob> QueuedExecutionDb::ClaimNextReadyExecutionJob(
@@ -995,7 +978,7 @@ bool QueuedExecutionDb::RequeueExpiredExecutionLeases(
         },
         false,
         error_out);
-    if (requeued) RefreshReadyWorksetAvailability();
+    if (requeued) RefreshExecutionWorkAvailability();
     return requeued;
 }
 
@@ -1008,7 +991,7 @@ bool QueuedExecutionDb::RequeueExpiredClaimedExecutionJobs(
         },
         false,
         error_out);
-    if (requeued) RefreshReadyWorksetAvailability();
+    if (requeued) RefreshExecutionWorkAvailability();
     return requeued;
 }
 
@@ -1027,7 +1010,7 @@ bool QueuedExecutionDb::RequeueClaimedExecutionJob(
         },
         false,
         error_out);
-    if (requeued) RefreshReadyWorksetAvailability();
+    if (requeued) RefreshExecutionWorkAvailability();
     return requeued;
 }
 
@@ -1040,7 +1023,7 @@ bool QueuedExecutionDb::RequeueInterruptedExecutionJobs(
         },
         false,
         error_out);
-    if (requeued) RefreshReadyWorksetAvailability();
+    if (requeued) RefreshExecutionWorkAvailability();
     return requeued;
 }
 
@@ -1186,7 +1169,7 @@ bool QueuedExecutionDb::MarkQueuedJobsSuperseded(
         },
         false,
         error_out);
-    if (applied) RefreshReadyWorksetAvailability();
+    if (applied) RefreshExecutionWorkAvailability();
     return applied;
 }
 
@@ -1262,7 +1245,7 @@ std::optional<events::ExecutionWorkflowJobPayloadView> QueuedExecutionDb::Resolv
 
 void QueuedExecutionDb::AvailabilityWatcherLoop() {
     const auto interval = std::max(
-        config_.ready_workset_watch_interval,
+        config_.availability_watch_interval,
         std::chrono::milliseconds(1));
     std::unique_lock lock(availability_mutex_);
     while (!availability_stop_.load(std::memory_order_acquire)) {
@@ -1277,31 +1260,31 @@ void QueuedExecutionDb::AvailabilityWatcherLoop() {
         }
         lock.unlock();
         ++availability_watcher_reads_;
-        RefreshReadyWorksetAvailability();
+        RefreshExecutionWorkAvailability();
         lock.lock();
     }
 }
 
-void QueuedExecutionDb::RefreshReadyWorksetAvailability() {
+void QueuedExecutionDb::RefreshExecutionWorkAvailability() {
     if (!IsRunning()) return;
     std::string error;
-    const auto snapshot = GetReadyWorksetAvailability(&error);
+    const auto snapshot = GetExecutionWorkAvailability(&error);
     if (snapshot.has_value()) {
-        PublishReadyWorksetAvailability(*snapshot);
+        PublishExecutionWorkAvailability(*snapshot);
     }
 }
 
-void QueuedExecutionDb::PublishReadyWorksetAvailability(
-    const ReadyWorksetAvailabilitySnapshot& snapshot) {
-    std::vector<ReadyWorksetAvailabilityCallback> callbacks;
+void QueuedExecutionDb::PublishExecutionWorkAvailability(
+    const ExecutionWorkAvailabilitySnapshot& snapshot) {
+    std::vector<ExecutionWorkAvailabilityCallback> callbacks;
     {
         std::lock_guard lock(availability_mutex_);
-        if (last_ready_workset_availability_.has_value()
-            && last_ready_workset_availability_->generation
+        if (last_execution_work_availability_.has_value()
+            && last_execution_work_availability_->generation
                 == snapshot.generation) {
             return;
         }
-        last_ready_workset_availability_ = snapshot;
+        last_execution_work_availability_ = snapshot;
         ++availability_signal_transitions_;
         callbacks.reserve(availability_callbacks_.size());
         for (const auto& [_, callback] : availability_callbacks_) {

@@ -186,9 +186,9 @@ private:
 
 class TrackingExecutionDb : public RecordingExecutionDb {
 public:
-    bool PublishWorkset(
-        const savor::db::PublishWorksetCommand&,
-        savor::db::PublishWorksetReceipt* receipt_out,
+    bool PublishWorksetWave(
+        const savor::db::PublishWorksetWaveCommand& command,
+        savor::db::PublishWorksetWaveReceipt* receipt_out,
         std::string* error_out) override {
         if (!publish_updates_availability.load()) {
             if (error_out) error_out->clear();
@@ -199,6 +199,10 @@ public:
         if (receipt_out) {
             receipt_out->disposition =
                 savor::db::ExecutionDbOperationDisposition::Applied;
+            receipt_out->durable_workset_count =
+                static_cast<int>(command.worksets.size());
+            receipt_out->durable_job_count = command.expected_job_count;
+            receipt_out->ready_workset_availability_changed = true;
         }
         if (error_out) error_out->clear();
         return true;
@@ -219,8 +223,8 @@ public:
     }
 
     std::vector<savor::db::WorksetDispatchLeaseReceipt>
-    RenewWorksetDispatchLeases(
-        const savor::db::RenewWorksetDispatchLeasesCommand& command,
+    RenewActiveWorksetLeases(
+        const savor::db::RenewActiveWorksetLeasesCommand& command,
         std::string* error_out) override {
         ++renew_calls;
         UpdateMaximum(
@@ -242,11 +246,43 @@ public:
         return receipts;
     }
 
-    std::optional<savor::db::ReadyWorksetAvailabilitySnapshot>
-    GetReadyWorksetAvailability(
+    bool MarkWorksetActive(
+        const savor::db::MarkWorksetActiveCommand& command,
+        savor::db::WorksetDispatchMutationReceipt* receipt_out,
+        std::string* error_out) override {
+        if (receipt_out != nullptr) {
+            *receipt_out = {
+                .disposition = savor::db::
+                    ExecutionDbOperationDisposition::Applied,
+                .dispatch_attempt_id = command.dispatch_attempt_id,
+                .lease_expires_at_utc =
+                    CurrentUtcMs() + command.lease_duration_ms,
+            };
+        }
+        if (error_out != nullptr) error_out->clear();
+        return true;
+    }
+
+    bool MarkWorksetDraining(
+        const savor::db::MarkWorksetDrainingCommand& command,
+        savor::db::WorksetDispatchMutationReceipt* receipt_out,
+        std::string* error_out) override {
+        if (receipt_out != nullptr) {
+            *receipt_out = {
+                .disposition = savor::db::
+                    ExecutionDbOperationDisposition::Applied,
+                .dispatch_attempt_id = command.dispatch_attempt_id,
+            };
+        }
+        if (error_out != nullptr) error_out->clear();
+        return true;
+    }
+
+    std::optional<savor::db::ExecutionWorkAvailabilitySnapshot>
+    GetExecutionWorkAvailability(
         std::string* error_out) const override {
         if (error_out) error_out->clear();
-        return savor::db::ReadyWorksetAvailabilitySnapshot{
+        return savor::db::ExecutionWorkAvailabilitySnapshot{
             .generation = ready_generation.load(),
             .has_ready_worksets = ready_present.load(),
             .changed_at_utc = CurrentUtcMs(),
@@ -274,16 +310,29 @@ public:
         return true;
     }
 
-    bool StageWorkerTerminal(
-        const savor::db::StageWorkerTerminalCommand&,
-        savor::db::StageWorkerTerminalReceipt* receipt_out,
+    bool PersistWorkerExecutionEventsBatch(
+        const savor::db::PersistWorkerExecutionEventsBatchCommand& command,
+        savor::db::PersistWorkerExecutionEventsBatchReceipt* receipt_out,
         std::string* error_out) override {
-        ++stage_calls;
+        stage_calls.fetch_add(static_cast<int>(command.events.size()));
         if (receipt_out != nullptr) {
-            *receipt_out = {
-                .disposition =
-                    savor::db::ExecutionDbOperationDisposition::Applied,
-            };
+            receipt_out->events.clear();
+            for (const auto& event : command.events) {
+                if (std::holds_alternative<
+                        savor::db::StageWorkerTerminalCommand>(event)) {
+                    receipt_out->events.emplace_back(
+                        savor::db::StageWorkerTerminalReceipt{
+                            .disposition = savor::db::
+                                ExecutionDbOperationDisposition::Applied,
+                        });
+                } else {
+                    receipt_out->events.emplace_back(
+                        savor::db::WorksetJobStartReceipt{
+                            .disposition = savor::db::
+                                ExecutionDbOperationDisposition::Applied,
+                        });
+                }
+            }
         }
         if (error_out != nullptr) {
             error_out->clear();
@@ -291,13 +340,10 @@ public:
         return true;
     }
 
-    bool RecoverExpiredWorksetDispatches(
-        int,
-        int* dispatches_recovered_out,
+    bool RecoverInterruptedWorksetDispatches(
+        savor::db::RecoverInterruptedWorksetDispatchesReceipt* receipt_out,
         std::string* error_out) override {
-        if (dispatches_recovered_out != nullptr) {
-            *dispatches_recovered_out = 0;
-        }
+        if (receipt_out != nullptr) *receipt_out = {};
         if (error_out != nullptr) {
             error_out->clear();
         }
@@ -366,8 +412,6 @@ public:
             claimed.claim_token =
                 command.batch_nonce + "-"
                 + std::to_string(index + 1);
-            claimed.lease_expires_at_utc =
-                CurrentUtcMs() + command.lease_duration_ms;
             claimed.items.push_back(
                 {
                     .job_id =
@@ -447,7 +491,6 @@ JobExecutionCoordinatorConfig TestConfig() {
         .workset_lease_duration = std::chrono::milliseconds(60),
         .workset_lease_renewal_point = std::chrono::milliseconds(30),
         .workset_lease_retry_interval = std::chrono::milliseconds(5),
-        .recovery_interval = std::chrono::hours(1),
         .terminal_retry_interval = std::chrono::milliseconds(1),
         .terminal_retry_max_interval = std::chrono::milliseconds(4),
         .blob_readiness_retry_interval =
@@ -737,24 +780,32 @@ TEST(
     const auto ready = coordinator.SnapshotReadyWorkers();
     ASSERT_EQ(ready.size(), 1u);
 
+    const auto stale_workset = TestTargetedWorkset();
     const auto stale = coordinator.SubmitWorksetToWorker(
         WorkerExecutionTarget{
             .worker_id = ready[0].worker_id,
             .process_generation =
                 ready[0].process_generation + 1,
         },
-        TestTargetedWorkset());
+        stale_workset,
+        savor::runtime::InitialWorksetCancellationSidecarV1{
+            .workset_id = stale_workset.workset_id,
+        });
     EXPECT_EQ(
         stale.disposition,
         WorkerSubmitDisposition::StaleGeneration);
 
+    const auto incompatible_workset = TestTargetedWorkset("other.module");
     const auto incompatible = coordinator.SubmitWorksetToWorker(
         WorkerExecutionTarget{
             .worker_id = ready[0].worker_id,
             .process_generation =
                 ready[0].process_generation,
         },
-        TestTargetedWorkset("other.module"));
+        incompatible_workset,
+        savor::runtime::InitialWorksetCancellationSidecarV1{
+            .workset_id = incompatible_workset.workset_id,
+        });
     EXPECT_EQ(
         incompatible.disposition,
         WorkerSubmitDisposition::IncompatibleWorkset);
@@ -840,28 +891,28 @@ TEST(
 
 TEST(
     QueuedExecutionDb,
-    ReadyWorksetCallbacksAreImmediateAndWatcherSeesExternalGeneration) {
+    ExecutionWorkCallbacksAreImmediateAndWatcherSeesExternalGeneration) {
     TrackingExecutionDb inner;
     inner.publish_updates_availability = true;
     savor::db::execution::QueuedExecutionDb queued(
         &inner,
         savor::db::execution::ExecutionQueueConfig{
-            .ready_workset_watch_interval =
+            .availability_watch_interval =
                 std::chrono::milliseconds(20),
         });
     std::string error;
     ASSERT_TRUE(queued.Start(&error)) << error;
     std::mutex observed_mutex;
-    std::vector<savor::db::ReadyWorksetAvailabilitySnapshot> observed;
-    const auto subscription = queued.SubscribeReadyWorksetAvailability(
+    std::vector<savor::db::ExecutionWorkAvailabilitySnapshot> observed;
+    const auto subscription = queued.SubscribeExecutionWorkAvailability(
         [&](const auto& snapshot) {
             std::lock_guard lock(observed_mutex);
             observed.push_back(snapshot);
         });
     ASSERT_NE(subscription, 0u);
 
-    savor::db::PublishWorksetReceipt published{};
-    ASSERT_TRUE(queued.PublishWorkset({}, &published, &error)) << error;
+    savor::db::PublishWorksetWaveReceipt published{};
+    ASSERT_TRUE(queued.PublishWorksetWave({}, &published, &error)) << error;
     EXPECT_EQ(
         published.disposition,
         savor::db::ExecutionDbOperationDisposition::Applied);
@@ -885,14 +936,14 @@ TEST(
             observed.front().generation);
     }
     const auto queue_telemetry = queued.GetTelemetrySnapshot();
-    EXPECT_GT(queue_telemetry.ready_workset_watcher_reads, 0u);
-    EXPECT_GE(queue_telemetry.ready_workset_signal_transitions, 3u);
-    EXPECT_GE(queue_telemetry.ready_workset_callback_wakes, 2u);
-    queued.UnsubscribeReadyWorksetAvailability(subscription);
+    EXPECT_GT(queue_telemetry.availability_watcher_reads, 0u);
+    EXPECT_GE(queue_telemetry.availability_signal_transitions, 3u);
+    EXPECT_GE(queue_telemetry.availability_callback_wakes, 2u);
+    queued.UnsubscribeExecutionWorkAvailability(subscription);
     queued.Stop();
     EXPECT_EQ(
         savor::db::execution::ExecutionQueueConfig{}
-            .ready_workset_watch_interval,
+            .availability_watch_interval,
         std::chrono::seconds(1));
 }
 
@@ -957,6 +1008,7 @@ TEST(
         workers.Stop();
         return;
     }
+    coordinator.OpenCancellationAdmission();
 
     const bool claimed = WaitUntil(
         [&]() { return execution_db.claim_calls.load() > 0; },
@@ -1034,6 +1086,7 @@ TEST(
         workers.Stop();
         return;
     }
+    coordinator.OpenCancellationAdmission();
     std::this_thread::sleep_for(std::chrono::milliseconds(25));
     EXPECT_EQ(execution_db.claim_calls.load(), 0);
 
@@ -1095,6 +1148,7 @@ TEST(
         TestConfig());
     std::string error;
     ASSERT_TRUE(coordinator.Start(&error)) << error;
+    coordinator.OpenCancellationAdmission();
     EXPECT_TRUE(WaitUntil(
         [&]() {
             return execution_db.maximum_requested_worksets.load()
@@ -1150,6 +1204,7 @@ TEST(
         TestConfig());
     std::string error;
     ASSERT_TRUE(coordinator.Start(&error)) << error;
+    coordinator.OpenCancellationAdmission();
     ASSERT_TRUE(WaitUntil(
         [&]() { return execution_db.claim_calls.load() >= 1; }));
     auto telemetry = coordinator.SnapshotTelemetry();
@@ -1187,7 +1242,7 @@ TEST(
 
 TEST(
     JobExecutionCoordinator,
-    BlockedSingleReconstructorExposesBacklogWhileHeartbeatContinues) {
+    BlockedSingleReconstructorExposesBacklogWithoutClaimLeaseRenewal) {
     TemporaryCoordinatorDirectory temporary;
     WorkerCoordinatorConfig worker_config{
         .desired_workers = 2,
@@ -1234,6 +1289,7 @@ TEST(
         TestConfig());
     std::string error;
     ASSERT_TRUE(coordinator.Start(&error)) << error;
+    coordinator.OpenCancellationAdmission();
 
     ASSERT_TRUE(WaitUntil([&]() {
         const auto telemetry = coordinator.SnapshotTelemetry();
@@ -1254,9 +1310,9 @@ TEST(
     EXPECT_EQ(reconstructing, 4u);
     EXPECT_EQ(blocked.reconstruction_queue_high_water, 3u);
     EXPECT_EQ(adapter->maximum_active(), 1);
-    EXPECT_TRUE(WaitUntil(
-        [&]() { return execution_db.renew_calls.load() > 0; }));
-    EXPECT_GT(execution_db.maximum_renewal_batch_size.load(), 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_EQ(execution_db.renew_calls.load(), 0);
+    EXPECT_EQ(execution_db.maximum_renewal_batch_size.load(), 0);
     EXPECT_EQ(adapter->maximum_active(), 1);
 
     reconstruction_release_promise.set_value();

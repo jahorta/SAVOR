@@ -1,6 +1,7 @@
 #include "ProcessWorker.h"
 
 #include "Runner/Runtime/Worksets/WorksetWireCodec.h"
+#include "Utils/Hash.h"
 #include "Utils/Log.h"
 #include "Utils/ThreadName.h"
 
@@ -606,6 +607,20 @@ ProcessWorksetSubmitOutcome ProcessWorker::submit_workset_with_outcome(
     const runtime::WorkerWorksetDefinition& workset,
     std::uint32_t timeout_ms)
 {
+    return submit_workset_with_outcome(
+        workset,
+        runtime::InitialWorksetCancellationSidecarV1{
+            .workset_id = workset.workset_id,
+        },
+        timeout_ms);
+}
+
+ProcessWorksetSubmitOutcome ProcessWorker::submit_workset_with_outcome(
+    const runtime::WorkerWorksetDefinition& workset,
+    const runtime::InitialWorksetCancellationSidecarV1&
+        initial_cancellations,
+    std::uint32_t timeout_ms)
+{
     ProcessWorksetSubmitOutcome outcome;
     outcome.result.command_kind = wrms::MessageKind::SubmitWorkset;
     outcome.result.status = wrms::CommandStatus::Rejected;
@@ -623,8 +638,30 @@ ProcessWorksetSubmitOutcome ProcessWorker::submit_workset_with_outcome(
         outcome.result.message = outcome.diagnostic;
         return outcome;
     }
+    const auto sidecar_validation =
+        runtime::ValidateInitialWorksetCancellationSidecar(
+            workset, initial_cancellations);
+    if (!sidecar_validation.ok)
+    {
+        outcome.diagnostic = sidecar_validation.error.message;
+        outcome.result.error_code = "LocalCancellationSidecarValidationFailed";
+        outcome.result.message = outcome.diagnostic;
+        return outcome;
+    }
+    const auto workset_sha256 = hash::sha256(
+        encoded_workset.data(), encoded_workset.size());
     wrms::SubmitWorksetPayload request{
-        .encoded_workset = std::move(encoded_workset)};
+        .encoded_workset = std::move(encoded_workset),
+        .workset_sha256 = workset_sha256,
+        .cancellation_sidecar_version =
+            runtime::kInitialWorksetCancellationSidecarVersionV1,
+        .cancellation_sidecar_sha256 =
+            runtime::ComputeInitialWorksetCancellationSidecarSha256(
+                initial_cancellations)};
+    request.initially_cancelled_item_ids.reserve(
+        initial_cancellations.item_ids.size());
+    for (const auto item_id : initial_cancellations.item_ids)
+        request.initially_cancelled_item_ids.push_back(item_id.value());
     std::vector<std::uint8_t> payload;
     if (!EncodeTypedPayload(request, &payload))
     {

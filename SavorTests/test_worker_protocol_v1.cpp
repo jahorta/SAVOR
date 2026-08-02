@@ -245,7 +245,17 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .encoded_invocation = { 0xde, 0xad, 0xbe, 0xef },
     });
     ExpectPayloadRoundTrip(SubmitWorksetPayload{
-        .encoded_workset = {0x57, 0x53, 0x01}});
+        .encoded_workset = {0x57, 0x53, 0x01},
+        .workset_sha256 = std::string(64, 'a'),
+        .cancellation_sidecar_version = 1,
+        .initially_cancelled_item_ids = {2, 5},
+        .cancellation_sidecar_sha256 = std::string(64, 'b')});
+    ExpectPayloadRoundTrip(SubmitWorksetResultPayload{
+        .workset_id = 500,
+        .sidecar_version = 1,
+        .applied_item_count = 2,
+        .applied_sidecar_sha256 = std::string(64, 'b'),
+        .already_accepted = true});
     ExpectPayloadRoundTrip(CancelWorksetItemPayload{
         .workset_id = 500,
         .item_id = 3,
@@ -365,7 +375,8 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .format_version = 1,
         .has_resident_workset = true,
         .workset_id = 500,
-        .state = WorksetStateCode::Running});
+        .state = WorksetStateCode::Running,
+        .cancellation_sidecar_sha256 = std::string(64, 'b')});
     ExpectPayloadRoundTrip(WorksetItemStartedPayload{
         .outbound_sequence = 32,
         .workset_id = 500,
@@ -402,7 +413,8 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .workset_id = 500,
         .item_count = 3,
         .completed_count = 2,
-        .unstarted_count = 1});
+        .unstarted_count = 0,
+        .initially_suppressed_count = 1});
 
     ExpectPayloadRoundTrip(HostEventPayload{
         55,

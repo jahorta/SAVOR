@@ -253,6 +253,47 @@ struct WorkerWorksetDefinition
     auto operator<=>(const WorkerWorksetDefinition&) const = default;
 };
 
+inline constexpr std::uint32_t
+    kInitialWorksetCancellationSidecarVersionV1 = 1;
+
+struct WorksetValidationResult;
+
+struct InitialWorksetCancellationSidecarV1
+{
+    WorkerWorksetId workset_id;
+    std::vector<WorkerWorksetItemId> item_ids;
+
+    auto operator<=>(
+        const InitialWorksetCancellationSidecarV1&) const = default;
+};
+
+enum class WorksetSubmissionDispositionV1 : std::uint8_t
+{
+    Accepted = 0,
+    AlreadyAccepted,
+};
+
+struct SubmitWorksetResultV1
+{
+    WorkerWorksetId workset_id;
+    std::uint32_t sidecar_version =
+        kInitialWorksetCancellationSidecarVersionV1;
+    std::uint32_t applied_item_count = 0;
+    std::string applied_sidecar_sha256;
+    WorksetSubmissionDispositionV1 disposition =
+        WorksetSubmissionDispositionV1::Accepted;
+
+    auto operator<=>(const SubmitWorksetResultV1&) const = default;
+};
+
+[[nodiscard]] std::string ComputeInitialWorksetCancellationSidecarSha256(
+    const InitialWorksetCancellationSidecarV1& sidecar);
+
+[[nodiscard]] WorksetValidationResult
+ValidateInitialWorksetCancellationSidecar(
+    const WorkerWorksetDefinition& definition,
+    const InitialWorksetCancellationSidecarV1& sidecar);
+
 enum class WorkerWorksetState : std::uint8_t
 {
     Validating,

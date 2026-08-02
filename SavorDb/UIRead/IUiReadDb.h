@@ -129,7 +129,6 @@ struct UiJobSummary {
     std::string result_processing_state;
     int result_processing_attempts = 0;
     int result_processing_failures = 0;
-    std::optional<std::int64_t> result_processing_retry_after_utc;
     std::string result_processing_error_code;
     std::string result_processing_error_text;
 };

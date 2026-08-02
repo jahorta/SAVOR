@@ -1356,10 +1356,10 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     Statement st;
                     if (!Prepare(execution_db_,
                             "INSERT INTO exec_workset_dispatch_attempt(dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,"
-                            "lease_expires_at_utc,claimed_at_utc,dispatched_at_utc,closed_at_utc,close_reason_code,close_reason_text) "
+                            "lease_expires_at_utc,claimed_at_utc,dispatched_at_utc,draining_at_utc,closed_at_utc,close_reason_code,close_reason_text) "
                             "VALUES(?1,?2,json_extract(?3,'$.dispatch_sequence'),json_extract(?3,'$.state'),?4,"
                             "json_extract(?3,'$.lease_expires_at_utc'),json_extract(?3,'$.claimed_at_utc'),"
-                            "json_extract(?3,'$.dispatched_at_utc'),json_extract(?3,'$.closed_at_utc'),"
+                            "json_extract(?3,'$.dispatched_at_utc'),json_extract(?3,'$.draining_at_utc'),json_extract(?3,'$.closed_at_utc'),"
                             "json_extract(?3,'$.close_reason_code'),json_extract(?3,'$.close_reason_text'));",
                             &st,
                             &db_error)) break;
@@ -1430,15 +1430,6 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                             spec.target_namespace + ":job-cancellation:"
                             + std::to_string(new_id) + ":" + old_cancellation_key)
                         : std::string{};
-                    bool ok_cancellation_delivery_token = false;
-                    const auto old_cancellation_delivery_token = JsonExtractText(
-                        execution_db_, line, "$.cancellation_delivery_token",
-                        &ok_cancellation_delivery_token);
-                    const auto cancellation_delivery_token = ok_cancellation_delivery_token
-                        ? Fnv1a64(
-                            spec.target_namespace + ":cancellation-delivery:"
-                            + std::to_string(new_id) + ":" + old_cancellation_delivery_token)
-                        : std::string{};
                     Statement st;
                     if (!Prepare(execution_db_,
                             "INSERT INTO exec_job("
@@ -1447,14 +1438,15 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                             "ended_at_utc,error_code,error_text,savestate_id,input_ini,workset_id,workset_item_ordinal,"
                             "dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id,execution_finished_at_utc,worker_terminal_status,"
                             "worker_terminal_fingerprint,worker_terminal_id,worker_terminal_error_code,worker_terminal_error_text,"
-                            "worker_terminal_unstarted,worker_result_blob_id,result_processing_state,result_processor_token,"
-                            "result_processing_lease_expires_at_utc,result_processing_attempts,result_processing_failures,"
+                            "worker_terminal_unstarted,worker_result_blob_id,result_processing_state,"
+                            "result_processing_attempts,result_processing_failures,"
                             "result_processing_error_code,result_processing_error_text,result_processing_failed_at_utc,"
                             "result_processed_at_utc,cancellation_group_key,cancellation_state,"
                             "cancellation_request_key,cancellation_reason_code,"
                             "cancellation_reason_text,cancellation_requested_by,cancellation_caused_by_job_id,"
-                            "cancellation_requested_at_utc,cancellation_delivery_token,cancellation_delivery_lease_expires_at_utc,"
-                            "cancellation_delivery_attempts,cancellation_delivered_at_utc,cancellation_resolved_at_utc,"
+                            "cancellation_requested_at_utc,cancellation_delivery_attempts,"
+                            "cancellation_last_delivery_error_code,cancellation_last_delivery_error_text,"
+                            "cancellation_last_delivery_failed_at_utc,cancellation_delivered_at_utc,cancellation_resolved_at_utc,"
                             "cancellation_resolution_code) "
                             "VALUES(?1,?2,?3,json_extract(?4,'$.program_kind'),json_extract(?4,'$.program_version'),"
                             "json_extract(?4,'$.program_ref_kind'),json_extract(?4,'$.program_ref_id'),?5,"
@@ -1462,22 +1454,23 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                             "json_extract(?4,'$.max_attempts'),json_extract(?4,'$.claimed_by_token'),"
                             "json_extract(?4,'$.lease_expires_at_utc'),json_extract(?4,'$.queued_at_utc'),"
                             "json_extract(?4,'$.started_at_utc'),json_extract(?4,'$.ended_at_utc'),"
-                            "json_extract(?4,'$.error_code'),json_extract(?4,'$.error_text'),?8,?11,"
+                            "json_extract(?4,'$.error_code'),json_extract(?4,'$.error_text'),?8,?10,"
                             "?6,json_extract(?4,'$.workset_item_ordinal'),?7,json_extract(?4,'$.dispatch_item_ordinal'),json_extract(?4,'$.reserved_attempt_id'),"
                             "json_extract(?4,'$.execution_finished_at_utc'),json_extract(?4,'$.worker_terminal_status'),"
                             "json_extract(?4,'$.worker_terminal_fingerprint'),json_extract(?4,'$.worker_terminal_id'),"
                             "json_extract(?4,'$.worker_terminal_error_code'),json_extract(?4,'$.worker_terminal_error_text'),"
                             "json_extract(?4,'$.worker_terminal_unstarted'),NULL,json_extract(?4,'$.result_processing_state'),"
-                            "json_extract(?4,'$.result_processor_token'),json_extract(?4,'$.result_processing_lease_expires_at_utc'),"
                             "json_extract(?4,'$.result_processing_attempts'),json_extract(?4,'$.result_processing_failures'),"
                             "json_extract(?4,'$.result_processing_error_code'),json_extract(?4,'$.result_processing_error_text'),"
                             "json_extract(?4,'$.result_processing_failed_at_utc'),json_extract(?4,'$.result_processed_at_utc'),"
-                            "?12,json_extract(?4,'$.cancellation_state'),"
+                            "?11,json_extract(?4,'$.cancellation_state'),"
                             "?9,json_extract(?4,'$.cancellation_reason_code'),"
                             "json_extract(?4,'$.cancellation_reason_text'),json_extract(?4,'$.cancellation_requested_by'),NULL,"
-                            "json_extract(?4,'$.cancellation_requested_at_utc'),?10,"
-                            "json_extract(?4,'$.cancellation_delivery_lease_expires_at_utc'),"
-                            "json_extract(?4,'$.cancellation_delivery_attempts'),json_extract(?4,'$.cancellation_delivered_at_utc'),"
+                            "json_extract(?4,'$.cancellation_requested_at_utc'),"
+                            "json_extract(?4,'$.cancellation_delivery_attempts'),"
+                            "json_extract(?4,'$.cancellation_last_delivery_error_code'),"
+                            "json_extract(?4,'$.cancellation_last_delivery_error_text'),"
+                            "json_extract(?4,'$.cancellation_last_delivery_failed_at_utc'),json_extract(?4,'$.cancellation_delivered_at_utc'),"
                             "json_extract(?4,'$.cancellation_resolved_at_utc'),json_extract(?4,'$.cancellation_resolution_code'));",
                             &st,
                             &db_error)) {
@@ -1496,31 +1489,25 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     } else {
                         sqlite3_bind_null(st.st, 9);
                     }
-                    if (ok_cancellation_delivery_token) {
-                        sqlite3_bind_text(
-                            st.st, 10, cancellation_delivery_token.c_str(), -1, SQLITE_TRANSIENT);
-                    } else {
-                        sqlite3_bind_null(st.st, 10);
-                    }
                     if (ok_input_ini) {
                         sqlite3_bind_text(
                             st.st,
-                            11,
+                            10,
                             restored_input_ini.c_str(),
                             -1,
                             SQLITE_TRANSIENT);
                     } else {
-                        sqlite3_bind_null(st.st, 11);
+                        sqlite3_bind_null(st.st, 10);
                     }
                     if (ok_cancellation_group_key) {
                         sqlite3_bind_text(
                             st.st,
-                            12,
+                            11,
                             restored_cancellation_group_key.c_str(),
                             -1,
                             SQLITE_TRANSIENT);
                     } else {
-                        sqlite3_bind_null(st.st, 12);
+                        sqlite3_bind_null(st.st, 11);
                     }
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
                     restored_jobs.push_back(new_id);
@@ -1566,24 +1553,19 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto request_key = Fnv1a64(
                         spec.target_namespace + ":job-cancellation:"
                         + std::to_string(new_job) + ":" + old_request_key);
-                    bool ok_delivery_token = false;
-                    const auto old_delivery_token = JsonExtractText(
-                        execution_db_, line, "$.delivery_token", &ok_delivery_token);
-                    const auto delivery_token = ok_delivery_token
-                        ? Fnv1a64(
-                            spec.target_namespace + ":cancellation-delivery:"
-                            + std::to_string(new_job) + ":" + old_delivery_token)
-                        : std::string{};
                     Statement st;
                     if (!Prepare(execution_db_,
                             "INSERT INTO exec_job_cancellation_request("
                             "cancellation_request_id,job_id,request_key,reason_code,reason_text,requested_by,caused_by_job_id,"
-                            "requested_at_utc,state,delivery_token,delivery_lease_expires_at_utc,delivery_attempts,"
+                            "requested_at_utc,state,delivery_attempts,last_delivery_error_code,"
+                            "last_delivery_error_text,last_delivery_failed_at_utc,"
                             "delivered_at_utc,resolved_at_utc,resolution_code) "
                             "VALUES(?1,?2,?3,json_extract(?4,'$.reason_code'),json_extract(?4,'$.reason_text'),"
                             "json_extract(?4,'$.requested_by'),?5,json_extract(?4,'$.requested_at_utc'),"
-                            "json_extract(?4,'$.state'),?6,json_extract(?4,'$.delivery_lease_expires_at_utc'),"
-                            "json_extract(?4,'$.delivery_attempts'),json_extract(?4,'$.delivered_at_utc'),"
+                            "json_extract(?4,'$.state'),json_extract(?4,'$.delivery_attempts'),"
+                            "json_extract(?4,'$.last_delivery_error_code'),"
+                            "json_extract(?4,'$.last_delivery_error_text'),"
+                            "json_extract(?4,'$.last_delivery_failed_at_utc'),json_extract(?4,'$.delivered_at_utc'),"
                             "json_extract(?4,'$.resolved_at_utc'),json_extract(?4,'$.resolution_code'));",
                             &st,
                             &db_error)) break;
@@ -1592,11 +1574,6 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     sqlite3_bind_text(st.st, 3, request_key.c_str(), -1, SQLITE_TRANSIENT);
                     sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
                     if (ok_caused_by) sqlite3_bind_int64(st.st, 5, new_caused_by); else sqlite3_bind_null(st.st, 5);
-                    if (ok_delivery_token) {
-                        sqlite3_bind_text(st.st, 6, delivery_token.c_str(), -1, SQLITE_TRANSIENT);
-                    } else {
-                        sqlite3_bind_null(st.st, 6);
-                    }
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
                     ++restored_execution_counts[kind];
                 } else if (kind == "workflow_instances") {

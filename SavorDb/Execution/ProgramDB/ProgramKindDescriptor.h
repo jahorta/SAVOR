@@ -270,6 +270,31 @@ struct ProgramResultProcessingContext {
     WorkerTerminalObservation terminal;
 };
 
+struct ProgramResultRecoveryContext {
+    std::int64_t job_id = 0;
+    std::int64_t job_set_id = 0;
+    std::int32_t program_kind = 0;
+    std::int32_t program_version = 0;
+    std::string program_ref_kind;
+    std::int64_t program_ref_id = 0;
+    std::string fingerprint;
+    std::string input_ini;
+    std::string terminal_sha256;
+};
+
+enum class ProgramResultRecoveryDisposition {
+    Recovered = 0,
+    NoPersistedOutcome,
+    Inconsistent,
+};
+
+struct ProgramResultRecovery {
+    ProgramResultRecoveryDisposition disposition =
+        ProgramResultRecoveryDisposition::Inconsistent;
+    std::optional<ProgramResultDecision> decision;
+    std::string diagnostic;
+};
+
 struct IProgramResultHandler {
     virtual ~IProgramResultHandler() = default;
     // Domain writes performed here must be idempotent. Returning a decision
@@ -277,6 +302,18 @@ struct IProgramResultHandler {
     // job's final state only afterwards.
     virtual ProgramResultDecision Process(
         const ProgramResultProcessingContext& context) const = 0;
+
+    // Used only during coordinator startup when a prior PROCESSING owner did
+    // not finish. Implementations inspect their already-durable program data;
+    // they must never fabricate a second worker observation.
+    virtual ProgramResultRecovery RecoverPersistedOutcome(
+        const ProgramResultRecoveryContext& context) const {
+        (void)context;
+        return {
+            .disposition = ProgramResultRecoveryDisposition::Inconsistent,
+            .diagnostic = "program kind does not support persisted-outcome recovery",
+        };
+    }
 };
 
 struct IResultPayloadWriter {

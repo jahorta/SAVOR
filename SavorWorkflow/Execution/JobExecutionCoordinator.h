@@ -23,17 +23,19 @@ struct JobExecutionCoordinatorConfig {
     std::chrono::milliseconds workset_lease_duration{180000};
     std::chrono::milliseconds workset_lease_renewal_point{90000};
     std::chrono::milliseconds workset_lease_retry_interval{5000};
-    std::chrono::milliseconds recovery_interval{1000};
     std::chrono::milliseconds terminal_retry_interval{250};
     std::chrono::milliseconds terminal_retry_max_interval{30000};
     std::chrono::milliseconds blob_readiness_retry_interval{1000};
     std::chrono::milliseconds blob_readiness_retry_max_interval{30000};
     std::size_t worker_queue_capacity = 2;
     std::size_t terminal_persistence_threads = 4;
+    std::size_t worker_event_batch_size = 32;
+    std::chrono::milliseconds worker_event_collection_delay{2};
+    std::size_t cancellation_batch_size = 32;
+    std::chrono::milliseconds cancellation_mutation_delay{2};
     std::uint32_t maximum_items_per_workset = 16;
     std::uint64_t maximum_encoded_workset_bytes =
         32ull * 1024ull * 1024ull;
-    int recovery_batch_size = 64;
     savor::runtime::StateCompatibilityToken state_compatibility;
 };
 
@@ -98,15 +100,60 @@ struct JobExecutionCoordinatorTelemetry {
     std::uint64_t worker_terminal_ack_abandoned_generation_loss = 0;
     std::uint64_t worker_terminal_staging_failures = 0;
     std::uint64_t worker_terminal_retry_attempts = 0;
+    std::uint64_t worker_event_batches = 0;
+    std::uint64_t worker_event_batch_items = 0;
+    std::uint64_t worker_event_batch_rollbacks = 0;
+    std::uint64_t worker_event_batch_retries = 0;
+    std::uint64_t worker_event_full_flushes = 0;
+    std::uint64_t worker_event_deadline_flushes = 0;
+    std::uint64_t worker_event_barrier_flushes = 0;
+    std::uint64_t worker_event_batch_max_size = 0;
+    std::uint64_t worker_event_batch_total_size = 0;
+    double worker_event_batch_average_size = 0.0;
+    std::uint64_t worker_event_batch_max_collection_age_ms = 0;
+    std::size_t worker_event_batch_queue_depth = 0;
+    std::size_t worker_event_batch_queue_high_water = 0;
     std::uint64_t blob_readiness_failures = 0;
-    std::uint64_t cancellations_claimed = 0;
     std::uint64_t cancellations_delivered = 0;
+    std::uint64_t cancellation_precommit_holds_registered = 0;
+    std::uint64_t cancellation_precommit_holds_promoted = 0;
+    std::size_t cancellation_precommit_holds_pending = 0;
+    std::uint64_t committed_cancellations_indexed = 0;
+    std::size_t unresolved_requested_cancellation_canaries = 0;
+    std::uint64_t waiting_jobs_suppressed_by_sidecar = 0;
+    std::uint64_t fully_canceled_worksets_avoided = 0;
+    std::uint64_t sidecar_items_submitted = 0;
+    std::uint64_t sidecar_submit_receipts_accepted = 0;
+    std::uint64_t sidecar_submit_receipts_repeated = 0;
+    std::uint64_t sidecar_submit_receipts_mismatched = 0;
+    std::uint64_t post_fence_cancellation_commands = 0;
+    std::uint64_t cancellation_mutation_batches = 0;
+    std::uint64_t cancellation_mutation_batch_items = 0;
+    double cancellation_mutation_batch_average_size = 0.0;
+    std::uint64_t cancellation_mutation_full_flushes = 0;
+    std::uint64_t cancellation_mutation_deadline_flushes = 0;
+    std::uint64_t cancellation_mutation_barrier_flushes = 0;
+    std::uint64_t cancellation_mutation_rollbacks = 0;
+    std::uint64_t cancellation_mutation_retries = 0;
+    std::uint64_t cancellation_mutation_max_size = 0;
+    std::uint64_t cancellation_mutation_max_collection_age_ms = 0;
+    std::size_t pending_cancellation_mutations = 0;
+    std::size_t cancellation_mutation_queue_high_water = 0;
     std::uint64_t worker_losses = 0;
-    std::uint64_t recovered_dispatches = 0;
+    std::uint64_t startup_recovered_dispatches = 0;
+    std::uint64_t startup_requeued_jobs = 0;
+    std::uint64_t startup_recovery_attempts_granted = 0;
+    std::uint64_t active_residence_probes = 0;
+    std::uint64_t active_residence_matches = 0;
+    std::uint64_t active_residence_failures = 0;
+    std::uint64_t active_lease_renewal_batches = 0;
+    std::uint64_t active_lease_renewal_retries = 0;
+    std::uint64_t draining_transitions = 0;
     std::uint64_t scheduler_wakeups = 0;
-    std::uint64_t ready_workset_generation = 0;
+    std::uint64_t availability_generation = 0;
     bool ready_worksets_present = false;
-    std::uint64_t ready_workset_signal_wakeups = 0;
+    bool execution_finished_results_present = false;
+    std::uint64_t availability_signal_wakeups = 0;
     std::uint32_t claim_backoff_stage = 0;
     std::uint64_t current_claim_backoff_ms = 0;
     std::uint64_t reconciliation_claims = 0;
@@ -161,16 +208,13 @@ struct JobExecutionCoordinatorTelemetry {
 
 class JobExecutionCoordinator {
 public:
-    using WorkerTerminalStagedCallback = std::function<void()>;
-
     JobExecutionCoordinator(
         savor::db::IExecutionDb* execution_db,
         const savor::db::execution::programdb::ProgramKindRegistry*
             program_kind_registry,
         WorkerCoordinator* worker_coordinator,
         savor::db::execution::WorkerResultBlobStore* blob_store,
-        JobExecutionCoordinatorConfig config = {},
-        WorkerTerminalStagedCallback terminal_staged_callback = {});
+        JobExecutionCoordinatorConfig config = {});
     ~JobExecutionCoordinator();
 
     JobExecutionCoordinator(const JobExecutionCoordinator&) = delete;
@@ -187,6 +231,15 @@ public:
     [[nodiscard]] bool IsPaused() const noexcept;
     [[nodiscard]] bool IsRunning() const noexcept;
     bool ClearInvariantPause();
+    void RegisterCancellationCommitPending(
+        std::uint64_t hold_id,
+        const std::vector<savor::db::ExecutionCancellationRequestSpec>&
+            cancellations);
+    void RegisterCommittedCancellations(
+        std::uint64_t hold_id,
+        const std::vector<savor::db::CommittedJobCancellation>&
+            cancellations);
+    void OpenCancellationAdmission();
     [[nodiscard]] JobExecutionCoordinatorTelemetry SnapshotTelemetry() const;
     [[nodiscard]] std::vector<JobExecutionWorkerLaneSnapshot>
         SnapshotWorkerLanes() const;

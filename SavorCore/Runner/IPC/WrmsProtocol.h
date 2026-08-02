@@ -295,10 +295,27 @@ struct SubmitInvocationPayload {
 
 struct SubmitWorksetPayload {
     std::vector<std::uint8_t> encoded_workset;
+    std::string workset_sha256;
+    std::uint32_t cancellation_sidecar_version = 1;
+    std::vector<std::uint64_t> initially_cancelled_item_ids;
+    std::string cancellation_sidecar_sha256;
 
     friend bool operator==(
         const SubmitWorksetPayload&,
         const SubmitWorksetPayload&) = default;
+};
+
+struct SubmitWorksetResultPayload {
+    std::uint32_t format_version = 1;
+    std::uint64_t workset_id = 0;
+    std::uint32_t sidecar_version = 1;
+    std::uint32_t applied_item_count = 0;
+    std::string applied_sidecar_sha256;
+    bool already_accepted = false;
+
+    friend bool operator==(
+        const SubmitWorksetResultPayload&,
+        const SubmitWorksetResultPayload&) = default;
 };
 
 struct CancelWorksetItemPayload {
@@ -484,6 +501,7 @@ struct WorksetResidenceSnapshotV1 {
     bool has_resident_workset = false;
     std::uint64_t workset_id = 0;
     WorksetStateCode state = WorksetStateCode::Validating;
+    std::string cancellation_sidecar_sha256;
 
     friend bool operator==(
         const WorksetResidenceSnapshotV1&,
@@ -549,6 +567,7 @@ struct WorksetSummaryPayload {
     std::uint32_t item_count = 0;
     std::uint32_t completed_count = 0;
     std::uint32_t unstarted_count = 0;
+    std::uint32_t initially_suppressed_count = 0;
 
     friend bool operator==(
         const WorksetSummaryPayload&,
@@ -650,6 +669,7 @@ SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(OpenSessionPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(PrepareModulePayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(SubmitInvocationPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(SubmitWorksetPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(SubmitWorksetResultPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CancelWorksetItemPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CancelWorksetPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(AcknowledgeTerminalPayload);

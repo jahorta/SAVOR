@@ -9,6 +9,8 @@
 #include "Worksets/StateArtifactFinalizer.h"
 #include "Worksets/WorkerCompletionLedger.h"
 #include "Worksets/WorksetStager.h"
+#include "Worksets/WorksetWireCodec.h"
+#include "Utils/Hash.h"
 
 #include <algorithm>
 #include <atomic>
@@ -327,12 +329,16 @@ struct WorkerRuntime::Impl
         WorkerWorksetDefinition definition;
         std::vector<PreparedInvocationTemplateReceipt> prepared;
         std::vector<bool> cancelled;
+        std::vector<bool> initially_suppressed;
         std::vector<bool> terminalized;
         std::uint32_t next_item = 0;
         WorkerWorksetState state = WorkerWorksetState::Validating;
         PreparedProgramBaselineReceipt baseline;
         std::uint32_t terminal_count = 0;
         std::uint32_t unstarted_count = 0;
+        std::uint32_t initially_suppressed_count = 0;
+        std::string definition_sha256;
+        std::string cancellation_sidecar_sha256;
         bool admission_closed = false;
         std::string admission_close_reason;
     };
@@ -342,6 +348,7 @@ struct WorkerRuntime::Impl
         std::uint32_t item_count = 0;
         std::uint32_t terminal_count = 0;
         std::uint32_t unstarted_count = 0;
+        std::uint32_t initially_suppressed_count = 0;
         std::uint32_t unacknowledged = 0;
     };
 
@@ -356,7 +363,16 @@ struct WorkerRuntime::Impl
         WorksetStagingId staging_id;
         WorkerWorksetId workset_id;
         std::shared_ptr<QueuedCommand> command;
+        InitialWorksetCancellationSidecarV1 initial_cancellations;
+        std::string definition_sha256;
+        std::string cancellation_sidecar_sha256;
         bool cancelled = false;
+    };
+
+    struct AcceptedWorksetSubmission
+    {
+        std::string definition_sha256;
+        SubmitWorksetResultV1 receipt;
     };
 
     struct ArtifactPublication
@@ -1016,6 +1032,11 @@ struct WorkerRuntime::Impl
             {
                 continue;
             }
+            if (ordinal < package.initially_suppressed.size() &&
+                package.initially_suppressed[ordinal])
+            {
+                continue;
+            }
             const std::size_t bytes =
                 package.definition.items[ordinal]
                     .declared_terminal_bytes;
@@ -1055,6 +1076,13 @@ struct WorkerRuntime::Impl
                 for (const WorksetItemTemplate& item :
                      submit->definition.items)
                 {
+                    if (std::ranges::find(
+                            submit->initial_cancellations.item_ids,
+                            item.item_id) !=
+                        submit->initial_cancellations.item_ids.end())
+                    {
+                        continue;
+                    }
                     if (combined >
                         std::numeric_limits<std::size_t>::max() -
                             item.declared_terminal_bytes)
@@ -1159,6 +1187,8 @@ struct WorkerRuntime::Impl
 
     [[nodiscard]] std::optional<WorksetPackage> ValidateAndStageWorkset(
         HostStagedWorksetPackage source,
+        const InitialWorksetCancellationSidecarV1& initial_cancellations,
+        std::string definition_sha256,
         RuntimeError& error)
     {
         WorksetPackage package;
@@ -1170,6 +1200,14 @@ struct WorkerRuntime::Impl
         if (!validated.ok)
         {
             error = validated.error;
+            return std::nullopt;
+        }
+        const WorksetValidationResult sidecar_validated =
+            ValidateInitialWorksetCancellationSidecar(
+                package.definition, initial_cancellations);
+        if (!sidecar_validated.ok)
+        {
+            error = sidecar_validated.error;
             return std::nullopt;
         }
         if (!program_runtime || !workset_state)
@@ -1204,10 +1242,31 @@ struct WorkerRuntime::Impl
         package.cancelled.resize(
             package.definition.items.size(),
             false);
+        package.initially_suppressed.resize(
+            package.definition.items.size(),
+            false);
         package.terminalized.resize(
             package.definition.items.size(),
             false);
-        package.prepared.reserve(package.definition.items.size());
+        package.prepared.resize(package.definition.items.size());
+        package.definition_sha256 = std::move(definition_sha256);
+        package.cancellation_sidecar_sha256 =
+            ComputeInitialWorksetCancellationSidecarSha256(
+                initial_cancellations);
+        for (std::size_t ordinal = 0;
+             ordinal < package.definition.items.size();
+             ++ordinal)
+        {
+            if (std::ranges::find(
+                    initial_cancellations.item_ids,
+                    package.definition.items[ordinal].item_id) !=
+                initial_cancellations.item_ids.end())
+            {
+                package.cancelled[ordinal] = true;
+                package.initially_suppressed[ordinal] = true;
+                ++package.initially_suppressed_count;
+            }
+        }
         const auto* phase = fullphase::ProductionRegistry().Find(
             package.definition.phase_invocation.program);
         if (phase == nullptr)
@@ -1217,9 +1276,14 @@ struct WorkerRuntime::Impl
                 "WorkerWorkset Full Phase definition is unavailable"};
             return std::nullopt;
         }
-        for (const WorksetItemTemplate& item :
-             package.definition.items)
+        for (std::size_t ordinal = 0;
+             ordinal < package.definition.items.size();
+             ++ordinal)
         {
+            if (package.initially_suppressed[ordinal])
+                continue;
+            const WorksetItemTemplate& item =
+                package.definition.items[ordinal];
             std::string build_diagnostic;
             const auto execution = phase->BuildResolvedExecution(
                 item.execution.input_payload,
@@ -1286,9 +1350,12 @@ struct WorkerRuntime::Impl
                 }
                 for (const auto& staged : package.prepared)
                 {
-                    (void)program_runtime
-                        ->ReleaseInvocationTemplate(
-                            staged.template_id);
+                    if (staged.template_id)
+                    {
+                        (void)program_runtime
+                            ->ReleaseInvocationTemplate(
+                                staged.template_id);
+                    }
                 }
                 error = prepared.accepted
                     ? RuntimeError{
@@ -1304,7 +1371,7 @@ struct WorkerRuntime::Impl
                 }
                 return std::nullopt;
             }
-            package.prepared.push_back(std::move(receipt));
+            package.prepared[ordinal] = std::move(receipt);
         }
         package.state = WorkerWorksetState::Staged;
         return package;
@@ -1314,6 +1381,59 @@ struct WorkerRuntime::Impl
         const std::shared_ptr<QueuedCommand>& queued,
         const SubmitWorksetCommand& command)
     {
+        const auto sidecar_validation =
+            ValidateInitialWorksetCancellationSidecar(
+                command.definition, command.initial_cancellations);
+        const auto sidecar_sha256 =
+            ComputeInitialWorksetCancellationSidecarSha256(
+                command.initial_cancellations);
+        std::vector<std::uint8_t> encoded_definition;
+        const auto encoded = EncodeWorkerWorksetV2(
+            command.definition,
+            encoded_definition);
+        const auto definition_sha256 = encoded.ok
+            ? ::hash::sha256(
+                encoded_definition.data(),
+                encoded_definition.size())
+            : std::string{};
+        if (!sidecar_validation.ok || !encoded.ok
+            || (!command.definition_sha256.empty()
+                && command.definition_sha256 != definition_sha256))
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::InvalidArgument,
+                !sidecar_validation.ok
+                    ? sidecar_validation.error.message
+                    : !encoded.ok
+                        ? encoded.message
+                        : "WorkerWorkset definition digest is invalid");
+            return;
+        }
+        const auto accepted = accepted_workset_submissions.find(
+            command.definition.workset_id.value());
+        if (accepted != accepted_workset_submissions.end())
+        {
+            if (accepted->second.definition_sha256
+                    != definition_sha256 ||
+                accepted->second.receipt.applied_sidecar_sha256
+                    != sidecar_sha256)
+            {
+                Reject(
+                    queued,
+                    WorkerRejectionCode::InvalidArgument,
+                    "WorkerWorkset identity was repeated with a different definition or cancellation sidecar");
+                return;
+            }
+            auto receipt = accepted->second.receipt;
+            receipt.disposition =
+                WorksetSubmissionDispositionV1::AlreadyAccepted;
+            Complete(
+                queued,
+                WorkerCommandOutcome::Accepted,
+                {}, {}, {}, {}, {}, receipt);
+            return;
+        }
         const WorkerState state = Snapshot().state;
         if (state != WorkerState::Ready &&
             state != WorkerState::Running &&
@@ -1381,13 +1501,23 @@ struct WorkerRuntime::Impl
                 "WorkerWorkset activation requires a clean, idle, paused session");
             return;
         }
+        const std::size_t live_item_count =
+            command.definition.items.size()
+            - command.initial_cancellations.item_ids.size();
         const std::size_t resident =
-            ResidentItemCount() + command.definition.items.size();
+            ResidentItemCount() + live_item_count;
         std::size_t candidate_terminal_bytes = 0;
         bool terminal_bytes_overflow = false;
         for (const WorksetItemTemplate& item :
              command.definition.items)
         {
+            if (std::ranges::find(
+                    command.initial_cancellations.item_ids,
+                    item.item_id) !=
+                command.initial_cancellations.item_ids.end())
+            {
+                continue;
+            }
             if (candidate_terminal_bytes >
                 std::numeric_limits<std::size_t>::max() -
                     item.declared_terminal_bytes)
@@ -1417,7 +1547,7 @@ struct WorkerRuntime::Impl
             candidate_terminal_bytes > terminal_capacity;
         if (resident >
                 workset_limits.maximum_active_and_staged_items ||
-            command.definition.items.size() >
+            live_item_count >
                 AvailableItemCredits() ||
             terminal_capacity_exceeded)
         {
@@ -1455,6 +1585,9 @@ struct WorkerRuntime::Impl
             submitted.staging_id,
             command.definition.workset_id,
             queued,
+            command.initial_cancellations,
+            definition_sha256,
+            sidecar_sha256,
             false});
         RefreshSnapshot();
         PublishWorksetState(
@@ -1546,6 +1679,8 @@ struct WorkerRuntime::Impl
             std::optional<WorksetPackage> staged =
                 ValidateAndStageWorkset(
                     std::move(*completion.package),
+                    pending.initial_cancellations,
+                    pending.definition_sha256,
                     error);
             if (!staged)
             {
@@ -1565,9 +1700,12 @@ struct WorkerRuntime::Impl
             {
                 for (const auto& receipt : staged->prepared)
                 {
-                    (void)program_runtime
-                        ->ReleaseInvocationTemplate(
-                            receipt.template_id);
+                    if (receipt.template_id)
+                    {
+                        (void)program_runtime
+                            ->ReleaseInvocationTemplate(
+                                receipt.template_id);
+                    }
                 }
                 Reject(
                     pending.command,
@@ -1587,10 +1725,26 @@ struct WorkerRuntime::Impl
                 active_workset.emplace(std::move(*staged));
             else
                 staged_workset.emplace(std::move(*staged));
+            SubmitWorksetResultV1 submission_receipt{
+                .workset_id = accepted_id,
+                .applied_item_count = static_cast<std::uint32_t>(
+                    pending.initial_cancellations.item_ids.size()),
+                .applied_sidecar_sha256 =
+                    pending.cancellation_sidecar_sha256,
+                .disposition =
+                    WorksetSubmissionDispositionV1::Accepted,
+            };
+            accepted_workset_submissions.insert_or_assign(
+                accepted_id.value(),
+                AcceptedWorksetSubmission{
+                    .definition_sha256 = pending.definition_sha256,
+                    .receipt = submission_receipt,
+                });
             RefreshSnapshot();
             Complete(
                 pending.command,
-                WorkerCommandOutcome::Accepted);
+                WorkerCommandOutcome::Accepted,
+                {}, {}, {}, {}, {}, submission_receipt);
             PublishWorksetState(
                 accepted_id,
                 WorkerWorksetState::Staged);
@@ -1673,13 +1827,16 @@ struct WorkerRuntime::Impl
             if (active_workset->cancelled[ordinal] &&
                 !active_workset->terminalized[ordinal])
             {
-                RetainUnstartedTerminal(
-                    *active_workset,
-                    ordinal,
-                    active_workset->admission_close_reason.empty()
-                        ? "Workset item was cancelled before admission"
-                        : active_workset
-                              ->admission_close_reason);
+                if (!active_workset->initially_suppressed[ordinal])
+                {
+                    RetainUnstartedTerminal(
+                        *active_workset,
+                        ordinal,
+                        active_workset->admission_close_reason.empty()
+                            ? "Workset item was cancelled before admission"
+                            : active_workset
+                                  ->admission_close_reason);
+                }
             }
             if (!active_workset->cancelled[ordinal] &&
                 !active_workset->terminalized[ordinal])
@@ -1727,6 +1884,12 @@ struct WorkerRuntime::Impl
             active_workset->definition.items[ordinal];
         const PreparedInvocationTemplateReceipt& prepared =
             active_workset->prepared[ordinal];
+        if (!prepared)
+        {
+            EnterTainted(
+                "Executable WorkerWorkset item has no prepared invocation template");
+            return;
+        }
         const SessionSnapshot current = session->snapshot();
         const WorkerOutboundSequence start_sequence =
             NextOutboundSequence();
@@ -2157,8 +2320,11 @@ struct WorkerRuntime::Impl
                 *package,
                 ordinal,
                 "Workset item was cancelled before admission");
-            (void)program_runtime->ReleaseInvocationTemplate(
-                package->prepared[ordinal].template_id);
+            if (package->prepared[ordinal].template_id)
+            {
+                (void)program_runtime->ReleaseInvocationTemplate(
+                    package->prepared[ordinal].template_id);
+            }
             if (!staged &&
                 ordinal == package->next_item &&
                 !active_invocation)
@@ -2433,7 +2599,8 @@ struct WorkerRuntime::Impl
             return package
                 ? package->definition.items.size() -
                     std::min<std::size_t>(
-                        package->terminal_count,
+                        package->terminal_count
+                            + package->initially_suppressed_count,
                         package->definition.items.size())
                 : std::size_t{0};
         };
@@ -2445,7 +2612,8 @@ struct WorkerRuntime::Impl
                     std::get_if<SubmitWorksetCommand>(
                         &pending_workset_staging->command->command))
             {
-                result += pending->definition.items.size();
+                result += pending->definition.items.size()
+                    - pending->initial_cancellations.item_ids.size();
             }
         }
         return result;
@@ -2463,6 +2631,11 @@ struct WorkerRuntime::Impl
             {
                 if (ordinal < package.terminalized.size() &&
                     package.terminalized[ordinal])
+                {
+                    continue;
+                }
+                if (ordinal < package.initially_suppressed.size() &&
+                    package.initially_suppressed[ordinal])
                 {
                     continue;
                 }
@@ -2492,6 +2665,13 @@ struct WorkerRuntime::Impl
                 {
                     const WorksetItemTemplate& item =
                         pending->definition.items[ordinal];
+                    if (std::ranges::find(
+                            pending->initial_cancellations.item_ids,
+                            item.item_id) !=
+                        pending->initial_cancellations.item_ids.end())
+                    {
+                        continue;
+                    }
                     items.emplace(WorkerItemExecutionCorrelation{
                         pending->definition.workset_id,
                         item.item_id,
@@ -2952,6 +3132,11 @@ struct WorkerRuntime::Impl
         std::uint32_t ordinal,
         std::string message)
     {
+        if (ordinal < package.initially_suppressed.size()
+            && package.initially_suppressed[ordinal])
+        {
+            return;
+        }
         const WorksetItemTemplate& item =
             package.definition.items[ordinal];
         ProgramInvocationTerminalEvent terminal;
@@ -3009,8 +3194,11 @@ struct WorkerRuntime::Impl
                 ordinal,
                 std::move(terminal),
                 true);
-            (void)program_runtime->ReleaseInvocationTemplate(
-                active_workset->prepared[ordinal].template_id);
+            if (active_workset->prepared[ordinal].template_id)
+            {
+                (void)program_runtime->ReleaseInvocationTemplate(
+                    active_workset->prepared[ordinal].template_id);
+            }
             active_workset->cancelled[ordinal] = true;
         }
         active_workset->next_item =
@@ -3028,6 +3216,8 @@ struct WorkerRuntime::Impl
                 package.definition.items.size());
         draining.terminal_count = package.terminal_count;
         draining.unstarted_count = package.unstarted_count;
+        draining.initially_suppressed_count =
+            package.initially_suppressed_count;
         draining.unacknowledged =
             static_cast<std::uint32_t>(
                 std::ranges::count_if(
@@ -3079,7 +3269,8 @@ struct WorkerRuntime::Impl
                 std::min(
                     draining.terminal_count,
                     draining.unstarted_count),
-            draining.unstarted_count});
+            draining.unstarted_count,
+            draining.initially_suppressed_count});
     }
 
     void FinishCurrentWorkset(WorkerWorksetState terminal_state)
@@ -3662,8 +3853,11 @@ struct WorkerRuntime::Impl
                 continue;
             }
             active_workset->cancelled[ordinal] = true;
-            (void)program_runtime->ReleaseInvocationTemplate(
-                active_workset->prepared[ordinal].template_id);
+            if (active_workset->prepared[ordinal].template_id)
+            {
+                (void)program_runtime->ReleaseInvocationTemplate(
+                    active_workset->prepared[ordinal].template_id);
+            }
         }
         active_workset->admission_close_reason =
             std::string(reason);
@@ -4537,10 +4731,13 @@ struct WorkerRuntime::Impl
                     "Staged workset was not admitted because the session became tainted");
                 try
                 {
-                    (void)program_runtime
-                        ->ReleaseInvocationTemplate(
-                            failed.prepared[ordinal]
-                                .template_id);
+                    if (failed.prepared[ordinal].template_id)
+                    {
+                        (void)program_runtime
+                            ->ReleaseInvocationTemplate(
+                                failed.prepared[ordinal]
+                                    .template_id);
+                    }
                 }
                 catch (...)
                 {
@@ -4661,9 +4858,12 @@ struct WorkerRuntime::Impl
                     stopped,
                     ordinal,
                     "Worker shutdown cancelled the staged workset");
-                (void)program_runtime
-                    ->ReleaseInvocationTemplate(
-                        stopped.prepared[ordinal].template_id);
+                if (stopped.prepared[ordinal].template_id)
+                {
+                    (void)program_runtime
+                        ->ReleaseInvocationTemplate(
+                            stopped.prepared[ordinal].template_id);
+                }
             }
             MoveToDraining(
                 stopped,
@@ -4888,6 +5088,15 @@ struct WorkerRuntime::Impl
                 ? std::optional<WorkerWorksetState>(
                     WorkerWorksetState::Validating)
                 : std::nullopt;
+            current_snapshot.resident_cancellation_sidecar_sha256 =
+                active_workset
+                ? active_workset->cancellation_sidecar_sha256
+                : staged_workset
+                ? staged_workset->cancellation_sidecar_sha256
+                : pending_workset_staging
+                ? pending_workset_staging
+                      ->cancellation_sidecar_sha256
+                : std::string{};
             current_snapshot.active_workset_item =
                 active_invocation &&
                     active_invocation->workset_item_id
@@ -4937,6 +5146,14 @@ struct WorkerRuntime::Impl
             ? std::optional<WorkerWorksetState>(
                 WorkerWorksetState::Validating)
             : std::nullopt;
+        current_snapshot.resident_cancellation_sidecar_sha256 =
+            active_workset
+            ? active_workset->cancellation_sidecar_sha256
+            : staged_workset
+            ? staged_workset->cancellation_sidecar_sha256
+            : pending_workset_staging
+            ? pending_workset_staging->cancellation_sidecar_sha256
+            : std::string{};
         current_snapshot.active_workset_item =
             active_invocation &&
                 active_invocation->workset_item_id
@@ -4959,7 +5176,8 @@ struct WorkerRuntime::Impl
         RuntimeError error = {},
         std::optional<SessionOperationReceipt> session_receipt = {},
         std::optional<ExecutionOperationId> execution_operation_id = {},
-        std::optional<ExecutionTerminalResult> execution_terminal = {})
+        std::optional<ExecutionTerminalResult> execution_terminal = {},
+        std::optional<SubmitWorksetResultV1> workset_submission = {})
     {
         if (queued->completed)
             return;
@@ -4979,6 +5197,7 @@ struct WorkerRuntime::Impl
         }
         result.execution_operation_id = execution_operation_id;
         result.execution_terminal = std::move(execution_terminal);
+        result.workset_submission = std::move(workset_submission);
         result.error = std::move(error);
 
         queued->completed = true;
@@ -5251,6 +5470,8 @@ struct WorkerRuntime::Impl
         pending_workset_staging;
     std::unordered_map<std::uint64_t, DrainingWorkset>
         draining_worksets;
+    std::unordered_map<std::uint64_t, AcceptedWorksetSubmission>
+        accepted_workset_submissions;
     std::unordered_map<std::uint64_t, RetainedTerminal>
         retained_terminals;
     std::unordered_map<std::uint64_t, PendingFinalizedTerminal>

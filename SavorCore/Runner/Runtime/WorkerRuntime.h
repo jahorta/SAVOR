@@ -42,6 +42,8 @@ struct CancelInvocationCommand
 struct SubmitWorksetCommand
 {
     WorkerWorksetDefinition definition;
+    InitialWorksetCancellationSidecarV1 initial_cancellations;
+    std::string definition_sha256;
 };
 
 struct CancelWorksetItemCommand
@@ -110,6 +112,7 @@ struct WorkerSnapshot
     std::optional<WorkerWorksetId> active_workset;
     std::optional<WorkerWorksetId> staged_workset;
     std::optional<WorkerWorksetState> resident_workset_state;
+    std::string resident_cancellation_sidecar_sha256;
     std::optional<WorkerWorksetItemId> active_workset_item;
     std::uint32_t available_item_credits = 0;
     std::uint32_t retained_terminal_count = 0;
@@ -162,6 +165,7 @@ struct WorkerWorksetTerminalSummaryEvent
     std::uint32_t item_count = 0;
     std::uint32_t completed_count = 0;
     std::uint32_t unstarted_count = 0;
+    std::uint32_t initially_suppressed_count = 0;
 };
 
 struct WorkerCommandResult
@@ -176,6 +180,7 @@ struct WorkerCommandResult
     std::optional<WorkerExecutionControlKind> execution_control;
     std::optional<ExecutionOperationId> execution_operation_id;
     std::optional<ExecutionTerminalResult> execution_terminal;
+    std::optional<SubmitWorksetResultV1> workset_submission;
     RuntimeError error;
 };
 

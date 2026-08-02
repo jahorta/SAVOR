@@ -1031,6 +1031,25 @@ TEST(
                 const auto frame =
                     savor::wrms::DecodeFrame(bytes, true);
                 ASSERT_TRUE(frame);
+                savor::wrms::SubmitWorksetPayload submit;
+                ASSERT_TRUE(savor::wrms::DecodePayload(
+                    frame.frame.payload,
+                    submit));
+                ASSERT_EQ(submit.cancellation_sidecar_version, 1u);
+                ASSERT_EQ(
+                    submit.initially_cancelled_item_ids,
+                    (std::vector<std::uint64_t>{5002}));
+                std::vector<std::uint8_t> typed_result;
+                ASSERT_TRUE(savor::wrms::EncodePayload(
+                    savor::wrms::SubmitWorksetResultPayload{
+                        .workset_id = 5001,
+                        .sidecar_version = 1,
+                        .applied_item_count = 1,
+                        .applied_sidecar_sha256 =
+                            submit.cancellation_sidecar_sha256,
+                        .already_accepted = false,
+                    },
+                    typed_result));
                 ASSERT_TRUE(
                     savor::ProcessWorkerTestPeer::DeliverPayload(
                         *worker_ptr,
@@ -1040,7 +1059,8 @@ TEST(
                             .command_kind =
                                 savor::wrms::MessageKind::SubmitWorkset,
                             .status =
-                                savor::wrms::CommandStatus::Succeeded},
+                                savor::wrms::CommandStatus::Succeeded,
+                            .result = std::move(typed_result)},
                         frame.frame.header.request_id));
             };
         savor::ProcessWorker worker{hooks};
@@ -1050,15 +1070,33 @@ TEST(
                 worker,
                 savor::runtime::SessionId{55},
                 savor::runtime::StateEpoch{4}));
-        const auto outcome =
-            worker.submit_workset_with_outcome(
-                MakeTransportTestWorkset(),
-                1000);
+        const auto workset = MakeTransportTestWorkset();
+        const savor::runtime::InitialWorksetCancellationSidecarV1
+            sidecar{
+                .workset_id = workset.workset_id,
+                .item_ids = {
+                    savor::runtime::WorkerWorksetItemId{5002}},
+            };
+        const auto outcome = worker.submit_workset_with_outcome(
+            workset,
+            sidecar,
+            1000);
         EXPECT_EQ(
             outcome.disposition,
             savor::ProcessWorksetSubmitDisposition::Accepted);
         EXPECT_TRUE(outcome.request_frame_written);
         EXPECT_TRUE(outcome.correlated_result_received);
+        savor::wrms::SubmitWorksetResultPayload applied;
+        ASSERT_TRUE(savor::wrms::DecodePayload(
+            outcome.result.result,
+            applied));
+        EXPECT_EQ(applied.workset_id, 5001u);
+        EXPECT_EQ(applied.applied_item_count, 1u);
+        EXPECT_EQ(
+            applied.applied_sidecar_sha256,
+            savor::runtime::
+                ComputeInitialWorksetCancellationSidecarSha256(
+                    sidecar));
         savor::ProcessWorkerTestPeer::StopNegotiatedVisualTransport(
             worker);
     }

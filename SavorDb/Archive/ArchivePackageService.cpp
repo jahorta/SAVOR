@@ -397,13 +397,14 @@ std::vector<ExportSpec> BuildExportSpecs(const CreateArchivePackageRequest& requ
               "started_at_utc,ended_at_utc,error_code,error_text,savestate_id,input_ini,workset_id,workset_item_ordinal,"
               "dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id,execution_finished_at_utc,worker_terminal_status,"
               "worker_terminal_fingerprint,worker_terminal_id,worker_terminal_error_code,worker_terminal_error_text,"
-              "worker_terminal_unstarted,NULL AS worker_result_blob_id,result_processing_state,result_processor_token,"
-              "result_processing_lease_expires_at_utc,result_processing_attempts,result_processing_failures,"
+              "worker_terminal_unstarted,NULL AS worker_result_blob_id,result_processing_state,"
+              "result_processing_attempts,result_processing_failures,"
               "result_processing_error_code,result_processing_error_text,result_processing_failed_at_utc,"
               "result_processed_at_utc,cancellation_group_key,cancellation_state,cancellation_request_key,cancellation_reason_code,"
               "cancellation_reason_text,cancellation_requested_by,cancellation_caused_by_job_id,"
-              "cancellation_requested_at_utc,cancellation_delivery_token,cancellation_delivery_lease_expires_at_utc,"
-              "cancellation_delivery_attempts,cancellation_delivered_at_utc,cancellation_resolved_at_utc,"
+              "cancellation_requested_at_utc,cancellation_delivery_attempts,"
+              "cancellation_last_delivery_error_code,cancellation_last_delivery_error_text,"
+              "cancellation_last_delivery_failed_at_utc,cancellation_delivered_at_utc,cancellation_resolved_at_utc,"
               "cancellation_resolution_code "
               "FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY job_id ASC;"
     });
@@ -672,7 +673,7 @@ bool CollectArchiveReadinessBlockers(
                    + "SELECT COUNT(1) FROM exec_workset_dispatch_attempt a "
                      "JOIN exec_workset w ON w.workset_id=a.workset_id "
                      "WHERE w.job_set_id IN (SELECT job_set_id FROM scoped_job_sets) "
-                     "AND a.state IN ('CLAIMED','DISPATCHED');",
+                     "AND a.state IN ('CLAIMED','ACTIVE','DRAINING');",
                "workset dispatch is active")
         && add_blocker_if_any(
                scoped_job_sets_and_jobs
@@ -804,13 +805,14 @@ std::vector<ExportSpec> BuildWorkflowExecutionSpecs(
               "started_at_utc,ended_at_utc,error_code,error_text,savestate_id,input_ini,workset_id,workset_item_ordinal,"
               "dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id,execution_finished_at_utc,worker_terminal_status,"
               "worker_terminal_fingerprint,worker_terminal_id,worker_terminal_error_code,worker_terminal_error_text,"
-              "worker_terminal_unstarted,NULL AS worker_result_blob_id,result_processing_state,result_processor_token,"
-              "result_processing_lease_expires_at_utc,result_processing_attempts,result_processing_failures,"
+              "worker_terminal_unstarted,NULL AS worker_result_blob_id,result_processing_state,"
+              "result_processing_attempts,result_processing_failures,"
               "result_processing_error_code,result_processing_error_text,result_processing_failed_at_utc,"
               "result_processed_at_utc,cancellation_group_key,cancellation_state,cancellation_request_key,cancellation_reason_code,"
               "cancellation_reason_text,cancellation_requested_by,cancellation_caused_by_job_id,"
-              "cancellation_requested_at_utc,cancellation_delivery_token,cancellation_delivery_lease_expires_at_utc,"
-              "cancellation_delivery_attempts,cancellation_delivered_at_utc,cancellation_resolved_at_utc,"
+              "cancellation_requested_at_utc,cancellation_delivery_attempts,"
+              "cancellation_last_delivery_error_code,cancellation_last_delivery_error_text,"
+              "cancellation_last_delivery_failed_at_utc,cancellation_delivered_at_utc,cancellation_resolved_at_utc,"
               "cancellation_resolution_code "
               "FROM exec_job WHERE job_id IN (SELECT job_id FROM scoped_jobs) ORDER BY job_id ASC;"
     });
@@ -3584,7 +3586,7 @@ std::vector<ArchiveCandidateRoot> SqliteArchivePackageService::ListArchiveCandid
         "    JOIN exec_workset w ON w.job_set_id=t.job_set_id "
         "    JOIN exec_workset_dispatch_attempt a ON a.workset_id=w.workset_id "
         "    WHERE t.root_job_set_id=run_stats.root_job_set_id "
-        "      AND a.state IN ('CLAIMED','DISPATCHED')"
+        "      AND a.state IN ('CLAIMED','ACTIVE','DRAINING')"
         "  ) "
         "  AND NOT EXISTS ("
         "    SELECT 1 FROM run_tree t "

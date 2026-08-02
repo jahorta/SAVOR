@@ -60,6 +60,11 @@ public:
         std::vector<std::uint8_t>* envelope_out,
         std::string* error_out = nullptr) const;
 
+    bool Exists(
+        std::string_view relative_path,
+        bool* exists_out,
+        std::string* error_out = nullptr) const;
+
     bool Remove(
         std::string_view relative_path,
         std::string* error_out = nullptr) const;

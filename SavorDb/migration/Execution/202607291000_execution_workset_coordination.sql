@@ -84,17 +84,18 @@ CREATE INDEX IF NOT EXISTS ix_exec_workset_compatibility
         required_capability_mask
     );
 
--- Each row is one durable lease/authority envelope for a runtime dispatch of
--- the logical workset. A later dispatch may claim its runnable remainder.
+-- Each row is one durable authority envelope for a runtime dispatch of the
+-- logical workset. Only a workset factually resident in a worker is leased.
 CREATE TABLE IF NOT EXISTS exec_workset_dispatch_attempt (
     dispatch_attempt_id INTEGER PRIMARY KEY,
     workset_id INTEGER NOT NULL,
     dispatch_sequence INTEGER NOT NULL CHECK(dispatch_sequence > 0),
-    state TEXT NOT NULL CHECK(state IN ('CLAIMED','DISPATCHED','CLOSED')),
+    state TEXT NOT NULL CHECK(state IN ('CLAIMED','ACTIVE','DRAINING','CLOSED')),
     claim_token TEXT NOT NULL,
-    lease_expires_at_utc INTEGER NOT NULL,
+    lease_expires_at_utc INTEGER NULL,
     claimed_at_utc INTEGER NOT NULL,
     dispatched_at_utc INTEGER NULL,
+    draining_at_utc INTEGER NULL,
     closed_at_utc INTEGER NULL,
     close_reason_code TEXT NULL,
     close_reason_text TEXT NULL,
@@ -104,17 +105,26 @@ CREATE TABLE IF NOT EXISTS exec_workset_dispatch_attempt (
     CONSTRAINT uq_exec_workset_dispatch_token
         UNIQUE(claim_token),
     CHECK(
-        (state = 'CLAIMED' AND dispatched_at_utc IS NULL AND closed_at_utc IS NULL)
+        (state = 'CLAIMED' AND lease_expires_at_utc IS NULL
+            AND dispatched_at_utc IS NULL AND draining_at_utc IS NULL
+            AND closed_at_utc IS NULL)
         OR
-        (state = 'DISPATCHED' AND dispatched_at_utc IS NOT NULL AND closed_at_utc IS NULL)
+        (state = 'ACTIVE' AND lease_expires_at_utc IS NOT NULL
+            AND dispatched_at_utc IS NOT NULL AND draining_at_utc IS NULL
+            AND closed_at_utc IS NULL)
         OR
-        (state = 'CLOSED' AND closed_at_utc IS NOT NULL)
+        (state = 'DRAINING' AND lease_expires_at_utc IS NULL
+            AND dispatched_at_utc IS NOT NULL AND draining_at_utc IS NOT NULL
+            AND closed_at_utc IS NULL)
+        OR
+        (state = 'CLOSED' AND lease_expires_at_utc IS NULL
+            AND closed_at_utc IS NOT NULL)
     )
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_exec_workset_active_dispatch
     ON exec_workset_dispatch_attempt(workset_id)
-    WHERE state IN ('CLAIMED','DISPATCHED');
+    WHERE state IN ('CLAIMED','ACTIVE','DRAINING');
 
 CREATE INDEX IF NOT EXISTS ix_exec_workset_dispatch_lease
     ON exec_workset_dispatch_attempt(state, lease_expires_at_utc);
@@ -242,18 +252,8 @@ ALTER TABLE exec_job
         CHECK(result_processing_state IS NULL OR result_processing_state IN (
             'PENDING',
             'PROCESSING',
-            'PARKED',
             'PROCESSED'
         ));
-
-ALTER TABLE exec_job
-    ADD COLUMN result_processor_token TEXT NULL;
-
-ALTER TABLE exec_job
-    ADD COLUMN result_processing_lease_expires_at_utc INTEGER NULL;
-
-ALTER TABLE exec_job
-    ADD COLUMN result_processing_retry_after_utc INTEGER NULL;
 
 ALTER TABLE exec_job
     ADD COLUMN result_processing_attempts INTEGER NOT NULL DEFAULT 0
@@ -290,7 +290,6 @@ ALTER TABLE exec_job
     ADD COLUMN cancellation_state TEXT NULL
         CHECK(cancellation_state IS NULL OR cancellation_state IN (
             'REQUESTED',
-            'DELIVERY_CLAIMED',
             'DELIVERED',
             'RESOLVED'
         ));
@@ -315,14 +314,17 @@ ALTER TABLE exec_job
     ADD COLUMN cancellation_requested_at_utc INTEGER NULL;
 
 ALTER TABLE exec_job
-    ADD COLUMN cancellation_delivery_token TEXT NULL;
-
-ALTER TABLE exec_job
-    ADD COLUMN cancellation_delivery_lease_expires_at_utc INTEGER NULL;
-
-ALTER TABLE exec_job
     ADD COLUMN cancellation_delivery_attempts INTEGER NOT NULL DEFAULT 0
         CHECK(cancellation_delivery_attempts >= 0);
+
+ALTER TABLE exec_job
+    ADD COLUMN cancellation_last_delivery_error_code TEXT NULL;
+
+ALTER TABLE exec_job
+    ADD COLUMN cancellation_last_delivery_error_text TEXT NULL;
+
+ALTER TABLE exec_job
+    ADD COLUMN cancellation_last_delivery_failed_at_utc INTEGER NULL;
 
 ALTER TABLE exec_job
     ADD COLUMN cancellation_delivered_at_utc INTEGER NULL;
@@ -346,14 +348,14 @@ CREATE TABLE IF NOT EXISTS exec_job_cancellation_request (
     requested_at_utc INTEGER NOT NULL,
     state TEXT NOT NULL CHECK(state IN (
         'REQUESTED',
-        'DELIVERY_CLAIMED',
         'DELIVERED',
         'RESOLVED'
     )),
-    delivery_token TEXT NULL,
-    delivery_lease_expires_at_utc INTEGER NULL,
     delivery_attempts INTEGER NOT NULL DEFAULT 0
         CHECK(delivery_attempts >= 0),
+    last_delivery_error_code TEXT NULL,
+    last_delivery_error_text TEXT NULL,
+    last_delivery_failed_at_utc INTEGER NULL,
     delivered_at_utc INTEGER NULL,
     resolved_at_utc INTEGER NULL,
     resolution_code TEXT NULL,
@@ -365,12 +367,11 @@ CREATE TABLE IF NOT EXISTS exec_job_cancellation_request (
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_exec_job_active_cancellation_request
     ON exec_job_cancellation_request(job_id)
-    WHERE state IN ('REQUESTED','DELIVERY_CLAIMED','DELIVERED');
+    WHERE state IN ('REQUESTED','DELIVERED');
 
 CREATE INDEX IF NOT EXISTS ix_exec_job_cancellation_request_delivery
     ON exec_job_cancellation_request(
         state,
-        delivery_lease_expires_at_utc,
         requested_at_utc,
         cancellation_request_id
     );
@@ -393,7 +394,7 @@ CREATE INDEX IF NOT EXISTS ix_exec_job_execution_finished
     ON exec_job(state, result_processing_state, execution_finished_at_utc);
 
 CREATE INDEX IF NOT EXISTS ix_exec_job_cancellation_delivery
-    ON exec_job(cancellation_state, cancellation_delivery_lease_expires_at_utc, cancellation_requested_at_utc);
+    ON exec_job(cancellation_state, cancellation_requested_at_utc);
 
 CREATE TRIGGER IF NOT EXISTS trg_exec_job_workset_membership_insert
 BEFORE INSERT ON exec_job

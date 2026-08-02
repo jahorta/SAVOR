@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "../Common/Events/EventEnvelope.h"
@@ -81,7 +82,6 @@ struct ExecutionJobRecord {
     std::optional<std::string> result_processing_state;
     int result_processing_attempts = 0;
     int result_processing_failures = 0;
-    std::optional<std::int64_t> result_processing_retry_after_utc;
     std::optional<std::string> cancellation_state;
     std::optional<std::string> cancellation_group_key;
 };
@@ -394,23 +394,40 @@ struct CompleteWorksetPublicationReceipt {
     std::string materialization_state;
 };
 
+struct PublishWorksetWaveCommand {
+    std::int64_t job_set_id = 0;
+    int expected_job_count = 0;
+    std::vector<PublishWorksetCommand> worksets;
+    std::string requested_by;
+};
+
+struct PublishWorksetWaveReceipt {
+    ExecutionDbOperationDisposition disposition =
+        ExecutionDbOperationDisposition::BackendError;
+    std::vector<PublishWorksetReceipt> worksets;
+    int durable_workset_count = 0;
+    int durable_job_count = 0;
+    std::string materialization_state;
+    bool ready_workset_availability_changed = false;
+};
+
 struct ClaimPublishedWorksetBatchCommand {
     std::string batch_nonce;
     std::size_t requested_workset_count = 0;
-    std::int64_t lease_duration_ms = 0;
 };
 
-struct ReadyWorksetAvailabilitySnapshot {
+struct ExecutionWorkAvailabilitySnapshot {
     std::uint64_t generation = 0;
     bool has_ready_worksets = false;
+    bool has_execution_finished_results = false;
     std::int64_t changed_at_utc = 0;
 
-    auto operator<=>(const ReadyWorksetAvailabilitySnapshot&) const = default;
+    auto operator<=>(const ExecutionWorkAvailabilitySnapshot&) const = default;
 };
 
-using ReadyWorksetAvailabilityCallback =
-    std::function<void(const ReadyWorksetAvailabilitySnapshot&)>;
-using ReadyWorksetAvailabilitySubscription = std::uint64_t;
+using ExecutionWorkAvailabilityCallback =
+    std::function<void(const ExecutionWorkAvailabilitySnapshot&)>;
+using ExecutionWorkAvailabilitySubscription = std::uint64_t;
 
 struct ClaimedPublishedWorksetItem {
     std::int64_t job_id = 0;
@@ -443,7 +460,6 @@ struct ClaimedPublishedWorkset {
     ExecutionWorksetCompatibility compatibility;
     int priority = 0;
     std::string claim_token;
-    std::int64_t lease_expires_at_utc = 0;
     std::vector<ClaimedPublishedWorksetItem> items;
 };
 
@@ -452,7 +468,7 @@ struct WorksetDispatchLeaseRequest {
     std::string claim_token;
 };
 
-struct RenewWorksetDispatchLeasesCommand {
+struct RenewActiveWorksetLeasesCommand {
     std::vector<WorksetDispatchLeaseRequest> requests;
     std::int64_t lease_duration_ms = 0;
 };
@@ -464,10 +480,23 @@ struct WorksetDispatchLeaseReceipt {
     std::optional<std::int64_t> lease_expires_at_utc;
 };
 
-struct MarkWorksetDispatchedCommand {
+struct MarkWorksetActiveCommand {
+    std::int64_t dispatch_attempt_id = 0;
+    std::string claim_token;
+    std::int64_t lease_duration_ms = 0;
+    std::string requested_by;
+};
+
+struct MarkWorksetDrainingCommand {
     std::int64_t dispatch_attempt_id = 0;
     std::string claim_token;
     std::string requested_by;
+};
+
+struct RecoverInterruptedWorksetDispatchesReceipt {
+    int dispatches_closed = 0;
+    int jobs_requeued = 0;
+    int recovery_attempts_granted = 0;
 };
 
 struct ReleaseWorksetDispatchCommand {
@@ -485,6 +514,7 @@ struct WorksetDispatchMutationReceipt {
     int jobs_requeued = 0;
     int jobs_failed = 0;
     bool dispatch_closed = false;
+    std::optional<std::int64_t> lease_expires_at_utc;
 };
 
 struct MarkWorksetJobStartedCommand {
@@ -536,6 +566,21 @@ struct StageWorkerTerminalReceipt {
     bool dispatch_closed = false;
 };
 
+using WorkerExecutionEventMutation = std::variant<
+    MarkWorksetJobStartedCommand,
+    StageWorkerTerminalCommand>;
+using WorkerExecutionEventMutationReceipt = std::variant<
+    WorksetJobStartReceipt,
+    StageWorkerTerminalReceipt>;
+
+struct PersistWorkerExecutionEventsBatchCommand {
+    std::vector<WorkerExecutionEventMutation> events;
+};
+
+struct PersistWorkerExecutionEventsBatchReceipt {
+    std::vector<WorkerExecutionEventMutationReceipt> events;
+};
+
 struct ExecutionTempBlobRecord {
     std::int64_t temp_blob_id = 0;
     std::string relative_path;
@@ -546,10 +591,8 @@ struct ExecutionTempBlobRecord {
     std::int64_t created_at_utc = 0;
 };
 
-struct ClaimExecutionFinishedJobCommand {
-    std::string processor_token;
-    std::int64_t lease_duration_ms = 0;
-    int max_total_processing_attempts = 1;
+struct ClaimExecutionFinishedJobsBatchCommand {
+    std::size_t requested_job_count = 32;
 };
 
 struct ClaimedExecutionFinishedJob {
@@ -567,21 +610,29 @@ struct ClaimedExecutionFinishedJob {
     std::optional<std::string> worker_terminal_error_text;
     bool worker_terminal_unstarted = false;
     ExecutionTempBlobRecord result_blob;
-    std::string processor_token;
-    std::int64_t processor_lease_expires_at_utc = 0;
     int processing_attempts = 0;
     int processing_failures = 0;
 };
 
-struct RenewResultProcessingLeaseCommand {
-    std::int64_t job_id = 0;
-    std::string processor_token;
-    std::int64_t lease_duration_ms = 0;
+struct InterruptedResultProcessingJob {
+    ClaimedExecutionFinishedJob claimed;
+    bool structural_metadata_complete = false;
+    std::string structural_diagnostic;
+    bool has_result_blob_record = false;
 };
 
-struct ParkResultProcessingCommand {
+struct ResetInterruptedResultProcessingCommand {
     std::int64_t job_id = 0;
-    std::string processor_token;
+    std::string requested_by;
+};
+
+struct RequeueLostResultProcessingCommand {
+    std::int64_t job_id = 0;
+    std::string requested_by;
+};
+
+struct RecordResultProcessingFailureCommand {
+    std::int64_t job_id = 0;
     std::string error_code;
     std::string error_text;
 };
@@ -609,7 +660,6 @@ struct ExecutionCancellationRequestSpec {
 
 struct CommitResultFinalizationCommand {
     std::int64_t job_id = 0;
-    std::string processor_token;
     ExecutionResultFinalizationDisposition disposition =
         ExecutionResultFinalizationDisposition::Final;
     std::optional<std::string> final_state;
@@ -621,6 +671,22 @@ struct CommitResultFinalizationCommand {
     std::string requested_by;
 };
 
+struct CommittedJobCancellation {
+    std::int64_t cancellation_request_id = 0;
+    std::int64_t job_id = 0;
+    std::string request_key;
+    std::string reason_code;
+    std::optional<std::string> reason_text;
+    std::optional<std::int64_t> caused_by_job_id;
+    std::string state;
+    std::string durable_job_state;
+    std::optional<std::int64_t> workset_id;
+    std::optional<std::int64_t> dispatch_attempt_id;
+    std::optional<std::string> claim_token;
+    ExecutionDbOperationDisposition disposition =
+        ExecutionDbOperationDisposition::BackendError;
+};
+
 struct ResultProcessingReceipt {
     ExecutionDbOperationDisposition disposition =
         ExecutionDbOperationDisposition::BackendError;
@@ -630,15 +696,11 @@ struct ResultProcessingReceipt {
     int processing_failures = 0;
     std::int64_t commit_sequence = 0;
     std::int64_t workflow_step_id = 0;
+    std::vector<CommittedJobCancellation> committed_cancellations;
 };
 
-struct RequestJobCancellationCommand {
-    std::int64_t job_id = 0;
-    std::string request_key;
-    std::string reason_code;
-    std::optional<std::string> reason_text;
-    std::string requested_by;
-    std::optional<std::int64_t> caused_by_job_id;
+struct CommitResultFinalizationsBatchCommand {
+    std::vector<CommitResultFinalizationCommand> finalizations;
 };
 
 struct JobCancellationReceipt {
@@ -650,45 +712,29 @@ struct JobCancellationReceipt {
     std::optional<std::string> resolution_code;
 };
 
-enum class JobCancellationExecutionAction {
+enum class JobCancellationOutcomeKind {
     CancelWithoutWorker = 0,
-    ReleaseClaimedWorkset,
-    DeliverToWorker,
-    ResolveNoLongerExecutable,
+    InitialSidecarApplied,
+    WorkerDeliveryAccepted,
+    WorkerTerminalResolved,
+    DeliveryFailed,
 };
 
-struct ClaimJobCancellationCommand {
-    std::string delivery_token;
-    std::int64_t lease_duration_ms = 0;
-};
-
-struct ClaimedJobCancellation {
+struct JobCancellationOutcomeCommand {
+    JobCancellationOutcomeKind kind =
+        JobCancellationOutcomeKind::CancelWithoutWorker;
     std::int64_t cancellation_request_id = 0;
     std::int64_t job_id = 0;
-    std::string request_key;
-    std::string reason_code;
-    std::optional<std::string> reason_text;
-    std::string job_state;
-    std::optional<std::int64_t> workset_id;
     std::optional<std::int64_t> dispatch_attempt_id;
-    std::optional<std::string> workset_claim_token;
-    JobCancellationExecutionAction action =
-        JobCancellationExecutionAction::ResolveNoLongerExecutable;
-    std::string delivery_token;
-    std::int64_t delivery_lease_expires_at_utc = 0;
-};
-
-struct MarkJobCancellationDeliveredCommand {
-    std::int64_t cancellation_request_id = 0;
-    std::string delivery_token;
-};
-
-struct ResolveJobCancellationCommand {
-    std::int64_t cancellation_request_id = 0;
-    std::optional<std::string> delivery_token;
+    std::optional<std::string> claim_token;
     std::string resolution_code;
-    bool finalize_job_canceled = false;
+    std::optional<std::string> error_code;
+    std::optional<std::string> error_text;
     std::string requested_by;
+};
+
+struct MutateJobCancellationsBatchCommand {
+    std::vector<JobCancellationOutcomeCommand> mutations;
 };
 
 struct ClaimTempBlobCleanupCommand {
@@ -761,29 +807,16 @@ struct IExecutionDb {
         }
         return false;
     }
-    virtual bool PublishWorkset(
-        const PublishWorksetCommand& command,
-        PublishWorksetReceipt* receipt_out = nullptr,
+    virtual bool PublishWorksetWave(
+        const PublishWorksetWaveCommand& command,
+        PublishWorksetWaveReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) {
         (void)command;
         if (receipt_out != nullptr) {
             *receipt_out = {};
         }
         if (error_out != nullptr) {
-            *error_out = "workset publication is not supported";
-        }
-        return false;
-    }
-    virtual bool CompleteWorksetPublication(
-        const CompleteWorksetPublicationCommand& command,
-        CompleteWorksetPublicationReceipt* receipt_out = nullptr,
-        std::string* error_out = nullptr) {
-        (void)command;
-        if (receipt_out != nullptr) {
-            *receipt_out = {};
-        }
-        if (error_out != nullptr) {
-            *error_out = "workset publication completion is not supported";
+            *error_out = "workset wave publication is not supported";
         }
         return false;
     }
@@ -797,35 +830,35 @@ struct IExecutionDb {
         return {};
     }
     virtual std::vector<WorksetDispatchLeaseReceipt>
-    RenewWorksetDispatchLeases(
-        const RenewWorksetDispatchLeasesCommand& command,
+    RenewActiveWorksetLeases(
+        const RenewActiveWorksetLeasesCommand& command,
         std::string* error_out = nullptr) {
         (void)command;
         if (error_out != nullptr) {
-            *error_out = "workset lease renewal is not supported";
+            *error_out = "active workset lease renewal is not supported";
         }
         return {};
     }
-    virtual std::optional<ReadyWorksetAvailabilitySnapshot>
-    GetReadyWorksetAvailability(
+    virtual std::optional<ExecutionWorkAvailabilitySnapshot>
+    GetExecutionWorkAvailability(
         std::string* error_out = nullptr) const {
         if (error_out != nullptr) {
-            *error_out = "ready-workset availability is not supported";
+            *error_out = "execution-work availability is not supported";
         }
         return std::nullopt;
     }
-    virtual ReadyWorksetAvailabilitySubscription
-    SubscribeReadyWorksetAvailability(
-        ReadyWorksetAvailabilityCallback callback) {
+    virtual ExecutionWorkAvailabilitySubscription
+    SubscribeExecutionWorkAvailability(
+        ExecutionWorkAvailabilityCallback callback) {
         (void)callback;
         return 0;
     }
-    virtual void UnsubscribeReadyWorksetAvailability(
-        ReadyWorksetAvailabilitySubscription subscription) {
+    virtual void UnsubscribeExecutionWorkAvailability(
+        ExecutionWorkAvailabilitySubscription subscription) {
         (void)subscription;
     }
-    virtual bool MarkWorksetDispatched(
-        const MarkWorksetDispatchedCommand& command,
+    virtual bool MarkWorksetActive(
+        const MarkWorksetActiveCommand& command,
         WorksetDispatchMutationReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) {
         (void)command;
@@ -833,7 +866,20 @@ struct IExecutionDb {
             *receipt_out = {};
         }
         if (error_out != nullptr) {
-            *error_out = "workset dispatch is not supported";
+            *error_out = "active workset transition is not supported";
+        }
+        return false;
+    }
+    virtual bool MarkWorksetDraining(
+        const MarkWorksetDrainingCommand& command,
+        WorksetDispatchMutationReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) {
+        (void)command;
+        if (receipt_out != nullptr) {
+            *receipt_out = {};
+        }
+        if (error_out != nullptr) {
+            *error_out = "draining workset transition is not supported";
         }
         return false;
     }
@@ -850,125 +896,107 @@ struct IExecutionDb {
         }
         return false;
     }
-    virtual bool MarkWorksetJobStarted(
-        const MarkWorksetJobStartedCommand& command,
-        WorksetJobStartReceipt* receipt_out = nullptr,
+    virtual bool PersistWorkerExecutionEventsBatch(
+        const PersistWorkerExecutionEventsBatchCommand& command,
+        PersistWorkerExecutionEventsBatchReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) {
         (void)command;
         if (receipt_out != nullptr) {
             *receipt_out = {};
         }
         if (error_out != nullptr) {
-            *error_out = "workset item start is not supported";
+            *error_out = "worker execution-event batching is not supported";
         }
         return false;
     }
-    virtual bool StageWorkerTerminal(
-        const StageWorkerTerminalCommand& command,
-        StageWorkerTerminalReceipt* receipt_out = nullptr,
-        std::string* error_out = nullptr) {
-        (void)command;
-        if (receipt_out != nullptr) {
-            *receipt_out = {};
-        }
-        if (error_out != nullptr) {
-            *error_out = "worker terminal staging is not supported";
-        }
-        return false;
-    }
-    virtual std::optional<ClaimedExecutionFinishedJob> ClaimNextExecutionFinishedJob(
-        const ClaimExecutionFinishedJobCommand& command,
+    virtual std::vector<ClaimedExecutionFinishedJob>
+    ClaimExecutionFinishedJobsBatch(
+        const ClaimExecutionFinishedJobsBatchCommand& command,
         std::string* error_out = nullptr) {
         (void)command;
         if (error_out != nullptr) {
             error_out->clear();
         }
-        return std::nullopt;
+        return {};
     }
-    virtual bool RenewResultProcessingLease(
-        const RenewResultProcessingLeaseCommand& command,
-        ResultProcessingReceipt* receipt_out = nullptr,
+    virtual std::vector<InterruptedResultProcessingJob>
+    ListInterruptedResultProcessingJobs(
         std::string* error_out = nullptr) {
-        (void)command;
-        if (receipt_out != nullptr) {
-            *receipt_out = {};
-        }
-        if (error_out != nullptr) {
-            *error_out = "result-processing lease renewal is not supported";
-        }
-        return false;
-    }
-    virtual bool ParkResultProcessing(
-        const ParkResultProcessingCommand& command,
-        ResultProcessingReceipt* receipt_out = nullptr,
-        std::string* error_out = nullptr) {
-        (void)command;
-        if (receipt_out != nullptr) {
-            *receipt_out = {};
-        }
-        if (error_out != nullptr) {
-            *error_out = "result parking is not supported";
-        }
-        return false;
-    }
-    virtual bool CommitResultFinalization(
-        const CommitResultFinalizationCommand& command,
-        ResultProcessingReceipt* receipt_out = nullptr,
-        std::string* error_out = nullptr) {
-        (void)command;
-        if (receipt_out != nullptr) {
-            *receipt_out = {};
-        }
-        if (error_out != nullptr) {
-            *error_out = "result finalization is not supported";
-        }
-        return false;
-    }
-    virtual bool RequestJobCancellation(
-        const RequestJobCancellationCommand& command,
-        JobCancellationReceipt* receipt_out = nullptr,
-        std::string* error_out = nullptr) {
-        (void)command;
-        if (receipt_out != nullptr) {
-            *receipt_out = {};
-        }
-        if (error_out != nullptr) {
-            *error_out = "durable cancellation requests are not supported";
-        }
-        return false;
-    }
-    virtual std::optional<ClaimedJobCancellation> ClaimNextJobCancellation(
-        const ClaimJobCancellationCommand& command,
-        std::string* error_out = nullptr) {
-        (void)command;
         if (error_out != nullptr) {
             error_out->clear();
         }
-        return std::nullopt;
+        return {};
     }
-    virtual bool MarkJobCancellationDelivered(
-        const MarkJobCancellationDeliveredCommand& command,
-        JobCancellationReceipt* receipt_out = nullptr,
+    virtual bool ResetInterruptedResultProcessing(
+        const ResetInterruptedResultProcessingCommand& command,
+        ResultProcessingReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) {
         (void)command;
         if (receipt_out != nullptr) {
             *receipt_out = {};
         }
         if (error_out != nullptr) {
-            *error_out = "cancellation delivery is not supported";
+            *error_out = "interrupted result reset is not supported";
         }
         return false;
     }
-    virtual bool ResolveJobCancellation(
-        const ResolveJobCancellationCommand& command,
-        JobCancellationReceipt* receipt_out = nullptr,
+    virtual bool RequeueLostResultProcessing(
+        const RequeueLostResultProcessingCommand& command,
+        ResultProcessingReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) {
         (void)command;
         if (receipt_out != nullptr) {
             *receipt_out = {};
         }
         if (error_out != nullptr) {
-            *error_out = "cancellation resolution is not supported";
+            *error_out = "lost result requeue is not supported";
+        }
+        return false;
+    }
+    virtual bool RecordResultProcessingFailure(
+        const RecordResultProcessingFailureCommand& command,
+        ResultProcessingReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) {
+        (void)command;
+        if (receipt_out != nullptr) {
+            *receipt_out = {};
+        }
+        if (error_out != nullptr) {
+            *error_out = "result processing failure recording is not supported";
+        }
+        return false;
+    }
+    virtual bool CommitResultFinalizationsBatch(
+        const CommitResultFinalizationsBatchCommand& command,
+        std::vector<ResultProcessingReceipt>* receipts_out = nullptr,
+        std::string* error_out = nullptr) {
+        (void)command;
+        if (receipts_out != nullptr) {
+            receipts_out->clear();
+        }
+        if (error_out != nullptr) {
+            *error_out = "result finalization batching is not supported";
+        }
+        return false;
+    }
+    virtual std::vector<CommittedJobCancellation>
+    ListUnresolvedJobCancellations(
+        std::string* error_out = nullptr) {
+        if (error_out != nullptr) {
+            error_out->clear();
+        }
+        return {};
+    }
+    virtual bool MutateJobCancellationsBatch(
+        const MutateJobCancellationsBatchCommand& command,
+        std::vector<JobCancellationReceipt>* receipts_out = nullptr,
+        std::string* error_out = nullptr) {
+        (void)command;
+        if (receipts_out != nullptr) {
+            receipts_out->clear();
+        }
+        if (error_out != nullptr) {
+            *error_out = "cancellation mutation batching is not supported";
         }
         return false;
     }
@@ -1007,39 +1035,11 @@ struct IExecutionDb {
         }
         return false;
     }
-    virtual bool RecoverExpiredWorksetDispatches(
-        int max_dispatches,
-        int* dispatches_recovered_out = nullptr,
+    virtual bool RecoverInterruptedWorksetDispatches(
+        RecoverInterruptedWorksetDispatchesReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) {
-        (void)max_dispatches;
-        if (dispatches_recovered_out != nullptr) {
-            *dispatches_recovered_out = 0;
-        }
-        if (error_out != nullptr) {
-            error_out->clear();
-        }
-        return true;
-    }
-    virtual bool RecoverExpiredResultProcessingLeases(
-        int max_jobs,
-        int* jobs_recovered_out = nullptr,
-        std::string* error_out = nullptr) {
-        (void)max_jobs;
-        if (jobs_recovered_out != nullptr) {
-            *jobs_recovered_out = 0;
-        }
-        if (error_out != nullptr) {
-            error_out->clear();
-        }
-        return true;
-    }
-    virtual bool RecoverExpiredCancellationDeliveryLeases(
-        int max_requests,
-        int* requests_recovered_out = nullptr,
-        std::string* error_out = nullptr) {
-        (void)max_requests;
-        if (requests_recovered_out != nullptr) {
-            *requests_recovered_out = 0;
+        if (receipt_out != nullptr) {
+            *receipt_out = {};
         }
         if (error_out != nullptr) {
             error_out->clear();

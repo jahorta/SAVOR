@@ -309,7 +309,7 @@ bool ProjectJobRows(
         "SELECT job_id,job_set_id,program_kind,state,priority,queued_at_utc,started_at_utc,ended_at_utc,error_code,"
         "attempts,max_attempts,fingerprint,claimed_by_token,lease_expires_at_utc,error_text,"
         "result_processing_state,result_processing_attempts,result_processing_failures,"
-        "result_processing_retry_after_utc,result_processing_error_code,result_processing_error_text "
+        "result_processing_error_code,result_processing_error_text "
         "FROM exec_job WHERE job_id=?1;";
     if (!Prepare(source, kSelect, &src, error_out)) {
         return false;
@@ -352,16 +352,14 @@ bool ProjectJobRows(
     Statement detail;
     constexpr const char* kDetail =
         "INSERT INTO ui_job_detail(job_id,attempts,max_attempts,fingerprint,claimed_by_token,lease_expires_at_utc,error_text,"
-        "result_processing_state,result_processing_attempts,result_processing_failures,result_processing_retry_after_utc,"
-        "result_processing_error_code,"
+        "result_processing_state,result_processing_attempts,result_processing_failures,result_processing_error_code,"
         "result_processing_error_text) "
-        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) "
         "ON CONFLICT(job_id) DO UPDATE SET "
         "attempts=excluded.attempts,max_attempts=excluded.max_attempts,fingerprint=excluded.fingerprint,"
         "claimed_by_token=excluded.claimed_by_token,lease_expires_at_utc=excluded.lease_expires_at_utc,error_text=excluded.error_text,"
         "result_processing_state=excluded.result_processing_state,result_processing_attempts=excluded.result_processing_attempts,"
         "result_processing_failures=excluded.result_processing_failures,"
-        "result_processing_retry_after_utc=excluded.result_processing_retry_after_utc,"
         "result_processing_error_code=excluded.result_processing_error_code,"
         "result_processing_error_text=excluded.result_processing_error_text;";
     if (!Prepare(ui, kDetail, &detail, error_out)) {
@@ -371,7 +369,7 @@ bool ProjectJobRows(
     for (int i = 9; i < 15; ++i) {
         BindColumn(detail.st, i - 7, src.st, i);
     }
-    for (int i = 15; i < 21; ++i) {
+    for (int i = 15; i < 20; ++i) {
         BindColumn(detail.st, i - 7, src.st, i);
     }
     if (!StepDone(ui, detail.st, error_out)) {

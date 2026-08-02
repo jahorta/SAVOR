@@ -764,37 +764,9 @@ public:
                 SeedProbeEndpointObservationDisposition::
                     AlreadyInvalidatedConflicting;
         if (conflicting_endpoint) {
-            auto decision = FinalDecision("SUCCEEDED");
-            for (const auto& sibling :
-                 execution_db_->ListJobsByProgramReference(
-                     static_cast<std::int32_t>(savor::PK_SeedProbe),
-                     kProgramRefKind,
-                     run->probe_run_id)) {
-                if (sibling.job_id == context.job_id
-                    || sibling.state == "EXECUTION_FINISHED"
-                    || IsExecutionTerminalState(sibling.state)) {
-                    continue;
-                }
-                decision.cancellations.push_back({
-                    .job_id = sibling.job_id,
-                    .request_key =
-                        "seedprobe-endpoint-invalidated:"
-                        + std::to_string(run->probe_run_id)
-                        + ":" + std::to_string(sibling.job_id),
-                    .reason_code = "SEEDPROBE_ENDPOINT_MISMATCH",
-                    .reason_text =
-                        "SeedProbe run was invalidated by a conflicting factual endpoint",
-                });
-            }
-            decision.event_lines.push_back(
-                "[seedprobe-invalidated] run="
-                + std::to_string(run->probe_run_id)
-                + " job=" + std::to_string(context.job_id)
-                + " established="
-                + std::string(ToDbString(
-                    observation_receipt.established_endpoint))
-                + " conflicting=" + endpoint_text);
-            return decision;
+            return ProcessPersistedObservation(
+                context, *run, *spec, observation_receipt.observation,
+                true, false);
         }
 
         const auto& persisted = observation_receipt.observation;
@@ -802,42 +774,142 @@ public:
         if (observation_receipt.endpoint_disposition ==
             SeedProbeEndpointObservationDisposition::
                 AlreadyInvalidatedMatching) {
+            return ProcessPersistedObservation(
+                context, *run, *spec, persisted, false, true);
+        }
+        return ProcessPersistedObservation(
+            context, *run, *spec, persisted, false, false);
+    }
+
+    ProgramResultRecovery RecoverPersistedOutcome(
+        const ProgramResultRecoveryContext& context) const override {
+        if (execution_db_ == nullptr || analysis_db_ == nullptr
+            || context.job_id <= 0
+            || context.program_kind != static_cast<std::int32_t>(savor::PK_SeedProbe)
+            || context.program_version != savor::runtime::seedprobe::ProgramVersion
+            || context.program_ref_kind != kProgramRefKind
+            || context.program_ref_id <= 0
+            || context.terminal_sha256.empty()) {
+            return {
+                .disposition = ProgramResultRecoveryDisposition::Inconsistent,
+                .diagnostic = "SeedProbe recovery identity is invalid",
+            };
+        }
+        const auto persisted =
+            analysis_db_->GetSeedProbeResultForSourceJob(context.job_id);
+        if (!persisted.has_value()) {
+            return {
+                .disposition = ProgramResultRecoveryDisposition::NoPersistedOutcome,
+            };
+        }
+        const auto spec = DecodeSeedProbeJobSpec(context.input_ini);
+        const auto run = analysis_db_->GetSeedProbeRun(context.program_ref_id);
+        if (!spec.has_value() || !run.has_value()
+            || persisted->probe_run_id != context.program_ref_id
+            || persisted->input_frame_id != spec->input_frame_id
+            || persisted->source_job_id != context.job_id
+            || persisted->terminal_sha256 != context.terminal_sha256
+            || persisted->confirmation_of_probe_result_id
+                != spec->confirmation_of_probe_result_id) {
+            return {
+                .disposition = ProgramResultRecoveryDisposition::Inconsistent,
+                .diagnostic =
+                    "SeedProbe persisted observation conflicts with Execution provenance",
+            };
+        }
+        ProgramResultProcessingContext processing{
+            .job_id = context.job_id,
+            .job_set_id = context.job_set_id,
+            .program_kind = context.program_kind,
+            .program_version = context.program_version,
+            .program_ref_kind = context.program_ref_kind,
+            .program_ref_id = context.program_ref_id,
+            .fingerprint = context.fingerprint,
+            .input_ini = context.input_ini,
+            .terminal = {
+                .job_id = context.job_id,
+                .sha256 = context.terminal_sha256,
+            },
+        };
+        const bool caused_invalidation =
+            run->conflicting_endpoint_source_job_id == context.job_id;
+        const bool already_invalidated = run->invalidated_at_utc.has_value()
+            && !caused_invalidation;
+        try {
+            return {
+                .disposition = ProgramResultRecoveryDisposition::Recovered,
+                .decision = ProcessPersistedObservation(
+                    processing, *run, *spec, *persisted,
+                    caused_invalidation, already_invalidated),
+            };
+        } catch (const std::exception& exception) {
+            return {
+                .disposition = ProgramResultRecoveryDisposition::Inconsistent,
+                .diagnostic = exception.what(),
+            };
+        }
+    }
+
+private:
+    ProgramResultDecision ProcessPersistedObservation(
+        const ProgramResultProcessingContext& context,
+        const savor::db::SeedProbeRunSnapshot& run,
+        const SeedProbeJobSpec& spec,
+        const savor::db::SeedProbeResultRow& persisted,
+        bool caused_invalidation,
+        bool already_invalidated) const {
+        if (caused_invalidation) {
+            auto decision = FinalDecision("SUCCEEDED");
+            for (const auto& sibling :
+                 execution_db_->ListJobsByProgramReference(
+                     static_cast<std::int32_t>(savor::PK_SeedProbe),
+                     kProgramRefKind,
+                     run.probe_run_id)) {
+                if (sibling.job_id == context.job_id
+                    || sibling.state == "EXECUTION_FINISHED"
+                    || IsExecutionTerminalState(sibling.state)) {
+                    continue;
+                }
+                decision.cancellations.push_back({
+                    .job_id = sibling.job_id,
+                    .request_key = "seedprobe-endpoint-invalidated:"
+                        + std::to_string(run.probe_run_id) + ":"
+                        + std::to_string(sibling.job_id),
+                    .reason_code = "SEEDPROBE_ENDPOINT_MISMATCH",
+                    .reason_text =
+                        "SeedProbe run was invalidated by a conflicting factual endpoint",
+                });
+            }
+            decision.event_lines.push_back(
+                "[seedprobe-invalidated] run="
+                + std::to_string(run.probe_run_id)
+                + " job=" + std::to_string(context.job_id));
+            return decision;
+        }
+        if (already_invalidated) {
             auto decision = FinalDecision("SUCCEEDED");
             decision.event_lines.push_back(
                 "[seedprobe-invalidated-late-fact] run="
-                + std::to_string(run->probe_run_id)
+                + std::to_string(run.probe_run_id)
                 + " job=" + std::to_string(context.job_id)
-                + " result="
-                + std::to_string(persisted.probe_result_id));
+                + " result=" + std::to_string(persisted.probe_result_id));
             return decision;
         }
-
-        if (spec->stage == SeedProbeJobStage::Survey) {
+        if (spec.stage == SeedProbeJobStage::Survey) {
             auto decision = FinalDecision("SUCCEEDED");
             decision.event_lines.push_back(
                 "[seedprobe-result] stage=SURVEY job="
                 + std::to_string(context.job_id)
-                + " result="
-                + std::to_string(persisted.probe_result_id)
-                + " raw_seed="
-                + std::to_string(persisted.seed_value));
+                + " result=" + std::to_string(persisted.probe_result_id)
+                + " raw_seed=" + std::to_string(persisted.seed_value));
             return decision;
         }
-        if (spec->stage == SeedProbeJobStage::Search) {
-            return ProcessSearch(
-                context,
-                *run,
-                *spec,
-                persisted);
+        if (spec.stage == SeedProbeJobStage::Search) {
+            return ProcessSearch(context, run, spec, persisted);
         }
-        return ProcessConfirm(
-            context,
-            *run,
-            *spec,
-            persisted);
+        return ProcessConfirm(context, run, spec, persisted);
     }
 
-private:
     std::optional<savor::db::SeedProbeResultRow>
     FindNeutralRepresentative(
         std::int64_t probe_run_id) const {

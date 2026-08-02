@@ -119,6 +119,57 @@ std::string ComputeWorkerWorksetExecutionKeyHash(
     return hash::sha256(canonical.data(), canonical.size());
 }
 
+std::string ComputeInitialWorksetCancellationSidecarSha256(
+    const InitialWorksetCancellationSidecarV1& sidecar)
+{
+    std::string canonical;
+    AppendNumber(
+        canonical,
+        kInitialWorksetCancellationSidecarVersionV1);
+    AppendNumber(canonical, sidecar.workset_id.value());
+    AppendNumber(canonical, sidecar.item_ids.size());
+    for (const WorkerWorksetItemId item_id : sidecar.item_ids)
+        AppendNumber(canonical, item_id.value());
+    return hash::sha256(canonical.data(), canonical.size());
+}
+
+WorksetValidationResult ValidateInitialWorksetCancellationSidecar(
+    const WorkerWorksetDefinition& definition,
+    const InitialWorksetCancellationSidecarV1& sidecar)
+{
+    if (!sidecar.workset_id ||
+        sidecar.workset_id != definition.workset_id)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "Initial cancellation sidecar does not identify the submitted workset");
+    }
+    std::uint64_t previous = 0;
+    for (const WorkerWorksetItemId item_id : sidecar.item_ids)
+    {
+        if (!item_id || item_id.value() <= previous)
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Initial cancellation sidecar item IDs must be unique and sorted");
+        }
+        const bool member = std::ranges::any_of(
+            definition.items,
+            [&](const WorksetItemTemplate& item)
+            {
+                return item.item_id == item_id;
+            });
+        if (!member)
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Initial cancellation sidecar contains an item outside the workset");
+        }
+        previous = item_id.value();
+    }
+    return WorksetValidationResult::Success();
+}
+
 std::string ComputeStateCacheKeyHash(const StateCacheKey& key)
 {
     std::string canonical;

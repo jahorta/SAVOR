@@ -133,14 +133,12 @@ public:
             program_kind_registry,
         WorkerCoordinator* worker_coordinator,
         savor::db::execution::WorkerResultBlobStore* blob_store,
-        JobExecutionCoordinatorConfig config,
-        WorkerTerminalStagedCallback terminal_staged_callback)
+        JobExecutionCoordinatorConfig config)
         : execution_db_(execution_db)
         , program_kind_registry_(program_kind_registry)
         , worker_coordinator_(worker_coordinator)
         , blob_store_(blob_store)
-        , config_(std::move(config))
-        , terminal_staged_callback_(std::move(terminal_staged_callback)) {
+        , config_(std::move(config)) {
         std::ostringstream token;
         token << "job-execution-coordinator-"
               << Clock::now().time_since_epoch().count()
@@ -162,6 +160,15 @@ public:
     bool IsPaused() const noexcept;
     bool IsRunning() const noexcept;
     bool ClearInvariantPause();
+    void RegisterCancellationCommitPending(
+        std::uint64_t hold_id,
+        const std::vector<savor::db::ExecutionCancellationRequestSpec>&
+            cancellations);
+    void RegisterCommittedCancellations(
+        std::uint64_t hold_id,
+        const std::vector<savor::db::CommittedJobCancellation>&
+            cancellations);
+    void OpenCancellationAdmission();
     JobExecutionCoordinatorTelemetry SnapshotTelemetry() const;
     std::vector<JobExecutionWorkerLaneSnapshot>
         SnapshotWorkerLanes() const;
@@ -176,6 +183,7 @@ private:
         Submitting,
         Active,
         Draining,
+        ReleasedDraining,
         ReleaseRequested,
         Released,
         Retired,
@@ -188,8 +196,20 @@ private:
     };
 
     struct PendingSubmissionCancellation {
-        savor::db::ClaimedJobCancellation cancellation;
+        savor::db::CommittedJobCancellation cancellation;
         std::optional<savor::runtime::WorkerWorksetItemId> item_id;
+        Clock::time_point enqueued_at{};
+    };
+
+    struct DispatchRecord;
+    using DispatchPtr = std::shared_ptr<DispatchRecord>;
+
+    struct PendingCancellationMutation {
+        savor::db::JobCancellationOutcomeCommand mutation;
+        std::string requested_resolution_code;
+        bool delivery = false;
+        DispatchPtr dispatch;
+        bool initial_suppression = false;
         Clock::time_point enqueued_at{};
     };
 
@@ -201,6 +221,9 @@ private:
         DispatchPhase phase = DispatchPhase::Claimed;
         bool submitted = false;
         bool dispatch_marked = false;
+        bool terminal_workset_state_observed = false;
+        bool draining_transition_persisted = false;
+        Clock::time_point draining_retry_at{};
         bool summary_observed = false;
         bool workset_cancellation_applied = false;
         std::optional<DeferredDispatchRelease> deferred_release;
@@ -209,12 +232,20 @@ private:
         std::unordered_map<std::uint64_t, std::size_t> item_index_by_id;
         std::unordered_set<std::int64_t> staged_jobs;
         std::unordered_set<std::int64_t> acknowledged_jobs;
+        std::unordered_set<std::int64_t> initially_suppressed_jobs;
+        std::unordered_set<std::int64_t> sidecar_persisted_jobs;
+        bool sidecar_receipt_accounted = false;
+        std::string cancellation_sidecar_sha256;
+        std::optional<
+            savor::runtime::InitialWorksetCancellationSidecarV1>
+            frozen_submission_sidecar;
+        std::vector<savor::db::CommittedJobCancellation>
+            frozen_submission_cancellations;
         std::unordered_map<
             std::int64_t,
             savor::runtime::WorkerItemTerminalCorrelation>
             terminal_by_job;
     };
-    using DispatchPtr = std::shared_ptr<DispatchRecord>;
 
     struct ReconstructionItem {
         DispatchPtr dispatch;
@@ -225,9 +256,16 @@ private:
         WorkerCoordinatorEventContext source;
         savor::wrms::WorksetItemStartedPayload payload;
     };
+    struct PreparedTerminalPersistence {
+        savor::db::execution::WorkerResultBlobReference blob;
+        savor::db::StageWorkerTerminalCommand command;
+        bool pinned = true;
+    };
     struct TerminalEvent {
         savor::runtime::DurableWorkerTerminalEnvelope envelope;
         std::uint32_t retry_attempt = 0;
+        std::shared_ptr<PreparedTerminalPersistence> prepared;
+        Clock::time_point retry_at{};
     };
     struct SummaryEvent {
         WorkerCoordinatorEventContext source;
@@ -246,6 +284,19 @@ private:
         bool active = false;
     };
 
+    struct PreparedWorkerEventMutation {
+        savor::db::WorkerExecutionEventMutation mutation;
+        Clock::time_point enqueued_at{};
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool completed = false;
+        bool succeeded = false;
+        savor::db::WorkerExecutionEventMutationReceipt receipt;
+        std::string error;
+    };
+    using PreparedWorkerEventMutationPtr =
+        std::shared_ptr<PreparedWorkerEventMutation>;
+
     enum class WorkerControlKind : std::uint8_t {
         Acknowledge = 0,
         CancelItem,
@@ -258,7 +309,7 @@ private:
         savor::runtime::WorkerItemTerminalCorrelation terminal;
         std::optional<savor::runtime::WorkerWorksetItemId> item_id;
         std::string reason;
-        std::optional<savor::db::ClaimedJobCancellation> cancellation;
+        std::optional<savor::db::CommittedJobCancellation> cancellation;
         Clock::time_point enqueued_at{};
         Clock::time_point retry_at{};
     };
@@ -298,11 +349,6 @@ private:
         Clock::time_point renew_at{};
     };
 
-    struct TerminalRetry {
-        TerminalEvent event;
-        Clock::time_point retry_at{};
-    };
-
     enum class LifecycleRequestKind : std::uint8_t {
         ReleaseUnsubmitted = 0,
         RecoverAfterWorkersStopped,
@@ -319,6 +365,8 @@ private:
     void SchedulerLoop();
     void ReconstructionLoop();
     void PersistenceLoop();
+    void WorkerEventBatchLoop();
+    void CancellationMutationLoop();
     void AuthorityLoop();
     void LeaseHeartbeatLoop();
     void WorkerLaneLoop(const WorkerLanePtr& lane);
@@ -349,11 +397,14 @@ private:
         std::string* error_out) const;
 
     void EnqueuePersistence(PersistenceEvent event);
-    bool ProcessPersistenceEvent(const PersistenceEvent& event);
+    bool ProcessPersistenceEvent(PersistenceEvent& event);
     bool HandleItemStarted(const ItemStartedEvent& event);
-    bool HandleTerminal(const TerminalEvent& event);
+    bool HandleTerminal(TerminalEvent& event);
     bool HandleWorksetSummary(const SummaryEvent& event);
-    void ScheduleTerminalRetry(TerminalEvent event);
+    bool PersistPreparedWorkerEvent(
+        savor::db::WorkerExecutionEventMutation mutation,
+        savor::db::WorkerExecutionEventMutationReceipt* receipt_out,
+        std::string* error_out);
 
     void EnqueueAuthority(std::function<void()> action);
     void EnqueueWorkerControl(
@@ -362,18 +413,24 @@ private:
     void ExecuteWorkerControl(
         const WorkerLanePtr& lane,
         WorkerControlCommand command);
-    bool ProcessCancellation();
+    void QueueCancellationMutation(PendingCancellationMutation mutation);
     bool ResolveClaimedCancellation(
-        const savor::db::ClaimedJobCancellation& cancellation,
+        const savor::db::CommittedJobCancellation& cancellation,
         std::string resolution_code,
-        bool finalize_job_canceled);
+        bool finalize_job_canceled,
+        std::optional<std::int64_t> dispatch_attempt_id = {},
+        std::optional<std::string> claim_token = {});
     void CompleteCancellationDelivery(
-        savor::db::ClaimedJobCancellation cancellation,
+        savor::db::CommittedJobCancellation cancellation,
         const WorkerCommandResult& result,
         bool whole_workset,
         Clock::time_point enqueued_at);
     void HandleWorkerUnavailable(WorkerUnavailableEvent event);
-    void RecoverExpiredAuthority();
+    void HandleWorksetState(
+        const WorkerCoordinatorEventContext& source,
+        const savor::wrms::WorksetStatePayload& payload);
+    bool MarkDispatchDraining(const DispatchPtr& dispatch);
+    bool ProcessPendingDrainingTransitions();
     void RefreshStorageReadiness();
     void ProcessLifecycleRequest();
 
@@ -403,7 +460,8 @@ private:
         const WorkerSubmitResult& result) noexcept;
 
     void RegisterLeaseHeartbeat(
-        const savor::db::ClaimedPublishedWorkset& claimed);
+        const DispatchPtr& dispatch,
+        std::int64_t lease_expires_at_utc);
     void UnregisterLeaseHeartbeat(
         std::int64_t dispatch_attempt_id,
         std::string_view claim_token);
@@ -432,7 +490,6 @@ private:
     WorkerCoordinator* worker_coordinator_ = nullptr;
     savor::db::execution::WorkerResultBlobStore* blob_store_ = nullptr;
     JobExecutionCoordinatorConfig config_{};
-    WorkerTerminalStagedCallback terminal_staged_callback_;
     std::string coordinator_token_;
     std::atomic<std::uint64_t> token_sequence_{1};
 
@@ -442,12 +499,16 @@ private:
     std::atomic<bool> user_paused_{false};
     std::atomic<bool> invariant_paused_{false};
     std::atomic<bool> storage_paused_{false};
+    std::atomic<bool> cancellation_storage_paused_{false};
+    std::atomic<bool> cancellation_admission_open_{false};
     std::atomic<bool> blob_store_ready_{false};
 
     std::thread scheduler_thread_;
     std::thread reconstruction_thread_;
     std::thread authority_thread_;
     std::thread lease_heartbeat_thread_;
+    std::thread worker_event_batch_thread_;
+    std::thread cancellation_mutation_thread_;
     std::vector<std::thread> persistence_threads_;
 
     mutable std::mutex scheduler_mutex_;
@@ -461,10 +522,10 @@ private:
     std::size_t last_assigned_worker_ =
         std::numeric_limits<std::size_t>::max();
     Clock::time_point next_full_claim_reconciliation_{};
-    savor::db::ReadyWorksetAvailabilitySubscription
-        ready_workset_subscription_ = 0;
-    savor::db::ReadyWorksetAvailabilitySnapshot
-        ready_workset_availability_{};
+    savor::db::ExecutionWorkAvailabilitySubscription
+        execution_work_subscription_ = 0;
+    savor::db::ExecutionWorkAvailabilitySnapshot
+        execution_work_availability_{};
     std::uint64_t scheduler_wakeup_generation_ = 0;
     std::string last_scheduler_wake_reason_;
 
@@ -487,15 +548,34 @@ private:
     std::map<std::string, PersistenceStream> persistence_streams_;
     std::size_t persistence_high_water_ = 0;
 
+    mutable std::mutex worker_event_batch_mutex_;
+    std::condition_variable worker_event_batch_cv_;
+    std::deque<PreparedWorkerEventMutationPtr>
+        worker_event_batch_queue_;
+    std::size_t worker_event_batch_high_water_ = 0;
+
     mutable std::mutex authority_mutex_;
     std::condition_variable authority_cv_;
     std::deque<std::function<void()>> authority_actions_;
-    Clock::time_point next_recovery_at_{};
+    struct CancellationIndexEntry {
+        savor::db::CommittedJobCancellation cancellation;
+    };
+    mutable std::mutex cancellation_index_mutex_;
+    std::unordered_map<std::int64_t, CancellationIndexEntry>
+        committed_cancellations_by_job_;
+    std::vector<savor::db::CommittedJobCancellation>
+        startup_unresolved_cancellations_;
+    std::unordered_map<std::uint64_t, std::vector<std::int64_t>>
+        pending_cancellation_holds_;
+    std::unordered_map<std::int64_t, std::size_t>
+        pending_cancellation_hold_counts_;
+    mutable std::mutex cancellation_mutation_mutex_;
+    std::condition_variable cancellation_mutation_cv_;
+    std::vector<PendingCancellationMutation> cancellation_mutations_;
+    std::size_t cancellation_mutation_high_water_ = 0;
+    std::atomic<bool> cancellation_mutation_stop_{false};
     Clock::time_point next_blob_readiness_retry_at_{};
     std::uint32_t blob_readiness_retry_attempt_ = 0;
-
-    mutable std::mutex terminal_retry_mutex_;
-    std::vector<TerminalRetry> terminal_retries_;
 
     mutable std::mutex lease_heartbeat_mutex_;
     std::condition_variable lease_heartbeat_cv_;
@@ -532,14 +612,55 @@ private:
         worker_terminal_ack_abandoned_generation_loss_{0};
     std::atomic<std::uint64_t> worker_terminal_staging_failures_{0};
     std::atomic<std::uint64_t> worker_terminal_retry_attempts_{0};
+    std::atomic<std::uint64_t> worker_event_batches_{0};
+    std::atomic<std::uint64_t> worker_event_batch_items_{0};
+    std::atomic<std::uint64_t> worker_event_batch_rollbacks_{0};
+    std::atomic<std::uint64_t> worker_event_batch_retries_{0};
+    std::atomic<std::uint64_t> worker_event_full_flushes_{0};
+    std::atomic<std::uint64_t> worker_event_deadline_flushes_{0};
+    std::atomic<std::uint64_t> worker_event_barrier_flushes_{0};
+    std::atomic<std::uint64_t> worker_event_batch_max_size_{0};
+    std::atomic<std::uint64_t> worker_event_batch_total_size_{0};
+    std::atomic<std::uint64_t>
+        worker_event_batch_max_collection_age_ms_{0};
     std::atomic<std::uint64_t> blob_readiness_failures_{0};
-    std::atomic<std::uint64_t> cancellations_claimed_{0};
     std::atomic<std::uint64_t> cancellations_delivered_{0};
+    std::atomic<std::uint64_t>
+        cancellation_precommit_holds_registered_{0};
+    std::atomic<std::uint64_t>
+        cancellation_precommit_holds_promoted_{0};
+    std::atomic<std::uint64_t> committed_cancellations_indexed_{0};
+    std::atomic<std::uint64_t> waiting_jobs_suppressed_by_sidecar_{0};
+    std::atomic<std::uint64_t> fully_canceled_worksets_avoided_{0};
+    std::atomic<std::uint64_t> sidecar_items_submitted_{0};
+    std::atomic<std::uint64_t> sidecar_submit_receipts_accepted_{0};
+    std::atomic<std::uint64_t> sidecar_submit_receipts_repeated_{0};
+    std::atomic<std::uint64_t> sidecar_submit_receipts_mismatched_{0};
+    std::atomic<std::uint64_t> post_fence_cancellation_commands_{0};
+    std::atomic<std::uint64_t> cancellation_mutation_batches_{0};
+    std::atomic<std::uint64_t> cancellation_mutation_batch_items_{0};
+    std::atomic<std::uint64_t> cancellation_mutation_full_flushes_{0};
+    std::atomic<std::uint64_t> cancellation_mutation_deadline_flushes_{0};
+    std::atomic<std::uint64_t> cancellation_mutation_barrier_flushes_{0};
+    std::atomic<std::uint64_t> cancellation_mutation_rollbacks_{0};
+    std::atomic<std::uint64_t> cancellation_mutation_retries_{0};
+    std::atomic<std::uint64_t> cancellation_mutation_max_size_{0};
+    std::atomic<std::uint64_t>
+        cancellation_mutation_max_collection_age_ms_{0};
+    std::atomic<std::size_t> pending_cancellation_mutations_{0};
     std::atomic<std::uint64_t> cancellations_already_applied_{0};
     std::atomic<std::uint64_t> worker_losses_{0};
-    std::atomic<std::uint64_t> recovered_dispatches_{0};
+    std::atomic<std::uint64_t> startup_recovered_dispatches_{0};
+    std::atomic<std::uint64_t> startup_requeued_jobs_{0};
+    std::atomic<std::uint64_t> startup_recovery_attempts_granted_{0};
+    std::atomic<std::uint64_t> active_residence_probes_{0};
+    std::atomic<std::uint64_t> active_residence_matches_{0};
+    std::atomic<std::uint64_t> active_residence_failures_{0};
+    std::atomic<std::uint64_t> active_lease_renewal_batches_{0};
+    std::atomic<std::uint64_t> active_lease_renewal_retries_{0};
+    std::atomic<std::uint64_t> draining_transitions_{0};
     std::atomic<std::uint64_t> scheduler_wakeups_{0};
-    std::atomic<std::uint64_t> ready_workset_signal_wakeups_{0};
+    std::atomic<std::uint64_t> availability_signal_wakeups_{0};
     std::atomic<std::uint64_t> reconciliation_claims_{0};
     std::atomic<std::uint64_t> worker_control_commands_queued_{0};
     std::atomic<std::uint64_t> worker_control_commands_attempted_{0};
@@ -642,6 +763,12 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
             < config_.blob_readiness_retry_interval
         || config_.worker_queue_capacity == 0
         || config_.terminal_persistence_threads == 0
+        || config_.worker_event_batch_size == 0
+        || config_.worker_event_collection_delay
+            < std::chrono::milliseconds::zero()
+        || config_.cancellation_batch_size == 0
+        || config_.cancellation_mutation_delay
+            < std::chrono::milliseconds::zero()
         || config_.maximum_items_per_workset == 0
         || config_.maximum_encoded_workset_bytes == 0
         || !config_.state_compatibility.Complete()) {
@@ -681,12 +808,27 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
         persistence_high_water_ = 0;
     }
     {
+        std::lock_guard lock(worker_event_batch_mutex_);
+        worker_event_batch_queue_.clear();
+        worker_event_batch_high_water_ = 0;
+    }
+    {
         std::lock_guard lock(authority_mutex_);
         authority_actions_.clear();
     }
     {
-        std::lock_guard lock(terminal_retry_mutex_);
-        terminal_retries_.clear();
+        std::lock_guard lock(cancellation_index_mutex_);
+        committed_cancellations_by_job_.clear();
+        startup_unresolved_cancellations_.clear();
+        pending_cancellation_holds_.clear();
+        pending_cancellation_hold_counts_.clear();
+    }
+    {
+        std::lock_guard lock(cancellation_mutation_mutex_);
+        cancellation_mutations_.clear();
+        cancellation_mutation_high_water_ = 0;
+        cancellation_mutation_stop_ = false;
+        pending_cancellation_mutations_.store(0);
     }
     {
         std::lock_guard lock(lease_heartbeat_mutex_);
@@ -716,36 +858,80 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
         last_scheduler_wake_reason_.clear();
     }
 
+    savor::db::RecoverInterruptedWorksetDispatchesReceipt
+        dispatch_recovery{};
+    std::string dispatch_recovery_error;
+    if (!execution_db_->RecoverInterruptedWorksetDispatches(
+            &dispatch_recovery,
+            &dispatch_recovery_error)) {
+        if (error_out != nullptr) {
+            *error_out = dispatch_recovery_error.empty()
+                ? "failed reconciling interrupted workset dispatches"
+                : std::move(dispatch_recovery_error);
+        }
+        return false;
+    }
+    startup_recovered_dispatches_.fetch_add(
+        static_cast<std::uint64_t>(dispatch_recovery.dispatches_closed));
+    startup_requeued_jobs_.fetch_add(
+        static_cast<std::uint64_t>(dispatch_recovery.jobs_requeued));
+    startup_recovery_attempts_granted_.fetch_add(
+        static_cast<std::uint64_t>(
+            dispatch_recovery.recovery_attempts_granted));
+
+    std::string cancellation_recovery_error;
+    const auto unresolved_cancellations =
+        execution_db_->ListUnresolvedJobCancellations(
+            &cancellation_recovery_error);
+    if (!cancellation_recovery_error.empty()) {
+        if (error_out != nullptr) {
+            *error_out = std::move(cancellation_recovery_error);
+        }
+        return false;
+    }
+    {
+        std::lock_guard lock(cancellation_index_mutex_);
+        for (const auto& cancellation : unresolved_cancellations) {
+            committed_cancellations_by_job_.insert_or_assign(
+                cancellation.job_id,
+                CancellationIndexEntry{cancellation});
+        }
+        startup_unresolved_cancellations_ = unresolved_cancellations;
+    }
+
     std::string availability_error;
     const auto availability =
-        execution_db_->GetReadyWorksetAvailability(&availability_error);
+        execution_db_->GetExecutionWorkAvailability(&availability_error);
     if (!availability.has_value()) {
         if (error_out) {
             *error_out = availability_error.empty()
-                ? "execution DB did not provide ready-workset availability"
+                ? "execution DB did not provide execution-work availability"
                 : std::move(availability_error);
         }
         return false;
     }
     {
         std::lock_guard lock(scheduler_mutex_);
-        ready_workset_availability_ = *availability;
+        execution_work_availability_ = *availability;
     }
-    ready_workset_subscription_ =
-        execution_db_->SubscribeReadyWorksetAvailability(
+    execution_work_subscription_ =
+        execution_db_->SubscribeExecutionWorkAvailability(
             [this](
-                const savor::db::ReadyWorksetAvailabilitySnapshot& snapshot) {
-                bool changed = false;
+                const savor::db::ExecutionWorkAvailabilitySnapshot& snapshot) {
+                bool generation_changed = false;
+                bool ready_changed = false;
                 {
                     std::lock_guard lock(scheduler_mutex_);
-                    changed = snapshot.generation
-                            != ready_workset_availability_.generation
-                        || snapshot.has_ready_worksets
-                            != ready_workset_availability_.has_ready_worksets;
-                    ready_workset_availability_ = snapshot;
+                    generation_changed = snapshot.generation
+                        != execution_work_availability_.generation;
+                    ready_changed = snapshot.has_ready_worksets
+                        != execution_work_availability_.has_ready_worksets;
+                    execution_work_availability_ = snapshot;
                 }
-                if (changed) {
-                    ++ready_workset_signal_wakeups_;
+                if (generation_changed) {
+                    ++availability_signal_wakeups_;
+                }
+                if (ready_changed) {
                     WakeScheduler(
                         "ready-workset-generation",
                         snapshot.has_ready_worksets);
@@ -756,10 +942,11 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
     quiescing_.store(false);
     invariant_paused_.store(false);
     storage_paused_.store(false);
+    cancellation_storage_paused_.store(false);
+    cancellation_admission_open_.store(false);
     blob_store_ready_.store(true);
     blob_readiness_retry_attempt_ = 0;
     next_blob_readiness_retry_at_ = {};
-    next_recovery_at_ = Clock::now();
     ConfigureWorkerCallbacks();
     running_.store(true);
 
@@ -770,6 +957,10 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
         persistence_threads_.emplace_back(
             [this]() { PersistenceLoop(); });
     }
+    worker_event_batch_thread_ =
+        std::thread([this]() { WorkerEventBatchLoop(); });
+    cancellation_mutation_thread_ =
+        std::thread([this]() { CancellationMutationLoop(); });
     reconstruction_thread_ =
         std::thread([this]() { ReconstructionLoop(); });
     authority_thread_ = std::thread([this]() { AuthorityLoop(); });
@@ -842,10 +1033,10 @@ void JobExecutionCoordinator::Impl::Stop() {
         return;
     }
     Quiesce();
-    if (ready_workset_subscription_ != 0) {
-        execution_db_->UnsubscribeReadyWorksetAvailability(
-            ready_workset_subscription_);
-        ready_workset_subscription_ = 0;
+    if (execution_work_subscription_ != 0) {
+        execution_db_->UnsubscribeExecutionWorkAvailability(
+            execution_work_subscription_);
+        execution_work_subscription_ = 0;
     }
     if (running_.load() && authority_thread_.joinable()) {
         std::string ignored;
@@ -858,6 +1049,7 @@ void JobExecutionCoordinator::Impl::Stop() {
     scheduler_cv_.notify_all();
     reconstruction_cv_.notify_all();
     persistence_cv_.notify_all();
+    worker_event_batch_cv_.notify_all();
     authority_cv_.notify_all();
     lease_heartbeat_cv_.notify_all();
     lifecycle_cv_.notify_all();
@@ -875,10 +1067,21 @@ void JobExecutionCoordinator::Impl::Stop() {
         lease_heartbeat_thread_.join();
     }
     if (authority_thread_.joinable()) authority_thread_.join();
+    {
+        std::lock_guard lock(cancellation_mutation_mutex_);
+        cancellation_mutation_stop_ = true;
+    }
+    cancellation_mutation_cv_.notify_all();
+    if (cancellation_mutation_thread_.joinable()) {
+        cancellation_mutation_thread_.join();
+    }
     for (auto& thread : persistence_threads_) {
         if (thread.joinable()) thread.join();
     }
     persistence_threads_.clear();
+    if (worker_event_batch_thread_.joinable()) {
+        worker_event_batch_thread_.join();
+    }
     worker_coordinator_->SetCallbacks({});
     blob_store_->UnpinAll();
     {
@@ -921,6 +1124,203 @@ bool JobExecutionCoordinator::Impl::ClearInvariantPause() {
     return changed;
 }
 
+void JobExecutionCoordinator::Impl::RegisterCancellationCommitPending(
+    std::uint64_t hold_id,
+    const std::vector<savor::db::ExecutionCancellationRequestSpec>&
+        cancellations) {
+    if (hold_id == 0 || cancellations.empty()) return;
+    std::vector<std::int64_t> jobs;
+    jobs.reserve(cancellations.size());
+    for (const auto& cancellation : cancellations) {
+        if (cancellation.job_id <= 0) continue;
+        jobs.push_back(cancellation.job_id);
+    }
+    std::ranges::sort(jobs);
+    jobs.erase(std::unique(jobs.begin(), jobs.end()), jobs.end());
+    if (jobs.empty()) return;
+    {
+        std::lock_guard lock(cancellation_index_mutex_);
+        const auto [_, inserted] = pending_cancellation_holds_.emplace(
+            hold_id, jobs);
+        if (!inserted) return;
+        for (const auto job_id : jobs)
+            ++pending_cancellation_hold_counts_[job_id];
+    }
+    ++cancellation_precommit_holds_registered_;
+    std::lock_guard lock(lanes_mutex_);
+    for (const auto& [_, lane] : lanes_) lane->cv.notify_all();
+}
+
+void JobExecutionCoordinator::Impl::RegisterCommittedCancellations(
+    std::uint64_t hold_id,
+    const std::vector<savor::db::CommittedJobCancellation>&
+        cancellations) {
+    std::vector<std::int64_t> held_jobs;
+    bool mismatch = false;
+    {
+        std::lock_guard lock(cancellation_index_mutex_);
+        const auto hold = pending_cancellation_holds_.find(hold_id);
+        if (hold == pending_cancellation_holds_.end()) {
+            mismatch = hold_id != 0 && !cancellations.empty();
+        } else {
+            held_jobs = hold->second;
+            std::vector<std::int64_t> committed_jobs;
+            committed_jobs.reserve(cancellations.size());
+            for (const auto& cancellation : cancellations)
+                committed_jobs.push_back(cancellation.job_id);
+            std::ranges::sort(committed_jobs);
+            committed_jobs.erase(
+                std::unique(committed_jobs.begin(), committed_jobs.end()),
+                committed_jobs.end());
+            mismatch = committed_jobs != held_jobs;
+            if (!mismatch) {
+                for (const auto& cancellation : cancellations) {
+                    committed_cancellations_by_job_.insert_or_assign(
+                        cancellation.job_id,
+                        CancellationIndexEntry{cancellation});
+                }
+                for (const auto job_id : held_jobs) {
+                    const auto count =
+                        pending_cancellation_hold_counts_.find(job_id);
+                    if (count != pending_cancellation_hold_counts_.end()) {
+                        if (count->second <= 1)
+                            pending_cancellation_hold_counts_.erase(count);
+                        else
+                            --count->second;
+                    }
+                }
+                pending_cancellation_holds_.erase(hold);
+            }
+        }
+    }
+    if (mismatch) {
+        invariant_paused_.store(true);
+        RecordError(
+            "committed cancellation receipts do not match their precommit hold");
+        WakeScheduler("cancellation-receipt-invariant", false);
+        return;
+    }
+    if (hold_id != 0) {
+        ++cancellation_precommit_holds_promoted_;
+    }
+    committed_cancellations_indexed_.fetch_add(cancellations.size());
+
+    for (const auto& cancellation : cancellations) {
+        DispatchPtr dispatch;
+        std::vector<DispatchPtr> candidates;
+        {
+            std::lock_guard registry_lock(registry_mutex_);
+            candidates.reserve(dispatches_.size());
+            for (const auto& [_, candidate] : dispatches_)
+                candidates.push_back(candidate);
+        }
+        for (const auto& candidate : candidates) {
+            std::lock_guard record_lock(candidate->mutex);
+            const bool contains = std::ranges::any_of(
+                candidate->claimed.items,
+                [&](const auto& item) {
+                    return item.job_id == cancellation.job_id;
+                });
+            if (contains) {
+                dispatch = candidate;
+                break;
+            }
+        }
+        if (!dispatch) {
+            if (cancellation.durable_job_state == "EXECUTION_FINISHED"
+                || cancellation.durable_job_state == "SUCCEEDED"
+                || cancellation.durable_job_state == "SUCCEEDED_WINNER"
+                || cancellation.durable_job_state == "SUCCEEDED_DUPLICATE"
+                || cancellation.durable_job_state == "FAILED"
+                || cancellation.durable_job_state == "CANCELED"
+                || cancellation.durable_job_state == "SUPERSEDED") {
+                (void)ResolveClaimedCancellation(
+                    cancellation, "NO_LONGER_EXECUTABLE", false);
+            }
+            continue;
+        }
+        std::optional<savor::runtime::WorkerWorksetItemId> item_id;
+        WorkerExecutionTarget target;
+        DispatchPhase phase = DispatchPhase::Claimed;
+        bool terminal_staged = false;
+        {
+            std::lock_guard lock(dispatch->mutex);
+            phase = dispatch->phase;
+            target = dispatch->target;
+            terminal_staged =
+                dispatch->staged_jobs.contains(cancellation.job_id);
+            for (const auto& [runtime_item_id, item_index] :
+                 dispatch->item_index_by_id) {
+                if (item_index < dispatch->claimed.items.size()
+                    && dispatch->claimed.items[item_index].job_id
+                        == cancellation.job_id) {
+                    item_id = savor::runtime::WorkerWorksetItemId{
+                        runtime_item_id};
+                    break;
+                }
+            }
+            if (phase == DispatchPhase::Submitting
+                && !dispatch->dispatch_marked) {
+                const bool already_pending = std::ranges::any_of(
+                    dispatch->pending_submission_cancellations,
+                    [&](const auto& pending) {
+                        return pending.cancellation
+                            .cancellation_request_id
+                            == cancellation.cancellation_request_id;
+                    });
+                if (!already_pending) {
+                    dispatch->pending_submission_cancellations.push_back({
+                        .cancellation = cancellation,
+                        .item_id = item_id,
+                        .enqueued_at = Clock::now(),
+                    });
+                    ++post_fence_cancellation_commands_;
+                }
+            }
+        }
+        if (terminal_staged) {
+            (void)ResolveClaimedCancellation(
+                cancellation, "WORKER_TERMINAL", false,
+                dispatch->claimed.dispatch_attempt_id,
+                dispatch->claimed.claim_token);
+        } else if ((phase == DispatchPhase::Active
+                || phase == DispatchPhase::Draining)
+            && item_id.has_value()) {
+            ++post_fence_cancellation_commands_;
+            EnqueueWorkerControl(
+                target,
+                {
+                    .kind = WorkerControlKind::CancelItem,
+                    .dispatch_attempt_id =
+                        dispatch->claimed.dispatch_attempt_id,
+                    .job_id = cancellation.job_id,
+                    .item_id = item_id,
+                    .reason = cancellation.reason_text.value_or(
+                        cancellation.reason_code),
+                    .cancellation = cancellation,
+                });
+        }
+    }
+    WakeScheduler("committed-cancellation", false);
+    std::lock_guard lock(lanes_mutex_);
+    for (const auto& [_, lane] : lanes_) lane->cv.notify_all();
+}
+
+void JobExecutionCoordinator::Impl::OpenCancellationAdmission() {
+    std::vector<savor::db::CommittedJobCancellation> startup;
+    {
+        std::lock_guard lock(cancellation_index_mutex_);
+        startup.swap(startup_unresolved_cancellations_);
+    }
+    if (!startup.empty()) {
+        RegisterCommittedCancellations(0, startup);
+    }
+    cancellation_admission_open_.store(true);
+    WakeScheduler("cancellation-admission-open", false);
+    std::lock_guard lock(lanes_mutex_);
+    for (const auto& [_, lane] : lanes_) lane->cv.notify_all();
+}
+
 void JobExecutionCoordinator::Impl::WakeScheduler(
     std::string reason,
     bool reset_backoff) {
@@ -939,7 +1339,9 @@ void JobExecutionCoordinator::Impl::WakeScheduler(
 bool JobExecutionCoordinator::Impl::IsDispatchAdmissionPaused()
     const noexcept {
     return quiescing_.load() || user_paused_.load()
-        || invariant_paused_.load() || storage_paused_.load();
+        || invariant_paused_.load() || storage_paused_.load()
+        || cancellation_storage_paused_.load()
+        || !cancellation_admission_open_.load();
 }
 
 JobExecutionCoordinatorTelemetry
@@ -985,18 +1387,100 @@ JobExecutionCoordinator::Impl::SnapshotTelemetry() const {
         worker_terminal_staging_failures_.load();
     telemetry.worker_terminal_retry_attempts =
         worker_terminal_retry_attempts_.load();
+    telemetry.worker_event_batches = worker_event_batches_.load();
+    telemetry.worker_event_batch_items = worker_event_batch_items_.load();
+    telemetry.worker_event_batch_rollbacks =
+        worker_event_batch_rollbacks_.load();
+    telemetry.worker_event_batch_retries =
+        worker_event_batch_retries_.load();
+    telemetry.worker_event_full_flushes =
+        worker_event_full_flushes_.load();
+    telemetry.worker_event_deadline_flushes =
+        worker_event_deadline_flushes_.load();
+    telemetry.worker_event_barrier_flushes =
+        worker_event_barrier_flushes_.load();
+    telemetry.worker_event_batch_max_size =
+        worker_event_batch_max_size_.load();
+    telemetry.worker_event_batch_total_size =
+        worker_event_batch_total_size_.load();
+    if (telemetry.worker_event_batches != 0) {
+        telemetry.worker_event_batch_average_size =
+            static_cast<double>(telemetry.worker_event_batch_total_size)
+            / static_cast<double>(telemetry.worker_event_batches);
+    }
+    telemetry.worker_event_batch_max_collection_age_ms =
+        worker_event_batch_max_collection_age_ms_.load();
     telemetry.blob_readiness_failures =
         blob_readiness_failures_.load();
-    telemetry.cancellations_claimed = cancellations_claimed_.load();
     telemetry.cancellations_delivered =
         cancellations_delivered_.load();
+    telemetry.cancellation_precommit_holds_registered =
+        cancellation_precommit_holds_registered_.load();
+    telemetry.cancellation_precommit_holds_promoted =
+        cancellation_precommit_holds_promoted_.load();
+    telemetry.committed_cancellations_indexed =
+        committed_cancellations_indexed_.load();
+    telemetry.waiting_jobs_suppressed_by_sidecar =
+        waiting_jobs_suppressed_by_sidecar_.load();
+    telemetry.fully_canceled_worksets_avoided =
+        fully_canceled_worksets_avoided_.load();
+    telemetry.sidecar_items_submitted =
+        sidecar_items_submitted_.load();
+    telemetry.sidecar_submit_receipts_accepted =
+        sidecar_submit_receipts_accepted_.load();
+    telemetry.sidecar_submit_receipts_repeated =
+        sidecar_submit_receipts_repeated_.load();
+    telemetry.sidecar_submit_receipts_mismatched =
+        sidecar_submit_receipts_mismatched_.load();
+    telemetry.post_fence_cancellation_commands =
+        post_fence_cancellation_commands_.load();
+    telemetry.cancellation_mutation_batches =
+        cancellation_mutation_batches_.load();
+    telemetry.cancellation_mutation_batch_items =
+        cancellation_mutation_batch_items_.load();
+    if (telemetry.cancellation_mutation_batches != 0) {
+        telemetry.cancellation_mutation_batch_average_size =
+            static_cast<double>(telemetry.cancellation_mutation_batch_items)
+            / static_cast<double>(telemetry.cancellation_mutation_batches);
+    }
+    telemetry.cancellation_mutation_full_flushes =
+        cancellation_mutation_full_flushes_.load();
+    telemetry.cancellation_mutation_deadline_flushes =
+        cancellation_mutation_deadline_flushes_.load();
+    telemetry.cancellation_mutation_barrier_flushes =
+        cancellation_mutation_barrier_flushes_.load();
+    telemetry.cancellation_mutation_rollbacks =
+        cancellation_mutation_rollbacks_.load();
+    telemetry.cancellation_mutation_retries =
+        cancellation_mutation_retries_.load();
+    telemetry.cancellation_mutation_max_size =
+        cancellation_mutation_max_size_.load();
+    telemetry.cancellation_mutation_max_collection_age_ms =
+        cancellation_mutation_max_collection_age_ms_.load();
+    {
+        std::lock_guard lock(cancellation_mutation_mutex_);
+        telemetry.cancellation_mutation_queue_high_water =
+            cancellation_mutation_high_water_;
+    }
     telemetry.cancellation_deliveries_already_applied =
         cancellations_already_applied_.load();
     telemetry.worker_losses = worker_losses_.load();
-    telemetry.recovered_dispatches = recovered_dispatches_.load();
+    telemetry.startup_recovered_dispatches =
+        startup_recovered_dispatches_.load();
+    telemetry.startup_requeued_jobs = startup_requeued_jobs_.load();
+    telemetry.startup_recovery_attempts_granted =
+        startup_recovery_attempts_granted_.load();
+    telemetry.active_residence_probes = active_residence_probes_.load();
+    telemetry.active_residence_matches = active_residence_matches_.load();
+    telemetry.active_residence_failures = active_residence_failures_.load();
+    telemetry.active_lease_renewal_batches =
+        active_lease_renewal_batches_.load();
+    telemetry.active_lease_renewal_retries =
+        active_lease_renewal_retries_.load();
+    telemetry.draining_transitions = draining_transitions_.load();
     telemetry.scheduler_wakeups = scheduler_wakeups_.load();
-    telemetry.ready_workset_signal_wakeups =
-        ready_workset_signal_wakeups_.load();
+    telemetry.availability_signal_wakeups =
+        availability_signal_wakeups_.load();
     telemetry.reconciliation_claims = reconciliation_claims_.load();
     telemetry.worker_control_commands_queued =
         worker_control_commands_queued_.load();
@@ -1030,7 +1514,8 @@ JobExecutionCoordinator::Impl::SnapshotTelemetry() const {
     telemetry.blob_store_ready = blob_store_ready_.load();
     telemetry.user_admission_paused = user_paused_.load();
     telemetry.invariant_admission_paused = invariant_paused_.load();
-    telemetry.storage_admission_paused = storage_paused_.load();
+    telemetry.storage_admission_paused = storage_paused_.load()
+        || cancellation_storage_paused_.load();
     telemetry.claims_paused_for_terminal_staging =
         telemetry.storage_admission_paused;
     telemetry.invariant_paused =
@@ -1039,14 +1524,28 @@ JobExecutionCoordinator::Impl::SnapshotTelemetry() const {
         std::lock_guard lock(scheduler_mutex_);
         telemetry.last_scheduler_wake_reason =
             last_scheduler_wake_reason_;
-        telemetry.ready_workset_generation =
-            ready_workset_availability_.generation;
+        telemetry.availability_generation =
+            execution_work_availability_.generation;
         telemetry.ready_worksets_present =
-            ready_workset_availability_.has_ready_worksets;
+            execution_work_availability_.has_ready_worksets;
+        telemetry.execution_finished_results_present =
+            execution_work_availability_.has_execution_finished_results;
         telemetry.claim_backoff_stage = std::min<std::uint32_t>(
             claim_backoff_.empty_attempts,
             3);
         telemetry.current_claim_backoff_ms = claim_backoff_.delay_ms;
+    }
+    {
+        std::lock_guard lock(cancellation_index_mutex_);
+        telemetry.cancellation_precommit_holds_pending =
+            pending_cancellation_holds_.size();
+        telemetry.unresolved_requested_cancellation_canaries =
+            static_cast<std::size_t>(std::count_if(
+                committed_cancellations_by_job_.begin(),
+                committed_cancellations_by_job_.end(),
+                [](const auto& entry) {
+                    return entry.second.cancellation.state == "REQUESTED";
+                }));
     }
 
     const auto now = Clock::now();
@@ -1077,6 +1576,14 @@ JobExecutionCoordinator::Impl::SnapshotTelemetry() const {
         for (const auto& [key, stream] : persistence_streams_) {
             (void)key;
             telemetry.persistence_queue_depth += stream.events.size();
+            telemetry.pending_worker_terminals +=
+                static_cast<std::size_t>(std::count_if(
+                    stream.events.begin(),
+                    stream.events.end(),
+                    [](const PersistenceEvent& event) {
+                        return std::holds_alternative<TerminalEvent>(
+                            event.payload);
+                    }));
             if (stream.active) ++telemetry.active_worker_streams;
             if (!stream.events.empty()
                 && (!oldest.has_value()
@@ -1092,6 +1599,15 @@ JobExecutionCoordinator::Impl::SnapshotTelemetry() const {
                         .count());
         }
     }
+    {
+        std::lock_guard lock(worker_event_batch_mutex_);
+        telemetry.worker_event_batch_queue_depth =
+            worker_event_batch_queue_.size();
+        telemetry.worker_event_batch_queue_high_water =
+            worker_event_batch_high_water_;
+    }
+    telemetry.pending_cancellation_mutations =
+        pending_cancellation_mutations_.load();
     {
         std::lock_guard lock(lanes_mutex_);
         for (const auto& [worker_id, lane] : lanes_) {
@@ -1136,10 +1652,6 @@ JobExecutionCoordinator::Impl::SnapshotTelemetry() const {
                 ++telemetry.draining_worksets;
             }
         }
-    }
-    {
-        std::lock_guard lock(terminal_retry_mutex_);
-        telemetry.pending_worker_terminals = terminal_retries_.size();
     }
     telemetry.buffered_worksets =
         telemetry.reserved_slots
@@ -1239,8 +1751,11 @@ void JobExecutionCoordinator::Impl::ConfigureWorkerCallbacks() {
                 }
             },
             .workset_state =
-                [](const WorkerCoordinatorEventContext&,
-                   const savor::wrms::WorksetStatePayload&) {},
+                [this](
+                    const WorkerCoordinatorEventContext& source,
+                    const savor::wrms::WorksetStatePayload& payload) {
+                    HandleWorksetState(source, payload);
+                },
             .item_started =
                 [this](
                     const WorkerCoordinatorEventContext& source,
@@ -1540,7 +2055,7 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
         Clock::time_point next_attempt = now + std::chrono::seconds(30);
         {
             std::lock_guard lock(scheduler_mutex_);
-            ready_signal = ready_workset_availability_.has_ready_worksets;
+            ready_signal = execution_work_availability_.has_ready_worksets;
             if (next_full_claim_reconciliation_ == Clock::time_point{}) {
                 next_full_claim_reconciliation_ =
                     now + std::chrono::seconds(30);
@@ -1566,8 +2081,6 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                 {
                     .batch_nonce = NextToken("workset-batch"),
                     .requested_workset_count = requested,
-                    .lease_duration_ms =
-                        config_.workset_lease_duration.count(),
                 },
                 &error);
             if (!error.empty()) RecordError(std::move(error));
@@ -1703,7 +2216,6 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                 };
                 dispatch->phase = DispatchPhase::Reconstructing;
                 InsertDispatch(dispatch);
-                RegisterLeaseHeartbeat(dispatch->claimed);
                 {
                     std::lock_guard lock(lane->mutex);
                     ++lane->reservations;
@@ -2087,6 +2599,44 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
             definition = dispatch->definition;
             item_count = definition.items.size();
         }
+        bool frozen_retry = false;
+        {
+            std::lock_guard lane_lock(lane->mutex);
+            frozen_retry = lane->retry_submission == dispatch;
+        }
+
+        auto snapshot_cancellations = [&]() {
+            std::pair<bool, std::vector<
+                savor::db::CommittedJobCancellation>> result;
+            std::lock_guard lock(cancellation_index_mutex_);
+            for (const auto& item : dispatch->claimed.items) {
+                if (pending_cancellation_hold_counts_.contains(
+                        item.job_id)) {
+                    result.first = true;
+                }
+                const auto cancellation =
+                    committed_cancellations_by_job_.find(item.job_id);
+                if (cancellation
+                    != committed_cancellations_by_job_.end()) {
+                    result.second.push_back(
+                        cancellation->second.cancellation);
+                }
+            }
+            return result;
+        };
+        auto cancellation_snapshot = frozen_retry
+            ? [&]() {
+                std::pair<bool, std::vector<
+                    savor::db::CommittedJobCancellation>> result;
+                std::lock_guard lock(dispatch->mutex);
+                result.second =
+                    dispatch->frozen_submission_cancellations;
+                return result;
+            }()
+            : snapshot_cancellations();
+        if (cancellation_snapshot.first) continue;
+        const auto projected_live_items = item_count
+            - std::min(item_count, cancellation_snapshot.second.size());
 
         bool accepting = false;
         for (const auto& worker :
@@ -2094,30 +2644,68 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
             if (worker.worker_id == lane->worker_id
                 && worker.process_generation == lane->generation
                 && worker.accepting_workset
-                && worker.available_item_credits >= item_count) {
+                && worker.available_item_credits
+                    >= projected_live_items) {
                 accepting = true;
                 break;
             }
         }
-        if (!accepting) continue;
+        if (!accepting && projected_live_items != 0) continue;
 
         bool cancellation_pending_before_submit = false;
+        savor::runtime::InitialWorksetCancellationSidecarV1 sidecar{
+            .workset_id = definition.workset_id,
+        };
+        std::vector<savor::db::CommittedJobCancellation>
+            sidecar_cancellations;
         {
+            std::lock_guard cancellation_lock(cancellation_index_mutex_);
             std::lock_guard record_lock(dispatch->mutex);
             std::lock_guard lane_lock(lane->mutex);
+            const bool retry_at_fence =
+                lane->retry_submission == dispatch;
+            if (retry_at_fence) {
+                if (!dispatch->frozen_submission_sidecar.has_value()) {
+                    cancellation_pending_before_submit = true;
+                } else {
+                    sidecar = *dispatch->frozen_submission_sidecar;
+                    sidecar_cancellations =
+                        dispatch->frozen_submission_cancellations;
+                }
+            } else {
+                for (std::size_t index = 0;
+                     index < dispatch->claimed.items.size();
+                     ++index) {
+                    const auto job_id =
+                        dispatch->claimed.items[index].job_id;
+                    if (pending_cancellation_hold_counts_.contains(job_id)) {
+                        cancellation_pending_before_submit = true;
+                        break;
+                    }
+                    const auto cancellation =
+                        committed_cancellations_by_job_.find(job_id);
+                    if (cancellation
+                        != committed_cancellations_by_job_.end()) {
+                        sidecar_cancellations.push_back(
+                            cancellation->second.cancellation);
+                        if (index < definition.items.size()) {
+                            sidecar.item_ids.push_back(
+                                definition.items[index].item_id);
+                        }
+                    }
+                }
+            }
+            std::ranges::sort(sidecar.item_ids, {},
+                [](const auto item_id) { return item_id.value(); });
             if (lane->retry_submission != dispatch) {
                 const auto found = std::find(
                     lane->waiting.begin(),
                     lane->waiting.end(),
                     dispatch);
                 if (found == lane->waiting.end()) continue;
-                if (!dispatch->pending_submission_cancellations.empty()) {
-                    cancellation_pending_before_submit = true;
-                } else {
+                if (!cancellation_pending_before_submit) {
                     lane->waiting.erase(found);
                 }
-            } else if (!dispatch->pending_submission_cancellations.empty()) {
-                cancellation_pending_before_submit = true;
             }
             if (!cancellation_pending_before_submit) {
                 lane->retry_submission.reset();
@@ -2128,20 +2716,66 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
                     dispatch->claimed.dispatch_attempt_id);
                 lane->has_submitted_workset = true;
                 dispatch->phase = DispatchPhase::Submitting;
+                dispatch->cancellation_sidecar_sha256 =
+                    savor::runtime::
+                        ComputeInitialWorksetCancellationSidecarSha256(
+                            sidecar);
+                dispatch->frozen_submission_sidecar = sidecar;
+                dispatch->frozen_submission_cancellations =
+                    sidecar_cancellations;
+                for (const auto& cancellation : sidecar_cancellations) {
+                    dispatch->initially_suppressed_jobs.insert(
+                        cancellation.job_id);
+                }
             }
         }
         if (cancellation_pending_before_submit) {
-            authority_cv_.notify_all();
-            std::this_thread::yield();
             continue;
         }
         WakeScheduler("worker-queue-capacity", false);
 
+        if (sidecar.item_ids.size() == definition.items.size()) {
+            ++fully_canceled_worksets_avoided_;
+            {
+                std::lock_guard lane_lock(lane->mutex);
+                lane->submitting.reset();
+            }
+            for (const auto& cancellation : sidecar_cancellations) {
+                QueueCancellationMutation({
+                    .mutation = savor::db::
+                        JobCancellationOutcomeCommand{
+                            .kind = savor::db::
+                                JobCancellationOutcomeKind::
+                                    CancelWithoutWorker,
+                            .cancellation_request_id =
+                                cancellation.cancellation_request_id,
+                            .job_id = cancellation.job_id,
+                            .dispatch_attempt_id =
+                                dispatch->claimed.dispatch_attempt_id,
+                            .claim_token =
+                                dispatch->claimed.claim_token,
+                            .resolution_code =
+                                "CANCELED_BEFORE_WORKER",
+                            .requested_by =
+                                "job_execution_coordinator",
+                        },
+                    .requested_resolution_code =
+                        "CANCELED_BEFORE_WORKER",
+                    .dispatch = dispatch,
+                    .initial_suppression = true,
+                });
+            }
+            WakeScheduler("fully-canceled-workset", false);
+            continue;
+        }
+
         ++submission_calls_started_;
+        sidecar_items_submitted_.fetch_add(sidecar.item_ids.size());
         const auto submitted =
             worker_coordinator_->SubmitWorksetToWorker(
                 dispatch->target,
-                definition);
+                definition,
+                sidecar);
         switch (submitted.disposition) {
         case WorkerSubmitDisposition::Accepted:
             ++submission_accepted_;
@@ -2172,6 +2806,13 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
         case WorkerSubmitDisposition::InvalidWorkset:
             ++submission_deterministic_rejection_;
             break;
+        }
+        if (submitted.disposition
+            == WorkerSubmitDisposition::AmbiguousAfterWrite) {
+            std::lock_guard lane_lock(lane->mutex);
+            lane->retry_submission = dispatch;
+            lane->cv.notify_all();
+            continue;
         }
         const bool retryable_submission = submitted.disposition
                 == WorkerSubmitDisposition::
@@ -2209,6 +2850,10 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
                     dispatch->deferred_release.reset();
                     pending_cancellations.swap(
                         dispatch->pending_submission_cancellations);
+                    dispatch->frozen_submission_sidecar.reset();
+                    dispatch->frozen_submission_cancellations.clear();
+                    dispatch->cancellation_sidecar_sha256.clear();
+                    dispatch->initially_suppressed_jobs.clear();
                 }
             }
             {
@@ -2236,53 +2881,68 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
                     "Worker rejected a locally validated workset "
                     "contract",
                     diagnostic);
-            } else if (deferred_release.has_value()
-                || !pending_cancellations.empty()) {
+            } else if (deferred_release.has_value()) {
                 EnqueueAuthority(
                     [this,
                      dispatch,
-                     deferred_release = std::move(deferred_release),
-                     pending_cancellations =
-                         std::move(pending_cancellations)]() mutable {
-                        std::string reason_code =
-                            deferred_release.has_value()
-                            ? deferred_release->reason_code
-                            : "JOB_CANCELLATION_REQUESTED";
-                        std::string reason_text =
-                            deferred_release.has_value()
-                            ? deferred_release->reason_text
-                            : pending_cancellations.front()
-                                  .cancellation.reason_text.value_or(
-                                      pending_cancellations.front()
-                                          .cancellation.reason_code);
-                        const bool keep_draining =
-                            deferred_release.has_value()
-                            && deferred_release->keep_draining;
-                        if (!ReleaseDispatch(
-                                dispatch,
-                                std::move(reason_code),
-                                std::move(reason_text),
-                                keep_draining)) {
-                            return;
-                        }
-                        for (const auto& pending :
-                             pending_cancellations) {
-                            (void)ResolveClaimedCancellation(
-                                pending.cancellation,
-                                "CANCELED_BUFFERED_JOB",
-                                true);
-                        }
-                    });
-            } else {
-                EnqueueAuthority(
-                    [this, dispatch, diagnostic]() {
+                     deferred_release = std::move(deferred_release)]() mutable {
                         (void)ReleaseDispatch(
                             dispatch,
-                            "WORKER_SUBMISSION_REJECTED",
-                            diagnostic);
+                            std::move(deferred_release->reason_code),
+                            std::move(deferred_release->reason_text),
+                            deferred_release->keep_draining);
                     });
+            } else {
+                // Nothing crossed the transport. Keep the exact durable claim
+                // and reconstruction, then rebuild a fresh sidecar from the
+                // committed index on the next submission attempt.
+                std::lock_guard lane_lock(lane->mutex);
+                lane->waiting.push_front(dispatch);
+                lane->projected_affinities.insert_or_assign(
+                    dispatch->claimed.dispatch_attempt_id,
+                    AffinityOf(dispatch->claimed.compatibility));
+                lane->cv.notify_all();
             }
             continue;
+        }
+
+        const bool sidecar_receipt_valid =
+            submitted.submission_receipt.has_value()
+            && submitted.submission_receipt->workset_id
+                == definition.workset_id
+            && submitted.submission_receipt->sidecar_version
+                == savor::runtime::
+                    kInitialWorksetCancellationSidecarVersionV1
+            && submitted.submission_receipt->applied_item_count
+                == sidecar.item_ids.size()
+            && submitted.submission_receipt
+                    ->applied_sidecar_sha256
+                == dispatch->cancellation_sidecar_sha256;
+        if (!sidecar_receipt_valid) {
+            ++sidecar_submit_receipts_mismatched_;
+            PauseForInvariant(
+                dispatch,
+                "Worker accepted a workset without the frozen cancellation sidecar receipt",
+                "dispatch_attempt_id=" + std::to_string(
+                    dispatch->claimed.dispatch_attempt_id));
+        } else if (submitted.submission_receipt->disposition
+            == savor::runtime::WorksetSubmissionDispositionV1::
+                AlreadyAccepted) {
+            ++sidecar_submit_receipts_repeated_;
+        } else {
+            ++sidecar_submit_receipts_accepted_;
+        }
+        if (sidecar_receipt_valid) {
+            bool first_receipt = false;
+            {
+                std::lock_guard lock(dispatch->mutex);
+                first_receipt = !dispatch->sidecar_receipt_accounted;
+                dispatch->sidecar_receipt_accounted = true;
+            }
+            if (first_receipt) {
+                waiting_jobs_suppressed_by_sidecar_.fetch_add(
+                    sidecar.item_ids.size());
+            }
         }
 
         {
@@ -2291,22 +2951,26 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
         }
 
         bool marked = false;
+        std::optional<std::int64_t> active_lease_expiry;
         while (!stop_.load() && !marked) {
             savor::db::WorksetDispatchMutationReceipt receipt{};
             std::string error;
             const bool called =
-                execution_db_->MarkWorksetDispatched(
+                execution_db_->MarkWorksetActive(
                     {
                         .dispatch_attempt_id =
                             dispatch->claimed.dispatch_attempt_id,
                         .claim_token =
                             dispatch->claimed.claim_token,
+                        .lease_duration_ms =
+                            config_.workset_lease_duration.count(),
                         .requested_by =
                             "job_execution_coordinator",
                     },
                     &receipt,
                     &error);
             if (called && Applied(receipt.disposition)) {
+                active_lease_expiry = receipt.lease_expires_at_utc;
                 marked = true;
                 break;
             }
@@ -2325,40 +2989,14 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
                         std::chrono::milliseconds(1)));
                 continue;
             }
-            if (receipt.disposition
-                == savor::db::ExecutionDbOperationDisposition::
-                    LeaseExpired) {
-                EnqueueWorkerControl(
-                    dispatch->target,
-                    {
-                        .kind = WorkerControlKind::CancelWorkset,
-                        .dispatch_attempt_id =
-                            dispatch->claimed.dispatch_attempt_id,
-                        .reason =
-                            "dispatch lease expired before durable mark",
-                    });
-                EnqueueAuthority(
-                    [this, dispatch, error]() {
-                        (void)ReleaseDispatch(
-                            dispatch,
-                            "DISPATCH_LEASE_EXPIRED_BEFORE_MARK",
-                            error.empty()
-                                ? "dispatch lease expired before "
-                                  "durable submission mark"
-                                : error,
-                            true);
-                    });
-            } else {
-                PauseForInvariant(
-                    dispatch,
-                    "Submitted workset lost durable authority",
-                    error.empty()
-                        ? "dispatch_attempt_id="
-                            + std::to_string(
-                                dispatch->claimed
-                                    .dispatch_attempt_id)
-                        : std::move(error));
-            }
+            PauseForInvariant(
+                dispatch,
+                "Submitted workset lost durable authority",
+                error.empty()
+                    ? "dispatch_attempt_id="
+                        + std::to_string(
+                            dispatch->claimed.dispatch_attempt_id)
+                    : std::move(error));
             break;
         }
         if (!marked) {
@@ -2370,10 +3008,18 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
         std::optional<DeferredDispatchRelease> deferred_release;
         std::deque<PendingSubmissionCancellation>
             pending_cancellations;
+        bool draining_on_mark = false;
         {
             std::lock_guard record_lock(dispatch->mutex);
             dispatch->dispatch_marked = true;
-            dispatch->phase = DispatchPhase::Active;
+            draining_on_mark =
+                dispatch->terminal_workset_state_observed;
+            dispatch->phase = draining_on_mark
+                ? DispatchPhase::Draining
+                : DispatchPhase::Active;
+            if (draining_on_mark) {
+                dispatch->draining_retry_at = Clock::now();
+            }
             deferred_release = std::move(dispatch->deferred_release);
             dispatch->deferred_release.reset();
             pending_cancellations.swap(
@@ -2382,10 +3028,54 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
         {
             std::lock_guard lane_lock(lane->mutex);
             lane->submitting.reset();
-            lane->active =
-                dispatch->claimed.dispatch_attempt_id;
+            if (!draining_on_mark) {
+                lane->active =
+                    dispatch->claimed.dispatch_attempt_id;
+            }
+        }
+        if (!draining_on_mark) {
+            const auto fallback_expiry =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count()
+                + config_.workset_lease_duration.count();
+            RegisterLeaseHeartbeat(
+                dispatch,
+                active_lease_expiry.value_or(fallback_expiry));
+        } else {
+            EnqueueAuthority(
+                [this, dispatch]() {
+                    (void)MarkDispatchDraining(dispatch);
+                });
         }
         ++worksets_submitted_;
+        if (sidecar_receipt_valid) {
+            for (const auto& cancellation : sidecar_cancellations) {
+                QueueCancellationMutation({
+                    .mutation = savor::db::
+                        JobCancellationOutcomeCommand{
+                            .kind = savor::db::
+                                JobCancellationOutcomeKind::
+                                    InitialSidecarApplied,
+                            .cancellation_request_id =
+                                cancellation.cancellation_request_id,
+                            .job_id = cancellation.job_id,
+                            .dispatch_attempt_id =
+                                dispatch->claimed.dispatch_attempt_id,
+                            .claim_token =
+                                dispatch->claimed.claim_token,
+                            .resolution_code =
+                                "INITIAL_SIDECAR_APPLIED",
+                            .requested_by =
+                                "job_execution_coordinator",
+                        },
+                    .requested_resolution_code =
+                        "INITIAL_SIDECAR_APPLIED",
+                    .dispatch = dispatch,
+                    .initial_suppression = true,
+                });
+            }
+        }
         persistence_cv_.notify_all();
         WakeScheduler("dispatch-marked", false);
         for (auto& pending : pending_cancellations) {
@@ -2632,6 +3322,130 @@ void JobExecutionCoordinator::Impl::EnqueuePersistence(
     persistence_cv_.notify_all();
 }
 
+bool JobExecutionCoordinator::Impl::PersistPreparedWorkerEvent(
+    savor::db::WorkerExecutionEventMutation mutation,
+    savor::db::WorkerExecutionEventMutationReceipt* receipt_out,
+    std::string* error_out) {
+    auto pending = std::make_shared<PreparedWorkerEventMutation>();
+    pending->mutation = std::move(mutation);
+    pending->enqueued_at = Clock::now();
+    {
+        std::lock_guard lock(worker_event_batch_mutex_);
+        worker_event_batch_queue_.push_back(pending);
+        worker_event_batch_high_water_ = std::max(
+            worker_event_batch_high_water_,
+            worker_event_batch_queue_.size());
+    }
+    worker_event_batch_cv_.notify_one();
+
+    std::unique_lock lock(pending->mutex);
+    pending->cv.wait(lock, [this, &pending]() {
+        return pending->completed || stop_.load();
+    });
+    if (!pending->completed) {
+        if (error_out != nullptr) *error_out = "worker-event batcher stopped";
+        return false;
+    }
+    if (receipt_out != nullptr) *receipt_out = pending->receipt;
+    if (error_out != nullptr) *error_out = pending->error;
+    return pending->succeeded;
+}
+
+void JobExecutionCoordinator::Impl::WorkerEventBatchLoop() {
+    for (;;) {
+        std::vector<PreparedWorkerEventMutationPtr> pending;
+        bool full_flush = false;
+        bool deadline_flush = false;
+        bool barrier_flush = false;
+        {
+            std::unique_lock lock(worker_event_batch_mutex_);
+            worker_event_batch_cv_.wait(lock, [this]() {
+                return stop_.load() || !worker_event_batch_queue_.empty();
+            });
+            if (stop_.load() && worker_event_batch_queue_.empty()) return;
+
+            const auto deadline = worker_event_batch_queue_.front()->enqueued_at
+                + config_.worker_event_collection_delay;
+            while (!stop_.load()
+                && worker_event_batch_queue_.size()
+                    < config_.worker_event_batch_size
+                && config_.worker_event_collection_delay
+                    > std::chrono::milliseconds::zero()) {
+                if (worker_event_batch_cv_.wait_until(
+                        lock,
+                        deadline,
+                        [this]() {
+                            return stop_.load()
+                                || worker_event_batch_queue_.size()
+                                    >= config_.worker_event_batch_size;
+                        })) {
+                    break;
+                }
+                break;
+            }
+            full_flush = worker_event_batch_queue_.size()
+                >= config_.worker_event_batch_size;
+            deadline_flush = !full_flush && !stop_.load()
+                && Clock::now() >= deadline;
+            barrier_flush = stop_.load();
+            const auto count = std::min(
+                config_.worker_event_batch_size,
+                worker_event_batch_queue_.size());
+            pending.reserve(count);
+            for (std::size_t index = 0; index < count; ++index) {
+                pending.push_back(
+                    std::move(worker_event_batch_queue_.front()));
+                worker_event_batch_queue_.pop_front();
+            }
+        }
+        if (pending.empty()) continue;
+        if (full_flush) ++worker_event_full_flushes_;
+        else if (deadline_flush) ++worker_event_deadline_flushes_;
+        else if (barrier_flush) ++worker_event_barrier_flushes_;
+
+        savor::db::PersistWorkerExecutionEventsBatchCommand command;
+        command.events.reserve(pending.size());
+        for (const auto& item : pending) {
+            command.events.push_back(item->mutation);
+        }
+        savor::db::PersistWorkerExecutionEventsBatchReceipt receipt;
+        std::string error;
+        const bool succeeded =
+            execution_db_->PersistWorkerExecutionEventsBatch(
+                command,
+                &receipt,
+                &error)
+            && receipt.events.size() == pending.size();
+
+        ++worker_event_batches_;
+        worker_event_batch_items_.fetch_add(pending.size());
+        worker_event_batch_total_size_.fetch_add(pending.size());
+        StoreMaximum(worker_event_batch_max_size_, pending.size());
+        const auto oldest_age = std::chrono::duration_cast<
+            std::chrono::milliseconds>(
+            Clock::now() - pending.front()->enqueued_at).count();
+        StoreMaximum(
+            worker_event_batch_max_collection_age_ms_,
+            static_cast<std::uint64_t>(std::max<std::int64_t>(0, oldest_age)));
+        if (!succeeded) {
+            ++worker_event_batch_rollbacks_;
+            worker_event_batch_retries_.fetch_add(pending.size());
+        }
+
+        for (std::size_t index = 0; index < pending.size(); ++index) {
+            auto& item = pending[index];
+            {
+                std::lock_guard lock(item->mutex);
+                item->succeeded = succeeded;
+                item->error = error;
+                if (succeeded) item->receipt = std::move(receipt.events[index]);
+                item->completed = true;
+            }
+            item->cv.notify_one();
+        }
+    }
+}
+
 void JobExecutionCoordinator::Impl::PersistenceLoop() {
     while (!stop_.load()) {
         std::string selected_key;
@@ -2645,21 +3459,35 @@ void JobExecutionCoordinator::Impl::PersistenceLoop() {
                     std::chrono::milliseconds(1)),
                 [this]() {
                     if (stop_.load()) return true;
+                    const auto now = Clock::now();
                     return std::any_of(
                         persistence_streams_.begin(),
                         persistence_streams_.end(),
-                        [](const auto& entry) {
-                            return !entry.second.active
-                                && !entry.second.events.empty();
+                        [now](const auto& entry) {
+                            if (entry.second.active
+                                || entry.second.events.empty()) {
+                                return false;
+                            }
+                            const auto* terminal =
+                                std::get_if<TerminalEvent>(
+                                    &entry.second.events.front().payload);
+                            return terminal == nullptr
+                                || terminal->retry_at <= now;
                         });
                 });
             if (stop_.load()) return;
             const auto found = std::find_if(
                 persistence_streams_.begin(),
                 persistence_streams_.end(),
-                [](const auto& entry) {
-                    return !entry.second.active
-                        && !entry.second.events.empty();
+                [now = Clock::now()](const auto& entry) {
+                    if (entry.second.active
+                        || entry.second.events.empty()) {
+                        return false;
+                    }
+                    const auto* terminal = std::get_if<TerminalEvent>(
+                        &entry.second.events.front().payload);
+                    return terminal == nullptr
+                        || terminal->retry_at <= now;
                 });
             if (found == persistence_streams_.end()) continue;
             selected_key = found->first;
@@ -2668,18 +3496,39 @@ void JobExecutionCoordinator::Impl::PersistenceLoop() {
         }
 
         const bool consumed = ProcessPersistenceEvent(event);
+        bool retry_pending = false;
         {
             std::lock_guard lock(persistence_mutex_);
             const auto found = persistence_streams_.find(selected_key);
             if (found != persistence_streams_.end()) {
                 if (consumed && !found->second.events.empty()) {
                     found->second.events.pop_front();
+                } else if (!consumed && !found->second.events.empty()) {
+                    found->second.events.front() = event;
                 }
                 found->second.active = false;
                 if (found->second.events.empty()) {
                     persistence_streams_.erase(found);
                 }
             }
+            retry_pending = std::any_of(
+                persistence_streams_.begin(),
+                persistence_streams_.end(),
+                [](const auto& entry) {
+                    return std::any_of(
+                        entry.second.events.begin(),
+                        entry.second.events.end(),
+                        [](const PersistenceEvent& candidate) {
+                            const auto* terminal =
+                                std::get_if<TerminalEvent>(
+                                    &candidate.payload);
+                            return terminal != nullptr
+                                && terminal->retry_attempt != 0;
+                        });
+                });
+        }
+        if (consumed && !retry_pending && blob_store_ready_.load()) {
+            storage_paused_.store(false);
         }
         if (!consumed) {
             std::unique_lock lock(persistence_mutex_);
@@ -2695,9 +3544,9 @@ void JobExecutionCoordinator::Impl::PersistenceLoop() {
 }
 
 bool JobExecutionCoordinator::Impl::ProcessPersistenceEvent(
-    const PersistenceEvent& event) {
+    PersistenceEvent& event) {
     return std::visit(
-        [this](const auto& payload) -> bool {
+        [this](auto& payload) -> bool {
             using T = std::decay_t<decltype(payload)>;
             if constexpr (std::is_same_v<T, ItemStartedEvent>) {
                 return HandleItemStarted(payload);
@@ -2738,7 +3587,9 @@ bool JobExecutionCoordinator::Impl::HandleItemStarted(
             || dispatch->target.worker_id != event.source.worker_id
             || dispatch->target.process_generation
                 != event.source.process_generation) {
-            if (dispatch->phase == DispatchPhase::Draining) return true;
+            if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+                return true;
+            }
             PauseForInvariant(
                 dispatch,
                 "Worker ItemStarted correlation mismatch",
@@ -2754,21 +3605,26 @@ bool JobExecutionCoordinator::Impl::HandleItemStarted(
                 != runtime_item.execution.execution_id.value()
             || event.payload.attempt_id
                 != runtime_item.execution.attempt_id.value()) {
-            if (dispatch->phase == DispatchPhase::Draining) return true;
+            if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+                return true;
+            }
             PauseForInvariant(
                 dispatch,
                 "Worker ItemStarted identity mismatch",
                 "job_id=" + std::to_string(durable_item.job_id));
             return true;
         }
-        if (dispatch->phase == DispatchPhase::Draining) return true;
+        if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+            return true;
+        }
     }
 
     savor::db::WorksetJobStartReceipt receipt{};
+    savor::db::WorkerExecutionEventMutationReceipt batch_receipt{};
     std::string error;
     const bool accepted =
-        execution_db_->MarkWorksetJobStarted(
-            {
+        PersistPreparedWorkerEvent(
+            savor::db::MarkWorksetJobStartedCommand{
                 .dispatch_attempt_id = dispatch_id,
                 .claim_token = claimed.claim_token,
                 .job_id = durable_item.job_id,
@@ -2780,30 +3636,35 @@ bool JobExecutionCoordinator::Impl::HandleItemStarted(
                     std::to_string(event.payload.invocation_id),
                 .requested_by = "job_execution_coordinator",
             },
-            &receipt,
+            &batch_receipt,
             &error);
+    if (accepted) {
+        if (const auto* typed =
+                std::get_if<savor::db::WorksetJobStartReceipt>(
+                    &batch_receipt)) {
+            receipt = *typed;
+        } else {
+            error = "worker-event batch returned the wrong start receipt";
+        }
+    }
     if (!accepted || !Applied(receipt.disposition)) {
+        bool authority_released = false;
+        {
+            std::lock_guard lock(dispatch->mutex);
+            authority_released =
+                dispatch->phase == DispatchPhase::Released
+                || dispatch->phase == DispatchPhase::ReleasedDraining
+                || dispatch->phase == DispatchPhase::Retired;
+        }
+        if (authority_released) return true;
         if (receipt.disposition
-            == savor::db::ExecutionDbOperationDisposition::
-                LeaseExpired) {
-            EnqueueAuthority(
-                [this, dispatch, error]() {
-                    (void)ReleaseDispatch(
-                        dispatch,
-                        "DISPATCH_LEASE_EXPIRED_AT_JOB_START",
-                        error.empty()
-                            ? "durable start authority lease expired"
-                            : error,
-                        true);
-                });
-        } else if (
-            receipt.disposition
             == savor::db::ExecutionDbOperationDisposition::
                 BackendError) {
             RecordError(
                 error.empty()
                     ? "failed accepting worker ItemStarted"
                     : std::move(error));
+            return false;
         } else {
             PauseForInvariant(
                 dispatch,
@@ -2821,43 +3682,9 @@ bool JobExecutionCoordinator::Impl::HandleItemStarted(
     return true;
 }
 
-void JobExecutionCoordinator::Impl::ScheduleTerminalRetry(
-    TerminalEvent event) {
-    const auto& payload = event.envelope.terminal;
-    const auto next_attempt = event.retry_attempt + 1;
-    event.retry_attempt = next_attempt;
-    {
-        std::lock_guard lock(terminal_retry_mutex_);
-        const auto duplicate = std::any_of(
-            terminal_retries_.begin(),
-            terminal_retries_.end(),
-            [&](const TerminalRetry& retry) {
-                return retry.event.envelope.terminal.workset_id
-                        == payload.workset_id
-                    && retry.event.envelope.terminal.item_id
-                        == payload.item_id
-                    && retry.event.envelope.terminal.terminal_id
-                        == payload.terminal_id;
-            });
-        if (!duplicate) {
-            terminal_retries_.push_back(
-                {
-                    .event = std::move(event),
-                    .retry_at = Clock::now()
-                        + CappedExponentialDelay(
-                            config_.terminal_retry_interval,
-                            config_.terminal_retry_max_interval,
-                            next_attempt),
-                });
-        }
-    }
-    storage_paused_.store(true);
-    WakeScheduler("storage-pause", false);
-    authority_cv_.notify_all();
-}
-
 bool JobExecutionCoordinator::Impl::HandleTerminal(
-    const TerminalEvent& event) {
+    TerminalEvent& event) {
+    if (event.retry_at > Clock::now()) return false;
     const auto& envelope = event.envelope;
     const auto& payload = envelope.terminal;
     const auto dispatch_id =
@@ -2875,7 +3702,7 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
     savor::db::ClaimedPublishedWorksetItem durable_item;
     savor::runtime::WorksetItemTemplate runtime_item;
     savor::runtime::WorkerItemTerminalCorrelation terminal;
-    bool draining = false;
+    bool authority_released = false;
     bool already_staged = false;
     {
         std::lock_guard lock(dispatch->mutex);
@@ -2889,7 +3716,7 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
             || dispatch->target.worker_id != envelope.worker_id
             || dispatch->target.process_generation
                 != envelope.process_generation) {
-            if (dispatch->phase == DispatchPhase::Draining) {
+            if (dispatch->phase == DispatchPhase::ReleasedDraining) {
                 ++worker_terminals_discarded_after_authority_release_;
                 return true;
             }
@@ -2910,7 +3737,7 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
                 != runtime_item.execution.attempt_id.value()
             || payload.terminal_id == 0
             || payload.terminal_order == 0) {
-            if (dispatch->phase == DispatchPhase::Draining) {
+            if (dispatch->phase == DispatchPhase::ReleasedDraining) {
                 ++worker_terminals_discarded_after_authority_release_;
                 return true;
             }
@@ -2946,7 +3773,7 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
             dispatch->terminal_by_job.find(durable_item.job_id);
         if (known != dispatch->terminal_by_job.end()
             && known->second != terminal) {
-            if (dispatch->phase == DispatchPhase::Draining) {
+            if (dispatch->phase == DispatchPhase::ReleasedDraining) {
                 ++worker_terminals_discarded_after_authority_release_;
                 return true;
             }
@@ -2959,12 +3786,13 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
         dispatch->terminal_by_job.emplace(
             durable_item.job_id,
             terminal);
-        draining = dispatch->phase == DispatchPhase::Draining;
+        authority_released =
+            dispatch->phase == DispatchPhase::ReleasedDraining;
         already_staged =
             dispatch->staged_jobs.contains(durable_item.job_id);
     }
 
-    if (draining) {
+    if (authority_released) {
         ++worker_terminals_discarded_after_authority_release_;
         EnqueueWorkerControl(
             dispatch->target,
@@ -3002,66 +3830,82 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
         return true;
     }
 
-    savor::db::execution::WorkerResultBlobReference blob{};
-    if (!blob_store_->Stage(
-            {
-                .workset_id = claimed.workset_id,
-                .dispatch_attempt_id = dispatch_id,
-                .job_id = durable_item.job_id,
-                .terminal_id = payload.terminal_id,
-                .envelope = envelope_bytes,
-            },
-            &blob,
-            &error)) {
-        ++worker_terminal_staging_failures_;
-        blob_store_ready_.store(false);
-        RecordError(
-            error.empty()
-                ? "failed staging private worker terminal blob"
-                : std::move(error));
-        ScheduleTerminalRetry(event);
-        return true;
-    }
-
-    savor::db::StageWorkerTerminalReceipt receipt{};
-    if (!execution_db_->StageWorkerTerminal(
-            {
+    auto prepared = event.prepared;
+    if (!prepared) {
+        savor::db::execution::WorkerResultBlobReference blob{};
+        if (!blob_store_->Stage(
+                {
+                    .workset_id = claimed.workset_id,
+                    .dispatch_attempt_id = dispatch_id,
+                    .job_id = durable_item.job_id,
+                    .terminal_id = payload.terminal_id,
+                    .envelope = envelope_bytes,
+                },
+                &blob,
+                &error)) {
+            ++worker_terminal_staging_failures_;
+            blob_store_ready_.store(false);
+            RecordError(
+                error.empty()
+                    ? "failed staging private worker terminal blob"
+                    : std::move(error));
+            ++event.retry_attempt;
+            event.retry_at = Clock::now()
+                + CappedExponentialDelay(
+                    config_.terminal_retry_interval,
+                    config_.terminal_retry_max_interval,
+                    event.retry_attempt);
+            storage_paused_.store(true);
+            WakeScheduler("storage-pause", false);
+            return false;
+        }
+        prepared = std::make_shared<PreparedTerminalPersistence>();
+        prepared->blob = std::move(blob);
+        prepared->command =
+            savor::db::StageWorkerTerminalCommand{
                 .dispatch_attempt_id = dispatch_id,
                 .claim_token = claimed.claim_token,
                 .job_id = durable_item.job_id,
                 .dispatch_item_ordinal = payload.item_ordinal,
-                .reserved_attempt_id =
-                    durable_item.reserved_attempt_id,
-                .terminal_status =
-                    TerminalStatusName(payload.status),
-                .terminal_fingerprint = blob.sha256,
-                .terminal_id =
-                    std::to_string(payload.terminal_id),
+                .reserved_attempt_id = durable_item.reserved_attempt_id,
+                .terminal_status = TerminalStatusName(payload.status),
+                .terminal_fingerprint = prepared->blob.sha256,
+                .terminal_id = std::to_string(payload.terminal_id),
                 .error_code = payload.error_code.empty()
                     ? std::nullopt
-                    : std::optional<std::string>(
-                        payload.error_code),
+                    : std::optional<std::string>(payload.error_code),
                 .error_text = payload.message.empty()
                     ? std::nullopt
-                    : std::optional<std::string>(
-                        payload.message),
+                    : std::optional<std::string>(payload.message),
                 .unstarted = payload.unstarted,
-                .result_blob =
-                    {
-                        .relative_path = blob.relative_path,
-                        .sha256 = blob.sha256,
-                        .size_bytes =
-                            static_cast<std::uint64_t>(
-                                blob.size_bytes),
-                        .format = blob.format,
-                    },
-                .requested_by =
-                    "job_execution_coordinator",
-            },
-            &receipt,
-            &error)
-        || !Applied(receipt.disposition)) {
-        blob_store_->Unpin(blob.relative_path);
+                .result_blob = {
+                    .relative_path = prepared->blob.relative_path,
+                    .sha256 = prepared->blob.sha256,
+                    .size_bytes = static_cast<std::uint64_t>(
+                        prepared->blob.size_bytes),
+                    .format = prepared->blob.format,
+                },
+                .requested_by = "job_execution_coordinator",
+            };
+    }
+    const auto& blob = prepared->blob;
+
+    savor::db::StageWorkerTerminalReceipt receipt{};
+    savor::db::WorkerExecutionEventMutationReceipt batch_receipt{};
+    const bool persisted = PersistPreparedWorkerEvent(
+            prepared->command,
+            &batch_receipt,
+            &error);
+    if (persisted) {
+        if (const auto* typed =
+                std::get_if<savor::db::StageWorkerTerminalReceipt>(
+                    &batch_receipt)) {
+            receipt = *typed;
+        } else {
+            error = "worker-event batch returned the wrong terminal receipt";
+        }
+    }
+    if (!persisted || !Applied(receipt.disposition)) {
         if (receipt.disposition
             == savor::db::ExecutionDbOperationDisposition::
                 BackendError) {
@@ -3070,8 +3914,21 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
                 error.empty()
                     ? "failed staging worker terminal in DB"
                     : std::move(error));
-            ScheduleTerminalRetry(event);
+            event.prepared = prepared;
+            ++event.retry_attempt;
+            event.retry_at = Clock::now()
+                + CappedExponentialDelay(
+                    config_.terminal_retry_interval,
+                    config_.terminal_retry_max_interval,
+                    event.retry_attempt);
+            storage_paused_.store(true);
+            WakeScheduler("storage-pause", false);
+            return false;
         } else {
+            if (prepared->pinned) {
+                blob_store_->Unpin(blob.relative_path);
+                prepared->pinned = false;
+            }
             std::string remove_error;
             if (!blob_store_->Remove(
                     blob.relative_path,
@@ -3082,20 +3939,17 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
                     static_cast<std::int64_t>(envelope.worker_id),
                     durable_item.job_id);
             }
-            if (receipt.disposition
-                == savor::db::ExecutionDbOperationDisposition::
-                    LeaseExpired) {
-                EnqueueAuthority(
-                    [this, dispatch, error]() {
-                        (void)ReleaseDispatch(
-                            dispatch,
-                            "DISPATCH_LEASE_EXPIRED_AT_TERMINAL",
-                            error.empty()
-                                ? "terminal arrived after durable "
-                                  "lease expiry"
-                                : error,
-                            true);
-                    });
+            bool authority_released = false;
+            {
+                std::lock_guard lock(dispatch->mutex);
+                authority_released =
+                    dispatch->phase == DispatchPhase::Released
+                    || dispatch->phase
+                        == DispatchPhase::ReleasedDraining
+                    || dispatch->phase == DispatchPhase::Retired;
+            }
+            if (authority_released) {
+                ++worker_terminals_discarded_after_authority_release_;
                 EnqueueWorkerControl(
                     dispatch->target,
                     {
@@ -3135,7 +3989,10 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
         return true;
     }
 
-    blob_store_->Unpin(blob.relative_path);
+    if (prepared->pinned) {
+        blob_store_->Unpin(blob.relative_path);
+        prepared->pinned = false;
+    }
     bool newly_staged = false;
     bool all_staged = false;
     {
@@ -3144,6 +4001,7 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
             dispatch->staged_jobs.emplace(durable_item.job_id).second;
         all_staged =
             dispatch->staged_jobs.size()
+                + dispatch->initially_suppressed_jobs.size()
             == dispatch->claimed.items.size();
     }
     if (newly_staged) {
@@ -3151,7 +4009,24 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
         if (event.retry_attempt != 0) {
             ++worker_terminal_retry_attempts_;
         }
-        if (terminal_staged_callback_) terminal_staged_callback_();
+        std::optional<savor::db::CommittedJobCancellation>
+            cancellation;
+        {
+            std::lock_guard lock(cancellation_index_mutex_);
+            const auto found = committed_cancellations_by_job_.find(
+                durable_item.job_id);
+            if (found != committed_cancellations_by_job_.end()) {
+                cancellation = found->second.cancellation;
+            }
+        }
+        if (cancellation.has_value()) {
+            (void)ResolveClaimedCancellation(
+                *cancellation,
+                "WORKER_TERMINAL",
+                false,
+                dispatch_id,
+                claimed.claim_token);
+        }
     }
     if (all_staged) {
         UnregisterLeaseHeartbeat(
@@ -3166,13 +4041,6 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
             .job_id = durable_item.job_id,
             .terminal = terminal,
         });
-    {
-        std::lock_guard lock(terminal_retry_mutex_);
-        if (terminal_retries_.empty()
-            && blob_store_ready_.load()) {
-            storage_paused_.store(false);
-        }
-    }
     MaybeRetire(dispatch);
     return true;
 }
@@ -3192,8 +4060,17 @@ bool JobExecutionCoordinator::Impl::HandleWorksetSummary(
             || dispatch->target.process_generation
                 != event.source.process_generation
             || event.payload.item_count
-                != dispatch->claimed.items.size()) {
-            if (dispatch->phase == DispatchPhase::Draining) return true;
+                != dispatch->claimed.items.size()
+            || event.payload.initially_suppressed_count
+                != dispatch->initially_suppressed_jobs.size()
+            || static_cast<std::uint64_t>(
+                    event.payload.completed_count)
+                    + event.payload.unstarted_count
+                    + event.payload.initially_suppressed_count
+                != event.payload.item_count) {
+            if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+                return true;
+            }
             PauseForInvariant(
                 dispatch,
                 "Worker workset summary mismatch",
@@ -3235,43 +4112,8 @@ void JobExecutionCoordinator::Impl::AuthorityLoop() {
 
         ProcessLifecycleRequest();
         RefreshStorageReadiness();
+        advanced = ProcessPendingDrainingTransitions() || advanced;
 
-        std::vector<TerminalEvent> ready_retries;
-        {
-            std::lock_guard lock(terminal_retry_mutex_);
-            const auto now = Clock::now();
-            auto found = terminal_retries_.begin();
-            while (found != terminal_retries_.end()) {
-                if (found->retry_at <= now) {
-                    ready_retries.push_back(std::move(found->event));
-                    found = terminal_retries_.erase(found);
-                } else {
-                    ++found;
-                }
-            }
-        }
-        for (auto& retry : ready_retries) {
-            EnqueuePersistence(
-                {
-                    .worker_id = retry.envelope.worker_id,
-                    .generation =
-                        retry.envelope.process_generation,
-                    .enqueued_at = Clock::now(),
-                    .payload = std::move(retry),
-                });
-            advanced = true;
-        }
-
-        advanced = ProcessCancellation() || advanced;
-        const auto now = Clock::now();
-        if (now >= next_recovery_at_) {
-            RecoverExpiredAuthority();
-            next_recovery_at_ =
-                now + std::max(
-                    config_.recovery_interval,
-                    std::chrono::milliseconds(1));
-            advanced = true;
-        }
         if (!advanced) {
             std::unique_lock lock(authority_mutex_);
             authority_cv_.wait_for(
@@ -3286,305 +4128,230 @@ void JobExecutionCoordinator::Impl::AuthorityLoop() {
 }
 
 bool JobExecutionCoordinator::Impl::ResolveClaimedCancellation(
-    const savor::db::ClaimedJobCancellation& cancellation,
+    const savor::db::CommittedJobCancellation& cancellation,
     std::string resolution_code,
-    bool finalize_job_canceled) {
+    bool finalize_job_canceled,
+    std::optional<std::int64_t> dispatch_attempt_id,
+    std::optional<std::string> claim_token) {
     const auto requested_code = resolution_code;
-    savor::db::JobCancellationReceipt receipt{};
-    std::string error;
-    if (!execution_db_->ResolveJobCancellation(
-            {
+    QueueCancellationMutation(
+        {
+            .mutation = savor::db::JobCancellationOutcomeCommand{
+                .kind = finalize_job_canceled
+                    ? dispatch_attempt_id.has_value()
+                        ? savor::db::JobCancellationOutcomeKind::
+                            InitialSidecarApplied
+                        : savor::db::JobCancellationOutcomeKind::
+                            CancelWithoutWorker
+                    : savor::db::JobCancellationOutcomeKind::
+                        WorkerTerminalResolved,
                 .cancellation_request_id =
                     cancellation.cancellation_request_id,
-                .delivery_token = cancellation.delivery_token,
+                .job_id = cancellation.job_id,
+                .dispatch_attempt_id = dispatch_attempt_id,
+                .claim_token = std::move(claim_token),
                 .resolution_code = std::move(resolution_code),
-                .finalize_job_canceled = finalize_job_canceled,
                 .requested_by = "job_execution_coordinator",
             },
-            &receipt,
-            &error)
-        || !Applied(receipt.disposition)) {
-        RecordError(
-            error.empty()
-                ? "failed resolving durable job cancellation"
-                : std::move(error));
-        return false;
-    }
-    RecordCancellationResolution(
-        receipt.resolution_code.value_or(requested_code));
+            .requested_resolution_code = requested_code,
+        });
     return true;
 }
 
-bool JobExecutionCoordinator::Impl::ProcessCancellation() {
-    std::string error;
-    const auto cancellation =
-        execution_db_->ClaimNextJobCancellation(
-            {
-                .delivery_token = NextToken("cancellation"),
-                .lease_duration_ms =
-                    config_.workset_lease_duration.count(),
-            },
-            &error);
-    if (!cancellation.has_value()) {
-        if (!error.empty()) RecordError(std::move(error));
-        return false;
+void JobExecutionCoordinator::Impl::QueueCancellationMutation(
+    PendingCancellationMutation mutation) {
+    mutation.enqueued_at = Clock::now();
+    {
+        std::lock_guard lock(cancellation_mutation_mutex_);
+        cancellation_mutations_.push_back(std::move(mutation));
+        cancellation_mutation_high_water_ = std::max(
+            cancellation_mutation_high_water_,
+            cancellation_mutations_.size());
+        pending_cancellation_mutations_.store(
+            cancellation_mutations_.size());
     }
-    ++cancellations_claimed_;
+    cancellation_mutation_cv_.notify_all();
+}
 
-    const auto resolve =
-        [this, cancellation](
-            std::string code,
-            bool cancel_job) {
-            return ResolveClaimedCancellation(
-                *cancellation,
-                std::move(code),
-                cancel_job);
-        };
-
-    switch (cancellation->action) {
-    case savor::db::JobCancellationExecutionAction::
-        CancelWithoutWorker:
-        (void)resolve("CANCELED_BEFORE_WORKER", true);
-        return true;
-    case savor::db::JobCancellationExecutionAction::
-        ResolveNoLongerExecutable:
-        (void)resolve("NO_LONGER_EXECUTABLE", false);
-        return true;
-    case savor::db::JobCancellationExecutionAction::
-        ReleaseClaimedWorkset: {
-        if (!cancellation->dispatch_attempt_id.has_value()) {
-            (void)resolve("CLAIM_ROUTE_MISSING", true);
-            return true;
-        }
-        const auto dispatch =
-            FindDispatch(*cancellation->dispatch_attempt_id);
-        if (!dispatch) {
-            RecordWarning(
-                "Cancellation is waiting for stale claim recovery",
-                "dispatch_attempt_id="
-                    + std::to_string(
-                        *cancellation->dispatch_attempt_id),
-                0,
-                cancellation->job_id);
-            return true;
-        }
-        bool dispatch_marked = false;
-        bool workset_cancellation_applied = false;
-        DispatchPhase phase = DispatchPhase::Claimed;
-        WorkerExecutionTarget target;
-        std::optional<savor::runtime::WorkerWorksetItemId> item_id;
+void JobExecutionCoordinator::Impl::CancellationMutationLoop() {
+    for (;;) {
+        std::vector<PendingCancellationMutation> pending;
+        bool full_flush = false;
+        bool deadline_flush = false;
+        bool barrier_flush = false;
         {
-            std::lock_guard lock(dispatch->mutex);
-            dispatch_marked = dispatch->dispatch_marked;
-            workset_cancellation_applied =
-                dispatch->workset_cancellation_applied;
-            phase = dispatch->phase;
-            target = dispatch->target;
-            for (const auto& [runtime_item_id, item_index] :
-                 dispatch->item_index_by_id) {
-                if (item_index < dispatch->claimed.items.size()
-                    && dispatch->claimed.items[item_index].job_id
-                        == cancellation->job_id) {
-                    item_id =
-                        savor::runtime::WorkerWorksetItemId{
-                            runtime_item_id};
-                    break;
-                }
-            }
-            if (!dispatch_marked) {
-                const auto found = std::find_if(
-                    dispatch->pending_submission_cancellations.begin(),
-                    dispatch->pending_submission_cancellations.end(),
-                    [&](const auto& pending) {
-                        return pending.cancellation
-                                   .cancellation_request_id
-                            == cancellation
-                                   ->cancellation_request_id;
-                    });
-                PendingSubmissionCancellation pending{
-                    .cancellation = *cancellation,
-                    .item_id = item_id,
-                    .enqueued_at = Clock::now(),
-                };
-                if (found ==
-                    dispatch->pending_submission_cancellations.end()) {
-                    dispatch->pending_submission_cancellations.push_back(
-                        std::move(pending));
-                } else {
-                    found->cancellation = *cancellation;
-                }
-            }
-        }
-        if (workset_cancellation_applied) {
-            if (resolve(
-                    "WORKSET_CANCELLATION_ALREADY_APPLIED",
-                    false)) {
-                ++cancellations_already_applied_;
-            }
-        } else if (dispatch_marked && item_id.has_value()) {
-            EnqueueWorkerControl(
-                target,
-                {
-                    .kind = WorkerControlKind::CancelItem,
-                    .dispatch_attempt_id =
-                        *cancellation->dispatch_attempt_id,
-                    .job_id = cancellation->job_id,
-                    .item_id = item_id,
-                    .reason = cancellation->reason_text.value_or(
-                        cancellation->reason_code),
-                    .cancellation = cancellation,
-                });
-        } else if (dispatch_marked) {
-            PauseForInvariant(
-                dispatch,
-                "Cancellation route invariant failed after dispatch",
-                "dispatch_attempt_id="
-                    + std::to_string(
-                        *cancellation->dispatch_attempt_id)
-                    + " job_id="
-                    + std::to_string(cancellation->job_id)
-                    + " missing reconstructed workset item",
-                cancellation->job_id);
-        } else if (phase == DispatchPhase::Submitting) {
-            return true;
-        } else {
-            bool deferred = false;
-            if (ReleaseDispatch(
-                    dispatch,
-                    "JOB_CANCELLATION_REQUESTED",
-                    cancellation->reason_text.value_or(
-                        cancellation->reason_code),
-                    false,
-                    &deferred,
-                    false)
-                && !deferred) {
-                {
-                    std::lock_guard lock(dispatch->mutex);
-                    std::erase_if(
-                        dispatch->pending_submission_cancellations,
-                        [&](const auto& pending) {
-                            return pending.cancellation
-                                       .cancellation_request_id
-                                == cancellation
-                                       ->cancellation_request_id;
-                        });
-                }
-                (void)resolve("CANCELED_BUFFERED_JOB", true);
-            }
-        }
-        return true;
-    }
-    case savor::db::JobCancellationExecutionAction::
-        DeliverToWorker: {
-        if (!cancellation->dispatch_attempt_id.has_value()) {
-            (void)resolve("WORKER_ROUTE_MISSING", true);
-            return true;
-        }
-        const auto dispatch =
-            FindDispatch(*cancellation->dispatch_attempt_id);
-        if (!dispatch) {
-            RecordWarning(
-                "Cancellation is waiting for worker-route recovery",
-                "dispatch_attempt_id="
-                    + std::to_string(
-                        *cancellation->dispatch_attempt_id),
-                0,
-                cancellation->job_id);
-            return true;
-        }
-        std::optional<savor::runtime::WorkerWorksetItemId> item_id;
-        WorkerExecutionTarget target;
-        bool submitted = false;
-        bool dispatch_marked = false;
-        bool workset_cancellation_applied = false;
-        DispatchPhase phase = DispatchPhase::Claimed;
-        {
-            std::lock_guard lock(dispatch->mutex);
-            target = dispatch->target;
-            submitted = dispatch->submitted;
-            dispatch_marked = dispatch->dispatch_marked;
-            workset_cancellation_applied =
-                dispatch->workset_cancellation_applied;
-            phase = dispatch->phase;
-            for (const auto& [runtime_item_id, item_index] :
-                 dispatch->item_index_by_id) {
-                if (item_index < dispatch->claimed.items.size()
-                    && dispatch->claimed.items[item_index].job_id
-                        == cancellation->job_id) {
-                    item_id =
-                        savor::runtime::WorkerWorksetItemId{
-                            runtime_item_id};
-                    break;
-                }
-            }
-            if (phase == DispatchPhase::Submitting
-                && !dispatch_marked
-                && item_id.has_value()) {
-                const auto found = std::find_if(
-                    dispatch->pending_submission_cancellations.begin(),
-                    dispatch->pending_submission_cancellations.end(),
-                    [&](const auto& pending) {
-                        return pending.cancellation
-                                   .cancellation_request_id
-                            == cancellation
-                                   ->cancellation_request_id;
-                    });
-                PendingSubmissionCancellation pending{
-                    .cancellation = *cancellation,
-                    .item_id = item_id,
-                    .enqueued_at = Clock::now(),
-                };
-                if (found ==
-                    dispatch->pending_submission_cancellations.end()) {
-                    dispatch->pending_submission_cancellations.push_back(
-                        std::move(pending));
-                } else {
-                    *found = std::move(pending);
-                }
-            }
-        }
-        if (workset_cancellation_applied) {
-            if (resolve(
-                    "WORKSET_CANCELLATION_ALREADY_APPLIED",
-                    false)) {
-                ++cancellations_already_applied_;
-            }
-            return true;
-        }
-        if (phase == DispatchPhase::Submitting
-            && !dispatch_marked && item_id.has_value()) {
-            return true;
-        }
-        if (!submitted || !item_id.has_value()) {
-            PauseForInvariant(
-                dispatch,
-                "Cancellation route invariant failed",
-                "claimed job is not present in an active "
-                "reconstructed workset");
-            return true;
-        }
-        EnqueueWorkerControl(
-            target,
-            {
-                .kind = WorkerControlKind::CancelItem,
-                .dispatch_attempt_id =
-                    *cancellation->dispatch_attempt_id,
-                .job_id = cancellation->job_id,
-                .item_id = item_id,
-                .reason = cancellation->reason_text.value_or(
-                    cancellation->reason_code),
-                .cancellation = cancellation,
+            std::unique_lock lock(cancellation_mutation_mutex_);
+            cancellation_mutation_cv_.wait(lock, [this]() {
+                return cancellation_mutation_stop_
+                    || !cancellation_mutations_.empty();
             });
-        return true;
-    }
-    default:
-        (void)resolve("UNKNOWN_CANCELLATION_ACTION", false);
-        return true;
+            if (cancellation_mutation_stop_
+                && cancellation_mutations_.empty()) {
+                return;
+            }
+            const auto deadline = cancellation_mutations_.front().enqueued_at
+                + config_.cancellation_mutation_delay;
+            while (!cancellation_mutation_stop_
+                && cancellation_mutations_.size()
+                    < config_.cancellation_batch_size
+                && Clock::now() < deadline) {
+                cancellation_mutation_cv_.wait_until(lock, deadline);
+            }
+            full_flush = cancellation_mutations_.size()
+                >= config_.cancellation_batch_size;
+            deadline_flush = !full_flush && !cancellation_mutation_stop_
+                && Clock::now() >= deadline;
+            barrier_flush = cancellation_mutation_stop_;
+            const auto count = std::min(
+                config_.cancellation_batch_size,
+                cancellation_mutations_.size());
+            pending.reserve(count);
+            for (std::size_t index = 0; index < count; ++index) {
+                pending.push_back(std::move(cancellation_mutations_[index]));
+            }
+            cancellation_mutations_.erase(
+                cancellation_mutations_.begin(),
+                cancellation_mutations_.begin()
+                    + static_cast<std::ptrdiff_t>(count));
+            pending_cancellation_mutations_.store(
+                cancellation_mutations_.size());
+        }
+        if (pending.empty()) continue;
+        if (full_flush) ++cancellation_mutation_full_flushes_;
+        else if (deadline_flush) ++cancellation_mutation_deadline_flushes_;
+        else if (barrier_flush) ++cancellation_mutation_barrier_flushes_;
+
+        savor::db::MutateJobCancellationsBatchCommand command;
+        command.mutations.reserve(pending.size());
+        for (const auto& item : pending) {
+            command.mutations.push_back(item.mutation);
+        }
+        std::vector<savor::db::JobCancellationReceipt> receipts;
+        std::string error;
+        bool committed = false;
+        for (;;) {
+            committed = execution_db_->MutateJobCancellationsBatch(
+                command, &receipts, &error)
+                && receipts.size() == pending.size();
+            if (committed) break;
+            ++cancellation_mutation_rollbacks_;
+            cancellation_mutation_retries_.fetch_add(pending.size());
+            cancellation_storage_paused_.store(true);
+            WakeScheduler("cancellation-storage-pause", false);
+            RecordError(
+                error.empty()
+                    ? "failed committing cancellation mutation batch"
+                    : error);
+            if (cancellation_mutation_stop_) break;
+            std::unique_lock lock(cancellation_mutation_mutex_);
+            cancellation_mutation_cv_.wait_for(
+                lock, std::chrono::milliseconds(5), [this]() {
+                    return cancellation_mutation_stop_.load();
+                });
+            receipts.clear();
+            error.clear();
+        }
+        ++cancellation_mutation_batches_;
+        cancellation_mutation_batch_items_.fetch_add(pending.size());
+        StoreMaximum(cancellation_mutation_max_size_, pending.size());
+        const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+            Clock::now() - pending.front().enqueued_at).count();
+        StoreMaximum(
+            cancellation_mutation_max_collection_age_ms_,
+            static_cast<std::uint64_t>(std::max<std::int64_t>(0, age)));
+        if (!committed) {
+            if (cancellation_mutation_stop_.load()) {
+                worker_control_commands_abandoned_.fetch_add(pending.size());
+                return;
+            }
+            for (auto& item : pending) {
+                QueueCancellationMutation(std::move(item));
+            }
+            continue;
+        }
+        if (cancellation_storage_paused_.exchange(false)) {
+            WakeScheduler("cancellation-storage-resume", false);
+        }
+        for (std::size_t index = 0; index < pending.size(); ++index) {
+            const auto& item = pending[index];
+            const auto& receipt = receipts[index];
+            if (!Applied(receipt.disposition)) {
+                RecordError(
+                    "cancellation mutation lost durable authority: disposition="
+                    + std::string(
+                        ExecutionDbDispositionName(receipt.disposition)));
+                ++worker_control_commands_failed_;
+                if (item.dispatch) {
+                    PauseForInvariant(
+                        item.dispatch,
+                        "Cancellation outcome lost durable authority",
+                        "request_id=" + std::to_string(
+                            item.mutation.cancellation_request_id)
+                            + " job_id=" + std::to_string(
+                                item.mutation.job_id)
+                            + " disposition="
+                            + ExecutionDbDispositionName(
+                                receipt.disposition),
+                        item.mutation.job_id);
+                } else {
+                    invariant_paused_.store(true);
+                    WakeScheduler(
+                        "cancellation-outcome-invariant", false);
+                }
+                continue;
+            }
+            if (receipt.state == "RESOLVED") {
+                std::lock_guard lock(cancellation_index_mutex_);
+                committed_cancellations_by_job_.erase(receipt.job_id);
+            }
+            if (item.initial_suppression && item.dispatch) {
+                bool fully_suppressed = false;
+                bool all_persisted = false;
+                {
+                    std::lock_guard lock(item.dispatch->mutex);
+                    item.dispatch->sidecar_persisted_jobs.insert(
+                        receipt.job_id);
+                    fully_suppressed =
+                        item.dispatch->initially_suppressed_jobs.size()
+                        == item.dispatch->claimed.items.size();
+                    all_persisted =
+                        item.dispatch->sidecar_persisted_jobs.size()
+                        == item.dispatch->initially_suppressed_jobs.size();
+                    if (fully_suppressed && all_persisted) {
+                        item.dispatch->phase = DispatchPhase::Retired;
+                    }
+                }
+                if (fully_suppressed && all_persisted) {
+                    ClearLaneIdentity(
+                        item.dispatch->target,
+                        item.dispatch->claimed.dispatch_attempt_id);
+                    RemoveDispatch(
+                        item.dispatch->claimed.dispatch_attempt_id,
+                        item.dispatch);
+                } else {
+                    MaybeRetire(item.dispatch);
+                }
+            }
+            RecordCancellationResolution(
+                receipt.resolution_code.value_or(
+                    item.requested_resolution_code.empty()
+                        ? item.delivery ? "DELIVERED" : "RESOLVED"
+                        : item.requested_resolution_code));
+            if (item.delivery) {
+                ++worker_control_commands_applied_;
+                if (receipt.disposition
+                    == savor::db::ExecutionDbOperationDisposition::AlreadyApplied) {
+                    ++cancellations_already_applied_;
+                } else {
+                    ++cancellations_delivered_;
+                }
+            }
+        }
     }
 }
 
 void JobExecutionCoordinator::Impl::CompleteCancellationDelivery(
-    savor::db::ClaimedJobCancellation cancellation,
+    savor::db::CommittedJobCancellation cancellation,
     const WorkerCommandResult& result,
     bool whole_workset,
     Clock::time_point enqueued_at) {
@@ -3602,37 +4369,208 @@ void JobExecutionCoordinator::Impl::CompleteCancellationDelivery(
                 ? static_cast<std::int64_t>(*result.worker_id)
                 : 0,
             cancellation.job_id);
+        EnqueueAuthority(
+            [this, cancellation = std::move(cancellation),
+             diagnostic = result.diagnostic]() mutable {
+                QueueCancellationMutation(
+                    {
+                        .mutation = savor::db::
+                            JobCancellationOutcomeCommand{
+                                .kind = savor::db::
+                                    JobCancellationOutcomeKind::
+                                        DeliveryFailed,
+                                .cancellation_request_id =
+                                    cancellation.cancellation_request_id,
+                                .job_id = cancellation.job_id,
+                                .error_code =
+                                    "WORKER_CANCELLATION_DELIVERY_FAILED",
+                                .error_text = diagnostic.empty()
+                                    ? "worker cancellation command was not accepted"
+                                    : std::move(diagnostic),
+                                .requested_by =
+                                    "job_execution_coordinator",
+                            },
+                        .requested_resolution_code =
+                            "REQUESTED",
+                    });
+            });
         return;
     }
     (void)whole_workset;
+    EnqueueAuthority(
+        [this, cancellation = std::move(cancellation)]() mutable {
+            QueueCancellationMutation(
+                {
+                    .mutation = savor::db::
+                        JobCancellationOutcomeCommand{
+                            .kind = savor::db::
+                                JobCancellationOutcomeKind::
+                                    WorkerDeliveryAccepted,
+                            .cancellation_request_id =
+                                cancellation.cancellation_request_id,
+                            .job_id = cancellation.job_id,
+                            .requested_by =
+                                "job_execution_coordinator",
+                        },
+                    .requested_resolution_code = "DELIVERED",
+                    .delivery = true,
+                });
+        });
+}
 
-    savor::db::JobCancellationReceipt receipt{};
-    std::string error;
-    if (!execution_db_->MarkJobCancellationDelivered(
-            {
-                .cancellation_request_id =
-                    cancellation.cancellation_request_id,
-                .delivery_token = cancellation.delivery_token,
-            },
-            &receipt,
-            &error)
-        || !Applied(receipt.disposition)) {
-        RecordError(
-            error.empty()
-                ? "failed marking cancellation delivered"
-                : std::move(error));
-        ++worker_control_commands_failed_;
+void JobExecutionCoordinator::Impl::HandleWorksetState(
+    const WorkerCoordinatorEventContext& source,
+    const savor::wrms::WorksetStatePayload& payload) {
+    const bool terminal =
+        payload.state == savor::wrms::WorksetStateCode::Completed
+        || payload.state == savor::wrms::WorksetStateCode::Cancelled
+        || payload.state == savor::wrms::WorksetStateCode::Failed;
+    if (!terminal
+        || payload.workset_id == 0
+        || payload.workset_id
+            > static_cast<std::uint64_t>(
+                (std::numeric_limits<std::int64_t>::max)())) {
         return;
     }
-    ++worker_control_commands_applied_;
-    RecordCancellationResolution(
-        receipt.resolution_code.value_or("DELIVERED"));
-    if (receipt.disposition
-        == savor::db::ExecutionDbOperationDisposition::AlreadyApplied) {
-        ++cancellations_already_applied_;
-    } else {
-        ++cancellations_delivered_;
+    const auto dispatch_id =
+        static_cast<std::int64_t>(payload.workset_id);
+    const auto dispatch = FindDispatch(dispatch_id);
+    if (!dispatch) return;
+
+    bool persist_draining = false;
+    bool source_mismatch = false;
+    {
+        std::lock_guard lock(dispatch->mutex);
+        if (dispatch->target.worker_id != source.worker_id
+            || dispatch->target.process_generation
+                != source.process_generation) {
+            if (dispatch->phase == DispatchPhase::Released
+                || dispatch->phase == DispatchPhase::ReleasedDraining
+                || dispatch->phase == DispatchPhase::Retired) {
+                return;
+            }
+            source_mismatch = true;
+        } else {
+            dispatch->terminal_workset_state_observed = true;
+            if (dispatch->dispatch_marked
+                && dispatch->phase == DispatchPhase::Active) {
+                dispatch->phase = DispatchPhase::Draining;
+                dispatch->draining_retry_at = Clock::now();
+                persist_draining = true;
+            }
+        }
     }
+    if (source_mismatch) {
+        PauseForInvariant(
+            dispatch,
+            "Worker terminal workset state source mismatch",
+            "dispatch_attempt_id=" + std::to_string(dispatch_id));
+        return;
+    }
+    ClearLaneIdentity(dispatch->target, dispatch_id);
+    UnregisterLeaseHeartbeat(
+        dispatch_id,
+        dispatch->claimed.claim_token);
+    if (persist_draining) {
+        EnqueueAuthority(
+            [this, dispatch]() {
+                (void)MarkDispatchDraining(dispatch);
+            });
+    }
+    WakeScheduler("workset-terminal-state", false);
+}
+
+bool JobExecutionCoordinator::Impl::MarkDispatchDraining(
+    const DispatchPtr& dispatch) {
+    if (!dispatch) return true;
+    savor::db::ClaimedPublishedWorkset claimed;
+    DispatchPhase phase = DispatchPhase::Released;
+    {
+        std::lock_guard lock(dispatch->mutex);
+        claimed = dispatch->claimed;
+        phase = dispatch->phase;
+        if (dispatch->draining_transition_persisted) return true;
+        if (phase == DispatchPhase::Draining
+            && dispatch->draining_retry_at > Clock::now()) {
+            return false;
+        }
+    }
+    if (phase == DispatchPhase::Released
+        || phase == DispatchPhase::ReleasedDraining
+        || phase == DispatchPhase::Retired) {
+        return true;
+    }
+    savor::db::WorksetDispatchMutationReceipt receipt{};
+    std::string error;
+    if (!execution_db_->MarkWorksetDraining(
+            {
+                .dispatch_attempt_id = claimed.dispatch_attempt_id,
+                .claim_token = claimed.claim_token,
+                .requested_by = "job_execution_coordinator",
+            },
+            &receipt,
+            &error)) {
+        {
+            std::lock_guard lock(dispatch->mutex);
+            if (dispatch->phase == DispatchPhase::Draining) {
+                dispatch->draining_retry_at = Clock::now()
+                    + config_.workset_lease_retry_interval;
+            }
+        }
+        RecordError(
+            error.empty()
+                ? "failed marking workset draining"
+                : std::move(error));
+        return false;
+    }
+    if (Applied(receipt.disposition)) {
+        {
+            std::lock_guard lock(dispatch->mutex);
+            if (dispatch->phase == DispatchPhase::Draining) {
+                dispatch->draining_transition_persisted = true;
+            }
+        }
+        ++draining_transitions_;
+        return true;
+    }
+    {
+        std::lock_guard lock(dispatch->mutex);
+        if (dispatch->phase == DispatchPhase::Released
+            || dispatch->phase == DispatchPhase::ReleasedDraining
+            || dispatch->phase == DispatchPhase::Retired) {
+            return true;
+        }
+    }
+    PauseForInvariant(
+        dispatch,
+        "Durable draining transition rejected",
+        "dispatch_attempt_id="
+            + std::to_string(claimed.dispatch_attempt_id)
+            + " disposition="
+            + ExecutionDbDispositionName(receipt.disposition));
+    return false;
+}
+
+bool JobExecutionCoordinator::Impl::ProcessPendingDrainingTransitions() {
+    std::vector<DispatchPtr> pending;
+    const auto now = Clock::now();
+    {
+        std::lock_guard lock(registry_mutex_);
+        for (const auto& [dispatch_id, dispatch] : dispatches_) {
+            (void)dispatch_id;
+            std::lock_guard dispatch_lock(dispatch->mutex);
+            if (dispatch->phase == DispatchPhase::Draining
+                && !dispatch->draining_transition_persisted
+                && dispatch->draining_retry_at <= now) {
+                pending.push_back(dispatch);
+            }
+        }
+    }
+    bool advanced = false;
+    for (const auto& dispatch : pending) {
+        advanced = MarkDispatchDraining(dispatch) || advanced;
+    }
+    return advanced;
 }
 
 void JobExecutionCoordinator::Impl::HandleWorkerUnavailable(
@@ -3666,32 +4604,6 @@ void JobExecutionCoordinator::Impl::HandleWorkerUnavailable(
     WakeScheduler("worker-unavailable", false);
 }
 
-void JobExecutionCoordinator::Impl::RecoverExpiredAuthority() {
-    std::string error;
-    int recovered = 0;
-    if (!execution_db_->RecoverExpiredWorksetDispatches(
-            std::max(1, config_.recovery_batch_size),
-            &recovered,
-            &error)) {
-        RecordError(
-            error.empty()
-                ? "failed recovering expired workset dispatches"
-                : std::move(error));
-    } else if (recovered > 0) {
-        recovered_dispatches_.fetch_add(
-            static_cast<std::uint64_t>(recovered));
-    }
-    int cancellation_recovered = 0;
-    error.clear();
-    if (!execution_db_->RecoverExpiredCancellationDeliveryLeases(
-            std::max(1, config_.recovery_batch_size),
-            &cancellation_recovered,
-            &error)
-        && !error.empty()) {
-        RecordError(std::move(error));
-    }
-}
-
 void JobExecutionCoordinator::Impl::RefreshStorageReadiness() {
     if (blob_store_ready_.load()) return;
     const auto now = Clock::now();
@@ -3702,8 +4614,21 @@ void JobExecutionCoordinator::Impl::RefreshStorageReadiness() {
         blob_readiness_retry_attempt_ = 0;
         bool has_retries = false;
         {
-            std::lock_guard lock(terminal_retry_mutex_);
-            has_retries = !terminal_retries_.empty();
+            std::lock_guard lock(persistence_mutex_);
+            has_retries = std::any_of(
+                persistence_streams_.begin(),
+                persistence_streams_.end(),
+                [](const auto& entry) {
+                    return std::any_of(
+                        entry.second.events.begin(),
+                        entry.second.events.end(),
+                        [](const PersistenceEvent& event) {
+                            const auto* terminal =
+                                std::get_if<TerminalEvent>(&event.payload);
+                            return terminal != nullptr
+                                && terminal->retry_attempt != 0;
+                        });
+                });
         }
         if (!has_retries) storage_paused_.store(false);
         WakeScheduler("storage-ready", false);
@@ -3749,6 +4674,7 @@ void JobExecutionCoordinator::Impl::ProcessLifecycleRequest() {
                 continue;
             }
             if (dispatch->phase != DispatchPhase::Released
+                && dispatch->phase != DispatchPhase::ReleasedDraining
                 && dispatch->phase != DispatchPhase::Retired) {
                 release.push_back(dispatch);
             }
@@ -3827,6 +4753,7 @@ bool JobExecutionCoordinator::Impl::ReleaseDispatch(
     {
         std::lock_guard lock(dispatch->mutex);
         if (dispatch->phase == DispatchPhase::Released
+            || dispatch->phase == DispatchPhase::ReleasedDraining
             || dispatch->phase == DispatchPhase::Retired) {
             return true;
         }
@@ -3899,6 +4826,9 @@ bool JobExecutionCoordinator::Impl::ReleaseDispatch(
         case DispatchPhase::Submitting: phase = "SUBMITTING"; break;
         case DispatchPhase::Active: phase = "ACTIVE"; break;
         case DispatchPhase::Draining: phase = "DRAINING"; break;
+        case DispatchPhase::ReleasedDraining:
+            phase = "RELEASED_DRAINING";
+            break;
         case DispatchPhase::ReleaseRequested: phase = "RELEASE_REQUESTED"; break;
         case DispatchPhase::Released: phase = "RELEASED"; break;
         case DispatchPhase::Retired: phase = "RETIRED"; break;
@@ -3943,7 +4873,7 @@ bool JobExecutionCoordinator::Impl::ReleaseDispatch(
         std::lock_guard lock(dispatch->mutex);
         dispatch->phase =
             keep_draining && submitted
-            ? DispatchPhase::Draining
+            ? DispatchPhase::ReleasedDraining
             : DispatchPhase::Released;
     }
     if (!(keep_draining && submitted)) {
@@ -4031,12 +4961,20 @@ void JobExecutionCoordinator::Impl::MaybeRetire(
         target = dispatch->target;
         claim_token = dispatch->claimed.claim_token;
         const auto item_count = dispatch->claimed.items.size();
-        complete = dispatch->phase == DispatchPhase::Draining
+        const auto suppressed =
+            dispatch->initially_suppressed_jobs.size();
+        const auto executable = item_count
+            - std::min(item_count, suppressed);
+        const bool sidecar_persisted =
+            dispatch->sidecar_persisted_jobs.size() == suppressed;
+        complete = dispatch->phase == DispatchPhase::ReleasedDraining
             ? dispatch->summary_observed
-                && dispatch->acknowledged_jobs.size() == item_count
+                && dispatch->acknowledged_jobs.size() == executable
+                && sidecar_persisted
             : dispatch->summary_observed
-                && dispatch->staged_jobs.size() == item_count
-                && dispatch->acknowledged_jobs.size() == item_count;
+                && dispatch->staged_jobs.size() == executable
+                && dispatch->acknowledged_jobs.size() == executable
+                && sidecar_persisted;
         if (complete) dispatch->phase = DispatchPhase::Retired;
     }
     if (!complete) return;
@@ -4046,13 +4984,25 @@ void JobExecutionCoordinator::Impl::MaybeRetire(
 }
 
 void JobExecutionCoordinator::Impl::RegisterLeaseHeartbeat(
-    const savor::db::ClaimedPublishedWorkset& claimed) {
+    const DispatchPtr& dispatch,
+    std::int64_t lease_expires_at_utc) {
+    if (!dispatch) return;
+    savor::db::ClaimedPublishedWorkset claimed;
+    {
+        std::lock_guard lock(dispatch->mutex);
+        if (dispatch->phase != DispatchPhase::Active
+            || !dispatch->dispatch_marked
+            || dispatch->terminal_workset_state_observed) {
+            return;
+        }
+        claimed = dispatch->claimed;
+    }
     LeaseHeartbeatEntry entry{
         .dispatch_attempt_id = claimed.dispatch_attempt_id,
         .claim_token = claimed.claim_token,
-        .lease_expires_at_utc = claimed.lease_expires_at_utc,
+        .lease_expires_at_utc = lease_expires_at_utc,
         .renew_at = LeaseRenewalDeadline(
-            claimed.lease_expires_at_utc,
+            lease_expires_at_utc,
             config_.workset_lease_renewal_point),
     };
     {
@@ -4137,39 +5087,82 @@ void JobExecutionCoordinator::Impl::LeaseHeartbeatLoop() {
             }
             DispatchPhase phase = DispatchPhase::Released;
             WorkerExecutionTarget target{};
-            std::int64_t workset_id = 0;
             std::string durable_token;
+            std::string expected_sidecar_sha256;
             {
                 std::lock_guard lock(dispatch->mutex);
                 phase = dispatch->phase;
                 target = dispatch->target;
-                workset_id = dispatch->claimed.workset_id;
                 durable_token = dispatch->claimed.claim_token;
+                expected_sidecar_sha256 =
+                    dispatch->cancellation_sidecar_sha256;
             }
             if (durable_token != entry.claim_token
-                || phase == DispatchPhase::Released
-                || phase == DispatchPhase::Retired) {
+                || phase != DispatchPhase::Active) {
                 UnregisterLeaseHeartbeat(
                     entry.dispatch_attempt_id,
                     entry.claim_token);
                 continue;
             }
-            if (phase == DispatchPhase::Active) {
-                savor::wrms::WorksetResidenceSnapshotV1 evidence{};
-                std::string evidence_error;
-                if (!worker_coordinator_->ConfirmWorksetResidence(
-                        target,
-                        savor::runtime::WorkerWorksetId{
-                            static_cast<std::uint64_t>(workset_id)},
-                        &evidence,
-                        &evidence_error)) {
-                    RecordWarning(
-                        "Active workset lease was not renewed",
-                        evidence_error,
-                        static_cast<std::int64_t>(target.worker_id));
-                    continue;
-                }
+            const auto lane = FindWorkerLane(
+                target.worker_id,
+                target.process_generation);
+            bool lane_reports_active = false;
+            if (lane) {
+                std::lock_guard lane_lock(lane->mutex);
+                lane_reports_active = lane->active.has_value()
+                    && *lane->active == entry.dispatch_attempt_id;
             }
+            if (!lane_reports_active) {
+                UnregisterLeaseHeartbeat(
+                    entry.dispatch_attempt_id,
+                    entry.claim_token);
+                continue;
+            }
+
+            ++active_residence_probes_;
+            savor::wrms::WorksetResidenceSnapshotV1 evidence{};
+            std::string evidence_error;
+            if (!worker_coordinator_->ConfirmWorksetResidence(
+                    target,
+                    savor::runtime::WorkerWorksetId{
+                        static_cast<std::uint64_t>(
+                            entry.dispatch_attempt_id)},
+                    &evidence,
+                    &evidence_error)) {
+                ++active_residence_failures_;
+                UnregisterLeaseHeartbeat(
+                    entry.dispatch_attempt_id,
+                    entry.claim_token);
+                RecordWarning(
+                    "Active workset residence check failed",
+                    evidence_error,
+                    static_cast<std::int64_t>(target.worker_id));
+                continue;
+            }
+            if (evidence.cancellation_sidecar_sha256
+                != expected_sidecar_sha256) {
+                ++active_residence_failures_;
+                UnregisterLeaseHeartbeat(
+                    entry.dispatch_attempt_id,
+                    entry.claim_token);
+                std::ostringstream diagnostic;
+                diagnostic
+                    << "worker residence sidecar mismatch: dispatch_attempt_id="
+                    << entry.dispatch_attempt_id
+                    << " expected=" << expected_sidecar_sha256
+                    << " observed="
+                    << evidence.cancellation_sidecar_sha256;
+                worker_coordinator_->QuarantineWorkerGeneration(
+                    target,
+                    diagnostic.str());
+                RecordWarning(
+                    "Active workset residence sidecar check failed",
+                    diagnostic.str(),
+                    static_cast<std::int64_t>(target.worker_id));
+                continue;
+            }
+            ++active_residence_matches_;
             renewable.push_back(entry);
             requests.push_back({
                 .dispatch_attempt_id = entry.dispatch_attempt_id,
@@ -4179,7 +5172,8 @@ void JobExecutionCoordinator::Impl::LeaseHeartbeatLoop() {
         if (requests.empty()) continue;
 
         std::string error;
-        auto receipts = execution_db_->RenewWorksetDispatchLeases(
+        ++active_lease_renewal_batches_;
+        auto receipts = execution_db_->RenewActiveWorksetLeases(
             {
                 .requests = std::move(requests),
                 .lease_duration_ms =
@@ -4218,8 +5212,10 @@ void JobExecutionCoordinator::Impl::LeaseHeartbeatLoop() {
                             durable_expiry,
                             config_.workset_lease_renewal_point);
                     } else if (receipt.disposition
-                        != savor::db::ExecutionDbOperationDisposition::
+                        == savor::db::ExecutionDbOperationDisposition::
                             BackendError) {
+                        ++active_lease_renewal_retries_;
+                    } else {
                         lease_heartbeat_entries_.erase(found);
                     }
                 }
@@ -4254,15 +5250,10 @@ void JobExecutionCoordinator::Impl::HandleLeaseHeartbeatResult(
     {
         std::lock_guard lock(dispatch->mutex);
         if (dispatch->claimed.claim_token != claim_token
-            || dispatch->phase == DispatchPhase::Released
-            || dispatch->phase == DispatchPhase::Retired) {
+            || dispatch->phase != DispatchPhase::Active) {
             return;
         }
         if (call_succeeded && Applied(receipt.disposition)) {
-            if (receipt.lease_expires_at_utc.has_value()) {
-                dispatch->claimed.lease_expires_at_utc =
-                    *receipt.lease_expires_at_utc;
-            }
             return;
         }
     }
@@ -4346,15 +5337,13 @@ JobExecutionCoordinator::JobExecutionCoordinator(
         program_kind_registry,
     WorkerCoordinator* worker_coordinator,
     savor::db::execution::WorkerResultBlobStore* blob_store,
-    JobExecutionCoordinatorConfig config,
-    WorkerTerminalStagedCallback terminal_staged_callback)
+    JobExecutionCoordinatorConfig config)
     : impl_(std::make_unique<Impl>(
           execution_db,
           program_kind_registry,
           worker_coordinator,
           blob_store,
-          std::move(config),
-          std::move(terminal_staged_callback))) {}
+          std::move(config))) {}
 
 JobExecutionCoordinator::~JobExecutionCoordinator() = default;
 
@@ -4382,6 +5371,21 @@ bool JobExecutionCoordinator::IsRunning() const noexcept {
 }
 bool JobExecutionCoordinator::ClearInvariantPause() {
     return impl_->ClearInvariantPause();
+}
+void JobExecutionCoordinator::RegisterCancellationCommitPending(
+    std::uint64_t hold_id,
+    const std::vector<savor::db::ExecutionCancellationRequestSpec>&
+        cancellations) {
+    impl_->RegisterCancellationCommitPending(hold_id, cancellations);
+}
+void JobExecutionCoordinator::RegisterCommittedCancellations(
+    std::uint64_t hold_id,
+    const std::vector<savor::db::CommittedJobCancellation>&
+        cancellations) {
+    impl_->RegisterCommittedCancellations(hold_id, cancellations);
+}
+void JobExecutionCoordinator::OpenCancellationAdmission() {
+    impl_->OpenCancellationAdmission();
 }
 JobExecutionCoordinatorTelemetry
 JobExecutionCoordinator::SnapshotTelemetry() const {

@@ -736,6 +736,30 @@ bool WorkerResultBlobStore::Read(
     return true;
 }
 
+bool WorkerResultBlobStore::Exists(
+    std::string_view relative_path,
+    bool* exists_out,
+    std::string* error_out) const {
+    if (exists_out == nullptr) {
+        return Fail("worker result blob existence output is required", error_out);
+    }
+    std::filesystem::path path;
+    if (!ResolvePrivatePath(relative_path, &path, error_out)) {
+        return false;
+    }
+    std::error_code error;
+    const bool exists = std::filesystem::exists(path, error);
+    if (error) {
+        return Fail(
+            FilesystemFailure(
+                "checking worker result blob existence", path, error),
+            error_out);
+    }
+    *exists_out = exists;
+    if (error_out != nullptr) error_out->clear();
+    return true;
+}
+
 bool WorkerResultBlobStore::Remove(
     std::string_view relative_path,
     std::string* error_out) const {

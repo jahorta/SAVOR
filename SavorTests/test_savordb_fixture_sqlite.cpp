@@ -10,6 +10,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -983,6 +984,26 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(ColumnExists(db_, "exec_workflow_instance", "workflow_graph_revision_id"));
     EXPECT_TRUE(TableExists(db_, "exec_workflow_instance_input_binding"));
     EXPECT_TRUE(TableExists(db_, "exec_workflow_instance_argument"));
+    EXPECT_TRUE(TableExists(db_, "exec_work_availability"));
+    EXPECT_TRUE(ColumnExists(
+        db_, "exec_work_availability", "has_ready_worksets"));
+    EXPECT_TRUE(ColumnExists(
+        db_, "exec_work_availability", "has_execution_finished_results"));
+    EXPECT_FALSE(ColumnExists(
+        db_, "exec_work_availability", "has_requested_cancellations"));
+    EXPECT_FALSE(ColumnExists(db_, "exec_job", "result_processor_token"));
+    EXPECT_FALSE(ColumnExists(
+        db_, "exec_job", "result_processing_lease_expires_at_utc"));
+    EXPECT_FALSE(ColumnExists(
+        db_, "exec_job", "result_processing_retry_after_utc"));
+    EXPECT_FALSE(ColumnExists(
+        db_, "exec_job_cancellation_request", "delivery_token"));
+    EXPECT_FALSE(ColumnExists(
+        db_, "exec_job_cancellation_request", "delivery_lease_expires_at_utc"));
+    EXPECT_EQ(
+        TableCreateSql(db_, "exec_job_cancellation_request").find(
+            "DELIVERY_IN_PROGRESS"),
+        std::string::npos);
     EXPECT_TRUE(ColumnExists(db_, "ui_workflow_instance", "display_state"));
     EXPECT_TRUE(ColumnExists(db_, "ui_workflow_step", "job_failed_count"));
     EXPECT_TRUE(ColumnExists(db_, "ui_workflow_alert", "is_active"));
@@ -8173,7 +8194,7 @@ INSERT INTO exec_workset_dispatch_attempt(
     close_reason_code,close_reason_text)
 VALUES(
     9120,9110,1,'CLOSED','fixture-seedprobe-dispatch',
-    2500,1100,1200,2000,'ALL_TERMINAL','fixture complete');
+    NULL,1100,1200,2000,'ALL_TERMINAL','fixture complete');
 INSERT INTO exec_job(
     job_id,job_set_id,program_kind,program_version,program_ref_kind,
     program_ref_id,fingerprint,priority,state,attempts,max_attempts,
@@ -11320,14 +11341,27 @@ INSERT INTO exec_job_set(
     job_set_id,program_kind,purpose,created_by,created_at_utc)
 VALUES(35010,42,'start-authority','test',1000);
 
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id,workflow_kind,state,root_scope_kind,
+    created_by,created_at_utc)
+VALUES(35011,'START_AUTHORITY','RUNNING','manual','test',1000);
+
+INSERT INTO exec_workflow_step(
+    workflow_step_id,workflow_instance_id,step_key,step_kind,state,
+    job_set_id,priority,attempts,max_attempts,created_at_utc)
+VALUES(
+    35012,35011,'Start','start.authority','MATERIALIZED',
+    35010,0,0,1,1000);
+
 INSERT INTO exec_workset(
-    workset_id,job_set_id,workset_key,program_kind,program_version,
+    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_key,program_kind,program_version,
     compatibility_key,module_canonical_id,module_version,module_sha256,
     entrypoint,verified_dependency_sha256,runtime_profile_sha256,
     required_capability_mask,estimated_payload_bytes,priority,item_count,
     published_at_utc)
 VALUES(
-    35020,35010,'start-authority-workset',42,1,
+    35020,35010,35012,35010,'start-authority-workset',42,1,
     'start-authority-compatibility','test.module',1,printf('%064d',0),
     'test-entrypoint',printf('%064d',0),printf('%064d',0),
     0,1,0,1,1000);
@@ -11336,7 +11370,7 @@ INSERT INTO exec_workset_dispatch_attempt(
     dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
     lease_expires_at_utc,claimed_at_utc,dispatched_at_utc)
 VALUES(
-    35030,35020,1,'DISPATCHED','start-authority-token',
+    35030,35020,1,'ACTIVE','start-authority-token',
     1,1000,1000);
 
 INSERT INTO exec_job(
@@ -11364,11 +11398,14 @@ VALUES(
             ExecutionDbOperationDisposition expected) {
             WorksetJobStartReceipt receipt{};
             std::string error;
-            ASSERT_TRUE(execution_db.MarkWorksetJobStarted(
-                command,
-                &receipt,
+            savor::db::PersistWorkerExecutionEventsBatchReceipt batch;
+            ASSERT_TRUE(execution_db.PersistWorkerExecutionEventsBatch(
+                {.events = {command}},
+                &batch,
                 &error))
                 << error;
+            ASSERT_EQ(batch.events.size(), 1u);
+            receipt = std::get<WorksetJobStartReceipt>(batch.events.front());
             EXPECT_EQ(receipt.disposition, expected);
         };
 
@@ -11398,15 +11435,6 @@ VALUES(
 
     expect_disposition(
         valid_command,
-        ExecutionDbOperationDisposition::LeaseExpired);
-
-    ASSERT_TRUE(ExecSql(
-        db_,
-        "UPDATE exec_workset_dispatch_attempt "
-        "SET lease_expires_at_utc=9223372036854775807 "
-        "WHERE dispatch_attempt_id=35030;"));
-    expect_disposition(
-        valid_command,
         ExecutionDbOperationDisposition::Applied);
     expect_disposition(
         valid_command,
@@ -11425,7 +11453,718 @@ VALUES(
 
 TEST_F(
     SqliteDbFixture,
-    ExpiredWorksetRecoveryRequeuesAndMakesWorksetClaimableAgain) {
+    BatchedWorkerPersistenceAndResultClaimsPreserveOrderAndThirtyTwoItemBoundary) {
+    using namespace savor::db;
+    using savor::db::execution::workflow::SqliteExecutionDb;
+
+    SqliteExecutionDb execution_db(db_);
+    std::string error;
+    EnsureMaterializingJobSetReceipt job_set{};
+    ASSERT_TRUE(execution_db.EnsureMaterializingJobSet(
+        {
+            .materialization_key = "batch-persistence-job-set",
+            .program_kind = 42,
+            .purpose = "batch-persistence",
+            .created_by = "test",
+            .created_at_utc = 1,
+            .expected_total = 33,
+        },
+        &job_set,
+        &error)) << error;
+    ASSERT_GT(job_set.job_set_id, 0);
+    const auto workflow_sql =
+        "INSERT INTO exec_workflow_instance("
+        "workflow_instance_id,workflow_kind,state,root_scope_kind,"
+        "created_by,created_at_utc) VALUES(36000,'BATCH_TEST','RUNNING',"
+        "'manual','test',1);"
+        "INSERT INTO exec_workflow_step("
+        "workflow_step_id,workflow_instance_id,step_key,step_kind,state,"
+        "job_set_id,priority,attempts,max_attempts,created_at_utc) VALUES("
+        "36001,36000,'Batch','batch.persistence','MATERIALIZED',"
+        + std::to_string(job_set.job_set_id)
+        + ",0,0,1,1);";
+    ASSERT_TRUE(ExecSql(db_, workflow_sql.c_str()));
+
+    std::vector<std::int64_t> job_ids;
+    for (int index = 0; index < 33; ++index) {
+        CreatePendingJobReceipt job{};
+        ASSERT_TRUE(execution_db.CreatePendingJob(
+            {
+                .job_set_id = job_set.job_set_id,
+                .program_kind = 42,
+                .program_version = 1,
+                .program_ref_kind = "batch",
+                .program_ref_id = index + 1,
+                .fingerprint = "batch-job-" + std::to_string(index),
+                .priority = 0,
+                .max_attempts = 2,
+                .input_ini = "[batch]",
+            },
+            &job,
+            &error)) << error;
+        ASSERT_EQ(job.disposition, ExecutionDbOperationDisposition::Applied);
+        job_ids.push_back(job.job_id);
+    }
+    SealJobPopulationReceipt seal{};
+    ASSERT_TRUE(execution_db.SealJobPopulation(
+        {
+            .job_set_id = job_set.job_set_id,
+            .expected_job_count = 33,
+            .requested_by = "test",
+        },
+        &seal,
+        &error)) << error;
+
+    const auto availability_before =
+        execution_db.GetExecutionWorkAvailability(&error);
+    ASSERT_TRUE(availability_before.has_value()) << error;
+    PublishWorksetCommand workset{
+        .job_set_id = job_set.job_set_id,
+        .workflow_step_id = 36001,
+        .root_job_set_id = job_set.job_set_id,
+        .workset_key = "batch-persistence-workset",
+        .program_kind = 42,
+        .program_version = 1,
+        .compatibility = {
+            .compatibility_key = "batch-persistence-compatibility",
+            .module_canonical_id = "batch.persistence.module",
+            .module_version = 1,
+            .module_sha256 = std::string(64, '1'),
+            .entrypoint = "execute",
+            .verified_dependency_sha256 = std::string(64, '2'),
+            .runtime_profile_sha256 = std::string(64, '3'),
+            .required_capability_mask = 0,
+            .estimated_payload_bytes = 33,
+        },
+        .priority = 0,
+        .ordered_job_ids = job_ids,
+        .requested_by = "test",
+    };
+    PublishWorksetWaveReceipt wave{};
+    ASSERT_TRUE(execution_db.PublishWorksetWave(
+        {
+            .job_set_id = job_set.job_set_id,
+            .expected_job_count = 33,
+            .worksets = {workset},
+            .requested_by = "test",
+        },
+        &wave,
+        &error)) << error;
+    ASSERT_EQ(wave.disposition, ExecutionDbOperationDisposition::Applied);
+    ASSERT_EQ(wave.worksets.size(), 1u);
+    EXPECT_TRUE(wave.ready_workset_availability_changed);
+    const auto availability_after =
+        execution_db.GetExecutionWorkAvailability(&error);
+    ASSERT_TRUE(availability_after.has_value()) << error;
+    EXPECT_EQ(
+        availability_after->generation,
+        availability_before->generation + 1);
+
+    PublishWorksetWaveReceipt replay{};
+    ASSERT_TRUE(execution_db.PublishWorksetWave(
+        {
+            .job_set_id = job_set.job_set_id,
+            .expected_job_count = 33,
+            .worksets = {workset},
+            .requested_by = "test",
+        },
+        &replay,
+        &error)) << error;
+    EXPECT_EQ(
+        replay.disposition,
+        ExecutionDbOperationDisposition::AlreadyApplied);
+    EXPECT_FALSE(replay.ready_workset_availability_changed);
+
+    const auto claimed_worksets = execution_db.ClaimPublishedWorksetBatch(
+        {
+            .batch_nonce = "batch-persistence-claim",
+            .requested_workset_count = 1,
+        },
+        &error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_EQ(claimed_worksets.size(), 1u);
+    ASSERT_EQ(claimed_worksets.front().items.size(), 33u);
+    WorksetDispatchMutationReceipt dispatched{};
+    ASSERT_TRUE(execution_db.MarkWorksetActive(
+        {
+            .dispatch_attempt_id =
+                claimed_worksets.front().dispatch_attempt_id,
+            .claim_token = claimed_worksets.front().claim_token,
+            .lease_duration_ms = 180000,
+            .requested_by = "test",
+        },
+        &dispatched,
+        &error)) << error;
+
+    const auto terminal_command = [&](std::size_t index, bool unstarted) {
+        const auto& item = claimed_worksets.front().items[index];
+        const auto sha = std::string(63, 'a')
+            + "0123456789abcdef"[index % 16];
+        return StageWorkerTerminalCommand{
+            .dispatch_attempt_id =
+                claimed_worksets.front().dispatch_attempt_id,
+            .claim_token = claimed_worksets.front().claim_token,
+            .job_id = item.job_id,
+            .dispatch_item_ordinal = item.dispatch_item_ordinal,
+            .reserved_attempt_id = item.reserved_attempt_id,
+            .terminal_status = "SUCCEEDED",
+            .terminal_fingerprint = sha,
+            .terminal_id = std::to_string(index + 1),
+            .unstarted = unstarted,
+            .result_blob = {
+                .relative_path = "worker_results/batch-"
+                    + std::to_string(index) + ".bin",
+                .sha256 = sha,
+                .size_bytes = 1,
+                .format = "test.batch.v1",
+            },
+            .requested_by = "test",
+        };
+    };
+
+    PersistWorkerExecutionEventsBatchCommand first_batch;
+    const auto& first_item = claimed_worksets.front().items.front();
+    const MarkWorksetJobStartedCommand valid_start{
+        .dispatch_attempt_id = claimed_worksets.front().dispatch_attempt_id,
+        .claim_token = claimed_worksets.front().claim_token,
+        .job_id = first_item.job_id,
+        .dispatch_item_ordinal = first_item.dispatch_item_ordinal,
+        .reserved_attempt_id = first_item.reserved_attempt_id,
+        .worker_invocation_id = "batch-first-invocation",
+        .requested_by = "test",
+    };
+    auto invalid_start = valid_start;
+    invalid_start.job_id = 0;
+    PersistWorkerExecutionEventsBatchReceipt rolled_back;
+    EXPECT_FALSE(execution_db.PersistWorkerExecutionEventsBatch(
+        {.events = {valid_start, invalid_start}},
+        &rolled_back,
+        &error));
+    const auto rolled_back_state_sql =
+        "SELECT state FROM exec_job WHERE job_id="
+        + std::to_string(first_item.job_id) + ";";
+    EXPECT_EQ(ReadText(db_, rolled_back_state_sql.c_str()),
+        "CLAIMED");
+    error.clear();
+
+    auto stale_start = valid_start;
+    stale_start.claim_token = "stale-token";
+    PersistWorkerExecutionEventsBatchReceipt isolated;
+    ASSERT_TRUE(execution_db.PersistWorkerExecutionEventsBatch(
+        {.events = {stale_start, valid_start}},
+        &isolated,
+        &error)) << error;
+    ASSERT_EQ(isolated.events.size(), 2u);
+    EXPECT_EQ(
+        std::get<WorksetJobStartReceipt>(isolated.events[0]).disposition,
+        ExecutionDbOperationDisposition::TokenMismatch);
+    EXPECT_EQ(
+        std::get<WorksetJobStartReceipt>(isolated.events[1]).disposition,
+        ExecutionDbOperationDisposition::Applied);
+
+    first_batch.events.emplace_back(valid_start);
+    first_batch.events.emplace_back(terminal_command(0, false));
+    for (std::size_t index = 1; index < 31; ++index) {
+        first_batch.events.emplace_back(terminal_command(index, true));
+    }
+    ASSERT_EQ(first_batch.events.size(), 32u);
+    PersistWorkerExecutionEventsBatchReceipt first_receipt;
+    ASSERT_TRUE(execution_db.PersistWorkerExecutionEventsBatch(
+        first_batch,
+        &first_receipt,
+        &error)) << error;
+    ASSERT_EQ(first_receipt.events.size(), 32u);
+    EXPECT_TRUE(std::holds_alternative<WorksetJobStartReceipt>(
+        first_receipt.events.front()));
+    EXPECT_TRUE(std::holds_alternative<StageWorkerTerminalReceipt>(
+        first_receipt.events[1]));
+
+    WorksetDispatchMutationReceipt draining{};
+    ASSERT_TRUE(execution_db.MarkWorksetDraining(
+        {
+            .dispatch_attempt_id =
+                claimed_worksets.front().dispatch_attempt_id,
+            .claim_token = claimed_worksets.front().claim_token,
+            .requested_by = "test-worker-terminal-state",
+        },
+        &draining,
+        &error)) << error;
+    EXPECT_EQ(
+        draining.disposition,
+        ExecutionDbOperationDisposition::Applied);
+    EXPECT_FALSE(draining.dispatch_closed);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            ("SELECT state FROM exec_workset_dispatch_attempt WHERE dispatch_attempt_id="
+                + std::to_string(
+                    claimed_worksets.front().dispatch_attempt_id)
+                + ";").c_str()),
+        "DRAINING");
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            ("SELECT COUNT(1) FROM exec_workset_dispatch_attempt WHERE dispatch_attempt_id="
+                + std::to_string(
+                    claimed_worksets.front().dispatch_attempt_id)
+                + " AND lease_expires_at_utc IS NULL AND draining_at_utc IS NOT NULL;").c_str()),
+        1);
+
+    PersistWorkerExecutionEventsBatchReceipt second_receipt;
+    ASSERT_TRUE(execution_db.PersistWorkerExecutionEventsBatch(
+        {.events = {terminal_command(31, true), terminal_command(32, true)}},
+        &second_receipt,
+        &error)) << error;
+    ASSERT_EQ(second_receipt.events.size(), 2u);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            ("SELECT state FROM exec_workset_dispatch_attempt WHERE dispatch_attempt_id="
+                + std::to_string(
+                    claimed_worksets.front().dispatch_attempt_id)
+                + ";").c_str()),
+        "CLOSED");
+    const auto finished_count_sql =
+        "SELECT COUNT(1) FROM exec_job "
+        "WHERE job_set_id=" + std::to_string(job_set.job_set_id)
+        + " AND state='EXECUTION_FINISHED';";
+    EXPECT_EQ(ReadInt64(db_, finished_count_sql.c_str()),
+        33);
+    const auto terminal_availability =
+        execution_db.GetExecutionWorkAvailability(&error);
+    ASSERT_TRUE(terminal_availability.has_value()) << error;
+    EXPECT_TRUE(terminal_availability->has_execution_finished_results);
+
+    const auto result_claims =
+        execution_db.ClaimExecutionFinishedJobsBatch(
+            {
+                .requested_job_count = 32,
+            },
+            &error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_EQ(result_claims.size(), 32u);
+    const auto one_result_remaining =
+        execution_db.GetExecutionWorkAvailability(&error);
+    ASSERT_TRUE(one_result_remaining.has_value()) << error;
+    EXPECT_TRUE(one_result_remaining->has_execution_finished_results);
+    for (std::size_t index = 1; index < result_claims.size(); ++index) {
+        EXPECT_LT(
+            result_claims[index - 1].job.job_id,
+            result_claims[index].job.job_id);
+    }
+    CommitResultFinalizationsBatchCommand finalizations;
+    for (std::size_t index = 0; index < 2; ++index) {
+        CommitResultFinalizationCommand finalization{
+            .job_id = result_claims[index].job.job_id,
+            .disposition =
+                ExecutionResultFinalizationDisposition::Final,
+            .final_state = "SUCCEEDED",
+            .requested_by = "test",
+        };
+        if (index == 0) {
+            finalization.cancellation_requests.push_back({
+                .job_id = result_claims[2].job.job_id,
+                .request_key = "batch-finalization-cancel",
+                .reason_code = "TEST_WINNER",
+                .reason_text = "committed with result finalization",
+                .requested_by = "test",
+                .caused_by_job_id = result_claims[0].job.job_id,
+            });
+        }
+        finalizations.finalizations.push_back(std::move(finalization));
+    }
+    std::vector<ResultProcessingReceipt> finalization_receipts;
+    ASSERT_TRUE(execution_db.CommitResultFinalizationsBatch(
+        finalizations,
+        &finalization_receipts,
+        &error)) << error;
+    ASSERT_EQ(finalization_receipts.size(), 2u);
+    EXPECT_EQ(
+        finalization_receipts[0].disposition,
+        ExecutionDbOperationDisposition::Applied);
+    EXPECT_EQ(
+        finalization_receipts[1].disposition,
+        ExecutionDbOperationDisposition::Applied);
+    ASSERT_EQ(
+        finalization_receipts[0].committed_cancellations.size(),
+        1u);
+    const auto& committed_cancellation =
+        finalization_receipts[0].committed_cancellations.front();
+    EXPECT_EQ(
+        committed_cancellation.job_id,
+        result_claims[2].job.job_id);
+    EXPECT_EQ(committed_cancellation.reason_code, "TEST_WINNER");
+    EXPECT_EQ(
+        committed_cancellation.durable_job_state,
+        "EXECUTION_FINISHED");
+    EXPECT_EQ(
+        committed_cancellation.dispatch_attempt_id,
+        claimed_worksets.front().dispatch_attempt_id);
+    EXPECT_EQ(
+        committed_cancellation.claim_token,
+        claimed_worksets.front().claim_token);
+    EXPECT_EQ(
+        committed_cancellation.disposition,
+        ExecutionDbOperationDisposition::Applied);
+
+    std::vector<ResultProcessingReceipt> replay_receipts;
+    ASSERT_TRUE(execution_db.CommitResultFinalizationsBatch(
+        {.finalizations = {finalizations.finalizations.front()}},
+        &replay_receipts,
+        &error)) << error;
+    ASSERT_EQ(replay_receipts.size(), 1u);
+    EXPECT_EQ(
+        replay_receipts.front().disposition,
+        ExecutionDbOperationDisposition::AlreadyApplied);
+    ASSERT_EQ(
+        replay_receipts.front().committed_cancellations.size(),
+        1u);
+    EXPECT_EQ(
+        replay_receipts.front().committed_cancellations.front()
+            .disposition,
+        ExecutionDbOperationDisposition::AlreadyApplied);
+    const auto final_claim =
+        execution_db.ClaimExecutionFinishedJobsBatch(
+            {
+                .requested_job_count = 32,
+            },
+            &error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_EQ(final_claim.size(), 1u);
+    const auto no_results_remaining =
+        execution_db.GetExecutionWorkAvailability(&error);
+    ASSERT_TRUE(no_results_remaining.has_value()) << error;
+    EXPECT_FALSE(no_results_remaining->has_execution_finished_results);
+
+    ResultProcessingReceipt diagnostic_receipt{};
+    ASSERT_TRUE(execution_db.RecordResultProcessingFailure(
+        {
+            .job_id = result_claims[2].job.job_id,
+            .error_code = "TEST_RESULT_CANARY",
+            .error_text = "visible interrupted result",
+        },
+        &diagnostic_receipt,
+        &error)) << error;
+    EXPECT_EQ(diagnostic_receipt.processing_state, "PROCESSING");
+    EXPECT_EQ(ReadText(
+        db_,
+        ("SELECT result_processing_error_code FROM exec_job WHERE job_id="
+            + std::to_string(result_claims[2].job.job_id) + ";").c_str()),
+        "TEST_RESULT_CANARY");
+
+    const auto lost_job_id = final_claim.front().job.job_id;
+    const auto lost_attempts_sql = "SELECT attempts FROM exec_job WHERE job_id="
+        + std::to_string(lost_job_id) + ";";
+    const auto lost_ceiling_sql = "SELECT max_attempts FROM exec_job WHERE job_id="
+        + std::to_string(lost_job_id) + ";";
+    const auto attempts_before_requeue =
+        ReadInt64(db_, lost_attempts_sql.c_str());
+    const auto ceiling_before_requeue =
+        ReadInt64(db_, lost_ceiling_sql.c_str());
+    ResultProcessingReceipt requeue_receipt{};
+    ASSERT_TRUE(execution_db.RequeueLostResultProcessing(
+        {
+            .job_id = lost_job_id,
+            .requested_by = "test-startup-recovery",
+        },
+        &requeue_receipt,
+        &error)) << error;
+    EXPECT_EQ(requeue_receipt.job_id, lost_job_id);
+    EXPECT_EQ(requeue_receipt.durable_job_state, "QUEUED");
+    EXPECT_EQ(ReadInt64(db_, lost_attempts_sql.c_str()),
+        attempts_before_requeue);
+    EXPECT_EQ(ReadInt64(db_, lost_ceiling_sql.c_str()),
+        ceiling_before_requeue + 1);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        ("SELECT COUNT(1) FROM exec_job WHERE job_id="
+            + std::to_string(lost_job_id)
+            + " AND worker_terminal_id IS NULL "
+              "AND worker_result_blob_id IS NULL;").c_str()),
+        1);
+}
+
+TEST_F(
+    SqliteDbFixture,
+    CancellationStartupLoadAndOutcomeMutationsAreLeaseFree) {
+    using namespace savor::db;
+    using savor::db::execution::workflow::SqliteExecutionDb;
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_by,created_at_utc)
+VALUES(36100,42,'cancellation-batch','test',1);
+)SQL"));
+    SqliteExecutionDb execution_db(db_);
+    std::string error;
+    for (int index = 0; index < 33; ++index) {
+        const auto job_id = 36101 + index;
+        const auto request_id = 36201 + index;
+        const auto request_key =
+            "cancel-batch-" + std::to_string(index);
+        const auto insert_job_sql =
+            "INSERT INTO exec_job("
+            "job_id,job_set_id,program_kind,program_version,program_ref_kind,"
+            "program_ref_id,fingerprint,priority,state,attempts,max_attempts,"
+            "queued_at_utc,cancellation_request_key,cancellation_state,"
+            "cancellation_requested_at_utc) VALUES("
+            + std::to_string(job_id)
+            + ",36100,42,1,'batch',"
+            + std::to_string(index + 1)
+            + ",'cancel-batch-" + std::to_string(index)
+            + "',0,'QUEUED',0,1,1,'" + request_key
+            + "','REQUESTED',1);"
+              "INSERT INTO exec_job_cancellation_request("
+              "cancellation_request_id,job_id,request_key,reason_code,"
+              "requested_by,requested_at_utc,state) VALUES("
+            + std::to_string(request_id) + ","
+            + std::to_string(job_id) + ",'" + request_key
+            + "','TEST','test',1,'REQUESTED');";
+        ASSERT_TRUE(ExecSql(db_, insert_job_sql.c_str()));
+    }
+
+    const auto claimed =
+        execution_db.ListUnresolvedJobCancellations(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_EQ(claimed.size(), 33u);
+    MutateJobCancellationsBatchCommand mutations;
+    for (std::size_t index = 0; index < 32; ++index) {
+        const auto& cancellation = claimed[index];
+        mutations.mutations.push_back({
+            .kind = JobCancellationOutcomeKind::CancelWithoutWorker,
+            .cancellation_request_id =
+                cancellation.cancellation_request_id,
+            .job_id = cancellation.job_id,
+            .resolution_code = "CANCELED_BEFORE_WORKER",
+            .requested_by = "test",
+        });
+    }
+    std::vector<JobCancellationReceipt> receipts;
+    ASSERT_TRUE(execution_db.MutateJobCancellationsBatch(
+        mutations,
+        &receipts,
+        &error)) << error;
+    ASSERT_EQ(receipts.size(), 32u);
+    for (const auto& receipt : receipts) {
+        EXPECT_EQ(receipt.disposition, ExecutionDbOperationDisposition::Applied);
+        EXPECT_EQ(receipt.state, "RESOLVED");
+    }
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job WHERE job_set_id=36100 "
+        "AND state='CANCELED';"),
+        32);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job_cancellation_request "
+        "WHERE state='REQUESTED';"),
+        1);
+
+    const auto last_claim =
+        execution_db.ListUnresolvedJobCancellations(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_EQ(last_claim.size(), 1u);
+
+    std::vector<JobCancellationReceipt> failure_receipts;
+    ASSERT_TRUE(execution_db.MutateJobCancellationsBatch(
+        {.mutations = {{
+            .kind = JobCancellationOutcomeKind::DeliveryFailed,
+            .cancellation_request_id =
+                last_claim.front().cancellation_request_id,
+            .job_id = last_claim.front().job_id,
+            .error_code = "TEST_DELIVERY_FAILURE",
+            .error_text = "visible cancellation canary",
+            .requested_by = "test",
+        }}},
+        &failure_receipts,
+        &error)) << error;
+    ASSERT_EQ(failure_receipts.size(), 1u);
+    EXPECT_EQ(failure_receipts.front().state, "REQUESTED");
+    EXPECT_EQ(ReadText(
+        db_,
+        "SELECT last_delivery_error_code "
+        "FROM exec_job_cancellation_request "
+        "WHERE state='REQUESTED';"),
+        "TEST_DELIVERY_FAILURE");
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT delivery_attempts FROM exec_job_cancellation_request "
+        "WHERE last_delivery_error_code='TEST_DELIVERY_FAILURE';"),
+        1);
+
+    ASSERT_TRUE(ExecSql(
+        db_,
+        ("UPDATE exec_job SET state='EXECUTION_FINISHED' WHERE job_id="
+            + std::to_string(last_claim.front().job_id) + ";").c_str()));
+    std::vector<JobCancellationReceipt> terminal_receipts;
+    ASSERT_TRUE(execution_db.MutateJobCancellationsBatch(
+        {.mutations = {{
+            .kind = JobCancellationOutcomeKind::WorkerTerminalResolved,
+            .cancellation_request_id =
+                last_claim.front().cancellation_request_id,
+            .job_id = last_claim.front().job_id,
+            .resolution_code = "WORKER_TERMINAL",
+            .requested_by = "test",
+        }}},
+        &terminal_receipts,
+        &error)) << error;
+    ASSERT_EQ(terminal_receipts.size(), 1u);
+    EXPECT_EQ(terminal_receipts.front().state, "RESOLVED");
+    EXPECT_EQ(ReadText(
+        db_,
+        ("SELECT cancellation_state FROM exec_job WHERE job_id="
+            + std::to_string(last_claim.front().job_id) + ";").c_str()),
+        "RESOLVED");
+    EXPECT_EQ(ReadText(
+        db_,
+        ("SELECT cancellation_resolution_code FROM exec_job WHERE job_id="
+            + std::to_string(last_claim.front().job_id) + ";").c_str()),
+        "WORKER_TERMINAL");
+}
+
+TEST_F(
+    SqliteDbFixture,
+    PartialCancellationNeverReleasesClaimedWorksetsAndResolvesAllSixtyFour) {
+    using namespace savor::db;
+    using savor::db::execution::workflow::SqliteExecutionDb;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_by,created_at_utc)
+VALUES(36300,42,'four-canceled-worksets','test',1);
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id,workflow_kind,state,root_scope_kind,
+    root_scope_id,created_by,created_at_utc)
+VALUES(36301,'TEST','RUNNING','job_set',36300,'test',1);
+INSERT INTO exec_workflow_step(
+    workflow_step_id,workflow_instance_id,step_key,graph_node_key,
+    step_kind,state,priority,attempts,max_attempts,job_set_id,
+    created_at_utc)
+VALUES(36302,36301,'probe','probe','test','MATERIALIZED',
+    0,1,1,36300,1);
+)SQL"));
+
+    std::vector<JobCancellationOutcomeCommand> first_per_workset;
+    std::vector<JobCancellationOutcomeCommand> remaining;
+    for (int workset_index = 0; workset_index < 4; ++workset_index) {
+        const auto workset_id = 36310 + workset_index;
+        const auto dispatch_id = 36320 + workset_index;
+        const auto workset_sql =
+            "INSERT INTO exec_workset("
+            "workset_id,job_set_id,workflow_step_id,root_job_set_id,"
+            "workset_key,program_kind,program_version,compatibility_key,"
+            "module_canonical_id,module_version,module_sha256,entrypoint,"
+            "verified_dependency_sha256,runtime_profile_sha256,"
+            "required_capability_mask,estimated_payload_bytes,priority,"
+            "item_count,published_at_utc) VALUES("
+            + std::to_string(workset_id)
+            + ",36300,36302,36300,'cancel-workset-"
+            + std::to_string(workset_index)
+            + "',42,1,'generic','test.module',1,printf('%064d',0),"
+              "'test-entrypoint',printf('%064d',0),printf('%064d',0),"
+              "0,1,0,16,1);"
+              "INSERT INTO exec_workset_dispatch_attempt("
+              "dispatch_attempt_id,workset_id,dispatch_sequence,state,"
+              "claim_token,claimed_at_utc) VALUES("
+            + std::to_string(dispatch_id) + ","
+            + std::to_string(workset_id)
+            + ",1,'CLAIMED','cancel-token-"
+            + std::to_string(workset_index) + "',1);";
+        ASSERT_TRUE(ExecSql(db_, workset_sql.c_str()));
+
+        for (int item_index = 0; item_index < 16; ++item_index) {
+            const auto flat_index = workset_index * 16 + item_index;
+            const auto job_id = 36400 + flat_index;
+            const auto request_id = 36500 + flat_index;
+            const auto request_key =
+                "four-workset-cancel-" + std::to_string(flat_index);
+            const auto job_sql =
+                "INSERT INTO exec_job("
+                "job_id,job_set_id,program_kind,program_version,"
+                "program_ref_kind,program_ref_id,fingerprint,priority,"
+                "state,attempts,max_attempts,queued_at_utc,workset_id,"
+                "workset_item_ordinal,dispatch_attempt_id,"
+                "dispatch_item_ordinal,reserved_attempt_id,"
+                "claimed_by_token,cancellation_request_key,"
+                "cancellation_state,cancellation_requested_at_utc) VALUES("
+                + std::to_string(job_id)
+                + ",36300,42,1,'test',"
+                + std::to_string(flat_index + 1)
+                + ",'four-workset-job-" + std::to_string(flat_index)
+                + "',0,'CLAIMED',1,1,1,"
+                + std::to_string(workset_id) + ","
+                + std::to_string(item_index) + ","
+                + std::to_string(dispatch_id) + ","
+                + std::to_string(item_index) + ",1,'cancel-token-"
+                + std::to_string(workset_index) + "','" + request_key
+                + "','REQUESTED',1);"
+                  "INSERT INTO exec_job_cancellation_request("
+                  "cancellation_request_id,job_id,request_key,reason_code,"
+                  "requested_by,requested_at_utc,state) VALUES("
+                + std::to_string(request_id) + ","
+                + std::to_string(job_id) + ",'" + request_key
+                + "','TEST','test',1,'REQUESTED');";
+            ASSERT_TRUE(ExecSql(db_, job_sql.c_str()));
+            JobCancellationOutcomeCommand mutation{
+                .kind = JobCancellationOutcomeKind::InitialSidecarApplied,
+                .cancellation_request_id = request_id,
+                .job_id = job_id,
+                .dispatch_attempt_id = dispatch_id,
+                .claim_token = "cancel-token-"
+                    + std::to_string(workset_index),
+                .resolution_code = "INITIAL_SIDECAR_APPLIED",
+                .requested_by = "test",
+            };
+            if (item_index == 0)
+                first_per_workset.push_back(std::move(mutation));
+            else
+                remaining.push_back(std::move(mutation));
+        }
+    }
+
+    SqliteExecutionDb execution_db(db_);
+    std::string error;
+    std::vector<JobCancellationReceipt> receipts;
+    ASSERT_TRUE(execution_db.MutateJobCancellationsBatch(
+        {.mutations = first_per_workset},
+        &receipts,
+        &error)) << error;
+    ASSERT_EQ(receipts.size(), 4u);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_workset_dispatch_attempt "
+        "WHERE state='CLAIMED';"),
+        4);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job_cancellation_request "
+        "WHERE state='REQUESTED';"),
+        60);
+
+    receipts.clear();
+    ASSERT_TRUE(execution_db.MutateJobCancellationsBatch(
+        {.mutations = remaining},
+        &receipts,
+        &error)) << error;
+    ASSERT_EQ(receipts.size(), 60u);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job_cancellation_request "
+        "WHERE state='RESOLVED';"),
+        64);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job WHERE state='CANCELED';"),
+        64);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_workset_dispatch_attempt "
+        "WHERE state='CLOSED' AND close_reason_code='ALL_ITEMS_CANCELED';"),
+        4);
+}
+
+TEST_F(
+    SqliteDbFixture,
+    InterruptedWorksetRecoveryRequeuesAndMakesWorksetClaimableAgain) {
     using savor::db::ClaimPublishedWorksetBatchCommand;
     using savor::db::execution::workflow::SqliteExecutionDb;
 
@@ -11465,7 +12204,7 @@ INSERT INTO exec_workset_dispatch_attempt(
     dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
     lease_expires_at_utc,claimed_at_utc,dispatched_at_utc)
 VALUES(
-    35130,35120,1,'DISPATCHED','expired-recovery-token',
+    35130,35120,1,'ACTIVE','expired-recovery-token',
     1,1000,1000);
 
 INSERT INTO exec_job(
@@ -11476,25 +12215,26 @@ INSERT INTO exec_job(
     dispatch_item_ordinal,reserved_attempt_id)
 VALUES(
     35140,35110,42,1,'test',1,'expired-recovery-job',0,
-    'RUNNING',1,2,'expired-recovery-token',1,1000,1000,
+    'RUNNING',1,1,'expired-recovery-token',1,1000,1000,
     35120,0,35130,0,1);
 )SQL"));
 
     SqliteExecutionDb execution_db(db_);
     std::string error;
     const auto before_recovery_signal =
-        execution_db.GetReadyWorksetAvailability(&error);
+        execution_db.GetExecutionWorkAvailability(&error);
     ASSERT_TRUE(before_recovery_signal.has_value()) << error;
     EXPECT_FALSE(before_recovery_signal->has_ready_worksets);
-    int recovered = 0;
-    ASSERT_TRUE(execution_db.RecoverExpiredWorksetDispatches(
-        1,
-        &recovered,
+    savor::db::RecoverInterruptedWorksetDispatchesReceipt recovery{};
+    ASSERT_TRUE(execution_db.RecoverInterruptedWorksetDispatches(
+        &recovery,
         &error))
         << error;
-    ASSERT_EQ(recovered, 1);
+    ASSERT_EQ(recovery.dispatches_closed, 1);
+    ASSERT_EQ(recovery.jobs_requeued, 1);
+    ASSERT_EQ(recovery.recovery_attempts_granted, 1);
     const auto after_recovery_signal =
-        execution_db.GetReadyWorksetAvailability(&error);
+        execution_db.GetExecutionWorkAvailability(&error);
     ASSERT_TRUE(after_recovery_signal.has_value()) << error;
     EXPECT_TRUE(after_recovery_signal->has_ready_worksets);
     EXPECT_GT(
@@ -11523,19 +12263,31 @@ VALUES(
         ClaimPublishedWorksetBatchCommand{
             .batch_nonce = "expired-recovery-reclaim",
             .requested_workset_count = 1,
-            .lease_duration_ms = 30000,
         },
         &error);
     ASSERT_EQ(claimed.size(), 1u) << error;
     const auto after_claim_signal =
-        execution_db.GetReadyWorksetAvailability(&error);
+        execution_db.GetExecutionWorkAvailability(&error);
     ASSERT_TRUE(after_claim_signal.has_value()) << error;
     EXPECT_FALSE(after_claim_signal->has_ready_worksets);
     EXPECT_GT(
         after_claim_signal->generation,
         after_recovery_signal->generation);
+    savor::db::WorksetDispatchMutationReceipt active{};
+    ASSERT_TRUE(execution_db.MarkWorksetActive(
+        {
+            .dispatch_attempt_id = claimed.front().dispatch_attempt_id,
+            .claim_token = claimed.front().claim_token,
+            .lease_duration_ms = 180000,
+            .requested_by = "test",
+        },
+        &active,
+        &error)) << error;
+    ASSERT_EQ(
+        active.disposition,
+        savor::db::ExecutionDbOperationDisposition::Applied);
     const auto lease_receipts =
-        execution_db.RenewWorksetDispatchLeases(
+        execution_db.RenewActiveWorksetLeases(
             {
                 .requests = {
                     {
@@ -11658,7 +12410,6 @@ END;
         {
             .batch_nonce = "rollback-batch",
             .requested_workset_count = 2,
-            .lease_duration_ms = 30000,
         },
         &error);
     EXPECT_TRUE(failed.empty());
@@ -11686,7 +12437,6 @@ UPDATE exec_job SET attempts=max_attempts WHERE job_id IN (35340,35341);
         {
             .batch_nonce = "ordered-batch",
             .requested_workset_count = 2,
-            .lease_duration_ms = 30000,
         },
         &error);
     ASSERT_EQ(claimed.size(), 2u) << error;
