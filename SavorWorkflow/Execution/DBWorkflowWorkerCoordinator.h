@@ -91,8 +91,7 @@ struct DBWorkflowWorkerCoordinatorConfig {
     bool visual_debug_workers = false;
     bool auto_resume_visual_workers = false;
     std::string visual_screenshot_dir;
-    // Slice 7 sets this to the canonical exact nine-module catalog hash.
-    // Until then the production partial manifest cannot open the data plane.
+    // Canonical exact hash of the two-module production Full Phase catalog.
     std::string expected_catalog_sha256;
     std::string expected_runtime_profile_sha256;
     std::string expected_dependency_manifest_sha256;
@@ -326,8 +325,6 @@ private:
         bool workset_admission_blocked = false;
         std::optional<std::int32_t> loaded_program_kind;
         std::optional<std::string> loaded_program_runtime_affinity_key;
-        std::optional<std::string> loaded_savestate_affinity_key;
-        std::optional<std::string> loaded_workset_execution_key;
         std::int64_t dispatch_success_count = 0;
         std::int64_t program_kind_switch_count = 0;
         std::chrono::steady_clock::time_point in_flight_started_at{};
@@ -344,8 +341,6 @@ private:
         size_t worker_idx = 0;
         std::optional<std::int32_t> loaded_program_kind;
         std::optional<std::string> loaded_program_runtime_affinity_key;
-        std::optional<std::string> loaded_savestate_affinity_key;
-        std::optional<std::string> loaded_workset_execution_key;
     };
     struct DispatchedJobContext {
         WorkflowReadyStep step;

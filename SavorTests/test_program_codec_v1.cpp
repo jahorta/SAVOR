@@ -137,8 +137,8 @@ ProgramModule MakeModule()
                 .domain_outcome_type = TypeRef::Builtin(BuiltinType::Bool),
                 .accepted_policies = ProgramPolicySet{
                     .state_policies = {
-                        InvocationStatePolicy::ContinueSession,
-                        InvocationStatePolicy::Boot,
+                        InvocationStatePolicy::RestoreBaseline,
+                        InvocationStatePolicy::EstablishBaseline,
                     },
                     .execution_intents = {ExecutionIntent::Live},
                 },
@@ -200,8 +200,8 @@ ProgramModule MakeModule()
         },
         .accepted_policies = ProgramPolicySet{
             .state_policies = {
-                InvocationStatePolicy::ContinueSession,
-                InvocationStatePolicy::Boot,
+                InvocationStatePolicy::RestoreBaseline,
+                InvocationStatePolicy::EstablishBaseline,
             },
             .execution_intents = {ExecutionIntent::Live},
         },
@@ -257,10 +257,10 @@ ProgramInvocation MakeInvocation(const ProgramModule& module)
             .backend = "jit64",
         },
         .state = InvocationStateRequest{
-            .policy = InvocationStatePolicy::ContinueSession,
+            .policy = InvocationStatePolicy::RestoreBaseline,
             .session_lineage = "lineage",
             .expected_session = SessionId(30),
-            .expected_epoch = StateEpoch(40),
+            .expected_epoch = WorksetEpoch(40),
         },
         .execution = InvocationExecutionPolicy{
             .intent = ExecutionIntent::Live,
@@ -377,8 +377,8 @@ TEST(ProgramCanonicalCodecV1, CanonicalizesUnorderedDeclarations)
     std::ranges::reverse(second.action_imports);
     std::ranges::reverse(second.source_map.entries);
     second.accepted_policies.state_policies = {
-        InvocationStatePolicy::Boot,
-        InvocationStatePolicy::ContinueSession,
+        InvocationStatePolicy::EstablishBaseline,
+        InvocationStatePolicy::RestoreBaseline,
     };
     second.identity.module_hash = ComputeProgramModuleHashV1(second);
 

@@ -9,23 +9,14 @@
 
 namespace savor::runtime::program {
 
-struct SessionResourceBindingDefinition;
-
 using SessionResourceReleaseCallback =
     std::function<ResourceReleaseResult(const ResourceReleaseRequest&)>;
-using SessionResourceRebindCallback = std::function<bool(
-    const ResourceRebindRequest&,
-    StateEpoch,
-    SessionResourceBindingDefinition&,
-    std::string&)>;
 
 struct SessionResourceBindingDefinition
 {
     ResourceKind kind = ResourceKind::HostResource;
-    StateEpoch acquisition_epoch;
-    ResourceRebindKey rebind_key;
+    WorksetEpoch acquisition_epoch;
     SessionResourceReleaseCallback release;
-    SessionResourceRebindCallback rebind;
     std::string diagnostic_label;
 };
 
@@ -33,13 +24,6 @@ struct SessionResourceBindingReceipt
 {
     bool success = false;
     ResourceExternalId external_id;
-    std::string diagnostic;
-};
-
-struct SessionResourceRebindReceipt
-{
-    bool success = false;
-    ResourceRebindCompletion completion;
     std::string diagnostic;
 };
 
@@ -59,10 +43,6 @@ public:
     [[nodiscard]] SessionResourceBindingReceipt Bind(
         SessionResourceBindingDefinition definition);
 
-    [[nodiscard]] SessionResourceRebindReceipt Rebind(
-        const ResourceRebindRequest& request,
-        StateEpoch state_epoch);
-
     [[nodiscard]] ResourceReleaseResult Release(
         const ResourceReleaseRequest& request) noexcept override;
 
@@ -74,7 +54,6 @@ private:
     {
         ResourceExternalId external_id;
         SessionResourceBindingDefinition definition;
-        bool awaiting_rebind = false;
     };
 
     [[nodiscard]] bool OnOwnerThread() const noexcept;

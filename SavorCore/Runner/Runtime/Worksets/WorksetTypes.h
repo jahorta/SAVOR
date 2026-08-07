@@ -2,7 +2,7 @@
 
 #include "../IProgramRuntimePort.h"
 #include "../FullPhase/FullPhaseProgram.h"
-#include "../Services/State/StateTypes.h"
+#include "../Services/Savestate/SavestateTypes.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -41,8 +41,6 @@ struct WorkerWorksetLimits
     std::size_t maximum_encoded_workset_bytes = 32ull * 1024ull * 1024ull;
     std::uint32_t maximum_item_credits = 64;
     std::uint32_t maximum_active_and_staged_items = 32;
-    std::uint32_t maximum_state_cache_entries = 16;
-    std::size_t maximum_state_cache_bytes = 512ull * 1024ull * 1024ull;
     std::uint32_t finalizer_threads = 2;
     std::uint32_t maximum_pending_finalizers = 8;
     std::size_t maximum_pending_finalizer_bytes =
@@ -72,11 +70,10 @@ struct WorkerRuntimeManifest
     auto operator<=>(const WorkerRuntimeManifest&) const = default;
 };
 
-enum class ProgramBaselineStateKind : std::uint8_t
+enum class ProgramBaselineArtifactKind : std::uint8_t
 {
-    Boot,
-    Artifact,
-    CurrentSession,
+    Savestate,
+    ReadOnlyMovie,
 };
 
 enum class ProgramBaselineComponentPolicy : std::uint8_t
@@ -85,29 +82,19 @@ enum class ProgramBaselineComponentPolicy : std::uint8_t
     ResetForEveryItem,
 };
 
-struct CurrentSessionBaselineGuard
-{
-    SessionId session_id;
-    StateEpoch state_epoch;
-    bool require_clean_idle = true;
-
-    [[nodiscard]] explicit operator bool() const noexcept
-    {
-        return session_id && state_epoch && require_clean_idle;
-    }
-
-    auto operator<=>(const CurrentSessionBaselineGuard&) const = default;
-};
-
 struct ProgramBaselineArtifact
 {
+    ProgramBaselineArtifactKind kind =
+        ProgramBaselineArtifactKind::Savestate;
+    // Savestate baselines require state_path. Read-only-movie baselines
+    // require movie_path and may name the exact startup savestate used by
+    // that movie.
     std::filesystem::path state_path;
     std::string state_sha256;
     std::optional<std::filesystem::path> movie_path;
     std::string movie_sha256;
-    ExternalMovieImportMode movie_mode = ExternalMovieImportMode::NoMovie;
-    StateCompatibilityToken compatibility;
-    StateLineage lineage;
+    ArtifactCompatibilityToken compatibility;
+    ArtifactLineage lineage;
 
     auto operator<=>(const ProgramBaselineArtifact&) const = default;
 };
@@ -130,9 +117,7 @@ struct ProgramBaselineComponent
 
 struct ProgramBaselineDefinition
 {
-    ProgramBaselineStateKind state_kind = ProgramBaselineStateKind::Artifact;
-    std::optional<ProgramBaselineArtifact> artifact;
-    std::optional<CurrentSessionBaselineGuard> current_session;
+    ProgramBaselineArtifact artifact;
     std::string lineage;
     std::vector<ProgramBaselineComponent> components;
 
@@ -155,29 +140,17 @@ struct PreparedProgramBaselineReceipt
 {
     ProgramBaselineKey key;
     SessionId session_id;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     std::string lineage;
-    bool restored = false;
+    bool state_established = false;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
-        return static_cast<bool>(key) && session_id && state_epoch &&
+        return static_cast<bool>(key) && session_id && workset_epoch &&
             !lineage.empty();
     }
 
     auto operator<=>(const PreparedProgramBaselineReceipt&) const = default;
-};
-
-struct StateCacheKey
-{
-    ProgramBaselineKey baseline;
-    std::string state_sha256;
-    std::string lineage;
-    StateCompatibilityToken compatibility;
-    std::string movie_continuation_sha256;
-    std::uint64_t session_generation = 0;
-
-    auto operator<=>(const StateCacheKey&) const = default;
 };
 
 struct WorkerWorksetExecutionKey
@@ -384,9 +357,6 @@ struct WorksetValidationResult
 
 [[nodiscard]] std::string ComputeWorkerWorksetExecutionKeyHash(
     const WorkerWorksetExecutionKey& key);
-
-[[nodiscard]] std::string ComputeStateCacheKeyHash(
-    const StateCacheKey& key);
 
 [[nodiscard]] WorksetValidationResult ValidateWorkerWorksetDefinition(
     const WorkerWorksetDefinition& definition,

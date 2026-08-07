@@ -72,6 +72,178 @@ std::optional<std::string> ColumnTextOptional(sqlite3_stmt* st, int index) {
     return ColumnText(st, index);
 }
 
+std::string_view ToDbString(TasMovieValidationOperation value) {
+    switch (value) {
+    case TasMovieValidationOperation::EstablishRootCursor: return "ESTABLISH_ROOT_CURSOR";
+    case TasMovieValidationOperation::Validate: return "VALIDATE";
+    default: return "";
+    }
+}
+
+TasMovieValidationOperation ParseTasMovieValidationOperation(std::string_view value) {
+    if (value == "ESTABLISH_ROOT_CURSOR") return TasMovieValidationOperation::EstablishRootCursor;
+    if (value == "VALIDATE") return TasMovieValidationOperation::Validate;
+    return TasMovieValidationOperation::Unknown;
+}
+
+std::string_view ToDbString(TasMovieValidationSourceKind value) {
+    switch (value) {
+    case TasMovieValidationSourceKind::DtmArtifact: return "DTM_ARTIFACT";
+    case TasMovieValidationSourceKind::RootEstablishment: return "ROOT_ESTABLISHMENT";
+    case TasMovieValidationSourceKind::Tree: return "TREE";
+    default: return "";
+    }
+}
+
+TasMovieValidationSourceKind ParseTasMovieValidationSourceKind(std::string_view value) {
+    if (value == "DTM_ARTIFACT") return TasMovieValidationSourceKind::DtmArtifact;
+    if (value == "ROOT_ESTABLISHMENT") return TasMovieValidationSourceKind::RootEstablishment;
+    if (value == "TREE") return TasMovieValidationSourceKind::Tree;
+    return TasMovieValidationSourceKind::Unknown;
+}
+
+std::string_view ToDbString(TasMovieValidationOutcome value) {
+    switch (value) {
+    case TasMovieValidationOutcome::RootCursorEstablished: return "ROOT_CURSOR_ESTABLISHED";
+    case TasMovieValidationOutcome::Valid: return "VALID";
+    case TasMovieValidationOutcome::Invalid: return "INVALID";
+    default: return "";
+    }
+}
+
+TasMovieValidationOutcome ParseTasMovieValidationOutcome(std::string_view value) {
+    if (value == "ROOT_CURSOR_ESTABLISHED") return TasMovieValidationOutcome::RootCursorEstablished;
+    if (value == "VALID") return TasMovieValidationOutcome::Valid;
+    if (value == "INVALID") return TasMovieValidationOutcome::Invalid;
+    return TasMovieValidationOutcome::Unknown;
+}
+
+std::string_view ToDbString(TasMovieValidationFailureReason value) {
+    switch (value) {
+    case TasMovieValidationFailureReason::MovieDesynchronized: return "MOVIE_DESYNCHRONIZED";
+    case TasMovieValidationFailureReason::ExpectedTerminalNotReached: return "EXPECTED_TERMINAL_NOT_REACHED";
+    case TasMovieValidationFailureReason::Unknown: return "UNKNOWN";
+    default: return "";
+    }
+}
+
+TasMovieValidationFailureReason ParseTasMovieValidationFailureReason(std::string_view value) {
+    if (value == "MOVIE_DESYNCHRONIZED") return TasMovieValidationFailureReason::MovieDesynchronized;
+    if (value == "EXPECTED_TERMINAL_NOT_REACHED") return TasMovieValidationFailureReason::ExpectedTerminalNotReached;
+    if (value == "UNKNOWN") return TasMovieValidationFailureReason::Unknown;
+    return TasMovieValidationFailureReason::None;
+}
+
+TasMovieValidationStatus ParseTasMovieValidationStatus(std::string_view value) {
+    if (value == "VALID") return TasMovieValidationStatus::Valid;
+    if (value == "QUARANTINED") return TasMovieValidationStatus::Quarantined;
+    return TasMovieValidationStatus::Untested;
+}
+
+TasMovieValidationRequestRecord ReadTasMovieValidationRequest(sqlite3_stmt* st) {
+    TasMovieValidationRequestRecord row{};
+    row.validation_request_id = sqlite3_column_int64(st, 0);
+    row.materialization_key = ColumnText(st, 1);
+    row.workflow_instance_id = sqlite3_column_int64(st, 2);
+    row.workflow_step_id = sqlite3_column_int64(st, 3);
+    row.step_kind = ColumnText(st, 4);
+    row.operation = ParseTasMovieValidationOperation(ColumnText(st, 5));
+    row.source_kind = ParseTasMovieValidationSourceKind(ColumnText(st, 6));
+    row.source_ref_id = sqlite3_column_int64(st, 7);
+    row.source_dtm_artifact_id = sqlite3_column_int64(st, 8);
+    row.source_dtm_sha256 = ColumnText(st, 9);
+    row.rtc_value = ColumnInt64Optional(st, 10);
+    row.effective_dtm_sha256 = ColumnText(st, 11);
+    row.itinerary_artifact_id = ColumnInt64Optional(st, 12);
+    row.itinerary_sha256 = ColumnTextOptional(st, 13);
+    row.required_final_breakpoint_pc = static_cast<std::uint32_t>(sqlite3_column_int64(st, 14));
+    row.capture_root_checkpoint = sqlite3_column_int(st, 15) != 0;
+    row.full_phase_program_kind = sqlite3_column_int64(st, 16);
+    row.full_phase_program_version = sqlite3_column_int64(st, 17);
+    row.full_phase_canonical_id = ColumnText(st, 18);
+    row.full_phase_contract_revision = sqlite3_column_int64(st, 19);
+    row.full_phase_sha256 = ColumnText(st, 20);
+    row.module_canonical_id = ColumnText(st, 21);
+    row.module_revision = sqlite3_column_int64(st, 22);
+    row.module_sha256 = ColumnText(st, 23);
+    row.created_at_utc = ColumnTime(st, 24);
+    return row;
+}
+
+TasMovieValidationAttemptRecord ReadTasMovieValidationAttempt(sqlite3_stmt* st) {
+    TasMovieValidationAttemptRecord row{};
+    row.validation_attempt_id = sqlite3_column_int64(st, 0);
+    row.validation_request_id = sqlite3_column_int64(st, 1);
+    row.source_job_id = sqlite3_column_int64(st, 2);
+    row.worker_terminal_sha256 = ColumnText(st, 3);
+    row.outcome = ParseTasMovieValidationOutcome(ColumnText(st, 4));
+    row.failure_reason = ParseTasMovieValidationFailureReason(ColumnText(st, 5));
+    if (auto v = ColumnInt64Optional(st, 6)) row.expected_pc = static_cast<std::uint32_t>(*v);
+    if (auto v = ColumnInt64Optional(st, 7)) row.expected_input_count = static_cast<std::uint64_t>(*v);
+    row.actual_pc = static_cast<std::uint32_t>(sqlite3_column_int64(st, 8));
+    row.actual_input_count = static_cast<std::uint64_t>(sqlite3_column_int64(st, 9));
+    if (auto v = ColumnInt64Optional(st, 10)) row.last_verified_itinerary_index = static_cast<std::uint64_t>(*v);
+    row.last_known_good_savestate_id = ColumnInt64Optional(st, 11);
+    row.candidate_itinerary_artifact_id = ColumnInt64Optional(st, 12);
+    row.candidate_itinerary_sha256 = ColumnTextOptional(st, 13);
+    row.produced_tas_movie_root_id = ColumnInt64Optional(st, 14);
+    row.worker_id = ColumnText(st, 15);
+    row.worker_process_generation = static_cast<std::uint64_t>(sqlite3_column_int64(st, 16));
+    row.workset_epoch = static_cast<std::uint64_t>(sqlite3_column_int64(st, 17));
+    row.recorded_at_utc = ColumnTime(st, 18);
+    return row;
+}
+
+bool TasMovieValidationRequestIdentityMatches(
+    const TasMovieValidationRequestRecord& row,
+    const CreateTasMovieValidationRequestCommand& command) {
+    return row.materialization_key == command.materialization_key
+        && row.workflow_instance_id == command.workflow_instance_id
+        && row.workflow_step_id == command.workflow_step_id
+        && row.step_kind == command.step_kind
+        && row.operation == command.operation
+        && row.source_kind == command.source_kind
+        && row.source_ref_id == command.source_ref_id
+        && row.source_dtm_artifact_id == command.source_dtm_artifact_id
+        && row.source_dtm_sha256 == command.source_dtm_sha256
+        && row.rtc_value == command.rtc_value
+        && row.effective_dtm_sha256 == command.effective_dtm_sha256
+        && row.itinerary_artifact_id == command.itinerary_artifact_id
+        && row.itinerary_sha256 == command.itinerary_sha256
+        && row.required_final_breakpoint_pc == command.required_final_breakpoint_pc
+        && row.capture_root_checkpoint == command.capture_root_checkpoint
+        && row.full_phase_program_kind == command.full_phase_program_kind
+        && row.full_phase_program_version == command.full_phase_program_version
+        && row.full_phase_canonical_id == command.full_phase_canonical_id
+        && row.full_phase_contract_revision == command.full_phase_contract_revision
+        && row.full_phase_sha256 == command.full_phase_sha256
+        && row.module_canonical_id == command.module_canonical_id
+        && row.module_revision == command.module_revision
+        && row.module_sha256 == command.module_sha256;
+}
+
+bool TasMovieValidationAttemptIdentityMatches(
+    const TasMovieValidationAttemptRecord& row,
+    const RecordTasMovieValidationAttemptCommand& command) {
+    return row.validation_request_id == command.validation_request_id
+        && row.source_job_id == command.source_job_id
+        && row.worker_terminal_sha256 == command.worker_terminal_sha256
+        && row.outcome == command.outcome
+        && row.failure_reason == command.failure_reason
+        && row.expected_pc == command.expected_pc
+        && row.expected_input_count == command.expected_input_count
+        && row.actual_pc == command.actual_pc
+        && row.actual_input_count == command.actual_input_count
+        && row.last_verified_itinerary_index == command.last_verified_itinerary_index
+        && row.last_known_good_savestate_id == command.last_known_good_savestate_id
+        && row.candidate_itinerary_artifact_id == command.candidate_itinerary_artifact_id
+        && row.candidate_itinerary_sha256 == command.candidate_itinerary_sha256
+        && row.produced_tas_movie_root_id == command.produced_tas_movie_root_id
+        && row.worker_id == command.worker_id
+        && row.worker_process_generation == command.worker_process_generation
+        && row.workset_epoch == command.workset_epoch;
+}
+
 SeedProbeResultRow ReadSeedProbeResultRow(sqlite3_stmt* st) {
     SeedProbeResultRow row{};
     row.probe_result_id = sqlite3_column_int64(st, 0);
@@ -81,7 +253,7 @@ SeedProbeResultRow ReadSeedProbeResultRow(sqlite3_stmt* st) {
     row.seed_value = static_cast<std::uint32_t>(sqlite3_column_int64(st, 4));
     row.origin_worker_id = static_cast<std::uint64_t>(sqlite3_column_int64(st, 5));
     row.origin_process_generation = static_cast<std::uint64_t>(sqlite3_column_int64(st, 6));
-    row.origin_state_epoch = static_cast<std::uint64_t>(sqlite3_column_int64(st, 7));
+    row.origin_workset_epoch = static_cast<std::uint64_t>(sqlite3_column_int64(st, 7));
     row.terminal_sha256 = ColumnText(st, 8);
     row.confirmation_of_probe_result_id = ColumnInt64Optional(st, 9);
     row.evidence_state = ParseSeedProbeEvidenceState(ColumnText(st, 10));
@@ -694,6 +866,294 @@ SqliteAnalysisDb::SqliteAnalysisDb(sqlite3* db)
     , spine_row_resolver_(db_) {
 }
 
+std::optional<TasMovieValidationRequestRecord> SqliteAnalysisDb::GetTasMovieValidationRequest(
+    std::int64_t validation_request_id) const {
+    if (db_ == nullptr || validation_request_id <= 0) return std::nullopt;
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT validation_request_id,materialization_key,workflow_instance_id,workflow_step_id,step_kind,"
+        "operation,source_kind,source_ref_id,source_dtm_artifact_id,source_dtm_sha256,rtc_value,"
+        "effective_dtm_sha256,itinerary_artifact_id,itinerary_sha256,required_final_breakpoint_pc,"
+        "capture_root_checkpoint,full_phase_program_kind,full_phase_program_version,full_phase_canonical_id,"
+        "full_phase_contract_revision,full_phase_sha256,module_canonical_id,module_revision,module_sha256,created_at_utc "
+        "FROM tmv_validation_request WHERE validation_request_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, validation_request_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return ReadTasMovieValidationRequest(st.st);
+}
+
+std::optional<TasMovieValidationRequestRecord> SqliteAnalysisDb::GetTasMovieValidationRequestForWorkflowStep(
+    std::int64_t workflow_step_id) const {
+    if (db_ == nullptr || workflow_step_id <= 0) return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(db_, "SELECT validation_request_id FROM tmv_validation_request WHERE workflow_step_id=?1;", -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, workflow_step_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieValidationRequest(sqlite3_column_int64(st.st, 0));
+}
+
+bool SqliteAnalysisDb::CreateTasMovieValidationRequest(
+    const CreateTasMovieValidationRequestCommand& command,
+    std::int64_t* validation_request_id_out,
+    std::string* error_out) {
+    const bool establishment = command.operation == TasMovieValidationOperation::EstablishRootCursor
+        && command.source_kind == TasMovieValidationSourceKind::DtmArtifact
+        && command.step_kind == "tasmovie.establish_root_cursor"
+        && !command.rtc_value && !command.itinerary_artifact_id && !command.itinerary_sha256
+        && !command.capture_root_checkpoint;
+    const bool root_validation = command.operation == TasMovieValidationOperation::Validate
+        && command.source_kind == TasMovieValidationSourceKind::RootEstablishment
+        && command.step_kind == "tasmovie.validate_root"
+        && command.rtc_value && command.itinerary_artifact_id && command.itinerary_sha256;
+    const bool tree_validation = command.operation == TasMovieValidationOperation::Validate
+        && command.source_kind == TasMovieValidationSourceKind::Tree
+        && command.step_kind == "tasmovie.validate_tree"
+        && !command.rtc_value && command.itinerary_artifact_id && command.itinerary_sha256
+        && !command.capture_root_checkpoint;
+    if (db_ == nullptr || command.materialization_key.empty() || command.workflow_instance_id <= 0
+        || command.workflow_step_id <= 0 || command.source_ref_id <= 0
+        || command.source_dtm_artifact_id <= 0 || !IsLowerHexSha256(command.source_dtm_sha256)
+        || !IsLowerHexSha256(command.effective_dtm_sha256)
+        || !IsLowerHexSha256(command.full_phase_sha256) || !IsLowerHexSha256(command.module_sha256)
+        || command.full_phase_canonical_id.empty() || command.module_canonical_id.empty()
+        || !(establishment || root_validation || tree_validation)) {
+        if (error_out) *error_out = "invalid immutable TAS movie validation request";
+        return false;
+    }
+    if (const auto existing = GetTasMovieValidationRequestForWorkflowStep(command.workflow_step_id); existing.has_value()) {
+        if (!TasMovieValidationRequestIdentityMatches(*existing, command)) {
+            if (error_out) *error_out = "workflow step already has a different TAS movie validation request";
+            return false;
+        }
+        if (validation_request_id_out) *validation_request_id_out = existing->validation_request_id;
+        return true;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO tmv_validation_request(materialization_key,workflow_instance_id,workflow_step_id,step_kind,"
+        "operation,source_kind,source_ref_id,source_dtm_artifact_id,source_dtm_sha256,rtc_value,effective_dtm_sha256,"
+        "itinerary_artifact_id,itinerary_sha256,required_final_breakpoint_pc,capture_root_checkpoint,"
+        "full_phase_program_kind,full_phase_program_version,full_phase_canonical_id,full_phase_contract_revision,"
+        "full_phase_sha256,module_canonical_id,module_revision,module_sha256,created_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24);";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_text(st.st, 1, command.materialization_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 2, command.workflow_instance_id);
+    sqlite3_bind_int64(st.st, 3, command.workflow_step_id);
+    sqlite3_bind_text(st.st, 4, command.step_kind.c_str(), -1, SQLITE_TRANSIENT);
+    const auto operation = ToDbString(command.operation);
+    const auto source_kind = ToDbString(command.source_kind);
+    sqlite3_bind_text(st.st, 5, operation.data(), static_cast<int>(operation.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 6, source_kind.data(), static_cast<int>(source_kind.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 7, command.source_ref_id);
+    sqlite3_bind_int64(st.st, 8, command.source_dtm_artifact_id);
+    sqlite3_bind_text(st.st, 9, command.source_dtm_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.rtc_value) sqlite3_bind_int64(st.st, 10, *command.rtc_value); else sqlite3_bind_null(st.st, 10);
+    sqlite3_bind_text(st.st, 11, command.effective_dtm_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.itinerary_artifact_id) sqlite3_bind_int64(st.st, 12, *command.itinerary_artifact_id); else sqlite3_bind_null(st.st, 12);
+    if (command.itinerary_sha256) sqlite3_bind_text(st.st, 13, command.itinerary_sha256->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st.st, 13);
+    sqlite3_bind_int64(st.st, 14, command.required_final_breakpoint_pc);
+    sqlite3_bind_int(st.st, 15, command.capture_root_checkpoint ? 1 : 0);
+    sqlite3_bind_int64(st.st, 16, command.full_phase_program_kind);
+    sqlite3_bind_int64(st.st, 17, command.full_phase_program_version);
+    sqlite3_bind_text(st.st, 18, command.full_phase_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 19, command.full_phase_contract_revision);
+    sqlite3_bind_text(st.st, 20, command.full_phase_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 21, command.module_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 22, command.module_revision);
+    sqlite3_bind_text(st.st, 23, command.module_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 24, command.created_at_utc.time_since_epoch().count());
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (validation_request_id_out) *validation_request_id_out = sqlite3_last_insert_rowid(db_);
+    return true;
+}
+
+std::optional<TasMovieValidationAttemptRecord> SqliteAnalysisDb::GetTasMovieValidationAttempt(
+    std::int64_t validation_attempt_id) const {
+    if (db_ == nullptr || validation_attempt_id <= 0) return std::nullopt;
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT validation_attempt_id,validation_request_id,source_job_id,worker_terminal_sha256,outcome,"
+        "failure_reason,expected_pc,expected_input_count,actual_pc,actual_input_count,last_verified_itinerary_index,"
+        "last_known_good_savestate_id,candidate_itinerary_artifact_id,candidate_itinerary_sha256,"
+        "produced_tas_movie_root_id,worker_id,worker_process_generation,workset_epoch,recorded_at_utc "
+        "FROM tmv_validation_attempt WHERE validation_attempt_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, validation_attempt_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return ReadTasMovieValidationAttempt(st.st);
+}
+
+std::optional<TasMovieValidationAttemptRecord> SqliteAnalysisDb::FindTasMovieValidationAttempt(
+    std::int64_t source_job_id,
+    std::string_view worker_terminal_sha256) const {
+    if (db_ == nullptr || source_job_id <= 0 || worker_terminal_sha256.empty()) return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(db_, "SELECT validation_attempt_id FROM tmv_validation_attempt WHERE source_job_id=?1 AND worker_terminal_sha256=?2;", -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, source_job_id);
+    sqlite3_bind_text(st.st, 2, worker_terminal_sha256.data(), static_cast<int>(worker_terminal_sha256.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieValidationAttempt(sqlite3_column_int64(st.st, 0));
+}
+
+bool SqliteAnalysisDb::RecordTasMovieValidationAttempt(
+    const RecordTasMovieValidationAttemptCommand& command,
+    std::int64_t* validation_attempt_id_out,
+    std::string* error_out) {
+    const bool root_cursor = command.outcome == TasMovieValidationOutcome::RootCursorEstablished
+        && command.failure_reason == TasMovieValidationFailureReason::None
+        && command.candidate_itinerary_artifact_id && command.candidate_itinerary_sha256
+        && IsLowerHexSha256(*command.candidate_itinerary_sha256)
+        && !command.produced_tas_movie_root_id
+        && !command.expected_pc && !command.expected_input_count
+        && !command.last_verified_itinerary_index;
+    const bool valid = command.outcome == TasMovieValidationOutcome::Valid
+        && command.failure_reason == TasMovieValidationFailureReason::None
+        && !command.candidate_itinerary_artifact_id && !command.candidate_itinerary_sha256
+        && !command.expected_pc && !command.expected_input_count;
+    const bool invalid = command.outcome == TasMovieValidationOutcome::Invalid
+        && command.failure_reason != TasMovieValidationFailureReason::None
+        && !command.candidate_itinerary_artifact_id && !command.candidate_itinerary_sha256
+        && !command.produced_tas_movie_root_id;
+    constexpr auto kI64Max = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (db_ == nullptr || command.validation_request_id <= 0 || command.source_job_id <= 0
+        || !IsLowerHexSha256(command.worker_terminal_sha256) || command.worker_id.empty()
+        || command.actual_input_count > kI64Max
+        || (command.expected_input_count && *command.expected_input_count > kI64Max)
+        || (command.last_verified_itinerary_index && *command.last_verified_itinerary_index > kI64Max)
+        || command.worker_process_generation > kI64Max
+        || command.workset_epoch > kI64Max
+        || !(root_cursor || valid || invalid)) {
+        if (error_out) *error_out = "invalid immutable TAS movie validation attempt";
+        return false;
+    }
+    const auto request = GetTasMovieValidationRequest(command.validation_request_id);
+    if (!request.has_value()) {
+        if (error_out) *error_out = "TAS movie validation request does not exist";
+        return false;
+    }
+    const bool request_outcome_matches =
+        (root_cursor
+            && request->operation
+                == TasMovieValidationOperation::EstablishRootCursor)
+        || ((valid || invalid)
+            && request->operation == TasMovieValidationOperation::Validate);
+    const bool root_publication_matches =
+        !valid
+        || (request->capture_root_checkpoint
+                ? command.produced_tas_movie_root_id.has_value()
+                : !command.produced_tas_movie_root_id.has_value());
+    if (!request_outcome_matches || !root_publication_matches) {
+        if (error_out)
+            *error_out =
+                "TAS movie validation attempt does not match its immutable request";
+        return false;
+    }
+    if (const auto existing = FindTasMovieValidationAttempt(command.source_job_id, command.worker_terminal_sha256); existing.has_value()) {
+        if (!TasMovieValidationAttemptIdentityMatches(*existing, command)) {
+            if (error_out) *error_out = "worker terminal already identifies a different TAS movie validation attempt";
+            return false;
+        }
+        if (validation_attempt_id_out) *validation_attempt_id_out = existing->validation_attempt_id;
+        return true;
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO tmv_validation_attempt(validation_request_id,source_job_id,worker_terminal_sha256,outcome,"
+        "failure_reason,expected_pc,expected_input_count,actual_pc,actual_input_count,last_verified_itinerary_index,"
+        "last_known_good_savestate_id,candidate_itinerary_artifact_id,candidate_itinerary_sha256,produced_tas_movie_root_id,"
+        "worker_id,worker_process_generation,workset_epoch,recorded_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18);";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, command.validation_request_id);
+    sqlite3_bind_int64(st.st, 2, command.source_job_id);
+    sqlite3_bind_text(st.st, 3, command.worker_terminal_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    const auto outcome = ToDbString(command.outcome);
+    sqlite3_bind_text(st.st, 4, outcome.data(), static_cast<int>(outcome.size()), SQLITE_TRANSIENT);
+    if (invalid) {
+        const auto reason = ToDbString(command.failure_reason);
+        sqlite3_bind_text(st.st, 5, reason.data(), static_cast<int>(reason.size()), SQLITE_TRANSIENT);
+    } else sqlite3_bind_null(st.st, 5);
+    if (command.expected_pc) sqlite3_bind_int64(st.st, 6, *command.expected_pc); else sqlite3_bind_null(st.st, 6);
+    if (command.expected_input_count) sqlite3_bind_int64(st.st, 7, static_cast<std::int64_t>(*command.expected_input_count)); else sqlite3_bind_null(st.st, 7);
+    sqlite3_bind_int64(st.st, 8, command.actual_pc);
+    sqlite3_bind_int64(st.st, 9, static_cast<std::int64_t>(command.actual_input_count));
+    if (command.last_verified_itinerary_index) sqlite3_bind_int64(st.st, 10, static_cast<std::int64_t>(*command.last_verified_itinerary_index)); else sqlite3_bind_null(st.st, 10);
+    if (command.last_known_good_savestate_id) sqlite3_bind_int64(st.st, 11, *command.last_known_good_savestate_id); else sqlite3_bind_null(st.st, 11);
+    if (command.candidate_itinerary_artifact_id) sqlite3_bind_int64(st.st, 12, *command.candidate_itinerary_artifact_id); else sqlite3_bind_null(st.st, 12);
+    if (command.candidate_itinerary_sha256) sqlite3_bind_text(st.st, 13, command.candidate_itinerary_sha256->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st.st, 13);
+    if (command.produced_tas_movie_root_id) sqlite3_bind_int64(st.st, 14, *command.produced_tas_movie_root_id); else sqlite3_bind_null(st.st, 14);
+    sqlite3_bind_text(st.st, 15, command.worker_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 16, static_cast<std::int64_t>(command.worker_process_generation));
+    sqlite3_bind_int64(st.st, 17, static_cast<std::int64_t>(command.workset_epoch));
+    sqlite3_bind_int64(st.st, 18, command.recorded_at_utc.time_since_epoch().count());
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (request->operation == TasMovieValidationOperation::Validate && (valid || invalid)) {
+        Statement status;
+        constexpr const char* kStatusSql =
+            "INSERT INTO tmv_dtm_validation_status(effective_dtm_sha256,status,validation_attempt_id,updated_at_utc) "
+            "VALUES(?1,?2,?3,?4) ON CONFLICT(effective_dtm_sha256) DO UPDATE SET "
+            "status=excluded.status,validation_attempt_id=excluded.validation_attempt_id,updated_at_utc=excluded.updated_at_utc;";
+        if (sqlite3_prepare_v2(db_, kStatusSql, -1, &status.st, nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        sqlite3_bind_text(status.st, 1, request->effective_dtm_sha256.c_str(), -1, SQLITE_TRANSIENT);
+        const auto status_value = valid ? "VALID" : "QUARANTINED";
+        sqlite3_bind_text(status.st, 2, status_value, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(status.st, 3, id);
+        sqlite3_bind_int64(status.st, 4, command.recorded_at_utc.time_since_epoch().count());
+        if (sqlite3_step(status.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+    }
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (validation_attempt_id_out) *validation_attempt_id_out = id;
+    return true;
+}
+
+std::optional<TasMovieValidationStatusRecord> SqliteAnalysisDb::GetTasMovieValidationStatus(
+    std::string_view effective_dtm_sha256) const {
+    if (db_ == nullptr || !IsLowerHexSha256(effective_dtm_sha256)) return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(db_, "SELECT effective_dtm_sha256,status,validation_attempt_id,updated_at_utc FROM tmv_dtm_validation_status WHERE effective_dtm_sha256=?1;", -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_text(st.st, 1, effective_dtm_sha256.data(), static_cast<int>(effective_dtm_sha256.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    TasMovieValidationStatusRecord row{};
+    row.effective_dtm_sha256 = ColumnText(st.st, 0);
+    row.status = ParseTasMovieValidationStatus(ColumnText(st.st, 1));
+    row.validation_attempt_id = sqlite3_column_int64(st.st, 2);
+    row.updated_at_utc = ColumnTime(st.st, 3);
+    return row;
+}
+
 std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const {
     if (db_ == nullptr || probe_run_id <= 0) {
         return std::nullopt;
@@ -727,7 +1187,7 @@ std::optional<SeedProbeResultRow> SqliteAnalysisDb::GetSeedProbeResult(
     if (sqlite3_prepare_v2(
             db_,
             "SELECT probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,"
-            "origin_worker_id,origin_process_generation,origin_state_epoch,terminal_sha256,"
+            "origin_worker_id,origin_process_generation,origin_workset_epoch,terminal_sha256,"
             "confirmation_of_probe_result_id,evidence_state,recorded_at_utc "
             "FROM sp_probe_result WHERE probe_result_id=?1;",
             -1,
@@ -751,7 +1211,7 @@ std::optional<SeedProbeResultRow> SqliteAnalysisDb::GetSeedProbeResultForSourceJ
     if (sqlite3_prepare_v2(
             db_,
             "SELECT probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,"
-            "origin_worker_id,origin_process_generation,origin_state_epoch,terminal_sha256,"
+            "origin_worker_id,origin_process_generation,origin_workset_epoch,terminal_sha256,"
             "confirmation_of_probe_result_id,evidence_state,recorded_at_utc "
             "FROM sp_probe_result WHERE source_job_id=?1;",
             -1,
@@ -776,7 +1236,7 @@ std::vector<SeedProbeResultRow> SqliteAnalysisDb::ListSeedProbeResults(
     if (sqlite3_prepare_v2(
             db_,
             "SELECT probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,"
-            "origin_worker_id,origin_process_generation,origin_state_epoch,terminal_sha256,"
+            "origin_worker_id,origin_process_generation,origin_workset_epoch,terminal_sha256,"
             "confirmation_of_probe_result_id,evidence_state,recorded_at_utc "
             "FROM sp_probe_result WHERE probe_run_id=?1 ORDER BY probe_result_id ASC;",
             -1,
@@ -802,7 +1262,7 @@ std::optional<SeedProbeResultRow> SqliteAnalysisDb::FindConfirmedSeedProbeResult
     if (sqlite3_prepare_v2(
             db_,
             "SELECT r.probe_result_id,r.probe_run_id,r.input_frame_id,r.source_job_id,r.seed_value,"
-            "r.origin_worker_id,r.origin_process_generation,r.origin_state_epoch,r.terminal_sha256,"
+            "r.origin_worker_id,r.origin_process_generation,r.origin_workset_epoch,r.terminal_sha256,"
             "r.confirmation_of_probe_result_id,r.evidence_state,r.recorded_at_utc "
             "FROM sp_probe_run pr "
             "JOIN sp_probe_result r ON r.probe_run_id=pr.probe_run_id "
@@ -1039,8 +1499,8 @@ bool SqliteAnalysisDb::RecordSeedProbeObservation(
         || command.origin_process_generation == 0
         || command.origin_process_generation > static_cast<std::uint64_t>(
             (std::numeric_limits<std::int64_t>::max)())
-        || command.origin_state_epoch == 0
-        || command.origin_state_epoch > static_cast<std::uint64_t>(
+        || command.origin_workset_epoch == 0
+        || command.origin_workset_epoch > static_cast<std::uint64_t>(
             (std::numeric_limits<std::int64_t>::max)())
         || !IsLowerHexSha256(command.terminal_sha256)
         || (command.confirmation_of_probe_result_id.has_value()
@@ -1071,7 +1531,7 @@ bool SqliteAnalysisDb::RecordSeedProbeObservation(
         if (sqlite3_prepare_v2(
                 db_,
                 "SELECT probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,"
-                "origin_worker_id,origin_process_generation,origin_state_epoch,terminal_sha256,"
+                "origin_worker_id,origin_process_generation,origin_workset_epoch,terminal_sha256,"
                 "confirmation_of_probe_result_id,evidence_state,recorded_at_utc "
                 "FROM sp_probe_result WHERE source_job_id=?1;",
                 -1, &existing.st, nullptr) != SQLITE_OK) {
@@ -1089,7 +1549,7 @@ bool SqliteAnalysisDb::RecordSeedProbeObservation(
                 && row.origin_worker_id == command.origin_worker_id
                 && row.origin_process_generation
                     == command.origin_process_generation
-                && row.origin_state_epoch == command.origin_state_epoch
+                && row.origin_workset_epoch == command.origin_workset_epoch
                 && row.terminal_sha256 == command.terminal_sha256
                 && row.confirmation_of_probe_result_id
                     == command.confirmation_of_probe_result_id;
@@ -1210,7 +1670,7 @@ bool SqliteAnalysisDb::RecordSeedProbeObservation(
             if (sqlite3_prepare_v2(
                     db_,
                     "SELECT probe_run_id,input_frame_id,source_job_id,origin_worker_id,"
-                    "origin_process_generation,origin_state_epoch,confirmation_of_probe_result_id "
+                    "origin_process_generation,origin_workset_epoch,confirmation_of_probe_result_id "
                     "FROM sp_probe_result WHERE probe_result_id=?1;",
                     -1, &provisional.st, nullptr) != SQLITE_OK) {
                 return fail(sqlite3_errmsg(db_));
@@ -1233,11 +1693,11 @@ bool SqliteAnalysisDb::RecordSeedProbeObservation(
                         == command.origin_process_generation
                     && static_cast<std::uint64_t>(
                         sqlite3_column_int64(provisional.st, 5))
-                        == command.origin_state_epoch)
+                        == command.origin_workset_epoch)
                 || sqlite3_column_type(provisional.st, 6)
                     != SQLITE_NULL) {
                 return fail(
-                    "confirmation must reference a representative from the same run and frame with a distinct job and scoped StateEpoch");
+                    "confirmation must reference a representative from the same run and frame with a distinct job and scoped WorksetEpoch");
             }
         }
 
@@ -1246,7 +1706,7 @@ bool SqliteAnalysisDb::RecordSeedProbeObservation(
                 db_,
                 "INSERT INTO sp_probe_result("
                 "probe_run_id,input_frame_id,source_job_id,seed_value,origin_worker_id,"
-                "origin_process_generation,origin_state_epoch,terminal_sha256,"
+                "origin_process_generation,origin_workset_epoch,terminal_sha256,"
                 "confirmation_of_probe_result_id,evidence_state,recorded_at_utc) "
                 "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'OBSERVED',?10);",
                 -1, &insert_result.st, nullptr) != SQLITE_OK) {
@@ -1262,7 +1722,7 @@ bool SqliteAnalysisDb::RecordSeedProbeObservation(
         sqlite3_bind_int64(insert_result.st, 6,
             static_cast<std::int64_t>(command.origin_process_generation));
         sqlite3_bind_int64(insert_result.st, 7,
-            static_cast<std::int64_t>(command.origin_state_epoch));
+            static_cast<std::int64_t>(command.origin_workset_epoch));
         sqlite3_bind_text(insert_result.st, 8,
             command.terminal_sha256.c_str(), -1, SQLITE_TRANSIENT);
         if (command.confirmation_of_probe_result_id.has_value()) {
@@ -1292,7 +1752,7 @@ bool SqliteAnalysisDb::RecordSeedProbeObservation(
         if (sqlite3_prepare_v2(
                 db_,
                 "SELECT probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,"
-                "origin_worker_id,origin_process_generation,origin_state_epoch,terminal_sha256,"
+                "origin_worker_id,origin_process_generation,origin_workset_epoch,terminal_sha256,"
                 "confirmation_of_probe_result_id,evidence_state,recorded_at_utc "
                 "FROM sp_probe_result WHERE probe_result_id=?1;",
                 -1, &inserted.st, nullptr) != SQLITE_OK) {
@@ -1359,7 +1819,7 @@ bool SqliteAnalysisDb::TransitionSeedProbeEvidence(
         if (sqlite3_prepare_v2(
             db_,
             "SELECT probe_run_id,evidence_state,seed_value,source_job_id,origin_worker_id,"
-            "origin_process_generation,origin_state_epoch,confirmation_of_probe_result_id "
+            "origin_process_generation,origin_workset_epoch,confirmation_of_probe_result_id "
             "FROM sp_probe_result WHERE probe_result_id=?1;",
             -1,
             &current.st,
@@ -1381,7 +1841,7 @@ bool SqliteAnalysisDb::TransitionSeedProbeEvidence(
     const auto source_job_id = sqlite3_column_int64(current.st, 3);
     const auto origin_worker_id = sqlite3_column_int64(current.st, 4);
     const auto origin_process_generation = sqlite3_column_int64(current.st, 5);
-    const auto origin_state_epoch = sqlite3_column_int64(current.st, 6);
+    const auto origin_workset_epoch = sqlite3_column_int64(current.st, 6);
     if (sqlite3_column_type(current.st, 7) != SQLITE_NULL) {
         if (error_out) *error_out = "confirmation observations cannot become evidence representatives";
         rollback();
@@ -1436,7 +1896,7 @@ bool SqliteAnalysisDb::TransitionSeedProbeEvidence(
                 "SELECT 1 FROM sp_probe_result "
                 "WHERE confirmation_of_probe_result_id=?1 AND seed_value=?2 "
                 "AND source_job_id<>?3 "
-                "AND (origin_worker_id<>?4 OR origin_process_generation<>?5 OR origin_state_epoch<>?6) "
+                "AND (origin_worker_id<>?4 OR origin_process_generation<>?5 OR origin_workset_epoch<>?6) "
                 "LIMIT 1;",
                 -1,
                 &confirmation.st,
@@ -1451,9 +1911,9 @@ bool SqliteAnalysisDb::TransitionSeedProbeEvidence(
         sqlite3_bind_int64(confirmation.st, 3, source_job_id);
         sqlite3_bind_int64(confirmation.st, 4, origin_worker_id);
         sqlite3_bind_int64(confirmation.st, 5, origin_process_generation);
-        sqlite3_bind_int64(confirmation.st, 6, origin_state_epoch);
+        sqlite3_bind_int64(confirmation.st, 6, origin_workset_epoch);
         if (sqlite3_step(confirmation.st) != SQLITE_ROW) {
-            if (error_out) *error_out = "confirmation requires an equal observation from a distinct job and scoped StateEpoch";
+            if (error_out) *error_out = "confirmation requires an equal observation from a distinct job and scoped WorksetEpoch";
             rollback();
             return false;
         }

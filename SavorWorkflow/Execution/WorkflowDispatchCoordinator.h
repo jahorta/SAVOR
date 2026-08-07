@@ -20,7 +20,6 @@ public:
 
     bool DispatchNextEligibleForWorker(
         std::size_t worker_idx,
-        const std::optional<std::string>& worker_savestate_affinity,
         std::chrono::steady_clock::time_point now);
 
 private:

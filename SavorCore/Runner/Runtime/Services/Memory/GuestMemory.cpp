@@ -10,7 +10,7 @@ GuestMemory::GuestMemory(IGuestMemoryBackendPort& backend)
 {
 }
 
-void GuestMemory::CommitStateEpoch(StateEpoch epoch) noexcept
+void GuestMemory::InitializeWorksetEpoch(WorksetEpoch epoch) noexcept
 {
     if (!OnOwnerThread())
         return;
@@ -20,7 +20,7 @@ void GuestMemory::CommitStateEpoch(StateEpoch epoch) noexcept
 GuestReadReceipt GuestMemory::ReadScalar(
     std::uint32_t address,
     GuestScalarWidth width,
-    StateEpoch epoch) const
+    WorksetEpoch epoch) const
 {
     if (!OnOwnerThread())
     {
@@ -61,7 +61,7 @@ GuestReadReceipt GuestMemory::ReadScalar(
 GuestBytesResult GuestMemory::ReadBytes(
     std::uint32_t address,
     std::size_t size,
-    StateEpoch epoch) const
+    WorksetEpoch epoch) const
 {
     if (!OnOwnerThread())
     {

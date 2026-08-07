@@ -158,6 +158,8 @@
     <ClCompile Include="test_program_verifier.cpp" />
     <ClCompile Include="test_semantic_observation_composition.cpp" />
     <ClCompile Include="test_seedprobe_module.cpp" />
+    <ClCompile Include="test_tas_movie_validation_module.cpp" />
+    <ClCompile Include="test_tas_movie_validation_persistence.cpp" />
     <ClCompile Include="test_job_execution_coordinator.cpp" />
     <ClCompile Include="test_worker_startup_barrier.cpp" />
     <ClCompile Include="test_worker_result_blob_store.cpp" />
@@ -166,7 +168,7 @@
     <ClCompile Include="test_session_services.cpp" />
     <ClCompile Include="test_movie_service.cpp" />
     <ClCompile Include="test_session_resource_ledger.cpp" />
-    <ClCompile Include="test_state_service.cpp" />
+    <ClCompile Include="test_savestate_service.cpp" />
     <ClCompile Include="test_emulation_session_stop_points.cpp" />
     <ClCompile Include="test_dolphin_stop_point_integration.cpp" />
     <ClCompile Include="test_legacy_stop_point_translation.cpp" />

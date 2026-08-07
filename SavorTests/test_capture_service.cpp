@@ -29,7 +29,6 @@ ProbeRouterAdapterConfig AdapterConfig()
         .group_id = StopSubscriptionGroupId(1702),
         .first_subscription_id = StopSubscriptionId(1710),
         .cpu_observer_descriptor_id = 1799,
-        .epoch_policy = StopEpochPolicy::RebindAfterRestore,
         .priority = -50,
     };
 }
@@ -66,16 +65,12 @@ struct FakeCaptureState
     std::string received_profile_json;
     std::vector<RoutedStopEvent> observed;
     std::vector<StopDelivery> delivered;
-    std::vector<StateEpoch> resumed_epochs;
     std::vector<std::pair<std::string, std::uint64_t>> markers;
     std::size_t create_count = 0;
     std::size_t start_count = 0;
-    std::size_t prepare_count = 0;
     std::size_t finalize_count = 0;
     bool active = false;
     bool fail_start = false;
-    bool fail_prepare = false;
-    bool fail_resume = false;
     bool reconcile_on_delivery = false;
 };
 
@@ -86,7 +81,6 @@ StopSubscriptionGroupDefinition DefinitionAt(
     return {
         .id = config.group_id,
         .source = config.source,
-        .epoch_policy = StopEpochPolicy::RebindAfterRestore,
         .subscriptions = {
             StopSubscriptionDefinition{
                 .id = config.first_subscription_id,
@@ -167,8 +161,6 @@ public:
                 : StopSubscriptionGroupDefinition{
                     .id = state_->config.group_id,
                     .source = state_->config.source,
-                    .epoch_policy =
-                        StopEpochPolicy::RebindAfterRestore,
                 },
         };
         return true;
@@ -194,36 +186,6 @@ public:
         if (!state_->active || id.empty())
             return false;
         state_->markers.emplace_back(id, value);
-        return true;
-    }
-
-    bool PrepareForStateReplacement(
-        std::string* error_out) override
-    {
-        ++state_->prepare_count;
-        if (state_->fail_prepare)
-        {
-            if (error_out)
-                *error_out = "injected capture prepare failure";
-            return false;
-        }
-        return true;
-    }
-
-    bool ResumeAfterStateReplacement(
-        StateEpoch epoch,
-        std::string* error_out) override
-    {
-        state_->resumed_epochs.push_back(epoch);
-        if (state_->fail_resume)
-        {
-            if (error_out)
-                *error_out = "injected capture resume failure";
-            return false;
-        }
-        state_->definition = DefinitionAt(
-            state_->config,
-            kInitialPc + static_cast<std::uint32_t>(epoch.value()));
         return true;
     }
 
@@ -304,9 +266,9 @@ struct ServiceFixture
           service(capture_backend, AdapterConfig()),
           router(manager, nullptr, &service)
     {
-        EXPECT_TRUE(router.Initialize(StateEpoch(1)).ok);
+        EXPECT_TRUE(router.Initialize(WorksetEpoch(1)).ok);
         EXPECT_TRUE(
-            service.BindRouter(router, StateEpoch(1)).ok);
+            service.BindRouter(router, WorksetEpoch(1)).ok);
     }
 
     ~ServiceFixture()
@@ -319,7 +281,7 @@ struct ServiceFixture
     {
         return service.Attach({
             .profile_json = ProfileJson(),
-            .expected_epoch = StateEpoch(1),
+            .expected_epoch = WorksetEpoch(1),
         });
     }
 
@@ -338,7 +300,7 @@ TEST(CaptureService, RejectsInvalidProfileBeforeCreatingAdapter)
     ServiceFixture fixture;
     const auto attached = fixture.service.Attach({
         .profile_json = "{not-json",
-        .expected_epoch = StateEpoch(1),
+        .expected_epoch = WorksetEpoch(1),
     });
     EXPECT_FALSE(attached.ok);
     EXPECT_EQ(
@@ -464,7 +426,6 @@ TEST(
             .stable_name = "capture.service.wake",
             .diagnostic_label = "capture service wake",
         },
-        .epoch_policy = StopEpochPolicy::EndOnEpochChange,
         .subscriptions = {
             StopSubscriptionDefinition{
                 .id = StopSubscriptionId(1801),
@@ -545,104 +506,6 @@ TEST(
     EXPECT_EQ(
         fixture.service.snapshot().reconcile_count,
         1u);
-}
-
-TEST(
-    CaptureService,
-    PreservesAttachmentAndRebindsAfterEpochReplacement)
-{
-    ServiceFixture fixture;
-    const auto attached = fixture.Attach();
-    ASSERT_TRUE(attached.ok) << attached.error.message;
-
-    ASSERT_TRUE(
-        fixture.service.PrepareStateReplacement(
-            StateEpoch(1)).ok);
-    ASSERT_TRUE(
-        fixture.router.PrepareStateReplacement(
-            StateEpoch(1)).ok);
-    ASSERT_TRUE(
-        fixture.router.CommitStateReplacement(
-            StateEpoch(2)).ok);
-    const auto committed =
-        fixture.service.CommitStateReplacement(StateEpoch(2));
-    ASSERT_TRUE(committed.ok)
-        << committed.error.message;
-
-    const auto snapshot = fixture.service.snapshot();
-    EXPECT_TRUE(snapshot.attached);
-    EXPECT_EQ(snapshot.attachment, attached.attachment);
-    EXPECT_EQ(snapshot.epoch, StateEpoch(2));
-    ASSERT_EQ(
-        fixture.capture_state->resumed_epochs.size(),
-        1u);
-    EXPECT_EQ(
-        fixture.capture_state->resumed_epochs[0],
-        StateEpoch(2));
-    ASSERT_EQ(
-        fixture.router.DesiredPhysicalPlan().pcs.size(),
-        1u);
-    EXPECT_EQ(
-        fixture.router.DesiredPhysicalPlan().pcs[0].pc,
-        kInitialPc + 2);
-}
-
-TEST(CaptureService, RollbackRebindsAtPreservedEpoch)
-{
-    ServiceFixture fixture;
-    ASSERT_TRUE(fixture.Attach().ok);
-    ASSERT_TRUE(
-        fixture.service.PrepareStateReplacement(
-            StateEpoch(1)).ok);
-    ASSERT_TRUE(
-        fixture.router.PrepareStateReplacement(
-            StateEpoch(1)).ok);
-    ASSERT_TRUE(
-        fixture.router.RollbackStateReplacement(
-            StateEpoch(1)).ok);
-    const auto rolled_back =
-        fixture.service.RollbackStateReplacement(
-            StateEpoch(1));
-    ASSERT_TRUE(rolled_back.ok)
-        << rolled_back.error.message;
-    ASSERT_EQ(
-        fixture.capture_state->resumed_epochs.size(),
-        1u);
-    EXPECT_EQ(
-        fixture.capture_state->resumed_epochs[0],
-        StateEpoch(1));
-}
-
-TEST(
-    CaptureService,
-    DetachedServiceTracksReplacementEpochForLaterAttachment)
-{
-    ServiceFixture fixture;
-    ASSERT_TRUE(
-        fixture.service.PrepareStateReplacement(
-            StateEpoch(1)).ok);
-    ASSERT_TRUE(
-        fixture.router.PrepareStateReplacement(
-            StateEpoch(1)).ok);
-    ASSERT_TRUE(
-        fixture.router.CommitStateReplacement(
-            StateEpoch(2)).ok);
-    const auto committed =
-        fixture.service.CommitStateReplacement(StateEpoch(2));
-    ASSERT_TRUE(committed.ok)
-        << committed.error.message;
-    EXPECT_FALSE(fixture.service.snapshot().attached);
-    EXPECT_EQ(
-        fixture.service.snapshot().epoch,
-        StateEpoch(2));
-
-    const auto attached = fixture.service.Attach({
-        .profile_json = ProfileJson(),
-        .expected_epoch = StateEpoch(2),
-    });
-    ASSERT_TRUE(attached.ok)
-        << attached.error.message;
-    EXPECT_EQ(attached.epoch, StateEpoch(2));
 }
 
 TEST(CaptureService, DetachReleasesGroupAndFinalizesArtifacts)
@@ -755,29 +618,6 @@ TEST(CaptureService, FinalizationFailureRequiresTaintAndBlocksNewAttachment)
     EXPECT_EQ(
         second_shutdown.requires_session_taint,
         first_shutdown.requires_session_taint);
-}
-
-TEST(CaptureService, ResumeFailureRequiresSessionTaint)
-{
-    ServiceFixture fixture;
-    fixture.capture_state->fail_resume = true;
-    ASSERT_TRUE(fixture.Attach().ok);
-    ASSERT_TRUE(
-        fixture.service.PrepareStateReplacement(
-            StateEpoch(1)).ok);
-    ASSERT_TRUE(
-        fixture.router.PrepareStateReplacement(
-            StateEpoch(1)).ok);
-    ASSERT_TRUE(
-        fixture.router.CommitStateReplacement(
-            StateEpoch(2)).ok);
-    const auto committed =
-        fixture.service.CommitStateReplacement(StateEpoch(2));
-    EXPECT_FALSE(committed.ok);
-    EXPECT_EQ(
-        committed.error.code,
-        CaptureServiceErrorCode::StateReplacementFailed);
-    EXPECT_TRUE(committed.requires_session_taint);
 }
 
 } // namespace

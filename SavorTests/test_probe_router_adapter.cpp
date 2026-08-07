@@ -66,7 +66,6 @@ ProbeRouterAdapterConfig AdapterConfig()
         .group_id = StopSubscriptionGroupId(702),
         .first_subscription_id = StopSubscriptionId(710),
         .cpu_observer_descriptor_id = 799,
-        .epoch_policy = StopEpochPolicy::RebindAfterRestore,
         .priority = -50,
     };
 }
@@ -127,7 +126,7 @@ StopDelivery PcDelivery(
     delivery.event.identity = {
         RoutedStopSequence(sequence),
         StopSampleSnapshotId(snapshot),
-        StateEpoch(epoch),
+        WorksetEpoch(epoch),
         StopDispatchGeneration(1),
     };
     delivery.event.evidence = {
@@ -157,7 +156,7 @@ StopDelivery MemoryDelivery(
     delivery.event.identity = {
         RoutedStopSequence(sequence),
         StopSampleSnapshotId(snapshot),
-        StateEpoch(epoch),
+        WorksetEpoch(epoch),
         StopDispatchGeneration(1),
     };
     delivery.event.evidence = {
@@ -230,9 +229,6 @@ TEST(CaptureRouterAdapter, LowersOnlySourceScopedPassiveRequirements)
     ASSERT_TRUE(built.ok) << built.error;
     EXPECT_EQ(built.definition.id, config.group_id);
     EXPECT_EQ(built.definition.source.id, config.source.id);
-    EXPECT_EQ(
-        built.definition.epoch_policy,
-        StopEpochPolicy::RebindAfterRestore);
     ASSERT_EQ(built.definition.subscriptions.size(), 4u);
 
     const auto* capture = FindPc(built.definition, kCapturePc);
@@ -402,10 +398,10 @@ TEST(
     ASSERT_EQ(progress_events.size(), 2u);
     EXPECT_EQ(progress_events[0].capture_sequence, 41u);
     EXPECT_EQ(progress_events[0].snapshot_id, 51u);
-    EXPECT_EQ(progress_events[0].guest_state_epoch, 7u);
+    EXPECT_EQ(progress_events[0].guest_workset_epoch, 7u);
     EXPECT_EQ(progress_events[1].capture_sequence, 42u);
     EXPECT_EQ(progress_events[1].snapshot_id, 52u);
-    EXPECT_EQ(progress_events[1].guest_state_epoch, 8u);
+    EXPECT_EQ(progress_events[1].guest_workset_epoch, 8u);
     EXPECT_FALSE(adapter.TakeReconcileRequest().has_value());
 }
 
@@ -529,7 +525,7 @@ TEST(
     ASSERT_EQ(progress_events.size(), 1u);
     EXPECT_EQ(progress_events[0].capture_sequence, 81u);
     EXPECT_EQ(progress_events[0].snapshot_id, 91u);
-    EXPECT_EQ(progress_events[0].guest_state_epoch, 11u);
+    EXPECT_EQ(progress_events[0].guest_workset_epoch, 11u);
     const auto sample = std::ranges::find_if(
         progress_events[0].fields,
         [](const savor::capture_format::Field& field) {
@@ -575,7 +571,7 @@ TEST(
         config);
     StopPointRouter router(manager, nullptr, &adapter);
 
-    ASSERT_TRUE(router.Initialize(StateEpoch(1)).ok);
+    ASSERT_TRUE(router.Initialize(WorksetEpoch(1)).ok);
     std::string error;
     ASSERT_TRUE(adapter.Start(profile, {}, &error)) << error;
     auto capture_definition =
@@ -595,7 +591,6 @@ TEST(
             .stable_name = "interaction.test",
             .diagnostic_label = "interaction test wake",
         },
-        .epoch_policy = StopEpochPolicy::EndOnEpochChange,
         .subscriptions = {
             StopSubscriptionDefinition{
                 .id = StopSubscriptionId(881),

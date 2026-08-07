@@ -17,7 +17,7 @@ MovieServiceResult Failure(std::string message)
 
 InputMovieReservationAdapter::InputMovieReservationAdapter(
     InputArbiter& input,
-    std::function<StateEpoch()> current_epoch)
+    std::function<WorksetEpoch()> current_epoch)
     : input_(input),
       current_epoch_(std::move(current_epoch))
 {
@@ -32,9 +32,13 @@ InputMovieReservationAdapter::AcquireUnsuspendableMovieReservation()
             Failure("A movie input reservation is already active"),
             {}};
     }
-    StateEpoch epoch = current_epoch_ ? current_epoch_() : StateEpoch{};
+    WorksetEpoch epoch = current_epoch_ ? current_epoch_() : WorksetEpoch{};
     if (!epoch)
-        epoch = StateEpoch(1);
+    {
+        return {
+            Failure("A movie input reservation requires an active workset"),
+            {}};
+    }
     InputLeaseReceipt acquired = AcquireLease(epoch);
     if (!acquired.ok)
     {
@@ -68,9 +72,9 @@ InputMovieReservationAdapter::ReleaseMovieReservation(
     if (!reservation || reservation != reservation_)
         return Failure("Movie input reservation identity does not match");
 
-    StateEpoch epoch = current_epoch_ ? current_epoch_() : StateEpoch{};
+    WorksetEpoch epoch = current_epoch_ ? current_epoch_() : WorksetEpoch{};
     if (!epoch)
-        epoch = input_.snapshot().epoch;
+        return Failure("A movie input reservation cannot be released outside its workset");
     InputReleaseReceipt released = input_.BeginRelease(lease_, epoch);
     if (!released.ok ||
         released.status != InputLeaseStatus::Released)
@@ -85,53 +89,6 @@ InputMovieReservationAdapter::ReleaseMovieReservation(
     return MovieServiceResult::Success();
 }
 
-MovieServiceResult InputMovieReservationAdapter::CommitStateEpoch(
-    StateEpoch epoch) noexcept
-{
-    const bool rebind = reservation_ && lease_;
-    if (input_.snapshot().epoch == epoch)
-    {
-        const InputArbiterOperationReceipt committed =
-            input_.CommitStateEpoch(epoch);
-        if (!committed.ok)
-        {
-            return MovieServiceResult::Failure(
-                MovieServiceErrorCode::IntegrityFailure,
-                committed.message.empty()
-                    ? "InputArbiter rejected the movie state epoch"
-                    : std::string(committed.message),
-                StateIntegrity::Unknown);
-        }
-        return MovieServiceResult::Success();
-    }
-    const InputArbiterOperationReceipt invalidated =
-        input_.InvalidateForStateReplacement(epoch);
-    if (!invalidated.ok)
-    {
-        return MovieServiceResult::Failure(
-            MovieServiceErrorCode::IntegrityFailure,
-            invalidated.message.empty()
-                ? "Movie input state could not be invalidated"
-                : std::string(invalidated.message),
-            StateIntegrity::Unknown);
-    }
-    if (!rebind)
-        return MovieServiceResult::Success();
-
-    InputLeaseReceipt acquired = AcquireLease(epoch);
-    if (!acquired.ok)
-    {
-        lease_ = {};
-        return MovieServiceResult::Failure(
-            MovieServiceErrorCode::IntegrityFailure,
-            acquired.message.empty()
-                ? "Movie input reservation could not be rebound"
-                : std::move(acquired.message),
-            StateIntegrity::Unknown);
-    }
-    lease_ = acquired.lease;
-    return MovieServiceResult::Success();
-}
 
 MovieServiceResult InputMovieReservationAdapter::Shutdown() noexcept
 {
@@ -141,7 +98,7 @@ MovieServiceResult InputMovieReservationAdapter::Shutdown() noexcept
 }
 
 InputLeaseReceipt InputMovieReservationAdapter::AcquireLease(
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     InputLeaseRequest request;
     request.owner = InputOwnerId(1);

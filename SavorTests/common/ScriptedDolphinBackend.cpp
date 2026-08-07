@@ -27,11 +27,18 @@ void ScriptedDolphinBackendControl::SetOpenResult(
     open_core_state = state;
 }
 
-void ScriptedDolphinBackendControl::SetRebootResult(
-    runtime::BackendResult result)
+void ScriptedDolphinBackendControl::SetCoreStopResult(
+    runtime::MovieBackendResult result)
 {
     std::lock_guard lock(mutex);
-    reboot_result = std::move(result);
+    core_stop_result = std::move(result);
+}
+
+void ScriptedDolphinBackendControl::SetCoreStartResult(
+    runtime::MovieBackendResult result)
+{
+    std::lock_guard lock(mutex);
+    core_start_result = std::move(result);
 }
 
 void ScriptedDolphinBackendControl::SetCloseResult(
@@ -216,18 +223,48 @@ runtime::BackendResult ScriptedDolphinBackend::Open(
     return result;
 }
 
-runtime::BackendResult ScriptedDolphinBackend::Reboot()
+runtime::MovieBackendResult
+ScriptedDolphinBackend::StopCoreForPreparedReadOnlyMovie()
 {
     std::lock_guard lock(control_->mutex);
-    control_->RecordLocked("reboot");
-    ++control_->reboot_count;
-    runtime::BackendResult result = control_->reboot_result;
+    control_->RecordLocked("movie.stop-core-for-playback");
+    ++control_->core_stop_count;
+    runtime::MovieBackendResult result = control_->core_stop_result;
     if (result.ok)
-        control_->core_state = runtime::BackendCoreState::Running;
-    else if (result.integrity == runtime::BackendIntegrity::Unknown)
+        control_->core_state = runtime::BackendCoreState::Closed;
+    else if (result.integrity == runtime::GuestIntegrity::Unknown)
         control_->core_state = runtime::BackendCoreState::Unknown;
     control_->changed.notify_all();
     return result;
+}
+
+runtime::MovieBackendResult
+ScriptedDolphinBackend::StartPreparedReadOnlyMovie()
+{
+    std::lock_guard lock(control_->mutex);
+    control_->RecordLocked("movie.start-prepared-playback");
+    ++control_->core_start_count;
+    runtime::MovieBackendResult result = control_->core_start_result;
+    if (result.ok)
+    {
+        control_->core_state = runtime::BackendCoreState::Paused;
+        control_->movie_snapshot.activity =
+            runtime::MovieActivity::ReadOnlyPlayback;
+        control_->movie_snapshot.read_only = true;
+    }
+    else if (result.integrity == runtime::GuestIntegrity::Unknown)
+        control_->core_state = runtime::BackendCoreState::Unknown;
+    control_->changed.notify_all();
+    return result;
+}
+
+runtime::MovieBackendResult
+ScriptedDolphinBackend::DiscardPreparedReadOnlyMovie() noexcept
+{
+    std::lock_guard lock(control_->mutex);
+    control_->RecordLocked("movie.discard-prepared-playback");
+    control_->prepared_movie_path.clear();
+    return runtime::MovieBackendResult::Success();
 }
 
 runtime::BackendResult ScriptedDolphinBackend::Close()
@@ -265,8 +302,8 @@ runtime::BackendHealthReport ScriptedDolphinBackend::CheckHealth() const
         healthy ? std::string{} : std::string{"scripted backend is unhealthy"}};
 }
 
-runtime::StateCompatibilityToken
-ScriptedDolphinBackend::StateCompatibility() const
+runtime::ArtifactCompatibilityToken
+ScriptedDolphinBackend::SavestateCompatibility() const
 {
     return {
         .game_id = "TEST00",
@@ -547,7 +584,7 @@ runtime::BackendResult ScriptedDolphinBackend::Capture(
 }
 
 runtime::MoviePlaybackPrepareResult
-ScriptedDolphinBackend::PrepareReadOnlyPlaybackBeforeBoot(
+ScriptedDolphinBackend::PrepareReadOnlyPlaybackForRestart(
     const std::filesystem::path& dtm_path)
 {
     std::lock_guard lock(control_->mutex);
@@ -622,8 +659,8 @@ ScriptedDolphinBackend::CaptureRecordingCheckpoint()
 }
 
 runtime::MovieBackendResult
-ScriptedDolphinBackend::PrepareStateReplacement(
-    const runtime::StateReplacementContext&)
+ScriptedDolphinBackend::PrepareSavestateRestore(
+    const runtime::SavestateMovieRestoreContext&)
 {
     std::lock_guard lock(control_->mutex);
     control_->RecordLocked("movie.prepare-state");
@@ -631,8 +668,8 @@ ScriptedDolphinBackend::PrepareStateReplacement(
 }
 
 runtime::MovieBackendResult
-ScriptedDolphinBackend::CommitStateReplacement(
-    const runtime::StateReplacementContext& context)
+ScriptedDolphinBackend::CommitSavestateRestore(
+    const runtime::SavestateMovieRestoreContext& context)
 {
     std::lock_guard lock(control_->mutex);
     control_->RecordLocked("movie.commit-state");
@@ -664,8 +701,8 @@ ScriptedDolphinBackend::CommitStateReplacement(
 }
 
 runtime::MovieBackendResult
-ScriptedDolphinBackend::RollbackStateReplacement(
-    const runtime::StateReplacementContext&) noexcept
+ScriptedDolphinBackend::RollbackSavestateRestore(
+    const runtime::SavestateMovieRestoreContext&) noexcept
 {
     std::lock_guard lock(control_->mutex);
     control_->RecordLocked("movie.rollback-state");

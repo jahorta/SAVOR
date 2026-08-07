@@ -6,7 +6,7 @@
 #include "ProgramRuntime/ProgramRuntime.h"
 #include "ProgramRuntime/Registry/CanonicalActionCatalog.h"
 #include "Worksets/ProgramBaseline.h"
-#include "Worksets/StateArtifactFinalizer.h"
+#include "Worksets/SavestateArtifactFinalizer.h"
 #include "Worksets/WorkerCompletionLedger.h"
 #include "Worksets/WorksetStager.h"
 #include "Worksets/WorksetWireCodec.h"
@@ -47,7 +47,6 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
         Overloaded{
             [](const OpenSessionCommand&) { return WorkerCommandKind::OpenSession; },
             [](const PrepareModuleCommand&) { return WorkerCommandKind::PrepareModule; },
-            [](const InvokeProgramCommand&) { return WorkerCommandKind::InvokeProgram; },
             [](const SubmitWorksetCommand&) { return WorkerCommandKind::SubmitWorkset; },
             [](const CancelInvocationCommand&) { return WorkerCommandKind::CancelInvocation; },
             [](const CancelWorksetItemCommand&) { return WorkerCommandKind::CancelWorksetItem; },
@@ -86,8 +85,8 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
     case ExecutionErrorCode::InvalidState:
     case ExecutionErrorCode::Busy:
         return WorkerRejectionCode::InvalidState;
-    case ExecutionErrorCode::StateEpochMismatch:
-        return WorkerRejectionCode::StateEpochMismatch;
+    case ExecutionErrorCode::WorksetEpochMismatch:
+        return WorkerRejectionCode::WorksetEpochMismatch;
     case ExecutionErrorCode::Unsupported:
     case ExecutionErrorCode::InputUnavailable:
         return WorkerRejectionCode::Unsupported;
@@ -142,7 +141,7 @@ struct WorkerRuntime::Impl
         Command,
         ProgramEvent,
         ProgramActionRequest,
-        ProgramActionCompletion,
+        ProgramActionResolution,
         ProgramPump,
         HostEvent,
         ForceStop,
@@ -152,7 +151,7 @@ struct WorkerRuntime::Impl
     {
         HostEventSequence sequence;
         SessionId observed_session_id;
-        StateEpoch observed_state_epoch;
+        WorksetEpoch observed_workset_epoch;
         std::string name;
         std::vector<std::uint8_t> encoded_payload;
     };
@@ -164,8 +163,8 @@ struct WorkerRuntime::Impl
         std::optional<ProgramRuntimeEvent> program_event;
         std::optional<program::ProgramActionRequest>
             program_action_request;
-        std::optional<program::ProgramActionCompletion>
-            program_action_completion;
+        std::optional<program::ProgramActionResolution>
+            program_action_resolution;
         std::optional<PendingHostEvent> host_event;
     };
 
@@ -279,7 +278,7 @@ struct WorkerRuntime::Impl
     };
 
     class ArtifactFinalizerNotifier final
-        : public IStateArtifactFinalizerNotifier
+        : public ISavestateArtifactFinalizerNotifier
     {
     public:
         explicit ArtifactFinalizerNotifier(
@@ -288,7 +287,7 @@ struct WorkerRuntime::Impl
         {
         }
 
-        void NotifyStateArtifactFinalizerCompletion() noexcept override
+        void NotifySavestateArtifactFinalizerCompletion() noexcept override
         {
             if (const auto mailbox = mailbox_.lock())
                 SignalMailbox(*mailbox);
@@ -300,27 +299,68 @@ struct WorkerRuntime::Impl
 
     struct ActiveInvocation
     {
+        enum class OutputTransactionState : std::uint8_t
+        {
+            Open,
+            SealedForCommit,
+            Finalizing,
+            Committed,
+            SealedForAbandon,
+            Abandoned,
+        };
+
+        enum class OutputState : std::uint8_t
+        {
+            Adopted,
+            Finalizing,
+            Published,
+            Abandoned,
+        };
+
+        struct Output
+        {
+            program::ProgramActionRequestId action_request_id;
+            program::StagedSavestateOutput savestate;
+            OutputState state = OutputState::Adopted;
+            SavestateArtifactFinalizationId finalization_id;
+            std::optional<program::ArtifactReferenceValue> artifact;
+            std::string failure;
+        };
+
+        struct OutputTransaction
+        {
+            OutputTransactionState state = OutputTransactionState::Open;
+            std::vector<Output> outputs;
+            std::uint64_t maximum_artifacts = 0;
+            std::size_t resident_bytes = 0;
+        };
+
         InvocationId invocation_id;
         AttemptId attempt_id;
-        StateEpoch origin_epoch;
+        WorksetEpoch workset_epoch;
         CancellationSource cancellation;
         std::optional<WorkerWorksetId> workset_id;
         std::optional<WorkerWorksetItemId> workset_item_id;
         std::uint32_t workset_item_ordinal = 0;
-        std::vector<StateArtifactFinalizationId>
+        std::vector<SavestateArtifactFinalizationId>
             artifact_finalizations;
         bool artifact_publication_promoted = false;
         std::string artifact_finalization_failure;
+        OutputTransaction outputs;
+        std::optional<ProgramExecutionFinished> execution_finished;
+        std::optional<ProgramInvocationTerminalEvent> terminal_draft;
 
         ActiveInvocation(
             InvocationId invocation,
             AttemptId attempt,
-            StateEpoch epoch)
+            WorksetEpoch epoch,
+            std::uint64_t maximum_artifacts)
             : invocation_id(invocation),
               attempt_id(attempt),
-              origin_epoch(epoch),
+              workset_epoch(epoch),
               cancellation(invocation)
         {
+            outputs.maximum_artifacts = maximum_artifacts;
         }
     };
 
@@ -378,19 +418,12 @@ struct WorkerRuntime::Impl
     struct ArtifactPublication
     {
         WorkerItemExecutionCorrelation item;
-        StateArtifactId state_artifact_id;
+        SavestateArtifactId state_artifact_id;
         std::string logical_artifact_id;
         bool completed = false;
+        bool abandon_requested = false;
         std::optional<program::ArtifactReferenceValue> artifact;
         std::string failure;
-        WorkerTerminalId terminal_id;
-    };
-
-    struct PendingFinalizedTerminal
-    {
-        WorkerWorksetItemTerminalEvent event;
-        std::size_t reserved_bytes = 0;
-        std::vector<StateArtifactFinalizationId> finalizations;
     };
 
     struct PendingExecutionCommand
@@ -427,10 +460,13 @@ struct WorkerRuntime::Impl
             baseline_components,
             std::make_shared<WorksetStagerNotifier>(mailbox));
         artifact_finalizer =
-            std::make_unique<StateArtifactFinalizer>(
+            std::make_unique<SavestateArtifactFinalizer>(
                 workset_limits,
                 std::make_shared<ArtifactFinalizerNotifier>(
-                    mailbox));
+                    mailbox),
+                this->test_hooks
+                    ? this->test_hooks->before_output_finalization
+                    : std::function<void()>{});
         if (this->session)
         {
             workset_state = std::make_unique<WorksetStateCoordinator>(
@@ -466,19 +502,6 @@ struct WorkerRuntime::Impl
             capabilities_value = AddCapability(
                 capabilities_value,
                 WorkerCapability::WorksetDispatch);
-        }
-        else if (this->program_runtime &&
-                 this->program_action_host &&
-                 HasCapability(
-                     this->program_runtime->capabilities(),
-                     WorkerCapability::ProgramInvocation))
-        {
-            // Focused development fakes retain the scalar lifecycle tests.
-            // Production ProgramRuntime advertises WorksetDispatch and never
-            // exposes this capability or transport.
-            capabilities_value = AddCapability(
-                capabilities_value,
-                WorkerCapability::ProgramInvocation);
         }
         BuildRuntimeManifest();
         if (this->program_runtime)
@@ -586,14 +609,14 @@ struct WorkerRuntime::Impl
         const WorkerSnapshot observed = Snapshot();
         return EnqueueHostEvent(
             observed.session.session_id,
-            observed.session.state_epoch,
+            observed.session.workset_epoch,
             std::move(name),
             std::move(encoded_payload));
     }
 
     bool EnqueueHostEvent(
         SessionId observed_session_id,
-        StateEpoch observed_state_epoch,
+        WorksetEpoch observed_workset_epoch,
         std::string name,
         std::vector<std::uint8_t> encoded_payload)
     {
@@ -614,7 +637,7 @@ struct WorkerRuntime::Impl
             item.host_event.emplace(PendingHostEvent{
                 HostEventSequence(raw_sequence),
                 observed_session_id,
-                observed_state_epoch,
+                observed_workset_epoch,
                 std::move(name),
                 std::move(encoded_payload)});
             mailbox->items.push_back(std::move(item));
@@ -789,12 +812,12 @@ struct WorkerRuntime::Impl
                 }
             }
             else if (item.kind ==
-                     MailboxItemKind::ProgramActionCompletion)
+                     MailboxItemKind::ProgramActionResolution)
             {
-                if (item.program_action_completion)
+                if (item.program_action_resolution)
                 {
-                    HandleProgramActionCompletion(
-                        std::move(*item.program_action_completion));
+                    HandleProgramActionResolution(
+                        std::move(*item.program_action_resolution));
                 }
             }
             else if (item.kind == MailboxItemKind::ProgramPump)
@@ -853,9 +876,6 @@ struct WorkerRuntime::Impl
                 },
                 [this, &queued](const PrepareModuleCommand& command) {
                     HandlePrepareModule(queued, command);
-                },
-                [this, &queued](const InvokeProgramCommand& command) {
-                    HandleInvoke(queued, command);
                 },
                 [this, &queued](const SubmitWorksetCommand& command) {
                     HandleSubmitWorkset(queued, command);
@@ -984,19 +1004,17 @@ struct WorkerRuntime::Impl
     }
 
     [[nodiscard]] static bool BaselinePolicyMatches(
-        ProgramBaselineStateKind baseline,
+        ProgramBaselineArtifactKind baseline,
         program::InvocationStatePolicy policy) noexcept
     {
         switch (baseline)
         {
-        case ProgramBaselineStateKind::Boot:
-            return policy == program::InvocationStatePolicy::Boot;
-        case ProgramBaselineStateKind::Artifact:
+        case ProgramBaselineArtifactKind::Savestate:
             return policy ==
                 program::InvocationStatePolicy::RestoreBaseline;
-        case ProgramBaselineStateKind::CurrentSession:
+        case ProgramBaselineArtifactKind::ReadOnlyMovie:
             return policy ==
-                program::InvocationStatePolicy::ContinueSession;
+                program::InvocationStatePolicy::EstablishBaseline;
         }
         return false;
     }
@@ -1006,14 +1024,25 @@ struct WorkerRuntime::Impl
         if (!session)
             return false;
         const SessionSnapshot current = session->snapshot();
-        const ExecutionSnapshot execution =
-            session->execution_snapshot();
         const bool clean =
             current.disposition == SessionDisposition::Clean ||
             current.disposition ==
                 SessionDisposition::CleanWithDiagnostics;
-        return current.open && clean &&
-            current.core_state == BackendCoreState::Paused &&
+        if (!current.open || !clean ||
+            current.core_state != BackendCoreState::Paused)
+        {
+            return false;
+        }
+
+        // Between worksets the guest-dependent runtime is intentionally absent.
+        // The paused infrastructure session is the clean idle boundary from
+        // which the next workset constructs its own services and epoch.
+        if (!current.workset_epoch)
+            return true;
+
+        const ExecutionSnapshot execution =
+            session->execution_snapshot();
+        return
             execution.activity == ExecutionActivity::IdlePaused &&
             !execution.active_operation &&
             execution.interruption_depth == 0;
@@ -1146,19 +1175,6 @@ struct WorkerRuntime::Impl
             }
         }
         for (const auto& [_, terminal] : retained_terminals)
-        {
-            if (terminal.event.correlation.workset_id ==
-                candidate.workset_id)
-            {
-                return true;
-            }
-            item_ids.insert(
-                terminal.event.correlation.item_id.value());
-            invocation_ids.insert(
-                terminal.event.correlation.invocation_id.value());
-        }
-        for (const auto& [_, terminal] :
-             pending_finalized_terminals)
         {
             if (terminal.event.correlation.workset_id ==
                 candidate.workset_id)
@@ -1315,7 +1331,7 @@ struct WorkerRuntime::Impl
             envelope.attempt_id = item.execution.attempt_id;
             envelope.module = phase->runtime_contract().module;
             envelope.entrypoint = phase->runtime_contract().entrypoint;
-            envelope.expected_state_epoch = {};
+            envelope.expected_workset_epoch = {};
             envelope.input_payload = encoded.bytes;
 
             PreparedInvocationTemplateReceipt receipt;
@@ -1339,7 +1355,7 @@ struct WorkerRuntime::Impl
                     package.definition.execution_key
                         .verified_dependency_sha256 ||
                 !BaselinePolicyMatches(
-                    package.definition.baseline.state_kind,
+                    package.definition.baseline.artifact.kind,
                     receipt.state_policy))
             {
                 if (prepared.accepted && receipt.template_id)
@@ -1473,25 +1489,6 @@ struct WorkerRuntime::Impl
                 "WorkerWorkset reuses a resident, draining, or retained workset, item, or invocation identity");
             return;
         }
-        if (command.definition.baseline.state_kind ==
-            ProgramBaselineStateKind::CurrentSession)
-        {
-            const auto& guard =
-                command.definition.baseline.current_session;
-            const SessionSnapshot current = session->snapshot();
-            if (!guard ||
-                guard->session_id != current.session_id ||
-                guard->state_epoch != current.state_epoch ||
-                active_workset || active_invocation ||
-                !SessionIsCleanIdle())
-            {
-                Reject(
-                    queued,
-                    WorkerRejectionCode::StateEpochMismatch,
-                    "Current-session workset baseline is stale or the exact session is not clean and idle");
-                return;
-            }
-        }
         if (!active_workset && !active_invocation &&
             !SessionIsCleanIdle())
         {
@@ -1601,7 +1598,7 @@ struct WorkerRuntime::Impl
         if (!workset_stager)
             return;
         for (WorksetStagingCompletion& completion :
-             workset_stager->DrainCompletions())
+             workset_stager->DrainResults())
         {
             if (!pending_workset_staging ||
                 completion.staging_id !=
@@ -1653,28 +1650,6 @@ struct WorkerRuntime::Impl
                 PublishCredits();
                 continue;
             }
-            if (completion.package->definition.baseline.state_kind ==
-                ProgramBaselineStateKind::CurrentSession)
-            {
-                const auto& guard = completion.package->definition
-                                        .baseline.current_session;
-                const SessionSnapshot current = session->snapshot();
-                if (!guard ||
-                    guard->session_id != current.session_id ||
-                    guard->state_epoch != current.state_epoch ||
-                    active_workset || active_invocation ||
-                    !SessionIsCleanIdle())
-                {
-                    Reject(
-                        pending.command,
-                        WorkerRejectionCode::StateEpochMismatch,
-                        "Current-session workset changed while host staging was in progress");
-                    RefreshSnapshot();
-                    PublishCredits();
-                    continue;
-                }
-            }
-
             RuntimeError error;
             std::optional<WorksetPackage> staged =
                 ValidateAndStageWorkset(
@@ -1809,8 +1784,7 @@ struct WorkerRuntime::Impl
     {
         if (!active_workset || active_invocation)
             return;
-        if (retained_terminals.size() +
-                pending_finalized_terminals.size() >=
+        if (retained_terminals.size() >=
                 workset_limits.maximum_retained_terminals ||
             retained_terminal_bytes >=
                 workset_limits.maximum_retained_terminal_bytes)
@@ -1855,6 +1829,61 @@ struct WorkerRuntime::Impl
 
         if (active_workset->next_item != 0)
         {
+            const auto* session_action_host =
+                dynamic_cast<const program::SessionProgramActionHost*>(
+                    program_action_host.get());
+            const program::SessionProgramActionHostSnapshot action =
+                session_action_host
+                ? session_action_host->snapshot()
+                : program::SessionProgramActionHostSnapshot{};
+            const ExecutionSnapshot execution =
+                session->execution_snapshot();
+            SessionResourceLedger* resources = session->resources();
+            program::SessionResourceBindingTable* bindings =
+                session->resource_bindings();
+            CaptureService* capture = session->capture_service();
+            StopPointRouter* stops = session->stop_points();
+            if ((session_action_host &&
+                 (action.invocation_active ||
+                  action.mapped_scope_count != 0 ||
+                  action.mapped_resource_count != 0 ||
+                  action.execution_pending ||
+                  action.queued_completion_count != 0)) ||
+                execution.activity != ExecutionActivity::IdlePaused ||
+                execution.active_operation.has_value() ||
+                execution.interruption_depth != 0 ||
+                !resources ||
+                resources->snapshot().state !=
+                    ResourceLedgerState::Accepting ||
+                resources->snapshot().active_resource_count != 0 ||
+                resources->snapshot().cleanup_execution_pending ||
+                !bindings || bindings->size() != 0 ||
+                (capture && capture->snapshot().attached) ||
+                !stops || !stops->ingress_enabled())
+            {
+                const std::string diagnostic =
+                    "The previous workset item did not reach a clean restoration boundary";
+                FailRemainingWorksetItems(
+                    WorkerRejectionCode::SessionTainted,
+                    diagnostic);
+                session->MarkTainted(diagnostic);
+                FinishCurrentWorkset(WorkerWorksetState::Failed);
+                EnterTainted(diagnostic);
+                return;
+            }
+            (void)session->DrainStopPointEvents();
+            if (!session->DrainStopPointEvents().empty())
+            {
+                const std::string diagnostic =
+                    "Stop-point ingress did not drain to a stable workset item boundary";
+                FailRemainingWorksetItems(
+                    WorkerRejectionCode::SessionTainted,
+                    diagnostic);
+                session->MarkTainted(diagnostic);
+                FinishCurrentWorkset(WorkerWorksetState::Failed);
+                EnterTainted(diagnostic);
+                return;
+            }
             ProgramBaselineComponentResult restored =
                 workset_state->RestoreForNextItem(
                     active_workset->baseline);
@@ -1903,7 +1932,7 @@ struct WorkerRuntime::Impl
             item.execution.execution_id,
             item.execution.attempt_id,
             current.session_id,
-            current.state_epoch,
+            current.workset_epoch,
             active_workset->baseline}))
         {
             EnterTainted(
@@ -1913,7 +1942,8 @@ struct WorkerRuntime::Impl
         active_invocation.emplace(
             item.execution.execution_id,
             item.execution.attempt_id,
-            current.state_epoch);
+            current.workset_epoch,
+            prepared.maximum_artifacts);
         active_invocation->workset_id =
             active_workset->definition.workset_id;
         active_invocation->workset_item_id = item.item_id;
@@ -1928,9 +1958,10 @@ struct WorkerRuntime::Impl
                     current_snapshot.last_command_sequence,
                     prepared.template_id,
                     current.session_id,
-                    current.state_epoch,
+                    current.workset_epoch,
                     active_workset->baseline.key.sha256,
                     active_workset->baseline.lineage,
+                    active_workset->baseline.state_established,
                 },
                 active_invocation->cancellation.token(),
                 program_event_ingress);
@@ -1987,8 +2018,8 @@ struct WorkerRuntime::Impl
             terminal.cleanup = CleanupStatus::Failed;
             terminal.session_disposition =
                 SessionDisposition::Tainted;
-            terminal.origin_state_epoch =
-                session->snapshot().state_epoch;
+            terminal.workset_epoch =
+                session->snapshot().workset_epoch;
             terminal.error = {
                 submission.error.code ==
                         WorkerRejectionCode::None
@@ -2023,116 +2054,6 @@ struct WorkerRuntime::Impl
         }
         RefreshSnapshot();
         ChangeState(WorkerState::Running);
-        QueueProgramPump();
-    }
-
-    void HandleInvoke(
-        const std::shared_ptr<QueuedCommand>& queued,
-        const InvokeProgramCommand& command)
-    {
-        if (program_runtime &&
-            HasCapability(
-                program_runtime->capabilities(),
-                WorkerCapability::WorksetDispatch))
-        {
-            Reject(
-                queued,
-                WorkerRejectionCode::Unsupported,
-                "Scalar invocation submission is retired; submit a one-item WorkerWorkset");
-            return;
-        }
-        if (!RequireReadyProgramRuntime(queued))
-            return;
-
-        const EncodedInvocationEnvelope& invocation = command.invocation;
-        if (!invocation.invocation_id ||
-            !invocation.attempt_id ||
-            invocation.module.canonical_id.empty() ||
-            invocation.entrypoint.empty())
-        {
-            Reject(
-                queued,
-                WorkerRejectionCode::InvalidArgument,
-                "InvokeProgram requires invocation, attempt, module, and entrypoint identities");
-            return;
-        }
-
-        const SessionSnapshot session_snapshot = session->snapshot();
-        if (!invocation.expected_state_epoch ||
-            invocation.expected_state_epoch != session_snapshot.state_epoch)
-        {
-            Reject(
-                queued,
-                WorkerRejectionCode::StateEpochMismatch,
-                "Invocation StateEpoch does not match the owned session");
-            return;
-        }
-
-        active_invocation.emplace(
-            invocation.invocation_id,
-            invocation.attempt_id,
-            session_snapshot.state_epoch);
-
-        ProgramRuntimeSubmission submission;
-        bool submission_threw = false;
-        try
-        {
-            submission = program_runtime->StartInvocation(
-                ProgramInvocationRequest{queued->sequence, invocation},
-                active_invocation->cancellation.token(),
-                program_event_ingress);
-        }
-        catch (const std::exception& ex)
-        {
-            submission_threw = true;
-            submission = ProgramRuntimeSubmission::Rejected(
-                WorkerRejectionCode::InternalFailure,
-                std::string("ProgramRuntime invocation submission threw: ") + ex.what());
-        }
-        catch (...)
-        {
-            submission_threw = true;
-            submission = ProgramRuntimeSubmission::Rejected(
-                WorkerRejectionCode::InternalFailure,
-                "ProgramRuntime invocation submission threw");
-        }
-
-        if (submission_threw)
-        {
-            const RuntimeError error = submission.error;
-            EnterTainted(
-                error.message.empty()
-                    ? "ProgramRuntime invocation submission threw"
-                    : error.message,
-                false);
-            Reject(
-                queued,
-                error.code == WorkerRejectionCode::None
-                    ? WorkerRejectionCode::InternalFailure
-                    : error.code,
-                error.message);
-            return;
-        }
-
-        if (!submission.accepted)
-        {
-            active_invocation.reset();
-            RefreshSnapshot();
-            Reject(
-                queued,
-                submission.error.code == WorkerRejectionCode::None
-                    ? WorkerRejectionCode::InternalFailure
-                    : submission.error.code,
-                submission.error.message);
-            return;
-        }
-
-        RefreshSnapshot();
-        ChangeState(WorkerState::Running);
-        Complete(
-            queued,
-            WorkerCommandOutcome::Accepted,
-            invocation.invocation_id);
         QueueProgramPump();
     }
 
@@ -2185,7 +2106,7 @@ struct WorkerRuntime::Impl
             Reject(queued, code, message);
             return;
         }
-        if (submission.terminal_already_published)
+        if (submission.execution_already_finished)
         {
             // ProgramRuntime has already selected and published the exact
             // invocation terminal, but that mailbox event has not reached
@@ -2531,7 +2452,8 @@ struct WorkerRuntime::Impl
         RefreshSnapshot();
         Complete(queued, WorkerCommandOutcome::Completed);
         PublishCredits();
-        if (active_workset && !active_invocation)
+        if (!taint_transition_active &&
+            active_workset && !active_invocation)
             StartNextWorksetItem();
         else if (!active_workset && staged_workset)
             PromoteStagedWorkset();
@@ -2550,7 +2472,7 @@ struct WorkerRuntime::Impl
                 active_invocation->invocation_id);
         if (!submission.accepted)
             return false;
-        if (submission.terminal_already_published)
+        if (submission.execution_already_finished)
             return true;
         if (!active_invocation->cancellation.request_cancellation(
                 CancellationReason::ExternalRequest))
@@ -2684,12 +2606,6 @@ struct WorkerRuntime::Impl
         for (const auto& [_, terminal] : retained_terminals)
             items.emplace(ExecutionCorrelation(
                 terminal.event.correlation));
-        for (const auto& [_, terminal] :
-             pending_finalized_terminals)
-        {
-            items.emplace(ExecutionCorrelation(
-                terminal.event.correlation));
-        }
         for (const auto& [_, publication] :
              artifact_publications)
         {
@@ -2702,8 +2618,7 @@ struct WorkerRuntime::Impl
     {
         const std::size_t resident = ResidentItemCount();
         const std::size_t retained =
-            retained_terminals.size() +
-            pending_finalized_terminals.size();
+            retained_terminals.size();
         const std::size_t global_used = CreditedItemCount();
         const std::size_t global =
             global_used >= workset_limits.maximum_item_credits
@@ -2759,8 +2674,7 @@ struct WorkerRuntime::Impl
             AvailableItemCredits(),
             static_cast<std::uint32_t>(ResidentItemCount()),
             static_cast<std::uint32_t>(
-                retained_terminals.size() +
-                pending_finalized_terminals.size())});
+                retained_terminals.size())});
     }
 
     [[nodiscard]] bool PublishReadyWorksetTerminals()
@@ -2830,9 +2744,7 @@ struct WorkerRuntime::Impl
         WorksetPackage& package,
         std::uint32_t ordinal,
         ProgramInvocationTerminalEvent terminal,
-        bool unstarted,
-        std::vector<StateArtifactFinalizationId>
-            finalizations = {})
+        bool unstarted)
     {
         if (ordinal >= package.definition.items.size())
             return;
@@ -2874,8 +2786,7 @@ struct WorkerRuntime::Impl
                 "A typed terminal cannot fit its validated byte reservation");
             return;
         }
-        if (retained_terminals.size() +
-                pending_finalized_terminals.size() >=
+        if (retained_terminals.size() >=
                 workset_limits.maximum_retained_terminals ||
             declared_bytes >
                 workset_limits.maximum_retained_terminal_bytes -
@@ -2914,177 +2825,11 @@ struct WorkerRuntime::Impl
         event.correlation = reserved.correlation;
         event.terminal = std::move(terminal);
         event.unstarted = unstarted;
-        retained_terminal_bytes += declared_bytes;
-        package.terminalized[ordinal] = true;
-        ++package.terminal_count;
-        if (unstarted)
-            ++package.unstarted_count;
-        for (const StateArtifactFinalizationId id :
-             finalizations)
-        {
-            const auto publication =
-                artifact_publications.find(id.value());
-            if (publication ==
-                    artifact_publications.end() ||
-                publication->second.item !=
-                    ExecutionCorrelation(
-                        reserved.correlation) ||
-                publication->second.terminal_id)
-            {
-                EnterTainted(
-                    "State artifact finalization lost its exact workset item correlation");
-                return;
-            }
-            publication->second.terminal_id =
-                reserved.correlation.terminal_id;
-        }
-        pending_finalized_terminals.emplace(
-            reserved.correlation.terminal_id.value(),
-            PendingFinalizedTerminal{
-                std::move(event),
-                declared_bytes,
-                std::move(finalizations)});
-        TryFinalizePendingTerminal(
-            reserved.correlation.terminal_id);
-    }
-
-    void TryFinalizePendingTerminal(
-        WorkerTerminalId terminal_id)
-    {
-        const auto pending =
-            pending_finalized_terminals.find(
-                terminal_id.value());
-        if (pending == pending_finalized_terminals.end())
-            return;
-        for (const StateArtifactFinalizationId id :
-             pending->second.finalizations)
-        {
-            const auto publication =
-                artifact_publications.find(id.value());
-            if (publication ==
-                    artifact_publications.end())
-            {
-                EnterTainted(
-                    "Pending terminal lost an artifact publication");
-                return;
-            }
-            if (!publication->second.completed)
-                return;
-        }
-
-        WorkerWorksetItemTerminalEvent event =
-            std::move(pending->second.event);
-        const std::size_t reserved_bytes =
-            pending->second.reserved_bytes;
-        bool artifact_failed = false;
-        std::string artifact_failure;
-        if (!pending->second.finalizations.empty())
-        {
-            const auto decoded =
-                program::DecodeProgramResultV1(
-                    event.terminal.output_payload);
-            program::ProgramResult result;
-            if (!decoded)
-            {
-                artifact_failed = true;
-                artifact_failure =
-                    decoded.status.message.empty()
-                    ? "ProgramResult could not be decoded for artifact finalization"
-                    : decoded.status.message;
-            }
-            else
-            {
-                result = std::move(*decoded.value);
-                std::uint64_t next_sequence = 1;
-                for (const program::ProgramArtifact& artifact :
-                     result.artifacts)
-                {
-                    next_sequence = std::max(
-                        next_sequence,
-                        artifact.sequence.value() + 1);
-                }
-                for (const StateArtifactFinalizationId id :
-                     pending->second.finalizations)
-                {
-                    const ArtifactPublication& publication =
-                        artifact_publications.at(id.value());
-                    if (!publication.failure.empty() ||
-                        !publication.artifact)
-                    {
-                        artifact_failed = true;
-                        artifact_failure =
-                            publication.failure.empty()
-                            ? "State artifact publication did not produce authoritative evidence"
-                            : publication.failure;
-                        break;
-                    }
-                    result.artifacts.push_back(
-                        program::ProgramArtifact{
-                            program::ProgramArtifactSequence(
-                                next_sequence++),
-                            *publication.artifact});
-                }
-                if (!artifact_failed)
-                {
-                    const program::EncodeResult encoded =
-                        program::EncodeProgramResultV1(result);
-                    if (!encoded)
-                    {
-                        artifact_failed = true;
-                        artifact_failure =
-                            encoded.status.message.empty()
-                            ? "Final ProgramResult artifact encoding failed"
-                            : encoded.status.message;
-                    }
-                    else
-                    {
-                        event.terminal.output_payload =
-                            encoded.bytes;
-                    }
-                }
-            }
-        }
-        if (artifact_failed)
-        {
-            event.terminal.status =
-                InvocationTerminalStatus::InfrastructureFailure;
-            event.terminal.output_payload.clear();
-            event.terminal.error = {
-                WorkerRejectionCode::BackendFailure,
-                artifact_failure};
-        }
-
-        const auto encoded_size =
-            [](const ProgramInvocationTerminalEvent& value)
-            {
-                return sizeof(WorkerWorksetItemTerminalEvent) +
-                    value.output_payload.size() +
-                    value.error.message.size();
-            };
-        std::size_t actual_bytes =
-            encoded_size(event.terminal);
-        if (actual_bytes > reserved_bytes)
-        {
-            event.terminal.status =
-                InvocationTerminalStatus::InfrastructureFailure;
-            event.terminal.output_payload.clear();
-            event.terminal.error = {
-                WorkerRejectionCode::CapacityExceeded,
-                "Finalized ProgramResult exceeded its declared terminal-byte reservation"};
-            event.terminal.cleanup = CleanupStatus::Clean;
-            actual_bytes = encoded_size(event.terminal);
-        }
-        if (actual_bytes > reserved_bytes)
-        {
-            EnterTainted(
-                "A finalized terminal cannot fit its validated byte reservation");
-            return;
-        }
         // The ledger's byte bound covers the complete retained event, not
         // only ProgramResult bytes. Its immutable payload is internal
         // retention evidence; the typed event remains authoritative.
         std::vector<std::uint8_t> ledger_payload(
-            actual_bytes,
+            encoded_bytes,
             0);
         std::copy(
             event.terminal.output_payload.begin(),
@@ -3102,28 +2847,114 @@ struct WorkerRuntime::Impl
                     : completed.message);
             return;
         }
-        retained_terminal_bytes -=
-            std::min(
-                retained_terminal_bytes,
-                reserved_bytes);
-        retained_terminal_bytes += actual_bytes;
-        for (const StateArtifactFinalizationId id :
-             pending->second.finalizations)
-        {
-            artifact_publications.erase(id.value());
-        }
+        package.terminalized[ordinal] = true;
+        ++package.terminal_count;
+        if (unstarted)
+            ++package.unstarted_count;
+        retained_terminal_bytes += encoded_bytes;
+        const WorkerItemTerminalCorrelation completed_correlation =
+            event.correlation;
         retained_terminals.emplace(
             event.correlation.terminal_id.value(),
             RetainedTerminal{
                 std::move(event),
-                actual_bytes});
-        pending_finalized_terminals.erase(pending);
+                encoded_bytes});
+        CloseActiveItemAfterTerminalRetention(
+            completed_correlation);
         RefreshSnapshot();
         if (!terminal_publication_deferred)
         {
             if (!PublishReadyWorksetTerminals())
                 return;
             PublishCredits();
+        }
+    }
+
+    void CloseActiveItemAfterTerminalRetention(
+        const WorkerItemTerminalCorrelation& correlation)
+    {
+        if (!active_invocation ||
+            !active_invocation->workset_id ||
+            !active_invocation->workset_item_id ||
+            *active_invocation->workset_id != correlation.workset_id ||
+            *active_invocation->workset_item_id != correlation.item_id ||
+            active_invocation->workset_item_ordinal !=
+                correlation.item_ordinal ||
+            active_invocation->invocation_id !=
+                correlation.invocation_id ||
+            active_invocation->attempt_id != correlation.attempt_id)
+        {
+            return;
+        }
+
+        auto& transaction = active_invocation->outputs;
+        if (transaction.state ==
+            ActiveInvocation::OutputTransactionState::Finalizing)
+        {
+            const bool published = std::ranges::all_of(
+                transaction.outputs,
+                [](const ActiveInvocation::Output& output) {
+                    return output.state ==
+                        ActiveInvocation::OutputState::Published;
+                });
+            transaction.state = published
+                ? ActiveInvocation::OutputTransactionState::Committed
+                : ActiveInvocation::OutputTransactionState::Abandoned;
+        }
+        else if (transaction.state ==
+                 ActiveInvocation::OutputTransactionState::SealedForAbandon)
+        {
+            const bool abandoned = std::ranges::all_of(
+                transaction.outputs,
+                [](const ActiveInvocation::Output& output) {
+                    return output.state ==
+                        ActiveInvocation::OutputState::Abandoned;
+                });
+            if (abandoned)
+            {
+                transaction.state =
+                    ActiveInvocation::OutputTransactionState::Abandoned;
+            }
+        }
+        if (transaction.state !=
+                ActiveInvocation::OutputTransactionState::Committed &&
+            transaction.state !=
+                ActiveInvocation::OutputTransactionState::Abandoned)
+        {
+            if (taint_transition_active)
+                return;
+            EnterTainted(
+                "Active workset item reached terminal retention with unresolved outputs");
+            return;
+        }
+
+        const std::uint32_t ordinal =
+            active_invocation->workset_item_ordinal;
+        active_invocation.reset();
+        if (active_workset &&
+            active_workset->definition.workset_id ==
+                correlation.workset_id &&
+            active_workset->next_item == ordinal)
+        {
+            ++active_workset->next_item;
+        }
+        RefreshSnapshot();
+
+        if (handling_execution_finished)
+            return;
+        if (!pending_shutdown_commands.empty() ||
+            Snapshot().state == WorkerState::Stopping)
+        {
+            FinishShutdown(false);
+        }
+        else if (active_workset)
+        {
+            StartNextWorksetItem();
+        }
+        else if (session->snapshot().disposition !=
+                 SessionDisposition::Tainted)
+        {
+            ChangeState(WorkerState::Ready);
         }
     }
 
@@ -3148,9 +2979,9 @@ struct WorkerRuntime::Impl
         terminal.session_disposition = session
             ? session->snapshot().disposition
             : SessionDisposition::Closed;
-        terminal.origin_state_epoch = session
-            ? session->snapshot().state_epoch
-            : StateEpoch{};
+        terminal.workset_epoch = session
+            ? session->snapshot().workset_epoch
+            : WorksetEpoch{};
         terminal.error = {
             WorkerRejectionCode::InvalidState,
             std::move(message)};
@@ -3186,8 +3017,8 @@ struct WorkerRuntime::Impl
             terminal.cleanup = CleanupStatus::Clean;
             terminal.session_disposition =
                 session->snapshot().disposition;
-            terminal.origin_state_epoch =
-                session->snapshot().state_epoch;
+            terminal.workset_epoch =
+                session->snapshot().workset_epoch;
             terminal.error = {code, message};
             RetainWorksetTerminal(
                 *active_workset,
@@ -3222,14 +3053,6 @@ struct WorkerRuntime::Impl
             static_cast<std::uint32_t>(
                 std::ranges::count_if(
                     retained_terminals,
-                    [&](const auto& entry)
-                    {
-                        return entry.second.event.correlation
-                                   .workset_id ==
-                            package.definition.workset_id;
-                    }) +
-                std::ranges::count_if(
-                    pending_finalized_terminals,
                     [&](const auto& entry)
                     {
                         return entry.second.event.correlation
@@ -3338,14 +3161,16 @@ struct WorkerRuntime::Impl
             return;
         }
 
-        const SessionSnapshot session_snapshot = session->snapshot();
-        if (!command.session_id ||
-            command.session_id != session_snapshot.session_id)
+        if (!active_workset || !active_invocation ||
+            !command.workset_id || !command.item_id ||
+            active_workset->definition.workset_id != command.workset_id ||
+            active_invocation->workset_id != command.workset_id ||
+            active_invocation->workset_item_id != command.item_id)
         {
             Reject(
                 queued,
-                WorkerRejectionCode::SessionMismatch,
-                "Screenshot does not identify the owned session");
+                WorkerRejectionCode::WorksetItemNotFound,
+                "Screenshot does not identify the exact active workset item");
             return;
         }
 
@@ -3377,23 +3202,27 @@ struct WorkerRuntime::Impl
         const ControlExecutionCommand& command)
     {
         const WorkerSnapshot worker = Snapshot();
-        if (worker.state != WorkerState::Ready)
+        if (worker.state != WorkerState::Running &&
+            worker.state != WorkerState::Cancelling)
         {
             Reject(
                 queued,
                 worker.state == WorkerState::Tainted
                     ? WorkerRejectionCode::SessionTainted
                     : WorkerRejectionCode::InvalidState,
-                "Execution control requires a ready worker");
+                "Execution control requires a running workset item");
             return;
         }
-        if (active_invocation || active_workset ||
-            staged_workset || pending_workset_staging)
+        if (!active_invocation || !active_workset ||
+            !command.workset_id || !command.item_id ||
+            active_workset->definition.workset_id != command.workset_id ||
+            active_invocation->workset_id != command.workset_id ||
+            active_invocation->workset_item_id != command.item_id)
         {
             Reject(
                 queued,
-                WorkerRejectionCode::InvocationAlreadyActive,
-                "Ready-session execution control is unavailable while work is resident or staging");
+                WorkerRejectionCode::WorksetItemNotFound,
+                "Execution control does not identify the exact active workset item");
             return;
         }
         if (!session_visual_intent)
@@ -3415,25 +3244,22 @@ struct WorkerRuntime::Impl
             return;
         }
 
+        const auto* session_action_host =
+            dynamic_cast<const program::SessionProgramActionHost*>(
+                program_action_host.get());
+        const program::SessionProgramActionHostSnapshot action =
+            session_action_host
+            ? session_action_host->snapshot()
+            : program::SessionProgramActionHostSnapshot{};
+        if (action.execution_pending)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::InvalidState,
+                "Execution control cannot overlap a program-owned execution action");
+            return;
+        }
         const SessionSnapshot session_snapshot = session->snapshot();
-        if (!command.session_id ||
-            command.session_id != session_snapshot.session_id)
-        {
-            Reject(
-                queued,
-                WorkerRejectionCode::SessionMismatch,
-                "Execution control does not identify the owned session");
-            return;
-        }
-        if (!command.expected_state_epoch ||
-            command.expected_state_epoch != session_snapshot.state_epoch)
-        {
-            Reject(
-                queued,
-                WorkerRejectionCode::StateEpochMismatch,
-                "Execution control StateEpoch does not match the owned session");
-            return;
-        }
 
         const bool is_step =
             command.control == WorkerExecutionControlKind::StepFrame;
@@ -3460,13 +3286,13 @@ struct WorkerRuntime::Impl
         if (command.control == WorkerExecutionControlKind::Resume)
         {
             InteractiveResumeRequest resume;
-            resume.expected_epoch = command.expected_state_epoch;
+            resume.expected_epoch = session_snapshot.workset_epoch;
             request = std::move(resume);
         }
         else
         {
             ExecutionRequestPolicy policy;
-            policy.expected_epoch = command.expected_state_epoch;
+            policy.expected_epoch = session_snapshot.workset_epoch;
             policy.interruptions = ExecutionInterruptionPolicy::Reject;
             switch (command.control)
             {
@@ -3575,7 +3401,7 @@ struct WorkerRuntime::Impl
                     FinishShutdown(false);
                     return;
                 }
-                if (submission.terminal_already_published)
+                if (submission.execution_already_finished)
                     return;
             }
             if (!active_invocation->cancellation.request_cancellation(
@@ -3613,29 +3439,39 @@ struct WorkerRuntime::Impl
         }
         if (state != WorkerState::Ready)
         {
+            const SessionSnapshot session_snapshot = session
+                ? session->snapshot()
+                : SessionSnapshot{};
             Reject(
                 queued,
                 state == WorkerState::Tainted
                     ? WorkerRejectionCode::SessionTainted
                     : WorkerRejectionCode::InvalidState,
-                "Program command requires a ready worker");
+                "Program module preparation requires a ready worker; observed_state=" +
+                    std::to_string(static_cast<std::uint8_t>(state)) +
+                    ", session_open=" +
+                    (session_snapshot.open ? "true" : "false") +
+                    ", workset_epoch=" +
+                    std::to_string(
+                        session_snapshot.workset_epoch.value()) +
+                    (session && !session->taint_diagnostic().empty()
+                        ? ", taint_diagnostic=" +
+                            session->taint_diagnostic()
+                        : std::string{}));
             return false;
         }
-        if (Snapshot().execution.activity != ExecutionActivity::IdlePaused)
+        if (!SessionIsCleanIdle())
         {
             Reject(
                 queued,
                 WorkerRejectionCode::InvalidState,
-                "Program command requires an idle paused execution session");
+                "Program command requires a clean idle session");
             return false;
         }
         if (!program_runtime ||
-            (!HasCapability(
-                 capabilities_value,
-                 WorkerCapability::WorksetDispatch) &&
-             !HasCapability(
-                 capabilities_value,
-                 WorkerCapability::ProgramInvocation)))
+            !HasCapability(
+                capabilities_value,
+                WorkerCapability::WorksetDispatch))
         {
             Reject(
                 queued,
@@ -3695,8 +3531,338 @@ struct WorkerRuntime::Impl
             SignalMailbox(*mailbox);
     }
 
-    void QueueProgramActionCompletion(
-        program::ProgramActionCompletion completion)
+    [[nodiscard]] bool AbandonStagedOutputs(
+        std::vector<program::StagedProgramOutput>& outputs) noexcept
+    {
+        bool proven = true;
+        for (program::StagedProgramOutput& output : outputs)
+        {
+            auto* savestate =
+                std::get_if<program::StagedSavestateOutput>(&output);
+            if (!savestate || !savestate->capture.artifact)
+                continue;
+            const SavestateServiceResult abandoned =
+                session->AbandonImmutableSavestateArtifact(
+                    savestate->capture.artifact);
+            if (!abandoned.ok &&
+                abandoned.code != SavestateServiceErrorCode::NotFound)
+            {
+                proven = false;
+            }
+        }
+        outputs.clear();
+        return proven;
+    }
+
+    [[nodiscard]] bool AbandonActiveOutputTransaction() noexcept
+    {
+        if (!active_invocation)
+            return true;
+        auto& transaction = active_invocation->outputs;
+        if (transaction.state ==
+                ActiveInvocation::OutputTransactionState::Committed ||
+            transaction.state ==
+                ActiveInvocation::OutputTransactionState::Abandoned)
+        {
+            return true;
+        }
+        transaction.state =
+            ActiveInvocation::OutputTransactionState::SealedForAbandon;
+        bool proven = true;
+        for (auto& output : transaction.outputs)
+        {
+            if (output.state == ActiveInvocation::OutputState::Published ||
+                output.state == ActiveInvocation::OutputState::Abandoned)
+            {
+                continue;
+            }
+            const SavestateServiceResult abandoned =
+                session->AbandonImmutableSavestateArtifact(
+                    output.savestate.capture.artifact);
+            if (!abandoned.ok &&
+                abandoned.code != SavestateServiceErrorCode::NotFound)
+            {
+                proven = false;
+            }
+            else
+            {
+                output.state = ActiveInvocation::OutputState::Abandoned;
+            }
+        }
+        if (proven)
+            transaction.state =
+                ActiveInvocation::OutputTransactionState::Abandoned;
+        return proven;
+    }
+
+    // Seals the actor-owned transaction without stealing immutable bytes from
+    // an accepted finalizer job. Outputs that have not left the actor are
+    // abandoned immediately. Accepted finalizer jobs are drained to a typed
+    // completion, but their evidence is deliberately not committed or exposed
+    // as an authoritative program artifact.
+    [[nodiscard]] bool SealActiveOutputTransactionForAbandon() noexcept
+    {
+        if (!active_invocation)
+            return true;
+        auto& transaction = active_invocation->outputs;
+        if (transaction.state ==
+                ActiveInvocation::OutputTransactionState::Committed ||
+            transaction.state ==
+                ActiveInvocation::OutputTransactionState::Abandoned)
+        {
+            return true;
+        }
+        if (transaction.state ==
+                ActiveInvocation::OutputTransactionState::Open ||
+            transaction.state ==
+                ActiveInvocation::OutputTransactionState::SealedForCommit)
+        {
+            return AbandonActiveOutputTransaction();
+        }
+
+        transaction.state =
+            ActiveInvocation::OutputTransactionState::SealedForAbandon;
+        bool proven = true;
+        bool awaiting_finalizer = false;
+        for (auto& output : transaction.outputs)
+        {
+            if (output.state == ActiveInvocation::OutputState::Abandoned)
+                continue;
+            if (output.state == ActiveInvocation::OutputState::Adopted)
+            {
+                const SavestateServiceResult abandoned =
+                    session->AbandonImmutableSavestateArtifact(
+                        output.savestate.capture.artifact);
+                if (!abandoned.ok &&
+                    abandoned.code != SavestateServiceErrorCode::NotFound)
+                {
+                    proven = false;
+                }
+                else
+                {
+                    output.state = ActiveInvocation::OutputState::Abandoned;
+                }
+                continue;
+            }
+
+            if (output.finalization_id)
+            {
+                const auto publication = artifact_publications.find(
+                    output.finalization_id.value());
+                if (publication == artifact_publications.end())
+                {
+                    proven = false;
+                    continue;
+                }
+                publication->second.abandon_requested = true;
+                publication->second.artifact.reset();
+                awaiting_finalizer =
+                    awaiting_finalizer || !publication->second.completed;
+            }
+            output.artifact.reset();
+            output.state = ActiveInvocation::OutputState::Abandoned;
+        }
+        if (proven && !awaiting_finalizer)
+        {
+            transaction.state =
+                ActiveInvocation::OutputTransactionState::Abandoned;
+        }
+        return proven;
+    }
+
+    [[nodiscard]] bool
+    AbandonOutputsAfterFinalizerShutdown() noexcept
+    {
+        if (!active_invocation)
+            return true;
+        if (!artifact_finalizer)
+            return AbandonActiveOutputTransaction();
+        const SavestateArtifactFinalizerSnapshot finalizer =
+            artifact_finalizer->snapshot();
+        if (!finalizer.shutdown || finalizer.outstanding_jobs != 0 ||
+            finalizer.running != 0 || finalizer.queued != 0)
+        {
+            return false;
+        }
+
+        bool proven = true;
+        auto& transaction = active_invocation->outputs;
+        transaction.state =
+            ActiveInvocation::OutputTransactionState::SealedForAbandon;
+        for (auto& output : transaction.outputs)
+        {
+            if (output.state == ActiveInvocation::OutputState::Abandoned)
+                continue;
+            const SavestateServiceResult abandoned =
+                session->AbandonImmutableSavestateArtifact(
+                    output.savestate.capture.artifact);
+            if (!abandoned.ok &&
+                abandoned.code != SavestateServiceErrorCode::NotFound)
+            {
+                proven = false;
+                continue;
+            }
+            output.artifact.reset();
+            output.state = ActiveInvocation::OutputState::Abandoned;
+            if (output.finalization_id)
+            {
+                artifact_publications.erase(
+                    output.finalization_id.value());
+            }
+        }
+        if (proven)
+        {
+            transaction.state =
+                ActiveInvocation::OutputTransactionState::Abandoned;
+        }
+        return proven;
+    }
+
+    program::ProgramActionResolution AdoptActorActionResult(
+        program::ActorActionResult result)
+    {
+        auto fail = [&](std::string message) {
+            const bool abandonment_proven =
+                AbandonStagedOutputs(result.staged_outputs);
+            if (!abandonment_proven)
+            {
+                session->MarkTainted(
+                    "Rejected staged output ownership could not be abandoned");
+            }
+            result.resolution.status =
+                abandonment_proven
+                ? program::ProgramActionResolutionStatus::Failed
+                : program::ProgramActionResolutionStatus::CleanupFailed;
+            result.resolution.output = {};
+            result.resolution.resources.clear();
+            result.resolution.cleanup = abandonment_proven
+                ? program::ProgramCleanupStatus::Clean
+                : program::ProgramCleanupStatus::Tainted;
+            result.resolution.session_disposition =
+                abandonment_proven
+                ? session->snapshot().disposition
+                : SessionDisposition::Tainted;
+            result.resolution.code = abandonment_proven
+                ? "staged_output_adoption_failed"
+                : "staged_output_abandonment_failed";
+            result.resolution.message = std::move(message);
+            return std::move(result.resolution);
+        };
+
+        if (result.staged_outputs.empty())
+            return std::move(result.resolution);
+        if (!active_invocation ||
+            result.resolution.invocation_id !=
+                active_invocation->invocation_id ||
+            result.resolution.attempt_id != active_invocation->attempt_id ||
+            result.resolution.workset_epoch !=
+                active_invocation->workset_epoch)
+        {
+            return fail(
+                "Staged output does not match the active workset item");
+        }
+        if (result.resolution.status !=
+                program::ProgramActionResolutionStatus::Completed ||
+            active_invocation->outputs.state !=
+                ActiveInvocation::OutputTransactionState::Open)
+        {
+            return fail(
+                "Only a successful action may adopt output into an open transaction");
+        }
+        if (active_invocation->outputs.outputs.size() +
+                result.staged_outputs.size() >
+            active_invocation->outputs.maximum_artifacts)
+        {
+            return fail(
+                "Staged output exceeds the verified invocation artifact allowance");
+        }
+
+        std::unordered_set<std::string> logical_ids;
+        std::unordered_set<std::uint64_t> service_ids;
+        std::unordered_set<std::string> paths;
+        std::size_t resident = active_invocation->outputs.resident_bytes;
+        for (const auto& output : active_invocation->outputs.outputs)
+        {
+            logical_ids.emplace(output.savestate.artifact_id);
+            service_ids.emplace(
+                output.savestate.capture.artifact.value());
+            paths.emplace(
+                output.savestate.capture.final_path
+                    .lexically_normal().string());
+            if (output.savestate.capture.movie_bytes)
+            {
+                paths.emplace(
+                    SavestateDtmSidecarPath(
+                        output.savestate.capture.final_path)
+                        .lexically_normal().string());
+            }
+        }
+        for (const program::StagedProgramOutput& staged :
+             result.staged_outputs)
+        {
+            const auto* output =
+                std::get_if<program::StagedSavestateOutput>(&staged);
+            if (!output || output->artifact_id.empty() ||
+                !output->capture.result.ok ||
+                !output->capture.artifact ||
+                output->capture.captured_epoch !=
+                    active_invocation->workset_epoch ||
+                !output->capture.state_bytes ||
+                output->capture.final_path.empty() ||
+                !logical_ids.emplace(output->artifact_id).second ||
+                !service_ids.emplace(
+                    output->capture.artifact.value()).second ||
+                !paths.emplace(
+                    output->capture.final_path
+                        .lexically_normal().string()).second)
+            {
+                return fail(
+                    "Staged savestate output identity, path, bytes, or correlation is invalid");
+            }
+            const bool has_movie =
+                output->capture.movie.has_value();
+            const bool has_movie_bytes =
+                output->capture.movie_bytes.has_value();
+            if (has_movie != has_movie_bytes)
+            {
+                return fail(
+                    "Staged savestate sidecar metadata and bytes disagree");
+            }
+            if (has_movie_bytes &&
+                !paths.emplace(
+                    SavestateDtmSidecarPath(
+                        output->capture.final_path)
+                        .lexically_normal().string()).second)
+            {
+                return fail(
+                    "Staged savestate sidecar path is duplicated");
+            }
+            if (output->capture.resident_bytes() >
+                workset_limits.maximum_pending_finalizer_bytes -
+                    std::min(
+                        resident,
+                        workset_limits.maximum_pending_finalizer_bytes))
+            {
+                return fail(
+                    "Staged output exceeds worker finalizer resident-byte capacity");
+            }
+            resident += output->capture.resident_bytes();
+        }
+
+        for (program::StagedProgramOutput& staged : result.staged_outputs)
+        {
+            auto& output =
+                std::get<program::StagedSavestateOutput>(staged);
+            active_invocation->outputs.outputs.push_back({
+                result.resolution.request_id,
+                std::move(output)});
+        }
+        active_invocation->outputs.resident_bytes = resident;
+        return std::move(result.resolution);
+    }
+
+    [[nodiscard]] bool QueueProgramActionResolution(
+        program::ProgramActionResolution completion)
     {
         bool queued = false;
         {
@@ -3705,8 +3871,8 @@ struct WorkerRuntime::Impl
             {
                 MailboxItem item;
                 item.kind =
-                    MailboxItemKind::ProgramActionCompletion;
-                item.program_action_completion.emplace(
+                    MailboxItemKind::ProgramActionResolution;
+                item.program_action_resolution.emplace(
                     std::move(completion));
                 mailbox->items.push_back(std::move(item));
                 queued = true;
@@ -3714,28 +3880,28 @@ struct WorkerRuntime::Impl
         }
         if (queued)
             SignalMailbox(*mailbox);
+        return queued;
     }
 
-    [[nodiscard]] program::ProgramActionCompletion
+    [[nodiscard]] program::ProgramActionResolution
     RejectProgramAction(
         const program::ProgramActionRequest& request,
-        program::ProgramActionCompletionStatus status,
+        program::ProgramActionResolutionStatus status,
         std::string code,
         std::string message) const
     {
-        const StateEpoch current_epoch =
-            session ? session->snapshot().state_epoch : StateEpoch{};
+        const WorksetEpoch current_epoch =
+            session ? session->snapshot().workset_epoch : WorksetEpoch{};
         return {
             .request_id = request.request_id,
             .invocation_id = request.invocation_id,
             .attempt_id = request.attempt_id,
             .operation = request.operation,
             .status = status,
-            .origin_epoch = request.expected_epoch,
-            .resulting_epoch = current_epoch,
+            .workset_epoch = current_epoch,
             .cleanup =
                 status ==
-                    program::ProgramActionCompletionStatus::CleanupFailed
+                    program::ProgramActionResolutionStatus::CleanupFailed
                 ? program::ProgramCleanupStatus::Tainted
                 : program::ProgramCleanupStatus::Clean,
             .session_disposition = session
@@ -3754,38 +3920,38 @@ struct WorkerRuntime::Impl
                 active_invocation->invocation_id ||
             request.attempt_id != active_invocation->attempt_id)
         {
-            QueueProgramActionCompletion(RejectProgramAction(
+            (void)QueueProgramActionResolution(RejectProgramAction(
                 request,
-                program::ProgramActionCompletionStatus::Rejected,
+                program::ProgramActionResolutionStatus::Rejected,
                 "invocation_mismatch",
                 "Program action does not identify the active invocation"));
             return;
         }
         if (!request.request_id)
         {
-            QueueProgramActionCompletion(RejectProgramAction(
+            (void)QueueProgramActionResolution(RejectProgramAction(
                 request,
-                program::ProgramActionCompletionStatus::Rejected,
+                program::ProgramActionResolutionStatus::Rejected,
                 "invalid_request",
                 "Program action request identity is zero"));
             return;
         }
         const SessionSnapshot current = session->snapshot();
         if (!request.expected_epoch ||
-            request.expected_epoch != current.state_epoch)
+            request.expected_epoch != current.workset_epoch)
         {
-            QueueProgramActionCompletion(RejectProgramAction(
+            (void)QueueProgramActionResolution(RejectProgramAction(
                 request,
-                program::ProgramActionCompletionStatus::StaleEpoch,
+                program::ProgramActionResolutionStatus::StaleEpoch,
                 "stale_epoch",
-                "Program action expected a stale StateEpoch"));
+                "Program action expected a stale WorksetEpoch"));
             return;
         }
         if (!program_action_host)
         {
-            QueueProgramActionCompletion(RejectProgramAction(
+            (void)QueueProgramActionResolution(RejectProgramAction(
                 request,
-                program::ProgramActionCompletionStatus::Unsupported,
+                program::ProgramActionResolutionStatus::Unsupported,
                 "action_host_unavailable",
                 "Worker has no actor-owned program action host"));
             return;
@@ -3810,12 +3976,13 @@ struct WorkerRuntime::Impl
         }
         if (!dispatched.accepted)
         {
-            QueueProgramActionCompletion(
-                dispatched.immediate_completion
-                    ? std::move(*dispatched.immediate_completion)
+            (void)QueueProgramActionResolution(
+                dispatched.immediate_result
+                    ? AdoptActorActionResult(
+                          std::move(*dispatched.immediate_result))
                     : RejectProgramAction(
                         request,
-                        program::ProgramActionCompletionStatus::Rejected,
+                        program::ProgramActionResolutionStatus::Rejected,
                         "action_rejected",
                         dispatched.diagnostic.empty()
                             ? "Program action host rejected the request"
@@ -3824,10 +3991,20 @@ struct WorkerRuntime::Impl
         }
         // Even an immediate service result crosses the mailbox before it can
         // resume ProgramRuntime.
-        if (dispatched.immediate_completion)
+        if (dispatched.immediate_result)
         {
-            QueueProgramActionCompletion(
-                std::move(*dispatched.immediate_completion));
+            const bool queued = QueueProgramActionResolution(
+                AdoptActorActionResult(
+                    std::move(*dispatched.immediate_result)));
+            if (!queued)
+            {
+                const bool abandoned =
+                    AbandonActiveOutputTransaction();
+                EnterTainted(
+                    abandoned
+                        ? "Adopted program output could not be delivered to ProgramRuntime"
+                        : "Adopted program output delivery and abandonment both failed");
+            }
         }
     }
 
@@ -3863,45 +4040,30 @@ struct WorkerRuntime::Impl
             std::string(reason);
     }
 
-    void PromotePendingArtifactPublications()
+    [[nodiscard]] std::string FinalizeActiveOutputs()
     {
-        if (!program_runtime || !active_invocation)
-            return;
-        std::vector<program::PendingStateArtifactPublication>
-            pending;
-        try
+        if (!active_invocation)
+            return "Staged output transaction has no active invocation owner";
+        auto& transaction = active_invocation->outputs;
+        if (transaction.state !=
+            ActiveInvocation::OutputTransactionState::Open)
         {
-            pending = program_runtime
-                ->DrainPendingStateArtifactPublications();
+            return "Staged output transaction is not open for commit";
         }
-        catch (const std::exception& exception)
+        transaction.state =
+            ActiveInvocation::OutputTransactionState::SealedForCommit;
+        if (transaction.outputs.empty())
         {
-            EnterTainted(
-                std::string(
-                    "ProgramRuntime pending publication drain threw: ") +
-                exception.what());
-            return;
+            transaction.state =
+                ActiveInvocation::OutputTransactionState::Committed;
+            return {};
         }
-        catch (...)
-        {
-            EnterTainted(
-                "ProgramRuntime pending publication drain threw");
-            return;
-        }
-        if (pending.empty())
-            return;
         if (!active_invocation->workset_id ||
             !active_invocation->workset_item_id ||
             !artifact_finalizer)
         {
-            for (auto& publication : pending)
-            {
-                (void)session->AbandonImmutableStateArtifact(
-                    publication.capture.artifact);
-            }
-            EnterTainted(
-                "Pending state-artifact publication has no exact workset item owner");
-            return;
+            (void)AbandonActiveOutputTransaction();
+            return "Staged output transaction has no exact workset item owner";
         }
 
         const WorkerItemExecutionCorrelation correlation{
@@ -3910,9 +4072,12 @@ struct WorkerRuntime::Impl
             active_invocation->workset_item_ordinal,
             active_invocation->invocation_id,
             active_invocation->attempt_id};
-        for (auto& publication : pending)
+        transaction.state =
+            ActiveInvocation::OutputTransactionState::Finalizing;
+        for (auto& output : transaction.outputs)
         {
-            StateArtifactFinalizationRequest request;
+            auto& publication = output.savestate;
+            SavestateArtifactFinalizationRequest request;
             request.item = correlation;
             request.state_artifact_id =
                 publication.capture.artifact;
@@ -3925,10 +4090,10 @@ struct WorkerRuntime::Impl
             if (publication.capture.movie_bytes)
             {
                 if (!publication.capture.movie ||
-                    publication.capture.movie->dtm_path.empty())
+                    publication.capture.movie->dtm_sha256.empty())
                 {
                     (void)session
-                        ->AbandonImmutableStateArtifact(
+                        ->AbandonImmutableSavestateArtifact(
                             publication.capture.artifact);
                     active_invocation
                         ->artifact_finalization_failure =
@@ -3940,7 +4105,8 @@ struct WorkerRuntime::Impl
                 }
                 ImmutableArtifactFile sidecar;
                 sidecar.final_path =
-                    publication.capture.movie->dtm_path;
+                    SavestateDtmSidecarPath(
+                        publication.capture.final_path);
                 sidecar.bytes = std::move(
                     *publication.capture.movie_bytes);
                 sidecar.expected_sha256 =
@@ -3948,15 +4114,15 @@ struct WorkerRuntime::Impl
                 request.sidecars.push_back(
                     std::move(sidecar));
             }
-            const StateArtifactId state_artifact_id =
+            const SavestateArtifactId state_artifact_id =
                 request.state_artifact_id;
             const std::string logical_artifact_id =
                 request.logical_artifact_id;
-            const StateArtifactFinalizerSubmission submitted =
+            const SavestateArtifactFinalizerSubmission submitted =
                 artifact_finalizer->Submit(std::move(request));
             if (!submitted.result.ok)
             {
-                (void)session->AbandonImmutableStateArtifact(
+                (void)session->AbandonImmutableSavestateArtifact(
                     state_artifact_id);
                 active_invocation
                     ->artifact_finalization_failure =
@@ -3965,13 +4131,18 @@ struct WorkerRuntime::Impl
                     : submitted.result.message;
                 CloseActiveWorksetAdmissionAfterPublication(
                     "Artifact publication failure closed later workset admission");
-                (void)RequestActiveWorksetCancellation();
+                output.state =
+                    ActiveInvocation::OutputState::Abandoned;
+                output.failure = active_invocation
+                    ->artifact_finalization_failure;
                 continue;
             }
             active_invocation->artifact_publication_promoted =
                 true;
             active_invocation->artifact_finalizations.push_back(
                 submitted.finalization_id);
+            output.finalization_id = submitted.finalization_id;
+            output.state = ActiveInvocation::OutputState::Finalizing;
             artifact_publications.emplace(
                 submitted.finalization_id.value(),
                 ArtifactPublication{
@@ -3981,10 +4152,191 @@ struct WorkerRuntime::Impl
         }
         RefreshSnapshot();
         PublishCredits();
+        if (!active_invocation
+                 ->artifact_finalization_failure.empty())
+        {
+            (void)SealActiveOutputTransactionForAbandon();
+            return active_invocation
+                ->artifact_finalization_failure;
+        }
+        return {};
     }
 
-    void HandleProgramActionCompletion(
-        program::ProgramActionCompletion completion)
+    [[nodiscard]] bool TryRetainActiveItemTerminal()
+    {
+        if (!active_invocation ||
+            !active_invocation->terminal_draft)
+        {
+            return false;
+        }
+        if (!active_workset ||
+            !active_invocation->workset_id ||
+            !active_invocation->workset_item_id ||
+            active_workset->definition.workset_id !=
+                *active_invocation->workset_id ||
+            active_invocation->workset_item_ordinal >=
+                active_workset->definition.items.size())
+        {
+            EnterTainted(
+                "A finished program execution lost its active workset item");
+            return false;
+        }
+
+        auto& transaction = active_invocation->outputs;
+        if (std::ranges::any_of(
+                transaction.outputs,
+                [](const ActiveInvocation::Output& output) {
+                    return output.state ==
+                        ActiveInvocation::OutputState::Finalizing;
+                }))
+        {
+            return false;
+        }
+
+        if (transaction.state ==
+            ActiveInvocation::OutputTransactionState::Finalizing)
+        {
+            const bool published = std::ranges::all_of(
+                transaction.outputs,
+                [](const ActiveInvocation::Output& output) {
+                    return output.state ==
+                            ActiveInvocation::OutputState::Published &&
+                        output.artifact.has_value() &&
+                        output.failure.empty();
+                });
+            transaction.state = published
+                ? ActiveInvocation::OutputTransactionState::Committed
+                : ActiveInvocation::OutputTransactionState::Abandoned;
+        }
+        else if (transaction.state ==
+                 ActiveInvocation::OutputTransactionState::SealedForAbandon)
+        {
+            const bool abandoned = std::ranges::all_of(
+                transaction.outputs,
+                [](const ActiveInvocation::Output& output) {
+                    return output.state ==
+                        ActiveInvocation::OutputState::Abandoned;
+                });
+            if (!abandoned)
+                return false;
+            transaction.state =
+                ActiveInvocation::OutputTransactionState::Abandoned;
+        }
+
+        if (transaction.state !=
+                ActiveInvocation::OutputTransactionState::Committed &&
+            transaction.state !=
+                ActiveInvocation::OutputTransactionState::Abandoned)
+        {
+            EnterTainted(
+                "A finished program execution retained an unresolved output transaction");
+            return false;
+        }
+
+        ProgramInvocationTerminalEvent terminal =
+            std::move(*active_invocation->terminal_draft);
+        active_invocation->terminal_draft.reset();
+        std::string publication_failure =
+            active_invocation->artifact_finalization_failure;
+        if (terminal.status == InvocationTerminalStatus::Completed &&
+            transaction.state ==
+                ActiveInvocation::OutputTransactionState::Committed &&
+            !transaction.outputs.empty())
+        {
+            auto decoded = program::DecodeProgramResultV1(
+                terminal.output_payload);
+            if (!decoded)
+            {
+                publication_failure = decoded.status.message.empty()
+                    ? "ProgramResult could not be decoded for output finalization"
+                    : decoded.status.message;
+            }
+            else
+            {
+                program::ProgramResult result =
+                    std::move(*decoded.value);
+                std::uint64_t next_sequence = 1;
+                for (const program::ProgramArtifact& artifact :
+                     result.artifacts)
+                {
+                    next_sequence = std::max(
+                        next_sequence,
+                        artifact.sequence.value() + 1);
+                }
+                for (const ActiveInvocation::Output& output :
+                     transaction.outputs)
+                {
+                    if (!output.failure.empty() || !output.artifact)
+                    {
+                        publication_failure = output.failure.empty()
+                            ? "Finalized output did not produce authoritative evidence"
+                            : output.failure;
+                        break;
+                    }
+                    result.artifacts.push_back(
+                        program::ProgramArtifact{
+                            program::ProgramArtifactSequence(
+                                next_sequence++),
+                            *output.artifact});
+                }
+                if (publication_failure.empty())
+                {
+                    const program::EncodeResult encoded =
+                        program::EncodeProgramResultV1(result);
+                    if (!encoded)
+                    {
+                        publication_failure =
+                            encoded.status.message.empty()
+                            ? "Final ProgramResult artifact encoding failed"
+                            : encoded.status.message;
+                    }
+                    else
+                    {
+                        terminal.output_payload =
+                            std::move(encoded.bytes);
+                    }
+                }
+            }
+        }
+        else if (terminal.status ==
+                     InvocationTerminalStatus::Completed &&
+                 transaction.state ==
+                     ActiveInvocation::OutputTransactionState::Abandoned)
+        {
+            publication_failure = publication_failure.empty()
+                ? "Program output transaction was abandoned before commit"
+                : publication_failure;
+        }
+
+        if (!publication_failure.empty())
+        {
+            terminal.status =
+                InvocationTerminalStatus::InfrastructureFailure;
+            terminal.output_payload.clear();
+            terminal.error = {
+                WorkerRejectionCode::BackendFailure,
+                publication_failure};
+        }
+
+        for (const SavestateArtifactFinalizationId id :
+             active_invocation->artifact_finalizations)
+        {
+            artifact_publications.erase(id.value());
+        }
+        const std::uint32_t ordinal =
+            active_invocation->workset_item_ordinal;
+        handling_execution_finished = true;
+        RetainWorksetTerminal(
+            *active_workset,
+            ordinal,
+            std::move(terminal),
+            false);
+        handling_execution_finished = false;
+        return !active_invocation;
+    }
+
+    void HandleProgramActionResolution(
+        program::ProgramActionResolution completion)
     {
         if (!program_runtime)
             return;
@@ -3999,7 +4351,7 @@ struct WorkerRuntime::Impl
         ProgramRuntimeSubmission delivered;
         try
         {
-            delivered = program_runtime->DeliverActionCompletion(
+            delivered = program_runtime->DeliverActionResolution(
                 std::move(completion));
         }
         catch (const std::exception& ex)
@@ -4023,8 +4375,66 @@ struct WorkerRuntime::Impl
                     : delivered.error.message);
             return;
         }
-        PromotePendingArtifactPublications();
+        TakeFinishedExecution();
         QueueProgramPump();
+    }
+
+    void TakeFinishedExecution()
+    {
+        if (!program_runtime || !active_invocation ||
+            active_invocation->execution_finished)
+        {
+            return;
+        }
+        ProgramExecutionTakeResult taken;
+        try
+        {
+            taken = program_runtime->TakeFinishedExecution(
+                active_invocation->invocation_id,
+                active_invocation->attempt_id);
+        }
+        catch (const std::exception& ex)
+        {
+            EnterTainted(
+                std::string("Finished-execution take threw: ") +
+                ex.what());
+            return;
+        }
+        catch (...)
+        {
+            EnterTainted("Finished-execution take threw");
+            return;
+        }
+        if (taken.error)
+        {
+            EnterTainted(
+                taken.error.message.empty()
+                    ? "ProgramRuntime rejected its exact finished-execution take"
+                    : taken.error.message);
+            return;
+        }
+        if (!taken.taken)
+            return;
+        if (!taken.finished)
+        {
+            EnterTainted(
+                "ProgramRuntime reported a taken execution without its draft");
+            return;
+        }
+        active_invocation->execution_finished =
+            std::move(*taken.finished);
+        const ProgramExecutionFinished& finished =
+            *active_invocation->execution_finished;
+        ProgramInvocationTerminalEvent terminal{
+            finished.invocation_id,
+            finished.attempt_id,
+            finished.status,
+            finished.cleanup,
+            finished.session_disposition,
+            finished.workset_epoch,
+            finished.output_payload,
+            finished.error};
+        HandleInvocationTerminal(std::move(terminal));
     }
 
     void PumpProgramRuntime()
@@ -4035,6 +4445,7 @@ struct WorkerRuntime::Impl
         {
             if (program_runtime->Pump())
                 QueueProgramPump();
+            TakeFinishedExecution();
         }
         catch (const std::exception& ex)
         {
@@ -4054,8 +4465,8 @@ struct WorkerRuntime::Impl
         try
         {
             program_action_host->Pump();
-            std::vector<program::ProgramActionCompletion> completions =
-                program_action_host->DrainCompletions();
+            std::vector<program::ActorActionResult> completions =
+                program_action_host->DrainResults();
             if (completions.empty())
                 return;
 
@@ -4071,14 +4482,15 @@ struct WorkerRuntime::Impl
                     // actor ownership and authoritative-stop precedence.
                     std::vector<MailboxItem> prioritized;
                     prioritized.reserve(completions.size());
-                    for (program::ProgramActionCompletion& completion :
+                    for (program::ActorActionResult& completion :
                          completions)
                     {
                         MailboxItem item;
                         item.kind =
-                            MailboxItemKind::ProgramActionCompletion;
-                        item.program_action_completion.emplace(
-                            std::move(completion));
+                            MailboxItemKind::ProgramActionResolution;
+                        item.program_action_resolution.emplace(
+                            AdoptActorActionResult(
+                                std::move(completion)));
                         prioritized.push_back(std::move(item));
                     }
                     const auto insertion = std::find_if(
@@ -4097,6 +4509,27 @@ struct WorkerRuntime::Impl
                         std::make_move_iterator(
                             prioritized.end()));
                     queued = true;
+                }
+            }
+            if (!queued)
+            {
+                bool abandoned = true;
+                for (program::ActorActionResult& completion : completions)
+                {
+                    abandoned =
+                        AbandonStagedOutputs(
+                            completion.staged_outputs) &&
+                        abandoned;
+                }
+                if (active_invocation)
+                {
+                    abandoned =
+                        AbandonActiveOutputTransaction() &&
+                        abandoned;
+                    EnterTainted(
+                        abandoned
+                            ? "Deferred action resolution could not be delivered to ProgramRuntime"
+                            : "Deferred action resolution delivery and output abandonment both failed");
                 }
             }
             if (queued)
@@ -4168,17 +4601,24 @@ struct WorkerRuntime::Impl
                         return;
                     }
                     Publish(progress);
-                },
-                [this](ProgramInvocationTerminalEvent& terminal) {
-                    HandleInvocationTerminal(terminal);
                 }},
             event);
+        TakeFinishedExecution();
     }
 
     void HandleHostEvent(PendingHostEvent event)
     {
-        if (event.name == "Host_JitCacheInvalidation" && session &&
-            session->snapshot().open)
+        const SessionSnapshot current = session
+            ? session->snapshot()
+            : SessionSnapshot{};
+        const bool belongs_to_active_workset =
+            current.open &&
+            current.workset_epoch &&
+            event.observed_session_id == current.session_id &&
+            event.observed_workset_epoch == current.workset_epoch;
+
+        if (event.name == "Host_JitCacheInvalidation" &&
+            belongs_to_active_workset)
         {
             const SessionOperationReceipt receipt =
                 session->RevalidateStopPointsAfterJit();
@@ -4190,8 +4630,8 @@ struct WorkerRuntime::Impl
                         : receipt.backend.message);
             }
         }
-        else if (event.name == "Host_PPCBreakpointsChanged" && session &&
-                 session->snapshot().open)
+        else if (event.name == "Host_PPCBreakpointsChanged" &&
+                 belongs_to_active_workset)
         {
             const SessionOperationReceipt receipt =
                 session->ValidateBreakpointChangeNotification();
@@ -4206,7 +4646,7 @@ struct WorkerRuntime::Impl
         Publish(HostRuntimeEvent{
             event.sequence,
             event.observed_session_id,
-            event.observed_state_epoch,
+            event.observed_workset_epoch,
             std::move(event.name),
             std::move(event.encoded_payload)});
     }
@@ -4342,8 +4782,8 @@ struct WorkerRuntime::Impl
                             case ExecutionTerminalStatus::Unsupported:
                                 code = WorkerRejectionCode::Unsupported;
                                 break;
-                            case ExecutionTerminalStatus::StateEpochMismatch:
-                                code = WorkerRejectionCode::StateEpochMismatch;
+                            case ExecutionTerminalStatus::WorksetEpochMismatch:
+                                code = WorkerRejectionCode::WorksetEpochMismatch;
                                 break;
                             case ExecutionTerminalStatus::BackendFailure:
                             case ExecutionTerminalStatus::CleanupFailure:
@@ -4421,40 +4861,6 @@ struct WorkerRuntime::Impl
                 active_invocation->workset_item_id;
         const std::uint32_t terminal_workset_ordinal =
             active_invocation->workset_item_ordinal;
-        std::vector<StateArtifactFinalizationId>
-            terminal_finalizations =
-                active_invocation->artifact_finalizations;
-        const bool artifact_publication_promoted =
-            active_invocation->artifact_publication_promoted;
-        const std::string artifact_finalization_failure =
-            active_invocation->artifact_finalization_failure;
-
-        ProgramRuntimeSubmission acknowledged;
-        try
-        {
-            acknowledged = program_runtime
-                ? program_runtime->AcknowledgeTerminal(
-                      terminal.invocation_id,
-                      terminal.attempt_id)
-                : ProgramRuntimeSubmission::Rejected(
-                      WorkerRejectionCode::ProgramRuntimeUnavailable,
-                      "ProgramRuntime is unavailable for terminal "
-                      "acknowledgement");
-        }
-        catch (const std::exception& ex)
-        {
-            acknowledged = ProgramRuntimeSubmission::Rejected(
-                WorkerRejectionCode::InternalFailure,
-                std::string(
-                    "ProgramRuntime terminal acknowledgement threw: ") +
-                    ex.what());
-        }
-        catch (...)
-        {
-            acknowledged = ProgramRuntimeSubmission::Rejected(
-                WorkerRejectionCode::InternalFailure,
-                "ProgramRuntime terminal acknowledgement threw");
-        }
 
         // The actor queue is the cancellation/completion arbitration point. Once
         // an exact cancellation command has been accepted, a later successful
@@ -4463,45 +4869,33 @@ struct WorkerRuntime::Impl
             terminal.status == InvocationTerminalStatus::Completed)
         {
             terminal.status = InvocationTerminalStatus::Cancelled;
-            if (!artifact_publication_promoted)
-                terminal.output_payload.clear();
+            terminal.output_payload.clear();
         }
 
         std::string taint_reason;
-        if (!acknowledged.accepted)
-        {
-            taint_reason = acknowledged.error.message.empty()
-                ? "ProgramRuntime could not acknowledge its terminal"
-                : acknowledged.error.message;
-            terminal.status =
-                InvocationTerminalStatus::InfrastructureFailure;
-            terminal.cleanup = CleanupStatus::Failed;
-            terminal.error = {
-                acknowledged.error.code ==
-                        WorkerRejectionCode::None
-                    ? WorkerRejectionCode::InternalFailure
-                    : acknowledged.error.code,
-                taint_reason};
-        }
-        else if (terminal.origin_state_epoch !=
-                 active_invocation->origin_epoch)
+        if (terminal.workset_epoch !=
+                 active_invocation->workset_epoch)
         {
             taint_reason =
-                "ProgramRuntime returned an invocation completion for a stale StateEpoch";
+                "ProgramRuntime returned an invocation completion for a stale WorksetEpoch";
             terminal.status = InvocationTerminalStatus::InfrastructureFailure;
             terminal.cleanup = CleanupStatus::Failed;
             terminal.error = {
-                WorkerRejectionCode::StateEpochMismatch,
+                WorkerRejectionCode::WorksetEpochMismatch,
                 taint_reason};
         }
         else if (terminal.cleanup == CleanupStatus::Failed ||
                  terminal.status == InvocationTerminalStatus::CleanupFailure ||
                  terminal.session_disposition == SessionDisposition::Tainted ||
-                 terminal.session_disposition == SessionDisposition::Closed)
+                 terminal.session_disposition == SessionDisposition::Closed ||
+                 session->snapshot().disposition ==
+                     SessionDisposition::Tainted)
         {
-            taint_reason = terminal.error.message.empty()
-                ? "Invocation cleanup did not prove a reusable session"
-                : terminal.error.message;
+            taint_reason = !terminal.error.message.empty()
+                ? terminal.error.message
+                : !session->taint_diagnostic().empty()
+                ? session->taint_diagnostic()
+                : "Invocation cleanup did not prove a clean session boundary";
             terminal.status = InvocationTerminalStatus::CleanupFailure;
             terminal.cleanup = CleanupStatus::Failed;
             if (!terminal.error)
@@ -4511,13 +4905,61 @@ struct WorkerRuntime::Impl
                     taint_reason};
             }
         }
-        else if (!artifact_finalization_failure.empty())
+        const bool invocation_succeeded =
+            taint_reason.empty() &&
+            terminal.status == InvocationTerminalStatus::Completed &&
+            terminal.cleanup != CleanupStatus::Failed &&
+            terminal.session_disposition != SessionDisposition::Tainted &&
+            terminal.session_disposition != SessionDisposition::Closed;
+        std::string output_transaction_failure;
+        if (invocation_succeeded)
+        {
+            const auto decoded = program::DecodeProgramResultV1(
+                terminal.output_payload);
+            if (!decoded ||
+                decoded.value->artifacts.size() +
+                        active_invocation->outputs.outputs.size() >
+                    active_invocation->outputs.maximum_artifacts)
+            {
+                output_transaction_failure = !decoded
+                    ? (decoded.status.message.empty()
+                           ? "ProgramResult draft could not be decoded before output finalization"
+                           : decoded.status.message)
+                    : "Combined program and staged outputs exceed the verified artifact allowance";
+                (void)AbandonActiveOutputTransaction();
+            }
+            else
+            {
+                output_transaction_failure = FinalizeActiveOutputs();
+            }
+        }
+        else
+        {
+            if (!AbandonActiveOutputTransaction())
+            {
+                taint_reason =
+                    "Failed execution outputs could not be abandoned";
+            }
+        }
+
+        if (!output_transaction_failure.empty())
+        {
+            terminal.status =
+                InvocationTerminalStatus::InfrastructureFailure;
+            terminal.output_payload.clear();
+            terminal.error = {
+                WorkerRejectionCode::BackendFailure,
+                std::move(output_transaction_failure)};
+        }
+        else if (!active_invocation
+                      ->artifact_finalization_failure.empty())
         {
             terminal.status =
                 InvocationTerminalStatus::InfrastructureFailure;
             terminal.error = {
                 WorkerRejectionCode::BackendFailure,
-                artifact_finalization_failure};
+                active_invocation
+                    ->artifact_finalization_failure};
         }
 
         if (!taint_reason.empty())
@@ -4547,10 +4989,6 @@ struct WorkerRuntime::Impl
             terminal_publication_deferred;
         if (tainted_terminal)
             terminal_publication_deferred = true;
-        std::optional<ProgramInvocationTerminalEvent>
-            deferred_scalar_terminal;
-
-        active_invocation.reset();
         RefreshSnapshot();
         terminal.session_disposition = session->snapshot().disposition;
         if (terminal_workset && terminal_workset_item &&
@@ -4560,25 +4998,14 @@ struct WorkerRuntime::Impl
             terminal_workset_ordinal <
                 active_workset->definition.items.size())
         {
-            RetainWorksetTerminal(
-                *active_workset,
-                terminal_workset_ordinal,
-                std::move(terminal),
-                false,
-                std::move(terminal_finalizations));
-            if (active_workset->next_item ==
-                terminal_workset_ordinal)
-            {
-                ++active_workset->next_item;
-            }
-        }
-        else if (tainted_terminal)
-        {
-            deferred_scalar_terminal.emplace(std::move(terminal));
+            active_invocation->terminal_draft =
+                std::move(terminal);
+            (void)TryRetainActiveItemTerminal();
         }
         else
         {
-            Publish(terminal);
+            taint_reason =
+                "A completed program execution had no active workset item";
         }
 
         if (tainted_terminal)
@@ -4601,26 +5028,23 @@ struct WorkerRuntime::Impl
                 publication_was_deferred;
             if (!publication_was_deferred)
                 (void)PublishReadyWorksetTerminals();
-            if (deferred_scalar_terminal)
-                Publish(std::move(*deferred_scalar_terminal));
             return;
         }
-
-        if (!pending_shutdown_commands.empty() ||
-            Snapshot().state == WorkerState::Stopping)
+        // The active item retains the execution draft and its output
+        // transaction until every finalizer completion has been observed.
+        // Only TryRetainActiveItemTerminal may then construct and retain the
+        // authoritative worker terminal.
+        if (!active_invocation && !tainted_terminal)
         {
-            FinishShutdown(false);
-            return;
-        }
-
-        if (active_workset)
-        {
-            StartNextWorksetItem();
-        }
-        else if (session->snapshot().disposition !=
-                 SessionDisposition::Tainted)
-        {
-            ChangeState(WorkerState::Ready);
+            if (!pending_shutdown_commands.empty() ||
+                Snapshot().state == WorkerState::Stopping)
+            {
+                FinishShutdown(false);
+            }
+            else if (active_workset)
+            {
+                StartNextWorksetItem();
+            }
         }
     }
 
@@ -4631,6 +5055,20 @@ struct WorkerRuntime::Impl
     {
         if (diagnostic.empty())
             diagnostic = "Session integrity could not be proven";
+        if (taint_transition_active)
+        {
+            if (session)
+                session->MarkTainted(diagnostic);
+            Publish(WorkerRuntimeDiagnosticEvent{
+                WorkerRejectionCode::SessionTainted,
+                std::move(diagnostic),
+                active_invocation
+                    ? std::optional<InvocationId>(
+                          active_invocation->invocation_id)
+                    : std::nullopt});
+            return;
+        }
+        taint_transition_active = true;
         const bool publication_was_deferred =
             terminal_publication_deferred;
         terminal_publication_deferred = true;
@@ -4647,7 +5085,7 @@ struct WorkerRuntime::Impl
                 InvocationTerminalStatus::InfrastructureFailure,
                 CleanupStatus::Failed,
                 SessionDisposition::Tainted,
-                active_invocation->origin_epoch,
+                active_invocation->workset_epoch,
                 {},
                 RuntimeError{
                     WorkerRejectionCode::SessionTainted,
@@ -4656,6 +5094,11 @@ struct WorkerRuntime::Impl
 
         if (active_invocation)
         {
+            if (!SealActiveOutputTransactionForAbandon())
+            {
+                diagnostic +=
+                    "; active output ownership could not be proven abandoned";
+            }
             (void)active_invocation->cancellation.request_cancellation(
                 CancellationReason::RuntimeFailure);
             if (program_action_host)
@@ -4679,18 +5122,31 @@ struct WorkerRuntime::Impl
             active_invocation->workset_item_ordinal <
                 active_workset->definition.items.size())
         {
-            const std::uint32_t ordinal =
-                active_invocation->workset_item_ordinal;
-            RetainWorksetTerminal(
-                *active_workset,
-                ordinal,
-                std::move(*synthetic_terminal),
-                false,
-                active_invocation
-                    ->artifact_finalizations);
+            synthetic_terminal->error.message = diagnostic;
+            active_invocation->terminal_draft =
+                std::move(*synthetic_terminal);
+            (void)TryRetainActiveItemTerminal();
             synthetic_terminal.reset();
-            if (active_workset->next_item == ordinal)
-                ++active_workset->next_item;
+        }
+        if (active_invocation && artifact_finalizer &&
+            active_invocation->outputs.state ==
+                ActiveInvocation::OutputTransactionState::SealedForAbandon &&
+            !active_invocation->artifact_finalizations.empty())
+        {
+            // A tainted worker cannot admit more output, but every accepted
+            // finalizer job must reach a typed completion before the active
+            // item and SavestateService ownership can be released.
+            artifact_finalizer->Shutdown();
+            DrainArtifactFinalizers();
+            if (active_invocation)
+            {
+                if (!AbandonOutputsAfterFinalizerShutdown())
+                {
+                    diagnostic +=
+                        "; stopped finalizer ownership could not be proven abandoned";
+                }
+                (void)TryRetainActiveItemTerminal();
+            }
         }
         if (active_workset)
         {
@@ -4763,8 +5219,8 @@ struct WorkerRuntime::Impl
         pending_execution_commands.clear();
 
         // WorksetStateCoordinator and its session cache retain references to
-        // StateService. Tear them down while the session service composition
-        // is still alive; EmulationSession::Shutdown destroys StateService.
+        // SavestateService. Tear them down while the session service composition
+        // is still alive; EmulationSession::Shutdown destroys SavestateService.
         // Reset the coordinator even when cleanup reports a failure so its
         // destructor cannot revisit those borrowed references afterward.
         if (workset_state)
@@ -4794,11 +5250,17 @@ struct WorkerRuntime::Impl
         if (!publication_was_deferred)
             (void)PublishReadyWorksetTerminals();
         if (synthetic_terminal)
-            Publish(std::move(*synthetic_terminal));
+        {
+            Publish(WorkerRuntimeDiagnosticEvent{
+                WorkerRejectionCode::SessionTainted,
+                "An active invocation could not retain its authoritative workset terminal",
+                synthetic_terminal->invocation_id});
+        }
         Publish(WorkerRuntimeDiagnosticEvent{
             WorkerRejectionCode::SessionTainted,
             std::move(diagnostic),
             invocation});
+        taint_transition_active = false;
     }
 
     void ForceStop()
@@ -4877,8 +5339,7 @@ struct WorkerRuntime::Impl
         (void)PublishReadyWorksetTerminals();
         const std::size_t unacknowledged_terminals =
             std::max(
-                retained_terminals.size() +
-                    pending_finalized_terminals.size(),
+                retained_terminals.size(),
                 completion_ledger.snapshot().retained_terminals);
         ShutdownProgramRuntimeOnce();
         ShutdownProgramActionHostOnce();
@@ -5017,7 +5478,7 @@ struct WorkerRuntime::Impl
                 it->kind ==
                     MailboxItemKind::ProgramActionRequest ||
                 it->kind ==
-                    MailboxItemKind::ProgramActionCompletion ||
+                    MailboxItemKind::ProgramActionResolution ||
                 it->kind == MailboxItemKind::ProgramPump)
                 it = mailbox->items.erase(it);
             else
@@ -5106,8 +5567,7 @@ struct WorkerRuntime::Impl
                 AvailableItemCredits();
             current_snapshot.retained_terminal_count =
                 static_cast<std::uint32_t>(
-                    retained_terminals.size() +
-                    pending_finalized_terminals.size());
+                    retained_terminals.size());
             current_snapshot.retained_terminal_bytes =
                 retained_terminal_bytes;
             current = current_snapshot;
@@ -5163,8 +5623,7 @@ struct WorkerRuntime::Impl
             AvailableItemCredits();
         current_snapshot.retained_terminal_count =
             static_cast<std::uint32_t>(
-                retained_terminals.size() +
-                pending_finalized_terminals.size());
+                retained_terminals.size());
         current_snapshot.retained_terminal_bytes =
             retained_terminal_bytes;
     }
@@ -5240,12 +5699,12 @@ struct WorkerRuntime::Impl
     {
         if (!artifact_finalizer)
             return;
-        std::vector<StateArtifactFinalizationCompletion>
+        std::vector<SavestateArtifactFinalizationCompletion>
             completions =
-                artifact_finalizer->DrainCompletions();
+                artifact_finalizer->DrainResults();
         if (completions.empty())
             return;
-        for (StateArtifactFinalizationCompletion& completion :
+        for (SavestateArtifactFinalizationCompletion& completion :
              completions)
         {
             const auto found = artifact_publications.find(
@@ -5264,18 +5723,32 @@ struct WorkerRuntime::Impl
             }
             ArtifactPublication& publication = found->second;
             publication.completed = true;
-            if (!completion.result.ok)
+            if (publication.abandon_requested)
+            {
+                publication.artifact.reset();
+                const SavestateServiceResult abandoned =
+                    session->AbandonImmutableSavestateArtifact(
+                        publication.state_artifact_id);
+                if (!abandoned.ok &&
+                    abandoned.code != SavestateServiceErrorCode::NotFound)
+                {
+                    publication.failure = abandoned.message.empty()
+                        ? "Abandoned output finalization retained service ownership"
+                        : abandoned.message;
+                }
+            }
+            else if (!completion.result.ok)
             {
                 publication.failure =
                     completion.result.message.empty()
                     ? "State artifact finalization failed"
                     : completion.result.message;
-                (void)session->AbandonImmutableStateArtifact(
+                (void)session->AbandonImmutableSavestateArtifact(
                     publication.state_artifact_id);
             }
             else
             {
-                ImmutableStateArtifactPublicationReceipt evidence;
+                ImmutableSavestateArtifactPublicationReceipt evidence;
                 evidence.artifact =
                     publication.state_artifact_id;
                 evidence.state_path = completion.state.path;
@@ -5303,22 +5776,22 @@ struct WorkerRuntime::Impl
                 }
                 if (!publication.failure.empty())
                 {
-                    (void)session->AbandonImmutableStateArtifact(
+                    (void)session->AbandonImmutableSavestateArtifact(
                         publication.state_artifact_id);
                 }
                 if (publication.failure.empty())
                 {
-                    const StateFileArtifactReceipt committed =
-                        session->CommitImmutableStateArtifact(
+                    const SavestateFileArtifactReceipt committed =
+                        session->CommitImmutableSavestateArtifact(
                             evidence);
                     if (!committed.result.ok)
                     {
                         publication.failure =
                             committed.result.message.empty()
-                            ? "StateService rejected finalized artifact evidence"
+                            ? "SavestateService rejected finalized artifact evidence"
                             : committed.result.message;
                         (void)session
-                            ->AbandonImmutableStateArtifact(
+                            ->AbandonImmutableSavestateArtifact(
                                 publication.state_artifact_id);
                     }
                     else
@@ -5330,7 +5803,7 @@ struct WorkerRuntime::Impl
                             program::
                                 CanonicalActionArtifactPayloadSchemaIdentity(
                                     program::CanonicalAction::
-                                        StateSaveImmutableArtifact);
+                                        SavestateSaveImmutableArtifact);
                         if (!hash || !schema)
                         {
                             publication.failure =
@@ -5347,8 +5820,8 @@ struct WorkerRuntime::Impl
                                     committed.path.string(),
                                     true};
                         }
-                        const StateServiceResult released =
-                            session->ReleaseStateArtifact(
+                        const SavestateServiceResult released =
+                            session->ReleaseSavestateArtifact(
                                 publication.state_artifact_id);
                         if (!released.ok)
                         {
@@ -5378,20 +5851,47 @@ struct WorkerRuntime::Impl
                         publication.failure;
                     CloseActiveWorksetAdmissionAfterPublication(
                         "Artifact publication failure closed later workset admission");
-                    if (!active_invocation->cancellation
-                             .is_cancellation_requested())
-                    {
-                        (void)RequestActiveWorksetCancellation();
-                    }
                 }
             }
-            const WorkerTerminalId terminal_id =
-                publication.terminal_id;
-            if (terminal_id)
-                TryFinalizePendingTerminal(terminal_id);
+            if (active_invocation &&
+                active_invocation->invocation_id ==
+                    publication.item.invocation_id &&
+                active_invocation->attempt_id ==
+                    publication.item.attempt_id)
+            {
+                const auto output = std::ranges::find_if(
+                    active_invocation->outputs.outputs,
+                    [&](const ActiveInvocation::Output& candidate) {
+                        return candidate.finalization_id ==
+                            completion.finalization_id;
+                    });
+                if (output ==
+                    active_invocation->outputs.outputs.end())
+                {
+                    EnterTainted(
+                        "State artifact completion lost its active output transaction entry");
+                    continue;
+                }
+                output->failure = publication.failure;
+                output->artifact = publication.artifact;
+                output->state = publication.failure.empty() &&
+                        publication.artifact
+                    ? ActiveInvocation::OutputState::Published
+                    : ActiveInvocation::OutputState::Abandoned;
+            }
+            if (active_invocation &&
+                active_invocation->invocation_id ==
+                    publication.item.invocation_id &&
+                active_invocation->attempt_id ==
+                    publication.item.attempt_id)
+            {
+                (void)TryRetainActiveItemTerminal();
+            }
         }
         RefreshSnapshot();
         PublishCredits();
+        if (active_workset && !active_invocation)
+            StartNextWorksetItem();
     }
 
     void BuildRuntimeManifest()
@@ -5453,7 +5953,7 @@ struct WorkerRuntime::Impl
     std::shared_ptr<ProgramBaselineComponentRegistry>
         baseline_components;
     std::unique_ptr<WorksetStager> workset_stager;
-    std::unique_ptr<StateArtifactFinalizer>
+    std::unique_ptr<SavestateArtifactFinalizer>
         artifact_finalizer;
     std::unique_ptr<WorksetStateCoordinator> workset_state;
     WorkerCapabilityMask capabilities_value = 0;
@@ -5474,12 +5974,12 @@ struct WorkerRuntime::Impl
         accepted_workset_submissions;
     std::unordered_map<std::uint64_t, RetainedTerminal>
         retained_terminals;
-    std::unordered_map<std::uint64_t, PendingFinalizedTerminal>
-        pending_finalized_terminals;
     std::unordered_map<std::uint64_t, ArtifactPublication>
         artifact_publications;
     std::size_t retained_terminal_bytes = 0;
     bool terminal_publication_deferred = false;
+    bool handling_execution_finished = false;
+    bool taint_transition_active = false;
     mutable std::mutex manifest_mutex;
     WorkerRuntimeManifest runtime_manifest_value;
     std::unordered_map<std::uint64_t, PendingExecutionCommand>
@@ -5547,13 +6047,13 @@ bool WorkerRuntime::EnqueueHostEvent(
 
 bool WorkerRuntime::EnqueueHostEvent(
     SessionId observed_session_id,
-    StateEpoch observed_state_epoch,
+    WorksetEpoch observed_workset_epoch,
     std::string name,
     std::vector<std::uint8_t> encoded_payload)
 {
     return impl_->EnqueueHostEvent(
         observed_session_id,
-        observed_state_epoch,
+        observed_workset_epoch,
         std::move(name),
         std::move(encoded_payload));
 }

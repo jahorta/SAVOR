@@ -39,7 +39,7 @@ struct ProgramExecutorSnapshot
 {
     ProgramExecutorActivity activity = ProgramExecutorActivity::Idle;
     InvocationId invocation_id;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     std::uint64_t instructions_executed = 0;
     std::uint64_t calls_executed = 0;
     std::uint64_t action_requests = 0;
@@ -48,7 +48,6 @@ struct ProgramExecutorSnapshot
     std::size_t call_depth = 0;
     std::size_t scope_depth = 0;
     std::optional<ProgramActionRequestId> pending_action;
-    std::size_t pending_state_artifact_publications = 0;
 };
 
 struct ProgramExecutorPumpResult
@@ -92,17 +91,11 @@ public:
         ProgramActionRequestId request_id);
 
     [[nodiscard]] bool DeliverHostCompletion(
-        ProgramActionCompletion completion,
+        ProgramActionResolution completion,
         std::string* diagnostic = nullptr);
 
     [[nodiscard]] bool RequestCancellation(
         CancellationReason reason) noexcept;
-
-    // Transfers host-only publication ownership to WorkerRuntime. Draining
-    // never changes program semantics: pending receipts are not artifact
-    // references and finalizer evidence is appended only to the terminal.
-    [[nodiscard]] std::vector<PendingStateArtifactPublication>
-        DrainPendingStateArtifactPublications();
 
     [[nodiscard]] ProgramExecutorSnapshot snapshot() const noexcept;
     [[nodiscard]] std::optional<

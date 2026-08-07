@@ -45,7 +45,7 @@ ProgramPolicySet Policies()
 {
     return {
         .state_policies = {
-            InvocationStatePolicy::ContinueSession,
+            InvocationStatePolicy::RestoreBaseline,
         },
         .execution_intents = {ExecutionIntent::Live},
     };
@@ -177,10 +177,10 @@ ProgramInvocation Invocation(
             .backend = "fake",
         },
         .state = {
-            .policy = InvocationStatePolicy::ContinueSession,
+            .policy = InvocationStatePolicy::RestoreBaseline,
             .session_lineage = "executor-test",
             .expected_session = SessionId(3),
-            .expected_epoch = StateEpoch(5),
+            .expected_epoch = WorksetEpoch(5),
         },
         .execution = {
             .intent = ExecutionIntent::Live,
@@ -195,13 +195,13 @@ ProgramInvocation Invocation(
     };
 }
 
-ProgramActionCompletion Completion(
+ProgramActionResolution Completion(
     const ProgramInvocation& invocation,
     ProgramActionRequestId request_id,
     ProgramHostOperation operation,
     ProgramValueGraph output = UnitGraph(),
-    ProgramActionCompletionStatus status =
-        ProgramActionCompletionStatus::Completed)
+    ProgramActionResolutionStatus status =
+        ProgramActionResolutionStatus::Completed)
 {
     return {
         .request_id = request_id,
@@ -209,8 +209,7 @@ ProgramActionCompletion Completion(
         .attempt_id = invocation.attempt_id,
         .operation = operation,
         .status = status,
-        .origin_epoch = invocation.state.expected_epoch,
-        .resulting_epoch = invocation.state.expected_epoch,
+        .workset_epoch = invocation.state.expected_epoch,
         .output = std::move(output),
         .cleanup = ProgramCleanupStatus::Clean,
         .session_disposition = SessionDisposition::Clean,
@@ -763,7 +762,7 @@ TEST(ProgramExecutor, SuspendsForActionsAndCorrelatesCompletions)
             ProgramHostOperation::InvokeAction)));
     ASSERT_TRUE(executor.BindPendingAction(request_id));
 
-    ProgramActionCompletion wrong = Completion(
+    ProgramActionResolution wrong = Completion(
         invocation,
         ProgramActionRequestId(501),
         ProgramHostOperation::InvokeAction);
@@ -792,7 +791,7 @@ TEST(ProgramExecutor, SuspendsForActionsAndCorrelatesCompletions)
         ScalarGraph(
             BuiltinType::U32,
             std::uint32_t(77)));
-    wrong.origin_epoch = StateEpoch(4);
+    wrong.workset_epoch = WorksetEpoch(4);
     EXPECT_FALSE(executor.DeliverHostCompletion(wrong));
     EXPECT_EQ(
         executor.snapshot().activity,
@@ -898,7 +897,7 @@ TEST(
             ProgramHostOperation::InvokeAction,
             ScalarGraph(BuiltinType::Bool, true))));
 
-    ProgramActionCompletion completed = Completion(
+    ProgramActionResolution completed = Completion(
         invocation,
         request_id,
         ProgramHostOperation::InvokeAction);
@@ -907,7 +906,6 @@ TEST(
         .receipt = ResourceReceiptId(91),
         .kind = ResourceKind::HostResource,
         .acquisition_epoch = invocation.state.expected_epoch,
-        .origin_epoch = invocation.state.expected_epoch,
     });
     ASSERT_TRUE(executor.DeliverHostCompletion(
         std::move(completed)));
@@ -998,12 +996,12 @@ TEST(ProgramExecutor, StaleActionCompletionFailsAndStillUnwinds)
     ASSERT_TRUE(suspended.host_request);
     const ProgramActionRequestId request_id(600);
     ASSERT_TRUE(executor.BindPendingAction(request_id));
-    ProgramActionCompletion stale = Completion(
+    ProgramActionResolution stale = Completion(
         invocation,
         request_id,
         ProgramHostOperation::InvokeAction,
         UnitGraph(),
-        ProgramActionCompletionStatus::StaleEpoch);
+        ProgramActionResolutionStatus::StaleEpoch);
     stale.code = "stale_epoch";
     stale.message = "completion belongs to an obsolete state epoch";
     ASSERT_TRUE(executor.DeliverHostCompletion(std::move(stale)));
@@ -1135,7 +1133,7 @@ TEST(ProgramExecutor, CancellationRunsDeferredCleanupAndClosesScopes)
             cleanup_id,
             ProgramHostOperation::InvokeAction,
             ScalarGraph(BuiltinType::Bool, true))));
-    ProgramActionCompletion cleaned = Completion(
+    ProgramActionResolution cleaned = Completion(
         invocation,
         cleanup_id,
         ProgramHostOperation::InvokeAction);
@@ -1232,12 +1230,12 @@ TEST(ProgramExecutor, CleanupTaintIsMonotonicThroughFinishInvocation)
     ASSERT_TRUE(cleanup.host_request->cleanup_only);
     const ProgramActionRequestId cleanup_id(751);
     ASSERT_TRUE(executor.BindPendingAction(cleanup_id));
-    ProgramActionCompletion failed_cleanup = Completion(
+    ProgramActionResolution failed_cleanup = Completion(
         invocation,
         cleanup_id,
         ProgramHostOperation::InvokeAction,
         UnitGraph(),
-        ProgramActionCompletionStatus::CleanupFailed);
+        ProgramActionResolutionStatus::CleanupFailed);
     failed_cleanup.code = "cleanup_fault";
     failed_cleanup.message = "injected compensation failure";
     ASSERT_TRUE(executor.DeliverHostCompletion(
@@ -1332,12 +1330,12 @@ TEST(ProgramExecutor, FailedScopeCloseIsRetiredAndCannotLoopForever)
         ProgramHostOperation::CloseScope);
     const ProgramActionRequestId close_id(762);
     ASSERT_TRUE(executor.BindPendingAction(close_id));
-    ProgramActionCompletion failed_close = Completion(
+    ProgramActionResolution failed_close = Completion(
         invocation,
         close_id,
         ProgramHostOperation::CloseScope,
         UnitGraph(),
-        ProgramActionCompletionStatus::CleanupFailed);
+        ProgramActionResolutionStatus::CleanupFailed);
     failed_close.code = "close_fault";
     failed_close.message = "injected scope close failure";
     ASSERT_TRUE(executor.DeliverHostCompletion(

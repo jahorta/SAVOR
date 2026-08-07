@@ -11,10 +11,7 @@ namespace savor::runtime::program {
 
 enum class CanonicalAction : std::uint8_t
 {
-    StateCapture,
-    StateRestore,
-    StateRestoreBaseline,
-    StateSaveImmutableArtifact,
+    SavestateSaveImmutableArtifact,
     ExecutionContinueUntil,
     ExecutionStepFrames,
     StopPointsSubscribeGroup,
@@ -25,6 +22,7 @@ enum class CanonicalAction : std::uint8_t
     InputNeutralize,
     InputPublishSequence,
     InputAwaitGuestPoll,
+    MoviePrepareReadOnlyPlayback,
     MovieStartPlayback,
     MovieStopPlayback,
     MovieStartRecording,
@@ -67,7 +65,19 @@ enum class CanonicalRuntimeSchema : std::uint8_t
     StopEvidencePayload,
     OptionalInputPublicationReceipt,
     OptionalInputNeutralWitness,
+    OptionalMoviePlaybackSession,
+    OptionalMovieInputCount,
+    ContinueUntilCompletionReason,
+    RoutedStopReceipt,
+    OptionalRoutedStopReceipt,
     OptionalContinueUntilResult,
+};
+
+enum class ContinueUntilCompletionReasonV1 : std::int64_t
+{
+    Breakpoint = 0,
+    CursorOverrun = 1,
+    MovieEnded = 2,
 };
 
 [[nodiscard]] std::string_view CanonicalActionName(

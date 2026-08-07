@@ -43,7 +43,7 @@ TEST(WorkerProtocolV1, EncodesExactWrmsLittleEndianGoldenFrame)
     constexpr std::uint64_t request_id = 0x1122334455667788ull;
 
     const auto encoded = EncodeFrame(
-        MessageKind::SubmitInvocation,
+        MessageKind::SubmitWorkset,
         request_id,
         payload);
 
@@ -51,7 +51,7 @@ TEST(WorkerProtocolV1, EncodesExactWrmsLittleEndianGoldenFrame)
     const std::vector<std::uint8_t> expected{
         0x57, 0x52, 0x4d, 0x53, // WRMS
         0x01, 0x00,             // protocol version 1
-        0x12, 0x00,             // SubmitInvocation
+        0x17, 0x00,             // SubmitWorkset
         0x02, 0x00, 0x00, 0x00, // payload length
         0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // request ID
         0xaa, 0xbb,
@@ -64,7 +64,7 @@ TEST(WorkerProtocolV1, EncodesExactWrmsLittleEndianGoldenFrame)
     EXPECT_EQ(decoded.consumed_size, expected.size());
     EXPECT_EQ(decoded.required_size, expected.size());
     EXPECT_EQ(decoded.frame.header.version, ProtocolVersion);
-    EXPECT_EQ(decoded.frame.header.kind, MessageKind::SubmitInvocation);
+    EXPECT_EQ(decoded.frame.header.kind, MessageKind::SubmitWorkset);
     EXPECT_EQ(decoded.frame.header.payload_size, payload.size());
     EXPECT_EQ(decoded.frame.header.request_id, request_id);
     EXPECT_EQ(
@@ -89,8 +89,8 @@ TEST(WorkerProtocolV1, EncodesExactAdditiveExecutionGoldenFrames)
         ASSERT_TRUE(EncodePayload(
             ControlExecutionPayload{
                 .control = ExecutionControlKind::StepFrame,
-                .session_id = 0x0102030405060708ull,
-                .expected_state_epoch = 0x1112131415161718ull,
+                .workset_id = 0x0102030405060708ull,
+                .item_id = 0x1112131415161718ull,
                 .count = 2,
                 .timeout_ms = 5000,
             },
@@ -123,7 +123,7 @@ TEST(WorkerProtocolV1, EncodesExactAdditiveExecutionGoldenFrames)
                 .control = ExecutionControlKind::StepFrame,
                 .status = CommandStatus::Succeeded,
                 .session_id = 0x1112131415161718ull,
-                .state_epoch = 0x2122232425262728ull,
+                .workset_epoch = 0x2122232425262728ull,
                 .operation_id = 0x3132333435363738ull,
                 .activity = ExecutionActivityCode::IdlePaused,
                 .has_terminal_status = true,
@@ -168,7 +168,7 @@ TEST(WorkerProtocolV1, EncodesExactAdditiveExecutionGoldenFrames)
         ASSERT_TRUE(EncodePayload(
             ExecutionStatePayload{
                 .session_id = 0x1112131415161718ull,
-                .state_epoch = 0x2122232425262728ull,
+                .workset_epoch = 0x2122232425262728ull,
                 .operation_id = 0x3132333435363738ull,
                 .activity = ExecutionActivityCode::InteractiveRunning,
                 .has_active_control = true,
@@ -234,16 +234,6 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .encoded_module = { 0x00, 0x10, 0x20, 0xff },
     });
 
-    ExpectPayloadRoundTrip(SubmitInvocationPayload{
-        .invocation_id = 101,
-        .attempt_id = 7,
-        .module_canonical_id = "battle.single-turn",
-        .module_revision = 7,
-        .module_canonical_hash = "sha256:0123456789abcdef",
-        .entrypoint = "execute",
-        .expected_state_epoch = 55,
-        .encoded_invocation = { 0xde, 0xad, 0xbe, 0xef },
-    });
     ExpectPayloadRoundTrip(SubmitWorksetPayload{
         .encoded_workset = {0x57, 0x53, 0x01},
         .workset_sha256 = std::string(64, 'a'),
@@ -279,6 +269,7 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
 
     ExpectPayloadRoundTrip(CaptureScreenshotPayload{
         55,
+        66,
         "C:/shots/final.png",
         2500,
     });
@@ -287,26 +278,26 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
 
     ExpectPayloadRoundTrip(ControlExecutionPayload{
         .control = ExecutionControlKind::StepFrame,
-        .session_id = 55,
-        .expected_state_epoch = 3,
+        .workset_id = 55,
+        .item_id = 3,
         .count = 2,
         .timeout_ms = 5000,
     });
 
     ExpectPayloadRoundTrip(CommandResultPayload{
         .command_sequence = 44,
-        .command_kind = MessageKind::SubmitInvocation,
+        .command_kind = MessageKind::SubmitWorkset,
         .status = CommandStatus::Rejected,
         .rejection_code = RejectionCode::ProgramRuntimeUnavailable,
         .error_code = "runtime_unavailable",
-        .message = "ProgramInvocation is not advertised",
+        .message = "WorksetDispatch is not advertised",
         .result = { 0x01, 0x02 },
     });
 
     ExpectPayloadRoundTrip(OpenSessionResultPayload{
         .success = true,
         .session_id = 55,
-        .state_epoch = 3,
+        .workset_epoch = 3,
         .capability_mask = 0x55aa55aa55aa55aaull,
         .worker_state = WorkerStateCode::Ready,
         .session_disposition = SessionDispositionCode::Clean,
@@ -318,7 +309,7 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
     ExpectPayloadRoundTrip(ScreenshotResultPayload{
         .status = ScreenshotStatus::Captured,
         .session_id = 55,
-        .state_epoch = 3,
+        .workset_epoch = 3,
         .output_path = "C:/shots/final.png",
         .rejection_code = RejectionCode::None,
         .error_code = {},
@@ -336,7 +327,7 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
     ExpectPayloadRoundTrip(SessionEventPayload{
         .event_type = SessionEventType::Tainted,
         .session_id = 55,
-        .state_epoch = 4,
+        .workset_epoch = 4,
         .capability_mask = 0x000000000000000full,
         .worker_state = WorkerStateCode::Stopping,
         .session_disposition = SessionDispositionCode::Tainted,
@@ -355,17 +346,6 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .progress = { 0x01, 0x00, 0x01, 0x00 },
     });
 
-    ExpectPayloadRoundTrip(InvocationTerminalPayload{
-        .invocation_id = 101,
-        .attempt_id = 7,
-        .status = InvocationTerminalStatus::InfrastructureFailure,
-        .session_disposition = SessionDispositionCode::Tainted,
-        .state_epoch = 4,
-        .rejection_code = RejectionCode::BackendFailure,
-        .error_code = "backend_failed",
-        .message = "backend stopped responding",
-        .result = { 0xca, 0xfe },
-    });
     ExpectPayloadRoundTrip(WorksetStatePayload{
         .outbound_sequence = 31,
         .workset_id = 500,
@@ -385,10 +365,10 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .invocation_id = 101,
         .attempt_id = 7,
         .session_id = 55,
-        .state_epoch = 4,
+        .workset_epoch = 4,
         .baseline_sha256 = std::string(64, 'a'),
         .baseline_lineage = "seed-probe/neutral",
-        .baseline_restored = true});
+        .baseline_state_established = true});
     ExpectPayloadRoundTrip(WorksetItemTerminalPayload{
         .outbound_sequence = 33,
         .workset_id = 500,
@@ -400,7 +380,7 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .terminal_order = 44,
         .status = InvocationTerminalStatus::Succeeded,
         .session_disposition = SessionDispositionCode::Clean,
-        .state_epoch = 4,
+        .workset_epoch = 4,
         .unstarted = false,
         .result = {0xaa, 0xbb}});
     ExpectPayloadRoundTrip(WorksetCreditsPayload{
@@ -436,7 +416,7 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .control = ExecutionControlKind::StepFrame,
         .status = CommandStatus::Succeeded,
         .session_id = 55,
-        .state_epoch = 3,
+        .workset_epoch = 3,
         .operation_id = 901,
         .activity = ExecutionActivityCode::IdlePaused,
         .has_terminal_status = true,
@@ -450,7 +430,7 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
 
     ExpectPayloadRoundTrip(ExecutionStatePayload{
         .session_id = 55,
-        .state_epoch = 3,
+        .workset_epoch = 3,
         .operation_id = 902,
         .activity = ExecutionActivityCode::InteractiveRunning,
         .has_active_control = true,
@@ -480,10 +460,9 @@ TEST(WorkerProtocolV1, KeepsExecutionControlAdditiveAndDirectional)
         MessageDirection::WorkerToParent);
 }
 
-TEST(WorkerProtocolV1, KeepsWorksetTransportAdditiveAndDirectional)
+TEST(WorkerProtocolV1, ExposesOnlyWorksetProgramTransport)
 {
     EXPECT_EQ(ProtocolVersion, 1u);
-    EXPECT_TRUE(IsKnownMessageKind(MessageKind::SubmitInvocation));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::RuntimeManifest));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::SubmitWorkset));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::CancelWorksetItem));
@@ -491,6 +470,8 @@ TEST(WorkerProtocolV1, KeepsWorksetTransportAdditiveAndDirectional)
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::AcknowledgeTerminal));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::LivenessProbe));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::WorksetItemTerminal));
+    EXPECT_FALSE(IsKnownMessageKind(
+        static_cast<MessageKind>(0x0106)));
     EXPECT_EQ(
         DirectionOf(MessageKind::SubmitWorkset),
         MessageDirection::ParentToWorker);
@@ -509,8 +490,8 @@ TEST(WorkerProtocolV1, RejectsInvalidExecutionControlWithoutPublishingOutput)
 {
     const ControlExecutionPayload valid{
         .control = ExecutionControlKind::Pause,
-        .session_id = 7,
-        .expected_state_epoch = 9,
+        .workset_id = 7,
+        .item_id = 9,
         .timeout_ms = 1000,
     };
     std::vector<std::uint8_t> encoded;
@@ -519,10 +500,10 @@ TEST(WorkerProtocolV1, RejectsInvalidExecutionControlWithoutPublishingOutput)
 
     encoded[0] = 0xff;
     ControlExecutionPayload unchanged;
-    unchanged.session_id = 777;
+    unchanged.workset_id = 777;
     const auto decoded = DecodePayload(encoded, unchanged);
     EXPECT_EQ(decoded.error, PayloadError::InvalidEnumValue);
-    EXPECT_EQ(unchanged.session_id, 777u);
+    EXPECT_EQ(unchanged.workset_id, 777u);
 
     auto invalid = valid;
     invalid.control = static_cast<ExecutionControlKind>(0xff);
@@ -562,25 +543,9 @@ TEST(WorkerProtocolV1, PreservesCompleteEncodedEnvelopeMetadata)
     ASSERT_TRUE(DecodePayload(encoded, decoded_module));
     EXPECT_EQ(decoded_module, module);
 
-    const SubmitInvocationPayload invocation{
-        .invocation_id = 7001,
-        .attempt_id = 23,
-        .module_canonical_id = module.canonical_id,
-        .module_revision = module.revision,
-        .module_canonical_hash = module.canonical_hash,
-        .entrypoint = "capture-and-route",
-        .expected_state_epoch = 991,
-        .encoded_invocation = { 0x10, 0x00, 0x20, 0x00 },
-    };
-    encoded.clear();
-    ASSERT_TRUE(EncodePayload(invocation, encoded));
-    SubmitInvocationPayload decoded_invocation;
-    ASSERT_TRUE(DecodePayload(encoded, decoded_invocation));
-    EXPECT_EQ(decoded_invocation, invocation);
-    EXPECT_EQ(decoded_invocation.expected_state_epoch, 991u);
 }
 
-TEST(WorkerProtocolV1, PreservesAttemptIdentityAcrossProgressAndTerminal)
+TEST(WorkerProtocolV1, PreservesAttemptIdentityAcrossProgressAndWorksetTerminal)
 {
     constexpr std::uint64_t invocation_id = 91;
     constexpr std::uint64_t first_attempt = 4;
@@ -603,16 +568,22 @@ TEST(WorkerProtocolV1, PreservesAttemptIdentityAcrossProgressAndTerminal)
     EXPECT_EQ(decoded_progress.attempt_id, retry_attempt);
     EXPECT_NE(decoded_progress.attempt_id, first_attempt);
 
-    const InvocationTerminalPayload terminal{
+    const WorksetItemTerminalPayload terminal{
+        .outbound_sequence = 1,
+        .workset_id = 500,
+        .item_id = 3,
+        .item_ordinal = 2,
         .invocation_id = invocation_id,
         .attempt_id = retry_attempt,
+        .terminal_id = 10,
+        .terminal_order = 1,
         .status = InvocationTerminalStatus::TimedOut,
         .session_disposition = SessionDispositionCode::Clean,
-        .state_epoch = 88,
+        .workset_epoch = 88,
     };
     encoded.clear();
     ASSERT_TRUE(EncodePayload(terminal, encoded));
-    InvocationTerminalPayload decoded_terminal;
+    WorksetItemTerminalPayload decoded_terminal;
     ASSERT_TRUE(DecodePayload(encoded, decoded_terminal));
     EXPECT_EQ(decoded_terminal.invocation_id, invocation_id);
     EXPECT_EQ(decoded_terminal.attempt_id, retry_attempt);
@@ -648,12 +619,15 @@ TEST(WorkerProtocolV1, RuntimeDiagnosticsAreNotSessionEvents)
 
 TEST(WorkerProtocolV1, OversizedTerminalCanBeReplacedByBoundedFailure)
 {
-    InvocationTerminalPayload oversized{
+    WorksetItemTerminalPayload oversized{
+        .outbound_sequence = 1,
+        .workset_id = 50,
+        .item_id = 5,
         .invocation_id = 501,
         .attempt_id = 8,
         .status = InvocationTerminalStatus::Succeeded,
         .session_disposition = SessionDispositionCode::Clean,
-        .state_epoch = 41,
+        .workset_epoch = 41,
     };
     oversized.result.resize(MaximumPayloadSize);
     std::vector<std::uint8_t> output{ 0x5a };
@@ -661,12 +635,15 @@ TEST(WorkerProtocolV1, OversizedTerminalCanBeReplacedByBoundedFailure)
     EXPECT_EQ(oversized_result.error, PayloadError::PayloadTooLarge);
     EXPECT_EQ(output, (std::vector<std::uint8_t>{ 0x5a }));
 
-    const InvocationTerminalPayload fallback{
+    const WorksetItemTerminalPayload fallback{
+        .outbound_sequence = oversized.outbound_sequence,
+        .workset_id = oversized.workset_id,
+        .item_id = oversized.item_id,
         .invocation_id = oversized.invocation_id,
         .attempt_id = oversized.attempt_id,
         .status = InvocationTerminalStatus::InfrastructureFailure,
         .session_disposition = oversized.session_disposition,
-        .state_epoch = oversized.state_epoch,
+        .workset_epoch = oversized.workset_epoch,
         .rejection_code = RejectionCode::InternalFailure,
         .error_code = "TerminalEncodingFailed",
         .message = "terminal output exceeded the WRMS payload bound",
@@ -681,7 +658,7 @@ TEST(WorkerProtocolV1, RejectsUnknownRuntimeEnumsWithoutPublishingOutput)
     const OpenSessionResultPayload valid{
         .success = true,
         .session_id = 1,
-        .state_epoch = 1,
+        .workset_epoch = 1,
         .worker_state = WorkerStateCode::Ready,
         .session_disposition = SessionDispositionCode::Clean,
     };
@@ -715,18 +692,21 @@ TEST(WorkerProtocolV1, RejectsUnknownRuntimeEnumsWithoutPublishingOutput)
     EXPECT_EQ(encode_result.error, PayloadError::InvalidEnumValue);
     EXPECT_EQ(unchanged_output, (std::vector<std::uint8_t>{ 0x5a }));
 
-    const InvocationTerminalPayload valid_terminal{
+    const WorksetItemTerminalPayload valid_terminal{
+        .outbound_sequence = 1,
+        .workset_id = 2,
+        .item_id = 3,
         .invocation_id = 9,
         .attempt_id = 3,
         .status = InvocationTerminalStatus::TimedOut,
         .session_disposition = SessionDispositionCode::Clean,
-        .state_epoch = 5,
+        .workset_epoch = 5,
     };
     encoded.clear();
     ASSERT_TRUE(EncodePayload(valid_terminal, encoded));
-    ASSERT_GT(encoded.size(), 16u);
-    encoded[16] = 0xff;
-    InvocationTerminalPayload unchanged_terminal;
+    ASSERT_GT(encoded.size(), 60u);
+    encoded[60] = 0xff;
+    WorksetItemTerminalPayload unchanged_terminal;
     unchanged_terminal.attempt_id = 777;
     const auto terminal_decode =
         DecodePayload(encoded, unchanged_terminal);

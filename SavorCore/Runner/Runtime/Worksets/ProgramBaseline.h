@@ -1,13 +1,13 @@
 #pragma once
 
-#include "SessionStateCache.h"
-
+#include "WorksetTypes.h"
 #include "../EmulationSession.h"
 
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -110,7 +110,7 @@ private:
 struct WorksetBaselineSnapshot
 {
     bool active = false;
-    bool reusable = false;
+    bool multi_item = false;
     ProgramBaselineKey key;
     PreparedProgramBaselineReceipt receipt;
     ResourceScopeId resource_scope;
@@ -135,7 +135,7 @@ public:
     [[nodiscard]] ProgramBaselineComponentResult Prepare(
         WorkerWorksetId workset_id,
         const ProgramBaselineDefinition& definition,
-        bool reusable,
+        bool multi_item,
         PreparedProgramBaselineReceipt& receipt_out);
 
     [[nodiscard]] ProgramBaselineComponentResult RestoreForNextItem(
@@ -145,30 +145,22 @@ public:
     [[nodiscard]] ProgramBaselineComponentResult Shutdown();
 
     [[nodiscard]] WorksetBaselineSnapshot snapshot() const noexcept;
-    [[nodiscard]] SessionStateCacheSnapshot cache_snapshot() const noexcept;
-
 private:
     [[nodiscard]] ProgramBaselineComponentResult PrepareSource(
         const ProgramBaselineDefinition& definition);
     [[nodiscard]] ProgramBaselineComponentResult OpenScope(
         WorkerWorksetId workset_id);
     [[nodiscard]] ProgramBaselineComponentResult CloseScope();
-    [[nodiscard]] ProgramBaselineComponentResult EnsureCache();
-    [[nodiscard]] StateCacheKey MakeCacheKey(
-        const ProgramBaselineDefinition& definition,
-        const StateHandleReceipt& captured) const;
-
     EmulationSession& session_;
     WorkerWorksetLimits limits_;
     std::shared_ptr<ProgramBaselineComponentRegistry> components_;
-    std::unique_ptr<SessionStateCache> cache_;
-    std::unordered_map<std::string, StateCacheKey> baseline_cache_keys_;
     ProgramBaselineDefinition active_definition_;
+    WorkerWorksetId active_workset_id_;
     ProgramBaselineKey active_key_;
     PreparedProgramBaselineReceipt active_receipt_;
-    std::optional<SessionStateCache::Lease> active_lease_;
+    std::optional<SavestateHandleReceipt> active_handle_;
     ResourceScopeId workset_scope_;
-    bool reusable_ = false;
+    bool multi_item_ = false;
     bool stopped_ = false;
 };
 

@@ -67,7 +67,7 @@ plan replaces both with `ProgramRuntime` and one `ProgramExecutor`.
 3. There is no temporary PhaseScript translator, compatibility executor, mandatory legacy differential
    harness, or per-job selection between old and new execution.
 4. New features, including Navmesh Survey, are prohibited in the legacy execution code.
-5. An active `ProgramInstance`, resource scope, `StateEpoch`, Dolphin session, or in-flight worker command
+5. An active `ProgramInstance`, resource scope, `WorksetEpoch`, Dolphin session, or in-flight worker command
    is never migrated across runtime versions.
 6. Existing persisted rows are not rewritten. Program-kind handlers translate recognized semantic
    payload/result fields at the runtime boundary; obsolete timing keys are ignored and are not rewritten
@@ -159,7 +159,7 @@ first `WorkerRuntime` change.
 - route cancellation, screenshots, session lifecycle, and encoded module/invocation envelopes through
   that actor;
 - narrow `DolphinBackend` to backend capabilities rather than policy; and
-- introduce typed command/result, cancellation-token, session-disposition, and `StateEpoch` primitives.
+- introduce typed command/result, cancellation-token, session-disposition, and `WorksetEpoch` primitives.
 
 Slice 1 is a hard production disconnect. `SavorWorker` no longer constructs, includes, or calls
 `PhaseScriptVM`, and the old VM is not placed behind the new seam as a compatibility executor. Its source
@@ -197,16 +197,16 @@ slices, but the ownership and control boundaries established here remain the gui
 - each open `EmulationSession` owns exactly one `PhysicalStopPointManager` and one `StopPointRouter`;
 - `PhysicalStopPointManager` is the sole owner of regular Dolphin PC breakpoints and memchecks, and its
   physical plan is the union of the router's logical subscription groups;
-- logical subscriptions carry source identity, delivery mode, priority, lifetime, routing policy,
-  bounded hit-time behavior, and `StateEpoch` policy without allowing one source to clear another;
+- logical subscriptions carry source identity, delivery mode, priority, lifetime, routing policy, and
+  bounded hit-time behavior without allowing one source to clear another;
 - MinHook remains an implementation detail in SavorProbe, but its JIT and post-write memcheck detours
   publish only through the dependency-neutral `INativeStopSink` boundary rather than a
   `ProbeRuntime` singleton;
 - retained capture-profile processing is passive behind a router adapter: it may observe the shared hit
   identity, sample, record, and request physical reconciliation, but it does not own Dolphin sites or
   pause, resume, step, or schedule execution; and
-- boot, state replacement, restore rollback, and JIT revalidation preserve one session-owned routing
-  boundary and reject stale-epoch delivery.
+- baseline restore, movie core restart, and JIT revalidation preserve one workset-owned routing
+  boundary and reject stale dispatch/physical-generation delivery.
 
 `RequestInterruptionHandler` is intentionally present as a typed routing outcome and
 `StopInterruptionHandlerRequest`, not as a second controller. The router identifies a verifier-known
@@ -282,69 +282,26 @@ unused guest-instruction control surface is removed before Slice 6A. Full Debug 
 Release x64 solution builds, focused and retained guards, and the headless recurring-`0x801DC288` JIT64
 integration guard passed without creating or controlling a GUI.
 
-### Dependency slice 4: scoped session services (implemented)
+### Dependency slice 4: workset-owned runtime services (implemented)
 
-Slice 4 establishes generic session services and hard-disconnects the corresponding legacy VM escape
-hatches. It does not restore `ProgramInvocation`.
-
-- `StateService` is the sole authority for boot/reboot/restore and worker-local `StateEpoch`. It owns
-  bounded immutable memory handles and caller-declared immutable file artifacts with SHA-256,
-  runtime/disc compatibility, parent/edge/producer lineage, and optional exact movie continuation.
-  Successful replacement advances the epoch exactly once; recoverable failure rolls back without
-  advancing, while unproven post-replacement integrity keeps the new epoch and taints the session.
-- A read-only checkpoint embeds the exact DTM history and verified SHA-256, game identity,
-  starts-from-savestate fact, and any known input/frame continuation. External import is explicit:
-  `NoMovie` and `ReadOnlyPlayback` are supported, while `Unspecified` and `Recording` are rejected. On
-  restore, the backend materializes and hash-validates the embedded DTM before state mutation; an
-  already-active read-only movie must have the same tracked DTM identity, and commit verifies the
-  prepared identity, resulting mode, and any known cursor. Dolphin restores an unknown cursor from the
-  savestate, and `MovieService` records the authoritative observed position. No file artifact captures
-  or restores an in-progress recording; only a same-session in-memory handle may rewind one.
-- `MovieService` validates and stages `Movie::PlayInput` before the single backend boot when initial
-  playback is supplied through `SessionOpenOptions`. The same request on an already-open session
-  legitimately uses a `StateService` reboot. Both paths propagate a DTM starting savestate, verify the
-  resulting mode, and hold an unsuspendable movie-exclusive input reservation. Recording finalization
-  publishes a new caller-declared DTM and any `<dtm>.sav` companion.
-- `InputArbiter` owns epoch-bound leases and the sole pad-publication path. It supports priority,
-  suspension, fresh publication tokens, poll acknowledgement, two-phase neutral release,
-  movie-exclusive reservation, bounded `IInputAdvancePort` retries, and both interruption-borrow
-  policies: preserve held input until borrower publication, or consume a fresh typed neutral witness
-  issued by the arbiter for the exact parent lease/publication/epoch.
-- `GuestMemory` supplies paused, epoch-checked generic reads. `GuestMutationService` supplies checked
-  `u8`/`u16`/`u32` and masked data writes plus aligned executable patches. Data mutations restore unless
-  explicitly committed; executable patches are always reversible and require symmetric JIT/cache
-  invalidation and readback.
-- One session-owned `CaptureService` accepts at most one opaque `savor.capture.profile/1` attachment.
-  It preserves the existing profile parser and behavior behind passive router observation, performs
-  actor-side dynamic reconciliation, survives restore by rebinding at the new epoch, and finalizes once
-  on detach/shutdown. Mandatory finalization failure taints the session, blocks another attachment and
-  session reuse, and requires a full rebuild. Capture cannot create a wake or advance Dolphin.
-- `ScreenshotService` owns one synchronous actor-thread bounded screenshot request. Active in-flight
-  cancellation remains deferred until nonblocking backend/actor ingress exists. `TelemetryBus` owns
-  bounded/coalescing diagnostics, preserves monotonic sequence order when a coalesced replacement takes
-  its fresh chronological position, and fails closed on required-event overflow.
-- A standalone actor-owned `SessionResourceLedger` owns session/synthetic scopes, atomic typed receipt
-  registration, promotion, reverse-order unwind, cleanup continuations, state-epoch end/rebind policy,
-  and clean/diagnostic/taint disposition. Slice 5 adds the program-resource binding seam onto this same
-  ledger.
-
-Game capability packs are not part of Slice 4. They arrive with the typed action/module surface in Slice
-5 and consume these narrow generic services. No broad game facade or placeholder pack is introduced.
-
-Focused validation covers the service contracts with deterministic backends, actor/thread checks,
-fault injection, and headless ownership guards. A JIT64 executable-patch guard at recurring
-`0x801DC288` is the narrow live target: validate expected instruction, apply NOP, invalidate/read back,
-restore/invalidate, and never advance while patched. Live state-plus-DTM continuation and live
-post-write capture remain deferred until deterministic program execution/input can reach authoritative
-witnesses without a GUI or user observation.
-
-This slice adds no WRMS message or worker capability, no project or project reference, and no SavorDb
-schema, migration, persistence, database-service, queue, claim, workflow, transaction, or artifact-store
-change. At the Slice 4 checkpoint, production `ProgramInvocation`, capability packs, DB work, and
-production-worker SavorE2E remain unavailable.
+- `EmulationSession::Open` performs infrastructure boot and has no active epoch or guest-dependent
+  service composition.
+- `BeginWorkset` allocates one nonzero monotonic `WorksetEpoch` and constructs input, movie, execution,
+  stop-point, capture, mutation, screenshot, savestate, and resource-ledger services. `EndWorkset`
+  tears them down and clears the epoch without closing Dolphin.
+- `SavestateService` owns only bytes, compatibility, lineage, bounded workset-private handles, and
+  immutable savestate publication records. `WorksetStateCoordinator` owns exact artifact restoration,
+  DTM-sidecar preparation, ingress quiescence, rollback, and reconciliation.
+- Initial and later-item savestate restores retain the same workset epoch. Programs have no generic
+  process-local state capture/restore action and cannot rewind state within an invocation.
+- `MovieService::PrepareReadOnlyPlayback` uses the staged `ReadOnlyMovie` baseline, stops the guest core,
+  and exposes the debugger boundary for stop subscription. `StartPreparedReadOnlyPlayback` loads and boots
+  the movie, then validates the installed plan. Both preserve the wrapper and workset epoch.
+- The resource ledger is workset-scoped and has no epoch-transition, supersession, or rebind policy.
+  Complete invocation unwind and artifact finalization/compensation are required before another item
+  restores its baseline.
 
 ### Dependency slice 5: canonical typed ProgramRuntime (implemented foundation)
-
 Slice 5 now establishes the canonical development surface without restoring the production worker path.
 
 **Implemented:**
@@ -448,34 +405,31 @@ Build the real process boundary before reconstructing an individual phase:
   mutation. Keep WRMS at version 1 and likewise reserve/reject the removed guest-instruction-step
   discriminator;
 - negotiate the exact protocol/runtime/dependency manifest, the currently installed module/entrypoint
-  catalog, and hard active/staged/cache/finalizer/completion-ledger limits. Catalog state is explicitly
+  catalog, and hard active/staged/finalizer/completion-ledger limits. Catalog state is explicitly
   `Partial` or `CompleteExact`. Transfer one canonical test-only module through the ordinary module
-  preparation protocol for the initial `Partial` real-process smoke; it is never one of the nine
-  production modules and cannot open the coordinator data plane;
+  preparation protocol for the initial `Partial` real-process smoke; it is never one of the two
+  production Full Phase modules and cannot open the coordinator data plane;
 - give `WorkerRuntime` ownership of at most one active session-mutating workset, at most one immutable
   host-only staged successor package, one worker-global completion/acknowledgement ledger, and one
   active child `ProgramInvocation`/`ProgramInstance`; neither staged nor completed children are visible
   to `ProgramRuntime`;
 - require one exact `WorkerWorksetExecutionKey` for a multi-item workset, covering module, entrypoint,
   dependency closure, runtime/session profile, exact `ProgramBaselineKey`, and execution/service
-  compatibility. Its `ProgramBaselineDefinition` orders the savestate, exact movie continuation, and
-  runtime-facing program-kind adapter-declared derived-state components;
-- allow staging to decode and validate envelopes, resolve immutable cached definitions, read/hash
-  immutable artifacts, and acquire bounded state-cache leases. Staging cannot restore guest state, bind
-  `StateEpoch`, capture a baseline, acquire session-effect resources, construct a `ProgramInstance`, or
+  compatibility. Its required `ProgramBaselineDefinition` is an exact savestate/optional-DTM pair or
+  an exact read-only-DTM/optional-startup-savestate pair;
+- allow staging to decode and validate envelopes, resolve immutable cached definitions, and read/hash
+  immutable artifacts. Staging cannot restore guest state, bind
+  `WorksetEpoch`, capture a baseline, acquire session-effect resources, construct a `ProgramInstance`, or
   advance Dolphin;
-- prepare the active key's exact source state once; retain one composite baseline definition and its
-  required cache lease at active-workset scope only for a multi-item workset, and run the first child
-  from the prepared state. Before every later child, `RestoreBaseline` restores the savestate/movie
-  continuation and every declared derived-state component as one transaction, returns one
-  `PreparedProgramBaselineReceipt`, and advances `StateEpoch` exactly once. A one-item workset skips
-  unnecessary reusable-baseline capture;
-- after a durable dependent transition commits, ordinary affinity may prefer the same clean worker and
-  attempt exact `ContinueSession`; any lineage/epoch/movie/`SessionResourceLedger` cleanup mismatch falls
-  back to a cache-assisted or ordinary immutable-artifact restore. Pending host-only finalizers or
-  acknowledgements do not invalidate the warm path while global credit remains. A producer and
-  dependent successor never share one workset;
-- bind each child to the authoritative session and current `StateEpoch` immediately before activation,
+- prepare the active key's exact artifact baseline once. A multi-item savestate workset retains one
+  private in-memory handle at active-workset scope, runs the first child from the restored artifact,
+  and restores the handle before every later child. A read-only-movie child independently establishes
+  its DTM through `MovieStartPlayback`. Every successful replacement advances `WorksetEpoch`, and all
+  handles are released when the workset terminates;
+- after a durable dependent transition commits, its successor is materialized as a new workset with a
+  complete exact artifact baseline. Worker placement is not a state input. A producer and dependent
+  successor never share one workset;
+- bind each child to the authoritative session and current `WorksetEpoch` immediately before activation,
   and require complete child unwind before activating another child. Validate claim/start authority for
   the complete finite membership before acceptance; once accepted, run clean children in order without
   a per-item coordinator authorization pause, using exact asynchronous cancellation for later lease
@@ -497,7 +451,7 @@ Build the real process boundary before reconstructing an individual phase:
   to SavorDb.
 
 Use the fixed configurable defaults: 16 items and 32 MiB encoded bytes per workset; 64 total worker item
-credits and 32 active-plus-staged items; 16 state-cache entries/512 MiB; two finalizer threads with eight
+credits and 32 active-plus-staged items; two finalizer threads with eight
 pending captures/256 MiB; 32 retained authoritative terminals/128 MiB; two concurrent worker startups;
 and at most one coordinator-buffered additional workset per negotiated Ready worker. No workset carries
 an elapsed guest-execution budget.
@@ -521,8 +475,8 @@ Implement the adjacent coordinator pipeline now, while keeping it gated until Sl
 4. materialize and index claimed jobs by stable priority/claim order and exact compatibility so staging
    does not rescan every candidate or issue a database read for every worker/candidate comparison.
    Choose the highest-priority, oldest eligible anchor, search only that priority class inside a
-   configured count/byte window, retain exact-key peers in durable claim order, prefer an already
-   compatible warm worker, and resolve otherwise-equal choices by queue time, job ID, worker ID, and
+   configured count/byte window, retain exact-key peers in durable claim order, and resolve
+   otherwise-equal choices by queue time, job ID, worker ID, and
    item ordinal;
 5. form at most one host-only staged successor package per worker from adapter-declared eligible items
    with an exactly matching `WorkerWorksetExecutionKey`; persisted affinity remains a hint rather than
@@ -566,7 +520,7 @@ changing only claim transaction granularity, and they do not grant workers datab
 
 - production `SavorWorker` constructs exactly one canonical runtime/action host, negotiates an explicit
   `Partial` catalog, transfers and executes the canonical test-only module in an unattended one-item
-  process workset, and never counts that module among the nine production modules or enables
+  process workset, and never counts that module among the two production Full Phase modules or enables
   coordinator data-plane work;
 - one-item and multi-item worksets produce identical per-job lifecycle, result, retry, artifact,
   transition, and recovery observations;
@@ -576,8 +530,8 @@ changing only claim transaction granularity, and they do not grant workers datab
 - host-only staging cannot mutate the session, a clean staged successor promotes without waiting for
   older finalizers or acknowledgements, full completion-ledger capacity halts admission, and
   cross-workset outbound and terminal ordering remains deterministic;
-- state-cache hit/miss equivalence, lease/eviction behavior, asynchronous artifact-finalization
-  ordering/failure, and no-terminal-before-finalization are covered;
+- mandatory artifact rematerialization for later worksets, active-workset-only handle ownership,
+  asynchronous artifact-finalization ordering/failure, and no-terminal-before-finalization are covered;
 - progressive startup, exact item-credit accounting/release, one-transaction ordered batch claim,
   stable indexed selection with starvation protection, exact-set lease renewal, claim/start races,
   targeted reconciliation, event wakeups, and bounded safety polling are covered;
@@ -588,8 +542,7 @@ changing only claim transaction granularity, and they do not grant workers datab
   clean children or at staged promotion, and later lease loss/supersession produces exact cancellation;
 - boundary tests enforce the fixed item/byte/structural-limit, total/staged-credit, cache, finalizer/pending-
   capture, retained-terminal, startup, and coordinator-buffer defaults;
-- WRMS remains version 1, and both the old `SubmitInvocation` and guest-step discriminators reject before
-  session mutation;
+- WRMS remains version 1 and exposes program execution only through `SubmitWorkset`;
 - cancellation, transport loss, worker loss, stale/duplicate completion, lease loss, and taint preserve
   independent durable recovery; and
 - no persistent workset/cache/ledger or unrelated database/workflow contract appears in the diff.
@@ -608,12 +561,9 @@ This prelude removes the newer typed guest-step API and protocol surface. The ol
 `visual_step_vm()` method remains an already disconnected legacy facade that always fails locally; it is
 never ported and is physically deleted with the rest of that facade in Slice 8.
 
-`DolphinWrapper::stepBootCoreForStateLoadBlocking` is the sole narrow exception. It remains a private
-state-replacement preflight for a paused zero-timebase boot core whose guest state is immediately
-replaced. It is not exposed through `ExecutionEngine`, an action, ProgramRuntime, WRMS, or debugging.
-Its current ignored completion-wait result is a backend correctness gap: propagate timeout/failure
-through the existing typed state-load failure before final activation, without redesigning or exposing
-the helper.
+Any zero-timebase bootstrap required by Dolphin before a savestate load remains a private backend detail
+of workset baseline restoration. It is not exposed through `ExecutionEngine`, an action, ProgramRuntime,
+WRMS, or debugging and never advances the workset epoch.
 
 Each phase slice is vertical. It provides the native typed module, any action or composition refinement
 that the phase proves necessary, the existing program-kind adapter input/result projection where
@@ -627,9 +577,8 @@ inputs and results remain scalar regardless of the surrounding workset.
 
 Direct process program/workset execution is available throughout 6A-6I through the production
 runtime/action-host seam and an explicitly partial catalog. Coordinator data-plane work remains
-unavailable. `CompleteExact` is advertised only after exactly all nine planned production and diagnostic
-module IDs/hashes and their exact dependency manifests are present, no extra module is installed, and
-the catalog can be activated atomically in Slice 7.
+unavailable. `CompleteExact` is advertised only after both current production Full Phase module
+IDs/hashes and their exact dependency manifests are present and no extra module is installed.
 
 #### Slice 6A - SeedProbe
 
@@ -652,7 +601,8 @@ the catalog can be activated atomically in Slice 7.
 #### Slice 6C - TAS Movie
 
 - Implement native `soa.tas_movie/play_and_checkpoint` over `MovieService`.
-- Make boot/state policy, configured stop, movie-completion/failure policy, and checkpoint publication
+- Make the `ReadOnlyMovie` baseline, establish-baseline policy, configured stop,
+  movie-completion/failure policy, and checkpoint publication
   explicit in the typed contract.
 - Adapt the existing TAS Movie payload/result representations without moving movie ownership into the
   module.
@@ -700,7 +650,7 @@ the catalog can be activated atomically in Slice 7.
 #### Slice 6H - Battle Completion
 
 - Implement native `soa.battle.completion/complete`.
-- After state restore, while paused, acquire the phase input lease and publish neutral for the new epoch
+- After state restore, while paused, acquire the phase input lease and publish neutral for the active workset epoch
   before any resume. Require successful host-side publication; do not require a guest neutral-poll
   acknowledgement or release witness.
 - Establish causal post-store evidence only through `0x8006F554 -> 0x8006F558` or
@@ -727,7 +677,7 @@ representation where existing compatibility requires it.
 
 **Implement:**
 
-- promote the incrementally characterized catalog to `CompleteExact`: exactly the planned nine module
+- require the current `CompleteExact` catalog: exactly the SeedProbe and TAS Movie Validation module
   IDs/hashes, their exact dependency manifest, and no extra installed module;
 - advertise the `CompleteExact` production gate over the already-active encoded
   module/workset/per-item-result/acknowledgement transport; do not advertise or retain a scalar-only
@@ -802,7 +752,7 @@ Existing payload/result codecs may remain behind SavorDb program-kind handlers t
 persisted records during production materialization and result writing. They cannot select or invoke the
 legacy worker interpreter. Compatibility aliases such as `PK_BattleEndResultsRunner` may remain only
 where existing stored Results Screen representations independently require them. The private
-`stepBootCoreForStateLoadBlocking` state-replacement preflight remains isolated and is not generalized
+`stepBootCoreForStateLoadBlocking` savestate-load preflight remains isolated and is not generalized
 into a runtime action.
 
 **Completion checks:**
@@ -880,7 +830,7 @@ refactor. That project must not reopen the runtime ABI around the shape of the c
 | `savor.capture.profile/1` | Representation and semantics remain unchanged behind passive `CaptureService`; router/engine retain wake and control authority |
 | SavorDb program-kind handler implementations | Adapt existing records to/from runtime contracts without changing their interfaces or storage |
 | Worker program transport | `Partial`/`CompleteExact` catalog negotiation plus one `SubmitWorkset` path for 1..N independently correlated invocation templates, host-only staging, globally ordered non-lossy per-item terminals, and exact acknowledgements |
-| Worker output/state locality | Bounded immutable `StateCacheKey` leases and host-only artifact finalization behind the worker-global completion ledger; every restore still uses `StateService` and a terminal never precedes required output validation |
+| Worker output/state locality | One artifact baseline per workset, an optional handle owned only by an active multi-item workset, and host-only artifact finalization behind the worker-global completion ledger; every restore still uses `SavestateService` and a terminal never precedes required output validation |
 | Coordinator materialization and worker bookkeeping | Progressive startup, negotiated item credits, deterministic exact-key assembly, one staged successor, ordered item-start mapping to current `JobStarted`, projection, acknowledgement, and existing recovery |
 | Narrow SavorDb execution operations | Real ordered batch claim, exact-set lease renewal, claim/start validation, and targeted known-terminal reconciliation over current records and per-item semantics |
 | Workflow lifecycle/outbox/recovery | Preserved unchanged; no typed-binding or frontier persistence is added |

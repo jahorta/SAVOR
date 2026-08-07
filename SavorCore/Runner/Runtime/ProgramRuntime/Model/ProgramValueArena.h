@@ -74,7 +74,7 @@ MeasureProgramValueGraph(
     const TypeRef& expected_root_type,
     std::span<const TypeSchemaDefinition> schemas,
     ProgramValueArenaLimits limits,
-    std::optional<StateEpoch> current_epoch = std::nullopt);
+    std::optional<WorksetEpoch> current_epoch = std::nullopt);
 
 struct ProgramValueArenaInsertResult
 {
@@ -143,7 +143,7 @@ public:
     [[nodiscard]] const ProgramValue* Lookup(ProgramValueId id) const noexcept;
     [[nodiscard]] ProgramValueArenaLookupResult LookupForEpoch(
         ProgramValueId id,
-        StateEpoch current_epoch) const noexcept;
+        WorksetEpoch current_epoch) const noexcept;
 
     [[nodiscard]] std::uint64_t value_count() const noexcept
     {

@@ -267,7 +267,7 @@ ProgramValueGraph ResultGraph(
         TypeRef::Builtin(BuiltinType::U64),
         std::uint64_t{23},
     };
-    ProgramValue state_epoch{
+    ProgramValue workset_epoch{
         ProgramValueId(3),
         TypeRef::Builtin(BuiltinType::U64),
         epoch,
@@ -288,13 +288,13 @@ ProgramValueGraph ResultGraph(
             CanonicalRuntimeSchema::StopEvidencePayload),
         StopEvidence(pc),
     };
-    ProgramValue stop{
+    ProgramValue routed_stop{
         ProgramValueId(7),
-        CanonicalActionOutputType(
-            CanonicalAction::ExecutionContinueUntil),
+        CanonicalRuntimeType(
+            CanonicalRuntimeSchema::RoutedStopReceipt),
         RecordValue{{
             sequence.id,
-            state_epoch.id,
+            workset_epoch.id,
             stopped_pc.id,
             sample.id,
             evidence.id,
@@ -308,6 +308,41 @@ ProgramValueGraph ResultGraph(
         CanonicalAction::InputAwaitGuestPoll,
         std::move(poll_payload),
         ProgramValueId(9));
+    ProgramValue optional_stop{
+        ProgramValueId(10),
+        CanonicalRuntimeType(
+            CanonicalRuntimeSchema::OptionalRoutedStopReceipt),
+        OptionalValue{routed_stop.id},
+    };
+    const SchemaIdentity reason_schema =
+        CanonicalRuntimeSchemaIdentity(
+            CanonicalRuntimeSchema::ContinueUntilCompletionReason);
+    ProgramValue reason{
+        ProgramValueId(13),
+        TypeRef::Named(reason_schema),
+        EnumValue{
+            reason_schema,
+            static_cast<std::int64_t>(
+                ContinueUntilCompletionReasonV1::Breakpoint),
+        },
+    };
+    ProgramValue movie_input_count{
+        ProgramValueId(14),
+        TypeRef::Builtin(BuiltinType::U64),
+        std::uint64_t{31},
+    };
+    ProgramValue stop{
+        ProgramValueId(15),
+        CanonicalActionOutputType(
+            CanonicalAction::ExecutionContinueUntil),
+        RecordValue{{
+            reason.id,
+            optional_stop.id,
+            stopped_pc.id,
+            movie_input_count.id,
+            workset_epoch.id,
+        }},
+    };
     ProgramValue root{
         ProgramValueId(12),
         TypeRef::Named(SeedProbeResultSchemaIdentityV2()),
@@ -324,10 +359,14 @@ ProgramValueGraph ResultGraph(
         .values = {
             std::move(seed),
             std::move(sequence),
-            std::move(state_epoch),
+            std::move(workset_epoch),
             std::move(stopped_pc),
             std::move(sample),
             std::move(evidence),
+            std::move(routed_stop),
+            std::move(optional_stop),
+            std::move(reason),
+            std::move(movie_input_count),
             std::move(stop),
             std::move(published),
             std::move(poll),
@@ -645,7 +684,7 @@ std::optional<std::int64_t> RecordObservation(
     std::uint32_t seed,
     std::uint64_t worker_id,
     std::uint64_t process_generation,
-    std::uint64_t state_epoch,
+    std::uint64_t workset_epoch,
     std::optional<std::int64_t> confirmation_of,
     char hash_digit,
     std::string* error_out)
@@ -661,7 +700,7 @@ std::optional<std::int64_t> RecordObservation(
                 .origin_worker_id = worker_id,
                 .origin_process_generation =
                     process_generation,
-                .origin_state_epoch = state_epoch,
+                .origin_workset_epoch = workset_epoch,
                 .terminal_sha256 =
                     std::string(64, hash_digit),
                 .confirmation_of_probe_result_id =
@@ -1030,7 +1069,7 @@ ProgramResultProcessingContext SuccessfulResultContext(
     std::uint32_t raw_seed,
     std::uint64_t worker_id,
     std::uint64_t process_generation,
-    std::uint64_t state_epoch,
+    std::uint64_t workset_epoch,
     SeedProbeEndpointV2 endpoint =
         SeedProbeEndpointV2::AfterRandSeedSet)
 {
@@ -1046,7 +1085,7 @@ ProgramResultProcessingContext SuccessfulResultContext(
         ResultGraph(
             frame,
             SeedProbeEndpointPc(endpoint),
-            state_epoch,
+            workset_epoch,
             17,
             17,
             raw_seed),
@@ -1079,7 +1118,7 @@ ProgramResultProcessingContext SuccessfulResultContext(
                 .session_disposition =
                     savor::wrms::
                         SessionDispositionCode::Clean,
-                .state_epoch = state_epoch,
+                .workset_epoch = workset_epoch,
                 .unstarted = false,
                 .rejection_code =
                     savor::wrms::RejectionCode::None,
@@ -1369,9 +1408,6 @@ TEST(SeedProbeModule, ProductionEnvelopeIsCanonicalAndVerifierAccepted)
     EXPECT_EQ(
         phase->runtime_contract().required_capabilities,
         CapabilityMask(WorkerCapability::WorksetDispatch));
-    EXPECT_FALSE(HasCapability(
-        phase->runtime_contract().required_capabilities,
-        WorkerCapability::ProgramInvocation));
     const auto& envelope = phase->module_envelope();
     EXPECT_EQ(
         envelope.identity.canonical_id,
@@ -1545,11 +1581,10 @@ TEST(SeedProbeModule, OrdersFactualActionsAndContainsNoLegacyEffects)
     }
 
     for (const CanonicalAction forbidden : {
-             CanonicalAction::StateCapture,
-             CanonicalAction::StateRestore,
-             CanonicalAction::StateRestoreBaseline,
-             CanonicalAction::StateSaveImmutableArtifact,
+             CanonicalAction::SavestateSaveImmutableArtifact,
              CanonicalAction::ExecutionStepFrames,
+             CanonicalAction::MoviePrepareReadOnlyPlayback,
+             CanonicalAction::MovieStartPlayback,
          })
     {
         EXPECT_EQ(
@@ -1650,17 +1685,14 @@ TEST(SeedProbeModule, StopGroupStaticConfigEncodesBothEndpointsBeforePolicies)
     std::uint32_t sample_count = 1;
     std::uint8_t delivery = 1;
     std::uint8_t routing = 1;
-    std::uint8_t epoch = 0;
     std::uint8_t lifetime = 1;
     ASSERT_TRUE(reader.U32(sample_count));
     ASSERT_TRUE(reader.U8(delivery));
     ASSERT_TRUE(reader.U8(routing));
-    ASSERT_TRUE(reader.U8(epoch));
     ASSERT_TRUE(reader.U8(lifetime));
     EXPECT_EQ(sample_count, 0u);
     EXPECT_EQ(delivery, 0u);
     EXPECT_EQ(routing, 0u);
-    EXPECT_EQ(epoch, 1u);
     EXPECT_EQ(lifetime, 0u);
     EXPECT_TRUE(reader.done());
 }
@@ -1694,7 +1726,7 @@ TEST(SeedProbeModule, DecodesAndValidatesCorrelatedFactualReceipts)
     EXPECT_TRUE(ValidateSeedProbeResultV2(
         request,
         result,
-        StateEpoch(42),
+        WorksetEpoch(42),
         &diagnostic)) << diagnostic;
 
     SeedProbeResultV2 decoded_result;
@@ -1721,7 +1753,7 @@ TEST(SeedProbeModule, DecodesAndValidatesCorrelatedFactualReceipts)
     EXPECT_TRUE(ValidateSeedProbeResultV2(
         request,
         field_return_result,
-        StateEpoch(43),
+        WorksetEpoch(43),
         &diagnostic)) << diagnostic;
 }
 
@@ -1780,14 +1812,14 @@ TEST(SeedProbeModule, RejectsFramePcPublicationAndEpochMismatches)
     EXPECT_FALSE(ValidateSeedProbeResultV2(
         request,
         result,
-        StateEpoch(42),
+        WorksetEpoch(42),
         &diagnostic));
 
     request.frame = frame;
     EXPECT_FALSE(ValidateSeedProbeResultV2(
         request,
         result,
-        StateEpoch(43),
+        WorksetEpoch(43),
         &diagnostic));
 
     EXPECT_FALSE(DecodeSeedProbeResultV2(
@@ -2096,7 +2128,7 @@ TEST_F(
                     candidate->seed_value,
                     2,
                     1,
-                    candidate->origin_state_epoch));
+                    candidate->origin_workset_epoch));
         EXPECT_EQ(decision.final_job_state, "SUCCEEDED");
         ASSERT_TRUE(SetJobState(
             db_,
@@ -2120,8 +2152,8 @@ TEST_F(
                 ->confirmation_of_probe_result_id,
             candidate->probe_result_id);
         EXPECT_EQ(
-            confirmation->origin_state_epoch,
-            candidate->origin_state_epoch);
+            confirmation->origin_workset_epoch,
+            candidate->origin_workset_epoch);
         EXPECT_NE(
             confirmation->origin_worker_id,
             candidate->origin_worker_id);

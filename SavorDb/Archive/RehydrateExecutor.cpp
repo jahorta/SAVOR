@@ -1011,6 +1011,8 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
     std::vector<std::int64_t> restored_jobs;
     std::unordered_map<std::string, std::unordered_map<std::int64_t, std::int64_t>> id_map;
     std::vector<std::string> pending_state_derivation_lines;
+    std::vector<std::int64_t> inserted_tas_movie_root_ids;
+    std::vector<std::int64_t> inserted_tas_movie_tree_ids;
 
     auto map_existing_id = [&](std::string_view map_kind, std::int64_t old_id, std::int64_t new_id, std::string* error_out) -> bool {
         id_map[std::string(map_kind)][old_id] = new_id;
@@ -1031,7 +1033,14 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
         const auto derivation_file = std::find_if(spec.stream_files.begin(), spec.stream_files.end(), [](const StreamFile& f) {
             return f.item_kind == "state_savestate_derivations";
         });
-        if (artifact_file != spec.stream_files.end() || savestate_file != spec.stream_files.end()) {
+        const auto tas_movie_root_file = std::find_if(spec.stream_files.begin(), spec.stream_files.end(), [](const StreamFile& f) {
+            return f.item_kind == "state_tas_movie_roots";
+        });
+        const auto tas_movie_tree_file = std::find_if(spec.stream_files.begin(), spec.stream_files.end(), [](const StreamFile& f) {
+            return f.item_kind == "state_tas_movie_trees";
+        });
+        if (artifact_file != spec.stream_files.end() || savestate_file != spec.stream_files.end()
+            || tas_movie_root_file != spec.stream_files.end() || tas_movie_tree_file != spec.stream_files.end()) {
             sqlite3_exec(state_db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr);
             std::string state_error;
             const auto extracted_root = spec.package_root / "rehydrated-savestates" / spec.target_namespace;
@@ -1126,6 +1135,131 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                         new_savestate_id = sqlite3_last_insert_rowid(state_db_);
                     }
                     if (!map_existing_id("state_savestate", old_savestate_id, new_savestate_id, &state_error)) break;
+                }
+            }
+
+            if (state_error.empty() && tas_movie_root_file != spec.stream_files.end()) {
+                std::ifstream in(spec.package_root / tas_movie_root_file->rel_path, std::ios::binary);
+                std::string line;
+                while (std::getline(in, line)) {
+                    if (line.empty()) continue;
+                    bool ok_id = false, ok_source = false, ok_dtm = false, ok_itinerary = false, ok_savestate = false;
+                    const auto old_id = JsonExtractInt(state_db_, line, "$.tas_movie_root_id", &ok_id);
+                    const auto old_source = JsonExtractInt(state_db_, line, "$.source_dtm_artifact_id", &ok_source);
+                    const auto old_dtm = JsonExtractInt(state_db_, line, "$.dtm_artifact_id", &ok_dtm);
+                    const auto old_itinerary = JsonExtractInt(state_db_, line, "$.itinerary_artifact_id", &ok_itinerary);
+                    const auto old_savestate = JsonExtractInt(state_db_, line, "$.checkpoint_savestate_id", &ok_savestate);
+                    if (!ok_id || !ok_source || !ok_dtm || !ok_itinerary || !ok_savestate) continue;
+                    const auto source = id_map["state_artifact"].find(old_source);
+                    const auto dtm = id_map["state_artifact"].find(old_dtm);
+                    const auto itinerary = id_map["state_artifact"].find(old_itinerary);
+                    const auto savestate = id_map["state_savestate"].find(old_savestate);
+                    if (source == id_map["state_artifact"].end()
+                        || dtm == id_map["state_artifact"].end()
+                        || itinerary == id_map["state_artifact"].end()
+                        || savestate == id_map["state_savestate"].end()) {
+                        state_error = "TAS movie root artifact or checkpoint mapping is missing";
+                        break;
+                    }
+                    Statement find;
+                    if (!Prepare(state_db_,
+                            "SELECT tas_movie_root_id,dtm_artifact_id,itinerary_artifact_id,checkpoint_savestate_id,required_final_breakpoint_pc "
+                            "FROM state_tas_movie_root WHERE source_dtm_artifact_id=?1 AND rtc_value=json_extract(?2,'$.rtc_value');",
+                            &find, &state_error)) break;
+                    sqlite3_bind_int64(find.st, 1, source->second);
+                    sqlite3_bind_text(find.st, 2, line.c_str(), -1, SQLITE_TRANSIENT);
+                    std::int64_t new_id = 0;
+                    if (sqlite3_step(find.st) == SQLITE_ROW) {
+                        if (sqlite3_column_int64(find.st, 1) != dtm->second
+                            || sqlite3_column_int64(find.st, 2) != itinerary->second
+                            || sqlite3_column_int64(find.st, 3) != savestate->second
+                            || sqlite3_column_int64(find.st, 4) != JsonExtractInt(state_db_, line, "$.required_final_breakpoint_pc", &ok_id)) {
+                            state_error = "rehydrated TAS movie root conflicts with an existing immutable root";
+                            break;
+                        }
+                        new_id = sqlite3_column_int64(find.st, 0);
+                    } else {
+                        Statement insert;
+                        if (!Prepare(state_db_,
+                                "INSERT INTO state_tas_movie_root(source_dtm_artifact_id,dtm_artifact_id,rtc_value,itinerary_artifact_id,"
+                                "required_final_breakpoint_pc,checkpoint_savestate_id,source_context_kind,source_context_id,created_at_utc) "
+                                "VALUES(?1,?2,json_extract(?5,'$.rtc_value'),?3,json_extract(?5,'$.required_final_breakpoint_pc'),?4,"
+                                "json_extract(?5,'$.source_context_kind'),json_extract(?5,'$.source_context_id'),json_extract(?5,'$.created_at_utc'));",
+                                &insert, &state_error)) break;
+                        sqlite3_bind_int64(insert.st, 1, source->second);
+                        sqlite3_bind_int64(insert.st, 2, dtm->second);
+                        sqlite3_bind_int64(insert.st, 3, itinerary->second);
+                        sqlite3_bind_int64(insert.st, 4, savestate->second);
+                        sqlite3_bind_text(insert.st, 5, line.c_str(), -1, SQLITE_TRANSIENT);
+                        if (!StepDone(state_db_, insert.st, &state_error)) break;
+                        new_id = sqlite3_last_insert_rowid(state_db_);
+                        inserted_tas_movie_root_ids.push_back(new_id);
+                    }
+                    if (!map_existing_id("state_tas_movie_root", old_id, new_id, &state_error)) break;
+                }
+            }
+
+            if (state_error.empty() && tas_movie_tree_file != spec.stream_files.end()) {
+                std::ifstream in(spec.package_root / tas_movie_tree_file->rel_path, std::ios::binary);
+                std::string line;
+                while (std::getline(in, line)) {
+                    if (line.empty()) continue;
+                    bool ok_id = false, ok_root = false, ok_parent = false, ok_dtm = false, ok_itinerary = false, ok_savestate = false;
+                    const auto old_id = JsonExtractInt(state_db_, line, "$.tas_movie_tree_id", &ok_id);
+                    const auto old_root = JsonExtractInt(state_db_, line, "$.tas_movie_root_id", &ok_root);
+                    const auto old_parent = JsonExtractInt(state_db_, line, "$.parent_tas_movie_tree_id", &ok_parent);
+                    const auto old_dtm = JsonExtractInt(state_db_, line, "$.dtm_artifact_id", &ok_dtm);
+                    const auto old_itinerary = JsonExtractInt(state_db_, line, "$.itinerary_artifact_id", &ok_itinerary);
+                    const auto old_savestate = JsonExtractInt(state_db_, line, "$.checkpoint_savestate_id", &ok_savestate);
+                    if (!ok_id || !ok_root || !ok_dtm || !ok_itinerary || !ok_savestate) continue;
+                    const auto root = id_map["state_tas_movie_root"].find(old_root);
+                    const auto dtm = id_map["state_artifact"].find(old_dtm);
+                    const auto itinerary = id_map["state_artifact"].find(old_itinerary);
+                    const auto savestate = id_map["state_savestate"].find(old_savestate);
+                    const auto parent = ok_parent ? id_map["state_tas_movie_tree"].find(old_parent) : id_map["state_tas_movie_tree"].end();
+                    if (root == id_map["state_tas_movie_root"].end()
+                        || dtm == id_map["state_artifact"].end()
+                        || itinerary == id_map["state_artifact"].end()
+                        || savestate == id_map["state_savestate"].end()
+                        || (ok_parent && parent == id_map["state_tas_movie_tree"].end())) {
+                        state_error = "TAS movie tree lineage, artifact, or checkpoint mapping is missing";
+                        break;
+                    }
+                    Statement find;
+                    if (!Prepare(state_db_, "SELECT tas_movie_tree_id,tas_movie_root_id,parent_tas_movie_tree_id,itinerary_artifact_id,checkpoint_savestate_id,required_final_breakpoint_pc FROM state_tas_movie_trees WHERE dtm_artifact_id=?1;", &find, &state_error)) break;
+                    sqlite3_bind_int64(find.st, 1, dtm->second);
+                    std::int64_t new_id = 0;
+                    if (sqlite3_step(find.st) == SQLITE_ROW) {
+                        const bool parent_matches = ok_parent
+                            ? sqlite3_column_type(find.st, 2) != SQLITE_NULL && sqlite3_column_int64(find.st, 2) == parent->second
+                            : sqlite3_column_type(find.st, 2) == SQLITE_NULL;
+                        if (sqlite3_column_int64(find.st, 1) != root->second || !parent_matches
+                            || sqlite3_column_int64(find.st, 3) != itinerary->second
+                            || sqlite3_column_int64(find.st, 4) != savestate->second
+                            || sqlite3_column_int64(find.st, 5) != JsonExtractInt(state_db_, line, "$.required_final_breakpoint_pc", &ok_id)) {
+                            state_error = "rehydrated TAS movie tree conflicts with an existing immutable tree";
+                            break;
+                        }
+                        new_id = sqlite3_column_int64(find.st, 0);
+                    } else {
+                        Statement insert;
+                        if (!Prepare(state_db_,
+                                "INSERT INTO state_tas_movie_trees(tas_movie_root_id,parent_tas_movie_tree_id,dtm_artifact_id,itinerary_artifact_id,"
+                                "required_final_breakpoint_pc,checkpoint_savestate_id,source_context_kind,source_context_id,created_at_utc) "
+                                "VALUES(?1,?2,?3,?4,json_extract(?6,'$.required_final_breakpoint_pc'),?5,json_extract(?6,'$.source_context_kind'),"
+                                "json_extract(?6,'$.source_context_id'),json_extract(?6,'$.created_at_utc'));",
+                                &insert, &state_error)) break;
+                        sqlite3_bind_int64(insert.st, 1, root->second);
+                        if (ok_parent) sqlite3_bind_int64(insert.st, 2, parent->second); else sqlite3_bind_null(insert.st, 2);
+                        sqlite3_bind_int64(insert.st, 3, dtm->second);
+                        sqlite3_bind_int64(insert.st, 4, itinerary->second);
+                        sqlite3_bind_int64(insert.st, 5, savestate->second);
+                        sqlite3_bind_text(insert.st, 6, line.c_str(), -1, SQLITE_TRANSIENT);
+                        if (!StepDone(state_db_, insert.st, &state_error)) break;
+                        new_id = sqlite3_last_insert_rowid(state_db_);
+                        inserted_tas_movie_tree_ids.push_back(new_id);
+                    }
+                    if (!map_existing_id("state_tas_movie_tree", old_id, new_id, &state_error)) break;
                 }
             }
 
@@ -1319,12 +1453,12 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     if (!Prepare(execution_db_,
                             "INSERT INTO exec_workset(workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,program_kind,program_version,compatibility_key,"
                             "module_canonical_id,module_version,module_sha256,entrypoint,verified_dependency_sha256,runtime_profile_sha256,"
-                            "required_capability_mask,execution_affinity_key,baseline_affinity_key,estimated_payload_bytes,priority,item_count,published_at_utc) "
+                            "required_capability_mask,execution_affinity_key,estimated_payload_bytes,priority,item_count,published_at_utc) "
                             "VALUES(?1,?2,?3,?4,json_extract(?5,'$.workset_key'),json_extract(?5,'$.program_kind'),json_extract(?5,'$.program_version'),"
                             "json_extract(?5,'$.compatibility_key'),json_extract(?5,'$.module_canonical_id'),json_extract(?5,'$.module_version'),"
                             "json_extract(?5,'$.module_sha256'),json_extract(?5,'$.entrypoint'),json_extract(?5,'$.verified_dependency_sha256'),"
                             "json_extract(?5,'$.runtime_profile_sha256'),json_extract(?5,'$.required_capability_mask'),"
-                            "json_extract(?5,'$.execution_affinity_key'),json_extract(?5,'$.baseline_affinity_key'),"
+                            "json_extract(?5,'$.execution_affinity_key'),"
                             "json_extract(?5,'$.estimated_payload_bytes'),json_extract(?5,'$.priority'),json_extract(?5,'$.item_count'),"
                             "json_extract(?5,'$.published_at_utc'));",
                             &st,
@@ -1973,6 +2107,134 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 }
             };
 
+            restore_stream("analysis_tas_movie_validation_requests", [&](const std::string& line) {
+                bool ok_id = false, ok_workflow = false, ok_step = false, ok_source_ref = false;
+                bool ok_source_artifact = false, ok_itinerary = false, ok_source_kind = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.validation_request_id", &ok_id);
+                const auto old_workflow = JsonExtractInt(analysis_db_, line, "$.workflow_instance_id", &ok_workflow);
+                const auto old_step = JsonExtractInt(analysis_db_, line, "$.workflow_step_id", &ok_step);
+                const auto old_source_ref = JsonExtractInt(analysis_db_, line, "$.source_ref_id", &ok_source_ref);
+                const auto old_source_artifact = JsonExtractInt(analysis_db_, line, "$.source_dtm_artifact_id", &ok_source_artifact);
+                const auto old_itinerary = JsonExtractInt(analysis_db_, line, "$.itinerary_artifact_id", &ok_itinerary);
+                const auto source_kind = JsonExtractText(analysis_db_, line, "$.source_kind", &ok_source_kind);
+                if (!ok_id || !ok_workflow || !ok_step || !ok_source_ref || !ok_source_artifact || !ok_source_kind) return;
+                const auto new_id = map_id("analysis_tas_movie_validation_request", old_id);
+                const auto workflow = lookup_map("workflow_instance", old_workflow).value_or(old_workflow);
+                const auto step = lookup_map("workflow_step", old_step).value_or(old_step);
+                const auto source_artifact = lookup_map("state_artifact", old_source_artifact);
+                const auto itinerary = ok_itinerary ? lookup_map("state_artifact", old_itinerary) : std::optional<std::int64_t>{};
+                std::optional<std::int64_t> source_ref;
+                if (source_kind == "DTM_ARTIFACT") source_ref = lookup_map("state_artifact", old_source_ref);
+                else if (source_kind == "TREE") source_ref = lookup_map("state_tas_movie_tree", old_source_ref);
+                else source_ref = old_source_ref;
+                if (new_id == 0 || !source_artifact || !source_ref || (ok_itinerary && !itinerary)) {
+                    db_error = "TAS movie validation request State mapping is missing";
+                    return;
+                }
+                const auto materialization_key = spec.target_namespace + ":rehydrate:tmv:" + std::to_string(old_id);
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO tmv_validation_request(validation_request_id,materialization_key,workflow_instance_id,workflow_step_id,step_kind,operation,source_kind,"
+                        "source_ref_id,source_dtm_artifact_id,source_dtm_sha256,rtc_value,effective_dtm_sha256,itinerary_artifact_id,itinerary_sha256,"
+                        "required_final_breakpoint_pc,capture_root_checkpoint,full_phase_program_kind,full_phase_program_version,full_phase_canonical_id,full_phase_contract_revision,"
+                        "full_phase_sha256,module_canonical_id,module_revision,module_sha256,created_at_utc) "
+                        "VALUES(?1,?2,?3,?4,json_extract(?5,'$.step_kind'),json_extract(?5,'$.operation'),json_extract(?5,'$.source_kind'),?6,?7,"
+                        "json_extract(?5,'$.source_dtm_sha256'),json_extract(?5,'$.rtc_value'),json_extract(?5,'$.effective_dtm_sha256'),?8,json_extract(?5,'$.itinerary_sha256'),"
+                        "json_extract(?5,'$.required_final_breakpoint_pc'),json_extract(?5,'$.capture_root_checkpoint'),json_extract(?5,'$.full_phase_program_kind'),"
+                        "json_extract(?5,'$.full_phase_program_version'),json_extract(?5,'$.full_phase_canonical_id'),json_extract(?5,'$.full_phase_contract_revision'),"
+                        "json_extract(?5,'$.full_phase_sha256'),json_extract(?5,'$.module_canonical_id'),json_extract(?5,'$.module_revision'),json_extract(?5,'$.module_sha256'),"
+                        "json_extract(?5,'$.created_at_utc'));",
+                        &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_text(st.st, 2, materialization_key.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(st.st, 3, workflow);
+                sqlite3_bind_int64(st.st, 4, step);
+                sqlite3_bind_text(st.st, 5, line.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(st.st, 6, *source_ref);
+                sqlite3_bind_int64(st.st, 7, *source_artifact);
+                bind_optional_int64(st.st, 8, itinerary);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+
+            restore_stream("analysis_tas_movie_validation_attempts", [&](const std::string& line) {
+                bool ok_id = false, ok_request = false, ok_job = false, ok_good = false;
+                bool ok_candidate = false, ok_root = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.validation_attempt_id", &ok_id);
+                const auto old_request = JsonExtractInt(analysis_db_, line, "$.validation_request_id", &ok_request);
+                const auto old_job = JsonExtractInt(analysis_db_, line, "$.source_job_id", &ok_job);
+                const auto old_good = JsonExtractInt(analysis_db_, line, "$.last_known_good_savestate_id", &ok_good);
+                const auto old_candidate = JsonExtractInt(analysis_db_, line, "$.candidate_itinerary_artifact_id", &ok_candidate);
+                const auto old_root = JsonExtractInt(analysis_db_, line, "$.produced_tas_movie_root_id", &ok_root);
+                if (!ok_id || !ok_request || !ok_job) return;
+                const auto new_id = map_id("analysis_tas_movie_validation_attempt", old_id);
+                const auto request_id = lookup_map("analysis_tas_movie_validation_request", old_request);
+                const auto job_id = lookup_map("job", old_job).value_or(old_job);
+                const auto good = ok_good ? lookup_map("state_savestate", old_good) : std::optional<std::int64_t>{};
+                const auto candidate = ok_candidate ? lookup_map("state_artifact", old_candidate) : std::optional<std::int64_t>{};
+                const auto root = ok_root ? lookup_map("state_tas_movie_root", old_root) : std::optional<std::int64_t>{};
+                if (new_id == 0 || !request_id || (ok_good && !good) || (ok_candidate && !candidate) || (ok_root && !root)) {
+                    db_error = "TAS movie validation attempt mapping is missing";
+                    return;
+                }
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO tmv_validation_attempt(validation_attempt_id,validation_request_id,source_job_id,worker_terminal_sha256,outcome,failure_reason,expected_pc,"
+                        "expected_input_count,actual_pc,actual_input_count,last_verified_itinerary_index,last_known_good_savestate_id,candidate_itinerary_artifact_id,"
+                        "candidate_itinerary_sha256,produced_tas_movie_root_id,worker_id,worker_process_generation,workset_epoch,recorded_at_utc) "
+                        "VALUES(?1,?2,?3,json_extract(?4,'$.worker_terminal_sha256'),json_extract(?4,'$.outcome'),json_extract(?4,'$.failure_reason'),"
+                        "json_extract(?4,'$.expected_pc'),json_extract(?4,'$.expected_input_count'),json_extract(?4,'$.actual_pc'),json_extract(?4,'$.actual_input_count'),"
+                        "json_extract(?4,'$.last_verified_itinerary_index'),?5,?6,json_extract(?4,'$.candidate_itinerary_sha256'),?7,json_extract(?4,'$.worker_id'),"
+                        "json_extract(?4,'$.worker_process_generation'),json_extract(?4,'$.workset_epoch'),json_extract(?4,'$.recorded_at_utc'));",
+                        &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *request_id);
+                sqlite3_bind_int64(st.st, 3, job_id);
+                sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                bind_optional_int64(st.st, 5, good);
+                bind_optional_int64(st.st, 6, candidate);
+                bind_optional_int64(st.st, 7, root);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+
+            restore_stream("analysis_tas_movie_validation_statuses", [&](const std::string& line) {
+                bool ok_attempt = false;
+                const auto old_attempt = JsonExtractInt(analysis_db_, line, "$.validation_attempt_id", &ok_attempt);
+                if (!ok_attempt) return;
+                const auto attempt = lookup_map("analysis_tas_movie_validation_attempt", old_attempt);
+                if (!attempt) {
+                    db_error = "TAS movie validation status attempt mapping is missing";
+                    return;
+                }
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO tmv_dtm_validation_status(effective_dtm_sha256,status,validation_attempt_id,updated_at_utc) "
+                        "VALUES(json_extract(?1,'$.effective_dtm_sha256'),json_extract(?1,'$.status'),?2,json_extract(?1,'$.updated_at_utc')) "
+                        "ON CONFLICT(effective_dtm_sha256) DO UPDATE SET status=excluded.status,validation_attempt_id=excluded.validation_attempt_id,updated_at_utc=excluded.updated_at_utc;",
+                        &st, &db_error)) return;
+                sqlite3_bind_text(st.st, 1, line.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(st.st, 2, *attempt);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+
+            restore_stream("analysis_tas_movie_validation_requests", [&](const std::string& line) {
+                bool ok_id = false, ok_source = false, ok_kind = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.validation_request_id", &ok_id);
+                const auto old_source = JsonExtractInt(analysis_db_, line, "$.source_ref_id", &ok_source);
+                const auto source_kind = JsonExtractText(analysis_db_, line, "$.source_kind", &ok_kind);
+                if (!ok_id || !ok_source || !ok_kind || source_kind != "ROOT_ESTABLISHMENT") return;
+                const auto request_id = lookup_map("analysis_tas_movie_validation_request", old_id);
+                const auto source = lookup_map("analysis_tas_movie_validation_attempt", old_source);
+                if (!request_id || !source) {
+                    db_error = "root-validation establishment attempt mapping is missing";
+                    return;
+                }
+                Statement st;
+                if (!Prepare(analysis_db_, "UPDATE tmv_validation_request SET source_ref_id=?1 WHERE validation_request_id=?2;", &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, *source);
+                sqlite3_bind_int64(st.st, 2, *request_id);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+
             restore_stream("analysis_battle_completions", [&](const std::string& line) {
                 bool ok_id = false, ok_workflow = false, ok_step = false, ok_job = false;
                 bool ok_entry = false, ok_completion = false, ok_manifest_artifact = false, ok_trace_artifact = false;
@@ -2445,11 +2707,11 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 Statement st;
                 if (!Prepare(analysis_db_,
                         "INSERT INTO sp_probe_result(probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,"
-                        "origin_worker_id,origin_process_generation,origin_state_epoch,terminal_sha256,"
+                        "origin_worker_id,origin_process_generation,origin_workset_epoch,terminal_sha256,"
                         "confirmation_of_probe_result_id,evidence_state,recorded_at_utc) "
                         "VALUES(?1,?2,?3,?4,json_extract(?5,'$.seed_value'),"
                         "json_extract(?5,'$.origin_worker_id'),json_extract(?5,'$.origin_process_generation'),"
-                        "json_extract(?5,'$.origin_state_epoch'),json_extract(?5,'$.terminal_sha256'),"
+                        "json_extract(?5,'$.origin_workset_epoch'),json_extract(?5,'$.terminal_sha256'),"
                         "?6,json_extract(?5,'$.evidence_state'),"
                         "json_extract(?5,'$.recorded_at_utc'));",
                         &st,
@@ -2563,6 +2825,21 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
             });
 
             auto map_domain_ref = [&](std::string_view ref_kind, std::int64_t old_id) -> std::optional<std::int64_t> {
+                if (ref_kind == "tmv_validation_request") {
+                    return lookup_map("analysis_tas_movie_validation_request", old_id);
+                }
+                if (ref_kind == "analysis.tas_movie_validation_attempt_id"
+                    || ref_kind == "tmv_validation_attempt") {
+                    return lookup_map("analysis_tas_movie_validation_attempt", old_id);
+                }
+                if (ref_kind == "state.tas_movie_tree_id"
+                    || ref_kind == "state_tas_movie_tree") {
+                    return lookup_map("state_tas_movie_tree", old_id);
+                }
+                if (ref_kind == "state_artifact"
+                    || ref_kind == "state_artifact.dtm_artifact_id") {
+                    return lookup_map("state_artifact", old_id);
+                }
                 if (ref_kind == "sp_probe_run") return lookup_map("analysis_seed_probe_run", old_id);
                 if (ref_kind == "analysisseedprobe.confirmed_result") {
                     return lookup_map("analysis_seed_probe_result", old_id);
@@ -2775,6 +3052,49 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 sqlite3_bind_int64(st.st, 2, *binding);
                 StepDone(execution_db_, st.st, &db_error);
             });
+
+            if (db_error.empty() && state_db_ != nullptr) {
+                const auto remap_state_contexts =
+                    [&](std::string_view table,
+                        std::string_view id_column,
+                        const std::vector<std::int64_t>& inserted_ids) {
+                    for (const auto new_state_id : inserted_ids) {
+                        Statement read;
+                        const auto select_sql = "SELECT source_context_kind,source_context_id FROM "
+                            + std::string(table) + " WHERE " + std::string(id_column) + "=?1;";
+                        if (!Prepare(state_db_, select_sql.c_str(), &read, &db_error)) return;
+                        sqlite3_bind_int64(read.st, 1, new_state_id);
+                        if (sqlite3_step(read.st) != SQLITE_ROW) continue;
+                        const auto* context_text = sqlite3_column_text(read.st, 0);
+                        const auto context_kind = context_text == nullptr
+                            ? std::string{}
+                            : std::string(reinterpret_cast<const char*>(context_text));
+                        const auto old_context_id = sqlite3_column_int64(read.st, 1);
+                        std::optional<std::int64_t> mapped;
+                        if (context_kind == "tmv_validation_request") {
+                            mapped = lookup_map("analysis_tas_movie_validation_request", old_context_id);
+                        } else if (context_kind == "tmv_validation_attempt") {
+                            mapped = lookup_map("analysis_tas_movie_validation_attempt", old_context_id);
+                        }
+                        if (!mapped) continue;
+                        Statement update;
+                        const auto update_sql = "UPDATE " + std::string(table)
+                            + " SET source_context_id=?1 WHERE " + std::string(id_column) + "=?2;";
+                        if (!Prepare(state_db_, update_sql.c_str(), &update, &db_error)) return;
+                        sqlite3_bind_int64(update.st, 1, *mapped);
+                        sqlite3_bind_int64(update.st, 2, new_state_id);
+                        if (!StepDone(state_db_, update.st, &db_error)) return;
+                    }
+                };
+                remap_state_contexts(
+                    "state_tas_movie_root",
+                    "tas_movie_root_id",
+                    inserted_tas_movie_root_ids);
+                remap_state_contexts(
+                    "state_tas_movie_trees",
+                    "tas_movie_tree_id",
+                    inserted_tas_movie_tree_ids);
+            }
 
             if (!db_error.empty()) {
                 result.error = StructuredError{ "ANALYSIS_REHYDRATE_ERROR", "failed restoring analysis rows", db_error }.ToJson();

@@ -814,6 +814,22 @@ CompositionResult LowerSemanticObservation(
         std::nullopt,
         "continue-until/no-input-publication",
         scope);
+    const auto no_movie = AddOptional(
+        builder,
+        function,
+        block,
+        CanonicalRuntimeSchema::OptionalMoviePlaybackSession,
+        std::nullopt,
+        "continue-until/no-movie",
+        scope);
+    const auto no_expected_count = AddOptional(
+        builder,
+        function,
+        block,
+        CanonicalRuntimeSchema::OptionalMovieInputCount,
+        std::nullopt,
+        "continue-until/no-expected-count",
+        scope);
     const auto continue_config = AddStaticConfig(
         builder,
         function,
@@ -823,7 +839,8 @@ CompositionResult LowerSemanticObservation(
         "continue-until/static-config",
         scope);
     const auto continue_request =
-        no_publication && continue_config
+        no_publication && no_movie && no_expected_count &&
+            continue_config
         ? AddRequest(
               builder,
               function,
@@ -832,6 +849,8 @@ CompositionResult LowerSemanticObservation(
               std::array{
                   *subscription,
                   *no_publication,
+                  *no_movie,
+                  *no_expected_count,
                   *continue_config},
               "continue-until/request",
               scope)
@@ -855,12 +874,45 @@ CompositionResult LowerSemanticObservation(
             "semantic.lowering_failed",
             "continue-until action did not produce a receipt");
 
+    // Downstream field projections historically addressed the routed stop
+    // directly. ContinueUntil/1 now carries it only for Breakpoint results,
+    // so extracting this optional both preserves those field contracts and
+    // makes non-breakpoint completion fail closed before observation work.
+    const auto routed_stop_optional = builder.AddInstruction(
+        function,
+        block,
+        InstructionOpcode::RecordProject,
+        CanonicalRuntimeType(
+            CanonicalRuntimeSchema::OptionalRoutedStopReceipt),
+        std::array{*receipt},
+        {},
+        "routed_stop",
+        std::nullopt,
+        scope);
+    const auto routed_stop = routed_stop_optional
+        ? builder.AddInstruction(
+              function,
+              block,
+              InstructionOpcode::OptionalExtract,
+              CanonicalRuntimeType(
+                  CanonicalRuntimeSchema::RoutedStopReceipt),
+              std::array{*routed_stop_optional},
+              {},
+              "continue-until/breakpoint-routed-stop",
+              std::nullopt,
+              scope)
+        : std::nullopt;
+    if (!routed_stop)
+        return detail::Fail(
+            "semantic.lowering_failed",
+            "continue-until breakpoint receipt could not be extracted");
+
     std::map<std::string, ProgramValueId> lowered_addresses;
     for (const auto& address : definition.address_expressions)
     {
         const auto value = LowerAddress(
             address,
-            *receipt,
+            *routed_stop,
             lowered_addresses,
             builder,
             function,
@@ -1041,7 +1093,7 @@ CompositionResult LowerSemanticObservation(
                                 InstructionOpcode::
                                     RecordProject,
                                 binding.field_type,
-                                std::array{*receipt},
+                                std::array{*routed_stop},
                                 {},
                                 binding.source_field,
                                 std::nullopt,

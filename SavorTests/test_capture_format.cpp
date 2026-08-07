@@ -64,7 +64,7 @@ Event event(
     value.record_sequence = sequence;
     value.monotonic_ns = sequence * 100;
     value.frame_index = sequence + 10;
-    value.guest_state_epoch = epoch;
+    value.guest_workset_epoch = epoch;
     value.profile_revision = revision;
     value.snapshot_id = sequence + 1000;
     value.kind = EventKind::Pc;
@@ -133,7 +133,7 @@ TEST(SavorCaptureFormat, RoundTripsDeltaChunksAndFilteredJsonExport)
     EXPECT_EQ(events[1].fields[0].value, 0x22222222u);
     EXPECT_EQ(events[1].fields[1].bytes,
         (std::vector<std::uint8_t>{ 0x80, 0x00, 0x02, 0x44 }));
-    EXPECT_EQ(events[2].guest_state_epoch, 1u);
+    EXPECT_EQ(events[2].guest_workset_epoch, 1u);
     EXPECT_EQ(events[2].profile_revision, 2u);
 
     const auto exported = temp.path / "probe-a.jsonl";

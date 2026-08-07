@@ -53,7 +53,7 @@ namespace {
 
 [[nodiscard]] MovieBackendResult MovieFailure(
     std::string message,
-    StateIntegrity integrity = StateIntegrity::Preserved)
+    GuestIntegrity integrity = GuestIntegrity::Preserved)
 {
     return MovieBackendResult::Failure(
         std::move(message),
@@ -538,11 +538,11 @@ struct DolphinWrapperBackend::Impl
     std::optional<std::filesystem::path> prepared_movie_savestate;
     std::optional<std::string> prepared_movie_sha256;
     std::optional<std::string> active_movie_sha256;
-    std::optional<StateReplacementContext> prepared_movie_replacement;
+    std::optional<SavestateMovieRestoreContext> prepared_movie_replacement;
     std::optional<std::string> prepared_movie_replacement_sha256;
     bool prepared_movie_started_for_replacement = false;
     std::vector<std::filesystem::path> owned_movie_restore_paths;
-    StateCompatibilityToken compatibility;
+    ArtifactCompatibilityToken compatibility;
     std::uint64_t movie_checkpoint_sequence = 1;
 
     void DetachStateCallback() noexcept
@@ -587,6 +587,59 @@ struct DolphinWrapperBackend::Impl
             std::memory_order_release);
     }
 
+    [[nodiscard]] BackendResult StartPauseInfrastructure()
+    {
+        if (!wrapper || !wrapper->system())
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::InvalidState,
+                "Dolphin pause infrastructure requires a live wrapper");
+        }
+        ResetPauseConfirmation(true);
+        const auto confirmation = pause_confirmation;
+        Core::System* const system = wrapper->system();
+        state_callback_handle = Core::AddOnStateChangedCallback(
+            [confirmation, system](Core::State state) {
+                if (state != Core::State::Paused)
+                    return;
+                auto acknowledge = [confirmation] {
+                    const std::uint64_t generation =
+                        confirmation->requested.load(
+                            std::memory_order_acquire);
+                    std::uint64_t acknowledged =
+                        confirmation->acknowledged.load(
+                            std::memory_order_acquire);
+                    while (acknowledged < generation &&
+                        !confirmation->acknowledged.compare_exchange_weak(
+                            acknowledged,
+                            generation,
+                            std::memory_order_release,
+                            std::memory_order_acquire))
+                    {
+                    }
+                };
+                if (Core::IsCPUThread())
+                    system->GetCPU().AddCPUThreadJob(std::move(acknowledge));
+                else
+                    acknowledge();
+            });
+
+        std::string error;
+        if (!pause_synchronizer.Start(
+                *system, confirmation, &error))
+        {
+            DetachStateCallback();
+            ResetPauseConfirmation(false);
+            return BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                error.empty()
+                    ? "Failed to start Dolphin pause synchronizer"
+                    : "Failed to start Dolphin pause synchronizer: " + error,
+                BackendIntegrity::Unknown);
+        }
+        return BackendResult::Success();
+    }
+
     [[nodiscard]] BackendResult RequireOpen() const
     {
         if (!open || !wrapper)
@@ -609,10 +662,7 @@ DolphinWrapperBackend::DolphinWrapperBackend(
 DolphinWrapperBackend::~DolphinWrapperBackend()
 {
     if (impl_)
-    {
-        impl_->pause_synchronizer.StopAndJoin();
-        impl_->DetachStateCallback();
-    }
+        (void)Close();
 }
 
 BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
@@ -663,40 +713,9 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
     if (impl_->cpu_core == DolphinBackendCpuCore::Jit64)
         Config::SetCurrent(Config::MAIN_CPU_CORE, PowerPC::CPUCore::JIT64);
 
-    std::optional<std::string> startup_savestate;
-    if (impl_->prepared_movie_path.has_value())
-    {
-        auto& movie = wrapper->system()->GetMovie();
-        movie.SetReadOnly(true);
-        std::optional<std::string> dolphin_savestate;
-        if (!movie.PlayInput(
-                impl_->prepared_movie_path->string(),
-                &dolphin_savestate))
-        {
-            wrapper.reset();
-            return BackendResult::Failure(
-                BackendErrorCode::GameLoadFailed,
-                "Dolphin failed to stage the prepared movie");
-        }
-        if (impl_->prepared_movie_savestate.has_value() !=
-                dolphin_savestate.has_value() ||
-            (dolphin_savestate.has_value() &&
-             *dolphin_savestate !=
-                 impl_->prepared_movie_savestate->string()))
-        {
-            movie.EndPlayInput(false);
-            wrapper.reset();
-            return BackendResult::Failure(
-                BackendErrorCode::GameLoadFailed,
-                "Dolphin movie startup-state discovery disagreed with the prepared DTM");
-        }
-        startup_savestate = std::move(dolphin_savestate);
-    }
-
     if (!wrapper->loadGame(
             options.iso_path.string(),
-            true,
-            std::move(startup_savestate)))
+            true))
     {
         if (wrapper->system()->GetMovie().IsMovieActive())
             wrapper->system()->GetMovie().EndPlayInput(false);
@@ -709,75 +728,17 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
 
     wrapper->ConfigurePortsStandardPadP1();
 
-    impl_->ResetPauseConfirmation(true);
-    const auto pause_confirmation = impl_->pause_confirmation;
-    Core::System* const system = wrapper->system();
-    impl_->state_callback_handle =
-        Core::AddOnStateChangedCallback(
-            [pause_confirmation, system](Core::State state) {
-                if (state != Core::State::Paused)
-                    return;
-                auto acknowledge = [pause_confirmation] {
-                    const std::uint64_t generation =
-                        pause_confirmation->requested.load(
-                            std::memory_order_acquire);
-                    std::uint64_t acknowledged =
-                        pause_confirmation->acknowledged.load(
-                            std::memory_order_acquire);
-                    while (acknowledged < generation &&
-                        !pause_confirmation->acknowledged
-                             .compare_exchange_weak(
-                                 acknowledged,
-                                 generation,
-                                 std::memory_order_release,
-                                 std::memory_order_acquire))
-                    {
-                    }
-                };
-                if (Core::IsCPUThread())
-                {
-                    // The callback runs before the CPU leaves RunLoop.
-                    // The queued job executes on the next stepping-loop turn,
-                    // after m_state_cpu_thread_active has become false.
-                    system->GetCPU().AddCPUThreadJob(
-                        std::move(acknowledge));
-                }
-                else
-                {
-                    // Host-side Paused notification follows SetStepping(true),
-                    // which already synchronizes with CPU idleness.
-                    acknowledge();
-                }
-            });
-
-    std::string pause_helper_error;
-    if (!impl_->pause_synchronizer.Start(
-            *system,
-            pause_confirmation,
-            &pause_helper_error))
-    {
-        impl_->DetachStateCallback();
-        wrapper.reset();
-        impl_->ResetPauseConfirmation(false);
-        return BackendResult::Failure(
-            BackendErrorCode::OperationFailed,
-            pause_helper_error.empty()
-                ? "Failed to start Dolphin pause synchronizer"
-                : std::string("Failed to start Dolphin pause synchronizer: ") +
-                    pause_helper_error,
-            BackendIntegrity::Unknown);
-    }
-
     impl_->wrapper = std::move(wrapper);
+    if (BackendResult pause = impl_->StartPauseInfrastructure(); !pause.ok)
+    {
+        impl_->wrapper.reset();
+        return pause;
+    }
     impl_->last_open_options = options;
     impl_->has_open_options = true;
     impl_->open = true;
     impl_->observed_movie_playing = false;
-    impl_->active_movie_sha256 =
-        impl_->prepared_movie_sha256;
-    impl_->prepared_movie_path.reset();
-    impl_->prepared_movie_savestate.reset();
-    impl_->prepared_movie_sha256.reset();
+    impl_->active_movie_sha256.reset();
     try
     {
         const auto disc = impl_->wrapper->getDiscInfo();
@@ -801,64 +762,161 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
     return BackendResult::Success();
 }
 
-BackendResult DolphinWrapperBackend::Reboot()
+MovieBackendResult DolphinWrapperBackend::StopCoreForPreparedReadOnlyMovie()
 {
-    if (!impl_->has_open_options)
+    if (!impl_->open || !impl_->wrapper || !impl_->has_open_options)
     {
-        return BackendResult::Failure(
-            BackendErrorCode::InvalidState,
-            "Dolphin backend has no prior open configuration");
+        return MovieBackendResult::Failure(
+            "Dolphin movie preparation requires an open wrapper session");
+    }
+    if (!impl_->prepared_movie_path || !impl_->prepared_movie_sha256)
+    {
+        return MovieBackendResult::Failure(
+            "Dolphin core stop requires one prepared read-only movie");
     }
 
-    const BackendOpenOptions options = impl_->last_open_options;
-    if (impl_->wrapper)
+    try
     {
-        try
+        auto& system = *impl_->wrapper->system();
+        Core::CPUThreadGuard guard(system);
+        std::string error;
+        if (!PhysicalObjectsHaveManagerShape(
+                system,
+                impl_->owned_physical_plan,
+                &error))
         {
-            auto& system = *impl_->wrapper->system();
-            Core::CPUThreadGuard guard(system);
-            std::string error;
-            if (!PhysicalObjectsHaveManagerShape(
-                    system,
-                    impl_->owned_physical_plan,
-                    &error))
-            {
-                return BackendResult::Failure(
-                    BackendErrorCode::OperationFailed,
-                    error.empty()
-                        ? "Dolphin reboot found unmanaged physical stop points"
-                        : std::move(error),
-                    BackendIntegrity::Unknown);
-            }
+            return MovieBackendResult::Failure(
+                error.empty()
+                    ? "Dolphin core stop found unmanaged physical stop points"
+                    : std::move(error),
+                GuestIntegrity::Unknown);
         }
-        catch (const std::exception& ex)
-        {
-            return BackendResult::Failure(
-                BackendErrorCode::OperationFailed,
-                std::string("failed validating physical stop points for reboot: ") +
-                    ex.what(),
-                BackendIntegrity::Unknown);
-        }
-        catch (...)
-        {
-            return BackendResult::Failure(
-                BackendErrorCode::OperationFailed,
-                "failed validating physical stop points for reboot",
-                BackendIntegrity::Unknown);
-        }
+    }
+    catch (const std::exception& ex)
+    {
+        return MovieBackendResult::Failure(
+            std::string("failed validating physical stop points before core stop: ") +
+                ex.what(),
+            GuestIntegrity::Unknown);
+    }
+    catch (...)
+    {
+        return MovieBackendResult::Failure(
+            "failed validating physical stop points before core stop",
+            GuestIntegrity::Unknown);
     }
 
     impl_->pause_synchronizer.StopAndJoin();
     impl_->DetachStateCallback();
-    impl_->wrapper.reset();
-    impl_->open = false;
     impl_->observed_movie_playing = false;
     impl_->active_movie_sha256.reset();
-    impl_->owned_physical_plan = {};
-    BackendResult result = Open(options);
-    if (!result.ok)
-        result.integrity = BackendIntegrity::Unknown;
-    return result;
+    std::string error;
+    bool stopped = false;
+    try
+    {
+        stopped = impl_->wrapper->stopCoreForReadOnlyMovie(&error);
+    }
+    catch (const std::exception& ex)
+    {
+        error = std::string(
+            "Dolphin guest-core stop raised an exception: ") +
+            ex.what();
+    }
+    catch (...)
+    {
+        error = "Dolphin guest-core stop raised an unknown exception";
+    }
+    if (!stopped)
+    {
+        impl_->ResetPauseConfirmation(false);
+        return MovieBackendResult::Failure(
+            error.empty()
+                ? "Dolphin failed to stop its guest core for movie playback"
+                : std::move(error),
+            GuestIntegrity::Unknown);
+    }
+    impl_->ResetPauseConfirmation(false);
+    return MovieBackendResult::Success();
+}
+
+MovieBackendResult DolphinWrapperBackend::StartPreparedReadOnlyMovie()
+{
+    if (!impl_->open || !impl_->wrapper || !impl_->has_open_options)
+    {
+        return MovieBackendResult::Failure(
+            "Dolphin movie start requires an open wrapper session");
+    }
+    if (!impl_->prepared_movie_path || !impl_->prepared_movie_sha256)
+    {
+        return MovieBackendResult::Failure(
+            "Dolphin movie start requires one prepared read-only movie");
+    }
+
+    std::optional<std::string> discovered_startup;
+    std::string error;
+    bool started = false;
+    try
+    {
+        started = impl_->wrapper->startReadOnlyMovieFromStoppedCore(
+            impl_->prepared_movie_path->string(),
+            discovered_startup,
+            &error);
+    }
+    catch (const std::exception& ex)
+    {
+        error = std::string(
+            "Dolphin prepared-movie start raised an exception: ") +
+            ex.what();
+    }
+    catch (...)
+    {
+        error = "Dolphin prepared-movie start raised an unknown exception";
+    }
+    if (!started)
+    {
+        impl_->ResetPauseConfirmation(false);
+        return MovieBackendResult::Failure(
+            error.empty()
+                ? "Dolphin failed to start the prepared read-only movie"
+                : std::move(error),
+            GuestIntegrity::Unknown);
+    }
+    const bool startup_matches =
+        impl_->prepared_movie_savestate.has_value() ==
+            discovered_startup.has_value() &&
+        (!discovered_startup ||
+         *discovered_startup ==
+             impl_->prepared_movie_savestate->string());
+    if (!startup_matches)
+    {
+        (void)StopMovie();
+        impl_->ResetPauseConfirmation(false);
+        return MovieBackendResult::Failure(
+            "Dolphin movie startup-state discovery disagreed with the prepared artifact baseline",
+            GuestIntegrity::Unknown);
+    }
+    if (BackendResult pause = impl_->StartPauseInfrastructure(); !pause.ok)
+    {
+        return MovieBackendResult::Failure(
+            pause.message.empty()
+                ? "Dolphin pause infrastructure did not restart"
+                : std::move(pause.message),
+            GuestIntegrity::Unknown);
+    }
+    impl_->active_movie_sha256 = impl_->prepared_movie_sha256;
+    impl_->prepared_movie_path.reset();
+    impl_->prepared_movie_savestate.reset();
+    impl_->prepared_movie_sha256.reset();
+    return MovieBackendResult::Success();
+}
+
+MovieBackendResult
+DolphinWrapperBackend::DiscardPreparedReadOnlyMovie() noexcept
+{
+    impl_->prepared_movie_path.reset();
+    impl_->prepared_movie_savestate.reset();
+    impl_->prepared_movie_sha256.reset();
+    return MovieBackendResult::Success();
 }
 
 BackendResult DolphinWrapperBackend::Close()
@@ -989,8 +1047,8 @@ BackendHealthReport DolphinWrapperBackend::CheckHealth() const
     return {true, state, {}};
 }
 
-StateCompatibilityToken
-DolphinWrapperBackend::StateCompatibility() const
+ArtifactCompatibilityToken
+DolphinWrapperBackend::SavestateCompatibility() const
 {
     return impl_->compatibility;
 }
@@ -1167,6 +1225,13 @@ BackendBufferResult DolphinWrapperBackend::SaveStateBuffer()
     if (BackendResult open = impl_->RequireOpen(); !open.ok)
         return {std::move(open), {}};
 
+    // State::SaveToBuffer normally queues its work back to Dolphin's CPU
+    // thread.  A workset baseline is captured while the core is already
+    // authoritatively paused, and a concurrent pause transition can leave
+    // that queued callback without another CPU-thread wake.  Exclude the CPU
+    // here so SaveToBuffer recognizes this caller as the temporary CPU thread
+    // and serializes the state inline.
+    Core::CPUThreadGuard guard(*impl_->wrapper->system());
     Common::UniqueBuffer<u8> buffer;
     if (!impl_->wrapper->saveStateToBuffer(buffer))
     {
@@ -1197,6 +1262,9 @@ BackendResult DolphinWrapperBackend::RestoreStateBuffer(
 
     Common::UniqueBuffer<u8> buffer(bytes.size());
     std::memcpy(buffer.data(), bytes.data(), bytes.size());
+    // Match buffer capture's CPU exclusion.  State::LoadFromBuffer otherwise
+    // uses the same paused-core CPU-thread job handoff.
+    Core::CPUThreadGuard guard(*impl_->wrapper->system());
     if (impl_->wrapper->loadStateFromBuffer(buffer))
     {
         if (QueryCoreState() == BackendCoreState::Paused)
@@ -1270,7 +1338,7 @@ ICaptureBackendPort* DolphinWrapperBackend::Captures() noexcept
 }
 
 MoviePlaybackPrepareResult
-DolphinWrapperBackend::PrepareReadOnlyPlaybackBeforeBoot(
+DolphinWrapperBackend::PrepareReadOnlyPlaybackForRestart(
     const std::filesystem::path& dtm_path)
 {
     if (dtm_path.empty() || !IsRegularFile(dtm_path))
@@ -1332,13 +1400,13 @@ MovieBackendResult DolphinWrapperBackend::StopMovie() noexcept
     }
     catch (const std::exception& ex)
     {
-        return MovieFailure(ex.what(), StateIntegrity::Unknown);
+        return MovieFailure(ex.what(), GuestIntegrity::Unknown);
     }
     catch (...)
     {
         return MovieFailure(
             "Dolphin movie shutdown threw",
-            StateIntegrity::Unknown);
+            GuestIntegrity::Unknown);
     }
 }
 
@@ -1399,7 +1467,7 @@ DolphinWrapperBackend::FinalizeRecording(
     catch (const std::exception& ex)
     {
         return {
-            MovieFailure(ex.what(), StateIntegrity::Unknown),
+            MovieFailure(ex.what(), GuestIntegrity::Unknown),
             std::nullopt};
     }
     catch (...)
@@ -1407,7 +1475,7 @@ DolphinWrapperBackend::FinalizeRecording(
         return {
             MovieFailure(
                 "Dolphin recording finalization threw",
-                StateIntegrity::Unknown),
+                GuestIntegrity::Unknown),
             std::nullopt};
     }
 }
@@ -1504,7 +1572,7 @@ DolphinWrapperBackend::CaptureRecordingCheckpoint()
     catch (const std::exception& ex)
     {
         return {
-            MovieFailure(ex.what(), StateIntegrity::Unknown),
+            MovieFailure(ex.what(), GuestIntegrity::Unknown),
             {}};
     }
     catch (...)
@@ -1512,13 +1580,13 @@ DolphinWrapperBackend::CaptureRecordingCheckpoint()
         return {
             MovieFailure(
                 "Dolphin recording checkpoint capture threw",
-                StateIntegrity::Unknown),
+                GuestIntegrity::Unknown),
             {}};
     }
 }
 
-MovieBackendResult DolphinWrapperBackend::PrepareStateReplacement(
-    const StateReplacementContext& context)
+MovieBackendResult DolphinWrapperBackend::PrepareSavestateRestore(
+    const SavestateMovieRestoreContext& context)
 {
     if (impl_->prepared_movie_replacement.has_value())
         return MovieFailure("A movie state replacement is already prepared");
@@ -1526,9 +1594,7 @@ MovieBackendResult DolphinWrapperBackend::PrepareStateReplacement(
     impl_->prepared_movie_started_for_replacement = false;
     impl_->prepared_movie_replacement_sha256.reset();
 
-    if (context.kind == StateReplacementKind::Boot ||
-        context.kind == StateReplacementKind::Reboot ||
-        !context.movie.has_value() ||
+    if (!context.movie.has_value() ||
         !impl_->wrapper)
     {
         return MovieBackendResult::Success();
@@ -1603,8 +1669,8 @@ MovieBackendResult DolphinWrapperBackend::PrepareStateReplacement(
     return MovieBackendResult::Success();
 }
 
-MovieBackendResult DolphinWrapperBackend::CommitStateReplacement(
-    const StateReplacementContext& context)
+MovieBackendResult DolphinWrapperBackend::CommitSavestateRestore(
+    const SavestateMovieRestoreContext& context)
 {
     if (!impl_->prepared_movie_replacement.has_value())
         return MovieFailure("Movie replacement was not prepared");
@@ -1614,7 +1680,7 @@ MovieBackendResult DolphinWrapperBackend::CommitStateReplacement(
         if (observed.activity != MovieActivity::Inactive)
             return MovieFailure(
                 "Dolphin restored unexpected movie state",
-                StateIntegrity::Unknown);
+                GuestIntegrity::Unknown);
         impl_->active_movie_sha256.reset();
         impl_->prepared_movie_replacement.reset();
         impl_->prepared_movie_replacement_sha256.reset();
@@ -1637,7 +1703,7 @@ MovieBackendResult DolphinWrapperBackend::CommitStateReplacement(
     {
         return MovieFailure(
             "Dolphin movie cursor did not reconcile with the restored state",
-            StateIntegrity::Unknown);
+            GuestIntegrity::Unknown);
     }
     if (expected == MovieActivity::ReadOnlyPlayback)
     {
@@ -1654,8 +1720,8 @@ MovieBackendResult DolphinWrapperBackend::CommitStateReplacement(
     return MovieBackendResult::Success();
 }
 
-MovieBackendResult DolphinWrapperBackend::RollbackStateReplacement(
-    const StateReplacementContext&) noexcept
+MovieBackendResult DolphinWrapperBackend::RollbackSavestateRestore(
+    const SavestateMovieRestoreContext&) noexcept
 {
     try
     {
@@ -1677,7 +1743,7 @@ MovieBackendResult DolphinWrapperBackend::RollbackStateReplacement(
     {
         return MovieFailure(
             "Movie replacement rollback was not proven",
-            StateIntegrity::Unknown);
+            GuestIntegrity::Unknown);
     }
 }
 

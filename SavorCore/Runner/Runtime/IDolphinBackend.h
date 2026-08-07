@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Services/State/StateTypes.h"
+#include "Services/Savestate/SavestateTypes.h"
 
 #include <chrono>
 #include <cstdint>
@@ -100,13 +100,12 @@ public:
     IDolphinBackend& operator=(const IDolphinBackend&) = delete;
 
     virtual BackendResult Open(const BackendOpenOptions& options) = 0;
-    virtual BackendResult Reboot() = 0;
     virtual BackendResult Close() = 0;
 
     [[nodiscard]] virtual BackendCoreState QueryCoreState() const noexcept = 0;
     [[nodiscard]] virtual BackendHealthReport CheckHealth() const = 0;
-    [[nodiscard]] virtual StateCompatibilityToken
-    StateCompatibility() const = 0;
+    [[nodiscard]] virtual ArtifactCompatibilityToken
+    SavestateCompatibility() const = 0;
 
     virtual BackendResult RestoreStateFile(const std::filesystem::path& path) = 0;
     virtual BackendResult SaveStateFile(const std::filesystem::path& path) = 0;

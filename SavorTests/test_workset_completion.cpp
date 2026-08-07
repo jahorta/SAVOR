@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Phases/Programs/SeedProbe/SeedProbeModule.h"
-#include "Runner/Runtime/Worksets/StateArtifactFinalizer.h"
+#include "Runner/Runtime/Worksets/SavestateArtifactFinalizer.h"
 #include "Runner/Runtime/Worksets/ProgramBaseline.h"
 #include "Runner/Runtime/Worksets/WorkerCompletionLedger.h"
 #include "Runner/Runtime/Worksets/WorksetWireCodec.h"
@@ -80,10 +80,10 @@ private:
     std::filesystem::path path_;
 };
 
-class RecordingNotifier final : public IStateArtifactFinalizerNotifier
+class RecordingNotifier final : public ISavestateArtifactFinalizerNotifier
 {
 public:
-    void NotifyStateArtifactFinalizerCompletion() noexcept override
+    void NotifySavestateArtifactFinalizerCompletion() noexcept override
     {
         notifications.fetch_add(1, std::memory_order_relaxed);
     }
@@ -117,13 +117,17 @@ WorkerWorksetDefinition CodecWorksetDefinition()
         .invocation_id = {7, 9},
         .program = phase->identity(),
     };
-    definition.baseline.state_kind =
-        ProgramBaselineStateKind::CurrentSession;
-    definition.baseline.current_session =
-        CurrentSessionBaselineGuard{
-            SessionId(7),
-            StateEpoch(8),
-            true};
+    definition.baseline.artifact = ProgramBaselineArtifact{
+        .kind = ProgramBaselineArtifactKind::Savestate,
+        .state_path = "codec.sav",
+        .state_sha256 = std::string(64, '0'),
+        .compatibility = {
+            "GEAE8E",
+            std::string(64, '1'),
+            "dolphin-2506a",
+            "test"},
+        .lineage = {.edge = "codec", .producer = "test"},
+    };
     definition.baseline.lineage =
         phase->runtime_contract().baseline_lineage;
     definition.baseline.components.push_back({
@@ -412,13 +416,17 @@ TEST(WorksetValidation, CapsEachTerminalBelowTheWrmsPayloadCeiling)
         .invocation_id = {2, 1},
         .program = phase->identity(),
     };
-    definition.baseline.state_kind =
-        ProgramBaselineStateKind::CurrentSession;
-    definition.baseline.current_session =
-        CurrentSessionBaselineGuard{
-            SessionId(2),
-            StateEpoch(3),
-            true};
+    definition.baseline.artifact = ProgramBaselineArtifact{
+        .kind = ProgramBaselineArtifactKind::Savestate,
+        .state_path = "validation.sav",
+        .state_sha256 = std::string(64, '0'),
+        .compatibility = {
+            "GEAE8E",
+            std::string(64, '1'),
+            "dolphin-2506a",
+            "test"},
+        .lineage = {.edge = "validation", .producer = "test"},
+    };
     definition.baseline.lineage =
         phase->runtime_contract().baseline_lineage;
     definition.execution_key.module =
@@ -496,7 +504,7 @@ TEST(WorkerRuntimeManifest, HashesCanonicalShapeAndRejectsInvalidLimits)
 
 TEST(
     WorksetStateCoordinator,
-    ReusesExactCacheFallsBackAfterPreservedFailureAndEvictsLru)
+    OwnsMultiItemHandleOnlyUntilTheActiveWorksetTerminates)
 {
     TemporaryDirectory temp;
     const auto write_state =
@@ -515,9 +523,7 @@ TEST(
     };
     const std::filesystem::path first_path =
         write_state("first.sav", "first-state");
-    const std::filesystem::path second_path =
-        write_state("second.sav", "second-state");
-    const StateCompatibilityToken compatibility{
+    const ArtifactCompatibilityToken compatibility{
         .game_id = "TEST00",
         .iso_sha256 = std::string(64, '0'),
         .emulator_build = "scripted-dolphin-backend",
@@ -528,15 +534,15 @@ TEST(
             std::string lineage)
     {
         ProgramBaselineDefinition definition;
-        definition.state_kind =
-            ProgramBaselineStateKind::Artifact;
         definition.artifact = ProgramBaselineArtifact{
+            .kind = ProgramBaselineArtifactKind::Savestate,
             .state_path = path,
             .state_sha256 =
                 hash::sha256_of_file(path.string()),
-            .movie_mode =
-                ExternalMovieImportMode::NoMovie,
             .compatibility = compatibility,
+            .lineage = {
+                .edge = "source",
+                .producer = "test"},
         };
         definition.lineage = std::move(lineage);
         return definition;
@@ -553,8 +559,6 @@ TEST(
     ASSERT_TRUE(session.Open(options).ok);
 
     WorkerWorksetLimits limits;
-    limits.maximum_state_cache_entries = 1;
-    limits.maximum_state_cache_bytes = 1024;
     auto components =
         std::make_shared<ProgramBaselineComponentRegistry>();
     WorksetStateCoordinator coordinator(
@@ -573,6 +577,14 @@ TEST(
             true,
             receipt)
             .ok);
+    EXPECT_TRUE(receipt.state_established);
+    ASSERT_TRUE(coordinator.RestoreForNextItem(receipt).ok);
+    EXPECT_TRUE(receipt.state_established);
+    {
+        std::lock_guard lock(backend->mutex);
+        EXPECT_EQ(backend->restore_buffer_count, 1);
+        EXPECT_EQ(backend->restore_file_count, 1);
+    }
     ASSERT_TRUE(coordinator.Release().ok);
 
     ASSERT_TRUE(
@@ -582,73 +594,94 @@ TEST(
             true,
             receipt)
             .ok);
-    EXPECT_TRUE(receipt.restored);
+    EXPECT_TRUE(receipt.state_established);
     ASSERT_TRUE(coordinator.Release().ok);
     {
         std::lock_guard lock(backend->mutex);
         EXPECT_EQ(backend->restore_buffer_count, 1);
-        backend->restore_buffer_result =
-            BackendResult::Failure(
-                BackendErrorCode::OperationFailed,
-                "preserved cache restore failure");
-    }
-
-    ASSERT_TRUE(
-        coordinator.Prepare(
-            WorkerWorksetId(3),
-            first,
-            true,
-            receipt)
-            .ok);
-    EXPECT_FALSE(receipt.restored);
-    ASSERT_TRUE(coordinator.Release().ok);
-    {
-        std::lock_guard lock(backend->mutex);
-        EXPECT_EQ(backend->restore_buffer_count, 2);
-        EXPECT_GE(backend->restore_file_count, 2);
-        backend->restore_buffer_result =
-            BackendResult::Success();
-    }
-
-    ProgramBaselineDefinition second =
-        baseline(second_path, "second");
-    ASSERT_TRUE(coordinator.Stage(second).ok);
-    ASSERT_TRUE(
-        coordinator.Prepare(
-            WorkerWorksetId(4),
-            second,
-            true,
-            receipt)
-            .ok);
-    ASSERT_TRUE(coordinator.Release().ok);
-    EXPECT_EQ(coordinator.cache_snapshot().entry_count, 1u);
-
-    const int before_first_again = [&]
-    {
-        std::lock_guard lock(backend->mutex);
-        return backend->restore_file_count;
-    }();
-    ASSERT_TRUE(
-        coordinator.Prepare(
-            WorkerWorksetId(5),
-            first,
-            true,
-            receipt)
-            .ok);
-    EXPECT_FALSE(receipt.restored);
-    ASSERT_TRUE(coordinator.Release().ok);
-    {
-        std::lock_guard lock(backend->mutex);
-        EXPECT_GT(
-            backend->restore_file_count,
-            before_first_again);
+        EXPECT_EQ(backend->restore_file_count, 2);
     }
 
     EXPECT_TRUE(coordinator.Shutdown().ok);
     EXPECT_TRUE(session.Shutdown().ok);
 }
 
-TEST(StateArtifactFinalizer, PublishesImmutableSidecarsThenStateAndDrains)
+TEST(
+    WorksetStateCoordinator,
+    RestoreFailurePreservesEpochAndTaintsOnlyForUnknownIntegrity)
+{
+    TemporaryDirectory temp;
+    const std::filesystem::path state_path = temp.path() / "baseline.sav";
+    {
+        std::ofstream output(
+            state_path,
+            std::ios::binary | std::ios::trunc);
+        output << "baseline-state";
+    }
+    ProgramBaselineDefinition baseline;
+    baseline.artifact = ProgramBaselineArtifact{
+        .kind = ProgramBaselineArtifactKind::Savestate,
+        .state_path = state_path,
+        .state_sha256 = hash::sha256_of_file(state_path.string()),
+        .compatibility = {
+            .game_id = "TEST00",
+            .iso_sha256 = std::string(64, '0'),
+            .emulator_build = "scripted-dolphin-backend",
+            .runtime_revision = "slice4"},
+        .lineage = {
+            .edge = "source",
+            .producer = "test"},
+    };
+    baseline.lineage = "restore-failure";
+
+    auto backend = std::make_shared<ScriptedDolphinBackendControl>();
+    EmulationSession session(
+        SessionId(91),
+        std::make_unique<ScriptedDolphinBackend>(backend));
+    SessionOpenOptions options;
+    options.backend.iso_path = "fake.iso";
+    ASSERT_TRUE(session.Open(options).ok);
+
+    WorksetStateCoordinator coordinator(
+        session,
+        WorkerWorksetLimits{},
+        std::make_shared<ProgramBaselineComponentRegistry>());
+    ASSERT_TRUE(coordinator.Stage(baseline).ok);
+    PreparedProgramBaselineReceipt receipt;
+    ASSERT_TRUE(coordinator.Prepare(
+        WorkerWorksetId(10), baseline, true, receipt).ok);
+    const WorksetEpoch preserved_epoch = receipt.workset_epoch;
+    backend->SetRestoreBufferResult(BackendResult::Failure(
+        BackendErrorCode::OperationFailed,
+        "preserved restore failure",
+        BackendIntegrity::Preserved));
+    const ProgramBaselineComponentResult preserved =
+        coordinator.RestoreForNextItem(receipt);
+    EXPECT_FALSE(preserved.ok);
+    EXPECT_EQ(session.snapshot().workset_epoch, preserved_epoch);
+    EXPECT_EQ(session.snapshot().disposition, SessionDisposition::Clean);
+    backend->SetRestoreBufferResult(BackendResult::Success());
+    ASSERT_TRUE(coordinator.Release().ok);
+
+    ASSERT_TRUE(coordinator.Prepare(
+        WorkerWorksetId(11), baseline, true, receipt).ok);
+    const WorksetEpoch unknown_epoch = receipt.workset_epoch;
+    backend->SetRestoreBufferResult(BackendResult::Failure(
+        BackendErrorCode::OperationFailed,
+        "unknown restore failure",
+        BackendIntegrity::Unknown));
+    const ProgramBaselineComponentResult unknown =
+        coordinator.RestoreForNextItem(receipt);
+    EXPECT_FALSE(unknown.ok);
+    EXPECT_EQ(session.snapshot().workset_epoch, unknown_epoch);
+    EXPECT_EQ(session.snapshot().disposition, SessionDisposition::Tainted);
+
+    EXPECT_TRUE(coordinator.Release().ok);
+    EXPECT_TRUE(coordinator.Shutdown().ok);
+    EXPECT_TRUE(session.Shutdown().ok);
+}
+
+TEST(SavestateArtifactFinalizer, PublishesImmutableSidecarsThenStateAndDrains)
 {
     TemporaryDirectory temp;
     WorkerWorksetLimits limits;
@@ -656,7 +689,7 @@ TEST(StateArtifactFinalizer, PublishesImmutableSidecarsThenStateAndDrains)
     limits.maximum_pending_finalizers = 8;
     limits.maximum_pending_finalizer_bytes = 256;
     auto notifier = std::make_shared<RecordingNotifier>();
-    StateArtifactFinalizer finalizer(limits, notifier);
+    SavestateArtifactFinalizer finalizer(limits, notifier);
 
     WorkerCompletionLedger ledger;
     ASSERT_TRUE(ledger.BindActorThread().ok);
@@ -666,9 +699,9 @@ TEST(StateArtifactFinalizer, PublishesImmutableSidecarsThenStateAndDrains)
 
     const auto state = Bytes("immutable-state");
     const auto movie = Bytes("immutable-movie");
-    StateArtifactFinalizationRequest request;
+    SavestateArtifactFinalizationRequest request;
     request.terminal = terminal.correlation;
-    request.state_artifact_id = StateArtifactId(1);
+    request.state_artifact_id = SavestateArtifactId(1);
     request.logical_artifact_id = "state:1";
     request.state = {
         temp.path() / "checkpoint.sav",
@@ -679,13 +712,13 @@ TEST(StateArtifactFinalizer, PublishesImmutableSidecarsThenStateAndDrains)
         movie,
         hash::sha256(movie.data(), movie.size())});
 
-    const StateArtifactFinalizerSubmission submitted =
+    const SavestateArtifactFinalizerSubmission submitted =
         finalizer.Submit(std::move(request));
     ASSERT_TRUE(submitted.result.ok) << submitted.result.message;
 
-    StateArtifactFinalizationRequest second;
+    SavestateArtifactFinalizationRequest second;
     second.terminal = terminal.correlation;
-    second.state_artifact_id = StateArtifactId(2);
+    second.state_artifact_id = SavestateArtifactId(2);
     second.logical_artifact_id = "state:2";
     second.state = {
         temp.path() / "second.sav",
@@ -693,9 +726,9 @@ TEST(StateArtifactFinalizer, PublishesImmutableSidecarsThenStateAndDrains)
         {}};
     ASSERT_TRUE(finalizer.Submit(std::move(second)).result.ok);
 
-    StateArtifactFinalizationRequest duplicate;
+    SavestateArtifactFinalizationRequest duplicate;
     duplicate.terminal = terminal.correlation;
-    duplicate.state_artifact_id = StateArtifactId(1);
+    duplicate.state_artifact_id = SavestateArtifactId(1);
     duplicate.logical_artifact_id = "state:1-duplicate";
     duplicate.state = {
         temp.path() / "duplicate.sav",
@@ -703,7 +736,7 @@ TEST(StateArtifactFinalizer, PublishesImmutableSidecarsThenStateAndDrains)
         {}};
     EXPECT_EQ(
         finalizer.Submit(std::move(duplicate)).result.code,
-        StateArtifactFinalizerErrorCode::InvalidArgument);
+        SavestateArtifactFinalizerErrorCode::InvalidArgument);
 
     std::barrier shutdown_start(3);
     std::thread first_shutdown([&] {
@@ -718,16 +751,16 @@ TEST(StateArtifactFinalizer, PublishesImmutableSidecarsThenStateAndDrains)
     first_shutdown.join();
     second_shutdown.join();
 
-    auto completions = finalizer.DrainCompletions();
+    auto completions = finalizer.DrainResults();
     ASSERT_EQ(completions.size(), 2u);
     const auto first = std::ranges::find(
         completions,
-        StateArtifactId(1),
-        &StateArtifactFinalizationCompletion::state_artifact_id);
+        SavestateArtifactId(1),
+        &SavestateArtifactFinalizationCompletion::state_artifact_id);
     const auto second_completion = std::ranges::find(
         completions,
-        StateArtifactId(2),
-        &StateArtifactFinalizationCompletion::state_artifact_id);
+        SavestateArtifactId(2),
+        &SavestateArtifactFinalizationCompletion::state_artifact_id);
     ASSERT_NE(first, completions.end());
     ASSERT_NE(second_completion, completions.end());
     ASSERT_TRUE(first->result.ok)
@@ -747,14 +780,14 @@ TEST(StateArtifactFinalizer, PublishesImmutableSidecarsThenStateAndDrains)
     EXPECT_EQ(finalizer.snapshot().outstanding_jobs, 0u);
 }
 
-TEST(StateArtifactFinalizer, RejectsCapacityAndNeverOverwritesConflict)
+TEST(SavestateArtifactFinalizer, RejectsCapacityAndNeverOverwritesConflict)
 {
     TemporaryDirectory temp;
     WorkerWorksetLimits limits;
     limits.finalizer_threads = 1;
     limits.maximum_pending_finalizers = 1;
     limits.maximum_pending_finalizer_bytes = 3;
-    StateArtifactFinalizer finalizer(limits);
+    SavestateArtifactFinalizer finalizer(limits);
 
     WorkerCompletionLedger ledger;
     ASSERT_TRUE(ledger.BindActorThread().ok);
@@ -762,14 +795,14 @@ TEST(StateArtifactFinalizer, RejectsCapacityAndNeverOverwritesConflict)
         ledger.ReserveTerminal(Correlation(1), 64);
     ASSERT_TRUE(terminal.result.ok);
 
-    StateArtifactFinalizationRequest too_large;
+    SavestateArtifactFinalizationRequest too_large;
     too_large.terminal = terminal.correlation;
-    too_large.state_artifact_id = StateArtifactId(1);
+    too_large.state_artifact_id = SavestateArtifactId(1);
     too_large.logical_artifact_id = "state:1";
     too_large.state = {temp.path() / "large.sav", Bytes("1234"), {}};
     EXPECT_EQ(
         finalizer.Submit(std::move(too_large)).result.code,
-        StateArtifactFinalizerErrorCode::CapacityExceeded);
+        SavestateArtifactFinalizerErrorCode::CapacityExceeded);
 
     {
         std::ofstream existing(
@@ -777,20 +810,20 @@ TEST(StateArtifactFinalizer, RejectsCapacityAndNeverOverwritesConflict)
             std::ios::binary | std::ios::trunc);
         existing << "old";
     }
-    StateArtifactFinalizationRequest conflict;
+    SavestateArtifactFinalizationRequest conflict;
     conflict.terminal = terminal.correlation;
-    conflict.state_artifact_id = StateArtifactId(2);
+    conflict.state_artifact_id = SavestateArtifactId(2);
     conflict.logical_artifact_id = "state:2";
     conflict.state = {temp.path() / "conflict.sav", Bytes("new"), {}};
     ASSERT_TRUE(finalizer.Submit(std::move(conflict)).result.ok);
     finalizer.Shutdown();
 
-    auto completions = finalizer.DrainCompletions();
+    auto completions = finalizer.DrainResults();
     ASSERT_EQ(completions.size(), 1u);
     EXPECT_FALSE(completions[0].result.ok);
     EXPECT_EQ(
         completions[0].result.code,
-        StateArtifactFinalizerErrorCode::IntegrityFailure);
+        SavestateArtifactFinalizerErrorCode::IntegrityFailure);
     EXPECT_EQ(
         hash::sha256_of_file((temp.path() / "conflict.sav").string()),
         hash::sha256("old", 3));

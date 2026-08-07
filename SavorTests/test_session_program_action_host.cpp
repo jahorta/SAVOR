@@ -4,7 +4,7 @@
 #include "Runner/Runtime/EmulationSession.h"
 #include "Runner/Runtime/ProgramRuntime/Actions/CanonicalActionPayload.h"
 #include "Runner/Runtime/ProgramRuntime/Actions/SessionProgramActionHost.h"
-#include "Runner/Runtime/Worksets/StateArtifactFinalizer.h"
+#include "Runner/Runtime/Worksets/SavestateArtifactFinalizer.h"
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
 #include "Utils/Hash.h"
@@ -91,6 +91,10 @@ public:
             session.Open({});
         if (!opened.ok)
             return false;
+        const SessionOperationReceipt begun =
+            session.BeginWorkset(WorkerWorksetId(1));
+        if (!begun.ok)
+            return false;
         host = std::make_unique<
             SessionProgramActionHost>(
                 session,
@@ -100,7 +104,7 @@ public:
 
     ProgramActionRequest Request(
         ProgramHostOperation operation,
-        StateEpoch epoch,
+        WorksetEpoch epoch,
         ProgramScopeId scope = ProgramScopeId(1))
     {
         ProgramActionRequest request;
@@ -117,19 +121,21 @@ public:
     ProgramActionDispatchResult Prepare(
         InvocationStatePolicy policy,
         std::string lineage,
-        std::optional<ArtifactReferenceValue> artifact = {})
+        bool state_already_prepared = true)
     {
         const SessionSnapshot snapshot = session.snapshot();
         ProgramActionRequest request = Request(
             ProgramHostOperation::PrepareInvocationState,
-            snapshot.state_epoch);
+            snapshot.workset_epoch);
         request.state_request = InvocationStateRequest{
             .policy = policy,
-            .state_artifact = std::move(artifact),
             .session_lineage = std::move(lineage),
             .expected_session = snapshot.session_id,
-            .expected_epoch = snapshot.state_epoch,
+            .expected_epoch = snapshot.workset_epoch,
         };
+        request.state_already_prepared = state_already_prepared;
+        if (state_already_prepared)
+            request.prepared_baseline_sha256 = std::string(64, 'b');
         return host->Dispatch(std::move(request));
     }
 
@@ -137,7 +143,7 @@ public:
     {
         return host->Dispatch(Request(
             ProgramHostOperation::FinishInvocation,
-            session.snapshot().state_epoch));
+            session.snapshot().workset_epoch));
     }
 
     ProgramActionDispatchResult Invoke(
@@ -147,7 +153,7 @@ public:
     {
         ProgramActionRequest request = Request(
             ProgramHostOperation::InvokeAction,
-            session.snapshot().state_epoch,
+            session.snapshot().workset_epoch,
             scope);
         request.action = CanonicalActionIdentity(action);
         const auto schema =
@@ -169,7 +175,7 @@ public:
     {
         ProgramActionRequest request = Request(
             ProgramHostOperation::InvokeAction,
-            session.snapshot().state_epoch,
+            session.snapshot().workset_epoch,
             scope);
         request.action = CanonicalActionIdentity(action);
         request.input = std::move(input);
@@ -191,6 +197,33 @@ const ProgramValue* Root(const ProgramValueGraph& graph)
         graph.root,
         &ProgramValue::id);
     return found == graph.values.end() ? nullptr : &*found;
+}
+
+ProgramActionDispatchResult PrepareMoviePlayback(
+    HostHarness& harness,
+    const std::filesystem::path& dtm)
+{
+    CanonicalActionPayload prepare;
+    if (!prepare.AddUtf8(
+            CanonicalActionPayloadField::Path,
+            dtm.string()))
+    {
+        throw std::logic_error("failed encoding movie preparation path");
+    }
+    return harness.Invoke(
+        CanonicalAction::MoviePrepareReadOnlyPlayback,
+        std::move(prepare));
+}
+
+ProgramActionDispatchResult StartPreparedMoviePlayback(
+    HostHarness& harness,
+    const ProgramActionDispatchResult& prepared)
+{
+    if (!prepared.immediate_result)
+        throw std::logic_error("movie preparation did not complete immediately");
+    return harness.InvokeGraph(
+        CanonicalAction::MovieStartPlayback,
+        prepared.immediate_result->resolution.output);
 }
 
 class TestValueGraphBuilder final
@@ -389,7 +422,8 @@ TestPoint FirstRegisteredPcPoint()
     throw std::logic_error("test source pack has no PC point");
 }
 
-ProgramValueGraph SubscribeRequestGraph(const TestPoint& target)
+ProgramValueGraph SubscribeRequestGraph(
+    const TestPoint& target)
 {
     TestStaticConfigWriter writer({'S', 'G', 'C', '1'});
     writer.U32(1);
@@ -406,8 +440,6 @@ ProgramValueGraph SubscribeRequestGraph(const TestPoint& target)
     writer.U8(static_cast<std::uint8_t>(
         StopRoutingPolicy::Pass));
     writer.U8(static_cast<std::uint8_t>(
-        StopEpochPolicy::EndOnEpochChange));
-    writer.U8(static_cast<std::uint8_t>(
         StopSubscriptionLifetime::Scoped));
 
     TestValueGraphBuilder builder;
@@ -422,7 +454,9 @@ ProgramValueGraph SubscribeRequestGraph(const TestPoint& target)
 
 ProgramValueGraph ContinueRequestGraph(
     const ProgramValue& stop_group,
-    const ProgramValue* input_publication = nullptr)
+    const ProgramValue* input_publication = nullptr,
+    const ProgramValue* playback_session = nullptr,
+    std::optional<std::uint64_t> expected_movie_input_count = std::nullopt)
 {
     TestStaticConfigWriter writer({'C', 'U', 'C', '1'});
     writer.U8(1);
@@ -444,6 +478,26 @@ ProgramValueGraph ContinueRequestGraph(
             CanonicalRuntimeSchema::
                 OptionalInputPublicationReceipt),
         OptionalValue{publication_value});
+    std::optional<ProgramValueId> playback_value;
+    if (playback_session)
+        playback_value = builder.AddFrom(*playback_session);
+    const ProgramValueId playback = builder.Add(
+        CanonicalRuntimeType(
+            CanonicalRuntimeSchema::
+                OptionalMoviePlaybackSession),
+        OptionalValue{playback_value});
+    std::optional<ProgramValueId> expected_count_value;
+    if (expected_movie_input_count)
+    {
+        expected_count_value = builder.Add(
+            TypeRef::Builtin(BuiltinType::U64),
+            *expected_movie_input_count);
+    }
+    const ProgramValueId expected_count = builder.Add(
+        CanonicalRuntimeType(
+            CanonicalRuntimeSchema::
+                OptionalMovieInputCount),
+        OptionalValue{expected_count_value});
     const ProgramValueId config = builder.Add(
         CanonicalRuntimeType(
             CanonicalRuntimeSchema::
@@ -451,7 +505,7 @@ ProgramValueGraph ContinueRequestGraph(
         writer.Finish());
     return builder.Finish(
         CanonicalAction::ExecutionContinueUntil,
-        {group, publication, config});
+        {group, publication, playback, expected_count, config});
 }
 
 ProgramValueGraph InputPollRequestGraph(
@@ -536,7 +590,7 @@ SchemaIdentity SourceSchema(std::string_view canonical_id)
 
 ProgramValueGraph ContextRequest(
     std::string_view schema,
-    StateEpoch epoch,
+    WorksetEpoch epoch,
     std::uint32_t pc)
 {
     ProgramValue sequence{
@@ -635,12 +689,12 @@ TEST(
 
     ProgramActionRequest malformed = harness.Request(
         ProgramHostOperation::PrepareInvocationState,
-        harness.session.snapshot().state_epoch);
+        harness.session.snapshot().workset_epoch);
     const ProgramActionDispatchResult first =
         harness.host->Dispatch(malformed);
-    ASSERT_TRUE(first.immediate_completion);
+    ASSERT_TRUE(first.immediate_result);
     EXPECT_EQ(
-        first.immediate_completion->code,
+        first.immediate_result->resolution.code,
         "invalid_state_request");
 
     std::promise<ProgramActionDispatchResult> attempted;
@@ -651,9 +705,9 @@ TEST(
     other.join();
     const ProgramActionDispatchResult wrong_thread =
         attempted.get_future().get();
-    ASSERT_TRUE(wrong_thread.immediate_completion);
+    ASSERT_TRUE(wrong_thread.immediate_result);
     EXPECT_EQ(
-        wrong_thread.immediate_completion->code,
+        wrong_thread.immediate_result->resolution.code,
         "wrong_thread");
 
     harness.host->Shutdown();
@@ -662,7 +716,7 @@ TEST(
 
 TEST(
     SessionProgramActionHost,
-    ImplementsBootContinueBaselineAndSameSessionArtifactPolicies)
+    AcceptsOnlyPreparedArtifactBaselineState)
 {
     TemporaryDirectory temporary;
     HostHarness harness;
@@ -670,16 +724,16 @@ TEST(
 
     ProgramActionDispatchResult boot =
         harness.Prepare(
-            InvocationStatePolicy::Boot,
+            InvocationStatePolicy::RestoreBaseline,
             "first-battle");
     ASSERT_TRUE(boot.accepted);
-    ASSERT_TRUE(boot.immediate_completion);
+    ASSERT_TRUE(boot.immediate_result);
     EXPECT_EQ(
-        boot.immediate_completion->status,
-        ProgramActionCompletionStatus::Completed);
+        boot.immediate_result->resolution.status,
+        ProgramActionResolutionStatus::Completed);
     EXPECT_EQ(
-        harness.session.snapshot().state_epoch,
-        StateEpoch(2));
+        harness.session.snapshot().workset_epoch,
+        WorksetEpoch(1));
 
     CanonicalActionPayload save;
     ASSERT_TRUE(save.AddUtf8(
@@ -687,27 +741,28 @@ TEST(
         temporary.File("baseline.sav").string()));
     ProgramActionDispatchResult saved =
         harness.Invoke(
-            CanonicalAction::StateSaveImmutableArtifact,
+            CanonicalAction::SavestateSaveImmutableArtifact,
             std::move(save));
     ASSERT_TRUE(saved.accepted);
-    ASSERT_TRUE(saved.immediate_completion);
+    ASSERT_TRUE(saved.immediate_result);
     const ProgramValue* artifact_root =
-        Root(saved.immediate_completion->output);
+        Root(saved.immediate_result->resolution.output);
     ASSERT_NE(artifact_root, nullptr);
     EXPECT_FALSE(std::holds_alternative<ArtifactReferenceValue>(
         artifact_root->payload));
     EXPECT_FALSE(
         CanonicalActionArtifactReferenceSchemaIdentity(
-            CanonicalAction::StateSaveImmutableArtifact));
+            CanonicalAction::SavestateSaveImmutableArtifact));
     ASSERT_EQ(
-        saved.immediate_completion
-            ->pending_state_artifacts.size(),
+        saved.immediate_result
+            ->staged_outputs.size(),
         1u);
-    PendingStateArtifactPublication pending =
-        std::move(saved.immediate_completion
-                      ->pending_state_artifacts.front());
-    StateArtifactFinalizer finalizer;
-    StateArtifactFinalizationRequest finalization;
+    StagedSavestateOutput pending =
+        std::get<StagedSavestateOutput>(
+            std::move(saved.immediate_result
+                          ->staged_outputs.front()));
+    SavestateArtifactFinalizer finalizer;
+    SavestateArtifactFinalizationRequest finalization;
     finalization.item = {
         WorkerWorksetId(1),
         WorkerWorksetItemId(1),
@@ -725,12 +780,12 @@ TEST(
     ASSERT_TRUE(
         finalizer.Submit(std::move(finalization)).result.ok);
     finalizer.Shutdown();
-    auto finalized = finalizer.DrainCompletions();
+    auto finalized = finalizer.DrainResults();
     ASSERT_EQ(finalized.size(), 1u);
     ASSERT_TRUE(finalized[0].result.ok)
         << finalized[0].result.message;
-    const StateFileArtifactReceipt committed =
-        harness.session.CommitImmutableStateArtifact({
+    const SavestateFileArtifactReceipt committed =
+        harness.session.CommitImmutableSavestateArtifact({
             .artifact = finalized[0].state_artifact_id,
             .state_path = finalized[0].state.path,
             .state_size_bytes = finalized[0].state.size_bytes,
@@ -740,7 +795,7 @@ TEST(
         << committed.result.message;
     const auto artifact_schema =
         CanonicalActionArtifactPayloadSchemaIdentity(
-            CanonicalAction::StateSaveImmutableArtifact);
+            CanonicalAction::SavestateSaveImmutableArtifact);
     const auto artifact_hash =
         ContentHash256::FromHex(committed.sha256);
     ASSERT_TRUE(artifact_schema);
@@ -755,13 +810,13 @@ TEST(
     ASSERT_TRUE(harness.Finish().accepted);
     ProgramActionDispatchResult continued =
         harness.Prepare(
-            InvocationStatePolicy::ContinueSession,
+            InvocationStatePolicy::RestoreBaseline,
             "first-battle");
     ASSERT_TRUE(continued.accepted);
-    ASSERT_TRUE(continued.immediate_completion);
+    ASSERT_TRUE(continued.immediate_result);
     EXPECT_EQ(
-        continued.immediate_completion->resulting_epoch,
-        StateEpoch(2));
+        continued.immediate_result->resolution.workset_epoch,
+        WorksetEpoch(1));
     ASSERT_TRUE(harness.Finish().accepted);
 
     ProgramActionDispatchResult baseline =
@@ -769,23 +824,23 @@ TEST(
             InvocationStatePolicy::RestoreBaseline,
             "first-battle");
     ASSERT_TRUE(baseline.accepted);
-    ASSERT_TRUE(baseline.immediate_completion);
+    ASSERT_TRUE(baseline.immediate_result);
     EXPECT_EQ(
-        harness.session.snapshot().state_epoch,
-        StateEpoch(3));
+        harness.session.snapshot().workset_epoch,
+        WorksetEpoch(1));
     ASSERT_TRUE(harness.Finish().accepted);
 
     ProgramActionDispatchResult loaded =
         harness.Prepare(
-            InvocationStatePolicy::LoadArtifact,
+            InvocationStatePolicy::RestoreBaseline,
             "artifact-branch",
-            artifact_copy);
+            true);
     ASSERT_TRUE(loaded.accepted);
-    ASSERT_TRUE(loaded.immediate_completion);
+    ASSERT_TRUE(loaded.immediate_result);
     EXPECT_EQ(
-        harness.session.snapshot().state_epoch,
-        StateEpoch(4));
-    EXPECT_EQ(harness.control->restore_file_count, 1);
+        harness.session.snapshot().workset_epoch,
+        WorksetEpoch(1));
+    EXPECT_EQ(harness.control->restore_file_count, 0);
     ASSERT_TRUE(harness.Finish().accepted);
 
     harness.host->Shutdown();
@@ -819,21 +874,21 @@ TEST(
     ArtifactReferenceValue external{
         "external-state",
         *CanonicalActionArtifactPayloadSchemaIdentity(
-            CanonicalAction::StateSaveImmutableArtifact),
+            CanonicalAction::SavestateSaveImmutableArtifact),
         *ContentHash256::FromHex(
             hash::sha256_of_file(state.string())),
         state.string(),
         true};
     ProgramActionDispatchResult rejected =
         harness.Prepare(
-            InvocationStatePolicy::LoadArtifact,
+            InvocationStatePolicy::RestoreBaseline,
             "external-branch",
-            external);
-    EXPECT_FALSE(rejected.accepted);
-    ASSERT_TRUE(rejected.immediate_completion);
+            true);
+    EXPECT_TRUE(rejected.accepted);
+    ASSERT_TRUE(rejected.immediate_result);
     EXPECT_EQ(
-        rejected.immediate_completion->code,
-        "external_movie_metadata_required");
+        rejected.immediate_result->resolution.code,
+        "");
     EXPECT_EQ(harness.control->restore_file_count, 0);
 
     harness.host->Shutdown();
@@ -842,128 +897,31 @@ TEST(
 
 TEST(
     SessionProgramActionHost,
-    RejectsMalformedRestoreBaselineShapeBeforeOpeningInvocationScope)
+    RejectsRestoreBaselineThatWasNotPreparedByTheWorkset)
 {
     HostHarness harness;
     ASSERT_TRUE(harness.Open());
     const SessionSnapshot before = harness.session.snapshot();
-    ArtifactReferenceValue artifact{
-        "unexpected-baseline-artifact",
-        *CanonicalActionArtifactPayloadSchemaIdentity(
-            CanonicalAction::StateSaveImmutableArtifact),
-        *ContentHash256::FromHex(
-            std::string(64, '1')),
-        "unused.sav",
-        true};
-
     ProgramActionDispatchResult rejected =
         harness.Prepare(
             InvocationStatePolicy::RestoreBaseline,
             "baseline-lineage",
-            artifact);
+            false);
     EXPECT_FALSE(rejected.accepted);
-    ASSERT_TRUE(rejected.immediate_completion);
+    ASSERT_TRUE(rejected.immediate_result);
     EXPECT_EQ(
-        rejected.immediate_completion->code,
-        "restore_baseline_artifact_forbidden");
+        rejected.immediate_result->resolution.code,
+        "prepared_baseline_required");
     EXPECT_FALSE(
         harness.host->snapshot().invocation_active);
     EXPECT_EQ(
         harness.host->snapshot().mapped_scope_count,
         0u);
     EXPECT_EQ(
-        harness.session.snapshot().state_epoch,
-        before.state_epoch);
+        harness.session.snapshot().workset_epoch,
+        before.workset_epoch);
     EXPECT_EQ(harness.control->restore_file_count, 0);
 
-    harness.host->Shutdown();
-    EXPECT_TRUE(harness.session.Shutdown().ok);
-}
-
-TEST(
-    SessionProgramActionHost,
-    MapsEpochAgnosticStateResourceAcrossPromotionAndRestore)
-{
-    HostHarness harness;
-    ASSERT_TRUE(harness.Open());
-    ASSERT_TRUE(harness.Prepare(
-        InvocationStatePolicy::Boot,
-        "resource-test").accepted);
-    const StateEpoch epoch =
-        harness.session.snapshot().state_epoch;
-
-    ProgramActionRequest open = harness.Request(
-        ProgramHostOperation::OpenScope,
-        epoch,
-        ProgramScopeId(2));
-    open.parent_scope = ProgramScopeId(1);
-    ProgramActionDispatchResult opened =
-        harness.host->Dispatch(std::move(open));
-    ASSERT_TRUE(opened.accepted);
-
-    ProgramActionDispatchResult captured =
-        harness.Invoke(
-            CanonicalAction::StateCapture,
-            {},
-            ProgramScopeId(2));
-    ASSERT_TRUE(captured.accepted);
-    ASSERT_TRUE(captured.immediate_completion);
-    const ProgramValue* handle_root =
-        Root(captured.immediate_completion->output);
-    ASSERT_NE(handle_root, nullptr);
-    const auto* handle = std::get_if<ResourceHandleValue>(
-        &handle_root->payload);
-    ASSERT_NE(handle, nullptr);
-    EXPECT_FALSE(handle->origin_epoch.has_value());
-    ASSERT_EQ(
-        captured.immediate_completion->resources.size(),
-        1u);
-
-    ProgramActionRequest promote = harness.Request(
-        ProgramHostOperation::PromoteResource,
-        epoch,
-        ProgramScopeId(1));
-    promote.resource = handle->handle_id;
-    EXPECT_TRUE(
-        harness.host->Dispatch(std::move(promote)).accepted);
-
-    ProgramActionRequest close = harness.Request(
-        ProgramHostOperation::CloseScope,
-        epoch,
-        ProgramScopeId(2));
-    EXPECT_TRUE(
-        harness.host->Dispatch(std::move(close)).accepted);
-
-    CanonicalActionPayload restore_request;
-    ASSERT_TRUE(restore_request.AddUnsigned(
-        CanonicalActionPayloadField::Handle,
-        handle->handle_id.value()));
-    ProgramActionDispatchResult restored =
-        harness.Invoke(
-            CanonicalAction::StateRestore,
-            std::move(restore_request));
-    ASSERT_TRUE(restored.accepted)
-        << restored.diagnostic;
-    ASSERT_TRUE(restored.immediate_completion);
-    EXPECT_EQ(
-        harness.session.snapshot().state_epoch,
-        StateEpoch(3));
-
-    ProgramActionDispatchResult finished = harness.Finish();
-    ASSERT_TRUE(finished.accepted);
-    ASSERT_TRUE(finished.immediate_completion);
-    ASSERT_EQ(
-        finished.immediate_completion->cleanup_receipts.size(),
-        1u);
-    EXPECT_EQ(
-        finished.immediate_completion->cleanup_receipts[0].resource,
-        handle->handle_id);
-    EXPECT_EQ(
-        finished.immediate_completion->cleanup_receipts[0].status,
-        ProgramCleanupStatus::Clean);
-    EXPECT_EQ(
-        harness.host->snapshot().mapped_resource_count,
-        0u);
     harness.host->Shutdown();
     EXPECT_TRUE(harness.session.Shutdown().ok);
 }
@@ -975,12 +933,12 @@ TEST(
     HostHarness harness;
     ASSERT_TRUE(harness.Open());
     ASSERT_TRUE(harness.Prepare(
-        InvocationStatePolicy::Boot,
+        InvocationStatePolicy::RestoreBaseline,
         "policy-test").accepted);
 
     ProgramActionRequest expired = harness.Request(
         ProgramHostOperation::InvokeAction,
-        harness.session.snapshot().state_epoch);
+        harness.session.snapshot().workset_epoch);
     expired.action =
         CanonicalActionIdentity(CanonicalAction::GuestReadU32);
     expired.timing = ActionTimingClass::BoundedHostOperation;
@@ -989,14 +947,14 @@ TEST(
     ProgramActionDispatchResult timed_out =
         harness.host->Dispatch(std::move(expired));
     EXPECT_FALSE(timed_out.accepted);
-    ASSERT_TRUE(timed_out.immediate_completion);
+    ASSERT_TRUE(timed_out.immediate_result);
     EXPECT_EQ(
-        timed_out.immediate_completion->status,
-        ProgramActionCompletionStatus::TimedOut);
+        timed_out.immediate_result->resolution.status,
+        ProgramActionResolutionStatus::TimedOut);
 
     ProgramActionRequest cancellation_driven = harness.Request(
         ProgramHostOperation::InvokeAction,
-        harness.session.snapshot().state_epoch);
+        harness.session.snapshot().workset_epoch);
     cancellation_driven.action =
         CanonicalActionIdentity(
             CanonicalAction::ExecutionContinueUntil);
@@ -1006,17 +964,17 @@ TEST(
         std::chrono::steady_clock::now() - 1ms;
     ProgramActionDispatchResult cancellation_driven_result =
         harness.host->Dispatch(std::move(cancellation_driven));
-    ASSERT_TRUE(cancellation_driven_result.immediate_completion);
+    ASSERT_TRUE(cancellation_driven_result.immediate_result);
     EXPECT_NE(
-        cancellation_driven_result.immediate_completion->status,
-        ProgramActionCompletionStatus::TimedOut);
+        cancellation_driven_result.immediate_result->resolution.status,
+        ProgramActionResolutionStatus::TimedOut);
     EXPECT_NE(
-        cancellation_driven_result.immediate_completion->code,
+        cancellation_driven_result.immediate_result->resolution.code,
         "action_deadline");
 
     ProgramActionRequest unauthorized = harness.Request(
         ProgramHostOperation::InvokeAction,
-        harness.session.snapshot().state_epoch);
+        harness.session.snapshot().workset_epoch);
     unauthorized.action =
         CanonicalActionIdentity(
             CanonicalAction::GuestWriteData);
@@ -1025,9 +983,9 @@ TEST(
     ProgramActionDispatchResult denied =
         harness.host->Dispatch(std::move(unauthorized));
     EXPECT_FALSE(denied.accepted);
-    ASSERT_TRUE(denied.immediate_completion);
+    ASSERT_TRUE(denied.immediate_result);
     EXPECT_EQ(
-        denied.immediate_completion->code,
+        denied.immediate_result->resolution.code,
         "action_effect_not_authorized");
 
     ASSERT_TRUE(harness.Finish().accepted);
@@ -1042,7 +1000,7 @@ TEST(
     HostHarness harness;
     ASSERT_TRUE(harness.Open());
     ASSERT_TRUE(harness.Prepare(
-        InvocationStatePolicy::Boot,
+        InvocationStatePolicy::RestoreBaseline,
         "enum-validation").accepted);
 
     const std::array<std::array<std::uint8_t, 5>, 5>
@@ -1072,9 +1030,9 @@ TEST(
                     1,
                     std::move(config)));
         EXPECT_FALSE(rejected.accepted);
-        ASSERT_TRUE(rejected.immediate_completion);
+        ASSERT_TRUE(rejected.immediate_result);
         EXPECT_EQ(
-            rejected.immediate_completion->code,
+            rejected.immediate_result->resolution.code,
             "invalid_action_payload");
         EXPECT_FALSE(
             harness.host->snapshot().execution_pending);
@@ -1103,7 +1061,7 @@ TEST(
     HostHarness harness;
     ASSERT_TRUE(harness.Open());
     ASSERT_TRUE(harness.Prepare(
-        InvocationStatePolicy::Boot,
+        InvocationStatePolicy::RestoreBaseline,
         "typed-request-validation").accepted);
 
     ProgramValueGraph malformed = StepFramesRequestGraph(1);
@@ -1128,9 +1086,9 @@ TEST(
             CanonicalAction::ExecutionStepFrames,
             std::move(malformed));
     EXPECT_FALSE(rejected.accepted);
-    ASSERT_TRUE(rejected.immediate_completion);
+    ASSERT_TRUE(rejected.immediate_result);
     EXPECT_EQ(
-        rejected.immediate_completion->code,
+        rejected.immediate_result->resolution.code,
         "invalid_action_payload");
     const auto after = harness.control->Calls();
     EXPECT_EQ(
@@ -1153,7 +1111,7 @@ TEST(
     HostHarness harness;
     ASSERT_TRUE(harness.Open());
     ASSERT_TRUE(harness.Prepare(
-        InvocationStatePolicy::Boot,
+        InvocationStatePolicy::RestoreBaseline,
         "typed-continue").accepted);
     const TestPoint target = FirstRegisteredPcPoint();
 
@@ -1162,9 +1120,9 @@ TEST(
             CanonicalAction::StopPointsSubscribeGroup,
             SubscribeRequestGraph(target));
     ASSERT_TRUE(subscribed.accepted);
-    ASSERT_TRUE(subscribed.immediate_completion);
+    ASSERT_TRUE(subscribed.immediate_result);
     const ProgramValue* group =
-        Root(subscribed.immediate_completion->output);
+        Root(subscribed.immediate_result->resolution.output);
     ASSERT_NE(group, nullptr);
     ASSERT_NE(
         std::get_if<ResourceHandleValue>(&group->payload),
@@ -1182,7 +1140,7 @@ TEST(
             ContinueRequestGraph(*group));
     ASSERT_TRUE(continued.accepted)
         << continued.diagnostic;
-    EXPECT_FALSE(continued.immediate_completion);
+    EXPECT_FALSE(continued.immediate_result);
     EXPECT_TRUE(
         harness.host->snapshot().execution_pending);
 
@@ -1206,14 +1164,14 @@ TEST(
             std::move(receipt));
     PumpHostExecution(harness);
 
-    std::vector<ProgramActionCompletion> completions =
-        harness.host->DrainCompletions();
+    std::vector<ActorActionResult> completions =
+        harness.host->DrainResults();
     ASSERT_EQ(completions.size(), 1u);
     EXPECT_EQ(
-        completions.front().status,
-        ProgramActionCompletionStatus::Completed);
+        completions.front().resolution.status,
+        ProgramActionResolutionStatus::Completed);
     const ProgramValue* result =
-        Root(completions.front().output);
+        Root(completions.front().resolution.output);
     ASSERT_NE(result, nullptr);
     EXPECT_EQ(
         result->type,
@@ -1223,13 +1181,39 @@ TEST(
         std::get_if<RecordValue>(&result->payload);
     ASSERT_NE(record, nullptr);
     ASSERT_EQ(record->fields.size(), 5u);
-    const auto evidence_iterator = std::ranges::find(
-        completions.front().output.values,
-        record->fields[4],
+    const auto optional_stop_iterator = std::ranges::find(
+        completions.front().resolution.output.values,
+        record->fields[1],
         &ProgramValue::id);
-    const ProgramValue* evidence =
-        evidence_iterator ==
-            completions.front().output.values.end()
+    const ProgramValue* optional_stop =
+        optional_stop_iterator ==
+            completions.front().resolution.output.values.end()
+        ? nullptr
+        : &*optional_stop_iterator;
+    ASSERT_NE(optional_stop, nullptr);
+    const auto* optional = std::get_if<OptionalValue>(
+        &optional_stop->payload);
+    ASSERT_NE(optional, nullptr);
+    ASSERT_TRUE(optional->value.has_value());
+    const auto routed_stop_iterator = std::ranges::find(
+        completions.front().resolution.output.values,
+        *optional->value,
+        &ProgramValue::id);
+    const ProgramValue* routed_stop =
+        routed_stop_iterator == completions.front().resolution.output.values.end()
+        ? nullptr
+        : &*routed_stop_iterator;
+    ASSERT_NE(routed_stop, nullptr);
+    const auto* routed_record = std::get_if<RecordValue>(
+        &routed_stop->payload);
+    ASSERT_NE(routed_record, nullptr);
+    ASSERT_EQ(routed_record->fields.size(), 5u);
+    const auto evidence_iterator = std::ranges::find(
+        completions.front().resolution.output.values,
+        routed_record->fields[4],
+        &ProgramValue::id);
+    const ProgramValue* evidence = evidence_iterator ==
+            completions.front().resolution.output.values.end()
         ? nullptr
         : &*evidence_iterator;
     ASSERT_NE(evidence, nullptr);
@@ -1271,7 +1255,7 @@ TEST(
     config.maximum_retained_completions = 0;
     ASSERT_TRUE(harness.Open(config));
     ASSERT_TRUE(harness.Prepare(
-        InvocationStatePolicy::Boot,
+        InvocationStatePolicy::RestoreBaseline,
         "completion-capacity").accepted);
 
     ProgramActionDispatchResult first =
@@ -1279,7 +1263,7 @@ TEST(
             CanonicalAction::ExecutionStepFrames,
             StepFramesRequestGraph(1));
     ASSERT_TRUE(first.accepted);
-    EXPECT_FALSE(first.immediate_completion);
+    EXPECT_FALSE(first.immediate_result);
     PumpHostExecution(harness);
     EXPECT_FALSE(
         harness.host->snapshot().execution_pending);
@@ -1293,9 +1277,9 @@ TEST(
             CanonicalAction::ExecutionStepFrames,
             StepFramesRequestGraph(1));
     EXPECT_FALSE(second.accepted);
-    ASSERT_TRUE(second.immediate_completion);
+    ASSERT_TRUE(second.immediate_result);
     EXPECT_EQ(
-        second.immediate_completion->code,
+        second.immediate_result->resolution.code,
         "completion_capacity_exhausted");
     const auto calls_after = harness.control->Calls();
     EXPECT_EQ(
@@ -1306,12 +1290,12 @@ TEST(
             calls_before,
             std::string("begin_frame_step")));
 
-    std::vector<ProgramActionCompletion> completions =
-        harness.host->DrainCompletions();
+    std::vector<ActorActionResult> completions =
+        harness.host->DrainResults();
     ASSERT_EQ(completions.size(), 1u);
     EXPECT_EQ(
-        completions.front().status,
-        ProgramActionCompletionStatus::Completed);
+        completions.front().resolution.status,
+        ProgramActionResolutionStatus::Completed);
     EXPECT_TRUE(harness.Finish().accepted);
     harness.host->Shutdown();
     EXPECT_TRUE(harness.session.Shutdown().ok);
@@ -1319,7 +1303,7 @@ TEST(
 
 TEST(
     SessionProgramActionHost,
-    MoviePlaybackAdvancesEpochAndReturnsAnEpochAgnosticHandle)
+    MoviePlaybackPreservesEpochAndReturnsAWorksetBoundHandle)
 {
     TemporaryDirectory temporary;
     const std::filesystem::path dtm =
@@ -1330,52 +1314,48 @@ TEST(
     harness.control->movie_available = true;
     ASSERT_TRUE(harness.Open());
     ASSERT_TRUE(harness.Prepare(
-        InvocationStatePolicy::Boot,
-        "movie-test").accepted);
-    const StateEpoch before =
-        harness.session.snapshot().state_epoch;
+        InvocationStatePolicy::EstablishBaseline,
+        "movie-test",
+        false).accepted);
+    const WorksetEpoch before =
+        harness.session.snapshot().workset_epoch;
 
-    CanonicalActionPayload start;
-    ASSERT_TRUE(start.AddUtf8(
-        CanonicalActionPayloadField::Path,
-        dtm.string()));
+    ProgramActionDispatchResult movie_prepared =
+        PrepareMoviePlayback(harness, dtm);
+    ASSERT_TRUE(movie_prepared.accepted) << movie_prepared.diagnostic;
     ProgramActionDispatchResult started =
-        harness.Invoke(
-            CanonicalAction::MovieStartPlayback,
-            std::move(start));
+        StartPreparedMoviePlayback(harness, movie_prepared);
     ASSERT_TRUE(started.accepted)
         << started.diagnostic;
-    ASSERT_TRUE(started.immediate_completion);
+    ASSERT_TRUE(started.immediate_result);
+    EXPECT_EQ(harness.session.snapshot().workset_epoch, before);
     EXPECT_EQ(
-        harness.session.snapshot().state_epoch,
-        StateEpoch(before.value() + 1));
-    EXPECT_EQ(
-        started.immediate_completion->resulting_epoch,
-        harness.session.snapshot().state_epoch);
+        started.immediate_result->resolution.workset_epoch,
+        harness.session.snapshot().workset_epoch);
     const ProgramValue* movie_root =
-        Root(started.immediate_completion->output);
+        Root(started.immediate_result->resolution.output);
     ASSERT_NE(movie_root, nullptr);
     const auto* movie_handle =
         std::get_if<ResourceHandleValue>(
             &movie_root->payload);
     ASSERT_NE(movie_handle, nullptr);
-    EXPECT_FALSE(movie_handle->origin_epoch.has_value());
+    EXPECT_EQ(movie_handle->workset_epoch, before);
 
     ProgramActionRequest stop = harness.Request(
         ProgramHostOperation::InvokeAction,
-        harness.session.snapshot().state_epoch);
+        harness.session.snapshot().workset_epoch);
     stop.action = CanonicalActionIdentity(
         CanonicalAction::MovieStopPlayback);
-    stop.input = started.immediate_completion->output;
+    stop.input = started.immediate_result->resolution.output;
     ProgramActionDispatchResult stopped =
         harness.host->Dispatch(std::move(stop));
     ASSERT_TRUE(stopped.accepted);
-    ASSERT_TRUE(stopped.immediate_completion);
+    ASSERT_TRUE(stopped.immediate_result);
     ASSERT_EQ(
-        stopped.immediate_completion->cleanup_receipts.size(),
+        stopped.immediate_result->resolution.cleanup_receipts.size(),
         1u);
     EXPECT_EQ(
-        stopped.immediate_completion->cleanup_receipts[0].status,
+        stopped.immediate_result->resolution.cleanup_receipts[0].status,
         ProgramCleanupStatus::Clean);
 
     ASSERT_TRUE(harness.Finish().accepted);
@@ -1385,73 +1365,149 @@ TEST(
 
 TEST(
     SessionProgramActionHost,
-    RestoredInactiveMovieSupersedesStaleProgramHandleCleanly)
+    OwnedPlaybackContinueRequiresExactHandleAndReturnsTypedMovieEnd)
 {
     TemporaryDirectory temporary;
     const std::filesystem::path dtm =
-        temporary.File("playback-before-restore.dtm");
+        temporary.File("owned-playback.dtm");
     WriteBytes(dtm, MakeDtm());
 
     HostHarness harness;
     harness.control->movie_available = true;
     ASSERT_TRUE(harness.Open());
     ASSERT_TRUE(harness.Prepare(
-        InvocationStatePolicy::Boot,
-        "movie-restore-cleanup").accepted);
-
-    ProgramActionDispatchResult baseline =
-        harness.Invoke(
-            CanonicalAction::StateCapture,
-            {});
-    ASSERT_TRUE(baseline.accepted);
-    ASSERT_TRUE(baseline.immediate_completion);
-    const ProgramValue* baseline_root =
-        Root(baseline.immediate_completion->output);
-    ASSERT_NE(baseline_root, nullptr);
-    const auto* baseline_handle =
-        std::get_if<ResourceHandleValue>(
-            &baseline_root->payload);
-    ASSERT_NE(baseline_handle, nullptr);
-
-    CanonicalActionPayload start;
-    ASSERT_TRUE(start.AddUtf8(
-        CanonicalActionPayloadField::Path,
-        dtm.string()));
+        InvocationStatePolicy::EstablishBaseline,
+        "owned-playback-continue",
+        false).accepted);
+    ProgramActionDispatchResult movie_prepared =
+        PrepareMoviePlayback(harness, dtm);
+    ASSERT_TRUE(movie_prepared.accepted) << movie_prepared.diagnostic;
     ProgramActionDispatchResult started =
-        harness.Invoke(
-            CanonicalAction::MovieStartPlayback,
-            std::move(start));
-    ASSERT_TRUE(started.accepted)
-        << started.diagnostic;
-    ASSERT_NE(harness.session.movie_service(), nullptr);
-    EXPECT_EQ(
-        harness.session.movie_service()->activity(),
-        MovieActivity::ReadOnlyPlayback);
+        StartPreparedMoviePlayback(harness, movie_prepared);
+    ASSERT_TRUE(started.accepted) << started.diagnostic;
+    ASSERT_TRUE(started.immediate_result);
+    const ProgramValue* movie_handle =
+        Root(started.immediate_result->resolution.output);
+    ASSERT_NE(movie_handle, nullptr);
 
-    CanonicalActionPayload restore_request;
-    ASSERT_TRUE(restore_request.AddUnsigned(
-        CanonicalActionPayloadField::Handle,
-        baseline_handle->handle_id.value()));
-    ProgramActionDispatchResult restored =
-        harness.Invoke(
-            CanonicalAction::StateRestore,
-            std::move(restore_request));
-    ASSERT_TRUE(restored.accepted)
-        << restored.diagnostic;
-    ASSERT_TRUE(restored.immediate_completion);
+    const TestPoint target = FirstRegisteredPcPoint();
+    ProgramActionDispatchResult subscribed = harness.InvokeGraph(
+        CanonicalAction::StopPointsSubscribeGroup,
+        SubscribeRequestGraph(target));
+    ASSERT_TRUE(subscribed.accepted);
+    ASSERT_TRUE(subscribed.immediate_result);
+    const ProgramValue* group =
+        Root(subscribed.immediate_result->resolution.output);
+    ASSERT_NE(group, nullptr);
+
+    ProgramActionDispatchResult missing_handle = harness.InvokeGraph(
+        CanonicalAction::ExecutionContinueUntil,
+        ContinueRequestGraph(*group, nullptr, nullptr, 5));
+    EXPECT_FALSE(missing_handle.accepted);
+
+    {
+        std::lock_guard lock(harness.control->mutex);
+        harness.control->movie_state = BackendMovieState::Ended;
+        harness.control->movie_input_count = 5;
+    }
+    ProgramActionDispatchResult continued = harness.InvokeGraph(
+        CanonicalAction::ExecutionContinueUntil,
+        ContinueRequestGraph(*group, nullptr, movie_handle, 5));
+    ASSERT_TRUE(continued.accepted) << continued.diagnostic;
+    PumpHostExecution(harness);
+    std::vector<ActorActionResult> completions =
+        harness.host->DrainResults();
+    ASSERT_EQ(completions.size(), 1u);
+    ASSERT_EQ(
+        completions.front().resolution.status,
+        ProgramActionResolutionStatus::Completed);
+    const ProgramValue* result = Root(completions.front().resolution.output);
+    ASSERT_NE(result, nullptr);
+    const auto* record = std::get_if<RecordValue>(&result->payload);
+    ASSERT_NE(record, nullptr);
+    ASSERT_EQ(record->fields.size(), 5u);
+    const auto reason_iterator = std::ranges::find(
+        completions.front().resolution.output.values,
+        record->fields[0],
+        &ProgramValue::id);
+    ASSERT_NE(reason_iterator, completions.front().resolution.output.values.end());
+    const auto* reason = std::get_if<EnumValue>(
+        &reason_iterator->payload);
+    ASSERT_NE(reason, nullptr);
     EXPECT_EQ(
-        harness.session.movie_service()->activity(),
-        MovieActivity::Inactive);
+        reason->value,
+        static_cast<std::int64_t>(
+            ContinueUntilCompletionReasonV1::MovieEnded));
+    const auto stop_iterator = std::ranges::find(
+        completions.front().resolution.output.values,
+        record->fields[1],
+        &ProgramValue::id);
+    ASSERT_NE(stop_iterator, completions.front().resolution.output.values.end());
+    const auto* optional_stop = std::get_if<OptionalValue>(
+        &stop_iterator->payload);
+    ASSERT_NE(optional_stop, nullptr);
+    EXPECT_FALSE(optional_stop->value.has_value());
+
+    ASSERT_TRUE(harness.Finish().accepted);
+    harness.host->Shutdown();
+    EXPECT_TRUE(harness.session.Shutdown().ok);
+}
+
+TEST(
+    SessionProgramActionHost,
+    EstablishBaselineRequiresPreparationBeforePassiveStopsAndPlayback)
+{
+    TemporaryDirectory temporary;
+    const std::filesystem::path dtm =
+        temporary.File("establish-baseline.dtm");
+    WriteBytes(dtm, MakeDtm());
+
+    HostHarness harness;
+    harness.control->movie_available = true;
+    ASSERT_TRUE(harness.Open());
+    ProgramActionDispatchResult prepared = harness.Prepare(
+        InvocationStatePolicy::EstablishBaseline,
+        "read-only-movie",
+        false);
+    ASSERT_TRUE(prepared.accepted);
+    ASSERT_TRUE(prepared.immediate_result);
+
+    const TestPoint target = FirstRegisteredPcPoint();
+    ProgramActionDispatchResult early_subscription = harness.InvokeGraph(
+        CanonicalAction::StopPointsSubscribeGroup,
+        SubscribeRequestGraph(
+            target));
+    EXPECT_FALSE(early_subscription.accepted);
+
+    ProgramActionDispatchResult movie_prepared =
+        PrepareMoviePlayback(harness, dtm);
+    ASSERT_TRUE(movie_prepared.accepted) << movie_prepared.diagnostic;
+    ASSERT_TRUE(movie_prepared.immediate_result);
+    ProgramActionDispatchResult subscribed = harness.InvokeGraph(
+        CanonicalAction::StopPointsSubscribeGroup,
+        SubscribeRequestGraph(target));
+    ASSERT_TRUE(subscribed.accepted) << subscribed.diagnostic;
+
+    ProgramActionDispatchResult early_return = harness.Finish();
+    EXPECT_FALSE(early_return.accepted);
+    ASSERT_TRUE(early_return.immediate_result);
+    EXPECT_EQ(
+        early_return.immediate_result->resolution.code,
+        "baseline_not_established");
+
+    ProgramActionDispatchResult started =
+        StartPreparedMoviePlayback(harness, movie_prepared);
+    ASSERT_TRUE(started.accepted) << started.diagnostic;
+    ASSERT_TRUE(started.immediate_result);
+    EXPECT_EQ(harness.control->core_stop_count, 1u);
+    EXPECT_EQ(harness.control->core_start_count, 1u);
 
     ProgramActionDispatchResult finished = harness.Finish();
-    ASSERT_TRUE(finished.accepted);
-    ASSERT_TRUE(finished.immediate_completion);
+    ASSERT_TRUE(finished.accepted) << finished.diagnostic;
+    ASSERT_TRUE(finished.immediate_result);
     EXPECT_EQ(
-        finished.immediate_completion->status,
-        ProgramActionCompletionStatus::Completed);
-    EXPECT_NE(
-        harness.session.snapshot().disposition,
-        SessionDisposition::Tainted);
+        finished.immediate_result->resolution.status,
+        ProgramActionResolutionStatus::Completed);
 
     harness.host->Shutdown();
     EXPECT_TRUE(harness.session.Shutdown().ok);
@@ -1464,19 +1520,19 @@ TEST(
     HostHarness harness;
     ASSERT_TRUE(harness.Open());
     ASSERT_TRUE(harness.Prepare(
-        InvocationStatePolicy::Boot,
+        InvocationStatePolicy::RestoreBaseline,
         "input-compensation").accepted);
-    const StateEpoch epoch =
-        harness.session.snapshot().state_epoch;
+    const WorksetEpoch epoch =
+        harness.session.snapshot().workset_epoch;
 
     ProgramActionDispatchResult leased =
         harness.InvokeGraph(
             CanonicalAction::InputAcquireLease,
             InputLeaseRequestGraph(false));
     ASSERT_TRUE(leased.accepted);
-    ASSERT_TRUE(leased.immediate_completion);
+    ASSERT_TRUE(leased.immediate_result);
     const ProgramValue* lease_root =
-        Root(leased.immediate_completion->output);
+        Root(leased.immediate_result->resolution.output);
     ASSERT_NE(lease_root, nullptr);
     const auto* lease =
         std::get_if<ResourceHandleValue>(
@@ -1496,9 +1552,9 @@ TEST(
                 *lease_root,
                 std::vector<Byte>(8, 0)));
     EXPECT_FALSE(rejected.accepted);
-    ASSERT_TRUE(rejected.immediate_completion);
+    ASSERT_TRUE(rejected.immediate_result);
     EXPECT_EQ(
-        rejected.immediate_completion->code,
+        rejected.immediate_result->resolution.code,
         "execution_rejected");
     ASSERT_NE(harness.session.input_arbiter(), nullptr);
     EXPECT_EQ(
@@ -1536,7 +1592,7 @@ TEST(
     HostHarness harness;
     ASSERT_TRUE(harness.Open());
     ASSERT_TRUE(harness.Prepare(
-        InvocationStatePolicy::Boot,
+        InvocationStatePolicy::RestoreBaseline,
         "exact-input-publication").accepted);
 
     ProgramActionDispatchResult leased =
@@ -1544,9 +1600,9 @@ TEST(
             CanonicalAction::InputAcquireLease,
             InputLeaseRequestGraph(false));
     ASSERT_TRUE(leased.accepted);
-    ASSERT_TRUE(leased.immediate_completion);
+    ASSERT_TRUE(leased.immediate_result);
     const ProgramValue* lease =
-        Root(leased.immediate_completion->output);
+        Root(leased.immediate_result->resolution.output);
     ASSERT_NE(lease, nullptr);
 
     const std::vector<Byte> frame{
@@ -1569,13 +1625,13 @@ TEST(
     ASSERT_TRUE(
         harness.host->snapshot().execution_pending);
     AcknowledgeInputAndPumpOnce(harness);
-    std::vector<ProgramActionCompletion>
+    std::vector<ActorActionResult>
         pulse_completions =
-            harness.host->DrainCompletions();
+            harness.host->DrainResults();
     ASSERT_EQ(pulse_completions.size(), 1u);
     CanonicalActionPayload pulse_receipt;
     ASSERT_TRUE(DecodeCanonicalActionPayload(
-        pulse_completions.front().output,
+        pulse_completions.front().resolution.output,
         *CanonicalActionOutputSchemaIdentity(
             CanonicalAction::InputPublishPulse),
         pulse_receipt));
@@ -1602,19 +1658,19 @@ TEST(
     ASSERT_TRUE(dispatched.accepted)
         << dispatched.diagnostic;
     AcknowledgeInputAndPumpOnce(harness);
-    std::vector<ProgramActionCompletion> completions =
-        harness.host->DrainCompletions();
+    std::vector<ActorActionResult> completions =
+        harness.host->DrainResults();
     ASSERT_EQ(completions.size(), 1u);
     ASSERT_EQ(
-        completions.front().status,
-        ProgramActionCompletionStatus::Completed);
+        completions.front().resolution.status,
+        ProgramActionResolutionStatus::Completed);
     const ProgramValue* publication =
-        Root(completions.front().output);
+        Root(completions.front().resolution.output);
     ASSERT_NE(publication, nullptr);
 
     CanonicalActionPayload receipt;
     ASSERT_TRUE(DecodeCanonicalActionPayload(
-        completions.front().output,
+        completions.front().resolution.output,
         *CanonicalActionOutputSchemaIdentity(
             CanonicalAction::InputPublishSequence),
         receipt));
@@ -1625,7 +1681,7 @@ TEST(
     EXPECT_EQ(
         receipt.Unsigned(
             CanonicalActionPayloadField::ResultEpoch),
-        harness.session.snapshot().state_epoch.value());
+        harness.session.snapshot().workset_epoch.value());
     ASSERT_TRUE(receipt.Bytes(
         CanonicalActionPayloadField::ResultFrame));
     EXPECT_TRUE(std::ranges::equal(
@@ -1641,10 +1697,10 @@ TEST(
                 *publication));
     ASSERT_TRUE(polled.accepted)
         << polled.diagnostic;
-    ASSERT_TRUE(polled.immediate_completion);
+    ASSERT_TRUE(polled.immediate_result);
     CanonicalActionPayload poll_result;
     ASSERT_TRUE(DecodeCanonicalActionPayload(
-        polled.immediate_completion->output,
+        polled.immediate_result->resolution.output,
         *CanonicalActionOutputSchemaIdentity(
             CanonicalAction::InputAwaitGuestPoll),
         poll_result));
@@ -1660,9 +1716,9 @@ TEST(
             CanonicalAction::StopPointsSubscribeGroup,
             SubscribeRequestGraph(target));
     ASSERT_TRUE(subscribed.accepted);
-    ASSERT_TRUE(subscribed.immediate_completion);
+    ASSERT_TRUE(subscribed.immediate_result);
     const ProgramValue* group =
-        Root(subscribed.immediate_completion->output);
+        Root(subscribed.immediate_result->resolution.output);
     ASSERT_NE(group, nullptr);
     ProgramActionDispatchResult continued =
         harness.InvokeGraph(
@@ -1678,7 +1734,7 @@ TEST(
     ASSERT_TRUE(harness.session.CancelExecution(
         CancellationReason::ExternalRequest).accepted);
     PumpHostExecution(harness);
-    (void)harness.host->DrainCompletions();
+    (void)harness.host->DrainResults();
 
     CanonicalActionPayload forged;
     ASSERT_TRUE(forged.AddUnsigned(
@@ -1718,9 +1774,9 @@ TEST(
                 *group,
                 forged_publication));
     EXPECT_FALSE(rejected.accepted);
-    ASSERT_TRUE(rejected.immediate_completion);
+    ASSERT_TRUE(rejected.immediate_result);
     EXPECT_EQ(
-        rejected.immediate_completion->code,
+        rejected.immediate_result->resolution.code,
         "input_relationship_invalid");
 
     ASSERT_TRUE(harness.Finish().accepted);
@@ -1754,12 +1810,12 @@ TEST(
         0u);
     ASSERT_TRUE(harness.Open());
     ASSERT_TRUE(harness.Prepare(
-        InvocationStatePolicy::Boot,
+        InvocationStatePolicy::RestoreBaseline,
         "navigation-query").accepted);
     harness.control->SetCoreState(BackendCoreState::Paused);
 
-    const StateEpoch epoch =
-        harness.session.snapshot().state_epoch;
+    const WorksetEpoch epoch =
+        harness.session.snapshot().workset_epoch;
     ProgramActionRequest query = harness.Request(
         ProgramHostOperation::InvokeAction,
         epoch);
@@ -1772,12 +1828,12 @@ TEST(
     ProgramActionDispatchResult captured =
         harness.host->Dispatch(std::move(query));
     ASSERT_TRUE(captured.accepted);
-    ASSERT_TRUE(captured.immediate_completion);
+    ASSERT_TRUE(captured.immediate_result);
     EXPECT_EQ(
-        captured.immediate_completion->status,
-        ProgramActionCompletionStatus::Completed);
+        captured.immediate_result->resolution.status,
+        ProgramActionResolutionStatus::Completed);
     const ProgramValue* context =
-        Root(captured.immediate_completion->output);
+        Root(captured.immediate_result->resolution.output);
     ASSERT_NE(context, nullptr);
     ASSERT_TRUE(context->type.named.has_value());
     EXPECT_EQ(

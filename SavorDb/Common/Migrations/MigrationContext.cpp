@@ -8,6 +8,7 @@ const char* ToString(MigrationContext context) {
     case MigrationContext::State: return "State";
     case MigrationContext::AnalysisSpine: return "AnalysisSpine";
     case MigrationContext::AnalysisSeedProbe: return "AnalysisSeedProbe";
+    case MigrationContext::AnalysisTasMovie: return "AnalysisTasMovie";
     case MigrationContext::AnalysisBattle: return "AnalysisBattle";
     case MigrationContext::Authoring: return "Authoring";
     case MigrationContext::UIRead: return "UIRead";

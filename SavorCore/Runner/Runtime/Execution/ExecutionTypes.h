@@ -35,7 +35,7 @@ struct InputPublicationEvidence
 {
     InputLeaseId lease;
     InputPublicationToken publication;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     savor::GCInputFrame frame{};
 };
 
@@ -98,7 +98,7 @@ enum class ExecutionInterruptionPolicy : std::uint8_t
 
 struct ExecutionRequestPolicy
 {
-    StateEpoch expected_epoch;
+    WorksetEpoch expected_epoch;
     MovieEndedPolicy movie_ended = MovieEndedPolicy::Ignore;
     ExecutionThrottlePolicy throttle = ExecutionThrottlePolicy::Preserve;
     ExecutionCurrentPointPolicy current_point =
@@ -113,6 +113,10 @@ struct ContinueUntilRequest
 {
     ExecutionRequestPolicy policy;
     StopSubscriptionGroupDefinition wake_group;
+    // When present, complete successfully once playback has consumed more
+    // than this many complete DTM input records. Equality remains a valid
+    // checkpoint boundary and may still be claimed by a routed stop.
+    std::optional<std::uint64_t> expected_movie_input_count;
 };
 
 struct StepFramesRequest
@@ -139,7 +143,7 @@ struct SafePauseRequest
 
 struct InteractiveResumeRequest
 {
-    StateEpoch expected_epoch;
+    WorksetEpoch expected_epoch;
     ExecutionThrottlePolicy throttle = ExecutionThrottlePolicy::Preserve;
     ExecutionInterruptionPolicy interruptions =
         ExecutionInterruptionPolicy::Reject;
@@ -171,10 +175,11 @@ enum class ExecutionTerminalStatus : std::uint8_t
     InterruptionAborted,
     InterruptionDepthExceeded,
     InterruptionFailed,
-    StateEpochMismatch,
+    WorksetEpochMismatch,
     Unsupported,
     BackendFailure,
     CleanupFailure,
+    CursorOverrun,
 };
 
 enum class ExecutionErrorCode : std::uint16_t
@@ -184,7 +189,7 @@ enum class ExecutionErrorCode : std::uint16_t
     InvalidState,
     WrongThread,
     Busy,
-    StateEpochMismatch,
+    WorksetEpochMismatch,
     Unsupported,
     StopPointFailure,
     BackendFailure,
@@ -223,7 +228,7 @@ struct ExecutionTerminalResult
     ExecutionOperationId operation_id;
     ExecutionOperationKind kind = ExecutionOperationKind::SafePause;
     ExecutionTerminalStatus status = ExecutionTerminalStatus::BackendFailure;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     std::uint32_t completed_count = 0;
     ExecutionEnvironmentEvidence evidence;
     std::optional<StopRouteReceipt> stop;
@@ -235,7 +240,7 @@ struct ExecutionTerminalResult
 struct ExecutionSnapshot
 {
     ExecutionActivity activity = ExecutionActivity::Closed;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     std::optional<ExecutionOperationId> active_operation;
     ExecutionOperationKind active_kind = ExecutionOperationKind::SafePause;
     std::uint8_t interruption_depth = 0;
@@ -271,7 +276,7 @@ struct ExecutionHealthWarning
 {
     ExecutionHealthWarningKind kind =
         ExecutionHealthWarningKind::SuspectedCoreStall;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     std::optional<ExecutionOperationId> operation_id;
     std::chrono::milliseconds elapsed{};
     std::uint64_t host_activity_generation = 0;

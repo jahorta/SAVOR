@@ -57,11 +57,10 @@ struct RuntimeProfile
 
 struct InvocationStateRequest
 {
-    InvocationStatePolicy policy = InvocationStatePolicy::Boot;
-    std::optional<ArtifactReferenceValue> state_artifact;
+    InvocationStatePolicy policy = InvocationStatePolicy::RestoreBaseline;
     std::string session_lineage;
     SessionId expected_session;
-    StateEpoch expected_epoch;
+    WorksetEpoch expected_epoch;
 
     auto operator<=>(const InvocationStateRequest&) const = default;
 };
@@ -172,7 +171,7 @@ struct ProgramTraceEvent
     ProgramTraceSequence sequence;
     std::string kind;
     std::optional<ProgramSourceLocationId> source_location;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::vector<ProvenanceEntry> attributes;
 
     auto operator<=>(const ProgramTraceEvent&) const = default;

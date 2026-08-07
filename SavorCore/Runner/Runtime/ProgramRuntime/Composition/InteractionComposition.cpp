@@ -996,6 +996,24 @@ CompositionResult LowerInteraction(
             "segment/" + segment.canonical_id +
                 "/continue/static-config",
             segment_scope);
+        const auto no_movie = AddOptional(
+            builder,
+            function,
+            block,
+            CanonicalRuntimeSchema::OptionalMoviePlaybackSession,
+            std::nullopt,
+            "segment/" + segment.canonical_id +
+                "/continue/no-movie",
+            segment_scope);
+        const auto no_expected_count = AddOptional(
+            builder,
+            function,
+            block,
+            CanonicalRuntimeSchema::OptionalMovieInputCount,
+            std::nullopt,
+            "segment/" + segment.canonical_id +
+                "/continue/no-expected-count",
+            segment_scope);
         const auto wait_request = AddRequest(
             builder,
             function,
@@ -1004,6 +1022,8 @@ CompositionResult LowerInteraction(
             std::array{
                 *subscription,
                 *wait_publication,
+                *no_movie,
+                *no_expected_count,
                 *wait_config},
             "segment/" + segment.canonical_id +
                 "/continue/request",

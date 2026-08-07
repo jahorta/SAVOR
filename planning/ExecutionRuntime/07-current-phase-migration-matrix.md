@@ -106,7 +106,7 @@ Document 04 owns the descriptors and signatures. The migration uses these exact 
 
 | Capability | Logical import |
 |---|---|
-| State lifecycle | `runtime.state.capture_baseline`, `runtime.state.restore`, `runtime.state.restore_baseline`, `runtime.state.save_artifact` |
+| Savestate publication | `runtime.savestate.save_immutable_artifact` |
 | Emulator advancement | `runtime.execution.continue_until`, `runtime.execution.step_frames` |
 | Input | `runtime.input.acquire_lease`, `runtime.input.set_held`, `runtime.input.pulse`, `runtime.input.neutralize`, `runtime.input.play_sequence`, `runtime.input.await_guest_poll` |
 | Movie | `runtime.movie.play`, `runtime.movie.stop`, `runtime.movie.record_start`, `runtime.movie.record_stop` |
@@ -132,7 +132,7 @@ queries migrate through one reusable semantic-observation composition library:
 - a `SemanticAwaitDefinition` declares exact point alternatives, bounded hit-time qualification or
   sampling, current-point acceptance, cancellation/movie policy, and execution policy;
 - a successful await returns a `SemanticPointReceipt` containing the logical point, physical evidence,
-  stop sequence, `StateEpoch`, and declared hit-time samples;
+  stop sequence, `WorksetEpoch`, and declared hit-time samples;
 - `AddressExpression<T>` and `ObservationDefinition<T>` describe bounded typed reads, checked
   dereferences/offsets, receipt fields, or registered coherent domain queries; and
 - an `ObservationUse<T>` binds an observation to a point receipt, acquisition mode, required/optional
@@ -150,7 +150,7 @@ Ordered observations stay ordered, and a coherent multi-field value uses one reg
 than claiming separate scalar reads are atomic. Optional unavailability remains distinct from false or
 zero. Required missing evidence is a structured action or infrastructure failure. Named baselines are
 ordinary IR values with explicit `First` or `Latest` policy, and no receipt, baseline, or guest-derived
-handle may cross a `StateEpoch` replacement.
+handle may cross a `WorksetEpoch` replacement.
 
 ### Reusable interaction composition
 
@@ -241,7 +241,7 @@ cannot reinterpret its internals.
 | Current construct | Target treatment |
 |---|---|
 | `ARM_PHASE_BPS_ONCE`, canonical/gated vectors | `SemanticPointDefinition` and `SemanticAwaitDefinition` lower exact alternatives and current-point policy into scoped router subscriptions plus `runtime.execution.continue_until` |
-| `LOAD_SNAPSHOT` and init-time savestate path | Invocation `StatePolicy` over a typed state handle or caller-declared immutable artifact; `StateService` alone advances `StateEpoch`, and `runtime.state.restore_baseline` is used only for a declared local retry |
+| `LOAD_SNAPSHOT` and init-time savestate path | The immutable workset definition declares the exact savestate artifact baseline. `WorksetStateCoordinator` restores it before each item under one unchanged `WorksetEpoch`; no program restore action exists. |
 | Timeout keys and `SET_TIMEOUT*` | Deleted before 6A. Guest-dependent work is cancellation-driven; only explicitly classified host-only operations retain infrastructure timeouts |
 | `RUN_UNTIL_BP*` and source-stop departure | `runtime.execution.continue_until` plus exact retained-receipt suppression under the sole `ExecutionEngine`; old step-off opcodes are mechanics, not target behavior |
 | Frame stepping | `runtime.execution.step_frames` when the phase contract is genuinely frame-granular |
@@ -250,7 +250,7 @@ cannot reinterpret its internals.
 | `READ_*`, address programs, direct query helpers | `AddressExpression<T>`, `ObservationDefinition<T>`, and `ObservationUse<T>` lower to checked `runtime.guest.read_*` actions or registered coherent game queries |
 | `WRITE_U32` and future patches | `runtime.guest.write_checked` or `runtime.guest.patch_executable`; data restores unless explicitly committed, executable patches are always reversible, and both return checked receipts |
 | Movie start/stop and recording | Scoped `runtime.movie.*` actions holding a movie-exclusive input reservation; read-only DTM preparation occurs before boot and exact movie continuation participates in state restore |
-| Save savestate from a guest path string | `runtime.state.save_artifact` publishes at a new caller-declared path with SHA-256, compatibility, lineage, and any exact DTM companion under an invocation-declared role |
+| Save savestate from a guest path string | `runtime.savestate.save_immutable_artifact` publishes at a new caller-declared path with SHA-256, compatibility, lineage, and any exact DTM companion under an invocation-declared role |
 | `GET_BATTLE_CONTEXT`, `GET_NAVIGATION_CONTEXT` | `soa.battle.capture_context` and `soa.navigation.capture_context` |
 | Predicate arm/capture/evaluate | Shared predicate composition consumes semantic-observation results, lowers comparison and reaction to ordinary IR, and optionally emits declared `ConditionObservation` progress |
 | Input-macro `Start`/`Advance`, plans, and `EXECUTE_*_MACRO_STEP` | Interaction composition lowers initialization/advancement reducers and verifier-known segment definitions into ordinary subprogram CFG, semantic awaits/observations, input actions, and emissions |
@@ -278,18 +278,17 @@ Within one worker, children still execute one at a time. The worker may hold at 
 session-mutating workset and one immutable host-only staged successor, while a bounded worker-global
 completion/acknowledgement ledger retains older completed executions, pending artifact finalizers, and
 unacknowledged terminals. Staging may decode and validate envelopes, resolve cached definitions, and
-read/hash immutable artifacts; it cannot restore state, bind `StateEpoch`, capture a baseline, acquire
+read/hash immutable artifacts; it cannot restore state, bind `WorksetEpoch`, capture a baseline, acquire
 session resources, or advance Dolphin. Neither staging nor output finalization creates a second
 `ProgramInstance` or executor.
 
 Each child retains its own job, invocation, attempt, structural limits, cancellation, provenance, cleanup,
 artifact, and terminal-result identity. Every child begins through the exact state preparation or
 composite baseline restore declared for the key. Before every later child, `RestoreBaseline` prepares
-every component, returns one `PreparedProgramBaselineReceipt`, and advances `StateEpoch` exactly once.
-An exact worker-local immutable-state cache may avoid repeated artifact reads, but no epoch-bound
-resource survives between children or worksets. After a dependent
-transition commits durably, ordinary same-worker affinity may attempt exact `ContinueSession`, with
-cached or file-backed restore as the correctness-equivalent fallback.
+every component from the active workset's private in-memory baseline handle, returns one
+`PreparedProgramBaselineReceipt`, and advances `WorksetEpoch` exactly once. No epoch-bound resource
+survives between children, and the handle is released when the workset terminates. Every later workset
+must materialize and establish its own complete artifact baseline.
 
 The coordinator validates claim/start authority for the complete finite membership before submission.
 After worker acceptance, clean ordered children proceed without a per-item authorization pause;
@@ -345,7 +344,8 @@ later steps through current operations.
 - optional expected RNG seed, required in `Materialize`;
 - optional output-state artifact role, required in `Materialize`.
 
-The source state is supplied by invocation `LoadArtifact` or `RestoreBaseline`; it is not a payload path.
+The source state is supplied only by the workset's exact `Savestate` artifact baseline; it is not a
+payload path or an invocation action.
 
 **Typed output and emissions**
 
@@ -462,74 +462,64 @@ worker-side caller uses kind `10`, Navigation Context context keys, `GET_NAVIGAT
 `ProgramRegistry` branches; only recognized semantic persisted fields may remain behind the handler, and
 the Survey handoff below passes.
 
-### Slice 6C - `soa.tas_movie::play_and_checkpoint`
+### Slice 6C - `soa.tas_movie_validation::validate`
 
 **Current control flow**
 
-`MakeTasMovieProgram` validates the DTM disc ID, starts playback, waits for the pre-battle stop, movie
-completion, cancellation, or failure, stops playback, saves a savestate, steps one frame, and returns
-movie failure status. The payload decoder derives disc identity and runtime from the DTM.
+The immutable Full Phase module arms the moderated TAS Movie boundary catalog before playback, starts
+the exact read-only DTM baseline, and either establishes the handcrafted root cursor or validates an
+ordered checkpoint itinerary through movie end.
 
 **Typed input**
 
-`TasPlaybackRequest` contains an immutable DTM artifact reference, expected disc identity, explicit stop
-condition, movie-ended policy, and an output-state artifact role. Invocation state policy is
-explicit (`Boot` for the current workflow unless a future workflow intentionally supplies a state).
+`TasMovieValidationRequestV1` contains the closed operation selected by workflow step kind, exact DTM
+path, bounded typed itinerary, and optional authorized final-checkpoint path. The workset declares the
+same exact `ReadOnlyMovie` artifact baseline, and the invocation uses `EstablishBaseline`.
 
 **Typed output and emissions**
 
-`TasPlaybackResult` contains playback outcome, terminal stop observation, DTM input/VI counters reported
-by `MovieService`, and one optional output `StateArtifact`. Playback failure is a domain outcome when the
-backend and cleanup succeeded; movie-service/backend failures are infrastructure status.
+`TasMovieValidationResultV1` returns `RootCursorEstablished`, `Valid`, or `Invalid`. Invalidity carries
+typed checkpoint/input-count diagnostics and remains a successful domain outcome; action, cleanup,
+capture, and backend failures remain infrastructure failures.
 
 **Required composition**
 
-- disc query;
-- scoped movie playback that, when supplied on initial `SessionOpenOptions`, validates and stages the
-  DTM so `Movie::PlayInput` occurs before the session's single backend boot; starting playback on an
-  already-open session uses the corresponding `StateService` reboot path;
+- one exact `ReadOnlyMovie` workset baseline staged without consuming infrastructure guest state;
+- `MoviePrepareReadOnlyPlayback` staging the DTM and stopping the guest core before any checkpoint group;
+- passive scoped `Observe/Pass` stop subscriptions armed at the uninitialized-core boundary;
+- `MovieStartPlayback` as the sole baseline-establishing action, consuming the preparation and booting
+  under the unchanged `WorksetEpoch`;
 - one unsuspendable movie-exclusive `InputArbiter` reservation held through playback;
-- semantic await with movie-ended observation;
-- immutable state save at a caller-declared path with SHA-256, compatibility, lineage, and the exact DTM
-  bytes/hash plus current input/frame continuation; and
-- routed one-frame advancement only if still required by a verified state-publication invariant.
+- cursor-aware `ExecutionContinueUntil` observations for routed boundaries, overrun, and movie end; and
+- optional immutable checkpoint publication only at the accepted final itinerary entry, followed by
+  tail playback to movie end.
 
 **Lifecycle duplication removed**
 
-Movie stop and input-reservation release become scope unwind rather than branch-sensitive opcodes. DTM
-and output paths become artifact references. A later restore re-establishes the exact read-only
-state-plus-DTM continuation; it does not ask `StateService` to infer whether a movie is active or which
-DTM to use from Dolphin or an ambient path. A cold external read-only import carries no required
-caller-supplied frame/input cursor: after the exact DTM is staged and state is restored, `MovieService`
-records Dolphin's authoritative observed cursor. An internally captured checkpoint already carries a
-known cursor and must match it exactly. External imports explicitly declare `NoMovie` or
-`ReadOnlyPlayback`. Recording file-artifact capture/import/restore is unsupported, while same-session
-recording rewind uses an in-memory handle. DTM length and host elapsed time may be diagnostic telemetry,
-but neither derives invocation policy or identity.
+Movie stop and input-reservation release are scope unwind rather than branch-sensitive opcodes. The
+workset and scalar request must identify the same DTM/startup-savestate artifacts. `MovieService` stops
+and starts only Dolphin's guest core, drains old ingress before subscription, validates the installed
+physical plan after boot, and never changes the session ID or workset epoch. DTM input counts, not byte offsets or VI timing,
+define itinerary boundaries.
 
 **WorkerWorkset fit**
 
-TAS Movie requests remain independently schedulable scalar movie lifecycles. They are expected to be
-singleton or small worksets because a long playback, boot/reboot policy, and per-request checkpoint
-dominate dispatch overhead. An exact-key match may use the generic path, but workset reuse never carries
-movie state, input position, or a prior request's checkpoint into the next child.
+Every validation is a singleton workflow, job, and workset. RTC range fan-out creates independent
+singleton worksets so different workers may validate concurrently. No movie state, input position, or
+checkpoint is inherited from another workset.
 
 **Parity checks**
 
-- current TAS payload derivation tests and DB workflow adapter tests;
-- `SavorE2E/TasMovieRealWorkerScenario.cpp`;
-- successful and failed playback both stop the movie;
-- exact terminal state/DTM artifact pair is usable by the next invocation with its internally captured
-  frame/input cursor matched and a new `StateEpoch`;
-- cold external state/DTM import succeeds without invented cursor metadata and records Dolphin's
-  post-restore observed frame/input position;
-- wrong disc rejects before movie playback.
+- exact catalog/module/dependency identities and prepare-stop/subscription/start ordering;
+- unchanged session ID and workset epoch across the single core restart;
+- establishment, itinerary acceptance/overrun/movie-end classification, and last-verified index;
+- root checkpoint capture followed by tail playback, with no publication on infrastructure failure;
+- exact DTM/baseline identity and US GameCube DTM validation.
 
 **Legacy removal condition**
 
-`tasmovie.play` uses the typed module, the worker has no TAS payload switch, and no caller sends
-`PK_TasMovie`. `TasMoviePayload` may remain behind the SavorDb program-kind handler or a read-only
-historical boundary to preserve existing stored records; it is outside worker execution.
+The legacy PhaseScript/payload, `tasmovie.play` aliases, direct controller path, and runtime registration
+are absent. `PK_TasMovie` resolves only the closed complete-validation descriptor and Full Phase module.
 
 ### Slice 6D - `soa.tas_frame_detector::detect`
 
@@ -738,7 +728,7 @@ program inputs.
 `BattleSingleTurnResult` contains:
 
 - typed battle outcome;
-- source state and state-epoch provenance;
+- source state and workset-epoch provenance;
 - starting/original/requested/applied/ending RNG values where applicable;
 - turn input/output indices and retry count;
 - terminal semantic stop;
@@ -758,7 +748,7 @@ program inputs.
   and declared fail-fast/progress policy;
 - scoped capture attachment;
 - immutable state save; and
-- explicit baseline restore for the one bounded local retry, which advances `StateEpoch`.
+- explicit baseline restore for the one bounded local retry, which advances `WorksetEpoch`.
 
 The RNG mutation's lifetime is declared. It may persist in the disposable emulated branch until restore
 or state publication, but its receipt and readback remain part of provenance. If it is intended to
@@ -825,7 +815,7 @@ may remain an artifact codec; it is not the program's internal result type.
 
 **Required composition**
 
-- a phase-scoped input lease that publishes neutral for the new epoch while the restored core is paused,
+- a phase-scoped input lease that publishes neutral under the active workset epoch while the restored core is paused,
   before any resume;
 - causal semantic routes `0x8006F554 -> 0x8006F558` and
   `0x8006F590 -> 0x8006F594`, retaining the first receipt until its exact successor;
@@ -964,11 +954,11 @@ Capability packs, typed action registration, and `ProgramRuntime` arrive in Slic
 Each slice is vertical: it adds the native module, any reusable action/composition refinement, current
 program-kind adapter projection where applicable, and focused validation. The pre-6A process seam makes
 one transferred canonical test-only module available for the first `Partial` real-process workset
-smoke; that module is never one of the nine production modules. As each slice lands, its installed
+smoke; that module is never one of the two production Full Phase modules. As each slice lands, its installed
 partial production catalog remains available to unattended one-item `SubmitWorkset` guards; references
 above to in-process validation remain minimum focused coverage, and references to
 direct-worker SavorE2E waiting for Slice 7 mean DB-backed/full-catalog activation. Coordinator data-plane
-work remains unavailable until Slice 7 proves `CompleteExact`: exactly all nine planned production
+work remains unavailable until `CompleteExact` proves exactly both current production Full Phase
 module IDs/hashes and no extras. There is no legacy 6J and no monolithic BattleEndResults slice.
 
 ## Interfaces and ownership affected
@@ -1013,7 +1003,7 @@ is successful program progress; a required false predicate may return a clean pr
 outcome.
 
 For observations, optional `Unavailable` is not false or zero, required missing evidence is a structured
-failure, and a stale receipt/baseline is rejected after `StateEpoch` replacement. For interactions,
+failure, and a stale receipt/baseline is rejected after `WorksetEpoch` replacement. For interactions,
 unexpected point, unacknowledged request or release, unsatisfied check, confirmed infrastructure
 failure, cancellation, and cleanup failure remain distinct. Normal and abnormal unwind attempt neutralization,
 any required release witness, subscription release, and input-lease release exactly once; mandatory
@@ -1093,7 +1083,8 @@ The current-phase migration is complete only when:
 Navmesh Survey may start as the first net-new program only after:
 
 1. `soa.navigation.context::capture` passes parity and publishes the exact typed context/state pair;
-2. baseline restore and `StateEpoch` behavior are proven on fresh and warm workers;
+2. baseline artifact materialization, restore, and `WorksetEpoch` behavior are proven independently of
+   worker placement;
 3. checked `u8`, masked data write, executable patch, teleport/settle, input, and state actions exist with
    scoped receipts;
 4. any two-wave workflow fan-out and deterministic reduction use existing SavorDb orchestration

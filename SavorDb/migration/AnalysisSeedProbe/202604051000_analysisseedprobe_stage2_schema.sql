@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS sp_probe_result (
     seed_value INTEGER NOT NULL CHECK(seed_value BETWEEN 0 AND 4294967295),
     origin_worker_id INTEGER NOT NULL CHECK(origin_worker_id >= 0),
     origin_process_generation INTEGER NOT NULL CHECK(origin_process_generation > 0),
-    origin_state_epoch INTEGER NOT NULL CHECK(origin_state_epoch > 0),
+    origin_workset_epoch INTEGER NOT NULL CHECK(origin_workset_epoch > 0),
     terminal_sha256 TEXT NOT NULL CHECK(length(terminal_sha256) = 64),
     confirmation_of_probe_result_id INTEGER NULL,
     evidence_state TEXT NOT NULL CHECK(evidence_state IN (
@@ -188,7 +188,7 @@ BEFORE UPDATE OF
     seed_value,
     origin_worker_id,
     origin_process_generation,
-    origin_state_epoch,
+    origin_workset_epoch,
     terminal_sha256,
     confirmation_of_probe_result_id,
     recorded_at_utc

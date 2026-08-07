@@ -43,6 +43,8 @@ enum class InputArbiterErrorCode : std::uint8_t
     None,
     WrongThread,
     Stopped,
+    InvalidArgument,
+    WorksetEpochMismatch,
     BackendFailure,
 };
 
@@ -64,7 +66,7 @@ struct InputLeaseReceipt
     bool ok = false;
     InputLeaseStatus status = InputLeaseStatus::Rejected;
     InputLeaseId lease;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::string message;
     InputArbiterErrorCode error = InputArbiterErrorCode::None;
 };
@@ -74,7 +76,7 @@ struct InputPublicationReceipt
     bool ok = false;
     InputLeaseId lease;
     InputPublicationToken publication;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     savor::GCInputFrame frame{};
     std::string message;
     InputArbiterErrorCode error = InputArbiterErrorCode::None;
@@ -86,7 +88,7 @@ struct InputAcknowledgementReceipt
     bool acknowledged = false;
     InputPollReceiptId receipt;
     InputPublicationToken publication;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::uint32_t callback_count = 0;
     std::string message;
     InputArbiterErrorCode error = InputArbiterErrorCode::None;
@@ -99,7 +101,7 @@ struct InputNeutralWitnessReceipt
     InputLeaseId lease;
     InputPublicationToken publication;
     InputPollReceiptId acknowledgement;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::string message;
     InputArbiterErrorCode error = InputArbiterErrorCode::None;
 };
@@ -111,7 +113,7 @@ struct InputReleaseReceipt
     InputLeaseId lease;
     InputPublicationToken neutral_publication;
     std::optional<InputLeaseId> resumed_lease;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::string message;
     InputArbiterErrorCode error = InputArbiterErrorCode::None;
 };
@@ -127,7 +129,7 @@ struct InputAdvanceBindingReceipt
 {
     bool ok = false;
     InputAdvanceBindingId binding;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::string message;
     InputArbiterErrorCode error = InputArbiterErrorCode::None;
 };
@@ -138,14 +140,14 @@ struct InputArbiterShutdownReceipt
     bool cleanup_complete = false;
     bool taint_required = false;
     InputPublicationToken neutral_publication;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::string message;
     InputArbiterErrorCode error = InputArbiterErrorCode::None;
 };
 
 struct InputArbiterSnapshot
 {
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::optional<InputLeaseId> active_lease;
     std::size_t suspended_count = 0;
     std::size_t lease_count = 0;
@@ -162,37 +164,37 @@ public:
 
     [[nodiscard]] InputLeaseReceipt Acquire(
         const InputLeaseRequest& request,
-        StateEpoch epoch);
+        WorksetEpoch epoch);
     [[nodiscard]] InputLeaseReceipt Borrow(
         InputLeaseId parent,
         const InputLeaseRequest& request,
-        StateEpoch epoch,
+        WorksetEpoch epoch,
         std::optional<InputNeutralWitnessId> neutral_witness =
             std::nullopt);
     [[nodiscard]] InputPublicationReceipt Publish(
         InputLeaseId lease,
         const savor::GCInputFrame& frame,
-        StateEpoch epoch);
+        WorksetEpoch epoch);
     [[nodiscard]] InputAcknowledgementReceipt Observe(
         InputLeaseId lease,
         InputPublicationToken publication,
-        StateEpoch epoch);
+        WorksetEpoch epoch);
     [[nodiscard]] InputNeutralWitnessReceipt ProveNeutralWitness(
         InputLeaseId lease,
         InputPublicationToken publication,
-        StateEpoch epoch);
+        WorksetEpoch epoch);
     [[nodiscard]] InputReleaseReceipt BeginRelease(
         InputLeaseId lease,
-        StateEpoch epoch);
+        WorksetEpoch epoch);
     [[nodiscard]] InputReleaseReceipt CompleteRelease(
         InputLeaseId lease,
         InputPublicationToken neutral_publication,
-        StateEpoch epoch);
+        WorksetEpoch epoch);
 
     [[nodiscard]] InputAdvanceBindingReceipt CreateAdvanceBinding(
         InputLeaseId lease,
         std::vector<savor::GCInputFrame> frames,
-        StateEpoch epoch,
+        WorksetEpoch epoch,
         std::uint32_t retry_limit = 1);
     [[nodiscard]] InputArbiterOperationReceipt ValidatePublication(
         const InputPublicationEvidence& publication) const noexcept;
@@ -202,37 +204,35 @@ public:
     InputArbiterOperationReceipt RemoveAdvanceBinding(
         InputAdvanceBindingId binding) noexcept;
 
-    InputArbiterOperationReceipt CommitStateEpoch(
-        StateEpoch epoch) noexcept;
-    InputArbiterOperationReceipt InvalidateForStateReplacement(
-        StateEpoch next_epoch) noexcept;
+    InputArbiterOperationReceipt InitializeWorksetEpoch(
+        WorksetEpoch epoch) noexcept;
     [[nodiscard]] InputArbiterShutdownReceipt Shutdown() noexcept;
     [[nodiscard]] InputArbiterSnapshot snapshot() const noexcept;
 
     [[nodiscard]] InputAdvanceReceipt Validate(
         InputAdvanceBindingId binding,
-        StateEpoch epoch) override;
+        WorksetEpoch epoch) override;
     [[nodiscard]] InputAdvanceReceipt PrepareNext(
         InputAdvanceBindingId binding,
-        StateEpoch epoch,
+        WorksetEpoch epoch,
         std::uint32_t advance_ordinal) override;
     [[nodiscard]] InputAdvanceReceipt ObserveAcknowledgement(
         InputAdvanceBindingId binding,
         InputPublicationToken publication,
-        StateEpoch epoch) override;
+        WorksetEpoch epoch) override;
     [[nodiscard]] InputAdvanceReceipt Complete(
         InputAdvanceBindingId binding,
-        StateEpoch epoch) noexcept override;
+        WorksetEpoch epoch) noexcept override;
     [[nodiscard]] InputAdvanceReceipt Cancel(
         InputAdvanceBindingId binding,
-        StateEpoch epoch) noexcept override;
+        WorksetEpoch epoch) noexcept override;
 
 private:
     struct LeaseState
     {
         InputLeaseRequest request;
         InputLeaseId id;
-        StateEpoch epoch;
+        WorksetEpoch epoch;
         InputLeaseStatus status = InputLeaseStatus::Active;
         std::optional<InputPublicationToken> latest_publication;
         std::optional<InputPublicationToken> pending_neutral;
@@ -241,7 +241,7 @@ private:
     struct PublicationState
     {
         InputLeaseId lease;
-        StateEpoch epoch;
+        WorksetEpoch epoch;
         std::uint64_t backend_sequence = 0;
         savor::GCInputFrame frame{};
     };
@@ -249,7 +249,7 @@ private:
     struct BindingState
     {
         InputLeaseId lease;
-        StateEpoch epoch;
+        WorksetEpoch epoch;
         std::vector<savor::GCInputFrame> frames;
         std::uint32_t retry_limit = 1;
         std::uint32_t retry_count = 0;
@@ -264,19 +264,19 @@ private:
         InputLeaseId lease;
         InputPublicationToken publication;
         InputPollReceiptId acknowledgement;
-        StateEpoch epoch;
+        WorksetEpoch epoch;
     };
 
     [[nodiscard]] LeaseState* FindLease(InputLeaseId lease) noexcept;
     [[nodiscard]] const LeaseState* FindLease(InputLeaseId lease) const noexcept;
-    [[nodiscard]] bool IsCurrent(StateEpoch epoch) const noexcept;
+    [[nodiscard]] bool IsCurrent(WorksetEpoch epoch) const noexcept;
     [[nodiscard]] InputPublicationReceipt PublishInternal(
         LeaseState& lease,
         const savor::GCInputFrame& frame);
     [[nodiscard]] InputReleaseReceipt FinishRelease(LeaseState& lease);
     [[nodiscard]] InputAdvanceReceipt ValidateBinding(
         InputAdvanceBindingId binding,
-        StateEpoch epoch) const;
+        WorksetEpoch epoch) const;
     [[nodiscard]] bool MatchesPublication(
         const InputPublicationEvidence& publication) const noexcept;
     [[nodiscard]] InputAdvanceReceipt BindingFailure(std::string message) const;
@@ -292,7 +292,7 @@ private:
 
     IInputBackendPort& backend_;
     std::thread::id owner_thread_;
-    StateEpoch epoch_;
+    WorksetEpoch epoch_;
     std::uint64_t next_lease_ = 1;
     std::uint64_t next_publication_ = 1;
     std::uint64_t next_poll_receipt_ = 1;

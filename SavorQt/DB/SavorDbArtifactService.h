@@ -234,11 +234,15 @@ private:
         for (char& ch : artifact_kind) {
             ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
         }
-        if (artifact_kind == "DTM" || artifact_kind == "DTMINI" || artifact_kind == "SAV" || artifact_kind == "LOG" || artifact_kind == "OTHER") {
+        if (artifact_kind == "DTM" || artifact_kind == "DTMINI"
+            || artifact_kind == "TAS_MOVIE_ITINERARY"
+            || artifact_kind == "SAV" || artifact_kind == "LOG"
+            || artifact_kind == "OTHER") {
             return artifact_kind;
         }
         if (file_ext == ".dtm") return "DTM";
         if (file_ext == ".dtmini") return "DTMINI";
+        if (file_ext == ".tmi") return "TAS_MOVIE_ITINERARY";
         if (file_ext == ".sav") return "SAV";
         if (file_ext == ".log" || file_ext == ".txt") return "LOG";
         return "OTHER";

@@ -79,7 +79,7 @@ namespace savor {
         return fail_legacy_service(
             result,
             ctx,
-            "[VM] savestate persistence is disconnected; use StateService");
+            "[VM] savestate persistence is disconnected; use SavestateService");
     }
 
     bool PhaseScriptVM::op_require_disc_gameid_from(const PSOp& op, PSResult&, PSContext& ctx) { std::string tmp; ctx.get<std::string>(op.key.id, tmp); if (tmp.size() < 6) return false; auto di = host_.getDiscInfo(); return di.has_value() && di->game_id.size() >= 6 && std::memcmp(di->game_id.data(), tmp.c_str(), 6) == 0; }

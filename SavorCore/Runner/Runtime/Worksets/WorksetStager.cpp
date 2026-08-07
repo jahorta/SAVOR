@@ -1,5 +1,7 @@
 #include "WorksetStager.h"
 
+#include "Phases/Programs/TasMovieValidation/TasMovieValidationModule.h"
+#include "Tas/DtmFile.h"
 #include "Utils/Hash.h"
 
 #include <exception>
@@ -87,7 +89,7 @@ WorksetStagingSubmission WorksetStager::Submit(
 }
 
 std::vector<WorksetStagingCompletion>
-WorksetStager::DrainCompletions()
+WorksetStager::DrainResults()
 {
     std::lock_guard lock(mutex_);
     std::vector<WorksetStagingCompletion> drained;
@@ -192,6 +194,41 @@ WorksetStagingCompletion WorksetStager::Process(
             return completion;
         }
 
+        if (job.definition.phase_invocation.program.canonical_id ==
+            "savor.full_phase.tas_movie_validation")
+        {
+            const ProgramBaselineArtifact& baseline =
+                job.definition.baseline.artifact;
+            if (baseline.kind != ProgramBaselineArtifactKind::ReadOnlyMovie ||
+                !baseline.movie_path)
+            {
+                completion.result = Invalid(
+                    "TAS Movie requires a read-only-movie artifact baseline");
+                return completion;
+            }
+            for (const WorksetItemTemplate& item : job.definition.items)
+            {
+                tasmovie::TasMovieValidationRequestV1 request;
+                std::string diagnostic;
+                if (!tasmovie::DecodeTasMovieValidationExecutionInputV1(
+                        item.execution.input_payload, request, &diagnostic) ||
+                    std::filesystem::path(request.dtm_path) !=
+                        *baseline.movie_path ||
+                    request.startup_savestate_path.has_value() !=
+                        !baseline.state_path.empty() ||
+                    (request.startup_savestate_path &&
+                     std::filesystem::path(*request.startup_savestate_path) !=
+                         baseline.state_path))
+                {
+                    completion.result = Invalid(
+                        diagnostic.empty()
+                            ? "TAS Movie scalar input disagrees with its exact DTM/startup-savestate baseline"
+                            : std::move(diagnostic));
+                    return completion;
+                }
+            }
+        }
+
         const ProgramBaselineKey baseline =
             ComputeProgramBaselineKey(job.definition.baseline);
         if (!baseline ||
@@ -203,49 +240,80 @@ WorksetStagingCompletion WorksetStager::Process(
         }
 
         std::optional<HostStagedArtifactEvidence> evidence;
-        if (job.definition.baseline.state_kind ==
-            ProgramBaselineStateKind::Artifact)
+        const ProgramBaselineArtifact& artifact =
+            job.definition.baseline.artifact;
+        HostStagedArtifactEvidence observed;
+        if (!artifact.state_path.empty())
         {
-            if (!job.definition.baseline.artifact)
-            {
-                completion.result = Invalid(
-                    "Artifact baseline has no exact artifact definition");
-                return completion;
-            }
-            const ProgramBaselineArtifact& artifact =
-                *job.definition.baseline.artifact;
-            HostStagedArtifactEvidence observed;
             observed.state_sha256 =
                 hash::sha256_of_file(artifact.state_path.string());
             observed.state_bytes = static_cast<std::size_t>(
                 std::filesystem::file_size(artifact.state_path));
             if (observed.state_sha256 != artifact.state_sha256)
             {
-                completion.result =
-                    WorksetStagerResult::Failure(
-                        WorksetStagerErrorCode::ArtifactFailure,
-                        "Program baseline state hash does not match");
+                completion.result = WorksetStagerResult::Failure(
+                    WorksetStagerErrorCode::ArtifactFailure,
+                    "Program baseline state hash does not match");
                 return completion;
             }
-            if (artifact.movie_path)
+        }
+        if (artifact.movie_path)
+        {
+            observed.movie_sha256 =
+                hash::sha256_of_file(artifact.movie_path->string());
+            observed.movie_bytes = static_cast<std::size_t>(
+                std::filesystem::file_size(*artifact.movie_path));
+            if (observed.movie_sha256 != artifact.movie_sha256)
             {
-                observed.movie_sha256 =
-                    hash::sha256_of_file(
-                        artifact.movie_path->string());
-                observed.movie_bytes = static_cast<std::size_t>(
-                    std::filesystem::file_size(*artifact.movie_path));
-                if (observed.movie_sha256 !=
-                    artifact.movie_sha256)
+                completion.result = WorksetStagerResult::Failure(
+                    WorksetStagerErrorCode::ArtifactFailure,
+                    "Program baseline movie hash does not match");
+                return completion;
+            }
+            savor::tas::DtmFile dtm;
+            std::string reason;
+            if (!dtm.load(artifact.movie_path->string()) ||
+                !dtm.supports_gc_poll_editing(&reason) ||
+                dtm.info().is_wii || dtm.info().controllers != 1 ||
+                dtm.info().input_count != dtm.gc_poll_count())
+            {
+                completion.result = WorksetStagerResult::Failure(
+                    WorksetStagerErrorCode::ArtifactFailure,
+                    "Program baseline DTM is not a valid aligned GC-only movie: " +
+                        reason);
+                return completion;
+            }
+            const savor::tas::DtmInfo info = dtm.info();
+            const std::string dtm_game_id(
+                info.game_id.data(), info.game_id.size());
+            if (dtm_game_id != artifact.compatibility.game_id)
+            {
+                completion.result = WorksetStagerResult::Failure(
+                    WorksetStagerErrorCode::ArtifactFailure,
+                    "Program baseline DTM belongs to another game");
+                return completion;
+            }
+            if (artifact.kind == ProgramBaselineArtifactKind::ReadOnlyMovie)
+            {
+                const bool has_startup = !artifact.state_path.empty();
+                if (info.starts_from_savestate != has_startup)
                 {
-                    completion.result =
-                        WorksetStagerResult::Failure(
-                            WorksetStagerErrorCode::ArtifactFailure,
-                            "Program baseline movie hash does not match");
+                    completion.result = WorksetStagerResult::Failure(
+                        WorksetStagerErrorCode::ArtifactFailure,
+                        "Read-only-movie baseline startup-savestate declaration disagrees with its DTM header");
+                    return completion;
+                }
+                if (has_startup && artifact.state_path !=
+                    std::filesystem::path(artifact.movie_path->string() + ".sav"))
+                {
+                    completion.result = WorksetStagerResult::Failure(
+                        WorksetStagerErrorCode::ArtifactFailure,
+                        "Read-only-movie startup savestate must be the exact <dtm>.sav companion");
                     return completion;
                 }
             }
-            evidence = std::move(observed);
         }
+        evidence = std::move(observed);
 
         completion.result = WorksetStagerResult::Success();
         completion.package.emplace(HostStagedWorksetPackage{

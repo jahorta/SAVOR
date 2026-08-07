@@ -37,7 +37,7 @@ namespace {
 
 using Field = CanonicalActionPayloadField;
 
-constexpr ResourceServiceId kStateService{1};
+constexpr ResourceServiceId kSavestateService{1};
 constexpr ResourceServiceId kExecutionService{2};
 constexpr ResourceServiceId kStopPointService{3};
 constexpr ResourceServiceId kInputService{4};
@@ -67,11 +67,6 @@ struct EnumFieldBound
 };
 
 constexpr std::array kEnumFieldBounds{
-    EnumFieldBound{
-        Field::EpochPolicy,
-        static_cast<std::uint64_t>(
-            StopEpochPolicy::RebindAfterRestore) +
-            1},
     EnumFieldBound{
         Field::Delivery,
         static_cast<std::uint64_t>(
@@ -131,7 +126,7 @@ std::optional<Field> InvalidEnumField(
 struct ContextRequestEvidence
 {
     std::uint64_t stop_sequence = 0;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::uint32_t expected_pc = 0;
 };
 
@@ -195,7 +190,7 @@ bool DecodeContextRequest(
             output.expected_pc) &&
         output.stop_sequence != 0 &&
         epoch != 0 &&
-        (output.epoch = StateEpoch(epoch), true);
+        (output.epoch = WorksetEpoch(epoch), true);
 }
 
 bool IsMem1Range(std::uint32_t address, std::size_t size)
@@ -212,7 +207,7 @@ template <typename T>
 bool ReadGuestStruct(
     GuestMemory& memory,
     std::uint32_t address,
-    StateEpoch epoch,
+    WorksetEpoch epoch,
     T& output)
 {
     static_assert(std::is_trivially_copyable_v<T>);
@@ -232,7 +227,7 @@ bool ReadGuestScalar(
     GuestMemory& memory,
     std::uint32_t address,
     GuestScalarWidth width,
-    StateEpoch epoch,
+    WorksetEpoch epoch,
     std::uint64_t& output)
 {
     const GuestReadReceipt read =
@@ -245,7 +240,7 @@ bool ReadGuestScalar(
 
 bool ReadBattleContext(
     GuestMemory& memory,
-    StateEpoch epoch,
+    WorksetEpoch epoch,
     soa::battle::ctx::BattleContext& output,
     std::string& diagnostic)
 {
@@ -388,7 +383,7 @@ bool ReadBattleContext(
 
 bool ReadNavigationContext(
     GuestMemory& memory,
-    StateEpoch epoch,
+    WorksetEpoch epoch,
     std::uint32_t capture_pc,
     soa::navigation::ctx::NavigationContext& output,
     std::string& diagnostic)
@@ -679,7 +674,7 @@ InputPublicationEvidenceFromPayload(
     return InputPublicationEvidence{
         InputLeaseId(*lease),
         InputPublicationToken(*publication),
-        StateEpoch(*epoch),
+        WorksetEpoch(*epoch),
         frame};
 }
 
@@ -918,7 +913,8 @@ bool DecodeReceiptPayload(
 bool AddResourceHandle(
     const ProgramValue& value,
     CanonicalAction producer,
-    CanonicalActionPayload& payload)
+    CanonicalActionPayload& payload,
+    CanonicalActionPayloadField field = Field::Handle)
 {
     if (value.type != CanonicalActionOutputType(producer))
         return false;
@@ -926,14 +922,14 @@ bool AddResourceHandle(
         std::get_if<ResourceHandleValue>(&value.payload);
     return handle && handle->handle_id &&
         payload.AddUnsigned(
-            Field::Handle,
+            field,
             handle->handle_id.value());
 }
 
 bool DecodeStopReceipt(
     const ProgramValueGraph& graph,
     const ProgramValue& value,
-    StateEpoch current_epoch,
+    WorksetEpoch current_epoch,
     CanonicalActionPayload& payload)
 {
     if (value.type != CanonicalActionOutputType(
@@ -945,13 +941,45 @@ bool DecodeStopReceipt(
         std::get_if<RecordValue>(&value.payload);
     if (!record || record->fields.size() != 5)
         return false;
+    const ProgramValue* reason_value = FindValue(
+        graph,
+        record->fields[0]);
+    const auto* reason = reason_value
+        ? std::get_if<EnumValue>(&reason_value->payload)
+        : nullptr;
+    if (!reason_value ||
+        reason_value->type != CanonicalRuntimeType(
+            CanonicalRuntimeSchema::ContinueUntilCompletionReason) ||
+        !reason ||
+        reason->value != static_cast<std::int64_t>(
+            ContinueUntilCompletionReasonV1::Breakpoint))
+    {
+        return false;
+    }
+    const ProgramValue* routed_value = nullptr;
+    if (!OptionalElement(
+            graph,
+            record->fields[1],
+            CanonicalRuntimeSchema::OptionalRoutedStopReceipt,
+            routed_value) ||
+        !routed_value ||
+        routed_value->type != CanonicalRuntimeType(
+            CanonicalRuntimeSchema::RoutedStopReceipt))
+    {
+        return false;
+    }
+    const auto* routed = std::get_if<RecordValue>(
+        &routed_value->payload);
+    if (!routed || routed->fields.size() != 5)
+        return false;
     std::uint64_t sequence = 0;
     std::uint64_t epoch = 0;
-    std::uint32_t pc = 0;
+    std::uint32_t routed_pc = 0;
+    std::uint32_t result_pc = 0;
     std::uint64_t sample = 0;
     const ProgramValue* evidence = RequireTypedValue(
         graph,
-        record->fields[4],
+        routed->fields[4],
         CanonicalRuntimeType(
             CanonicalRuntimeSchema::StopEvidencePayload));
     const auto* evidence_bytes = evidence
@@ -960,23 +988,25 @@ bool DecodeStopReceipt(
         : nullptr;
     return ScalarValue(
                graph,
-               record->fields[0],
+               routed->fields[0],
                sequence) &&
-        ScalarValue(graph, record->fields[1], epoch) &&
-        ScalarValue(graph, record->fields[2], pc) &&
-        ScalarValue(graph, record->fields[3], sample) &&
+        ScalarValue(graph, routed->fields[1], epoch) &&
+        ScalarValue(graph, routed->fields[2], routed_pc) &&
+        ScalarValue(graph, routed->fields[3], sample) &&
+        ScalarValue(graph, record->fields[2], result_pc) &&
         evidence_bytes && evidence_bytes->size() >= 4 &&
         (*evidence_bytes)[0] == static_cast<Byte>('R') &&
         (*evidence_bytes)[1] == static_cast<Byte>('S') &&
         (*evidence_bytes)[2] == static_cast<Byte>('E') &&
         (*evidence_bytes)[3] == static_cast<Byte>('1') &&
-        sequence != 0 && sample != 0 && pc != 0 &&
+        sequence != 0 && sample != 0 && routed_pc != 0 &&
+        routed_pc == result_pc &&
         epoch == current_epoch.value() &&
         payload.AddUnsigned(
             Field::ResultStopSequence,
             sequence) &&
         payload.AddUnsigned(Field::ResultEpoch, epoch) &&
-        payload.AddUnsigned(Field::ResultPc, pc);
+        payload.AddUnsigned(Field::ResultPc, routed_pc);
 }
 
 const SemanticPointDescriptor* FindSourcePoint(
@@ -1109,11 +1139,9 @@ bool DecodeStopGroupConfig(
 
     std::uint8_t delivery = 0;
     std::uint8_t routing = 0;
-    std::uint8_t epoch = 0;
     std::uint8_t lifetime = 0;
     if (!reader.U8(delivery) ||
         !reader.U8(routing) ||
-        !reader.U8(epoch) ||
         !reader.U8(lifetime) ||
         !reader.done())
     {
@@ -1126,9 +1154,6 @@ bool DecodeStopGroupConfig(
         routing !=
             static_cast<std::uint8_t>(
                 StopRoutingPolicy::Pass) ||
-        epoch >
-            static_cast<std::uint8_t>(
-                StopEpochPolicy::RebindAfterRestore) ||
         lifetime !=
             static_cast<std::uint8_t>(
                 StopSubscriptionLifetime::Scoped))
@@ -1149,7 +1174,6 @@ bool DecodeStopGroupConfig(
     return payload.AddBytes(Field::PcAlternatives, std::move(pcs)) &&
         payload.AddUnsigned(Field::Delivery, delivery) &&
         payload.AddUnsigned(Field::RoutingPolicy, routing) &&
-        payload.AddUnsigned(Field::EpochPolicy, epoch) &&
         payload.AddUnsigned(Field::Lifetime, lifetime);
 }
 
@@ -1400,7 +1424,7 @@ bool DecodeObservationConfig(
 bool DecodeTypedCanonicalRequest(
     CanonicalAction action,
     const ProgramValueGraph& graph,
-    StateEpoch current_epoch,
+    WorksetEpoch current_epoch,
     CanonicalActionPayload& payload,
     std::string& diagnostic)
 {
@@ -1520,6 +1544,51 @@ bool DecodeTypedCanonicalRequest(
                 Field::Publication,
                 *publication);
         };
+    const auto optional_handle =
+        [&](std::size_t index,
+            CanonicalRuntimeSchema optional_schema,
+            CanonicalAction producer,
+            CanonicalActionPayloadField field,
+            bool& present) {
+            const ProgramValue* element = nullptr;
+            if (index >= record->fields.size() ||
+                !OptionalElement(
+                    graph,
+                    record->fields[index],
+                    optional_schema,
+                    element))
+            {
+                return false;
+            }
+            present = element != nullptr;
+            return !element || AddResourceHandle(
+                *element,
+                producer,
+                payload,
+                field);
+        };
+    const auto optional_u64 =
+        [&](std::size_t index,
+            CanonicalRuntimeSchema optional_schema,
+            CanonicalActionPayloadField field,
+            bool& present) {
+            const ProgramValue* element = nullptr;
+            if (index >= record->fields.size() ||
+                !OptionalElement(
+                    graph,
+                    record->fields[index],
+                    optional_schema,
+                    element))
+            {
+                return false;
+            }
+            present = element != nullptr;
+            if (!element)
+                return true;
+            std::uint64_t value = 0;
+            return ScalarValue(graph, element->id, value) &&
+                payload.AddUnsigned(field, value);
+        };
 
     switch (action)
     {
@@ -1537,11 +1606,13 @@ bool DecodeTypedCanonicalRequest(
     case CanonicalAction::ExecutionContinueUntil:
     {
         bool publication = false;
+        bool playback = false;
+        bool expected_count = false;
         const auto* config = bytes(
-            2,
+            4,
             CanonicalRuntimeSchema::
                 ContinueUntilStaticConfig);
-        if (record->fields.size() != 3 ||
+        if (record->fields.size() != 5 ||
             !handle(
                 0,
                 CanonicalAction::StopPointsSubscribeGroup) ||
@@ -1552,14 +1623,40 @@ bool DecodeTypedCanonicalRequest(
                 CanonicalAction::InputPublishHeld,
                 false,
                 publication) ||
+            !optional_handle(
+                2,
+                CanonicalRuntimeSchema::
+                    OptionalMoviePlaybackSession,
+                CanonicalAction::MovieStartPlayback,
+                Field::PlaybackHandle,
+                playback) ||
+            !optional_u64(
+                3,
+                CanonicalRuntimeSchema::
+                    OptionalMovieInputCount,
+                Field::ExpectedMovieInputCount,
+                expected_count) ||
             !config ||
             !DecodeContinueConfig(
                 *config,
                 payload,
-                diagnostic))
+                diagnostic) ||
+            (expected_count && !playback) ||
+            (playback &&
+             UnsignedOr(
+                 payload,
+                 Field::MovieEndedPolicy,
+                 static_cast<std::uint64_t>(MovieEndedPolicy::Ignore)) !=
+                 static_cast<std::uint64_t>(MovieEndedPolicy::Ignore)))
         {
             if (diagnostic.empty())
-                diagnostic = "ContinueUntilRequest is malformed";
+            {
+                diagnostic = expected_count && !playback
+                    ? "ContinueUntil expected input count requires an exact playback session"
+                    : playback
+                    ? "ContinueUntil playback ownership requires static movie policy Ignore"
+                    : "ContinueUntilRequest is malformed";
+            }
             return false;
         }
         (void)publication;
@@ -1830,13 +1927,6 @@ StopSubscriptionGroupDefinition BuildPcGroup(
         "program.action." + std::to_string(invocation.value()) +
             "." + std::to_string(request.value()),
         "canonical program action"};
-    definition.epoch_policy = static_cast<StopEpochPolicy>(
-        UnsignedOr(
-            payload,
-            Field::EpochPolicy,
-            static_cast<std::uint64_t>(
-                StopEpochPolicy::EndOnEpochChange)));
-
     const StopDeliveryMode delivery =
         static_cast<StopDeliveryMode>(UnsignedOr(
             payload,
@@ -1909,33 +1999,36 @@ bool ExecutionSucceeded(const ExecutionTerminalResult& terminal) noexcept
     return terminal.status ==
             ExecutionTerminalStatus::RequestedCompletion ||
         terminal.status == ExecutionTerminalStatus::StepsCompleted ||
-        terminal.status == ExecutionTerminalStatus::Paused;
+        terminal.status == ExecutionTerminalStatus::Paused ||
+        terminal.status == ExecutionTerminalStatus::CursorOverrun ||
+        (terminal.status == ExecutionTerminalStatus::MovieEnded &&
+         !terminal.error);
 }
 
-ProgramActionCompletionStatus ExecutionCompletionStatus(
+ProgramActionResolutionStatus ExecutionCompletionStatus(
     const ExecutionTerminalResult& terminal) noexcept
 {
     switch (terminal.status)
     {
     case ExecutionTerminalStatus::Cancelled:
-        return ProgramActionCompletionStatus::Cancelled;
+        return ProgramActionResolutionStatus::Cancelled;
     case ExecutionTerminalStatus::TimedOut:
-        return ProgramActionCompletionStatus::TimedOut;
-    case ExecutionTerminalStatus::StateEpochMismatch:
-        return ProgramActionCompletionStatus::StaleEpoch;
+        return ProgramActionResolutionStatus::TimedOut;
+    case ExecutionTerminalStatus::WorksetEpochMismatch:
+        return ProgramActionResolutionStatus::StaleEpoch;
     case ExecutionTerminalStatus::Unsupported:
-        return ProgramActionCompletionStatus::Unsupported;
+        return ProgramActionResolutionStatus::Unsupported;
     default:
         return ExecutionSucceeded(terminal)
-            ? ProgramActionCompletionStatus::Completed
-            : ProgramActionCompletionStatus::Failed;
+            ? ProgramActionResolutionStatus::Completed
+            : ProgramActionResolutionStatus::Failed;
     }
 }
 
 ProgramValueGraph ResourceHandleGraph(
     CanonicalAction action,
     ProgramResourceHandleId handle,
-    std::optional<StateEpoch> epoch)
+    WorksetEpoch epoch)
 {
     const auto contract =
         CanonicalActionResourceContractSchemaIdentity(action);
@@ -1954,120 +2047,155 @@ ProgramValueGraph ResourceHandleGraph(
 ProgramValueGraph ContinueUntilResultGraph(
     const ExecutionTerminalResult& terminal)
 {
-    if (!terminal.stop || !terminal.stop->event)
-        return {};
-    const StopRouteReceipt& stop = *terminal.stop;
-    const RoutedStopEvent& event = *stop.event;
-    if (!stop.identity.sequence ||
-        !stop.identity.sample_snapshot ||
-        !stop.identity.state_epoch)
+    ContinueUntilCompletionReasonV1 reason;
+    switch (terminal.status)
     {
+    case ExecutionTerminalStatus::RequestedCompletion:
+        reason = ContinueUntilCompletionReasonV1::Breakpoint;
+        break;
+    case ExecutionTerminalStatus::CursorOverrun:
+        reason = ContinueUntilCompletionReasonV1::CursorOverrun;
+        break;
+    case ExecutionTerminalStatus::MovieEnded:
+        reason = ContinueUntilCompletionReasonV1::MovieEnded;
+        break;
+    default:
         return {};
     }
 
-    std::vector<Byte> evidence{
-        static_cast<Byte>('R'),
-        static_cast<Byte>('S'),
-        static_cast<Byte>('E'),
-        static_cast<Byte>('1')};
-    const auto u8 = [&evidence](std::uint8_t value) {
-        evidence.push_back(value);
-    };
-    const auto u32 = [&evidence](std::uint32_t value) {
-        for (unsigned shift = 0; shift != 32; shift += 8)
-            evidence.push_back(
-                static_cast<Byte>((value >> shift) & 0xffu));
-    };
-    const auto u64 = [&evidence](std::uint64_t value) {
-        for (unsigned shift = 0; shift != 64; shift += 8)
-            evidence.push_back(
-                static_cast<Byte>((value >> shift) & 0xffu));
+    std::vector<ProgramValue> values;
+    std::optional<ProgramValueId> routed_stop;
+    std::uint64_t next_id = 1;
+    const auto add = [&](TypeRef type, ProgramValuePayload payload) {
+        ProgramValue value{
+            ProgramValueId(next_id++),
+            std::move(type),
+            std::move(payload)};
+        const ProgramValueId id = value.id;
+        values.push_back(std::move(value));
+        return id;
     };
 
-    u8(static_cast<std::uint8_t>(event.evidence.path));
-    if (const auto* pc =
-            std::get_if<PcStopPointSpec>(
-                &event.evidence.point))
+    if (reason == ContinueUntilCompletionReasonV1::Breakpoint)
     {
-        u8(0);
-        u32(pc->pc);
-    }
-    else if (const auto* memory =
-                 std::get_if<MemoryStopPointSpec>(
-                     &event.evidence.point))
-    {
-        u8(1);
-        u32(memory->address);
-        u32(memory->size);
-        u8(static_cast<std::uint8_t>(memory->access));
-    }
-    else
-    {
-        const auto* synthetic =
-            std::get_if<SyntheticStopPointSpec>(
-                &event.evidence.point);
-        if (!synthetic)
+        if (!terminal.stop || !terminal.stop->event)
             return {};
-        u8(2);
-        u64(synthetic->identity);
-    }
-    u32(event.evidence.hit_pc);
-    u64(event.evidence.value);
-    u8(event.evidence.post_write ? 1u : 0u);
-    u64(stop.identity.dispatch_generation.value());
-    u64(stop.identity.physical_generation.value());
-    u8(event.sample_count);
-    for (std::size_t index = 0;
-         index < event.sample_count;
-         ++index)
-    {
-        u32(event.samples[index].descriptor_id);
-        u64(event.samples[index].value);
-        u8(event.samples[index].available ? 1u : 0u);
+        const StopRouteReceipt& stop = *terminal.stop;
+        const RoutedStopEvent& event = *stop.event;
+        if (!stop.identity.sequence ||
+            !stop.identity.sample_snapshot ||
+            !stop.identity.workset_epoch)
+        {
+            return {};
+        }
+
+        std::vector<Byte> evidence{
+            static_cast<Byte>('R'),
+            static_cast<Byte>('S'),
+            static_cast<Byte>('E'),
+            static_cast<Byte>('1')};
+        const auto u8 = [&evidence](std::uint8_t value) {
+            evidence.push_back(value);
+        };
+        const auto u32 = [&evidence](std::uint32_t value) {
+            for (unsigned shift = 0; shift != 32; shift += 8)
+                evidence.push_back(
+                    static_cast<Byte>((value >> shift) & 0xffu));
+        };
+        const auto u64 = [&evidence](std::uint64_t value) {
+            for (unsigned shift = 0; shift != 64; shift += 8)
+                evidence.push_back(
+                    static_cast<Byte>((value >> shift) & 0xffu));
+        };
+
+        u8(static_cast<std::uint8_t>(event.evidence.path));
+        if (const auto* pc = std::get_if<PcStopPointSpec>(
+                &event.evidence.point))
+        {
+            u8(0);
+            u32(pc->pc);
+        }
+        else if (const auto* memory =
+                     std::get_if<MemoryStopPointSpec>(
+                         &event.evidence.point))
+        {
+            u8(1);
+            u32(memory->address);
+            u32(memory->size);
+            u8(static_cast<std::uint8_t>(memory->access));
+        }
+        else
+        {
+            const auto* synthetic =
+                std::get_if<SyntheticStopPointSpec>(
+                    &event.evidence.point);
+            if (!synthetic)
+                return {};
+            u8(2);
+            u64(synthetic->identity);
+        }
+        u32(event.evidence.hit_pc);
+        u64(event.evidence.value);
+        u8(event.evidence.post_write ? 1u : 0u);
+        u64(stop.identity.dispatch_generation.value());
+        u64(stop.identity.physical_generation.value());
+        u8(event.sample_count);
+        for (std::size_t index = 0;
+             index < event.sample_count;
+             ++index)
+        {
+            u32(event.samples[index].descriptor_id);
+            u64(event.samples[index].value);
+            u8(event.samples[index].available ? 1u : 0u);
+        }
+
+        const ProgramValueId sequence = add(
+            TypeRef::Builtin(BuiltinType::U64),
+            stop.identity.sequence.value());
+        const ProgramValueId epoch = add(
+            TypeRef::Builtin(BuiltinType::U64),
+            stop.identity.workset_epoch.value());
+        const ProgramValueId pc = add(
+            TypeRef::Builtin(BuiltinType::U32),
+            event.evidence.hit_pc);
+        const ProgramValueId sample = add(
+            TypeRef::Builtin(BuiltinType::U64),
+            stop.identity.sample_snapshot.value());
+        const ProgramValueId evidence_id = add(
+            CanonicalRuntimeType(
+                CanonicalRuntimeSchema::StopEvidencePayload),
+            std::move(evidence));
+        routed_stop = add(
+            CanonicalRuntimeType(
+                CanonicalRuntimeSchema::RoutedStopReceipt),
+            RecordValue{{sequence, epoch, pc, sample, evidence_id}});
     }
 
-    ProgramValue sequence{
-        ProgramValueId(1),
-        TypeRef::Builtin(BuiltinType::U64),
-        stop.identity.sequence.value()};
-    ProgramValue epoch{
-        ProgramValueId(2),
-        TypeRef::Builtin(BuiltinType::U64),
-        stop.identity.state_epoch.value()};
-    ProgramValue pc{
-        ProgramValueId(3),
-        TypeRef::Builtin(BuiltinType::U32),
-        event.evidence.hit_pc};
-    ProgramValue sample{
-        ProgramValueId(4),
-        TypeRef::Builtin(BuiltinType::U64),
-        stop.identity.sample_snapshot.value()};
-    ProgramValue evidence_value{
-        ProgramValueId(5),
+    const ProgramValueId optional_stop = add(
         CanonicalRuntimeType(
-            CanonicalRuntimeSchema::StopEvidencePayload),
-        std::move(evidence)};
-    ProgramValue root{
-        ProgramValueId(6),
+            CanonicalRuntimeSchema::OptionalRoutedStopReceipt),
+        OptionalValue{routed_stop});
+    const ProgramValueId reason_id = add(
+        CanonicalRuntimeType(
+            CanonicalRuntimeSchema::ContinueUntilCompletionReason),
+        EnumValue{
+            CanonicalRuntimeSchemaIdentity(
+                CanonicalRuntimeSchema::ContinueUntilCompletionReason),
+            static_cast<std::int64_t>(reason)});
+    const ProgramValueId pc = add(
+        TypeRef::Builtin(BuiltinType::U32),
+        terminal.evidence.pc);
+    const ProgramValueId input_count = add(
+        TypeRef::Builtin(BuiltinType::U64),
+        terminal.evidence.movie_input_count);
+    const ProgramValueId epoch = add(
+        TypeRef::Builtin(BuiltinType::U64),
+        terminal.workset_epoch.value());
+    const ProgramValueId root = add(
         CanonicalActionOutputType(
             CanonicalAction::ExecutionContinueUntil),
-        RecordValue{{
-            sequence.id,
-            epoch.id,
-            pc.id,
-            sample.id,
-            evidence_value.id,
-        }}};
-    return {
-        root.id,
-        {
-            std::move(sequence),
-            std::move(epoch),
-            std::move(pc),
-            std::move(sample),
-            std::move(evidence_value),
-            std::move(root),
-        }};
+        RecordValue{{reason_id, optional_stop, pc, input_count, epoch}});
+    return {root, std::move(values)};
 }
 
 template <typename T>
@@ -2143,6 +2271,13 @@ ProgramValueGraph ArtifactListResultGraph(
 
 struct SessionProgramActionHost::Impl
 {
+    enum class BaselineStage : std::uint8_t
+    {
+        Established,
+        AwaitingMoviePreparation,
+        MoviePrepared,
+    };
+
     struct ActiveInvocation
     {
         InvocationId invocation;
@@ -2150,6 +2285,7 @@ struct SessionProgramActionHost::Impl
         ResourceOwnerId owner;
         ResourceScopeId root_scope;
         CancellationSource cancellation;
+        BaselineStage baseline_stage = BaselineStage::Established;
 
         ActiveInvocation(
             InvocationId invocation_id,
@@ -2167,8 +2303,7 @@ struct SessionProgramActionHost::Impl
         ProgramResourceHandleId handle;
         ResourceReceiptId receipt;
         ResourceKind kind = ResourceKind::HostResource;
-        StateEpoch epoch;
-        std::optional<StateEpoch> origin_epoch;
+        WorksetEpoch epoch;
         std::uint64_t concrete_id = 0;
         std::shared_ptr<StopSubscriptionGroupHandle> stop_group;
         std::optional<StopSubscriptionGroupDefinition>
@@ -2177,15 +2312,9 @@ struct SessionProgramActionHost::Impl
         std::shared_ptr<bool> finalized;
     };
 
-    struct BaselineMapping
-    {
-        StateHandleId handle;
-        ResourceReceiptId receipt;
-    };
-
     struct SavedArtifact
     {
-        StateArtifactId artifact;
+        SavestateArtifactId artifact;
         std::filesystem::path path;
         std::string sha256;
     };
@@ -2231,21 +2360,20 @@ struct SessionProgramActionHost::Impl
         return owner_thread == std::this_thread::get_id();
     }
 
-    [[nodiscard]] ProgramActionCompletion Completion(
+    [[nodiscard]] ProgramActionResolution Completion(
         const ProgramActionRequest& request,
-        ProgramActionCompletionStatus status,
+        ProgramActionResolutionStatus status,
         std::string code = {},
         std::string message = {}) const
     {
         const SessionSnapshot current = session.snapshot();
-        ProgramActionCompletion completion;
+        ProgramActionResolution completion;
         completion.request_id = request.request_id;
         completion.invocation_id = request.invocation_id;
         completion.attempt_id = request.attempt_id;
         completion.operation = request.operation;
         completion.status = status;
-        completion.origin_epoch = request.expected_epoch;
-        completion.resulting_epoch = current.state_epoch;
+        completion.workset_epoch = current.workset_epoch;
         completion.output =
             request.operation == ProgramHostOperation::InvokeAction
             ? ProgramValueGraph{}
@@ -2264,23 +2392,30 @@ struct SessionProgramActionHost::Impl
     }
 
     [[nodiscard]] ProgramActionDispatchResult Immediate(
-        ProgramActionCompletion completion)
+        ProgramActionResolution resolution)
     {
-        return {true, std::move(completion), {}};
+        return {
+            true,
+            ActorActionResult{std::move(resolution), {}},
+            {}};
     }
 
     [[nodiscard]] ProgramActionDispatchResult Reject(
         const ProgramActionRequest& request,
-        ProgramActionCompletionStatus status,
+        ProgramActionResolutionStatus status,
         std::string code,
         std::string message)
     {
-        ProgramActionCompletion completion = Completion(
+        ProgramActionResolution completion = Completion(
             request,
             status,
             std::move(code),
             std::move(message));
-        return {false, std::move(completion), completion.message};
+        const std::string diagnostic = completion.message;
+        return {
+            false,
+            ActorActionResult{std::move(completion), {}},
+            diagnostic};
     }
 
     [[nodiscard]] ResourceScopeId Scope(
@@ -2369,14 +2504,12 @@ struct SessionProgramActionHost::Impl
         ProgramScopeId program_scope,
         ResourceKind kind,
         ResourceServiceId service_id,
-        StateEpoch epoch,
+        WorksetEpoch epoch,
         SessionResourceReleaseCallback release,
         std::uint64_t concrete_id,
         std::shared_ptr<StopSubscriptionGroupHandle> stop_group,
         std::string label,
-        std::string& diagnostic,
-        ResourceEpochPolicy epoch_policy =
-            ResourceEpochPolicy::EndOnEpochChange)
+        std::string& diagnostic)
     {
         SessionResourceLedger* ledger = session.resources();
         SessionResourceBindingTable* bindings =
@@ -2405,7 +2538,6 @@ struct SessionProgramActionHost::Impl
         definition.owner = active->owner;
         definition.service = service_id;
         definition.release = {kind, bound.external_id};
-        definition.epoch_policy = epoch_policy;
         definition.promotion =
             ResourcePromotionPolicy::AnyAncestor;
         definition.cleanup =
@@ -2423,13 +2555,10 @@ struct SessionProgramActionHost::Impl
                 bindings->Release({
                     temporary,
                     ResourceReleaseReason::Explicit,
-                    session.snapshot().state_epoch,
+                    session.snapshot().workset_epoch,
                     true});
             if (compensated.status !=
-                    ResourceReleaseStatus::Released &&
-                compensated.status !=
-                    ResourceReleaseStatus::
-                        SupersededByStateReplacement)
+                    ResourceReleaseStatus::Released)
             {
                 session.MarkTainted(
                     "Program resource registration compensation could not prove cleanup");
@@ -2463,148 +2592,15 @@ struct SessionProgramActionHost::Impl
         mapping.receipt = acquired.receipts.front().id;
         mapping.kind = kind;
         mapping.epoch = epoch;
-        mapping.origin_epoch =
-            epoch_policy == ResourceEpochPolicy::EpochAgnostic
-            ? std::nullopt
-            : std::optional<StateEpoch>(epoch);
         mapping.concrete_id = concrete_id;
         mapping.stop_group = std::move(stop_group);
         const ProgramActionResource resource{
             mapping.handle,
             mapping.receipt,
             mapping.kind,
-            mapping.epoch,
-            mapping.origin_epoch};
+            mapping.epoch};
         resources.emplace(mapping.handle.value(), std::move(mapping));
         return resource;
-    }
-
-    [[nodiscard]] bool RegisterBaseline(
-        std::string key,
-        const StateHandleReceipt& captured,
-        std::string& diagnostic)
-    {
-        StateService* states = session.state_service();
-        SessionResourceLedger* ledger = session.resources();
-        SessionResourceBindingTable* bindings =
-            session.resource_bindings();
-        if (key.empty() || !states || !ledger || !bindings)
-        {
-            diagnostic =
-                "Session baseline registration dependencies are unavailable";
-            return false;
-        }
-        const ResourceLedgerSnapshot snapshot = ledger->snapshot();
-        const auto root = ledger->FindScope(snapshot.session_root);
-        if (!root || !root->open)
-        {
-            diagnostic = "Session resource root is unavailable";
-            return false;
-        }
-
-        SessionResourceBindingReceipt bound = bindings->Bind({
-            .kind = ResourceKind::StateHandle,
-            .acquisition_epoch = captured.captured_epoch,
-            .release =
-                [states, handle = captured.handle](
-                    const ResourceReleaseRequest&) {
-                    const StateServiceResult released =
-                        states->ReleaseMemoryHandle(handle);
-                    return ResourceReleaseResult{
-                        released.ok
-                            ? ResourceReleaseStatus::Released
-                            : ResourceReleaseStatus::Failed,
-                        released.message};
-                },
-            .diagnostic_label =
-                "program session baseline " + key,
-        });
-        if (!bound.success)
-        {
-            diagnostic = std::move(bound.diagnostic);
-            return false;
-        }
-
-        ResourceAcquisitionDefinition definition;
-        definition.owner = root->owner;
-        definition.service = kStateService;
-        definition.release = {
-            ResourceKind::StateHandle,
-            bound.external_id};
-        definition.epoch_policy =
-            ResourceEpochPolicy::EpochAgnostic;
-        definition.promotion =
-            ResourcePromotionPolicy::Forbidden;
-        definition.cleanup =
-            ResourceCleanupRequirement::Mandatory;
-        definition.diagnostic_label =
-            "program session baseline " + key;
-        ResourceAcquisitionResult acquired =
-            ledger->Acquire(snapshot.session_root, {definition});
-        if (!acquired.success || acquired.receipts.size() != 1)
-        {
-            ResourceReceipt temporary;
-            temporary.release = definition.release;
-            temporary.acquisition_epoch =
-                captured.captured_epoch;
-            temporary.cleanup = definition.cleanup;
-            const ResourceReleaseResult compensated =
-                bindings->Release({
-                    temporary,
-                    ResourceReleaseReason::Explicit,
-                    session.snapshot().state_epoch,
-                    true});
-            if (compensated.status !=
-                    ResourceReleaseStatus::Released &&
-                compensated.status !=
-                    ResourceReleaseStatus::
-                        SupersededByStateReplacement)
-            {
-                session.MarkTainted(
-                    "Session baseline registration compensation could not prove cleanup");
-            }
-            diagnostic = acquired.error.message.empty()
-                ? "Session baseline ledger acquisition failed"
-                : std::move(acquired.error.message);
-            return false;
-        }
-
-        if (const auto previous = baselines.find(key);
-            previous != baselines.end())
-        {
-            ResourceUnwindResult released =
-                ledger->Release(previous->second.receipt, *bindings);
-            if (!released.completed())
-            {
-                const ResourceUnwindResult compensated =
-                    ledger->Release(
-                    acquired.receipts.front().id,
-                    *bindings);
-                if (!compensated.completed())
-                {
-                    session.MarkTainted(
-                        "Replacement session baseline compensation could not prove cleanup");
-                }
-                diagnostic =
-                    "Prior session baseline could not be released cleanly";
-                if (released.disposition ==
-                        ResourceCleanupDisposition::TaintRequired ||
-                    released.outcome ==
-                        ResourceUnwindOutcome::CleanupFailed)
-                {
-                    session.MarkTainted(diagnostic);
-                }
-                return false;
-            }
-            baselines.erase(previous);
-        }
-        baselines.emplace(
-            std::move(key),
-            BaselineMapping{
-                captured.handle,
-                acquired.receipts.front().id});
-        PruneReleasedResources();
-        return true;
     }
 
     [[nodiscard]] bool HasCompletionCapacity() const noexcept
@@ -2613,7 +2609,13 @@ struct SessionProgramActionHost::Impl
             config.maximum_retained_completions;
     }
 
-    [[nodiscard]] bool Queue(ProgramActionCompletion completion)
+    [[nodiscard]] bool Queue(ProgramActionResolution resolution)
+    {
+        return Queue(ActorActionResult{
+            std::move(resolution), {}});
+    }
+
+    [[nodiscard]] bool Queue(ActorActionResult result)
     {
         if (!HasCompletionCapacity())
         {
@@ -2622,18 +2624,18 @@ struct SessionProgramActionHost::Impl
             // This is an invariant failure: accepted asynchronous work is
             // admitted only while one completion slot is available. Surface
             // the terminal anyway so its waiter cannot hang.
-            completion.status =
-                ProgramActionCompletionStatus::CleanupFailed;
-            completion.cleanup = ProgramCleanupStatus::Tainted;
-            completion.session_disposition =
+            result.resolution.status =
+                ProgramActionResolutionStatus::CleanupFailed;
+            result.resolution.cleanup = ProgramCleanupStatus::Tainted;
+            result.resolution.session_disposition =
                 SessionDisposition::Tainted;
-            completion.code = "completion_capacity_invariant";
-            completion.message =
+            result.resolution.code = "completion_capacity_invariant";
+            result.resolution.message =
                 "Accepted program action completed without its reserved completion slot";
-            completions.push_back(std::move(completion));
+            completions.push_back(std::move(result));
             return false;
         }
-        completions.push_back(std::move(completion));
+        completions.push_back(std::move(result));
         return true;
     }
 
@@ -2723,7 +2725,7 @@ struct SessionProgramActionHost::Impl
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "completion_capacity_exhausted",
                 "Program action completion capacity must be drained before accepting asynchronous work");
         }
@@ -2731,7 +2733,7 @@ struct SessionProgramActionHost::Impl
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "execution_busy",
                 "Another program action owns ExecutionEngine");
         }
@@ -2754,19 +2756,19 @@ struct SessionProgramActionHost::Impl
                         "Rejected program execution left its input advance binding live");
                     return Reject(
                         request,
-                        ProgramActionCompletionStatus::CleanupFailed,
+                        ProgramActionResolutionStatus::CleanupFailed,
                         "input_binding_compensation_failed",
                         std::string(removed.message));
                 }
             }
             const auto status =
                 submitted.error.code ==
-                        ExecutionErrorCode::StateEpochMismatch
-                ? ProgramActionCompletionStatus::StaleEpoch
+                        ExecutionErrorCode::WorksetEpochMismatch
+                ? ProgramActionResolutionStatus::StaleEpoch
                 : submitted.error.code ==
                             ExecutionErrorCode::Unsupported
-                ? ProgramActionCompletionStatus::Unsupported
-                : ProgramActionCompletionStatus::Failed;
+                ? ProgramActionResolutionStatus::Unsupported
+                : ProgramActionResolutionStatus::Failed;
             return Reject(
                 request,
                 status,
@@ -2796,17 +2798,17 @@ struct SessionProgramActionHost::Impl
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "invalid_state_request",
                 "Invocation state preparation is malformed or overlaps another invocation");
         }
         const SessionSnapshot current = session.snapshot();
         if (!current.open ||
-            current.state_epoch != request.expected_epoch)
+            current.workset_epoch != request.expected_epoch)
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::StaleEpoch,
+                ProgramActionResolutionStatus::StaleEpoch,
                 "stale_epoch",
                 "Invocation state preparation expected another session epoch");
         }
@@ -2814,11 +2816,11 @@ struct SessionProgramActionHost::Impl
         if ((state.expected_session &&
              state.expected_session != current.session_id) ||
             (state.expected_epoch &&
-             state.expected_epoch != current.state_epoch))
+             state.expected_epoch != current.workset_epoch))
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "state_identity_mismatch",
                 "Invocation state policy identifies another session or epoch");
         }
@@ -2826,7 +2828,7 @@ struct SessionProgramActionHost::Impl
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "lineage_required",
                 "Invocation state policy requires an explicit session lineage");
         }
@@ -2834,91 +2836,43 @@ struct SessionProgramActionHost::Impl
             (!CompleteSha256(request.prepared_baseline_sha256) ||
              !state.expected_session || !state.expected_epoch ||
              state.expected_session != current.session_id ||
-             state.expected_epoch != current.state_epoch))
+             state.expected_epoch != current.workset_epoch))
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "prepared_baseline_mismatch",
                 "Prepared baseline must identify the exact current session and epoch");
         }
 
         switch (state.policy)
         {
-        case InvocationStatePolicy::Boot:
-            if (state.state_artifact)
-            {
-                return Reject(
-                    request,
-                    ProgramActionCompletionStatus::Rejected,
-                    "boot_artifact_forbidden",
-                    "Boot cannot consume prior emulation state");
-            }
-            break;
-        case InvocationStatePolicy::LoadArtifact:
-            if (!state.state_artifact)
-            {
-                return Reject(
-                    request,
-                    ProgramActionCompletionStatus::Rejected,
-                    "state_artifact_required",
-                    "LoadArtifact requires one explicit immutable state artifact");
-            }
-            break;
         case InvocationStatePolicy::RestoreBaseline:
-            if (state.state_artifact)
+            if (!request.state_already_prepared)
             {
                 return Reject(
                     request,
-                    ProgramActionCompletionStatus::Rejected,
-                    "restore_baseline_artifact_forbidden",
-                    "RestoreBaseline resolves its registered immutable baseline by lineage and cannot carry a state artifact");
+                    ProgramActionResolutionStatus::Rejected,
+                    "prepared_baseline_required",
+                    "RestoreBaseline requires a workset-prepared artifact state");
             }
             break;
-        case InvocationStatePolicy::ContinueSession:
-            if (!state.expected_session || !state.expected_epoch ||
-                state.expected_session != current.session_id ||
-                state.expected_epoch != current.state_epoch ||
-                current_lineage.empty() ||
-                state.session_lineage != current_lineage ||
-                state.state_artifact.has_value())
+        case InvocationStatePolicy::EstablishBaseline:
+            if (request.state_already_prepared)
             {
                 return Reject(
                     request,
-                    ProgramActionCompletionStatus::Rejected,
-                    "continue_session_mismatch",
-                    "ContinueSession requires the exact current session, epoch, and established lineage");
+                    ProgramActionResolutionStatus::Rejected,
+                    "unestablished_baseline_required",
+                    "EstablishBaseline must begin from a staged but unestablished movie artifact");
             }
             break;
         default:
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "invalid_state_policy",
                 "Invocation state preparation contains an unknown state policy");
-        }
-
-        if (state.state_artifact)
-        {
-            const auto expected_schema =
-                CanonicalActionArtifactPayloadSchemaIdentity(
-                    CanonicalAction::
-                        StateSaveImmutableArtifact);
-            const ArtifactReferenceValue& artifact =
-                *state.state_artifact;
-            if (!expected_schema ||
-                artifact.schema != *expected_schema ||
-                artifact.artifact_id.empty() ||
-                !artifact.complete ||
-                artifact.storage_reference.empty() ||
-                artifact.content_hash.empty())
-            {
-                return Reject(
-                    request,
-                    ProgramActionCompletionStatus::Rejected,
-                    "invalid_state_artifact",
-                    "LoadArtifact requires the exact complete immutable state-artifact reference");
-            }
         }
 
         SessionResourceLedger* ledger = session.resources();
@@ -2926,7 +2880,7 @@ struct SessionProgramActionHost::Impl
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Failed,
+                ProgramActionResolutionStatus::Failed,
                 "resource_ledger_unavailable",
                 "Session resource ledger is unavailable");
         }
@@ -2946,7 +2900,7 @@ struct SessionProgramActionHost::Impl
             active.reset();
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Failed,
+                ProgramActionResolutionStatus::Failed,
                 "scope_open_failed",
                 invocation_scope.error.message);
         }
@@ -2955,165 +2909,17 @@ struct SessionProgramActionHost::Impl
             invocation_scope.scope.id);
         active->root_scope = invocation_scope.scope.id;
 
-        ProgramActionCompletion completion = Completion(
+        ProgramActionResolution completion = Completion(
             request,
-            ProgramActionCompletionStatus::Completed);
+            ProgramActionResolutionStatus::Completed);
         if (request.state_already_prepared)
         {
-            current_lineage = state.session_lineage;
             return Immediate(std::move(completion));
         }
-        if (state.policy == InvocationStatePolicy::ContinueSession)
-        {
-            return Immediate(std::move(completion));
-        }
-
-        StateService* states = session.state_service();
-        if (!states)
-        {
-            return FailPreparedState(
-                request,
-                "state_service_unavailable",
-                "StateService is unavailable");
-        }
-
-        if (state.policy == InvocationStatePolicy::Boot)
-        {
-            const SessionOperationReceipt rebooted = session.Reboot();
-            if (!rebooted.ok)
-            {
-                return FailPreparedState(
-                    request,
-                    "session_boot_failed",
-                    rebooted.backend.message.empty()
-                        ? "Fresh session boot failed"
-                        : rebooted.backend.message);
-            }
-
-            const StateHandleReceipt baseline =
-                session.CaptureStateHandle();
-            if (!baseline.result.ok)
-            {
-                return FailPreparedState(
-                    request,
-                    "baseline_capture_failed",
-                    baseline.result.message.empty()
-                        ? "Fresh session baseline capture failed"
-                        : baseline.result.message);
-            }
-            std::string diagnostic;
-            if (!RegisterBaseline(
-                    state.session_lineage,
-                    baseline,
-                    diagnostic))
-            {
-                (void)states->ReleaseMemoryHandle(
-                    baseline.handle);
-                return FailPreparedState(
-                    request,
-                    "baseline_registration_failed",
-                    std::move(diagnostic));
-            }
-            current_lineage = state.session_lineage;
-            completion.resulting_epoch =
-                rebooted.resulting_epoch;
-            PruneReleasedResources();
-            return Immediate(std::move(completion));
-        }
-
-        StateOperationReceipt restored;
-        if (state.state_artifact)
-        {
-            const ArtifactReferenceValue& artifact =
-                *state.state_artifact;
-            const auto same_session =
-                saved_artifacts.find(artifact.artifact_id);
-            if (same_session != saved_artifacts.end() &&
-                same_session->second.path ==
-                    std::filesystem::path(
-                        artifact.storage_reference) &&
-                same_session->second.sha256 ==
-                    artifact.content_hash.ToHex())
-            {
-                restored = session.RestoreStateArtifact(
-                    same_session->second.artifact);
-            }
-            else
-            {
-                const std::filesystem::path state_path(
-                    artifact.storage_reference);
-                const std::filesystem::path movie_sidecar(
-                    state_path.string() + ".dtm");
-                if (std::filesystem::exists(movie_sidecar))
-                {
-                    return FailPreparedState(
-                        request,
-                        "external_movie_metadata_required",
-                        "External movie-backed state requires an exact DTM hash that InvocationStateRequest does not provide");
-                }
-
-                StateFileImportRequest import;
-                import.path = state_path;
-                import.expected_sha256 =
-                    artifact.content_hash.ToHex();
-                import.compatibility =
-                    states->compatibility();
-                // Absence of the exact <state>.dtm sidecar is the only
-                // supported external no-movie declaration in this envelope.
-                import.movie_mode =
-                    ExternalMovieImportMode::NoMovie;
-                import.lineage.edge =
-                    state.session_lineage;
-                import.lineage.producer =
-                    "ProgramRuntime";
-                const StateFileArtifactReceipt imported =
-                    session.ImportStateArtifact(import);
-                if (!imported.result.ok)
-                {
-                    return FailPreparedState(
-                        request,
-                        "state_import_failed",
-                        imported.result.message);
-                }
-                restored = session.RestoreStateArtifact(
-                    imported.artifact);
-                (void)states->ReleaseFileArtifact(
-                    imported.artifact);
-            }
-        }
-        else if (state.policy ==
-                     InvocationStatePolicy::RestoreBaseline &&
-                 !state.session_lineage.empty())
-        {
-            const auto found =
-                baselines.find(state.session_lineage);
-            if (found == baselines.end())
-            {
-                return FailPreparedState(
-                    request,
-                    "baseline_unavailable",
-                    "Requested invocation baseline is unavailable");
-            }
-            restored = session.RestoreStateHandle(
-                found->second.handle);
-        }
-        else
-        {
-            return FailPreparedState(
-                request,
-                "state_artifact_required",
-                "This invocation state policy requires an artifact or registered baseline");
-        }
-        if (!restored.result.ok)
-        {
-            return FailPreparedState(
-                request,
-                "state_restore_failed",
-                restored.result.message);
-        }
-        completion.resulting_epoch = restored.resulting_epoch;
-        current_lineage = state.session_lineage;
-        PruneReleasedResources();
+        // EstablishBaseline deliberately opens only the invocation scope.
+        // Preparation stops the guest core; only successful consumption by
+        // MovieStartPlayback establishes guest state. WorksetEpoch is stable.
+        active->baseline_stage = BaselineStage::AwaitingMoviePreparation;
         return Immediate(std::move(completion));
     }
 
@@ -3136,7 +2942,7 @@ struct SessionProgramActionHost::Impl
         active.reset();
         return Reject(
             request,
-            ProgramActionCompletionStatus::Failed,
+            ProgramActionResolutionStatus::Failed,
             std::move(code),
             std::move(message));
     }
@@ -3168,7 +2974,7 @@ struct SessionProgramActionHost::Impl
         ExecutionTerminalResult terminal);
     void CompleteCleanup(
         ExecutionTerminalResult terminal);
-    [[nodiscard]] ProgramActionCompletion ExecutionCompletion(
+    [[nodiscard]] ProgramActionResolution ExecutionCompletion(
         const PendingExecution& operation,
         const ExecutionTerminalResult& terminal);
     [[nodiscard]] ProgramActionDispatchResult CompleteWithPayload(
@@ -3182,6 +2988,7 @@ struct SessionProgramActionHost::Impl
         ProgramActionRequest request,
         ResourceMapping& mapping,
         CanonicalActionPayload output = {});
+    void AbandonQueuedStagedOutputs() noexcept;
     void ReleaseSavedArtifactRecords() noexcept;
 
     EmulationSession& session;
@@ -3191,11 +2998,9 @@ struct SessionProgramActionHost::Impl
     std::optional<ActiveInvocation> active;
     std::unordered_map<std::uint64_t, ResourceScopeId> scopes;
     std::unordered_map<std::uint64_t, ResourceMapping> resources;
-    std::unordered_map<std::string, BaselineMapping> baselines;
     std::unordered_map<std::string, SavedArtifact> saved_artifacts;
-    std::string current_lineage;
     std::optional<PendingExecution> pending;
-    std::vector<ProgramActionCompletion> completions;
+    std::vector<ActorActionResult> completions;
     std::uint64_t next_resource_handle = 1;
     bool stopped = false;
 };
@@ -3210,7 +3015,7 @@ SessionProgramActionHost::Impl::CompleteWithPayload(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Failed,
+            ProgramActionResolutionStatus::Failed,
             "result_encoding_failed",
             "Canonical action completion has no action identity");
     }
@@ -3222,7 +3027,7 @@ SessionProgramActionHost::Impl::CompleteWithPayload(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Failed,
+            ProgramActionResolutionStatus::Failed,
             "result_encoding_failed",
             "Canonical action output is not an SAP1 receipt");
     }
@@ -3232,13 +3037,13 @@ SessionProgramActionHost::Impl::CompleteWithPayload(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Failed,
+            ProgramActionResolutionStatus::Failed,
             "result_encoding_failed",
             encoded.diagnostic);
     }
-    ProgramActionCompletion completion = Completion(
+    ProgramActionResolution completion = Completion(
         request,
-        ProgramActionCompletionStatus::Completed);
+        ProgramActionResolutionStatus::Completed);
     completion.output = std::move(encoded.graph);
     completion.resources = std::move(acquired);
     return Immediate(std::move(completion));
@@ -3251,7 +3056,7 @@ SessionProgramActionHost::Impl::ResourceFailure(
 {
     return Reject(
         request,
-        ProgramActionCompletionStatus::Failed,
+        ProgramActionResolutionStatus::Failed,
         "resource_registration_failed",
         diagnostic.empty()
             ? "Program resource registration failed"
@@ -3266,7 +3071,7 @@ SessionProgramActionHost::Impl::Dispatch(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "wrong_thread",
             "Program action host dispatch ran outside its actor thread");
     }
@@ -3274,7 +3079,7 @@ SessionProgramActionHost::Impl::Dispatch(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "runtime_stopping",
             "Program action host is shut down");
     }
@@ -3283,7 +3088,7 @@ SessionProgramActionHost::Impl::Dispatch(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "invalid_request",
             "Program action request identities must be nonzero");
     }
@@ -3295,25 +3100,25 @@ SessionProgramActionHost::Impl::Dispatch(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "invocation_mismatch",
             "Program action does not identify the active invocation");
     }
     if (request.operation !=
             ProgramHostOperation::PrepareInvocationState &&
-        request.expected_epoch != session.snapshot().state_epoch)
+        request.expected_epoch != session.snapshot().workset_epoch)
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::StaleEpoch,
+            ProgramActionResolutionStatus::StaleEpoch,
             "stale_epoch",
-            "Program action expected a stale StateEpoch");
+            "Program action expected a stale WorksetEpoch");
     }
     if (pending)
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "action_pending",
             "A program action is already awaiting service completion");
     }
@@ -3321,7 +3126,7 @@ SessionProgramActionHost::Impl::Dispatch(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "completion_capacity_exhausted",
             "Program action completions must be drained before accepting more work");
     }
@@ -3330,7 +3135,7 @@ SessionProgramActionHost::Impl::Dispatch(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::TimedOut,
+            ProgramActionResolutionStatus::TimedOut,
             "action_deadline",
             "Program action request reached its effective deadline before dispatch");
     }
@@ -3345,8 +3150,8 @@ SessionProgramActionHost::Impl::Dispatch(
             return Reject(
                 request,
                 effects
-                    ? ProgramActionCompletionStatus::Rejected
-                    : ProgramActionCompletionStatus::Unsupported,
+                    ? ProgramActionResolutionStatus::Rejected
+                    : ProgramActionResolutionStatus::Unsupported,
                 effects
                     ? "action_effect_not_authorized"
                     : "unsupported_action",
@@ -3354,6 +3159,15 @@ SessionProgramActionHost::Impl::Dispatch(
                     ? "Invocation policy does not authorize every declared action effect"
                     : "The exact action identity has no registered effect contract");
         }
+    }
+    if (request.operation == ProgramHostOperation::FinishInvocation &&
+        active && active->baseline_stage != BaselineStage::Established)
+    {
+        return Reject(
+            request,
+            ProgramActionResolutionStatus::Rejected,
+            "baseline_not_established",
+            "An EstablishBaseline invocation cannot return successfully before movie playback establishes guest state");
     }
 
     switch (request.operation)
@@ -3373,7 +3187,7 @@ SessionProgramActionHost::Impl::Dispatch(
     }
     return Reject(
         request,
-        ProgramActionCompletionStatus::Rejected,
+        ProgramActionResolutionStatus::Rejected,
         "unknown_host_operation",
         "Program action host operation is unknown");
 }
@@ -3387,7 +3201,7 @@ SessionProgramActionHost::Impl::OpenScope(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "invalid_scope",
             "Program lexical scope mapping is malformed");
     }
@@ -3396,7 +3210,7 @@ SessionProgramActionHost::Impl::OpenScope(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Failed,
+            ProgramActionResolutionStatus::Failed,
             "resource_ledger_unavailable",
             "Session resource ledger is unavailable");
     }
@@ -3409,14 +3223,14 @@ SessionProgramActionHost::Impl::OpenScope(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Failed,
+            ProgramActionResolutionStatus::Failed,
             "scope_open_failed",
             opened.error.message);
     }
     scopes.emplace(request.scope.value(), opened.scope.id);
     return Immediate(Completion(
         request,
-        ProgramActionCompletionStatus::Completed));
+        ProgramActionResolutionStatus::Completed));
 }
 
 ProgramActionDispatchResult
@@ -3427,9 +3241,9 @@ SessionProgramActionHost::Impl::BeginUnwind(
 {
     if (unwind.completed())
     {
-        ProgramActionCompletion completion = Completion(
+        ProgramActionResolution completion = Completion(
             request,
-            ProgramActionCompletionStatus::Completed);
+            ProgramActionResolutionStatus::Completed);
         completion.cleanup_receipts =
             MakeCleanupReceipts(unwind.steps);
         completion.cleanup = CleanupStatusOf(unwind.disposition);
@@ -3470,7 +3284,7 @@ SessionProgramActionHost::Impl::BeginUnwind(
             "Program resource cleanup could not advance the guest");
         return Reject(
             failed_request,
-            ProgramActionCompletionStatus::CleanupFailed,
+            ProgramActionResolutionStatus::CleanupFailed,
             "cleanup_execution_failed",
             "Program resource cleanup could not submit its bounded frame advance");
     }
@@ -3489,15 +3303,15 @@ SessionProgramActionHost::Impl::BeginUnwind(
     ProgramActionDispatchResult failed = Reject(
         request,
         taint
-            ? ProgramActionCompletionStatus::CleanupFailed
-            : ProgramActionCompletionStatus::Failed,
+            ? ProgramActionResolutionStatus::CleanupFailed
+            : ProgramActionResolutionStatus::Failed,
         taint ? "cleanup_failed" : "scope_close_failed",
         unwind.error.message.empty()
             ? "Program resource unwind failed"
             : unwind.error.message);
-    if (failed.immediate_completion)
+    if (failed.immediate_result)
     {
-        failed.immediate_completion->cleanup_receipts =
+        failed.immediate_result->resolution.cleanup_receipts =
             MakeCleanupReceipts(unwind.steps);
     }
     return failed;
@@ -3516,7 +3330,7 @@ SessionProgramActionHost::Impl::CloseScope(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "scope_unavailable",
             "Program scope is not mapped to the session ledger");
     }
@@ -3537,7 +3351,7 @@ SessionProgramActionHost::Impl::Promote(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "resource_unavailable",
             "Program resource or promotion scope is unavailable");
     }
@@ -3547,13 +3361,13 @@ SessionProgramActionHost::Impl::Promote(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "promotion_rejected",
             promoted.error.message);
     }
     return Immediate(Completion(
         request,
-        ProgramActionCompletionStatus::Completed));
+        ProgramActionResolutionStatus::Completed));
 }
 
 ProgramActionDispatchResult
@@ -3564,7 +3378,7 @@ SessionProgramActionHost::Impl::Invoke(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "missing_action",
             "Program action request has no exact action identity");
     }
@@ -3573,6 +3387,14 @@ SessionProgramActionHost::Impl::Invoke(
         *request.action ==
             capabilities::NavigationCaptureContextActionIdentity())
     {
+        if (active && active->baseline_stage != BaselineStage::Established)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "baseline_not_established",
+                "Guest context reads are unavailable before baseline establishment");
+        }
         return InvokeSourceQuery(std::move(request));
     }
     const auto canonical = ResolveCanonicalAction(*request.action);
@@ -3580,9 +3402,28 @@ SessionProgramActionHost::Impl::Invoke(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Unsupported,
+            ProgramActionResolutionStatus::Unsupported,
             "unsupported_action",
             "The exact action identity has no session host implementation");
+    }
+    if (*canonical == CanonicalAction::MoviePrepareReadOnlyPlayback &&
+        (!active || active->baseline_stage !=
+            BaselineStage::AwaitingMoviePreparation))
+    {
+        return Reject(
+            request,
+            ProgramActionResolutionStatus::Rejected,
+            "invalid_baseline_stage",
+            "Movie preparation is available only as the first EstablishBaseline lifecycle action");
+    }
+    if (*canonical == CanonicalAction::MovieStartPlayback &&
+        (!active || active->baseline_stage != BaselineStage::MoviePrepared))
+    {
+        return Reject(
+            request,
+            ProgramActionResolutionStatus::Rejected,
+            "invalid_baseline_stage",
+            "MovieStartPlayback requires the current invocation's prepared movie boundary");
     }
     CanonicalActionPayload payload;
     const TypeRef input_type =
@@ -3590,6 +3431,17 @@ SessionProgramActionHost::Impl::Invoke(
     if (input_type.named &&
         input_type.named->canonical_id.ends_with(".Result"))
     {
+        if (active &&
+            active->baseline_stage != BaselineStage::Established &&
+            !(*canonical == CanonicalAction::MovieStartPlayback &&
+              active->baseline_stage == BaselineStage::MoviePrepared))
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "baseline_not_established",
+                "Guest-dependent resource actions are unavailable before baseline establishment");
+        }
         const ProgramValue* root = RootValue(request.input);
         const auto* handle = root
             ? std::get_if<ResourceHandleValue>(&root->payload)
@@ -3601,7 +3453,7 @@ SessionProgramActionHost::Impl::Invoke(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "invalid_resource_handle",
                 "Canonical action requires its exact typed resource handle");
         }
@@ -3617,7 +3469,7 @@ SessionProgramActionHost::Impl::Invoke(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "invalid_action_payload",
             "Canonical action has no nominal request schema");
     }
@@ -3637,11 +3489,29 @@ SessionProgramActionHost::Impl::Invoke(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "invalid_action_payload",
             diagnostic.empty()
                 ? "Canonical action payload is malformed"
                 : std::move(diagnostic));
+    }
+    if (active && active->baseline_stage != BaselineStage::Established)
+    {
+        const bool prepare =
+            *canonical == CanonicalAction::MoviePrepareReadOnlyPlayback &&
+            active->baseline_stage ==
+                BaselineStage::AwaitingMoviePreparation;
+        const bool passive_subscription =
+            *canonical == CanonicalAction::StopPointsSubscribeGroup &&
+            active->baseline_stage == BaselineStage::MoviePrepared;
+        if (!prepare && !passive_subscription)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "baseline_not_established",
+                "Movie preparation must precede passive stop subscriptions and MovieStartPlayback");
+        }
     }
     return InvokeCanonical(
         std::move(request),
@@ -3667,7 +3537,7 @@ SessionProgramActionHost::Impl::InvokeSourceQuery(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "invalid_context_request",
             "Coherent context request has malformed or stale routed evidence");
     }
@@ -3679,7 +3549,7 @@ SessionProgramActionHost::Impl::InvokeSourceQuery(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Failed,
+            ProgramActionResolutionStatus::Failed,
             "observation_point_unavailable",
             "Coherent context acquisition is not paused at its bound receipt PC");
     }
@@ -3688,14 +3558,14 @@ SessionProgramActionHost::Impl::InvokeSourceQuery(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Unsupported,
+            ProgramActionResolutionStatus::Unsupported,
             "guest_memory_unavailable",
             "GuestMemory is unavailable");
     }
 
-    ProgramActionCompletion completion = Completion(
+    ProgramActionResolution completion = Completion(
         request,
-        ProgramActionCompletionStatus::Completed);
+        ProgramActionResolutionStatus::Completed);
     std::string diagnostic;
     if (battle)
     {
@@ -3708,7 +3578,7 @@ SessionProgramActionHost::Impl::InvokeSourceQuery(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Failed,
+                ProgramActionResolutionStatus::Failed,
                 "battle_context_unavailable",
                 std::move(diagnostic));
         }
@@ -3727,7 +3597,7 @@ SessionProgramActionHost::Impl::InvokeSourceQuery(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Failed,
+                ProgramActionResolutionStatus::Failed,
                 "navigation_context_unavailable",
                 std::move(diagnostic));
         }
@@ -3750,7 +3620,7 @@ SessionProgramActionHost::Impl::ReleaseMappedResource(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Failed,
+            ProgramActionResolutionStatus::Failed,
             "resource_ledger_unavailable",
             "Session resource ledger is unavailable");
     }
@@ -3773,18 +3643,18 @@ SessionProgramActionHost::Impl::ReleaseMappedResource(
                     CompleteWithPayload(
                     std::move(request),
                     std::move(output));
-                if (completed.immediate_completion)
+                if (completed.immediate_result)
                 {
-                    completed.immediate_completion->
+                    completed.immediate_result->resolution.
                         cleanup_receipts =
                             std::move(cleanup_receipts);
                 }
                 return completed;
             }
         }
-        ProgramActionCompletion completion = Completion(
+        ProgramActionResolution completion = Completion(
             request,
-            ProgramActionCompletionStatus::Completed);
+            ProgramActionResolutionStatus::Completed);
         completion.cleanup_receipts =
             std::move(cleanup_receipts);
         return Immediate(std::move(completion));
@@ -3811,7 +3681,7 @@ SessionProgramActionHost::Impl::ReleaseMappedResource(
             "Program resource release could not advance the guest");
         return Reject(
             failed,
-            ProgramActionCompletionStatus::CleanupFailed,
+            ProgramActionResolutionStatus::CleanupFailed,
             "cleanup_execution_failed",
             "Program resource release could not submit its bounded frame advance");
     }
@@ -3823,15 +3693,15 @@ SessionProgramActionHost::Impl::ReleaseMappedResource(
     ProgramActionDispatchResult failed = Reject(
         request,
         taint
-            ? ProgramActionCompletionStatus::CleanupFailed
-            : ProgramActionCompletionStatus::Failed,
+            ? ProgramActionResolutionStatus::CleanupFailed
+            : ProgramActionResolutionStatus::Failed,
         "resource_release_failed",
         unwind.error.message.empty()
             ? "Program resource release failed"
             : unwind.error.message);
-    if (failed.immediate_completion)
+    if (failed.immediate_result)
     {
-        failed.immediate_completion->cleanup_receipts =
+        failed.immediate_result->resolution.cleanup_receipts =
             MakeCleanupReceipts(unwind.steps);
     }
     return failed;
@@ -3847,7 +3717,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
     {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Rejected,
+            ProgramActionResolutionStatus::Rejected,
             "invalid_enum_value",
             "Canonical action payload contains an unknown numeric policy value in field " +
                 std::to_string(
@@ -3865,18 +3735,18 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         [&](ProgramActionRequest completed_request,
             const ProgramActionResource& resource)
             -> ProgramActionDispatchResult {
-        ProgramActionCompletion completion = Completion(
+        ProgramActionResolution completion = Completion(
             completed_request,
-            ProgramActionCompletionStatus::Completed);
+            ProgramActionResolutionStatus::Completed);
         completion.output = ResourceHandleGraph(
             action,
             resource.handle,
-            resource.origin_epoch);
+            resource.acquisition_epoch);
         if (completion.output.values.empty())
         {
             return Reject(
                 completed_request,
-                ProgramActionCompletionStatus::Failed,
+                ProgramActionResolutionStatus::Failed,
                 "result_encoding_failed",
                 "Resource handle result schema is unavailable");
         }
@@ -3887,184 +3757,36 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         [&](std::string code, std::string message) {
         return Reject(
             request,
-            ProgramActionCompletionStatus::Failed,
+            ProgramActionResolutionStatus::Failed,
             std::move(code),
             std::move(message));
     };
 
     switch (action)
     {
-    case CanonicalAction::StateCapture:
+    case CanonicalAction::SavestateSaveImmutableArtifact:
     {
-        StateService* states = session.state_service();
-        if (!states)
-        {
-            return Reject(
-                request,
-                ProgramActionCompletionStatus::Unsupported,
-                "state_service_unavailable",
-                "StateService is unavailable");
-        }
-        const StateHandleReceipt captured =
-            session.CaptureStateHandle();
-        if (!captured.result.ok)
-        {
-            return service_failure(
-                "state_capture_failed",
-                captured.result.message);
-        }
-        std::string diagnostic;
-        std::optional<ProgramActionResource> resource;
-        if (const auto key = payload.Utf8(Field::BaselineKey);
-            key && !key->empty())
-        {
-            const std::string baseline_key(*key);
-            if (!RegisterBaseline(
-                    baseline_key,
-                    captured,
-                    diagnostic))
-            {
-                (void)states->ReleaseMemoryHandle(
-                    captured.handle);
-                return ResourceFailure(
-                    std::move(request),
-                    diagnostic);
-            }
-            if (next_resource_handle == 0 ||
-                next_resource_handle ==
-                    std::numeric_limits<std::uint64_t>::max())
-            {
-                session.MarkTainted(
-                    "Program resource handle identity space is exhausted after baseline registration");
-                return ResourceFailure(
-                    std::move(request),
-                    "Program resource handle identity space is exhausted");
-            }
-            const BaselineMapping& baseline =
-                baselines.at(baseline_key);
-            ResourceMapping mapping;
-            mapping.handle = ProgramResourceHandleId(
-                next_resource_handle++);
-            mapping.receipt = baseline.receipt;
-            mapping.kind = ResourceKind::StateHandle;
-            mapping.epoch = captured.captured_epoch;
-            mapping.origin_epoch = std::nullopt;
-            mapping.concrete_id =
-                captured.handle.value();
-            resource = ProgramActionResource{
-                mapping.handle,
-                mapping.receipt,
-                mapping.kind,
-                mapping.epoch,
-                mapping.origin_epoch};
-            resources.emplace(
-                mapping.handle.value(),
-                std::move(mapping));
-        }
-        else
-        {
-            resource = RegisterResource(
-                request.scope,
-                ResourceKind::StateHandle,
-                kStateService,
-                captured.captured_epoch,
-                [states, handle = captured.handle](
-                    const ResourceReleaseRequest&) {
-                    const StateServiceResult released =
-                        states->ReleaseMemoryHandle(handle);
-                    return ResourceReleaseResult{
-                        released.ok
-                            ? ResourceReleaseStatus::Released
-                            : ResourceReleaseStatus::Failed,
-                        released.message};
-                },
-                captured.handle.value(),
-                {},
-                "program state handle",
-                diagnostic,
-                ResourceEpochPolicy::EpochAgnostic);
-        }
-        if (!resource)
-            return ResourceFailure(std::move(request), diagnostic);
-        return complete_resource(std::move(request), *resource);
-    }
-    case CanonicalAction::StateRestore:
-    case CanonicalAction::StateRestoreBaseline:
-    {
-        StateService* states = session.state_service();
-        if (!states)
-        {
-            return Reject(
-                request,
-                ProgramActionCompletionStatus::Unsupported,
-                "state_service_unavailable",
-                "StateService is unavailable");
-        }
-        StateHandleId handle;
-        if (ResourceMapping* mapping = require_handle();
-            mapping && mapping->kind == ResourceKind::StateHandle)
-        {
-            handle = StateHandleId(mapping->concrete_id);
-        }
-        else if (const auto key = payload.Utf8(Field::BaselineKey);
-                 key && baselines.contains(std::string(*key)))
-        {
-            handle = baselines.at(std::string(*key)).handle;
-        }
-        if (!handle)
-        {
-            return Reject(
-                request,
-                ProgramActionCompletionStatus::Rejected,
-                "state_handle_unavailable",
-                "State restore requires a current typed state handle or baseline");
-        }
-        const StateOperationReceipt restored =
-            session.RestoreStateHandle(handle);
-        if (!restored.result.ok)
-        {
-            return service_failure(
-                "state_restore_failed",
-                restored.result.message);
-        }
-        PruneReleasedResources();
-        CanonicalActionPayload result;
-        (void)result.AddUnsigned(
-            Field::ResultEpoch,
-            restored.resulting_epoch.value());
-        ProgramActionDispatchResult completed =
-            CompleteWithPayload(
-                std::move(request),
-                std::move(result));
-        if (completed.immediate_completion)
-        {
-            completed.immediate_completion->resulting_epoch =
-                restored.resulting_epoch;
-        }
-        return completed;
-    }
-    case CanonicalAction::StateSaveImmutableArtifact:
-    {
-        StateService* states = session.state_service();
+        const bool has_active_workset =
+            static_cast<bool>(session.snapshot().workset_epoch);
         const auto path = payload.Utf8(Field::Path);
-        if (!states || !path || path->empty())
+        if (!has_active_workset || !path || path->empty())
         {
             return Reject(
                 request,
-                states
-                    ? ProgramActionCompletionStatus::Rejected
-                    : ProgramActionCompletionStatus::Unsupported,
+                has_active_workset
+                    ? ProgramActionResolutionStatus::Rejected
+                    : ProgramActionResolutionStatus::Unsupported,
                 "invalid_artifact_request",
-                "State artifact capture requires StateService and a caller-declared path");
+                "State artifact capture requires SavestateService and a caller-declared path");
         }
-        StateFileCaptureRequest capture;
+        SavestateCaptureRequest capture;
         capture.path = std::filesystem::path(*path);
         capture.lineage.edge = std::string(
             payload.Utf8(Field::Label).value_or(
                 "program state artifact"));
         capture.lineage.producer = "ProgramRuntime";
-        ImmutableStateArtifactCaptureReceipt artifact =
-            session.CaptureImmutableStateArtifact(capture);
+        ImmutableSavestateArtifactCaptureReceipt artifact =
+            session.CaptureImmutableSavestateArtifact(capture);
         if (!artifact.result.ok)
         {
             return service_failure(
@@ -4088,7 +3810,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 Field::Publication,
                 "pending"))
         {
-            (void)session.AbandonImmutableStateArtifact(
+            (void)session.AbandonImmutableSavestateArtifact(
                 artifact.artifact);
             return service_failure(
                 "result_encoding_failed",
@@ -4098,18 +3820,18 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             CompleteWithPayload(
                 std::move(request),
                 std::move(result));
-        if (!completed.immediate_completion)
+        if (!completed.immediate_result)
         {
-            (void)session.AbandonImmutableStateArtifact(
+            (void)session.AbandonImmutableSavestateArtifact(
                 artifact.artifact);
             return service_failure(
                 "result_encoding_failed",
                 "Pending state-artifact receipt was not completed");
         }
-        completed.immediate_completion
-            ->pending_state_artifacts.push_back({
-            artifact_id,
-            std::move(artifact)});
+        completed.immediate_result->staged_outputs.emplace_back(
+            StagedSavestateOutput{
+                std::move(artifact_id),
+                std::move(artifact)});
         return completed;
     }
     case CanonicalAction::ExecutionContinueUntil:
@@ -4122,7 +3844,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "stop_group_unavailable",
                 "ContinueUntil requires its exact passive stop-group handle");
         }
@@ -4154,7 +3876,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             {
                 return Reject(
                     request,
-                    ProgramActionCompletionStatus::Rejected,
+                    ProgramActionResolutionStatus::Rejected,
                     "stop_group_not_passive",
                     "ContinueUntil can promote only a passive Observe/Pass stop group");
             }
@@ -4173,7 +3895,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "invalid_stop_alternatives",
                 "ContinueUntil passive group has no bounded alternatives");
         }
@@ -4189,8 +3911,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 return Reject(
                     request,
                     input
-                        ? ProgramActionCompletionStatus::Rejected
-                        : ProgramActionCompletionStatus::Unsupported,
+                        ? ProgramActionResolutionStatus::Rejected
+                        : ProgramActionResolutionStatus::Unsupported,
                     "input_relationship_invalid",
                     "ContinueUntil requires a complete typed input publication receipt");
             }
@@ -4201,18 +3923,58 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             {
                 return Reject(
                     request,
-                    ProgramActionCompletionStatus::Rejected,
+                    ProgramActionResolutionStatus::Rejected,
                     "input_relationship_invalid",
                     relationship.message);
             }
             input_relationship = relationship.binding;
         }
+        std::optional<std::uint64_t> expected_movie_input_count;
+        if (const auto expected = payload.Unsigned(
+                Field::ExpectedMovieInputCount))
+        {
+            expected_movie_input_count = *expected;
+        }
+        if (const auto playback_handle = payload.Unsigned(
+                Field::PlaybackHandle))
+        {
+            PruneReleasedResources();
+            ResourceMapping* playback = Resource(
+                ProgramResourceHandleId(*playback_handle));
+            MovieService* movies = session.movie_service();
+            if (!playback ||
+                playback->kind != ResourceKind::MovieSession ||
+                playback->concrete_id != static_cast<std::uint64_t>(
+                    MovieActivity::ReadOnlyPlayback) ||
+                !movies ||
+                movies->activity() != MovieActivity::ReadOnlyPlayback)
+            {
+                return Reject(
+                    request,
+                    movies
+                        ? ProgramActionResolutionStatus::Rejected
+                        : ProgramActionResolutionStatus::Unsupported,
+                    "movie_session_unavailable",
+                    "ContinueUntil requires its exact live read-only playback handle");
+            }
+        }
+        else if (expected_movie_input_count)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "movie_session_required",
+                "ContinueUntil input-count observation requires playback ownership");
+        }
         ExecutionRequestPolicy policy =
             ExecutionPolicy(request, payload);
+        if (payload.Contains(Field::PlaybackHandle))
+            policy.movie_ended = MovieEndedPolicy::Complete;
         policy.input_relationship = input_relationship;
         ContinueUntilRequest execution{
             std::move(policy),
-            std::move(wake)};
+            std::move(wake),
+            expected_movie_input_count};
         return SubmitExecutionAction(
             std::move(request),
             std::move(execution),
@@ -4228,7 +3990,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "invalid_step_count",
                 "Frame step count is outside its bounded range");
         }
@@ -4245,7 +4007,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Unsupported,
+                ProgramActionResolutionStatus::Unsupported,
                 "stop_router_unavailable",
                 "StopPointRouter is unavailable");
         }
@@ -4258,7 +4020,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "invalid_stop_group",
                 "Stop group requires bounded PC alternatives");
         }
@@ -4267,11 +4029,6 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             subscription.consumer = &stop_consumer;
         }
-        const ResourceEpochPolicy resource_epoch_policy =
-            definition.epoch_policy ==
-                StopEpochPolicy::EndOnEpochChange
-            ? ResourceEpochPolicy::EndOnEpochChange
-            : ResourceEpochPolicy::EpochAgnostic;
         StopGroupRegistrationOptions options;
         options.current_point =
             static_cast<StopCurrentPointPolicy>(UnsignedOr(
@@ -4310,8 +4067,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             registered.receipt.lease.group_id.value(),
             group,
             "program stop-point group",
-            diagnostic,
-            resource_epoch_policy);
+            diagnostic);
         if (!resource)
             return ResourceFailure(std::move(request), diagnostic);
         if (ResourceMapping* mapping =
@@ -4331,7 +4087,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "stop_group_unavailable",
                 "Stop group replacement requires its typed handle");
         }
@@ -4344,23 +4100,11 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             mapping->stop_group->lease().group_id;
         definition.source.id =
             mapping->stop_group->lease().source_id;
-        const bool replacement_epoch_agnostic =
-            definition.epoch_policy !=
-                StopEpochPolicy::EndOnEpochChange;
-        if (replacement_epoch_agnostic !=
-            !mapping->origin_epoch.has_value())
-        {
-            return Reject(
-                request,
-                ProgramActionCompletionStatus::Rejected,
-                "stop_group_epoch_policy_changed",
-                "Stop group replacement cannot change the resource handle epoch policy");
-        }
         if (definition.subscriptions.empty())
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "invalid_stop_group",
                 "Replacement stop group requires bounded PC alternatives");
         }
@@ -4380,13 +4124,13 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 replaced.error.message);
         }
         mapping->stop_group_definition = retained_definition;
-        ProgramActionCompletion completion = Completion(
+        ProgramActionResolution completion = Completion(
             request,
-            ProgramActionCompletionStatus::Completed);
+            ProgramActionResolutionStatus::Completed);
         completion.output = ResourceHandleGraph(
             action,
             mapping->handle,
-            mapping->origin_epoch);
+            mapping->epoch);
         return Immediate(std::move(completion));
     }
     case CanonicalAction::InputAcquireLease:
@@ -4396,7 +4140,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Unsupported,
+                ProgramActionResolutionStatus::Unsupported,
                 "input_unavailable",
                 "InputArbiter is unavailable");
         }
@@ -4438,14 +4182,6 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             leased.epoch,
             [input, lease = leased.lease, neutral](
                 const ResourceReleaseRequest& release) mutable {
-                if (release.reason ==
-                        ResourceReleaseReason::StateEpochChanged)
-                {
-                    return ResourceReleaseResult{
-                        ResourceReleaseStatus::
-                            SupersededByStateReplacement,
-                        {}};
-                }
                 if (!*neutral)
                 {
                     const InputReleaseReceipt begun =
@@ -4511,8 +4247,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             return Reject(
                 request,
                 input
-                    ? ProgramActionCompletionStatus::Rejected
-                    : ProgramActionCompletionStatus::Unsupported,
+                    ? ProgramActionResolutionStatus::Rejected
+                    : ProgramActionResolutionStatus::Unsupported,
                 "input_lease_unavailable",
                 "Input action requires a current typed input lease");
         }
@@ -4526,7 +4262,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             {
                 return Reject(
                     request,
-                    ProgramActionCompletionStatus::Rejected,
+                    ProgramActionResolutionStatus::Rejected,
                     "publication_required",
                     "Input poll requires a publication token");
             }
@@ -4539,7 +4275,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 {
                     return Reject(
                         request,
-                        ProgramActionCompletionStatus::Rejected,
+                        ProgramActionResolutionStatus::Rejected,
                         "input_publication_mismatch",
                         "Input poll receipt does not match its exact lease and epoch");
                 }
@@ -4549,7 +4285,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 {
                     return Reject(
                         request,
-                        ProgramActionCompletionStatus::Rejected,
+                        ProgramActionResolutionStatus::Rejected,
                         "input_publication_mismatch",
                         std::string(validated.message));
                 }
@@ -4594,7 +4330,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             {
                 return Reject(
                     request,
-                    ProgramActionCompletionStatus::Rejected,
+                    ProgramActionResolutionStatus::Rejected,
                     "invalid_input_frame",
                     "Held input requires one canonical GC frame");
             }
@@ -4666,8 +4402,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             return Reject(
                 request,
                 input
-                    ? ProgramActionCompletionStatus::Rejected
-                    : ProgramActionCompletionStatus::Unsupported,
+                    ? ProgramActionResolutionStatus::Rejected
+                    : ProgramActionResolutionStatus::Unsupported,
                 "input_lease_unavailable",
                 "Input sequence requires a current typed input lease");
         }
@@ -4682,7 +4418,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             {
                 return Reject(
                     request,
-                    ProgramActionCompletionStatus::Rejected,
+                    ProgramActionResolutionStatus::Rejected,
                     "invalid_input_frame",
                     "Input pulse requires one canonical GC frame");
             }
@@ -4697,7 +4433,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             {
                 return Reject(
                     request,
-                    ProgramActionCompletionStatus::Rejected,
+                    ProgramActionResolutionStatus::Rejected,
                     "invalid_input_sequence",
                     "Input sequence is empty, malformed, or over its bound");
             }
@@ -4730,6 +4466,90 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             PendingKind::InputAdvance,
             binding.binding);
     }
+    case CanonicalAction::MoviePrepareReadOnlyPlayback:
+    {
+        MovieService* movies = session.movie_service();
+        const auto path = payload.Utf8(Field::Path);
+        if (!movies || !path || path->empty())
+        {
+            return Reject(
+                request,
+                movies
+                    ? ProgramActionResolutionStatus::Rejected
+                    : ProgramActionResolutionStatus::Unsupported,
+                movies ? "movie_path_required" : "movie_service_unavailable",
+                movies
+                    ? "Movie preparation requires a caller-declared DTM path"
+                    : "MovieService is unavailable");
+        }
+        const MovieOperationReceipt prepared =
+            movies->PrepareReadOnlyPlayback({
+                .dtm_path = std::filesystem::path(*path)});
+        if (!prepared.result.ok || !prepared.preparation)
+        {
+            if (prepared.result.integrity == GuestIntegrity::Unknown)
+            {
+                session.MarkTainted(
+                    prepared.result.message.empty()
+                        ? "Movie preparation left guest integrity unknown"
+                        : prepared.result.message);
+            }
+            return service_failure(
+                "movie_prepare_failed",
+                prepared.result.message.empty()
+                    ? "MovieService returned an invalid preparation"
+                    : prepared.result.message);
+        }
+
+        auto consumed = std::make_shared<bool>(false);
+        std::string diagnostic;
+        auto resource = RegisterResource(
+            request.scope,
+            ResourceKind::PreparedMoviePlayback,
+            kMovieService,
+            prepared.workset_epoch,
+            [movies,
+             preparation = prepared.preparation,
+             consumed](const ResourceReleaseRequest&) {
+                if (*consumed)
+                {
+                    return ResourceReleaseResult{
+                        ResourceReleaseStatus::Released,
+                        {}};
+                }
+                const MovieOperationReceipt abandoned =
+                    movies->AbandonPreparedReadOnlyPlayback(preparation);
+                return ResourceReleaseResult{
+                    abandoned.result.ok
+                        ? ResourceReleaseStatus::Released
+                        : ResourceReleaseStatus::Failed,
+                    abandoned.result.message};
+            },
+            prepared.preparation.value(),
+            {},
+            "prepared read-only movie playback",
+            diagnostic);
+        if (!resource)
+            return ResourceFailure(std::move(request), diagnostic);
+        if (ResourceMapping* mapping = Resource(resource->handle))
+        {
+            mapping->artifact_path = prepared.artifact_path;
+            mapping->finalized = consumed;
+        }
+        ProgramActionDispatchResult completed =
+            complete_resource(std::move(request), *resource);
+        if (completed.immediate_result)
+            completed.immediate_result->resolution.workset_epoch =
+                prepared.workset_epoch;
+        if (active && completed.accepted &&
+            completed.immediate_result &&
+            completed.immediate_result->resolution.status ==
+                ProgramActionResolutionStatus::Completed)
+        {
+            active->baseline_stage = BaselineStage::MoviePrepared;
+        }
+        return completed;
+    }
     case CanonicalAction::MovieStartPlayback:
     case CanonicalAction::MovieStartRecording:
     {
@@ -4738,7 +4558,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Unsupported,
+                ProgramActionResolutionStatus::Unsupported,
                 "movie_service_unavailable",
                 "MovieService is unavailable");
         }
@@ -4747,22 +4567,41 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         if (action ==
             CanonicalAction::MovieStartPlayback)
         {
-            const auto path = payload.Utf8(Field::Path);
-            if (!path || path->empty())
+            ResourceMapping* preparation = require_handle();
+            if (!preparation ||
+                preparation->kind != ResourceKind::PreparedMoviePlayback ||
+                !preparation->finalized)
             {
                 return Reject(
                     request,
-                    ProgramActionCompletionStatus::Rejected,
-                    "movie_path_required",
-                    "Movie playback requires a caller-declared DTM path");
+                    ProgramActionResolutionStatus::Rejected,
+                    "movie_preparation_unavailable",
+                    "Movie playback requires its exact prepared-movie handle");
             }
-            MoviePlaybackRequest playback;
-            playback.dtm_path = std::filesystem::path(*path);
-            playback.boot.diagnostic_label = std::string(
-                payload.Utf8(Field::Label).value_or(
-                    "program movie playback"));
             started =
-                movies->StartReadOnlyPlayback(playback);
+                movies->StartPreparedReadOnlyPlayback(
+                    MoviePreparationId(preparation->concrete_id));
+            if (started.result.ok)
+            {
+                *preparation->finalized = true;
+                SessionResourceLedger* ledger = session.resources();
+                SessionResourceBindingTable* bindings =
+                    session.resource_bindings();
+                const ProgramResourceHandleId consumed_handle =
+                    preparation->handle;
+                if (!ledger || !bindings ||
+                    !ledger->Release(
+                        preparation->receipt,
+                        *bindings).completed())
+                {
+                    session.MarkTainted(
+                        "Prepared movie handle could not be consumed after playback started");
+                    return service_failure(
+                        "movie_preparation_cleanup_failed",
+                        "Prepared movie handle could not be consumed after playback started");
+                }
+                resources.erase(consumed_handle.value());
+            }
         }
         else
         {
@@ -4776,7 +4615,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             {
                 return Reject(
                     request,
-                    ProgramActionCompletionStatus::Rejected,
+                    ProgramActionResolutionStatus::Rejected,
                     "movie_artifact_path_required",
                     "Movie recording start must declare its immutable DTM output path");
             }
@@ -4784,6 +4623,13 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         }
         if (!started.result.ok)
         {
+            if (started.result.integrity == GuestIntegrity::Unknown)
+            {
+                session.MarkTainted(
+                    started.result.message.empty()
+                        ? "Movie start left guest integrity unknown"
+                        : started.result.message);
+            }
             return service_failure(
                 "movie_start_failed",
                 started.result.message);
@@ -4796,10 +4642,10 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             request.scope,
             ResourceKind::MovieSession,
             kMovieService,
-            started.state_epoch,
+            started.workset_epoch,
             [movies,
              activity,
-             acquisition_epoch = started.state_epoch,
+             acquisition_epoch = started.workset_epoch,
              finalized](
                 const ResourceReleaseRequest& release) {
                 if (*finalized)
@@ -4849,10 +4695,19 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             static_cast<std::uint64_t>(activity),
             {},
             "program movie session",
-            diagnostic,
-            ResourceEpochPolicy::EpochAgnostic);
+            diagnostic);
         if (!resource)
+        {
+            if (activity == MovieActivity::ReadOnlyPlayback)
+            {
+                const MovieOperationReceipt compensated =
+                    movies->StopPlayback();
+                if (!compensated.result.ok)
+                    session.MarkTainted(
+                        "Movie playback could not be compensated after resource registration failed");
+            }
             return ResourceFailure(std::move(request), diagnostic);
+        }
         ResourceMapping* mapping = Resource(resource->handle);
         if (mapping)
         {
@@ -4861,10 +4716,18 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         }
         ProgramActionDispatchResult completed =
             complete_resource(std::move(request), *resource);
-        if (completed.immediate_completion)
+        if (completed.immediate_result)
         {
-            completed.immediate_completion->resulting_epoch =
-                started.state_epoch;
+            completed.immediate_result->resolution.workset_epoch =
+                started.workset_epoch;
+        }
+        if (action == CanonicalAction::MovieStartPlayback &&
+            active && completed.accepted &&
+            completed.immediate_result &&
+            completed.immediate_result->resolution.status ==
+                ProgramActionResolutionStatus::Completed)
+        {
+            active->baseline_stage = BaselineStage::Established;
         }
         return completed;
     }
@@ -4876,7 +4739,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "movie_session_unavailable",
                 "Movie stop requires its typed playback handle");
         }
@@ -4895,8 +4758,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             return Reject(
                 request,
                 movies
-                    ? ProgramActionCompletionStatus::Rejected
-                    : ProgramActionCompletionStatus::Unsupported,
+                    ? ProgramActionResolutionStatus::Rejected
+                    : ProgramActionResolutionStatus::Unsupported,
                 "movie_session_unavailable",
                 "Movie finalization requires its typed recording handle");
         }
@@ -4911,9 +4774,9 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         }
         if (mapping->finalized)
             *mapping->finalized = true;
-        ProgramActionCompletion completion = Completion(
+        ProgramActionResolution completion = Completion(
             request,
-            ProgramActionCompletionStatus::Completed);
+            ProgramActionResolutionStatus::Completed);
         completion.output = ArtifactResultGraph(
             action,
             "movie:" + std::to_string(
@@ -4938,7 +4801,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 "Finalized movie resource could not be released");
             return Reject(
                 request,
-                ProgramActionCompletionStatus::CleanupFailed,
+                ProgramActionResolutionStatus::CleanupFailed,
                 "movie_cleanup_failed",
                 "Finalized movie resource could not be released");
         }
@@ -4958,8 +4821,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             return Reject(
                 request,
                 memory
-                    ? ProgramActionCompletionStatus::Rejected
-                    : ProgramActionCompletionStatus::Unsupported,
+                    ? ProgramActionResolutionStatus::Rejected
+                    : ProgramActionResolutionStatus::Unsupported,
                 "invalid_guest_read",
                 "Guest scalar read requires GuestMemory and a 32-bit address");
         }
@@ -4976,9 +4839,9 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             request.expected_epoch);
         if (!read.ok)
             return service_failure("guest_read_failed", read.message);
-        ProgramActionCompletion completion = Completion(
+        ProgramActionResolution completion = Completion(
             request,
-            ProgramActionCompletionStatus::Completed);
+            ProgramActionResolutionStatus::Completed);
         switch (action)
         {
         case CanonicalAction::GuestReadU8:
@@ -5006,7 +4869,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
     case CanonicalAction::GuestRunCoherentQuery:
         return Reject(
             request,
-            ProgramActionCompletionStatus::Unsupported,
+            ProgramActionResolutionStatus::Unsupported,
             "query_identity_required",
             "Generic coherent-query dispatch has no registered query identity; use an exact capability-pack action");
     case CanonicalAction::GuestWriteData:
@@ -5030,8 +4893,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             return Reject(
                 request,
                 mutations
-                    ? ProgramActionCompletionStatus::Rejected
-                    : ProgramActionCompletionStatus::Unsupported,
+                    ? ProgramActionResolutionStatus::Rejected
+                    : ProgramActionResolutionStatus::Unsupported,
                 "invalid_mutation_request",
                 "Guest mutation request is incomplete or outside supported widths");
         }
@@ -5069,14 +4932,6 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             applied.epoch,
             [mutations, mutation_id = applied.mutation](
                 const ResourceReleaseRequest& release) {
-                if (release.reason ==
-                        ResourceReleaseReason::StateEpochChanged)
-                {
-                    return ResourceReleaseResult{
-                        ResourceReleaseStatus::
-                            SupersededByStateReplacement,
-                        {}};
-                }
                 const GuestMutationReceipt restored =
                     mutations->Restore(
                         mutation_id,
@@ -5105,8 +4960,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             return Reject(
                 request,
                 capture
-                    ? ProgramActionCompletionStatus::Rejected
-                    : ProgramActionCompletionStatus::Unsupported,
+                    ? ProgramActionResolutionStatus::Rejected
+                    : ProgramActionResolutionStatus::Unsupported,
                 "capture_unavailable",
                 "Capture attachment requires CaptureService, an opaque profile, and a caller-declared path");
         }
@@ -5153,8 +5008,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             attached.attachment.value(),
             {},
             "program capture attachment",
-            diagnostic,
-            ResourceEpochPolicy::EpochAgnostic);
+            diagnostic);
         if (!resource)
             return ResourceFailure(std::move(request), diagnostic);
         ResourceMapping* mapping = Resource(resource->handle);
@@ -5178,8 +5032,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             return Reject(
                 request,
                 capture
-                    ? ProgramActionCompletionStatus::Rejected
-                    : ProgramActionCompletionStatus::Unsupported,
+                    ? ProgramActionResolutionStatus::Rejected
+                    : ProgramActionResolutionStatus::Unsupported,
                 "capture_attachment_unavailable",
                 "Capture marker requires a current attachment and marker ID");
         }
@@ -5210,7 +5064,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "capture_attachment_unavailable",
                 "Capture finalization requires its typed attachment handle");
         }
@@ -5284,9 +5138,9 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             MakeCleanupReceipts(released.steps);
         resources.erase(handle.value());
 
-        ProgramActionCompletion completion = Completion(
+        ProgramActionResolution completion = Completion(
             request,
-            ProgramActionCompletionStatus::Completed);
+            ProgramActionResolutionStatus::Completed);
         completion.output = ArtifactListResultGraph(
             action,
             "capture:" +
@@ -5313,7 +5167,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             return Reject(
                 request,
-                ProgramActionCompletionStatus::Rejected,
+                ProgramActionResolutionStatus::Rejected,
                 "screenshot_label_required",
                 "Screenshot capture requires a logical artifact label");
         }
@@ -5358,9 +5212,9 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 "screenshot_hash_failed",
                 ex.what());
         }
-        ProgramActionCompletion completion = Completion(
+        ProgramActionResolution completion = Completion(
             request,
-            ProgramActionCompletionStatus::Completed);
+            ProgramActionResolutionStatus::Completed);
         completion.output = ArtifactResultGraph(
             action,
             "screenshot:" + reservation->logical_label + ":" +
@@ -5386,8 +5240,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             return Reject(
                 request,
                 telemetry
-                    ? ProgramActionCompletionStatus::Rejected
-                    : ProgramActionCompletionStatus::Unsupported,
+                    ? ProgramActionResolutionStatus::Rejected
+                    : ProgramActionResolutionStatus::Unsupported,
                 "invalid_telemetry",
                 "Telemetry action requires source, kind, and bounded payload");
         }
@@ -5435,7 +5289,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
     }
     return Reject(
         request,
-        ProgramActionCompletionStatus::Unsupported,
+        ProgramActionResolutionStatus::Unsupported,
         "unsupported_action",
         "Canonical action is not implemented by the session host");
 }
@@ -5453,7 +5307,7 @@ bool SessionProgramActionHost::Impl::SubmitCleanupAdvance(
 
     const SessionSnapshot current = session.snapshot();
     ExecutionRequestPolicy policy;
-    policy.expected_epoch = current.state_epoch;
+    policy.expected_epoch = current.workset_epoch;
     policy.movie_ended = MovieEndedPolicy::Ignore;
     policy.throttle = ExecutionThrottlePolicy::Preserve;
     policy.current_point =
@@ -5473,17 +5327,17 @@ bool SessionProgramActionHost::Impl::SubmitCleanupAdvance(
     return true;
 }
 
-ProgramActionCompletion
+ProgramActionResolution
 SessionProgramActionHost::Impl::ExecutionCompletion(
     const PendingExecution& operation,
     const ExecutionTerminalResult& terminal)
 {
-    ProgramActionCompletion completion = Completion(
+    ProgramActionResolution completion = Completion(
         operation.request,
         ExecutionCompletionStatus(terminal));
-    completion.resulting_epoch = terminal.state_epoch
-        ? terminal.state_epoch
-        : session.snapshot().state_epoch;
+    completion.workset_epoch = terminal.workset_epoch
+        ? terminal.workset_epoch
+        : session.snapshot().workset_epoch;
     completion.message = terminal.error.message;
     completion.code =
         terminal.status == ExecutionTerminalStatus::CoreStalled
@@ -5506,7 +5360,7 @@ SessionProgramActionHost::Impl::ExecutionCompletion(
     if (!schema)
     {
         completion.status =
-            ProgramActionCompletionStatus::Failed;
+            ProgramActionResolutionStatus::Failed;
         completion.code = "result_encoding_failed";
         completion.message =
             "Execution action has no canonical result schema";
@@ -5520,10 +5374,10 @@ SessionProgramActionHost::Impl::ExecutionCompletion(
         if (completion.output.values.empty())
         {
             completion.status =
-                ProgramActionCompletionStatus::Failed;
+                ProgramActionResolutionStatus::Failed;
             completion.code = "result_encoding_failed";
             completion.message =
-                "ContinueUntil completed without exact routed stop evidence";
+                "ContinueUntil completed without a typed terminal observation";
             return completion;
         }
         completion.code.clear();
@@ -5541,7 +5395,7 @@ SessionProgramActionHost::Impl::ExecutionCompletion(
                 *terminal.input_publication))
         {
             completion.status =
-                ProgramActionCompletionStatus::Failed;
+                ProgramActionResolutionStatus::Failed;
             completion.code = "result_encoding_failed";
             completion.message =
                 "Input publication completed without exact lease, frame, token, and epoch evidence";
@@ -5554,7 +5408,7 @@ SessionProgramActionHost::Impl::ExecutionCompletion(
         if (!encoded.ok)
         {
             completion.status =
-                ProgramActionCompletionStatus::Failed;
+                ProgramActionResolutionStatus::Failed;
             completion.code = "result_encoding_failed";
             completion.message =
                 std::move(encoded.diagnostic);
@@ -5575,7 +5429,7 @@ SessionProgramActionHost::Impl::ExecutionCompletion(
         terminal.completed_count);
     (void)payload.AddUnsigned(
         Field::ResultEpoch,
-        completion.resulting_epoch.value());
+        completion.workset_epoch.value());
     (void)payload.AddUnsigned(
         Field::ResultPc,
         terminal.evidence.pc);
@@ -5590,7 +5444,7 @@ SessionProgramActionHost::Impl::ExecutionCompletion(
     if (!encoded.ok)
     {
         completion.status =
-            ProgramActionCompletionStatus::Failed;
+            ProgramActionResolutionStatus::Failed;
         completion.code = "result_encoding_failed";
         completion.message = std::move(encoded.diagnostic);
         return completion;
@@ -5614,7 +5468,7 @@ void SessionProgramActionHost::Impl::CompletePendingExecution(
 
     PendingExecution completed = std::move(*pending);
     pending.reset();
-    ProgramActionCompletion completion =
+    ProgramActionResolution completion =
         ExecutionCompletion(completed, terminal);
 
     if (completed.input_binding)
@@ -5632,7 +5486,7 @@ void SessionProgramActionHost::Impl::CompletePendingExecution(
             session.MarkTainted(
                 "Program input advance binding could not be retired");
             completion.status =
-                ProgramActionCompletionStatus::CleanupFailed;
+                ProgramActionResolutionStatus::CleanupFailed;
             completion.cleanup =
                 ProgramCleanupStatus::Tainted;
             completion.code =
@@ -5670,9 +5524,9 @@ void SessionProgramActionHost::Impl::CompleteCleanup(
 
     const auto fail = [&](std::string code, std::string message) {
         session.MarkTainted(message);
-        ProgramActionCompletion completion = Completion(
+        ProgramActionResolution completion = Completion(
             continuation.request,
-            ProgramActionCompletionStatus::CleanupFailed,
+            ProgramActionResolutionStatus::CleanupFailed,
             std::move(code),
             std::move(message));
         completion.cleanup = ProgramCleanupStatus::Tainted;
@@ -5720,9 +5574,9 @@ void SessionProgramActionHost::Impl::CompleteCleanup(
         pending.reset();
         session.MarkTainted(
             "Program resource cleanup exceeded or could not submit its bounded advance");
-        ProgramActionCompletion completion = Completion(
+        ProgramActionResolution completion = Completion(
             request,
-            ProgramActionCompletionStatus::CleanupFailed,
+            ProgramActionResolutionStatus::CleanupFailed,
             "cleanup_advance_exhausted",
             "Program resource cleanup exceeded or could not submit its bounded advance");
         completion.cleanup = ProgramCleanupStatus::Tainted;
@@ -5764,9 +5618,9 @@ void SessionProgramActionHost::Impl::CompleteCleanup(
         }
     }
 
-    ProgramActionCompletion completion = Completion(
+    ProgramActionResolution completion = Completion(
         continuation.request,
-        ProgramActionCompletionStatus::Completed);
+        ProgramActionResolutionStatus::Completed);
     completion.cleanup_receipts =
         std::move(cleanup_receipts);
     completion.cleanup = CleanupStatusOf(unwind.disposition);
@@ -5776,7 +5630,7 @@ void SessionProgramActionHost::Impl::CompleteCleanup(
         session.MarkTainted(
             "Program resource cleanup requires session taint");
         completion.status =
-            ProgramActionCompletionStatus::CleanupFailed;
+            ProgramActionResolutionStatus::CleanupFailed;
         completion.session_disposition =
             SessionDisposition::Tainted;
     }
@@ -5784,21 +5638,42 @@ void SessionProgramActionHost::Impl::CompleteCleanup(
 }
 
 void SessionProgramActionHost::Impl::
+AbandonQueuedStagedOutputs() noexcept
+{
+    for (const ActorActionResult& result : completions)
+    {
+        for (const StagedProgramOutput& output : result.staged_outputs)
+        {
+            const auto* savestate =
+                std::get_if<StagedSavestateOutput>(&output);
+            if (!savestate)
+                continue;
+            const SavestateServiceResult abandoned =
+                session.AbandonImmutableSavestateArtifact(
+                    savestate->capture.artifact);
+            if (!abandoned.ok &&
+                abandoned.code != SavestateServiceErrorCode::NotFound)
+            {
+                session.MarkTainted(
+                    abandoned.message.empty()
+                        ? "Queued staged program output could not be abandoned"
+                        : abandoned.message);
+            }
+        }
+    }
+    completions.clear();
+}
+
+void SessionProgramActionHost::Impl::
 ReleaseSavedArtifactRecords() noexcept
 {
-    StateService* states = session.state_service();
-    if (!states)
-    {
-        saved_artifacts.clear();
-        return;
-    }
     for (const auto& [identity, artifact] : saved_artifacts)
     {
         (void)identity;
-        const StateServiceResult released =
-            states->ReleaseFileArtifact(artifact.artifact);
+        const SavestateServiceResult released =
+            session.ReleaseSavestateArtifact(artifact.artifact);
         if (!released.ok &&
-            released.code != StateServiceErrorCode::NotFound)
+            released.code != SavestateServiceErrorCode::NotFound)
         {
             session.MarkCleanWithDiagnostics(
                 released.message.empty()
@@ -5862,12 +5737,12 @@ void SessionProgramActionHost::Pump()
     (void)impl_->BindOrCheckOwner();
 }
 
-std::vector<ProgramActionCompletion>
-SessionProgramActionHost::DrainCompletions()
+std::vector<ActorActionResult>
+SessionProgramActionHost::DrainResults()
 {
     if (!impl_ || !impl_->BindOrCheckOwner())
         return {};
-    std::vector<ProgramActionCompletion> result;
+    std::vector<ActorActionResult> result;
     result.swap(impl_->completions);
     return result;
 }
@@ -5910,6 +5785,7 @@ void SessionProgramActionHost::Shutdown() noexcept
     impl_->scopes.clear();
     impl_->resources.clear();
     impl_->active.reset();
+    impl_->AbandonQueuedStagedOutputs();
     impl_->ReleaseSavedArtifactRecords();
 }
 
@@ -5929,7 +5805,7 @@ SessionProgramActionHost::snapshot() const noexcept
         result.invocation_id = impl_->active->invocation;
         result.attempt_id = impl_->active->attempt;
     }
-    result.epoch = impl_->session.snapshot().state_epoch;
+    result.epoch = impl_->session.snapshot().workset_epoch;
     result.mapped_scope_count = impl_->scopes.size();
     result.mapped_resource_count = impl_->resources.size();
     result.execution_pending = impl_->pending.has_value();

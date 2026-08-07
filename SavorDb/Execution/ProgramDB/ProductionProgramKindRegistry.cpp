@@ -20,12 +20,9 @@ bool Fail(std::string message, std::string* error_out) {
 
 ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(
     const std::filesystem::path& runtime_working_dir_root) {
-    // Keep the old per-kind configuration values constructible for developer
-    // tools while their descriptors are rewritten. They are intentionally not
-    // registered into the production coordinator in this infrastructure slice.
     ProductionProgramKindRegistryConfig config{};
-    config.tas_movie.working_dir_root =
-        runtime_working_dir_root / "tasmovie";
+    config.tas_movie_validation.working_dir_root =
+        runtime_working_dir_root / "tasmovie-validation";
     config.seed_probe.working_dir_root =
         runtime_working_dir_root / "seedprobe";
     config.battle_context.working_dir_root =
@@ -94,16 +91,46 @@ bool BuildProductionProgramKindRegistry(
                 error_out);
         }
 
+        auto tas_movie_validation =
+            tasmovievalidation::BuildTasMovieValidationProgramDescriptor(
+                dependencies.execution_db,
+                dependencies.state_db,
+                dependencies.analysis_db,
+                std::move(config.tas_movie_validation));
+        if (tas_movie_validation.program_kind
+                != static_cast<std::int32_t>(savor::PK_TasMovie)
+            || tas_movie_validation.job_materializer == nullptr
+            || tas_movie_validation.workset_reconstruction == nullptr
+            || tas_movie_validation.result_handler == nullptr) {
+            return Fail(
+                "TAS Movie validation production descriptor is incomplete",
+                error_out);
+        }
+        if (!registry.Register(tas_movie_validation)
+            || !registry.RegisterForStepKind(
+                "tasmovie.establish_root_cursor",
+                tas_movie_validation)
+            || !registry.RegisterForStepKind(
+                "tasmovie.validate_root",
+                tas_movie_validation)
+            || !registry.RegisterForStepKind(
+                "tasmovie.validate_tree",
+                tas_movie_validation)) {
+            return Fail(
+                "TAS Movie validation production descriptor registration failed",
+                error_out);
+        }
+
         *registry_out = std::move(registry);
     } catch (const std::exception& exception) {
         return Fail(
             std::string(
-                "SeedProbe production descriptor construction failed: ")
+                "Production descriptor construction failed: ")
                 + exception.what(),
             error_out);
     } catch (...) {
         return Fail(
-            "SeedProbe production descriptor construction failed",
+            "Production descriptor construction failed",
             error_out);
     }
 

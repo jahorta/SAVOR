@@ -29,6 +29,26 @@ public:
     [[nodiscard]] bool IsRunning() const;
     [[nodiscard]] savor::db::core::QueuedDbTelemetrySnapshot GetTelemetrySnapshot() const;
 
+    bool CreateTasMovieValidationRequest(
+        const CreateTasMovieValidationRequestCommand& command,
+        std::int64_t* validation_request_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<TasMovieValidationRequestRecord> GetTasMovieValidationRequest(
+        std::int64_t validation_request_id) const override;
+    std::optional<TasMovieValidationRequestRecord> GetTasMovieValidationRequestForWorkflowStep(
+        std::int64_t workflow_step_id) const override;
+    bool RecordTasMovieValidationAttempt(
+        const RecordTasMovieValidationAttemptCommand& command,
+        std::int64_t* validation_attempt_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<TasMovieValidationAttemptRecord> GetTasMovieValidationAttempt(
+        std::int64_t validation_attempt_id) const override;
+    std::optional<TasMovieValidationAttemptRecord> FindTasMovieValidationAttempt(
+        std::int64_t source_job_id,
+        std::string_view worker_terminal_sha256) const override;
+    std::optional<TasMovieValidationStatusRecord> GetTasMovieValidationStatus(
+        std::string_view effective_dtm_sha256) const override;
+
     std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const override;
     std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const override;
     std::optional<SeedProbeResultRow> GetSeedProbeResultForSourceJob(std::int64_t source_job_id) const override;

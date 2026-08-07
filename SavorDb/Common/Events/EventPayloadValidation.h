@@ -386,16 +386,16 @@ inline bool ValidateStateArtifactPayloadV1(const EventEnvelope& envelope, std::s
         }
         return true;
     }
-    if (envelope.event_type == "State.TasVariantCreated.v1") {
-        if (envelope.payload_ref_kind != "tas_variant" && envelope.payload_ref_kind != "tas-variant") {
-            if (error_out) *error_out = "payload_ref_kind must be tas_variant for State.TasVariantCreated.v1";
+    if (envelope.event_type == "State.TasMovieRootCreated.v1") {
+        if (envelope.payload_ref_kind != "tas_movie_root") {
+            if (error_out) *error_out = "payload_ref_kind must be tas_movie_root for State.TasMovieRootCreated.v1";
             return false;
         }
         return true;
     }
-    if (envelope.event_type == "State.TasVariantProducedSavestateSet.v1") {
-        if (envelope.payload_ref_kind != "tas_variant" && envelope.payload_ref_kind != "tas-variant") {
-            if (error_out) *error_out = "payload_ref_kind must be tas_variant for State.TasVariantProducedSavestateSet.v1";
+    if (envelope.event_type == "State.TasMovieTreeCreated.v1") {
+        if (envelope.payload_ref_kind != "tas_movie_tree") {
+            if (error_out) *error_out = "payload_ref_kind must be tas_movie_tree for State.TasMovieTreeCreated.v1";
             return false;
         }
         return true;

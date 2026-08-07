@@ -16,12 +16,12 @@ GuestMutationService::GuestMutationService(
 {
 }
 
-void GuestMutationService::CommitStateEpoch(StateEpoch epoch) noexcept
+void GuestMutationService::InitializeWorksetEpoch(WorksetEpoch epoch) noexcept
 {
     if (!OnOwnerThread() || stopped_)
         return;
     epoch_ = epoch;
-    memory_.CommitStateEpoch(epoch);
+    memory_.InitializeWorksetEpoch(epoch);
 }
 
 GuestMutationReceipt GuestMutationService::Apply(
@@ -166,7 +166,7 @@ GuestMutationReceipt GuestMutationService::Apply(
 
 GuestMutationReceipt GuestMutationService::Restore(
     GuestMutationId mutation,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     if (!OnOwnerThread())
     {
@@ -297,7 +297,7 @@ GuestMutationReceipt GuestMutationService::Restore(
 
 GuestMutationReceipt GuestMutationService::Commit(
     GuestMutationId mutation,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     if (!OnOwnerThread())
     {
@@ -345,41 +345,10 @@ GuestMutationReceipt GuestMutationService::Commit(
     return state.receipt;
 }
 
-std::vector<GuestMutationReceipt>
-GuestMutationService::SupersedeForStateReplacement(StateEpoch old_epoch)
-{
-    if (!OnOwnerThread())
-    {
-        GuestMutationReceipt failure;
-        failure.epoch = old_epoch;
-        failure.message =
-            "GuestMutationService operation used the wrong actor thread";
-        return {std::move(failure)};
-    }
-    if (stopped_)
-        return {ServiceFailure("GuestMutationService is stopped")};
-    std::vector<GuestMutationReceipt> results;
-    for (auto& [_, state] : mutations_)
-    {
-        if (!state.restoration_required ||
-            state.receipt.epoch != old_epoch)
-        {
-            continue;
-        }
-        state.receipt.ok = true;
-        state.receipt.status =
-            GuestMutationStatus::SupersededByStateReplacement;
-        state.receipt.taint_required = false;
-        state.receipt.message.clear();
-        state.restoration_required = false;
-        results.push_back(state.receipt);
-    }
-    return results;
-}
 
 std::vector<GuestMutationReceipt> GuestMutationService::RestoreScope(
     MutationScopeId scope,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     if (!OnOwnerThread())
     {

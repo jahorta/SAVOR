@@ -92,7 +92,7 @@ CaptureServiceReceipt CaptureService::Success(
 
 CaptureServiceReceipt CaptureService::BindRouter(
     StopPointRouter& router,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     if (CaptureServiceError error = CheckActor())
         return Failure(error.code, std::move(error.message));
@@ -102,11 +102,11 @@ CaptureServiceReceipt CaptureService::BindRouter(
             CaptureServiceErrorCode::AlreadyBound,
             "CaptureService is already bound to a stop-point router");
     }
-    if (!epoch || router.state_epoch() != epoch)
+    if (!epoch || router.workset_epoch() != epoch)
     {
         return Failure(
             CaptureServiceErrorCode::StaleEpoch,
-            "CaptureService requires the router's current nonzero StateEpoch");
+            "CaptureService requires the router's current nonzero WorksetEpoch");
     }
     router_ = &router;
     epoch_ = epoch;
@@ -130,19 +130,13 @@ CaptureServiceReceipt CaptureService::Attach(
             CaptureServiceErrorCode::AlreadyAttached,
             "Only one capture profile may be attached to a session");
     }
-    if (state_replacement_prepared_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StateReplacementActive,
-            "A capture profile cannot attach during state replacement");
-    }
     if (!request.expected_epoch ||
         request.expected_epoch != epoch_ ||
-        router_->state_epoch() != epoch_)
+        router_->workset_epoch() != epoch_)
     {
         return Failure(
             CaptureServiceErrorCode::StaleEpoch,
-            "Capture profile attachment expected a different StateEpoch");
+            "Capture profile attachment expected a different WorksetEpoch");
     }
     if (request.profile_json.empty())
     {
@@ -288,12 +282,6 @@ CaptureServiceReceipt CaptureService::Detach(
             CaptureServiceErrorCode::StaleAttachment,
             "Capture detach named a different attachment");
     }
-    if (state_replacement_prepared_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StateReplacementActive,
-            "Capture detach is unavailable during state replacement");
-    }
     return FinalizeAndReset(
         CaptureAttachmentStatus::Detached,
         false);
@@ -386,12 +374,6 @@ CaptureServiceReceipt CaptureService::ReconcileBeforeResume()
             CaptureServiceErrorCode::NotAttached,
             "No capture profile is attached");
     }
-    if (state_replacement_prepared_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StateReplacementActive,
-            "Capture reconciliation is unavailable during state replacement");
-    }
     if (pending_definition_)
         return ApplyDefinition(*pending_definition_);
 
@@ -421,12 +403,6 @@ CaptureServiceReceipt CaptureService::SetProfileGroupEnabled(
             CaptureServiceErrorCode::StaleAttachment,
             "Capture group update named a different attachment");
     }
-    if (state_replacement_prepared_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StateReplacementActive,
-            "Capture group update is unavailable during state replacement");
-    }
     if (!adapter_->SetProfileGroupEnabled(group, enabled))
     {
         return Failure(
@@ -453,12 +429,6 @@ CaptureServiceReceipt CaptureService::ReplaceProfile(
         return Failure(
             CaptureServiceErrorCode::StaleAttachment,
             "Capture profile replacement named a different attachment");
-    }
-    if (state_replacement_prepared_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StateReplacementActive,
-            "Capture profile replacement is unavailable during state replacement");
     }
 
     savor::probe::ProfileParseResult parsed =
@@ -503,12 +473,6 @@ CaptureServiceReceipt CaptureService::Mark(
             CaptureServiceErrorCode::StaleAttachment,
             "Capture marker named a different attachment");
     }
-    if (state_replacement_prepared_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StateReplacementActive,
-            "Capture markers are unavailable during state replacement");
-    }
     if (id.empty())
     {
         return Failure(
@@ -524,122 +488,6 @@ CaptureServiceReceipt CaptureService::Mark(
     return Success(CaptureAttachmentStatus::Attached);
 }
 
-CaptureServiceReceipt CaptureService::PrepareStateReplacement(
-    StateEpoch expected_epoch)
-{
-    if (CaptureServiceError error = CheckActor())
-        return Failure(error.code, std::move(error.message));
-    if (state_replacement_prepared_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StateReplacementActive,
-            "Capture state replacement is already prepared");
-    }
-    if (!expected_epoch || expected_epoch != epoch_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StaleEpoch,
-            "Capture state replacement expected a different StateEpoch");
-    }
-    if (adapter_)
-    {
-        std::string error;
-        if (!adapter_->PrepareForStateReplacement(&error))
-        {
-            return Failure(
-                CaptureServiceErrorCode::StateReplacementFailed,
-                error.empty()
-                    ? "Capture profile failed to prepare for state replacement"
-                    : std::move(error));
-        }
-    }
-    state_replacement_prepared_ = true;
-    return Success(
-        adapter_
-            ? CaptureAttachmentStatus::Attached
-            : CaptureAttachmentStatus::Detached);
-}
-
-CaptureServiceReceipt CaptureService::CommitStateReplacement(
-    StateEpoch new_epoch)
-{
-    if (CaptureServiceError error = CheckActor())
-        return Failure(error.code, std::move(error.message));
-    if (!state_replacement_prepared_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StateReplacementNotPrepared,
-            "Capture state replacement was not prepared");
-    }
-    if (!new_epoch || new_epoch.value() <= epoch_.value() ||
-        !router_ || router_->state_epoch() != new_epoch)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StaleEpoch,
-            "Capture state replacement requires the router's advanced StateEpoch");
-    }
-
-    epoch_ = new_epoch;
-    state_replacement_prepared_ = false;
-    if (!adapter_)
-        return Success(CaptureAttachmentStatus::Detached);
-
-    std::string error;
-    if (!adapter_->ResumeAfterStateReplacement(new_epoch, &error))
-    {
-        return Failure(
-            CaptureServiceErrorCode::StateReplacementFailed,
-            error.empty()
-                ? "Capture profile failed to resume after state replacement"
-                : std::move(error),
-            true);
-    }
-    CaptureServiceReceipt reconciled =
-        RebuildAndApplyDefinition();
-    if (!reconciled.ok)
-        reconciled.requires_session_taint = true;
-    return reconciled;
-}
-
-CaptureServiceReceipt CaptureService::RollbackStateReplacement(
-    StateEpoch restored_epoch)
-{
-    if (CaptureServiceError error = CheckActor())
-        return Failure(error.code, std::move(error.message));
-    if (!state_replacement_prepared_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StateReplacementNotPrepared,
-            "Capture state replacement was not prepared");
-    }
-    if (!restored_epoch || restored_epoch != epoch_ ||
-        !router_ || router_->state_epoch() != restored_epoch)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StaleEpoch,
-            "Capture rollback requires the preserved router StateEpoch");
-    }
-
-    state_replacement_prepared_ = false;
-    if (!adapter_)
-        return Success(CaptureAttachmentStatus::Detached);
-
-    std::string error;
-    if (!adapter_->ResumeAfterStateReplacement(restored_epoch, &error))
-    {
-        return Failure(
-            CaptureServiceErrorCode::StateReplacementFailed,
-            error.empty()
-                ? "Capture profile failed to resume after state rollback"
-                : std::move(error),
-            true);
-    }
-    CaptureServiceReceipt reconciled =
-        RebuildAndApplyDefinition();
-    if (!reconciled.ok)
-        reconciled.requires_session_taint = true;
-    return reconciled;
-}
 
 CaptureServiceReceipt CaptureService::FinalizeAndReset(
     CaptureAttachmentStatus status,
@@ -684,7 +532,6 @@ CaptureServiceReceipt CaptureService::FinalizeAndReset(
         finalized.ok = true;
     adapter_.reset();
     pending_definition_.reset();
-    state_replacement_prepared_ = false;
 
     result.capture_complete = finalized.capture_complete;
     result.artifacts_finalized = finalized.ok;
@@ -765,8 +612,6 @@ CaptureServiceSnapshot CaptureService::snapshot() const noexcept
     return {
         .bound = router_ != nullptr,
         .attached = adapter_ != nullptr,
-        .state_replacement_prepared =
-            state_replacement_prepared_,
         .stopping = stopping_,
         .attachment = attachment_,
         .epoch = epoch_,

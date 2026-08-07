@@ -198,7 +198,7 @@ struct WorksetReconstructionContext {
     std::int64_t root_job_set_id = 0;
     std::string dispatch_token;
     std::string compatibility_key;
-    savor::runtime::StateCompatibilityToken state_compatibility;
+    savor::runtime::ArtifactCompatibilityToken state_compatibility;
     std::vector<WorksetReconstructionItem> items;
 };
 

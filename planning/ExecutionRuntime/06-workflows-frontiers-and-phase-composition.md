@@ -35,7 +35,7 @@ execution-facing database-service interfaces may additionally be added or adapte
 for real bounded batch claim/reservation, exact-set lease renewal, claim/start authority validation, and
 targeted advancement of an exact known terminal. Those operations use the same existing rows, commands,
 idempotency rules, and per-item semantics. They do not persist a workset, completion ledger, capacity
-credit, state-cache entry, staged package, or new lifecycle state.
+credit, active-workset baseline handle, staged package, or new lifecycle state.
 
 In this document, **schema** means a runtime program/type schema unless explicitly qualified as a
 database schema.
@@ -190,7 +190,7 @@ Each item retains:
 
 - its existing job, job-set, workflow-step, claim, and attempt identities;
 - one immutable invocation template with its own typed input, limits, cancellation identity, and
-  provenance; the worker binds its authoritative session and current `StateEpoch` immediately before
+  provenance; the worker binds its authoritative session and current `WorksetEpoch` immediately before
   activation;
 - one independent invocation root scope and complete unwind;
 - one ordinary `ProgramResult`; and
@@ -198,26 +198,25 @@ Each item retains:
 
 The workset itself has only transient request identity, one exact in-memory
 `WorkerWorksetExecutionKey`, the
-fixed item order, bounded item-count/encoded-byte/item-credit limits, a scoped
-`StateCacheKey` lease only when reusable state is needed, one exact `ProgramBaselineKey`, and
-execution/cancellation state. The corresponding `ProgramBaselineDefinition` contains ordered savestate,
-exact movie-continuation, and runtime-facing program-kind adapter-declared derived-state components. The key
-covers exact module, entrypoint, dependency closure, runtime/session profile, source-state
-identity/hash/lineage or reusable-baseline identity, movie-continuation policy, and
+fixed item order, bounded item-count/encoded-byte/item-credit limits, one exact
+`ProgramBaselineKey`, and execution/cancellation state. The corresponding required
+`ProgramBaselineDefinition` contains either an exact savestate artifact with its optional exact DTM
+sidecar or an exact read-only DTM with its optional startup savestate. The key covers exact module,
+entrypoint, dependency closure, runtime/session profile, source-artifact identity/hash/lineage, and
 execution/input/capture/movie/mutation/relevant-service compatibility. The workset is never a SavorDb
 row, workflow step, queue record, claim token, attempt, result, artifact, or recovery object. The worker
 cannot add items, reorder them, select later durable work, or inspect SavorDb.
 
 One workset owns the session at a time, but the worker may also hold one immutable staged successor
 package. Staging is limited to transport decoding, complete definition/input/dependency validation,
-verified-module pinning, and host-only immutable cache preparation. It cannot mutate the session, load
+verified-module pinning, and host-only immutable artifact validation. It cannot mutate the session, load
 state, capture a baseline, publish item start, or create a `ProgramInstance`. The worker-global
 completion/acknowledgement ledger is separate from both packages: it retains promoted immutable state
 captures, finalization state, authoritative terminals, and acknowledgements from executed items even
 after their workset session scope releases.
 
 The initial configurable envelope is fixed at 16 items and 32 MiB encoded bytes per workset; 64 total
-worker item credits and 32 active-plus-staged items; 16 state-cache entries/512 MiB; two finalizer
+worker item credits and 32 active-plus-staged items; two finalizer
 threads with eight pending captures/256 MiB; and 32 retained terminals/128 MiB. Coordinator buffering
 is at most one additional workset per negotiated Ready worker. No workset carries an elapsed guest
 execution budget.
@@ -240,8 +239,8 @@ asynchronous cancellation path below rather than an authorization roundtrip.
 3. The coordinator materializes the claimed items independently, derives each exact runtime-only key,
    and assembles worksets deterministically. It chooses the highest-priority, oldest eligible anchor,
    searches only that priority class within a configured count/byte window, and selects exact-key peers
-   in durable claim order. It prefers an already compatible warm worker, then resolves otherwise-equal
-   choices by queue time, job ID, worker ID, and item ordinal. The finite lookahead prevents affinity
+   in durable claim order, then resolves otherwise-equal choices by queue time, job ID, worker ID, and
+   item ordinal. The finite lookahead prevents affinity
    clustering from starving an older incompatible job. Leftovers remain individually claimed, leased,
    and capacity-accounted rather than being silently reordered.
 4. A multi-item workset contains only adapter-declared eligible items with one exact
@@ -252,12 +251,12 @@ asynchronous cancellation path below rather than an authorization roundtrip.
 5. If no workset owns the session, the accepted package becomes active. Otherwise at most one package
    may enter the immutable staged-successor slot under exact staged correlation. Acceptance keeps every
    not-yet-started item in its existing `CLAIMED` state and does not append `JobStarted`.
-6. Active common preparation acquires or creates the exact `StateCacheKey` entry and scoped lease when
-   reusable state is declared. A multi-item workset prepares its exact composite
-   `ProgramBaselineDefinition`; a singleton does not capture an unnecessary new baseline. The first
-   child begins from prepared state. Before every later child, `RestoreBaseline` prepares the leased
-   savestate/movie continuation and all declared derived-state components, returns one
-   `PreparedProgramBaselineReceipt`, and advances `StateEpoch` exactly once.
+6. Active common preparation materializes and verifies the exact required `ProgramBaselineDefinition`.
+   A savestate workset restores its artifact baseline before its first child. If it contains multiple
+   children, the active workset captures one private in-memory handle and restores that handle before
+   every later child. A read-only-movie workset stages its artifacts without starting playback; every
+   child independently establishes the declared movie through `MovieStartPlayback`. All workset-owned
+   handles are released when that workset terminates.
 7. Immediately before a child's first effect, the worker publishes its ordered item-start event and
    activates the sole `ProgramInvocation`/`ProgramInstance` without waiting for a coordinator decision.
    The coordinator consumes that event and appends the existing per-job `JobStarted` event before
@@ -323,27 +322,18 @@ decides whether current SavorDb operations create later work.
 
 ### State and session policy
 
-Runtime state policy makes boot, restore, baseline use, and guarded session continuation explicit to the
-worker. It does not change how SavorDb stores savestate or artifact references. Program-kind handlers map
-the existing references into the runtime state-policy object in memory.
+Runtime state policy distinguishes an already restored artifact baseline from an invocation that must
+establish its declared read-only movie artifact. Infrastructure boot is not a phase baseline. This does
+not change how SavorDb stores savestate or artifact references; program-kind handlers map the existing
+references into the runtime artifact baseline in memory.
 
 Worker reuse remains an optimization. `ProgramResult` cleanup/session status governs whether the current
 worker session may be reused, without requiring a new persisted cleanup-status field. Workset locality
 does not permit child-invocation-scoped input, router, capture, movie, mutation, pending-action, or
-epoch-bound resources to cross an item boundary. An immutable baseline cache entry belongs to
-`StateService`; each workset holds only a scoped `StateCacheKey` lease. The bytes may remain in the
-bounded clean session cache after that lease releases, but every child still begins through the exact
-prepared/restore transaction declared by its matching key and receives a fresh epoch where required.
-
-After a durable phase transition commits, the coordinator may prefer the same clean worker for an exact
-successor. `ContinueSession` is permitted only when the worker still proves the exact current
-session/epoch, state hash/lineage, movie continuation, clean `SessionResourceLedger`/cleanup receipt, and
-successor policy. Older host-only finalizers or acknowledgements in the worker-global completion ledger
-do not invalidate the warm path when credit remains. Otherwise the same invocation falls back to a
-cache-assisted or ordinary immutable-artifact load. Durable correctness never depends on the warm path,
-and a workset still cannot contain a producer/consumer dependency. Affinity and `ContinueSession` never
-reserve or hold an otherwise idle worker; they are attempted only when the worker is available under
-ordinary capacity scheduling.
+epoch-bound resources to cross an item boundary. A private multi-item baseline handle belongs only to
+the active workset. No serialized guest state, baseline handle, or epoch is retained for a later
+workset. Every later workset rematerializes and establishes its own declared artifacts regardless of
+worker placement.
 
 ### Generalized frontiers are separate work
 
@@ -361,22 +351,21 @@ executor.
 An `A -> B -> A` composition continues to use existing workflow operations. Each program-kind handler
 constructs the corresponding exact runtime invocation when its existing job activates. Runtime
 verification proves that A and B fully unwind their session resources; no new persisted phase-edge or
-binding representation is introduced here. Exact warm-worker continuation or `StateCacheKey` locality
-may optimize the handoff only after the preceding result/transition is durable and is always backed by
-the ordinary immutable-artifact restore path.
+binding representation is introduced here. Each resulting workset carries and materializes its own
+complete artifact baseline; worker placement cannot change that requirement.
 
 ### Progressive worker startup
 
 Process launch, WRMS-v1 negotiation, production catalog verification, session readiness, and capacity-
 credit publication occur independently for each configured worker, with at most two concurrent
 startups. The coordinator may open its data-plane loops once at least one worker has passed
-`CompleteExact`: exactly the nine planned production module IDs/hashes, their exact dependency manifest,
+`CompleteExact`: exactly the two production Full Phase module IDs/hashes, their exact dependency manifest,
 no extras, all required production capabilities, and nonzero usable credits. It does not wait for every
 configured process to finish booting. Later compatible workers add their credits atomically when ready.
 
 A failed, mismatched, or still-starting worker contributes no claim capacity and cannot receive a
 staged package. The pre-6A transferred test-only module may prove a `Partial` catalog process path while
-the data plane stays closed; it is never one of the nine production modules. There is no scalar or
+the data plane stays closed; it is never one of the two production Full Phase modules. There is no scalar or
 partial-catalog DB fallback, and startup is a structured failure when
 no required worker becomes ready. Progressive availability changes utilization only: deterministic
 claim priority, exact-key assembly, per-item attempts, and durable workflow behavior remain the same.
@@ -447,7 +436,7 @@ Migration must:
 4. replace the unactivated scalar production submission with one bounded coordinator/worker
    `SubmitWorkset` path for 1..N independently claimed/materialized jobs, with deterministic exact-key
    assembly, one immutable staged successor, item-capacity credits, composite
-   `ProgramBaselineDefinition` preparation plus scoped `StateCacheKey` leases, ordered per-item start,
+   artifact `ProgramBaselineDefinition` preparation, active-workset-only restoration, ordered per-item start,
    asynchronous immutable state-artifact finalization, globally ordered
    terminals, per-item projection/acknowledgement, targeted post-commit advancement, and current
    requeue/recovery behavior;
@@ -465,7 +454,7 @@ Migration must:
 10. pass existing capture profiles to passive `CaptureService` unchanged and preserve their current
    profile-visible behavior;
 11. avoid storing `WorkerWorkset`, staged correlation, completion/acknowledgement state, capacity
-   credits, `StateCacheKey`, `ProgramInstance`, canonical runtime IR, lowered
+   credits, `ProgramInstance`, canonical runtime IR, lowered
    predicate/observation/interaction definitions, receipts, baselines, dependency closures, or new
    runtime-only status fields in SavorDb; and
 12. keep generalized workflow/frontier work outside this refactor.
@@ -507,10 +496,8 @@ this refactor.
   release plus local capacity/cleanliness checks and absence of an exact cancellation notice. It does
   not wait for coordinator reauthorization. Prior acknowledgements may drain globally without retaining
   the old session scope.
-- Cache-hit, cache-miss, warm `ContinueSession`, and artifact-load paths are semantically equivalent;
-  cache state is transient, scoped, exact-keyed, and never required for recovery.
 - Progressive startup contributes capacity only from `CompleteExact` Ready workers containing exactly
-  the nine production modules and no extras; the transferred test-only `Partial` catalog never activates
+  the two production Full Phase modules and no extras; a test-only `Partial` catalog never activates
   DB work or changes claim priority.
 - Existing queued jobs and historical payload/result records remain valid; no data conversion is
   required.
@@ -538,8 +525,8 @@ The following are outside this refactor and do not gate its completion:
 - persisted module source, canonical IR, dependency catalogs, or verification caches;
 - persisted workset identities, membership, drain cursors, acknowledgements, or workset-level attempts
   and results;
-- persisted staged-package correlation, capacity credits, completion-ledger entries, `StateCacheKey`s,
-  cache inventories, or background-finalization state;
+- persisted staged-package correlation, capacity credits, completion-ledger entries, active-workset
+  handles, or background-finalization state;
 - changes to artifact retention, storage backends, or SavorDb artifact interfaces; and
 - distributed frontier scheduling or sharding.
 

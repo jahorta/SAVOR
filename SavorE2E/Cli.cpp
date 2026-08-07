@@ -5,6 +5,7 @@
 #include <array>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <sstream>
@@ -16,21 +17,12 @@ namespace savor::e2e {
 namespace {
 
 constexpr auto kAllScenarioOrder = std::to_array<std::string_view>({
-    "tasmovie",
     "seedprobe",
-    "seedprobe_battle",
-    "battle",
-    "battle_macro_probe",
-    "tasmovie_seedprobe",
-    "tasmovie_seedprobe_battle",
-    "tasmovie_seedprobe_battle_override",
-    "tasmovie_battle",
 });
 
 struct ScenarioRequirement {
     bool requires_dtm_file = false;
     bool requires_savestate_file = false;
-    bool requires_savestate_file_for_seedprobe_placeholder = false;
     bool requires_source_savestate_id = false;
 };
 
@@ -38,40 +30,16 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
     if (scenario == "seedprobe") {
         return {.requires_savestate_file = true};
     }
-    if (scenario == "tasmovie") {
+    if (scenario == "tasmovie"
+        || scenario == "tasmovie_with_validation") {
         return {.requires_dtm_file = true};
-    }
-    if (scenario == "seedprobe_battle" || scenario == "battle") {
-        return {.requires_savestate_file = true};
-    }
-    if (scenario == "battle_macro_probe") {
-        return {.requires_savestate_file = true};
-    }
-    if (scenario == "navigation_context") {
-        return {.requires_source_savestate_id = true};
-    }
-    if (scenario == "tasmovie_seedprobe") {
-        return {
-            .requires_dtm_file = true,
-            .requires_savestate_file = true,
-            .requires_savestate_file_for_seedprobe_placeholder = true,
-        };
-    }
-    if (scenario == "tasmovie_seedprobe_battle") {
-        return {.requires_dtm_file = true};
-    }
-    if (scenario == "tasmovie_seedprobe_battle_override" || scenario == "tasmovie_battle") {
-        return {
-            .requires_dtm_file = true,
-            .requires_savestate_file = true,
-            .requires_savestate_file_for_seedprobe_placeholder = true,
-        };
     }
     return {};
 }
 
 bool IsSupportedScenario(const std::string_view scenario) {
-    if (scenario == "all" || scenario == "navigation_context") {
+    if (scenario == "all" || scenario == "tasmovie"
+        || scenario == "tasmovie_with_validation") {
         return true;
     }
     for (const auto& supported : kAllScenarioOrder) {
@@ -82,16 +50,9 @@ bool IsSupportedScenario(const std::string_view scenario) {
     return false;
 }
 
-bool IsTasMovieScenario(const std::string_view scenario) {
+bool IsFreshTasMovieScenario(const std::string_view scenario) {
     return scenario == "tasmovie"
-        || scenario == "tasmovie_seedprobe"
-        || scenario == "tasmovie_seedprobe_battle"
-        || scenario == "tasmovie_seedprobe_battle_override"
-        || scenario == "tasmovie_battle";
-}
-
-bool IsTasMovieSeedProbeScenario(const std::string_view scenario) {
-    return scenario == "tasmovie_seedprobe";
+        || scenario == "tasmovie_with_validation";
 }
 
 std::vector<std::string> ExpandScenarioArguments(const std::vector<std::string>& requested_scenarios) {
@@ -298,7 +259,7 @@ void PrintUsage() {
               << " [--savestate-file <path>]"
               << " [--source-savestate-id <id>]"
               << " [--dtm-file <path>]"
-              << " [--scenario seedprobe|seedprobe_battle|battle|navigation_context|all]"
+              << " [--scenario seedprobe|tasmovie|tasmovie_with_validation|all]"
               << " [--poll-ms <100..5000 - default 100>]"
               << " [--worker-count <1..30 - default 1>]"
               << " [--wait-for-workers-ready]"
@@ -317,31 +278,14 @@ void PrintUsage() {
               << " [--tasmovie-rtc-max <value>]"
               << " [--seedprobe-samples-per-axis <count>]"
               << " [--seedprobe-combo-attempts-per-target <count>]"
-              << " [--battle-fake-attack-low <count>]"
-              << " [--battle-fake-attack-high <count>]"
-              << " [--battle-plan <block,focus|attack:4,block>]"
-              << " [--battle-macro attack|focus|block]"
-              << " [--battle-macro-target-slot <4..11>]"
-              << " [--battle-fake-attacks <count>]"
-              << " [--battle-fake-attack-sweep]"
-              << " [--battle-fake-sweep-trials <count>]"
-              << " [--battle-fake-sweep-min-target-neutral <frames>]"
-              << " [--battle-fake-sweep-max-target-neutral <frames>]"
-              << " [--battle-fake-sweep-min-input-neutral <frames>]"
-              << " [--battle-fake-sweep-max-input-neutral <frames>]"
-              << " [--battle-fake-sweep-output <path>]"
-              << " [--battle-macro-debug]\n\n";
+              << "\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
     std::cout << "E2E perf mode requires Release builds and load-level low|mid|high; worker-count defaults to 15 and accepts 1..30.\n";
-    std::cout << "TAS rtc sets one concrete launch value; rtc-min/max fans out graph scenarios into one workflow per value.\n";
-    std::cout << "Visual worker locks worker count to 1. battle_macro_probe opens an interactive prompt unless --battle-plan or --battle-macro is supplied.\n";
-    std::cout << "Battle macro CLI: use --battle-plan block,attack:5 for a multi-character plan, --battle-fake-attacks N for experimental RNG fake attacks, --battle-fake-attack-sweep to measure fake-attack timing, or --battle-macro attack --battle-macro-target-slot 5 for one command.\n";
-    std::cout << "navigation_context reuses the selected workspace databases and requires --source-savestate-id for any complete StateDB savestate.\n";
+    std::cout << "The tasmovie scenario establishes the handcrafted root cursor only; it takes no RTC and must run alone.\n";
+    std::cout << "The tasmovie_with_validation scenario requires one exact --tasmovie-rtc in 0..4294967295 and must run alone.\n";
+    std::cout << "Visual worker locks worker count to 1.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
-    std::cout << "Scenarios: all, seedprobe, tasmovie, seedprobe_battle, battle, "
-              << "battle_macro_probe, navigation_context, "
-              << "tasmovie_seedprobe, tasmovie_seedprobe_battle, "
-              << "tasmovie_seedprobe_battle_override, tasmovie_battle\n";
+    std::cout << "Scenarios: all, seedprobe, tasmovie, tasmovie_with_validation\n";
     std::cout << "You may pass --scenario multiple times and they will run in order.\n\n";
 }
 
@@ -352,6 +296,9 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     bool samples_per_axis_explicit = false;
     bool fake_attack_low_explicit = false;
     bool fake_attack_high_explicit = false;
+    bool tasmovie_rtc_explicit = false;
+    bool tasmovie_rtc_min_explicit = false;
+    bool tasmovie_rtc_max_explicit = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -368,6 +315,20 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             if (!require_value(flag, &v)) return false;
             try {
                 *out = std::stoi(v);
+            } catch (const std::exception&) {
+                if (error_out) *error_out = std::string("invalid integer for ") + flag + ": " + v;
+                return false;
+            }
+            return true;
+        };
+        const auto require_int64 = [&](const char* flag, std::int64_t* out) {
+            std::string v;
+            if (!require_value(flag, &v)) return false;
+            try {
+                std::size_t consumed = 0;
+                const auto parsed = std::stoll(v, &consumed, 0);
+                if (consumed != v.size()) throw std::invalid_argument("trailing characters");
+                *out = parsed;
             } catch (const std::exception&) {
                 if (error_out) *error_out = std::string("invalid integer for ") + flag + ": " + v;
                 return false;
@@ -458,19 +419,32 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             if (!require_value(arg.c_str(), &v)) return false;
             if (!ParseDurableLineMask(v, &options.durable_line_mask, error_out)) return false;
         } else if (arg == "--tasmovie-rtc" || arg == "--rtc") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
+            if (tasmovie_rtc_explicit) {
+                if (error_out) *error_out = "exact TAS Movie RTC may be specified only once";
+                return false;
+            }
+            std::int64_t v = 0;
+            if (!require_int64(arg.c_str(), &v)) return false;
             options.tasmovie_rtc = v;
-            options.tasmovie_rtc_min = v;
-            options.tasmovie_rtc_max = v;
+            tasmovie_rtc_explicit = true;
         } else if (arg == "--tasmovie-rtc-min" || arg == "--rtc-min") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
+            if (tasmovie_rtc_min_explicit) {
+                if (error_out) *error_out = "TAS Movie RTC minimum may be specified only once";
+                return false;
+            }
+            std::int64_t v = 0;
+            if (!require_int64(arg.c_str(), &v)) return false;
             options.tasmovie_rtc_min = v;
+            tasmovie_rtc_min_explicit = true;
         } else if (arg == "--tasmovie-rtc-max" || arg == "--rtc-max") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
+            if (tasmovie_rtc_max_explicit) {
+                if (error_out) *error_out = "TAS Movie RTC maximum may be specified only once";
+                return false;
+            }
+            std::int64_t v = 0;
+            if (!require_int64(arg.c_str(), &v)) return false;
             options.tasmovie_rtc_max = v;
+            tasmovie_rtc_max_explicit = true;
         } else if (arg == "--seedprobe-samples-per-axis" || arg == "--samples-per-axis") {
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
@@ -599,15 +573,15 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         }
     }
 
-    bool is_tasmovie = false;
-    bool is_tasmovie_seedprobe = false;
+    bool is_tasmovie_establishment = false;
+    bool is_tasmovie_with_validation = false;
+    bool is_fresh_tasmovie = false;
     bool needs_savestate = false;
     bool needs_source_savestate_id = false;
     bool needs_dtm = false;
     std::vector<std::string> savestate_required_scenarios;
     std::vector<std::string> source_savestate_required_scenarios;
     std::vector<std::string> dtm_required_scenarios;
-    std::vector<std::string> placeholder_savestate_required_scenarios;
 
     const auto join = [](const std::vector<std::string>& names) {
         std::ostringstream oss;
@@ -621,8 +595,12 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     };
 
     for (const auto& scenario : options.scenarios) {
-        is_tasmovie = is_tasmovie || IsTasMovieScenario(scenario);
-        is_tasmovie_seedprobe = is_tasmovie_seedprobe || IsTasMovieSeedProbeScenario(scenario);
+        is_tasmovie_establishment = is_tasmovie_establishment
+            || scenario == "tasmovie";
+        is_tasmovie_with_validation = is_tasmovie_with_validation
+            || scenario == "tasmovie_with_validation";
+        is_fresh_tasmovie = is_fresh_tasmovie
+            || IsFreshTasMovieScenario(scenario);
         const auto req = GetScenarioRequirement(scenario);
         needs_savestate = needs_savestate || req.requires_savestate_file;
         needs_source_savestate_id = needs_source_savestate_id || req.requires_source_savestate_id;
@@ -637,9 +615,34 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (req.requires_dtm_file) {
             dtm_required_scenarios.push_back(scenario);
         }
-        if (req.requires_savestate_file_for_seedprobe_placeholder) {
-            placeholder_savestate_required_scenarios.push_back(scenario);
+    }
+
+    if (is_fresh_tasmovie && options.scenarios.size() != 1) {
+        if (error_out) *error_out = "TAS Movie scenarios must run alone because they start from a fresh database";
+        return false;
+    }
+    if (is_fresh_tasmovie && options.repeat != 1) {
+        if (error_out) *error_out = "TAS Movie scenarios require --repeat 1";
+        return false;
+    }
+    if (is_fresh_tasmovie && options.worker_count != 1) {
+        if (error_out) *error_out = "TAS Movie scenarios require exactly one worker";
+        return false;
+    }
+    if (is_tasmovie_establishment && (options.tasmovie_rtc.has_value()
+        || options.tasmovie_rtc_min.has_value()
+        || options.tasmovie_rtc_max.has_value())) {
+        if (error_out) *error_out = "tasmovie establishment does not accept RTC arguments";
+        return false;
+    }
+    if (is_tasmovie_with_validation
+        && (!options.tasmovie_rtc.has_value()
+            || options.tasmovie_rtc_min.has_value()
+            || options.tasmovie_rtc_max.has_value())) {
+        if (error_out) {
+            *error_out = "tasmovie_with_validation requires exactly one --tasmovie-rtc and does not accept RTC range arguments";
         }
+        return false;
     }
 
     if (needs_savestate && options.savestate_file.empty()) {
@@ -656,11 +659,6 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     }
     if (!options.dtm_file.empty() && !std::filesystem::exists(options.dtm_file)) {
         if (error_out) *error_out = "DTM file does not exist: " + options.dtm_file.string();
-        return false;
-    }
-    if (is_tasmovie_seedprobe && options.savestate_file.empty()) {
-        if (error_out) *error_out = "--savestate-file is required as the placeholder SeedProbe run state for: "
-                                   + join(placeholder_savestate_required_scenarios);
         return false;
     }
     if (options.iso_path.empty() || !std::filesystem::exists(options.iso_path)) {
@@ -703,16 +701,24 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "E2E perf mode does not support --visual-worker";
         return false;
     }
-    if (options.tasmovie_rtc.has_value() && (*options.tasmovie_rtc < 0 || *options.tasmovie_rtc > 255)) {
-        if (error_out) *error_out = "--tasmovie-rtc must be between 0 and 255";
+    constexpr std::int64_t kMaxGameCubeRtc =
+        static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max());
+    if (options.tasmovie_rtc.has_value()
+        && (*options.tasmovie_rtc < 0
+            || *options.tasmovie_rtc > kMaxGameCubeRtc)) {
+        if (error_out) *error_out = "--tasmovie-rtc must be between 0 and 4294967295";
         return false;
     }
-    if (options.tasmovie_rtc_min.has_value() && (*options.tasmovie_rtc_min < 0 || *options.tasmovie_rtc_min > 255)) {
-        if (error_out) *error_out = "--tasmovie-rtc-min must be between 0 and 255";
+    if (options.tasmovie_rtc_min.has_value()
+        && (*options.tasmovie_rtc_min < 0
+            || *options.tasmovie_rtc_min > kMaxGameCubeRtc)) {
+        if (error_out) *error_out = "--tasmovie-rtc-min must be between 0 and 4294967295";
         return false;
     }
-    if (options.tasmovie_rtc_max.has_value() && (*options.tasmovie_rtc_max < 0 || *options.tasmovie_rtc_max > 255)) {
-        if (error_out) *error_out = "--tasmovie-rtc-max must be between 0 and 255";
+    if (options.tasmovie_rtc_max.has_value()
+        && (*options.tasmovie_rtc_max < 0
+            || *options.tasmovie_rtc_max > kMaxGameCubeRtc)) {
+        if (error_out) *error_out = "--tasmovie-rtc-max must be between 0 and 4294967295";
         return false;
     }
     if (options.tasmovie_rtc_min.has_value()
@@ -801,7 +807,9 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     return true;
 }
 
-TasMovieRtcRange ResolveTasMovieRtcRange(const CliOptions& options, int default_value) {
+TasMovieRtcRange ResolveTasMovieRtcRange(
+    const CliOptions& options,
+    std::int64_t default_value) {
     TasMovieRtcRange range{};
     if (options.tasmovie_rtc_min.has_value() || options.tasmovie_rtc_max.has_value()) {
         range.low = options.tasmovie_rtc_min.value_or(options.tasmovie_rtc_max.value_or(default_value));

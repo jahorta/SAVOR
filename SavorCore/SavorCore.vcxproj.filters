@@ -103,7 +103,7 @@
     <Filter Include="Runner\Runtime\Services\Screenshot">
       <UniqueIdentifier>{6A1A5678-F0C4-4FA9-A2DA-181E0ED60399}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Runner\Runtime\Services\State">
+    <Filter Include="Runner\Runtime\Services\Savestate">
       <UniqueIdentifier>{B1C111B7-BD6B-4558-A1DB-C74AD273789F}</UniqueIdentifier>
     </Filter>
     <Filter Include="Runner\Runtime\Services\Telemetry">
@@ -309,10 +309,7 @@
     <ClInclude Include="Phases\Programs\SeedProbe\SeedProbeModule.h">
       <Filter>Phases\SeedProbe</Filter>
     </ClInclude>
-    <ClInclude Include="Phases\Programs\PlayTasMovie\TasMovieScript.h">
-      <Filter>Phases\TasMovie</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\PlayTasMovie\TasMoviePayload.h">
+    <ClInclude Include="Phases\Programs\TasMovieValidation\TasMovieValidationModule.h">
       <Filter>Phases\TasMovie</Filter>
     </ClInclude>
     <ClInclude Include="Phases\Programs\TasFrameDetector\TasFrameDetectorScript.h">
@@ -543,17 +540,17 @@
     <ClInclude Include="Runner\Runtime\Services\Screenshot\ScreenshotService.h">
       <Filter>Runner\Runtime\Services\Screenshot</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Runtime\Services\State\IStateBackendPort.h">
-      <Filter>Runner\Runtime\Services\State</Filter>
+    <ClInclude Include="Runner\Runtime\Services\Savestate\ISavestateBackendPort.h">
+      <Filter>Runner\Runtime\Services\Savestate</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Runtime\Services\State\SessionStateBackendAdapter.h">
-      <Filter>Runner\Runtime\Services\State</Filter>
+    <ClInclude Include="Runner\Runtime\Services\Savestate\SessionSavestateBackendAdapter.h">
+      <Filter>Runner\Runtime\Services\Savestate</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Runtime\Services\State\StateService.h">
-      <Filter>Runner\Runtime\Services\State</Filter>
+    <ClInclude Include="Runner\Runtime\Services\Savestate\SavestateService.h">
+      <Filter>Runner\Runtime\Services\Savestate</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Runtime\Services\State\StateTypes.h">
-      <Filter>Runner\Runtime\Services\State</Filter>
+    <ClInclude Include="Runner\Runtime\Services\Savestate\SavestateTypes.h">
+      <Filter>Runner\Runtime\Services\Savestate</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Runtime\Services\Telemetry\TelemetryBus.h">
       <Filter>Runner\Runtime\Services\Telemetry</Filter>
@@ -579,10 +576,7 @@
     <ClInclude Include="Runner\Runtime\Worksets\ProgramBaseline.h">
       <Filter>Runner\Runtime\Worksets</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Runtime\Worksets\StateArtifactFinalizer.h">
-      <Filter>Runner\Runtime\Worksets</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Runtime\Worksets\SessionStateCache.h">
+    <ClInclude Include="Runner\Runtime\Worksets\SavestateArtifactFinalizer.h">
       <Filter>Runner\Runtime\Worksets</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Runtime\Worksets\WorkerCompletionLedger.h">
@@ -926,11 +920,11 @@
     <ClCompile Include="Runner\Runtime\Services\Screenshot\ScreenshotService.cpp">
       <Filter>Runner\Runtime\Services\Screenshot</Filter>
     </ClCompile>
-    <ClCompile Include="Runner\Runtime\Services\State\SessionStateBackendAdapter.cpp">
-      <Filter>Runner\Runtime\Services\State</Filter>
+    <ClCompile Include="Runner\Runtime\Services\Savestate\SessionSavestateBackendAdapter.cpp">
+      <Filter>Runner\Runtime\Services\Savestate</Filter>
     </ClCompile>
-    <ClCompile Include="Runner\Runtime\Services\State\StateService.cpp">
-      <Filter>Runner\Runtime\Services\State</Filter>
+    <ClCompile Include="Runner\Runtime\Services\Savestate\SavestateService.cpp">
+      <Filter>Runner\Runtime\Services\Savestate</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Runtime\Services\Telemetry\TelemetryBus.cpp">
       <Filter>Runner\Runtime\Services\Telemetry</Filter>
@@ -953,10 +947,7 @@
     <ClCompile Include="Runner\Runtime\Worksets\ProgramBaseline.cpp">
       <Filter>Runner\Runtime\Worksets</Filter>
     </ClCompile>
-    <ClCompile Include="Runner\Runtime\Worksets\StateArtifactFinalizer.cpp">
-      <Filter>Runner\Runtime\Worksets</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Runtime\Worksets\SessionStateCache.cpp">
+    <ClCompile Include="Runner\Runtime\Worksets\SavestateArtifactFinalizer.cpp">
       <Filter>Runner\Runtime\Worksets</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Runtime\Worksets\WorkerCompletionLedger.cpp">
@@ -986,7 +977,7 @@
     <ClCompile Include="Phases\Programs\SeedProbe\SeedProbeModule.cpp">
       <Filter>Phases\SeedProbe</Filter>
     </ClCompile>
-    <ClCompile Include="Phases\Programs\PlayTasMovie\TasMoviePayload.cpp">
+    <ClCompile Include="Phases\Programs\TasMovieValidation\TasMovieValidationModule.cpp">
       <Filter>Phases\TasMovie</Filter>
     </ClCompile>
     <ClCompile Include="Phases\Programs\TasFrameDetector\TasFrameDetectorPayload.cpp">

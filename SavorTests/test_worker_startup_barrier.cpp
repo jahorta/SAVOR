@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -87,6 +90,166 @@ TEST(SeedProbeWorkerStartupCli, BarrierDefaultsOffAndParsesExplicitly) {
         &explicit_barrier,
         &error)) << error;
     EXPECT_TRUE(explicit_barrier.wait_for_workers_ready);
+}
+
+TEST(TasMovieEstablishmentCli, AcceptsOnlyTheEstablishmentInputs) {
+    savor::e2e::CliOptions options;
+    std::string error;
+    ASSERT_TRUE(ParseSeedProbeArgs(
+        {
+            "SavorE2E",
+            "--scenario", "tasmovie",
+            "--iso", ".",
+            "--dolphin-base-dir", ".",
+            "--dtm-file", ".",
+        },
+        &options,
+        &error)) << error;
+    ASSERT_EQ(options.scenarios.size(), 1u);
+    EXPECT_EQ(options.scenarios.front(), "tasmovie");
+    EXPECT_TRUE(options.savestate_file.empty());
+    EXPECT_FALSE(options.tasmovie_rtc.has_value());
+}
+
+TEST(TasMovieEstablishmentCli, RejectsCombinationRepeatAndRtcModes) {
+    savor::e2e::CliOptions options;
+    std::string error;
+    EXPECT_FALSE(ParseSeedProbeArgs(
+        {
+            "SavorE2E", "--scenario", "tasmovie",
+            "--scenario", "seedprobe", "--iso", ".",
+            "--dolphin-base-dir", ".", "--dtm-file", ".",
+            "--savestate-file", ".",
+        },
+        &options,
+        &error));
+    EXPECT_NE(error.find("must run alone"), std::string::npos);
+
+    error.clear();
+    EXPECT_FALSE(ParseSeedProbeArgs(
+        {
+            "SavorE2E", "--scenario", "tasmovie", "--repeat", "2",
+            "--iso", ".", "--dolphin-base-dir", ".",
+            "--dtm-file", ".",
+        },
+        &options,
+        &error));
+    EXPECT_NE(error.find("--repeat 1"), std::string::npos);
+
+    error.clear();
+    EXPECT_FALSE(ParseSeedProbeArgs(
+        {
+            "SavorE2E", "--scenario", "tasmovie",
+            "--tasmovie-rtc", "0", "--iso", ".",
+            "--dolphin-base-dir", ".", "--dtm-file", ".",
+        },
+        &options,
+        &error));
+    EXPECT_NE(error.find("does not accept RTC"), std::string::npos);
+
+    error.clear();
+    EXPECT_FALSE(ParseSeedProbeArgs(
+        {
+            "SavorE2E", "--scenario", "tasmovie",
+            "--worker-count", "2", "--iso", ".",
+            "--dolphin-base-dir", ".", "--dtm-file", ".",
+        },
+        &options,
+        &error));
+    EXPECT_NE(error.find("exactly one worker"), std::string::npos);
+}
+
+TEST(TasMovieEstablishmentCli, RemovesLegacyCombinationScenarios) {
+    savor::e2e::CliOptions options;
+    std::string error;
+    EXPECT_FALSE(ParseSeedProbeArgs(
+        {
+            "SavorE2E", "--scenario", "tasmovie_seedprobe",
+            "--iso", ".", "--dolphin-base-dir", ".",
+        },
+        &options,
+        &error));
+    EXPECT_NE(error.find("unknown --scenario"), std::string::npos);
+
+    error.clear();
+    ASSERT_TRUE(ParseSeedProbeArgs(
+        {
+            "SavorE2E", "--scenario", "all", "--iso", ".",
+            "--dolphin-base-dir", ".", "--savestate-file", ".",
+        },
+        &options,
+        &error)) << error;
+    EXPECT_EQ(
+        std::find(
+            options.scenarios.begin(), options.scenarios.end(), "tasmovie"),
+        options.scenarios.end());
+    ASSERT_EQ(options.scenarios.size(), 1u);
+    EXPECT_EQ(options.scenarios.front(), "seedprobe");
+    EXPECT_EQ(
+        std::find(
+            options.scenarios.begin(), options.scenarios.end(),
+            "tasmovie_with_validation"),
+        options.scenarios.end());
+
+    for (const auto* removed : {
+             "seedprobe_battle", "battle", "battle_macro_probe",
+             "navigation_context"}) {
+        error.clear();
+        EXPECT_FALSE(ParseSeedProbeArgs(
+            {"SavorE2E", "--scenario", removed},
+            &options,
+            &error));
+        EXPECT_NE(error.find("unknown --scenario"), std::string::npos);
+    }
+}
+
+TEST(TasMovieWithValidationCli, AcceptsExactFullU32RtcDomain) {
+    for (const auto* rtc : {"0", "4294967295"}) {
+        savor::e2e::CliOptions options;
+        std::string error;
+        ASSERT_TRUE(ParseSeedProbeArgs(
+            {
+                "SavorE2E", "--scenario", "tasmovie_with_validation",
+                "--tasmovie-rtc", rtc, "--iso", ".",
+                "--dolphin-base-dir", ".", "--dtm-file", ".",
+            },
+            &options,
+            &error)) << error;
+        ASSERT_TRUE(options.tasmovie_rtc.has_value());
+        EXPECT_EQ(
+            *options.tasmovie_rtc,
+            rtc == std::string_view("0")
+                ? 0
+                : static_cast<std::int64_t>(
+                    std::numeric_limits<std::uint32_t>::max()));
+    }
+}
+
+TEST(TasMovieWithValidationCli, RejectsMissingRangeConflictingAndInvalidRtc) {
+    const auto reject = [](std::initializer_list<const char*> extra) {
+        std::vector<std::string> storage{
+            "SavorE2E", "--scenario", "tasmovie_with_validation",
+            "--iso", ".", "--dolphin-base-dir", ".", "--dtm-file", ".",
+        };
+        storage.insert(storage.end(), extra.begin(), extra.end());
+        std::vector<char*> argv;
+        for (auto& value : storage) argv.push_back(value.data());
+        savor::e2e::CliOptions options;
+        std::string error;
+        return !savor::e2e::ParseArgs(
+            static_cast<int>(argv.size()), argv.data(), &options, &error);
+    };
+
+    EXPECT_TRUE(reject({}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc-min", "0", "--tasmovie-rtc-max", "1"}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "0", "--tasmovie-rtc-min", "0"}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "-1"}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "4294967296"}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "0", "--repeat", "2"}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "0", "--worker-count", "2"}));
+    EXPECT_TRUE(reject({
+        "--tasmovie-rtc", "0", "--scenario", "seedprobe",
+        "--savestate-file", "."}));
 }
 
 TEST(SeedProbeWorkerStartupBarrier, HoldsClaimsUntilFullFleetIsReady) {

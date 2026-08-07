@@ -1,4 +1,4 @@
-#include "StateArtifactFinalizer.h"
+#include "SavestateArtifactFinalizer.h"
 
 #include "Utils/Hash.h"
 
@@ -70,7 +70,7 @@ std::atomic<std::uint64_t> g_staging_nonce{1};
 
 [[nodiscard]] std::filesystem::path StagingPath(
     const std::filesystem::path& final_path,
-    StateArtifactFinalizationId id,
+    SavestateArtifactFinalizationId id,
     std::size_t ordinal,
     std::uint64_t nonce)
 {
@@ -137,19 +137,19 @@ std::atomic<std::uint64_t> g_staging_nonce{1};
 
 struct FilePublication
 {
-    StateArtifactFinalizerResult result;
+    SavestateArtifactFinalizerResult result;
     FinalizedArtifactFile receipt;
 };
 
 struct StagingWrite
 {
-    StateArtifactFinalizerResult result;
+    SavestateArtifactFinalizerResult result;
     std::filesystem::path path;
 };
 
 [[nodiscard]] StagingWrite WriteDurableStaging(
     const ImmutableArtifactFile& file,
-    StateArtifactFinalizationId id,
+    SavestateArtifactFinalizationId id,
     std::size_t ordinal,
     const std::string& digest)
 {
@@ -177,8 +177,8 @@ struct StagingWrite
             open_error != ERROR_ALREADY_EXISTS)
         {
             return {
-                StateArtifactFinalizerResult::Failure(
-                    StateArtifactFinalizerErrorCode::FilesystemFailure,
+                SavestateArtifactFinalizerResult::Failure(
+                    SavestateArtifactFinalizerErrorCode::FilesystemFailure,
                     "Unable to create immutable artifact staging file: " +
                         std::system_category().message(open_error)),
                 {}};
@@ -187,8 +187,8 @@ struct StagingWrite
     if (handle == INVALID_HANDLE_VALUE)
     {
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::FilesystemFailure,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::FilesystemFailure,
                 "Unable to allocate a unique immutable artifact staging "
                 "file"),
             {}};
@@ -232,8 +232,8 @@ struct StagingWrite
     {
         ::DeleteFileW(staging.c_str());
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::FilesystemFailure,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::FilesystemFailure,
                 "Unable to durably write immutable artifact staging file: " +
                     std::system_category().message(open_error)),
             {}};
@@ -250,8 +250,8 @@ struct StagingWrite
         if (!output)
         {
             return {
-                StateArtifactFinalizerResult::Failure(
-                    StateArtifactFinalizerErrorCode::FilesystemFailure,
+                SavestateArtifactFinalizerResult::Failure(
+                    SavestateArtifactFinalizerErrorCode::FilesystemFailure,
                     "Unable to open immutable artifact staging file"),
                 {}};
         }
@@ -268,8 +268,8 @@ struct StagingWrite
             std::error_code ignored;
             std::filesystem::remove(staging, ignored);
             return {
-                StateArtifactFinalizerResult::Failure(
-                    StateArtifactFinalizerErrorCode::FilesystemFailure,
+                SavestateArtifactFinalizerResult::Failure(
+                    SavestateArtifactFinalizerErrorCode::FilesystemFailure,
                     "Unable to write immutable artifact staging file"),
                 {}};
         }
@@ -283,8 +283,8 @@ struct StagingWrite
             std::error_code ignored;
             std::filesystem::remove(staging, ignored);
             return {
-                StateArtifactFinalizerResult::Failure(
-                    StateArtifactFinalizerErrorCode::IntegrityFailure,
+                SavestateArtifactFinalizerResult::Failure(
+                    SavestateArtifactFinalizerErrorCode::IntegrityFailure,
                     "Immutable artifact staging validation failed"),
                 {}};
         }
@@ -294,24 +294,24 @@ struct StagingWrite
         std::error_code ignored;
         std::filesystem::remove(staging, ignored);
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::FilesystemFailure,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::FilesystemFailure,
                 exception.what()),
             {}};
     }
-    return {StateArtifactFinalizerResult::Success(), staging};
+    return {SavestateArtifactFinalizerResult::Success(), staging};
 }
 
 [[nodiscard]] FilePublication PublishImmutableFile(
     const ImmutableArtifactFile& file,
-    StateArtifactFinalizationId id,
+    SavestateArtifactFinalizationId id,
     std::size_t ordinal)
 {
     if (file.final_path.empty() || !file.bytes)
     {
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::InvalidArgument,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::InvalidArgument,
                 "Immutable artifact publication requires a destination and "
                 "captured bytes"),
             {}};
@@ -322,8 +322,8 @@ struct StagingWrite
     if (!CompleteSha256(digest))
     {
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::IntegrityFailure,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::IntegrityFailure,
                 "Unable to hash immutable artifact bytes"),
             {}};
     }
@@ -332,8 +332,8 @@ struct StagingWrite
          file.expected_sha256 != digest))
     {
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::HashMismatch,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::HashMismatch,
                 "Immutable artifact bytes do not match their expected SHA-256"),
             {}};
     }
@@ -344,8 +344,8 @@ struct StagingWrite
         if (error)
         {
             return {
-                StateArtifactFinalizerResult::Failure(
-                    StateArtifactFinalizerErrorCode::FilesystemFailure,
+                SavestateArtifactFinalizerResult::Failure(
+                    SavestateArtifactFinalizerErrorCode::FilesystemFailure,
                     "Unable to inspect immutable artifact destination: " +
                         error.message()),
                 {}};
@@ -355,8 +355,8 @@ struct StagingWrite
             if (hash::sha256_of_file(file.final_path.string()) != digest)
             {
                 return {
-                    StateArtifactFinalizerResult::Failure(
-                        StateArtifactFinalizerErrorCode::IntegrityFailure,
+                    SavestateArtifactFinalizerResult::Failure(
+                        SavestateArtifactFinalizerErrorCode::IntegrityFailure,
                         "Immutable artifact destination already contains "
                         "different bytes"),
                     {}};
@@ -365,20 +365,20 @@ struct StagingWrite
         catch (const std::exception& exception)
         {
             return {
-                StateArtifactFinalizerResult::Failure(
-                    StateArtifactFinalizerErrorCode::FilesystemFailure,
+                SavestateArtifactFinalizerResult::Failure(
+                    SavestateArtifactFinalizerErrorCode::FilesystemFailure,
                     exception.what()),
                 {}};
         }
         return {
-            StateArtifactFinalizerResult::Success(),
+            SavestateArtifactFinalizerResult::Success(),
             {file.final_path, file.bytes.size(), digest, true}};
     }
     if (error)
     {
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::FilesystemFailure,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::FilesystemFailure,
                 "Unable to inspect immutable artifact destination: " +
                     error.message()),
             {}};
@@ -391,8 +391,8 @@ struct StagingWrite
         if (error)
         {
             return {
-                StateArtifactFinalizerResult::Failure(
-                    StateArtifactFinalizerErrorCode::FilesystemFailure,
+                SavestateArtifactFinalizerResult::Failure(
+                    SavestateArtifactFinalizerErrorCode::FilesystemFailure,
                     "Unable to create immutable artifact directory: " +
                         error.message()),
                 {}};
@@ -430,7 +430,7 @@ struct StagingWrite
                 {
                     std::filesystem::remove(staging, exists_error);
                     return {
-                        StateArtifactFinalizerResult::Success(),
+                        SavestateArtifactFinalizerResult::Success(),
                         {file.final_path,
                          file.bytes.size(),
                          digest,
@@ -450,24 +450,27 @@ struct StagingWrite
 #endif
         std::filesystem::remove(staging, exists_error);
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::FilesystemFailure,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::FilesystemFailure,
                 message),
             {}};
     }
 
     return {
-        StateArtifactFinalizerResult::Success(),
+        SavestateArtifactFinalizerResult::Success(),
         {file.final_path, file.bytes.size(), digest, false}};
 }
 
 } // namespace
 
-StateArtifactFinalizer::StateArtifactFinalizer(
+SavestateArtifactFinalizer::SavestateArtifactFinalizer(
     const WorkerWorksetLimits& limits,
-    std::shared_ptr<IStateArtifactFinalizerNotifier> notifier)
+    std::shared_ptr<ISavestateArtifactFinalizerNotifier> notifier,
+    std::function<void()> before_process_for_testing)
     : limits_(limits),
-      notifier_(std::move(notifier))
+      notifier_(std::move(notifier)),
+      before_process_for_testing_(
+          std::move(before_process_for_testing))
 {
     const std::uint32_t thread_count =
         std::max<std::uint32_t>(1, limits_.finalizer_threads);
@@ -501,13 +504,13 @@ StateArtifactFinalizer::StateArtifactFinalizer(
     }
 }
 
-StateArtifactFinalizer::~StateArtifactFinalizer()
+SavestateArtifactFinalizer::~SavestateArtifactFinalizer()
 {
     Shutdown();
 }
 
-StateArtifactFinalizerSubmission StateArtifactFinalizer::Submit(
-    StateArtifactFinalizationRequest request)
+SavestateArtifactFinalizerSubmission SavestateArtifactFinalizer::Submit(
+    SavestateArtifactFinalizationRequest request)
 {
     if (!request.item)
         request.item = ExecutionCorrelation(request.terminal);
@@ -520,8 +523,8 @@ StateArtifactFinalizerSubmission StateArtifactFinalizer::Submit(
         request.state.final_path.empty() || !request.state.bytes)
     {
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::InvalidArgument,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::InvalidArgument,
                 "State-artifact finalization requires exact item "
                 "correlation and immutable state bytes"),
             {}};
@@ -537,8 +540,8 @@ StateArtifactFinalizerSubmission StateArtifactFinalizer::Submit(
             !AddSize(sidecar.bytes.size(), resident_bytes))
         {
             return {
-                StateArtifactFinalizerResult::Failure(
-                    StateArtifactFinalizerErrorCode::InvalidArgument,
+                SavestateArtifactFinalizerResult::Failure(
+                    SavestateArtifactFinalizerErrorCode::InvalidArgument,
                     "State-artifact sidecars require unique paths, immutable "
                     "bytes, and a representable aggregate size"),
                 {}};
@@ -549,8 +552,8 @@ StateArtifactFinalizerSubmission StateArtifactFinalizer::Submit(
     if (!accepting_)
     {
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::NotAccepting,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::NotAccepting,
                 "State-artifact finalizer is shutting down"),
             {}};
     }
@@ -558,8 +561,8 @@ StateArtifactFinalizerSubmission StateArtifactFinalizer::Submit(
             request.state_artifact_id.value()))
     {
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::InvalidArgument,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::InvalidArgument,
                 "The exact captured state artifact already has pending "
                 "finalization"),
             {}};
@@ -571,21 +574,21 @@ StateArtifactFinalizerSubmission StateArtifactFinalizer::Submit(
             limits_.maximum_pending_finalizer_bytes - resident_bytes)
     {
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::CapacityExceeded,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::CapacityExceeded,
                 "State-artifact finalizer count or byte capacity is full"),
             {}};
     }
     if (next_finalization_id_ == 0)
     {
         return {
-            StateArtifactFinalizerResult::Failure(
-                StateArtifactFinalizerErrorCode::SequenceExhausted,
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::SequenceExhausted,
                 "State-artifact finalization identity is exhausted"),
             {}};
     }
 
-    const StateArtifactFinalizationId id(next_finalization_id_++);
+    const SavestateArtifactFinalizationId id(next_finalization_id_++);
     jobs_.push_back(Job{id, std::move(request), resident_bytes});
     outstanding_ids_.emplace(id.value());
     outstanding_artifact_ids_.emplace(
@@ -593,18 +596,18 @@ StateArtifactFinalizerSubmission StateArtifactFinalizer::Submit(
     ++outstanding_jobs_;
     resident_payload_bytes_ += resident_bytes;
     wake_.notify_one();
-    return {StateArtifactFinalizerResult::Success(), id};
+    return {SavestateArtifactFinalizerResult::Success(), id};
 }
 
-std::vector<StateArtifactFinalizationCompletion>
-StateArtifactFinalizer::DrainCompletions()
+std::vector<SavestateArtifactFinalizationCompletion>
+SavestateArtifactFinalizer::DrainResults()
 {
     std::lock_guard lock(mutex_);
-    std::vector<StateArtifactFinalizationCompletion> drained;
+    std::vector<SavestateArtifactFinalizationCompletion> drained;
     drained.reserve(completions_.size());
     while (!completions_.empty())
     {
-        StateArtifactFinalizationCompletion completion =
+        SavestateArtifactFinalizationCompletion completion =
             std::move(completions_.front());
         completions_.pop_front();
         outstanding_ids_.erase(completion.finalization_id.value());
@@ -617,7 +620,7 @@ StateArtifactFinalizer::DrainCompletions()
     return drained;
 }
 
-void StateArtifactFinalizer::Shutdown() noexcept
+void SavestateArtifactFinalizer::Shutdown() noexcept
 {
     {
         std::unique_lock lock(mutex_);
@@ -647,8 +650,8 @@ void StateArtifactFinalizer::Shutdown() noexcept
     stopped_.notify_all();
 }
 
-StateArtifactFinalizerSnapshot
-StateArtifactFinalizer::snapshot() const noexcept
+SavestateArtifactFinalizerSnapshot
+SavestateArtifactFinalizer::snapshot() const noexcept
 {
     std::lock_guard lock(mutex_);
     return {
@@ -661,7 +664,7 @@ StateArtifactFinalizer::snapshot() const noexcept
         resident_payload_bytes_};
 }
 
-void StateArtifactFinalizer::WorkerMain() noexcept
+void SavestateArtifactFinalizer::WorkerMain() noexcept
 {
     for (;;)
     {
@@ -682,10 +685,12 @@ void StateArtifactFinalizer::WorkerMain() noexcept
             ++running_;
         }
 
-        StateArtifactFinalizationCompletion completion = Process(job);
+        if (before_process_for_testing_)
+            before_process_for_testing_();
+        SavestateArtifactFinalizationCompletion completion = Process(job);
         job.request.state.bytes = {};
         job.request.sidecars.clear();
-        std::shared_ptr<IStateArtifactFinalizerNotifier> notifier;
+        std::shared_ptr<ISavestateArtifactFinalizerNotifier> notifier;
         {
             std::lock_guard lock(mutex_);
             if (running_ != 0)
@@ -698,14 +703,14 @@ void StateArtifactFinalizer::WorkerMain() noexcept
             notifier = notifier_;
         }
         if (notifier)
-            notifier->NotifyStateArtifactFinalizerCompletion();
+            notifier->NotifySavestateArtifactFinalizerCompletion();
     }
 }
 
-StateArtifactFinalizationCompletion StateArtifactFinalizer::Process(
+SavestateArtifactFinalizationCompletion SavestateArtifactFinalizer::Process(
     const Job& job) const noexcept
 {
-    StateArtifactFinalizationCompletion completion;
+    SavestateArtifactFinalizationCompletion completion;
     completion.finalization_id = job.id;
     completion.item = job.request.item;
     completion.terminal = job.request.terminal;
@@ -740,15 +745,15 @@ StateArtifactFinalizationCompletion StateArtifactFinalizer::Process(
     }
     catch (const std::exception& exception)
     {
-        completion.result = StateArtifactFinalizerResult::Failure(
-            StateArtifactFinalizerErrorCode::FilesystemFailure,
+        completion.result = SavestateArtifactFinalizerResult::Failure(
+            SavestateArtifactFinalizerErrorCode::FilesystemFailure,
             exception.what());
         return completion;
     }
     catch (...)
     {
-        completion.result = StateArtifactFinalizerResult::Failure(
-            StateArtifactFinalizerErrorCode::FilesystemFailure,
+        completion.result = SavestateArtifactFinalizerResult::Failure(
+            SavestateArtifactFinalizerErrorCode::FilesystemFailure,
             "Unknown state-artifact finalization failure");
         return completion;
     }

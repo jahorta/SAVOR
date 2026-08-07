@@ -158,15 +158,14 @@ session-shaping policy. The `ProgramBaselineDefinition` is an ordered set of
 `ProgramBaselineComponent`s covering savestate, exact movie continuation, and runtime-facing
 program-kind adapter-declared derived state. These are workset/session contracts, not module values or
 IR. The staged successor contains only the complete static item templates,
-correlation, validated immutable metadata, and scoped cache leases. Staging may decode, resolve and
-verify cached modules, validate typed inputs, read and hash immutable artifacts, and acquire a lease on
-an immutable serialized-state cache entry identified by exact `StateCacheKey`. It cannot bind
-`SessionId` or `StateEpoch`, restore or capture state, acquire an invocation/session resource, dispatch
+correlation, and validated immutable metadata. Staging may decode, resolve and
+verify cached modules, validate typed inputs, and read and hash its own immutable artifacts. It cannot bind
+`SessionId` or `WorksetEpoch`, restore or capture state, acquire an invocation/session resource, dispatch
 an action, or construct a `ProgramInvocation` or `ProgramInstance`.
 
 Only after a workset is active does `WorkerRuntime` prepare its common source state and optional
 multi-item composite baseline. Before every later child, `RestoreBaseline` prepares every component,
-returns one `PreparedProgramBaselineReceipt`, and advances `StateEpoch` exactly once. Immediately before
+returns one `PreparedProgramBaselineReceipt`, and retains the workset's existing `WorksetEpoch`. Immediately before
 each child admission, `WorkerRuntime` binds that template to the exact current session and epoch;
 `ProgramRuntime` then receives one ordinary immutable `ProgramInvocation` and creates one ordinary
 `ProgramInstance`. Exactly one invocation/instance may execute or own invocation resources across the
@@ -180,10 +179,8 @@ workset/item/invocation/attempt correlation. It never contains a `ProgramInstanc
 resource handle, or live program state. Its entries may outlive the session ownership of the originating
 workset and therefore do not turn finalization or acknowledgement waiting into program execution.
 
-`StateCacheKey` and its bounded actor-LRU cache are likewise outside the program type system. A cache
-entry is immutable serialized state plus validated compatibility/lineage metadata, not a program value,
-guest handle, baseline, or epoch-bound state. A scoped cache lease prevents eviction while active or
-staged host preparation references the entry; it grants no session authority.
+The optional multi-item state handle is likewise outside the program type system. It belongs only to
+the active workset, is never exposed as a module value, and is released when that workset terminates.
 
 A bounded list remains a valid program type when the domain operation itself is atomically defined over
 that list. It must not be introduced merely to combine otherwise independent jobs for transport or
@@ -219,8 +216,8 @@ Rules:
 6. Artifact references may leave the runtime in `ProgramResult`. A program-kind result adapter maps them
    to the existing SavorDb artifact/domain representation; this refactor does not persist
    `artifact_ref<TSchema>` directly. Resource and opaque handles may not cross the runtime boundary.
-7. Guest-derived opaque handles are tagged with the `StateEpoch` in which they were produced. Using one
-   after state replacement is an infrastructure contract failure.
+7. Guest-derived opaque handles are tagged with their owning `WorksetEpoch` and scoped invocation. They
+   cannot survive invocation unwind or cross a workset boundary.
 8. Host pointers, object addresses, service references, callbacks, threads, and arbitrary C++ objects
    are not values.
 9. Program inputs are immutable. Computed values use function-frame values and block arguments rather
@@ -293,7 +290,7 @@ The reusable authoring model contains:
   and rearm/current-instruction-suppression policy. It lowers to a scoped logical router subscription
   and cancellation-driven `runtime.execution.continue_until`.
 - `SemanticPointReceipt`: the matched logical point, physical hit evidence, stop sequence,
-  `StateEpoch`, and any declared hit-time samples. A receipt identifies one routed event; it does not
+  `WorksetEpoch`, and any declared hit-time samples. A receipt identifies one routed event; it does not
   grant control authority.
 - `AddressExpression<T>`: a pure, bounded, typed address derivation from registered symbols,
   compatibility-pinned addresses, checked dereferences/offsets, or receipt fields. Current address
@@ -324,8 +321,8 @@ distinct from `false`, zero, or an ordinary domain-negative result.
 Named baselines are ordinary typed IR values. Each use declares `First` or `Latest` update policy and
 the exact comparison point. Translation of current battle predicates uses `Latest`: acquire and update
 the baseline before evaluating the predicate at that same hit. Receipts, observations, baselines,
-derived addresses, and guest-derived handles carry their originating `StateEpoch` and cannot be reused
-after state replacement.
+derived addresses, and guest-derived handles carry their originating `WorksetEpoch` and cannot be reused
+after their invocation scope unwinds.
 
 Lowering generates only exact imports, ordinary scoped subscriptions, execution and read/query action
 awaits, typed values, branches, and declared emissions. Its normalized IR, source mapping, schemas, and
@@ -360,7 +357,7 @@ Each `InteractionSegmentDefinition` declares one bounded unit:
 
 `InteractionSegmentResult` contains the exact semantic-point receipt, requested-input and neutral-release
 receipts when applicable, ordered observations/check results, schema-declared domain evidence,
-originating `StateEpoch`, and a distinct terminal status. Host elapsed time may appear only as
+originating `WorksetEpoch`, and a distinct terminal status. Host elapsed time may appear only as
 diagnostic telemetry, not as a completion policy or generic domain result. Unexpected point,
 unacknowledged input, unsatisfied check, confirmed infrastructure failure, cancellation, and cleanup
 failure cannot collapse into one boolean.
@@ -416,7 +413,7 @@ Each evaluation produces one of `Satisfied`, `Unsatisfied`, `NotApplicable`, or 
 `Unsatisfied` is an ordinary typed result and becomes terminal only because the check's use policy says
 so. Failure to obtain required evidence is an action/runtime failure and must not silently become
 `Unsatisfied` or be ignored. Epoch-bound baselines and witness values cannot be reused after
-`StateEpoch` changes.
+`WorksetEpoch` changes.
 
 The library lowers predicates before module verification. The verifier receives only canonical IR,
 normal imports, schemas, scopes, and emissions; it accepts no separate module-level predicate bytecode.
@@ -474,13 +471,13 @@ At that boundary:
    current scope, and epoch requirements.
 3. The instance records one pending continuation and stops advancing.
 4. `ActionRegistry` dispatches the request to the bounded handler.
-5. A completion returns with invocation ID, request ID, origin `StateEpoch`, typed output, resource
+5. A resolution returns with invocation ID, request ID, active `WorksetEpoch`, typed output, resource
    receipts, and diagnostics.
-6. `ProgramRuntime` rejects stale, duplicate, mismatched, or schema-invalid completions.
+6. `ProgramRuntime` rejects stale, duplicate, mismatched, or schema-invalid resolutions.
 7. `ProgramExecutor` binds the output and resumes the saved continuation.
 
 An instance has at most one program-level awaited action at a time. Structured child operations inside
-an action remain owned by session services and complete before the one action completion is delivered.
+an action remain owned by session services and complete before the one action resolution is delivered.
 This restriction makes cancellation, trace order, replay, and resource ownership unambiguous.
 
 ### Structured scopes and defer
@@ -510,13 +507,13 @@ root and permits synthetic nested scopes so every generic service can use the cl
 program execution exists. Slice 5 adds actor-owned binding between invocation resource identities and
 that same ledger without changing the ledger's contracts.
 
-The ledger assigns monotonic receipt/acquisition identities and records owner, service, scope,
-acquisition epoch, release descriptor, promotion policy, cleanup requirement, and one of
-`EpochAgnostic`, `EndOnEpochChange`, `RebindAfterRestore`, or `ReplacesState`. Batch acquisition is
-atomic. Scope unwind is reverse acquisition order, continues after independent failures, and may suspend
-only for a typed cleanup-execution continuation. Optional release failure yields clean-with-diagnostics;
-unproven mandatory cleanup yields taint. A successful state transaction closes or requests rebind for
-old-epoch resources before accepting the new epoch.
+The ledger is constructed for one active workset and records owner, service, scope, one immutable
+`WorksetEpoch`, release descriptor, promotion policy, and cleanup requirement. It has no cross-epoch
+resource policy because an epoch never changes inside a workset. Batch acquisition is atomic. Scope
+unwind is reverse acquisition order, continues after independent failures, and may suspend only for a
+typed cleanup-execution continuation. Optional release failure yields clean-with-diagnostics; unproven
+mandatory cleanup yields taint. Every invocation must return the ledger to the workset scope with no
+live action resource before another item may restore the baseline.
 
 ### ProgramInstance
 
@@ -528,7 +525,7 @@ old-epoch resources before accepting the new epoch.
 - typed call frames and their computed values;
 - pending action request and continuation, if suspended;
 - lexical resource/defer stack;
-- current `StateEpoch` and all epoch-bound handles;
+- current `WorksetEpoch` and all epoch-bound handles;
 - remaining instruction, call, action, emission, memory, artifact, and other structural budgets;
 - emitted-record and artifact-reference builders;
 - branch/action trace correlation;
@@ -538,8 +535,8 @@ old-epoch resources before accepting the new epoch.
 It does not contain:
 
 - a phase-controller subtype or virtual behavior;
-- worker queues, active/staged workset membership, ordering or promotion state, `StateCacheKey` entries
-  or leases, completion/acknowledgement-ledger state, workflow IDs used for scheduling, or frontier
+- worker queues, active/staged workset membership, ordering or promotion state, workset-owned state
+  handles, completion/acknowledgement-ledger state, workflow IDs used for scheduling, or frontier
   mutation methods;
 - an OS thread, event loop, timer thread, or callback into the protocol;
 - a `DolphinBackend`, `EmulationSession`, or broad service reference; or
@@ -577,7 +574,7 @@ These are services inside one subsystem, not alternate executors. `ProgramDefini
 DB workflow phase-adapter registry. `ActionRegistry` stores capability implementations, not arbitrary
 phase factories. `ProgramRuntime` drives the session-owned resource ledger for invocation scopes and
 receipts; it does not implement a second cleanup ledger. It neither owns nor iterates the enclosing
-active workset or host-only staged successor, does not own the immutable state cache or worker-global
+active workset or host-only staged successor, does not own workset baseline handles or the worker-global
 completion/acknowledgement ledger, and never has more than one active `ProgramInstance`. It returns one
 fully unwound execution outcome plus any promoted immutable-output receipt to `WorkerRuntime`; host-only
 finalization, authoritative terminal assembly, workset admission/promotion, retention, and
@@ -651,7 +648,7 @@ The target replaces these current public assumptions:
 | Current assumption | Target boundary |
 |---|---|
 | `PhaseScript` is a flat op vector plus breakpoint sets | `ProgramModule` is an immutable typed CFG plus exact imports |
-| `PSInit` implicitly loads one savestate and captures one baseline | `ProgramInvocation` declares state policy; `StateService` performs it as the sole epoch authority using explicit handles or caller-declared immutable artifacts with hash, compatibility, lineage, and any exact DTM continuation |
+| `PSInit` implicitly loads one savestate and captures one baseline | The immutable workset declares an exact artifact baseline; `WorksetStateCoordinator` restores it while `SavestateService` owns only bytes, compatibility, lineage, bounded handles, and immutable publication records |
 | `PSJob` combines raw payload and ambient context | Entrypoint receives one verified typed input record |
 | `PSResult` is `ok`, error byte, and context | `ProgramResult` separates infrastructure, domain, and cleanup status with typed outputs/emissions |
 | `PSContext` is inputs, locals, observations, and outputs | Each boundary has an explicit schema; frame values are typed |
@@ -727,15 +724,15 @@ execution path.
   cannot construct an invocation.
 - Once a finite workset is accepted, its clean children proceed in order without a per-item coordinator
   authorization pause. Exact asynchronous cancellation handles later lease loss or supersession.
-- `StateCacheKey`, immutable serialized-state cache entries and leases, and the worker-global
+- workset-owned state handles and the worker-global
   completion/acknowledgement ledger remain outside modules, entrypoint schemas, IR values, invocations,
   and instances.
 - A published terminal can remain unacknowledged after its workset releases the session without keeping
   a continuation, instance, baseline, or resource scope alive.
-- Duplicate or stale action completions cannot resume an instance.
+- Duplicate or stale action resolutions cannot resume an instance.
 - Cancellation at every instruction/action suspension point takes the same verified unwind path.
-- Invocation scopes project onto the standalone session ledger, and no executor-local receipt or cleanup
-  stack can disagree with the session's reverse-order unwind, epoch transition, or taint disposition.
+- Invocation scopes project onto the workset-owned resource ledger, and no executor-local receipt or
+  cleanup stack can disagree with its reverse-order unwind or taint disposition.
 - Current macro `Start`/`Advance` behavior can be represented as a typed reducer/statechart without a
   peer executor.
 - Equivalent semantic-await/observation composition and hand-authored canonical IR normalize to the
@@ -744,7 +741,7 @@ execution path.
   semantic point or explicit frame step; required-unavailable evidence and an ordinary
   false/domain-negative value remain distinct.
 - Named `First` and `Latest` baselines update at their declared point and every receipt, observation,
-  address, and baseline is rejected after its originating `StateEpoch`.
+  address, and baseline is rejected after its originating `WorksetEpoch`.
 - Static and adaptive interactions lower to verifier-known subprogram CFG and reducer transitions
   without a new opcode, action family, runtime, or dynamically constructed effect.
 - Interaction tests distinguish input request from guest-observed release and preserve

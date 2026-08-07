@@ -4,668 +4,121 @@
 #include "common/FakePhysicalStopBackend.h"
 #include "common/ScriptedDolphinBackend.h"
 
-#include <algorithm>
-#include <atomic>
-#include <chrono>
-#include <cstdint>
-#include <filesystem>
-#include <fstream>
 #include <memory>
-#include <string>
-#include <utility>
-#include <vector>
 
 namespace {
 
 using namespace savor::runtime;
 using namespace savor::test_support;
 
-class RecordingStopConsumer final : public IStopPointConsumer
+class Consumer final : public IStopPointConsumer
 {
 public:
-    void OnStopPoint(const StopDelivery& delivery) override
-    {
-        deliveries.push_back(delivery);
-    }
-
-    std::vector<StopDelivery> deliveries;
+    void OnStopPoint(const StopDelivery&) override {}
 };
 
-StopSubscriptionGroupDefinition PcGroup(
-    std::uint64_t id,
-    std::uint32_t pc,
-    IStopPointConsumer& consumer,
-    StopEpochPolicy epoch_policy = StopEpochPolicy::EndOnEpochChange)
+struct Harness
 {
-    return {
-        .id = StopSubscriptionGroupId(id),
-        .source = {
-            .id = StopSourceId(id + 1000),
-            .stable_name = "session.stop.test." + std::to_string(id),
-            .diagnostic_label = "EmulationSession stop-point test",
-        },
-        .epoch_policy = epoch_policy,
-        .subscriptions = {{
-            .id = StopSubscriptionId(id),
-            .point = PcStopPointSpec{pc},
-            .delivery = StopDeliveryMode::Observe,
-            .policy = StopRoutingPolicy::Pass,
-            .consumer = &consumer,
-        }},
-    };
-}
-
-std::size_t CountPhysicalCalls(
-    const std::vector<FakePhysicalStopCall>& calls,
-    FakePhysicalStopOperation operation)
-{
-    return static_cast<std::size_t>(std::count_if(
-        calls.begin(),
-        calls.end(),
-        [&](const FakePhysicalStopCall& call) {
-            return call.operation == operation;
-        }));
-}
-
-class SessionStopPointHarness
-{
-public:
-    explicit SessionStopPointHarness(std::uint64_t session_id)
-        : session_control(
-              std::make_shared<ScriptedDolphinBackendControl>()),
-          physical_control(
-              std::make_shared<FakePhysicalStopBackendControl>())
+    Harness()
+        : dolphin(std::make_shared<ScriptedDolphinBackendControl>()),
+          physical(std::make_shared<FakePhysicalStopBackendControl>())
     {
-        auto physical =
-            std::make_unique<FakePhysicalStopBackend>(physical_control);
-        physical_backend = physical.get();
         session = std::make_unique<EmulationSession>(
-            SessionId(session_id),
+            SessionId(41),
             MakeScriptedDolphinBackend(
-                session_control,
-                std::move(physical)));
+                dolphin,
+                std::make_unique<FakePhysicalStopBackend>(physical)));
     }
 
-    [[nodiscard]] SessionOperationReceipt Open()
-    {
-        return session->Open({});
-    }
-
-    std::shared_ptr<ScriptedDolphinBackendControl> session_control;
-    std::shared_ptr<FakePhysicalStopBackendControl> physical_control;
-    FakePhysicalStopBackend* physical_backend = nullptr;
+    std::shared_ptr<ScriptedDolphinBackendControl> dolphin;
+    std::shared_ptr<FakePhysicalStopBackendControl> physical;
     std::unique_ptr<EmulationSession> session;
 };
 
-class TemporarySessionDirectory final
+TEST(EmulationSessionWorksetEpoch, InfrastructureOpenHasNoActiveEpoch)
 {
-public:
-    TemporarySessionDirectory()
-    {
-        const auto stamp = std::chrono::steady_clock::now()
-            .time_since_epoch().count();
-        path_ = std::filesystem::temp_directory_path() /
-            ("savor-session-services-" + std::to_string(stamp));
-        std::filesystem::create_directories(path_);
-    }
-
-    ~TemporarySessionDirectory()
-    {
-        std::error_code ignored;
-        std::filesystem::remove_all(path_, ignored);
-    }
-
-    [[nodiscard]] const std::filesystem::path& path() const noexcept
-    {
-        return path_;
-    }
-
-private:
-    std::filesystem::path path_;
-};
-
-void WriteTestDtm(const std::filesystem::path& path)
-{
-    std::vector<std::uint8_t> bytes(256, 0);
-    bytes[0] = 'D';
-    bytes[1] = 'T';
-    bytes[2] = 'M';
-    bytes[3] = 0x1a;
-    bytes[4] = 'T';
-    bytes[5] = 'E';
-    bytes[6] = 'S';
-    bytes[7] = 'T';
-    bytes[8] = '0';
-    bytes[9] = '0';
-    bytes[11] = 1;
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    ASSERT_TRUE(output);
-    output.write(
-        reinterpret_cast<const char*>(bytes.data()),
-        static_cast<std::streamsize>(bytes.size()));
-    ASSERT_TRUE(output.good());
-}
-
-TEST(
-    EmulationSessionStopPoints,
-    OpenTransactionBindsSinkAndEstablishesExactPlanOrRollsBack)
-{
-    {
-        SessionStopPointHarness harness(1001);
-        const SessionOperationReceipt open = harness.Open();
-        ASSERT_TRUE(open.ok) << open.backend.message;
-        EXPECT_EQ(open.origin_epoch, StateEpoch{});
-        EXPECT_EQ(open.resulting_epoch, StateEpoch(1));
-
-        StopPointRouter* const router = harness.session->stop_points();
-        ASSERT_NE(router, nullptr);
-        EXPECT_TRUE(router->ingress_enabled());
-        EXPECT_EQ(router->state_epoch(), StateEpoch(1));
-        EXPECT_EQ(
-            harness.physical_control->BoundSink(),
-            static_cast<savor::probe::INativeStopSink*>(router));
-
-        const auto open_calls = harness.physical_control->Calls();
-        ASSERT_GE(open_calls.size(), 2u);
-        EXPECT_EQ(
-            open_calls[0].operation,
-            FakePhysicalStopOperation::BindSink);
-        EXPECT_EQ(
-            open_calls[1].operation,
-            FakePhysicalStopOperation::Apply);
-        EXPECT_TRUE(open_calls[1].commit_invoked);
-        EXPECT_EQ(
-            open_calls[1].generation,
-            PhysicalPlanGeneration(1));
-        EXPECT_TRUE(open_calls[1].plan.pcs.empty());
-        EXPECT_TRUE(open_calls[1].plan.memory.empty());
-
-        RecordingStopConsumer consumer;
-        auto registration =
-            router->RegisterGroup(PcGroup(1, 0x80001000u, consumer));
-        ASSERT_TRUE(registration.receipt.ok)
-            << registration.receipt.error.message;
-        EXPECT_EQ(
-            harness.physical_control->ActualPlan().pcs,
-            std::vector<PhysicalPcStop>{{0x80001000u}});
-        EXPECT_EQ(
-            harness.physical_control->ActualGeneration(),
-            PhysicalPlanGeneration(2));
-
-        EXPECT_TRUE(harness.session->Shutdown().ok);
-    }
-
-    SessionStopPointHarness rollback(1002);
-    rollback.physical_control->SetApplyOutcome(
-        FakePhysicalStopOutcome{
-            .ok = false,
-            .integrity = PhysicalStopIntegrity::Preserved,
-            .message = "injected initial-plan failure",
-        });
-    const SessionOperationReceipt failed_open = rollback.Open();
-    EXPECT_FALSE(failed_open.ok);
-    EXPECT_EQ(failed_open.resulting_epoch, StateEpoch(1));
-    EXPECT_EQ(failed_open.disposition, SessionDisposition::Tainted);
-    EXPECT_EQ(rollback.session->stop_points(), nullptr);
-    EXPECT_EQ(rollback.physical_control->BoundSink(), nullptr);
-    EXPECT_TRUE(rollback.physical_control->ActualPlan().pcs.empty());
-    EXPECT_EQ(rollback.session_control->CloseCount(), 1);
-
-    const auto rollback_calls = rollback.physical_control->Calls();
-    EXPECT_EQ(
-        CountPhysicalCalls(
-            rollback_calls,
-            FakePhysicalStopOperation::BindSink),
-        1u);
-    EXPECT_EQ(
-        CountPhysicalCalls(
-            rollback_calls,
-            FakePhysicalStopOperation::Apply),
-        1u);
-    EXPECT_EQ(
-        CountPhysicalCalls(
-            rollback_calls,
-            FakePhysicalStopOperation::UnbindSink),
-        1u);
-    EXPECT_TRUE(rollback.session->Shutdown().ok);
-
-    SessionStopPointHarness stopped(1003);
-    stopped.session_control->SetOpenResult(
-        BackendResult::Success(),
-        BackendCoreState::Stopped);
-    const SessionOperationReceipt stopped_open = stopped.Open();
-    EXPECT_FALSE(stopped_open.ok);
-    EXPECT_EQ(stopped_open.resulting_epoch, StateEpoch(1));
-    EXPECT_EQ(stopped_open.disposition, SessionDisposition::Tainted);
-    EXPECT_EQ(stopped.session->stop_points(), nullptr);
-    EXPECT_EQ(stopped.physical_control->BoundSink(), nullptr);
-    EXPECT_TRUE(stopped.physical_control->ActualPlan().pcs.empty());
-    EXPECT_TRUE(stopped.physical_control->ActualPlan().memory.empty());
-    EXPECT_EQ(stopped.session_control->CloseCount(), 1);
-}
-
-TEST(
-    EmulationSessionStopPoints,
-    ReadOnlyMovieOpenStagesPlaybackBeforeTheSingleBackendBoot)
-{
-    TemporarySessionDirectory temp;
-    const std::filesystem::path dtm = temp.path() / "movie.dtm";
-    WriteTestDtm(dtm);
-
-    SessionStopPointHarness harness(1009);
-    harness.session_control->movie_available = true;
-    SessionOpenOptions options;
-    options.read_only_movie_path = dtm;
-    const SessionOperationReceipt open =
-        harness.session->Open(options);
-
-    ASSERT_TRUE(open.ok) << open.backend.message;
-    EXPECT_EQ(harness.session_control->OpenCount(), 1);
-    EXPECT_EQ(harness.session_control->reboot_count, 0);
-    ASSERT_NE(harness.session->movie_service(), nullptr);
-    EXPECT_EQ(
-        harness.session->movie_service()->activity(),
-        MovieActivity::ReadOnlyPlayback);
-    const std::vector<std::string> calls =
-        harness.session_control->Calls();
-    const auto prepared = std::find(
-        calls.begin(),
-        calls.end(),
-        "movie.prepare-playback");
-    const auto booted = std::find(
-        calls.begin(),
-        calls.end(),
-        "open");
-    ASSERT_NE(prepared, calls.end());
-    ASSERT_NE(booted, calls.end());
-    EXPECT_LT(prepared, booted);
-    EXPECT_TRUE(harness.session->Shutdown().ok);
-}
-
-TEST(
-    EmulationSessionStopPoints,
-    PreconfiguredIngressNotificationSurvivesOpenAndEngineResumeDepartsCurrentPoint)
-{
-    SessionStopPointHarness harness(1010);
-    std::atomic<std::uint64_t> notification{0};
-    ASSERT_TRUE(
-        harness.session->ConfigureStopPointIngressNotification(
-            &notification,
-            nullptr,
-            nullptr));
-    ASSERT_TRUE(harness.Open().ok);
-    ASSERT_EQ(
-        harness.session->snapshot().core_state,
-        BackendCoreState::Paused);
-
-    RecordingStopConsumer wake_consumer;
-    StopPointRouter* const router = harness.session->stop_points();
-    ASSERT_NE(router, nullptr);
-    auto wake_definition = PcGroup(40, 0x80001000u, wake_consumer);
-    wake_definition.subscriptions[0].delivery = StopDeliveryMode::Wake;
-    auto wake = router->RegisterGroup(std::move(wake_definition));
-    ASSERT_TRUE(wake.receipt.ok);
-
-    EXPECT_TRUE(
-        harness.physical_backend
-            ->InjectJitPcStop(0x80001000u)
-            .request_break);
-    EXPECT_EQ(notification.load(std::memory_order_acquire), 1u);
-    ASSERT_EQ(harness.session->DrainStopPointEvents().size(), 1u);
-    const ExecutionSubmissionReceipt resumed =
-        harness.session->SubmitExecution(InteractiveResumeRequest{
-            .expected_epoch = StateEpoch(1),
-        });
-    ASSERT_TRUE(resumed.accepted) << resumed.error.message;
-
-    RecordingStopConsumer observer;
-    auto current = router->RegisterGroup(
-        PcGroup(41, 0x80001000u, observer),
-        {.current_point = StopCurrentPointPolicy::Require});
-    EXPECT_FALSE(current.receipt.ok);
-    EXPECT_EQ(
-        current.receipt.error.code,
-        StopPointErrorCode::CurrentPointUnavailable);
-    ASSERT_TRUE(
-        harness.session
-            ->CancelExecution(CancellationReason::ExternalRequest)
-            .accepted);
-    harness.session->PumpExecution();
-    EXPECT_FALSE(
-        harness.session->DrainExecutionEvents().empty());
-    EXPECT_TRUE(harness.session->Shutdown().ok);
-}
-
-TEST(
-    EmulationSessionStopPoints,
-    RebootAndStateHandleReplacementAdvanceOnlyOnSuccess)
-{
-    SessionStopPointHarness harness(1003);
-    ASSERT_TRUE(harness.Open().ok);
-    ASSERT_NE(harness.session->stop_points(), nullptr);
-    const StateHandleReceipt first =
-        harness.session->CaptureStateHandle();
-    ASSERT_TRUE(first.result.ok) << first.result.message;
-
-    const auto expect_epoch = [&](std::uint64_t expected) {
-        EXPECT_EQ(
-            harness.session->snapshot().state_epoch,
-            StateEpoch(expected));
-        EXPECT_EQ(
-            harness.session->stop_points()->state_epoch(),
-            StateEpoch(expected));
-    };
-    expect_epoch(1);
-
-    EXPECT_TRUE(harness.session->Reboot().ok);
-    expect_epoch(2);
-    EXPECT_TRUE(harness.session->RestoreStateHandle(first.handle).result.ok);
-    expect_epoch(3);
-    const StateHandleReceipt second =
-        harness.session->CaptureStateHandle();
-    ASSERT_TRUE(second.result.ok) << second.result.message;
-    EXPECT_TRUE(harness.session->RestoreStateHandle(second.handle).result.ok);
-    expect_epoch(4);
-
-    harness.session_control->SetRebootResult(
-        BackendResult::Failure(
-            BackendErrorCode::OperationFailed,
-            "preserved reboot failure",
-            BackendIntegrity::Preserved));
-    const SessionOperationReceipt failed_reboot =
-        harness.session->Reboot();
-    EXPECT_FALSE(failed_reboot.ok);
-    EXPECT_EQ(failed_reboot.origin_epoch, StateEpoch(4));
-    EXPECT_EQ(failed_reboot.resulting_epoch, StateEpoch(4));
-    EXPECT_EQ(failed_reboot.disposition, SessionDisposition::Clean);
-    expect_epoch(4);
-    harness.session_control->SetRebootResult(
-        BackendResult::Success());
-
-    harness.session_control->SetRestoreBufferResult(
-        BackendResult::Failure(
-            BackendErrorCode::OperationFailed,
-            "preserved handle restore failure",
-            BackendIntegrity::Preserved));
-    const StateOperationReceipt failed_handle =
-        harness.session->RestoreStateHandle(first.handle);
-    EXPECT_FALSE(failed_handle.result.ok);
-    EXPECT_EQ(failed_handle.origin_epoch, StateEpoch(4));
-    EXPECT_EQ(failed_handle.resulting_epoch, StateEpoch(4));
-    EXPECT_EQ(
-        failed_handle.result.integrity,
-        StateIntegrity::Preserved);
-    expect_epoch(4);
-    harness.session_control->SetRestoreBufferResult(
-        BackendResult::Success());
-
-    const SessionOperationReceipt disconnected_buffer =
-        harness.session->RestoreStateBuffer({0x03, 0x04});
-    EXPECT_FALSE(disconnected_buffer.ok);
-    EXPECT_EQ(disconnected_buffer.origin_epoch, StateEpoch(4));
-    EXPECT_EQ(disconnected_buffer.resulting_epoch, StateEpoch(4));
-    EXPECT_EQ(
-        disconnected_buffer.disposition,
-        SessionDisposition::Clean);
-    expect_epoch(4);
-
-    const auto calls = harness.physical_control->Calls();
-    EXPECT_EQ(
-        CountPhysicalCalls(calls, FakePhysicalStopOperation::Apply),
-        6u);
-    EXPECT_TRUE(harness.session->Shutdown().ok);
-}
-
-TEST(
-    EmulationSessionStopPoints,
-    ReplacementEndsOrRebindsGroupsAtTheNewEpoch)
-{
-    SessionStopPointHarness harness(1004);
-    ASSERT_TRUE(harness.Open().ok);
-    StopPointRouter* const router = harness.session->stop_points();
-    ASSERT_NE(router, nullptr);
-
-    RecordingStopConsumer ending_consumer;
-    RecordingStopConsumer rebinding_consumer;
-    auto ending = router->RegisterGroup(PcGroup(
-        1,
-        0x80001000u,
-        ending_consumer,
-        StopEpochPolicy::EndOnEpochChange));
-    auto rebinding = router->RegisterGroup(PcGroup(
-        2,
-        0x80002000u,
-        rebinding_consumer,
-        StopEpochPolicy::RebindAfterRestore));
-    ASSERT_TRUE(ending.receipt.ok) << ending.receipt.error.message;
-    ASSERT_TRUE(rebinding.receipt.ok)
-        << rebinding.receipt.error.message;
-    EXPECT_EQ(
-        router->DesiredPhysicalPlan().pcs,
-        (std::vector<PhysicalPcStop>{
-            {0x80001000u},
-            {0x80002000u},
-        }));
-
-    const StateHandleReceipt state =
-        harness.session->CaptureStateHandle();
-    ASSERT_TRUE(state.result.ok) << state.result.message;
-    const StateOperationReceipt restored =
-        harness.session->RestoreStateHandle(state.handle);
-    ASSERT_TRUE(restored.result.ok) << restored.result.message;
-    EXPECT_EQ(restored.origin_epoch, StateEpoch(1));
-    EXPECT_EQ(restored.resulting_epoch, StateEpoch(2));
-    EXPECT_EQ(router->state_epoch(), StateEpoch(2));
-    EXPECT_EQ(
-        router->DesiredPhysicalPlan().pcs,
-        std::vector<PhysicalPcStop>{{0x80002000u}});
-
-    (void)harness.physical_backend->InjectJitPcStop(
-        0x80001000u);
-    EXPECT_TRUE(harness.session->DrainStopPointEvents().empty());
-    EXPECT_TRUE(ending_consumer.deliveries.empty());
-
-    (void)harness.physical_backend->InjectJitPcStop(0x80002000u);
-    const auto receipts = harness.session->DrainStopPointEvents();
-    ASSERT_EQ(receipts.size(), 1u);
-    ASSERT_EQ(rebinding_consumer.deliveries.size(), 1u);
-    EXPECT_EQ(
-        rebinding_consumer.deliveries[0].event.identity.state_epoch,
-        StateEpoch(2));
-
-    const StopReleaseReceipt ended_release =
-        ending.handle.Release();
-    EXPECT_TRUE(ended_release.ok);
-    EXPECT_TRUE(ended_release.already_released);
-    const StopReleaseReceipt rebound_release =
-        rebinding.handle.Release();
-    EXPECT_TRUE(rebound_release.ok);
-    EXPECT_FALSE(rebound_release.already_released);
-    EXPECT_TRUE(harness.session->Shutdown().ok);
-}
-
-TEST(
-    EmulationSessionStopPoints,
-    PostReplacementReconcileFailureTaintsAndClosesSession)
-{
-    SessionStopPointHarness harness(1005);
-    ASSERT_TRUE(harness.Open().ok);
-    StopPointRouter* const router = harness.session->stop_points();
-    ASSERT_NE(router, nullptr);
-
-    RecordingStopConsumer consumer;
-    auto registration =
-        router->RegisterGroup(PcGroup(1, 0x80001000u, consumer));
-    ASSERT_TRUE(registration.receipt.ok)
-        << registration.receipt.error.message;
-    const StateHandleReceipt state =
-        harness.session->CaptureStateHandle();
-    ASSERT_TRUE(state.result.ok) << state.result.message;
-
-    harness.physical_control->SetApplyOutcome(
-        FakePhysicalStopOutcome{
-            .ok = false,
-            .integrity = PhysicalStopIntegrity::Unknown,
-            .message = "injected post-restore reconcile failure",
-        });
-    const StateOperationReceipt restored =
-        harness.session->RestoreStateHandle(state.handle);
-    EXPECT_FALSE(restored.result.ok);
-    EXPECT_EQ(restored.origin_epoch, StateEpoch(1));
-    EXPECT_EQ(restored.resulting_epoch, StateEpoch(2));
-    EXPECT_EQ(
-        restored.result.integrity,
-        StateIntegrity::Unknown);
-    EXPECT_EQ(
-        harness.session->snapshot().disposition,
-        SessionDisposition::Tainted);
-
-    const SessionSnapshot snapshot = harness.session->snapshot();
-    EXPECT_FALSE(snapshot.open);
-    EXPECT_EQ(snapshot.core_state, BackendCoreState::Closed);
-    EXPECT_EQ(snapshot.state_epoch, StateEpoch(2));
-    EXPECT_EQ(snapshot.disposition, SessionDisposition::Tainted);
+    Harness harness;
+    const SessionOperationReceipt opened = harness.session->Open({});
+    ASSERT_TRUE(opened.ok) << opened.backend.message;
+    EXPECT_FALSE(opened.workset_epoch);
+    EXPECT_FALSE(harness.session->snapshot().workset_epoch);
+    EXPECT_EQ(harness.session->movie_service(), nullptr);
     EXPECT_EQ(harness.session->stop_points(), nullptr);
-    EXPECT_EQ(harness.physical_control->BoundSink(), nullptr);
-    EXPECT_TRUE(harness.physical_control->ActualPlan().pcs.empty());
-    EXPECT_EQ(harness.session_control->CloseCount(), 1);
-
-    const auto calls = harness.physical_control->Calls();
-    EXPECT_EQ(
-        CountPhysicalCalls(calls, FakePhysicalStopOperation::Clear),
-        1u);
-    EXPECT_EQ(
-        CountPhysicalCalls(
-            calls,
-            FakePhysicalStopOperation::UnbindSink),
-        1u);
-    (void)harness.session->Shutdown();
-}
-
-TEST(
-    EmulationSessionStopPoints,
-    JitRevalidationAdvancesPhysicalGenerationWithoutChangingEpoch)
-{
-    SessionStopPointHarness harness(1006);
-    ASSERT_TRUE(harness.Open().ok);
-    StopPointRouter* const router = harness.session->stop_points();
-    ASSERT_NE(router, nullptr);
-
-    RecordingStopConsumer consumer;
-    auto registration =
-        router->RegisterGroup(PcGroup(1, 0x80001000u, consumer));
-    ASSERT_TRUE(registration.receipt.ok)
-        << registration.receipt.error.message;
-
-    const StateEpoch epoch = harness.session->snapshot().state_epoch;
-    const StopDispatchGeneration dispatch =
-        router->dispatch_generation();
-    const PhysicalPlanGeneration physical =
-        harness.physical_control->ActualGeneration();
-
-    const SessionOperationReceipt revalidated =
-        harness.session->RevalidateStopPointsAfterJit();
-    ASSERT_TRUE(revalidated.ok) << revalidated.backend.message;
-    EXPECT_EQ(revalidated.origin_epoch, epoch);
-    EXPECT_EQ(revalidated.resulting_epoch, epoch);
-    EXPECT_EQ(harness.session->snapshot().state_epoch, epoch);
-    EXPECT_EQ(router->state_epoch(), epoch);
-    EXPECT_EQ(
-        router->dispatch_generation().value(),
-        dispatch.value() + 1);
-    EXPECT_EQ(
-        harness.physical_control->ActualGeneration().value(),
-        physical.value() + 1);
-
-    const auto calls = harness.physical_control->Calls();
-    EXPECT_EQ(
-        CountPhysicalCalls(
-            calls,
-            FakePhysicalStopOperation::Revalidate),
-        1u);
     EXPECT_TRUE(harness.session->Shutdown().ok);
 }
 
-TEST(
-    EmulationSessionStopPoints,
-    ShutdownDrainsIngressAndClearsOwnershipBeforeBackendDestruction)
+TEST(EmulationSessionWorksetEpoch, EpochIsStableForWorksetAndClearedAtEnd)
 {
-    RecordingStopConsumer consumer;
-    SessionStopPointHarness harness(1007);
-    ASSERT_TRUE(harness.Open().ok);
-    StopPointRouter* const router = harness.session->stop_points();
-    ASSERT_NE(router, nullptr);
+    Harness harness;
+    ASSERT_TRUE(harness.session->Open({}).ok);
+    const WorkerWorksetId workset(7);
+    const SessionOperationReceipt begun =
+        harness.session->BeginWorkset(workset);
+    ASSERT_TRUE(begun.ok) << begun.backend.message;
+    ASSERT_TRUE(begun.workset_epoch);
+    EXPECT_EQ(begun.workset_epoch, harness.session->snapshot().workset_epoch);
+    EXPECT_NE(harness.session->movie_service(), nullptr);
+    EXPECT_NE(harness.session->stop_points(), nullptr);
 
-    auto registration =
-        router->RegisterGroup(PcGroup(1, 0x80001000u, consumer));
-    ASSERT_TRUE(registration.receipt.ok)
-        << registration.receipt.error.message;
-
-    for (std::uint32_t index = 0; index < 3; ++index)
-    {
-        (void)harness.physical_backend->InjectJitPcStop(
-            0x80001000u);
-    }
-    EXPECT_TRUE(consumer.deliveries.empty());
-
-    std::atomic<bool> destruction_observed{false};
-    std::atomic<bool> cleanup_preceded_destruction{false};
-    harness.session_control->SetDestructionObserver([&] {
-        cleanup_preceded_destruction.store(
-            harness.physical_control->BoundSink() == nullptr &&
-                harness.physical_control->ActualPlan().pcs.empty() &&
-                harness.physical_control->ActualPlan().memory.empty() &&
-                consumer.deliveries.size() == 3,
-            std::memory_order_release);
-        destruction_observed.store(true, std::memory_order_release);
-    });
-
-    const SessionOperationReceipt shutdown =
-        harness.session->Shutdown();
-    ASSERT_TRUE(shutdown.ok) << shutdown.backend.message;
-    EXPECT_EQ(consumer.deliveries.size(), 3u);
-    EXPECT_EQ(harness.session->stop_points(), nullptr);
-    EXPECT_TRUE(
-        destruction_observed.load(std::memory_order_acquire));
-    EXPECT_TRUE(
-        cleanup_preceded_destruction.load(
-            std::memory_order_acquire));
-    EXPECT_EQ(harness.session_control->DestructionCount(), 1);
-    EXPECT_EQ(harness.physical_control->BoundSink(), nullptr);
-    EXPECT_TRUE(harness.physical_control->ActualPlan().pcs.empty());
-
-    const auto calls = harness.physical_control->Calls();
-    EXPECT_EQ(
-        CountPhysicalCalls(calls, FakePhysicalStopOperation::Clear),
-        1u);
-    EXPECT_EQ(
-        CountPhysicalCalls(
-            calls,
-            FakePhysicalStopOperation::UnbindSink),
-        1u);
+    const SessionOperationReceipt ended =
+        harness.session->EndWorkset(workset);
+    ASSERT_TRUE(ended.ok) << ended.backend.message;
+    EXPECT_EQ(ended.workset_epoch, begun.workset_epoch);
+    EXPECT_FALSE(harness.session->snapshot().workset_epoch);
+    EXPECT_EQ(harness.session->movie_service(), nullptr);
     EXPECT_TRUE(harness.session->Shutdown().ok);
-    EXPECT_EQ(harness.session_control->DestructionCount(), 1);
 }
 
-TEST(
-    EmulationSessionStopPoints,
-    ShutdownReceiptPreservesCleanWithDiagnosticsDisposition)
+TEST(EmulationSessionWorksetEpoch, AllocationIsMonotonicAcrossWorksets)
 {
-    SessionStopPointHarness harness(1008);
-    ASSERT_TRUE(harness.Open().ok);
-    harness.session->MarkCleanWithDiagnostics(
-        "optional resource cleanup diagnostic");
+    Harness harness;
+    ASSERT_TRUE(harness.session->Open({}).ok);
+    const auto first = harness.session->BeginWorkset(WorkerWorksetId(1));
+    ASSERT_TRUE(first.ok);
+    ASSERT_TRUE(harness.session->EndWorkset(WorkerWorksetId(1)).ok);
+    const auto second = harness.session->BeginWorkset(WorkerWorksetId(2));
+    ASSERT_TRUE(second.ok);
+    EXPECT_GT(second.workset_epoch.value(), first.workset_epoch.value());
+    ASSERT_TRUE(harness.session->EndWorkset(WorkerWorksetId(2)).ok);
+    EXPECT_TRUE(harness.session->Shutdown().ok);
+}
 
-    const SessionOperationReceipt shutdown =
-        harness.session->Shutdown();
+TEST(EmulationSessionWorksetEpoch, PostMovieStartValidationRetainsLogicalGroups)
+{
+    Harness harness;
+    ASSERT_TRUE(harness.session->Open({}).ok);
+    ASSERT_TRUE(harness.session->BeginWorkset(WorkerWorksetId(3)).ok);
+    StopPointRouter* router = harness.session->stop_points();
+    ASSERT_NE(router, nullptr);
+    Consumer consumer;
+    StopSubscriptionGroupDefinition definition;
+    definition.id = StopSubscriptionGroupId(1);
+    definition.source = {
+        StopSourceId(2), "workset.restart.test", "restart test"};
+    definition.subscriptions.push_back({
+        .id = StopSubscriptionId(3),
+        .point = PcStopPointSpec{0x80101E48u},
+        .delivery = StopDeliveryMode::Observe,
+        .policy = StopRoutingPolicy::Pass,
+        .consumer = &consumer});
+    auto group = router->RegisterGroup(std::move(definition));
+    ASSERT_TRUE(group.receipt.ok) << group.receipt.error.message;
+    const WorksetEpoch epoch = router->workset_epoch();
+    const StopDispatchGeneration dispatch = router->dispatch_generation();
+    const PhysicalPlanGeneration physical = router->physical_generation();
 
-    ASSERT_TRUE(shutdown.ok) << shutdown.backend.message;
-    EXPECT_EQ(
-        shutdown.disposition,
-        SessionDisposition::CleanWithDiagnostics);
-    EXPECT_EQ(
-        harness.session->taint_diagnostic(),
-        "optional resource cleanup diagnostic");
+    const StopPointLifecycleReceipt reconciled =
+        router->RevalidateAfterJit();
+    ASSERT_TRUE(reconciled.ok) << reconciled.error.message;
+    EXPECT_EQ(router->workset_epoch(), epoch);
+    EXPECT_GT(router->dispatch_generation().value(), dispatch.value());
+    EXPECT_GT(router->physical_generation().value(), physical.value());
+    EXPECT_EQ(router->DesiredPhysicalPlan().pcs,
+              std::vector<PhysicalPcStop>{{0x80101E48u}});
+
+    ASSERT_TRUE(group.handle.Release().ok);
+    ASSERT_TRUE(harness.session->EndWorkset(WorkerWorksetId(3)).ok);
+    EXPECT_TRUE(harness.session->Shutdown().ok);
 }
 
 } // namespace

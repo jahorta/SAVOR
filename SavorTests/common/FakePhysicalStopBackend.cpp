@@ -118,7 +118,7 @@ void FakePhysicalStopBackendControl::SetJitInvalidationHandler(
 }
 
 void FakePhysicalStopBackendControl::SetRestoreHandler(
-    std::function<void(runtime::StateEpoch)> handler)
+    std::function<void(runtime::WorksetEpoch)> handler)
 {
     std::lock_guard lock(mutex);
     restore_handler = std::move(handler);
@@ -165,7 +165,7 @@ FakePhysicalStopBackendControl::OwnerThread() const
     return owner_thread;
 }
 
-std::vector<runtime::StateEpoch>
+std::vector<runtime::WorksetEpoch>
 FakePhysicalStopBackendControl::InjectedRestoreEpochs() const
 {
     std::lock_guard lock(mutex);
@@ -520,9 +520,9 @@ bool FakePhysicalStopBackend::InjectJitInvalidation()
     return true;
 }
 
-bool FakePhysicalStopBackend::InjectRestore(runtime::StateEpoch new_epoch)
+bool FakePhysicalStopBackend::InjectRestore(runtime::WorksetEpoch new_epoch)
 {
-    std::function<void(runtime::StateEpoch)> handler;
+    std::function<void(runtime::WorksetEpoch)> handler;
     {
         std::lock_guard lock(control_->mutex);
         handler = control_->restore_handler;

@@ -256,7 +256,7 @@ bool DecodePublication(
     output = {
         .lease_id = *lease,
         .publication_id = *publication,
-        .state_epoch = StateEpoch(*epoch),
+        .workset_epoch = WorksetEpoch(*epoch),
         .frame = decoded,
     };
     return true;
@@ -294,7 +294,7 @@ bool DecodePoll(
         .acknowledged = true,
         .poll_receipt_id = *receipt,
         .publication_id = *publication,
-        .state_epoch = StateEpoch(*epoch),
+        .workset_epoch = WorksetEpoch(*epoch),
     };
     return true;
 }
@@ -316,46 +316,79 @@ bool DecodeStop(
         return false;
     }
 
+    const ProgramValue* reason_value = graph.Find(record->fields[0]);
+    const auto* reason = reason_value == nullptr
+        ? nullptr
+        : std::get_if<EnumValue>(&reason_value->payload);
+    const auto* optional_stop =
+        graph.PayloadOf<OptionalValue>(record->fields[1]);
+    const ProgramValue* routed_value =
+        optional_stop && optional_stop->value
+        ? graph.Find(*optional_stop->value)
+        : nullptr;
+    const auto* routed = routed_value == nullptr
+        ? nullptr
+        : std::get_if<RecordValue>(&routed_value->payload);
+    if (reason_value == nullptr ||
+        reason_value->type != CanonicalRuntimeType(
+            CanonicalRuntimeSchema::ContinueUntilCompletionReason) ||
+        reason == nullptr ||
+        reason->value != static_cast<std::int64_t>(
+            ContinueUntilCompletionReasonV1::Breakpoint) ||
+        routed_value == nullptr ||
+        routed_value->type != CanonicalRuntimeType(
+            CanonicalRuntimeSchema::RoutedStopReceipt) ||
+        routed == nullptr || routed->fields.size() != 5)
+    {
+        return false;
+    }
+
     std::uint64_t sequence = 0;
     std::uint64_t epoch = 0;
     std::uint32_t pc = 0;
+    std::uint32_t result_pc = 0;
     std::uint64_t sample = 0;
     std::vector<Byte> evidence;
     if (!ReadScalar(
             graph,
-            record->fields[0],
+            routed->fields[0],
             BuiltinType::U64,
             sequence) ||
         !ReadScalar(
             graph,
-            record->fields[1],
+            routed->fields[1],
             BuiltinType::U64,
             epoch) ||
         !ReadScalar(
             graph,
-            record->fields[2],
+            routed->fields[2],
             BuiltinType::U32,
             pc) ||
         !ReadScalar(
             graph,
-            record->fields[3],
+            routed->fields[3],
             BuiltinType::U64,
             sample) ||
         !ReadNamedBytes(
             graph,
-            record->fields[4],
+            routed->fields[4],
             CanonicalRuntimeSchemaIdentity(
                 CanonicalRuntimeSchema::StopEvidencePayload),
             evidence) ||
+        !ReadScalar(
+            graph,
+            record->fields[2],
+            BuiltinType::U32,
+            result_pc) ||
         sequence == 0 || epoch == 0 || pc == 0 ||
-        sample == 0 || evidence.empty())
+        pc != result_pc || sample == 0 || evidence.empty())
     {
         return false;
     }
 
     output = {
         .stop_sequence = sequence,
-        .state_epoch = StateEpoch(epoch),
+        .workset_epoch = WorksetEpoch(epoch),
         .pc = pc,
         .sample_snapshot_id = sample,
         .evidence = std::move(evidence),
@@ -491,7 +524,6 @@ std::vector<Byte> StopGroupConfig(
     writer.U32(0); // No hit-time samples; RNG is read while paused.
     writer.U8(0); // Observe.
     writer.U8(0); // Pass.
-    writer.U8(1); // EndOnEpochChange.
     writer.U8(0); // Scoped.
     return std::move(writer).Finish();
 }
@@ -1125,10 +1157,10 @@ bool DecodeSeedProbeResultV2(
     }
     if (decoded.publication.publication_id !=
             decoded.guest_poll.publication_id ||
-        decoded.semantic_stop.state_epoch !=
-            decoded.publication.state_epoch ||
-        decoded.semantic_stop.state_epoch !=
-            decoded.guest_poll.state_epoch)
+        decoded.semantic_stop.workset_epoch !=
+            decoded.publication.workset_epoch ||
+        decoded.semantic_stop.workset_epoch !=
+            decoded.guest_poll.workset_epoch)
     {
         SetDiagnostic(
             diagnostic,
@@ -1214,7 +1246,7 @@ bool DecodeSeedProbeProgramResultAgainstDefinition(
 bool ValidateSeedProbeResultV2(
     const SeedProbeRequestV2& request,
     const SeedProbeResultV2& result,
-    StateEpoch terminal_origin_epoch,
+    WorksetEpoch terminal_workset_epoch,
     std::string* diagnostic)
 {
     SetDiagnostic(diagnostic, {});
@@ -1234,17 +1266,17 @@ bool ValidateSeedProbeResultV2(
             "SeedProbe publication receipt contains a different input frame");
         return false;
     }
-    if (!terminal_origin_epoch ||
-        result.semantic_stop.state_epoch !=
-            terminal_origin_epoch ||
-        result.publication.state_epoch !=
-            terminal_origin_epoch ||
-        result.guest_poll.state_epoch !=
-            terminal_origin_epoch)
+    if (!terminal_workset_epoch ||
+        result.semantic_stop.workset_epoch !=
+            terminal_workset_epoch ||
+        result.publication.workset_epoch !=
+            terminal_workset_epoch ||
+        result.guest_poll.workset_epoch !=
+            terminal_workset_epoch)
     {
         SetDiagnostic(
             diagnostic,
-            "SeedProbe receipt epochs do not match the terminal origin epoch");
+            "SeedProbe receipt epochs do not match the terminal workset epoch");
         return false;
     }
     if (!result.guest_poll.acknowledged ||
@@ -1516,6 +1548,22 @@ ProgramModule ConstructSeedProbeModuleV2()
         publication,
         "endpoints/continue/publication",
         scope);
+    const ProgramValueId no_movie = OptionalValue(
+        builder,
+        function,
+        entry,
+        CanonicalRuntimeSchema::OptionalMoviePlaybackSession,
+        std::nullopt,
+        "endpoints/continue/no-movie",
+        scope);
+    const ProgramValueId no_expected_count = OptionalValue(
+        builder,
+        function,
+        entry,
+        CanonicalRuntimeSchema::OptionalMovieInputCount,
+        std::nullopt,
+        "endpoints/continue/no-expected-count",
+        scope);
     const ProgramValueId continue_config = ConstantBytes(
         builder,
         function,
@@ -1532,6 +1580,8 @@ ProgramModule ConstructSeedProbeModuleV2()
         std::array{
             subscription,
             continue_publication,
+            no_movie,
+            no_expected_count,
             continue_config,
         },
         "endpoints/continue/request",
@@ -1674,7 +1724,6 @@ ProgramModule ConstructSeedProbeModuleV2()
         .execution_intents = {
             ExecutionIntent::Live,
         },
-        .permits_state_replacement = true,
     };
     module.budgets = {
         .maximum_instructions = 256,

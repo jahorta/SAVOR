@@ -43,9 +43,8 @@ struct GroupRecord
 {
     StopSubscriptionGroupId id;
     StopSourceIdentity source;
-    StopEpochPolicy epoch_policy = StopEpochPolicy::EndOnEpochChange;
     std::uint64_t registration_sequence = 0;
-    StateEpoch acquisition_epoch;
+    WorksetEpoch acquisition_epoch;
     std::shared_ptr<SourceDropCounter> drop_counter;
     std::vector<SubscriptionRecord> subscriptions;
 };
@@ -77,7 +76,7 @@ struct DispatchSnapshot
 {
     StopDispatchGeneration generation;
     PhysicalPlanGeneration physical_generation;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     PhysicalStopPointPlan physical_plan;
     std::vector<DispatchEntry> entries;
 };
@@ -542,15 +541,6 @@ namespace {
                 StopPointErrorCode::InvalidPolicy,
                 "Guard subscriptions support only Pass or Fail routing");
         }
-        if (definition.epoch_policy == StopEpochPolicy::EpochAgnostic &&
-            !std::holds_alternative<SyntheticStopPointSpec>(
-                subscription.point))
-        {
-            return Error(
-                StopPointErrorCode::InvalidPolicy,
-                "Only synthetic stop points may be epoch agnostic");
-        }
-
         const StopPointError point_error = std::visit(
             [](const auto& point) -> StopPointError {
                 using Point = std::decay_t<decltype(point)>;
@@ -590,14 +580,13 @@ namespace {
 [[nodiscard]] GroupRecord MakeGroupRecord(
     StopSubscriptionGroupDefinition definition,
     std::uint64_t registration_sequence,
-    StateEpoch acquisition_epoch,
+    WorksetEpoch acquisition_epoch,
     std::shared_ptr<SourceDropCounter> drop_counter,
     const std::optional<RoutedStopEvent>& current_point)
 {
     GroupRecord record;
     record.id = definition.id;
     record.source = std::move(definition.source);
-    record.epoch_policy = definition.epoch_policy;
     record.registration_sequence = registration_sequence;
     record.acquisition_epoch = acquisition_epoch;
     record.drop_counter = std::move(drop_counter);
@@ -615,7 +604,7 @@ namespace {
         {
             subscription.suppression = std::make_shared<SuppressionGate>();
             if (current_point &&
-                current_point->identity.state_epoch == acquisition_epoch &&
+                current_point->identity.workset_epoch == acquisition_epoch &&
                 PointMatchesEvidence(
                     subscription.definition.point,
                     current_point->evidence))
@@ -697,14 +686,14 @@ namespace {
 
 [[nodiscard]] std::unique_ptr<DispatchSnapshot> BuildSnapshot(
     const std::map<std::uint64_t, GroupRecord>& groups,
-    StateEpoch epoch,
+    WorksetEpoch epoch,
     StopDispatchGeneration generation,
     PhysicalPlanGeneration physical_generation)
 {
     auto snapshot = std::make_unique<DispatchSnapshot>();
     snapshot->generation = generation;
     snapshot->physical_generation = physical_generation;
-    snapshot->state_epoch = epoch;
+    snapshot->workset_epoch = epoch;
     snapshot->physical_plan = BuildPhysicalPlan(groups);
     for (const auto& [_, group] : groups)
     {
@@ -861,7 +850,7 @@ void AppendHistory(
     const RoutedStopEvent& current,
     const StopSubscriptionGroupDefinition& definition)
 {
-    if (current.identity.state_epoch.value() == 0)
+    if (current.identity.workset_epoch.value() == 0)
         return false;
     for (const StopSubscriptionDefinition& subscription : definition.subscriptions)
     {
@@ -1044,7 +1033,7 @@ namespace {
 {
     return {
         false,
-        router.state_epoch(),
+        router.workset_epoch(),
         router.dispatch_generation(),
         {},
         integrity,
@@ -1060,7 +1049,7 @@ namespace {
 {
     return {
         true,
-        router.state_epoch(),
+        router.workset_epoch(),
         router.dispatch_generation(),
         physical_generation,
         PhysicalStopIntegrity::Preserved,
@@ -1071,7 +1060,7 @@ namespace {
 
 } // namespace
 
-StopPointLifecycleReceipt StopPointRouter::Initialize(StateEpoch first_epoch)
+StopPointLifecycleReceipt StopPointRouter::Initialize(WorksetEpoch first_epoch)
 {
     if (owner_thread_ != std::this_thread::get_id())
     {
@@ -1083,7 +1072,7 @@ StopPointLifecycleReceipt StopPointRouter::Initialize(StateEpoch first_epoch)
     }
     if (initialized_)
     {
-        if (first_epoch == state_epoch_ && !stopped_)
+        if (first_epoch == workset_epoch_ && !stopped_)
             return LifecycleSuccess(*this, physical_manager_.generation());
         return LifecycleFailure(
             *this,
@@ -1093,16 +1082,16 @@ StopPointLifecycleReceipt StopPointRouter::Initialize(StateEpoch first_epoch)
     {
         return LifecycleFailure(
             *this,
-            Error(StopPointErrorCode::InvalidArgument, "The first StateEpoch must be nonzero"));
+            Error(StopPointErrorCode::InvalidArgument, "The first WorksetEpoch must be nonzero"));
     }
 
-    state_epoch_ = first_epoch;
+    workset_epoch_ = first_epoch;
     dispatch_generation_ = StopDispatchGeneration(1);
 
     PhysicalStopBackendReceipt bind = physical_manager_.BindNativeStopSink(*this);
     if (!bind.ok)
     {
-        state_epoch_ = {};
+        workset_epoch_ = {};
         dispatch_generation_ = {};
         return LifecycleFailure(*this, PhysicalError(bind), bind.integrity);
     }
@@ -1112,7 +1101,7 @@ StopPointLifecycleReceipt StopPointRouter::Initialize(StateEpoch first_epoch)
     if (!first_physical_generation)
     {
         (void)physical_manager_.UnbindNativeStopSink();
-        state_epoch_ = {};
+        workset_epoch_ = {};
         dispatch_generation_ = {};
         return LifecycleFailure(
             *this,
@@ -1140,7 +1129,7 @@ StopPointLifecycleReceipt StopPointRouter::Initialize(StateEpoch first_epoch)
     {
         (void)physical_manager_.UnbindNativeStopSink();
         impl_->dispatch.store(nullptr, std::memory_order_release);
-        state_epoch_ = {};
+        workset_epoch_ = {};
         dispatch_generation_ = {};
         return LifecycleFailure(*this, PhysicalError(apply), apply.integrity);
     }
@@ -1172,37 +1161,6 @@ namespace {
 
 } // namespace
 
-StopPointLifecycleReceipt StopPointRouter::PrepareStateReplacement(
-    StateEpoch expected_epoch)
-{
-    if (StopPointError error =
-            CheckControlThread(*this, owner_thread_, initialized_, stopping_))
-    {
-        return LifecycleFailure(*this, std::move(error));
-    }
-    if (replacing_state_)
-    {
-        return LifecycleFailure(
-            *this,
-            Error(StopPointErrorCode::InvalidArgument, "State replacement is already prepared"));
-    }
-    if (expected_epoch != state_epoch_)
-    {
-        return LifecycleFailure(
-            *this,
-            Error(StopPointErrorCode::StaleEpoch, "State replacement expected a different StateEpoch"));
-    }
-
-    ingress_enabled_.store(false, std::memory_order_release);
-    WaitForNativeIngressQuiescence();
-    const std::vector<StopRouteReceipt> drained = DrainIngress();
-    replacing_state_ = true;
-    impl_->current_point.reset();
-    return LifecycleSuccess(
-        *this,
-        physical_manager_.generation(),
-        drained.size());
-}
 
 namespace {
 
@@ -1272,7 +1230,7 @@ struct CandidateApplyReceipt
     StopPointRouter::Impl& impl,
     PhysicalStopPointManager& physical_manager,
     std::map<std::uint64_t, GroupRecord> candidate,
-    StateEpoch epoch,
+    WorksetEpoch epoch,
     StopDispatchGeneration& current_generation,
     bool force_physical_reconcile)
 {
@@ -1393,119 +1351,49 @@ struct CandidateApplyReceipt
 
 } // namespace
 
-StopPointLifecycleReceipt StopPointRouter::CommitStateReplacement(
-    StateEpoch new_epoch)
+
+StopPointLifecycleReceipt StopPointRouter::QuiesceForWorksetBaselineRestore()
 {
     if (StopPointError error =
             CheckControlThread(*this, owner_thread_, initialized_, stopping_))
     {
         return LifecycleFailure(*this, std::move(error));
     }
-    if (!replacing_state_)
+    ingress_enabled_.store(false, std::memory_order_release);
+    WaitForNativeIngressQuiescence();
+    const std::vector<StopRouteReceipt> drained = DrainIngress();
+    return LifecycleSuccess(
+        *this,
+        physical_manager_.generation(),
+        drained.size());
+}
+
+StopPointLifecycleReceipt
+StopPointRouter::ReconcileAfterWorksetBaselineRestore()
+{
+    if (StopPointError error =
+            CheckControlThread(*this, owner_thread_, initialized_, stopping_))
     {
-        return LifecycleFailure(
-            *this,
-            Error(StopPointErrorCode::InvalidArgument, "State replacement was not prepared"));
+        return LifecycleFailure(*this, std::move(error));
     }
-    if (!new_epoch || new_epoch.value() <= state_epoch_.value())
+    if (ingress_enabled_.load(std::memory_order_acquire))
     {
         return LifecycleFailure(
             *this,
             Error(
-                StopPointErrorCode::StaleEpoch,
-                "Committed StateEpoch must advance monotonically"));
-    }
-
-    auto candidate = impl_->groups;
-    std::vector<std::pair<std::uint64_t, std::uint64_t>> ended;
-    for (auto iterator = candidate.begin(); iterator != candidate.end();)
-    {
-        GroupRecord& group = iterator->second;
-        if (group.epoch_policy == StopEpochPolicy::EndOnEpochChange)
-        {
-            ended.emplace_back(group.id.value(), group.registration_sequence);
-            iterator = candidate.erase(iterator);
-            continue;
-        }
-        if (group.epoch_policy == StopEpochPolicy::RebindAfterRestore)
-        {
-            group.acquisition_epoch = new_epoch;
-            for (SubscriptionRecord& subscription : group.subscriptions)
-            {
-                if (subscription.one_shot)
-                    subscription.one_shot->fired.store(false, std::memory_order_release);
-                if (subscription.suppression)
-                    subscription.suppression->armed.store(false, std::memory_order_release);
-            }
-        }
-        ++iterator;
+                StopPointErrorCode::InvalidState,
+                "Workset baseline reconciliation requires quiesced ingress"));
     }
 
     CandidateApplyReceipt applied = ApplyCandidate(
         *impl_,
         physical_manager_,
-        std::move(candidate),
-        new_epoch,
+        impl_->groups,
+        workset_epoch_,
         dispatch_generation_,
         true);
     if (!applied.ok)
     {
-        ingress_enabled_.store(false, std::memory_order_release);
-        return LifecycleFailure(*this, std::move(applied.error), applied.integrity);
-    }
-
-    for (const auto& [group_id, sequence] : ended)
-        impl_->released_registration_sequences[group_id] = sequence;
-    state_epoch_ = new_epoch;
-    impl_->current_point.reset();
-    authoritative_overflow_.store(false, std::memory_order_release);
-    impl_->overflow_reported = false;
-    replacing_state_ = false;
-    ingress_enabled_.store(true, std::memory_order_release);
-    return LifecycleSuccess(*this, applied.physical_generation);
-}
-
-StopPointLifecycleReceipt StopPointRouter::RollbackStateReplacement(
-    StateEpoch expected_epoch)
-{
-    if (StopPointError error =
-            CheckControlThread(*this, owner_thread_, initialized_, stopping_))
-    {
-        return LifecycleFailure(*this, std::move(error));
-    }
-    if (!replacing_state_)
-    {
-        return LifecycleFailure(
-            *this,
-            Error(StopPointErrorCode::InvalidArgument, "State replacement was not prepared"));
-    }
-    if (expected_epoch != state_epoch_)
-    {
-        return LifecycleFailure(
-            *this,
-            Error(StopPointErrorCode::StaleEpoch, "Rollback expected a different StateEpoch"));
-    }
-
-    auto candidate = impl_->groups;
-    for (auto& [_, group] : candidate)
-    {
-        for (SubscriptionRecord& subscription : group.subscriptions)
-        {
-            if (subscription.suppression)
-                subscription.suppression->armed.store(false, std::memory_order_release);
-        }
-    }
-
-    CandidateApplyReceipt applied = ApplyCandidate(
-        *impl_,
-        physical_manager_,
-        std::move(candidate),
-        state_epoch_,
-        dispatch_generation_,
-        true);
-    if (!applied.ok)
-    {
-        ingress_enabled_.store(false, std::memory_order_release);
         return LifecycleFailure(
             *this,
             std::move(applied.error),
@@ -1513,9 +1401,101 @@ StopPointLifecycleReceipt StopPointRouter::RollbackStateReplacement(
     }
 
     impl_->current_point.reset();
-    replacing_state_ = false;
+    authoritative_overflow_.store(false, std::memory_order_release);
+    impl_->overflow_reported = false;
     ingress_enabled_.store(true, std::memory_order_release);
-    return LifecycleSuccess(*this, applied.physical_generation);
+    return LifecycleSuccess(
+        *this,
+        applied.physical_generation);
+}
+
+StopPointLifecycleReceipt
+StopPointRouter::ResumeAfterFailedWorksetBaselineRestore()
+{
+    if (StopPointError error =
+            CheckControlThread(*this, owner_thread_, initialized_, stopping_))
+    {
+        return LifecycleFailure(*this, std::move(error));
+    }
+    if (ingress_enabled_.load(std::memory_order_acquire))
+    {
+        return LifecycleFailure(
+            *this,
+            Error(
+                StopPointErrorCode::InvalidState,
+                "Failed workset baseline restoration did not retain quiesced ingress"));
+    }
+    PhysicalStopBackendReceipt physical =
+        physical_manager_.ValidateExactPlanUnchanged();
+    if (!physical.ok)
+    {
+        return LifecycleFailure(
+            *this,
+            PhysicalError(physical),
+            physical.integrity);
+    }
+    impl_->current_point.reset();
+    authoritative_overflow_.store(false, std::memory_order_release);
+    impl_->overflow_reported = false;
+    ingress_enabled_.store(true, std::memory_order_release);
+    return LifecycleSuccess(*this, physical.generation);
+}
+
+StopPointLifecycleReceipt StopPointRouter::ValidateEmptyForMovieCoreStop()
+{
+    if (StopPointError error =
+            CheckControlThread(*this, owner_thread_, initialized_, stopping_))
+    {
+        return LifecycleFailure(*this, std::move(error));
+    }
+
+    const PhysicalStopPointPlan desired = DesiredPhysicalPlan();
+    if (!desired.pcs.empty() || !desired.memory.empty())
+    {
+        return LifecycleFailure(
+            *this,
+            Error(
+                StopPointErrorCode::InvalidState,
+                "Movie core stop requires an empty program-owned stop-point plan"));
+    }
+    PhysicalStopBackendReceipt physical =
+        physical_manager_.ValidateExactPlanUnchanged();
+    if (!physical.ok)
+    {
+        return LifecycleFailure(
+            *this,
+            PhysicalError(physical),
+            physical.integrity);
+    }
+    return LifecycleSuccess(*this, physical.generation);
+}
+
+StopPointLifecycleReceipt StopPointRouter::EnterStoppedMovieCoreBoundary()
+{
+    if (StopPointError error =
+            CheckControlThread(*this, owner_thread_, initialized_, stopping_))
+    {
+        return LifecycleFailure(*this, std::move(error));
+    }
+
+    // Core shutdown can enqueue JIT/debugger notifications even though the
+    // program-owned plan was empty. Quiesce and advance the generations before
+    // a module installs the first breakpoint so no pre-stop packet can be
+    // interpreted against that new subscription.
+    ingress_enabled_.store(false, std::memory_order_release);
+    WaitForNativeIngressQuiescence();
+    StopPointLifecycleReceipt revalidated = RevalidateAfterJit();
+    if (!revalidated.ok)
+        return revalidated;
+    const std::vector<StopRouteReceipt> stale = DrainIngress();
+    impl_->current_point.reset();
+    authoritative_overflow_.store(false, std::memory_order_release);
+    impl_->overflow_reported = false;
+    ingress_enabled_.store(true, std::memory_order_release);
+    return LifecycleSuccess(
+        *this,
+        revalidated.physical_generation,
+        stale.size());
 }
 
 StopPointLifecycleReceipt StopPointRouter::RevalidateAfterJit()
@@ -1525,13 +1505,6 @@ StopPointLifecycleReceipt StopPointRouter::RevalidateAfterJit()
     {
         return LifecycleFailure(*this, std::move(error));
     }
-    if (replacing_state_)
-    {
-        return LifecycleFailure(
-            *this,
-            Error(StopPointErrorCode::InvalidArgument, "Cannot revalidate JIT during state replacement"));
-    }
-
     const StopDispatchGeneration next_dispatch =
         NextDispatchGeneration(dispatch_generation_);
     const PhysicalPlanGeneration next_physical =
@@ -1552,7 +1525,7 @@ StopPointLifecycleReceipt StopPointRouter::RevalidateAfterJit()
     {
         snapshot = BuildSnapshot(
             impl_->groups,
-            state_epoch_,
+            workset_epoch_,
             next_dispatch,
             next_physical);
     }
@@ -1596,15 +1569,6 @@ StopPointLifecycleReceipt StopPointRouter::ValidateBreakpointChangeNotification(
     {
         return LifecycleFailure(*this, std::move(error));
     }
-    if (replacing_state_)
-    {
-        return LifecycleFailure(
-            *this,
-            Error(
-                StopPointErrorCode::InvalidArgument,
-                "Cannot validate breakpoint changes during state replacement"));
-    }
-
     PhysicalStopBackendReceipt physical =
         physical_manager_.ValidateExactPlanUnchanged();
     if (!physical.ok)
@@ -1672,13 +1636,6 @@ StopGroupRegistrationResult StopPointRouter::RegisterGroup(
         result.receipt.error = std::move(error);
         return result;
     }
-    if (replacing_state_)
-    {
-        result.receipt.error = Error(
-            StopPointErrorCode::RuntimeStopping,
-            "Cannot register stop subscriptions during state replacement");
-        return result;
-    }
     if (StopPointError error = ValidateDefinition(
             definition,
             cpu_evaluator_,
@@ -1697,7 +1654,7 @@ StopGroupRegistrationResult StopPointRouter::RegisterGroup(
 
     const bool current_available =
         impl_->current_point &&
-        impl_->current_point->identity.state_epoch == state_epoch_ &&
+        impl_->current_point->identity.workset_epoch == workset_epoch_ &&
         CurrentPointMatchesDefinition(*impl_->current_point, definition);
     if (options.current_point == StopCurrentPointPolicy::Require &&
         !current_available)
@@ -1745,7 +1702,7 @@ StopGroupRegistrationResult StopPointRouter::RegisterGroup(
         MakeGroupRecord(
             std::move(definition),
             registration_sequence,
-            state_epoch_,
+            workset_epoch_,
             std::move(drop_counter),
             impl_->current_point));
 
@@ -1753,7 +1710,7 @@ StopGroupRegistrationResult StopPointRouter::RegisterGroup(
         *impl_,
         physical_manager_,
         std::move(candidate),
-        state_epoch_,
+        workset_epoch_,
         dispatch_generation_,
         false);
     if (!applied.ok)
@@ -1770,7 +1727,7 @@ StopGroupRegistrationResult StopPointRouter::RegisterGroup(
         group_id,
         source_id,
         registration_sequence,
-        state_epoch_,
+        workset_epoch_,
         true,
     };
     result.receipt = {
@@ -1944,7 +1901,7 @@ StopRouteReceipt StopPointRouter::AcceptCurrentPoint(
                 "Current-point request does not own the active group"));
     }
     if (!impl_->current_point ||
-        impl_->current_point->identity.state_epoch != state_epoch_)
+        impl_->current_point->identity.workset_epoch != workset_epoch_)
     {
         return FailureRoute(
             StopRouteTerminal::Unclaimed,
@@ -2116,7 +2073,7 @@ StopPointError StopPointRouter::ArmInterruptionSuppression(
     }
     if (!impl_->current_point ||
         impl_->current_point->identity != receipt.identity ||
-        receipt.identity.state_epoch != state_epoch_ ||
+        receipt.identity.workset_epoch != workset_epoch_ ||
         !receipt.event ||
         receipt.event->identity != impl_->current_point->identity ||
         receipt.event->evidence != impl_->current_point->evidence)
@@ -2218,14 +2175,14 @@ StopGroupReceipt StopPointRouter::ReplaceFromHandle(
     candidate[lease.group_id.value()] = MakeGroupRecord(
         std::move(definition),
         lease.registration_sequence,
-        state_epoch_,
+        workset_epoch_,
         existing->second.drop_counter,
         impl_->current_point);
     CandidateApplyReceipt applied = ApplyCandidate(
         *impl_,
         physical_manager_,
         std::move(candidate),
-        state_epoch_,
+        workset_epoch_,
         dispatch_generation_,
         false);
     if (!applied.ok)
@@ -2238,7 +2195,7 @@ StopGroupReceipt StopPointRouter::ReplaceFromHandle(
         return result;
     }
 
-    lease.acquisition_epoch = state_epoch_;
+    lease.acquisition_epoch = workset_epoch_;
     result.ok = true;
     result.lease = lease;
     result.dispatch_generation = dispatch_generation_;
@@ -2316,7 +2273,7 @@ StopReleaseReceipt StopPointRouter::ReleaseFromHandle(
         *impl_,
         physical_manager_,
         std::move(candidate),
-        state_epoch_,
+        workset_epoch_,
         dispatch_generation_,
         false);
     if (!applied.ok)
@@ -2392,7 +2349,7 @@ namespace {
     packet.event.identity = {
         RoutedStopSequence(sequence),
         StopSampleSnapshotId(sample_snapshot),
-        packet.snapshot->state_epoch,
+        packet.snapshot->workset_epoch,
         packet.snapshot->generation,
         packet.snapshot->physical_generation,
     };
@@ -2858,7 +2815,7 @@ namespace {
     StopPointRouter::Impl& impl,
     NativePacket packet,
     StopDispatchGeneration current_generation,
-    StateEpoch current_epoch,
+    WorksetEpoch current_epoch,
     PhysicalPlanGeneration current_physical_generation)
 {
     StopRouteReceipt receipt;
@@ -2866,13 +2823,13 @@ namespace {
     receipt.event = packet.event;
     if (!packet.snapshot ||
         packet.event.identity.dispatch_generation != current_generation ||
-        packet.event.identity.state_epoch != current_epoch ||
+        packet.event.identity.workset_epoch != current_epoch ||
         packet.event.identity.physical_generation !=
             current_physical_generation)
     {
         receipt.terminal = StopRouteTerminal::Stale;
         receipt.error = Error(
-            packet.event.identity.state_epoch != current_epoch
+            packet.event.identity.workset_epoch != current_epoch
                 ? StopPointErrorCode::StaleEpoch
                 : StopPointErrorCode::StaleDispatchGeneration,
             "Native stop event belongs to a stale dispatch snapshot");
@@ -3069,7 +3026,7 @@ std::vector<StopRouteReceipt> StopPointRouter::DrainIngress()
                 *impl_,
                 std::move(packet),
                 dispatch_generation_,
-                state_epoch_,
+                workset_epoch_,
                 physical_manager_.generation()));
             packet = {};
         }
@@ -3080,7 +3037,7 @@ std::vector<StopRouteReceipt> StopPointRouter::DrainIngress()
                 *impl_,
                 std::move(packet),
                 dispatch_generation_,
-                state_epoch_,
+                workset_epoch_,
                 physical_manager_.generation()));
         }
 
@@ -3093,7 +3050,7 @@ std::vector<StopRouteReceipt> StopPointRouter::DrainIngress()
                 *impl_,
                 physical_manager_,
                 std::move(one_shots.candidate),
-                state_epoch_,
+                workset_epoch_,
                 dispatch_generation_,
                 false);
             if (!applied.ok)
@@ -3226,7 +3183,7 @@ StopRouteReceipt StopPointRouter::InjectSyntheticStop(
         *impl_,
         std::move(packet),
         dispatch_generation_,
-        state_epoch_,
+        workset_epoch_,
         physical_manager_.generation());
 }
 
@@ -3264,7 +3221,7 @@ StopPointLifecycleReceipt StopPointRouter::StopIngressDrainAndCleanup()
     empty_snapshot->generation = next;
     empty_snapshot->physical_generation =
         physical_manager_.next_generation();
-    empty_snapshot->state_epoch = state_epoch_;
+    empty_snapshot->workset_epoch = workset_epoch_;
     const DispatchSnapshot* empty_snapshot_pointer = nullptr;
     const bool archived_empty = next &&
         ArchiveSnapshot(*impl_, std::move(empty_snapshot));
@@ -3295,7 +3252,6 @@ StopPointLifecycleReceipt StopPointRouter::StopIngressDrainAndCleanup()
     ingress_notifier_context_ = nullptr;
     ingress_notifier_ = nullptr;
     impl_->current_point.reset();
-    replacing_state_ = false;
     stopped_ = clear.ok && unbind.ok;
     if (stopped_)
     {

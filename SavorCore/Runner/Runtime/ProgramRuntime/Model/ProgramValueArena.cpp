@@ -451,7 +451,7 @@ const ProgramValue* ProgramValueArena::Lookup(
 
 ProgramValueArenaLookupResult ProgramValueArena::LookupForEpoch(
     ProgramValueId id,
-    StateEpoch current_epoch) const noexcept
+    WorksetEpoch current_epoch) const noexcept
 {
     const ProgramValue* value = Lookup(id);
     if (!value)
@@ -467,12 +467,11 @@ ProgramValueArenaLookupResult ProgramValueArena::LookupForEpoch(
             using T = std::decay_t<decltype(payload)>;
             if constexpr (std::is_same_v<T, ResourceHandleValue>)
             {
-                return payload.origin_epoch.has_value() &&
-                    *payload.origin_epoch != current_epoch;
+                return payload.workset_epoch != current_epoch;
             }
             else if constexpr (std::is_same_v<T, OpaqueHandleValue>)
             {
-                return payload.origin_epoch != current_epoch;
+                return payload.workset_epoch != current_epoch;
             }
             else
             {
@@ -512,7 +511,7 @@ ProgramValueArenaStatus ValidateProgramValueGraph(
     const TypeRef& expected_root_type,
     std::span<const TypeSchemaDefinition> schemas,
     ProgramValueArenaLimits limits,
-    std::optional<StateEpoch> current_epoch)
+    std::optional<WorksetEpoch> current_epoch)
 {
     ProgramValueArena arena(limits);
     const ProgramValueArenaInsertResult imported =
@@ -735,10 +734,9 @@ ProgramValueArenaStatus ValidateProgramValueGraph(
                 !schema->element_type->named ||
                 handle->resource_type !=
                     *schema->element_type->named ||
-                (handle->origin_epoch &&
-                 (!*handle->origin_epoch ||
-                  (current_epoch &&
-                   *handle->origin_epoch != *current_epoch))))
+                !handle->workset_epoch ||
+                (current_epoch &&
+                 handle->workset_epoch != *current_epoch))
             {
                 return schema_failure(
                     "resource handle violates its exact schema or epoch");
@@ -750,13 +748,13 @@ ProgramValueArenaStatus ValidateProgramValueGraph(
             const auto* handle =
                 std::get_if<OpaqueHandleValue>(&value.payload);
             if (!handle || !handle->handle_id ||
-                !handle->origin_epoch ||
+                !handle->workset_epoch ||
                 !schema->element_type ||
                 !schema->element_type->named ||
                 handle->handle_type !=
                     *schema->element_type->named ||
                 (current_epoch &&
-                 handle->origin_epoch != *current_epoch))
+                 handle->workset_epoch != *current_epoch))
             {
                 return schema_failure(
                     "opaque handle violates its exact schema or epoch");
@@ -820,11 +818,11 @@ std::uint64_t ProgramValueArena::Measure(
             else if constexpr (std::is_same_v<T, ResourceHandleValue>)
                 return sizeof(value.handle_id) +
                     IdentityBytes(value.resource_type) +
-                    sizeof(StateEpoch);
+                    sizeof(WorksetEpoch);
             else if constexpr (std::is_same_v<T, OpaqueHandleValue>)
                 return sizeof(value.handle_id) +
                     IdentityBytes(value.handle_type) +
-                    sizeof(value.origin_epoch);
+                    sizeof(value.workset_epoch);
             else
                 return 0;
         },

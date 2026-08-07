@@ -66,8 +66,9 @@ Current facilities are capable but their ownership overlaps:
   cleanup sequence.
 - `SavorCore/Runner/Breakpoints/BPRegistry.h:15-43` encodes visibility and one owner/consumer
   classification with each static stop point. Those fields do not express concurrent logical routing.
-- `SavorCore/Core/DolphinWrapper.cpp:680-828` already advances a probe guest-state epoch on savestate
-  load and in-memory restore, demonstrating the need for epoch-aware observations.
+- The former wrapper-level guest-state epoch advanced on savestate load. That behavior was removed:
+  the current runtime has one immutable epoch per workset and treats restores as workset-local state
+  operations.
 - `DolphinWrapper.cpp:1666-1826` implements physical PC breakpoint and watchpoint mutation through the
   broad facade.
 - `SavorProbe/ProbeProfile.h:21-225` and `SavorProbe/ProbeProfile.cpp:611-1142` define and validate the
@@ -83,16 +84,16 @@ provides the research basis for the target services:
 
 - lines 267-396 define one `ExecutionEngine`, logical stop routing, physical-stop ownership, and
   structured child operations;
-- lines 397-471 define capture, predicates, input arbitration, state replacement, and game ownership;
+- lines 397-471 define capture, predicates, input arbitration, baseline restoration, and game ownership;
 - lines 633-729 map current facilities and state the target invariants; and
 - lines 812-840 describe a suitable fake-backend test architecture.
 
 Slices 1 through 4 now implement the generic ownership seam described below. In particular,
-`EmulationSession` composes the engine/router with `InputArbiter`, `StateService`, `GuestMemory`,
+`EmulationSession` composes the engine/router with `InputArbiter`, `SavestateService`, `GuestMemory`,
 `GuestMutationService`, `MovieService`, one passive `CaptureService`, `ScreenshotService`,
 `TelemetryBus`, and the standalone `SessionResourceLedger`. The legacy VM calls that formerly owned
 these facilities are hard-disconnected. Slice 5 now adds canonical action descriptors and an
-actor-marshalled request/completion seam, program-resource binding onto the Slice 4 ledger, and the
+actor-marshalled request/resolution seam, program-resource binding onto the Slice 4 ledger, and the
 concrete internal `SessionProgramActionHost` bindings from canonical requests to session-owned
 services. Production worker composition constructs neither the runtime nor this host and does not
 advertise worker `ProgramInvocation`.
@@ -122,7 +123,7 @@ sequenceDiagram
         EE-->>SS: typed execution result
     end
     SS-->>AR: output + receipts + diagnostics
-    AR-->>PR: typed ActionCompletion
+    AR-->>PR: typed ProgramActionResolution
     PR->>PR: validate request and epoch
     PR-->>PE: resume matching continuation
 ```
@@ -132,29 +133,33 @@ An action request logically includes:
 - invocation, request, and trace correlation identities;
 - exact action ID, version, and signature hash;
 - typed input conforming to the imported schema;
-- current `StateEpoch`;
+- current `WorksetEpoch`;
 - active resource scope;
 - cancellation token and structural-budget context;
 - retry/idempotency identity where external publication is possible; and
 - the caller's allowed capability/effect set.
 
-An action completion logically includes:
+The program-facing `ProgramActionResolution` logically includes:
 
 - matching invocation and request identities;
 - terminal infrastructure status;
 - typed action output for successful execution;
 - domain observation/outcome fields declared by the action;
-- origin and resulting `StateEpoch`;
+- the one immutable active `WorksetEpoch`;
 - resources acquired and restoration/finalization receipts;
-- emitted observation/artifact references, if declared;
+- emitted observations declared by the action, but no host-owned staged artifact capture;
 - structured diagnostics and causal error chain; and
 - trace information sufficient to compare re-execution.
 
 Action idempotency keys and commit receipts belong to runtime results or existing external
 artifact/telemetry mechanisms. They do not create SavorDb columns, tables, interfaces, or queue records.
 
+The actor may additionally return an `ActorActionResult` containing staged outputs. `WorkerRuntime`
+must adopt or abandon those outputs before delivering its contained resolution; `ProgramRuntime` and
+`ProgramExecutor` never receive their host capture receipts.
+
 There is one outstanding program-level action per `ProgramInstance`. A handler may use structured child
-operations inside its owning session service, but returns one completion to the program. A handler
+operations inside its owning session service, but returns one resolution to the program. A handler
 cannot resume the executor itself.
 
 ### ActionDescriptor
@@ -167,9 +172,9 @@ Every action registration has an immutable logical descriptor:
 | Types | Exact input, output, domain-observation, receipt, and diagnostic schemas |
 | Capability pack | Pack and version that provides the action |
 | Required capabilities | Narrow session interfaces the handler may receive |
-| Effect declarations | Read guest, mutate guest, advance emulation, publish input, replace state, movie, capture, artifact I/O, telemetry |
+| Effect declarations | Read guest, mutate guest, advance emulation, publish input, movie, capture, artifact I/O, telemetry |
 | Resource behavior | Resources acquired, owning scope, release/finalization operation, and receipt type |
-| Epoch behavior | Epoch requirement, whether the action may replace state, and handle invalidation/rebinding rules |
+| Workset behavior | Active-workset requirement and immutable `WorksetEpoch` correlation |
 | Determinism/replay | Replay class and fields that must be recorded or compared |
 | Cancellation | Cancellation mode, safe points, maximum non-cancellable section, and cancellation completion |
 | Timing class | `CancellationDriven` guest-dependent work or `BoundedHostOperation` with a finite infrastructure timeout |
@@ -256,7 +261,7 @@ capabilities. It lowers before verification to exact capability-pack imports and
 - a `SemanticAwaitDefinition` creates one scoped router subscription group and awaits
   `runtime.execution.continue_until`;
 - a successful wait returns one `SemanticPointReceipt` containing the logical point, physical hit
-  evidence, stop sequence, `StateEpoch`, and declared hit-time samples;
+  evidence, stop sequence, `WorksetEpoch`, and declared hit-time samples;
 - `HitTimeSample` requirements compile only to the router's bounded, allocation-free registered sample
   subset;
 - `PausedAtPoint` observations compile to registered `runtime.guest.read_*` or coherent game-query
@@ -276,7 +281,7 @@ infrastructure timeout.
 recipes. It distinguishes required evidence loss from optional `Unavailable` and from a successfully
 observed false, zero, or domain-negative value. Ordered observation uses execute in declaration order;
 coherent multi-field state is returned by one registered query. Every receipt, sample, baseline,
-derived address, and guest-derived handle is epoch-bound and rejected after state replacement.
+derived address, and guest-derived handle is bound to the active workset and rejected after it ends.
 
 No service evaluates module branches, check policy, scoring, or authoritative progress. No
 `ObservationRuntime`, query VM, observation opcode, dynamic action ID, filesystem access, or database
@@ -301,7 +306,7 @@ for its semantic subscription and observation resources. Its required temporal o
    continuation executes the source instruction with the new input without an explicit guest
    instruction-step action.
 4. Accept a matched gate only with the declared logical point and matching PC/physical evidence, stop
-   sequence, input epoch, and `StateEpoch`; an unrelated or stale hit cannot advance the segment.
+   sequence, input epoch, and `WorksetEpoch`; an unrelated or stale hit cannot advance the segment.
 5. Apply the declared semantic completion policy. `StopAtGate` leaves the matched gate paused.
    `ContinueWithRequestToDeclaredSuccessor` retains the request and input lease while continuing to one
    separately declared semantic successor, then leaves that successor paused. A requirement phrased
@@ -346,8 +351,8 @@ remains a session-safety mechanism; an unsatisfied program predicate does not be
 unless a separate safety contract explicitly requires it.
 
 Predicate baselines, sampled addresses, and guest-derived witness handles inherit the observation
-contract's epoch binding. Lowered code must reacquire them after state replacement rather than retaining
-them across `StateEpoch`.
+contract's workset binding. Programs do not restore guest state during an invocation; every such value
+is discarded during item unwind before a later item restores the shared baseline.
 
 Live predicate messages may use `TelemetryBus`, but progress or evidence needed by program results,
 scoring, or adapters must also be a declared typed program emission. No `runtime.predicate.*` capability
@@ -367,7 +372,7 @@ Each descriptor declares one class:
 Pure reducers are deterministic by definition and do not use an action replay class.
 
 Elapsed host time or poll count may appear in infrastructure diagnostics when useful. It becomes domain
-evidence only when the action's domain schema explicitly declares it. Guest-dependent action completion
+evidence only when the action's domain schema explicitly declares it. Guest-dependent action resolution
 is never converted into a phase execution deadline.
 
 ### Cancellation modes
@@ -395,26 +400,24 @@ Worker-global completion/acknowledgement ledger
   -> immutable promoted state captures, finalization state, and retained terminals
 
 Session root scope
-  -> bounded immutable state cache
   -> transient workset scope
-       -> scoped state-cache lease
        -> composite ProgramBaselineDefinition/ProgramBaselineKey
+       -> optional multi-item state handle
        -> one active invocation root scope
             -> lexical program scope
                  -> action transaction scope
                       -> service-owned resources and receipts
 ```
 
-The workset scope owns the exact common-preparation receipts and, only for a multi-item workset, one
-`ProgramBaselineDefinition` plus the scoped cache lease needed by its savestate component. The
+The workset scope owns the exact common-preparation receipts and, only for a multi-item savestate
+workset, one in-memory handle. The
 definition's ordered `ProgramBaselineComponent`s cover the savestate, exact movie continuation, and
 runtime-facing program-kind adapter-declared derived state; `ProgramBaselineKey` identifies that whole
-set. A one-item workset does not capture an unnecessary reusable baseline. The session-owned state cache
-may retain immutable serialized state bytes across worksets, but no workset obtains restore authority
-without its own lease. The scope may not retain a live input lease, router wait, mutation, capture
+set. A one-item workset does not capture an unnecessary handle, and no handle survives workset
+termination. The scope may not retain a live input lease, router wait, mutation, capture
 writer, action continuation, guest-derived pointer, or other mutable invocation effect between items.
-Only immutable cache entries, baseline component definitions, and compiled definitions survive
-according to their contracts; every mutable child resource is reacquired.
+Only immutable artifact declarations and compiled definitions survive according to their contracts;
+every mutable child resource is reacquired.
 
 The worker-global completion/acknowledgement ledger is host-only lifecycle state rather than another
 program or session scope. An invocation may promote a synchronously captured immutable state buffer and
@@ -454,16 +457,15 @@ Rules:
    exhaustion, guard abort, and worker-requested shutdown use the same unwind machinery.
 8. Optional cleanup failure records `CleanWithDiagnostics`; mandatory cleanup without a verified receipt
    records `TaintRequired` and blocks later acquisition.
-9. State replacement is a ledger transaction: epoch-agnostic resources survive, end-on-change resources
-   close as superseded, stable rebindable resources produce typed rebind requests, and state-replacing
-   resources cannot be treated as ordinary handles.
+9. The ledger belongs to one workset and one immutable `WorksetEpoch`. It contains no state-transition,
+   supersession, or rebind mode; workset teardown is the lifecycle authority.
 10. Every item fully unwinds its invocation root back to the workset scope before another item may
     restore the baseline or enter `ProgramRuntime`.
 11. Workset cancellation or terminal completion releases the workset scope after the active invocation
     has unwound. A failed mandatory workset-scope release taints the session and prevents later item
     admission.
-12. State-cache leases are ordinary scoped ledger resources. Eviction cannot remove a leased entry, and
-    release of the last lease never changes guest state or `StateEpoch`.
+12. A multi-item savestate workset's private baseline handle is a scoped ledger resource. It cannot
+    escape the active workset, and releasing it never changes guest state or `WorksetEpoch`.
 13. Promotion into the completion/acknowledgement ledger is permitted only for immutable host-owned
     bytes and metadata whose synchronous capture succeeded. Before promotion, ordinary unwind owns
     abort/cleanup; after promotion, the global ledger owns finalization, terminal assembly, retryable
@@ -475,499 +477,44 @@ Rules:
     baseline preparation, local credits, and exact asynchronous cancellation govern later admission;
     no per-item coordinator authorization pause is a resource boundary.
 
-### StateEpoch interaction
-
-`StateService` is the sole authority that creates the monotonically increasing worker-local
-`StateEpoch`. No router, capture, movie, input, mutation, session helper, or backend callback may advance
-its own epoch.
-
-Resource descriptors declare one epoch policy:
-
-- `EpochAgnostic`: artifact writers or pure host resources do not depend on guest state.
-- `EndOnEpochChange`: the default for guest-derived handles, observations, mutations, input
-  acknowledgements, and transient waits.
-- `RebindAfterRestore`: a session service may recreate a semantic subscription from stable identifiers
-  after restore; the old physical/opaque handle is never reused.
-- `ReplacesState`: the action is allowed to perform the state transaction and must return the new epoch.
-
-Before state replacement, services are notified and active execution is safely paused. Old-epoch
-mutations are closed as superseded by replacement rather than written into the newly loaded state.
-Input poll receipts, predicate baselines, dynamic guest addresses, current-instruction suppression, and
-opaque pointers are invalidated. A successful boot, reboot, in-memory restore, or file-artifact restore
-advances the epoch exactly once. A recoverable backend failure rolls every prepared participant back and
-does not advance it. If backend replacement succeeded but participant commit or integrity proof fails,
-the new epoch remains authoritative and the session is tainted. Any later use of an old handle is
-rejected before service execution.
-
-Workset item templates deliberately omit the actor-owned exact session/epoch guard. After common state
-preparation, the first item is bound to that prepared epoch. Before each later item, `StateService`
-restores the savestate/movie component while the composite `RestoreBaseline` transaction restores every
-adapter-declared derived-state component. The transaction advances `StateEpoch` exactly once and returns
-one `PreparedProgramBaselineReceipt`; only after that complete receipt commits does `WorkerRuntime` bind
-the item to the resulting exact `SessionId` and epoch and submit the resolved `ProgramInvocation`. This
-just-in-time binding fills only actor-owned runtime identity. It cannot change the template's module,
-entrypoint, dependencies, inputs, policy, limits, or provenance.
-
-No receipt, observation, address, acknowledgement, mutation, suppression state, or guest-derived handle
-from one item can be supplied to another. The host-owned immutable baseline remains a valid restore
-source for its workset lifetime, but its captured epoch is provenance rather than permission to reuse
-guest-epoch-bound objects.
-
-The private `DolphinWrapper::stepBootCoreForStateLoadBlocking` helper is an isolated backend preflight
-exception used only inside a `StateService` boot/load transaction when Dolphin requires one bootstrap
-opcode before loading state. It is not exposed to `ExecutionEngine`, actions, program or visual
-debugging, semantic observation, or interaction composition, and it is never a general post-open
-advancement mechanism. The state-replacement receipt and new epoch are committed only after the entire
-transaction, including this preflight and the load, succeeds. The current helper ignores the boolean
-result of its bounded completion wait and returns success unconditionally; that is a known backend gap.
-Before production cutover, the private preflight must propagate timeout/failure into the typed
-state-replacement failure path without becoming a public execution operation.
-
-### Canonical logical capability IDs
-
-These names are stable planning identities. Exact signatures and version numbers are defined by
-implementation slices without changing their responsibility.
-
-| Capability | Logical action/reducer IDs |
-|---|---|
-| State | `runtime.state.capture_baseline`, `runtime.state.restore`, `runtime.state.restore_baseline`, `runtime.state.save_artifact` |
-| Execution | `runtime.execution.continue_until`, `runtime.execution.step_frames` |
-| Stop subscriptions | `runtime.stop.subscribe_group`, `runtime.stop.replace_group` |
-| Input | `runtime.input.acquire_lease`, `runtime.input.set_held`, `runtime.input.pulse`, `runtime.input.neutralize`, `runtime.input.play_sequence`, `runtime.input.await_guest_poll` |
-| Movie | `runtime.movie.play`, `runtime.movie.stop`, `runtime.movie.record_start`, `runtime.movie.record_stop` |
-| Guest reads | `runtime.guest.read_u8`, `runtime.guest.read_u16`, `runtime.guest.read_u32`, `runtime.guest.read_u64`, `runtime.guest.read_f32`, `runtime.guest.read_f64` |
-| Guest mutation | `runtime.guest.write_checked`, `runtime.guest.patch_executable` |
-| Capture/telemetry | `runtime.capture.attach`, `runtime.capture.marker`, `runtime.capture.screenshot`, `runtime.capture.finalize`, `runtime.telemetry.emit` |
-| Game observations | `soa.battle.capture_context`, `soa.navigation.capture_context` |
-| Pure game conversion | reducer/callable `soa.battle.materialize_turn_input` |
-| Adaptive battle subprograms | `soa.battle.command_macro`, `soa.battle.completion_macro`, `soa.battle.results_screen_macro`, with pure reducers using the corresponding `.reduce` identity |
-
-Semantic-observation and interaction composition introduce no additional action family. They lower to
-the exact IDs above plus capability-pack-owned point/query definitions and ordinary IR.
-
-`runtime.execution.continue_until` accepts logical completion conditions. The owning handler creates
-temporary wake subscriptions through the router; programs never manipulate physical PCs.
-
-### ExecutionEngine
-
-`ExecutionEngine` is the sole owner of supported post-open program and interactive emulator advancement.
-The private state-load bootstrap above remains part of the backend-owned replacement preflight, not a
-second execution owner. The engine accepts typed operations corresponding to:
-
-- continue until logical completion conditions;
-- step a bounded number of frames;
-- advance through an opaque input relationship supplied by `InputArbiter`;
-- reach a safe pause;
-- interactively resume a Ready visual-intent session; and
-- execute verifier-known bounded interruption handlers requested by router interceptors.
-
-It owns operation IDs, cancellation, centralized core health, movie-ended policy, throttle mode,
-current-instruction suppression, pause confirmation, and resumption after routing. Every operation
-carries `StateEpoch` and remains interceptor-aware.
-
-Only one foreground operation advances the core. Interruption-handler child operations structurally
-suspend the parent and return to it; they do not start a nested runtime.
-
-The engine is an actor-owned state machine, not a thread. Guest-dependent requests are
-cancellation-driven. Parent health monitoring is ineligible while a handler child is active and
-rebaselines when that parent resumes; the same rule applies while a child is suspended by a declared
-nested child. Ready-session `InteractiveResume` follows the same health and cancellation rules and
-terminates at a safe pause, routed terminal, shutdown, or failure.
-
-An immutable trusted handler descriptor declares its allowed child operation kinds, child structural limits,
-permitted nested keys, recursion policy, and maximum depth. The engine additionally enforces an absolute
-depth cap of eight. A child may return only `ResumeParent` or `AbortParent`; unknown handlers,
-undeclared nesting, forbidden recursion, depth overflow, and infrastructure failure remain distinct
-typed failures. The parent retains its exact completion condition, temporary wake group, input
-relationship, suppression state, and `StateEpoch`; its health baseline is intentionally renewed after
-the ineligible suspension interval.
-
-The session-owned health monitor starts only after engine advancement is confirmed running.
-VI/CoreTiming progress or a changed synchronous host-activity generation resets its baseline. Native
-router/sampler/capture work uses an atomic, allocation-free, `noexcept` activity scope; actor-side
-guest-blocking work uses ordinary scoped registration. Intentional pause, state replacement,
-reconciliation, and handler suspension are ineligible. Background artifact finalization is not.
-
-After ten eligible seconds without progress the monitor emits `SuspectedCoreStall`; after ten more it
-requests a safe pause. Proven pause and health produce `CoreStalled` with clean diagnostics; unproven
-integrity taints the session. A continuously active host scope warns after ten seconds and every thirty
-seconds thereafter but does not become a core-stall failure. Actor-owned work that blocks publication
-retains its completed duration so the next actor pump emits every crossed threshold. Completed-scope
-diagnostic overflow is explicit. These defaults are session policy, not module, workset, fingerprint,
-or database input.
-
-The private backend facet available to the engine contains only primitive pause/resume, frame-step,
-core/PC/VI/movie/throttle observation, and throttle apply/restore operations. Movie observation here
-does not own playback or recording lifecycle. Neither the facet nor an action, worker control, or visual
-control exposes guest PowerPC instruction stepping.
-
-A future `StepProgramInstruction` belongs wholly to `ProgramRuntime`: it advances one verified IR
-instruction or terminator and treats an awaited action as one atomic request-to-completion debugger
-step. It is not a `runtime.execution.*` action, gives no service or backend capability, and cannot weaken
-cancellation or structured unwind. Its implementation, worker protocol, and UI are deferred.
-
-### StopPointRouter and PhysicalStopPointManager
-
-Programs/actions acquire logical subscription-group resources. A subscription declares:
-
-- source identity and diagnostics label;
-- semantic PC/memory/synthetic stop-point specification;
-- `Observe`, `Progress`, `Wake`, `Intercept`, or `Guard` delivery;
-- priority and `Pass`, `Consume`, `RequestInterruptionHandler`, or `Fail` routing policy;
-- lifetime/scope and epoch policy;
-- optional compiled predicate/sample requirements; and
-- rearm/current-instruction suppression behavior.
-
-Routing order is deterministic: synchronous hit-time samples, passive observe/progress delivery, guards,
-interceptors by priority, then the foreground wake condition.
-
-`RequestInterruptionHandler` keeps the core stopped, suppresses lower-priority interceptors and the
-foreground wake, and emits a typed `StopInterruptionHandlerRequest` containing the source, group,
-subscription, and verifier-known interruption-handler key. The routed-stop identity remains on the
-enclosing receipt. The router does not execute the handler. `ExecutionEngine` consumes the request in
-Slice 3, suspends the foreground operation, and either resumes or terminates it according to the bounded
-handler result.
-
-For one physical hit, the router creates one immutable routed-event identity containing sequence,
-snapshot/sample identity, and `StateEpoch`. Control/wake, capture, progress, and semantic-point receipts
-project that same identity rather than independently resampling or resequencing the event. The router
-also determines whether a foreground wake/control condition was active for that hit; passive consumers
-may observe that fact but cannot create or upgrade it.
-
-`PhysicalStopPointManager` alone derives and reconciles the union of physical Dolphin PC breakpoints and
-memchecks. It reference-counts logical needs and publishes an immutable CPU-thread dispatch snapshot.
-No program/action can clear another source's subscription or enabled state.
-
-### GuestMemory and GuestMutationService
-
-The Slice 4 `GuestMemory` owns paused-safe epoch-checked scalar and byte reads through a private backend
-facet. Slice 5 adds source-backed field/battle/navigation address definitions and coherent
-battle/navigation query descriptors over this seam. Register access and later pack-specific queries
-remain future capability work rather than reasons to broaden `GuestMemory`. CPU-hit-time samples
-continue to use the separate bounded sampling path configured by the router.
-
-`GuestMutationService` owns all program-requested writes:
-
-- checked `u8`, `u16`, and `u32` data writes;
-- masked read-modify-write operations;
-- executable instruction patches;
-- named mutation profiles and nested scopes; and
-- restoration receipts.
-
-A data mutation transaction declares the owner, scope, epoch, target, width, expected original value or
-masked precondition, new value, and readback requirement. It fails closed when the precondition or
-readback differs. Overlapping unrelated mutations are rejected; an explicitly parented nested mutation
-from the same owner restores in reverse order. A data mutation is reversible by default and may become
-part of the current guest state only through explicit `Commit`. State replacement supersedes active
-old-epoch mutations without writing their old bytes into the new state.
-
-An executable patch additionally requires:
-
-- aligned executable target and declared instruction width;
-- exact expected instruction bytes/value;
-- paused-core application;
-- the backend's required instruction-cache/JIT invalidation;
-- post-invalidation readback/verification;
-- a receipt containing original and replacement values; and
-- symmetric restoration/invalidation on scope exit.
-
-Executable patches can never use `Commit`; they are always reversible. Mutation profiles are generic.
-Navmesh encounter suppression and trigger patching use the same service as battle RNG or future
-collision probes; there is no Survey-only binary editor.
-
-### InputArbiter
-
-`InputArbiter` alone publishes controller state. An input lease declares:
-
-- owner identity and scope;
-- priority;
-- whether it is suspendable;
-- whether an interruption handler requested by a router interceptor may borrow it;
-- restoration/neutralization policy;
-- whether guest-poll acknowledgement is required;
-- whether the lease is an unsuspendable movie-exclusive reservation; and
-- one explicit interruption-borrow policy: preserve the parent's held state until the borrower first
-  publishes, or require a fresh typed `InputNeutralWitnessId` issued by `InputArbiter` after it proves
-  guest acknowledgement of the exact current neutral publication.
-
-Held state, pulses, sequences, and neutral release are operations on a valid epoch-bound lease. Each
-publication creates a fresh token; guest-poll observation creates a distinct acknowledgement receipt.
-Release is two-phase when required: publish neutral, then prove that exact publication was observed
-before completing release and resuming a suspended parent. Dropping a C++ object or merely publishing
-neutral is not sufficient cleanup. A neutral borrow witness is bound to the parent lease, publication,
-and `StateEpoch`; missing, fabricated, wrong-lease, stale, non-neutral, or superseded witnesses reject,
-and a successful borrow consumes the witness.
-
-Slice 4 implements the opaque `IInputAdvancePort` collaboration required by `ExecutionEngine`: validate
-the lease binding, prepare a fresh publication before advancement, return its token, observe
-acknowledgement afterward, and request a bounded retry or completion. The engine never publishes pad
-state itself.
-
-Emergency neutralization may preempt ordinary owners only under cancellation/guard/shutdown policy and
-must record what was preempted. An unsuspendable movie/input owner cannot be silently overwritten by a
-dialog or visual command.
-
-### StateService
-
-`StateService` owns boot/reboot, disk state artifacts, multiple in-memory state handles, restore, save,
-compatibility validation, state lineage, movie checkpoint association, and `StateEpoch`. It is the sole
-epoch authority; `EmulationSession` mirrors its receipts rather than independently incrementing an
-epoch.
-
-It replaces the VM's one implicit snapshot with explicit handles:
-
-- a baseline handle may be captured and restored repeatedly within its declared lifetime;
-- arbitrary state handles may coexist within budget;
-- immutable state artifacts use new caller-declared paths and may be loaded by invocation policy or
-  explicit action;
-- every handle/artifact records exact state SHA-256, compatibility (`game_id`, ISO SHA-256, emulator
-  build, and optional runtime revision), captured epoch, and parent/edge/producer lineage; and
-- a read-only-playback checkpoint embeds the exact DTM history bytes and verified SHA-256, game ID,
-  frame/input counters, and starts-from-savestate fact. A read-only file artifact publishes that exact
-  DTM companion with the state rather than relying on ambient Dolphin movie state; and
-- an in-progress recording checkpoint is never a file artifact. It may be rewound only from a
-  same-session in-memory handle carrying the process-local recording generation and exact embedded DTM
-  history.
-
-`StateService` also owns one bounded session-local immutable state cache, initially 16 entries and
-512 MiB. `StateCacheKey` contains the
-state content hash, exact game/ISO/emulator/runtime compatibility, lineage and source-artifact identity,
-the complete no-movie or read-only movie-continuation identity needed to interpret the bytes, and any
-session-generation constraint required by the backend/runtime profile. Recording-generation handles are
-deliberately excluded. A cache entry contains immutable serialized state bytes plus the verified movie
-metadata/DTM bytes required by that key; it contains no live backend object, guest handle, router
-receipt, input acknowledgement, or `StateEpoch` permission.
-
-Cache use is always explicit through a scoped lease:
-
-- common workset preparation may acquire an existing entry after validating the exact
-  `StateCacheKey`, or populate one from a hash-validated artifact or newly captured baseline;
-- a completed output state may populate the cache only after asynchronous artifact publication has
-  established its final content hash and complete compatibility/lineage/movie key;
-- a multi-item workset holds its baseline lease until no later child can start;
-- a later workset or durable successor may acquire a fresh lease to the same immutable entry, but still
-  performs an ordinary `StateService` restore and receives a fresh `StateEpoch`;
-- eviction is bounded and deterministic with respect to active leases, but cache presence, eviction
-  order, compression, and storage tier are never correctness inputs; and
-- a miss falls back to the declared immutable artifact or normal boot/load path without changing
-  invocation semantics.
-
-An incompatible reboot, runtime/backend replacement, movie-generation change, or integrity uncertainty
-invalidates every affected entry before another lease may be acquired. A compatible replacement may
-retain only entries whose complete key and session-generation constraint remain valid.
-
-A restore transaction:
-
-1. reaches a safe pause and blocks new execution operations;
-2. prepares the registered session, router, input, capture, mutation, movie, and resource-ledger
-   participants;
-3. loads/reboots the backend;
-4. increments `StateEpoch`;
-5. invalidates or rebinds resources according to descriptor policy;
-6. reconciles physical stop points;
-7. returns a typed replacement receipt that later actions/telemetry may project; and
-8. returns only after the new epoch is internally consistent.
-
-Loading state is never an unannounced helper side effect of VM initialization or a normal opcode.
-
-For one accepted workset, common preparation is a bounded state transaction:
-
-1. validate the `WorkerWorksetExecutionKey`, build the exact `ProgramBaselineDefinition` and
-   `ProgramBaselineKey`, derive the `StateCacheKey` for its state/movie bytes when reusable, and prepare
-   its declared boot/load/continue state plus adapter-declared derived state;
-2. when the workset has more than one item, acquire or create one immutable cache entry after that state
-   is confirmed clean and paused, capture the ordered baseline components, and bind the definition and
-   workset-scoped lease; skip this reusable-baseline capture and lease for a one-item workset unless its
-   declared source is already satisfied by an ordinary cache-assisted load;
-3. admit the first item against the already-prepared current epoch without a redundant restore;
-4. after that item fully unwinds, run composite `RestoreBaseline` before each later non-cancelled item:
-   restore the exact state/movie bytes named by the same cache lease, restore every declared
-   derived-state component, return one `PreparedProgramBaselineReceipt`, and create one fresh epoch for
-   the whole successful transaction; and
-5. release the workset lease when no later item can be admitted. The underlying cache entry may remain
-   only as bounded immutable session cache state.
-
-A recoverable restore failure does not advance the epoch, produces an infrastructure terminal for the
-affected item, and stops the workset because the next item's required starting state was not
-established. Any uncertain restore or cleanup taints the session and likewise stops all later admission.
-
-External state import is explicit and hash-checked before backend mutation. The caller must declare
-`NoMovie` or `ReadOnlyPlayback`; `Unspecified` and `Recording` are rejected. A read-only import names and
-hashes the exact DTM companion, but it does not require a caller-supplied frame/input cursor. Every
-read-only restore materializes the embedded DTM history, verifies its SHA-256 and DTM structure, and
-stages it before backend restore. If read-only playback is already active, the backend's tracked active
-DTM SHA-256 must match the checkpoint; commit then verifies the expected movie mode, prepared DTM
-identity, and any known cursor before accepting the new epoch. Dolphin restores an unknown cursor from
-the savestate, and `MovieService` records the authoritative observed frame/input position afterward.
-File-artifact capture/import/restore never represents an in-progress recording; recording rewind is
-available only through a same-session in-memory handle carrying the process-local recording generation.
-
-#### Asynchronous immutable state-artifact finalization
-
-State capture must remain synchronized with the paused guest, but compression, hashing, sidecar/file
-I/O, and validation do not need to occupy the session actor or keep a `ProgramInstance` alive. A state
-artifact therefore uses this fixed sequence. The initial host pool has two finalizer threads and admits
-at most eight pending immutable captures totaling 256 MiB:
-
-1. While safely paused on the actor, `StateService` captures immutable state bytes and the exact
-   no-movie or read-only movie metadata/DTM continuation required by the declared artifact role.
-2. The actor validates the synchronous capture receipt and promotes only those host-owned immutable
-   bytes and metadata into the worker-global completion/acknowledgement ledger. The promotion reserves
-   the already-admitted item's bounded count/byte credit. No `ArtifactRef` or authoritative item
-   terminal exists yet.
-3. A bounded background finalizer computes the content hash, writes the caller-declared new state and
-   required sidecar/DTM files through the existing artifact mechanism, and validates the published
-   bytes, hashes, compatibility, and lineage. It cannot access Dolphin, session services, router/input
-   state, `ProgramRuntime`, or workflow persistence.
-4. The finalizer enqueues one typed completion. On the actor, the global ledger correlates it to the
-   exact workset/item/invocation/attempt and actor-assigned terminal-order ordinal, constructs the final
-   `StateArtifact` reference or typed failure, and only then permits authoritative `ProgramResult`
-   assembly and publication.
-
-The state-save action returns a typed pending-publication receipt bound to a declared artifact role,
-not a fabricated final hash or durable `ArtifactRef`. Program control may record that the synchronous
-capture committed, but it cannot branch on publication success or consume the final artifact from the
-same invocation. Any phase whose subsequent behavior genuinely depends on the durable artifact keeps
-that dependency in terminal/result handling or a later durable workflow step.
-
-Once step 2 succeeds, the producing `ProgramInstance` may finish its ordinary unwind and a later child
-may become the sole active invocation if completion-ledger and item-capacity bounds allow it. Pending
-finalization is completion data, not a suspended action or second active program. Final state terminals
-are released in actor-assigned deterministic completion order even if background tasks finish in a
-different order.
-
-Cancellation before promotion follows ordinary action unwind. After promotion, the bounded finalizer
-continues draining the captured output to exactly one success or infrastructure-failure terminal;
-cancellation closes later admission but cannot discard or retract the promoted bytes. Publication
-failure is an infrastructure failure for that item; it taints the session only when session integrity or
-mandatory cleanup cannot be proven. A worker crash leaves no authoritative artifact without the
-existing final validation/publication evidence and recovers through the item's existing attempt and
-idempotency rules.
-
-### MovieService, CaptureService, ScreenshotService, and TelemetryBus
-
-`MovieService` owns playback/recording lifecycle and an unsuspendable movie-exclusive input reservation.
-Initial read-only playback may be supplied in `SessionOpenOptions`; that path validates and stages the
-DTM so the backend calls `Movie::PlayInput` before the session's single boot. Starting playback after the
-session is already open performs the same preparation and legitimately uses a `StateService` reboot.
-Both paths propagate any DTM starting savestate into the state transaction, verify the resulting movie
-mode, and hold the reservation until stop/unwind. Recording finalization publishes a caller-declared new
-DTM and, when applicable, its `<dtm>.sav` starting-state companion. Movie-related execution termination
-remains an `ExecutionEngine` policy, not a string guessed by a caller.
-
-`CaptureService` owns at most one opaque profile attachment, passive router subscriptions,
-service-internal recorder queues/threads, sampling windows, trace buffers, and capture artifact
-finalization. Attaching capture cannot grant control authority. The attachment belongs to
-`EmulationSession`, prepares before state replacement, rebinds its stable group at the new epoch, and
-survives a successful restore; detach/shutdown releases the group and finalizes artifacts exactly once.
-Artifact finalization is mandatory cleanup: any finalization failure requires session taint, leaves the
-capture service unable to accept a new attachment, and blocks session/worker reuse until a full rebuild.
-
-For the initial refactor, `runtime.capture.attach` passes the existing versioned
-`savor.capture.profile/1` artifact/configuration opaquely to `CaptureService`. The service preserves its
-current parser, validation, subscriptions, filters/predicate bytecode, probe/sample/address-program
-behavior, activation and dynamic watchpoints, PC and post-write memory sampling, sampling order and
-policies, one-shot/max-hit behavior, changed-only and related retention rules, windows, flight
-recorders, trace buffers, queues, drops/coalescing, progress formatting/publication, event order, and
-artifact finalization. Observation/interaction composition may attach, mark, screenshot, or finalize
-such a profile through ordinary actions, but does not reinterpret or lower profile internals into
-program IR.
-
-Profile `control` subscriptions and control-triggered windows, recorders, flags, metrics, and synthetic
-events retain their observable meaning without retaining `ProbeRuntime` control authority.
-`StopPointRouter`/`ExecutionEngine` owns the foreground wake and reports the already-determined active
-control fact on the shared routed event. `CaptureService` passively consumes that same event and
-publishes a control-tagged or synthetic profile event only when the routed hit had an active foreground
-wake/control condition. A capture profile alone cannot pause, resume, arm a foreground wait, step the
-core, or turn an observe-only hit into control.
-
-`TelemetryBus` accepts typed, bounded progress and diagnostics and feeds one serialized worker
-publisher. Telemetry is not authoritative program output unless the program also emits a declared
-record/artifact. Lossy events may coalesce or drop under the declared policy; required-event overflow is
-an authoritative failure. Every accepted event receives a monotonic sequence. When coalescing replaces
-an older queued event, the replacement keeps its fresh sequence and moves to that chronological
-position rather than retaining the older slot, so drain order remains sequence order. Background
-callbacks never write worker protocol frames directly.
-
-Workset item terminals are not telemetry. The worker-global completion/acknowledgement ledger owns
-promoted immutable state captures, background-finalization correlation, terminal assembly, and
-non-lossy retention across workset boundaries. Its initial authoritative-terminal bound is 32 retained
-terminals totaling 128 MiB. When an executed item completes synchronous session work
-or an unstarted item receives its final disposition, the actor assigns one monotonic terminal-order
-ordinal across worksets. This ordinal is distinct from the serialized publisher's outbound sequence.
-Background completions may arrive in another order, but the actor publishes authoritative terminals in
-terminal-order. A later item may start while an earlier state artifact finalizes, so its correlated
-start/progress events may appear before the earlier terminal; the publisher assigns those events their
-normal monotonic outbound sequence at publication, and they cannot change terminal order or completion
-authority.
-
-Each assembled `ProgramResult` receives the next outbound sequence through the one serialized protocol
-publisher and remains
-replayable until the parent acknowledges durable handling of that exact
-workset/item/invocation/attempt/terminal-order tuple. Telemetry drop/coalescing policy can never
-discard or replace a completion-ledger entry or terminal. Pending finalization, ready-but-order-blocked
-terminals, unacknowledged terminals, resident items, and the one immutable staged successor package all
-consume negotiated item/count/byte credits. When no credit remains, the actor keeps Dolphin paused and
-does not restore or admit another item. Once an executed workset has released its session resources, its
-completion entries may continue draining while the next workset is promoted; acknowledgement retention
-does not keep the old baseline or workset scope alive.
-
-`ScreenshotService` owns one correlated, actor-thread, synchronous bounded screenshot call, validates
-the expected `StateEpoch`, and preserves backend integrity/failure in its terminal receipt. The positive
-timeout is passed to the backend, and screenshot capture does not advance Dolphin. Because the current
-backend call occupies the actor until it returns, cancellation cannot preempt an active request after
-dispatch. Nonblocking backend/actor ingress and active in-flight cancellation are explicitly deferred.
-
-### Modular GameRuntime packs
-
-Dependency Slice 5 now supplies `runtime.session` plus the first source-backed game packs:
-`soa.field`, `soa.battle`, and `soa.navigation`. They register exact:
-
-- types/schemas;
-- exact generic action descriptors through `runtime.session`;
-- semantic stop-point and symbolic address definitions;
-- bounded coherent battle/navigation query descriptors;
-- pure reducers and reusable subprogram dependencies; and
-- compatibility requirements.
-
-The catalog is pinned to the supported USA game/executable/address-map identity. It includes the pure
-`soa.battle.materialize_turn_input` reducer backed by the current battle command materializer. It does
-not translate or execute a macro.
-
-A pack receives only the narrow generic services needed by each registered handler. It cannot depend on
-`WorkerRuntime`, `ProgramExecutor`, workflow persistence, or a raw `DolphinBackend`. Packs are
-independently versioned so adding overworld behavior does not invalidate battle-only modules.
-`soa.cutscene` and `soa.overworld` remain deferred rather than appearing as placeholders, and
-battle-specific behavior did not move into the generic services.
-
-## Interfaces and ownership affected
-
-The target decomposes present authority as follows:
-
-| Current surface | Target owner |
-|---|---|
-| `DolphinWrapper::runUntilBreakpointFlexible`, frame stepping, tape stepping | `ExecutionEngine` via `runtime.execution.*` actions |
-| `armPcBreakpoints`, `setEnabledPcBreakpointsOnly`, watchpoint clear/arm | `PhysicalStopPointManager`, derived from router subscriptions |
-| VM canonical/gated/predicate/macro sets | Scoped `StopPointRouter` subscription groups |
-| `DolphinWrapper::setInput`, playback epochs, VM macro exclusivity | `InputArbiter` leases and operations |
-| VM `snapshot_`, `loadSavestate`, raw buffer load/save, reboot | `StateService` typed handles, scoped `StateCacheKey` leases, and caller-declared immutable artifacts; read-only restores carry exact DTM history, recording rewind is memory-handle-only, and raw buffer/file escape hatches are disconnected |
-| Synchronous state-file hashing/publication on the execution path | Synchronous paused immutable-byte/movie-metadata capture followed by worker-global completion-ledger ownership and bounded background finalization |
-| VM `writeU32` and future executable patches | `GuestMutationService` reversible checked transactions; only data writes may be explicitly committed |
-| VM-owned probe/capture job | One session-owned `CaptureService` attachment that passively rebinds across restore |
-| VM movie start/stop | `MovieService` resource paired with `InputArbiter`'s unsuspendable movie reservation, hash-verified DTM history, and active-DTM identity |
-| VM screenshot/progress helpers | Synchronous actor-owned `ScreenshotService` and sequence-ordered bounded `TelemetryBus` receipts |
-| `PSContext` domain extraction opcodes | Typed actions from the relevant `soa.*` capability pack |
-| VM breakpoint/address/baseline observation machinery | Shared semantic-observation composition lowers to scoped router, execution, and registered read/query actions |
-| `InputMacroRuntime` and providers as control engine | Shared interaction composition lowers to IR subprograms, pure reducers, semantic observations, and ordinary actions |
-| VM predicate arming, baseline capture, evaluation, progress, and `AbortOnFail` | Shared compile-time predicate composition consumes semantic observations; pure IR evaluates them and the composing module owns branch/fail/emission policy |
-| Probe profile control waits and profile capture behavior | Router/engine owns wake authority; `CaptureService` passively preserves opaque `savor.capture.profile/1` semantics from the same routed event |
-
-Action handlers are constructed with declared narrow service capabilities. Service implementations may
-use `DolphinBackend`; action code cannot acquire it through downcast, global singleton, or transitive
-facade.
+### WorksetEpoch interaction
+
+`EmulationSession::BeginWorkset` is the sole allocator of the monotonically increasing worker-local
+`WorksetEpoch`. Infrastructure `Open` has no active epoch. The epoch is nonzero and immutable for the
+entire active workset, including every item, every private baseline restore, and a TAS Movie guest-core
+restart. `EndWorkset` tears down guest-dependent services and clears the active epoch without closing the
+Dolphin wrapper.
+
+Input, movie, execution, stop-point, capture, mutation, screenshot, savestate, and resource-ledger
+services are constructed for that workset. Every receipt and live handle is bound to its one epoch.
+There is no resource epoch policy, state-transition mode, or coordinator-supplied session/epoch input.
+External controls identify the exact active workset and item; session and epoch remain outbound
+diagnostic evidence.
+
+`SavestateService` owns only savestate bytes, compatibility, lineage, bounded memory handles, and
+immutable publication records. It does not allocate epochs or coordinate Dolphin lifecycle. The
+`WorksetStateCoordinator` owns initial artifact restoration and later item restoration. Before a later
+restore it proves the previous invocation is fully unwound, promoted savestate publication or
+compensation has finished, execution is idle-paused, action/resource tables are empty, and native stop
+ingress has drained to a stable boundary.
+
+A savestate restore prepares the exact same-name DTM history and movie-input reservation, quiesces stop
+ingress, loads the state, verifies the restored movie cursor, and force-reconciles the physical stop
+plan while retaining the same `WorksetEpoch`. Preserved backend failure with successful rollback fails
+the workset without taint. Unknown backend integrity, rollback failure, or failed reconciliation taints
+the session while preserving the primary diagnostic.
+
+A multi-item savestate workset may hold one private in-memory baseline handle only until that workset
+ends. A later workset must import its own declared artifact; no handle, guest observation, input receipt,
+mutation, stop subscription, or movie authority crosses the boundary.
+
+A `ReadOnlyMovie` workset begins unestablished. `MoviePrepareReadOnlyPlayback` stages the exact artifacts,
+stops only Dolphin's guest core, and drains pre-stop ingress. The program then installs passive stop groups
+while the core is uninitialized. `MovieStartPlayback` consumes that preparation, loads the DTM, boots
+paused, and validates the exact physical plan without changing the workset epoch. Programs have no generic
+capture/restore action and do not rewind guest state during an invocation.
 
 ## Failure and cleanup behavior
-
 ### Action failure protocol
 
 - Validation failure before dispatch acquires no resource and returns a deterministic runtime rejection.
@@ -999,13 +546,12 @@ Service-specific releases include:
 - invalidate state/guest handles; and
 - publish cleanup diagnostics.
 
-If a state replacement has already superseded an old-epoch mutation, its receipt closes as
-`SupersededByStateReplacement`; the service must not write old bytes into the new state. If restoration
-cannot be proven and no state replacement safely supersedes it, cleanup is failed.
+Programs cannot replace or rewind guest state. A workset baseline restore occurs only after the prior
+invocation has released every mutation and other action resource. If cleanup or restoration cannot be
+proven, the workset fails and the session is tainted when integrity is unknown.
 
 Any failed mandatory cleanup produces `Tainted` session disposition. Remaining cleanup is still
-attempted. No later invocation, especially `ContinueSession`, may run until a full backend/session
-rebuild succeeds.
+attempted. No later workset may consume that guest state; recovery requires an explicit clean boundary.
 
 Within a workset, clean or clean-with-diagnostics item unwind returns ownership to the workset scope and
 permits the next baseline restore. Tainted, uncertain, or incomplete mandatory cleanup closes admission
@@ -1028,8 +574,9 @@ uncertain.
 - Failure to reconcile physical stop points after an epoch change taints the session.
 - Failure to observe neutral input release taints or fails according to the lease's mandatory cleanup
   policy; it is never silently ignored.
-- A recoverable state replacement failure rolls participants back and does not advance `StateEpoch`.
-  Failure after backend replacement, failed rollback, or any other unproven integrity taints the session.
+- A recoverable workset baseline-restore failure rolls back staged movie/input/ingress state without
+  changing `WorksetEpoch`. Unknown backend integrity, failed rollback, or failed reconciliation taints
+  the session.
 - Executable patch verification or restoration failure is always session-tainting.
 
 ## Dependencies and migration implications
@@ -1049,8 +596,8 @@ Migration implications:
    tape/macro advancement rather than creating a compatibility executor.
 5. Keep the implemented `InputArbiter` opaque input-advance port beneath `ExecutionEngine`; re-author
    current input/macro behavior with its epoch-bound leases, borrow policy, and guest-observed release.
-6. Use the implemented `StateService` as the sole epoch authority and translate raw savestate/buffer
-   operations to explicit handles, `StateCacheKey`-validated scoped cache leases, or caller-declared
+6. Use `EmulationSession::BeginWorkset` as the sole epoch authority. Keep `SavestateService` limited to
+   active-workset bytes, bounded private handles, and caller-declared
    immutable artifacts with exact movie continuation. State-artifact publication uses synchronous
    paused capture followed by bounded asynchronous finalization through the worker-global completion
    ledger.
@@ -1110,11 +657,11 @@ host interfaces are not exposed to new modules.
   movie exclusivity, poll acknowledgement, typed arbiter-issued one-use neutral borrow witnesses, and
   input-advance retries pass deterministic tests.
 - Multiple state handles can coexist within budgets; each successful replacement increments the sole
-  `StateEpoch`; recoverable failure does not; stale handles reject; exact SHA/compatibility/lineage and
+  `WorksetEpoch`; recoverable failure does not; stale handles reject; exact SHA/compatibility/lineage and
   state-plus-DTM continuation are checked.
-- State-cache tests prove exact `StateCacheKey` matching, scoped leases, lease-safe eviction, cache-hit
-  versus artifact-load equivalence, fresh epoch on every restore, miss fallback, exclusion of recording
-  handles, and complete absence of guest/resource authority in cached entries.
+- Workset-baseline tests prove exact artifact validation, active-workset-only handle ownership, fresh
+  epoch on every restore, release at workset termination, and mandatory artifact reconstruction for
+  every later workset.
 - State-artifact finalization tests prove actor-owned paused byte/movie capture, promotion before
   invocation unwind, background-only hash/sidecar/file work, exact actor correlation, deterministic
   terminal order despite out-of-order background completion, bounded credits, crash/idempotency
@@ -1131,11 +678,11 @@ host interfaces are not exposed to new modules.
 - Existing `savor.capture.profile/1` compatibility tests cover every retained parser, sampling,
   retention, window, flight-recorder, queue/drop/coalescing, progress, ordering, and artifact behavior;
   control publication remains active-wake-only and shares the router event identity.
-- Capture service tests prove one opaque attachment, stable actor-side reconciliation, restore rebind,
-  rollback, exactly-once finalization, taint plus attachment/reuse blocking on mandatory finalization
+- Capture service tests prove one opaque attachment, stable actor-side reconciliation,
+  exactly-once finalization, taint plus attachment/reuse blocking on mandatory finalization
   failure, and taint on unproven resume without a second router or controller.
-- The standalone ledger tests atomic acquisition, actor ownership, promotion, reverse unwind,
-  cleanup-execution continuation, optional diagnostics, mandatory taint, and epoch end/rebind.
+- The workset-owned ledger tests atomic acquisition, actor ownership, promotion, reverse unwind,
+  cleanup-execution continuation, optional diagnostics, mandatory taint, and complete teardown.
 - Screenshot and telemetry tests cover synchronous actor ownership, request correlation, stale epoch,
   preserved backend failure, monotonic sequence order through coalescing, bounded loss, and
   authoritative overflow. They do not claim active screenshot cancellation before nonblocking backend
@@ -1153,15 +700,14 @@ host interfaces are not exposed to new modules.
 
 ## Deferred work
 
-- Complete nine-module production catalog activation and DB data-plane enablement. Production worker
-  construction of the implemented `ProgramRuntime`/`SessionProgramActionHost` and unified
-  `WorkerWorkset` capability/limit advertisement are pre-6A dependencies.
+- Add future production modules to the exact catalog only as their Full Phase migrations land. Production
+  worker construction of `ProgramRuntime`/`SessionProgramActionHost`, artifact-atomic `WorkerWorkset`
+  dispatch, and the SeedProbe plus TAS Movie validation catalog are implemented.
 - Migration-specific typed action payload schemas beyond the implemented canonical envelope and
   source-backed coherent query/reducer contracts.
 - Concrete router priority values, subscription serialization, and CPU sampling bytecode.
-- Measurement-driven tuning beyond the fixed initial 16-entry/512-MiB state cache, two finalizer
-  threads, eight pending captures/256 MiB, and 32 retained terminals/128 MiB, plus compression, eviction,
-  and future artifact-backend adapters. Scoped `StateCacheKey` leases, caller-declared paths,
+- Measurement-driven tuning of two finalizer threads, eight pending captures/256 MiB, and 32 retained
+  terminals/128 MiB, plus compression and future artifact-backend adapters. Caller-declared paths,
   immutable/hash/compatibility/lineage semantics, and actor-side authoritative terminal assembly are
   already fixed; none alters SavorDb storage or interfaces.
 - Generalized `eventhook` trigger characterization and allowlisting.

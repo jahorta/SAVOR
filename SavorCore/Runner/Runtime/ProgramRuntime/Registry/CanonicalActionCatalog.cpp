@@ -17,11 +17,8 @@ struct CatalogEntry
     std::string_view signature;
 };
 
-constexpr std::array<CatalogEntry, 30> kActions{{
-    {"runtime.state.capture", "(StateCaptureRequest)->StateHandle"},
-    {"runtime.state.restore", "(StateRestoreRequest)->StateRestoreReceipt"},
-    {"runtime.state.restore_baseline", "(BaselineRestoreRequest)->StateRestoreReceipt"},
-    {"runtime.state.save_immutable_artifact", "(StateArtifactSaveRequest)->PendingStateArtifactPublicationReceipt"},
+constexpr std::array<CatalogEntry, 28> kActions{{
+    {"runtime.savestate.save_immutable_artifact", "(SavestateArtifactSaveRequest)->PendingSavestateArtifactPublicationReceipt"},
     {"runtime.execution.continue_until", "(ContinueUntilRequest)->ContinueUntilResult"},
     {"runtime.execution.step_frames", "(StepFramesRequest)->ExecutionResult"},
     {"runtime.stop_points.subscribe_group", "(StopGroupDefinition)->StopGroupHandle"},
@@ -32,7 +29,8 @@ constexpr std::array<CatalogEntry, 30> kActions{{
     {"runtime.input.neutralize", "(NeutralInputRequest)->InputNeutralWitness"},
     {"runtime.input.publish_sequence", "(BoundedInputSequence)->InputPublicationReceipt"},
     {"runtime.input.await_guest_poll", "(InputPollRequest)->InputPollReceipt"},
-    {"runtime.movie.start_playback", "(MoviePlaybackRequest)->MovieSessionHandle"},
+    {"runtime.movie.prepare_read_only_playback", "(MoviePlaybackRequest)->PreparedMoviePlaybackHandle"},
+    {"runtime.movie.start_playback", "(PreparedMoviePlaybackHandle)->MovieSessionHandle"},
     {"runtime.movie.stop_playback", "(MovieSessionHandle)->MovieTerminalReceipt"},
     {"runtime.movie.start_recording", "(MovieRecordingRequest)->MovieSessionHandle"},
     {"runtime.movie.stop_recording", "(MovieSessionHandle)->MovieArtifactRef"},
@@ -142,10 +140,10 @@ ActionOutputShape OutputShape(CanonicalAction action) noexcept
 {
     switch (action)
     {
-    case CanonicalAction::StateCapture:
     case CanonicalAction::StopPointsSubscribeGroup:
     case CanonicalAction::StopPointsReplaceGroup:
     case CanonicalAction::InputAcquireLease:
+    case CanonicalAction::MoviePrepareReadOnlyPlayback:
     case CanonicalAction::MovieStartPlayback:
     case CanonicalAction::MovieStartRecording:
     case CanonicalAction::GuestWriteData:
@@ -155,7 +153,7 @@ ActionOutputShape OutputShape(CanonicalAction action) noexcept
     case CanonicalAction::MovieStopRecording:
     case CanonicalAction::ScreenshotCapture:
         return ActionOutputShape::ArtifactReference;
-    case CanonicalAction::StateSaveImmutableArtifact:
+    case CanonicalAction::SavestateSaveImmutableArtifact:
         return ActionOutputShape::SapReceipt;
     case CanonicalAction::CaptureFinalize:
         return ActionOutputShape::ArtifactReferenceList;
@@ -177,15 +175,19 @@ std::optional<SchemaIdentity> SharedOutputSchemaIdentity(
 {
     switch (action)
     {
-    case CanonicalAction::StateRestore:
-    case CanonicalAction::StateRestoreBaseline:
-        return RuntimeSchemaIdentity(
-            "runtime.state.StateRestoreReceipt",
-            "bytes(max=65536;StateRestoreReceipt/1)");
     case CanonicalAction::ExecutionContinueUntil:
+    {
+        const TypeRef reason = CanonicalRuntimeType(
+            CanonicalRuntimeSchema::ContinueUntilCompletionReason);
+        const TypeRef stop = CanonicalRuntimeType(
+            CanonicalRuntimeSchema::OptionalRoutedStopReceipt);
         return RuntimeSchemaIdentity(
             "runtime.execution.ContinueUntilResult",
-            "record ContinueUntilResult/1(stop_sequence:u64,state_epoch:u64,pc:u32,sample_snapshot_id:u64,evidence:StopEvidencePayload/1)");
+            "record ContinueUntilResult/1(reason:" +
+                TypeContract(reason) + ",routed_stop:" +
+                TypeContract(stop) +
+                ",pc:u32,movie_input_count:u64,workset_epoch:u64)");
+    }
     case CanonicalAction::ExecutionStepFrames:
         return RuntimeSchemaIdentity(
             "runtime.execution.ExecutionResult",
@@ -214,6 +216,8 @@ std::optional<CanonicalAction> DirectHandleInput(
 {
     switch (action)
     {
+    case CanonicalAction::MovieStartPlayback:
+        return CanonicalAction::MoviePrepareReadOnlyPlayback;
     case CanonicalAction::MovieStopPlayback:
         return CanonicalAction::MovieStartPlayback;
     case CanonicalAction::MovieStopRecording:
@@ -295,6 +299,14 @@ std::vector<RecordFieldDefinition> TypedRequestFields(
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
                      OptionalInputPublicationReceipt)},
+            {"playback_session",
+             CanonicalRuntimeType(
+                 CanonicalRuntimeSchema::
+                     OptionalMoviePlaybackSession)},
+            {"expected_movie_input_count",
+             CanonicalRuntimeType(
+                 CanonicalRuntimeSchema::
+                     OptionalMovieInputCount)},
             {"static_config",
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
@@ -627,7 +639,7 @@ std::optional<SchemaIdentity>
 CanonicalActionArtifactPayloadSchemaIdentity(
     CanonicalAction action)
 {
-    if (action == CanonicalAction::StateSaveImmutableArtifact)
+    if (action == CanonicalAction::SavestateSaveImmutableArtifact)
     {
         return ArtifactPayloadIdentity(action);
     }
@@ -701,7 +713,7 @@ SchemaIdentity CanonicalRuntimeSchemaIdentity(
     case CanonicalRuntimeSchema::StopGroupStaticConfig:
         return RuntimeSchemaIdentity(
             "runtime.stop_points.StopGroupStaticConfig",
-            "bytes(max=65536;SGC1 ordered alternatives, bounded samples, wake/pass/scoped/epoch policy)");
+            "bytes(max=65536;SGC1 ordered alternatives, bounded samples, passive scoped routing)");
     case CanonicalRuntimeSchema::ContinueUntilStaticConfig:
         return RuntimeSchemaIdentity(
             "runtime.execution.ContinueUntilStaticConfig",
@@ -748,6 +760,40 @@ SchemaIdentity CanonicalRuntimeSchemaIdentity(
             CanonicalAction::InputNeutralize);
         return RuntimeSchemaIdentity(
             "runtime.input.OptionalInputNeutralWitness",
+            "optional<" + TypeContract(element) + ">");
+    }
+    case CanonicalRuntimeSchema::OptionalMoviePlaybackSession:
+    {
+        const TypeRef element = CanonicalActionOutputType(
+            CanonicalAction::MovieStartPlayback);
+        return RuntimeSchemaIdentity(
+            "runtime.movie.OptionalPlaybackSession",
+            "optional<" + TypeContract(element) + ">");
+    }
+    case CanonicalRuntimeSchema::OptionalMovieInputCount:
+        return RuntimeSchemaIdentity(
+            "runtime.movie.OptionalInputCount",
+            "optional<" + TypeContract(
+                TypeRef::Builtin(BuiltinType::U64)) + ">");
+    case CanonicalRuntimeSchema::ContinueUntilCompletionReason:
+        return RuntimeSchemaIdentity(
+            "runtime.execution.ContinueUntilCompletionReason",
+            "enum ContinueUntilCompletionReason/1{Breakpoint=0,CursorOverrun=1,MovieEnded=2}");
+    case CanonicalRuntimeSchema::RoutedStopReceipt:
+    {
+        const TypeRef evidence = CanonicalRuntimeType(
+            CanonicalRuntimeSchema::StopEvidencePayload);
+        return RuntimeSchemaIdentity(
+            "runtime.stop_points.RoutedStopReceipt",
+            "record RoutedStopReceipt/1(stop_sequence:u64,workset_epoch:u64,pc:u32,sample_snapshot_id:u64,evidence:" +
+                TypeContract(evidence) + ")");
+    }
+    case CanonicalRuntimeSchema::OptionalRoutedStopReceipt:
+    {
+        const TypeRef element = CanonicalRuntimeType(
+            CanonicalRuntimeSchema::RoutedStopReceipt);
+        return RuntimeSchemaIdentity(
+            "runtime.stop_points.OptionalRoutedStopReceipt",
             "optional<" + TypeContract(element) + ">");
     }
     case CanonicalRuntimeSchema::OptionalContinueUntilResult:
@@ -856,6 +902,52 @@ BuildCanonicalRuntimeActionSchemas()
     });
     append({
         .identity = CanonicalRuntimeSchemaIdentity(
+            CanonicalRuntimeSchema::OptionalMoviePlaybackSession),
+        .kind = TypeSchemaKind::Optional,
+        .element_type = CanonicalActionOutputType(
+            CanonicalAction::MovieStartPlayback),
+    });
+    append({
+        .identity = CanonicalRuntimeSchemaIdentity(
+            CanonicalRuntimeSchema::OptionalMovieInputCount),
+        .kind = TypeSchemaKind::Optional,
+        .element_type = TypeRef::Builtin(BuiltinType::U64),
+    });
+    append({
+        .identity = CanonicalRuntimeSchemaIdentity(
+            CanonicalRuntimeSchema::ContinueUntilCompletionReason),
+        .kind = TypeSchemaKind::ClosedEnum,
+        .enum_members = {
+            {"Breakpoint", static_cast<std::int64_t>(
+                 ContinueUntilCompletionReasonV1::Breakpoint)},
+            {"CursorOverrun", static_cast<std::int64_t>(
+                 ContinueUntilCompletionReasonV1::CursorOverrun)},
+            {"MovieEnded", static_cast<std::int64_t>(
+                 ContinueUntilCompletionReasonV1::MovieEnded)},
+        },
+    });
+    append({
+        .identity = CanonicalRuntimeSchemaIdentity(
+            CanonicalRuntimeSchema::RoutedStopReceipt),
+        .kind = TypeSchemaKind::Record,
+        .record_fields = {
+            {"stop_sequence", TypeRef::Builtin(BuiltinType::U64)},
+            {"workset_epoch", TypeRef::Builtin(BuiltinType::U64)},
+            {"pc", TypeRef::Builtin(BuiltinType::U32)},
+            {"sample_snapshot_id", TypeRef::Builtin(BuiltinType::U64)},
+            {"evidence", CanonicalRuntimeType(
+                 CanonicalRuntimeSchema::StopEvidencePayload)},
+        },
+    });
+    append({
+        .identity = CanonicalRuntimeSchemaIdentity(
+            CanonicalRuntimeSchema::OptionalRoutedStopReceipt),
+        .kind = TypeSchemaKind::Optional,
+        .element_type = CanonicalRuntimeType(
+            CanonicalRuntimeSchema::RoutedStopReceipt),
+    });
+    append({
+        .identity = CanonicalRuntimeSchemaIdentity(
             CanonicalRuntimeSchema::
                 OptionalContinueUntilResult),
         .kind = TypeSchemaKind::Optional,
@@ -895,18 +987,20 @@ BuildCanonicalRuntimeActionSchemas()
                     *CanonicalActionOutputSchemaIdentity(action),
                 .kind = TypeSchemaKind::Record,
                 .record_fields = {
-                    {"stop_sequence",
-                     TypeRef::Builtin(BuiltinType::U64)},
-                    {"state_epoch",
-                     TypeRef::Builtin(BuiltinType::U64)},
-                    {"pc",
-                     TypeRef::Builtin(BuiltinType::U32)},
-                    {"sample_snapshot_id",
-                     TypeRef::Builtin(BuiltinType::U64)},
-                    {"evidence",
+                    {"reason",
                      CanonicalRuntimeType(
                          CanonicalRuntimeSchema::
-                             StopEvidencePayload)},
+                             ContinueUntilCompletionReason)},
+                    {"routed_stop",
+                     CanonicalRuntimeType(
+                         CanonicalRuntimeSchema::
+                             OptionalRoutedStopReceipt)},
+                    {"pc",
+                     TypeRef::Builtin(BuiltinType::U32)},
+                    {"movie_input_count",
+                     TypeRef::Builtin(BuiltinType::U64)},
+                    {"workset_epoch",
+                     TypeRef::Builtin(BuiltinType::U64)},
                 },
             });
             continue;
@@ -991,7 +1085,7 @@ BuildCanonicalRuntimeActionSchemas()
         case ActionOutputShape::U64:
             break;
         }
-        if (action == CanonicalAction::StateSaveImmutableArtifact)
+        if (action == CanonicalAction::SavestateSaveImmutableArtifact)
         {
             append({
                 .identity = ArtifactPayloadIdentity(action),
@@ -1122,35 +1216,9 @@ BuildCanonicalRuntimeActionDescriptors()
     std::vector<ActionDescriptor> result;
     result.reserve(kActions.size());
     result.push_back(Descriptor(
-        CanonicalAction::StateCapture,
-        service(SessionServiceCapability::State),
-        0,
-        30000,
-        ActionEpochPolicy::RequiresCurrentEpoch,
-        ActionReplayClass::RecordedEvidence,
-        ActionCancellationMode::Cooperative,
-        ActionResourceBehavior::Promotable,
-        ActionCleanupGuarantee::Automatic));
-    result.push_back(Descriptor(
-        CanonicalAction::StateRestore,
-        service(SessionServiceCapability::State),
-        effect(ActionEffect::ReplaceState),
-        60000,
-        ActionEpochPolicy::MayReplaceState,
-        ActionReplayClass::RecordedEvidence,
-        ActionCancellationMode::BeforeMutationOnly));
-    result.push_back(Descriptor(
-        CanonicalAction::StateRestoreBaseline,
-        service(SessionServiceCapability::State),
-        effect(ActionEffect::ReplaceState),
-        60000,
-        ActionEpochPolicy::MayReplaceState,
-        ActionReplayClass::RecordedEvidence,
-        ActionCancellationMode::BeforeMutationOnly));
-    result.push_back(Descriptor(
-        CanonicalAction::StateSaveImmutableArtifact,
+        CanonicalAction::SavestateSaveImmutableArtifact,
         services(
-            SessionServiceCapability::State,
+            SessionServiceCapability::Savestate,
             SessionServiceCapability::Artifact),
         effect(ActionEffect::ArtifactIo),
         60000,
@@ -1262,11 +1330,22 @@ BuildCanonicalRuntimeActionDescriptors()
         0));
 
     result.push_back(Descriptor(
+        CanonicalAction::MoviePrepareReadOnlyPlayback,
+        service(SessionServiceCapability::Movie),
+        effect(ActionEffect::MoviePlayback),
+        60000,
+        ActionEpochPolicy::RequiresCurrentEpoch,
+        ActionReplayClass::RecordedEvidence,
+        ActionCancellationMode::CleanupRequired,
+        ActionResourceBehavior::Promotable,
+        ActionCleanupGuarantee::VerifiedCompensation,
+        true));
+    result.push_back(Descriptor(
         CanonicalAction::MovieStartPlayback,
         service(SessionServiceCapability::Movie),
         effect(ActionEffect::MoviePlayback),
         60000,
-        ActionEpochPolicy::MayReplaceState,
+        ActionEpochPolicy::RequiresCurrentEpoch,
         ActionReplayClass::RecordedEvidence,
         ActionCancellationMode::CleanupRequired,
         ActionResourceBehavior::Promotable,

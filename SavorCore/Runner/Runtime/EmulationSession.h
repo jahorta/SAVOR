@@ -13,8 +13,8 @@
 #include "Services/Movie/MovieService.h"
 #include "Services/Resources/SessionResourceLedger.h"
 #include "Services/Screenshot/ScreenshotService.h"
-#include "Services/State/SessionStateBackendAdapter.h"
-#include "Services/State/StateService.h"
+#include "Services/Savestate/SessionSavestateBackendAdapter.h"
+#include "Services/Savestate/SavestateService.h"
 #include "Services/Telemetry/TelemetryBus.h"
 #include "StopPoints/StopPointRouter.h"
 #include "ProgramRuntime/Actions/SessionResourceBindingTable.h"
@@ -33,12 +33,11 @@ namespace savor::runtime {
 enum class SessionOperation : std::uint8_t
 {
     Open,
-    Reboot,
-    RestoreStateFile,
-    RestoreStateBuffer,
-    SaveStateFile,
-    SaveStateBuffer,
+    BeginWorkset,
+    EndWorkset,
+    RestoreSavestate,
     Screenshot,
+    CoreRestartReconciliation,
     JitRevalidation,
     BreakpointReconciliation,
     HealthCheck,
@@ -48,7 +47,6 @@ enum class SessionOperation : std::uint8_t
 struct SessionOpenOptions
 {
     BackendOpenOptions backend;
-    std::optional<std::filesystem::path> read_only_movie_path;
     std::filesystem::path runtime_artifact_root;
 };
 
@@ -56,7 +54,7 @@ struct SessionSnapshot
 {
     SessionId session_id;
     SessionDisposition disposition = SessionDisposition::Closed;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     BackendCoreState core_state = BackendCoreState::Closed;
     bool open = false;
 };
@@ -65,19 +63,12 @@ struct SessionOperationReceipt
 {
     SessionOperation operation = SessionOperation::HealthCheck;
     bool ok = false;
-    StateEpoch origin_epoch;
-    StateEpoch resulting_epoch;
+    WorksetEpoch workset_epoch;
     SessionDisposition disposition = SessionDisposition::Closed;
     BackendResult backend;
 };
 
-struct SessionBufferReceipt
-{
-    SessionOperationReceipt operation;
-    std::vector<std::uint8_t> bytes;
-};
-
-class EmulationSession final : private IStateReplacementParticipant
+class EmulationSession final
 {
 public:
     EmulationSession(
@@ -96,31 +87,18 @@ public:
         StopPointIngressNotifier notifier) noexcept;
 
     SessionOperationReceipt Open(const SessionOpenOptions& options);
-    SessionOperationReceipt Reboot();
+    SessionOperationReceipt BeginWorkset(WorkerWorksetId workset_id);
+    SessionOperationReceipt EndWorkset(WorkerWorksetId workset_id);
 
-    SessionOperationReceipt RestoreStateFile(const std::filesystem::path& path);
-    SessionOperationReceipt RestoreStateBuffer(const std::vector<std::uint8_t>& bytes);
-    SessionOperationReceipt SaveStateFile(const std::filesystem::path& path);
-    SessionBufferReceipt SaveStateBuffer();
-
-    [[nodiscard]] StateHandleReceipt CaptureStateHandle();
-    [[nodiscard]] StateOperationReceipt RestoreStateHandle(
-        StateHandleId handle);
-    [[nodiscard]] StateFileArtifactReceipt CaptureStateArtifact(
-        const StateFileCaptureRequest& request);
-    [[nodiscard]] ImmutableStateArtifactCaptureReceipt
-        CaptureImmutableStateArtifact(
-            const StateFileCaptureRequest& request);
-    [[nodiscard]] StateFileArtifactReceipt CommitImmutableStateArtifact(
-        const ImmutableStateArtifactPublicationReceipt& publication);
-    [[nodiscard]] StateServiceResult AbandonImmutableStateArtifact(
-        StateArtifactId artifact) noexcept;
-    [[nodiscard]] StateServiceResult ReleaseStateArtifact(
-        StateArtifactId artifact) noexcept;
-    [[nodiscard]] StateFileArtifactReceipt ImportStateArtifact(
-        const StateFileImportRequest& request);
-    [[nodiscard]] StateOperationReceipt RestoreStateArtifact(
-        StateArtifactId artifact);
+    [[nodiscard]] ImmutableSavestateArtifactCaptureReceipt
+        CaptureImmutableSavestateArtifact(
+            const SavestateCaptureRequest& request);
+    [[nodiscard]] SavestateFileArtifactReceipt CommitImmutableSavestateArtifact(
+        const ImmutableSavestateArtifactPublicationReceipt& publication);
+    [[nodiscard]] SavestateServiceResult AbandonImmutableSavestateArtifact(
+        SavestateArtifactId artifact) noexcept;
+    [[nodiscard]] SavestateServiceResult ReleaseSavestateArtifact(
+        SavestateArtifactId artifact) noexcept;
 
     SessionOperationReceipt CaptureScreenshot(
         const std::filesystem::path& path,
@@ -189,11 +167,6 @@ public:
 
     [[nodiscard]] std::vector<TelemetryEvent> DrainTelemetry();
 
-    [[nodiscard]] StateService* state_service() noexcept
-    {
-        return state_service_.get();
-    }
-
     [[nodiscard]] MovieService* movie_service() noexcept
     {
         return movie_service_.get();
@@ -221,47 +194,51 @@ public:
     }
 
 private:
+    friend class WorksetStateCoordinator;
+
     [[nodiscard]] bool BindOrCheckOwner() noexcept;
     [[nodiscard]] bool CanOperate() const noexcept;
-    [[nodiscard]] bool HasReusableCoreState() const noexcept;
+    [[nodiscard]] bool HasHealthyCoreState() const noexcept;
     [[nodiscard]] SessionOperationReceipt Reject(
         SessionOperation operation,
         BackendErrorCode code,
         std::string message) const;
     [[nodiscard]] SessionOperationReceipt Complete(
         SessionOperation operation,
-        StateEpoch origin,
-        BackendResult result,
-        bool advances_epoch);
-    [[nodiscard]] SessionOperationReceipt CompleteStateOperation(
-        SessionOperation operation,
-        const StateOperationReceipt& state);
-    [[nodiscard]] StateOperationReceipt FinalizeStateReplacement(
-        StateOperationReceipt state);
+        BackendResult result);
+    [[nodiscard]] SavestateHandleReceipt CaptureWorksetBaselineHandle();
+    [[nodiscard]] SavestateRestoreReceipt RestoreWorksetBaselineHandle(
+        SavestateHandleId handle);
+    [[nodiscard]] SavestateFileArtifactReceipt ImportWorksetBaselineArtifact(
+        const SavestateImportRequest& request);
+    [[nodiscard]] SavestateRestoreReceipt RestoreWorksetBaselineArtifact(
+        SavestateArtifactId artifact);
+    [[nodiscard]] SavestateServiceResult ReleaseWorksetBaselineHandle(
+        SavestateHandleId handle) noexcept;
+    [[nodiscard]] SavestateServiceResult ReleaseWorksetBaselineArtifact(
+        SavestateArtifactId artifact) noexcept;
+    [[nodiscard]] SavestateRestoreReceipt ReconcileRestoredSavestate(
+        SavestateRestoreReceipt receipt,
+        const std::optional<MovieCheckpointMetadata>& expected_movie);
+    [[nodiscard]] SavestateRestoreReceipt RestoreWorksetBaselineTransaction(
+        const SavestateMovieRestoreContext& context,
+        const std::function<SavestateRestoreReceipt()>& restore);
+    [[nodiscard]] BackendResult ValidateStopPointsBeforeMovieCoreStop();
+    [[nodiscard]] BackendResult SettleStopPointsAfterMovieCoreStop();
+    [[nodiscard]] BackendResult ValidateStopPointsAfterMovieCoreStart();
     void ApplyBackendFailure(const BackendResult& result);
     void RefreshCoreState() noexcept;
-    [[nodiscard]] BackendResult InitializeStopPoints(StateEpoch first_epoch);
-    [[nodiscard]] BackendResult InitializeServices(StateEpoch first_epoch);
-    [[nodiscard]] BackendResult InitializeServiceComposition(
-        const SessionOpenOptions& options);
-    [[nodiscard]] BackendResult InitializeExecution(StateEpoch first_epoch);
+    [[nodiscard]] BackendResult InitializeStopPoints(WorksetEpoch first_epoch);
+    [[nodiscard]] BackendResult InitializeServices(WorksetEpoch first_epoch);
+    [[nodiscard]] BackendResult InitializeServiceComposition();
+    [[nodiscard]] BackendResult InitializeExecution(WorksetEpoch first_epoch);
     [[nodiscard]] BackendResult CleanupServices() noexcept;
-    [[nodiscard]] BackendResult PrepareStopPointStateReplacement();
-    [[nodiscard]] BackendResult CommitStopPointStateReplacement(
-        StateEpoch new_epoch);
-    [[nodiscard]] BackendResult RollbackStopPointStateReplacement();
     [[nodiscard]] BackendResult CleanupStopPoints();
-    [[nodiscard]] BackendResult TaintAndCloseAfterStopPointFailure(
+    [[nodiscard]] BackendResult TaintAndRetireSessionAfterStopPointFailure(
         BackendResult failure);
-    [[nodiscard]] StateServiceResult PrepareStateReplacement(
-        const StateReplacementContext& context) override;
-    [[nodiscard]] StateServiceResult CommitStateReplacement(
-        const StateReplacementContext& context) override;
-    [[nodiscard]] StateServiceResult RollbackStateReplacement(
-        const StateReplacementContext& context) noexcept override;
     [[nodiscard]] BackendResult CleanupRuntimeComposition() noexcept;
-    [[nodiscard]] static BackendResult FromStateService(
-        const StateServiceResult& result);
+    [[nodiscard]] static BackendResult FromSavestateService(
+        const SavestateServiceResult& result);
     [[nodiscard]] static BackendResult FromMovieService(
         const MovieServiceResult& result);
 
@@ -275,8 +252,8 @@ private:
     std::unique_ptr<GuestMutationService> guest_mutations_;
     std::unique_ptr<ScreenshotService> screenshot_service_;
     std::unique_ptr<RuntimeArtifactSink> artifact_sink_;
-    std::unique_ptr<SessionStateBackendAdapter> state_backend_adapter_;
-    std::unique_ptr<StateService> state_service_;
+    std::unique_ptr<SessionSavestateBackendAdapter> savestate_backend_adapter_;
+    std::unique_ptr<SavestateService> savestate_service_;
     std::unique_ptr<InputMovieReservationAdapter>
         movie_input_reservations_;
     std::unique_ptr<MovieService> movie_service_;
@@ -288,19 +265,17 @@ private:
     ExecutionEngineConfig execution_engine_config_;
     std::unique_ptr<ExecutionEngine> execution_engine_;
     std::vector<ExecutionEvent> retained_execution_events_;
+    SessionOpenOptions open_options_;
     SessionDisposition disposition_ = SessionDisposition::Closed;
-    StateEpoch state_epoch_;
+    WorksetEpoch workset_epoch_;
+    WorksetEpoch::value_type next_workset_epoch_ = 1;
+    WorkerWorksetId active_workset_id_;
     BackendCoreState core_state_ = BackendCoreState::Closed;
     std::thread::id owner_thread_;
     bool owner_bound_ = false;
     bool opened_ = false;
     bool shutdown_ = false;
     bool backend_shutdown_attempted_ = false;
-    bool state_replacement_prepared_ = false;
-    bool state_prepare_execution_ = false;
-    bool state_prepare_capture_ = false;
-    bool state_prepare_router_ = false;
-    bool state_prepare_ledger_ = false;
     std::optional<SessionOperationReceipt> shutdown_receipt_;
     std::string taint_diagnostic_;
     std::atomic<std::uint64_t>* stop_ingress_notification_counter_ = nullptr;

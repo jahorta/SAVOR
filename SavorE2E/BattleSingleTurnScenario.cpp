@@ -27,7 +27,6 @@
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Execution/Workflow/WorkflowUnitActivationFactory.h"
-#include "Phases/Programs/PlayTasMovie/TasMoviePayload.h"
 #include "Execution/DBWorkflowCoordinatorFactory.h"
 #include "Execution/DBWorkflowWorkerCoordinator.h"
 #include "Runner/Breakpoints/BpRegistry.h"
@@ -2124,12 +2123,8 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     auto registry_config =
         savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
             scenario_workspace_root / "workflow-runtime");
-    auto& tas_config = registry_config.tas_movie;
-    tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
-    tas_config.blueprint.rtc_low = 0;
-    tas_config.blueprint.rtc_high = 0;
-    tas_config.blueprint.progress_enable = true;
-    tas_config.working_dir_root = scenario_workspace_root / "tasmovie";
+    registry_config.tas_movie_validation.working_dir_root =
+        scenario_workspace_root / "tasmovie-validation";
     registry_config.battle_context.working_dir_root =
         scenario_workspace_root / "battle-context";
     registry_config.battle_single_turn.working_dir_root =

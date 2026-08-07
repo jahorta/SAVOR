@@ -1,6 +1,7 @@
 #include "ProgramVerifier.h"
 
 #include "Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
+#include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
 
 #include <algorithm>
 #include <cmath>
@@ -137,8 +138,6 @@ bool PolicySubset(
          parent.permits_movie_recording) &&
         (!child.permits_capture || parent.permits_capture) &&
         (!child.permits_replay || parent.permits_replay) &&
-        (!child.permits_state_replacement ||
-         parent.permits_state_replacement) &&
         (!child.permits_resource_promotion ||
          parent.permits_resource_promotion);
 }
@@ -2061,14 +2060,146 @@ bool ActionEffectsAllowed(
     const auto has = [&](ActionEffect effect) {
         return (action.effects & EffectMask(effect)) != 0;
     };
-    return (!has(ActionEffect::ReplaceState) ||
-            policies.permits_state_replacement) &&
-        (!has(ActionEffect::MoviePlayback) ||
+    return (!has(ActionEffect::MoviePlayback) ||
          policies.permits_movie_playback) &&
         (!has(ActionEffect::MovieRecording) ||
          policies.permits_movie_recording) &&
         (!has(ActionEffect::Capture) ||
          policies.permits_capture);
+}
+
+void ValidateEstablishBaselineControlFlow(
+    const ProgramModule& module,
+    const ProgramEntrypoint& entrypoint,
+    DiagnosticList& diagnostics)
+{
+    if (!std::ranges::contains(
+            entrypoint.accepted_policies.state_policies,
+            InvocationStatePolicy::EstablishBaseline))
+    {
+        return;
+    }
+    const ProgramFunction* function =
+        FindFunction(module, entrypoint.function);
+    if (!function)
+        return;
+
+    struct EstablishmentState
+    {
+        bool may_await_preparation = false;
+        bool may_be_prepared = false;
+        bool may_be_established = false;
+        auto operator<=>(const EstablishmentState&) const = default;
+    };
+    std::map<ProgramBlockId, const BasicBlock*> blocks;
+    for (const BasicBlock& block : function->blocks)
+        blocks.emplace(block.id, &block);
+    std::map<ProgramBlockId, EstablishmentState> incoming;
+    incoming[function->entry_block] = {true, false, false};
+    std::vector<ProgramBlockId> work{function->entry_block};
+    std::set<ProgramInstructionId> diagnosed_instructions;
+    std::set<ProgramBlockId> diagnosed_returns;
+    while (!work.empty())
+    {
+        const ProgramBlockId id = work.back();
+        work.pop_back();
+        const auto found = blocks.find(id);
+        if (found == blocks.end())
+            continue;
+        EstablishmentState state = incoming[id];
+        const BasicBlock& block = *found->second;
+        for (const Instruction& instruction : block.instructions)
+        {
+            if (instruction.opcode != InstructionOpcode::AwaitAction ||
+                !instruction.target.dependency)
+            {
+                continue;
+            }
+            const auto action =
+                FindCanonicalAction(*instruction.target.dependency);
+            if (action == CanonicalAction::MoviePrepareReadOnlyPlayback)
+            {
+                if (state.may_be_prepared &&
+                    diagnosed_instructions.emplace(instruction.id).second)
+                {
+                    Add(
+                        diagnostics,
+                        VerificationErrorCode::InvalidPolicy,
+                        "EstablishBaseline prepares movie playback more than once before establishment",
+                        instruction.source_location);
+                }
+                state.may_be_prepared =
+                    state.may_be_prepared ||
+                    state.may_await_preparation;
+                state.may_await_preparation = false;
+                continue;
+            }
+            if (action == CanonicalAction::StopPointsSubscribeGroup)
+            {
+                if (state.may_await_preparation &&
+                    diagnosed_instructions.emplace(instruction.id).second)
+                {
+                    Add(
+                        diagnostics,
+                        VerificationErrorCode::InvalidPolicy,
+                        "EstablishBaseline subscribes stop points before movie preparation stops the core",
+                        instruction.source_location);
+                }
+                continue;
+            }
+            if (action == CanonicalAction::MovieStartPlayback)
+            {
+                if (state.may_await_preparation &&
+                    diagnosed_instructions.emplace(instruction.id).second)
+                {
+                    Add(
+                        diagnostics,
+                        VerificationErrorCode::InvalidPolicy,
+                        "EstablishBaseline reaches MovieStartPlayback before movie preparation",
+                        instruction.source_location);
+                }
+                state.may_be_established =
+                    state.may_be_established || state.may_be_prepared;
+                state.may_be_prepared = false;
+                state.may_await_preparation = false;
+                continue;
+            }
+            if ((state.may_await_preparation || state.may_be_prepared) &&
+                diagnosed_instructions.emplace(instruction.id).second)
+            {
+                Add(
+                    diagnostics,
+                    VerificationErrorCode::InvalidPolicy,
+                    "EstablishBaseline reaches a guest-dependent action before prepared MovieStartPlayback",
+                    instruction.source_location);
+            }
+        }
+        if (block.terminator.kind == TerminatorKind::Return &&
+            (state.may_await_preparation || state.may_be_prepared) &&
+            diagnosed_returns.emplace(block.id).second)
+        {
+            Add(
+                diagnostics,
+                VerificationErrorCode::InvalidPolicy,
+                "EstablishBaseline has a successful return path before prepared MovieStartPlayback",
+                block.terminator.source_location);
+        }
+        for (const BlockEdge& edge : Edges(block.terminator))
+        {
+            EstablishmentState& destination = incoming[edge.target];
+            const EstablishmentState merged{
+                destination.may_await_preparation ||
+                    state.may_await_preparation,
+                destination.may_be_prepared || state.may_be_prepared,
+                destination.may_be_established ||
+                    state.may_be_established};
+            if (merged != destination)
+            {
+                destination = merged;
+                work.push_back(edge.target);
+            }
+        }
+    }
 }
 
 void ValidateEntrypointClosure(
@@ -2320,9 +2451,7 @@ bool ValidateEffects(
         const auto has = [&](ActionEffect effect) {
             return (action->effects & EffectMask(effect)) != 0;
         };
-        if ((has(ActionEffect::ReplaceState) &&
-             !module.accepted_policies.permits_state_replacement) ||
-            (has(ActionEffect::MoviePlayback) &&
+        if ((has(ActionEffect::MoviePlayback) &&
              !module.accepted_policies.permits_movie_playback) ||
             (has(ActionEffect::MovieRecording) &&
              !module.accepted_policies.permits_movie_recording) ||
@@ -2909,6 +3038,10 @@ ProgramVerificationResult ProgramVerifier::Verify(
         }
         if (function)
         {
+            ValidateEstablishBaselineControlFlow(
+                *module,
+                entrypoint,
+                result.diagnostics);
             ValidateEntrypointClosure(
                 *module,
                 entrypoint,

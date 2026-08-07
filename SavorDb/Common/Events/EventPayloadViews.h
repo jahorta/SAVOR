@@ -136,7 +136,8 @@ struct AnalysisSpinePayloadView {
 struct StateArtifactPayloadView {
     std::int64_t artifact_id = 0;
     std::int64_t savestate_id = 0;
-    std::int64_t tas_variant_id = 0;
+    std::int64_t tas_movie_root_id = 0;
+    std::int64_t tas_movie_tree_id = 0;
 };
 
 // Typed v1 payload view for Archive package events.

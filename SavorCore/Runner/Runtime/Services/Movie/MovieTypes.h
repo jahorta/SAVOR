@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runner/Runtime/Services/State/StateTypes.h"
+#include "Runner/Runtime/Services/Savestate/SavestateTypes.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -13,16 +13,20 @@ namespace savor::runtime {
 
 struct MovieReservationIdTag;
 using MovieReservationId = StrongId<MovieReservationIdTag>;
+struct MoviePreparationIdTag;
+using MoviePreparationId = StrongId<MoviePreparationIdTag>;
 
 enum class MovieActivity : std::uint8_t
 {
     Inactive,
+    PreparedReadOnlyPlayback,
     ReadOnlyPlayback,
     Recording,
 };
 
 enum class MovieOperation : std::uint8_t
 {
+    PreparePlayback,
     StartPlayback,
     StopPlayback,
     StartRecording,
@@ -38,7 +42,7 @@ enum class MovieServiceErrorCode : std::uint16_t
     InvalidState,
     Unsupported,
     ReservationFailure,
-    StateFailure,
+    SavestateFailure,
     BackendFailure,
     ArtifactFailure,
     IntegrityFailure,
@@ -48,18 +52,18 @@ struct MovieServiceResult
 {
     bool ok = false;
     MovieServiceErrorCode code = MovieServiceErrorCode::BackendFailure;
-    StateIntegrity integrity = StateIntegrity::Preserved;
+    GuestIntegrity integrity = GuestIntegrity::Preserved;
     std::string message;
 
     [[nodiscard]] static MovieServiceResult Success()
     {
-        return {true, MovieServiceErrorCode::None, StateIntegrity::Preserved, {}};
+        return {true, MovieServiceErrorCode::None, GuestIntegrity::Preserved, {}};
     }
 
     [[nodiscard]] static MovieServiceResult Failure(
         MovieServiceErrorCode code,
         std::string message,
-        StateIntegrity integrity = StateIntegrity::Preserved)
+        GuestIntegrity integrity = GuestIntegrity::Preserved)
     {
         return {false, code, integrity, std::move(message)};
     }
@@ -79,8 +83,9 @@ struct MovieOperationReceipt
     MovieServiceResult result;
     MovieOperation operation = MovieOperation::StartPlayback;
     MovieActivity activity = MovieActivity::Inactive;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     MovieReservationId reservation;
+    MoviePreparationId preparation;
     std::string dtm_sha256;
     std::filesystem::path artifact_path;
     std::optional<std::filesystem::path> starting_savestate;
@@ -89,14 +94,20 @@ struct MovieOperationReceipt
 struct MovieCheckpointReceipt
 {
     MovieServiceResult result;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     std::optional<MovieCheckpointMetadata> checkpoint;
 };
 
 struct MoviePlaybackRequest
 {
     std::filesystem::path dtm_path;
-    StateBootRequest boot;
+};
+
+struct SavestateMovieRestoreContext
+{
+    WorksetEpoch workset_epoch;
+    std::optional<MovieCheckpointMetadata> movie;
+    bool external_artifact = false;
 };
 
 struct MovieRecordingRequest

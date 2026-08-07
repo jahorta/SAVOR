@@ -30,7 +30,7 @@ using DeltaMap = std::unordered_map<std::string, DeltaState>;
 
 std::string baseline_key(const Event& event)
 {
-    return event.probe_id + "\x1f" + std::to_string(event.guest_state_epoch) + "\x1f"
+    return event.probe_id + "\x1f" + std::to_string(event.guest_workset_epoch) + "\x1f"
         + std::to_string(event.profile_revision);
 }
 
@@ -321,7 +321,7 @@ void encode_event(
     append_varint(out, event.capture_sequence);
     append_varint(out, event.monotonic_ns);
     append_varint(out, event.frame_index);
-    append_varint(out, event.guest_state_epoch);
+    append_varint(out, event.guest_workset_epoch);
     append_varint(out, event.profile_revision);
     append_varint(out, event.snapshot_id);
     out.push_back(static_cast<std::uint8_t>(event.kind));
@@ -380,7 +380,7 @@ bool decode_event(
     event.record_sequence = prior_record_sequence + record_sequence_delta;
     prior_record_sequence = event.record_sequence;
     if (!read_varint(in, offset, event.frame_index)
-        || !read_varint(in, offset, event.guest_state_epoch)
+        || !read_varint(in, offset, event.guest_workset_epoch)
         || !read_varint(in, offset, event.profile_revision)
         || !read_varint(in, offset, event.snapshot_id)) {
         return false;
@@ -1212,7 +1212,7 @@ std::string render_event_json(
         << ",\"record_sequence\":" << event.record_sequence
         << ",\"monotonic_ns\":" << event.monotonic_ns
         << ",\"frame_index\":" << event.frame_index
-        << ",\"guest_state_epoch\":" << event.guest_state_epoch
+        << ",\"guest_workset_epoch\":" << event.guest_workset_epoch
         << ",\"profile_revision\":" << event.profile_revision
         << ",\"snapshot_id\":" << event.snapshot_id
         << ",\"event_kind\":\"" << event_kind_name(event.kind) << '"'

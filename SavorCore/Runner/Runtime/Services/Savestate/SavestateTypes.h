@@ -13,24 +13,34 @@
 
 namespace savor::runtime {
 
-struct StateHandleIdTag;
-struct StateArtifactIdTag;
+struct SavestateHandleIdTag;
+struct SavestateArtifactIdTag;
 
-using StateHandleId = StrongId<StateHandleIdTag>;
-using StateArtifactId = StrongId<StateArtifactIdTag>;
+using SavestateHandleId = StrongId<SavestateHandleIdTag>;
+using SavestateArtifactId = StrongId<SavestateArtifactIdTag>;
+
+// Dolphin discovers a savestate's movie history at the exact companion path
+// formed by appending ".dtm" to the complete savestate path. Keep this
+// identity in the shared artifact contract so capture, finalization, restore,
+// and baseline validation cannot independently choose different paths.
+[[nodiscard]] inline std::filesystem::path SavestateDtmSidecarPath(
+    const std::filesystem::path& savestate)
+{
+    return std::filesystem::path(savestate.string() + ".dtm");
+}
 
 // Immutable ownership transfer for state/movie bytes captured while Dolphin
 // is authoritatively paused. The bytes may be copied between host-only
 // pipeline records, but cannot be mutated after capture.
-class ImmutableStateBytes final
+class ImmutableSavestateBytes final
 {
 public:
-    ImmutableStateBytes() = default;
+    ImmutableSavestateBytes() = default;
 
-    [[nodiscard]] static ImmutableStateBytes Capture(
+    [[nodiscard]] static ImmutableSavestateBytes Capture(
         std::vector<std::uint8_t> bytes)
     {
-        ImmutableStateBytes captured;
+        ImmutableSavestateBytes captured;
         captured.bytes_ =
             std::make_shared<const std::vector<std::uint8_t>>(
                 std::move(bytes));
@@ -54,34 +64,25 @@ private:
     std::shared_ptr<const std::vector<std::uint8_t>> bytes_;
 };
 
-enum class StateServiceErrorCode : std::uint16_t
+enum class SavestateServiceErrorCode : std::uint16_t
 {
     None,
     InvalidArgument,
     InvalidState,
     Unsupported,
-    StaleEpoch,
+    WorksetMismatch,
     NotFound,
     CompatibilityMismatch,
     CapacityExceeded,
-    ParticipantFailure,
     BackendFailure,
     ArtifactFailure,
     IntegrityFailure,
 };
 
-enum class StateIntegrity : std::uint8_t
+enum class GuestIntegrity : std::uint8_t
 {
     Preserved,
     Unknown,
-};
-
-enum class StateReplacementKind : std::uint8_t
-{
-    Boot,
-    Reboot,
-    RestoreMemoryHandle,
-    RestoreFileArtifact,
 };
 
 enum class MovieCheckpointMode : std::uint8_t
@@ -99,14 +100,14 @@ enum class ExternalMovieImportMode : std::uint8_t
     Recording,
 };
 
-struct StateCompatibilityToken
+struct ArtifactCompatibilityToken
 {
     std::string game_id;
     std::string iso_sha256;
     std::string emulator_build;
     std::string runtime_revision;
 
-    auto operator<=>(const StateCompatibilityToken&) const = default;
+    auto operator<=>(const ArtifactCompatibilityToken&) const = default;
 
     [[nodiscard]] bool Complete() const noexcept
     {
@@ -141,10 +142,9 @@ struct MovieCheckpointMetadata
     // savestate, after which MovieService records the observed position.
     bool cursor_known = false;
     bool starts_from_savestate = false;
-    // Recording continuations are intentionally process-local. This value is
-    // assigned by StateService when a handle is captured and is never accepted
-    // from an external artifact.
-    std::uint64_t recording_session_generation = 0;
+    // Recording continuations are intentionally workset-local and are never
+    // accepted from an external artifact.
+    WorksetEpoch recording_workset_epoch;
 
     [[nodiscard]] bool HasMovie() const noexcept
     {
@@ -152,68 +152,67 @@ struct MovieCheckpointMetadata
     }
 };
 
-struct StateLineage
+struct ArtifactLineage
 {
-    std::optional<StateHandleId> parent_handle;
-    std::optional<StateArtifactId> parent_artifact;
+    std::optional<SavestateHandleId> parent_handle;
+    std::optional<SavestateArtifactId> parent_artifact;
     std::string edge;
     std::string producer;
 
-    auto operator<=>(const StateLineage&) const = default;
+    auto operator<=>(const ArtifactLineage&) const = default;
 };
 
-struct StateServiceResult
+struct SavestateServiceResult
 {
     bool ok = false;
-    StateServiceErrorCode code = StateServiceErrorCode::BackendFailure;
-    StateIntegrity integrity = StateIntegrity::Preserved;
+    SavestateServiceErrorCode code = SavestateServiceErrorCode::BackendFailure;
+    GuestIntegrity integrity = GuestIntegrity::Preserved;
     std::string message;
 
-    [[nodiscard]] static StateServiceResult Success()
+    [[nodiscard]] static SavestateServiceResult Success()
     {
-        return {true, StateServiceErrorCode::None, StateIntegrity::Preserved, {}};
+        return {true, SavestateServiceErrorCode::None, GuestIntegrity::Preserved, {}};
     }
 
-    [[nodiscard]] static StateServiceResult Failure(
-        StateServiceErrorCode code,
+    [[nodiscard]] static SavestateServiceResult Failure(
+        SavestateServiceErrorCode code,
         std::string message,
-        StateIntegrity integrity = StateIntegrity::Preserved)
+        GuestIntegrity integrity = GuestIntegrity::Preserved)
     {
         return {false, code, integrity, std::move(message)};
     }
 };
 
-struct StateOperationReceipt
+struct SavestateRestoreReceipt
 {
-    StateServiceResult result;
-    StateReplacementKind operation = StateReplacementKind::Boot;
-    StateEpoch origin_epoch;
-    StateEpoch resulting_epoch;
-    StateCompatibilityToken compatibility;
-};
-
-struct StateHandleReceipt
-{
-    StateServiceResult result;
-    StateHandleId handle;
-    StateEpoch captured_epoch;
-    std::size_t size_bytes = 0;
-    std::string sha256;
-    StateCompatibilityToken compatibility;
-    StateLineage lineage;
+    SavestateServiceResult result;
+    WorksetEpoch workset_epoch;
+    ArtifactCompatibilityToken compatibility;
     std::optional<MovieCheckpointMetadata> movie;
 };
 
-struct StateFileArtifactReceipt
+struct SavestateHandleReceipt
 {
-    StateServiceResult result;
-    StateArtifactId artifact;
-    StateEpoch captured_epoch;
+    SavestateServiceResult result;
+    SavestateHandleId handle;
+    WorksetEpoch captured_epoch;
+    std::size_t size_bytes = 0;
+    std::string sha256;
+    ArtifactCompatibilityToken compatibility;
+    ArtifactLineage lineage;
+    std::optional<MovieCheckpointMetadata> movie;
+};
+
+struct SavestateFileArtifactReceipt
+{
+    SavestateServiceResult result;
+    SavestateArtifactId artifact;
+    WorksetEpoch captured_epoch;
     std::filesystem::path path;
     std::size_t size_bytes = 0;
     std::string sha256;
-    StateCompatibilityToken compatibility;
-    StateLineage lineage;
+    ArtifactCompatibilityToken compatibility;
+    ArtifactLineage lineage;
     std::optional<MovieCheckpointMetadata> movie;
     bool external = false;
 };
@@ -222,16 +221,16 @@ struct StateFileArtifactReceipt
 // captures these bytes synchronously while the session is idle-paused, then
 // transfers the receipt to a host-only finalizer. No path has been published
 // and no authoritative artifact reference exists yet.
-struct ImmutableStateArtifactCaptureReceipt
+struct ImmutableSavestateArtifactCaptureReceipt
 {
-    StateServiceResult result;
-    StateArtifactId artifact;
-    StateEpoch captured_epoch;
+    SavestateServiceResult result;
+    SavestateArtifactId artifact;
+    WorksetEpoch captured_epoch;
     std::filesystem::path final_path;
-    ImmutableStateBytes state_bytes;
-    std::optional<ImmutableStateBytes> movie_bytes;
-    StateCompatibilityToken compatibility;
-    StateLineage lineage;
+    ImmutableSavestateBytes state_bytes;
+    std::optional<ImmutableSavestateBytes> movie_bytes;
+    ArtifactCompatibilityToken compatibility;
+    ArtifactLineage lineage;
     std::optional<MovieCheckpointMetadata> movie;
 
     [[nodiscard]] std::size_t resident_bytes() const noexcept
@@ -241,12 +240,12 @@ struct ImmutableStateArtifactCaptureReceipt
     }
 };
 
-// Host finalization evidence returned to the actor. StateService accepts it
+// Host finalization evidence returned to the actor. SavestateService accepts it
 // only for the exact pending capture and then records the ordinary immutable
 // file artifact. Hashing and filesystem publication have already completed.
-struct ImmutableStateArtifactPublicationReceipt
+struct ImmutableSavestateArtifactPublicationReceipt
 {
-    StateArtifactId artifact;
+    SavestateArtifactId artifact;
     std::filesystem::path state_path;
     std::size_t state_size_bytes = 0;
     std::string state_sha256;
@@ -255,45 +254,28 @@ struct ImmutableStateArtifactPublicationReceipt
     std::string movie_sha256;
 };
 
-struct StateBootRequest
-{
-    std::optional<std::filesystem::path> startup_savestate;
-    std::optional<MovieCheckpointMetadata> movie;
-    std::string diagnostic_label;
-};
-
-struct StateHandleCaptureRequest
+struct SavestateHandleCaptureRequest
 {
     std::optional<MovieCheckpointMetadata> movie;
-    StateLineage lineage;
+    ArtifactLineage lineage;
 };
 
-struct StateFileCaptureRequest
+struct SavestateCaptureRequest
 {
     std::filesystem::path path;
     std::optional<MovieCheckpointMetadata> movie;
-    StateLineage lineage;
+    ArtifactLineage lineage;
 };
 
-struct StateFileImportRequest
+struct SavestateImportRequest
 {
     std::filesystem::path path;
     std::string expected_sha256;
-    StateCompatibilityToken compatibility;
+    ArtifactCompatibilityToken compatibility;
     ExternalMovieImportMode movie_mode = ExternalMovieImportMode::Unspecified;
     std::optional<std::filesystem::path> dtm_path;
     std::string expected_dtm_sha256;
-    StateLineage lineage;
-};
-
-struct StateReplacementContext
-{
-    StateReplacementKind kind = StateReplacementKind::Boot;
-    StateEpoch origin_epoch;
-    StateEpoch candidate_epoch;
-    StateCompatibilityToken compatibility;
-    std::optional<MovieCheckpointMetadata> movie;
-    bool external_artifact = false;
+    ArtifactLineage lineage;
 };
 
 } // namespace savor::runtime

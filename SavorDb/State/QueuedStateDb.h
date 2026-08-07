@@ -41,6 +41,12 @@ public:
         const DeriveSavestateCommand& command,
         std::int64_t* derivation_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    std::optional<ArtifactRecord> GetArtifact(
+        std::int64_t artifact_id) const override;
+    std::optional<ArtifactRecord> GetArtifactBySha256(
+        std::string_view sha256) const override;
+    std::optional<SavestateRecord> FindSavestateByArtifactId(
+        std::int64_t artifact_id) const override;
     std::optional<SavestateRecord> GetSavestate(
         std::int64_t savestate_id) const override;
     std::vector<SavestateDerivationRecord> ListIncomingSavestateDerivations(
@@ -48,15 +54,27 @@ public:
     std::vector<SavestateDerivationRecord> ListSavestateDerivationsBySourceContext(
         std::string_view source_context_kind,
         std::int64_t source_context_id) const override;
-    bool CreateTasVariant(
-        const CreateTasVariantCommand& command,
-        std::int64_t* tas_variant_id_out = nullptr,
+    bool CreateTasMovieRoot(
+        const CreateTasMovieRootCommand& command,
+        std::int64_t* tas_movie_root_id_out = nullptr,
         std::string* error_out = nullptr) override;
-    std::optional<TasVariantRecord> GetTasVariant(
-        std::int64_t tas_variant_id) const override;
-    bool UpdateTasVariantProducedSavestate(
-        const UpdateTasVariantProducedSavestateCommand& command,
+    std::optional<TasMovieRootRecord> GetTasMovieRoot(
+        std::int64_t tas_movie_root_id) const override;
+    std::optional<TasMovieRootRecord> FindTasMovieRootBySourceRtc(
+        std::int64_t source_dtm_artifact_id,
+        std::int64_t rtc_value) const override;
+    std::optional<TasMovieRootRecord> FindTasMovieRootByDtmArtifactId(
+        std::int64_t dtm_artifact_id) const override;
+    bool CreateTasMovieTree(
+        const CreateTasMovieTreeCommand& command,
+        std::int64_t* tas_movie_tree_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    std::optional<TasMovieTreeRecord> GetTasMovieTree(
+        std::int64_t tas_movie_tree_id) const override;
+    std::optional<TasMovieTreeRecord> FindTasMovieTreeByDtmArtifactId(
+        std::int64_t dtm_artifact_id) const override;
+    std::vector<TasMovieTreeRecord> ListTasMovieTreeLineage(
+        std::int64_t tas_movie_tree_id) const override;
     std::optional<std::string> MaterializeArtifactToDirectory(
         std::int64_t artifact_id,
         std::string_view output_directory,

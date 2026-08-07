@@ -10,16 +10,12 @@
 #include <thread>
 
 #include "Cli.h"
-#include "BattleMacroProbeScenario.h"
-#include "BattleSingleTurnScenario.h"
 #include "Common/DbService.h"
 #include "Common/Performance/DbPerfReport.h"
 #include "DbSetup.h"
-#include "NavigationContextScenario.h"
 #include "SeedProbeRealWorkerScenario.h"
 #include "TasMovieRealWorkerScenario.h"
 #include "Worker/WorkerCapabilityPreflight.h"
-#include "WorkerCoordinatorPerf.h"
 
 namespace {
 
@@ -70,15 +66,22 @@ int main(int argc, char** argv) {
     const std::map<std::string, bool (*)(const CliOptions&, const char*, DBService*, std::string*)> scenarios{
         { "seedprobe", &RunSeedProbeWorkflowGraphRealWorkerSmoke },
         { "tasmovie", &RunTasMovieRealWorkerSmoke },
-        { "tasmovie_seedprobe", &RunTasMovieSeedProbeRealWorkerSmoke },
-        { "seedprobe_battle", &RunSeedProbeBattleRealWorkerScenario },
-        { "battle", &RunBattleWorkflowGraphRealWorkerScenario },
-        { "battle_macro_probe", &RunBattleMacroProbeScenario },
-        { "navigation_context", &RunNavigationContextScenario },
-        { "tasmovie_seedprobe_battle", &RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario },
-        { "tasmovie_seedprobe_battle_override", &RunTasMovieSeedProbeBattleOverrideWorkflowGraphRealWorkerScenario },
-        { "tasmovie_battle", &RunTasMovieBattleWorkflowGraphRealWorkerScenario },
+        { "tasmovie_with_validation",
+            &RunTasMovieWithValidationRealWorkerSmoke },
     };
+
+    if (options.scenarios.size() == 1
+        && (options.scenarios.front() == "tasmovie"
+            || options.scenarios.front() == "tasmovie_with_validation")) {
+        std::filesystem::path reset_root;
+        std::string reset_error;
+        if (!ResetTasMovieScenarioWorkspace(options, &reset_root, &reset_error)) {
+            std::cerr << "[FAIL] resetting TAS Movie scenario database - "
+                      << reset_error << "\n";
+            return 1;
+        }
+        std::cout << "[tasmovie-db-reset] workspace=" << reset_root.string() << "\n";
+    }
 
     const auto worker_preflight = savor::RunWorkerCapabilityPreflight(
         savor::WorkerCapabilityPreflightRequest{
@@ -121,10 +124,6 @@ int main(int argc, char** argv) {
     }
 
     const bool perf_mode = options.perf_report_dir.has_value();
-    WorkerCoordinatorPerfAccumulator worker_coordinator_perf;
-    if (perf_mode) {
-        options.worker_coordinator_perf = &worker_coordinator_perf;
-    }
     std::ofstream snapshots;
     std::atomic<bool> stop_sampling{ false };
     const auto started_at = Clock::now();
@@ -252,7 +251,6 @@ int main(int argc, char** argv) {
         report.elapsed_ms = elapsed_ms;
         report.worker_count = static_cast<int>(options.worker_count);
         report.repeat_count = options.repeat;
-        report.worker_coordinator = worker_coordinator_perf.BuildSummary();
         savor::db::perf::WriteSummaryJson(*options.perf_report_dir, report);
         savor::db::perf::WriteMarkdownReport(*options.perf_report_dir, report);
         std::cout << "Perf report: " << (*options.perf_report_dir / "perf-report.md").string() << "\n"

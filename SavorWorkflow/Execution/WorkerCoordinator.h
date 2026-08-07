@@ -134,7 +134,6 @@ struct ReadyWorkerCompatibilitySnapshot {
 
     std::optional<std::string> warm_execution_key_sha256;
     std::optional<std::string> warm_program_module_id;
-    std::optional<std::string> warm_baseline_sha256;
 };
 
 struct WorkerCoordinatorEventContext {
@@ -357,7 +356,6 @@ private:
         std::optional<std::uint64_t> submitting_workset_id;
         std::optional<std::string> warm_execution_key_sha256;
         std::optional<std::string> warm_program_module_id;
-        std::optional<std::string> warm_baseline_sha256;
         std::uint64_t accepted_worksets = 0;
         std::uint64_t completed_worksets = 0;
         std::uint64_t visual_render_widget_handle = 0;

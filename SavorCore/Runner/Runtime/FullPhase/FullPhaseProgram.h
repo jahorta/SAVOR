@@ -43,7 +43,7 @@ struct FullPhaseRuntimeContract
     std::string verified_dependency_sha256;
     std::string runtime_profile_sha256;
     program::InvocationStatePolicy state_policy =
-        program::InvocationStatePolicy::Boot;
+        program::InvocationStatePolicy::RestoreBaseline;
     program::InvocationExecutionPolicy execution;
     program::ProgramBudgets limits;
     WorkerCapabilityMask required_capabilities = 0;
@@ -96,7 +96,7 @@ private:
 };
 
 // Closed production registry for the program kinds that have completed the
-// Full Phase cutover. This slice intentionally contains SeedProbe only.
+// Full Phase cutover.
 [[nodiscard]] const FullPhaseProgramRegistry& ProductionRegistry();
 
 } // namespace savor::runtime::fullphase

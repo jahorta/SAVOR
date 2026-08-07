@@ -33,9 +33,6 @@ enum class CaptureServiceErrorCode : std::uint16_t
     AdapterStartFailed,
     RouterRegistrationFailed,
     RouterReconcileFailed,
-    StateReplacementActive,
-    StateReplacementNotPrepared,
-    StateReplacementFailed,
     FinalizationFailed,
     RuntimeStopping,
 };
@@ -63,7 +60,7 @@ struct CaptureAttachmentRequest
 {
     std::string profile_json;
     savor::probe::SessionOptions options;
-    StateEpoch expected_epoch;
+    WorksetEpoch expected_epoch;
 };
 
 struct CaptureServiceReceipt
@@ -72,7 +69,7 @@ struct CaptureServiceReceipt
     CaptureAttachmentStatus status =
         CaptureAttachmentStatus::Rejected;
     CaptureAttachmentId attachment;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     StopDispatchGeneration dispatch_generation;
     PhysicalPlanGeneration physical_generation;
     bool capture_complete = true;
@@ -88,10 +85,9 @@ struct CaptureServiceSnapshot
 {
     bool bound = false;
     bool attached = false;
-    bool state_replacement_prepared = false;
     bool stopping = false;
     CaptureAttachmentId attachment;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     bool router_group_active = false;
     std::uint64_t reconcile_count = 0;
 };
@@ -111,7 +107,7 @@ public:
 
     [[nodiscard]] CaptureServiceReceipt BindRouter(
         StopPointRouter& router,
-        StateEpoch epoch);
+        WorksetEpoch epoch);
     [[nodiscard]] CaptureServiceReceipt Attach(
         CaptureAttachmentRequest request);
     [[nodiscard]] CaptureServiceReceipt Detach(
@@ -129,12 +125,6 @@ public:
         std::string_view id,
         std::uint64_t value = 0);
 
-    [[nodiscard]] CaptureServiceReceipt PrepareStateReplacement(
-        StateEpoch expected_epoch);
-    [[nodiscard]] CaptureServiceReceipt CommitStateReplacement(
-        StateEpoch new_epoch);
-    [[nodiscard]] CaptureServiceReceipt RollbackStateReplacement(
-        StateEpoch restored_epoch);
     [[nodiscard]] CaptureServiceReceipt Shutdown() noexcept;
 
     [[nodiscard]] CaptureServiceSnapshot snapshot() const noexcept;
@@ -171,10 +161,9 @@ private:
         pending_definition_;
     std::thread::id owner_thread_;
     CaptureAttachmentId attachment_;
-    StateEpoch epoch_;
+    WorksetEpoch epoch_;
     std::uint64_t next_attachment_ = 1;
     std::uint64_t reconcile_count_ = 0;
-    bool state_replacement_prepared_ = false;
     bool stopping_ = false;
     bool tainted_ = false;
     std::optional<CaptureServiceReceipt> shutdown_receipt_;

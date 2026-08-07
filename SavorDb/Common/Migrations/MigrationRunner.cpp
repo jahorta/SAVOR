@@ -121,6 +121,7 @@ std::vector<MigrationContext> ListAllMigrationContexts() {
         MigrationContext::State,
         MigrationContext::AnalysisSpine,
         MigrationContext::AnalysisSeedProbe,
+        MigrationContext::AnalysisTasMovie,
         MigrationContext::AnalysisBattle,
         MigrationContext::Authoring,
         MigrationContext::UIRead,

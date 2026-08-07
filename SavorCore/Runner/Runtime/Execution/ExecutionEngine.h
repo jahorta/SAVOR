@@ -46,7 +46,7 @@ public:
     ExecutionEngine(const ExecutionEngine&) = delete;
     ExecutionEngine& operator=(const ExecutionEngine&) = delete;
 
-    [[nodiscard]] BackendResult Initialize(StateEpoch epoch);
+    [[nodiscard]] BackendResult Initialize(WorksetEpoch epoch);
     [[nodiscard]] ExecutionSubmissionReceipt Submit(ExecutionRequest request);
     [[nodiscard]] ExecutionSubmissionReceipt SubmitInterruptionChild(
         InterruptionFrameId frame_id,
@@ -67,9 +67,6 @@ public:
     [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
     next_wake() const;
 
-    [[nodiscard]] BackendResult PrepareStateReplacement();
-    [[nodiscard]] BackendResult CommitStateEpoch(StateEpoch epoch);
-    [[nodiscard]] BackendResult RollbackStateReplacement(StateEpoch epoch);
     [[nodiscard]] BackendResult Shutdown();
 
 private:

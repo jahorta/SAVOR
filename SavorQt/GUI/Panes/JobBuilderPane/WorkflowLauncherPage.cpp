@@ -418,7 +418,7 @@ void WorkflowLauncherPage::renderCurrentUnitIfNeeded(bool forceRebuild)
 
     refreshAuthoredRefsForStandaloneUnit(*unit);
     populateExternalInputsForUnit(*unit);
-    const bool hasTasMovie = unit->unit_kind == "tas_movie";
+    const bool hasTasMovie = unit->unit_kind == "tas_movie_validate_root";
     const bool hasSeedProbe = unit->unit_kind == "seed_probe_chain"
         || unit->unit_kind == "battle_seed_probe"
         || unit->unit_kind == "dungeon_seed_probe"
@@ -703,7 +703,7 @@ void WorkflowLauncherPage::launchStandaloneUnit()
 
     std::int64_t rtcLow = 0;
     std::int64_t rtcHigh = 0;
-    if (unit->unit_kind == "tas_movie") {
+    if (unit->unit_kind == "tas_movie_validate_root") {
         bool lowOk = false;
         bool highOk = false;
         rtcLow = rtcLowEdit_->text().trimmed().toLongLong(&lowOk, 0);
@@ -712,7 +712,7 @@ void WorkflowLauncherPage::launchStandaloneUnit()
             postStatusMessage(QStringLiteral("RTC low and high must be numeric."), StatusToast::Severity::Warn);
             return;
         }
-        if (rtcHigh < rtcLow) {
+        if (rtcLow < 0 || rtcHigh < rtcLow) {
             postStatusMessage(QStringLiteral("RTC high must be greater than or equal to RTC low."), StatusToast::Severity::Warn);
             return;
         }
@@ -788,8 +788,8 @@ void WorkflowLauncherPage::launchStandaloneUnit()
     }
 
     std::vector<std::int64_t> workflowIds;
-    const std::int64_t launchLow = unit->unit_kind == "tas_movie" ? rtcLow : 0;
-    const std::int64_t launchHigh = unit->unit_kind == "tas_movie" ? rtcHigh : 0;
+    const std::int64_t launchLow = unit->unit_kind == "tas_movie_validate_root" ? rtcLow : 0;
+    const std::int64_t launchHigh = unit->unit_kind == "tas_movie_validate_root" ? rtcHigh : 0;
     const auto nodeKey = standaloneNodeKey(*unit);
     for (std::int64_t rtc = launchLow; rtc <= launchHigh; ++rtc) {
         savorqt::db::WorkflowGraphStartRequest request{};
@@ -797,7 +797,7 @@ void WorkflowLauncherPage::launchStandaloneUnit()
         request.root_scope_kind = rootScopeKind;
         request.root_scope_id = rootScopeId;
         request.input_bindings = inputBindings;
-        if (unit->unit_kind == "tas_movie") {
+        if (unit->unit_kind == "tas_movie_validate_root") {
             request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
                 .node_key = nodeKey,
                 .argument_key = "rtc",
@@ -1079,7 +1079,7 @@ QString WorkflowLauncherPage::graphLaunchShapeSignature(const savor::db::Workflo
     for (const auto& node : graph.nodes) {
         const QString unitKind = QString::fromStdString(node.unit_kind);
         parts << QStringLiteral("node:%1:%2").arg(QString::fromStdString(node.node_key), unitKind);
-        if (unitKind == QStringLiteral("tas_movie")) {
+        if (unitKind == QStringLiteral("tas_movie_validate_root")) {
             parts << QStringLiteral("rtc");
         }
         if (unitKind == QStringLiteral("seed_probe_chain")
@@ -1110,7 +1110,7 @@ QString WorkflowLauncherPage::unitLaunchShapeSignature(const WorkflowUnitDefinit
 {
     QStringList parts;
     parts << QStringLiteral("unit:%1").arg(QString::fromStdString(unit.unit_kind));
-    if (unit.unit_kind == "tas_movie") {
+    if (unit.unit_kind == "tas_movie_validate_root") {
         parts << QStringLiteral("rtc");
     }
     if (unit.unit_kind == "seed_probe_chain"
@@ -1172,6 +1172,12 @@ QString WorkflowLauncherPage::defaultRefKindForDataKind(const QString& data_kind
     if (data_kind == QStringLiteral("analysis.input_frame_set_id")) {
         return QStringLiteral("au.input_set");
     }
+    if (data_kind == QStringLiteral("analysis.tas_movie_validation_attempt_id")) {
+        return QStringLiteral("tmv_validation_attempt");
+    }
+    if (data_kind == QStringLiteral("state.tas_movie_tree_id")) {
+        return QStringLiteral("state_tas_movie_tree");
+    }
     if (data_kind == QStringLiteral("analysis.battle_manual_followup_id")) {
         return QStringLiteral("analysis.battle_manual_followup");
     }
@@ -1195,7 +1201,7 @@ std::vector<QString> WorkflowLauncherPage::tasMovieNodeKeys(const savor::db::Wor
 {
     std::vector<QString> keys;
     for (const auto& node : graph.nodes) {
-        if (node.unit_kind == "tas_movie") {
+        if (node.unit_kind == "tas_movie_validate_root") {
             keys.push_back(QString::fromStdString(node.node_key));
         }
     }

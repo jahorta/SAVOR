@@ -31,7 +31,7 @@ struct SessionProgramActionHostSnapshot
     bool invocation_active = false;
     InvocationId invocation_id;
     AttemptId attempt_id;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::size_t mapped_scope_count = 0;
     std::size_t mapped_resource_count = 0;
     bool execution_pending = false;
@@ -60,8 +60,8 @@ public:
         CancellationReason reason) noexcept override;
     void HandleExecutionEvent(ExecutionEvent event) override;
     void Pump() override;
-    [[nodiscard]] std::vector<ProgramActionCompletion>
-        DrainCompletions() override;
+    [[nodiscard]] std::vector<ActorActionResult>
+        DrainResults() override;
     void Shutdown() noexcept override;
 
     [[nodiscard]] SessionProgramActionHostSnapshot snapshot() const noexcept;

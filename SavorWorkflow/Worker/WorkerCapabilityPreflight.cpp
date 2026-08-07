@@ -17,13 +17,12 @@ struct CapabilityName {
     const char* name;
 };
 
-constexpr std::array<CapabilityName, 8> kCapabilityNames{{
+constexpr std::array<CapabilityName, 7> kCapabilityNames{{
     {runtime::WorkerCapability::SessionLifecycle, "SessionLifecycle"},
     {runtime::WorkerCapability::Screenshot, "Screenshot"},
     {runtime::WorkerCapability::HostEvents, "HostEvents"},
     {runtime::WorkerCapability::CancellationProtocol, "CancellationProtocol"},
     {runtime::WorkerCapability::Shutdown, "Shutdown"},
-    {runtime::WorkerCapability::ProgramInvocation, "ProgramInvocation"},
     {runtime::WorkerCapability::InteractiveVisualDebug, "InteractiveVisualDebug"},
     {runtime::WorkerCapability::WorksetDispatch, "WorksetDispatch"},
 }};
@@ -47,17 +46,10 @@ bool HasCompleteProductionCatalogShape(
 {
     static constexpr std::array<
         std::pair<std::string_view, std::string_view>,
-        9>
+        2>
         kProductionModules{{
             {"soa.seed_probe", "probe"},
-            {"soa.navigation.context", "capture"},
-            {"soa.tas_movie", "play_and_checkpoint"},
-            {"soa.tas_frame_detector", "detect"},
-            {"soa.battle.context", "capture"},
-            {"soa.battle.macro_probe", "probe"},
-            {"soa.battle.single_turn", "execute"},
-            {"soa.battle.completion", "complete"},
-            {"soa.battle.results_screen", "advance"},
+            {"soa.tas_movie_validation", "validate"},
         }};
 
     if (manifest.catalog_status !=
@@ -70,7 +62,7 @@ bool HasCompleteProductionCatalogShape(
         if (error_out)
         {
             *error_out =
-                "the worker catalog is not a complete exact nine-module "
+                "the worker catalog is not the complete exact two-module "
                 "production catalog";
         }
         return false;
@@ -219,7 +211,7 @@ WorkerCapabilityPreflightResult RunWorkerCapabilityPreflight(
             message
                 << "RuntimeUnavailable: worker negotiated WorksetDispatch "
                    "but database execution requires the CompleteExact "
-                   "nine-module production catalog";
+                   "two-module production catalog";
             if (!catalog_error.empty())
                 message << " (" << catalog_error << ")";
             if (!catalog_hash_matches)

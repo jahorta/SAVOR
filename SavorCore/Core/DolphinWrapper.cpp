@@ -361,6 +361,102 @@ namespace savor {
                 Core::GetState(*m_system) == Core::State::Paused);
     }
 
+    bool DolphinWrapper::stopCoreForReadOnlyMovie(std::string* error_out)
+    {
+        const auto fail = [&](std::string message) {
+            if (error_out)
+                *error_out = std::move(message);
+            return false;
+        };
+        if (!m_imported_from_qt || m_last_game_iso_path.empty())
+            return fail("Dolphin core stop requires an initialized wrapper and current game");
+
+        if (Core::IsRunning(*m_system))
+        {
+            if (Core::GetState(*m_system) == Core::State::Paused)
+                Core::SetState(*m_system, Core::State::Running);
+            const auto running_deadline = steady_clock::now() + 5s;
+            while (Core::GetState(*m_system) != Core::State::Running &&
+                   steady_clock::now() < running_deadline)
+            {
+                Core::HostDispatchJobs(*m_system);
+                std::this_thread::sleep_until(
+                    steady_clock::now() + milliseconds(1));
+            }
+            Core::Stop(*m_system);
+        }
+        const auto stop_deadline = steady_clock::now() + 20s;
+        while (!Core::IsUninitialized(*m_system) &&
+               steady_clock::now() < stop_deadline)
+        {
+            Core::HostDispatchJobs(*m_system);
+            std::this_thread::sleep_until(
+                steady_clock::now() + milliseconds(1));
+        }
+        if (!Core::IsUninitialized(*m_system))
+            return fail("Dolphin guest core did not reach the uninitialized state");
+
+        return true;
+    }
+
+    bool DolphinWrapper::startReadOnlyMovieFromStoppedCore(
+        const std::string& dtm_path,
+        std::optional<std::string>& startup_savestate_out,
+        std::string* error_out)
+    {
+        const auto fail = [&](std::string message) {
+            if (error_out)
+                *error_out = std::move(message);
+            return false;
+        };
+        if (!m_imported_from_qt || m_last_game_iso_path.empty())
+            return fail("Dolphin movie start requires an initialized wrapper and current game");
+        if (dtm_path.empty())
+            return fail("Dolphin movie start requires an exact DTM path");
+        if (!Core::IsUninitialized(*m_system))
+            return fail("Dolphin movie start requires an uninitialized guest core");
+
+        auto& movie = m_system->GetMovie();
+        movie.SetReadOnly(true);
+        if (movie.IsMovieActive())
+            movie.EndPlayInput(false);
+        std::optional<std::string> startup_savestate;
+        if (!movie.PlayInput(dtm_path, &startup_savestate))
+            return fail("Dolphin rejected the prepared read-only DTM");
+
+        SConfig::GetInstance().bBootToPause = true;
+        Config::SetCurrent(Config::MAIN_ENABLE_DEBUGGING, true);
+        auto boot = BootParameters::GenerateFromFile(m_last_game_iso_path);
+        if (startup_savestate)
+        {
+            boot->boot_session_data.SetSavestateData(
+                *startup_savestate,
+                DeleteSavestateAfterBoot::No);
+        }
+        if (!BootManager::BootCore(*m_system, std::move(boot), m_wsi))
+        {
+            movie.EndPlayInput(false);
+            return fail("Dolphin failed to boot the current game for read-only playback");
+        }
+
+        const auto boot_deadline = steady_clock::now() + 20s;
+        while (steady_clock::now() < boot_deadline)
+        {
+            Core::HostDispatchJobs(*m_system);
+            if (Core::IsRunning(*m_system) &&
+                Core::GetState(*m_system) == Core::State::Paused)
+            {
+                startup_savestate_out = std::move(startup_savestate);
+                return true;
+            }
+            std::this_thread::sleep_until(
+                steady_clock::now() + milliseconds(1));
+        }
+        if (movie.IsMovieActive())
+            movie.EndPlayInput(false);
+        return fail("Dolphin movie core restart did not reach a paused boundary");
+    }
+
     bool DolphinWrapper::runOnCpuThread(const std::function<void()>& fn, const bool waitForCompletion) const
     {
         if (!Core::IsRunning(*m_system))
@@ -802,24 +898,6 @@ namespace savor {
         return true;
     }
 
-    bool DolphinWrapper::startMoviePlayback(const std::string& dtm_path)
-    {
-        (void)dtm_path;
-        SCLOGE(
-            "[Movie] hard cutover: playback lifecycle is disconnected; "
-            "use the future MovieService");
-        return false;
-    }
-
-    bool DolphinWrapper::endMoviePlaybackBlocking(uint32_t timeout_ms)
-    {
-        (void)timeout_ms;
-        SCLOGE(
-            "[Movie] hard cutover: playback lifecycle is disconnected; "
-            "use the future MovieService");
-        return false;
-    }
-
     bool DolphinWrapper::setGCMemoryCardA(const std::string& raw_path)
     {
         // We avoid Dolphin source changes: copy the provided RAW to the
@@ -868,22 +946,6 @@ namespace savor {
         catch (...) {
             return false;
         }
-    }
-
-    bool DolphinWrapper::startMovieRecording()
-    {
-        SCLOGE(
-            "[Movie] hard cutover: recording lifecycle is disconnected; "
-            "use the future MovieService");
-        return false;
-    }
-
-    void DolphinWrapper::endMovieRecording(std::optional<std::string> movie_save_path)
-    {
-        (void)movie_save_path;
-        SCLOGE(
-            "[Movie] hard cutover: recording lifecycle is disconnected; "
-            "use the future MovieService");
     }
 
     void DolphinWrapper::applyNextInputFrame() {

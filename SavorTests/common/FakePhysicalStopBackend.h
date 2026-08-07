@@ -81,8 +81,8 @@ struct FakePhysicalStopBackendControl
     FakePhysicalStopOperationGate clear_gate;
 
     std::function<void()> jit_invalidation_handler;
-    std::function<void(runtime::StateEpoch)> restore_handler;
-    std::vector<runtime::StateEpoch> injected_restore_epochs;
+    std::function<void(runtime::WorksetEpoch)> restore_handler;
+    std::vector<runtime::WorksetEpoch> injected_restore_epochs;
 
     void SetBindOutcome(FakePhysicalStopOutcome outcome);
     void SetUnbindOutcome(FakePhysicalStopOutcome outcome);
@@ -99,7 +99,7 @@ struct FakePhysicalStopBackendControl
 
     void SetJitInvalidationHandler(std::function<void()> handler);
     void SetRestoreHandler(
-        std::function<void(runtime::StateEpoch)> handler);
+        std::function<void(runtime::WorksetEpoch)> handler);
 
     [[nodiscard]] std::vector<FakePhysicalStopCall> Calls() const;
     [[nodiscard]] runtime::PhysicalStopPointPlan ActualPlan() const;
@@ -107,7 +107,7 @@ struct FakePhysicalStopBackendControl
     [[nodiscard]] savor::probe::INativeStopSink* BoundSink() const;
     [[nodiscard]] bool HasOwnerViolation() const;
     [[nodiscard]] std::optional<std::thread::id> OwnerThread() const;
-    [[nodiscard]] std::vector<runtime::StateEpoch> InjectedRestoreEpochs() const;
+    [[nodiscard]] std::vector<runtime::WorksetEpoch> InjectedRestoreEpochs() const;
 };
 
 class FakePhysicalStopBackend final
@@ -160,7 +160,7 @@ public:
         Core::System* system = nullptr);
 
     [[nodiscard]] bool InjectJitInvalidation();
-    [[nodiscard]] bool InjectRestore(runtime::StateEpoch new_epoch);
+    [[nodiscard]] bool InjectRestore(runtime::WorksetEpoch new_epoch);
 
 private:
     [[nodiscard]] runtime::PhysicalStopBackendReceipt RunPlanOperation(

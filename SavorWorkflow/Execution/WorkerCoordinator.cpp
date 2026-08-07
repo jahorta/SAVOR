@@ -80,10 +80,6 @@ bool LimitsSatisfy(
         && actual.maximum_item_credits >= required.maximum_item_credits
         && actual.maximum_active_and_staged_items
             >= required.maximum_active_and_staged_items
-        && actual.maximum_state_cache_entries
-            >= required.maximum_state_cache_entries
-        && actual.maximum_state_cache_bytes
-            >= required.maximum_state_cache_bytes
         && actual.finalizer_threads >= required.finalizer_threads
         && actual.maximum_pending_finalizers
             >= required.maximum_pending_finalizers
@@ -1580,8 +1576,6 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
                     workset.execution_key.canonical_sha256;
                 slot->warm_program_module_id =
                     workset.execution_key.module.canonical_id;
-                slot->warm_baseline_sha256 =
-                    workset.execution_key.baseline.sha256;
                 ++slot->accepted_worksets;
                 worker_status_.UpdateState(
                     ToTelemetryWorkerId(slot->id),
@@ -2572,7 +2566,6 @@ void WorkerCoordinator::ResetWorkerSlot(const WorkerSlotPtr& slot) {
         slot->consecutive_liveness_failures = 0;
         slot->warm_execution_key_sha256.reset();
         slot->warm_program_module_id.reset();
-        slot->warm_baseline_sha256.reset();
     }
     ConfigureWorkerCallbacks(slot);
     if (old_worker) {
@@ -2878,8 +2871,6 @@ WorkerCoordinator::SnapshotReadyWorker(const WorkerSlot& slot) const {
             slot.warm_execution_key_sha256,
         .warm_program_module_id =
             slot.warm_program_module_id,
-        .warm_baseline_sha256 =
-            slot.warm_baseline_sha256,
     };
     return snapshot;
 }

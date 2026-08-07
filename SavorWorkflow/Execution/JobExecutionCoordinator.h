@@ -18,6 +18,30 @@
 
 namespace savor::runner::parallel::savordb {
 
+namespace detail {
+
+enum class DispatchRetirementAuthority : std::uint8_t {
+    None = 0,
+    DrainingPending,
+    DrainingPersisted,
+    ReleasedDraining,
+};
+
+struct DispatchRetirementFacts {
+    DispatchRetirementAuthority authority =
+        DispatchRetirementAuthority::None;
+    bool summary_observed = false;
+    std::size_t executable_items = 0;
+    std::size_t staged_items = 0;
+    std::size_t acknowledged_items = 0;
+    bool sidecar_persisted = false;
+};
+
+[[nodiscard]] bool DispatchReadyToRetire(
+    const DispatchRetirementFacts& facts) noexcept;
+
+} // namespace detail
+
 struct JobExecutionCoordinatorConfig {
     std::chrono::milliseconds poll_interval{20};
     std::chrono::milliseconds workset_lease_duration{180000};
@@ -36,7 +60,7 @@ struct JobExecutionCoordinatorConfig {
     std::uint32_t maximum_items_per_workset = 16;
     std::uint64_t maximum_encoded_workset_bytes =
         32ull * 1024ull * 1024ull;
-    savor::runtime::StateCompatibilityToken state_compatibility;
+    savor::runtime::ArtifactCompatibilityToken state_compatibility;
 };
 
 struct JobExecutionCoordinatorWarning {
@@ -69,9 +93,7 @@ struct JobExecutionWorkerLaneSnapshot {
     WorkerSchedulerAffinityState affinity_state =
         WorkerSchedulerAffinityState::Cold;
     std::optional<std::string> projected_execution_affinity_key;
-    std::optional<std::string> projected_baseline_affinity_key;
     std::optional<std::string> actual_execution_affinity_key;
-    std::optional<std::string> actual_baseline_affinity_key;
 };
 
 struct JobExecutionCoordinatorTelemetry {

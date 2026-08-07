@@ -71,7 +71,7 @@ TEST(SessionResourceBindingTable, ReleasesConcreteResourceExactlyOnce)
     std::uint32_t release_count = 0;
     const auto bound = bindings.Bind({
         .kind = ResourceKind::InputLease,
-        .acquisition_epoch = StateEpoch(7),
+        .acquisition_epoch = WorksetEpoch(7),
         .release = [&release_count](const ResourceReleaseRequest&) {
             ++release_count;
             return ResourceReleaseResult{
@@ -88,12 +88,11 @@ TEST(SessionResourceBindingTable, ReleasesConcreteResourceExactlyOnce)
     receipt.release = {
         ResourceKind::InputLease,
         bound.external_id};
-    receipt.acquisition_epoch = StateEpoch(7);
-    receipt.epoch_policy = ResourceEpochPolicy::EndOnEpochChange;
+    receipt.acquisition_epoch = WorksetEpoch(7);
     ResourceReleaseRequest request{
         .receipt = receipt,
         .reason = ResourceReleaseReason::Explicit,
-        .current_epoch = StateEpoch(7),
+        .current_epoch = WorksetEpoch(7),
     };
     EXPECT_EQ(
         bindings.Release(request).status,
@@ -107,98 +106,6 @@ TEST(SessionResourceBindingTable, ReleasesConcreteResourceExactlyOnce)
         bindings.Release(request).status,
         ResourceReleaseStatus::Released);
     EXPECT_EQ(release_count, 1u);
-}
-
-TEST(SessionResourceBindingTable, RebindsOnlyAfterEpochSupersession)
-{
-    SessionResourceBindingTable bindings;
-    std::uint32_t release_count = 0;
-    std::uint32_t rebind_count = 0;
-    const ResourceRebindKey stable_key(44);
-
-    SessionResourceRebindCallback rebind;
-    rebind = [&release_count, &rebind_count, stable_key, &rebind](
-                 const ResourceRebindRequest&,
-                 StateEpoch epoch,
-                 SessionResourceBindingDefinition& replacement,
-                 std::string&) {
-        ++rebind_count;
-        replacement = {
-            .kind = ResourceKind::StopPointGroup,
-            .acquisition_epoch = epoch,
-            .rebind_key = stable_key,
-            .release = [&release_count](
-                           const ResourceReleaseRequest&) {
-                ++release_count;
-                return ResourceReleaseResult{
-                    ResourceReleaseStatus::Released,
-                    {}};
-            },
-            .rebind = rebind,
-            .diagnostic_label = "rebound stop group",
-        };
-        return true;
-    };
-
-    const auto bound = bindings.Bind({
-        .kind = ResourceKind::StopPointGroup,
-        .acquisition_epoch = StateEpoch(1),
-        .rebind_key = stable_key,
-        .release = [&release_count](const ResourceReleaseRequest&) {
-            ++release_count;
-            return ResourceReleaseResult{
-                ResourceReleaseStatus::SupersededByStateReplacement,
-                {}};
-        },
-        .rebind = rebind,
-        .diagnostic_label = "stop group",
-    });
-    ASSERT_TRUE(bound.success) << bound.diagnostic;
-
-    ResourceReceipt prior;
-    prior.id = ResourceReceiptId(9);
-    prior.release = {
-        ResourceKind::StopPointGroup,
-        bound.external_id};
-    prior.acquisition_epoch = StateEpoch(1);
-    prior.epoch_policy = ResourceEpochPolicy::RebindAfterRestore;
-    prior.promotion = ResourcePromotionPolicy::ImmediateParent;
-    prior.cleanup = ResourceCleanupRequirement::Mandatory;
-    prior.rebind_key = stable_key;
-    prior.diagnostic_label = "stop group";
-
-    ResourceRebindRequest request{
-        .prior_receipt = prior,
-        .owner = ResourceOwnerId(5),
-        .service = ResourceServiceId(6),
-        .scope = ResourceScopeId(7),
-        .kind = ResourceKind::StopPointGroup,
-        .stable_key = stable_key,
-        .state_epoch = StateEpoch(2),
-    };
-    EXPECT_FALSE(bindings.Rebind(request, StateEpoch(2)).success);
-
-    EXPECT_EQ(
-        bindings.Release({
-            .receipt = prior,
-            .reason = ResourceReleaseReason::StateEpochChanged,
-            .current_epoch = StateEpoch(2),
-        }).status,
-        ResourceReleaseStatus::SupersededByStateReplacement);
-    EXPECT_EQ(release_count, 1u);
-
-    const auto rebound = bindings.Rebind(request, StateEpoch(2));
-    ASSERT_TRUE(rebound.success) << rebound.diagnostic;
-    EXPECT_EQ(rebind_count, 1u);
-    EXPECT_EQ(
-        rebound.completion.replacement.release.kind,
-        ResourceKind::StopPointGroup);
-    EXPECT_EQ(
-        rebound.completion.replacement.epoch_policy,
-        ResourceEpochPolicy::RebindAfterRestore);
-    EXPECT_NE(
-        rebound.completion.replacement.release.external_id,
-        bound.external_id);
 }
 
 } // namespace

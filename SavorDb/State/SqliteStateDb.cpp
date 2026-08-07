@@ -260,12 +260,14 @@ std::optional<events::StateArtifactPayloadView> ResolveSavestateRef(sqlite3* db,
     return view;
 }
 
-std::optional<events::StateArtifactPayloadView> ResolveTasVariantRef(sqlite3* db, std::int64_t tas_variant_id) {
+std::optional<events::StateArtifactPayloadView> ResolveTasMovieRootRef(
+    sqlite3* db,
+    std::int64_t tas_movie_root_id) {
     Statement st;
     if (sqlite3_prepare_v2(
             db,
-            "SELECT tas_variant_id, base_dtm_artifact_id, COALESCE(produced_savestate_id, 0) "
-            "FROM state_tas_movie_variant WHERE tas_variant_id=?1;",
+            "SELECT r.tas_movie_root_id,r.dtm_artifact_id,r.checkpoint_savestate_id "
+            "FROM state_tas_movie_root r WHERE r.tas_movie_root_id=?1;",
             -1,
             &st.st,
             nullptr)
@@ -273,74 +275,42 @@ std::optional<events::StateArtifactPayloadView> ResolveTasVariantRef(sqlite3* db
         return std::nullopt;
     }
 
-    sqlite3_bind_int64(st.st, 1, tas_variant_id);
+    sqlite3_bind_int64(st.st, 1, tas_movie_root_id);
     if (sqlite3_step(st.st) != SQLITE_ROW) {
         return std::nullopt;
     }
 
     events::StateArtifactPayloadView view{};
-    view.tas_variant_id = sqlite3_column_int64(st.st, 0);
+    view.tas_movie_root_id = sqlite3_column_int64(st.st, 0);
     view.artifact_id = sqlite3_column_int64(st.st, 1);
     view.savestate_id = sqlite3_column_int64(st.st, 2);
     return view;
 }
 
-std::optional<TasVariantRecord> LoadTasVariantByName(sqlite3* db, std::string_view name) {
+std::optional<events::StateArtifactPayloadView> ResolveTasMovieTreeRef(
+    sqlite3* db,
+    std::int64_t tas_movie_tree_id) {
     Statement st;
     if (sqlite3_prepare_v2(
             db,
-            "SELECT tas_variant_id,name,base_dtm_artifact_id,dtmini_artifact_id,mutation_mode,rtc_value,"
-            "bookmark_name,insert_frame_count,parent_tas_variant_id,produced_savestate_id,created_at_utc "
-            "FROM state_tas_movie_variant WHERE name=?1;",
+            "SELECT t.tas_movie_tree_id,t.dtm_artifact_id,t.checkpoint_savestate_id "
+            "FROM state_tas_movie_trees t WHERE t.tas_movie_tree_id=?1;",
             -1,
             &st.st,
             nullptr)
         != SQLITE_OK) {
         return std::nullopt;
     }
-    sqlite3_bind_text(st.st, 1, name.data(), static_cast<int>(name.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 1, tas_movie_tree_id);
     if (sqlite3_step(st.st) != SQLITE_ROW) {
         return std::nullopt;
     }
 
-    TasVariantRecord row{};
-    row.tas_variant_id = sqlite3_column_int64(st.st, 0);
-    const auto* name_text = sqlite3_column_text(st.st, 1);
-    row.name = name_text == nullptr ? "" : reinterpret_cast<const char*>(name_text);
-    row.base_dtm_artifact_id = sqlite3_column_int64(st.st, 2);
-    if (sqlite3_column_type(st.st, 3) != SQLITE_NULL) {
-        row.dtmini_artifact_id = sqlite3_column_int64(st.st, 3);
-    }
-    const auto* mode = sqlite3_column_text(st.st, 4);
-    row.mutation_mode = mode == nullptr ? "" : reinterpret_cast<const char*>(mode);
-    if (sqlite3_column_type(st.st, 5) != SQLITE_NULL) {
-        row.rtc_value = sqlite3_column_int64(st.st, 5);
-    }
-    if (sqlite3_column_type(st.st, 6) != SQLITE_NULL) {
-        row.bookmark_name = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
-    }
-    if (sqlite3_column_type(st.st, 7) != SQLITE_NULL) {
-        row.insert_frame_count = sqlite3_column_int64(st.st, 7);
-    }
-    if (sqlite3_column_type(st.st, 8) != SQLITE_NULL) {
-        row.parent_tas_variant_id = sqlite3_column_int64(st.st, 8);
-    }
-    if (sqlite3_column_type(st.st, 9) != SQLITE_NULL) {
-        row.produced_savestate_id = sqlite3_column_int64(st.st, 9);
-    }
-    row.created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 10)));
-    return row;
-}
-
-bool TasVariantIdentityMatches(const TasVariantRecord& row, const CreateTasVariantCommand& command) {
-    return row.name == command.name
-        && row.base_dtm_artifact_id == command.base_dtm_artifact_id
-        && row.dtmini_artifact_id == command.dtmini_artifact_id
-        && row.mutation_mode == command.mutation_mode
-        && row.rtc_value == command.rtc_value
-        && row.bookmark_name == command.bookmark_name
-        && row.insert_frame_count == command.insert_frame_count
-        && row.parent_tas_variant_id == command.parent_tas_variant_id;
+    events::StateArtifactPayloadView view{};
+    view.tas_movie_tree_id = sqlite3_column_int64(st.st, 0);
+    view.artifact_id = sqlite3_column_int64(st.st, 1);
+    view.savestate_id = sqlite3_column_int64(st.st, 2);
+    return view;
 }
 
 } // namespace
@@ -450,6 +420,17 @@ bool SqliteStateDb::CreateSavestate(
     if (command.artifact_id <= 0 || command.savestate_type.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
+    }
+
+    if (const auto existing = FindSavestateByArtifactId(command.artifact_id); existing.has_value()) {
+        if (existing->savestate_type != command.savestate_type
+            || existing->note != command.note
+            || existing->is_complete != command.is_complete) {
+            if (error_out) *error_out = "savestate artifact is already bound with different immutable fields";
+            return false;
+        }
+        if (savestate_id_out) *savestate_id_out = existing->savestate_id;
+        return true;
     }
 
     if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
@@ -646,6 +627,49 @@ bool SqliteStateDb::DeriveSavestate(
     return true;
 }
 
+std::optional<ArtifactRecord> SqliteStateDb::GetArtifact(
+    std::int64_t artifact_id) const {
+    if (db_ == nullptr || artifact_id <= 0) return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc "
+            "FROM state_artifact WHERE artifact_id=?1;",
+            -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, artifact_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    ArtifactRecord row{};
+    row.artifact_id = sqlite3_column_int64(st.st, 0);
+    row.sha256 = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 1));
+    row.size_bytes = sqlite3_column_int64(st.st, 2);
+    row.compression_kind = sqlite3_column_int(st.st, 3);
+    row.filename = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 4));
+    row.file_ext = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 5));
+    row.artifact_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
+    row.created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 7)));
+    return row;
+}
+
+std::optional<ArtifactRecord> SqliteStateDb::GetArtifactBySha256(
+    std::string_view sha256) const {
+    if (db_ == nullptr || sha256.empty()) return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(db_, "SELECT artifact_id FROM state_artifact WHERE sha256=?1;", -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_text(st.st, 1, sha256.data(), static_cast<int>(sha256.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetArtifact(sqlite3_column_int64(st.st, 0));
+}
+
+std::optional<SavestateRecord> SqliteStateDb::FindSavestateByArtifactId(
+    std::int64_t artifact_id) const {
+    if (db_ == nullptr || artifact_id <= 0) return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(db_, "SELECT savestate_id FROM state_savestate WHERE artifact_id=?1;", -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, artifact_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetSavestate(sqlite3_column_int64(st.st, 0));
+}
+
 std::optional<SavestateRecord> SqliteStateDb::GetSavestate(
     std::int64_t savestate_id) const {
     if (db_ == nullptr || savestate_id <= 0) {
@@ -759,226 +783,292 @@ std::vector<SavestateDerivationRecord> SqliteStateDb::ListSavestateDerivationsBy
     return rows;
 }
 
-bool SqliteStateDb::CreateTasVariant(
-    const CreateTasVariantCommand& command,
-    std::int64_t* tas_variant_id_out,
-    std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (command.name.empty()
-        || command.base_dtm_artifact_id <= 0
-        || command.mutation_mode.empty()) {
-        if (error_out) *error_out = "required command fields are missing";
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        return false;
-    }
-
-    if (const auto existing = LoadTasVariantByName(db_, command.name); existing.has_value()) {
-        if (!TasVariantIdentityMatches(*existing, command)) {
-            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-            if (error_out) *error_out = "tas variant name already exists with different defining fields";
-            return false;
-        }
-        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-            if (error_out != nullptr) {
-                *error_out = sqlite3_errmsg(db_);
-            }
-            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-            return false;
-        }
-        if (tas_variant_id_out) {
-            *tas_variant_id_out = existing->tas_variant_id;
-        }
-        return true;
-    }
-
-    Statement insert_variant;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO state_tas_movie_variant("
-            "name,base_dtm_artifact_id,dtmini_artifact_id,mutation_mode,rtc_value,bookmark_name,insert_frame_count,parent_tas_variant_id,produced_savestate_id,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);",
-            -1,
-            &insert_variant.st,
-            nullptr)
-        != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    sqlite3_bind_text(insert_variant.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_variant.st, 2, command.base_dtm_artifact_id);
-    if (command.dtmini_artifact_id.has_value()) sqlite3_bind_int64(insert_variant.st, 3, command.dtmini_artifact_id.value());
-    else sqlite3_bind_null(insert_variant.st, 3);
-    sqlite3_bind_text(insert_variant.st, 4, command.mutation_mode.c_str(), -1, SQLITE_TRANSIENT);
-    if (command.rtc_value.has_value()) sqlite3_bind_int64(insert_variant.st, 5, command.rtc_value.value());
-    else sqlite3_bind_null(insert_variant.st, 5);
-    if (command.bookmark_name.has_value()) sqlite3_bind_text(insert_variant.st, 6, command.bookmark_name->c_str(), -1, SQLITE_TRANSIENT);
-    else sqlite3_bind_null(insert_variant.st, 6);
-    if (command.insert_frame_count.has_value()) sqlite3_bind_int64(insert_variant.st, 7, command.insert_frame_count.value());
-    else sqlite3_bind_null(insert_variant.st, 7);
-    if (command.parent_tas_variant_id.has_value()) sqlite3_bind_int64(insert_variant.st, 8, command.parent_tas_variant_id.value());
-    else sqlite3_bind_null(insert_variant.st, 8);
-    if (command.produced_savestate_id.has_value()) sqlite3_bind_int64(insert_variant.st, 9, command.produced_savestate_id.value());
-    else sqlite3_bind_null(insert_variant.st, 9);
-    sqlite3_bind_int64(insert_variant.st, 10, command.created_at_utc.time_since_epoch().count());
-
-    if (sqlite3_step(insert_variant.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    const auto tas_variant_id = sqlite3_last_insert_rowid(db_);
-    const auto aggregate_id = std::to_string(tas_variant_id);
-    if (!InsertStateOutboxEvent(
-            db_,
-            "State.TasVariantCreated.v1",
-            "tas_variant",
-            aggregate_id,
-            command.correlation_id,
-            command.causation_id,
-            command.created_at_utc.time_since_epoch().count(),
-            "tas_variant",
-            tas_variant_id,
-            error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (tas_variant_id_out) {
-        *tas_variant_id_out = tas_variant_id;
-    }
-    return true;
-}
-
-std::optional<TasVariantRecord> SqliteStateDb::GetTasVariant(
-    std::int64_t tas_variant_id) const {
-    if (db_ == nullptr || tas_variant_id <= 0) {
-        return std::nullopt;
-    }
-
+std::optional<TasMovieRootRecord> SqliteStateDb::GetTasMovieRoot(
+    std::int64_t tas_movie_root_id) const {
+    if (db_ == nullptr || tas_movie_root_id <= 0) return std::nullopt;
     Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT tas_variant_id,name,base_dtm_artifact_id,dtmini_artifact_id,mutation_mode,rtc_value,"
-            "bookmark_name,insert_frame_count,parent_tas_variant_id,produced_savestate_id,created_at_utc "
-            "FROM state_tas_movie_variant WHERE tas_variant_id=?1;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return std::nullopt;
-    }
-    sqlite3_bind_int64(st.st, 1, tas_variant_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-
-    TasVariantRecord row{};
-    row.tas_variant_id = sqlite3_column_int64(st.st, 0);
-    const auto* name = sqlite3_column_text(st.st, 1);
-    row.name = name == nullptr ? "" : reinterpret_cast<const char*>(name);
-    row.base_dtm_artifact_id = sqlite3_column_int64(st.st, 2);
-    if (sqlite3_column_type(st.st, 3) != SQLITE_NULL) {
-        row.dtmini_artifact_id = sqlite3_column_int64(st.st, 3);
-    }
-    const auto* mode = sqlite3_column_text(st.st, 4);
-    row.mutation_mode = mode == nullptr ? "" : reinterpret_cast<const char*>(mode);
-    if (sqlite3_column_type(st.st, 5) != SQLITE_NULL) {
-        row.rtc_value = sqlite3_column_int64(st.st, 5);
-    }
-    if (sqlite3_column_type(st.st, 6) != SQLITE_NULL) {
-        row.bookmark_name = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
-    }
-    if (sqlite3_column_type(st.st, 7) != SQLITE_NULL) {
-        row.insert_frame_count = sqlite3_column_int64(st.st, 7);
-    }
-    if (sqlite3_column_type(st.st, 8) != SQLITE_NULL) {
-        row.parent_tas_variant_id = sqlite3_column_int64(st.st, 8);
-    }
-    if (sqlite3_column_type(st.st, 9) != SQLITE_NULL) {
-        row.produced_savestate_id = sqlite3_column_int64(st.st, 9);
-    }
-    row.created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 10)));
+    constexpr const char* kSql =
+        "SELECT tas_movie_root_id,source_dtm_artifact_id,dtm_artifact_id,rtc_value,"
+        "itinerary_artifact_id,required_final_breakpoint_pc,checkpoint_savestate_id,"
+        "source_context_kind,source_context_id,created_at_utc "
+        "FROM state_tas_movie_root WHERE tas_movie_root_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, tas_movie_root_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    TasMovieRootRecord row{};
+    row.tas_movie_root_id = sqlite3_column_int64(st.st, 0);
+    row.source_dtm_artifact_id = sqlite3_column_int64(st.st, 1);
+    row.dtm_artifact_id = sqlite3_column_int64(st.st, 2);
+    row.rtc_value = sqlite3_column_int64(st.st, 3);
+    row.itinerary_artifact_id = sqlite3_column_int64(st.st, 4);
+    row.required_final_breakpoint_pc = static_cast<std::uint32_t>(sqlite3_column_int64(st.st, 5));
+    row.checkpoint_savestate_id = sqlite3_column_int64(st.st, 6);
+    row.source_context_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 7));
+    row.source_context_id = sqlite3_column_int64(st.st, 8);
+    row.created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 9)));
     return row;
 }
 
-bool SqliteStateDb::UpdateTasVariantProducedSavestate(
-    const UpdateTasVariantProducedSavestateCommand& command,
+std::optional<TasMovieRootRecord> SqliteStateDb::FindTasMovieRootBySourceRtc(
+    std::int64_t source_dtm_artifact_id,
+    std::int64_t rtc_value) const {
+    if (db_ == nullptr || source_dtm_artifact_id <= 0 || rtc_value < 0) return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT tas_movie_root_id FROM state_tas_movie_root "
+            "WHERE source_dtm_artifact_id=?1 AND rtc_value=?2;",
+            -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, source_dtm_artifact_id);
+    sqlite3_bind_int64(st.st, 2, rtc_value);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieRoot(sqlite3_column_int64(st.st, 0));
+}
+
+std::optional<TasMovieRootRecord> SqliteStateDb::FindTasMovieRootByDtmArtifactId(
+    std::int64_t dtm_artifact_id) const {
+    if (db_ == nullptr || dtm_artifact_id <= 0) return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT tas_movie_root_id FROM state_tas_movie_root WHERE dtm_artifact_id=?1;",
+            -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, dtm_artifact_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieRoot(sqlite3_column_int64(st.st, 0));
+}
+
+bool SqliteStateDb::CreateTasMovieRoot(
+    const CreateTasMovieRootCommand& command,
+    std::int64_t* tas_movie_root_id_out,
     std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
+    if (db_ == nullptr || command.source_dtm_artifact_id <= 0 || command.dtm_artifact_id <= 0
+        || command.rtc_value < 0 || command.itinerary_artifact_id <= 0
+        || command.required_final_breakpoint_pc == 0 || command.checkpoint_savestate_id <= 0 || command.source_context_kind.empty()
+        || command.source_context_id <= 0) {
+        if (error_out) *error_out = "invalid TAS movie root command";
         return false;
     }
-    if (command.tas_variant_id <= 0 || command.produced_savestate_id <= 0) {
-        if (error_out) *error_out = "required command fields are missing";
+    const auto source_artifact = GetArtifact(command.source_dtm_artifact_id);
+    const auto dtm_artifact = GetArtifact(command.dtm_artifact_id);
+    const auto itinerary_artifact = GetArtifact(command.itinerary_artifact_id);
+    const auto checkpoint = GetSavestate(command.checkpoint_savestate_id);
+    if (!source_artifact || source_artifact->artifact_kind != "DTM"
+        || !dtm_artifact || dtm_artifact->artifact_kind != "DTM"
+        || !itinerary_artifact || itinerary_artifact->artifact_kind != "TAS_MOVIE_ITINERARY"
+        || !checkpoint || checkpoint->artifact_kind != "SAV") {
+        if (error_out) *error_out = "TAS movie root artifacts do not satisfy their immutable kinds";
         return false;
     }
     if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
+    const auto existing = FindTasMovieRootBySourceRtc(command.source_dtm_artifact_id, command.rtc_value);
+    if (existing.has_value()) {
+        const bool same = existing->dtm_artifact_id == command.dtm_artifact_id
+            && existing->itinerary_artifact_id == command.itinerary_artifact_id
+            && existing->required_final_breakpoint_pc == command.required_final_breakpoint_pc
+            && existing->checkpoint_savestate_id == command.checkpoint_savestate_id;
+        if (!same) {
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out) *error_out = "source DTM and RTC already identify a different immutable root";
+            return false;
+        }
+        (void)sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr);
+        if (tas_movie_root_id_out) *tas_movie_root_id_out = existing->tas_movie_root_id;
+        return true;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO state_tas_movie_root(source_dtm_artifact_id,dtm_artifact_id,rtc_value,"
+        "itinerary_artifact_id,required_final_breakpoint_pc,checkpoint_savestate_id,"
+        "source_context_kind,source_context_id,created_at_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, command.source_dtm_artifact_id);
+    sqlite3_bind_int64(st.st, 2, command.dtm_artifact_id);
+    sqlite3_bind_int64(st.st, 3, command.rtc_value);
+    sqlite3_bind_int64(st.st, 4, command.itinerary_artifact_id);
+    sqlite3_bind_int64(st.st, 5, command.required_final_breakpoint_pc);
+    sqlite3_bind_int64(st.st, 6, command.checkpoint_savestate_id);
+    sqlite3_bind_text(st.st, 7, command.source_context_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 8, command.source_context_id);
+    sqlite3_bind_int64(st.st, 9, command.created_at_utc.time_since_epoch().count());
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (!InsertStateOutboxEvent(db_, "State.TasMovieRootCreated.v1", "tas_movie_root",
+            std::to_string(id), command.correlation_id, command.causation_id,
+            command.created_at_utc.time_since_epoch().count(), "tas_movie_root", id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (tas_movie_root_id_out) *tas_movie_root_id_out = id;
+    return true;
+}
 
-    Statement update_variant;
+std::optional<TasMovieTreeRecord> SqliteStateDb::GetTasMovieTree(
+    std::int64_t tas_movie_tree_id) const {
+    if (db_ == nullptr || tas_movie_tree_id <= 0) return std::nullopt;
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT tas_movie_tree_id,tas_movie_root_id,parent_tas_movie_tree_id,dtm_artifact_id,"
+        "itinerary_artifact_id,required_final_breakpoint_pc,checkpoint_savestate_id,"
+        "source_context_kind,source_context_id,created_at_utc FROM state_tas_movie_trees "
+        "WHERE tas_movie_tree_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, tas_movie_tree_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    TasMovieTreeRecord row{};
+    row.tas_movie_tree_id = sqlite3_column_int64(st.st, 0);
+    row.tas_movie_root_id = sqlite3_column_int64(st.st, 1);
+    if (sqlite3_column_type(st.st, 2) != SQLITE_NULL) row.parent_tas_movie_tree_id = sqlite3_column_int64(st.st, 2);
+    row.dtm_artifact_id = sqlite3_column_int64(st.st, 3);
+    row.itinerary_artifact_id = sqlite3_column_int64(st.st, 4);
+    row.required_final_breakpoint_pc = static_cast<std::uint32_t>(sqlite3_column_int64(st.st, 5));
+    row.checkpoint_savestate_id = sqlite3_column_int64(st.st, 6);
+    row.source_context_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 7));
+    row.source_context_id = sqlite3_column_int64(st.st, 8);
+    row.created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 9)));
+    return row;
+}
+
+std::optional<TasMovieTreeRecord> SqliteStateDb::FindTasMovieTreeByDtmArtifactId(
+    std::int64_t dtm_artifact_id) const {
+    if (db_ == nullptr || dtm_artifact_id <= 0) return std::nullopt;
+    Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "UPDATE state_tas_movie_variant SET produced_savestate_id=?2 WHERE tas_variant_id=?1;",
-            -1,
-            &update_variant.st,
-            nullptr)
-        != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-    sqlite3_bind_int64(update_variant.st, 1, command.tas_variant_id);
-    sqlite3_bind_int64(update_variant.st, 2, command.produced_savestate_id);
-    if (sqlite3_step(update_variant.st) != SQLITE_DONE || sqlite3_changes(db_) <= 0) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
+            "SELECT tas_movie_tree_id FROM state_tas_movie_trees WHERE dtm_artifact_id=?1;",
+            -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, dtm_artifact_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieTree(sqlite3_column_int64(st.st, 0));
+}
 
-    if (!InsertStateOutboxEvent(
-            db_,
-            "State.TasVariantProducedSavestateSet.v1",
-            "tas_variant",
-            std::to_string(command.tas_variant_id),
-            command.correlation_id,
-            command.causation_id,
-            command.updated_at_utc.time_since_epoch().count(),
-            "tas_variant",
-            command.tas_variant_id,
-            error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+bool SqliteStateDb::CreateTasMovieTree(
+    const CreateTasMovieTreeCommand& command,
+    std::int64_t* tas_movie_tree_id_out,
+    std::string* error_out) {
+    if (db_ == nullptr || command.tas_movie_root_id <= 0 || command.dtm_artifact_id <= 0
+        || command.itinerary_artifact_id <= 0 || command.required_final_breakpoint_pc == 0
+        || command.checkpoint_savestate_id <= 0
+        || command.source_context_kind.empty() || command.source_context_id <= 0) {
+        if (error_out) *error_out = "invalid TAS movie tree command";
         return false;
     }
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+    if (!GetTasMovieRoot(command.tas_movie_root_id).has_value()) {
+        if (error_out) *error_out = "TAS movie root does not exist";
+        return false;
+    }
+    const auto dtm_artifact = GetArtifact(command.dtm_artifact_id);
+    const auto itinerary_artifact = GetArtifact(command.itinerary_artifact_id);
+    const auto checkpoint = GetSavestate(command.checkpoint_savestate_id);
+    if (!dtm_artifact || dtm_artifact->artifact_kind != "DTM"
+        || !itinerary_artifact || itinerary_artifact->artifact_kind != "TAS_MOVIE_ITINERARY"
+        || !checkpoint || checkpoint->artifact_kind != "SAV") {
+        if (error_out) *error_out = "TAS movie tree artifacts do not satisfy their immutable kinds";
+        return false;
+    }
+    if (command.parent_tas_movie_tree_id.has_value()) {
+        const auto parent = GetTasMovieTree(*command.parent_tas_movie_tree_id);
+        if (!parent.has_value() || parent->tas_movie_root_id != command.tas_movie_root_id) {
+            if (error_out) *error_out = "parent TAS movie tree must belong to the same root";
+            return false;
+        }
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    Statement find;
+    if (sqlite3_prepare_v2(db_, "SELECT tas_movie_tree_id FROM state_tas_movie_trees WHERE dtm_artifact_id=?1;", -1, &find.st, nullptr) != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(find.st, 1, command.dtm_artifact_id);
+    if (sqlite3_step(find.st) == SQLITE_ROW) {
+        const auto existing = GetTasMovieTree(sqlite3_column_int64(find.st, 0));
+        const bool same = existing.has_value()
+            && existing->tas_movie_root_id == command.tas_movie_root_id
+            && existing->parent_tas_movie_tree_id == command.parent_tas_movie_tree_id
+            && existing->itinerary_artifact_id == command.itinerary_artifact_id
+            && existing->required_final_breakpoint_pc == command.required_final_breakpoint_pc
+            && existing->checkpoint_savestate_id == command.checkpoint_savestate_id
+            && existing->source_context_kind == command.source_context_kind
+            && existing->source_context_id == command.source_context_id;
+        if (!same) {
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out) *error_out = "DTM already identifies a different immutable TAS movie tree";
+            return false;
+        }
+        (void)sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr);
+        if (tas_movie_tree_id_out) *tas_movie_tree_id_out = existing->tas_movie_tree_id;
+        return true;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO state_tas_movie_trees(tas_movie_root_id,parent_tas_movie_tree_id,dtm_artifact_id,"
+        "itinerary_artifact_id,required_final_breakpoint_pc,checkpoint_savestate_id,source_context_kind,"
+        "source_context_id,created_at_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, command.tas_movie_root_id);
+    if (command.parent_tas_movie_tree_id) sqlite3_bind_int64(st.st, 2, *command.parent_tas_movie_tree_id); else sqlite3_bind_null(st.st, 2);
+    sqlite3_bind_int64(st.st, 3, command.dtm_artifact_id);
+    sqlite3_bind_int64(st.st, 4, command.itinerary_artifact_id);
+    sqlite3_bind_int64(st.st, 5, command.required_final_breakpoint_pc);
+    sqlite3_bind_int64(st.st, 6, command.checkpoint_savestate_id);
+    sqlite3_bind_text(st.st, 7, command.source_context_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 8, command.source_context_id);
+    sqlite3_bind_int64(st.st, 9, command.created_at_utc.time_since_epoch().count());
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (!InsertStateOutboxEvent(db_, "State.TasMovieTreeCreated.v1", "tas_movie_tree",
+            std::to_string(id), command.correlation_id, command.causation_id,
+            command.created_at_utc.time_since_epoch().count(), "tas_movie_tree", id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (tas_movie_tree_id_out) *tas_movie_tree_id_out = id;
     return true;
+}
+
+std::vector<TasMovieTreeRecord> SqliteStateDb::ListTasMovieTreeLineage(
+    std::int64_t tas_movie_tree_id) const {
+    std::vector<TasMovieTreeRecord> rows;
+    if (db_ == nullptr || tas_movie_tree_id <= 0) return rows;
+    Statement st;
+    constexpr const char* kSql =
+        "WITH RECURSIVE lineage(id,depth) AS (SELECT ?1,0 UNION ALL "
+        "SELECT t.parent_tas_movie_tree_id,depth+1 FROM state_tas_movie_trees t JOIN lineage l "
+        "ON t.tas_movie_tree_id=l.id WHERE t.parent_tas_movie_tree_id IS NOT NULL) "
+        "SELECT id FROM lineage ORDER BY depth DESC;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) return rows;
+    sqlite3_bind_int64(st.st, 1, tas_movie_tree_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        if (auto row = GetTasMovieTree(sqlite3_column_int64(st.st, 0)); row.has_value()) rows.push_back(*row);
+    }
+    return rows;
 }
 
 std::optional<std::string> SqliteStateDb::MaterializeArtifactToDirectory(
@@ -1269,8 +1359,10 @@ std::optional<ArtifactPayloadRecord> SqliteStateDb::ResolveArtifactPayload(
         dispatch_event_type = "State.SavestateCreated.v1";
     } else if (payload_ref_kind == "savestate_derivation" || payload_ref_kind == "derivation") {
         dispatch_event_type = "State.SavestateDerived.v1";
-    } else if (payload_ref_kind == "tas_variant" || payload_ref_kind == "tas-variant") {
-        dispatch_event_type = "State.TasVariantCreated.v1";
+    } else if (payload_ref_kind == "tas_movie_root") {
+        dispatch_event_type = "State.TasMovieRootCreated.v1";
+    } else if (payload_ref_kind == "tas_movie_tree") {
+        dispatch_event_type = "State.TasMovieTreeCreated.v1";
     } else {
         return std::nullopt;
     }
@@ -1297,8 +1389,11 @@ std::optional<ArtifactPayloadRecord> SqliteStateDb::ResolveArtifactPayloadForEve
     if (payload_ref_kind == "savestate_derivation" || payload_ref_kind == "derivation") {
         return ResolveSavestateDerivationRef(db_, payload_ref_id);
     }
-    if (payload_ref_kind == "tas_variant" || payload_ref_kind == "tas-variant") {
-        return ResolveTasVariantRef(db_, payload_ref_id);
+    if (payload_ref_kind == "tas_movie_root") {
+        return ResolveTasMovieRootRef(db_, payload_ref_id);
+    }
+    if (payload_ref_kind == "tas_movie_tree") {
+        return ResolveTasMovieTreeRef(db_, payload_ref_id);
     }
 
     return std::nullopt;

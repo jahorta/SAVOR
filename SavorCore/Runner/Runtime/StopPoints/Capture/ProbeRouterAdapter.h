@@ -23,7 +23,6 @@ struct ProbeRouterAdapterConfig
     StopSubscriptionGroupId group_id;
     StopSubscriptionId first_subscription_id;
     std::uint32_t cpu_observer_descriptor_id = 0;
-    StopEpochPolicy epoch_policy = StopEpochPolicy::RebindAfterRestore;
     std::int32_t priority = -100;
 };
 

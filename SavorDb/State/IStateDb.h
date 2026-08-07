@@ -48,32 +48,68 @@ struct DeriveSavestateCommand {
     std::string causation_id;
 };
 
-struct CreateTasVariantCommand {
-    std::string name;
-    std::int64_t base_dtm_artifact_id = 0;
-    std::optional<std::int64_t> dtmini_artifact_id;
-    std::string mutation_mode;
-    std::optional<std::int64_t> rtc_value;
-    std::optional<std::string> bookmark_name;
-    std::optional<std::int64_t> insert_frame_count;
-    std::optional<std::int64_t> parent_tas_variant_id;
-    std::optional<std::int64_t> produced_savestate_id;
+struct ArtifactRecord {
+    std::int64_t artifact_id = 0;
+    std::string sha256;
+    std::int64_t size_bytes = 0;
+    int compression_kind = 0;
+    std::string filename;
+    std::string file_ext;
+    std::string artifact_kind;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct CreateTasMovieRootCommand {
+    std::int64_t source_dtm_artifact_id = 0;
+    std::int64_t dtm_artifact_id = 0;
+    std::int64_t rtc_value = 0;
+    std::int64_t itinerary_artifact_id = 0;
+    std::uint32_t required_final_breakpoint_pc = 0;
+    std::int64_t checkpoint_savestate_id = 0;
+    std::string source_context_kind;
+    std::int64_t source_context_id = 0;
     types::UtcTimePoint created_at_utc{};
     std::string correlation_id;
     std::string causation_id;
 };
 
-struct TasVariantRecord {
-    std::int64_t tas_variant_id = 0;
-    std::string name;
-    std::int64_t base_dtm_artifact_id = 0;
-    std::optional<std::int64_t> dtmini_artifact_id;
-    std::string mutation_mode;
-    std::optional<std::int64_t> rtc_value;
-    std::optional<std::string> bookmark_name;
-    std::optional<std::int64_t> insert_frame_count;
-    std::optional<std::int64_t> parent_tas_variant_id;
-    std::optional<std::int64_t> produced_savestate_id;
+struct TasMovieRootRecord {
+    std::int64_t tas_movie_root_id = 0;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::int64_t dtm_artifact_id = 0;
+    std::int64_t rtc_value = 0;
+    std::int64_t itinerary_artifact_id = 0;
+    std::uint32_t required_final_breakpoint_pc = 0;
+    std::int64_t checkpoint_savestate_id = 0;
+    std::string source_context_kind;
+    std::int64_t source_context_id = 0;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct CreateTasMovieTreeCommand {
+    std::int64_t tas_movie_root_id = 0;
+    std::optional<std::int64_t> parent_tas_movie_tree_id;
+    std::int64_t dtm_artifact_id = 0;
+    std::int64_t itinerary_artifact_id = 0;
+    std::uint32_t required_final_breakpoint_pc = 0;
+    std::int64_t checkpoint_savestate_id = 0;
+    std::string source_context_kind;
+    std::int64_t source_context_id = 0;
+    types::UtcTimePoint created_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct TasMovieTreeRecord {
+    std::int64_t tas_movie_tree_id = 0;
+    std::int64_t tas_movie_root_id = 0;
+    std::optional<std::int64_t> parent_tas_movie_tree_id;
+    std::int64_t dtm_artifact_id = 0;
+    std::int64_t itinerary_artifact_id = 0;
+    std::uint32_t required_final_breakpoint_pc = 0;
+    std::int64_t checkpoint_savestate_id = 0;
+    std::string source_context_kind;
+    std::int64_t source_context_id = 0;
     types::UtcTimePoint created_at_utc{};
 };
 
@@ -101,14 +137,6 @@ struct SavestateDerivationRecord {
     types::UtcTimePoint created_at_utc{};
 };
 
-struct UpdateTasVariantProducedSavestateCommand {
-    std::int64_t tas_variant_id = 0;
-    std::int64_t produced_savestate_id = 0;
-    types::UtcTimePoint updated_at_utc{};
-    std::string correlation_id;
-    std::string causation_id;
-};
-
 struct IStateDb {
     virtual ~IStateDb() = default;
 
@@ -127,6 +155,15 @@ struct IStateDb {
         std::int64_t* derivation_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
+    virtual std::optional<ArtifactRecord> GetArtifact(
+        std::int64_t artifact_id) const = 0;
+
+    virtual std::optional<ArtifactRecord> GetArtifactBySha256(
+        std::string_view sha256) const = 0;
+
+    virtual std::optional<SavestateRecord> FindSavestateByArtifactId(
+        std::int64_t artifact_id) const = 0;
+
     virtual std::optional<SavestateRecord> GetSavestate(
         std::int64_t savestate_id) const = 0;
 
@@ -137,17 +174,34 @@ struct IStateDb {
         std::string_view source_context_kind,
         std::int64_t source_context_id) const = 0;
 
-    virtual bool CreateTasVariant(
-        const CreateTasVariantCommand& command,
-        std::int64_t* tas_variant_id_out = nullptr,
+    virtual bool CreateTasMovieRoot(
+        const CreateTasMovieRootCommand& command,
+        std::int64_t* tas_movie_root_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
-    virtual std::optional<TasVariantRecord> GetTasVariant(
-        std::int64_t tas_variant_id) const = 0;
+    virtual std::optional<TasMovieRootRecord> GetTasMovieRoot(
+        std::int64_t tas_movie_root_id) const = 0;
 
-    virtual bool UpdateTasVariantProducedSavestate(
-        const UpdateTasVariantProducedSavestateCommand& command,
+    virtual std::optional<TasMovieRootRecord> FindTasMovieRootBySourceRtc(
+        std::int64_t source_dtm_artifact_id,
+        std::int64_t rtc_value) const = 0;
+
+    virtual std::optional<TasMovieRootRecord> FindTasMovieRootByDtmArtifactId(
+        std::int64_t dtm_artifact_id) const = 0;
+
+    virtual bool CreateTasMovieTree(
+        const CreateTasMovieTreeCommand& command,
+        std::int64_t* tas_movie_tree_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
+
+    virtual std::optional<TasMovieTreeRecord> GetTasMovieTree(
+        std::int64_t tas_movie_tree_id) const = 0;
+
+    virtual std::optional<TasMovieTreeRecord> FindTasMovieTreeByDtmArtifactId(
+        std::int64_t dtm_artifact_id) const = 0;
+
+    virtual std::vector<TasMovieTreeRecord> ListTasMovieTreeLineage(
+        std::int64_t tas_movie_tree_id) const = 0;
 
     // Materializes an artifact to a directory using "<sha256><file_ext>" from state_artifact.
     virtual std::optional<std::string> MaterializeArtifactToDirectory(

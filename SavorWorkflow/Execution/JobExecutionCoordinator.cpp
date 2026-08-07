@@ -16,6 +16,26 @@
 #include "Runner/Runtime/Worksets/WorksetTypes.h"
 
 namespace savor::runner::parallel::savordb {
+
+bool detail::DispatchReadyToRetire(
+    const DispatchRetirementFacts& facts) noexcept {
+    if (!facts.summary_observed
+        || facts.acknowledged_items != facts.executable_items
+        || !facts.sidecar_persisted) {
+        return false;
+    }
+    switch (facts.authority) {
+    case DispatchRetirementAuthority::DrainingPersisted:
+        return facts.staged_items == facts.executable_items;
+    case DispatchRetirementAuthority::ReleasedDraining:
+        return true;
+    case DispatchRetirementAuthority::None:
+    case DispatchRetirementAuthority::DrainingPending:
+    default:
+        return false;
+    }
+}
+
 namespace {
 
 std::atomic<std::uint64_t> g_coordinator_sequence{1};
@@ -317,7 +337,6 @@ private:
     struct WorksetAffinity {
         std::string module_canonical_id;
         std::optional<std::string> execution_key;
-        std::optional<std::string> baseline_key;
     };
 
     struct WorkerLane {
@@ -337,7 +356,6 @@ private:
         bool has_submitted_workset = false;
         std::optional<std::string> actual_module_canonical_id;
         std::optional<std::string> actual_execution_key;
-        std::optional<std::string> actual_baseline_key;
         std::map<std::int64_t, WorksetAffinity> projected_affinities;
     };
     using WorkerLanePtr = std::shared_ptr<WorkerLane>;
@@ -1702,8 +1720,6 @@ JobExecutionCoordinator::Impl::SnapshotWorkerLanes() const {
             }
             snapshot.actual_execution_affinity_key =
                 lane->actual_execution_key;
-            snapshot.actual_baseline_affinity_key =
-                lane->actual_baseline_key;
             if (!lane->projected_affinities.empty()) {
                 snapshot.affinity_state =
                     WorkerSchedulerAffinityState::Projected;
@@ -1711,8 +1727,6 @@ JobExecutionCoordinator::Impl::SnapshotWorkerLanes() const {
                     lane->projected_affinities.rbegin()->second;
                 snapshot.projected_execution_affinity_key =
                     projected.execution_key;
-                snapshot.projected_baseline_affinity_key =
-                    projected.baseline_key;
             } else if (lane->has_submitted_workset) {
                 snapshot.affinity_state =
                     WorkerSchedulerAffinityState::Actual;
@@ -1946,7 +1960,6 @@ JobExecutionCoordinator::Impl::AffinityOf(
     return {
         .module_canonical_id = compatibility.module_canonical_id,
         .execution_key = compatibility.execution_affinity_key,
-        .baseline_key = compatibility.baseline_affinity_key,
     };
 }
 
@@ -1954,8 +1967,7 @@ int JobExecutionCoordinator::Impl::AffinityScore(
     const WorkerLane& lane,
     const savor::db::ExecutionWorksetCompatibility& compatibility) {
     const bool declares_affinity =
-        compatibility.execution_affinity_key.has_value()
-        || compatibility.baseline_affinity_key.has_value();
+        compatibility.execution_affinity_key.has_value();
     if (!declares_affinity) return 0;
 
     // Until a first reservation establishes projected state, a worker that
@@ -1968,13 +1980,11 @@ int JobExecutionCoordinator::Impl::AffinityScore(
     std::optional<std::string> module =
         lane.actual_module_canonical_id;
     std::optional<std::string> execution = lane.actual_execution_key;
-    std::optional<std::string> baseline = lane.actual_baseline_key;
     if (!lane.projected_affinities.empty()) {
         const auto& projected =
             lane.projected_affinities.rbegin()->second;
         module = projected.module_canonical_id;
         execution = projected.execution_key;
-        baseline = projected.baseline_key;
     }
 
     int score = 0;
@@ -1986,10 +1996,6 @@ int JobExecutionCoordinator::Impl::AffinityScore(
         && execution == compatibility.execution_affinity_key) {
         score += 2;
     }
-    if (compatibility.baseline_affinity_key.has_value()
-        && baseline == compatibility.baseline_affinity_key) {
-        score += 4;
-    }
     return score;
 }
 
@@ -1998,7 +2004,6 @@ void JobExecutionCoordinator::Impl::RefreshActualAffinity(
     const ReadyWorkerCompatibilitySnapshot& worker) {
     lane.actual_module_canonical_id = worker.warm_program_module_id;
     lane.actual_execution_key = worker.warm_execution_key_sha256;
-    lane.actual_baseline_key = worker.warm_baseline_sha256;
 }
 
 void JobExecutionCoordinator::Impl::RemoveProjectedAffinity(
@@ -2453,9 +2458,7 @@ bool JobExecutionCoordinator::Impl::ValidateReconstruction(
         || (compatibility.execution_affinity_key.has_value()
             && key.canonical_sha256
                 != *compatibility.execution_affinity_key)
-        || (compatibility.baseline_affinity_key.has_value()
-            && key.baseline.sha256
-                != *compatibility.baseline_affinity_key)) {
+        ) {
         return fail(
             "reconstructed workset changed durable compatibility "
             "metadata");
@@ -4524,13 +4527,19 @@ bool JobExecutionCoordinator::Impl::MarkDispatchDraining(
         return false;
     }
     if (Applied(receipt.disposition)) {
+        bool first_persisted_transition = false;
         {
             std::lock_guard lock(dispatch->mutex);
-            if (dispatch->phase == DispatchPhase::Draining) {
+            if (dispatch->phase == DispatchPhase::Draining
+                && !dispatch->draining_transition_persisted) {
                 dispatch->draining_transition_persisted = true;
+                first_persisted_transition = true;
             }
         }
-        ++draining_transitions_;
+        if (first_persisted_transition) {
+            ++draining_transitions_;
+        }
+        MaybeRetire(dispatch);
         return true;
     }
     {
@@ -4967,14 +4976,28 @@ void JobExecutionCoordinator::Impl::MaybeRetire(
             - std::min(item_count, suppressed);
         const bool sidecar_persisted =
             dispatch->sidecar_persisted_jobs.size() == suppressed;
-        complete = dispatch->phase == DispatchPhase::ReleasedDraining
-            ? dispatch->summary_observed
-                && dispatch->acknowledged_jobs.size() == executable
-                && sidecar_persisted
-            : dispatch->summary_observed
-                && dispatch->staged_jobs.size() == executable
-                && dispatch->acknowledged_jobs.size() == executable
-                && sidecar_persisted;
+        detail::DispatchRetirementAuthority authority =
+            detail::DispatchRetirementAuthority::None;
+        if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+            authority = detail::DispatchRetirementAuthority::
+                ReleasedDraining;
+        } else if (dispatch->phase == DispatchPhase::Draining) {
+            authority = dispatch->draining_transition_persisted
+                ? detail::DispatchRetirementAuthority::
+                    DrainingPersisted
+                : detail::DispatchRetirementAuthority::
+                    DrainingPending;
+        }
+        complete = detail::DispatchReadyToRetire(
+            {
+                .authority = authority,
+                .summary_observed = dispatch->summary_observed,
+                .executable_items = executable,
+                .staged_items = dispatch->staged_jobs.size(),
+                .acknowledged_items =
+                    dispatch->acknowledged_jobs.size(),
+                .sidecar_persisted = sidecar_persisted,
+            });
         if (complete) dispatch->phase = DispatchPhase::Retired;
     }
     if (!complete) return;

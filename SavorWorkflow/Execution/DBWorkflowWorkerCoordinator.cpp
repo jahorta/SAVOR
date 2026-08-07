@@ -90,8 +90,6 @@ bool HasUsableWorksetLimits(
         && limits.maximum_active_and_staged_items > 0
         && limits.maximum_active_and_staged_items
             <= limits.maximum_item_credits
-        && limits.maximum_state_cache_entries > 0
-        && limits.maximum_state_cache_bytes > 0
         && limits.finalizer_threads > 0
         && limits.maximum_pending_finalizers > 0
         && limits.maximum_pending_finalizer_bytes > 0
@@ -105,21 +103,14 @@ bool HasExactProductionCatalogShape(
     std::string* error_out) {
     static constexpr std::array<
         std::pair<std::string_view, std::string_view>,
-        9>
+        2>
         kProductionModules{{
             {"soa.seed_probe", "probe"},
-            {"soa.navigation.context", "capture"},
-            {"soa.tas_movie", "play_and_checkpoint"},
-            {"soa.tas_frame_detector", "detect"},
-            {"soa.battle.context", "capture"},
-            {"soa.battle.macro_probe", "probe"},
-            {"soa.battle.single_turn", "execute"},
-            {"soa.battle.completion", "complete"},
-            {"soa.battle.results_screen", "advance"},
+            {"soa.tas_movie_validation", "validate"},
         }};
     if (manifest.modules.size() != kProductionModules.size()) {
         if (error_out != nullptr) {
-            *error_out = "CompleteExact catalog must contain exactly nine "
+            *error_out = "CompleteExact catalog must contain exactly two "
                 "production modules";
         }
         return false;
@@ -152,7 +143,7 @@ bool HasExactProductionCatalogShape(
                 == module.entrypoints.end()) {
             if (error_out != nullptr) {
                 *error_out = "CompleteExact catalog module or entrypoint "
-                    "does not match the production nine-module catalog";
+                    "does not match the production two-module catalog";
             }
             return false;
         }
@@ -1679,8 +1670,6 @@ void DBWorkflowWorkerCoordinator::Stop() {
             slot->dead_in_flight_observed_at = {};
             slot->loaded_program_kind.reset();
             slot->loaded_program_runtime_affinity_key.reset();
-            slot->loaded_savestate_affinity_key.reset();
-            slot->loaded_workset_execution_key.reset();
             slot->worker.reset();
             worker_status_.UpdateState(
                 static_cast<std::int64_t>(slot->id),
@@ -2324,10 +2313,6 @@ void DBWorkflowWorkerCoordinator::HandleWorksetItemStarted(
             context.claimed.program_kind;
         slot->loaded_program_runtime_affinity_key =
             context.claimed.affinity.program_runtime_affinity_key;
-        slot->loaded_savestate_affinity_key =
-            context.claimed.affinity.savestate_affinity_key;
-        slot->loaded_workset_execution_key =
-            context.claimed.workset_execution_key;
         worker_status_.SetCurrentJob(
             static_cast<std::int64_t>(slot->id),
             context.claimed.job_id,
@@ -2707,7 +2692,7 @@ void DBWorkflowWorkerCoordinator::HandleWorksetItemTerminal(
         decoded->job_id =
             static_cast<std::uint64_t>(item_context.claimed.job_id);
         decoded->worker_id = event.worker_idx;
-        decoded->epoch = terminal.state_epoch;
+        decoded->epoch = terminal.workset_epoch;
 
         savor::db::ExecutionJobTerminalAuthorityReceipt
             authority_receipt{};
@@ -3441,10 +3426,6 @@ bool DBWorkflowWorkerCoordinator::DispatchClaimedWorksetToWorker(
             slot->loaded_program_kind = anchor.program_kind;
             slot->loaded_program_runtime_affinity_key =
                 anchor.affinity.program_runtime_affinity_key;
-            slot->loaded_savestate_affinity_key =
-                anchor.affinity.savestate_affinity_key;
-            slot->loaded_workset_execution_key =
-                anchor.workset_execution_key;
         }
         worker_status_.UpdateState(
             static_cast<std::int64_t>(slot->id),
@@ -3576,10 +3557,6 @@ bool DBWorkflowWorkerCoordinator::DispatchNextEligibleForWorker(
          << " job_set=" << anchor.job_set_id
          << " program_kind=" << anchor.program_kind
          << " claim_sequence=" << anchor.claim_sequence;
-    if (anchor.affinity.savestate_affinity_key.has_value()) {
-        line << " savestate_affinity="
-             << *anchor.affinity.savestate_affinity_key;
-    }
     if (anchor.affinity.program_runtime_affinity_key.has_value()) {
         line << " runtime_affinity="
              << *anchor.affinity.program_runtime_affinity_key;
@@ -3999,33 +3976,11 @@ void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
 
         bool dispatched_any = false;
         auto dispatchable_workers = CollectDispatchableWorkers();
-        ClaimedJobRecord anchor{};
-        if (job_materialization_service_.PeekMaterializedAnchor(
-                &anchor)) {
-            const auto is_exact_warm =
-                [&](const DispatchableWorkerInfo& worker) {
-                    return worker.loaded_workset_execution_key.has_value()
-                        && *worker.loaded_workset_execution_key
-                            == anchor.workset_execution_key;
-                };
-            std::sort(
-                dispatchable_workers.begin(),
-                dispatchable_workers.end(),
-                [&](const auto& lhs, const auto& rhs) {
-                    const bool lhs_warm = is_exact_warm(lhs);
-                    const bool rhs_warm = is_exact_warm(rhs);
-                    if (lhs_warm != rhs_warm) {
-                        return lhs_warm;
-                    }
-                    return lhs.worker_idx < rhs.worker_idx;
-                });
-        }
         for (const auto& worker : dispatchable_workers) {
             ++dispatch_attempt_count_;
             const bool dispatched = DispatchNextEligibleForWorker(
                 worker.worker_idx,
                 MaterializedJobSelectionAffinity{
-                    .savestate_affinity_key = worker.loaded_savestate_affinity_key,
                     .program_kind = worker.loaded_program_kind,
                     .program_runtime_affinity_key = worker.loaded_program_runtime_affinity_key,
                 },
@@ -5064,8 +5019,6 @@ void DBWorkflowWorkerCoordinator::CompleteWorkerSlotStartup(
     }
     slot.loaded_program_kind.reset();
     slot.loaded_program_runtime_affinity_key.reset();
-    slot.loaded_savestate_affinity_key.reset();
-    slot.loaded_workset_execution_key.reset();
     slot.runtime_manifest.reset();
 
     std::ostringstream line;
@@ -5101,8 +5054,6 @@ std::shared_ptr<savor::ProcessWorker> DBWorkflowWorkerCoordinator::ResetWorkerSl
     slot.dead_in_flight_observed_at = {};
     slot.loaded_program_kind.reset();
     slot.loaded_program_runtime_affinity_key.reset();
-    slot.loaded_savestate_affinity_key.reset();
-    slot.loaded_workset_execution_key.reset();
     slot.worker = std::make_shared<savor::ProcessWorker>();
     ConfigureWorkerCallbacks(
         slot.id,
@@ -5148,8 +5099,6 @@ void DBWorkflowWorkerCoordinator::StopWorkerSlot(
             slot.dead_in_flight_observed_at = {};
             slot.loaded_program_kind.reset();
             slot.loaded_program_runtime_affinity_key.reset();
-            slot.loaded_savestate_affinity_key.reset();
-            slot.loaded_workset_execution_key.reset();
         } else {
             slot.workset_admission_blocked = true;
         }
@@ -5247,9 +5196,6 @@ std::vector<DBWorkflowWorkerCoordinator::DispatchableWorkerInfo> DBWorkflowWorke
             .worker_idx = idx,
             .loaded_program_kind = slot.loaded_program_kind,
             .loaded_program_runtime_affinity_key = slot.loaded_program_runtime_affinity_key,
-            .loaded_savestate_affinity_key = slot.loaded_savestate_affinity_key,
-            .loaded_workset_execution_key =
-                slot.loaded_workset_execution_key,
         });
     }
 

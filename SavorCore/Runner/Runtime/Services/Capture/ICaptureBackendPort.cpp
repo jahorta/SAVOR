@@ -70,20 +70,6 @@ bool ProbeCaptureProfileAdapter::EmitMarker(
     return adapter_.EmitMarker(id, value);
 }
 
-bool ProbeCaptureProfileAdapter::PrepareForStateReplacement(
-    std::string* error_out)
-{
-    return adapter_.probe_runtime().prepare_for_core_shutdown(error_out);
-}
-
-bool ProbeCaptureProfileAdapter::ResumeAfterStateReplacement(
-    StateEpoch epoch,
-    std::string* error_out)
-{
-    adapter_.probe_runtime().set_guest_state_epoch(epoch.value());
-    return adapter_.probe_runtime().resume_after_core_boot(error_out);
-}
-
 StopCpuObservationResult ProbeCaptureProfileAdapter::ObserveRoutedHit(
     std::uint32_t descriptor_id,
     const RoutedStopEvent& event) noexcept

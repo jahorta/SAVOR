@@ -42,6 +42,12 @@ void FakeExecutionBackendControl::SetViCount(std::uint64_t value)
     snapshot.vi_count = value;
 }
 
+void FakeExecutionBackendControl::SetMovieInputCount(std::uint64_t value)
+{
+    std::lock_guard lock(mutex);
+    snapshot.movie_input_count = value;
+}
+
 void FakeExecutionBackendControl::SetMovieState(runtime::BackendMovieState value)
 {
     std::lock_guard lock(mutex);

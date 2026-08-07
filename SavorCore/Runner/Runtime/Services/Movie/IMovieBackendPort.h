@@ -12,17 +12,17 @@ namespace savor::runtime {
 struct MovieBackendResult
 {
     bool ok = false;
-    StateIntegrity integrity = StateIntegrity::Preserved;
+    GuestIntegrity integrity = GuestIntegrity::Preserved;
     std::string message;
 
     [[nodiscard]] static MovieBackendResult Success()
     {
-        return {true, StateIntegrity::Preserved, {}};
+        return {true, GuestIntegrity::Preserved, {}};
     }
 
     [[nodiscard]] static MovieBackendResult Failure(
         std::string message,
-        StateIntegrity integrity = StateIntegrity::Preserved)
+        GuestIntegrity integrity = GuestIntegrity::Preserved)
     {
         return {false, integrity, std::move(message)};
     }
@@ -51,10 +51,13 @@ class IMovieBackendPort
 public:
     virtual ~IMovieBackendPort() = default;
 
-    // Stages the exact DTM so the shared concrete backend can call
-    // MovieManager::PlayInput before its next boot.
-    virtual MoviePlaybackPrepareResult PrepareReadOnlyPlaybackBeforeBoot(
+    // Stages the exact DTM/startup-state pair for the next same-wrapper guest
+    // core restart.
+    virtual MoviePlaybackPrepareResult PrepareReadOnlyPlaybackForRestart(
         const std::filesystem::path& dtm_path) = 0;
+    virtual MovieBackendResult StopCoreForPreparedReadOnlyMovie() = 0;
+    virtual MovieBackendResult StartPreparedReadOnlyMovie() = 0;
+    virtual MovieBackendResult DiscardPreparedReadOnlyMovie() noexcept = 0;
     virtual MovieBackendResult StopMovie() noexcept = 0;
 
     virtual MovieBackendResult BeginRecording() = 0;
@@ -65,14 +68,14 @@ public:
     [[nodiscard]] virtual MovieSnapshot Snapshot() const = 0;
     virtual MovieCheckpointBackendResult CaptureRecordingCheckpoint() = 0;
 
-    // These operations stage and verify movie state around StateService's
-    // backend replacement. They do not advance or load guest state.
-    virtual MovieBackendResult PrepareStateReplacement(
-        const StateReplacementContext& context) = 0;
-    virtual MovieBackendResult CommitStateReplacement(
-        const StateReplacementContext& context) = 0;
-    virtual MovieBackendResult RollbackStateReplacement(
-        const StateReplacementContext& context) noexcept = 0;
+    // These operations stage and verify movie history around one workset-owned
+    // savestate load. They never own the load or advance the workset epoch.
+    virtual MovieBackendResult PrepareSavestateRestore(
+        const SavestateMovieRestoreContext& context) = 0;
+    virtual MovieBackendResult CommitSavestateRestore(
+        const SavestateMovieRestoreContext& context) = 0;
+    virtual MovieBackendResult RollbackSavestateRestore(
+        const SavestateMovieRestoreContext& context) noexcept = 0;
 
 protected:
     IMovieBackendPort() = default;

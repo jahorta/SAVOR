@@ -13,7 +13,6 @@ WorkflowDispatchCoordinator::WorkflowDispatchCoordinator(
 
 bool WorkflowDispatchCoordinator::DispatchNextEligibleForWorker(
     std::size_t worker_idx,
-    const std::optional<std::string>& worker_savestate_affinity,
     std::chrono::steady_clock::time_point now) {
     if (materialization_service_ == nullptr || !dispatch_to_worker_) {
         return false;
@@ -21,9 +20,7 @@ bool WorkflowDispatchCoordinator::DispatchNextEligibleForWorker(
 
     ClaimedJobRecord candidate{};
     if (!materialization_service_->TrySelectMaterializedJobForWorker(
-        MaterializedJobSelectionAffinity{
-            .savestate_affinity_key = worker_savestate_affinity,
-        },
+        MaterializedJobSelectionAffinity{},
         &candidate)) {
         return false;
     }

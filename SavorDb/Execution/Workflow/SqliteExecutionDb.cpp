@@ -2551,7 +2551,7 @@ bool SqliteExecutionDb::PublishWorkset(
             "compatibility_key,module_canonical_id,module_version,"
             "module_sha256,entrypoint,verified_dependency_sha256,"
             "runtime_profile_sha256,required_capability_mask,"
-            "execution_affinity_key,baseline_affinity_key,"
+            "execution_affinity_key,"
             "estimated_payload_bytes,priority,workflow_step_id,"
             "root_job_set_id "
             "FROM exec_workset "
@@ -2598,16 +2598,14 @@ bool SqliteExecutionDb::PublishWorkset(
                 == compatibility.required_capability_mask
             && OptionalText(existing.st, 12)
                 == compatibility.execution_affinity_key
-            && OptionalText(existing.st, 13)
-                == compatibility.baseline_affinity_key
             && static_cast<std::uint64_t>(
-                sqlite3_column_int64(existing.st, 14))
+                sqlite3_column_int64(existing.st, 13))
                 == compatibility.estimated_payload_bytes
-            && sqlite3_column_int(existing.st, 15)
+            && sqlite3_column_int(existing.st, 14)
                 == command.priority
-            && sqlite3_column_int64(existing.st, 16)
+            && sqlite3_column_int64(existing.st, 15)
                 == workflow_step_id
-            && sqlite3_column_int64(existing.st, 17)
+            && sqlite3_column_int64(existing.st, 16)
                 == root_job_set_id;
         bool membership_matches = metadata_matches;
         if (membership_matches) {
@@ -2710,10 +2708,10 @@ bool SqliteExecutionDb::PublishWorkset(
             "compatibility_key,module_canonical_id,module_version,"
             "module_sha256,entrypoint,verified_dependency_sha256,"
             "runtime_profile_sha256,required_capability_mask,"
-            "execution_affinity_key,baseline_affinity_key,"
+            "execution_affinity_key,"
             "estimated_payload_bytes,priority,item_count,published_at_utc) "
             "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,"
-            "?13,?14,?15,?16,?17,?18,?19,?20);",
+            "?13,?14,?15,?16,?17,?18,?19);",
             -1,
             &insert_workset.st,
             nullptr)
@@ -2781,21 +2779,17 @@ bool SqliteExecutionDb::PublishWorkset(
         insert_workset.st,
         15,
         compatibility.execution_affinity_key);
-    BindOptionalText(
-        insert_workset.st,
-        16,
-        compatibility.baseline_affinity_key);
     sqlite3_bind_int64(
         insert_workset.st,
-        17,
+        16,
         static_cast<std::int64_t>(
             compatibility.estimated_payload_bytes));
-    sqlite3_bind_int(insert_workset.st, 18, command.priority);
+    sqlite3_bind_int(insert_workset.st, 17, command.priority);
     sqlite3_bind_int(
         insert_workset.st,
-        19,
+        18,
         static_cast<int>(command.ordered_job_ids.size()));
-    sqlite3_bind_int64(insert_workset.st, 20, now);
+    sqlite3_bind_int64(insert_workset.st, 19, now);
     if (sqlite3_step(insert_workset.st) != SQLITE_DONE) {
         fail(sqlite3_errmsg(db_));
         return false;
@@ -3062,7 +3056,7 @@ SqliteExecutionDb::ClaimPublishedWorksetBatch(
             "w.module_canonical_id,w.module_version,w.module_sha256,"
             "w.entrypoint,w.verified_dependency_sha256,"
             "w.runtime_profile_sha256,w.required_capability_mask,"
-            "w.execution_affinity_key,w.baseline_affinity_key,"
+            "w.execution_affinity_key,"
             "w.estimated_payload_bytes,w.priority,w.published_at_utc,"
             "(SELECT COUNT(1) FROM exec_job j "
             " WHERE j.workset_id=w.workset_id AND j.state='QUEUED' "
@@ -3099,7 +3093,7 @@ SqliteExecutionDb::ClaimPublishedWorksetBatch(
             fail(sqlite3_errmsg(db_));
             return claimed_worksets;
         }
-        const auto priority = sqlite3_column_int(candidates.st, 18);
+        const auto priority = sqlite3_column_int(candidates.st, 17);
         if (!absolute_priority.has_value()) {
             absolute_priority = priority;
         } else if (priority != *absolute_priority) {
@@ -3130,16 +3124,14 @@ SqliteExecutionDb::ClaimPublishedWorksetBatch(
                 sqlite3_column_int64(candidates.st, 14));
         row.compatibility.execution_affinity_key =
             OptionalText(candidates.st, 15);
-        row.compatibility.baseline_affinity_key =
-            OptionalText(candidates.st, 16);
         row.compatibility.estimated_payload_bytes =
             static_cast<std::uint64_t>(
-                sqlite3_column_int64(candidates.st, 17));
+                sqlite3_column_int64(candidates.st, 16));
         row.priority = priority;
         candidate.published_at_utc =
-            sqlite3_column_int64(candidates.st, 19);
+            sqlite3_column_int64(candidates.st, 18);
         candidate.runnable_count =
-            sqlite3_column_int(candidates.st, 20);
+            sqlite3_column_int(candidates.st, 19);
         selected.push_back(std::move(candidate));
     }
     std::stable_sort(
@@ -4879,7 +4871,7 @@ SqliteExecutionDb::ClaimNextExecutionFinishedJob(
             "w.module_version,w.module_sha256,w.entrypoint,"
             "w.verified_dependency_sha256,w.runtime_profile_sha256,"
             "w.required_capability_mask,w.execution_affinity_key,"
-            "w.baseline_affinity_key,w.estimated_payload_bytes,"
+            "w.estimated_payload_bytes,"
             "j.worker_terminal_status,j.worker_terminal_fingerprint,"
             "j.worker_terminal_id,j.worker_terminal_error_code,"
             "j.worker_terminal_error_text,j.worker_terminal_unstarted,"
@@ -4931,33 +4923,31 @@ SqliteExecutionDb::ClaimNextExecutionFinishedJob(
             sqlite3_column_int64(details.st, 11));
     claimed.compatibility.execution_affinity_key =
         OptionalText(details.st, 12);
-    claimed.compatibility.baseline_affinity_key =
-        OptionalText(details.st, 13);
     claimed.compatibility.estimated_payload_bytes =
         static_cast<std::uint64_t>(
-            sqlite3_column_int64(details.st, 14));
-    claimed.worker_terminal_status = Text(details.st, 15);
-    claimed.worker_terminal_fingerprint = Text(details.st, 16);
-    claimed.worker_terminal_id = Text(details.st, 17);
-    claimed.worker_terminal_error_code = OptionalText(details.st, 18);
-    claimed.worker_terminal_error_text = OptionalText(details.st, 19);
+            sqlite3_column_int64(details.st, 13));
+    claimed.worker_terminal_status = Text(details.st, 14);
+    claimed.worker_terminal_fingerprint = Text(details.st, 15);
+    claimed.worker_terminal_id = Text(details.st, 16);
+    claimed.worker_terminal_error_code = OptionalText(details.st, 17);
+    claimed.worker_terminal_error_text = OptionalText(details.st, 18);
     claimed.worker_terminal_unstarted =
-        sqlite3_column_int(details.st, 20) != 0;
+        sqlite3_column_int(details.st, 19) != 0;
     claimed.result_blob.temp_blob_id =
-        sqlite3_column_int64(details.st, 21);
-    claimed.result_blob.relative_path = Text(details.st, 22);
-    claimed.result_blob.sha256 = Text(details.st, 23);
+        sqlite3_column_int64(details.st, 20);
+    claimed.result_blob.relative_path = Text(details.st, 21);
+    claimed.result_blob.sha256 = Text(details.st, 22);
     claimed.result_blob.size_bytes = static_cast<std::uint64_t>(
-        sqlite3_column_int64(details.st, 24));
-    claimed.result_blob.format = Text(details.st, 25);
-    claimed.result_blob.cleanup_state = Text(details.st, 26);
+        sqlite3_column_int64(details.st, 23));
+    claimed.result_blob.format = Text(details.st, 24);
+    claimed.result_blob.cleanup_state = Text(details.st, 25);
     claimed.result_blob.created_at_utc =
-        sqlite3_column_int64(details.st, 27);
-    claimed.processing_attempts = sqlite3_column_int(details.st, 28);
-    claimed.processing_failures = sqlite3_column_int(details.st, 29);
-    if (sqlite3_column_type(details.st, 30) == SQLITE_NULL
-        || sqlite3_column_int64(details.st, 30) < 0
-        || sqlite3_column_int64(details.st, 30)
+        sqlite3_column_int64(details.st, 26);
+    claimed.processing_attempts = sqlite3_column_int(details.st, 27);
+    claimed.processing_failures = sqlite3_column_int(details.st, 28);
+    if (sqlite3_column_type(details.st, 29) == SQLITE_NULL
+        || sqlite3_column_int64(details.st, 29) < 0
+        || sqlite3_column_int64(details.st, 29)
             > static_cast<sqlite3_int64>(
                 (std::numeric_limits<std::uint32_t>::max)())) {
         fail("execution-finished job has invalid runtime ordinal");
@@ -4965,7 +4955,7 @@ SqliteExecutionDb::ClaimNextExecutionFinishedJob(
     }
     claimed.runtime_item_ordinal =
         static_cast<std::uint32_t>(
-            sqlite3_column_int64(details.st, 30));
+            sqlite3_column_int64(details.st, 29));
 
     if (!InsertJobActionEventAndOutbox(
             db_,
@@ -5028,7 +5018,7 @@ SqliteExecutionDb::ListInterruptedResultProcessingJobs(
                 "w.module_version,w.module_sha256,w.entrypoint,"
                 "w.verified_dependency_sha256,w.runtime_profile_sha256,"
                 "w.required_capability_mask,w.execution_affinity_key,"
-                "w.baseline_affinity_key,w.estimated_payload_bytes,"
+                "w.estimated_payload_bytes,"
                 "j.worker_terminal_status,j.worker_terminal_fingerprint,"
                 "j.worker_terminal_id,j.worker_terminal_error_code,"
                 "j.worker_terminal_error_text,j.worker_terminal_unstarted,"
@@ -5071,14 +5061,14 @@ SqliteExecutionDb::ListInterruptedResultProcessingJobs(
             && sqlite3_column_type(details.st, 9) != SQLITE_NULL
             && sqlite3_column_type(details.st, 10) != SQLITE_NULL
             && sqlite3_column_type(details.st, 11) != SQLITE_NULL
+            && sqlite3_column_type(details.st, 13) != SQLITE_NULL
             && sqlite3_column_type(details.st, 14) != SQLITE_NULL
             && sqlite3_column_type(details.st, 15) != SQLITE_NULL
             && sqlite3_column_type(details.st, 16) != SQLITE_NULL
-            && sqlite3_column_type(details.st, 17) != SQLITE_NULL
-            && sqlite3_column_type(details.st, 20) != SQLITE_NULL
+            && sqlite3_column_type(details.st, 19) != SQLITE_NULL
+            && sqlite3_column_type(details.st, 27) != SQLITE_NULL
             && sqlite3_column_type(details.st, 28) != SQLITE_NULL
-            && sqlite3_column_type(details.st, 29) != SQLITE_NULL
-            && sqlite3_column_type(details.st, 30) != SQLITE_NULL;
+            && sqlite3_column_type(details.st, 29) != SQLITE_NULL;
         if (!interrupted.structural_metadata_complete) {
             interrupted.structural_diagnostic =
                 "PROCESSING job is missing dispatch, workset, terminal, or ordinal metadata";
@@ -5098,32 +5088,31 @@ SqliteExecutionDb::ListInterruptedResultProcessingJobs(
         claimed.compatibility.required_capability_mask =
             static_cast<std::uint64_t>(sqlite3_column_int64(details.st, 11));
         claimed.compatibility.execution_affinity_key = OptionalText(details.st, 12);
-        claimed.compatibility.baseline_affinity_key = OptionalText(details.st, 13);
         claimed.compatibility.estimated_payload_bytes =
-            static_cast<std::uint64_t>(sqlite3_column_int64(details.st, 14));
-        claimed.worker_terminal_status = Text(details.st, 15);
-        claimed.worker_terminal_fingerprint = Text(details.st, 16);
-        claimed.worker_terminal_id = Text(details.st, 17);
-        claimed.worker_terminal_error_code = OptionalText(details.st, 18);
-        claimed.worker_terminal_error_text = OptionalText(details.st, 19);
-        claimed.worker_terminal_unstarted = sqlite3_column_int(details.st, 20) != 0;
+            static_cast<std::uint64_t>(sqlite3_column_int64(details.st, 13));
+        claimed.worker_terminal_status = Text(details.st, 14);
+        claimed.worker_terminal_fingerprint = Text(details.st, 15);
+        claimed.worker_terminal_id = Text(details.st, 16);
+        claimed.worker_terminal_error_code = OptionalText(details.st, 17);
+        claimed.worker_terminal_error_text = OptionalText(details.st, 18);
+        claimed.worker_terminal_unstarted = sqlite3_column_int(details.st, 19) != 0;
         interrupted.has_result_blob_record =
-            sqlite3_column_type(details.st, 21) != SQLITE_NULL;
+            sqlite3_column_type(details.st, 20) != SQLITE_NULL;
         if (interrupted.has_result_blob_record) {
-            claimed.result_blob.temp_blob_id = sqlite3_column_int64(details.st, 21);
-            claimed.result_blob.relative_path = Text(details.st, 22);
-            claimed.result_blob.sha256 = Text(details.st, 23);
+            claimed.result_blob.temp_blob_id = sqlite3_column_int64(details.st, 20);
+            claimed.result_blob.relative_path = Text(details.st, 21);
+            claimed.result_blob.sha256 = Text(details.st, 22);
             claimed.result_blob.size_bytes = static_cast<std::uint64_t>(
-                sqlite3_column_int64(details.st, 24));
-            claimed.result_blob.format = Text(details.st, 25);
-            claimed.result_blob.cleanup_state = Text(details.st, 26);
-            claimed.result_blob.created_at_utc = sqlite3_column_int64(details.st, 27);
+                sqlite3_column_int64(details.st, 23));
+            claimed.result_blob.format = Text(details.st, 24);
+            claimed.result_blob.cleanup_state = Text(details.st, 25);
+            claimed.result_blob.created_at_utc = sqlite3_column_int64(details.st, 26);
         }
-        claimed.processing_attempts = sqlite3_column_int(details.st, 28);
-        claimed.processing_failures = sqlite3_column_int(details.st, 29);
-        if (sqlite3_column_type(details.st, 30) != SQLITE_NULL) {
+        claimed.processing_attempts = sqlite3_column_int(details.st, 27);
+        claimed.processing_failures = sqlite3_column_int(details.st, 28);
+        if (sqlite3_column_type(details.st, 29) != SQLITE_NULL) {
             claimed.runtime_item_ordinal = static_cast<std::uint32_t>(
-                sqlite3_column_int64(details.st, 30));
+                sqlite3_column_int64(details.st, 29));
         }
         result.push_back(std::move(interrupted));
     }
@@ -6896,9 +6885,6 @@ std::optional<ClaimedExecutionJob> SqliteExecutionDb::ClaimNextReadyExecutionJob
         if (rc == SQLITE_ROW) {
             claimed.job_id = sqlite3_column_int64(claim_st.st, 0);
             claimed.job_set_id = sqlite3_column_int64(claim_st.st, 1);
-            if (sqlite3_column_type(claim_st.st, 2) != SQLITE_NULL) {
-                claimed.savestate_affinity_key = "savestate:" + std::to_string(sqlite3_column_int64(claim_st.st, 2));
-            }
             const auto program_kind = sqlite3_column_int(claim_st.st, 3);
             const auto* program_ref_kind_text = sqlite3_column_text(claim_st.st, 4);
             const auto program_ref_kind = program_ref_kind_text ? reinterpret_cast<const char*>(program_ref_kind_text) : "";
@@ -7041,10 +7027,6 @@ std::vector<ClaimedExecutionJob> SqliteExecutionDb::ClaimBatchReadyExecutionJobs
         ClaimedExecutionJob row{};
         row.job_id = sqlite3_column_int64(candidates.st, 0);
         row.job_set_id = sqlite3_column_int64(candidates.st, 1);
-        if (sqlite3_column_type(candidates.st, 2) != SQLITE_NULL) {
-            row.savestate_affinity_key =
-                "savestate:" + std::to_string(sqlite3_column_int64(candidates.st, 2));
-        }
         const auto program_kind = sqlite3_column_int(candidates.st, 3);
         const auto* program_ref_kind_text = sqlite3_column_text(candidates.st, 4);
         const auto program_ref_kind = program_ref_kind_text != nullptr

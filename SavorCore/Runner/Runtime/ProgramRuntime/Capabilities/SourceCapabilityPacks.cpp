@@ -173,10 +173,10 @@ std::vector<TypeSchemaDefinition> BuildSchemas()
         "soa.battle.CaptureContextRequest",
         {
             {"stop_sequence", TypeRef::Builtin(BuiltinType::U64)},
-            {"state_epoch", TypeRef::Builtin(BuiltinType::U64)},
+            {"workset_epoch", TypeRef::Builtin(BuiltinType::U64)},
             {"expected_pc", TypeRef::Builtin(BuiltinType::U32)},
         },
-        "record CaptureContextRequest/1(stop_sequence,state_epoch,expected_pc)"));
+        "record CaptureContextRequest/1(stop_sequence,workset_epoch,expected_pc)"));
 
     schemas.push_back(EnumSchema(
         "soa.battle.BattleAction",
@@ -246,7 +246,7 @@ std::vector<TypeSchemaDefinition> BuildSchemas()
         "soa.navigation.CaptureContextRequest",
         {
             {"stop_sequence", TypeRef::Builtin(BuiltinType::U64)},
-            {"state_epoch", TypeRef::Builtin(BuiltinType::U64)},
+            {"workset_epoch", TypeRef::Builtin(BuiltinType::U64)},
             {"expected_pc", TypeRef::Builtin(BuiltinType::U32)},
         },
         "record NavigationCaptureContextRequest/1"));

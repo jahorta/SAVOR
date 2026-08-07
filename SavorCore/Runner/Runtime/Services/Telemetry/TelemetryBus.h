@@ -35,7 +35,7 @@ struct TelemetryEvent
     std::string source;
     std::string kind;
     TelemetrySeverity severity = TelemetrySeverity::Info;
-    std::optional<StateEpoch> epoch;
+    std::optional<WorksetEpoch> epoch;
     std::string payload;
     bool record_progress = false;
     TelemetryLossPolicy loss_policy =

@@ -336,8 +336,7 @@ Required sequence:
 1. A runs and returns with all invocation resources unwound.
 2. The existing result/transition handler projects A's outputs and the B handler constructs its exact
    runtime invocation from current persisted data.
-3. B starts through the same `ProgramRuntime`, either from a named state artifact or an explicitly
-   authorized clean `ContinueSession`.
+3. B starts through the same `ProgramRuntime` from its own exact artifact baseline.
 4. B returns and fully unwinds.
 5. The A handler invokes the exact original A module revision and entrypoint again.
 6. The runtime proves that the second A owns only its newly acquired resource scopes.
@@ -445,7 +444,7 @@ frontiers remain workflow concerns even when their already-ready scalar invocati
 | Bounded interaction and input | `InputArbiter` plus game actions | Doors, replay, cutscenes, overworld |
 | Typed runtime observations | Game capability packs and capture/telemetry services | All designs |
 | Predicate/check composition | Module-building library lowering to IR, observation actions, scoped router qualifications, and `ConditionObservation` emissions | Survey, replay, collision search, cutscenes, and overworld |
-| Savestate load/save and epochs | `StateService` | Replay, cutscenes, overworld; Survey baseline reload only |
+| Savestate load/save and epochs | `SavestateService` | Replay, cutscenes, overworld; Survey baseline reload only |
 | Route/control playback | Navigation subprograms/actions | Replay and validation |
 | Frontier scheduling | Separate future workflow/frontier project | Collision search and overworld DFS |
 | Deterministic reduction | Existing workflow integration where supported; otherwise a separate future workflow project | Survey and collision refinement |
@@ -462,7 +461,7 @@ representation and interfaces unchanged.
 - A failed executable-patch precondition, readback, cache/JIT operation, or restoration taints the session
   and quarantines all positive observations from that invocation.
 - A masked BitVar write that changes any undeclared bit invalidates the Survey job.
-- A state restore increments `StateEpoch`; pre-restore handles, selected-object pointers, and pending
+- A state restore increments `WorksetEpoch`; pre-restore handles, selected-object pointers, and pending
   observations are invalid and must be reacquired.
 - Wrong door TBLID, missing open witness, failure to cross, or failed settle yields no successor anchor.
 - Replay divergence is a typed domain outcome; transport/emulator failure is an infrastructure outcome.
@@ -473,7 +472,7 @@ representation and interfaces unchanged.
   bypass session ownership.
 - A bounded overworld expansion cannot own or corrupt a durable DFS stack. Durable retry behavior belongs
   to the separate orchestration project.
-- Cleanup failure always prohibits `ContinueSession`, even when the domain outcome otherwise succeeded.
+- Cleanup failure remains an infrastructure failure even when the domain outcome otherwise succeeded.
 
 ## Architectural implications illustrated
 

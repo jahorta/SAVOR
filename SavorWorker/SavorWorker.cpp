@@ -163,8 +163,8 @@ savor::wrms::RejectionCode MapRejectionCode(
         return WireCode::InvocationMismatch;
     case RuntimeCode::DuplicateCancellation:
         return WireCode::DuplicateCancellation;
-    case RuntimeCode::StateEpochMismatch:
-        return WireCode::StateEpochMismatch;
+    case RuntimeCode::WorksetEpochMismatch:
+        return WireCode::WorksetEpochMismatch;
     case RuntimeCode::BackendFailure:
         return WireCode::BackendFailure;
     case RuntimeCode::RuntimeStopping:
@@ -206,8 +206,6 @@ MessageKind MapCommandKind(savor::runtime::WorkerCommandKind kind) {
         return MessageKind::OpenSession;
     case savor::runtime::WorkerCommandKind::PrepareModule:
         return MessageKind::PrepareModule;
-    case savor::runtime::WorkerCommandKind::InvokeProgram:
-        return MessageKind::SubmitInvocation;
     case savor::runtime::WorkerCommandKind::CancelInvocation:
         return MessageKind::CancelInvocation;
     case savor::runtime::WorkerCommandKind::SubmitWorkset:
@@ -298,8 +296,8 @@ savor::runtime::WorkerRejectionCode MapExecutionError(
     case Error::InterruptionPolicyViolation:
     case Error::InterruptionDepthExceeded:
         return Rejection::InvalidState;
-    case Error::StateEpochMismatch:
-        return Rejection::StateEpochMismatch;
+    case Error::WorksetEpochMismatch:
+        return Rejection::WorksetEpochMismatch;
     case Error::Unsupported:
     case Error::InputUnavailable:
         return Rejection::Unsupported;
@@ -347,8 +345,8 @@ savor::wrms::ExecutionTerminalStatusCode MapExecutionTerminalStatus(
         return Wire::InterruptionDepthExceeded;
     case Runtime::InterruptionFailed:
         return Wire::InterruptionFailed;
-    case Runtime::StateEpochMismatch:
-        return Wire::StateEpochMismatch;
+    case Runtime::WorksetEpochMismatch:
+        return Wire::WorksetEpochMismatch;
     case Runtime::Unsupported:
         return Wire::Unsupported;
     case Runtime::BackendFailure:
@@ -431,40 +429,6 @@ public:
             return false;
         }
         return PublishRaw(kind, request_id, std::move(encoded_payload));
-    }
-
-    bool PublishInvocationTerminal(
-        const savor::wrms::InvocationTerminalPayload& terminal) {
-        std::vector<std::uint8_t> encoded_payload;
-        if (savor::wrms::EncodePayload(terminal, encoded_payload)) {
-            return PublishRaw(
-                MessageKind::InvocationTerminal,
-                0,
-                std::move(encoded_payload));
-        }
-
-        savor::wrms::InvocationTerminalPayload fallback{
-            .invocation_id = terminal.invocation_id,
-            .attempt_id = terminal.attempt_id,
-            .status =
-                savor::wrms::InvocationTerminalStatus::InfrastructureFailure,
-            .session_disposition = terminal.session_disposition,
-            .state_epoch = terminal.state_epoch,
-            .rejection_code = savor::wrms::RejectionCode::InternalFailure,
-            .error_code = "TerminalEncodingFailed",
-            .message =
-                "Invocation terminal payload could not be encoded within WRMS bounds",
-        };
-        encoded_payload.clear();
-        if (!savor::wrms::EncodePayload(fallback, encoded_payload) ||
-            !PublishRaw(
-                MessageKind::InvocationTerminal,
-                0,
-                std::move(encoded_payload))) {
-            MarkUnhealthy();
-            return false;
-        }
-        return true;
     }
 
     bool PublishRaw(
@@ -728,7 +692,7 @@ void PublishCommandCompletion(
         savor::wrms::OpenSessionResultPayload payload{
             .success = succeeded,
             .session_id = session.session_id.value(),
-            .state_epoch = session.state_epoch.value(),
+            .workset_epoch = session.workset_epoch.value(),
             .capability_mask = snapshot.capabilities,
             .worker_state = MapWorkerState(snapshot.state),
             .session_disposition =
@@ -749,7 +713,7 @@ void PublishCommandCompletion(
                 ? savor::wrms::ScreenshotStatus::Captured
                 : savor::wrms::ScreenshotStatus::Failed,
             .session_id = session.session_id.value(),
-            .state_epoch = session.state_epoch.value(),
+            .workset_epoch = session.workset_epoch.value(),
             .output_path =
                 metadata.TakeScreenshot(result.request_id.value()),
             .rejection_code = MapRejectionCode(result.error.code),
@@ -779,7 +743,7 @@ void PublishCommandCompletion(
                 .control = MapExecutionControl(control),
                 .status = MapCommandStatus(result),
                 .session_id = session.session_id.value(),
-                .state_epoch = session.state_epoch.value(),
+                .workset_epoch = session.workset_epoch.value(),
                 .operation_id = operation_id,
                 .activity = MapExecutionActivity(execution.activity),
                 .has_terminal_status =
@@ -873,7 +837,7 @@ void PublishWorkerEvent(
                         .event_type =
                             savor::wrms::SessionEventType::StateChanged,
                         .session_id = session.session_id.value(),
-                        .state_epoch = session.state_epoch.value(),
+                        .workset_epoch = session.workset_epoch.value(),
                         .capability_mask = state.current.capabilities,
                         .worker_state = MapWorkerState(state.current.state),
                         .session_disposition =
@@ -927,23 +891,6 @@ void PublishWorkerEvent(
                         .progress = std::move(encoded),
                     });
             },
-            [&](const savor::runtime::ProgramInvocationTerminalEvent& terminal) {
-                publisher.PublishInvocationTerminal(
-                    savor::wrms::InvocationTerminalPayload{
-                        .invocation_id = terminal.invocation_id.value(),
-                        .attempt_id = terminal.attempt_id.value(),
-                        .status = MapTerminalStatus(terminal.status),
-                        .session_disposition =
-                            MapSessionDisposition(
-                                terminal.session_disposition),
-                        .state_epoch = terminal.origin_state_epoch.value(),
-                        .rejection_code =
-                            MapRejectionCode(terminal.error.code),
-                        .error_code = ErrorCodeString(terminal.error.code),
-                        .message = terminal.error.message,
-                        .result = terminal.output_payload,
-                    });
-            },
             [&](const savor::runtime::WorkerWorksetStateEvent& state) {
                 publisher.Publish(
                     MessageKind::WorksetState,
@@ -973,13 +920,13 @@ void PublishWorkerEvent(
                         .invocation_id = started.invocation_id.value(),
                         .attempt_id = started.attempt_id.value(),
                         .session_id = started.session_id.value(),
-                        .state_epoch = started.state_epoch.value(),
+                        .workset_epoch = started.workset_epoch.value(),
                         .baseline_sha256 =
                             started.baseline.key.sha256,
                         .baseline_lineage =
                             started.baseline.lineage,
-                        .baseline_restored =
-                            started.baseline.restored,
+                        .baseline_state_established =
+                            started.baseline.state_established,
                     });
             },
             [&](const savor::runtime::WorkerWorksetItemTerminalEvent& item) {
@@ -1004,8 +951,8 @@ void PublishWorkerEvent(
                         .session_disposition =
                             MapSessionDisposition(
                                 terminal.session_disposition),
-                        .state_epoch =
-                            terminal.origin_state_epoch.value(),
+                        .workset_epoch =
+                            terminal.workset_epoch.value(),
                         .unstarted = item.unstarted,
                         .rejection_code =
                             MapRejectionCode(terminal.error.code),
@@ -1075,7 +1022,7 @@ void PublishWorkerEvent(
                     0,
                     savor::wrms::ExecutionStatePayload{
                         .session_id = execution_event.session_id.value(),
-                        .state_epoch = snapshot.state_epoch.value(),
+                        .workset_epoch = snapshot.workset_epoch.value(),
                         .operation_id = operation_id,
                         .activity =
                             MapExecutionActivity(snapshot.activity),
@@ -1107,7 +1054,7 @@ void PublishWorkerEvent(
                     0,
                     savor::wrms::HostEventPayload{
                         .session_id = host.session_id.value(),
-                        .state_epoch = host.state_epoch.value(),
+                        .workset_epoch = host.workset_epoch.value(),
                         .sequence = host.event_sequence.value(),
                         .name = host.name,
                         .event_data = host.encoded_payload,
@@ -1254,21 +1201,6 @@ bool SubmitFrame(
         (void)runtime.Submit(
             WireRequestId{frame.header.request_id},
             PrepareModuleCommand{std::move(module)});
-        return true;
-    }
-    case MessageKind::SubmitInvocation: {
-        publisher.Publish(
-            MessageKind::CommandResult,
-            frame.header.request_id,
-            savor::wrms::CommandResultPayload{
-                .command_kind = MessageKind::SubmitInvocation,
-                .status = savor::wrms::CommandStatus::Unsupported,
-                .rejection_code =
-                    savor::wrms::RejectionCode::Unsupported,
-                .error_code = "ReservedSubmitInvocation",
-                .message =
-                    "SubmitInvocation is reserved; submit a one-item WorkerWorkset",
-            });
         return true;
     }
     case MessageKind::SubmitWorkset: {
@@ -1465,7 +1397,8 @@ bool SubmitFrame(
         (void)runtime.Submit(
             WireRequestId{frame.header.request_id},
             CaptureScreenshotCommand{
-                .session_id = SessionId{payload.session_id},
+                .workset_id = WorkerWorksetId{payload.workset_id},
+                .item_id = WorkerWorksetItemId{payload.item_id},
                 .output_path = std::move(payload.output_path),
                 .timeout = std::chrono::milliseconds{
                     payload.timeout_ms ? payload.timeout_ms : 3000},
@@ -1503,9 +1436,8 @@ bool SubmitFrame(
             WireRequestId{frame.header.request_id},
             ControlExecutionCommand{
                 .control = control,
-                .session_id = SessionId{payload.session_id},
-                .expected_state_epoch =
-                    StateEpoch{payload.expected_state_epoch},
+                .workset_id = WorkerWorksetId{payload.workset_id},
+                .item_id = WorkerWorksetItemId{payload.item_id},
                 .count = payload.count,
                 .timeout = std::chrono::milliseconds{
                     payload.timeout_ms},

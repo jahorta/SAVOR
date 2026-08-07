@@ -8,7 +8,7 @@
 #include "NavigationContext/NavigationContextPhaseRegistration.h"
 #include "ProgramKindRegistry.h"
 #include "SeedProbe/SeedProbeProgram.h"
-#include "TasMovie/TasMoviePhaseRegistration.h"
+#include "TasMovieValidation/TasMovieValidationProgram.h"
 
 namespace savor::db::execution::programdb {
 
@@ -20,7 +20,7 @@ struct ProductionProgramKindRegistryDependencies {
 };
 
 struct ProductionProgramKindRegistryConfig {
-    tasmovie::TasMoviePhaseRegistrationConfig tas_movie;
+    tasmovievalidation::TasMovieValidationProgramConfig tas_movie_validation;
     seedprobe::SeedProbeProgramConfig seed_probe;
     battlecontext::BattleContextProbePhaseRegistrationConfig battle_context;
     battle::BattleSingleTurnPhaseRegistrationConfig battle_single_turn;

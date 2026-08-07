@@ -28,7 +28,7 @@ void AppendNumber(std::string& output, Value value)
 
 void AppendCompatibility(
     std::string& output,
-    const StateCompatibilityToken& value)
+    const ArtifactCompatibilityToken& value)
 {
     AppendField(output, value.game_id);
     AppendField(output, value.iso_sha256);
@@ -58,37 +58,15 @@ ProgramBaselineKey ComputeProgramBaselineKey(
     std::string canonical;
     AppendNumber(
         canonical,
-        static_cast<std::uint32_t>(definition.state_kind));
+        static_cast<std::uint32_t>(definition.artifact.kind));
     AppendField(canonical, definition.lineage);
-    AppendNumber(
-        canonical,
-        definition.current_session.has_value() ? 1 : 0);
-    if (definition.current_session)
-    {
-        AppendNumber(
-            canonical,
-            definition.current_session->session_id.value());
-        AppendNumber(
-            canonical,
-            definition.current_session->state_epoch.value());
-        AppendNumber(
-            canonical,
-            definition.current_session->require_clean_idle ? 1 : 0);
-    }
-    AppendNumber(canonical, definition.artifact.has_value() ? 1 : 0);
-    if (definition.artifact)
-    {
-        const ProgramBaselineArtifact& artifact = *definition.artifact;
-        AppendField(canonical, artifact.state_sha256);
-        AppendNumber(canonical, artifact.movie_path ? 1 : 0);
-        AppendField(canonical, artifact.movie_sha256);
-        AppendNumber(
-            canonical,
-            static_cast<std::uint32_t>(artifact.movie_mode));
-        AppendCompatibility(canonical, artifact.compatibility);
-        AppendField(canonical, artifact.lineage.edge);
-        AppendField(canonical, artifact.lineage.producer);
-    }
+    const ProgramBaselineArtifact& artifact = definition.artifact;
+    AppendField(canonical, artifact.state_sha256);
+    AppendNumber(canonical, artifact.movie_path ? 1 : 0);
+    AppendField(canonical, artifact.movie_sha256);
+    AppendCompatibility(canonical, artifact.compatibility);
+    AppendField(canonical, artifact.lineage.edge);
+    AppendField(canonical, artifact.lineage.producer);
     AppendNumber(canonical, definition.components.size());
     for (const ProgramBaselineComponent& component : definition.components)
     {
@@ -168,18 +146,6 @@ WorksetValidationResult ValidateInitialWorksetCancellationSidecar(
         previous = item_id.value();
     }
     return WorksetValidationResult::Success();
-}
-
-std::string ComputeStateCacheKeyHash(const StateCacheKey& key)
-{
-    std::string canonical;
-    AppendField(canonical, key.baseline.sha256);
-    AppendField(canonical, key.state_sha256);
-    AppendField(canonical, key.lineage);
-    AppendCompatibility(canonical, key.compatibility);
-    AppendField(canonical, key.movie_continuation_sha256);
-    AppendNumber(canonical, key.session_generation);
-    return hash::sha256(canonical.data(), canonical.size());
 }
 
 WorksetValidationResult ValidateWorkerWorksetDefinition(
@@ -284,60 +250,56 @@ WorksetValidationResult ValidateWorkerWorksetDefinition(
             WorkerRejectionCode::InvalidArgument,
             "WorkerWorkset baseline requires explicit lineage");
     }
-    const bool artifact_baseline =
-        definition.baseline.state_kind ==
-        ProgramBaselineStateKind::Artifact;
-    const bool current_session_baseline =
-        definition.baseline.state_kind ==
-        ProgramBaselineStateKind::CurrentSession;
-    if (artifact_baseline !=
-            definition.baseline.artifact.has_value() ||
-        current_session_baseline !=
-            definition.baseline.current_session.has_value())
+    const ProgramBaselineArtifact& artifact = definition.baseline.artifact;
+    if (!artifact.compatibility.Complete() ||
+        artifact.lineage.edge.empty() || artifact.lineage.producer.empty())
     {
         return WorksetValidationResult::Failure(
             WorkerRejectionCode::InvalidArgument,
-            "Program baseline kind does not match its exact state source");
+            "Program baseline artifact compatibility or lineage is incomplete");
     }
-    if (current_session_baseline &&
-        !static_cast<bool>(*definition.baseline.current_session))
+    const bool has_state = !artifact.state_path.empty();
+    const bool has_state_hash = !artifact.state_sha256.empty();
+    const bool has_movie = artifact.movie_path.has_value();
+    const bool has_movie_hash = !artifact.movie_sha256.empty();
+    switch (artifact.kind)
     {
+    case ProgramBaselineArtifactKind::Savestate: {
+        if (!has_state || !CompleteSha256(artifact.state_sha256) ||
+            has_movie != has_movie_hash)
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Savestate baseline requires an exact state and a complete optional DTM sidecar");
+        }
+        if (has_movie)
+        {
+            const std::filesystem::path expected_movie =
+                std::filesystem::path(artifact.state_path.string() + ".dtm");
+            if (*artifact.movie_path != expected_movie ||
+                !CompleteSha256(artifact.movie_sha256))
+            {
+                return WorksetValidationResult::Failure(
+                    WorkerRejectionCode::InvalidArgument,
+                    "Savestate baseline DTM must be the exact same-name sidecar");
+            }
+        }
+        break;
+    }
+    case ProgramBaselineArtifactKind::ReadOnlyMovie:
+        if (!has_movie || !CompleteSha256(artifact.movie_sha256) ||
+            has_state != has_state_hash ||
+            (has_state && !CompleteSha256(artifact.state_sha256)))
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Read-only-movie baseline requires an exact DTM and a complete optional startup savestate");
+        }
+        break;
+    default:
         return WorksetValidationResult::Failure(
             WorkerRejectionCode::InvalidArgument,
-            "Current-session baseline requires exact clean-idle session and epoch evidence");
-    }
-    if (definition.baseline.artifact)
-    {
-        const ProgramBaselineArtifact& artifact =
-            *definition.baseline.artifact;
-        if (artifact.state_path.empty() ||
-            !CompleteSha256(artifact.state_sha256) ||
-            !artifact.compatibility.Complete())
-        {
-            return WorksetValidationResult::Failure(
-                WorkerRejectionCode::InvalidArgument,
-                "Program baseline artifact identity is incomplete");
-        }
-        const bool has_movie_path = artifact.movie_path.has_value();
-        const bool has_movie_hash = !artifact.movie_sha256.empty();
-        const bool no_movie =
-            artifact.movie_mode == ExternalMovieImportMode::NoMovie;
-        const bool read_only_movie =
-            artifact.movie_mode ==
-            ExternalMovieImportMode::ReadOnlyPlayback;
-        const std::filesystem::path expected_movie =
-            std::filesystem::path(artifact.state_path.string() + ".dtm");
-        if ((!no_movie && !read_only_movie) ||
-            (no_movie && (has_movie_path || has_movie_hash)) ||
-            (read_only_movie &&
-             (!has_movie_path || !has_movie_hash ||
-              artifact.movie_path != expected_movie ||
-              !CompleteSha256(artifact.movie_sha256))))
-        {
-            return WorksetValidationResult::Failure(
-                WorkerRejectionCode::InvalidArgument,
-                "Program baseline movie continuation policy and exact sidecar identity disagree");
-        }
+            "Program baseline artifact kind is invalid");
     }
     std::set<std::pair<std::string, std::uint32_t>> component_ids;
     for (const ProgramBaselineComponent& component :
@@ -502,8 +464,6 @@ WorksetValidationResult ValidateWorkerRuntimeManifest(
         limits.maximum_encoded_workset_bytes == 0 ||
         limits.maximum_item_credits == 0 ||
         limits.maximum_active_and_staged_items == 0 ||
-        limits.maximum_state_cache_entries == 0 ||
-        limits.maximum_state_cache_bytes == 0 ||
         limits.finalizer_threads == 0 ||
         limits.maximum_pending_finalizers == 0 ||
         limits.maximum_pending_finalizer_bytes == 0 ||

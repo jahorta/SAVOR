@@ -1040,6 +1040,41 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
             specs.push_back({"analysis_seed_probe_encounter_projections", "SELECT * FROM sp_encounter_projection WHERE probe_run_id IN (" + run_ids + ") ORDER BY encounter_projection_id ASC;"});
         }
     }
+
+    if (!workflow_ids.empty()
+        && IsTablePresent(analysis_db, "tmv_validation_request", nullptr)
+        && IsTablePresent(analysis_db, "tmv_validation_attempt", nullptr)) {
+        const auto request_ids = QueryInt64Column(
+            analysis_db,
+            "WITH RECURSIVE selected(validation_request_id) AS ("
+            "SELECT validation_request_id FROM tmv_validation_request WHERE workflow_instance_id IN (" + workflow_id_list + ") "
+            "UNION SELECT parent.validation_request_id FROM tmv_validation_request child "
+            "JOIN tmv_validation_attempt source_attempt ON child.source_kind='ROOT_ESTABLISHMENT' "
+            "AND source_attempt.validation_attempt_id=child.source_ref_id "
+            "JOIN tmv_validation_request parent ON parent.validation_request_id=source_attempt.validation_request_id "
+            "JOIN selected current ON current.validation_request_id=child.validation_request_id) "
+            "SELECT validation_request_id FROM selected ORDER BY validation_request_id;",
+            &error);
+        if (!request_ids.empty()) {
+            const auto ids = JoinIds(request_ids);
+            specs.push_back({
+                "analysis_tas_movie_validation_requests",
+                "SELECT * FROM tmv_validation_request WHERE validation_request_id IN (" + ids
+                    + ") ORDER BY validation_request_id ASC;"});
+            specs.push_back({
+                "analysis_tas_movie_validation_attempts",
+                "SELECT * FROM tmv_validation_attempt WHERE validation_request_id IN (" + ids
+                    + ") ORDER BY validation_attempt_id ASC;"});
+            if (IsTablePresent(analysis_db, "tmv_dtm_validation_status", nullptr)) {
+                specs.push_back({
+                    "analysis_tas_movie_validation_statuses",
+                    "SELECT DISTINCT s.* FROM tmv_dtm_validation_status s "
+                    "JOIN tmv_validation_request r ON r.effective_dtm_sha256=s.effective_dtm_sha256 "
+                    "WHERE r.validation_request_id IN (" + ids
+                        + ") ORDER BY s.effective_dtm_sha256 ASC;"});
+            }
+        }
+    }
     return specs;
 }
 
@@ -1781,7 +1816,124 @@ void MergeArtifactRows(
     }
 }
 
-std::vector<ExportSpec> BuildStateSavestateSpecs(const std::vector<SavestateArchiveRow>& rows) {
+struct TasMovieArchiveClosure {
+    std::vector<std::int64_t> root_ids;
+    std::vector<std::int64_t> tree_ids;
+    std::vector<std::int64_t> savestate_ids;
+    std::vector<std::int64_t> artifact_ids;
+};
+
+TasMovieArchiveClosure CollectTasMovieArchiveClosure(
+    sqlite3* analysis_db,
+    sqlite3* state_db,
+    const std::vector<std::int64_t>& workflow_ids,
+    std::string* error_out) {
+    TasMovieArchiveClosure closure;
+    if (analysis_db == nullptr || state_db == nullptr || workflow_ids.empty()
+        || !IsTablePresent(analysis_db, "tmv_validation_request", nullptr)) {
+        return closure;
+    }
+    std::string error;
+    const auto workflows = JoinIds(workflow_ids);
+    const auto request_ids = QueryInt64Column(
+        analysis_db,
+        "WITH RECURSIVE selected(validation_request_id) AS ("
+        "SELECT validation_request_id FROM tmv_validation_request WHERE workflow_instance_id IN (" + workflows + ") "
+        "UNION SELECT parent.validation_request_id FROM tmv_validation_request child "
+        "JOIN tmv_validation_attempt source_attempt ON child.source_kind='ROOT_ESTABLISHMENT' "
+        "AND source_attempt.validation_attempt_id=child.source_ref_id "
+        "JOIN tmv_validation_request parent ON parent.validation_request_id=source_attempt.validation_request_id "
+        "JOIN selected current ON current.validation_request_id=child.validation_request_id) "
+        "SELECT validation_request_id FROM selected;",
+        &error);
+    if (!error.empty() || request_ids.empty()) {
+        if (error_out != nullptr && !error.empty()) *error_out = error;
+        return closure;
+    }
+    const auto requests = JoinIds(request_ids);
+    auto append = [](std::vector<std::int64_t>* destination, std::vector<std::int64_t> values) {
+        destination->insert(destination->end(), values.begin(), values.end());
+    };
+    append(&closure.artifact_ids, QueryInt64Column(
+        analysis_db,
+        "SELECT source_dtm_artifact_id FROM tmv_validation_request WHERE validation_request_id IN (" + requests + ") "
+        "UNION SELECT itinerary_artifact_id FROM tmv_validation_request WHERE validation_request_id IN (" + requests + ") AND itinerary_artifact_id IS NOT NULL "
+        "UNION SELECT candidate_itinerary_artifact_id FROM tmv_validation_attempt WHERE validation_request_id IN (" + requests + ") AND candidate_itinerary_artifact_id IS NOT NULL;",
+        &error));
+    append(&closure.savestate_ids, QueryInt64Column(
+        analysis_db,
+        "SELECT last_known_good_savestate_id FROM tmv_validation_attempt WHERE validation_request_id IN (" + requests + ") AND last_known_good_savestate_id IS NOT NULL;",
+        &error));
+    append(&closure.root_ids, QueryInt64Column(
+        analysis_db,
+        "SELECT produced_tas_movie_root_id FROM tmv_validation_attempt WHERE validation_request_id IN (" + requests + ") AND produced_tas_movie_root_id IS NOT NULL;",
+        &error));
+    append(&closure.tree_ids, QueryInt64Column(
+        analysis_db,
+        "SELECT source_ref_id FROM tmv_validation_request WHERE validation_request_id IN (" + requests + ") AND source_kind='TREE';",
+        &error));
+    if (!error.empty()) {
+        if (error_out != nullptr) *error_out = error;
+        return {};
+    }
+
+    if (!closure.tree_ids.empty()) {
+        const auto trees = JoinIds(closure.tree_ids);
+        closure.tree_ids = QueryInt64Column(
+            state_db,
+            "WITH RECURSIVE lineage(tas_movie_tree_id) AS ("
+            "SELECT tas_movie_tree_id FROM state_tas_movie_trees WHERE tas_movie_tree_id IN (" + trees + ") "
+            "UNION SELECT t.parent_tas_movie_tree_id FROM state_tas_movie_trees t JOIN lineage l "
+            "ON t.tas_movie_tree_id=l.tas_movie_tree_id WHERE t.parent_tas_movie_tree_id IS NOT NULL) "
+            "SELECT tas_movie_tree_id FROM lineage ORDER BY tas_movie_tree_id;",
+            &error);
+        if (!closure.tree_ids.empty()) {
+            const auto lineage = JoinIds(closure.tree_ids);
+            append(&closure.root_ids, QueryInt64Column(
+                state_db,
+                "SELECT tas_movie_root_id FROM state_tas_movie_trees WHERE tas_movie_tree_id IN (" + lineage + ");",
+                &error));
+            append(&closure.artifact_ids, QueryInt64Column(
+                state_db,
+                "SELECT dtm_artifact_id FROM state_tas_movie_trees WHERE tas_movie_tree_id IN (" + lineage + ") "
+                "UNION SELECT itinerary_artifact_id FROM state_tas_movie_trees WHERE tas_movie_tree_id IN (" + lineage + ");",
+                &error));
+            append(&closure.savestate_ids, QueryInt64Column(
+                state_db,
+                "SELECT checkpoint_savestate_id FROM state_tas_movie_trees WHERE tas_movie_tree_id IN (" + lineage + ");",
+                &error));
+        }
+    }
+    std::sort(closure.root_ids.begin(), closure.root_ids.end());
+    closure.root_ids.erase(std::unique(closure.root_ids.begin(), closure.root_ids.end()), closure.root_ids.end());
+    if (!closure.root_ids.empty()) {
+        const auto roots = JoinIds(closure.root_ids);
+        append(&closure.artifact_ids, QueryInt64Column(
+            state_db,
+            "SELECT source_dtm_artifact_id FROM state_tas_movie_root WHERE tas_movie_root_id IN (" + roots + ") "
+            "UNION SELECT dtm_artifact_id FROM state_tas_movie_root WHERE tas_movie_root_id IN (" + roots + ") "
+            "UNION SELECT itinerary_artifact_id FROM state_tas_movie_root WHERE tas_movie_root_id IN (" + roots + ");",
+            &error));
+        append(&closure.savestate_ids, QueryInt64Column(
+            state_db,
+            "SELECT checkpoint_savestate_id FROM state_tas_movie_root WHERE tas_movie_root_id IN (" + roots + ");",
+            &error));
+    }
+    if (!error.empty()) {
+        if (error_out != nullptr) *error_out = error;
+        return {};
+    }
+    for (auto* values : {&closure.tree_ids, &closure.savestate_ids, &closure.artifact_ids}) {
+        std::sort(values->begin(), values->end());
+        values->erase(std::unique(values->begin(), values->end()), values->end());
+    }
+    return closure;
+}
+
+std::vector<ExportSpec> BuildStateSavestateSpecs(
+    const std::vector<SavestateArchiveRow>& rows,
+    const std::vector<std::int64_t>& tas_movie_root_ids,
+    const std::vector<std::int64_t>& tas_movie_tree_ids) {
     std::vector<ExportSpec> specs;
     if (rows.empty()) {
         return specs;
@@ -1800,6 +1952,12 @@ std::vector<ExportSpec> BuildStateSavestateSpecs(const std::vector<SavestateArch
         const auto sav_ids = JoinIds(savestate_ids);
         specs.push_back({"state_savestates", "SELECT * FROM state_savestate WHERE savestate_id IN (" + sav_ids + ") ORDER BY savestate_id ASC;"});
         specs.push_back({"state_savestate_derivations", "SELECT * FROM state_savestate_derivation WHERE from_savestate_id IN (" + sav_ids + ") AND to_savestate_id IN (" + sav_ids + ") ORDER BY from_savestate_id ASC,to_savestate_id ASC;"});
+    }
+    if (!tas_movie_root_ids.empty()) {
+        specs.push_back({"state_tas_movie_roots", "SELECT * FROM state_tas_movie_root WHERE tas_movie_root_id IN (" + JoinIds(tas_movie_root_ids) + ") ORDER BY tas_movie_root_id ASC;"});
+    }
+    if (!tas_movie_tree_ids.empty()) {
+        specs.push_back({"state_tas_movie_trees", "SELECT * FROM state_tas_movie_trees WHERE tas_movie_tree_id IN (" + JoinIds(tas_movie_tree_ids) + ") ORDER BY tas_movie_tree_id ASC;"});
     }
     return specs;
 }
@@ -1910,6 +2068,18 @@ std::vector<std::int64_t> FilterExclusiveSavestateIds(
                 "WHERE (from_savestate_id=" + id + " AND to_savestate_id NOT IN (" + sav_ids + ")) "
                 "OR (to_savestate_id=" + id + " AND from_savestate_id NOT IN (" + sav_ids + "));",
                 &error) > 0;
+            if (!referenced && IsTablePresent(state_db, "state_tas_movie_root", nullptr)) {
+                referenced = QuerySingleInt64(
+                    state_db,
+                    "SELECT COUNT(1) FROM state_tas_movie_root WHERE checkpoint_savestate_id=" + id + ";",
+                    &error) > 0;
+            }
+            if (!referenced && IsTablePresent(state_db, "state_tas_movie_trees", nullptr)) {
+                referenced = QuerySingleInt64(
+                    state_db,
+                    "SELECT COUNT(1) FROM state_tas_movie_trees WHERE checkpoint_savestate_id=" + id + ";",
+                    &error) > 0;
+            }
         }
         if (!referenced) {
             exclusive.push_back(savestate_id);
@@ -1941,11 +2111,18 @@ std::vector<std::int64_t> FilterExclusiveAggregateArtifactIds(
                 state_db,
                 "SELECT COUNT(1) FROM state_savestate WHERE artifact_id=" + id + ";",
                 &error) > 0;
-            if (!referenced && IsTablePresent(state_db, "state_tas_variant", nullptr)) {
+            if (!referenced && IsTablePresent(state_db, "state_tas_movie_root", nullptr)) {
                 referenced = QuerySingleInt64(
                     state_db,
-                    "SELECT COUNT(1) FROM state_tas_variant WHERE base_dtm_artifact_id=" + id
-                        + " OR dtmini_artifact_id=" + id + ";",
+                    "SELECT COUNT(1) FROM state_tas_movie_root WHERE source_dtm_artifact_id=" + id
+                        + " OR dtm_artifact_id=" + id + " OR itinerary_artifact_id=" + id + ";",
+                    &error) > 0;
+            }
+            if (!referenced && IsTablePresent(state_db, "state_tas_movie_trees", nullptr)) {
+                referenced = QuerySingleInt64(
+                    state_db,
+                    "SELECT COUNT(1) FROM state_tas_movie_trees WHERE dtm_artifact_id=" + id
+                        + " OR itinerary_artifact_id=" + id + ";",
                     &error) > 0;
             }
         }
@@ -1985,6 +2162,24 @@ std::vector<std::int64_t> FilterExclusiveAggregateArtifactIds(
                     + ")) AND (f.recorded_dtm_artifact_id=" + id
                     + " OR f.recorded_dtmini_artifact_id=" + id
                     + " OR f.recorded_sav_artifact_id=" + id + ");",
+                &error) > 0;
+        }
+        if (!referenced && analysis_db != nullptr
+            && IsTablePresent(analysis_db, "tmv_validation_request", nullptr)) {
+            referenced = QuerySingleInt64(
+                analysis_db,
+                "SELECT COUNT(1) FROM tmv_validation_request WHERE workflow_instance_id NOT IN ("
+                    + workflow_filter + ") AND (source_dtm_artifact_id=" + id
+                    + " OR itinerary_artifact_id=" + id + ");",
+                &error) > 0;
+        }
+        if (!referenced && analysis_db != nullptr
+            && IsTablePresent(analysis_db, "tmv_validation_attempt", nullptr)) {
+            referenced = QuerySingleInt64(
+                analysis_db,
+                "SELECT COUNT(1) FROM tmv_validation_attempt a JOIN tmv_validation_request r "
+                    "ON r.validation_request_id=a.validation_request_id WHERE r.workflow_instance_id NOT IN ("
+                    + workflow_filter + ") AND a.candidate_itinerary_artifact_id=" + id + ";",
                 &error) > 0;
         }
         if (!referenced) exclusive.push_back(artifact_id);
@@ -2508,20 +2703,41 @@ CreateArchivePackageResult SqliteArchivePackageService::CreateWorkflowPackage(
     std::vector<SavestateArchiveRow> state_artifact_rows;
     std::vector<ExportSpec> state_specs;
     if (request.include_state_savestates && state_db_ != nullptr) {
-        const auto savestate_ids = CollectWorkflowSavestateIds(execution_db_, analysis_db_, workflow_ids, job_ids, battle_set_ids);
+        const auto tas_movie_closure = CollectTasMovieArchiveClosure(
+            analysis_db_, state_db_, workflow_ids, &query_error);
+        if (!query_error.empty()) {
+            result.error = query_error;
+            return result;
+        }
+        auto savestate_ids = CollectWorkflowSavestateIds(execution_db_, analysis_db_, workflow_ids, job_ids, battle_set_ids);
+        savestate_ids.insert(savestate_ids.end(), tas_movie_closure.savestate_ids.begin(), tas_movie_closure.savestate_ids.end());
+        std::sort(savestate_ids.begin(), savestate_ids.end());
+        savestate_ids.erase(std::unique(savestate_ids.begin(), savestate_ids.end()), savestate_ids.end());
         savestate_rows = LoadSavestateRows(state_db_, savestate_ids, &query_error);
         if (!query_error.empty()) {
             result.error = query_error;
             return result;
         }
         state_artifact_rows = savestate_rows;
-        auto aggregate_artifact_rows = LoadStandaloneArtifactRows(state_db_, aggregate_artifact_ids, &query_error);
+        auto standalone_artifact_ids = aggregate_artifact_ids;
+        standalone_artifact_ids.insert(
+            standalone_artifact_ids.end(),
+            tas_movie_closure.artifact_ids.begin(),
+            tas_movie_closure.artifact_ids.end());
+        std::sort(standalone_artifact_ids.begin(), standalone_artifact_ids.end());
+        standalone_artifact_ids.erase(
+            std::unique(standalone_artifact_ids.begin(), standalone_artifact_ids.end()),
+            standalone_artifact_ids.end());
+        auto aggregate_artifact_rows = LoadStandaloneArtifactRows(state_db_, standalone_artifact_ids, &query_error);
         if (!query_error.empty()) {
             result.error = query_error;
             return result;
         }
         MergeArtifactRows(&state_artifact_rows, std::move(aggregate_artifact_rows));
-        state_specs = BuildStateSavestateSpecs(state_artifact_rows);
+        state_specs = BuildStateSavestateSpecs(
+            state_artifact_rows,
+            tas_movie_closure.root_ids,
+            tas_movie_closure.tree_ids);
     }
 
     const auto export_total = static_cast<std::int64_t>(

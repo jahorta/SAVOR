@@ -50,6 +50,14 @@ namespace savor {
             const std::string& iso_path,
             bool boot_to_pause = false,
             std::optional<std::string> startup_savestate = std::nullopt);
+        // Splits exact read-only playback around Dolphin's stopped-core
+        // debugger boundary. Wrapper, controller, UI, user-directory, and
+        // render-surface ownership remain live throughout.
+        bool stopCoreForReadOnlyMovie(std::string* error_out = nullptr);
+        bool startReadOnlyMovieFromStoppedCore(
+            const std::string& dtm_path,
+            std::optional<std::string>& startup_savestate_out,
+            std::string* error_out = nullptr);
         bool loadSavestate(const std::string& state_path);
         bool saveSavestateBlocking(const std::string& state_path);
         bool saveScreenshotBlocking(const std::string& image_path, uint32_t timeout_ms = 3000);
@@ -251,19 +259,10 @@ namespace savor {
         bool isMoviePlaying() const;
         bool isMoviePlaybackEnded() const;
         uint64_t getCurrentMovieInputCount() const;
-        // Hard-cutover facades retained only so legacy builders compile.
-        // MovieService will own production playback and recording lifecycle.
-        bool startMoviePlayback(const std::string& dtm_path);
-        bool endMoviePlaybackBlocking(uint32_t timeout_ms = 4000);
         bool setGCMemoryCardA(const std::string& raw_path);
         bool pauseEmulationBlocking(uint32_t timeout_ms = 1000);
         bool resumeEmulation();
         bool isEmulationPaused() const;
-
-        bool startMovieRecording();
-        void endMovieRecording(
-            std::optional<std::string> movie_save_path = std::nullopt);
-
 
     private:
 

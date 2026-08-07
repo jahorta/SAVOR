@@ -78,6 +78,7 @@ bool DBService::Start(std::string* error_out) {
     }
     if (!ApplyMigrations(analysis_sqlite_, migrations::MigrationContext::AnalysisSpine, error_out)
         || !ApplyMigrations(analysis_sqlite_, migrations::MigrationContext::AnalysisSeedProbe, error_out)
+        || !ApplyMigrations(analysis_sqlite_, migrations::MigrationContext::AnalysisTasMovie, error_out)
         || !ApplyMigrations(analysis_sqlite_, migrations::MigrationContext::AnalysisBattle, error_out)) {
         return fail_start("Failed applying Analysis migrations: " + (error_out ? *error_out : std::string{}));
     }

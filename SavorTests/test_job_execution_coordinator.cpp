@@ -476,7 +476,7 @@ private:
     mutable std::atomic<int> maximum_active_{0};
 };
 
-savor::runtime::StateCompatibilityToken TestCompatibility() {
+savor::runtime::ArtifactCompatibilityToken TestCompatibility() {
     return {
         .game_id = "TEST00",
         .iso_sha256 = std::string(64, '0'),
@@ -522,10 +522,104 @@ savor::runtime::DurableWorkerTerminalEnvelope MakeTerminal(
                     savor::wrms::InvocationTerminalStatus::Succeeded,
                 .session_disposition =
                     savor::wrms::SessionDispositionCode::Clean,
-                .state_epoch = 11,
+                .workset_epoch = 11,
                 .result = {1, 2, 3},
             },
     };
+}
+
+TEST(
+    JobExecutionCoordinatorLifecycle,
+    ActiveAndUnpersistedDrainingDispatchesCannotRetire) {
+    using savor::runner::parallel::savordb::detail::
+        DispatchReadyToRetire;
+    using savor::runner::parallel::savordb::detail::
+        DispatchRetirementAuthority;
+    using savor::runner::parallel::savordb::detail::
+        DispatchRetirementFacts;
+
+    DispatchRetirementFacts facts{
+        .authority = DispatchRetirementAuthority::None,
+        .summary_observed = true,
+        .executable_items = 16,
+        .staged_items = 16,
+        .acknowledged_items = 16,
+        .sidecar_persisted = true,
+    };
+    EXPECT_FALSE(DispatchReadyToRetire(facts));
+
+    facts.authority = DispatchRetirementAuthority::DrainingPending;
+    EXPECT_FALSE(DispatchReadyToRetire(facts));
+}
+
+TEST(
+    JobExecutionCoordinatorLifecycle,
+    PersistedDrainingReevaluatesEveryTerminalFactOrdering) {
+    using savor::runner::parallel::savordb::detail::
+        DispatchReadyToRetire;
+    using savor::runner::parallel::savordb::detail::
+        DispatchRetirementAuthority;
+    using savor::runner::parallel::savordb::detail::
+        DispatchRetirementFacts;
+
+    DispatchRetirementFacts facts{
+        .authority = DispatchRetirementAuthority::DrainingPending,
+        .summary_observed = true,
+        .executable_items = 16,
+        .staged_items = 16,
+        .acknowledged_items = 16,
+        .sidecar_persisted = true,
+    };
+    EXPECT_FALSE(DispatchReadyToRetire(facts));
+    facts.authority = DispatchRetirementAuthority::DrainingPersisted;
+    EXPECT_TRUE(DispatchReadyToRetire(facts));
+
+    facts.summary_observed = false;
+    EXPECT_FALSE(DispatchReadyToRetire(facts));
+    facts.summary_observed = true;
+    EXPECT_TRUE(DispatchReadyToRetire(facts));
+
+    facts.acknowledged_items = 15;
+    EXPECT_FALSE(DispatchReadyToRetire(facts));
+    facts.acknowledged_items = 16;
+    EXPECT_TRUE(DispatchReadyToRetire(facts));
+
+    facts.staged_items = 15;
+    EXPECT_FALSE(DispatchReadyToRetire(facts));
+    facts.staged_items = 16;
+    EXPECT_TRUE(DispatchReadyToRetire(facts));
+
+    facts.sidecar_persisted = false;
+    EXPECT_FALSE(DispatchReadyToRetire(facts));
+    facts.sidecar_persisted = true;
+    EXPECT_TRUE(DispatchReadyToRetire(facts));
+}
+
+TEST(
+    JobExecutionCoordinatorLifecycle,
+    ReleasedDrainingRetainsItsExistingRetirementRules) {
+    using savor::runner::parallel::savordb::detail::
+        DispatchReadyToRetire;
+    using savor::runner::parallel::savordb::detail::
+        DispatchRetirementAuthority;
+    using savor::runner::parallel::savordb::detail::
+        DispatchRetirementFacts;
+
+    DispatchRetirementFacts facts{
+        .authority = DispatchRetirementAuthority::ReleasedDraining,
+        .summary_observed = true,
+        .executable_items = 16,
+        .staged_items = 0,
+        .acknowledged_items = 16,
+        .sidecar_persisted = true,
+    };
+    EXPECT_TRUE(DispatchReadyToRetire(facts));
+
+    facts.acknowledged_items = 15;
+    EXPECT_FALSE(DispatchReadyToRetire(facts));
+    facts.acknowledged_items = 16;
+    facts.summary_observed = false;
+    EXPECT_FALSE(DispatchReadyToRetire(facts));
 }
 
 TEST(

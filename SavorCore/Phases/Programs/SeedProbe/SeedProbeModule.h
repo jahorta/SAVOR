@@ -45,7 +45,7 @@ struct SeedProbeRequestV2
 struct SemanticStopReceiptV2
 {
     std::uint64_t stop_sequence = 0;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     std::uint32_t pc = 0;
     std::uint64_t sample_snapshot_id = 0;
     std::vector<program::Byte> evidence;
@@ -57,7 +57,7 @@ struct InputPublicationReceiptV2
 {
     std::uint64_t lease_id = 0;
     std::uint64_t publication_id = 0;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     savor::GCInputFrame frame{};
 
     bool operator==(const InputPublicationReceiptV2&) const = default;
@@ -68,7 +68,7 @@ struct InputPollReceiptV2
     bool acknowledged = false;
     std::uint64_t poll_receipt_id = 0;
     std::uint64_t publication_id = 0;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
 
     bool operator==(const InputPollReceiptV2&) const = default;
 };
@@ -154,7 +154,7 @@ SeedProbeEndpointFromPc(std::uint32_t pc) noexcept;
 [[nodiscard]] bool ValidateSeedProbeResultV2(
     const SeedProbeRequestV2& request,
     const SeedProbeResultV2& result,
-    StateEpoch terminal_origin_epoch,
+    WorksetEpoch terminal_workset_epoch,
     std::string* diagnostic = nullptr);
 
 [[nodiscard]] std::shared_ptr<const ISeedProbeFullPhaseDefinitionV2>

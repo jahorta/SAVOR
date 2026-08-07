@@ -22,7 +22,7 @@ enum class GuestScalarWidth : std::uint8_t
 struct GuestReadReceipt
 {
     bool ok = false;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::uint32_t address = 0;
     GuestScalarWidth width = GuestScalarWidth::U8;
     std::uint64_t value = 0;
@@ -34,22 +34,22 @@ class GuestMemory final
 public:
     explicit GuestMemory(IGuestMemoryBackendPort& backend);
 
-    void CommitStateEpoch(StateEpoch epoch) noexcept;
+    void InitializeWorksetEpoch(WorksetEpoch epoch) noexcept;
     [[nodiscard]] GuestReadReceipt ReadScalar(
         std::uint32_t address,
         GuestScalarWidth width,
-        StateEpoch epoch) const;
+        WorksetEpoch epoch) const;
     [[nodiscard]] GuestBytesResult ReadBytes(
         std::uint32_t address,
         std::size_t size,
-        StateEpoch epoch) const;
+        WorksetEpoch epoch) const;
 
 private:
     [[nodiscard]] bool OnOwnerThread() const noexcept;
 
     IGuestMemoryBackendPort& backend_;
     std::thread::id owner_thread_;
-    StateEpoch epoch_;
+    WorksetEpoch epoch_;
 };
 
 } // namespace savor::runtime

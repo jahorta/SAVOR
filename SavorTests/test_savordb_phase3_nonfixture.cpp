@@ -92,17 +92,10 @@ namespace savordb {
         savor::runtime::WorkerRuntimeManifest CompleteWorksetTestManifest() {
             static constexpr std::array<
                 std::pair<std::string_view, std::string_view>,
-                9>
+                2>
                 kModules{{
                     {"soa.seed_probe", "probe"},
-                    {"soa.navigation.context", "capture"},
-                    {"soa.tas_movie", "play_and_checkpoint"},
-                    {"soa.tas_frame_detector", "detect"},
-                    {"soa.battle.context", "capture"},
-                    {"soa.battle.macro_probe", "probe"},
-                    {"soa.battle.single_turn", "execute"},
-                    {"soa.battle.completion", "complete"},
-                    {"soa.battle.results_screen", "advance"},
+                    {"soa.tas_movie_validation", "validate"},
                 }};
             savor::runtime::WorkerRuntimeManifest manifest;
             manifest.catalog_status =
@@ -2037,7 +2030,7 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
             });
 
         const auto now = std::chrono::steady_clock::now();
-        EXPECT_FALSE(dispatch.DispatchNextEligibleForWorker(0, std::nullopt, now));
+        EXPECT_FALSE(dispatch.DispatchNextEligibleForWorker(0, now));
         EXPECT_EQ(dispatch_calls, 0);
 
         std::atomic<bool> stop_requested{ false };
@@ -2064,7 +2057,7 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
 
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
         while (dispatch_calls == 0 && std::chrono::steady_clock::now() < deadline) {
-            (void)dispatch.DispatchNextEligibleForWorker(0, std::nullopt, std::chrono::steady_clock::now());
+            (void)dispatch.DispatchNextEligibleForWorker(0, std::chrono::steady_clock::now());
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
@@ -2254,7 +2247,6 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         ClaimedJobRecord selected{};
         EXPECT_TRUE(materialization.TrySelectMaterializedJobForWorker(
             MaterializedJobSelectionAffinity{
-                .savestate_affinity_key = std::string("123"),
                 .program_kind = 7,
                 .program_runtime_affinity_key = std::string("old-runtime"),
             },

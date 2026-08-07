@@ -242,13 +242,22 @@ TEST(ActionRegistry, DescriptorIdentityCoversEveryMaterialPolicyClass)
         value.output_type = TypeRef::Builtin(BuiltinType::U64);
     });
     changes_hash([](ActionDescriptor& value) {
-        value.domain_observation_type.reset();
+        value.domain_observation_type = value.domain_observation_type
+            ? std::optional<TypeRef>{}
+            : std::optional<TypeRef>{
+                  TypeRef::Builtin(BuiltinType::Bool)};
     });
     changes_hash([](ActionDescriptor& value) {
-        value.receipt_type.reset();
+        value.receipt_type = value.receipt_type
+            ? std::optional<TypeRef>{}
+            : std::optional<TypeRef>{
+                  TypeRef::Builtin(BuiltinType::U64)};
     });
     changes_hash([](ActionDescriptor& value) {
-        value.diagnostic_type.reset();
+        value.diagnostic_type = value.diagnostic_type
+            ? std::optional<TypeRef>{}
+            : std::optional<TypeRef>{
+                  TypeRef::Builtin(BuiltinType::I32)};
     });
     changes_hash([](ActionDescriptor& value) {
         value.required_services ^=
@@ -258,37 +267,56 @@ TEST(ActionRegistry, DescriptorIdentityCoversEveryMaterialPolicyClass)
         value.effects ^= EffectMask(ActionEffect::ReadGuest);
     });
     changes_hash([](ActionDescriptor& value) {
-        value.epoch_policy = ActionEpochPolicy::MayReplaceState;
+        value.epoch_policy = value.epoch_policy ==
+                ActionEpochPolicy::EpochAgnostic
+            ? ActionEpochPolicy::RequiresCurrentEpoch
+            : ActionEpochPolicy::EpochAgnostic;
     });
     changes_hash([](ActionDescriptor& value) {
-        value.replay_class = ActionReplayClass::ExternalCommit;
+        value.replay_class = value.replay_class ==
+                ActionReplayClass::ExternalCommit
+            ? ActionReplayClass::Deterministic
+            : ActionReplayClass::ExternalCommit;
     });
     changes_hash([](ActionDescriptor& value) {
-        value.cancellation =
-            ActionCancellationMode::BeforeMutationOnly;
+        value.cancellation = value.cancellation ==
+                ActionCancellationMode::BeforeMutationOnly
+            ? ActionCancellationMode::Cooperative
+            : ActionCancellationMode::BeforeMutationOnly;
     });
     changes_hash([](ActionDescriptor& value) {
         ++value.maximum_non_cancellable_milliseconds;
     });
     changes_hash([](ActionDescriptor& value) {
-        value.timing = ActionTimingClass::CancellationDriven;
+        value.timing = value.timing ==
+                ActionTimingClass::CancellationDriven
+            ? ActionTimingClass::BoundedHostOperation
+            : ActionTimingClass::CancellationDriven;
     });
     changes_hash([](ActionDescriptor& value) {
         ++value.default_host_timeout_milliseconds;
     });
     changes_hash([](ActionDescriptor& value) {
-        value.resource_behavior = ActionResourceBehavior::Scoped;
+        value.resource_behavior = value.resource_behavior ==
+                ActionResourceBehavior::Scoped
+            ? ActionResourceBehavior::None
+            : ActionResourceBehavior::Scoped;
     });
     changes_hash([](ActionDescriptor& value) {
-        value.cleanup =
-            ActionCleanupGuarantee::VerifiedCompensation;
+        value.cleanup = value.cleanup ==
+                ActionCleanupGuarantee::VerifiedCompensation
+            ? ActionCleanupGuarantee::None
+            : ActionCleanupGuarantee::VerifiedCompensation;
     });
     changes_hash([](ActionDescriptor& value) {
         value.taints_on_unproven_cleanup =
             !value.taints_on_unproven_cleanup;
     });
     changes_hash([](ActionDescriptor& value) {
-        value.idempotency = ActionIdempotency::ReceiptProven;
+        value.idempotency = value.idempotency ==
+                ActionIdempotency::ReceiptProven
+            ? ActionIdempotency::NotRetryable
+            : ActionIdempotency::ReceiptProven;
     });
     changes_hash([](ActionDescriptor& value) {
         value.diagnostic_categories.push_back("new_category");
@@ -376,7 +404,9 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
     ActionRegistry registry(&schemas);
     const std::vector<ActionDescriptor> descriptors =
         BuildCanonicalRuntimeActionDescriptors();
-    ASSERT_EQ(descriptors.size(), 30u);
+    ASSERT_EQ(
+        descriptors.size(),
+        static_cast<std::size_t>(CanonicalAction::TelemetryEmit) + 1u);
     EXPECT_TRUE(std::ranges::none_of(
         descriptors,
         [](const ActionDescriptor& descriptor)
@@ -442,32 +472,20 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
         ActionCleanupGuarantee::VerifiedCompensation);
     EXPECT_TRUE(patch->taints_on_unproven_cleanup);
 
-    const ActionDescriptor* capture = registry.ResolveAction(
-        CanonicalActionIdentity(CanonicalAction::StateCapture));
     const ActionDescriptor* stop_group = registry.ResolveAction(
         CanonicalActionIdentity(
             CanonicalAction::StopPointsSubscribeGroup));
-    ASSERT_NE(capture, nullptr);
     ASSERT_NE(stop_group, nullptr);
-    EXPECT_NE(capture->input_type, stop_group->input_type);
-    EXPECT_NE(capture->output_type, stop_group->output_type);
-    ASSERT_TRUE(capture->output_type.named);
-    const TypeSchemaDefinition* capture_handle =
-        schemas.Resolve(*capture->output_type.named);
-    ASSERT_NE(capture_handle, nullptr);
-    EXPECT_EQ(
-        capture_handle->kind,
-        TypeSchemaKind::ResourceHandle);
-    ASSERT_TRUE(capture_handle->element_type);
-    EXPECT_EQ(
-        capture_handle->element_type,
-        TypeRef::Named(
-            *CanonicalActionResourceContractSchemaIdentity(
-                CanonicalAction::StateCapture)));
+    EXPECT_FALSE(FindCanonicalAction({
+        .canonical_id = "runtime.state.capture",
+        .version = 1}));
+    EXPECT_FALSE(FindCanonicalAction({
+        .canonical_id = "runtime.state.restore",
+        .version = 1}));
 
     const ActionDescriptor* save_artifact =
         registry.ResolveAction(CanonicalActionIdentity(
-            CanonicalAction::StateSaveImmutableArtifact));
+            CanonicalAction::SavestateSaveImmutableArtifact));
     ASSERT_NE(save_artifact, nullptr);
     ASSERT_TRUE(save_artifact->output_type.named);
     const TypeSchemaDefinition* pending_publication =
@@ -482,7 +500,7 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
     EXPECT_NE(
         schemas.Resolve(
             *CanonicalActionArtifactPayloadSchemaIdentity(
-                CanonicalAction::StateSaveImmutableArtifact)),
+                CanonicalAction::SavestateSaveImmutableArtifact)),
         nullptr);
 
     const auto finalize_output =
@@ -508,6 +526,11 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
     ASSERT_NE(read_u32, nullptr);
     EXPECT_FALSE(read_u32->output_type.is_named());
     EXPECT_EQ(read_u32->output_type.builtin, BuiltinType::U32);
+    EXPECT_EQ(
+        CanonicalActionInputType(
+            CanonicalAction::MovieStartPlayback),
+        CanonicalActionOutputType(
+            CanonicalAction::MoviePrepareReadOnlyPlayback));
     EXPECT_EQ(
         CanonicalActionInputType(
             CanonicalAction::MovieStopPlayback),
@@ -539,7 +562,8 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
     };
     require_record(
         CanonicalAction::ExecutionContinueUntil,
-        {"wake_group", "input_publication", "static_config"});
+        {"wake_group", "input_publication", "playback_session",
+         "expected_movie_input_count", "static_config"});
     require_record(
         CanonicalAction::InputAwaitGuestPoll,
         {"lease", "input_publication",
@@ -563,8 +587,11 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
     ASSERT_EQ(receipt->record_fields.size(), 5u);
     EXPECT_EQ(
         receipt->record_fields[0].name,
-        "stop_sequence");
+        "reason");
+    EXPECT_EQ(receipt->record_fields[1].name, "routed_stop");
     EXPECT_EQ(receipt->record_fields[2].name, "pc");
+    EXPECT_EQ(receipt->record_fields[3].name, "movie_input_count");
+    EXPECT_EQ(receipt->record_fields[4].name, "workset_epoch");
 }
 
 TEST(CapabilityPackRegistry, ManifestHashCoversCompleteNormalizedContract)

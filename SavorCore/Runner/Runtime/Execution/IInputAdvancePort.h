@@ -36,21 +36,21 @@ public:
 
     [[nodiscard]] virtual InputAdvanceReceipt Validate(
         InputAdvanceBindingId binding,
-        StateEpoch epoch) = 0;
+        WorksetEpoch epoch) = 0;
     [[nodiscard]] virtual InputAdvanceReceipt PrepareNext(
         InputAdvanceBindingId binding,
-        StateEpoch epoch,
+        WorksetEpoch epoch,
         std::uint32_t advance_ordinal) = 0;
     [[nodiscard]] virtual InputAdvanceReceipt ObserveAcknowledgement(
         InputAdvanceBindingId binding,
         InputPublicationToken publication,
-        StateEpoch epoch) = 0;
+        WorksetEpoch epoch) = 0;
     [[nodiscard]] virtual InputAdvanceReceipt Complete(
         InputAdvanceBindingId binding,
-        StateEpoch epoch) noexcept = 0;
+        WorksetEpoch epoch) noexcept = 0;
     [[nodiscard]] virtual InputAdvanceReceipt Cancel(
         InputAdvanceBindingId binding,
-        StateEpoch epoch) noexcept = 0;
+        WorksetEpoch epoch) noexcept = 0;
 
 protected:
     IInputAdvancePort() = default;

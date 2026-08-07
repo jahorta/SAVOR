@@ -196,8 +196,7 @@
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeExecutionAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeJobSpec.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeProgram.h" />
-    <ClInclude Include="Execution\ProgramDB\TasMovie\TasMovieAdapters.h" />
-    <ClInclude Include="Execution\ProgramDB\TasMovie\TasMoviePhaseRegistration.h" />
+    <ClInclude Include="Execution\ProgramDB\TasMovieValidation\TasMovieValidationProgram.h" />
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h" />
     <ClInclude Include="Common\Migrations\MigrationContext.h" />
     <ClInclude Include="Common\Migrations\MigrationRunner.h" />
@@ -260,8 +259,7 @@
     <ClCompile Include="Execution\ProgramDB\WorkerResultBlobCleanupService.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeExecutionAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeProgram.cpp" />
-    <ClCompile Include="Execution\ProgramDB\TasMovie\TasMovieAdapters.cpp" />
-    <ClCompile Include="Execution\ProgramDB\TasMovie\TasMoviePhaseRegistration.cpp" />
+    <ClCompile Include="Execution\ProgramDB\TasMovieValidation\TasMovieValidationProgram.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteExecutionDb.cpp" />
     <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp" />
@@ -292,6 +290,7 @@
     <None Include="migration\AnalysisBattle\202607211200_analysisbattle_battle_end_workflow.sql" />
     <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql" />
     <None Include="migration\AnalysisSeedProbe\202607211100_analysisseedprobe_field_return_flavor.sql" />
+    <None Include="migration\AnalysisTasMovie\202608041100_analysis_tas_movie_validation.sql" />
     <None Include="migration\AnalysisSpine\202604051000_analysisspine_stage2_schema.sql" />
     <None Include="migration\Archive\202604051000_archive_stage2_schema.sql" />
     <None Include="migration\Archive\202604051100_archive_stage3_outbox.sql" />
@@ -323,6 +322,7 @@
     <None Include="migration\Execution\202608011000_execution_work_availability.sql" />
     <None Include="migration\State\202604051000_state_stage2_schema.sql" />
     <None Include="migration\State\202607231800_state_derivation_source_context_index.sql" />
+    <None Include="migration\State\202608041000_state_tas_movie_roots_and_trees.sql" />
     <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql" />
     <None Include="migration\UIRead\202604051200_uiread_stage3b_workflow.sql" />
     <None Include="migration\UIRead\202604051300_uiread_stage3c_projection_checkpoint_compat.sql" />

@@ -141,7 +141,6 @@ ClaimJobsResult JobMaterializationService::ClaimJobsDetailed(
             .job_set_id = claimed.job_set_id,
             .job_id = claimed.job_id,
             .affinity = ClaimedJobAffinity{
-                .savestate_affinity_key = claimed.savestate_affinity_key,
                 .program_runtime_affinity_key = claimed.program_runtime_affinity_key,
             },
             });
@@ -285,7 +284,6 @@ bool JobMaterializationService::MaterializeClaimedJobRecord(
     materialized_record.runtime_init = init_request;
     materialized_record.payload = descriptor->runtime_init->MaterializePsJob(materialized_record.job_id, init_request);
     materialized_record.affinity = ClaimedJobAffinity{
-        .savestate_affinity_key = std::to_string(init_request.savestate_ref_id),
         .program_runtime_affinity_key = init_request.bootstrap_profile,
     };
     // A RuntimeInitRequest does not yet describe the complete composite
@@ -512,7 +510,6 @@ bool JobMaterializationService::MaterializeJobForDebugReplay(
     record.program_kind = program_kind;
     record.runtime_init = std::move(runtime_init);
     record.affinity = ClaimedJobAffinity{
-        .savestate_affinity_key = std::to_string(record.runtime_init.savestate_ref_id),
         .program_runtime_affinity_key = record.runtime_init.bootstrap_profile,
     };
     record.claimed_at = std::chrono::steady_clock::now();
@@ -719,12 +716,6 @@ bool JobMaterializationService::BetterMaterializedDispatchCandidate(
     const ClaimedJobRecord& lhs,
     const ClaimedJobRecord& rhs,
     const MaterializedJobSelectionAffinity& worker_affinity) {
-    const bool lhs_savestate = MatchesStringAffinity(worker_affinity.savestate_affinity_key, lhs.affinity.savestate_affinity_key);
-    const bool rhs_savestate = MatchesStringAffinity(worker_affinity.savestate_affinity_key, rhs.affinity.savestate_affinity_key);
-    if (lhs_savestate != rhs_savestate) {
-        return lhs_savestate;
-    }
-
     const bool lhs_program = worker_affinity.program_kind.has_value()
         && lhs.program_kind == *worker_affinity.program_kind;
     const bool rhs_program = worker_affinity.program_kind.has_value()

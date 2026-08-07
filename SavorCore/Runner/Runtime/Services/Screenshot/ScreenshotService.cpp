@@ -10,7 +10,7 @@ ScreenshotService::ScreenshotService(IScreenshotBackendPort& backend)
 {
 }
 
-void ScreenshotService::CommitStateEpoch(StateEpoch epoch) noexcept
+void ScreenshotService::InitializeWorksetEpoch(WorksetEpoch epoch) noexcept
 {
     if (!OnOwnerThread())
         return;
@@ -20,7 +20,7 @@ void ScreenshotService::CommitStateEpoch(StateEpoch epoch) noexcept
 ScreenshotReceipt ScreenshotService::Capture(
     const std::filesystem::path& path,
     std::chrono::milliseconds timeout,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     if (!OnOwnerThread())
     {
@@ -58,7 +58,7 @@ ScreenshotReceipt ScreenshotService::Capture(
 
 ScreenshotReceipt ScreenshotService::Cancel(
     ScreenshotRequestId request,
-    StateEpoch epoch) noexcept
+    WorksetEpoch epoch) noexcept
 {
     if (!OnOwnerThread())
     {

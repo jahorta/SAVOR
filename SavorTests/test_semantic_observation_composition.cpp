@@ -199,7 +199,7 @@ ProgramVerificationResult CompleteAndVerify(
             module.required_capability_packs,
         .accepted_policies = {
             .state_policies = {
-                InvocationStatePolicy::ContinueSession},
+                InvocationStatePolicy::RestoreBaseline},
             .execution_intents = {ExecutionIntent::Live},
         },
     }};
@@ -503,12 +503,12 @@ TEST(SemanticObservationComposition, PackQueryBuildsExactProjectedRequest)
                 .source_field = "stop_sequence",
             },
             {
-                .field_name = "state_epoch",
+                .field_name = "workset_epoch",
                 .field_type =
                     TypeRef::Builtin(BuiltinType::U64),
                 .source = ObservationDefinition::
                     RequestValueSource::StopReceiptField,
-                .source_field = "state_epoch",
+                .source_field = "workset_epoch",
             },
             {
                 .field_name = "expected_pc",

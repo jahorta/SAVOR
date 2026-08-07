@@ -20,7 +20,7 @@ using namespace std::chrono_literals;
 using namespace savor;
 using namespace savor::runtime;
 
-constexpr StateEpoch kEpoch{11};
+constexpr WorksetEpoch kEpoch{11};
 
 class FakeInputBackend final : public IInputBackendPort
 {
@@ -178,7 +178,7 @@ TEST(InputArbiter, PublishesFreshTokensAndRequiresObservedNeutralRelease)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
-    ASSERT_TRUE(arbiter.CommitStateEpoch(kEpoch).ok);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
 
     InputLeaseReceipt lease = arbiter.Acquire(
         {
@@ -228,11 +228,11 @@ TEST(InputArbiter, PublishesFreshTokensAndRequiresObservedNeutralRelease)
     EXPECT_EQ(complete.status, InputLeaseStatus::Released);
 }
 
-TEST(InputArbiter, EnforcesBorrowPolicyAndInvalidatesOnEpochReplacement)
+TEST(InputArbiter, EnforcesBorrowPolicyWithinOneWorksetEpoch)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
-    ASSERT_TRUE(arbiter.CommitStateEpoch(kEpoch).ok);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
     InputLeaseReceipt parent = arbiter.Acquire(
         {
             .owner = InputOwnerId(1),
@@ -295,23 +295,13 @@ TEST(InputArbiter, EnforcesBorrowPolicyAndInvalidatesOnEpochReplacement)
             witness.witness).ok);
     EXPECT_EQ(arbiter.snapshot().suspended_count, 0u);
 
-    ASSERT_TRUE(
-        arbiter.InvalidateForStateReplacement(StateEpoch(12)).ok);
-    EXPECT_FALSE(arbiter.snapshot().active_lease.has_value());
-    EXPECT_EQ(arbiter.snapshot().lease_count, 0u);
-    EXPECT_EQ(arbiter.snapshot().publication_count, 0u);
-    EXPECT_EQ(arbiter.snapshot().binding_count, 0u);
-    EXPECT_FALSE(arbiter.Publish(
-        parent.lease,
-        {},
-        kEpoch).ok);
 }
 
 TEST(InputArbiter, NeutralWitnessesRejectFabricationWrongLeaseAndNonNeutralInput)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
-    ASSERT_TRUE(arbiter.CommitStateEpoch(kEpoch).ok);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
     InputLeaseReceipt parent = arbiter.Acquire(
         {
             .owner = InputOwnerId(1),
@@ -377,7 +367,7 @@ TEST(InputArbiter, ImplementsExecutionEngineAdvancePortWithBoundedRetries)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
-    ASSERT_TRUE(arbiter.CommitStateEpoch(kEpoch).ok);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
     InputLeaseReceipt lease = arbiter.Acquire(
         {.owner = InputOwnerId(3), .priority = 10},
         kEpoch);
@@ -412,7 +402,7 @@ TEST(InputArbiter, CompletedPublishReleaseCyclesDoNotRetainTombstones)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
-    ASSERT_TRUE(arbiter.CommitStateEpoch(kEpoch).ok);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
 
     for (std::uint64_t cycle = 1; cycle <= 512; ++cycle)
     {
@@ -452,59 +442,13 @@ TEST(InputArbiter, CompletedPublishReleaseCyclesDoNotRetainTombstones)
     }
 }
 
-TEST(InputArbiter, EpochReplacementClearsAllSupersededState)
-{
-    FakeInputBackend backend;
-    InputArbiter arbiter(backend);
-    ASSERT_TRUE(arbiter.CommitStateEpoch(kEpoch).ok);
-    const GCInputFrame neutral{};
-
-    InputLeaseReceipt parent = arbiter.Acquire(
-        {
-            .owner = InputOwnerId(1),
-            .priority = 10,
-            .suspendable = true},
-        kEpoch);
-    ASSERT_TRUE(parent.ok);
-    ASSERT_TRUE(arbiter.Publish(parent.lease, {}, kEpoch).ok);
-    ASSERT_TRUE(
-        arbiter.CreateAdvanceBinding(parent.lease, {neutral}, kEpoch).ok);
-
-    InputLeaseReceipt child = arbiter.Acquire(
-        {.owner = InputOwnerId(2), .priority = 20},
-        kEpoch);
-    ASSERT_TRUE(child.ok);
-    ASSERT_TRUE(arbiter.Publish(child.lease, {}, kEpoch).ok);
-    ASSERT_TRUE(
-        arbiter.CreateAdvanceBinding(child.lease, {neutral}, kEpoch).ok);
-
-    const InputArbiterSnapshot before = arbiter.snapshot();
-    EXPECT_EQ(before.lease_count, 2u);
-    EXPECT_EQ(before.publication_count, 2u);
-    EXPECT_EQ(before.binding_count, 2u);
-    EXPECT_EQ(before.suspended_count, 1u);
-    const std::size_t publishes_before = backend.publish_calls;
-
-    ASSERT_TRUE(
-        arbiter.InvalidateForStateReplacement(StateEpoch(12)).ok);
-    const InputArbiterSnapshot after = arbiter.snapshot();
-    EXPECT_EQ(after.epoch, StateEpoch(12));
-    EXPECT_FALSE(after.active_lease.has_value());
-    EXPECT_EQ(after.suspended_count, 0u);
-    EXPECT_EQ(after.lease_count, 0u);
-    EXPECT_EQ(after.publication_count, 0u);
-    EXPECT_EQ(after.binding_count, 0u);
-    EXPECT_EQ(backend.publish_calls, publishes_before + 1);
-    EXPECT_FALSE(arbiter.Publish(child.lease, {}, StateEpoch(12)).ok);
-}
-
 TEST(
     InputArbiter,
     PublicationRelationshipsRequireExactLeaseTokenEpochAndFrame)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
-    ASSERT_TRUE(arbiter.CommitStateEpoch(kEpoch).ok);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
     InputLeaseReceipt lease = arbiter.Acquire(
         {
             .owner = InputOwnerId(1),
@@ -541,7 +485,7 @@ TEST(
         arbiter.ValidatePublication(wrong_lease).ok);
     InputPublicationEvidence wrong_epoch = exact;
     wrong_epoch.epoch =
-        StateEpoch(exact.epoch.value() + 1);
+        WorksetEpoch(exact.epoch.value() + 1);
     EXPECT_FALSE(
         arbiter.ValidatePublication(wrong_epoch).ok);
 
@@ -567,7 +511,7 @@ TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
-    ASSERT_TRUE(arbiter.CommitStateEpoch(kEpoch).ok);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
     InputLeaseReceipt lease = arbiter.Acquire(
         {
             .owner = InputOwnerId(1),
@@ -602,7 +546,6 @@ TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
     InputArbiterOperationReceipt validated_publication;
     InputArbiterOperationReceipt removed_binding;
     InputArbiterOperationReceipt committed_epoch;
-    InputArbiterOperationReceipt invalidated_epoch;
     InputAdvanceReceipt validated;
     InputAdvanceReceipt prepared;
     InputAdvanceReceipt acknowledged;
@@ -652,9 +595,7 @@ TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
                 publication.frame});
         removed_binding =
             arbiter.RemoveAdvanceBinding(binding.binding);
-        committed_epoch = arbiter.CommitStateEpoch(StateEpoch(12));
-        invalidated_epoch =
-            arbiter.InvalidateForStateReplacement(StateEpoch(12));
+        committed_epoch = arbiter.InitializeWorksetEpoch(WorksetEpoch(12));
         validated = arbiter.Validate(binding.binding, kEpoch);
         prepared = arbiter.PrepareNext(binding.binding, kEpoch, 0);
         acknowledged = arbiter.ObserveAcknowledgement(
@@ -686,7 +627,6 @@ TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
         InputArbiterErrorCode::WrongThread);
     EXPECT_EQ(removed_binding.error, InputArbiterErrorCode::WrongThread);
     EXPECT_EQ(committed_epoch.error, InputArbiterErrorCode::WrongThread);
-    EXPECT_EQ(invalidated_epoch.error, InputArbiterErrorCode::WrongThread);
     EXPECT_FALSE(validated.ok);
     EXPECT_FALSE(prepared.ok);
     EXPECT_FALSE(acknowledged.ok);
@@ -711,7 +651,7 @@ TEST(InputArbiter, ShutdownIsIdempotentAndClearsRetainedState)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
-    ASSERT_TRUE(arbiter.CommitStateEpoch(kEpoch).ok);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
     InputLeaseReceipt lease = arbiter.Acquire(
         {
             .owner = InputOwnerId(1),
@@ -751,7 +691,7 @@ TEST(InputArbiter, ShutdownReportsWhetherNeutralAcknowledgementWasProven)
     {
         FakeInputBackend backend;
         InputArbiter arbiter(backend);
-        ASSERT_TRUE(arbiter.CommitStateEpoch(kEpoch).ok);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
         InputLeaseReceipt lease = arbiter.Acquire(
             {.owner = InputOwnerId(1)},
             kEpoch);
@@ -767,7 +707,7 @@ TEST(InputArbiter, ShutdownReportsWhetherNeutralAcknowledgementWasProven)
     {
         FakeInputBackend backend;
         InputArbiter arbiter(backend);
-        ASSERT_TRUE(arbiter.CommitStateEpoch(kEpoch).ok);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
         InputLeaseReceipt lease = arbiter.Acquire(
             {.owner = InputOwnerId(2)},
             kEpoch);
@@ -799,7 +739,7 @@ TEST(GuestMutationService, AppliesNestedCheckedWritesAndRestoresInReverse)
     backend.PutU32(0x80001000, 0x11223344);
     GuestMemory memory(backend);
     GuestMutationService mutations(memory, backend);
-    mutations.CommitStateEpoch(kEpoch);
+    mutations.InitializeWorksetEpoch(kEpoch);
 
     GuestMutationReceipt outer = mutations.Apply(
         {
@@ -837,7 +777,7 @@ TEST(GuestMutationService, ExecutablePatchInvalidatesAndCannotCommit)
     backend.PutU32(0x801dc288, 0x9421fff0);
     GuestMemory memory(backend);
     GuestMutationService mutations(memory, backend);
-    mutations.CommitStateEpoch(kEpoch);
+    mutations.InitializeWorksetEpoch(kEpoch);
 
     GuestMutationReceipt patch = mutations.Apply(
         {
@@ -869,7 +809,7 @@ TEST(
         "injected invalidation failure");
     GuestMemory memory(backend);
     GuestMutationService mutations(memory, backend);
-    mutations.CommitStateEpoch(kEpoch);
+    mutations.InitializeWorksetEpoch(kEpoch);
 
     const GuestMutationReceipt failed = mutations.Apply(
         {
@@ -908,7 +848,7 @@ TEST(
     backend.corrupt_read_call = 2;
     GuestMemory memory(backend);
     GuestMutationService mutations(memory, backend);
-    mutations.CommitStateEpoch(kEpoch);
+    mutations.InitializeWorksetEpoch(kEpoch);
 
     const GuestMutationReceipt failed = mutations.Apply(
         {
@@ -939,7 +879,7 @@ TEST(
     backend.PutU32(kAddress, kOriginal);
     GuestMemory memory(backend);
     GuestMutationService mutations(memory, backend);
-    mutations.CommitStateEpoch(kEpoch);
+    mutations.InitializeWorksetEpoch(kEpoch);
     const GuestMutationReceipt patch = mutations.Apply(
         {
             .owner = MutationOwnerId(1),
@@ -969,29 +909,6 @@ TEST(
     EXPECT_TRUE(cleanup.restorations.front().ok);
 }
 
-TEST(GuestMutationService, StateReplacementSupersedesWithoutWritingOldBytes)
-{
-    FakeGuestMemoryBackend backend;
-    backend.PutU32(0x803469a8, 0x12345678);
-    GuestMemory memory(backend);
-    GuestMutationService mutations(memory, backend);
-    mutations.CommitStateEpoch(kEpoch);
-    GuestMutationReceipt write = mutations.Apply(
-        {
-            .owner = MutationOwnerId(1),
-            .scope = MutationScopeId(1),
-            .epoch = kEpoch,
-            .address = 0x803469a8,
-            .expected = 0x12345678,
-            .replacement = 0x87654321});
-    ASSERT_TRUE(write.ok);
-    const auto receipts = mutations.SupersedeForStateReplacement(kEpoch);
-    ASSERT_EQ(receipts.size(), 1u);
-    EXPECT_EQ(
-        receipts.front().status,
-        GuestMutationStatus::SupersededByStateReplacement);
-}
-
 TEST(
     GuestMutationService,
     ShutdownRestoresAllActiveMutationsInReverseOrderAndIsIdempotent)
@@ -1001,7 +918,7 @@ TEST(
     backend.PutU32(0x801dc288, 0x9421fff0);
     GuestMemory memory(backend);
     GuestMutationService mutations(memory, backend);
-    mutations.CommitStateEpoch(kEpoch);
+    mutations.InitializeWorksetEpoch(kEpoch);
 
     const GuestMutationReceipt outer = mutations.Apply(
         {
@@ -1077,7 +994,7 @@ TEST(
     backend.PutU32(kSecond, 0x22222222);
     GuestMemory memory(backend);
     GuestMutationService mutations(memory, backend);
-    mutations.CommitStateEpoch(kEpoch);
+    mutations.InitializeWorksetEpoch(kEpoch);
     ASSERT_TRUE(mutations.Apply(
         {
             .owner = MutationOwnerId(1),
@@ -1125,12 +1042,12 @@ TEST(
     FakeGuestMemoryBackend memory_backend;
     memory_backend.PutU32(0x80001000, 0x11223344);
     GuestMemory memory(memory_backend);
-    memory.CommitStateEpoch(kEpoch);
+    memory.InitializeWorksetEpoch(kEpoch);
 
     GuestReadReceipt read;
     GuestBytesResult bytes;
     std::thread other([&] {
-        memory.CommitStateEpoch(StateEpoch(12));
+        memory.InitializeWorksetEpoch(WorksetEpoch(12));
         read = memory.ReadScalar(
             0x80001000,
             GuestScalarWidth::U32,
@@ -1153,18 +1070,17 @@ TEST(
     memory_backend.PutU32(0x80001000, 0x11223344);
     GuestMemory memory(memory_backend);
     GuestMutationService mutations(memory, memory_backend);
-    memory.CommitStateEpoch(kEpoch);
-    mutations.CommitStateEpoch(kEpoch);
+    memory.InitializeWorksetEpoch(kEpoch);
+    mutations.InitializeWorksetEpoch(kEpoch);
 
     GuestMutationReceipt applied;
     GuestMutationReceipt restored;
     GuestMutationReceipt committed;
-    std::vector<GuestMutationReceipt> superseded;
     std::vector<GuestMutationReceipt> scope_restored;
     GuestMutationCleanupReceipt restored_all;
     GuestMutationCleanupReceipt shutdown;
     std::thread other([&] {
-        mutations.CommitStateEpoch(StateEpoch(12));
+        mutations.InitializeWorksetEpoch(WorksetEpoch(12));
         applied = mutations.Apply(
             {
                 .owner = MutationOwnerId(1),
@@ -1175,8 +1091,6 @@ TEST(
                 .replacement = 0x55667788});
         restored = mutations.Restore(GuestMutationId(1), kEpoch);
         committed = mutations.Commit(GuestMutationId(1), kEpoch);
-        superseded =
-            mutations.SupersedeForStateReplacement(kEpoch);
         scope_restored =
             mutations.RestoreScope(MutationScopeId(1), kEpoch);
         restored_all = mutations.RestoreAll();
@@ -1187,8 +1101,6 @@ TEST(
     EXPECT_FALSE(applied.ok);
     EXPECT_FALSE(restored.ok);
     EXPECT_FALSE(committed.ok);
-    ASSERT_EQ(superseded.size(), 1u);
-    EXPECT_FALSE(superseded.front().ok);
     ASSERT_EQ(scope_restored.size(), 1u);
     EXPECT_FALSE(scope_restored.front().ok);
     EXPECT_FALSE(restored_all.ok);
@@ -1207,13 +1119,13 @@ TEST(
 {
     FakeScreenshotBackend screenshot_backend;
     ScreenshotService screenshots(screenshot_backend);
-    screenshots.CommitStateEpoch(kEpoch);
+    screenshots.InitializeWorksetEpoch(kEpoch);
 
     ScreenshotReceipt captured;
     ScreenshotReceipt cancelled;
     std::optional<ScreenshotReceipt> last;
     std::thread other([&] {
-        screenshots.CommitStateEpoch(StateEpoch(12));
+        screenshots.InitializeWorksetEpoch(WorksetEpoch(12));
         captured = screenshots.Capture("wrong-thread.png", 1s, kEpoch);
         cancelled =
             screenshots.Cancel(ScreenshotRequestId(1), kEpoch);
@@ -1276,7 +1188,7 @@ TEST(ScreenshotService, CorrelatesOneRequestAndPreservesBackendFailure)
 {
     FakeScreenshotBackend backend;
     ScreenshotService service(backend);
-    service.CommitStateEpoch(kEpoch);
+    service.InitializeWorksetEpoch(kEpoch);
     const std::filesystem::path path = "shot.png";
     ScreenshotReceipt success = service.Capture(path, 2s, kEpoch);
     ASSERT_TRUE(success.ok);

@@ -156,7 +156,6 @@ struct ClaimedExecutionJob {
     std::string workflow_step_key;
     std::string workflow_step_kind;
     int workflow_step_priority = 0;
-    std::optional<std::string> savestate_affinity_key;
     std::optional<std::string> program_runtime_affinity_key;
     std::string claimed_by_token;
     std::int64_t lease_expires_at_utc = 0;
@@ -352,7 +351,6 @@ struct ExecutionWorksetCompatibility {
     std::string runtime_profile_sha256;
     std::uint64_t required_capability_mask = 0;
     std::optional<std::string> execution_affinity_key;
-    std::optional<std::string> baseline_affinity_key;
     std::uint64_t estimated_payload_bytes = 0;
 };
 

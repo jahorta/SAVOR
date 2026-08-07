@@ -128,7 +128,7 @@ struct ResourceHandleValue
 {
     ProgramResourceHandleId handle_id;
     SchemaIdentity resource_type;
-    std::optional<StateEpoch> origin_epoch;
+    WorksetEpoch workset_epoch;
 
     auto operator<=>(const ResourceHandleValue&) const = default;
 };
@@ -137,7 +137,7 @@ struct OpaqueHandleValue
 {
     ProgramResourceHandleId handle_id;
     SchemaIdentity handle_type;
-    StateEpoch origin_epoch;
+    WorksetEpoch workset_epoch;
 
     auto operator<=>(const OpaqueHandleValue&) const = default;
 };

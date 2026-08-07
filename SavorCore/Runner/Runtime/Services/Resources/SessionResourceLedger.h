@@ -18,7 +18,6 @@ struct ResourceScopeIdTag;
 struct ResourceReceiptIdTag;
 struct ResourceAcquisitionSequenceTag;
 struct ResourceExternalIdTag;
-struct ResourceRebindKeyTag;
 struct ResourceCleanupContinuationIdTag;
 
 using ResourceOwnerId = StrongId<ResourceOwnerIdTag>;
@@ -28,7 +27,6 @@ using ResourceReceiptId = StrongId<ResourceReceiptIdTag>;
 using ResourceAcquisitionSequence =
     StrongId<ResourceAcquisitionSequenceTag>;
 using ResourceExternalId = StrongId<ResourceExternalIdTag>;
-using ResourceRebindKey = StrongId<ResourceRebindKeyTag>;
 using ResourceCleanupContinuationId =
     StrongId<ResourceCleanupContinuationIdTag>;
 
@@ -53,21 +51,13 @@ enum class ResourceKind : std::uint8_t
     InputLease,
     StopPointGroup,
     ExecutionOperation,
-    StateHandle,
     GuestMutation,
+    PreparedMoviePlayback,
     MovieSession,
     CaptureAttachment,
     ArtifactWriter,
     TelemetrySubscription,
     HostResource,
-};
-
-enum class ResourceEpochPolicy : std::uint8_t
-{
-    EpochAgnostic,
-    EndOnEpochChange,
-    RebindAfterRestore,
-    ReplacesState,
 };
 
 enum class ResourcePromotionPolicy : std::uint8_t
@@ -87,7 +77,6 @@ enum class ResourceRecordStatus : std::uint8_t
 {
     Active,
     Released,
-    SupersededByStateReplacement,
     ReleaseFailed,
 };
 
@@ -95,7 +84,6 @@ enum class ResourceLedgerState : std::uint8_t
 {
     Uninitialized,
     Accepting,
-    StateTransition,
     Unwinding,
     Tainted,
     Closed,
@@ -145,13 +133,10 @@ struct ResourceAcquisitionDefinition
     ResourceOwnerId owner;
     ResourceServiceId service;
     ResourceReleaseDescriptor release;
-    ResourceEpochPolicy epoch_policy =
-        ResourceEpochPolicy::EndOnEpochChange;
     ResourcePromotionPolicy promotion =
         ResourcePromotionPolicy::Forbidden;
     ResourceCleanupRequirement cleanup =
         ResourceCleanupRequirement::Mandatory;
-    ResourceRebindKey rebind_key;
     std::string diagnostic_label;
 };
 
@@ -164,15 +149,11 @@ struct ResourceReceipt
     ResourceServiceId service;
     ResourceScopeId scope;
     ResourceReleaseDescriptor release;
-    StateEpoch acquisition_epoch;
-    ResourceEpochPolicy epoch_policy =
-        ResourceEpochPolicy::EndOnEpochChange;
+    WorksetEpoch acquisition_epoch;
     ResourcePromotionPolicy promotion =
         ResourcePromotionPolicy::Forbidden;
     ResourceCleanupRequirement cleanup =
         ResourceCleanupRequirement::Mandatory;
-    ResourceRebindKey rebind_key;
-    ResourceReceiptId rebound_from;
     ResourceRecordStatus status = ResourceRecordStatus::Active;
     std::string diagnostic_label;
     std::string release_diagnostic;
@@ -221,7 +202,6 @@ enum class ResourceReleaseReason : std::uint8_t
 {
     Explicit,
     ScopeExit,
-    StateEpochChanged,
     Shutdown,
 };
 
@@ -229,14 +209,13 @@ struct ResourceReleaseRequest
 {
     ResourceReceipt receipt;
     ResourceReleaseReason reason = ResourceReleaseReason::Explicit;
-    StateEpoch current_epoch;
+    WorksetEpoch current_epoch;
     bool cleanup_only = true;
 };
 
 enum class ResourceReleaseStatus : std::uint8_t
 {
     Released,
-    SupersededByStateReplacement,
     CleanupExecutionRequired,
     Failed,
 };
@@ -260,23 +239,6 @@ struct ResourceUnwindStep
 {
     ResourceReleaseRequest request;
     ResourceReleaseResult result;
-};
-
-struct ResourceRebindRequest
-{
-    ResourceReceipt prior_receipt;
-    ResourceOwnerId owner;
-    ResourceServiceId service;
-    ResourceScopeId scope;
-    ResourceKind kind = ResourceKind::HostResource;
-    ResourceRebindKey stable_key;
-    StateEpoch state_epoch;
-};
-
-struct ResourceRebindCompletion
-{
-    ResourceReceiptId prior_receipt;
-    ResourceAcquisitionDefinition replacement;
 };
 
 enum class ResourceUnwindOutcome : std::uint8_t
@@ -307,7 +269,6 @@ struct ResourceUnwindResult
     ResourceCleanupDisposition disposition =
         ResourceCleanupDisposition::Clean;
     std::vector<ResourceUnwindStep> steps;
-    std::vector<ResourceRebindRequest> rebind_requests;
     std::optional<ResourceCleanupExecutionRequest>
         cleanup_execution_request;
     ResourceLedgerError error;
@@ -325,7 +286,7 @@ struct ResourceLedgerSnapshot
     ResourceCleanupDisposition disposition =
         ResourceCleanupDisposition::Clean;
     SessionId session;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     ResourceScopeId session_root;
     std::size_t open_scope_count = 0;
     std::size_t active_resource_count = 0;
@@ -348,7 +309,7 @@ public:
 
     [[nodiscard]] ResourceOperationResult Initialize(
         SessionId session,
-        StateEpoch state_epoch,
+        WorksetEpoch workset_epoch,
         ResourceOwnerId session_owner);
 
     [[nodiscard]] ResourceScopeResult OpenSyntheticScope(
@@ -371,25 +332,6 @@ public:
     [[nodiscard]] ResourceUnwindResult CloseScope(
         ResourceScopeId scope,
         IResourceReleaseDispatcher& dispatcher);
-
-    // This gate is one participant in the session's larger state transaction.
-    // The caller must pause execution and complete any pre-replacement work
-    // before committing the authoritative new epoch here.
-    [[nodiscard]] ResourceOperationResult BeginStateTransition(
-        StateEpoch expected_epoch);
-
-    [[nodiscard]] ResourceUnwindResult CommitStateTransition(
-        StateEpoch new_epoch,
-        IResourceReleaseDispatcher& dispatcher);
-
-    [[nodiscard]] ResourceOperationResult RollbackStateTransition(
-        StateEpoch expected_epoch);
-
-    [[nodiscard]] ResourceAcquisitionResult CompleteStateTransitionRebinds(
-        const std::vector<ResourceRebindCompletion>& completions);
-
-    [[nodiscard]] ResourceOperationResult FailStateTransitionRebinds(
-        std::string diagnostic);
 
     [[nodiscard]] ResourceUnwindResult ContinueCleanup(
         ResourceCleanupContinuationId continuation,
@@ -423,7 +365,6 @@ private:
         bool had_failure = false;
         ResourceCleanupContinuationId continuation;
         std::vector<ResourceUnwindStep> steps;
-        std::vector<ResourceRebindRequest> rebind_requests;
     };
 
     [[nodiscard]] bool OnOwnerThread() const noexcept;
@@ -459,17 +400,15 @@ private:
     ResourceCleanupDisposition disposition_ =
         ResourceCleanupDisposition::Clean;
     SessionId session_id_;
-    StateEpoch state_epoch_;
+    WorksetEpoch workset_epoch_;
     ResourceScopeId session_root_;
     std::uint64_t next_scope_id_ = 1;
     std::uint64_t next_resource_id_ = 1;
     std::uint64_t next_sequence_ = 1;
     std::uint64_t next_continuation_id_ = 1;
-    StateEpoch transition_origin_epoch_;
     std::vector<ScopeRecord> scopes_;
     std::vector<ResourceReceipt> resources_;
     std::optional<PendingUnwind> pending_unwind_;
-    std::vector<ResourceRebindRequest> pending_rebinds_;
     // The first cleanup operation binds the composite dispatcher. It must
     // outlive the ledger and every later cleanup must use the same instance.
     IResourceReleaseDispatcher* bound_dispatcher_ = nullptr;

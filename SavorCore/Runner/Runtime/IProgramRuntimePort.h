@@ -35,7 +35,7 @@ struct EncodedInvocationEnvelope
     AttemptId attempt_id;
     ProgramModuleIdentity module;
     std::string entrypoint;
-    StateEpoch expected_state_epoch;
+    WorksetEpoch expected_workset_epoch;
     std::vector<std::uint8_t> input_payload;
 };
 
@@ -43,14 +43,6 @@ struct ModulePreparationRequest
 {
     WorkerCommandSequence command_sequence;
     EncodedModuleEnvelope module;
-};
-
-struct ProgramInvocationRequest
-{
-    WorkerCommandSequence command_sequence;
-    EncodedInvocationEnvelope invocation;
-    bool state_already_prepared = false;
-    std::string prepared_baseline_sha256;
 };
 
 struct InvocationTemplatePreparationRequest
@@ -68,7 +60,8 @@ struct PreparedInvocationTemplateReceipt
     std::string entrypoint;
     std::string program_compatibility_sha256;
     program::InvocationStatePolicy state_policy =
-        program::InvocationStatePolicy::Boot;
+        program::InvocationStatePolicy::RestoreBaseline;
+    std::uint64_t maximum_artifacts = 0;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
@@ -83,9 +76,10 @@ struct PreparedInvocationStartRequest
     WorkerCommandSequence command_sequence;
     PreparedInvocationTemplateId template_id;
     SessionId session_id;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     std::string baseline_sha256;
     std::string baseline_lineage;
+    bool state_already_prepared = false;
 };
 
 struct ProgramRuntimeCatalogModule
@@ -132,24 +126,44 @@ struct ProgramInvocationTerminalEvent
     InvocationTerminalStatus status = InvocationTerminalStatus::Failed;
     CleanupStatus cleanup = CleanupStatus::Clean;
     SessionDisposition session_disposition = SessionDisposition::Clean;
-    StateEpoch origin_state_epoch;
+    WorksetEpoch workset_epoch;
     std::vector<std::uint8_t> output_payload;
+    RuntimeError error;
+};
+
+// Actor-consumed execution draft. It contains the canonical ProgramResult
+// before worker-owned staged outputs are finalized and appended.
+struct ProgramExecutionFinished
+{
+    InvocationId invocation_id;
+    AttemptId attempt_id;
+    InvocationTerminalStatus status = InvocationTerminalStatus::Failed;
+    CleanupStatus cleanup = CleanupStatus::Clean;
+    SessionDisposition session_disposition = SessionDisposition::Clean;
+    WorksetEpoch workset_epoch;
+    std::vector<std::uint8_t> output_payload;
+    RuntimeError error;
+};
+
+struct ProgramExecutionTakeResult
+{
+    bool taken = false;
+    std::optional<ProgramExecutionFinished> finished;
     RuntimeError error;
 };
 
 using ProgramRuntimeEvent = std::variant<
     ModulePreparationEvent,
-    ProgramInvocationProgressEvent,
-    ProgramInvocationTerminalEvent>;
+    ProgramInvocationProgressEvent>;
 
 struct ProgramRuntimeSubmission
 {
     bool accepted = false;
     // Cancellation uses this actor-arbitration result when the canonical
-    // terminal was already published but has not yet been consumed by
-    // WorkerRuntime. The exact cancellation loses without tainting or
-    // rewriting the terminal.
-    bool terminal_already_published = false;
+    // execution has already finished and its draft is retained for an exact
+    // WorkerRuntime take. The exact cancellation loses without tainting or
+    // rewriting that draft.
+    bool execution_already_finished = false;
     RuntimeError error;
 
     [[nodiscard]] static ProgramRuntimeSubmission Accepted()
@@ -158,7 +172,7 @@ struct ProgramRuntimeSubmission
     }
 
     [[nodiscard]] static ProgramRuntimeSubmission
-        TerminalAlreadyPublished()
+        ExecutionAlreadyFinished()
     {
         return {true, true, {}};
     }
@@ -194,11 +208,6 @@ public:
     // actor-marshalled service request surface.
     virtual ProgramRuntimeSubmission PrepareModule(
         ModulePreparationRequest request,
-        std::shared_ptr<IProgramRuntimeEventSink> events) = 0;
-
-    virtual ProgramRuntimeSubmission StartInvocation(
-        ProgramInvocationRequest request,
-        CancellationToken cancellation,
         std::shared_ptr<IProgramRuntimeEventSink> events) = 0;
 
     // Workset admission validates and pins canonical invocation contents
@@ -254,35 +263,26 @@ public:
         (void)sink;
     }
 
-    virtual ProgramRuntimeSubmission DeliverActionCompletion(
-        program::ProgramActionCompletion completion)
+    virtual ProgramRuntimeSubmission DeliverActionResolution(
+        program::ProgramActionResolution completion)
     {
         (void)completion;
         return ProgramRuntimeSubmission::Rejected(
             WorkerRejectionCode::Unsupported,
-            "ProgramRuntime does not accept actor action completions");
+            "ProgramRuntime does not accept actor action resolutions");
     }
 
-    // Transfers host-only publications which were promoted by accepted
-    // action completions. ProgramRuntime and ProgramExecutor never finalize
-    // files or expose these pending receipts to program IR.
-    [[nodiscard]] virtual std::vector<
-        program::PendingStateArtifactPublication>
-        DrainPendingStateArtifactPublications()
-    {
-        return {};
-    }
-
-    // A terminal remains correlated inside the runtime until the actor has
-    // consumed it. Ports that publish terminals synchronously but do not need
-    // retention may accept this acknowledgement as a no-op.
-    virtual ProgramRuntimeSubmission AcknowledgeTerminal(
+    // Atomically transfers an exact retained execution draft to the worker.
+    // A correlation mismatch leaves the draft retained.
+    [[nodiscard]] virtual ProgramExecutionTakeResult TakeFinishedExecution(
         InvocationId invocation_id,
         AttemptId attempt_id)
     {
         (void)invocation_id;
         (void)attempt_id;
-        return ProgramRuntimeSubmission::Accepted();
+        return {false, std::nullopt, {
+            WorkerRejectionCode::Unsupported,
+            "ProgramRuntime does not retain finished executions"}};
     }
 
     // Returns true when another fair actor quantum is immediately runnable.

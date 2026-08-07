@@ -57,7 +57,6 @@ CREATE TABLE IF NOT EXISTS exec_workset (
     required_capability_mask INTEGER NOT NULL
         CHECK(required_capability_mask >= 0),
     execution_affinity_key TEXT NULL,
-    baseline_affinity_key TEXT NULL,
     estimated_payload_bytes INTEGER NOT NULL
         CHECK(estimated_payload_bytes >= 0),
     priority INTEGER NOT NULL,

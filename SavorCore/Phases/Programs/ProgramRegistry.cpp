@@ -1,6 +1,4 @@
 #include "ProgramRegistry.h"
-#include "PlayTasMovie/TasMoviePayload.h"
-#include "PlayTasMovie/TasMovieScript.h"
 #include "TasFrameDetector/TasFrameDetectorPayload.h"
 #include "TasFrameDetector/TasFrameDetectorScript.h"
 #include "BattleRunner/BattleRunnerPayload.h"
@@ -24,9 +22,6 @@ namespace savor::programs {
     PhaseScript build_main_program(uint8_t program_kind)
     {
         switch (program_kind) {
-        case PK_TasMovie:
-            // TAS fixed program uses context keys for the disc, movie, and output state.
-            return tasmovie::MakeTasMovieProgram();
         case PK_TasInputStreamDetector:
             return tasframedetector::MakeTasFrameDetectorProgram();
         case PK_BattleTurnRunner:
@@ -60,8 +55,6 @@ namespace savor::programs {
         if (tag != active_program_kind) return false;
 
         switch (active_program_kind) {
-        case PK_TasMovie:
-            return tasmovie::decode_payload(payload, out_ctx);
         case PK_TasInputStreamDetector:
             return tasframedetector::decode_payload(payload, out_ctx);
         case PK_BattleTurnRunner:          

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -17,11 +18,11 @@
 
 namespace savor::runtime {
 
-struct StateArtifactFinalizationIdTag;
-using StateArtifactFinalizationId =
-    StrongId<StateArtifactFinalizationIdTag>;
+struct SavestateArtifactFinalizationIdTag;
+using SavestateArtifactFinalizationId =
+    StrongId<SavestateArtifactFinalizationIdTag>;
 
-enum class StateArtifactFinalizerErrorCode : std::uint16_t
+enum class SavestateArtifactFinalizerErrorCode : std::uint16_t
 {
     None,
     InvalidArgument,
@@ -33,27 +34,27 @@ enum class StateArtifactFinalizerErrorCode : std::uint16_t
     SequenceExhausted,
 };
 
-struct StateArtifactFinalizerResult
+struct SavestateArtifactFinalizerResult
 {
     bool ok = false;
-    StateArtifactFinalizerErrorCode code =
-        StateArtifactFinalizerErrorCode::FilesystemFailure;
+    SavestateArtifactFinalizerErrorCode code =
+        SavestateArtifactFinalizerErrorCode::FilesystemFailure;
     std::string message;
 
-    [[nodiscard]] static StateArtifactFinalizerResult Success()
+    [[nodiscard]] static SavestateArtifactFinalizerResult Success()
     {
-        return {true, StateArtifactFinalizerErrorCode::None, {}};
+        return {true, SavestateArtifactFinalizerErrorCode::None, {}};
     }
 
-    [[nodiscard]] static StateArtifactFinalizerResult Failure(
-        StateArtifactFinalizerErrorCode code,
+    [[nodiscard]] static SavestateArtifactFinalizerResult Failure(
+        SavestateArtifactFinalizerErrorCode code,
         std::string message)
     {
         return {false, code, std::move(message)};
     }
 };
 
-using ImmutableArtifactBytes = ImmutableStateBytes;
+using ImmutableArtifactBytes = ImmutableSavestateBytes;
 
 struct ImmutableArtifactFile
 {
@@ -63,7 +64,7 @@ struct ImmutableArtifactFile
     std::string expected_sha256;
 };
 
-struct StateArtifactFinalizationRequest
+struct SavestateArtifactFinalizationRequest
 {
     // Preferred pre-terminal identity. It is sufficient to finalize output
     // while ordinary invocation unwind is still establishing its terminal.
@@ -71,7 +72,7 @@ struct StateArtifactFinalizationRequest
     // Optional later binding retained in the request/completion so the
     // completion ledger can correlate a reservation made before Submit.
     WorkerItemTerminalCorrelation terminal;
-    StateArtifactId state_artifact_id;
+    SavestateArtifactId state_artifact_id;
     std::string logical_artifact_id;
     ImmutableArtifactFile state;
     // Sidecars publish before the state file. Every file is immutable: an
@@ -87,25 +88,25 @@ struct FinalizedArtifactFile
     bool reused_existing = false;
 };
 
-struct StateArtifactFinalizationCompletion
+struct SavestateArtifactFinalizationCompletion
 {
-    StateArtifactFinalizationId finalization_id;
+    SavestateArtifactFinalizationId finalization_id;
     WorkerItemExecutionCorrelation item;
     WorkerItemTerminalCorrelation terminal;
-    StateArtifactId state_artifact_id;
+    SavestateArtifactId state_artifact_id;
     std::string logical_artifact_id;
-    StateArtifactFinalizerResult result;
+    SavestateArtifactFinalizerResult result;
     FinalizedArtifactFile state;
     std::vector<FinalizedArtifactFile> sidecars;
 };
 
-struct StateArtifactFinalizerSubmission
+struct SavestateArtifactFinalizerSubmission
 {
-    StateArtifactFinalizerResult result;
-    StateArtifactFinalizationId finalization_id;
+    SavestateArtifactFinalizerResult result;
+    SavestateArtifactFinalizationId finalization_id;
 };
 
-struct StateArtifactFinalizerSnapshot
+struct SavestateArtifactFinalizerSnapshot
 {
     bool accepting = false;
     bool shutdown = false;
@@ -119,56 +120,58 @@ struct StateArtifactFinalizerSnapshot
 // The notifier is deliberately weaker than a completion callback: its only
 // permitted role is waking the WorkerRuntime actor. Finalizer threads place the
 // complete value in the internal queue before invoking this noexcept seam.
-class IStateArtifactFinalizerNotifier
+class ISavestateArtifactFinalizerNotifier
 {
 public:
-    virtual ~IStateArtifactFinalizerNotifier() = default;
-    virtual void NotifyStateArtifactFinalizerCompletion() noexcept = 0;
+    virtual ~ISavestateArtifactFinalizerNotifier() = default;
+    virtual void NotifySavestateArtifactFinalizerCompletion() noexcept = 0;
 };
 
 // Host-only bounded publication of already-captured immutable bytes. Jobs do
-// not contain EmulationSession, Dolphin, StateService, or arbitrary callbacks,
+// not contain EmulationSession, Dolphin, SavestateService, or arbitrary callbacks,
 // so finalizer threads cannot mutate guest/session state.
-class StateArtifactFinalizer final
+class SavestateArtifactFinalizer final
 {
 public:
-    explicit StateArtifactFinalizer(
+    explicit SavestateArtifactFinalizer(
         const WorkerWorksetLimits& limits = {},
-        std::shared_ptr<IStateArtifactFinalizerNotifier> notifier = {});
-    ~StateArtifactFinalizer();
+        std::shared_ptr<ISavestateArtifactFinalizerNotifier> notifier = {},
+        std::function<void()> before_process_for_testing = {});
+    ~SavestateArtifactFinalizer();
 
-    StateArtifactFinalizer(const StateArtifactFinalizer&) = delete;
-    StateArtifactFinalizer& operator=(const StateArtifactFinalizer&) = delete;
+    SavestateArtifactFinalizer(const SavestateArtifactFinalizer&) = delete;
+    SavestateArtifactFinalizer& operator=(const SavestateArtifactFinalizer&) = delete;
 
-    [[nodiscard]] StateArtifactFinalizerSubmission Submit(
-        StateArtifactFinalizationRequest request);
+    [[nodiscard]] SavestateArtifactFinalizerSubmission Submit(
+        SavestateArtifactFinalizationRequest request);
 
     // May be called by the actor after a notifier wake. Draining frees the
     // corresponding count credit; payload byte credit is freed as soon as a
     // worker finishes because completions retain receipts, not captured bytes.
-    [[nodiscard]] std::vector<StateArtifactFinalizationCompletion>
-        DrainCompletions();
+    [[nodiscard]] std::vector<SavestateArtifactFinalizationCompletion>
+        DrainResults();
 
     // Stops admission, lets every accepted job reach a completion, and joins
     // all finalizer threads. It is idempotent and does not discard completions.
     void Shutdown() noexcept;
 
-    [[nodiscard]] StateArtifactFinalizerSnapshot snapshot() const noexcept;
+    [[nodiscard]] SavestateArtifactFinalizerSnapshot snapshot() const noexcept;
 
 private:
     struct Job
     {
-        StateArtifactFinalizationId id;
-        StateArtifactFinalizationRequest request;
+        SavestateArtifactFinalizationId id;
+        SavestateArtifactFinalizationRequest request;
         std::size_t resident_bytes = 0;
     };
 
     void WorkerMain() noexcept;
-    [[nodiscard]] StateArtifactFinalizationCompletion Process(
+    [[nodiscard]] SavestateArtifactFinalizationCompletion Process(
         const Job& job) const noexcept;
 
     WorkerWorksetLimits limits_;
-    std::shared_ptr<IStateArtifactFinalizerNotifier> notifier_;
+    std::shared_ptr<ISavestateArtifactFinalizerNotifier> notifier_;
+    std::function<void()> before_process_for_testing_;
     mutable std::mutex mutex_;
     std::condition_variable wake_;
     std::condition_variable stopped_;
@@ -181,9 +184,9 @@ private:
     std::size_t outstanding_jobs_ = 0;
     std::size_t resident_payload_bytes_ = 0;
     std::deque<Job> jobs_;
-    std::deque<StateArtifactFinalizationCompletion> completions_;
+    std::deque<SavestateArtifactFinalizationCompletion> completions_;
     std::unordered_set<std::uint64_t> outstanding_ids_;
-    // StateArtifactId is session-owned and unique for each captured output.
+    // SavestateArtifactId is session-owned and unique for each captured output.
     // Multiple independent captures from one invocation/item are allowed.
     std::unordered_set<std::uint64_t> outstanding_artifact_ids_;
     std::vector<std::thread> threads_;

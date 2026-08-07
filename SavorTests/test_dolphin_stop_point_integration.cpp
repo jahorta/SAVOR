@@ -132,7 +132,6 @@ private:
                 ? "live JIT router wake guard"
                 : "live JIT router passive guard",
         },
-        .epoch_policy = StopEpochPolicy::RebindAfterRestore,
         .subscriptions = {{
             .id = subscription_id,
             .point = PcStopPointSpec{kGameModeControllerPc},
@@ -147,7 +146,7 @@ private:
 }
 
 [[nodiscard]] ExecutionRequestPolicy MakeExecutionPolicy(
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     ExecutionRequestPolicy policy;
     policy.expected_epoch = epoch;
@@ -163,7 +162,6 @@ private:
             .stable_name = "integration.game_mode_controller.engine_wake",
             .diagnostic_label = "headless JIT ExecutionEngine wake guard",
         },
-        .epoch_policy = StopEpochPolicy::RebindAfterRestore,
         .subscriptions = {{
             .id = kWakeSubscription,
             .point = PcStopPointSpec{kGameModeControllerPc},
@@ -237,7 +235,7 @@ void ExpectSameIdentity(
 {
     EXPECT_EQ(lhs.sequence, rhs.sequence);
     EXPECT_EQ(lhs.sample_snapshot, rhs.sample_snapshot);
-    EXPECT_EQ(lhs.state_epoch, rhs.state_epoch);
+    EXPECT_EQ(lhs.workset_epoch, rhs.workset_epoch);
     EXPECT_EQ(lhs.dispatch_generation, rhs.dispatch_generation);
     EXPECT_EQ(lhs.physical_generation, rhs.physical_generation);
 }
@@ -279,8 +277,8 @@ TEST(
     open_options.backend.visual = false;
     const SessionOperationReceipt opened = session.Open(open_options);
     ASSERT_TRUE(opened.ok) << opened.backend.message;
-    ASSERT_EQ(opened.origin_epoch, StateEpoch{});
-    ASSERT_EQ(opened.resulting_epoch, StateEpoch(1));
+    ASSERT_EQ(opened.workset_epoch, WorksetEpoch{});
+    ASSERT_EQ(opened.workset_epoch, WorksetEpoch(1));
     ASSERT_TRUE(savor::probe::NativeStopHooksInstalled());
 
     StopPointRouter* const router = session.stop_points();
@@ -303,7 +301,7 @@ TEST(
     const GuestReadReceipt original_instruction = memory->ReadScalar(
         kGameModeControllerPc,
         GuestScalarWidth::U32,
-        StateEpoch(1));
+        WorksetEpoch(1));
     ASSERT_TRUE(original_instruction.ok)
         << original_instruction.message;
     ASSERT_EQ(original_instruction.value, 0x9421fff0u);
@@ -312,7 +310,7 @@ TEST(
     const GuestMutationReceipt patch = mutations->Apply({
         .owner = MutationOwnerId(0x7101u),
         .scope = MutationScopeId(0x7101u),
-        .epoch = StateEpoch(1),
+        .epoch = WorksetEpoch(1),
         .address = kGameModeControllerPc,
         .expected = original_instruction.value,
         .replacement = 0x60000000u,
@@ -323,19 +321,19 @@ TEST(
     const GuestReadReceipt patched_instruction = memory->ReadScalar(
         kGameModeControllerPc,
         GuestScalarWidth::U32,
-        StateEpoch(1));
+        WorksetEpoch(1));
     ASSERT_TRUE(patched_instruction.ok);
     EXPECT_EQ(patched_instruction.value, 0x60000000u);
     EXPECT_EQ(
         session.execution_snapshot().evidence.vi_count,
         before_patch.evidence.vi_count);
     const GuestMutationReceipt restored_patch =
-        mutations->Restore(patch.mutation, StateEpoch(1));
+        mutations->Restore(patch.mutation, WorksetEpoch(1));
     ASSERT_TRUE(restored_patch.ok) << restored_patch.message;
     const GuestReadReceipt restored_instruction = memory->ReadScalar(
         kGameModeControllerPc,
         GuestScalarWidth::U32,
-        StateEpoch(1));
+        WorksetEpoch(1));
     ASSERT_TRUE(restored_instruction.ok);
     EXPECT_EQ(
         restored_instruction.value,
@@ -351,7 +349,7 @@ TEST(
         session.execution_snapshot().evidence;
     const ExecutionSubmissionReceipt initial_step =
         session.SubmitExecution(StepFramesRequest{
-            .policy = MakeExecutionPolicy(StateEpoch(1)),
+            .policy = MakeExecutionPolicy(WorksetEpoch(1)),
             .count = 1,
         });
     ASSERT_TRUE(initial_step.accepted) << initial_step.error.message;
@@ -380,7 +378,7 @@ TEST(
         capture->Attach({
             .profile_json = MakeLiveCaptureProfile(),
             .options = std::move(capture_options),
-            .expected_epoch = StateEpoch(1),
+            .expected_epoch = WorksetEpoch(1),
         });
     ASSERT_TRUE(capture_attached.ok)
         << capture_attached.error.message;
@@ -398,7 +396,7 @@ TEST(
 
     const ExecutionSubmissionReceipt first_wait =
         session.SubmitExecution(ContinueUntilRequest{
-            .policy = MakeExecutionPolicy(StateEpoch(1)),
+            .policy = MakeExecutionPolicy(WorksetEpoch(1)),
             .wake_group = MakeEngineWakeGroup(),
         });
     ASSERT_TRUE(first_wait.accepted) << first_wait.error.message;
@@ -432,7 +430,7 @@ TEST(
     EXPECT_EQ(routed_pc->pc, kGameModeControllerPc);
     EXPECT_EQ(event.evidence.hit_pc, kGameModeControllerPc);
     EXPECT_EQ(event.evidence.path, NativeStopPath::Jit);
-    EXPECT_EQ(event.identity.state_epoch, session.snapshot().state_epoch);
+    EXPECT_EQ(event.identity.workset_epoch, session.snapshot().workset_epoch);
     EXPECT_TRUE(event.active_foreground_wake);
     EXPECT_TRUE(event.authoritative);
     EXPECT_FALSE(router->authoritative_overflowed());
@@ -458,7 +456,7 @@ TEST(
     // it, and the next completion must carry a fresh routed sequence.
     const ExecutionSubmissionReceipt second_wait =
         session.SubmitExecution(ContinueUntilRequest{
-            .policy = MakeExecutionPolicy(StateEpoch(1)),
+            .policy = MakeExecutionPolicy(WorksetEpoch(1)),
             .wake_group = MakeEngineWakeGroup(),
         });
     ASSERT_TRUE(second_wait.accepted) << second_wait.error.message;
@@ -489,8 +487,8 @@ TEST(
         second_terminal->stop->identity.physical_generation,
         first_wake.identity.physical_generation);
     EXPECT_EQ(
-        second_terminal->stop->identity.state_epoch,
-        StateEpoch(1));
+        second_terminal->stop->identity.workset_epoch,
+        WorksetEpoch(1));
     EXPECT_EQ(
         second_terminal->stop->event->evidence.path,
         NativeStopPath::Jit);
@@ -511,7 +509,7 @@ TEST(
         session.execution_snapshot().evidence.vi_count;
     const ExecutionSubmissionReceipt final_step =
         session.SubmitExecution(StepFramesRequest{
-            .policy = MakeExecutionPolicy(StateEpoch(1)),
+            .policy = MakeExecutionPolicy(WorksetEpoch(1)),
             .count = 1,
         });
     ASSERT_TRUE(final_step.accepted) << final_step.error.message;

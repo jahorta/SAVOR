@@ -1,6 +1,7 @@
 #include "FullPhaseProgram.h"
 
 #include "../../../Phases/Programs/SeedProbe/SeedProbeModule.h"
+#include "../../../Phases/Programs/TasMovieValidation/TasMovieValidationModule.h"
 
 #include <algorithm>
 
@@ -55,6 +56,8 @@ const FullPhaseProgramRegistry& ProductionRegistry()
         FullPhaseProgramRegistry value;
         (void)value.Register(
             seedprobe::SeedProbeFullPhaseDefinitionV2());
+        (void)value.Register(
+            tasmovie::TasMovieValidationFullPhaseDefinitionV1());
         return value;
     }();
     return registry;

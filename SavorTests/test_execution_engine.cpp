@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Runner/Runtime/Execution/ExecutionEngine.h"
-#include "Runner/Runtime/Worksets/StateArtifactFinalizer.h"
+#include "Runner/Runtime/Worksets/SavestateArtifactFinalizer.h"
 #include "common/FakeExecutionBackend.h"
 #include "common/FakePhysicalStopBackend.h"
 
@@ -24,7 +24,7 @@ using namespace std::chrono_literals;
 using namespace savor::runtime;
 using namespace savor::test_support;
 
-constexpr StateEpoch kEpoch{7};
+constexpr WorksetEpoch kEpoch{7};
 constexpr std::uint32_t kWakePc = 0x801DC288u;
 
 std::uint64_t AtomicHostTicks(void* context) noexcept
@@ -98,7 +98,7 @@ std::size_t CountCall(
         expected));
 }
 
-ExecutionRequestPolicy Policy(StateEpoch epoch = kEpoch)
+ExecutionRequestPolicy Policy(WorksetEpoch epoch = kEpoch)
 {
     ExecutionRequestPolicy policy;
     policy.expected_epoch = epoch;
@@ -114,7 +114,6 @@ StopSubscriptionGroupDefinition WakeGroup(std::uint32_t pc = kWakePc)
             .stable_name = "test.execution-engine.wake",
             .diagnostic_label = "execution-engine test",
         },
-        .epoch_policy = StopEpochPolicy::EndOnEpochChange,
         .subscriptions = {
             {
                 .id = StopSubscriptionId(100),
@@ -268,7 +267,7 @@ public:
 
     InputAdvanceReceipt Validate(
         InputAdvanceBindingId binding,
-        StateEpoch epoch) override
+        WorksetEpoch epoch) override
     {
         calls.push_back("validate");
         frame_steps_seen.push_back(FrameStepCount());
@@ -282,7 +281,7 @@ public:
 
     InputAdvanceReceipt PrepareNext(
         InputAdvanceBindingId binding,
-        StateEpoch epoch,
+        WorksetEpoch epoch,
         std::uint32_t advance_ordinal) override
     {
         calls.push_back("prepare");
@@ -310,7 +309,7 @@ public:
     InputAdvanceReceipt ObserveAcknowledgement(
         InputAdvanceBindingId binding,
         InputPublicationToken publication,
-        StateEpoch epoch) override
+        WorksetEpoch epoch) override
     {
         calls.push_back("observe");
         frame_steps_seen.push_back(FrameStepCount());
@@ -330,7 +329,7 @@ public:
 
     InputAdvanceReceipt Complete(
         InputAdvanceBindingId binding,
-        StateEpoch epoch) noexcept override
+        WorksetEpoch epoch) noexcept override
     {
         calls.push_back("complete");
         frame_steps_seen.push_back(FrameStepCount());
@@ -344,7 +343,7 @@ public:
 
     InputAdvanceReceipt Cancel(
         InputAdvanceBindingId binding,
-        StateEpoch epoch) noexcept override
+        WorksetEpoch epoch) noexcept override
     {
         calls.push_back("cancel");
         frame_steps_seen.push_back(FrameStepCount());
@@ -362,7 +361,7 @@ public:
     InputPublicationToken last_publication;
     InputPublicationToken observed_publication;
     std::vector<InputPublicationToken> prepared_publications;
-    StateEpoch last_epoch;
+    WorksetEpoch last_epoch;
     std::uint32_t last_ordinal = 0;
     std::vector<InputAdvanceDecision> acknowledgement_decisions{
         InputAdvanceDecision::Complete,
@@ -449,7 +448,6 @@ protected:
                 .stable_name = "test.execution-engine.interruption",
                 .diagnostic_label = "execution-engine interruption test",
             },
-            .epoch_policy = StopEpochPolicy::EndOnEpochChange,
             .subscriptions = {{
                 .id = StopSubscriptionId(500),
                 .point = PcStopPointSpec{kWakePc},
@@ -539,7 +537,7 @@ TEST_F(ExecutionEngineFixture, InitializesAsIdlePausedAtTheSessionEpoch)
 
     const ExecutionSnapshot snapshot = engine->snapshot();
     EXPECT_EQ(snapshot.activity, ExecutionActivity::IdlePaused);
-    EXPECT_EQ(snapshot.state_epoch, kEpoch);
+    EXPECT_EQ(snapshot.workset_epoch, kEpoch);
     EXPECT_FALSE(snapshot.active_operation.has_value());
     EXPECT_EQ(snapshot.evidence.core_state, BackendCoreState::Paused);
     EXPECT_TRUE(snapshot.evidence.pause_confirmed);
@@ -1041,9 +1039,9 @@ TEST_F(
     limits.finalizer_threads = 1;
     limits.maximum_pending_finalizers = 2;
     limits.maximum_pending_finalizer_bytes = 1024;
-    StateArtifactFinalizer finalizer(limits);
+    SavestateArtifactFinalizer finalizer(limits);
 
-    StateArtifactFinalizationRequest request;
+    SavestateArtifactFinalizationRequest request;
     request.item = {
         WorkerWorksetId(1),
         WorkerWorksetItemId(1),
@@ -1051,7 +1049,7 @@ TEST_F(
         InvocationId(1),
         AttemptId(1),
     };
-    request.state_artifact_id = StateArtifactId(1);
+    request.state_artifact_id = SavestateArtifactId(1);
     request.logical_artifact_id = "health-test-state";
     request.state = {
         temporary.path() / "health-test.sav",
@@ -1060,7 +1058,7 @@ TEST_F(
     };
     ASSERT_TRUE(finalizer.Submit(std::move(request)).result.ok);
     finalizer.Shutdown();
-    const auto completions = finalizer.DrainCompletions();
+    const auto completions = finalizer.DrainResults();
     ASSERT_EQ(completions.size(), 1u);
     ASSERT_TRUE(completions.front().result.ok)
         << completions.front().result.message;
@@ -1099,7 +1097,6 @@ TEST_F(
                 .diagnostic_label =
                     "execution-engine capture observer",
             },
-            .epoch_policy = StopEpochPolicy::EndOnEpochChange,
             .subscriptions = {{
                 .id = StopSubscriptionId(901),
                 .point = PcStopPointSpec{kCapturePc},
@@ -1178,39 +1175,6 @@ TEST_F(
     const StopReleaseReceipt released =
         capture_group.handle.Release();
     EXPECT_TRUE(released.ok) << released.error.message;
-}
-
-TEST_F(
-    ExecutionEngineFixture,
-    PausedAndEpochReplacementTimeIsRebaselinedBeforeGuestExecution)
-{
-    CreateEngine();
-    now += 24h;
-
-    ASSERT_TRUE(router.PrepareStateReplacement(kEpoch).ok);
-    ASSERT_TRUE(engine->PrepareStateReplacement().ok);
-    ASSERT_TRUE(router.CommitStateReplacement(StateEpoch(8)).ok);
-    ASSERT_TRUE(engine->CommitStateEpoch(StateEpoch(8)).ok);
-
-    const ExecutionSubmissionReceipt submission =
-        engine->Submit(ContinueUntilRequest{
-            .policy = Policy(StateEpoch(8)),
-            .wake_group = WakeGroup(),
-        });
-    ASSERT_TRUE(submission.accepted) << submission.error.message;
-    engine->Pump();
-    EXPECT_TRUE(engine->has_active_operation());
-    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
-
-    execution_control->SetViCount(1);
-    now += 10s;
-    engine->Pump();
-    EXPECT_TRUE(engine->has_active_operation());
-    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
-
-    ASSERT_TRUE(
-        engine->Cancel(CancellationReason::ExternalRequest).accepted);
-    ASSERT_TRUE(DrainTerminal(*engine).has_value());
 }
 
 TEST_F(
@@ -1449,7 +1413,7 @@ TEST_F(ExecutionEngineFixture, ContinueCompletesFromTheSharedRouterReceipt)
     ASSERT_TRUE(terminal->stop.has_value());
     ASSERT_TRUE(terminal->stop->event.has_value());
     EXPECT_EQ(terminal->stop->event->evidence.hit_pc, kWakePc);
-    EXPECT_EQ(terminal->state_epoch, kEpoch);
+    EXPECT_EQ(terminal->workset_epoch, kEpoch);
 }
 
 TEST_F(
@@ -1666,6 +1630,141 @@ TEST_F(ExecutionEngineFixture, MovieEndCompletesAccordingToPolicy)
 
 TEST_F(
     ExecutionEngineFixture,
+    CursorOverrunBeforeInitialResumeCompletesWithoutResuming)
+{
+    execution_control->SetMovieState(BackendMovieState::Playing);
+    execution_control->SetMovieInputCount(11);
+    CreateEngine();
+    ExecutionRequestPolicy policy = Policy();
+    policy.movie_ended = MovieEndedPolicy::Complete;
+
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = std::move(policy),
+            .wake_group = WakeGroup(),
+            .expected_movie_input_count = 10,
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::CursorOverrun);
+    EXPECT_EQ(terminal->evidence.movie_input_count, 11u);
+    EXPECT_EQ(CountCall(execution_control->Calls(), "resume"), 0u);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    CursorOverrunDuringMaintenancePollingPausesAndCompletes)
+{
+    execution_control->SetMovieState(BackendMovieState::Playing);
+    execution_control->SetMovieInputCount(10);
+    CreateEngine();
+    ExecutionRequestPolicy policy = Policy();
+    policy.movie_ended = MovieEndedPolicy::Complete;
+
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = std::move(policy),
+            .wake_group = WakeGroup(),
+            .expected_movie_input_count = 10,
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    EXPECT_EQ(CountCall(execution_control->Calls(), "resume"), 1u);
+    execution_control->SetMovieInputCount(12);
+    now += 11ms;
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::CursorOverrun);
+    EXPECT_EQ(terminal->evidence.movie_input_count, 12u);
+    EXPECT_EQ(terminal->evidence.core_state, BackendCoreState::Paused);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    CursorOverrunTakesPriorityOverOwnedMovieEnd)
+{
+    execution_control->SetMovieState(BackendMovieState::Ended);
+    execution_control->SetMovieInputCount(21);
+    CreateEngine();
+    ExecutionRequestPolicy policy = Policy();
+    policy.movie_ended = MovieEndedPolicy::Complete;
+
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = std::move(policy),
+            .wake_group = WakeGroup(),
+            .expected_movie_input_count = 20,
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::CursorOverrun);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    OwnedMovieEndAtOrBelowExpectedCountCompletesAsMovieEnded)
+{
+    execution_control->SetMovieState(BackendMovieState::Ended);
+    execution_control->SetMovieInputCount(19);
+    CreateEngine();
+    ExecutionRequestPolicy policy = Policy();
+    policy.movie_ended = MovieEndedPolicy::Complete;
+
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = std::move(policy),
+            .wake_group = WakeGroup(),
+            .expected_movie_input_count = 20,
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::MovieEnded);
+    EXPECT_EQ(terminal->evidence.movie_input_count, 19u);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    BreakpointDuringPauseConfirmationReplacesPendingCursorOverrun)
+{
+    execution_control->SetMovieState(BackendMovieState::Playing);
+    execution_control->SetMovieInputCount(10);
+    execution_control->SetPauseChangesState(false);
+    CreateEngine();
+    ExecutionRequestPolicy policy = Policy();
+    policy.movie_ended = MovieEndedPolicy::Complete;
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = std::move(policy),
+            .wake_group = WakeGroup(),
+            .expected_movie_input_count = 10,
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+
+    execution_control->SetMovieInputCount(11);
+    now += 11ms;
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+    (void)physical_backend.InjectJitPcStop(kWakePc);
+    auto receipts = router.DrainIngress();
+    ASSERT_EQ(receipts.size(), 1u);
+    execution_control->SetCoreState(BackendCoreState::Paused);
+    engine->HandleStopPointReceipt(std::move(receipts.front()));
+
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(
+        terminal->status,
+        ExecutionTerminalStatus::RequestedCompletion);
+    ASSERT_TRUE(terminal->stop.has_value());
+    ASSERT_TRUE(terminal->stop->event.has_value());
+    EXPECT_EQ(terminal->stop->event->evidence.hit_pc, kWakePc);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
     AcceptedWakePrecedesCancellationMovieEndAndHealthMaintenance)
 {
     execution_control->SetMovieState(BackendMovieState::Playing);
@@ -1730,20 +1829,20 @@ TEST_F(
     EXPECT_FALSE(TakeTerminal(*engine).has_value());
 }
 
-TEST_F(ExecutionEngineFixture, RejectsStateEpochMismatchWithoutAdvancing)
+TEST_F(ExecutionEngineFixture, RejectsWorksetEpochMismatchWithoutAdvancing)
 {
     CreateEngine();
 
     const ExecutionSubmissionReceipt submission =
         engine->Submit(StepFramesRequest{
-            .policy = Policy(StateEpoch(8)),
+            .policy = Policy(WorksetEpoch(8)),
             .count = 1,
         });
 
     EXPECT_FALSE(submission.accepted);
     EXPECT_EQ(
         submission.error.code,
-        ExecutionErrorCode::StateEpochMismatch);
+        ExecutionErrorCode::WorksetEpochMismatch);
     EXPECT_EQ(CountCall(execution_control->Calls(), "frame_step"), 0u);
 }
 

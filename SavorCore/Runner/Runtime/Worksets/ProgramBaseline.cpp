@@ -23,12 +23,12 @@ bool CompleteSha256(std::string_view value)
         });
 }
 
-ProgramBaselineComponentResult FromStateFailure(
-    const StateServiceResult& result,
+ProgramBaselineComponentResult FromSavestateFailure(
+    const SavestateServiceResult& result,
     std::string fallback)
 {
     return ProgramBaselineComponentResult::Failure(
-        result.integrity == StateIntegrity::Unknown
+        result.integrity == GuestIntegrity::Unknown
             ? WorkerRejectionCode::SessionTainted
             : WorkerRejectionCode::BackendFailure,
         result.message.empty() ? std::move(fallback) : result.message);
@@ -217,89 +217,74 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Stage(
         components_->Stage(definition);
     if (!staged.ok)
         return staged;
-    const bool artifact_source =
-        definition.state_kind == ProgramBaselineStateKind::Artifact;
-    const bool current_source =
-        definition.state_kind ==
-        ProgramBaselineStateKind::CurrentSession;
-    if (artifact_source != definition.artifact.has_value() ||
-        current_source != definition.current_session.has_value())
+    const ProgramBaselineArtifact& artifact = definition.artifact;
+    if (!artifact.compatibility.Complete() ||
+        artifact.lineage.edge.empty() || artifact.lineage.producer.empty())
     {
         return ProgramBaselineComponentResult::Failure(
             WorkerRejectionCode::InvalidArgument,
-            "Program baseline kind does not match its exact state source");
+            "Artifact baseline requires complete compatibility and lineage");
     }
-    if (current_source &&
-        !static_cast<bool>(*definition.current_session))
+    const bool has_state = !artifact.state_path.empty();
+    const bool has_movie = artifact.movie_path.has_value();
+    if (artifact.kind == ProgramBaselineArtifactKind::Savestate)
+    {
+        if (!has_state || !CompleteSha256(artifact.state_sha256) ||
+            has_movie != !artifact.movie_sha256.empty())
+        {
+            return ProgramBaselineComponentResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Savestate baseline requires an exact state and complete optional DTM sidecar");
+        }
+        if (has_movie &&
+            *artifact.movie_path !=
+                SavestateDtmSidecarPath(artifact.state_path))
+        {
+            return ProgramBaselineComponentResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Savestate baseline DTM is not its same-name sidecar");
+        }
+    }
+    else if (artifact.kind == ProgramBaselineArtifactKind::ReadOnlyMovie)
+    {
+        if (!has_movie || !CompleteSha256(artifact.movie_sha256) ||
+            (has_state != !artifact.state_sha256.empty()) ||
+            (has_state && !CompleteSha256(artifact.state_sha256)))
+        {
+            return ProgramBaselineComponentResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Read-only-movie baseline requires an exact DTM and complete optional startup savestate");
+        }
+    }
+    else
     {
         return ProgramBaselineComponentResult::Failure(
             WorkerRejectionCode::InvalidArgument,
-            "Current-session baseline requires exact clean-idle session and epoch evidence");
+            "Artifact baseline kind is invalid");
     }
-    if (artifact_source)
+    try
     {
-        if (!definition.artifact ||
-            definition.artifact->state_path.empty() ||
-            !CompleteSha256(
-                definition.artifact->state_sha256) ||
-            !definition.artifact->compatibility.Complete())
+        if (has_state && hash::sha256_of_file(artifact.state_path.string()) !=
+            artifact.state_sha256)
         {
             return ProgramBaselineComponentResult::Failure(
                 WorkerRejectionCode::InvalidArgument,
-                "Artifact baseline requires an exact immutable state");
+                "Program baseline state hash does not match its artifact");
         }
-        const ProgramBaselineArtifact& artifact =
-            *definition.artifact;
-        const bool no_movie =
-            artifact.movie_mode ==
-            ExternalMovieImportMode::NoMovie;
-        const bool read_only =
-            artifact.movie_mode ==
-            ExternalMovieImportMode::ReadOnlyPlayback;
-        const std::filesystem::path expected_movie =
-            std::filesystem::path(
-                artifact.state_path.string() + ".dtm");
-        if ((!no_movie && !read_only) ||
-            (no_movie &&
-             (artifact.movie_path ||
-              !artifact.movie_sha256.empty())) ||
-            (read_only &&
-             (!artifact.movie_path ||
-              artifact.movie_path != expected_movie ||
-              !CompleteSha256(artifact.movie_sha256))))
+        if (has_movie && hash::sha256_of_file(artifact.movie_path->string()) !=
+            artifact.movie_sha256)
         {
             return ProgramBaselineComponentResult::Failure(
                 WorkerRejectionCode::InvalidArgument,
-                "Program baseline movie policy does not match its exact sidecar");
+                "Program baseline movie hash does not match its artifact");
         }
-        try
-        {
-            if (hash::sha256_of_file(
-                    definition.artifact->state_path.string()) !=
-                definition.artifact->state_sha256)
-            {
-                return ProgramBaselineComponentResult::Failure(
-                    WorkerRejectionCode::InvalidArgument,
-                    "Program baseline state hash does not match its artifact");
-            }
-            if (artifact.movie_path &&
-                hash::sha256_of_file(
-                    artifact.movie_path->string()) !=
-                    artifact.movie_sha256)
-            {
-                return ProgramBaselineComponentResult::Failure(
-                    WorkerRejectionCode::InvalidArgument,
-                    "Program baseline movie hash does not match its artifact");
-            }
-        }
-        catch (const std::exception& ex)
-        {
-            return ProgramBaselineComponentResult::Failure(
-                WorkerRejectionCode::InvalidArgument,
-                std::string(
-                    "Program baseline artifact could not be staged: ") +
-                    ex.what());
-        }
+    }
+    catch (const std::exception& ex)
+    {
+        return ProgramBaselineComponentResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            std::string("Program baseline artifact could not be staged: ") +
+                ex.what());
     }
     if (!ComputeProgramBaselineKey(definition))
     {
@@ -313,7 +298,7 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Stage(
 ProgramBaselineComponentResult WorksetStateCoordinator::Prepare(
     WorkerWorksetId workset_id,
     const ProgramBaselineDefinition& definition,
-    bool reusable,
+    bool multi_item,
     PreparedProgramBaselineReceipt& receipt_out)
 {
     if (stopped_ || active_key_)
@@ -322,91 +307,35 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Prepare(
             WorkerRejectionCode::InvalidState,
             "Another workset baseline is active or the coordinator is stopped");
     }
-    if (!session_.snapshot().open || !session_.state_service())
+    if (!session_.snapshot().open || session_.snapshot().workset_epoch)
     {
         return ProgramBaselineComponentResult::Failure(
             WorkerRejectionCode::SessionUnavailable,
-            "Program baseline requires an open state service");
+            "Program baseline requires an idle infrastructure session");
     }
-    ProgramBaselineComponentResult cache_ready = EnsureCache();
-    if (!cache_ready.ok)
-        return cache_ready;
-
+    const SessionOperationReceipt begun = session_.BeginWorkset(workset_id);
+    if (!begun.ok)
+    {
+        return ProgramBaselineComponentResult::Failure(
+            begun.disposition == SessionDisposition::Tainted
+                ? WorkerRejectionCode::SessionTainted
+                : WorkerRejectionCode::SessionUnavailable,
+            begun.backend.message.empty()
+                ? "Workset runtime activation failed"
+                : begun.backend.message);
+    }
+    active_workset_id_ = workset_id;
     ProgramBaselineComponentResult scope = OpenScope(workset_id);
     if (!scope.ok)
+    {
+        (void)session_.EndWorkset(workset_id);
+        active_workset_id_ = {};
         return scope;
+    }
 
     active_definition_ = definition;
     active_key_ = ComputeProgramBaselineKey(definition);
-    reusable_ = reusable;
-
-    if (reusable_)
-    {
-        const auto known =
-            baseline_cache_keys_.find(active_key_.sha256);
-        if (known != baseline_cache_keys_.end())
-        {
-            active_lease_ = cache_->Acquire(known->second);
-            if (active_lease_)
-            {
-                const StateOperationReceipt restored =
-                    cache_->Restore(*active_lease_);
-                if (!restored.result.ok)
-                {
-                    if (restored.result.integrity ==
-                        StateIntegrity::Unknown)
-                    {
-                        const auto failure = FromStateFailure(
-                            restored.result,
-                            "Cached program baseline restore failed");
-                        (void)Release();
-                        return failure;
-                    }
-                    active_lease_.reset();
-                    const StateServiceResult removed =
-                        cache_->Remove(known->second);
-                    baseline_cache_keys_.erase(known);
-                    if (!removed.ok)
-                    {
-                        const auto failure = FromStateFailure(
-                            removed,
-                            "Failed cached baseline could not be released");
-                        (void)Release();
-                        return failure;
-                    }
-                    // A preserved-integrity cache failure is a performance
-                    // miss. Reconstruct the exact source below.
-                }
-                else
-                {
-                    ProgramBaselineComponentResult activated =
-                        components_->Activate(
-                            active_definition_,
-                            session_,
-                            true);
-                    if (!activated.ok)
-                    {
-                        (void)Release();
-                        return activated;
-                    }
-                    active_receipt_ = {
-                        active_key_,
-                        session_.snapshot().session_id,
-                        restored.resulting_epoch,
-                        definition.lineage,
-                        true};
-                    receipt_out = active_receipt_;
-                    return ProgramBaselineComponentResult::Success();
-                }
-            }
-            else
-            {
-                // A stale index cannot turn an ordinary cache miss into a
-                // correctness failure.
-                baseline_cache_keys_.erase(known);
-            }
-        }
-    }
+    multi_item_ = multi_item;
 
     ProgramBaselineComponentResult source = PrepareSource(definition);
     if (!source.ok)
@@ -414,48 +343,46 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Prepare(
         (void)Release();
         return source;
     }
-    ProgramBaselineComponentResult activated =
-        components_->Activate(definition, session_, false);
-    if (!activated.ok)
+    const bool established = definition.artifact.kind ==
+        ProgramBaselineArtifactKind::Savestate;
+    if (established)
+    {
+        ProgramBaselineComponentResult activated =
+            components_->Activate(definition, session_, false);
+        if (!activated.ok)
+        {
+            (void)Release();
+            return activated;
+        }
+    }
+    else if (!definition.components.empty())
     {
         (void)Release();
-        return activated;
+        return ProgramBaselineComponentResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "Movie-established baselines cannot activate guest-dependent components before playback");
     }
 
     const SessionSnapshot current = session_.snapshot();
     active_receipt_ = {
         active_key_,
         current.session_id,
-        current.state_epoch,
+        current.workset_epoch,
         definition.lineage,
-        false};
+        established};
 
-    if (reusable_)
+    if (multi_item_ && established)
     {
-        const StateHandleReceipt captured =
-            session_.CaptureStateHandle();
-        if (!captured.result.ok)
+        active_handle_ = session_.CaptureWorksetBaselineHandle();
+        if (!active_handle_->result.ok)
         {
+            const SavestateServiceResult failure = active_handle_->result;
+            active_handle_.reset();
             (void)Release();
-            return FromStateFailure(
-                captured.result,
-                "Reusable program baseline capture failed");
+            return FromSavestateFailure(
+                failure,
+                "Workset-owned baseline capture failed");
         }
-        const StateCacheKey cache_key =
-            MakeCacheKey(definition, captured);
-        StateServiceResult cache_error;
-        active_lease_ = cache_->InsertAndAcquire(
-            cache_key,
-            captured,
-            &cache_error);
-        if (!active_lease_)
-        {
-            (void)Release();
-            return FromStateFailure(
-                cache_error,
-                "Reusable program baseline cache insertion failed");
-        }
-        baseline_cache_keys_[active_key_.sha256] = cache_key;
     }
 
     receipt_out = active_receipt_;
@@ -466,17 +393,33 @@ ProgramBaselineComponentResult
 WorksetStateCoordinator::RestoreForNextItem(
     PreparedProgramBaselineReceipt& receipt_out)
 {
-    if (stopped_ || !active_key_ || !reusable_ || !active_lease_)
+    if (stopped_ || !active_key_ || !multi_item_)
     {
         return ProgramBaselineComponentResult::Failure(
             WorkerRejectionCode::InvalidState,
-            "No reusable workset baseline is active");
+            "No multi-item workset baseline is active");
     }
-    const StateOperationReceipt restored =
-        cache_->Restore(*active_lease_);
+    if (active_definition_.artifact.kind ==
+        ProgramBaselineArtifactKind::ReadOnlyMovie)
+    {
+        const SessionSnapshot current = session_.snapshot();
+        active_receipt_ = {
+            active_key_, current.session_id, current.workset_epoch,
+            active_definition_.lineage, false};
+        receipt_out = active_receipt_;
+        return ProgramBaselineComponentResult::Success();
+    }
+    if (!active_handle_ || !active_handle_->handle)
+    {
+        return ProgramBaselineComponentResult::Failure(
+            WorkerRejectionCode::InvalidState,
+            "No workset-owned savestate handle is active");
+    }
+    const SavestateRestoreReceipt restored =
+        session_.RestoreWorksetBaselineHandle(active_handle_->handle);
     if (!restored.result.ok)
     {
-        return FromStateFailure(
+        return FromSavestateFailure(
             restored.result,
             "Workset baseline restore failed");
     }
@@ -487,7 +430,7 @@ WorksetStateCoordinator::RestoreForNextItem(
     active_receipt_ = {
         active_key_,
         session_.snapshot().session_id,
-        restored.resulting_epoch,
+        restored.workset_epoch,
         active_definition_.lineage,
         true};
     receipt_out = active_receipt_;
@@ -496,12 +439,45 @@ WorksetStateCoordinator::RestoreForNextItem(
 
 ProgramBaselineComponentResult WorksetStateCoordinator::Release()
 {
-    active_lease_.reset();
+    ProgramBaselineComponentResult handle_result =
+        ProgramBaselineComponentResult::Success();
+    if (active_handle_ && active_handle_->handle)
+    {
+        const SavestateServiceResult released =
+            session_.ReleaseWorksetBaselineHandle(active_handle_->handle);
+        if (!released.ok)
+            handle_result = FromSavestateFailure(
+                released, "Workset-owned baseline release failed");
+    }
+    active_handle_.reset();
+    ProgramBaselineComponentResult scope_result = CloseScope();
+    ProgramBaselineComponentResult end_result =
+        ProgramBaselineComponentResult::Success();
+    if (active_workset_id_)
+    {
+        const SessionOperationReceipt ended =
+            session_.EndWorkset(active_workset_id_);
+        if (!ended.ok)
+        {
+            end_result = ProgramBaselineComponentResult::Failure(
+                ended.disposition == SessionDisposition::Tainted
+                    ? WorkerRejectionCode::SessionTainted
+                    : WorkerRejectionCode::BackendFailure,
+                ended.backend.message.empty()
+                    ? "Workset runtime cleanup failed"
+                    : ended.backend.message);
+        }
+    }
+    active_workset_id_ = {};
     active_definition_ = {};
     active_key_ = {};
     active_receipt_ = {};
-    reusable_ = false;
-    return CloseScope();
+    multi_item_ = false;
+    if (!handle_result.ok)
+        return handle_result;
+    if (!scope_result.ok)
+        return scope_result;
+    return end_result;
 }
 
 ProgramBaselineComponentResult WorksetStateCoordinator::Shutdown()
@@ -511,12 +487,6 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Shutdown()
     ProgramBaselineComponentResult released = Release();
     if (!released.ok)
         return released;
-    if (cache_)
-    {
-        const StateServiceResult invalidated = cache_->InvalidateAll();
-        if (!invalidated.ok)
-            return FromStateFailure(invalidated, "State-cache shutdown failed");
-    }
     stopped_ = true;
     return ProgramBaselineComponentResult::Success();
 }
@@ -525,116 +495,46 @@ WorksetBaselineSnapshot WorksetStateCoordinator::snapshot() const noexcept
 {
     return {
         static_cast<bool>(active_key_),
-        reusable_,
+        multi_item_,
         active_key_,
         active_receipt_,
         workset_scope_};
 }
 
-SessionStateCacheSnapshot
-WorksetStateCoordinator::cache_snapshot() const noexcept
-{
-    return cache_ ? cache_->snapshot() : SessionStateCacheSnapshot{};
-}
-
 ProgramBaselineComponentResult WorksetStateCoordinator::PrepareSource(
     const ProgramBaselineDefinition& definition)
 {
-    switch (definition.state_kind)
+    if (definition.artifact.kind ==
+        ProgramBaselineArtifactKind::ReadOnlyMovie)
     {
-    case ProgramBaselineStateKind::Boot: {
-        const SessionOperationReceipt rebooted = session_.Reboot();
-        if (!rebooted.ok)
-        {
-            return ProgramBaselineComponentResult::Failure(
-                rebooted.disposition == SessionDisposition::Tainted
-                    ? WorkerRejectionCode::SessionTainted
-                    : WorkerRejectionCode::BackendFailure,
-                rebooted.backend.message.empty()
-                    ? "Program baseline reboot failed"
-                    : rebooted.backend.message);
-        }
         return ProgramBaselineComponentResult::Success();
     }
-    case ProgramBaselineStateKind::CurrentSession:
-    {
-        if (!definition.current_session)
-        {
-            return ProgramBaselineComponentResult::Failure(
-                WorkerRejectionCode::InvalidArgument,
-                "Current-session baseline guard is missing");
-        }
-        const SessionSnapshot current = session_.snapshot();
-        const ExecutionSnapshot execution =
-            session_.execution_snapshot();
-        const bool clean =
-            current.disposition == SessionDisposition::Clean ||
-            current.disposition ==
-                SessionDisposition::CleanWithDiagnostics;
-        const bool idle =
-            current.open &&
-            current.core_state == BackendCoreState::Paused &&
-            execution.activity == ExecutionActivity::IdlePaused &&
-            !execution.active_operation &&
-            execution.interruption_depth == 0;
-        if (current.session_id !=
-                definition.current_session->session_id ||
-            current.state_epoch !=
-                definition.current_session->state_epoch)
-        {
-            return ProgramBaselineComponentResult::Failure(
-                WorkerRejectionCode::StateEpochMismatch,
-                "Current-session baseline identifies another session or epoch");
-        }
-        if (!clean || !idle ||
-            !definition.current_session->require_clean_idle)
-        {
-            return ProgramBaselineComponentResult::Failure(
-                current.disposition == SessionDisposition::Tainted
-                    ? WorkerRejectionCode::SessionTainted
-                    : WorkerRejectionCode::InvalidState,
-                "Current-session baseline requires a clean, idle, paused session");
-        }
-        return ProgramBaselineComponentResult::Success();
-    }
-    case ProgramBaselineStateKind::Artifact:
-        break;
-    }
-
-    if (!definition.artifact)
-    {
-        return ProgramBaselineComponentResult::Failure(
-            WorkerRejectionCode::InvalidArgument,
-            "Artifact program baseline has no artifact");
-    }
-    const ProgramBaselineArtifact& artifact = *definition.artifact;
-    StateFileImportRequest request;
+    const ProgramBaselineArtifact& artifact = definition.artifact;
+    SavestateImportRequest request;
     request.path = artifact.state_path;
     request.expected_sha256 = artifact.state_sha256;
     request.compatibility = artifact.compatibility;
-    request.movie_mode = artifact.movie_mode;
+    request.movie_mode = artifact.movie_path
+        ? ExternalMovieImportMode::ReadOnlyPlayback
+        : ExternalMovieImportMode::NoMovie;
     request.dtm_path = artifact.movie_path;
     request.expected_dtm_sha256 = artifact.movie_sha256;
     request.lineage = artifact.lineage;
-    const StateFileArtifactReceipt imported =
-        session_.ImportStateArtifact(request);
+    const SavestateFileArtifactReceipt imported =
+        session_.ImportWorksetBaselineArtifact(request);
     if (!imported.result.ok)
     {
-        return FromStateFailure(
+        return FromSavestateFailure(
             imported.result,
             "Program baseline artifact import failed");
     }
-    const StateOperationReceipt restored =
-        session_.RestoreStateArtifact(imported.artifact);
-    StateService* states = session_.state_service();
-    const StateServiceResult released = states
-        ? states->ReleaseFileArtifact(imported.artifact)
-        : StateServiceResult::Failure(
-              StateServiceErrorCode::InvalidState,
-              "State service disappeared during baseline preparation");
+    const SavestateRestoreReceipt restored =
+        session_.RestoreWorksetBaselineArtifact(imported.artifact);
+    const SavestateServiceResult released =
+        session_.ReleaseWorksetBaselineArtifact(imported.artifact);
     if (!released.ok)
     {
-        return FromStateFailure(
+        return FromSavestateFailure(
             released,
             restored.result.ok
                 ? "Program baseline imported artifact release failed"
@@ -642,7 +542,7 @@ ProgramBaselineComponentResult WorksetStateCoordinator::PrepareSource(
     }
     if (!restored.result.ok)
     {
-        return FromStateFailure(
+        return FromSavestateFailure(
             restored.result,
             "Program baseline artifact restore failed");
     }
@@ -702,40 +602,6 @@ ProgramBaselineComponentResult WorksetStateCoordinator::CloseScope()
                 : closed.error.message);
     }
     return ProgramBaselineComponentResult::Success();
-}
-
-ProgramBaselineComponentResult WorksetStateCoordinator::EnsureCache()
-{
-    if (cache_)
-        return ProgramBaselineComponentResult::Success();
-    StateService* states = session_.state_service();
-    if (!states)
-    {
-        return ProgramBaselineComponentResult::Failure(
-            WorkerRejectionCode::SessionUnavailable,
-            "State cache requires an open StateService");
-    }
-    cache_ = std::make_unique<SessionStateCache>(
-        *states,
-        limits_.maximum_state_cache_entries,
-        limits_.maximum_state_cache_bytes);
-    return ProgramBaselineComponentResult::Success();
-}
-
-StateCacheKey WorksetStateCoordinator::MakeCacheKey(
-    const ProgramBaselineDefinition& definition,
-    const StateHandleReceipt& captured) const
-{
-    StateCacheKey key;
-    key.baseline = active_key_;
-    key.state_sha256 = captured.sha256;
-    key.lineage = definition.lineage;
-    key.compatibility = captured.compatibility;
-    if (captured.movie)
-        key.movie_continuation_sha256 = captured.movie->dtm_sha256;
-    if (const StateService* states = session_.state_service())
-        key.session_generation = states->session_generation();
-    return key;
 }
 
 } // namespace savor::runtime

@@ -38,13 +38,12 @@ public:
     DolphinWrapperBackend& operator=(const DolphinWrapperBackend&) = delete;
 
     BackendResult Open(const BackendOpenOptions& options) override;
-    BackendResult Reboot() override;
     BackendResult Close() override;
 
     [[nodiscard]] BackendCoreState QueryCoreState() const noexcept override;
     [[nodiscard]] BackendHealthReport CheckHealth() const override;
-    [[nodiscard]] StateCompatibilityToken
-    StateCompatibility() const override;
+    [[nodiscard]] ArtifactCompatibilityToken
+    SavestateCompatibility() const override;
 
     BackendResult RestoreStateFile(const std::filesystem::path& path) override;
     BackendResult SaveStateFile(const std::filesystem::path& path) override;
@@ -95,8 +94,11 @@ private:
         const std::filesystem::path& path,
         std::chrono::milliseconds timeout) override;
 
-    MoviePlaybackPrepareResult PrepareReadOnlyPlaybackBeforeBoot(
+    MoviePlaybackPrepareResult PrepareReadOnlyPlaybackForRestart(
         const std::filesystem::path& dtm_path) override;
+    MovieBackendResult StopCoreForPreparedReadOnlyMovie() override;
+    MovieBackendResult StartPreparedReadOnlyMovie() override;
+    MovieBackendResult DiscardPreparedReadOnlyMovie() noexcept override;
     MovieBackendResult StopMovie() noexcept override;
     MovieBackendResult BeginRecording() override;
     MovieRecordingFinalizeResult FinalizeRecording(
@@ -104,12 +106,12 @@ private:
     MovieBackendResult CancelRecording() noexcept override;
     [[nodiscard]] MovieSnapshot Snapshot() const override;
     MovieCheckpointBackendResult CaptureRecordingCheckpoint() override;
-    MovieBackendResult PrepareStateReplacement(
-        const StateReplacementContext& context) override;
-    MovieBackendResult CommitStateReplacement(
-        const StateReplacementContext& context) override;
-    MovieBackendResult RollbackStateReplacement(
-        const StateReplacementContext& context) noexcept override;
+    MovieBackendResult PrepareSavestateRestore(
+        const SavestateMovieRestoreContext& context) override;
+    MovieBackendResult CommitSavestateRestore(
+        const SavestateMovieRestoreContext& context) override;
+    MovieBackendResult RollbackSavestateRestore(
+        const SavestateMovieRestoreContext& context) noexcept override;
 
     [[nodiscard]] std::unique_ptr<ICaptureProfileAdapter>
     CreateCaptureProfileAdapter(

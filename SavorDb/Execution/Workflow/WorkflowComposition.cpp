@@ -135,21 +135,52 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
 
     (void)registry.RegisterUnit(
         WorkflowUnitDefinition{
-            .unit_kind = "tas_movie",
-            .display_name = "TAS Movie",
-            .description = "Runs a DTM/TAS movie and produces a savestate for downstream chains.",
+            .unit_kind = "tas_movie_establish_root_cursor",
+            .display_name = "TAS Movie: Establish Root Cursor",
+            .description = "Establishes the handcrafted root DTM checkpoint cursor exactly once.",
             .default_activation_params_json = "{}",
-            .authored_refs = {
-                { .ref_kind = "tas_spec", .display_name = "TAS spec" },
-            },
             .required_inputs = {
-                Port("dtm_artifact", "state_artifact.dtm_artifact_id", "DTM artifact"),
+                Port("root_dtm", "state_artifact.dtm_artifact_id", "Handcrafted root DTM"),
             },
             .possible_outputs = {
-                Port("savestate", "state.savestate_id", "Output savestate"),
+                Port("tas_movie_validation_attempt", "analysis.tas_movie_validation_attempt_id", "Validation attempt"),
             },
-            .internal_step_kinds = { "tasmovie.play" },
-            .step_templates = SingleStep("tas_movie"),
+            .internal_step_kinds = { "tasmovie.establish_root_cursor" },
+            .step_templates = SingleStep("tasmovie.establish_root_cursor"),
+        },
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
+            .unit_kind = "tas_movie_validate_root",
+            .display_name = "TAS Movie: Validate Root",
+            .description = "Validates one RTC-patched root DTM and publishes its canonical checkpoint on first success.",
+            .default_activation_params_json = "{}",
+            .required_inputs = {
+                Port("root_establishment", "analysis.tas_movie_validation_attempt_id", "Root cursor establishment"),
+            },
+            .possible_outputs = {
+                Port("tas_movie_validation_attempt", "analysis.tas_movie_validation_attempt_id", "Validation attempt"),
+            },
+            .internal_step_kinds = { "tasmovie.validate_root" },
+            .step_templates = SingleStep("tasmovie.validate_root"),
+        },
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
+            .unit_kind = "tas_movie_validate_tree",
+            .display_name = "TAS Movie: Validate Tree",
+            .description = "Explicitly validates one immutable non-root TAS movie without capturing another checkpoint.",
+            .default_activation_params_json = "{}",
+            .required_inputs = {
+                Port("tas_movie_tree", "state.tas_movie_tree_id", "TAS movie tree"),
+            },
+            .possible_outputs = {
+                Port("tas_movie_validation_attempt", "analysis.tas_movie_validation_attempt_id", "Validation attempt"),
+            },
+            .internal_step_kinds = { "tasmovie.validate_tree" },
+            .step_templates = SingleStep("tasmovie.validate_tree"),
         },
         &ignored);
 

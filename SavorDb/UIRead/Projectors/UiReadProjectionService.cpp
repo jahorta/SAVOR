@@ -172,6 +172,17 @@ bool AttachExecutionSource(
     return StepDone(db, attach.st, error_out);
 }
 
+bool AttachAnalysisSource(
+    sqlite3* db,
+    const std::filesystem::path& analysis_db_path,
+    std::string* error_out) {
+    Statement attach;
+    if (!Prepare(db, "ATTACH DATABASE ?1 AS analysis_source;", &attach, error_out)) return false;
+    const auto path = analysis_db_path.string();
+    sqlite3_bind_text(attach.st, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+    return StepDone(db, attach.st, error_out);
+}
+
 std::int64_t ScalarInt64(sqlite3* db, const std::string& sql, std::string* error_out) {
     Statement st;
     if (!Prepare(db, sql.c_str(), &st, error_out)) {
@@ -665,6 +676,27 @@ bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow
     }
 
     const auto now = UtcNowMillis();
+
+    Statement valid_hashes;
+    if (Prepare(source,
+            "SELECT effective_dtm_sha256 FROM analysis_source.tmv_dtm_validation_status WHERE status='VALID';",
+            &valid_hashes,
+            nullptr)) {
+        while (sqlite3_step(valid_hashes.st) == SQLITE_ROW) {
+            Statement clear_resolved;
+            if (!Prepare(ui,
+                    "UPDATE ui_workflow_alert SET is_active=0,cleared_at_utc=?2 "
+                    "WHERE alert_code=?1 AND is_active=1;",
+                    &clear_resolved,
+                    error_out)) return false;
+            const auto hash = Text(valid_hashes.st, 0);
+            const auto code = "TAS_MOVIE_INVALID:" + hash;
+            sqlite3_bind_text(clear_resolved.st, 1, code.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(clear_resolved.st, 2, now);
+            if (!StepDone(ui, clear_resolved.st, error_out)) return false;
+        }
+    }
+
     Statement clear_alerts;
     if (!Prepare(ui,
             "UPDATE ui_workflow_alert SET is_active=0,cleared_at_utc=?2 WHERE workflow_instance_id=?1 AND is_active=1;",
@@ -684,7 +716,16 @@ bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow
         "CASE WHEN blocked_reason='DESCRIPTOR_UNAVAILABLE' THEN 'DESCRIPTOR_UNAVAILABLE' "
         "WHEN blocked_reason IS NOT NULL THEN 'STEP_BLOCKED' ELSE 'STEP_FAILED' END,"
         "COALESCE(blocked_reason,'step failed') "
-        "FROM exec_workflow_step WHERE workflow_instance_id=?1 AND (blocked_reason IS NOT NULL OR state='FAILED');";
+        "FROM exec_workflow_step WHERE workflow_instance_id=?1 AND (blocked_reason IS NOT NULL OR state='FAILED') "
+        "UNION ALL "
+        "SELECT (s.workflow_step_id * 10) + 3,s.workflow_instance_id,s.workflow_step_id,"
+        "'TAS_MOVIE_INVALID','TAS_MOVIE_INVALID:' || r.effective_dtm_sha256,"
+        "'TAS movie validation quarantined exact DTM ' || r.effective_dtm_sha256 "
+        "FROM exec_workflow_step s JOIN exec_job j ON j.job_set_id=s.job_set_id "
+        "JOIN analysis_source.tmv_validation_attempt a ON a.source_job_id=j.job_id AND a.outcome='INVALID' "
+        "JOIN analysis_source.tmv_validation_request r ON r.validation_request_id=a.validation_request_id "
+        "JOIN analysis_source.tmv_dtm_validation_status q ON q.effective_dtm_sha256=r.effective_dtm_sha256 AND q.status='QUARANTINED' "
+        "WHERE s.workflow_instance_id=?1;";
     if (!Prepare(source, kAlertSrc, &alert_src, error_out)) return false;
     sqlite3_bind_int64(alert_src.st, 1, workflow_instance_id);
     while (sqlite3_step(alert_src.st) == SQLITE_ROW) {
@@ -2124,6 +2165,16 @@ void UiReadProjectionService::InterruptStreams() const {
 bool UiReadProjectionService::OpenStream(StreamRuntime& stream, std::string* error_out) {
     if (!OpenDb(stream.source_db_path, true, &stream.source_db, error_out)) {
         if (error_out) *error_out = "failed opening projection source " + stream.stream_id + ": " + *error_out;
+        return false;
+    }
+    if (stream.kind == StreamKind::Execution
+        && !AttachAnalysisSource(
+            stream.source_db,
+            config_.analysis_db_path,
+            error_out)) {
+        if (error_out) {
+            *error_out = "failed attaching Analysis source for execution: " + *error_out;
+        }
         return false;
     }
     if (stream.kind == StreamKind::AnalysisSeedProbe

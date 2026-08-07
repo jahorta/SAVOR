@@ -259,7 +259,7 @@ bool ProbeRuntime::start(
     frame_clock_active_.store(std::ranges::any_of(profile_.probes, [](const auto& probe) {
         return probe.kind == ProbeKind::Pc && probe.frame_clock;
     }), std::memory_order_relaxed);
-    guest_state_epoch_.store(0, std::memory_order_relaxed);
+    guest_workset_epoch_.store(0, std::memory_order_relaxed);
     flight_triggered_.store(false, std::memory_order_relaxed);
     flight_post_remaining_.store(0, std::memory_order_relaxed);
     capture_gap_first_sequence_.store(0, std::memory_order_relaxed);
@@ -552,7 +552,7 @@ bool ProbeRuntime::replace_profile(
         event.record_sequence = next_record_sequence_.fetch_add(1, std::memory_order_relaxed);
         event.monotonic_ns = monotonic_now_ns();
         event.frame_index = frame_index_.load(std::memory_order_relaxed);
-        event.guest_state_epoch = guest_state_epoch_.load(std::memory_order_relaxed);
+        event.guest_workset_epoch = guest_workset_epoch_.load(std::memory_order_relaxed);
         event.profile_revision = profile_.revision;
         event.snapshot_id = next_snapshot_id_.fetch_add(1, std::memory_order_relaxed);
         event.kind = capture_format::EventKind::Marker;
@@ -607,9 +607,9 @@ bool ProbeRuntime::resume_after_core_boot(std::string* error_out)
     return armed;
 }
 
-void ProbeRuntime::set_guest_state_epoch(std::uint64_t epoch)
+void ProbeRuntime::set_guest_workset_epoch(std::uint64_t epoch)
 {
-    guest_state_epoch_.store(epoch, std::memory_order_release);
+    guest_workset_epoch_.store(epoch, std::memory_order_release);
 }
 
 std::vector<ProfileStopRequirement>
@@ -684,7 +684,7 @@ bool ProbeRuntime::emit_marker(std::string_view id, std::uint64_t value)
     event.capture_sequence = next_capture_sequence_.fetch_add(1, std::memory_order_relaxed);
     event.monotonic_ns = monotonic_now_ns();
     event.frame_index = frame_index_.load(std::memory_order_relaxed);
-    event.guest_state_epoch = guest_state_epoch_.load(std::memory_order_relaxed);
+    event.guest_workset_epoch = guest_workset_epoch_.load(std::memory_order_relaxed);
     event.profile_revision = profile_.revision;
     event.snapshot_id = next_snapshot_id_.fetch_add(1, std::memory_order_relaxed);
     event.probe_index = kSyntheticMarkerProbeIndex;
@@ -719,8 +719,8 @@ void ProbeRuntime::process_routed_pc(
 {
     if (!active_.load(std::memory_order_acquire))
         return;
-    guest_state_epoch_.store(
-        context.guest_state_epoch,
+    guest_workset_epoch_.store(
+        context.guest_workset_epoch,
         std::memory_order_release);
     if (watchpoints_dirty_.load(std::memory_order_acquire))
         watchpoint_reconcile_pending_.store(true, std::memory_order_release);
@@ -734,7 +734,7 @@ void ProbeRuntime::process_routed_pc(
     const auto stamp_routed_identity = [&](RawProbeEvent& event) {
         event.capture_sequence = capture_sequence;
         event.snapshot_id = snapshot_id;
-        event.guest_state_epoch = context.guest_state_epoch;
+        event.guest_workset_epoch = context.guest_workset_epoch;
     };
     bool frame_clock_hit = false;
     for (const auto i : pc_probe_indices_) {
@@ -754,7 +754,7 @@ void ProbeRuntime::process_routed_pc(
             marker.capture_sequence = capture_sequence;
             marker.monotonic_ns = monotonic_now_ns();
             marker.frame_index = frame;
-            marker.guest_state_epoch = context.guest_state_epoch;
+            marker.guest_workset_epoch = context.guest_workset_epoch;
             marker.profile_revision = profile_.revision;
             marker.snapshot_id = snapshot_id;
             marker.probe_index = kSyntheticMarkerProbeIndex;
@@ -795,7 +795,7 @@ void ProbeRuntime::process_routed_pc(
                     resolution.capture_sequence = capture_sequence;
                     resolution.monotonic_ns = monotonic_now_ns();
                     resolution.frame_index = frame_index_.load(std::memory_order_relaxed);
-                    resolution.guest_state_epoch = context.guest_state_epoch;
+                    resolution.guest_workset_epoch = context.guest_workset_epoch;
                     resolution.profile_revision = profile_.revision;
                     resolution.snapshot_id = snapshot_id;
                     resolution.probe_index = i;
@@ -929,7 +929,7 @@ void ProbeRuntime::process_routed_pc(
             control_event.capture_sequence = capture_sequence;
             control_event.monotonic_ns = monotonic_now_ns();
             control_event.frame_index = frame_index_.load(std::memory_order_relaxed);
-            control_event.guest_state_epoch = context.guest_state_epoch;
+            control_event.guest_workset_epoch = context.guest_workset_epoch;
             control_event.profile_revision = profile_.revision;
             control_event.snapshot_id = snapshot_id;
             control_event.probe_index = kSyntheticControlProbeIndex;
@@ -954,8 +954,8 @@ void ProbeRuntime::process_routed_memory(
 {
     if (!active_.load(std::memory_order_acquire) || (write && !post_write))
         return;
-    guest_state_epoch_.store(
-        context.guest_state_epoch,
+    guest_workset_epoch_.store(
+        context.guest_workset_epoch,
         std::memory_order_release);
     if (memory_probe_indices_.empty()
         && !context.active_foreground_wake) {
@@ -970,7 +970,7 @@ void ProbeRuntime::process_routed_memory(
     const auto stamp_routed_identity = [&](RawProbeEvent& event) {
         event.capture_sequence = capture_sequence;
         event.snapshot_id = snapshot_id;
-        event.guest_state_epoch = context.guest_state_epoch;
+        event.guest_workset_epoch = context.guest_workset_epoch;
     };
     bool requested_control = false;
     RawProbeEvent control_event{};
@@ -1057,7 +1057,7 @@ void ProbeRuntime::process_routed_memory(
             control_event.capture_sequence = capture_sequence;
             control_event.monotonic_ns = monotonic_now_ns();
             control_event.frame_index = frame_index_.load(std::memory_order_relaxed);
-            control_event.guest_state_epoch = context.guest_state_epoch;
+            control_event.guest_workset_epoch = context.guest_workset_epoch;
             control_event.profile_revision = profile_.revision;
             control_event.snapshot_id = snapshot_id;
             control_event.probe_index = kSyntheticControlProbeIndex;
@@ -1088,7 +1088,7 @@ bool ProbeRuntime::sample_probe(
     event.capture_sequence = next_capture_sequence_.fetch_add(1, std::memory_order_relaxed);
     event.monotonic_ns = monotonic_now_ns();
     event.frame_index = frame_index_.load(std::memory_order_relaxed);
-    event.guest_state_epoch = guest_state_epoch_.load(std::memory_order_relaxed);
+    event.guest_workset_epoch = guest_workset_epoch_.load(std::memory_order_relaxed);
     event.profile_revision = profile_.revision;
     event.pc = pc;
     event.address = address;
@@ -1546,7 +1546,7 @@ capture_format::Event ProbeRuntime::decode_event(const RawProbeEvent& raw) const
     event.capture_sequence = raw.capture_sequence;
     event.monotonic_ns = raw.monotonic_ns;
     event.frame_index = raw.frame_index;
-    event.guest_state_epoch = raw.guest_state_epoch;
+    event.guest_workset_epoch = raw.guest_workset_epoch;
     event.profile_revision = raw.profile_revision;
     event.snapshot_id = raw.snapshot_id;
     event.pc = raw.pc;
@@ -1796,7 +1796,7 @@ void ProbeRuntime::recorder_main()
         capture_format::Event gap;
         gap.capture_sequence = gap_first;
         gap.frame_index = frame_index_.load(std::memory_order_relaxed);
-        gap.guest_state_epoch = guest_state_epoch_.load(std::memory_order_relaxed);
+        gap.guest_workset_epoch = guest_workset_epoch_.load(std::memory_order_relaxed);
         gap.profile_revision = profile_.revision;
         gap.kind = capture_format::EventKind::Gap;
         gap.probe_id = "probe.capture.gap";
@@ -1818,7 +1818,7 @@ void ProbeRuntime::recorder_main()
         capture_format::Event event;
         event.capture_sequence = next_capture_sequence_.fetch_add(1, std::memory_order_relaxed);
         event.frame_index = frame_index_.load(std::memory_order_relaxed);
-        event.guest_state_epoch = guest_state_epoch_.load(std::memory_order_relaxed);
+        event.guest_workset_epoch = guest_workset_epoch_.load(std::memory_order_relaxed);
         event.profile_revision = profile_.revision;
         event.kind = capture_format::EventKind::Metrics;
         event.probe_id = "probe.metrics." + metric.id;
@@ -1859,7 +1859,7 @@ void ProbeRuntime::recorder_main()
         capture_format::Event event;
         event.capture_sequence = next_capture_sequence_.fetch_add(1, std::memory_order_relaxed);
         event.frame_index = frame_index_.load(std::memory_order_relaxed);
-        event.guest_state_epoch = guest_state_epoch_.load(std::memory_order_relaxed);
+        event.guest_workset_epoch = guest_workset_epoch_.load(std::memory_order_relaxed);
         event.profile_revision = profile_.revision;
         event.kind = capture_format::EventKind::Metrics;
         event.probe_id = "flight.metrics." + state.id;
@@ -1874,7 +1874,7 @@ void ProbeRuntime::recorder_main()
         capture_format::Event session;
         session.capture_sequence = next_capture_sequence_.fetch_add(1, std::memory_order_relaxed);
         session.frame_index = frame_index_.load(std::memory_order_relaxed);
-        session.guest_state_epoch = guest_state_epoch_.load(std::memory_order_relaxed);
+        session.guest_workset_epoch = guest_workset_epoch_.load(std::memory_order_relaxed);
         session.profile_revision = profile_.revision;
         session.kind = capture_format::EventKind::Metrics;
         session.probe_id = "probe.session.metrics";
@@ -1882,7 +1882,7 @@ void ProbeRuntime::recorder_main()
         session.fields.push_back(capture_format::Field{ .name = "capture_drops", .value = capture_drops_.load(std::memory_order_relaxed) });
         session.fields.push_back(capture_format::Field{ .name = "progress_drops", .value = progress_drops_.load(std::memory_order_relaxed) });
         session.fields.push_back(capture_format::Field{ .name = "profile_revision", .value = profile_.revision });
-        session.fields.push_back(capture_format::Field{ .name = "guest_state_epoch", .value = guest_state_epoch_.load(std::memory_order_relaxed) });
+        session.fields.push_back(capture_format::Field{ .name = "guest_workset_epoch", .value = guest_workset_epoch_.load(std::memory_order_relaxed) });
         append_capture(std::move(session));
     }
 }

@@ -99,7 +99,7 @@ namespace savor {
         return fail_legacy_service(
             result,
             ctx,
-            "[VM] state-buffer restoration is disconnected; use StateService");
+            "[VM] state-buffer restoration is disconnected; use SavestateService");
     }
 
     bool PhaseScriptVM::op_capture_snapshot(
@@ -109,14 +109,14 @@ namespace savor {
         return fail_legacy_service(
             result,
             ctx,
-            "[VM] state-buffer capture is disconnected; use StateService");
+            "[VM] state-buffer capture is disconnected; use SavestateService");
     }
 
     bool PhaseScriptVM::op_reboot_core(PSResult& result, PSContext& ctx) {
         return fail_legacy_service(
             result,
             ctx,
-            "[VM] core reboot is disconnected; use StateService");
+            "[VM] core reboot is disconnected; use SavestateService");
     }
     void PhaseScriptVM::op_label() const {}
     void PhaseScriptVM::op_goto(const PSOp& op, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const { jump_to_label_if_exists(op.jmp.name, label_vm_pc_map, vm_pc, section); }

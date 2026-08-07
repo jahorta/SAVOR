@@ -23,7 +23,7 @@ TEST(ProgramModel, StrongIdentifiersRemainNonInterchangeable)
     static_assert(!std::is_convertible_v<ProgramFunctionId, ProgramBlockId>);
     static_assert(!std::is_convertible_v<ProgramValueId, ProgramInstructionId>);
     static_assert(!std::is_convertible_v<ProgramScopeId, ProgramResourceHandleId>);
-    static_assert(!std::is_convertible_v<StateEpoch, ProgramValueId>);
+    static_assert(!std::is_convertible_v<WorksetEpoch, ProgramValueId>);
 
     EXPECT_EQ(ProgramFunctionId(7).value(), 7u);
     EXPECT_NE(ProgramFunctionId(7), ProgramFunctionId(8));
@@ -197,12 +197,12 @@ TEST(ProgramValueArena, BindCloneAndEpochLookupPreserveImmutability)
         OpaqueHandleValue{
             .handle_id = ProgramResourceHandleId(1),
             .handle_type = handle_type,
-            .origin_epoch = StateEpoch(4),
+            .workset_epoch = WorksetEpoch(4),
         });
     ASSERT_TRUE(handle);
-    EXPECT_TRUE(arena.LookupForEpoch(handle.value, StateEpoch(4)));
+    EXPECT_TRUE(arena.LookupForEpoch(handle.value, WorksetEpoch(4)));
     EXPECT_EQ(
-        arena.LookupForEpoch(handle.value, StateEpoch(5)).status.error,
+        arena.LookupForEpoch(handle.value, WorksetEpoch(5)).status.error,
         ProgramValueArenaError::StaleEpoch);
 }
 
@@ -271,7 +271,7 @@ TEST(ProgramValueArena, ValidatesNominalGraphsAndNestedEpochs)
                 .payload = ResourceHandleValue{
                     .handle_id = ProgramResourceHandleId(9),
                     .resource_type = handle_payload,
-                    .origin_epoch = StateEpoch(4),
+                    .workset_epoch = WorksetEpoch(4),
                 },
             },
             ProgramValue{
@@ -287,14 +287,14 @@ TEST(ProgramValueArena, ValidatesNominalGraphsAndNestedEpochs)
         TypeRef::Named(record_schema),
         schemas,
         {8, 4096},
-        StateEpoch(4)));
+        WorksetEpoch(4)));
     EXPECT_EQ(
         ValidateProgramValueGraph(
             graph,
             TypeRef::Named(record_schema),
             schemas,
             {8, 4096},
-            StateEpoch(5)).error,
+            WorksetEpoch(5)).error,
         ProgramValueArenaError::SchemaMismatch);
 }
 

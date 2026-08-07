@@ -347,7 +347,7 @@ protected:
                     .seed_value = 0x44444444,
                     .origin_worker_id = 1,
                     .origin_process_generation = 1,
-                    .origin_state_epoch = 1,
+                    .origin_workset_epoch = 1,
                     .terminal_sha256 = std::string(64, '1'),
                     .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
                     .recorded_at_utc = now,
@@ -379,7 +379,7 @@ protected:
                     .seed_value = 0x44444444,
                     .origin_worker_id = 1,
                     .origin_process_generation = 1,
-                    .origin_state_epoch = 2,
+                    .origin_workset_epoch = 2,
                     .terminal_sha256 = std::string(64, '2'),
                     .confirmation_of_probe_result_id =
                         seeded.source_probe_result_id,

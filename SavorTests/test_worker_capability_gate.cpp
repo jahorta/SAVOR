@@ -111,17 +111,10 @@ savor::runtime::WorkerRuntimeManifest CompleteTestManifest(
 {
     static constexpr std::array<
         std::pair<std::string_view, std::string_view>,
-        9>
+        2>
         kModules{{
             {"soa.seed_probe", "probe"},
-            {"soa.navigation.context", "capture"},
-            {"soa.tas_movie", "play_and_checkpoint"},
-            {"soa.tas_frame_detector", "detect"},
-            {"soa.battle.context", "capture"},
-            {"soa.battle.macro_probe", "probe"},
-            {"soa.battle.single_turn", "execute"},
-            {"soa.battle.completion", "complete"},
-            {"soa.battle.results_screen", "advance"},
+            {"soa.tas_movie_validation", "validate"},
         }};
     savor::runtime::WorkerRuntimeManifest manifest{};
     manifest.catalog_status =
@@ -454,7 +447,7 @@ TEST(WorkerCapabilityGate, CompleteExactCatalogRejectsAnExtraModule)
         result.status,
         CoordinatorStartStatus::WorksetCatalogUnavailable);
     EXPECT_TRUE(result.non_retryable);
-    EXPECT_NE(result.error.find("exactly nine"), std::string::npos);
+    EXPECT_NE(result.error.find("exactly two"), std::string::npos);
     EXPECT_FALSE(coordinator.IsDataPlaneEnabled());
     ASSERT_NE(item_credits, nullptr);
     EXPECT_FALSE(item_credits->IsOpen());

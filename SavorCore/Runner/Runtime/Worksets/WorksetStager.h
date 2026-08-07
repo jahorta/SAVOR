@@ -58,7 +58,7 @@ struct HostStagedArtifactEvidence
     std::string movie_sha256;
 };
 
-// Immutable host-only package. It has no SessionId/StateEpoch binding and
+// Immutable host-only package. It has no SessionId/WorksetEpoch binding and
 // carries no resource lease or authority to prepare/advance Dolphin.
 struct HostStagedWorksetPackage
 {
@@ -117,7 +117,7 @@ public:
     [[nodiscard]] WorksetStagingSubmission Submit(
         WorkerWorksetDefinition definition);
     [[nodiscard]] std::vector<WorksetStagingCompletion>
-        DrainCompletions();
+        DrainResults();
     void Shutdown() noexcept;
     [[nodiscard]] WorksetStagerSnapshot snapshot() const noexcept;
 

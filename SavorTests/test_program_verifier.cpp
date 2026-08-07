@@ -41,7 +41,7 @@ ProgramPolicySet Policies()
 {
     return {
         .state_policies = {
-            InvocationStatePolicy::ContinueSession,
+            InvocationStatePolicy::RestoreBaseline,
         },
         .execution_intents = {ExecutionIntent::Live},
     };
@@ -261,6 +261,34 @@ TEST(ProgramVerifier, ProducesAndCachesExactImmutableClosure)
     ASSERT_TRUE(second.success);
     EXPECT_EQ(first.verified, second.verified);
     EXPECT_EQ(harness.modules.verified_cache_size(), 1u);
+}
+
+TEST(
+    ProgramVerifier,
+    EstablishBaselineRejectsSuccessfulReturnBeforeMoviePlayback)
+{
+    Harness harness;
+    ProgramModule module = ValidModule("test.establish-before-use");
+    module.accepted_policies.state_policies = {
+        InvocationStatePolicy::EstablishBaseline};
+    module.entrypoints.front().accepted_policies.state_policies = {
+        InvocationStatePolicy::EstablishBaseline};
+    module.identity.module_hash = ComputeProgramModuleHashV1(module);
+    ASSERT_TRUE(harness.modules.RegisterCompiled(module).success);
+
+    const ProgramVerificationResult result =
+        harness.Verify(module.identity);
+
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(std::ranges::any_of(
+        result.diagnostics,
+        [](const VerificationDiagnostic& diagnostic)
+        {
+            return diagnostic.code == VerificationErrorCode::InvalidPolicy &&
+                diagnostic.message.find(
+                    "successful return path before prepared MovieStartPlayback") !=
+                    std::string::npos;
+        }));
 }
 
 TEST(ProgramVerifier, ChecksDefinitionBeforeUseAndUnreachableBlocks)

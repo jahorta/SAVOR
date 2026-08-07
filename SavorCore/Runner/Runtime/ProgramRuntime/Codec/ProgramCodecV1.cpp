@@ -920,17 +920,13 @@ void WriteProgramValue(Writer& writer, const ProgramValue& value)
             {
                 WriteId(writer, payload.handle_id);
                 WriteSchemaIdentity(writer, payload.resource_type);
-                writer.Optional(
-                    payload.origin_epoch,
-                    [](Writer& output, StateEpoch epoch) {
-                        WriteId(output, epoch);
-                    });
+                WriteId(writer, payload.workset_epoch);
             }
             else if constexpr (std::is_same_v<T, OpaqueHandleValue>)
             {
                 WriteId(writer, payload.handle_id);
                 WriteSchemaIdentity(writer, payload.handle_type);
-                WriteId(writer, payload.origin_epoch);
+                WriteId(writer, payload.workset_epoch);
             }
         },
         value.payload);
@@ -1054,11 +1050,7 @@ bool ReadProgramValue(Reader& reader, ProgramValue& value)
         ResourceHandleValue decoded;
         if (!ReadId(reader, decoded.handle_id) ||
             !ReadSchemaIdentity(reader, decoded.resource_type) ||
-            !reader.Optional(
-                decoded.origin_epoch,
-                [](Reader& input, StateEpoch& epoch) {
-                    return ReadId(input, epoch);
-                }))
+            !ReadId(reader, decoded.workset_epoch))
         {
             return false;
         }
@@ -1070,7 +1062,7 @@ bool ReadProgramValue(Reader& reader, ProgramValue& value)
         OpaqueHandleValue decoded;
         if (!ReadId(reader, decoded.handle_id) ||
             !ReadSchemaIdentity(reader, decoded.handle_type) ||
-            !ReadId(reader, decoded.origin_epoch))
+            !ReadId(reader, decoded.workset_epoch))
         {
             return false;
         }
@@ -1485,7 +1477,6 @@ void WritePolicySet(Writer& writer, const ProgramPolicySet& policies)
     writer.Bool(policies.permits_movie_recording);
     writer.Bool(policies.permits_capture);
     writer.Bool(policies.permits_replay);
-    writer.Bool(policies.permits_state_replacement);
     writer.Bool(policies.permits_resource_promotion);
 }
 
@@ -1496,7 +1487,7 @@ bool ReadPolicySet(Reader& reader, ProgramPolicySet& policies)
                [](Reader& input, InvocationStatePolicy& policy) {
                    return input.EnumValue(
                        policy,
-                       InvocationStatePolicy::ContinueSession);
+                       InvocationStatePolicy::EstablishBaseline);
                }) &&
         reader.Vector(
             policies.execution_intents,
@@ -1507,7 +1498,6 @@ bool ReadPolicySet(Reader& reader, ProgramPolicySet& policies)
         reader.Bool(policies.permits_movie_recording) &&
         reader.Bool(policies.permits_capture) &&
         reader.Bool(policies.permits_replay) &&
-        reader.Bool(policies.permits_state_replacement) &&
         reader.Bool(policies.permits_resource_promotion);
 }
 
@@ -1881,7 +1871,6 @@ bool ReadRuntimeProfile(Reader& reader, RuntimeProfile& profile)
 void WriteStateRequest(Writer& writer, const InvocationStateRequest& state)
 {
     writer.Enum(state.policy);
-    writer.Optional(state.state_artifact, WriteArtifactReference);
     writer.String(state.session_lineage);
     WriteId(writer, state.expected_session);
     WriteId(writer, state.expected_epoch);
@@ -1891,8 +1880,7 @@ bool ReadStateRequest(Reader& reader, InvocationStateRequest& state)
 {
     return reader.EnumValue(
                state.policy,
-               InvocationStatePolicy::ContinueSession) &&
-        reader.Optional(state.state_artifact, ReadArtifactReference) &&
+               InvocationStatePolicy::EstablishBaseline) &&
         reader.String(state.session_lineage) &&
         ReadId(reader, state.expected_session) &&
         ReadId(reader, state.expected_epoch);

@@ -84,7 +84,10 @@ namespace savor::tas {
         std::string compute_sha256() const;
         std::vector<uint8_t> payload_bytes() const;
 
-        void set_recording_start_time_unix_seconds(uint64_t unix_seconds);
+        // Sets the GameCube-visible RTC start value, measured in seconds
+        // since 2000-01-01. Dolphin stores the corresponding Unix timestamp
+        // in the DTM header and exposes the RTC to the guest as a u32.
+        void set_gamecube_rtc_seconds(uint32_t gamecube_rtc_seconds);
 
         bool supports_gc_poll_editing(std::string* reason = nullptr) const;
         size_t gc_poll_count() const;

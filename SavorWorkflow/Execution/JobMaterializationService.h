@@ -29,7 +29,6 @@ enum class ClaimedJobLifecycleState {
 };
 
 struct ClaimedJobAffinity {
-    std::optional<std::string> savestate_affinity_key;
     std::optional<std::string> program_runtime_affinity_key;
 };
 
@@ -65,7 +64,6 @@ struct ClaimedJobSeed {
 };
 
 struct MaterializedJobSelectionAffinity {
-    std::optional<std::string> savestate_affinity_key;
     std::optional<std::int32_t> program_kind;
     std::optional<std::string> program_runtime_affinity_key;
 };

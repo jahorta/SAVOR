@@ -29,11 +29,6 @@ struct PrepareModuleCommand
     EncodedModuleEnvelope module;
 };
 
-struct InvokeProgramCommand
-{
-    EncodedInvocationEnvelope invocation;
-};
-
 struct CancelInvocationCommand
 {
     InvocationId invocation_id;
@@ -64,7 +59,8 @@ struct AcknowledgeTerminalCommand
 
 struct CaptureScreenshotCommand
 {
-    SessionId session_id;
+    WorkerWorksetId workset_id;
+    WorkerWorksetItemId item_id;
     std::filesystem::path output_path;
     std::chrono::milliseconds timeout{3000};
 };
@@ -79,8 +75,8 @@ enum class WorkerExecutionControlKind : std::uint8_t
 struct ControlExecutionCommand
 {
     WorkerExecutionControlKind control = WorkerExecutionControlKind::Pause;
-    SessionId session_id;
-    StateEpoch expected_state_epoch;
+    WorkerWorksetId workset_id;
+    WorkerWorksetItemId item_id;
     std::uint32_t count = 0;
     std::chrono::milliseconds timeout{};
 };
@@ -92,7 +88,6 @@ struct ShutdownCommand
 using WorkerCommand = std::variant<
     OpenSessionCommand,
     PrepareModuleCommand,
-    InvokeProgramCommand,
     SubmitWorksetCommand,
     CancelInvocationCommand,
     CancelWorksetItemCommand,
@@ -138,7 +133,7 @@ struct WorkerWorksetItemStartedEvent
     InvocationId invocation_id;
     AttemptId attempt_id;
     SessionId session_id;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     PreparedProgramBaselineReceipt baseline;
 };
 
@@ -206,7 +201,7 @@ struct HostRuntimeEvent
 {
     HostEventSequence event_sequence;
     SessionId session_id;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     std::string name;
     std::vector<std::uint8_t> encoded_payload;
 };
@@ -222,7 +217,6 @@ using WorkerEvent = std::variant<
     WorkerCommandCompletedEvent,
     ModulePreparationEvent,
     ProgramInvocationProgressEvent,
-    ProgramInvocationTerminalEvent,
     WorkerWorksetStateEvent,
     WorkerWorksetItemStartedEvent,
     WorkerWorksetItemTerminalEvent,
@@ -240,6 +234,7 @@ struct WorkerRuntimeTestHooks
     // deterministic without timing sleeps.
     std::function<void(EmulationSession&)> session_opened;
     std::function<void()> before_ingress_stability_check;
+    std::function<void()> before_output_finalization;
 };
 
 class WorkerRuntime final
@@ -270,7 +265,7 @@ public:
         std::vector<std::uint8_t> encoded_payload);
     [[nodiscard]] bool EnqueueHostEvent(
         SessionId observed_session_id,
-        StateEpoch observed_state_epoch,
+        WorksetEpoch observed_workset_epoch,
         std::string name,
         std::vector<std::uint8_t> encoded_payload);
     // Await a previously submitted Shutdown command. This must not be called

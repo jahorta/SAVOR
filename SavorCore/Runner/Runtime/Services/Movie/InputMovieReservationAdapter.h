@@ -14,22 +14,20 @@ class InputMovieReservationAdapter final
 public:
     InputMovieReservationAdapter(
         InputArbiter& input,
-        std::function<StateEpoch()> current_epoch);
+        std::function<WorksetEpoch()> current_epoch);
 
     MovieInputReservationReceipt
     AcquireUnsuspendableMovieReservation() override;
     MovieServiceResult ReleaseMovieReservation(
         MovieReservationId reservation) noexcept override;
 
-    [[nodiscard]] MovieServiceResult CommitStateEpoch(
-        StateEpoch epoch) noexcept;
     [[nodiscard]] MovieServiceResult Shutdown() noexcept;
 
 private:
-    [[nodiscard]] InputLeaseReceipt AcquireLease(StateEpoch epoch);
+    [[nodiscard]] InputLeaseReceipt AcquireLease(WorksetEpoch epoch);
 
     InputArbiter& input_;
-    std::function<StateEpoch()> current_epoch_;
+    std::function<WorksetEpoch()> current_epoch_;
     MovieReservationId reservation_;
     InputLeaseId lease_;
     std::uint64_t next_reservation_ = 1;

@@ -88,7 +88,7 @@ struct ProbeRoutedHitSample {
 struct ProbeRoutedHitContext {
     std::uint64_t routed_sequence = 0;
     std::uint64_t sample_snapshot_id = 0;
-    std::uint64_t guest_state_epoch = 0;
+    std::uint64_t guest_workset_epoch = 0;
     std::array<ProbeRoutedHitSample, kMaxProbeRoutedHitSamples> samples{};
     std::uint8_t sample_count = 0;
     bool active_foreground_wake = false;
@@ -137,7 +137,7 @@ public:
         std::string* error_out = nullptr);
     bool prepare_for_core_shutdown(std::string* error_out = nullptr);
     bool resume_after_core_boot(std::string* error_out = nullptr);
-    void set_guest_state_epoch(std::uint64_t epoch);
+    void set_guest_workset_epoch(std::uint64_t epoch);
     void set_frame_index(std::uint64_t frame);
     bool uses_frame_clock() const { return frame_clock_active_.load(std::memory_order_acquire); }
     bool emit_marker(std::string_view id, std::uint64_t value = 0);
@@ -243,7 +243,7 @@ private:
     std::atomic<std::uint64_t> next_snapshot_id_{ 1 };
     std::atomic<std::uint64_t> frame_index_{ 0 };
     std::atomic<bool> frame_clock_active_{ false };
-    std::atomic<std::uint64_t> guest_state_epoch_{ 0 };
+    std::atomic<std::uint64_t> guest_workset_epoch_{ 0 };
     std::atomic<std::uint64_t> recorder_generation_{ 0 };
     std::atomic<bool> flight_triggered_{ false };
     std::atomic<std::uint32_t> flight_post_remaining_{ 0 };

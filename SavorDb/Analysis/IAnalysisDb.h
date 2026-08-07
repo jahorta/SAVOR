@@ -440,7 +440,7 @@ struct RecordSeedProbeObservationCommand {
     std::uint32_t seed_value = 0;
     std::uint64_t origin_worker_id = 0;
     std::uint64_t origin_process_generation = 0;
-    std::uint64_t origin_state_epoch = 0;
+    std::uint64_t origin_workset_epoch = 0;
     std::string terminal_sha256;
     std::optional<std::int64_t> confirmation_of_probe_result_id;
     SeedProbeEndpoint endpoint = SeedProbeEndpoint::Unknown;
@@ -458,7 +458,7 @@ struct SeedProbeResultRow {
     std::uint32_t seed_value = 0;
     std::uint64_t origin_worker_id = 0;
     std::uint64_t origin_process_generation = 0;
-    std::uint64_t origin_state_epoch = 0;
+    std::uint64_t origin_workset_epoch = 0;
     std::string terminal_sha256;
     std::optional<std::int64_t> confirmation_of_probe_result_id;
     SeedProbeEvidenceState evidence_state = SeedProbeEvidenceState::Unknown;
@@ -885,8 +885,124 @@ struct BattleResultsRecord {
     std::optional<types::UtcTimePoint> completed_at_utc;
 };
 
+enum class TasMovieValidationOperation {
+    Unknown = 0,
+    EstablishRootCursor,
+    Validate,
+};
+
+enum class TasMovieValidationSourceKind {
+    Unknown = 0,
+    DtmArtifact,
+    RootEstablishment,
+    Tree,
+};
+
+enum class TasMovieValidationOutcome {
+    Unknown = 0,
+    RootCursorEstablished,
+    Valid,
+    Invalid,
+};
+
+enum class TasMovieValidationFailureReason {
+    None = 0,
+    MovieDesynchronized,
+    ExpectedTerminalNotReached,
+    Unknown,
+};
+
+enum class TasMovieValidationStatus {
+    Untested = 0,
+    Valid,
+    Quarantined,
+};
+
+struct CreateTasMovieValidationRequestCommand {
+    std::string materialization_key;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::string step_kind;
+    TasMovieValidationOperation operation = TasMovieValidationOperation::Unknown;
+    TasMovieValidationSourceKind source_kind = TasMovieValidationSourceKind::Unknown;
+    std::int64_t source_ref_id = 0;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::string source_dtm_sha256;
+    std::optional<std::int64_t> rtc_value;
+    std::string effective_dtm_sha256;
+    std::optional<std::int64_t> itinerary_artifact_id;
+    std::optional<std::string> itinerary_sha256;
+    std::uint32_t required_final_breakpoint_pc = 0;
+    bool capture_root_checkpoint = false;
+    std::int64_t full_phase_program_kind = 0;
+    std::int64_t full_phase_program_version = 0;
+    std::string full_phase_canonical_id;
+    std::int64_t full_phase_contract_revision = 0;
+    std::string full_phase_sha256;
+    std::string module_canonical_id;
+    std::int64_t module_revision = 0;
+    std::string module_sha256;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct TasMovieValidationRequestRecord : CreateTasMovieValidationRequestCommand {
+    std::int64_t validation_request_id = 0;
+};
+
+struct RecordTasMovieValidationAttemptCommand {
+    std::int64_t validation_request_id = 0;
+    std::int64_t source_job_id = 0;
+    std::string worker_terminal_sha256;
+    TasMovieValidationOutcome outcome = TasMovieValidationOutcome::Unknown;
+    TasMovieValidationFailureReason failure_reason = TasMovieValidationFailureReason::None;
+    std::optional<std::uint32_t> expected_pc;
+    std::optional<std::uint64_t> expected_input_count;
+    std::uint32_t actual_pc = 0;
+    std::uint64_t actual_input_count = 0;
+    std::optional<std::uint64_t> last_verified_itinerary_index;
+    std::optional<std::int64_t> last_known_good_savestate_id;
+    std::optional<std::int64_t> candidate_itinerary_artifact_id;
+    std::optional<std::string> candidate_itinerary_sha256;
+    std::optional<std::int64_t> produced_tas_movie_root_id;
+    std::string worker_id;
+    std::uint64_t worker_process_generation = 0;
+    std::uint64_t workset_epoch = 0;
+    types::UtcTimePoint recorded_at_utc{};
+};
+
+struct TasMovieValidationAttemptRecord : RecordTasMovieValidationAttemptCommand {
+    std::int64_t validation_attempt_id = 0;
+};
+
+struct TasMovieValidationStatusRecord {
+    std::string effective_dtm_sha256;
+    TasMovieValidationStatus status = TasMovieValidationStatus::Untested;
+    std::int64_t validation_attempt_id = 0;
+    types::UtcTimePoint updated_at_utc{};
+};
+
 struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
+
+    virtual bool CreateTasMovieValidationRequest(
+        const CreateTasMovieValidationRequestCommand& command,
+        std::int64_t* validation_request_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<TasMovieValidationRequestRecord> GetTasMovieValidationRequest(
+        std::int64_t validation_request_id) const = 0;
+    virtual std::optional<TasMovieValidationRequestRecord> GetTasMovieValidationRequestForWorkflowStep(
+        std::int64_t workflow_step_id) const = 0;
+    virtual bool RecordTasMovieValidationAttempt(
+        const RecordTasMovieValidationAttemptCommand& command,
+        std::int64_t* validation_attempt_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<TasMovieValidationAttemptRecord> GetTasMovieValidationAttempt(
+        std::int64_t validation_attempt_id) const = 0;
+    virtual std::optional<TasMovieValidationAttemptRecord> FindTasMovieValidationAttempt(
+        std::int64_t source_job_id,
+        std::string_view worker_terminal_sha256) const = 0;
+    virtual std::optional<TasMovieValidationStatusRecord> GetTasMovieValidationStatus(
+        std::string_view effective_dtm_sha256) const = 0;
 
     virtual std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const = 0;
     virtual std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const = 0;

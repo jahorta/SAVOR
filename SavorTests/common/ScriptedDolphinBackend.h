@@ -33,7 +33,10 @@ struct ScriptedDolphinBackendControl
     std::vector<std::filesystem::path> screenshots;
 
     runtime::BackendResult open_result = runtime::BackendResult::Success();
-    runtime::BackendResult reboot_result = runtime::BackendResult::Success();
+    runtime::MovieBackendResult core_stop_result =
+        runtime::MovieBackendResult::Success();
+    runtime::MovieBackendResult core_start_result =
+        runtime::MovieBackendResult::Success();
     runtime::BackendResult close_result = runtime::BackendResult::Success();
     runtime::BackendResult pause_result = runtime::BackendResult::Success();
     runtime::BackendResult resume_result = runtime::BackendResult::Success();
@@ -62,10 +65,11 @@ struct ScriptedDolphinBackendControl
     runtime::MovieSnapshot movie_snapshot;
     std::optional<std::filesystem::path> movie_startup_savestate;
     std::filesystem::path prepared_movie_path;
-    bool movie_available = false;
+    bool movie_available = true;
 
     int open_count = 0;
-    int reboot_count = 0;
+    int core_stop_count = 0;
+    int core_start_count = 0;
     int close_count = 0;
     int screenshot_count = 0;
     int restore_file_count = 0;
@@ -78,7 +82,8 @@ struct ScriptedDolphinBackendControl
     void SetOpenResult(
         runtime::BackendResult result,
         runtime::BackendCoreState state = runtime::BackendCoreState::Paused);
-    void SetRebootResult(runtime::BackendResult result);
+    void SetCoreStopResult(runtime::MovieBackendResult result);
+    void SetCoreStartResult(runtime::MovieBackendResult result);
     void SetCloseResult(runtime::BackendResult result);
     void SetPauseResult(runtime::BackendResult result);
     void SetResumeResult(runtime::BackendResult result);
@@ -123,13 +128,12 @@ public:
 
     runtime::BackendResult Open(
         const runtime::BackendOpenOptions& options) override;
-    runtime::BackendResult Reboot() override;
     runtime::BackendResult Close() override;
 
     [[nodiscard]] runtime::BackendCoreState QueryCoreState() const noexcept override;
     [[nodiscard]] runtime::BackendHealthReport CheckHealth() const override;
-    [[nodiscard]] runtime::StateCompatibilityToken
-    StateCompatibility() const override;
+    [[nodiscard]] runtime::ArtifactCompatibilityToken
+    SavestateCompatibility() const override;
 
     runtime::BackendResult Pause(std::chrono::milliseconds timeout);
     runtime::BackendResult Resume() override;
@@ -187,8 +191,11 @@ private:
         std::chrono::milliseconds timeout) override;
 
     runtime::MoviePlaybackPrepareResult
-    PrepareReadOnlyPlaybackBeforeBoot(
+    PrepareReadOnlyPlaybackForRestart(
         const std::filesystem::path& dtm_path) override;
+    runtime::MovieBackendResult StopCoreForPreparedReadOnlyMovie() override;
+    runtime::MovieBackendResult StartPreparedReadOnlyMovie() override;
+    runtime::MovieBackendResult DiscardPreparedReadOnlyMovie() noexcept override;
     runtime::MovieBackendResult StopMovie() noexcept override;
     runtime::MovieBackendResult BeginRecording() override;
     runtime::MovieRecordingFinalizeResult FinalizeRecording(
@@ -197,12 +204,12 @@ private:
     [[nodiscard]] runtime::MovieSnapshot Snapshot() const override;
     runtime::MovieCheckpointBackendResult
     CaptureRecordingCheckpoint() override;
-    runtime::MovieBackendResult PrepareStateReplacement(
-        const runtime::StateReplacementContext& context) override;
-    runtime::MovieBackendResult CommitStateReplacement(
-        const runtime::StateReplacementContext& context) override;
-    runtime::MovieBackendResult RollbackStateReplacement(
-        const runtime::StateReplacementContext& context) noexcept override;
+    runtime::MovieBackendResult PrepareSavestateRestore(
+        const runtime::SavestateMovieRestoreContext& context) override;
+    runtime::MovieBackendResult CommitSavestateRestore(
+        const runtime::SavestateMovieRestoreContext& context) override;
+    runtime::MovieBackendResult RollbackSavestateRestore(
+        const runtime::SavestateMovieRestoreContext& context) noexcept override;
 
     std::shared_ptr<ScriptedDolphinBackendControl> control_;
     std::unique_ptr<runtime::IPhysicalStopPointBackendPort>

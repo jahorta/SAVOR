@@ -27,7 +27,7 @@ struct ScreenshotReceipt
     bool ok = false;
     ScreenshotStatus status = ScreenshotStatus::Rejected;
     ScreenshotRequestId request;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::filesystem::path path;
     BackendIntegrity integrity = BackendIntegrity::Preserved;
     std::string message;
@@ -38,14 +38,14 @@ class ScreenshotService final
 public:
     explicit ScreenshotService(IScreenshotBackendPort& backend);
 
-    void CommitStateEpoch(StateEpoch epoch) noexcept;
+    void InitializeWorksetEpoch(WorksetEpoch epoch) noexcept;
     [[nodiscard]] ScreenshotReceipt Capture(
         const std::filesystem::path& path,
         std::chrono::milliseconds timeout,
-        StateEpoch epoch);
+        WorksetEpoch epoch);
     [[nodiscard]] ScreenshotReceipt Cancel(
         ScreenshotRequestId request,
-        StateEpoch epoch) noexcept;
+        WorksetEpoch epoch) noexcept;
     [[nodiscard]] std::optional<ScreenshotReceipt> last_receipt() const;
 
 private:
@@ -53,7 +53,7 @@ private:
 
     IScreenshotBackendPort& backend_;
     std::thread::id owner_thread_;
-    StateEpoch epoch_;
+    WorksetEpoch epoch_;
     std::uint64_t next_request_ = 1;
     bool active_ = false;
     std::optional<ScreenshotReceipt> last_receipt_;

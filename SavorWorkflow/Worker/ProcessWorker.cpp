@@ -123,7 +123,7 @@ runtime::WorkerRejectionCode MapRejectionCode(
     case Wire::InvocationNotActive: return Runtime::InvocationNotActive;
     case Wire::InvocationMismatch: return Runtime::InvocationMismatch;
     case Wire::DuplicateCancellation: return Runtime::DuplicateCancellation;
-    case Wire::StateEpochMismatch: return Runtime::StateEpochMismatch;
+    case Wire::WorksetEpochMismatch: return Runtime::WorksetEpochMismatch;
     case Wire::BackendFailure: return Runtime::BackendFailure;
     case Wire::RuntimeStopping: return Runtime::RuntimeStopping;
     case Wire::InternalFailure: return Runtime::InternalFailure;
@@ -566,29 +566,6 @@ bool ProcessWorker::prepare_encoded_module(
     return true;
 }
 
-bool ProcessWorker::submit_encoded_invocation(
-    const runtime::EncodedInvocationEnvelope& invocation,
-    wrms::CommandResultPayload* result_out,
-    std::uint32_t timeout_ms)
-{
-    (void)invocation;
-    (void)timeout_ms;
-    if (result_out)
-    {
-        *result_out = wrms::CommandResultPayload{
-            .command_kind = wrms::MessageKind::SubmitInvocation,
-            .status = wrms::CommandStatus::Unsupported,
-            .rejection_code = wrms::RejectionCode::Unsupported,
-            .error_code = "ReservedSubmitInvocation",
-            .message =
-                "SubmitInvocation is retired; submit a one-item WorkerWorkset",
-        };
-    }
-    set_last_error(
-        "SubmitInvocation is retired; submit a one-item WorkerWorkset");
-    return false;
-}
-
 bool ProcessWorker::submit_workset(
     const runtime::WorkerWorksetDefinition& workset,
     wrms::CommandResultPayload* result_out,
@@ -923,14 +900,25 @@ bool ProcessWorker::cancel_invocation(
 }
 
 bool ProcessWorker::request_screenshot(
-    runtime::SessionId session_id,
+    runtime::WorkerWorksetId workset_id,
+    runtime::WorkerWorksetItemId item_id,
     std::string output_path,
     std::uint32_t capture_timeout_ms,
     wrms::ScreenshotResultPayload* result_out,
     std::uint32_t command_timeout_ms)
 {
+    const ProcessWorkerSnapshot observed = latest_snapshot();
+    if (!workset_id || !item_id || !observed.active_workset ||
+        !observed.active_workset_item ||
+        *observed.active_workset != workset_id ||
+        *observed.active_workset_item != item_id)
+    {
+        set_last_error("screenshot requires an exact active workset item");
+        return false;
+    }
     wrms::CaptureScreenshotPayload request{
-        .session_id = session_id.value(),
+        .workset_id = workset_id.value(),
+        .item_id = item_id.value(),
         .output_path = std::move(output_path),
         .timeout_ms = capture_timeout_ms,
     };
@@ -983,7 +971,7 @@ std::uint32_t ProcessWorker::effective_execution_command_timeout(
 bool ProcessWorker::validate_execution_result(
     wrms::ExecutionControlKind control,
     runtime::SessionId session_id,
-    runtime::StateEpoch expected_state_epoch,
+    runtime::WorksetEpoch expected_workset_epoch,
     std::uint32_t requested_count,
     const wrms::ExecutionResultPayload& result,
     std::string* error_out)
@@ -1001,7 +989,7 @@ bool ProcessWorker::validate_execution_result(
     }
     if (result.status != wrms::CommandStatus::Succeeded)
         return true;
-    if (result.state_epoch != expected_state_epoch.value() ||
+    if (result.workset_epoch != expected_workset_epoch.value() ||
         result.operation_id == 0)
     {
         return fail(
@@ -1070,8 +1058,8 @@ bool ProcessWorker::classify_shutdown_response(
 
 bool ProcessWorker::request_execution_control(
     wrms::ExecutionControlKind control,
-    runtime::SessionId session_id,
-    runtime::StateEpoch expected_state_epoch,
+    runtime::WorkerWorksetId workset_id,
+    runtime::WorkerWorksetItemId item_id,
     std::uint32_t count,
     std::uint32_t operation_timeout_ms,
     wrms::ExecutionResultPayload* result_out,
@@ -1091,17 +1079,14 @@ bool ProcessWorker::request_execution_control(
     }
     if (!observed.session_open ||
         !observed.session_visual_intent ||
-        !session_id ||
-        observed.session_id != session_id)
-    {
-        set_last_error("execution control requires the open worker session");
-        return false;
-    }
-    if (!expected_state_epoch ||
-        observed.state_epoch != expected_state_epoch)
+        !workset_id || !item_id ||
+        !observed.active_workset ||
+        !observed.active_workset_item ||
+        *observed.active_workset != workset_id ||
+        *observed.active_workset_item != item_id)
     {
         set_last_error(
-            "execution control StateEpoch does not match the worker session");
+            "execution control requires an exact active workset item");
         return false;
     }
 
@@ -1123,8 +1108,8 @@ bool ProcessWorker::request_execution_control(
 
     wrms::ControlExecutionPayload request{
         .control = control,
-        .session_id = session_id.value(),
-        .expected_state_epoch = expected_state_epoch.value(),
+        .workset_id = workset_id.value(),
+        .item_id = item_id.value(),
         .count = count,
         .timeout_ms = operation_timeout_ms,
     };
@@ -1159,8 +1144,8 @@ bool ProcessWorker::request_execution_control(
     std::string validation_error;
     if (!validate_execution_result(
             control,
-            session_id,
-            expected_state_epoch,
+            observed.session_id,
+            observed.workset_epoch,
             count,
             result,
             &validation_error))
@@ -1182,16 +1167,16 @@ bool ProcessWorker::request_execution_control(
 }
 
 bool ProcessWorker::pause_guest_execution(
-    runtime::SessionId session_id,
-    runtime::StateEpoch expected_state_epoch,
+    runtime::WorkerWorksetId workset_id,
+    runtime::WorkerWorksetItemId item_id,
     wrms::ExecutionResultPayload* result_out,
     std::uint32_t operation_timeout_ms,
     std::uint32_t command_timeout_ms)
 {
     return request_execution_control(
         wrms::ExecutionControlKind::Pause,
-        session_id,
-        expected_state_epoch,
+        workset_id,
+        item_id,
         0,
         operation_timeout_ms,
         result_out,
@@ -1199,15 +1184,15 @@ bool ProcessWorker::pause_guest_execution(
 }
 
 bool ProcessWorker::resume_guest_execution(
-    runtime::SessionId session_id,
-    runtime::StateEpoch expected_state_epoch,
+    runtime::WorkerWorksetId workset_id,
+    runtime::WorkerWorksetItemId item_id,
     wrms::ExecutionResultPayload* result_out,
     std::uint32_t command_timeout_ms)
 {
     return request_execution_control(
         wrms::ExecutionControlKind::Resume,
-        session_id,
-        expected_state_epoch,
+        workset_id,
+        item_id,
         0,
         0,
         result_out,
@@ -1215,8 +1200,8 @@ bool ProcessWorker::resume_guest_execution(
 }
 
 bool ProcessWorker::step_guest_frames(
-    runtime::SessionId session_id,
-    runtime::StateEpoch expected_state_epoch,
+    runtime::WorkerWorksetId workset_id,
+    runtime::WorkerWorksetItemId item_id,
     std::uint32_t count,
     wrms::ExecutionResultPayload* result_out,
     std::uint32_t operation_timeout_ms,
@@ -1224,8 +1209,8 @@ bool ProcessWorker::step_guest_frames(
 {
     return request_execution_control(
         wrms::ExecutionControlKind::StepFrame,
-        session_id,
-        expected_state_epoch,
+        workset_id,
+        item_id,
         count,
         operation_timeout_ms,
         result_out,
@@ -1280,13 +1265,6 @@ void ProcessWorker::set_invocation_progress_callback(
 {
     std::lock_guard<std::mutex> lock(callback_mutex_);
     invocation_progress_callback_ = std::move(callback);
-}
-
-void ProcessWorker::set_invocation_terminal_callback(
-    InvocationTerminalCallback callback)
-{
-    std::lock_guard<std::mutex> lock(callback_mutex_);
-    invocation_terminal_callback_ = std::move(callback);
 }
 
 void ProcessWorker::set_host_event_callback(HostEventCallback callback)
@@ -2253,7 +2231,7 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             {
                 snapshot_.session_open = true;
                 snapshot_.session_id = runtime::SessionId{result.session_id};
-                snapshot_.state_epoch = runtime::StateEpoch{result.state_epoch};
+                snapshot_.workset_epoch = runtime::WorksetEpoch{result.workset_epoch};
                 snapshot_.session_capabilities = result.capability_mask;
                 snapshot_.worker_state = MapWorkerState(result.worker_state);
                 snapshot_.session_disposition =
@@ -2268,7 +2246,7 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             else if (!snapshot_.session_open)
             {
                 snapshot_.session_id = runtime::SessionId{result.session_id};
-                snapshot_.state_epoch = runtime::StateEpoch{result.state_epoch};
+                snapshot_.workset_epoch = runtime::WorksetEpoch{result.workset_epoch};
                 snapshot_.session_capabilities = result.capability_mask;
                 snapshot_.worker_state = MapWorkerState(result.worker_state);
                 snapshot_.session_disposition =
@@ -2362,7 +2340,7 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
         }
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         snapshot_.session_id = runtime::SessionId{event.session_id};
-        snapshot_.state_epoch = runtime::StateEpoch{event.state_epoch};
+        snapshot_.workset_epoch = runtime::WorksetEpoch{event.workset_epoch};
         snapshot_.session_capabilities = event.capability_mask;
         snapshot_.worker_state = MapWorkerState(event.worker_state);
         snapshot_.session_disposition =
@@ -2424,13 +2402,6 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             progress_out_->push(std::move(legacy));
         return;
     }
-    case wrms::MessageKind::InvocationTerminal:
-    {
-        fail_protocol(
-            "scalar InvocationTerminal is retired; production terminals "
-            "must use WorksetItemTerminal");
-        return;
-    }
     case wrms::MessageKind::HostEvent:
     {
         wrms::HostEventPayload event;
@@ -2486,7 +2457,7 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             snapshot_.session_id = runtime::SessionId{result.session_id};
-            snapshot_.state_epoch = runtime::StateEpoch{result.state_epoch};
+            snapshot_.workset_epoch = runtime::WorksetEpoch{result.workset_epoch};
             snapshot_.execution_activity = result.activity;
             snapshot_.execution_operation_id = result.operation_id;
             snapshot_.execution_completed_count = result.completed_count;
@@ -2522,7 +2493,7 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             snapshot_.session_id = runtime::SessionId{state.session_id};
-            snapshot_.state_epoch = runtime::StateEpoch{state.state_epoch};
+            snapshot_.workset_epoch = runtime::WorksetEpoch{state.workset_epoch};
             snapshot_.execution_activity = state.activity;
             snapshot_.execution_operation_id = state.operation_id;
             snapshot_.active_execution_control = state.has_active_control
@@ -2572,6 +2543,8 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             case wrms::WorksetStateCode::PreparingBaseline:
             case wrms::WorksetStateCode::Running:
             case wrms::WorksetStateCode::Draining:
+                if (snapshot_.active_workset != id)
+                    snapshot_.active_workset_item.reset();
                 snapshot_.active_workset = id;
                 if (snapshot_.staged_workset == id)
                     snapshot_.staged_workset.reset();
@@ -2580,7 +2553,10 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             case wrms::WorksetStateCode::Cancelled:
             case wrms::WorksetStateCode::Failed:
                 if (snapshot_.active_workset == id)
+                {
                     snapshot_.active_workset.reset();
+                    snapshot_.active_workset_item.reset();
+                }
                 if (snapshot_.staged_workset == id)
                     snapshot_.staged_workset.reset();
                 break;
@@ -2628,11 +2604,13 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             snapshot_.active_workset =
                 runtime::WorkerWorksetId{started.workset_id};
+            snapshot_.active_workset_item =
+                runtime::WorkerWorksetItemId{started.item_id};
             if (snapshot_.staged_workset ==
                 runtime::WorkerWorksetId{started.workset_id})
                 snapshot_.staged_workset.reset();
-            snapshot_.state_epoch =
-                runtime::StateEpoch{started.state_epoch};
+            snapshot_.workset_epoch =
+                runtime::WorksetEpoch{started.workset_epoch};
         }
         WorksetItemStartedCallback callback;
         {
@@ -2670,8 +2648,15 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             return;
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
-            snapshot_.state_epoch =
-                runtime::StateEpoch{terminal.state_epoch};
+            snapshot_.workset_epoch =
+                runtime::WorksetEpoch{terminal.workset_epoch};
+            if (snapshot_.active_workset ==
+                    runtime::WorkerWorksetId{terminal.workset_id} &&
+                snapshot_.active_workset_item ==
+                    runtime::WorkerWorksetItemId{terminal.item_id})
+            {
+                snapshot_.active_workset_item.reset();
+            }
             snapshot_.last_rejection_code =
                 MapRejectionCode(terminal.rejection_code);
             if (!terminal.message.empty())
@@ -2758,7 +2743,10 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             const runtime::WorkerWorksetId id{summary.workset_id};
             if (snapshot_.active_workset == id)
+            {
                 snapshot_.active_workset.reset();
+                snapshot_.active_workset_item.reset();
+            }
             if (snapshot_.staged_workset == id)
                 snapshot_.staged_workset.reset();
             no_resident_workset =

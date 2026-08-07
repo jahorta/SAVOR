@@ -94,7 +94,7 @@ struct StopGroupRegistrationOptions
 struct StopPointLifecycleReceipt
 {
     bool ok = false;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     StopDispatchGeneration dispatch_generation;
     PhysicalPlanGeneration physical_generation;
     PhysicalStopIntegrity physical_integrity = PhysicalStopIntegrity::Preserved;
@@ -172,13 +172,12 @@ public:
     StopPointRouter(const StopPointRouter&) = delete;
     StopPointRouter& operator=(const StopPointRouter&) = delete;
 
-    [[nodiscard]] StopPointLifecycleReceipt Initialize(StateEpoch first_epoch);
-    [[nodiscard]] StopPointLifecycleReceipt PrepareStateReplacement(
-        StateEpoch expected_epoch);
-    [[nodiscard]] StopPointLifecycleReceipt CommitStateReplacement(
-        StateEpoch new_epoch);
-    [[nodiscard]] StopPointLifecycleReceipt RollbackStateReplacement(
-        StateEpoch expected_epoch);
+    [[nodiscard]] StopPointLifecycleReceipt Initialize(WorksetEpoch first_epoch);
+    [[nodiscard]] StopPointLifecycleReceipt QuiesceForWorksetBaselineRestore();
+    [[nodiscard]] StopPointLifecycleReceipt ReconcileAfterWorksetBaselineRestore();
+    [[nodiscard]] StopPointLifecycleReceipt ResumeAfterFailedWorksetBaselineRestore();
+    [[nodiscard]] StopPointLifecycleReceipt ValidateEmptyForMovieCoreStop();
+    [[nodiscard]] StopPointLifecycleReceipt EnterStoppedMovieCoreBoundary();
     [[nodiscard]] StopPointLifecycleReceipt RevalidateAfterJit();
     [[nodiscard]] StopPointLifecycleReceipt ValidateBreakpointChangeNotification();
     [[nodiscard]] StopPointLifecycleReceipt StopIngressDrainAndCleanup();
@@ -209,9 +208,9 @@ public:
     PassiveDropDiagnostics() const;
     [[nodiscard]] PhysicalStopPointPlan DesiredPhysicalPlan() const;
 
-    [[nodiscard]] StateEpoch state_epoch() const noexcept
+    [[nodiscard]] WorksetEpoch workset_epoch() const noexcept
     {
-        return state_epoch_;
+        return workset_epoch_;
     }
 
     [[nodiscard]] StopDispatchGeneration dispatch_generation() const noexcept
@@ -271,7 +270,7 @@ private:
     HostActivityTracker* host_activity_ = nullptr;
     std::shared_ptr<StopPointLeaseControl> lease_control_;
     std::thread::id owner_thread_;
-    StateEpoch state_epoch_;
+    WorksetEpoch workset_epoch_;
     StopDispatchGeneration dispatch_generation_;
     std::atomic<bool> ingress_enabled_{false};
     std::atomic<bool> authoritative_overflow_{false};
@@ -283,7 +282,6 @@ private:
     void* ingress_notifier_context_ = nullptr;
     StopPointIngressNotifier ingress_notifier_ = nullptr;
     std::atomic<bool> initialized_{false};
-    bool replacing_state_ = false;
     bool stopping_ = false;
     bool stopped_ = false;
 };

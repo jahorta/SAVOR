@@ -22,16 +22,9 @@
 #include <vector>
 
 #include "Analysis/IAnalysisDb.h"
-#include "Execution/ProgramDB/ProgramResultProcessor.h"
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeJobSpec.h"
-#include "Execution/ProgramDB/WorkerResultBlobCleanupService.h"
-#include "Execution/QueuedExecutionDb.h"
-#include "Execution/WorkerResultBlobStore.h"
-#include "Execution/Workflow/WorkflowCoordinatorService.h"
-#include "Execution/JobExecutionCoordinator.h"
-#include "Execution/WorkerCoordinator.h"
 #include "Phases/Programs/SeedProbe/SeedProbeModule.h"
 #include "Phases/RNGSeedDeltaMap.h"
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
@@ -41,6 +34,7 @@
 #include "DbSetup.h"
 #include "DurableLogFile.h"
 #include "MultiLineProgressRenderer.h"
+#include "SplitCoordinatorRuntime.h"
 #include "WorkerStartupBarrier.h"
 
 #ifdef _WIN32
@@ -66,393 +60,6 @@ using ::WorkerStateKind;
 namespace {
 
 constexpr std::uint32_t kWorkerStartupOperationTimeoutMs = 60'000;
-
-struct SeedProbeSplitCoordinatorTelemetry {
-    WorkflowCoordinatorTelemetry workflow;
-    JobExecutionCoordinatorTelemetry execution;
-    WorkerCoordinatorTelemetry worker;
-    ProgramResultProcessorTelemetry results;
-    WorkerResultBlobCleanupTelemetry cleanup;
-    std::vector<JobExecutionWorkerLaneSnapshot> lanes;
-    std::optional<savor::db::execution::ExecutionQueueTelemetrySnapshot>
-        execution_db_queue;
-};
-
-class SeedProbeSplitCoordinatorRuntime {
-public:
-    using EventLineCallback =
-        savor::db::execution::workflow::WorkflowCoordinatorService::
-            EventLineCallback;
-
-    ~SeedProbeSplitCoordinatorRuntime() {
-        Stop(nullptr);
-    }
-
-    SeedProbeSplitCoordinatorRuntime(
-        const SeedProbeSplitCoordinatorRuntime&) = delete;
-    SeedProbeSplitCoordinatorRuntime& operator=(
-        const SeedProbeSplitCoordinatorRuntime&) = delete;
-
-    SeedProbeSplitCoordinatorRuntime() = default;
-
-    void SetExecutionPaused(bool paused) {
-        execution_paused_ = paused;
-        if (job_execution_coordinator_ != nullptr) {
-            job_execution_coordinator_->SetPaused(paused);
-        }
-    }
-
-    bool Start(
-        savor::db::IExecutionDb* execution_db,
-        savor::db::IAuthoringDb* authoring_db,
-        const savor::db::execution::programdb::ProgramKindRegistry*
-            program_kind_registry,
-        savor::runner::parallel::savordb::WorkerCoordinatorConfig
-            worker_config,
-        const std::filesystem::path& object_store_root,
-        std::chrono::milliseconds poll_interval,
-        savor::runtime::StateCompatibilityToken state_compatibility,
-        EventLineCallback event_line_callback,
-        std::string* error_out) {
-        if (execution_db == nullptr || authoring_db == nullptr
-            || program_kind_registry == nullptr) {
-            if (error_out != nullptr) {
-                *error_out =
-                    "split coordinator runtime requires execution DB, "
-                    "Authoring DB, and program registry";
-            }
-            return false;
-        }
-        if (!state_compatibility.Complete()
-            || state_compatibility.runtime_revision.empty()) {
-            if (error_out) {
-                *error_out =
-                    "split coordinator runtime requires complete state "
-                    "compatibility";
-            }
-            return false;
-        }
-        if (started_) {
-            return true;
-        }
-        queued_execution_db_ =
-            dynamic_cast<savor::db::execution::QueuedExecutionDb*>(
-                execution_db);
-
-        blob_store_ =
-            std::make_unique<savor::db::execution::WorkerResultBlobStore>(
-                object_store_root);
-
-        savor::db::execution::workflow::WorkflowCoordinatorConfig
-            workflow_config{};
-        workflow_config.workflow_enabled = true;
-        workflow_config.strict_smoke_terminal_on_failure = false;
-        workflow_config.poll_interval =
-            std::max(poll_interval, std::chrono::milliseconds(1));
-        workflow_coordinator_ = std::make_unique<
-            savor::db::execution::workflow::WorkflowCoordinatorService>(
-                execution_db,
-                program_kind_registry,
-                workflow_config,
-                event_line_callback,
-                nullptr,
-                authoring_db);
-
-        blob_cleanup_ = std::make_unique<
-            savor::db::execution::programdb::
-                WorkerResultBlobCleanupService>(
-                    execution_db,
-                    blob_store_.get(),
-                    savor::db::execution::programdb::
-                        WorkerResultBlobCleanupConfig{
-                            .enabled = true,
-                            .poll_interval =
-                                std::max(
-                                    poll_interval,
-                                    std::chrono::milliseconds(1)),
-                        });
-
-        result_processor_ = std::make_unique<
-            savor::db::execution::programdb::ProgramResultProcessor>(
-                execution_db,
-                program_kind_registry,
-                blob_store_.get(),
-                savor::db::execution::programdb::
-                    ProgramResultProcessorConfig{
-                        .enabled = true,
-                    },
-                [this](
-                    std::uint64_t commit_sequence,
-                    std::int64_t workflow_step_id,
-                    std::int64_t job_id) {
-                    if (workflow_coordinator_ != nullptr) {
-                        (void)workflow_coordinator_->PublishTerminalCommit(
-                            {
-                                .commit_sequence = commit_sequence,
-                                .workflow_step_id = workflow_step_id,
-                                .job_id = job_id,
-                            });
-                    }
-                    if (blob_cleanup_ != nullptr) {
-                        blob_cleanup_->Wake();
-                    }
-                },
-                std::move(event_line_callback));
-
-        worker_coordinator_ = std::make_unique<
-            savor::runner::parallel::savordb::WorkerCoordinator>(
-                std::move(worker_config));
-        job_execution_coordinator_ = std::make_unique<
-            savor::runner::parallel::savordb::JobExecutionCoordinator>(
-                execution_db,
-                program_kind_registry,
-                worker_coordinator_.get(),
-                blob_store_.get(),
-                savor::runner::parallel::savordb::
-                    JobExecutionCoordinatorConfig{
-                        .poll_interval =
-                            std::max(
-                                poll_interval,
-                                std::chrono::milliseconds(1)),
-                        .state_compatibility =
-                            std::move(state_compatibility),
-                    });
-        job_execution_coordinator_->SetPaused(execution_paused_);
-        result_processor_->SetCancellationCallbacks(
-            [this](
-                std::uint64_t hold_id,
-                const std::vector<savor::db::
-                    ExecutionCancellationRequestSpec>& cancellations) {
-                if (job_execution_coordinator_ != nullptr) {
-                    job_execution_coordinator_
-                        ->RegisterCancellationCommitPending(
-                            hold_id, cancellations);
-                }
-            },
-            [this](
-                std::uint64_t hold_id,
-                const std::vector<savor::db::
-                    CommittedJobCancellation>& cancellations) {
-                if (job_execution_coordinator_ != nullptr) {
-                    job_execution_coordinator_
-                        ->RegisterCommittedCancellations(
-                            hold_id, cancellations);
-                }
-            });
-
-        std::string error;
-        if (!workflow_coordinator_->Start(&error)) {
-            return FailStart(
-                "workflow coordinator startup failed: " + error,
-                error_out);
-        }
-        workflow_started_ = true;
-        if (!blob_cleanup_->Start(&error)) {
-            return FailStart(
-                "worker result blob cleanup startup failed: " + error,
-                error_out);
-        }
-        cleanup_started_ = true;
-        const auto worker_start = worker_coordinator_->Start();
-        if (!worker_start.started()) {
-            last_fleet_startup_snapshot_ =
-                worker_coordinator_->SnapshotFleetStartup();
-            return FailStart(
-                "worker coordinator did not start: "
-                    + worker_start.diagnostic,
-                error_out);
-        }
-        worker_started_ = true;
-
-        if (!job_execution_coordinator_->Start(&error)) {
-            return FailStart(
-                "job execution coordinator startup failed: " + error,
-                error_out);
-        }
-        job_execution_started_ = true;
-        if (!result_processor_->Start(&error)) {
-            return FailStart(
-                "program result processor startup failed: " + error,
-                error_out);
-        }
-        result_processor_started_ = true;
-        job_execution_coordinator_->OpenCancellationAdmission();
-        started_ = true;
-        if (error_out != nullptr) {
-            error_out->clear();
-        }
-        return true;
-    }
-
-    bool Stop(std::string* error_out) {
-        bool ok = true;
-        std::string errors;
-        const auto append_error = [&](std::string message) {
-            ok = false;
-            if (!errors.empty()) {
-                errors += "; ";
-            }
-            errors += std::move(message);
-        };
-
-        if (job_execution_started_
-            && job_execution_coordinator_ != nullptr) {
-            job_execution_coordinator_->Quiesce();
-            std::string error;
-            if (!job_execution_coordinator_->ReleaseBufferedClaims(
-                    &error)) {
-                append_error(
-                    "release buffered claims failed: " + error);
-            }
-        }
-        if (worker_started_ && worker_coordinator_ != nullptr) {
-            worker_coordinator_->Stop();
-            worker_started_ = false;
-        }
-        if (job_execution_started_
-            && job_execution_coordinator_ != nullptr) {
-            std::string error;
-            if (!job_execution_coordinator_->RecoverAfterWorkersStopped(
-                    &error)) {
-                append_error(
-                    "post-worker dispatch recovery failed: " + error);
-            }
-            job_execution_coordinator_->Stop();
-            job_execution_started_ = false;
-        }
-        if (result_processor_started_ && result_processor_ != nullptr) {
-            result_processor_->Stop();
-            result_processor_started_ = false;
-        }
-        if (cleanup_started_ && blob_cleanup_ != nullptr) {
-            blob_cleanup_->Stop();
-            cleanup_started_ = false;
-        }
-        if (workflow_started_ && workflow_coordinator_ != nullptr) {
-            workflow_coordinator_->Stop();
-            workflow_started_ = false;
-        }
-
-        started_ = false;
-        job_execution_coordinator_.reset();
-        worker_coordinator_.reset();
-        result_processor_.reset();
-        blob_cleanup_.reset();
-        workflow_coordinator_.reset();
-        blob_store_.reset();
-        queued_execution_db_ = nullptr;
-        if (error_out != nullptr) {
-            *error_out = std::move(errors);
-        }
-        return ok;
-    }
-
-    [[nodiscard]] SeedProbeSplitCoordinatorTelemetry
-        SnapshotTelemetry() const {
-        return {
-            .workflow = workflow_coordinator_ != nullptr
-                ? workflow_coordinator_->SnapshotTelemetry()
-                : WorkflowCoordinatorTelemetry{},
-            .execution = job_execution_coordinator_ != nullptr
-                ? job_execution_coordinator_->SnapshotTelemetry()
-                : JobExecutionCoordinatorTelemetry{},
-            .worker = worker_coordinator_ != nullptr
-                ? worker_coordinator_->SnapshotTelemetry()
-                : WorkerCoordinatorTelemetry{},
-            .results = result_processor_ != nullptr
-                ? result_processor_->SnapshotTelemetry()
-                : ProgramResultProcessorTelemetry{},
-            .cleanup = blob_cleanup_ != nullptr
-                ? blob_cleanup_->SnapshotTelemetry()
-                : WorkerResultBlobCleanupTelemetry{},
-            .lanes = job_execution_coordinator_ != nullptr
-                ? job_execution_coordinator_->SnapshotWorkerLanes()
-                : std::vector<JobExecutionWorkerLaneSnapshot>{},
-            .execution_db_queue = queued_execution_db_ != nullptr
-                ? std::optional(
-                    queued_execution_db_->GetTelemetrySnapshot())
-                : std::nullopt,
-        };
-    }
-
-    [[nodiscard]] std::vector<WorkerSnapshot> SnapshotWorkers() const {
-        return worker_coordinator_ != nullptr
-            ? worker_coordinator_->SnapshotWorkers()
-            : std::vector<WorkerSnapshot>{};
-    }
-
-    [[nodiscard]] std::vector<ReadyWorkerCompatibilitySnapshot>
-        SnapshotReadyWorkers() const {
-        return worker_coordinator_ != nullptr
-            ? worker_coordinator_->SnapshotReadyWorkers()
-            : std::vector<ReadyWorkerCompatibilitySnapshot>{};
-    }
-
-    [[nodiscard]] std::vector<JobExecutionCoordinatorWarning>
-        SnapshotExecutionWarnings() const {
-        return job_execution_coordinator_ != nullptr
-            ? job_execution_coordinator_->SnapshotWarnings()
-            : std::vector<JobExecutionCoordinatorWarning>{};
-    }
-
-    [[nodiscard]] savor::runner::parallel::savordb::
-        FleetStartupSnapshot SnapshotFleetStartup() const {
-        return worker_coordinator_ != nullptr
-            ? worker_coordinator_->SnapshotFleetStartup()
-            : last_fleet_startup_snapshot_;
-    }
-
-    [[nodiscard]] savor::runner::parallel::savordb::
-        WorkerCoordinatorStartResult SnapshotWorkerStartResult() const {
-        return worker_coordinator_ != nullptr
-            ? worker_coordinator_->SnapshotStartResult()
-            : savor::runner::parallel::savordb::
-                WorkerCoordinatorStartResult{};
-    }
-
-private:
-    bool FailStart(std::string message, std::string* error_out) {
-        std::string shutdown_error;
-        (void)Stop(&shutdown_error);
-        if (!shutdown_error.empty()) {
-            message += "; shutdown: " + shutdown_error;
-        }
-        if (error_out != nullptr) {
-            *error_out = std::move(message);
-        }
-        return false;
-    }
-
-    std::unique_ptr<savor::db::execution::WorkerResultBlobStore>
-        blob_store_;
-    savor::db::execution::QueuedExecutionDb*
-        queued_execution_db_ = nullptr;
-    std::unique_ptr<
-        savor::db::execution::workflow::WorkflowCoordinatorService>
-        workflow_coordinator_;
-    std::unique_ptr<
-        savor::db::execution::programdb::
-            WorkerResultBlobCleanupService>
-        blob_cleanup_;
-    std::unique_ptr<
-        savor::db::execution::programdb::ProgramResultProcessor>
-        result_processor_;
-    std::unique_ptr<
-        savor::runner::parallel::savordb::WorkerCoordinator>
-        worker_coordinator_;
-    std::unique_ptr<
-        savor::runner::parallel::savordb::JobExecutionCoordinator>
-        job_execution_coordinator_;
-    bool workflow_started_ = false;
-    bool cleanup_started_ = false;
-    bool result_processor_started_ = false;
-    bool worker_started_ = false;
-    bool job_execution_started_ = false;
-    bool started_ = false;
-    bool execution_paused_ = false;
-    savor::runner::parallel::savordb::FleetStartupSnapshot
-        last_fleet_startup_snapshot_;
-};
 
 enum class DurableLineSeverity {
     Info,
@@ -697,7 +304,7 @@ std::vector<std::string> BuildNewMaterializedStepEventLines(
 }
 
 std::string FormatCoordinatorTelemetryLine(
-    const SeedProbeSplitCoordinatorTelemetry& telemetry,
+    const SplitCoordinatorTelemetry& telemetry,
     size_t active_workers) {
     std::ostringstream oss;
     oss << "workers=" << active_workers
@@ -961,12 +568,8 @@ std::string FormatWorkerLaneLine(
     out << " affinity=" << AffinityStateName(lane.affinity_state)
         << " projected_execution="
         << lane.projected_execution_affinity_key.value_or("none")
-        << " projected_baseline="
-        << lane.projected_baseline_affinity_key.value_or("none")
         << " actual_execution="
-        << lane.actual_execution_affinity_key.value_or("none")
-        << " actual_baseline="
-        << lane.actual_baseline_affinity_key.value_or("none");
+        << lane.actual_execution_affinity_key.value_or("none");
     return out.str();
 }
 
@@ -1182,7 +785,7 @@ std::size_t CountActiveWorkers(const std::vector<WorkerSnapshot>& workers) {
 
 std::vector<std::string> BuildProgressLines(
     savor::db::IExecutionDb* execution_db,
-    const SeedProbeSplitCoordinatorTelemetry& telemetry,
+    const SplitCoordinatorTelemetry& telemetry,
     const std::vector<WorkerSnapshot>& worker_snapshot,
     const std::optional<savor::db::execution::workflow::WorkflowGraphSnapshot>& graph) {
     std::vector<std::string> lines;
@@ -1233,7 +836,7 @@ bool ValidateSplitCoordinatorExecution(
     savor::db::IExecutionDb* execution_db,
     const std::optional<
         savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
-    const SeedProbeSplitCoordinatorTelemetry& telemetry,
+    const SplitCoordinatorTelemetry& telemetry,
     const std::vector<ReadyWorkerCompatibilitySnapshot>& ready_workers,
     const savor::runtime::ProgramModuleIdentity&
         expected_seed_probe_module,
@@ -1820,14 +1423,14 @@ bool ValidateSeedProbeAcceptedEvidence(
                     == representative.origin_worker_id
                 && confirmation.origin_process_generation
                     == representative.origin_process_generation
-                && confirmation.origin_state_epoch
-                    == representative.origin_state_epoch)
+                && confirmation.origin_workset_epoch
+                    == representative.origin_workset_epoch)
             || confirmation.origin_process_generation == 0
             || representative.origin_process_generation == 0
-            || confirmation.origin_state_epoch == 0
-            || representative.origin_state_epoch == 0) {
+            || confirmation.origin_workset_epoch == 0
+            || representative.origin_workset_epoch == 0) {
             failures.push_back(
-                "confirmation did not use a distinct job and scoped StateEpoch "
+                "confirmation did not use a distinct job and scoped WorksetEpoch "
                 "for representative "
                 + std::to_string(representative.probe_result_id));
         }
@@ -2128,7 +1731,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         }
         return false;
     }
-    savor::runtime::StateCompatibilityToken
+    savor::runtime::ArtifactCompatibilityToken
         state_compatibility{
             .game_id = std::string(
                 savor::runtime::program::capabilities::
@@ -2162,12 +1765,11 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             .auto_resume_visual_workers = false,
             .runtime_artifact_root =
                 (scenario_workspace_root / "runtime-artifacts").string(),
-            .enabled_program_kinds = {
-                seed_probe_phase->identity().program_kind,
-            },
+            .enabled_program_kinds =
+                program_kind_registry.RegisteredProgramKinds(),
         };
 
-    SeedProbeSplitCoordinatorRuntime coordinators;
+    SplitCoordinatorRuntime coordinators;
     ArmInitialWorkerPoolBarrier(
         options.wait_for_workers_ready,
         [&](bool paused) {

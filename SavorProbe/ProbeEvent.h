@@ -58,7 +58,7 @@ struct RawProbeEvent {
     std::uint64_t capture_sequence = 0;
     std::uint64_t monotonic_ns = 0;
     std::uint64_t frame_index = 0;
-    std::uint64_t guest_state_epoch = 0;
+    std::uint64_t guest_workset_epoch = 0;
     std::uint64_t profile_revision = 0;
     std::uint64_t snapshot_id = 0;
     std::uint64_t hit_count = 0;

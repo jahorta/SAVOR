@@ -48,7 +48,6 @@
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeExecutionAdapters.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeJobSpec.h"
-#include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
 #include "UIRead/Projectors/ProjectorContract.h"
 #include "Execution/WorkflowCoordinatorBridge.h"
 #include "Execution/DBWorkflowWorkerCoordinator.h"
@@ -169,7 +168,7 @@ std::optional<ConfirmedSeedProbeFixture> CreateConfirmedSeedProbeFixture(
                 .seed_value = seed_value,
                 .origin_worker_id = 1,
                 .origin_process_generation = 1,
-                .origin_state_epoch = 1,
+                .origin_workset_epoch = 1,
                 .terminal_sha256 = std::string(64, 'a'),
                 .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
                 .recorded_at_utc = now,
@@ -209,7 +208,7 @@ std::optional<ConfirmedSeedProbeFixture> CreateConfirmedSeedProbeFixture(
                 .seed_value = seed_value,
                 .origin_worker_id = 1,
                 .origin_process_generation = 1,
-                .origin_state_epoch = 2,
+                .origin_workset_epoch = 2,
                 .terminal_sha256 = std::string(64, 'b'),
                 .confirmation_of_probe_result_id = representative_result_id,
                 .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
@@ -369,13 +368,18 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
     ASSERT_FALSE(std::filesystem::exists(runtime_root_a));
     ASSERT_FALSE(std::filesystem::exists(runtime_root_b));
 
-    const auto data_version_before = ReadInt64(db_, "PRAGMA data_version;");
     const auto schema_rows_before = ReadInt64(
         db_,
         "SELECT COUNT(*) FROM sqlite_schema;");
     const auto migration_rows_before = ReadInt64(
         db_,
         "SELECT COUNT(*) FROM migration_history;");
+    const auto tas_movie_requests_before = ReadInt64(
+        db_,
+        "SELECT COUNT(*) FROM tmv_validation_request;");
+    const auto job_sets_before = ReadInt64(
+        db_,
+        "SELECT COUNT(*) FROM exec_job_set;");
 
     constexpr std::int32_t kSentinelProgramKind = 31337;
     ProgramKindDescriptor sentinel{};
@@ -434,37 +438,20 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
         std::int32_t program_kind;
         const char* program_name;
     };
-    constexpr std::array<ExpectedDescriptor, 7> canonical_descriptors{{
-        {static_cast<std::int32_t>(savor::PK_TasMovie), "TasMovie"},
+    constexpr std::array<ExpectedDescriptor, 2> canonical_descriptors{{
+        {static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
         {static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
-        {static_cast<std::int32_t>(savor::PK_BattleContextProbe), "BattleContextProbe"},
-        {static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner), "BattleSingleTurnRunner"},
-        {static_cast<std::int32_t>(savor::PK_BattleCompletionRunner), "BattleCompletionRunner"},
-        {static_cast<std::int32_t>(savor::PK_BattleResultsScreenRunner), "BattleResultsScreenRunner"},
-        {static_cast<std::int32_t>(savor::PK_NavigationContextRunner), "NavigationContextRunner"},
     }};
     struct ExpectedStepDescriptor {
         const char* step_kind;
         std::int32_t program_kind;
         const char* program_name;
     };
-    constexpr std::array<ExpectedStepDescriptor, 16> step_descriptors{{
-        {"tas_movie", static_cast<std::int32_t>(savor::PK_TasMovie), "TasMovie"},
-        {"tasmovie.play", static_cast<std::int32_t>(savor::PK_TasMovie), "TasMovie"},
-        {"seed_probe_chain", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbeChain"},
-        {"seedprobe.neutral", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
-        {"seedprobe.grid", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
-        {"seedprobe.unique", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
-        {"battle_chain", static_cast<std::int32_t>(savor::PK_BattleContextProbe), "BattleContextProbe"},
-        {"battle.context_probe", static_cast<std::int32_t>(savor::PK_BattleContextProbe), "BattleContextProbe"},
-        {"battle.single_turn", static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner), "BattleSingleTurnRunner"},
-        {"battle.completion", static_cast<std::int32_t>(savor::PK_BattleCompletionRunner), "BattleCompletionRunner"},
-        {"battle.field_return_seed_probe", static_cast<std::int32_t>(savor::PK_SeedProbe), "FieldReturnSeedProbe"},
-        {"battle.field_return_seed_probe.grid", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
-        {"battle.field_return_seed_probe.unique", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
-        {"battle.field_return_seed_probe.materialize", static_cast<std::int32_t>(savor::PK_SeedProbe), "FieldReturnSeedMaterialize"},
-        {"battle.results_screen", static_cast<std::int32_t>(savor::PK_BattleResultsScreenRunner), "BattleResultsScreenRunner"},
-        {"navigation.context_probe", static_cast<std::int32_t>(savor::PK_NavigationContextRunner), "NavigationContextRunner"},
+    constexpr std::array<ExpectedStepDescriptor, 4> step_descriptors{{
+        {"tasmovie.establish_root_cursor", static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
+        {"tasmovie.validate_root", static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
+        {"tasmovie.validate_tree", static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
+        {"seedprobe.run", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
     }};
 
     const auto expect_complete_descriptor =
@@ -474,12 +461,9 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
             ASSERT_NE(descriptor, nullptr);
             EXPECT_EQ(descriptor->program_kind, expected_program_kind);
             EXPECT_EQ(descriptor->program_name, expected_program_name);
-            EXPECT_TRUE(
-                descriptor->job_persistence != nullptr
-                || descriptor->graph_job_persistence != nullptr);
-            EXPECT_NE(descriptor->runtime_init, nullptr);
-            EXPECT_NE(descriptor->result_mapper, nullptr);
-            EXPECT_NE(descriptor->workflow_transition, nullptr);
+            EXPECT_NE(descriptor->job_materializer, nullptr);
+            EXPECT_NE(descriptor->workset_reconstruction, nullptr);
+            EXPECT_NE(descriptor->result_handler, nullptr);
             EXPECT_TRUE(descriptor->supports_workflow_orchestration);
         };
 
@@ -496,16 +480,12 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
             expected.program_name);
     }
 
-    // Battle End also attempts a PK_SeedProbe numeric registration. The
-    // production order must preserve ordinary SeedProbe as the first winner.
     const auto* seed_probe =
         output.Find(static_cast<std::int32_t>(savor::PK_SeedProbe));
     ASSERT_NE(seed_probe, nullptr);
     EXPECT_EQ(seed_probe->program_name, "SeedProbe");
-    const auto* field_return_seed_probe =
-        output.FindForStepKind("battle.field_return_seed_probe");
-    ASSERT_NE(field_return_seed_probe, nullptr);
-    EXPECT_EQ(field_return_seed_probe->program_name, "FieldReturnSeedProbe");
+    EXPECT_EQ(output.FindForStepKind("tas_movie"), nullptr);
+    EXPECT_EQ(output.FindForStepKind("tasmovie.play"), nullptr);
 
     ProgramKindRegistry second_registry;
     ASSERT_TRUE(BuildProductionProgramKindRegistry(
@@ -528,13 +508,18 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
 
     EXPECT_FALSE(std::filesystem::exists(runtime_root_a));
     EXPECT_FALSE(std::filesystem::exists(runtime_root_b));
-    EXPECT_EQ(ReadInt64(db_, "PRAGMA data_version;"), data_version_before);
     EXPECT_EQ(
         ReadInt64(db_, "SELECT COUNT(*) FROM sqlite_schema;"),
         schema_rows_before);
     EXPECT_EQ(
         ReadInt64(db_, "SELECT COUNT(*) FROM migration_history;"),
         migration_rows_before);
+    EXPECT_EQ(
+        ReadInt64(db_, "SELECT COUNT(*) FROM tmv_validation_request;"),
+        tas_movie_requests_before);
+    EXPECT_EQ(
+        ReadInt64(db_, "SELECT COUNT(*) FROM exec_job_set;"),
+        job_sets_before);
 
     error.clear();
     EXPECT_FALSE(BuildProductionProgramKindRegistry(
@@ -545,6 +530,7 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
     EXPECT_FALSE(error.empty());
 }
 
+#if 0 // Removed legacy TAS Movie variant/adapter coverage.
 TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedStateWritesAndTasVariantEnsure) {
     auto* state_db = db_service_->StateDb();
     ASSERT_NE(state_db, nullptr);
@@ -721,6 +707,7 @@ TEST_F(SqliteDbFixture, TasMovieRepeatedSchedulesUseDbJobSetScopedFingerprints) 
     EXPECT_EQ(2, sqlite3_column_int64(st, 0));
     sqlite3_finalize(st);
 }
+#endif
 
 TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedAuthoringAndAnalysisWrites) {
     auto* authoring_db = db_service_->AuthoringDb();
@@ -5507,7 +5494,7 @@ version=1
 ');
 INSERT INTO sp_probe_result(
     probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
-    origin_worker_id,origin_process_generation,origin_state_epoch,
+    origin_worker_id,origin_process_generation,origin_workset_epoch,
     terminal_sha256,confirmation_of_probe_result_id,
     evidence_state,recorded_at_utc)
 VALUES(
@@ -5539,7 +5526,7 @@ version=1
 ');
 INSERT INTO sp_probe_result(
     probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
-    origin_worker_id,origin_process_generation,origin_state_epoch,
+    origin_worker_id,origin_process_generation,origin_workset_epoch,
     terminal_sha256,confirmation_of_probe_result_id,
     evidence_state,recorded_at_utc)
 VALUES(
@@ -5650,7 +5637,7 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunAcceptsSameNumericEpochFromDifferentWo
         .seed_value = 0,
         .origin_worker_id = 1,
         .origin_process_generation = 1,
-        .origin_state_epoch = 1,
+        .origin_workset_epoch = 1,
         .terminal_sha256 = std::string(64, 'a'),
         .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
         .recorded_at_utc = now,
@@ -5714,7 +5701,7 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunAcceptsSameNumericEpochFromDifferentWo
             .seed_value = 0,
             .origin_worker_id = 2,
             .origin_process_generation = 1,
-            .origin_state_epoch = 1,
+            .origin_workset_epoch = 1,
             .terminal_sha256 = std::string(64, 'b'),
             .confirmation_of_probe_result_id = probe_result_id,
             .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
@@ -5734,7 +5721,7 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunAcceptsSameNumericEpochFromDifferentWo
     ASSERT_TRUE(confirmation.has_value());
     EXPECT_EQ(confirmation->origin_worker_id, 2);
     EXPECT_EQ(confirmation->origin_process_generation, 1);
-    EXPECT_EQ(confirmation->origin_state_epoch, 1);
+    EXPECT_EQ(confirmation->origin_workset_epoch, 1);
 
     changed = false;
     ASSERT_TRUE(analysis_db->TransitionSeedProbeEvidence(
@@ -5954,7 +5941,7 @@ version=1
 
 INSERT INTO sp_probe_result(
     probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
-    origin_worker_id,origin_process_generation,origin_state_epoch,
+    origin_worker_id,origin_process_generation,origin_workset_epoch,
     terminal_sha256,confirmation_of_probe_result_id,
     evidence_state,recorded_at_utc)
 VALUES
@@ -6962,6 +6949,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
 }
 
 
+#if 0 // Removed legacy TAS Movie graph materialization coverage.
 TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSpecScopedDedupe) {
     using namespace savor::db;
     using namespace savor::db::execution::programdb;
@@ -7371,6 +7359,7 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorBlocksTasMovieGraphNodeWithoutRtcArgume
     EXPECT_EQ(sqlite3_column_int64(st, 0), 0);
     sqlite3_finalize(st);
 }
+#endif
 
 TEST_F(SqliteDbFixture, Stage3dAnalysisSeedProbeSetCreateEmitsEventTwentyThree) {
     using namespace savor::db;
@@ -8148,7 +8137,7 @@ VALUES(
     'AFTER_RAND_SEED_SET',9102);
 INSERT INTO sp_probe_result(
     probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
-    origin_worker_id,origin_process_generation,origin_state_epoch,
+    origin_worker_id,origin_process_generation,origin_workset_epoch,
     terminal_sha256,confirmation_of_probe_result_id,
     evidence_state,recorded_at_utc)
 VALUES
@@ -8178,7 +8167,7 @@ INSERT INTO exec_workset(
     workset_key,program_kind,program_version,
     compatibility_key,module_canonical_id,module_version,module_sha256,
     entrypoint,verified_dependency_sha256,runtime_profile_sha256,
-    required_capability_mask,execution_affinity_key,baseline_affinity_key,
+    required_capability_mask,execution_affinity_key,
     estimated_payload_bytes,priority,item_count,published_at_utc)
 VALUES(
     9110,9100,9103,9100,'fixture.archive.seedprobe.workset',1,2,
@@ -8187,7 +8176,7 @@ VALUES(
     'probe',
     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-    128,NULL,'savestate:701',128,0,3,1000);
+    128,NULL,128,0,3,1000);
 INSERT INTO exec_workset_dispatch_attempt(
     dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
     lease_expires_at_utc,claimed_at_utc,dispatched_at_utc,closed_at_utc,
@@ -8460,7 +8449,7 @@ INSERT INTO exec_workset(
     workset_id,job_set_id,workset_key,program_kind,program_version,
     compatibility_key,module_canonical_id,module_version,module_sha256,
     entrypoint,verified_dependency_sha256,runtime_profile_sha256,
-    required_capability_mask,execution_affinity_key,baseline_affinity_key,
+    required_capability_mask,execution_affinity_key,
     estimated_payload_bytes,priority,item_count,published_at_utc)
 VALUES(
     9110,9100,'fixture.archive.field-return.workset',1,1,
@@ -8469,7 +8458,7 @@ VALUES(
     'soa.seed_probe/probe',
     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-    0,NULL,'savestate:702',128,0,2,1100);
+    0,NULL,128,0,2,1100);
 INSERT INTO exec_job(
     job_id,job_set_id,program_kind,program_version,program_ref_kind,
     program_ref_id,fingerprint,priority,state,attempts,max_attempts,
@@ -8527,7 +8516,7 @@ VALUES(
     1,1,2,'COMPLETED',9001,1100,1200);
 INSERT INTO sp_probe_result(
     probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
-    origin_worker_id,origin_process_generation,origin_state_epoch,
+    origin_worker_id,origin_process_generation,origin_workset_epoch,
     terminal_sha256,confirmation_of_probe_result_id,
     evidence_state,recorded_at_utc)
 VALUES
@@ -9404,7 +9393,7 @@ VALUES(
     1,1,2,'COMPLETED',8051,1000,2000);
 INSERT INTO sp_probe_result(
     probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
-    origin_worker_id,origin_process_generation,origin_state_epoch,
+    origin_worker_id,origin_process_generation,origin_workset_epoch,
     terminal_sha256,confirmation_of_probe_result_id,
     evidence_state,recorded_at_utc)
 VALUES
@@ -11881,6 +11870,88 @@ TEST_F(
             + std::to_string(lost_job_id)
             + " AND worker_terminal_id IS NULL "
               "AND worker_result_blob_id IS NULL;").c_str()),
+        1);
+}
+
+TEST_F(
+    SqliteDbFixture,
+    DelayedWorksetDrainingClosesAfterAllJobsAreAlreadyTerminal) {
+    using namespace savor::db;
+    using savor::db::execution::workflow::SqliteExecutionDb;
+
+    ASSERT_TRUE(ExecSql(
+        db_,
+        "INSERT INTO exec_job_set("
+        "job_set_id,program_kind,purpose,created_by,created_at_utc,"
+        "expected_total) VALUES(37000,42,'delayed-draining','test',1,1);"
+        "INSERT INTO exec_workflow_instance("
+        "workflow_instance_id,workflow_kind,state,root_scope_kind,"
+        "created_by,created_at_utc) VALUES(37001,'DRAINING_TEST',"
+        "'COMPLETED','manual','test',1);"
+        "INSERT INTO exec_workflow_step("
+        "workflow_step_id,workflow_instance_id,step_key,step_kind,state,"
+        "job_set_id,priority,attempts,max_attempts,created_at_utc) VALUES("
+        "37002,37001,'Drain','draining.test','COMPLETED',37000,0,1,1,1);"
+        "INSERT INTO exec_workset("
+        "workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,"
+        "program_kind,program_version,compatibility_key,module_canonical_id,"
+        "module_version,module_sha256,entrypoint,verified_dependency_sha256,"
+        "runtime_profile_sha256,required_capability_mask,"
+        "estimated_payload_bytes,priority,item_count,published_at_utc) VALUES("
+        "37003,37000,37002,37000,'delayed-draining-workset',42,1,"
+        "'delayed-draining-compatibility','delayed.draining.module',1,"
+        "'1111111111111111111111111111111111111111111111111111111111111111',"
+        "'execute',"
+        "'2222222222222222222222222222222222222222222222222222222222222222',"
+        "'3333333333333333333333333333333333333333333333333333333333333333',"
+        "0,1,0,1,1);"
+        "INSERT INTO exec_workset_dispatch_attempt("
+        "dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,"
+        "lease_expires_at_utc,claimed_at_utc,dispatched_at_utc) VALUES("
+        "37004,37003,1,'ACTIVE','delayed-draining-token',1000,1,2);"
+        "INSERT INTO exec_job("
+        "job_id,job_set_id,program_kind,program_version,program_ref_kind,"
+        "program_ref_id,fingerprint,priority,state,attempts,max_attempts,"
+        "queued_at_utc,workset_id,workset_item_ordinal,dispatch_attempt_id,"
+        "dispatch_item_ordinal,reserved_attempt_id) VALUES("
+        "37005,37000,42,1,'test',1,'delayed-draining-job',0,'SUCCEEDED',"
+        "1,1,1,37003,0,37004,0,1);"));
+
+    SqliteExecutionDb execution_db(db_);
+    WorksetDispatchMutationReceipt draining{};
+    std::string error;
+    ASSERT_TRUE(execution_db.MarkWorksetDraining(
+        {
+            .dispatch_attempt_id = 37004,
+            .claim_token = "delayed-draining-token",
+            .requested_by = "test-terminal-state-arrived-last",
+        },
+        &draining,
+        &error)) << error;
+    EXPECT_EQ(
+        draining.disposition,
+        ExecutionDbOperationDisposition::Applied);
+    EXPECT_TRUE(draining.dispatch_closed);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT state FROM exec_workset_dispatch_attempt "
+            "WHERE dispatch_attempt_id=37004;"),
+        "CLOSED");
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT close_reason_code FROM exec_workset_dispatch_attempt "
+            "WHERE dispatch_attempt_id=37004;"),
+        "WORKER_TERMINALS_STAGED");
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT COUNT(1) FROM exec_workset_dispatch_attempt "
+            "WHERE dispatch_attempt_id=37004 "
+            "AND lease_expires_at_utc IS NULL "
+            "AND draining_at_utc IS NOT NULL "
+            "AND closed_at_utc IS NOT NULL;"),
         1);
 }
 

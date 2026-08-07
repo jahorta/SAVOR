@@ -220,7 +220,7 @@ bool ReadFullPhaseProgram(
 
 void WriteCompatibility(
     Writer& writer,
-    const StateCompatibilityToken& value)
+    const ArtifactCompatibilityToken& value)
 {
     writer.String(value.game_id);
     writer.String(value.iso_sha256);
@@ -230,7 +230,7 @@ void WriteCompatibility(
 
 bool ReadCompatibility(
     Reader& reader,
-    StateCompatibilityToken& value)
+    ArtifactCompatibilityToken& value)
 {
     return reader.String(value.game_id) &&
         reader.String(value.iso_sha256) &&
@@ -242,30 +242,17 @@ void WriteBaseline(
     Writer& writer,
     const ProgramBaselineDefinition& baseline)
 {
-    writer.U8(static_cast<std::uint8_t>(baseline.state_kind));
-    writer.U8(baseline.current_session ? 1 : 0);
-    if (baseline.current_session)
-    {
-        writer.U64(baseline.current_session->session_id.value());
-        writer.U64(baseline.current_session->state_epoch.value());
-        writer.U8(
-            baseline.current_session->require_clean_idle ? 1 : 0);
-    }
-    writer.U8(baseline.artifact ? 1 : 0);
-    if (baseline.artifact)
-    {
-        const ProgramBaselineArtifact& artifact = *baseline.artifact;
-        writer.String(artifact.state_path.generic_string());
-        writer.String(artifact.state_sha256);
-        writer.U8(artifact.movie_path ? 1 : 0);
-        if (artifact.movie_path)
-            writer.String(artifact.movie_path->generic_string());
-        writer.String(artifact.movie_sha256);
-        writer.U8(static_cast<std::uint8_t>(artifact.movie_mode));
-        WriteCompatibility(writer, artifact.compatibility);
-        writer.String(artifact.lineage.edge);
-        writer.String(artifact.lineage.producer);
-    }
+    const ProgramBaselineArtifact& artifact = baseline.artifact;
+    writer.U8(static_cast<std::uint8_t>(artifact.kind));
+    writer.String(artifact.state_path.generic_string());
+    writer.String(artifact.state_sha256);
+    writer.U8(artifact.movie_path ? 1 : 0);
+    if (artifact.movie_path)
+        writer.String(artifact.movie_path->generic_string());
+    writer.String(artifact.movie_sha256);
+    WriteCompatibility(writer, artifact.compatibility);
+    writer.String(artifact.lineage.edge);
+    writer.String(artifact.lineage.producer);
     writer.String(baseline.lineage);
     writer.Count(baseline.components.size());
     for (const ProgramBaselineComponent& component :
@@ -284,74 +271,36 @@ bool ReadBaseline(
     Reader& reader,
     ProgramBaselineDefinition& baseline)
 {
-    std::uint8_t state_kind = 0;
-    std::uint8_t has_current_session = 0;
-    std::uint8_t has_artifact = 0;
-    if (!reader.U8(state_kind) ||
-        state_kind >
-            static_cast<std::uint8_t>(
-                ProgramBaselineStateKind::CurrentSession) ||
-        !reader.U8(has_current_session) ||
-        has_current_session > 1)
+    std::uint8_t artifact_kind = 0;
+    if (!reader.U8(artifact_kind) ||
+        artifact_kind > static_cast<std::uint8_t>(
+            ProgramBaselineArtifactKind::ReadOnlyMovie))
     {
         reader.Fail("Program baseline enum is invalid");
         return false;
     }
-    if (has_current_session)
+    ProgramBaselineArtifact artifact;
+    artifact.kind =
+        static_cast<ProgramBaselineArtifactKind>(artifact_kind);
+    std::string state_path;
+    std::uint8_t has_movie = 0;
+    std::string movie_path;
+    if (!reader.String(state_path) ||
+        !reader.String(artifact.state_sha256) ||
+        !reader.U8(has_movie) || has_movie > 1 ||
+        (has_movie && !reader.String(movie_path)) ||
+        !reader.String(artifact.movie_sha256) ||
+        !ReadCompatibility(reader, artifact.compatibility) ||
+        !reader.String(artifact.lineage.edge) ||
+        !reader.String(artifact.lineage.producer))
     {
-        std::uint64_t session_id = 0;
-        std::uint64_t state_epoch = 0;
-        std::uint8_t require_clean_idle = 0;
-        if (!reader.U64(session_id) ||
-            !reader.U64(state_epoch) ||
-            !reader.U8(require_clean_idle) ||
-            require_clean_idle > 1)
-        {
-            reader.Fail("Current-session baseline guard is invalid");
-            return false;
-        }
-        baseline.current_session = CurrentSessionBaselineGuard{
-            SessionId(session_id),
-            StateEpoch(state_epoch),
-            require_clean_idle != 0};
-    }
-    if (!reader.U8(has_artifact) || has_artifact > 1)
-    {
-        reader.Fail("Program baseline enum is invalid");
+        reader.Fail("Program baseline artifact is invalid");
         return false;
     }
-    baseline.state_kind =
-        static_cast<ProgramBaselineStateKind>(state_kind);
-    if (has_artifact)
-    {
-        ProgramBaselineArtifact artifact;
-        std::string state_path;
-        std::uint8_t has_movie = 0;
-        std::string movie_path;
-        std::uint8_t movie_mode = 0;
-        if (!reader.String(state_path) ||
-            !reader.String(artifact.state_sha256) ||
-            !reader.U8(has_movie) || has_movie > 1 ||
-            (has_movie && !reader.String(movie_path)) ||
-            !reader.String(artifact.movie_sha256) ||
-            !reader.U8(movie_mode) ||
-            movie_mode >
-                static_cast<std::uint8_t>(
-                    ExternalMovieImportMode::Recording) ||
-            !ReadCompatibility(reader, artifact.compatibility) ||
-            !reader.String(artifact.lineage.edge) ||
-            !reader.String(artifact.lineage.producer))
-        {
-            reader.Fail("Program baseline artifact is invalid");
-            return false;
-        }
-        artifact.state_path = std::move(state_path);
-        if (has_movie)
-            artifact.movie_path = std::move(movie_path);
-        artifact.movie_mode =
-            static_cast<ExternalMovieImportMode>(movie_mode);
-        baseline.artifact = std::move(artifact);
-    }
+    artifact.state_path = std::move(state_path);
+    if (has_movie)
+        artifact.movie_path = std::move(movie_path);
+    baseline.artifact = std::move(artifact);
     std::uint32_t component_count = 0;
     if (!reader.String(baseline.lineage) ||
         !reader.Count(component_count, 256))
@@ -390,8 +339,6 @@ void WriteLimits(Writer& writer, const WorkerWorksetLimits& limits)
     writer.U64(limits.maximum_encoded_workset_bytes);
     writer.U32(limits.maximum_item_credits);
     writer.U32(limits.maximum_active_and_staged_items);
-    writer.U32(limits.maximum_state_cache_entries);
-    writer.U64(limits.maximum_state_cache_bytes);
     writer.U32(limits.finalizer_threads);
     writer.U32(limits.maximum_pending_finalizers);
     writer.U64(limits.maximum_pending_finalizer_bytes);
@@ -403,15 +350,12 @@ void WriteLimits(Writer& writer, const WorkerWorksetLimits& limits)
 bool ReadLimits(Reader& reader, WorkerWorksetLimits& limits)
 {
     std::uint64_t encoded_bytes = 0;
-    std::uint64_t cache_bytes = 0;
     std::uint64_t finalizer_bytes = 0;
     std::uint64_t terminal_bytes = 0;
     if (!reader.U32(limits.maximum_items_per_workset) ||
         !reader.U64(encoded_bytes) ||
         !reader.U32(limits.maximum_item_credits) ||
         !reader.U32(limits.maximum_active_and_staged_items) ||
-        !reader.U32(limits.maximum_state_cache_entries) ||
-        !reader.U64(cache_bytes) ||
         !reader.U32(limits.finalizer_threads) ||
         !reader.U32(limits.maximum_pending_finalizers) ||
         !reader.U64(finalizer_bytes) ||
@@ -423,8 +367,6 @@ bool ReadLimits(Reader& reader, WorkerWorksetLimits& limits)
     }
     limits.maximum_encoded_workset_bytes =
         static_cast<std::size_t>(encoded_bytes);
-    limits.maximum_state_cache_bytes =
-        static_cast<std::size_t>(cache_bytes);
     limits.maximum_pending_finalizer_bytes =
         static_cast<std::size_t>(finalizer_bytes);
     limits.maximum_retained_terminal_bytes =

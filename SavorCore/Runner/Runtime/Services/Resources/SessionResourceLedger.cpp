@@ -43,7 +43,7 @@ SessionResourceLedger::SessionResourceLedger(
 
 ResourceOperationResult SessionResourceLedger::Initialize(
     SessionId session,
-    StateEpoch state_epoch,
+    WorksetEpoch workset_epoch,
     ResourceOwnerId session_owner)
 {
     if (!OnOwnerThread())
@@ -58,7 +58,7 @@ ResourceOperationResult SessionResourceLedger::Initialize(
             ResourceLedgerErrorCode::InvalidState,
             "SessionResourceLedger is already initialized");
     }
-    if (!session || !state_epoch || !session_owner)
+    if (!session || !workset_epoch || !session_owner)
     {
         return FailedOperation(
             ResourceLedgerErrorCode::InvalidArgument,
@@ -82,7 +82,7 @@ ResourceOperationResult SessionResourceLedger::Initialize(
         session_root_ = root.id;
         session_id_ = session;
         ++next_scope_id_;
-        state_epoch_ = state_epoch;
+        workset_epoch_ = workset_epoch;
         disposition_ = ResourceCleanupDisposition::Clean;
         state_ = ResourceLedgerState::Accepting;
         return Success();
@@ -229,18 +229,6 @@ ResourceAcquisitionResult SessionResourceLedger::Acquire(
                     ResourceLedgerErrorCode::InvalidArgument,
                     "Resource owner does not match the owning scope")};
         }
-        if (definition.epoch_policy ==
-                ResourceEpochPolicy::RebindAfterRestore &&
-            !definition.rebind_key)
-        {
-            return ResourceAcquisitionResult{
-                false,
-                {},
-                Error(
-                    ResourceLedgerErrorCode::InvalidArgument,
-                    "RebindAfterRestore requires a stable rebind key")};
-        }
-
         const auto same_identity =
             [&definition](const ResourceReceipt& existing) {
                 return IsLive(existing.status) &&
@@ -291,11 +279,9 @@ ResourceAcquisitionResult SessionResourceLedger::Acquire(
             receipt.service = definition.service;
             receipt.scope = scope;
             receipt.release = definition.release;
-            receipt.acquisition_epoch = state_epoch_;
-            receipt.epoch_policy = definition.epoch_policy;
+            receipt.acquisition_epoch = workset_epoch_;
             receipt.promotion = definition.promotion;
             receipt.cleanup = definition.cleanup;
-            receipt.rebind_key = definition.rebind_key;
             receipt.diagnostic_label = definition.diagnostic_label;
 
             candidate.push_back(receipt);
@@ -574,356 +560,6 @@ ResourceUnwindResult SessionResourceLedger::CloseScope(
         dispatcher);
 }
 
-ResourceOperationResult SessionResourceLedger::BeginStateTransition(
-    StateEpoch expected_epoch)
-{
-    if (!OnOwnerThread())
-    {
-        return FailedOperation(
-            ResourceLedgerErrorCode::WrongThread,
-            "State transition began outside the ledger owner thread");
-    }
-    if (const ResourceLedgerError state_error = ValidateAccepting())
-        return ResourceOperationResult{false, state_error};
-    if (!expected_epoch || expected_epoch != state_epoch_)
-    {
-        return FailedOperation(
-            ResourceLedgerErrorCode::StaleEpoch,
-            "State transition expected a different StateEpoch");
-    }
-
-    transition_origin_epoch_ = state_epoch_;
-    state_ = ResourceLedgerState::StateTransition;
-    return Success();
-}
-
-ResourceUnwindResult SessionResourceLedger::CommitStateTransition(
-    StateEpoch new_epoch,
-    IResourceReleaseDispatcher& dispatcher)
-{
-    if (!OnOwnerThread())
-    {
-        return RejectedUnwind(
-            ResourceLedgerErrorCode::WrongThread,
-            "State transition committed outside the ledger owner thread");
-    }
-    if (state_ != ResourceLedgerState::StateTransition)
-    {
-        return RejectedUnwind(
-            ResourceLedgerErrorCode::InvalidState,
-            "No state transition is active");
-    }
-    if (!new_epoch || new_epoch.value() <= state_epoch_.value())
-    {
-        return RejectedUnwind(
-            ResourceLedgerErrorCode::StaleEpoch,
-            "Committed StateEpoch must advance monotonically");
-    }
-
-    // The backend state replacement is already authoritative when this method
-    // is called. The ledger therefore advances its epoch before closing old
-    // guest-derived receipts. A cleanup failure cannot roll the guest back.
-    state_epoch_ = new_epoch;
-
-    std::vector<ResourceReceiptId> resources;
-    for (const ResourceReceipt& receipt : resources_)
-    {
-        if (!IsLive(receipt.status))
-            continue;
-        if (receipt.epoch_policy == ResourceEpochPolicy::EndOnEpochChange ||
-            receipt.epoch_policy == ResourceEpochPolicy::RebindAfterRestore)
-        {
-            resources.push_back(receipt.id);
-        }
-    }
-    std::sort(
-        resources.begin(),
-        resources.end(),
-        [this](ResourceReceiptId lhs, ResourceReceiptId rhs) {
-            const auto left = FindResource(lhs);
-            const auto right = FindResource(rhs);
-            return left && right && left->sequence > right->sequence;
-        });
-
-    return StartUnwind(
-        std::move(resources),
-        {},
-        ResourceReleaseReason::StateEpochChanged,
-        ResourceLedgerState::Accepting,
-        false,
-        dispatcher);
-}
-
-ResourceOperationResult SessionResourceLedger::RollbackStateTransition(
-    StateEpoch expected_epoch)
-{
-    if (!OnOwnerThread())
-    {
-        return FailedOperation(
-            ResourceLedgerErrorCode::WrongThread,
-            "State transition rolled back outside the ledger owner thread");
-    }
-    if (state_ != ResourceLedgerState::StateTransition)
-    {
-        return FailedOperation(
-            ResourceLedgerErrorCode::InvalidState,
-            "No state transition is active");
-    }
-    if (!expected_epoch || expected_epoch != transition_origin_epoch_ ||
-        expected_epoch != state_epoch_)
-    {
-        return FailedOperation(
-            ResourceLedgerErrorCode::StaleEpoch,
-            "State transition rollback expected a different StateEpoch");
-    }
-
-    transition_origin_epoch_ = {};
-    state_ = ResourceLedgerState::Accepting;
-    return Success();
-}
-
-ResourceAcquisitionResult
-SessionResourceLedger::CompleteStateTransitionRebinds(
-    const std::vector<ResourceRebindCompletion>& completions)
-{
-    if (!OnOwnerThread())
-    {
-        return ResourceAcquisitionResult{
-            false,
-            {},
-            Error(
-                ResourceLedgerErrorCode::WrongThread,
-                "State-transition rebinds completed outside the ledger owner thread")};
-    }
-    if (state_ != ResourceLedgerState::StateTransition ||
-        pending_rebinds_.empty())
-    {
-        return ResourceAcquisitionResult{
-            false,
-            {},
-            Error(
-                ResourceLedgerErrorCode::InvalidState,
-                "No state-transition rebind set is awaiting completion")};
-    }
-    if (completions.size() != pending_rebinds_.size())
-    {
-        return ResourceAcquisitionResult{
-            false,
-            {},
-            Error(
-                ResourceLedgerErrorCode::InvalidArgument,
-                "Every requested state-transition rebind must complete atomically")};
-    }
-
-    const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
-    const auto count = static_cast<std::uint64_t>(completions.size());
-    if (count > maximum - next_resource_id_ ||
-        count > maximum - next_sequence_)
-    {
-        return ResourceAcquisitionResult{
-            false,
-            {},
-            Error(
-                ResourceLedgerErrorCode::ExhaustedIdentity,
-                "Resource receipt identity space is exhausted")};
-    }
-
-    for (std::size_t index = 0; index < completions.size(); ++index)
-    {
-        const ResourceRebindCompletion& completion = completions[index];
-        const auto request = std::find_if(
-            pending_rebinds_.begin(),
-            pending_rebinds_.end(),
-            [&completion](const ResourceRebindRequest& candidate) {
-                return candidate.prior_receipt.id ==
-                    completion.prior_receipt;
-            });
-        if (request == pending_rebinds_.end())
-        {
-            return ResourceAcquisitionResult{
-                false,
-                {},
-                Error(
-                    ResourceLedgerErrorCode::InvalidArgument,
-                    "A rebind completion does not match a requested prior receipt")};
-        }
-        if (std::count_if(
-                completions.begin(),
-                completions.end(),
-                [&completion](const ResourceRebindCompletion& candidate) {
-                    return candidate.prior_receipt ==
-                        completion.prior_receipt;
-                }) != 1)
-        {
-            return ResourceAcquisitionResult{
-                false,
-                {},
-                Error(
-                    ResourceLedgerErrorCode::InvalidArgument,
-                    "A prior receipt appears more than once in the rebind batch")};
-        }
-
-        const ResourceAcquisitionDefinition& replacement =
-            completion.replacement;
-        if (replacement.owner != request->owner ||
-            replacement.service != request->service ||
-            replacement.release.kind != request->kind ||
-            replacement.epoch_policy !=
-                ResourceEpochPolicy::RebindAfterRestore ||
-            replacement.rebind_key != request->stable_key ||
-            replacement.promotion !=
-                request->prior_receipt.promotion ||
-            replacement.cleanup != request->prior_receipt.cleanup ||
-            !replacement.release.external_id ||
-            replacement.release.external_id ==
-                request->prior_receipt.release.external_id)
-        {
-            return ResourceAcquisitionResult{
-                false,
-                {},
-                Error(
-                    ResourceLedgerErrorCode::InvalidArgument,
-                    "A rebound resource changed immutable ownership, policy, or reused its old opaque handle")};
-        }
-
-        const ResourceLedgerError scope_error =
-            ValidateScopeForAcquisition(request->scope);
-        if (scope_error)
-            return ResourceAcquisitionResult{false, {}, scope_error};
-        const auto scope = std::find_if(
-            scopes_.begin(),
-            scopes_.end(),
-            [&request](const ScopeRecord& candidate) {
-                return candidate.receipt.id == request->scope;
-            });
-        if (scope == scopes_.end() ||
-            scope->receipt.owner != replacement.owner)
-        {
-            return ResourceAcquisitionResult{
-                false,
-                {},
-                Error(
-                    ResourceLedgerErrorCode::InvalidArgument,
-                    "A rebound resource does not match its retained scope owner")};
-        }
-
-        const auto duplicate =
-            [&replacement](const ResourceReceipt& existing) {
-                return IsLive(existing.status) &&
-                    existing.service == replacement.service &&
-                    existing.release == replacement.release;
-            };
-        if (std::any_of(resources_.begin(), resources_.end(), duplicate))
-        {
-            return ResourceAcquisitionResult{
-                false,
-                {},
-                Error(
-                    ResourceLedgerErrorCode::ResourceAlreadyRegistered,
-                    "A rebound service resource is already active")};
-        }
-        for (std::size_t earlier = 0; earlier < index; ++earlier)
-        {
-            if (completions[earlier].replacement.service ==
-                    replacement.service &&
-                completions[earlier].replacement.release ==
-                    replacement.release)
-            {
-                return ResourceAcquisitionResult{
-                    false,
-                    {},
-                    Error(
-                        ResourceLedgerErrorCode::ResourceAlreadyRegistered,
-                        "The rebind batch contains a duplicate service resource")};
-            }
-        }
-    }
-
-    try
-    {
-        auto candidate = resources_;
-        std::vector<ResourceReceipt> receipts;
-        candidate.reserve(candidate.size() + completions.size());
-        receipts.reserve(completions.size());
-        std::uint64_t resource_id = next_resource_id_;
-        std::uint64_t sequence = next_sequence_;
-
-        for (const ResourceRebindCompletion& completion : completions)
-        {
-            const auto request = std::find_if(
-                pending_rebinds_.begin(),
-                pending_rebinds_.end(),
-                [&completion](const ResourceRebindRequest& candidate_request) {
-                    return candidate_request.prior_receipt.id ==
-                        completion.prior_receipt;
-                });
-            const ResourceAcquisitionDefinition& replacement =
-                completion.replacement;
-
-            ResourceReceipt receipt;
-            receipt.session = session_id_;
-            receipt.id = ResourceReceiptId(resource_id++);
-            receipt.sequence = ResourceAcquisitionSequence(sequence++);
-            receipt.owner = replacement.owner;
-            receipt.service = replacement.service;
-            receipt.scope = request->scope;
-            receipt.release = replacement.release;
-            receipt.acquisition_epoch = state_epoch_;
-            receipt.epoch_policy = replacement.epoch_policy;
-            receipt.promotion = replacement.promotion;
-            receipt.cleanup = replacement.cleanup;
-            receipt.rebind_key = replacement.rebind_key;
-            receipt.rebound_from = completion.prior_receipt;
-            receipt.diagnostic_label = replacement.diagnostic_label;
-            candidate.push_back(receipt);
-            receipts.push_back(std::move(receipt));
-        }
-
-        resources_.swap(candidate);
-        next_resource_id_ = resource_id;
-        next_sequence_ = sequence;
-        pending_rebinds_.clear();
-        transition_origin_epoch_ = {};
-        state_ = ResourceLedgerState::Accepting;
-        return ResourceAcquisitionResult{true, std::move(receipts), {}};
-    }
-    catch (...)
-    {
-        return ResourceAcquisitionResult{
-            false,
-            {},
-            Error(
-                ResourceLedgerErrorCode::InternalFailure,
-                "State-transition rebind batch could not be committed")};
-    }
-}
-
-ResourceOperationResult SessionResourceLedger::FailStateTransitionRebinds(
-    std::string diagnostic)
-{
-    if (!OnOwnerThread())
-    {
-        return FailedOperation(
-            ResourceLedgerErrorCode::WrongThread,
-            "State-transition rebind failure reported outside the ledger owner thread");
-    }
-    if (state_ != ResourceLedgerState::StateTransition ||
-        pending_rebinds_.empty())
-    {
-        return FailedOperation(
-            ResourceLedgerErrorCode::InvalidState,
-            "No state-transition rebind set is awaiting completion");
-    }
-
-    diagnostic_ = diagnostic.empty()
-        ? "A mandatory state-transition resource could not be rebound"
-        : std::move(diagnostic);
-    pending_rebinds_.clear();
-    transition_origin_epoch_ = {};
-    disposition_ = ResourceCleanupDisposition::TaintRequired;
-    state_ = ResourceLedgerState::Tainted;
-    return Success();
-}
 
 ResourceUnwindResult SessionResourceLedger::ContinueCleanup(
     ResourceCleanupContinuationId continuation,
@@ -988,13 +624,6 @@ ResourceUnwindResult SessionResourceLedger::Shutdown(
             ResourceLedgerErrorCode::CleanupInProgress,
             "Resource cleanup must finish before Shutdown can begin");
     }
-    if (state_ == ResourceLedgerState::StateTransition)
-    {
-        return RejectedUnwind(
-            ResourceLedgerErrorCode::InvalidState,
-            "An active state transition must commit or roll back before Shutdown");
-    }
-
     std::vector<ResourceReceiptId> resources;
     for (const ResourceReceipt& receipt : resources_)
     {
@@ -1032,7 +661,7 @@ ResourceLedgerSnapshot SessionResourceLedger::snapshot() const noexcept
     result.state = state_;
     result.disposition = disposition_;
     result.session = session_id_;
-    result.state_epoch = state_epoch_;
+    result.workset_epoch = workset_epoch_;
     result.session_root = session_root_;
     result.open_scope_count = static_cast<std::size_t>(std::count_if(
         scopes_.begin(),
@@ -1221,20 +850,10 @@ ResourceUnwindResult SessionResourceLedger::StartUnwind(
     catch (...)
     {
         pending_unwind_.reset();
-        if (reason == ResourceReleaseReason::StateEpochChanged)
-        {
-            disposition_ = ResourceCleanupDisposition::TaintRequired;
-            diagnostic_ =
-                "Resource cleanup could not be initialized after StateEpoch replacement";
-            state_ = ResourceLedgerState::Tainted;
-        }
-        else
-        {
-            state_ =
-                disposition_ == ResourceCleanupDisposition::TaintRequired
-                ? ResourceLedgerState::Tainted
-                : completion_state;
-        }
+        state_ =
+            disposition_ == ResourceCleanupDisposition::TaintRequired
+            ? ResourceLedgerState::Tainted
+            : completion_state;
         return RejectedUnwind(
             ResourceLedgerErrorCode::InternalFailure,
             "Resource unwind could not be initialized");
@@ -1271,7 +890,7 @@ ResourceUnwindResult SessionResourceLedger::PumpUnwind(
         ResourceReleaseRequest request;
         request.receipt = *found;
         request.reason = pending.reason;
-        request.current_epoch = state_epoch_;
+        request.current_epoch = workset_epoch_;
         request.cleanup_only = true;
 
         const ResourceReleaseResult release = dispatcher.Release(request);
@@ -1285,7 +904,6 @@ ResourceUnwindResult SessionResourceLedger::PumpUnwind(
                 ResourceUnwindOutcome::CleanupExecutionRequired;
             result.disposition = disposition_;
             result.steps = pending.steps;
-            result.rebind_requests = pending.rebind_requests;
             result.cleanup_execution_request =
                 ResourceCleanupExecutionRequest{
                     pending.continuation,
@@ -1298,10 +916,6 @@ ResourceUnwindResult SessionResourceLedger::PumpUnwind(
         {
         case ResourceReleaseStatus::Released:
             found->status = ResourceRecordStatus::Released;
-            break;
-        case ResourceReleaseStatus::SupersededByStateReplacement:
-            found->status =
-                ResourceRecordStatus::SupersededByStateReplacement;
             break;
         case ResourceReleaseStatus::Failed:
             found->status = ResourceRecordStatus::ReleaseFailed;
@@ -1325,21 +939,6 @@ ResourceUnwindResult SessionResourceLedger::PumpUnwind(
             break;
         }
 
-        if (pending.reason == ResourceReleaseReason::StateEpochChanged &&
-            found->epoch_policy ==
-                ResourceEpochPolicy::RebindAfterRestore &&
-            release.status != ResourceReleaseStatus::Failed)
-        {
-            pending.rebind_requests.push_back(ResourceRebindRequest{
-                *found,
-                found->owner,
-                found->service,
-                found->scope,
-                found->release.kind,
-                found->rebind_key,
-                state_epoch_});
-        }
-
         ++pending.next_resource;
     }
 
@@ -1349,7 +948,6 @@ ResourceUnwindResult SessionResourceLedger::PumpUnwind(
         : ResourceUnwindOutcome::Completed;
     result.disposition = disposition_;
     result.steps = pending.steps;
-    result.rebind_requests = pending.rebind_requests;
     FinishPendingUnwind();
     result.disposition = disposition_;
     return result;
@@ -1380,7 +978,6 @@ void SessionResourceLedger::FinishPendingUnwind()
     if (!pending_unwind_)
         return;
 
-    const bool had_failure = pending_unwind_->had_failure;
     for (ResourceScopeId id : pending_unwind_->scopes_to_close)
     {
         const bool still_owns_resource = std::any_of(
@@ -1406,9 +1003,6 @@ void SessionResourceLedger::FinishPendingUnwind()
     const bool shutdown = pending_unwind_->shutdown;
     const ResourceLedgerState completion_state =
         pending_unwind_->completion_state;
-    const ResourceReleaseReason reason = pending_unwind_->reason;
-    std::vector<ResourceRebindRequest> rebind_requests =
-        pending_unwind_->rebind_requests;
     pending_unwind_.reset();
 
     if (shutdown)
@@ -1419,24 +1013,10 @@ void SessionResourceLedger::FinishPendingUnwind()
         disposition_ == ResourceCleanupDisposition::TaintRequired)
     {
         state_ = ResourceLedgerState::Tainted;
-        pending_rebinds_.clear();
-        transition_origin_epoch_ = {};
-    }
-    else if (
-        reason == ResourceReleaseReason::StateEpochChanged &&
-        !rebind_requests.empty())
-    {
-        pending_rebinds_ = std::move(rebind_requests);
-        state_ = ResourceLedgerState::StateTransition;
     }
     else
     {
         state_ = completion_state;
-        if (reason == ResourceReleaseReason::StateEpochChanged ||
-            had_failure)
-        {
-            transition_origin_epoch_ = {};
-        }
     }
 }
 

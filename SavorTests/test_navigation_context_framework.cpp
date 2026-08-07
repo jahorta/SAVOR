@@ -632,28 +632,13 @@ TEST(NavigationContextFramework, ProgramRegistryBuildsAndDecodesKindTen)
     EXPECT_EQ(output_path, "navigation-context.sav");
 }
 
-TEST(NavigationContextFramework, CliAcceptsAnyPositiveStateDbSavestateId)
+TEST(NavigationContextFramework, LegacyCoordinatorScenarioIsNotRegistered)
 {
     savor::e2e::CliOptions options;
     std::string error;
-    ASSERT_TRUE(ParseTestArgs({
-        "SavorE2E",
-        "--scenario", "navigation_context",
-        "--iso", ".",
-        "--dolphin-base-dir", ".",
-        "--source-savestate-id", "77",
-    }, &options, &error)) << error;
-    ASSERT_EQ(options.scenarios.size(), 1u);
-    EXPECT_EQ(options.scenarios.front(), "navigation_context");
-    EXPECT_EQ(options.source_savestate_id, 77);
-    EXPECT_TRUE(options.savestate_file.empty());
-
-    error.clear();
     EXPECT_FALSE(ParseTestArgs({
         "SavorE2E",
         "--scenario", "navigation_context",
-        "--iso", ".",
-        "--dolphin-base-dir", ".",
     }, &options, &error));
-    EXPECT_NE(error.find("--source-savestate-id"), std::string::npos);
+    EXPECT_NE(error.find("unknown --scenario"), std::string::npos);
 }

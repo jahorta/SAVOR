@@ -4,7 +4,7 @@
 #include "../Registry/ActionRegistry.h"
 #include "../../Execution/ExecutionTypes.h"
 #include "../../Services/Resources/SessionResourceLedger.h"
-#include "../../Services/State/StateTypes.h"
+#include "../../Services/Savestate/SavestateTypes.h"
 
 #include <chrono>
 #include <cstdint>
@@ -35,7 +35,7 @@ struct ProgramActionRequest
     InvocationId invocation_id;
     AttemptId attempt_id;
     ProgramHostOperation operation = ProgramHostOperation::InvokeAction;
-    StateEpoch expected_epoch;
+    WorksetEpoch expected_epoch;
     std::optional<ExactDependencyIdentity> action;
     ProgramValueGraph input;
     ProgramScopeId scope;
@@ -57,7 +57,7 @@ struct ProgramActionRequest
     bool cleanup_only = false;
 };
 
-enum class ProgramActionCompletionStatus : std::uint8_t
+enum class ProgramActionResolutionStatus : std::uint8_t
 {
     Completed,
     Rejected,
@@ -74,43 +74,47 @@ struct ProgramActionResource
     ProgramResourceHandleId handle;
     ResourceReceiptId receipt;
     ResourceKind kind = ResourceKind::HostResource;
-    StateEpoch acquisition_epoch;
-    // Epoch-agnostic services reconcile their concrete object internally, so
-    // the program handle must not be rejected merely because guest state was
-    // replaced after acquisition.
-    std::optional<StateEpoch> origin_epoch;
+    WorksetEpoch acquisition_epoch;
 };
 
-// Internal ownership transfer from a completed state-save action to the
-// worker's host-output pipeline. Program IR receives only the matching typed
-// pending-publication receipt. It never receives an ArtifactReferenceValue;
-// only finalizer evidence can create a complete authoritative reference in
-// the terminal ProgramResult.
-struct PendingStateArtifactPublication
+// Actor-only ownership transfer from a resolved state-save action to the
+// worker's staged-output transaction. ProgramRuntime and ProgramExecutor
+// receive only ProgramActionResolution and never own this capture receipt.
+struct StagedSavestateOutput
 {
     std::string artifact_id;
-    ImmutableStateArtifactCaptureReceipt capture;
+    ImmutableSavestateArtifactCaptureReceipt capture;
 };
 
-struct ProgramActionCompletion
+using StagedProgramOutput = std::variant<StagedSavestateOutput>;
+
+// Canonical program-facing resolution of one actor-owned host action. Host
+// output ownership is deliberately absent from this type.
+struct ProgramActionResolution
 {
     ProgramActionRequestId request_id;
     InvocationId invocation_id;
     AttemptId attempt_id;
     ProgramHostOperation operation = ProgramHostOperation::InvokeAction;
-    ProgramActionCompletionStatus status =
-        ProgramActionCompletionStatus::Failed;
-    StateEpoch origin_epoch;
-    StateEpoch resulting_epoch;
+    ProgramActionResolutionStatus status =
+        ProgramActionResolutionStatus::Failed;
+    WorksetEpoch workset_epoch;
     ProgramValueGraph output;
-    std::vector<PendingStateArtifactPublication>
-        pending_state_artifacts;
     std::vector<ProgramActionResource> resources;
     std::vector<CleanupReceipt> cleanup_receipts;
     ProgramCleanupStatus cleanup = ProgramCleanupStatus::Clean;
     SessionDisposition session_disposition = SessionDisposition::Clean;
     std::string code;
     std::string message;
+};
+
+// Complete actor-side result of one host action. The worker must adopt every
+// staged output before it may deliver a successful resolution to
+// ProgramRuntime.
+struct ActorActionResult
+{
+    ProgramActionResolution resolution;
+    std::vector<StagedProgramOutput> staged_outputs;
 };
 
 class IProgramActionRequestSink
@@ -123,7 +127,7 @@ public:
 struct ProgramActionDispatchResult
 {
     bool accepted = false;
-    std::optional<ProgramActionCompletion> immediate_completion;
+    std::optional<ActorActionResult> immediate_result;
     std::string diagnostic;
 };
 
@@ -142,8 +146,8 @@ public:
         CancellationReason reason) noexcept = 0;
     virtual void HandleExecutionEvent(ExecutionEvent event) = 0;
     virtual void Pump() = 0;
-    [[nodiscard]] virtual std::vector<ProgramActionCompletion>
-        DrainCompletions() = 0;
+    [[nodiscard]] virtual std::vector<ActorActionResult>
+        DrainResults() = 0;
     virtual void Shutdown() noexcept = 0;
 
 protected:

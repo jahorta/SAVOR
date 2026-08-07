@@ -53,14 +53,13 @@ struct HostEventSequenceTag;
 struct SessionIdTag;
 struct ProgramExecutionIdTag;
 struct AttemptIdTag;
-struct StateEpochTag;
+struct WorksetEpochTag;
 struct WorkerWorksetIdTag;
 struct WorkerWorksetItemIdTag;
 struct WorkerTerminalIdTag;
 struct WorkerTerminalOrderTag;
 struct WorkerOutboundSequenceTag;
 struct PreparedInvocationTemplateIdTag;
-struct StateCacheLeaseIdTag;
 
 using WireRequestId = StrongId<WireRequestIdTag>;
 using WorkerCommandSequence = StrongId<WorkerCommandSequenceTag>;
@@ -71,7 +70,7 @@ using ProgramExecutionId = StrongId<ProgramExecutionIdTag>;
 // state. Public workset and result contracts use ProgramExecutionId.
 using InvocationId = ProgramExecutionId;
 using AttemptId = StrongId<AttemptIdTag>;
-using StateEpoch = StrongId<StateEpochTag>;
+using WorksetEpoch = StrongId<WorksetEpochTag>;
 using WorkerWorksetId = StrongId<WorkerWorksetIdTag>;
 using WorkerWorksetItemId = StrongId<WorkerWorksetItemIdTag>;
 using WorkerTerminalId = StrongId<WorkerTerminalIdTag>;
@@ -79,10 +78,9 @@ using WorkerTerminalOrder = StrongId<WorkerTerminalOrderTag>;
 using WorkerOutboundSequence = StrongId<WorkerOutboundSequenceTag>;
 using PreparedInvocationTemplateId =
     StrongId<PreparedInvocationTemplateIdTag>;
-using StateCacheLeaseId = StrongId<StateCacheLeaseIdTag>;
 
-static_assert(!std::is_convertible_v<StateEpoch, WorkerCommandSequence>);
-static_assert(!std::is_convertible_v<WorkerCommandSequence, StateEpoch>);
+static_assert(!std::is_convertible_v<WorksetEpoch, WorkerCommandSequence>);
+static_assert(!std::is_convertible_v<WorkerCommandSequence, WorksetEpoch>);
 static_assert(!std::is_convertible_v<ProgramExecutionId, AttemptId>);
 static_assert(!std::is_convertible_v<WorkerWorksetId, WorkerWorksetItemId>);
 static_assert(!std::is_convertible_v<WorkerTerminalId, WorkerTerminalOrder>);
@@ -95,7 +93,6 @@ enum class WorkerCapability : std::uint64_t
     HostEvents = 1ull << 2,
     CancellationProtocol = 1ull << 3,
     Shutdown = 1ull << 4,
-    ProgramInvocation = 1ull << 5,
     InteractiveVisualDebug = 1ull << 6,
     WorksetDispatch = 1ull << 7,
 };
@@ -180,7 +177,6 @@ enum class WorkerCommandKind : std::uint8_t
 {
     OpenSession,
     PrepareModule,
-    InvokeProgram,
     CancelInvocation,
     CaptureScreenshot,
     ControlExecution,
@@ -212,7 +208,7 @@ enum class WorkerRejectionCode : std::uint16_t
     InvocationNotActive,
     InvocationMismatch,
     DuplicateCancellation,
-    StateEpochMismatch,
+    WorksetEpochMismatch,
     BackendFailure,
     RuntimeStopping,
     InternalFailure,

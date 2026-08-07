@@ -318,7 +318,6 @@ ProbeRouterAdapter::BuildCurrentGroupDefinition()
 
     result.definition.id = config_.group_id;
     result.definition.source = config_.source;
-    result.definition.epoch_policy = config_.epoch_policy;
     result.definition.subscriptions.reserve(subscription_count);
     std::uint64_t next_id = first_id;
     const auto add_subscription = [&](
@@ -430,8 +429,8 @@ StopCpuObservationResult ProbeRouterAdapter::ObserveRoutedHit(
     context.routed_sequence = event.identity.sequence.value();
     context.sample_snapshot_id =
         event.identity.sample_snapshot.value();
-    context.guest_state_epoch =
-        event.identity.state_epoch.value();
+    context.guest_workset_epoch =
+        event.identity.workset_epoch.value();
     context.active_foreground_wake =
         event.active_foreground_wake;
     context.sample_count = static_cast<std::uint8_t>(

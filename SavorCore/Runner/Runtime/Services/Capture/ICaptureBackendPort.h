@@ -51,11 +51,6 @@ public:
     [[nodiscard]] virtual bool EmitMarker(
         std::string_view id,
         std::uint64_t value) = 0;
-    [[nodiscard]] virtual bool PrepareForStateReplacement(
-        std::string* error_out) = 0;
-    [[nodiscard]] virtual bool ResumeAfterStateReplacement(
-        StateEpoch epoch,
-        std::string* error_out) = 0;
     [[nodiscard]] virtual StopCpuObservationResult ObserveRoutedHit(
         std::uint32_t descriptor_id,
         const RoutedStopEvent& event) noexcept = 0;
@@ -115,11 +110,6 @@ public:
     [[nodiscard]] bool EmitMarker(
         std::string_view id,
         std::uint64_t value) override;
-    [[nodiscard]] bool PrepareForStateReplacement(
-        std::string* error_out) override;
-    [[nodiscard]] bool ResumeAfterStateReplacement(
-        StateEpoch epoch,
-        std::string* error_out) override;
     [[nodiscard]] StopCpuObservationResult ObserveRoutedHit(
         std::uint32_t descriptor_id,
         const RoutedStopEvent& event) noexcept override;

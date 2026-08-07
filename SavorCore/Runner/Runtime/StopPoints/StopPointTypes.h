@@ -28,7 +28,7 @@ using StopDispatchGeneration = StrongId<StopDispatchGenerationTag>;
 using PhysicalPlanGeneration = StrongId<PhysicalPlanGenerationTag>;
 
 static_assert(!std::is_same_v<RoutedStopSequence, StopDispatchGeneration>);
-static_assert(!std::is_convertible_v<StateEpoch, StopDispatchGeneration>);
+static_assert(!std::is_convertible_v<WorksetEpoch, StopDispatchGeneration>);
 
 enum class StopMemoryAccess : std::uint8_t
 {
@@ -82,13 +82,6 @@ enum class StopRoutingPolicy : std::uint8_t
     Fail,
 };
 
-enum class StopEpochPolicy : std::uint8_t
-{
-    EpochAgnostic,
-    EndOnEpochChange,
-    RebindAfterRestore,
-};
-
 enum class StopSubscriptionLifetime : std::uint8_t
 {
     Scoped,
@@ -113,7 +106,7 @@ struct RoutedStopIdentity
 {
     RoutedStopSequence sequence;
     StopSampleSnapshotId sample_snapshot;
-    StateEpoch state_epoch;
+    WorksetEpoch workset_epoch;
     StopDispatchGeneration dispatch_generation;
     PhysicalPlanGeneration physical_generation;
 
@@ -178,7 +171,6 @@ struct StopSubscriptionGroupDefinition
 {
     StopSubscriptionGroupId id;
     StopSourceIdentity source;
-    StopEpochPolicy epoch_policy = StopEpochPolicy::EndOnEpochChange;
     std::vector<StopSubscriptionDefinition> subscriptions;
 };
 
@@ -186,6 +178,7 @@ enum class StopPointErrorCode : std::uint16_t
 {
     None,
     InvalidArgument,
+    InvalidState,
     InvalidPolicy,
     WrongThread,
     GroupNotFound,
@@ -216,7 +209,7 @@ struct StopSubscriptionGroupLease
     StopSubscriptionGroupId group_id;
     StopSourceId source_id;
     std::uint64_t registration_sequence = 0;
-    StateEpoch acquisition_epoch;
+    WorksetEpoch acquisition_epoch;
     bool active = false;
 };
 

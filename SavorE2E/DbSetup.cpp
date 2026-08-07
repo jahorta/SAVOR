@@ -1,6 +1,7 @@
 #include "DbSetup.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <exception>
 #include <limits>
@@ -51,35 +52,17 @@ const char* WorkflowStepStateName(
 
 } // namespace
 
-void AppendTasMovieRtcArgumentIfSingle(
-    savor::db::execution::workflow::WorkflowCreateInstanceCommand* command,
-    const CliOptions& options,
-    int default_value) {
-    if (command == nullptr) {
-        return;
-    }
-    const auto range = ResolveTasMovieRtcRange(options, default_value);
-    if (range.low != range.high) {
-        return;
-    }
-    command->arguments.push_back({
-        .node_key = "tas_1",
-        .argument_key = "rtc",
-        .value_type = "integer",
-        .integer_value = range.low,
-        .source_kind = "scenario",
-    });
-}
-
 savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
     const auto root = options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default");
-    const bool reuse_existing_database = std::find(
-            options.scenarios.begin(),
-            options.scenarios.end(),
-            "navigation_context") != options.scenarios.end();
+    const bool preserve_prepared_workspace = std::ranges::any_of(
+        options.scenarios,
+        [](const std::string& scenario) {
+            return scenario == "tasmovie"
+                || scenario == "tasmovie_with_validation";
+        });
 
     std::error_code ec;
-    if (!reuse_existing_database && std::filesystem::exists(root)) {
+    if (!preserve_prepared_workspace && std::filesystem::exists(root)) {
         for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
             if (ec) {
                 break;
@@ -109,6 +92,77 @@ savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
         .object_store_root = root / "object_store",
         .archive_store_root = root / "archive_store",
     };
+}
+
+bool ResetTasMovieScenarioWorkspace(
+    const CliOptions& options,
+    std::filesystem::path* workspace_root_out,
+    std::string* error_out) {
+    std::error_code ec;
+    const auto requested_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default");
+    const auto root = std::filesystem::absolute(requested_root, ec).lexically_normal();
+    if (ec || root.empty() || root == root.root_path()) {
+        if (error_out) {
+            *error_out = "refusing to reset an empty or filesystem-root TAS Movie workspace";
+        }
+        return false;
+    }
+
+    const std::array database_names{
+        "execution.db", "state.db", "analysis.db", "authoring.db",
+        "ui_read.db", "archive.db",
+    };
+    for (const auto* database_name : database_names) {
+        for (const auto* suffix : {"", "-wal", "-shm", "-journal"}) {
+            const auto target = root / (std::string(database_name) + suffix);
+            std::filesystem::remove(target, ec);
+            if (ec) {
+                if (error_out) {
+                    *error_out = "failed clearing TAS Movie database file '"
+                        + target.string() + "': " + ec.message();
+                }
+                return false;
+            }
+        }
+    }
+
+    const std::array reset_directories{
+        "object_store", "archive_store", "workflow-runtime",
+        "tasmovie-validation", "verification",
+    };
+    for (const auto* directory_name : reset_directories) {
+        const auto target = root / directory_name;
+        std::filesystem::remove_all(target, ec);
+        if (ec) {
+            if (error_out) {
+                *error_out = "failed clearing TAS Movie workspace directory '"
+                    + target.string() + "': " + ec.message();
+            }
+            return false;
+        }
+    }
+
+    std::filesystem::create_directories(root, ec);
+    if (ec) {
+        if (error_out) {
+            *error_out = "failed creating TAS Movie workspace '"
+                + root.string() + "': " + ec.message();
+        }
+        return false;
+    }
+    std::filesystem::create_directories(root / "log", ec);
+    if (ec) {
+        if (error_out) {
+            *error_out = "failed creating TAS Movie log directory: " + ec.message();
+        }
+        return false;
+    }
+
+    if (workspace_root_out) {
+        *workspace_root_out = root;
+    }
+    return true;
 }
 
 bool CheckWorkflowQuiescence(
@@ -239,73 +293,6 @@ bool CheckWorkflowQuiescence(
         *diagnostics_out = diagnostics.str();
     }
     return false;
-}
-
-ScopedWorkflowCoordinatorService::~ScopedWorkflowCoordinatorService() {
-    Stop();
-}
-
-bool ScopedWorkflowCoordinatorService::Start(
-    savor::db::IExecutionDb* execution_db,
-    savor::db::IAuthoringDb* authoring_db,
-    const savor::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
-    const CliOptions& options,
-    std::string* error_out,
-    EventLineCallback event_line_callback,
-    bool strict_smoke_terminal_on_failure,
-    std::shared_ptr<
-        savor::db::execution::workflow::CoordinatorItemCreditSource>
-        item_credit_source) {
-    if (service_ != nullptr && service_->IsRunning()) {
-        return true;
-    }
-    if (execution_db == nullptr || authoring_db == nullptr || program_kind_registry == nullptr) {
-        if (error_out != nullptr) {
-            *error_out = "workflow coordinator requires execution db, authoring db, and program registry";
-        }
-        return false;
-    }
-
-    savor::db::execution::workflow::WorkflowCoordinatorConfig config{};
-    config.workflow_enabled = true;
-    config.strict_smoke_terminal_on_failure = strict_smoke_terminal_on_failure;
-    config.poll_interval = std::chrono::milliseconds(std::max<std::int64_t>(1, options.poll_ms));
-    config.item_credit_source = std::move(item_credit_source);
-
-    auto service = std::make_unique<savor::db::execution::workflow::WorkflowCoordinatorService>(
-        execution_db,
-        program_kind_registry,
-        config,
-        std::move(event_line_callback),
-        nullptr,
-        authoring_db);
-    std::string err;
-    if (!service->Start(&err)) {
-        if (error_out != nullptr) {
-            *error_out = "workflow coordinator startup failed: " + err;
-        }
-        return false;
-    }
-    service_ = std::move(service);
-    return true;
-}
-
-void ScopedWorkflowCoordinatorService::Stop() {
-    if (service_ != nullptr) {
-        service_->Stop();
-        service_.reset();
-    }
-}
-
-bool ScopedWorkflowCoordinatorService::IsRunning() const {
-    return service_ != nullptr && service_->IsRunning();
-}
-
-savor::db::execution::workflow::WorkflowCoordinatorTelemetry
-ScopedWorkflowCoordinatorService::SnapshotTelemetry() const {
-    return service_ != nullptr
-        ? service_->SnapshotTelemetry()
-        : savor::db::execution::workflow::WorkflowCoordinatorTelemetry{};
 }
 
 bool SeedStateSavestate(
@@ -538,7 +525,6 @@ bool SeedTasMovieWorkflow(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IExecutionDb* execution_db,
     std::int64_t dtm_artifact_id,
-    const CliOptions& options,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || execution_db == nullptr || dtm_artifact_id <= 0) {
@@ -549,25 +535,25 @@ bool SeedTasMovieWorkflow(
     savor::db::SaveWorkflowGraphResult saved{};
     if (!authoring_db->SaveWorkflowGraph(
             {
-                .name = "SavorE2E workflow graph TasMovie",
-                .description = "Graph-style TAS movie scenario",
+                .name = "SavorE2E TAS Movie root cursor establishment",
+                .description = "Singleton handcrafted-DTM root cursor establishment",
                 .graph_version = 1,
-                .graph_hash = "savor-e2e.workflow_graph.tasmovie",
+                .graph_hash = "savor-e2e.workflow_graph.tasmovie.establish_root_cursor.v1",
                 .nodes = {
                     {
                         .node_key = "tas_1",
-                        .unit_kind = "tas_movie",
-                        .display_name = "TAS Movie",
+                        .unit_kind = "tas_movie_establish_root_cursor",
+                        .display_name = "TAS Movie: Establish Root Cursor",
                         .inputs = {
-                            { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
+                            { .input_key = "root_dtm", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "Handcrafted root DTM" },
                         },
                         .possible_outputs = {
-                            { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                            { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .display_name = "Validation attempt" },
                         },
                     },
                 },
                 .created_at_utc = UtcNow(),
-                .correlation_id = "savor-e2e.workflow_graph.tasmovie",
+                .correlation_id = "savor-e2e.workflow_graph.tasmovie.establish_root_cursor",
                 .causation_id = "savor-e2e.seed",
             },
             &saved,
@@ -588,8 +574,8 @@ bool SeedTasMovieWorkflow(
         registry,
         "tas_1",
         "tas_1",
-        "tas_movie",
-        "TAS Movie",
+        "tas_movie_establish_root_cursor",
+        "TAS Movie: Establish Root Cursor",
         std::nullopt,
         std::nullopt,
         {},
@@ -598,75 +584,65 @@ bool SeedTasMovieWorkflow(
         if (error_out) *error_out = activation_error;
         return false;
     }
+    if (tas_activation->steps.size() != 1
+        || tas_activation->steps.front().step_kind != "tasmovie.establish_root_cursor"
+        || tas_activation->steps.front().max_attempts != 1) {
+        if (error_out) {
+            *error_out = "tas_movie_establish_root_cursor must resolve to one single-attempt tasmovie.establish_root_cursor step";
+        }
+        return false;
+    }
     command.unit_activations.push_back(std::move(*tas_activation));
     command.input_bindings.push_back({
         .node_key = "tas_1",
-        .input_key = "dtm_artifact",
+        .input_key = "root_dtm",
         .data_kind = "state_artifact.dtm_artifact_id",
         .ref_kind = "state_artifact",
         .ref_id = dtm_artifact_id,
         .source_kind = "external",
     });
-    AppendTasMovieRtcArgumentIfSingle(&command, options, 0);
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
-bool SeedTasMovieSeedProbeWorkflow(
+bool SeedTasMovieRootValidationWorkflow(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IExecutionDb* execution_db,
-    std::int64_t dtm_artifact_id,
-    std::int64_t seed_probe_spec_id,
-    const CliOptions& options,
+    std::int64_t establishment_attempt_id,
+    std::int64_t rtc_value,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
-    if (authoring_db == nullptr || execution_db == nullptr) {
-        if (error_out) *error_out = "authoring/execution db unavailable";
-        return false;
-    }
-    if (dtm_artifact_id <= 0 || seed_probe_spec_id <= 0) {
-        if (error_out) *error_out = "dtm artifact and seed probe spec ids must be > 0";
+    if (authoring_db == nullptr || execution_db == nullptr
+        || establishment_attempt_id <= 0 || rtc_value < 0
+        || static_cast<std::uint64_t>(rtc_value)
+            > std::numeric_limits<std::uint32_t>::max()) {
+        if (error_out) {
+            *error_out = "authoring/execution DB, establishment attempt, or GameCube RTC is invalid";
+        }
         return false;
     }
 
     savor::db::SaveWorkflowGraphResult saved{};
     if (!authoring_db->SaveWorkflowGraph(
             {
-                .name = "SavorE2E workflow graph TasMovie SeedProbe",
-                .description = "Graph-style TAS movie into one SeedProbe run",
+                .name = "SavorE2E TAS Movie root validation",
+                .description = "Singleton RTC-specific TAS Movie root validation",
                 .graph_version = 1,
-                .graph_hash =
-                    "savor-e2e.workflow_graph.tasmovie_seedprobe.v2",
+                .graph_hash = "savor-e2e.workflow_graph.tasmovie.validate_root.v1",
                 .nodes = {
                     {
-                        .node_key = "tas_1",
-                        .unit_kind = "tas_movie",
-                        .display_name = "TAS Movie",
+                        .node_key = "tas_validate_1",
+                        .unit_kind = "tas_movie_validate_root",
+                        .display_name = "TAS Movie: Validate Root",
                         .inputs = {
-                            { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
+                            { .input_key = "root_establishment", .data_kind = "analysis.tas_movie_validation_attempt_id", .display_name = "Root cursor establishment" },
                         },
                         .possible_outputs = {
-                            { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                            { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .display_name = "Validation attempt" },
                         },
                     },
-                    {
-                        .node_key = "probe_1",
-                        .unit_kind = "battle_seed_probe",
-                        .display_name = "Battle Seed Probe",
-                        .authored_ref_kind = std::string("seed_probe_spec"),
-                        .authored_ref_id = seed_probe_spec_id,
-                        .inputs = {
-                            { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
-                        },
-                        .possible_outputs = {
-                            { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
-                        },
-                    },
-                },
-                .edges = {
-                    { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
                 },
                 .created_at_utc = UtcNow(),
-                .correlation_id = "savor-e2e.workflow_graph.tasmovie_seedprobe",
+                .correlation_id = "savor-e2e.workflow_graph.tasmovie.validate_root",
                 .causation_id = "savor-e2e.seed",
             },
             &saved,
@@ -677,69 +653,54 @@ bool SeedTasMovieSeedProbeWorkflow(
     savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
     command.workflow_kind = "workflow_graph";
     command.root_scope_kind = "manual";
-    command.root_scope_id = dtm_artifact_id;
+    command.root_scope_id = establishment_attempt_id;
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "savor-e2e";
     command.created_at_utc = UtcNow().time_since_epoch().count();
-    const auto registry = savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+    const auto registry =
+        savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
     std::string activation_error;
-    auto tas_activation = savor::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
-        registry,
-        "tas_1",
-        "tas_1",
-        "tas_movie",
-        "TAS Movie",
-        std::nullopt,
-        std::nullopt,
-        {},
-        &activation_error);
-    if (!tas_activation.has_value()) {
+    auto activation =
+        savor::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+            registry,
+            "tas_validate_1",
+            "tas_validate_1",
+            "tas_movie_validate_root",
+            "TAS Movie: Validate Root",
+            std::nullopt,
+            std::nullopt,
+            {},
+            &activation_error);
+    if (!activation.has_value()) {
         if (error_out) *error_out = activation_error;
         return false;
     }
-    command.unit_activations.push_back(std::move(*tas_activation));
-    auto probe_activation = savor::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
-        registry,
-        "probe_1",
-        "probe_1",
-        "battle_seed_probe",
-        "Battle Seed Probe",
-        std::optional<std::string>("seed_probe_spec"),
-        seed_probe_spec_id,
-        { "tas_1" },
-        &activation_error);
-    if (!probe_activation.has_value()) {
-        if (error_out) *error_out = activation_error;
-        return false;
-    }
-    if (probe_activation->steps.size() != 1
-        || probe_activation->steps.front().step_kind
-            != "seedprobe.run") {
+    if (activation->steps.size() != 1
+        || activation->steps.front().step_kind != "tasmovie.validate_root"
+        || activation->steps.front().max_attempts != 1) {
         if (error_out) {
-            *error_out =
-                "battle_seed_probe must resolve to exactly one "
-                "seedprobe.run workflow step";
+            *error_out = "tas_movie_validate_root must resolve to one single-attempt tasmovie.validate_root step";
         }
         return false;
     }
-    command.unit_activations.push_back(std::move(*probe_activation));
+    command.unit_activations.push_back(std::move(*activation));
     command.input_bindings.push_back({
-        .node_key = "tas_1",
-        .input_key = "dtm_artifact",
-        .data_kind = "state_artifact.dtm_artifact_id",
-        .ref_kind = "state_artifact",
-        .ref_id = dtm_artifact_id,
+        .node_key = "tas_validate_1",
+        .input_key = "root_establishment",
+        .data_kind = "analysis.tas_movie_validation_attempt_id",
+        .ref_kind = "tmv_validation_attempt",
+        .ref_id = establishment_attempt_id,
         .source_kind = "external",
     });
-    AppendTasMovieRtcArgumentIfSingle(&command, options, 0);
     command.arguments.push_back({
-        .node_key = "probe_1",
-        .argument_key = "samples_per_axis",
+        .node_key = "tas_validate_1",
+        .argument_key = "rtc",
         .value_type = "integer",
-        .integer_value = options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis),
+        .integer_value = rtc_value,
         .source_kind = "scenario",
     });
-    return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
+    return execution_db->CreateWorkflowInstance(
+        command, workflow_instance_id_out, error_out);
 }
 
 } // namespace savor::e2e

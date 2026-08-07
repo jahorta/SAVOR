@@ -229,18 +229,21 @@ bool ValidateItemIdentity(
 savor::runtime::ProgramBaselineDefinition BuildBaseline(
     const savor::db::SavestateRecord& state,
     const std::filesystem::path& path,
-    const savor::runtime::StateCompatibilityToken& compatibility) {
+    const savor::runtime::ArtifactCompatibilityToken& compatibility) {
+    const std::filesystem::path sidecar(path.string() + ".dtm");
+    const bool has_sidecar = std::filesystem::is_regular_file(sidecar);
     return {
-        .state_kind =
-            savor::runtime::ProgramBaselineStateKind::Artifact,
         .artifact =
             savor::runtime::ProgramBaselineArtifact{
+                .kind = savor::runtime::ProgramBaselineArtifactKind::Savestate,
                 .state_path = path,
                 .state_sha256 = state.artifact_sha256,
-                .movie_path = std::nullopt,
-                .movie_sha256 = {},
-                .movie_mode =
-                    savor::runtime::ExternalMovieImportMode::NoMovie,
+                .movie_path = has_sidecar
+                    ? std::optional<std::filesystem::path>(sidecar)
+                    : std::nullopt,
+                .movie_sha256 = has_sidecar
+                    ? ::hash::sha256_of_file(sidecar.string())
+                    : std::string{},
                 .compatibility = compatibility,
                 .lineage = {
                     .edge = std::string(kArtifactLineage),
@@ -361,8 +364,7 @@ public:
             const auto cached = invocation_cache_.find(cache_key);
             if (cached != invocation_cache_.end()) {
                 if (cached->second.probe_run_id != run->probe_run_id
-                    || !cached->second.baseline.artifact.has_value()
-                    || cached->second.baseline.artifact->compatibility
+                    || cached->second.baseline.artifact.compatibility
                         != context.state_compatibility) {
                     return fail(
                         "SeedProbe Full Phase invocation cache identity changed");
@@ -660,7 +662,7 @@ public:
             || terminal.process_generation
                 > static_cast<std::uint64_t>(
                     (std::numeric_limits<std::int64_t>::max)())
-            || terminal.terminal.state_epoch == 0
+            || terminal.terminal.workset_epoch == 0
             || terminal.terminal.session_disposition
                 != savor::wrms::
                     SessionDispositionCode::Clean) {
@@ -703,8 +705,8 @@ public:
                 ValidateSeedProbeResultV2(
                     request,
                     observation,
-                    savor::runtime::StateEpoch{
-                        terminal.terminal.state_epoch},
+                    savor::runtime::WorksetEpoch{
+                        terminal.terminal.workset_epoch},
                     &observation_error)) {
             return FinalDecision(
                 "FAILED",
@@ -731,8 +733,8 @@ public:
                     .origin_worker_id = terminal.worker_id,
                     .origin_process_generation =
                         terminal.process_generation,
-                    .origin_state_epoch = observation.semantic_stop
-                        .state_epoch.value(),
+                    .origin_workset_epoch = observation.semantic_stop
+                        .workset_epoch.value(),
                     .terminal_sha256 = context.terminal.sha256,
                     .confirmation_of_probe_result_id = confirmation_of,
                     .endpoint = endpoint,
@@ -1114,8 +1116,8 @@ private:
                     == persisted.origin_worker_id
                 && candidate->origin_process_generation
                     == persisted.origin_process_generation
-                && candidate->origin_state_epoch
-                    == persisted.origin_state_epoch)
+                && candidate->origin_workset_epoch
+                    == persisted.origin_workset_epoch)
             || persisted.confirmation_of_probe_result_id
                 != spec.confirmation_of_probe_result_id) {
             throw std::runtime_error(

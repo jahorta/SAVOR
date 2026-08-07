@@ -21,7 +21,7 @@ InputArbiter::InputArbiter(IInputBackendPort& backend)
 
 InputLeaseReceipt InputArbiter::Acquire(
     const InputLeaseRequest& request,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     if (!OnOwnerThread())
     {
@@ -79,7 +79,7 @@ InputLeaseReceipt InputArbiter::Acquire(
 InputLeaseReceipt InputArbiter::Borrow(
     InputLeaseId parent,
     const InputLeaseRequest& request,
-    StateEpoch epoch,
+    WorksetEpoch epoch,
     std::optional<InputNeutralWitnessId> neutral_witness)
 {
     if (!OnOwnerThread())
@@ -155,7 +155,7 @@ InputLeaseReceipt InputArbiter::Borrow(
 InputPublicationReceipt InputArbiter::Publish(
     InputLeaseId lease,
     const savor::GCInputFrame& frame,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     if (!OnOwnerThread())
     {
@@ -193,7 +193,7 @@ InputPublicationReceipt InputArbiter::Publish(
 InputAcknowledgementReceipt InputArbiter::Observe(
     InputLeaseId lease,
     InputPublicationToken publication,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     if (!OnOwnerThread())
     {
@@ -260,7 +260,7 @@ InputAcknowledgementReceipt InputArbiter::Observe(
 InputNeutralWitnessReceipt InputArbiter::ProveNeutralWitness(
     InputLeaseId lease,
     InputPublicationToken publication,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     if (!OnOwnerThread())
     {
@@ -340,7 +340,7 @@ InputNeutralWitnessReceipt InputArbiter::ProveNeutralWitness(
 
 InputReleaseReceipt InputArbiter::BeginRelease(
     InputLeaseId lease,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     if (!OnOwnerThread())
     {
@@ -410,7 +410,7 @@ InputReleaseReceipt InputArbiter::BeginRelease(
 InputReleaseReceipt InputArbiter::CompleteRelease(
     InputLeaseId lease,
     InputPublicationToken neutral_publication,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     if (!OnOwnerThread())
     {
@@ -467,7 +467,7 @@ InputReleaseReceipt InputArbiter::CompleteRelease(
 InputAdvanceBindingReceipt InputArbiter::CreateAdvanceBinding(
     InputLeaseId lease,
     std::vector<savor::GCInputFrame> frames,
-    StateEpoch epoch,
+    WorksetEpoch epoch,
     std::uint32_t retry_limit)
 {
     if (!OnOwnerThread())
@@ -581,8 +581,8 @@ InputArbiterOperationReceipt InputArbiter::RemoveAdvanceBinding(
     return {true, InputArbiterErrorCode::None, {}};
 }
 
-InputArbiterOperationReceipt InputArbiter::CommitStateEpoch(
-    StateEpoch epoch) noexcept
+InputArbiterOperationReceipt InputArbiter::InitializeWorksetEpoch(
+    WorksetEpoch epoch) noexcept
 {
     if (!OnOwnerThread())
     {
@@ -597,54 +597,25 @@ InputArbiterOperationReceipt InputArbiter::CommitStateEpoch(
             false,
             InputArbiterErrorCode::Stopped,
             "InputArbiter is shut down"};
+    }
+    if (!epoch)
+    {
+        return {
+            false,
+            InputArbiterErrorCode::InvalidArgument,
+            "InputArbiter requires a nonzero WorksetEpoch"};
+    }
+    if (epoch_ && epoch_ != epoch)
+    {
+        return {
+            false,
+            InputArbiterErrorCode::WorksetEpochMismatch,
+            "InputArbiter cannot change its owning WorksetEpoch"};
     }
     epoch_ = epoch;
     return {true, InputArbiterErrorCode::None, {}};
 }
 
-InputArbiterOperationReceipt InputArbiter::InvalidateForStateReplacement(
-    StateEpoch next_epoch) noexcept
-{
-    if (!OnOwnerThread())
-    {
-        return {
-            false,
-            InputArbiterErrorCode::WrongThread,
-            "InputArbiter mutation was attempted off its actor thread"};
-    }
-    if (IsStopped())
-    {
-        return {
-            false,
-            InputArbiterErrorCode::Stopped,
-            "InputArbiter is shut down"};
-    }
-    bool neutralized = true;
-    if (active_)
-    {
-        if (LeaseState* active = FindLease(*active_))
-        {
-            if (!(active->request.movie_exclusive &&
-                  !backend_.IsAvailable(active->request.port)))
-            {
-                const BackendInputPublication publication =
-                    backend_.Publish(active->request.port, NeutralFrame());
-                neutralized = publication.result.ok &&
-                    publication.sequence != 0;
-            }
-        }
-    }
-    ClearRetainedState();
-    epoch_ = next_epoch;
-    if (!neutralized)
-    {
-        return {
-            false,
-            InputArbiterErrorCode::BackendFailure,
-            "input neutralization failed during state replacement"};
-    }
-    return {true, InputArbiterErrorCode::None, {}};
-}
 
 InputArbiterShutdownReceipt InputArbiter::Shutdown() noexcept
 {
@@ -768,14 +739,14 @@ InputArbiterSnapshot InputArbiter::snapshot() const noexcept
 
 InputAdvanceReceipt InputArbiter::Validate(
     InputAdvanceBindingId binding,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     return ValidateBinding(binding, epoch);
 }
 
 InputAdvanceReceipt InputArbiter::ValidateBinding(
     InputAdvanceBindingId binding,
-    StateEpoch epoch) const
+    WorksetEpoch epoch) const
 {
     if (!OnOwnerThread())
     {
@@ -804,7 +775,7 @@ InputAdvanceReceipt InputArbiter::ValidateBinding(
 
 InputAdvanceReceipt InputArbiter::PrepareNext(
     InputAdvanceBindingId binding,
-    StateEpoch epoch,
+    WorksetEpoch epoch,
     std::uint32_t advance_ordinal)
 {
     InputAdvanceReceipt valid = ValidateBinding(binding, epoch);
@@ -842,7 +813,7 @@ InputAdvanceReceipt InputArbiter::PrepareNext(
 InputAdvanceReceipt InputArbiter::ObserveAcknowledgement(
     InputAdvanceBindingId binding,
     InputPublicationToken publication,
-    StateEpoch epoch)
+    WorksetEpoch epoch)
 {
     InputAdvanceReceipt valid = ValidateBinding(binding, epoch);
     if (!valid.ok)
@@ -881,7 +852,7 @@ InputAdvanceReceipt InputArbiter::ObserveAcknowledgement(
 
 InputAdvanceReceipt InputArbiter::Complete(
     InputAdvanceBindingId binding,
-    StateEpoch epoch) noexcept
+    WorksetEpoch epoch) noexcept
 {
     if (!OnOwnerThread())
     {
@@ -916,7 +887,7 @@ InputAdvanceReceipt InputArbiter::Complete(
 
 InputAdvanceReceipt InputArbiter::Cancel(
     InputAdvanceBindingId binding,
-    StateEpoch epoch) noexcept
+    WorksetEpoch epoch) noexcept
 {
     if (!OnOwnerThread())
     {
@@ -966,7 +937,7 @@ const InputArbiter::LeaseState* InputArbiter::FindLease(
     return found == leases_.end() ? nullptr : &found->second;
 }
 
-bool InputArbiter::IsCurrent(StateEpoch epoch) const noexcept
+bool InputArbiter::IsCurrent(WorksetEpoch epoch) const noexcept
 {
     return epoch_ && epoch_ == epoch;
 }
@@ -1005,7 +976,7 @@ InputPublicationReceipt InputArbiter::PublishInternal(
 InputReleaseReceipt InputArbiter::FinishRelease(LeaseState& lease)
 {
     const InputLeaseId id = lease.id;
-    const StateEpoch epoch = lease.epoch;
+    const WorksetEpoch epoch = lease.epoch;
     active_.reset();
     suspended_.erase(
         std::remove(suspended_.begin(), suspended_.end(), id),

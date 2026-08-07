@@ -39,7 +39,7 @@ ProgramPolicySet Policies()
 {
     return {
         .state_policies = {
-            InvocationStatePolicy::ContinueSession,
+            InvocationStatePolicy::RestoreBaseline,
         },
         .execution_intents = {ExecutionIntent::Live},
     };
@@ -244,17 +244,11 @@ ProgramModule StatePolicyModule(std::string canonical_id)
 {
     ProgramModule module = Module(std::move(canonical_id));
     const std::vector<InvocationStatePolicy> policies{
-        InvocationStatePolicy::Boot,
-        InvocationStatePolicy::LoadArtifact,
         InvocationStatePolicy::RestoreBaseline,
-        InvocationStatePolicy::ContinueSession,
     };
     module.accepted_policies.state_policies = policies;
-    module.accepted_policies.permits_state_replacement = true;
     module.entrypoints.front()
         .accepted_policies.state_policies = policies;
-    module.entrypoints.front()
-        .accepted_policies.permits_state_replacement = true;
     module.identity.module_hash =
         ComputeProgramModuleHashV1(module);
     return module;
@@ -435,10 +429,10 @@ ProgramInvocation Invocation(
         },
         .runtime_profile = TestRuntimeProfile(),
         .state = {
-            .policy = InvocationStatePolicy::ContinueSession,
+            .policy = InvocationStatePolicy::RestoreBaseline,
             .session_lineage = "program-runtime-test",
             .expected_session = SessionId(9),
-            .expected_epoch = StateEpoch(5),
+            .expected_epoch = WorksetEpoch(5),
         },
         .execution = {
             .intent = ExecutionIntent::Live,
@@ -506,7 +500,7 @@ ModulePreparationRequest PreparationRequest(
     };
 }
 
-ProgramInvocationRequest InvocationRequest(
+EncodedInvocationEnvelope InvocationRequest(
     const ProgramInvocation& invocation,
     WorkerCommandSequence sequence = WorkerCommandSequence(2))
 {
@@ -514,25 +508,71 @@ ProgramInvocationRequest InvocationRequest(
         EncodeProgramInvocationV1(invocation);
     EXPECT_TRUE(encoded)
         << encoded.status.message;
+    (void)sequence;
     return {
-        .command_sequence = sequence,
-        .invocation = {
-            .invocation_id = invocation.invocation_id,
-            .attempt_id = invocation.attempt_id,
-            .module = EnvelopeIdentity(invocation.module),
-            .entrypoint = invocation.entrypoint,
-            .expected_state_epoch =
-                invocation.state.expected_epoch,
-            .input_payload = encoded.bytes,
-        },
+        .invocation_id = invocation.invocation_id,
+        .attempt_id = invocation.attempt_id,
+        .module = EnvelopeIdentity(invocation.module),
+        .entrypoint = invocation.entrypoint,
+        .expected_workset_epoch = invocation.state.expected_epoch,
+        .input_payload = encoded.bytes,
     };
 }
 
-ProgramActionCompletion Completion(
+ProgramRuntimeSubmission StartInvocation(
+    ProgramRuntime& runtime,
+    EncodedInvocationEnvelope invocation,
+    CancellationToken cancellation,
+    const std::shared_ptr<IProgramRuntimeEventSink>& events,
+    bool state_already_prepared = true)
+{
+    const WorksetEpoch workset_epoch = invocation.expected_workset_epoch;
+    DecodeResult<ProgramInvocation> decoded =
+        DecodeProgramInvocationV1(invocation.input_payload);
+    if (!decoded)
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            decoded.status.message.empty()
+                ? "test invocation payload is invalid"
+                : decoded.status.message);
+    }
+    const std::string baseline_lineage =
+        decoded.value->state.session_lineage;
+    ProgramInvocation unbound = *decoded.value;
+    unbound.state.expected_session = {};
+    unbound.state.expected_epoch = {};
+    EncodedInvocationEnvelope unbound_envelope =
+        InvocationRequest(unbound);
+    PreparedInvocationTemplateReceipt receipt;
+    const ProgramRuntimeSubmission prepared =
+        runtime.PrepareInvocationTemplate(
+            {
+                WorkerCommandSequence(2),
+                std::move(unbound_envelope),
+            },
+            receipt);
+    if (!prepared.accepted)
+        return prepared;
+    return runtime.StartPreparedInvocation(
+        {
+            WorkerCommandSequence(3),
+            receipt.template_id,
+            SessionId(1),
+            workset_epoch,
+            std::string(64, 'b'),
+            baseline_lineage,
+            state_already_prepared,
+        },
+        std::move(cancellation),
+        events);
+}
+
+ProgramActionResolution Completion(
     const ProgramActionRequest& request,
-    StateEpoch resulting_epoch,
-    ProgramActionCompletionStatus status =
-        ProgramActionCompletionStatus::Completed)
+    WorksetEpoch workset_epoch,
+    ProgramActionResolutionStatus status =
+        ProgramActionResolutionStatus::Completed)
 {
     return {
         .request_id = request.request_id,
@@ -540,8 +580,7 @@ ProgramActionCompletion Completion(
         .attempt_id = request.attempt_id,
         .operation = request.operation,
         .status = status,
-        .origin_epoch = request.expected_epoch,
-        .resulting_epoch = resulting_epoch,
+        .workset_epoch = workset_epoch,
         .output = UnitGraph(),
         .cleanup = ProgramCleanupStatus::Clean,
         .session_disposition = SessionDisposition::Clean,
@@ -555,7 +594,7 @@ TEST(ProgramRuntime, PreparesSprmBeforeAcceptingSpri)
         << runtime.initialization_diagnostic();
     EXPECT_TRUE(HasCapability(
         runtime.capabilities(),
-        WorkerCapability::ProgramInvocation));
+        WorkerCapability::WorksetDispatch));
 
     auto events = std::make_shared<RecordingEventSink>();
     const ProgramModule module =
@@ -591,7 +630,7 @@ TEST(ProgramRuntime, PreparesSprmBeforeAcceptingSpri)
     const ProgramInvocation invocation = Invocation(module);
     CancellationSource cancellation(invocation.invocation_id);
     const ProgramRuntimeSubmission no_sink =
-        runtime.StartInvocation(
+        StartInvocation(runtime,
             InvocationRequest(invocation),
             cancellation.token(),
             events);
@@ -603,7 +642,7 @@ TEST(ProgramRuntime, PreparesSprmBeforeAcceptingSpri)
 
 TEST(
     ProgramRuntime,
-    CompleteExactRequiresTheConfiguredNineProductionModulesAndNoExtras)
+    CompleteExactRequiresEveryConfiguredModuleAndNoExtras)
 {
     std::vector<ProgramModule> modules;
     std::vector<ProgramRuntimeCatalogModule> expected;
@@ -726,9 +765,10 @@ TEST(
                 WorkerCommandSequence(3),
                 prepared.template_id,
                 SessionId(9),
-                StateEpoch(5),
+                WorksetEpoch(5),
                 std::string(64, 'a'),
                 invocation.state.session_lineage,
+                true,
             },
             cancellation.token(),
             events);
@@ -745,11 +785,11 @@ TEST(
         SessionId(9));
     EXPECT_EQ(
         state.state_request->expected_epoch,
-        StateEpoch(5));
+        WorksetEpoch(5));
 
     ASSERT_TRUE(
-        runtime.DeliverActionCompletion(
-            Completion(state, StateEpoch(5)))
+        runtime.DeliverActionResolution(
+            Completion(state, WorksetEpoch(5)))
             .accepted);
     EXPECT_FALSE(runtime.Pump());
     ASSERT_EQ(actions->requests.size(), 2u);
@@ -758,22 +798,21 @@ TEST(
         finish.operation,
         ProgramHostOperation::FinishInvocation);
     ASSERT_TRUE(
-        runtime.DeliverActionCompletion(
-            Completion(finish, StateEpoch(5)))
+        runtime.DeliverActionResolution(
+            Completion(finish, WorksetEpoch(5)))
             .accepted);
     EXPECT_FALSE(runtime.Pump());
-    const auto* terminal =
-        events->Last<ProgramInvocationTerminalEvent>();
+    const auto taken = runtime.TakeFinishedExecution(
+        invocation.invocation_id,
+        invocation.attempt_id);
+    const auto* terminal = taken.finished
+        ? &*taken.finished
+        : nullptr;
     ASSERT_NE(terminal, nullptr);
     EXPECT_EQ(
         terminal->status,
         InvocationTerminalStatus::Completed);
-    EXPECT_EQ(terminal->origin_state_epoch, StateEpoch(5));
-    EXPECT_TRUE(
-        runtime.AcknowledgeTerminal(
-            invocation.invocation_id,
-            invocation.attempt_id)
-            .accepted);
+    EXPECT_EQ(terminal->workset_epoch, WorksetEpoch(5));
 }
 
 TEST(ProgramRuntime, RequiresAnExactConfiguredRuntimeProfile)
@@ -784,7 +823,7 @@ TEST(ProgramRuntime, RequiresAnExactConfiguredRuntimeProfile)
     EXPECT_FALSE(unavailable.initialized());
     EXPECT_FALSE(HasCapability(
         unavailable.capabilities(),
-        WorkerCapability::ProgramInvocation));
+        WorkerCapability::WorksetDispatch));
 
     ProgramRuntime runtime(TestRuntimeConfig());
     ASSERT_TRUE(runtime.initialized())
@@ -800,7 +839,7 @@ TEST(ProgramRuntime, RequiresAnExactConfiguredRuntimeProfile)
 
     const auto rejected = [&](ProgramInvocation invocation) {
         CancellationSource cancellation(invocation.invocation_id);
-        return runtime.StartInvocation(
+        return StartInvocation(runtime,
             InvocationRequest(invocation),
             cancellation.token(),
             events);
@@ -842,55 +881,12 @@ TEST(ProgramRuntime, EnforcesInvocationStatePolicyShapes)
         PreparationRequest(module), events).accepted);
     ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared);
 
-    ArtifactReferenceValue complete{
-        .artifact_id = "state-1",
-        .content_hash = module.identity.module_hash,
-        .storage_reference = "session://state-1",
-        .complete = true,
-    };
-    const auto rejected = [&](ProgramInvocation invocation) {
-        CancellationSource cancellation(invocation.invocation_id);
-        return runtime.StartInvocation(
-            InvocationRequest(invocation),
-            cancellation.token(),
-            events);
-    };
-
     std::uint64_t next_id = 80;
-    for (const InvocationStatePolicy policy : {
-             InvocationStatePolicy::Boot,
-             InvocationStatePolicy::RestoreBaseline,
-             InvocationStatePolicy::ContinueSession})
-    {
-        ProgramInvocation invalid =
-            Invocation(module, InvocationId(next_id++));
-        invalid.state.policy = policy;
-        invalid.state.state_artifact = complete;
-        EXPECT_FALSE(rejected(std::move(invalid)).accepted);
-    }
-
-    for (const InvocationStatePolicy policy : {
-             InvocationStatePolicy::LoadArtifact})
-    {
-        ProgramInvocation missing =
-            Invocation(module, InvocationId(next_id++));
-        missing.state.policy = policy;
-        EXPECT_FALSE(rejected(std::move(missing)).accepted);
-
-        ProgramInvocation incomplete =
-            Invocation(module, InvocationId(next_id++));
-        incomplete.state.policy = policy;
-        incomplete.state.state_artifact = complete;
-        incomplete.state.state_artifact->complete = false;
-        EXPECT_FALSE(rejected(std::move(incomplete)).accepted);
-    }
-
     ProgramInvocation valid =
         Invocation(module, InvocationId(next_id++));
-    valid.state.policy = InvocationStatePolicy::LoadArtifact;
-    valid.state.state_artifact = complete;
+    valid.state.policy = InvocationStatePolicy::RestoreBaseline;
     CancellationSource cancellation(valid.invocation_id);
-    ASSERT_TRUE(runtime.StartInvocation(
+    ASSERT_TRUE(StartInvocation(runtime,
         InvocationRequest(valid),
         cancellation.token(),
         events).accepted);
@@ -898,10 +894,7 @@ TEST(ProgramRuntime, EnforcesInvocationStatePolicyShapes)
     ASSERT_TRUE(actions->requests.front().state_request);
     EXPECT_EQ(
         actions->requests.front().state_request->policy,
-        InvocationStatePolicy::LoadArtifact);
-    EXPECT_EQ(
-        actions->requests.front().state_request->state_artifact,
-        complete);
+        InvocationStatePolicy::RestoreBaseline);
 
     ProgramRuntime baseline_runtime(TestRuntimeConfig());
     ASSERT_TRUE(baseline_runtime.initialized())
@@ -921,7 +914,7 @@ TEST(ProgramRuntime, EnforcesInvocationStatePolicyShapes)
         InvocationStatePolicy::RestoreBaseline;
     CancellationSource baseline_cancellation(
         baseline.invocation_id);
-    ASSERT_TRUE(baseline_runtime.StartInvocation(
+    ASSERT_TRUE(StartInvocation(baseline_runtime,
         InvocationRequest(baseline),
         baseline_cancellation.token(),
         baseline_events).accepted);
@@ -932,9 +925,6 @@ TEST(ProgramRuntime, EnforcesInvocationStatePolicyShapes)
         baseline_actions->requests.front()
             .state_request->policy,
         InvocationStatePolicy::RestoreBaseline);
-    EXPECT_FALSE(
-        baseline_actions->requests.front()
-            .state_request->state_artifact);
 }
 
 TEST(ProgramRuntime, RunsOnlyThroughTheActorActionSinkAndPublishesSprr)
@@ -961,7 +951,7 @@ TEST(ProgramRuntime, RunsOnlyThroughTheActorActionSinkAndPublishesSprr)
     ProgramInvocation invocation = Invocation(module);
     CancellationSource cancellation(invocation.invocation_id);
     const ProgramRuntimeSubmission started =
-        runtime.StartInvocation(
+        StartInvocation(runtime,
             InvocationRequest(invocation),
             cancellation.token(),
             events);
@@ -975,19 +965,29 @@ TEST(ProgramRuntime, RunsOnlyThroughTheActorActionSinkAndPublishesSprr)
         ProgramHostOperation::PrepareInvocationState);
     ASSERT_TRUE(state_request.state_request);
     EXPECT_EQ(
-        *state_request.state_request,
-        invocation.state);
+        state_request.state_request->policy,
+        invocation.state.policy);
+    EXPECT_EQ(
+        state_request.state_request->session_lineage,
+        invocation.state.session_lineage);
+    EXPECT_EQ(
+        state_request.state_request->expected_session,
+        SessionId(1));
+    EXPECT_EQ(
+        state_request.state_request->expected_epoch,
+        invocation.state.expected_epoch);
 
     // Entry execution cannot begin before the actor completes state
     // preparation.
     EXPECT_FALSE(runtime.Pump());
     EXPECT_EQ(actions->requests.size(), 1u);
-    EXPECT_EQ(
-        events->Last<ProgramInvocationTerminalEvent>(),
-        nullptr);
+    EXPECT_FALSE(runtime.TakeFinishedExecution(
+        invocation.invocation_id,
+        invocation.attempt_id).taken);
 
-    const StateEpoch prepared_epoch(6);
-    ProgramActionCompletion prepared_completion =
+    const WorksetEpoch prepared_epoch =
+        invocation.state.expected_epoch;
+    ProgramActionResolution prepared_completion =
         Completion(state_request, prepared_epoch);
     prepared_completion.cleanup_receipts.push_back(
         CleanupReceipt{
@@ -995,7 +995,7 @@ TEST(ProgramRuntime, RunsOnlyThroughTheActorActionSinkAndPublishesSprr)
             ProgramCleanupStatus::Clean,
             "state preparation cleanup"});
     ASSERT_TRUE(
-        runtime.DeliverActionCompletion(
+        runtime.DeliverActionResolution(
             std::move(prepared_completion))
             .accepted);
     EXPECT_EQ(actions->requests.size(), 1u);
@@ -1014,7 +1014,7 @@ TEST(ProgramRuntime, RunsOnlyThroughTheActorActionSinkAndPublishesSprr)
         prepared_epoch);
     EXPECT_TRUE(finish_request.cleanup_only);
 
-    ProgramActionCompletion finish_completion =
+    ProgramActionResolution finish_completion =
         Completion(finish_request, prepared_epoch);
     finish_completion.cleanup_receipts.push_back(
         CleanupReceipt{
@@ -1023,12 +1023,16 @@ TEST(ProgramRuntime, RunsOnlyThroughTheActorActionSinkAndPublishesSprr)
             "finish cleanup"});
     finish_completion.cleanup =
         ProgramCleanupStatus::CleanWithDiagnostics;
-    ASSERT_TRUE(runtime.DeliverActionCompletion(
+    ASSERT_TRUE(runtime.DeliverActionResolution(
         std::move(finish_completion)).accepted);
     EXPECT_FALSE(runtime.Pump());
 
-    const ProgramInvocationTerminalEvent* terminal =
-        events->Last<ProgramInvocationTerminalEvent>();
+    const auto taken = runtime.TakeFinishedExecution(
+        invocation.invocation_id,
+        invocation.attempt_id);
+    const ProgramExecutionFinished* terminal = taken.finished
+        ? &*taken.finished
+        : nullptr;
     ASSERT_NE(terminal, nullptr);
     EXPECT_EQ(
         terminal->status,
@@ -1040,7 +1044,7 @@ TEST(ProgramRuntime, RunsOnlyThroughTheActorActionSinkAndPublishesSprr)
         terminal->session_disposition,
         SessionDisposition::Clean);
     EXPECT_EQ(
-        terminal->origin_state_epoch,
+        terminal->workset_epoch,
         invocation.state.expected_epoch);
     ASSERT_GE(terminal->output_payload.size(), 4u);
     EXPECT_EQ(terminal->output_payload[0], Byte('S'));
@@ -1110,7 +1114,7 @@ TEST(ProgramRuntime, ProjectsOnlyVerifiedBoundedHostOperationDeadlines)
     invocation.input = BytesGraph(input_type);
 
     CancellationSource cancellation(invocation.invocation_id);
-    ASSERT_TRUE(runtime.StartInvocation(
+    ASSERT_TRUE(StartInvocation(runtime,
         InvocationRequest(invocation),
         cancellation.token(),
         events).accepted);
@@ -1121,8 +1125,8 @@ TEST(ProgramRuntime, ProjectsOnlyVerifiedBoundedHostOperationDeadlines)
     EXPECT_TRUE(actions->requests.front().bounded_host_deadline);
     EXPECT_FALSE(runtime.next_wake().has_value());
 
-    ASSERT_TRUE(runtime.DeliverActionCompletion(
-        Completion(actions->requests.front(), StateEpoch(6))).accepted);
+    ASSERT_TRUE(runtime.DeliverActionResolution(
+        Completion(actions->requests.front(), WorksetEpoch(5))).accepted);
     EXPECT_FALSE(runtime.Pump());
     ASSERT_EQ(actions->requests.size(), 2u);
     const ProgramActionRequest& request = actions->requests.back();
@@ -1182,7 +1186,7 @@ TEST(ProgramRuntime, CancellationDrivenActionsCarryNoElapsedDeadline)
     invocation.input = StepFramesGraph(1);
 
     CancellationSource cancellation(invocation.invocation_id);
-    ASSERT_TRUE(runtime.StartInvocation(
+    ASSERT_TRUE(StartInvocation(runtime,
         InvocationRequest(invocation),
         cancellation.token(),
         events).accepted);
@@ -1193,8 +1197,8 @@ TEST(ProgramRuntime, CancellationDrivenActionsCarryNoElapsedDeadline)
     EXPECT_TRUE(actions->requests.front().bounded_host_deadline);
     EXPECT_FALSE(runtime.next_wake());
 
-    ASSERT_TRUE(runtime.DeliverActionCompletion(
-        Completion(actions->requests.front(), StateEpoch(6))).accepted);
+    ASSERT_TRUE(runtime.DeliverActionResolution(
+        Completion(actions->requests.front(), WorksetEpoch(5))).accepted);
     EXPECT_FALSE(runtime.Pump());
     ASSERT_EQ(actions->requests.size(), 2u);
     const ProgramActionRequest& request = actions->requests.back();
@@ -1206,7 +1210,7 @@ TEST(ProgramRuntime, CancellationDrivenActionsCarryNoElapsedDeadline)
     EXPECT_FALSE(runtime.next_wake());
 }
 
-TEST(ProgramRuntime, RetainsTerminalCorrelationUntilActorAcknowledges)
+TEST(ProgramRuntime, RetainsFinishedExecutionUntilExactActorTake)
 {
     ProgramRuntime runtime(TestRuntimeConfig());
     ASSERT_TRUE(runtime.initialized())
@@ -1216,48 +1220,59 @@ TEST(ProgramRuntime, RetainsTerminalCorrelationUntilActorAcknowledges)
     runtime.BindActionSink(actions);
 
     const ProgramModule module =
-        Module("test.runtime.terminal-ack");
+        Module("test.runtime.execution-take");
     ASSERT_TRUE(runtime.PrepareModule(
         PreparationRequest(module), events).accepted);
     ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared);
 
     const ProgramInvocation invocation = Invocation(module);
     CancellationSource cancellation(invocation.invocation_id);
-    ASSERT_TRUE(runtime.StartInvocation(
+    ASSERT_TRUE(StartInvocation(runtime,
         InvocationRequest(invocation),
         cancellation.token(),
         events).accepted);
-    ASSERT_TRUE(runtime.DeliverActionCompletion(
-        Completion(actions->requests.front(), StateEpoch(6))).accepted);
+    ASSERT_TRUE(runtime.DeliverActionResolution(
+        Completion(
+            actions->requests.front(),
+            invocation.state.expected_epoch)).accepted);
     EXPECT_FALSE(runtime.Pump());
-    ASSERT_TRUE(runtime.DeliverActionCompletion(
-        Completion(actions->requests.back(), StateEpoch(6))).accepted);
+    ASSERT_TRUE(runtime.DeliverActionResolution(
+        Completion(
+            actions->requests.back(),
+            invocation.state.expected_epoch)).accepted);
     EXPECT_FALSE(runtime.Pump());
-    ASSERT_NE(
-        events->Last<ProgramInvocationTerminalEvent>(),
-        nullptr);
-
     const ProgramRuntimeSubmission cancellation_lost =
         runtime.RequestCancellation(invocation.invocation_id);
     EXPECT_TRUE(cancellation_lost.accepted);
-    EXPECT_TRUE(cancellation_lost.terminal_already_published);
-    EXPECT_FALSE(runtime.AcknowledgeTerminal(
+    EXPECT_TRUE(cancellation_lost.execution_already_finished);
+    const auto wrong_take = runtime.TakeFinishedExecution(
         invocation.invocation_id,
-        AttemptId(999)).accepted);
-    EXPECT_TRUE(runtime.AcknowledgeTerminal(
+        AttemptId(999));
+    EXPECT_FALSE(wrong_take.taken);
+    EXPECT_EQ(
+        wrong_take.error.code,
+        WorkerRejectionCode::InvocationMismatch);
+    EXPECT_TRUE(runtime.TakeFinishedExecution(
         invocation.invocation_id,
-        invocation.attempt_id).accepted);
+        invocation.attempt_id).taken);
+    const auto repeated_take = runtime.TakeFinishedExecution(
+        invocation.invocation_id,
+        invocation.attempt_id);
+    EXPECT_FALSE(repeated_take.taken);
+    EXPECT_EQ(
+        repeated_take.error.code,
+        WorkerRejectionCode::InvocationNotActive);
 
     ProgramInvocation next =
         Invocation(module, InvocationId(72));
     CancellationSource next_cancellation(next.invocation_id);
-    EXPECT_TRUE(runtime.StartInvocation(
+    EXPECT_TRUE(StartInvocation(runtime,
         InvocationRequest(next),
         next_cancellation.token(),
         events).accepted);
 }
 
-TEST(ProgramRuntime, RemembersCancellationDuringStatePreparation)
+TEST(ProgramRuntime, RemembersCancellationDuringBaselinePreparation)
 {
     ProgramRuntime runtime(TestRuntimeConfig());
     ASSERT_TRUE(runtime.initialized())
@@ -1277,7 +1292,7 @@ TEST(ProgramRuntime, RemembersCancellationDuringStatePreparation)
     const ProgramInvocation invocation = Invocation(module);
     CancellationSource cancellation(invocation.invocation_id);
     ASSERT_TRUE(
-        runtime.StartInvocation(
+        StartInvocation(runtime,
             InvocationRequest(invocation),
             cancellation.token(),
             events)
@@ -1291,8 +1306,8 @@ TEST(ProgramRuntime, RemembersCancellationDuringStatePreparation)
     ASSERT_TRUE(cancelled.accepted)
         << cancelled.error.message;
     ASSERT_TRUE(
-        runtime.DeliverActionCompletion(
-            Completion(state_request, StateEpoch(6)))
+        runtime.DeliverActionResolution(
+            Completion(state_request, WorksetEpoch(5)))
             .accepted);
 
     EXPECT_FALSE(runtime.Pump());
@@ -1304,13 +1319,17 @@ TEST(ProgramRuntime, RemembersCancellationDuringStatePreparation)
         ProgramHostOperation::FinishInvocation);
     EXPECT_TRUE(finish_request.cleanup_only);
     ASSERT_TRUE(
-        runtime.DeliverActionCompletion(
-            Completion(finish_request, StateEpoch(6)))
+        runtime.DeliverActionResolution(
+            Completion(finish_request, WorksetEpoch(5)))
             .accepted);
     EXPECT_FALSE(runtime.Pump());
 
-    const ProgramInvocationTerminalEvent* terminal =
-        events->Last<ProgramInvocationTerminalEvent>();
+    const auto taken = runtime.TakeFinishedExecution(
+        invocation.invocation_id,
+        invocation.attempt_id);
+    const ProgramExecutionFinished* terminal = taken.finished
+        ? &*taken.finished
+        : nullptr;
     ASSERT_NE(terminal, nullptr);
     EXPECT_EQ(
         terminal->status,
@@ -1344,13 +1363,13 @@ TEST(ProgramRuntime, RejectsMalformedSpriWithoutPublishingAnAction)
     ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared);
 
     const ProgramInvocation invocation = Invocation(module);
-    ProgramInvocationRequest malformed =
+    EncodedInvocationEnvelope malformed =
         InvocationRequest(invocation);
-    ASSERT_FALSE(malformed.invocation.input_payload.empty());
-    malformed.invocation.input_payload[0] = Byte('X');
+    ASSERT_FALSE(malformed.input_payload.empty());
+    malformed.input_payload[0] = Byte('X');
     CancellationSource cancellation(invocation.invocation_id);
     const ProgramRuntimeSubmission rejected =
-        runtime.StartInvocation(
+        StartInvocation(runtime,
             std::move(malformed),
             cancellation.token(),
             events);
@@ -1359,9 +1378,6 @@ TEST(ProgramRuntime, RejectsMalformedSpriWithoutPublishingAnAction)
         rejected.error.code,
         WorkerRejectionCode::InvalidArgument);
     EXPECT_TRUE(actions->requests.empty());
-    EXPECT_EQ(
-        events->Last<ProgramInvocationTerminalEvent>(),
-        nullptr);
 }
 
 TEST(ProgramRuntime, ReportsMalformedSprmThroughPreparationEvent)
@@ -1436,7 +1452,7 @@ TEST(ProgramRuntime, RejectedPreparationDoesNotBlockCorrectedRetry)
         nullptr);
 }
 
-TEST(ProgramRuntime, RejectsMismatchedAndTerminatesStaleStateCompletion)
+TEST(ProgramRuntime, RejectsMismatchedAndTerminatesStaleCompletion)
 {
     ProgramRuntime runtime(TestRuntimeConfig());
     ASSERT_TRUE(runtime.initialized())
@@ -1456,7 +1472,7 @@ TEST(ProgramRuntime, RejectsMismatchedAndTerminatesStaleStateCompletion)
     const ProgramInvocation invocation = Invocation(module);
     CancellationSource cancellation(invocation.invocation_id);
     ASSERT_TRUE(
-        runtime.StartInvocation(
+        StartInvocation(runtime,
             InvocationRequest(invocation),
             cancellation.token(),
             events)
@@ -1464,43 +1480,47 @@ TEST(ProgramRuntime, RejectsMismatchedAndTerminatesStaleStateCompletion)
     ASSERT_EQ(actions->requests.size(), 1u);
     const ProgramActionRequest request = actions->requests.front();
 
-    ProgramActionCompletion wrong =
-        Completion(request, StateEpoch(6));
+    ProgramActionResolution wrong =
+        Completion(request, WorksetEpoch(5));
     wrong.request_id =
         ProgramActionRequestId(request.request_id.value() + 1);
     EXPECT_FALSE(
-        runtime.DeliverActionCompletion(wrong).accepted);
-    wrong = Completion(request, StateEpoch(6));
+        runtime.DeliverActionResolution(wrong).accepted);
+    wrong = Completion(request, WorksetEpoch(5));
     wrong.operation = ProgramHostOperation::InvokeAction;
     EXPECT_FALSE(
-        runtime.DeliverActionCompletion(wrong).accepted);
-    wrong = Completion(request, StateEpoch(6));
+        runtime.DeliverActionResolution(wrong).accepted);
+    wrong = Completion(request, WorksetEpoch(5));
     wrong.attempt_id = AttemptId(999);
     EXPECT_FALSE(
-        runtime.DeliverActionCompletion(wrong).accepted);
-    wrong = Completion(request, StateEpoch(6));
-    wrong.origin_epoch = StateEpoch(4);
+        runtime.DeliverActionResolution(wrong).accepted);
+    wrong = Completion(request, WorksetEpoch(5));
+    wrong.workset_epoch = WorksetEpoch(4);
     const ProgramRuntimeSubmission stale_origin =
-        runtime.DeliverActionCompletion(wrong);
+        runtime.DeliverActionResolution(wrong);
     EXPECT_FALSE(stale_origin.accepted);
     EXPECT_EQ(
         stale_origin.error.code,
-        WorkerRejectionCode::StateEpochMismatch);
-    EXPECT_EQ(
-        events->Last<ProgramInvocationTerminalEvent>(),
-        nullptr);
+        WorkerRejectionCode::WorksetEpochMismatch);
+    EXPECT_FALSE(runtime.TakeFinishedExecution(
+        invocation.invocation_id,
+        invocation.attempt_id).taken);
 
-    ProgramActionCompletion stale = Completion(
+    ProgramActionResolution stale = Completion(
         request,
         request.expected_epoch,
-        ProgramActionCompletionStatus::StaleEpoch);
+        ProgramActionResolutionStatus::StaleEpoch);
     stale.code = "stale_epoch";
     stale.message = "state preparation observed an obsolete epoch";
     ASSERT_TRUE(
-        runtime.DeliverActionCompletion(std::move(stale))
+        runtime.DeliverActionResolution(std::move(stale))
             .accepted);
-    const ProgramInvocationTerminalEvent* terminal =
-        events->Last<ProgramInvocationTerminalEvent>();
+    const auto taken = runtime.TakeFinishedExecution(
+        invocation.invocation_id,
+        invocation.attempt_id);
+    const ProgramExecutionFinished* terminal = taken.finished
+        ? &*taken.finished
+        : nullptr;
     ASSERT_NE(terminal, nullptr);
     EXPECT_EQ(
         terminal->status,
@@ -1522,7 +1542,7 @@ TEST(ProgramRuntime, RejectsMismatchedAndTerminatesStaleStateCompletion)
     EXPECT_EQ(actions->requests.size(), 1u);
 }
 
-TEST(ProgramRuntime, RejectsMalformedCompletionAfterStatePreparation)
+TEST(ProgramRuntime, RejectsMalformedCompletionAfterBaselinePreparation)
 {
     ProgramRuntime runtime(TestRuntimeConfig());
     ASSERT_TRUE(runtime.initialized())
@@ -1542,41 +1562,41 @@ TEST(ProgramRuntime, RejectsMalformedCompletionAfterStatePreparation)
     const ProgramInvocation invocation = Invocation(module);
     CancellationSource cancellation(invocation.invocation_id);
     ASSERT_TRUE(
-        runtime.StartInvocation(
+        StartInvocation(runtime,
             InvocationRequest(invocation),
             cancellation.token(),
             events)
             .accepted);
     ASSERT_EQ(actions->requests.size(), 1u);
     ASSERT_TRUE(
-        runtime.DeliverActionCompletion(
-            Completion(actions->requests.front(), StateEpoch(6)))
+        runtime.DeliverActionResolution(
+            Completion(actions->requests.front(), WorksetEpoch(5)))
             .accepted);
     EXPECT_FALSE(runtime.Pump());
     ASSERT_EQ(actions->requests.size(), 2u);
     const ProgramActionRequest finish = actions->requests.back();
 
-    ProgramActionCompletion malformed =
-        Completion(finish, StateEpoch(6));
+    ProgramActionResolution malformed =
+        Completion(finish, WorksetEpoch(5));
     malformed.invocation_id = InvocationId(999);
     const ProgramRuntimeSubmission rejected =
-        runtime.DeliverActionCompletion(std::move(malformed));
+        runtime.DeliverActionResolution(std::move(malformed));
     EXPECT_FALSE(rejected.accepted);
     EXPECT_EQ(
         rejected.error.code,
         WorkerRejectionCode::InvocationMismatch);
-    EXPECT_EQ(
-        events->Last<ProgramInvocationTerminalEvent>(),
-        nullptr);
+    EXPECT_FALSE(runtime.TakeFinishedExecution(
+        invocation.invocation_id,
+        invocation.attempt_id).taken);
 
     ASSERT_TRUE(
-        runtime.DeliverActionCompletion(
-            Completion(finish, StateEpoch(6)))
+        runtime.DeliverActionResolution(
+            Completion(finish, WorksetEpoch(5)))
             .accepted);
     EXPECT_FALSE(runtime.Pump());
-    EXPECT_NE(
-        events->Last<ProgramInvocationTerminalEvent>(),
-        nullptr);
+    EXPECT_TRUE(runtime.TakeFinishedExecution(
+        invocation.invocation_id,
+        invocation.attempt_id).taken);
 }
 
 } // namespace

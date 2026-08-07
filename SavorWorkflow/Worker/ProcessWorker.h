@@ -160,7 +160,7 @@ struct ProcessWorkerSnapshot {
     bool session_open{ false };
     bool session_visual_intent{ false };
     runtime::SessionId session_id;
-    runtime::StateEpoch state_epoch;
+    runtime::WorksetEpoch workset_epoch;
     runtime::WorkerCapabilityMask session_capabilities{ 0 };
     runtime::WorkerState worker_state{ runtime::WorkerState::Starting };
     runtime::SessionDisposition session_disposition{ runtime::SessionDisposition::Closed };
@@ -176,6 +176,7 @@ struct ProcessWorkerSnapshot {
     std::string last_error;
     bool runtime_manifest_received{ false };
     std::optional<runtime::WorkerWorksetId> active_workset;
+    std::optional<runtime::WorkerWorksetItemId> active_workset_item;
     std::optional<runtime::WorkerWorksetId> staged_workset;
     std::uint32_t available_item_credits{ 0 };
     std::uint32_t active_and_staged_items{ 0 };
@@ -187,8 +188,6 @@ class ProcessWorker {
 public:
     using InvocationProgressCallback =
         std::function<void(const wrms::InvocationProgressPayload&)>;
-    using InvocationTerminalCallback =
-        std::function<void(const wrms::InvocationTerminalPayload&)>;
     using HostEventCallback =
         std::function<void(const wrms::HostEventPayload&)>;
     using ExecutionStateCallback =
@@ -226,10 +225,6 @@ public:
 
     bool prepare_encoded_module(
         const runtime::EncodedModuleEnvelope& module,
-        wrms::CommandResultPayload* result_out = nullptr,
-        std::uint32_t timeout_ms = 10000);
-    bool submit_encoded_invocation(
-        const runtime::EncodedInvocationEnvelope& invocation,
         wrms::CommandResultPayload* result_out = nullptr,
         std::uint32_t timeout_ms = 10000);
     bool submit_workset(
@@ -272,25 +267,26 @@ public:
         wrms::CommandResultPayload* result_out = nullptr,
         std::uint32_t timeout_ms = 0);
     bool request_screenshot(
-        runtime::SessionId session_id,
+        runtime::WorkerWorksetId workset_id,
+        runtime::WorkerWorksetItemId item_id,
         std::string output_path,
         std::uint32_t capture_timeout_ms,
         wrms::ScreenshotResultPayload* result_out = nullptr,
         std::uint32_t command_timeout_ms = 10000);
     bool pause_guest_execution(
-        runtime::SessionId session_id,
-        runtime::StateEpoch expected_state_epoch,
+        runtime::WorkerWorksetId workset_id,
+        runtime::WorkerWorksetItemId item_id,
         wrms::ExecutionResultPayload* result_out = nullptr,
         std::uint32_t operation_timeout_ms = 3000,
         std::uint32_t command_timeout_ms = 10000);
     bool resume_guest_execution(
-        runtime::SessionId session_id,
-        runtime::StateEpoch expected_state_epoch,
+        runtime::WorkerWorksetId workset_id,
+        runtime::WorkerWorksetItemId item_id,
         wrms::ExecutionResultPayload* result_out = nullptr,
         std::uint32_t command_timeout_ms = 10000);
     bool step_guest_frames(
-        runtime::SessionId session_id,
-        runtime::StateEpoch expected_state_epoch,
+        runtime::WorkerWorksetId workset_id,
+        runtime::WorkerWorksetItemId item_id,
         std::uint32_t count = 1,
         wrms::ExecutionResultPayload* result_out = nullptr,
         std::uint32_t operation_timeout_ms = 3000,
@@ -305,7 +301,6 @@ public:
     std::string last_error() const;
 
     void set_invocation_progress_callback(InvocationProgressCallback callback);
-    void set_invocation_terminal_callback(InvocationTerminalCallback callback);
     void set_host_event_callback(HostEventCallback callback);
     void set_execution_state_callback(ExecutionStateCallback callback);
     void set_workset_state_callback(WorksetStateCallback callback);
@@ -422,8 +417,8 @@ private:
         bool allow_during_stop = false);
     bool request_execution_control(
         wrms::ExecutionControlKind control,
-        runtime::SessionId session_id,
-        runtime::StateEpoch expected_state_epoch,
+        runtime::WorkerWorksetId workset_id,
+        runtime::WorkerWorksetItemId item_id,
         std::uint32_t count,
         std::uint32_t operation_timeout_ms,
         wrms::ExecutionResultPayload* result_out,
@@ -434,7 +429,7 @@ private:
     [[nodiscard]] static bool validate_execution_result(
         wrms::ExecutionControlKind control,
         runtime::SessionId session_id,
-        runtime::StateEpoch expected_state_epoch,
+        runtime::WorksetEpoch expected_workset_epoch,
         std::uint32_t requested_count,
         const wrms::ExecutionResultPayload& result,
         std::string* error_out);
@@ -514,7 +509,6 @@ private:
 
     mutable std::mutex callback_mutex_;
     InvocationProgressCallback invocation_progress_callback_;
-    InvocationTerminalCallback invocation_terminal_callback_;
     HostEventCallback host_event_callback_;
     ExecutionStateCallback execution_state_callback_;
     WorksetStateCallback workset_state_callback_;

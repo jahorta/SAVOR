@@ -16,6 +16,14 @@
 
 namespace savor::runtime::program {
 
+struct InternalProgramInvocationStartRequest
+{
+    WorkerCommandSequence command_sequence;
+    EncodedInvocationEnvelope invocation;
+    bool state_already_prepared = false;
+    std::string prepared_baseline_sha256;
+};
+
 struct ProgramRuntimeConfig
 {
     RuntimeCompatibility compatibility;
@@ -29,8 +37,8 @@ struct ProgramRuntimeConfig
     std::chrono::milliseconds bounded_host_operation_timeout{
         std::chrono::seconds(30)};
     // When present, CompleteExact is reported only after the loaded catalog
-    // exactly matches these nine production modules. Development modules and
-    // extra modules can never satisfy this contract.
+    // exactly matches this configured production module set. Development
+    // modules and extra modules can never satisfy this contract.
     std::optional<std::vector<ProgramRuntimeCatalogModule>>
         expected_exact_catalog;
 };
@@ -66,11 +74,6 @@ public:
         ModulePreparationRequest request,
         std::shared_ptr<IProgramRuntimeEventSink> events) override;
 
-    ProgramRuntimeSubmission StartInvocation(
-        ProgramInvocationRequest request,
-        CancellationToken cancellation,
-        std::shared_ptr<IProgramRuntimeEventSink> events) override;
-
     ProgramRuntimeSubmission PrepareInvocationTemplate(
         InvocationTemplatePreparationRequest request,
         PreparedInvocationTemplateReceipt& receipt) override;
@@ -92,13 +95,10 @@ public:
     void BindActionSink(
         std::shared_ptr<IProgramActionRequestSink> sink) override;
 
-    ProgramRuntimeSubmission DeliverActionCompletion(
-        ProgramActionCompletion completion) override;
+    ProgramRuntimeSubmission DeliverActionResolution(
+        ProgramActionResolution completion) override;
 
-    [[nodiscard]] std::vector<PendingStateArtifactPublication>
-        DrainPendingStateArtifactPublications() override;
-
-    ProgramRuntimeSubmission AcknowledgeTerminal(
+    [[nodiscard]] ProgramExecutionTakeResult TakeFinishedExecution(
         InvocationId invocation_id,
         AttemptId attempt_id) override;
 
@@ -115,6 +115,11 @@ public:
     [[nodiscard]] CapabilityPackRegistry& capability_packs() noexcept;
 
 private:
+    ProgramRuntimeSubmission StartInvocation(
+        InternalProgramInvocationStartRequest request,
+        CancellationToken cancellation,
+        std::shared_ptr<IProgramRuntimeEventSink> events);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

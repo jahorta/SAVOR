@@ -176,17 +176,17 @@ TEST(FakePhysicalStopBackend, RecordsHooksAndInjectsNativeAndLifecycleEvents)
     EXPECT_TRUE(sink.memory_stops[0].post_write);
 
     int jit_invalidations = 0;
-    StateEpoch restored_epoch;
+    WorksetEpoch restored_epoch;
     control->SetJitInvalidationHandler([&] { ++jit_invalidations; });
     control->SetRestoreHandler(
-        [&](StateEpoch epoch) { restored_epoch = epoch; });
+        [&](WorksetEpoch epoch) { restored_epoch = epoch; });
     EXPECT_TRUE(backend.InjectJitInvalidation());
-    EXPECT_TRUE(backend.InjectRestore(StateEpoch(11)));
+    EXPECT_TRUE(backend.InjectRestore(WorksetEpoch(11)));
     EXPECT_EQ(jit_invalidations, 1);
-    EXPECT_EQ(restored_epoch, StateEpoch(11));
+    EXPECT_EQ(restored_epoch, WorksetEpoch(11));
     EXPECT_EQ(
         control->InjectedRestoreEpochs(),
-        std::vector<StateEpoch>{StateEpoch(11)});
+        std::vector<WorksetEpoch>{WorksetEpoch(11)});
 
     const PhysicalStopBackendReceipt unbound =
         backend.UnbindNativeStopSink(sink);

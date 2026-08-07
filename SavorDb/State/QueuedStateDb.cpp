@@ -106,6 +106,34 @@ bool QueuedStateDb::DeriveSavestate(
         error_out);
 }
 
+std::optional<ArtifactRecord> QueuedStateDb::GetArtifact(
+    std::int64_t artifact_id) const {
+    return ExecuteRead<std::optional<ArtifactRecord>>(
+        [this, artifact_id]() {
+            return inner_ != nullptr ? inner_->GetArtifact(artifact_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+std::optional<ArtifactRecord> QueuedStateDb::GetArtifactBySha256(
+    std::string_view sha256) const {
+    const auto value = std::string(sha256);
+    return ExecuteRead<std::optional<ArtifactRecord>>(
+        [this, value]() {
+            return inner_ != nullptr ? inner_->GetArtifactBySha256(value) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+std::optional<SavestateRecord> QueuedStateDb::FindSavestateByArtifactId(
+    std::int64_t artifact_id) const {
+    return ExecuteRead<std::optional<SavestateRecord>>(
+        [this, artifact_id]() {
+            return inner_ != nullptr ? inner_->FindSavestateByArtifactId(artifact_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
 std::optional<SavestateRecord> QueuedStateDb::GetSavestate(
     std::int64_t savestate_id) const {
     return ExecuteRead<std::optional<SavestateRecord>>(
@@ -141,36 +169,91 @@ std::vector<SavestateDerivationRecord> QueuedStateDb::ListSavestateDerivationsBy
         {});
 }
 
-bool QueuedStateDb::CreateTasVariant(
-    const CreateTasVariantCommand& command,
-    std::int64_t* tas_variant_id_out,
+bool QueuedStateDb::CreateTasMovieRoot(
+    const CreateTasMovieRootCommand& command,
+    std::int64_t* tas_movie_root_id_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, command, tas_variant_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->CreateTasVariant(command, tas_variant_id_out, error_out) : false;
+        [this, command, tas_movie_root_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->CreateTasMovieRoot(command, tas_movie_root_id_out, error_out) : false;
         },
         false,
         error_out);
 }
 
-std::optional<TasVariantRecord> QueuedStateDb::GetTasVariant(
-    std::int64_t tas_variant_id) const {
-    return ExecuteRead<std::optional<TasVariantRecord>>(
-        [this, tas_variant_id]() {
-            return inner_ != nullptr ? inner_->GetTasVariant(tas_variant_id) : std::nullopt;
+std::optional<TasMovieRootRecord> QueuedStateDb::GetTasMovieRoot(
+    std::int64_t tas_movie_root_id) const {
+    return ExecuteRead<std::optional<TasMovieRootRecord>>(
+        [this, tas_movie_root_id]() {
+            return inner_ != nullptr ? inner_->GetTasMovieRoot(tas_movie_root_id) : std::nullopt;
         },
         std::nullopt);
 }
 
-bool QueuedStateDb::UpdateTasVariantProducedSavestate(
-    const UpdateTasVariantProducedSavestateCommand& command,
+std::optional<TasMovieRootRecord> QueuedStateDb::FindTasMovieRootBySourceRtc(
+    std::int64_t source_dtm_artifact_id,
+    std::int64_t rtc_value) const {
+    return ExecuteRead<std::optional<TasMovieRootRecord>>(
+        [this, source_dtm_artifact_id, rtc_value]() {
+            return inner_ != nullptr
+                ? inner_->FindTasMovieRootBySourceRtc(source_dtm_artifact_id, rtc_value)
+                : std::nullopt;
+        },
+        std::nullopt);
+}
+
+std::optional<TasMovieRootRecord> QueuedStateDb::FindTasMovieRootByDtmArtifactId(
+    std::int64_t dtm_artifact_id) const {
+    return ExecuteRead<std::optional<TasMovieRootRecord>>(
+        [this, dtm_artifact_id]() {
+            return inner_ != nullptr
+                ? inner_->FindTasMovieRootByDtmArtifactId(dtm_artifact_id)
+                : std::nullopt;
+        },
+        std::nullopt);
+}
+
+bool QueuedStateDb::CreateTasMovieTree(
+    const CreateTasMovieTreeCommand& command,
+    std::int64_t* tas_movie_tree_id_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, command, error_out]() {
-            return inner_ != nullptr ? inner_->UpdateTasVariantProducedSavestate(command, error_out) : false;
+        [this, command, tas_movie_tree_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->CreateTasMovieTree(command, tas_movie_tree_id_out, error_out) : false;
         },
         false,
         error_out);
+}
+
+std::optional<TasMovieTreeRecord> QueuedStateDb::GetTasMovieTree(
+    std::int64_t tas_movie_tree_id) const {
+    return ExecuteRead<std::optional<TasMovieTreeRecord>>(
+        [this, tas_movie_tree_id]() {
+            return inner_ != nullptr ? inner_->GetTasMovieTree(tas_movie_tree_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+std::optional<TasMovieTreeRecord> QueuedStateDb::FindTasMovieTreeByDtmArtifactId(
+    std::int64_t dtm_artifact_id) const {
+    return ExecuteRead<std::optional<TasMovieTreeRecord>>(
+        [this, dtm_artifact_id]() {
+            return inner_ != nullptr
+                ? inner_->FindTasMovieTreeByDtmArtifactId(dtm_artifact_id)
+                : std::nullopt;
+        },
+        std::nullopt);
+}
+
+std::vector<TasMovieTreeRecord> QueuedStateDb::ListTasMovieTreeLineage(
+    std::int64_t tas_movie_tree_id) const {
+    return ExecuteRead<std::vector<TasMovieTreeRecord>>(
+        [this, tas_movie_tree_id]() {
+            return inner_ != nullptr
+                ? inner_->ListTasMovieTreeLineage(tas_movie_tree_id)
+                : std::vector<TasMovieTreeRecord>{};
+        },
+        {});
 }
 
 std::optional<std::string> QueuedStateDb::MaterializeArtifactToDirectory(

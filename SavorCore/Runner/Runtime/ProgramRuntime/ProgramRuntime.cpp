@@ -129,35 +129,14 @@ constexpr ProgramScopeId kInvocationScope{
     {
         return false;
     }
-    const bool replaces_state =
-        invocation.state.policy !=
-        InvocationStatePolicy::ContinueSession;
-    return !replaces_state || accepted.permits_state_replacement;
-}
-
-[[nodiscard]] bool CompleteArtifact(
-    const ArtifactReferenceValue& artifact) noexcept
-{
-    return artifact.complete && !artifact.artifact_id.empty() &&
-        !artifact.content_hash.empty() &&
-        !artifact.storage_reference.empty();
+    return true;
 }
 
 [[nodiscard]] bool InvocationStateShapeAccepted(
     const InvocationStateRequest& state) noexcept
 {
-    switch (state.policy)
-    {
-    case InvocationStatePolicy::LoadArtifact:
-        return state.state_artifact &&
-            CompleteArtifact(*state.state_artifact);
-    case InvocationStatePolicy::RestoreBaseline:
-        return !state.state_artifact;
-    case InvocationStatePolicy::Boot:
-    case InvocationStatePolicy::ContinueSession:
-        return !state.state_artifact;
-    }
-    return false;
+    return state.policy == InvocationStatePolicy::RestoreBaseline ||
+        state.policy == InvocationStatePolicy::EstablishBaseline;
 }
 
 [[nodiscard]] bool RuntimeProfileConfigurationAccepted(
@@ -392,7 +371,6 @@ std::string ComputeProgramInvocationCompatibilityHashV1(
     invocation.attempt_id = {};
     invocation.state.expected_session = {};
     invocation.state.expected_epoch = {};
-    invocation.state.state_artifact.reset();
     invocation.state.session_lineage.clear();
     // Use a valid, type-neutral graph as the canonical placeholder. An empty
     // graph is not encodable and per-item input must not affect this key.
@@ -411,13 +389,13 @@ struct ProgramRuntime::Impl
     {
         PreparingState,
         Executing,
-        TerminalPublished,
+        ExecutionFinished,
     };
 
     struct ActiveInvocation
     {
         ProgramInvocation invocation;
-        StateEpoch origin_state_epoch;
+        WorksetEpoch workset_epoch;
         std::shared_ptr<const VerifiedProgramModule> verified;
         CancellationToken cancellation;
         std::shared_ptr<IProgramRuntimeEventSink> events;
@@ -433,6 +411,7 @@ struct ProgramRuntime::Impl
             SessionDisposition::Clean;
         std::vector<CleanupReceipt>
             preparation_cleanup_receipts;
+        std::optional<ProgramExecutionFinished> finished;
     };
 
     struct PreparedTemplate
@@ -460,7 +439,7 @@ struct ProgramRuntime::Impl
         {
             initialization_diagnostic =
                 "ProgramRuntime exact production catalog must contain "
-                "exactly nine unique non-development modules with complete "
+                "unique non-development modules with complete "
                 "identities and entrypoints";
             return;
         }
@@ -490,14 +469,14 @@ struct ProgramRuntime::Impl
         return ProgramActionRequestId(next_action_id++);
     }
 
-    void PublishTerminal(ProgramResult result)
+    void FinishExecution(ProgramResult result)
     {
         if (!active ||
-            active->stage == ActiveStage::TerminalPublished)
+            active->stage == ActiveStage::ExecutionFinished)
         {
             return;
         }
-        active->stage = ActiveStage::TerminalPublished;
+        active->stage = ActiveStage::ExecutionFinished;
         if (active->preparation_cleanup > result.cleanup)
             result.cleanup = active->preparation_cleanup;
         if (active->preparation_disposition >
@@ -526,39 +505,37 @@ struct ProgramRuntime::Impl
                 active->preparation_cleanup_receipts.end()));
         const EncodeResult encoded = EncodeProgramResultV1(result);
 
-        ProgramInvocationTerminalEvent terminal;
-        terminal.invocation_id = result.invocation_id;
-        terminal.attempt_id = result.attempt_id;
-        terminal.status = MapTerminal(result.infrastructure);
-        terminal.cleanup = MapCleanup(result.cleanup);
-        terminal.session_disposition = result.session_disposition;
-        terminal.origin_state_epoch = active->origin_state_epoch;
+        ProgramExecutionFinished finished;
+        finished.invocation_id = result.invocation_id;
+        finished.attempt_id = result.attempt_id;
+        finished.status = MapTerminal(result.infrastructure);
+        finished.cleanup = MapCleanup(result.cleanup);
+        finished.session_disposition = result.session_disposition;
+        finished.workset_epoch = active->workset_epoch;
         if (encoded)
-            terminal.output_payload = encoded.bytes;
+            finished.output_payload = encoded.bytes;
         else
         {
-            terminal.status =
+            finished.status =
                 InvocationTerminalStatus::InfrastructureFailure;
-            terminal.cleanup = CleanupStatus::Failed;
-            terminal.session_disposition = SessionDisposition::Tainted;
-            terminal.error = {
+            finished.cleanup = CleanupStatus::Failed;
+            finished.session_disposition = SessionDisposition::Tainted;
+            finished.error = {
                 WorkerRejectionCode::InternalFailure,
                 encoded.status.message.empty()
                     ? "ProgramResult canonical encoding failed"
                     : encoded.status.message};
         }
-        if (!terminal.error && result.infrastructure !=
+        if (!finished.error && result.infrastructure !=
                 ProgramInfrastructureStatus::Completed)
         {
-            terminal.error = {
+            finished.error = {
                 MapDiagnostic(result.infrastructure),
                 result.diagnostics.empty()
                     ? "Canonical program invocation did not complete"
                     : result.diagnostics.back().message};
         }
-        const auto events = active->events;
-        if (events)
-            events->Publish(std::move(terminal));
+        active->finished = std::move(finished);
     }
 
     ProgramRuntimeConfig config;
@@ -604,8 +581,7 @@ WorkerCapabilityMask ProgramRuntime::capabilities() const noexcept
 {
     if (!impl_->initialized || impl_->shutdown)
         return 0;
-    return WorkerCapability::ProgramInvocation |
-        WorkerCapability::WorksetDispatch;
+    return CapabilityMask(WorkerCapability::WorksetDispatch);
 }
 
 ProgramRuntimeSubmission ProgramRuntime::PrepareModule(
@@ -714,7 +690,7 @@ ProgramRuntimeSubmission ProgramRuntime::PrepareModule(
 }
 
 ProgramRuntimeSubmission ProgramRuntime::StartInvocation(
-    ProgramInvocationRequest request,
+    InternalProgramInvocationStartRequest request,
     CancellationToken cancellation,
     std::shared_ptr<IProgramRuntimeEventSink> events)
 {
@@ -764,7 +740,7 @@ ProgramRuntimeSubmission ProgramRuntime::StartInvocation(
         invocation.module != *outer_module ||
         invocation.entrypoint != request.invocation.entrypoint ||
         invocation.state.expected_epoch !=
-            request.invocation.expected_state_epoch ||
+            request.invocation.expected_workset_epoch ||
         cancellation.invocation_id() != invocation.invocation_id)
     {
         return ProgramRuntimeSubmission::Rejected(
@@ -842,7 +818,7 @@ ProgramRuntimeSubmission ProgramRuntime::StartInvocation(
 
     Impl::ActiveInvocation active;
     active.invocation = std::move(invocation);
-    active.origin_state_epoch =
+    active.workset_epoch =
         active.invocation.state.expected_epoch;
     active.verified = std::move(verified.verified);
     active.cancellation = std::move(cancellation);
@@ -920,7 +896,7 @@ ProgramRuntimeSubmission ProgramRuntime::PrepareInvocationTemplate(
             request.invocation_template.entrypoint ||
         invocation.state.expected_session ||
         invocation.state.expected_epoch ||
-        request.invocation_template.expected_state_epoch)
+        request.invocation_template.expected_workset_epoch)
     {
         return ProgramRuntimeSubmission::Rejected(
             WorkerRejectionCode::InvalidArgument,
@@ -1008,7 +984,8 @@ ProgramRuntimeSubmission ProgramRuntime::PrepareInvocationTemplate(
         ModuleIdentityToEnvelope(invocation.module),
         invocation.entrypoint,
         compatibility,
-        invocation.state.policy};
+        invocation.state.policy,
+        invocation.limits.maximum_artifacts};
     return ProgramRuntimeSubmission::Accepted();
 }
 
@@ -1038,11 +1015,14 @@ ProgramRuntimeSubmission ProgramRuntime::StartPreparedInvocation(
             WorkerRejectionCode::InvalidArgument,
             "Prepared invocation template is unknown");
     }
-    if (!request.session_id || !request.state_epoch ||
+    if (!request.session_id || !request.workset_epoch ||
         request.baseline_sha256.size() != 64 ||
         request.baseline_lineage.empty() ||
         found->second.invocation.state.session_lineage !=
-            request.baseline_lineage)
+            request.baseline_lineage ||
+        (found->second.invocation.state.policy ==
+             InvocationStatePolicy::RestoreBaseline) !=
+            request.state_already_prepared)
     {
         return ProgramRuntimeSubmission::Rejected(
             WorkerRejectionCode::InvalidArgument,
@@ -1051,7 +1031,7 @@ ProgramRuntimeSubmission ProgramRuntime::StartPreparedInvocation(
 
     ProgramInvocation invocation = found->second.invocation;
     invocation.state.expected_session = request.session_id;
-    invocation.state.expected_epoch = request.state_epoch;
+    invocation.state.expected_epoch = request.workset_epoch;
     const EncodeResult encoded = EncodeProgramInvocationV1(invocation);
     if (!encoded)
     {
@@ -1066,13 +1046,13 @@ ProgramRuntimeSubmission ProgramRuntime::StartPreparedInvocation(
     envelope.attempt_id = invocation.attempt_id;
     envelope.module = ModuleIdentityToEnvelope(invocation.module);
     envelope.entrypoint = invocation.entrypoint;
-    envelope.expected_state_epoch = request.state_epoch;
+    envelope.expected_workset_epoch = request.workset_epoch;
     envelope.input_payload = encoded.bytes;
     ProgramRuntimeSubmission started = StartInvocation(
         {
             request.command_sequence,
             std::move(envelope),
-            true,
+            request.state_already_prepared,
             request.baseline_sha256,
         },
         std::move(cancellation),
@@ -1134,9 +1114,9 @@ ProgramRuntimeSubmission ProgramRuntime::RequestCancellation(
             "Cancellation does not identify the active invocation");
     }
     if (impl_->active->stage ==
-        Impl::ActiveStage::TerminalPublished)
+        Impl::ActiveStage::ExecutionFinished)
     {
-        return ProgramRuntimeSubmission::TerminalAlreadyPublished();
+        return ProgramRuntimeSubmission::ExecutionAlreadyFinished();
     }
     if (impl_->active->executor)
     {
@@ -1163,14 +1143,14 @@ void ProgramRuntime::BindActionSink(
     impl_->action_sink = std::move(sink);
 }
 
-ProgramRuntimeSubmission ProgramRuntime::DeliverActionCompletion(
-    ProgramActionCompletion completion)
+ProgramRuntimeSubmission ProgramRuntime::DeliverActionResolution(
+    ProgramActionResolution completion)
 {
     if (!impl_->active)
     {
         return ProgramRuntimeSubmission::Rejected(
             WorkerRejectionCode::InvocationNotActive,
-            "No invocation is awaiting an action completion");
+            "No invocation is awaiting an action resolution");
     }
     if (completion.invocation_id !=
             impl_->active->invocation.invocation_id ||
@@ -1192,12 +1172,12 @@ ProgramRuntimeSubmission ProgramRuntime::DeliverActionCompletion(
                 WorkerRejectionCode::InvalidArgument,
                 "State preparation completion does not match its request");
         }
-        if (!completion.origin_epoch ||
-            completion.origin_epoch !=
+        if (!completion.workset_epoch ||
+            completion.workset_epoch !=
                 impl_->active->invocation.state.expected_epoch)
         {
             return ProgramRuntimeSubmission::Rejected(
-                WorkerRejectionCode::StateEpochMismatch,
+                WorkerRejectionCode::WorksetEpochMismatch,
                 "State preparation completion has a stale origin epoch");
         }
         impl_->active->preparation_cleanup =
@@ -1207,17 +1187,17 @@ ProgramRuntimeSubmission ProgramRuntime::DeliverActionCompletion(
         impl_->active->preparation_cleanup_receipts =
             std::move(completion.cleanup_receipts);
         if (completion.status !=
-                ProgramActionCompletionStatus::Completed)
+                ProgramActionResolutionStatus::Completed)
         {
             const ProgramInfrastructureStatus infrastructure =
                 completion.status ==
-                        ProgramActionCompletionStatus::Cancelled
+                        ProgramActionResolutionStatus::Cancelled
                 ? ProgramInfrastructureStatus::Cancelled
                 : completion.status ==
-                          ProgramActionCompletionStatus::TimedOut
+                          ProgramActionResolutionStatus::TimedOut
                 ? ProgramInfrastructureStatus::TimedOut
                 : completion.status ==
-                          ProgramActionCompletionStatus::StaleEpoch
+                          ProgramActionResolutionStatus::StaleEpoch
                 ? ProgramInfrastructureStatus::ContractFailed
                 : ProgramInfrastructureStatus::Rejected;
             ProgramResult rejected{
@@ -1245,17 +1225,9 @@ ProgramRuntimeSubmission ProgramRuntime::DeliverActionCompletion(
                 .provenance =
                     impl_->active->invocation.provenance,
             };
-            impl_->PublishTerminal(std::move(rejected));
+            impl_->FinishExecution(std::move(rejected));
             return ProgramRuntimeSubmission::Accepted();
         }
-        if (!completion.resulting_epoch)
-        {
-            return ProgramRuntimeSubmission::Rejected(
-                WorkerRejectionCode::StateEpochMismatch,
-                "State preparation returned a zero StateEpoch");
-        }
-        impl_->active->invocation.state.expected_epoch =
-            completion.resulting_epoch;
         auto executor = std::make_unique<ProgramExecutor>(
             [](const ExactDependencyIdentity& identity,
                std::span<const ProgramValueGraph> inputs,
@@ -1307,45 +1279,38 @@ ProgramRuntimeSubmission ProgramRuntime::DeliverActionCompletion(
                 : diagnostic);
     }
     impl_->active->invocation.state.expected_epoch =
-        impl_->active->executor->snapshot().state_epoch;
+        impl_->active->executor->snapshot().workset_epoch;
     return ProgramRuntimeSubmission::Accepted();
 }
 
-std::vector<PendingStateArtifactPublication>
-ProgramRuntime::DrainPendingStateArtifactPublications()
-{
-    if (!impl_->active ||
-        impl_->active->stage != Impl::ActiveStage::Executing ||
-        !impl_->active->executor)
-    {
-        return {};
-    }
-    return impl_->active->executor
-        ->DrainPendingStateArtifactPublications();
-}
-
-ProgramRuntimeSubmission ProgramRuntime::AcknowledgeTerminal(
+ProgramExecutionTakeResult ProgramRuntime::TakeFinishedExecution(
     InvocationId invocation_id,
     AttemptId attempt_id)
 {
     if (!impl_->active)
     {
-        return ProgramRuntimeSubmission::Rejected(
+        return {false, std::nullopt, {
             WorkerRejectionCode::InvocationNotActive,
-            "Canonical ProgramRuntime has no retained terminal");
+            "Canonical ProgramRuntime has no retained execution"}};
     }
     if (impl_->active->stage !=
-            Impl::ActiveStage::TerminalPublished ||
+            Impl::ActiveStage::ExecutionFinished)
+    {
+        return {};
+    }
+    if (!impl_->active->finished ||
         impl_->active->invocation.invocation_id != invocation_id ||
         impl_->active->invocation.attempt_id != attempt_id)
     {
-        return ProgramRuntimeSubmission::Rejected(
+        return {false, std::nullopt, {
             WorkerRejectionCode::InvocationMismatch,
-            "Terminal acknowledgement does not match the retained "
-            "invocation attempt");
+            "Finished-execution take does not match the retained "
+            "invocation attempt"}};
     }
+    ProgramExecutionFinished finished =
+        std::move(*impl_->active->finished);
     impl_->active.reset();
-    return ProgramRuntimeSubmission::Accepted();
+    return {true, std::move(finished), {}};
 }
 
 bool ProgramRuntime::Pump()
@@ -1431,7 +1396,7 @@ bool ProgramRuntime::Pump()
     }
     if (pumped.terminal)
     {
-        impl_->PublishTerminal(std::move(*pumped.terminal));
+        impl_->FinishExecution(std::move(*pumped.terminal));
         return false;
     }
     return pumped.runnable;
@@ -1460,7 +1425,7 @@ void ProgramRuntime::Shutdown() noexcept
     if (impl_->active)
     {
         if (impl_->active->stage !=
-            Impl::ActiveStage::TerminalPublished)
+            Impl::ActiveStage::ExecutionFinished)
         {
             ProgramResult failed{
                 .invocation_id =
@@ -1488,7 +1453,7 @@ void ProgramRuntime::Shutdown() noexcept
             };
             try
             {
-                impl_->PublishTerminal(std::move(failed));
+                impl_->FinishExecution(std::move(failed));
             }
             catch (...)
             {

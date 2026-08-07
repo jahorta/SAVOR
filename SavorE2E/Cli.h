@@ -7,10 +7,6 @@
 #include <vector>
 
 namespace savor::e2e {
-class WorkerCoordinatorPerfAccumulator;
-}
-
-namespace savor::e2e {
 
 enum class DurableLineCategory : std::uint32_t {
     Result = 1u << 0,
@@ -81,9 +77,9 @@ struct CliOptions {
     std::int64_t perf_snapshot_interval_ms = 1000;
     int repeat = 1;
     std::string load_level;
-    std::optional<int> tasmovie_rtc;
-    std::optional<int> tasmovie_rtc_min;
-    std::optional<int> tasmovie_rtc_max;
+    std::optional<std::int64_t> tasmovie_rtc;
+    std::optional<std::int64_t> tasmovie_rtc_min;
+    std::optional<std::int64_t> tasmovie_rtc_max;
     std::optional<int> seedprobe_samples_per_axis;
     std::optional<int> seedprobe_combo_attempts_per_target;
     std::optional<int> battle_fake_attack_low;
@@ -101,18 +97,19 @@ struct CliOptions {
     int battle_fake_sweep_max_input_neutral = 20;
     std::optional<std::filesystem::path> battle_fake_sweep_output;
     bool battle_macro_debug = false;
-    WorkerCoordinatorPerfAccumulator* worker_coordinator_perf = nullptr;
 };
 
 struct TasMovieRtcRange {
-    int low = 0;
-    int high = 0;
+    std::int64_t low = 0;
+    std::int64_t high = 0;
 };
 
 void PrintUsage();
 bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* error_out);
 std::filesystem::path ResolveWorkerExePath(const char* argv0);
 std::filesystem::path ResolveMigrationRoot(const std::optional<std::filesystem::path>& explicit_root);
-TasMovieRtcRange ResolveTasMovieRtcRange(const CliOptions& options, int default_value);
+TasMovieRtcRange ResolveTasMovieRtcRange(
+    const CliOptions& options,
+    std::int64_t default_value);
 
 } // namespace savor::e2e

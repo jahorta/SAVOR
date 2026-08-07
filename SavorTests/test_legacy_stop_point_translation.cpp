@@ -133,8 +133,6 @@ LogicalPcGroup LowerPcKeys(
     LogicalPcGroup lowered;
     lowered.definition.id = group_id;
     lowered.definition.source = std::move(source);
-    lowered.definition.epoch_policy =
-        StopEpochPolicy::EndOnEpochChange;
 
     auto next_subscription_id = first_subscription_id.value();
     for (const BPKey key : keys)
@@ -277,8 +275,6 @@ std::optional<ScopedMemoryGroup> LowerMemoryArmAndClear(
     lowered.legacy_watchpoint_id = arm.memwatch.id;
     lowered.definition.id = group_id;
     lowered.definition.source = std::move(source);
-    lowered.definition.epoch_policy =
-        StopEpochPolicy::EndOnEpochChange;
     lowered.definition.subscriptions.push_back({
         .id = subscription_id,
         .point = MemoryStopPointSpec{
@@ -323,8 +319,6 @@ PassiveCaptureGroup LowerCaptureSites(
     PassiveCaptureGroup lowered;
     lowered.definition.id = group_id;
     lowered.definition.source = std::move(source);
-    lowered.definition.epoch_policy =
-        StopEpochPolicy::RebindAfterRestore;
 
     auto next_subscription_id = first_subscription_id.value();
     for (const ProbeDefinition& probe : probes)
@@ -448,9 +442,6 @@ TEST(
              &lowered.gated,
              &lowered.predicates})
     {
-        EXPECT_EQ(
-            group->definition.epoch_policy,
-            StopEpochPolicy::EndOnEpochChange);
         for (const auto& subscription :
              group->definition.subscriptions)
         {

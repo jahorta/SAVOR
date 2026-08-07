@@ -147,8 +147,7 @@ StopSubscriptionDefinition MemorySubscription(
 
 StopSubscriptionGroupDefinition Group(
     std::uint64_t id,
-    std::vector<StopSubscriptionDefinition> subscriptions,
-    StopEpochPolicy epoch_policy = StopEpochPolicy::EndOnEpochChange)
+    std::vector<StopSubscriptionDefinition> subscriptions)
 {
     return {
         .id = StopSubscriptionGroupId(id),
@@ -157,7 +156,6 @@ StopSubscriptionGroupDefinition Group(
             .stable_name = "test.source." + std::to_string(id),
             .diagnostic_label = "test",
         },
-        .epoch_policy = epoch_policy,
         .subscriptions = std::move(subscriptions),
     };
 }
@@ -179,7 +177,7 @@ class StopPointRouterFixture : public testing::Test
 protected:
     void SetUp() override
     {
-        ASSERT_TRUE(router.Initialize(StateEpoch(1)).ok);
+        ASSERT_TRUE(router.Initialize(WorksetEpoch(1)).ok);
     }
 
     void TearDown() override
@@ -576,8 +574,7 @@ TEST_F(StopPointRouterFixture, RejectsInvalidGuardAndEpochAgnosticPolicies)
 
     auto pc_agnostic = router.RegisterGroup(Group(
         3,
-        {PcSubscription(3, 0x80001000u, consumer)},
-        StopEpochPolicy::EpochAgnostic));
+        {PcSubscription(3, 0x80001000u, consumer)}));
     EXPECT_FALSE(pc_agnostic.receipt.ok);
     EXPECT_EQ(
         pc_agnostic.receipt.error.code,
@@ -590,8 +587,7 @@ TEST_F(StopPointRouterFixture, RejectsInvalidGuardAndEpochAgnosticPolicies)
     };
     auto synthetic_agnostic = router.RegisterGroup(Group(
         4,
-        {std::move(synthetic)},
-        StopEpochPolicy::EpochAgnostic));
+        {std::move(synthetic)}));
     EXPECT_TRUE(synthetic_agnostic.receipt.ok)
         << synthetic_agnostic.receipt.error.message;
 }
@@ -683,7 +679,7 @@ TEST(StopPointRouter, PublishesQualifiedMissAsTypedUnclaimedEvidence)
     PhysicalStopPointManager manager(backend);
     RejectingCpuEvaluator evaluator;
     StopPointRouter router(manager, &evaluator);
-    ASSERT_TRUE(router.Initialize(StateEpoch(1)).ok);
+    ASSERT_TRUE(router.Initialize(WorksetEpoch(1)).ok);
 
     RecordingStopConsumer consumer;
     auto definition = PcSubscription(1, 0x80001000u, consumer);
@@ -831,7 +827,7 @@ TEST(StopPointRouter, InvokesTrustedCpuObserverOnceAfterFinalWakeSelection)
     observer.result =
         StopCpuObservationResult::ObservedRequiresReconcile;
     StopPointRouter router(manager, nullptr, &observer);
-    ASSERT_TRUE(router.Initialize(StateEpoch(1)).ok);
+    ASSERT_TRUE(router.Initialize(WorksetEpoch(1)).ok);
 
     RecordingStopConsumer consumer;
     auto passive = PcSubscription(1, 0x80001000u, consumer);
@@ -870,7 +866,7 @@ TEST(
     PhysicalStopPointManager manager(backend);
     HostActivityTracker host_activity;
     StopPointRouter router(manager, nullptr, nullptr, &host_activity);
-    ASSERT_TRUE(router.Initialize(StateEpoch(1)).ok);
+    ASSERT_TRUE(router.Initialize(WorksetEpoch(1)).ok);
 
     const HostActivityTracker::Snapshot before_empty =
         host_activity.snapshot();
@@ -908,7 +904,7 @@ TEST(StopPointRouter, CpuObserverFailureFailsClosedBeforeActorDelivery)
     RecordingCpuObserver observer;
     observer.result = StopCpuObservationResult::Failed;
     StopPointRouter router(manager, nullptr, &observer);
-    ASSERT_TRUE(router.Initialize(StateEpoch(1)).ok);
+    ASSERT_TRUE(router.Initialize(WorksetEpoch(1)).ok);
 
     RecordingStopConsumer consumer;
     auto definition = PcSubscription(1, 0x80001000u, consumer);
@@ -933,7 +929,7 @@ TEST(StopPointRouter, CpuEvaluationAndActorDeliveryStayOnOwnedThreads)
     PhysicalStopPointManager manager(backend);
     ThreadRecordingCpuEvaluator evaluator;
     StopPointRouter router(manager, &evaluator);
-    ASSERT_TRUE(router.Initialize(StateEpoch(1)).ok);
+    ASSERT_TRUE(router.Initialize(WorksetEpoch(1)).ok);
 
     ThreadRecordingConsumer consumer;
     auto definition = PcSubscription(1, 0x80001000u, consumer);
@@ -971,7 +967,7 @@ TEST(StopPointRouter, PublishesIngressNotificationWithoutCallingActorCode)
     ASSERT_FALSE(router.SetIngressNotifier(
         &raw_notification,
         &CountRawNotification));
-    ASSERT_TRUE(router.Initialize(StateEpoch(1)).ok);
+    ASSERT_TRUE(router.Initialize(WorksetEpoch(1)).ok);
 
     RecordingStopConsumer consumer;
     auto registration = router.RegisterGroup(
@@ -1065,59 +1061,6 @@ TEST_F(StopPointRouterFixture, AccountsPassiveDropsPerQualifiedSource)
     EXPECT_EQ(diagnostics[0].passive_drop_count, 1u);
     EXPECT_EQ(diagnostics[1].source_id, StopSourceId(20));
     EXPECT_EQ(diagnostics[1].passive_drop_count, 1u);
-}
-
-TEST_F(StopPointRouterFixture, EpochCommitEndsOrRebindsGroupsAtomically)
-{
-    RecordingStopConsumer consumer;
-    auto ending = router.RegisterGroup(Group(
-        1,
-        {PcSubscription(1, 0x80001000u, consumer)},
-        StopEpochPolicy::EndOnEpochChange));
-    auto rebinding = router.RegisterGroup(Group(
-        2,
-        {PcSubscription(2, 0x80002000u, consumer)},
-        StopEpochPolicy::RebindAfterRestore));
-    ASSERT_TRUE(ending.receipt.ok);
-    ASSERT_TRUE(rebinding.receipt.ok);
-
-    ASSERT_TRUE(router.PrepareStateReplacement(StateEpoch(1)).ok);
-    ASSERT_TRUE(router.CommitStateReplacement(StateEpoch(2)).ok);
-    EXPECT_EQ(router.state_epoch(), StateEpoch(2));
-    EXPECT_EQ(
-        router.DesiredPhysicalPlan().pcs,
-        std::vector<PhysicalPcStop>{{0x80002000u}});
-
-    const StopReleaseReceipt ended_release = ending.handle.Release();
-    EXPECT_TRUE(ended_release.ok);
-    EXPECT_TRUE(ended_release.already_released);
-    EXPECT_EQ(rebinding.handle.lease().acquisition_epoch, StateEpoch(1));
-}
-
-TEST_F(StopPointRouterFixture, StateReplacementDrainsOldEpochBeforePublishingNew)
-{
-    RecordingStopConsumer consumer;
-    auto registration = router.RegisterGroup(Group(
-        1,
-        {PcSubscription(1, 0x80001000u, consumer)},
-        StopEpochPolicy::RebindAfterRestore));
-    ASSERT_TRUE(registration.receipt.ok);
-
-    (void)backend.InjectJitPcStop(0x80001000u);
-    const auto prepared =
-        router.PrepareStateReplacement(StateEpoch(1));
-    ASSERT_TRUE(prepared.ok);
-    EXPECT_EQ(prepared.drained_event_count, 1u);
-    ASSERT_EQ(consumer.deliveries.size(), 1u);
-    EXPECT_EQ(
-        consumer.deliveries[0].event.identity.state_epoch,
-        StateEpoch(1));
-
-    ASSERT_TRUE(router.CommitStateReplacement(StateEpoch(2)).ok);
-    (void)backend.InjectJitPcStop(0x80001000u);
-    const auto current = router.DrainIngress();
-    ASSERT_EQ(current.size(), 1u);
-    EXPECT_EQ(current[0].identity.state_epoch, StateEpoch(2));
 }
 
 TEST_F(StopPointRouterFixture, OneShotHitRemovesItsPhysicalStopBeforeResume)
@@ -1239,7 +1182,7 @@ TEST(StopPointRouter, RejectsCurrentPointWhenNewSampleWasNotCapturedAtHitTime)
     PhysicalStopPointManager manager(backend);
     RejectingCpuEvaluator evaluator;
     StopPointRouter router(manager, &evaluator);
-    ASSERT_TRUE(router.Initialize(StateEpoch(1)).ok);
+    ASSERT_TRUE(router.Initialize(WorksetEpoch(1)).ok);
 
     RecordingStopConsumer consumer;
     auto wake = router.RegisterGroup(Group(
@@ -1340,6 +1283,61 @@ TEST_F(StopPointRouterFixture, RevalidatesJitAndRejectsUnmanagedBreakpointDrift)
         StopPointErrorCode::PhysicalIntegrityUnknown);
     EXPECT_FALSE(router.ingress_enabled());
     EXPECT_EQ(manager.generation(), after_revalidate);
+}
+
+TEST_F(
+    StopPointRouterFixture,
+    StoppedMovieCoreBoundaryRequiresEmptyPlanAndRejectsQueuedIngress)
+{
+    const WorksetEpoch epoch = router.workset_epoch();
+    const StopDispatchGeneration dispatch_before =
+        router.dispatch_generation();
+    const PhysicalPlanGeneration physical_before =
+        manager.generation();
+    (void)backend.InjectJitPcStop(0x80001000u);
+
+    ASSERT_TRUE(router.ValidateEmptyForMovieCoreStop().ok);
+    const StopPointLifecycleReceipt reconciled =
+        router.EnterStoppedMovieCoreBoundary();
+    ASSERT_TRUE(reconciled.ok) << reconciled.error.message;
+    EXPECT_EQ(reconciled.workset_epoch, epoch);
+    // With an empty physical plan the injected stop is passed immediately;
+    // the boundary still proves the ingress queue is empty before returning.
+    EXPECT_EQ(reconciled.drained_event_count, 0u);
+    EXPECT_GT(
+        reconciled.dispatch_generation.value(),
+        dispatch_before.value());
+    EXPECT_GT(
+        reconciled.physical_generation.value(),
+        physical_before.value());
+    EXPECT_TRUE(router.DesiredPhysicalPlan().pcs.empty());
+
+    RecordingStopConsumer consumer;
+    auto registration = router.RegisterGroup(
+        Group(1, {PcSubscription(1, 0x80001000u, consumer)}));
+    ASSERT_TRUE(registration.receipt.ok)
+        << registration.receipt.error.message;
+    ASSERT_TRUE(router.RevalidateAfterJit().ok);
+    EXPECT_EQ(router.DesiredPhysicalPlan().pcs,
+              std::vector<PhysicalPcStop>{{0x80001000u}});
+    ASSERT_TRUE(registration.handle.Release().ok);
+}
+
+TEST_F(
+    StopPointRouterFixture,
+    MovieCoreStopValidationRejectsAnInstalledProgramPlan)
+{
+    RecordingStopConsumer consumer;
+    auto registration = router.RegisterGroup(
+        Group(1, {PcSubscription(1, 0x80001000u, consumer)}));
+    ASSERT_TRUE(registration.receipt.ok);
+
+    const StopPointLifecycleReceipt rejected =
+        router.ValidateEmptyForMovieCoreStop();
+    EXPECT_FALSE(rejected.ok);
+    EXPECT_EQ(rejected.error.code, StopPointErrorCode::InvalidState);
+
+    ASSERT_TRUE(registration.handle.Release().ok);
 }
 
 TEST_F(StopPointRouterFixture, RoutingHistoryIsBounded)

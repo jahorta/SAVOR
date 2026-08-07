@@ -187,10 +187,8 @@ struct ProgramBudgets
 
 enum class InvocationStatePolicy : std::uint8_t
 {
-    Boot,
-    LoadArtifact,
     RestoreBaseline,
-    ContinueSession,
+    EstablishBaseline,
 };
 
 enum class ExecutionIntent : std::uint8_t
@@ -207,7 +205,6 @@ struct ProgramPolicySet
     bool permits_movie_recording = false;
     bool permits_capture = false;
     bool permits_replay = false;
-    bool permits_state_replacement = false;
     bool permits_resource_promotion = false;
 
     auto operator<=>(const ProgramPolicySet&) const = default;

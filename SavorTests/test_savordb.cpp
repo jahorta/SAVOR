@@ -60,17 +60,10 @@ namespace {
 savor::runtime::WorkerRuntimeManifest CompleteCoordinatorTestManifest() {
     static constexpr std::array<
         std::pair<std::string_view, std::string_view>,
-        9>
+        2>
         kModules{{
             {"soa.seed_probe", "probe"},
-            {"soa.navigation.context", "capture"},
-            {"soa.tas_movie", "play_and_checkpoint"},
-            {"soa.tas_frame_detector", "detect"},
-            {"soa.battle.context", "capture"},
-            {"soa.battle.macro_probe", "probe"},
-            {"soa.battle.single_turn", "execute"},
-            {"soa.battle.completion", "complete"},
-            {"soa.battle.results_screen", "advance"},
+            {"soa.tas_movie_validation", "validate"},
         }};
 
     savor::runtime::WorkerRuntimeManifest manifest;
@@ -159,15 +152,26 @@ TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
     using namespace savor::db::execution::workflow;
 
     const auto registry = BuildDefaultWorkflowUnitRegistry();
-    const auto* tas = registry.Find("tas_movie");
+    const auto* establish = registry.Find("tas_movie_establish_root_cursor");
+    const auto* validate_root = registry.Find("tas_movie_validate_root");
+    const auto* validate_tree = registry.Find("tas_movie_validate_tree");
     const auto* seed_probe = registry.Find("seed_probe_chain");
     const auto* battle = registry.Find("battle_chain");
-    ASSERT_NE(tas, nullptr);
+    ASSERT_NE(establish, nullptr);
+    ASSERT_NE(validate_root, nullptr);
+    ASSERT_NE(validate_tree, nullptr);
     ASSERT_NE(seed_probe, nullptr);
     ASSERT_NE(battle, nullptr);
 
-    ASSERT_EQ(tas->possible_outputs.size(), 1u);
-    EXPECT_EQ(tas->possible_outputs[0].data_kind, "state.savestate_id");
+    ASSERT_EQ(establish->required_inputs.size(), 1u);
+    EXPECT_EQ(establish->required_inputs[0].data_kind, "state_artifact.dtm_artifact_id");
+    ASSERT_EQ(establish->possible_outputs.size(), 1u);
+    EXPECT_EQ(establish->possible_outputs[0].data_kind, "analysis.tas_movie_validation_attempt_id");
+    ASSERT_EQ(validate_root->required_inputs.size(), 1u);
+    EXPECT_EQ(validate_root->required_inputs[0].data_kind, "analysis.tas_movie_validation_attempt_id");
+    ASSERT_EQ(validate_tree->required_inputs.size(), 1u);
+    EXPECT_EQ(validate_tree->required_inputs[0].data_kind, "state.tas_movie_tree_id");
+    EXPECT_EQ(registry.Find("tas_movie"), nullptr);
     ASSERT_EQ(seed_probe->required_inputs.size(), 1u);
     EXPECT_EQ(seed_probe->required_inputs[0].data_kind, "state.savestate_id");
     ASSERT_EQ(seed_probe->possible_outputs.size(), 1u);
@@ -185,24 +189,17 @@ TEST(Stage5WorkflowComposition, ValidatesTasSeedProbeBattleCompatibility) {
 
     WorkflowCompositionSpec composition;
     composition.nodes = {
-        { .node_key = "tas_1", .unit_kind = "tas_movie" },
-        { .node_key = "probe_1", .unit_kind = "seed_probe_chain" },
-        { .node_key = "battle_1", .unit_kind = "battle_chain" },
+        { .node_key = "tas_1", .unit_kind = "tas_movie_establish_root_cursor" },
     };
     composition.external_inputs = {
-        { .node_key = "tas_1", .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .ref_id = 10 },
-    };
-    composition.output_bindings = {
-        { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
-        { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
-        { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+        { .node_key = "tas_1", .input_key = "root_dtm", .data_kind = "state_artifact.dtm_artifact_id", .ref_id = 10 },
     };
 
     const auto preview = service.Preview(composition);
     EXPECT_TRUE(preview.valid);
     EXPECT_TRUE(preview.issues.empty());
-    ASSERT_EQ(preview.nodes.size(), 3u);
-    EXPECT_EQ(preview.nodes[2].resolved_inputs.size(), 2u);
+    ASSERT_EQ(preview.nodes.size(), 1u);
+    EXPECT_EQ(preview.nodes[0].resolved_inputs.size(), 1u);
 }
 
 TEST(Stage5WorkflowComposition, ReportsUnresolvedAndMismatchedInputs) {

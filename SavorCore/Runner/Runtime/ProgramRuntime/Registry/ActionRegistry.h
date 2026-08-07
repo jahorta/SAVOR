@@ -17,7 +17,7 @@ namespace savor::runtime::program {
 enum class SessionServiceCapability : std::uint32_t
 {
     None = 0,
-    State = 1u << 0,
+    Savestate = 1u << 0,
     Execution = 1u << 1,
     StopPoints = 1u << 2,
     Input = 1u << 3,
@@ -39,7 +39,6 @@ enum class ActionEffect : std::uint32_t
     MutateGuest = 1u << 1,
     AdvanceEmulation = 1u << 2,
     PublishInput = 1u << 3,
-    ReplaceState = 1u << 4,
     MoviePlayback = 1u << 5,
     MovieRecording = 1u << 6,
     Movie = (1u << 5) | (1u << 6),
@@ -54,7 +53,6 @@ enum class ActionEpochPolicy : std::uint8_t
 {
     EpochAgnostic,
     RequiresCurrentEpoch,
-    MayReplaceState,
 };
 
 enum class ActionReplayClass : std::uint8_t

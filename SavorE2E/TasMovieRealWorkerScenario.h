@@ -13,7 +13,7 @@ bool RunTasMovieRealWorkerSmoke(
     savor::db::core::DBService* db_service,
     std::string* error_out);
 
-bool RunTasMovieSeedProbeRealWorkerSmoke(
+bool RunTasMovieWithValidationRealWorkerSmoke(
     const CliOptions& options,
     const char* argv0,
     savor::db::core::DBService* db_service,

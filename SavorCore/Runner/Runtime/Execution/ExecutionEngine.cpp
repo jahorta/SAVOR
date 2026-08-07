@@ -44,7 +44,7 @@ using Clock = std::chrono::steady_clock;
         request);
 }
 
-[[nodiscard]] StateEpoch EpochOf(const ExecutionRequest& request)
+[[nodiscard]] WorksetEpoch EpochOf(const ExecutionRequest& request)
 {
     return std::visit(
         [](const auto& value) {
@@ -246,7 +246,7 @@ struct ExecutionEngine::Impl
     HostActivityTracker* host_activity = nullptr;
     std::function<Clock::time_point()> now;
     std::thread::id owner_thread;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     ExecutionSnapshot snapshot;
     std::optional<ActiveOperation> active;
     std::vector<SuspendedFrame> handlers;
@@ -257,7 +257,6 @@ struct ExecutionEngine::Impl
     std::uint64_t next_operation = 1;
     std::uint64_t next_frame = 1;
     bool initialized = false;
-    bool replacing_state = false;
     bool stopping = false;
 
     Impl(
@@ -346,7 +345,7 @@ struct ExecutionEngine::Impl
 
     void RefreshSnapshot(const BackendExecutionSnapshot* backend_snapshot = nullptr)
     {
-        snapshot.state_epoch = epoch;
+        snapshot.workset_epoch = epoch;
         snapshot.active_operation =
             active ? std::optional(active->id) : std::nullopt;
         if (active)
@@ -429,7 +428,7 @@ struct ExecutionEngine::Impl
         RefreshSnapshot();
         ExecutionHealthWarning warning;
         warning.kind = kind;
-        warning.state_epoch = epoch;
+        warning.workset_epoch = epoch;
         warning.operation_id = operation.id;
         warning.elapsed =
             std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -890,7 +889,7 @@ struct ExecutionEngine::Impl
         terminal.operation_id = operation.id;
         terminal.kind = operation.kind;
         terminal.status = status;
-        terminal.state_epoch = epoch;
+        terminal.workset_epoch = epoch;
         terminal.completed_count = operation.completed_count;
         terminal.evidence = ConvertEvidence(observed);
         terminal.stop = std::move(stop);
@@ -919,7 +918,7 @@ struct ExecutionEngine::Impl
                 status == ExecutionTerminalStatus::Paused
                 ? ExecutionTerminalStatus::Paused
                 : ExecutionTerminalStatus::CleanupFailure;
-            pause_terminal.state_epoch = epoch;
+            pause_terminal.workset_epoch = epoch;
             pause_terminal.evidence = ConvertEvidence(observed);
             pause_terminal.error =
                 pause_terminal.status == ExecutionTerminalStatus::Paused
@@ -1043,17 +1042,11 @@ struct ExecutionEngine::Impl
                 ExecutionErrorCode::RuntimeStopping,
                 "ExecutionEngine is not available");
         }
-        if (replacing_state)
-        {
-            return Error(
-                ExecutionErrorCode::InvalidState,
-                "ExecutionEngine is replacing session state");
-        }
         if (!EpochOf(request) || EpochOf(request) != epoch)
         {
             return Error(
-                ExecutionErrorCode::StateEpochMismatch,
-                "Execution request StateEpoch does not match the session");
+                ExecutionErrorCode::WorksetEpochMismatch,
+                "Execution request WorksetEpoch does not match the session");
         }
         if (ThrottleOf(request) != ExecutionThrottlePolicy::Preserve &&
             !HasExecutionCapability(
@@ -1135,6 +1128,15 @@ struct ExecutionEngine::Impl
                 return Error(
                     ExecutionErrorCode::InvalidArgument,
                     "ContinueUntil group may contain only Wake alternatives");
+            }
+            if (value.expected_movie_input_count &&
+                !HasExecutionCapability(
+                    backend.Capabilities(),
+                    BackendExecutionCapability::MovieObservation))
+            {
+                return Error(
+                    ExecutionErrorCode::Unsupported,
+                    "ContinueUntil movie input-count observation is unavailable");
             }
             break;
         }
@@ -1502,6 +1504,31 @@ struct ExecutionEngine::Impl
                 return registration;
             if (operation.pending_terminal)
                 return {};
+            const auto& request =
+                std::get<ContinueUntilRequest>(operation.request);
+            if (request.expected_movie_input_count &&
+                observed.movie_input_count >
+                    *request.expected_movie_input_count)
+            {
+                operation.pending_terminal =
+                    ExecutionTerminalStatus::CursorOverrun;
+                return {};
+            }
+            if (request.policy.movie_ended !=
+                    MovieEndedPolicy::Ignore &&
+                observed.movie_state == BackendMovieState::Ended)
+            {
+                operation.pending_terminal =
+                    ExecutionTerminalStatus::MovieEnded;
+                if (request.policy.movie_ended ==
+                    MovieEndedPolicy::Fail)
+                {
+                    operation.pending_error = Error(
+                        ExecutionErrorCode::InvalidState,
+                        "movie ended before the requested completion");
+                }
+                return {};
+            }
             return ResumeBackend();
         }
         case ExecutionOperationKind::StepFrames:
@@ -1692,7 +1719,7 @@ ExecutionEngine::~ExecutionEngine()
     }
 }
 
-BackendResult ExecutionEngine::Initialize(StateEpoch epoch)
+BackendResult ExecutionEngine::Initialize(WorksetEpoch epoch)
 {
     if (!impl_->OnOwnerThread())
     {
@@ -2207,21 +2234,39 @@ ExecutionControlReceipt ExecutionEngine::CompleteInterruptionHandler(
 
 void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
 {
-    if (!impl_->OnOwnerThread() || !impl_->active ||
-        impl_->active->pending_terminal)
+    if (!impl_->OnOwnerThread() || !impl_->active)
     {
         return;
     }
-    if (receipt.identity.state_epoch &&
-        receipt.identity.state_epoch != impl_->epoch)
+    if (impl_->active->pending_terminal)
+    {
+        const ExecutionTerminalStatus pending =
+            *impl_->active->pending_terminal;
+        if (receipt.terminal == StopRouteTerminal::WokeForeground &&
+            (pending == ExecutionTerminalStatus::CursorOverrun ||
+             pending == ExecutionTerminalStatus::MovieEnded))
+        {
+            // A routed breakpoint is the more precise terminal observation.
+            // Preserve cancellation and infrastructure terminals, but allow
+            // an in-flight pause requested for coarse movie observation to
+            // be superseded by exact routed evidence.
+            impl_->active->pending_terminal =
+                ExecutionTerminalStatus::RequestedCompletion;
+            impl_->active->pending_error.reset();
+            impl_->active->pending_stop = std::move(receipt);
+        }
+        return;
+    }
+    if (receipt.identity.workset_epoch &&
+        receipt.identity.workset_epoch != impl_->epoch)
     {
         if (receipt.event && receipt.event->authoritative)
         {
             impl_->BeginFinish(
-                ExecutionTerminalStatus::StateEpochMismatch,
+                ExecutionTerminalStatus::WorksetEpochMismatch,
                 Error(
-                    ExecutionErrorCode::StateEpochMismatch,
-                    "authoritative stop receipt belongs to another StateEpoch"),
+                    ExecutionErrorCode::WorksetEpochMismatch,
+                    "authoritative stop receipt belongs to another WorksetEpoch"),
                 std::move(receipt));
         }
         return;
@@ -2633,6 +2678,20 @@ void ExecutionEngine::Pump()
         return;
     }
 
+    if (operation.kind == ExecutionOperationKind::ContinueUntil)
+    {
+        const auto& request =
+            std::get<ContinueUntilRequest>(operation.request);
+        if (request.expected_movie_input_count &&
+            observed.movie_input_count >
+                *request.expected_movie_input_count)
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::CursorOverrun);
+            return;
+        }
+    }
+
     if (const ExecutionRequestPolicy* policy =
             PolicyOf(operation.request))
     {
@@ -2780,96 +2839,6 @@ std::optional<Clock::time_point> ExecutionEngine::next_wake() const
     return wake;
 }
 
-BackendResult ExecutionEngine::PrepareStateReplacement()
-{
-    if (!impl_->OnOwnerThread())
-    {
-        return BackendResult::Failure(
-            BackendErrorCode::InvalidState,
-            "ExecutionEngine state replacement called outside its owner thread");
-    }
-    if (!impl_->initialized || impl_->stopping ||
-        impl_->active || !impl_->handlers.empty())
-    {
-        return BackendResult::Failure(
-            BackendErrorCode::InvalidState,
-            "ExecutionEngine must be idle before state replacement");
-    }
-    const BackendExecutionSnapshot observed = impl_->Query();
-    if (!observed.result.ok)
-        return observed.result;
-    if (observed.core_state != BackendCoreState::Paused ||
-        !observed.pause_confirmed)
-    {
-        return BackendResult::Failure(
-            BackendErrorCode::InvalidState,
-            "ExecutionEngine state replacement requires a paused core");
-    }
-    impl_->replacing_state = true;
-    return BackendResult::Success();
-}
-
-BackendResult ExecutionEngine::CommitStateEpoch(StateEpoch epoch)
-{
-    if (!impl_->OnOwnerThread() || !impl_->replacing_state || !epoch)
-    {
-        return BackendResult::Failure(
-            BackendErrorCode::InvalidState,
-            "ExecutionEngine state-replacement commit is invalid");
-    }
-    BackendExecutionSnapshot observed = impl_->Query();
-    if (!observed.result.ok)
-        return observed.result;
-    if (observed.core_state != BackendCoreState::Paused ||
-        !observed.pause_confirmed)
-    {
-        BackendResult pause = impl_->CallBackend(
-            "post-replacement execution pause",
-            [&] { return impl_->backend.RequestPause(); });
-        if (!pause.ok)
-            return pause;
-        observed = impl_->Query();
-    }
-    if (!observed.result.ok)
-        return observed.result;
-    if (observed.core_state != BackendCoreState::Paused ||
-        !observed.pause_confirmed)
-    {
-        return BackendResult::Failure(
-            BackendErrorCode::OperationFailed,
-            "state replacement did not return to a confirmed paused core",
-            BackendIntegrity::Unknown);
-    }
-    impl_->epoch = epoch;
-    impl_->replacing_state = false;
-    impl_->PublishState(&observed);
-    return BackendResult::Success();
-}
-
-BackendResult ExecutionEngine::RollbackStateReplacement(StateEpoch epoch)
-{
-    if (!impl_->OnOwnerThread() || !impl_->replacing_state)
-    {
-        return BackendResult::Failure(
-            BackendErrorCode::InvalidState,
-            "ExecutionEngine state-replacement rollback is invalid");
-    }
-    impl_->epoch = epoch;
-    impl_->replacing_state = false;
-    const BackendExecutionSnapshot observed = impl_->Query();
-    if (!observed.result.ok)
-        return observed.result;
-    if (observed.core_state != BackendCoreState::Paused ||
-        !observed.pause_confirmed)
-    {
-        return BackendResult::Failure(
-            BackendErrorCode::OperationFailed,
-            "state-replacement rollback did not preserve a paused core",
-            BackendIntegrity::Unknown);
-    }
-    impl_->PublishState(&observed);
-    return BackendResult::Success();
-}
 
 BackendResult ExecutionEngine::Shutdown()
 {

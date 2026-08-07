@@ -133,10 +133,12 @@ std::vector<uint8_t> DtmFile::payload_bytes() const
     return std::vector<uint8_t>(m_bytes.begin() + static_cast<std::ptrdiff_t>(kMinHeader), m_bytes.end());
 }
 
-void DtmFile::set_recording_start_time_unix_seconds(uint64_t unix_seconds)
+void DtmFile::set_gamecube_rtc_seconds(uint32_t gamecube_rtc_seconds)
 {
     if (!m_valid) return;
-    write_le<uint64_t>(m_bytes.data() + kOffRecordingStartTime, unix_seconds + base_sec);
+    write_le<uint64_t>(
+        m_bytes.data() + kOffRecordingStartTime,
+        static_cast<uint64_t>(gamecube_rtc_seconds) + base_sec);
 }
 
 bool DtmFile::supports_gc_poll_editing(std::string* reason) const

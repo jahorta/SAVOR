@@ -263,7 +263,7 @@ public:
     static bool ValidateExecutionResult(
         wrms::ExecutionControlKind control,
         runtime::SessionId session_id,
-        runtime::StateEpoch expected_state_epoch,
+        runtime::WorksetEpoch expected_workset_epoch,
         std::uint32_t requested_count,
         const wrms::ExecutionResultPayload& result,
         std::string* error_out = nullptr)
@@ -271,7 +271,7 @@ public:
         return ProcessWorker::validate_execution_result(
             control,
             session_id,
-            expected_state_epoch,
+            expected_workset_epoch,
             requested_count,
             result,
             error_out);
@@ -280,7 +280,9 @@ public:
     static bool StartNegotiatedVisualTransport(
         ProcessWorker& worker,
         runtime::SessionId session_id,
-        runtime::StateEpoch state_epoch)
+        runtime::WorksetEpoch workset_epoch,
+        runtime::WorkerWorksetId active_workset = {},
+        runtime::WorkerWorksetItemId active_item = {})
     {
         if (worker.writer_.joinable() || worker.child_stdin_write_)
             return false;
@@ -320,9 +322,16 @@ public:
             worker.snapshot_.session_open = true;
             worker.snapshot_.session_visual_intent = true;
             worker.snapshot_.session_id = session_id;
-            worker.snapshot_.state_epoch = state_epoch;
+            worker.snapshot_.workset_epoch = workset_epoch;
             worker.snapshot_.session_capabilities = capabilities;
             worker.snapshot_.worker_state = runtime::WorkerState::Ready;
+            if (active_workset && active_item)
+            {
+                worker.snapshot_.active_workset = active_workset;
+                worker.snapshot_.active_workset_item = active_item;
+                worker.snapshot_.worker_state =
+                    runtime::WorkerState::Running;
+            }
             worker.snapshot_.session_disposition =
                 runtime::SessionDisposition::Clean;
             worker.snapshot_.execution_activity =
@@ -429,7 +438,17 @@ savor::runtime::WorkerWorksetDefinition MakeTransportTestWorkset()
         .invocation_id = {1, 5001},
         .program = phase->identity(),
     };
-    workset.baseline.state_kind = ProgramBaselineStateKind::Boot;
+    workset.baseline.artifact = ProgramBaselineArtifact{
+        .kind = ProgramBaselineArtifactKind::Savestate,
+        .state_path = "transport.sav",
+        .state_sha256 = std::string(64, 'c'),
+        .compatibility = {
+            "GEAE8E",
+            std::string(64, 'd'),
+            "dolphin-2506a",
+            "test"},
+        .lineage = {.edge = "transport", .producer = "test"},
+    };
     workset.baseline.lineage =
         phase->runtime_contract().baseline_lineage;
     workset.execution_key.module =
@@ -591,7 +610,6 @@ DevelopmentNoEffectProgram MakeDevelopmentNoEffectProgram(
         .state_policies = {
             InvocationStatePolicy::RestoreBaseline},
         .execution_intents = {ExecutionIntent::Live},
-        .permits_state_replacement = true,
     };
     ProgramModule module{
         .identity = {
@@ -917,37 +935,15 @@ TEST(
 TEST(ProcessWorkerV1, ExecutionControlsFailLocallyWithoutNegotiatedCapability)
 {
     savor::ProcessWorker worker;
-    const auto session = savor::runtime::SessionId{91};
-    const auto epoch = savor::runtime::StateEpoch{4};
+    const auto workset = savor::runtime::WorkerWorksetId{91};
+    const auto item = savor::runtime::WorkerWorksetItemId{4};
 
-    EXPECT_FALSE(worker.pause_guest_execution(session, epoch));
+    EXPECT_FALSE(worker.pause_guest_execution(workset, item));
     ExpectErrorContains(worker, "does not advertise");
-    EXPECT_FALSE(worker.resume_guest_execution(session, epoch));
+    EXPECT_FALSE(worker.resume_guest_execution(workset, item));
     ExpectErrorContains(worker, "does not advertise");
-    EXPECT_FALSE(worker.step_guest_frames(session, epoch, 1));
+    EXPECT_FALSE(worker.step_guest_frames(workset, item, 1));
     ExpectErrorContains(worker, "does not advertise");
-}
-
-TEST(ProcessWorkerV1, ScalarInvocationSubmissionFailsLocallyWithoutWriting)
-{
-    std::atomic<unsigned> observed_writes{0};
-    auto hooks = std::make_shared<savor::ProcessWorkerTestHooks>();
-    hooks->observe_writer_frame =
-        [&](savor::wrms::MessageKind,
-            std::span<const std::uint8_t>) {
-            observed_writes.fetch_add(1, std::memory_order_relaxed);
-        };
-    savor::ProcessWorker worker{hooks};
-    savor::wrms::CommandResultPayload result;
-    EXPECT_FALSE(worker.submit_encoded_invocation(
-        savor::runtime::EncodedInvocationEnvelope{},
-        &result));
-    EXPECT_EQ(
-        result.command_kind,
-        savor::wrms::MessageKind::SubmitInvocation);
-    EXPECT_EQ(result.status, savor::wrms::CommandStatus::Unsupported);
-    EXPECT_EQ(observed_writes.load(std::memory_order_relaxed), 0u);
-    ExpectErrorContains(worker, "one-item WorkerWorkset");
 }
 
 TEST(ProcessWorkerV1, LivenessProbeUsesTheDirectCommandResultPath)
@@ -985,7 +981,7 @@ TEST(ProcessWorkerV1, LivenessProbeUsesTheDirectCommandResultPath)
         savor::ProcessWorkerTestPeer::StartNegotiatedVisualTransport(
             worker,
             savor::runtime::SessionId{55},
-            savor::runtime::StateEpoch{4}));
+            savor::runtime::WorksetEpoch{4}));
 
     savor::wrms::CommandResultPayload result;
     EXPECT_TRUE(worker.probe_liveness(&result, 1000));
@@ -1069,7 +1065,7 @@ TEST(
             savor::ProcessWorkerTestPeer::StartNegotiatedVisualTransport(
                 worker,
                 savor::runtime::SessionId{55},
-                savor::runtime::StateEpoch{4}));
+                savor::runtime::WorksetEpoch{4}));
         const auto workset = MakeTransportTestWorkset();
         const savor::runtime::InitialWorksetCancellationSidecarV1
             sidecar{
@@ -1138,7 +1134,7 @@ TEST(
             savor::ProcessWorkerTestPeer::StartNegotiatedVisualTransport(
                 worker,
                 savor::runtime::SessionId{55},
-                savor::runtime::StateEpoch{4}));
+                savor::runtime::WorksetEpoch{4}));
         const auto outcome =
             worker.submit_workset_with_outcome(
                 MakeTransportTestWorkset(),
@@ -1176,7 +1172,7 @@ TEST(
             savor::ProcessWorkerTestPeer::StartNegotiatedVisualTransport(
                 worker,
                 savor::runtime::SessionId{55},
-                savor::runtime::StateEpoch{4}));
+                savor::runtime::WorksetEpoch{4}));
         const auto outcome =
             worker.submit_workset_with_outcome(
                 MakeTransportTestWorkset(),
@@ -1236,7 +1232,7 @@ TEST(
         savor::ProcessWorkerTestPeer::StartNegotiatedVisualTransport(
             worker,
             savor::runtime::SessionId{55},
-            savor::runtime::StateEpoch{4}));
+            savor::runtime::WorksetEpoch{4}));
 
     const std::thread::id delivery_thread = std::this_thread::get_id();
     auto callback_result =
@@ -1278,7 +1274,7 @@ TEST(
                 savor::wrms::InvocationTerminalStatus::Succeeded,
             .session_disposition =
                 savor::wrms::SessionDispositionCode::Clean,
-            .state_epoch = 4,
+            .workset_epoch = 4,
         }));
     ASSERT_EQ(
         callback_future.wait_for(std::chrono::seconds(2)),
@@ -1645,7 +1641,7 @@ TEST(
                 StartNegotiatedVisualTransport(
                     worker,
                     savor::runtime::SessionId{55},
-                    savor::runtime::StateEpoch{4}));
+                    savor::runtime::WorksetEpoch{4}));
         EXPECT_TRUE(
             savor::ProcessWorkerTestPeer::DeliverRuntimeManifest(
                 worker,
@@ -1688,7 +1684,7 @@ TEST(
         savor::wrms::OpenSessionResultPayload{
             .success = true,
             .session_id = 77,
-            .state_epoch = 9,
+            .workset_epoch = 9,
             .worker_state = savor::wrms::WorkerStateCode::Ready,
             .session_disposition =
                 savor::wrms::SessionDispositionCode::Clean},
@@ -1697,7 +1693,7 @@ TEST(
     const auto after = worker.latest_snapshot();
     EXPECT_EQ(after.session_open, before.session_open);
     EXPECT_EQ(after.session_id, before.session_id);
-    EXPECT_EQ(after.state_epoch, before.state_epoch);
+    EXPECT_EQ(after.workset_epoch, before.workset_epoch);
     ExpectErrorContains(worker, "unsolicited");
 }
 
@@ -1722,7 +1718,7 @@ TEST(
     const auto after = worker.latest_snapshot();
     EXPECT_EQ(after.session_open, before.session_open);
     EXPECT_EQ(after.session_id, before.session_id);
-    EXPECT_EQ(after.state_epoch, before.state_epoch);
+    EXPECT_EQ(after.workset_epoch, before.workset_epoch);
     ExpectErrorContains(worker, "invalid");
 }
 
@@ -1792,7 +1788,9 @@ TEST(
     };
 
     constexpr auto session = savor::runtime::SessionId{91};
-    constexpr auto epoch = savor::runtime::StateEpoch{4};
+    constexpr auto epoch = savor::runtime::WorksetEpoch{4};
+    constexpr auto workset = savor::runtime::WorkerWorksetId{31};
+    constexpr auto item = savor::runtime::WorkerWorksetItemId{7};
     std::mutex observed_mutex;
     std::vector<ObservedRequest> observed;
     std::atomic<bool> decoded_all{true};
@@ -1840,9 +1838,8 @@ TEST(
                             .control = it->payload.control,
                             .status =
                                 savor::wrms::CommandStatus::Succeeded,
-                            .session_id = it->payload.session_id,
-                            .state_epoch =
-                                it->payload.expected_state_epoch,
+                            .session_id = session.value(),
+                            .workset_epoch = epoch.value(),
                             .operation_id = 1000 + it->request_id,
                             .activity =
                                 savor::wrms::ExecutionActivityCode::
@@ -1866,7 +1863,9 @@ TEST(
         savor::ProcessWorkerTestPeer::StartNegotiatedVisualTransport(
             worker,
             session,
-            epoch));
+            epoch,
+            workset,
+            item));
 
     std::latch ready{2};
     std::latch go{1};
@@ -1875,8 +1874,8 @@ TEST(
         go.wait();
         savor::wrms::ExecutionResultPayload result;
         const bool succeeded = worker.step_guest_frames(
-            session,
-            epoch,
+            workset,
+            item,
             count,
             &result,
             1000,
@@ -1912,10 +1911,8 @@ TEST(
         EXPECT_EQ(
             request.payload.control,
             savor::wrms::ExecutionControlKind::StepFrame);
-        EXPECT_EQ(request.payload.session_id, session.value());
-        EXPECT_EQ(
-            request.payload.expected_state_epoch,
-            epoch.value());
+        EXPECT_EQ(request.payload.workset_id, workset.value());
+        EXPECT_EQ(request.payload.item_id, item.value());
         EXPECT_TRUE(
             request.payload.count == 2 ||
             request.payload.count == 3);
@@ -1962,12 +1959,12 @@ TEST(ProcessWorkerV1, SuccessfulExecutionResultsMustMatchControlSemantics)
     using savor::wrms::ExecutionTerminalStatusCode;
 
     const auto session = savor::runtime::SessionId{91};
-    const auto epoch = savor::runtime::StateEpoch{4};
+    const auto epoch = savor::runtime::WorksetEpoch{4};
     const ExecutionResultPayload valid_step{
         .control = ExecutionControlKind::StepFrame,
         .status = CommandStatus::Succeeded,
         .session_id = session.value(),
-        .state_epoch = epoch.value(),
+        .workset_epoch = epoch.value(),
         .operation_id = 17,
         .activity = ExecutionActivityCode::IdlePaused,
         .has_terminal_status = true,
@@ -2006,7 +2003,7 @@ TEST(ProcessWorkerV1, SuccessfulExecutionResultsMustMatchControlSemantics)
         .control = ExecutionControlKind::Resume,
         .status = CommandStatus::Succeeded,
         .session_id = session.value(),
-        .state_epoch = epoch.value(),
+        .workset_epoch = epoch.value(),
         .operation_id = 18,
         .activity = ExecutionActivityCode::InteractiveRunning,
     };
@@ -2032,7 +2029,7 @@ TEST(ProcessWorkerV1, SuccessfulExecutionResultsMustMatchControlSemantics)
         .control = ExecutionControlKind::Pause,
         .status = CommandStatus::Succeeded,
         .session_id = session.value(),
-        .state_epoch = epoch.value(),
+        .workset_epoch = epoch.value(),
         .operation_id = 19,
         .activity = ExecutionActivityCode::IdlePaused,
         .has_terminal_status = true,
@@ -2077,14 +2074,14 @@ TEST(ProcessWorkerV1, RejectedDuplicateOpenPreservesExistingSessionSnapshot)
     savor::ProcessWorker worker;
     const auto session_capabilities = savor::runtime::AddCapability(
         savor::runtime::kSlice1ProductionCapabilities,
-        savor::runtime::WorkerCapability::ProgramInvocation);
+        savor::runtime::WorkerCapability::WorksetDispatch);
 
     ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverOpenSessionResult(
         worker,
         savor::wrms::OpenSessionResultPayload{
             .success = true,
             .session_id = 71,
-            .state_epoch = 9,
+            .workset_epoch = 9,
             .capability_mask = session_capabilities,
             .worker_state = savor::wrms::WorkerStateCode::Ready,
             .session_disposition =
@@ -2093,7 +2090,7 @@ TEST(ProcessWorkerV1, RejectedDuplicateOpenPreservesExistingSessionSnapshot)
     const auto opened = worker.latest_snapshot();
     ASSERT_TRUE(opened.session_open);
     ASSERT_EQ(opened.session_id, savor::runtime::SessionId{71});
-    ASSERT_EQ(opened.state_epoch, savor::runtime::StateEpoch{9});
+    ASSERT_EQ(opened.workset_epoch, savor::runtime::WorksetEpoch{9});
 
     ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverOpenSessionResult(
         worker,
@@ -2109,7 +2106,7 @@ TEST(ProcessWorkerV1, RejectedDuplicateOpenPreservesExistingSessionSnapshot)
     const auto rejected = worker.latest_snapshot();
     EXPECT_TRUE(rejected.session_open);
     EXPECT_EQ(rejected.session_id, opened.session_id);
-    EXPECT_EQ(rejected.state_epoch, opened.state_epoch);
+    EXPECT_EQ(rejected.workset_epoch, opened.workset_epoch);
     EXPECT_EQ(rejected.session_capabilities, opened.session_capabilities);
     EXPECT_EQ(rejected.worker_state, opened.worker_state);
     EXPECT_EQ(rejected.session_disposition, opened.session_disposition);
@@ -2126,7 +2123,7 @@ TEST(ProcessWorkerV1, RuntimeDiagnosticPreservesSessionAndProgressCarriesAttempt
         savor::wrms::OpenSessionResultPayload{
             .success = true,
             .session_id = 72,
-            .state_epoch = 10,
+            .workset_epoch = 10,
             .capability_mask =
                 savor::runtime::kSlice1ProductionCapabilities,
             .worker_state = savor::wrms::WorkerStateCode::Ready,
@@ -2148,7 +2145,7 @@ TEST(ProcessWorkerV1, RuntimeDiagnosticPreservesSessionAndProgressCarriesAttempt
     const auto diagnosed = worker.latest_snapshot();
     EXPECT_EQ(diagnosed.session_open, authoritative.session_open);
     EXPECT_EQ(diagnosed.session_id, authoritative.session_id);
-    EXPECT_EQ(diagnosed.state_epoch, authoritative.state_epoch);
+    EXPECT_EQ(diagnosed.workset_epoch, authoritative.workset_epoch);
     EXPECT_EQ(
         diagnosed.session_capabilities,
         authoritative.session_capabilities);
@@ -2183,33 +2180,6 @@ TEST(ProcessWorkerV1, RuntimeDiagnosticPreservesSessionAndProgressCarriesAttempt
     EXPECT_EQ(observed_progress->attempt_id, 801u);
 }
 
-TEST(
-    ProcessWorkerV1,
-    ScalarInvocationTerminalFailsProtocolWithoutReleasingWorksetSlot)
-{
-    savor::ProcessWorker worker;
-    savor::ProcessWorkerTestPeer::SetBusyWorksetResidency(
-        worker,
-        savor::runtime::WorkerWorksetId{55});
-
-    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
-        worker,
-        savor::wrms::MessageKind::InvocationTerminal,
-        savor::wrms::InvocationTerminalPayload{
-            .invocation_id = 701,
-            .attempt_id = 801,
-            .status =
-                savor::wrms::InvocationTerminalStatus::Succeeded,
-            .session_disposition =
-                savor::wrms::SessionDispositionCode::Clean,
-            .state_epoch = 10,
-        }));
-
-    EXPECT_TRUE(worker.is_failed());
-    EXPECT_TRUE(savor::ProcessWorkerTestPeer::Busy(worker));
-    ExpectErrorContains(worker, "scalar InvocationTerminal is retired");
-}
-
 TEST(ProcessWorkerV1, ExecutionStateUpdatesSnapshotAndUsesDedicatedCallback)
 {
     savor::ProcessWorker worker;
@@ -2219,7 +2189,7 @@ TEST(ProcessWorkerV1, ExecutionStateUpdatesSnapshotAndUsesDedicatedCallback)
 
     const savor::wrms::ExecutionStatePayload running{
         .session_id = 81,
-        .state_epoch = 12,
+        .workset_epoch = 12,
         .operation_id = 501,
         .activity =
             savor::wrms::ExecutionActivityCode::InteractiveRunning,
@@ -2238,7 +2208,7 @@ TEST(ProcessWorkerV1, ExecutionStateUpdatesSnapshotAndUsesDedicatedCallback)
     EXPECT_EQ(*observed, running);
     const auto snapshot = worker.latest_snapshot();
     EXPECT_EQ(snapshot.session_id, savor::runtime::SessionId{81});
-    EXPECT_EQ(snapshot.state_epoch, savor::runtime::StateEpoch{12});
+    EXPECT_EQ(snapshot.workset_epoch, savor::runtime::WorksetEpoch{12});
     EXPECT_EQ(
         snapshot.execution_activity,
         savor::wrms::ExecutionActivityCode::InteractiveRunning);
@@ -2396,8 +2366,17 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
         .invocation_id = {1, 501},
         .program = phase->identity(),
     };
-    workset.baseline.state_kind =
-        savor::runtime::ProgramBaselineStateKind::Boot;
+    workset.baseline.artifact = savor::runtime::ProgramBaselineArtifact{
+        .kind = savor::runtime::ProgramBaselineArtifactKind::Savestate,
+        .state_path = "transport.sav",
+        .state_sha256 = std::string(64, 'c'),
+        .compatibility = {
+            "GEAE8E",
+            std::string(64, 'd'),
+            "dolphin-2506a",
+            "test"},
+        .lineage = {.edge = "transport", .producer = "test"},
+    };
     workset.baseline.lineage =
         phase->runtime_contract().baseline_lineage;
     workset.execution_key.module =
@@ -2498,9 +2477,6 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
     EXPECT_TRUE(savor::runtime::HasCapability(
         capabilities,
         savor::runtime::WorkerCapability::Shutdown));
-    EXPECT_FALSE(savor::runtime::HasCapability(
-        capabilities,
-        savor::runtime::WorkerCapability::ProgramInvocation));
     EXPECT_TRUE(savor::runtime::HasCapability(
         capabilities,
         savor::runtime::WorkerCapability::InteractiveVisualDebug));
@@ -2653,8 +2629,6 @@ TEST(
         &launch_error)) << launch_error;
     ASSERT_TRUE(worker.has_process_capability(
         savor::runtime::WorkerCapability::WorksetDispatch));
-    EXPECT_FALSE(worker.has_process_capability(
-        savor::runtime::WorkerCapability::ProgramInvocation));
     const auto initial_manifest = worker.runtime_manifest();
     ASSERT_TRUE(initial_manifest.has_value());
     EXPECT_EQ(
@@ -2676,7 +2650,7 @@ TEST(
         120000)) << open_error;
     ASSERT_TRUE(opened.success);
     ASSERT_NE(opened.session_id, 0u);
-    ASSERT_NE(opened.state_epoch, 0u);
+    ASSERT_EQ(opened.workset_epoch, 0u);
 
     savor::wrms::CommandResultPayload prepared;
     ASSERT_TRUE(worker.prepare_encoded_module(
@@ -2709,15 +2683,12 @@ TEST(
         initial_manifest->catalog_sha256);
 
     savor::runtime::ProgramBaselineDefinition baseline{
-        .state_kind =
-            savor::runtime::ProgramBaselineStateKind::Artifact,
         .artifact =
             savor::runtime::ProgramBaselineArtifact{
+                .kind = savor::runtime::ProgramBaselineArtifactKind::Savestate,
                 .state_path = state_path,
                 .state_sha256 =
                     Sha256FileStreaming(state_path),
-                .movie_mode =
-                    savor::runtime::ExternalMovieImportMode::NoMovie,
                 .compatibility = {
                     .game_id = std::string(
                         savor::runtime::program::capabilities::
@@ -2821,14 +2792,6 @@ TEST(
         first_lifecycle_promise->get_future();
     auto first_lifecycle_signalled =
         std::make_shared<std::atomic<bool>>(false);
-    std::atomic<bool> scalar_terminal_seen{false};
-    worker.set_invocation_terminal_callback(
-        [&](const savor::wrms::InvocationTerminalPayload&)
-        {
-            scalar_terminal_seen.store(
-                true,
-                std::memory_order_release);
-        });
     worker.set_workset_item_started_callback(
         [started_promise,
          first_lifecycle_promise,
@@ -2936,12 +2899,12 @@ TEST(
         started.attempt_id,
         program.invocation.attempt_id.value());
     EXPECT_EQ(started.session_id, opened.session_id);
-    EXPECT_GT(started.state_epoch, opened.state_epoch);
+    EXPECT_GT(started.workset_epoch, opened.workset_epoch);
     EXPECT_EQ(
         started.baseline_sha256,
         workset.execution_key.baseline.sha256);
     EXPECT_EQ(started.baseline_lineage, kBaselineLineage);
-    EXPECT_FALSE(started.baseline_restored);
+    EXPECT_FALSE(started.baseline_state_established);
 
     ASSERT_EQ(
         terminal_future.wait_for(std::chrono::seconds(180)),
@@ -3014,8 +2977,6 @@ TEST(
     EXPECT_GT(
         summary.outbound_sequence,
         terminal.terminal.outbound_sequence);
-    EXPECT_FALSE(
-        scalar_terminal_seen.load(std::memory_order_acquire));
     EXPECT_GE(
         worker.latest_snapshot().last_outbound_sequence,
         summary.outbound_sequence);

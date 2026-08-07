@@ -37,7 +37,6 @@ enum class GuestMutationStatus : std::uint8_t
     Active,
     Restored,
     Committed,
-    SupersededByStateReplacement,
     Failed,
 };
 
@@ -46,7 +45,7 @@ struct GuestMutationRequest
     MutationOwnerId owner;
     MutationScopeId scope;
     std::optional<GuestMutationId> parent;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::uint32_t address = 0;
     GuestScalarWidth width = GuestScalarWidth::U32;
     std::uint64_t expected = 0;
@@ -64,7 +63,7 @@ struct GuestMutationReceipt
     GuestMutationId mutation;
     MutationOwnerId owner;
     MutationScopeId scope;
-    StateEpoch epoch;
+    WorksetEpoch epoch;
     std::uint32_t address = 0;
     GuestScalarWidth width = GuestScalarWidth::U32;
     std::uint64_t original = 0;
@@ -91,20 +90,18 @@ public:
         GuestMemory& memory,
         IGuestMemoryBackendPort& backend);
 
-    void CommitStateEpoch(StateEpoch epoch) noexcept;
+    void InitializeWorksetEpoch(WorksetEpoch epoch) noexcept;
     [[nodiscard]] GuestMutationReceipt Apply(
         const GuestMutationRequest& request);
     [[nodiscard]] GuestMutationReceipt Restore(
         GuestMutationId mutation,
-        StateEpoch epoch);
+        WorksetEpoch epoch);
     [[nodiscard]] GuestMutationReceipt Commit(
         GuestMutationId mutation,
-        StateEpoch epoch);
-    [[nodiscard]] std::vector<GuestMutationReceipt>
-    SupersedeForStateReplacement(StateEpoch old_epoch);
+        WorksetEpoch epoch);
     [[nodiscard]] std::vector<GuestMutationReceipt> RestoreScope(
         MutationScopeId scope,
-        StateEpoch epoch);
+        WorksetEpoch epoch);
     [[nodiscard]] GuestMutationCleanupReceipt RestoreAll();
     [[nodiscard]] GuestMutationCleanupReceipt Shutdown() noexcept;
 
@@ -143,7 +140,7 @@ private:
     GuestMemory& memory_;
     IGuestMemoryBackendPort& backend_;
     std::thread::id owner_thread_;
-    StateEpoch epoch_;
+    WorksetEpoch epoch_;
     std::uint64_t next_mutation_ = 1;
     std::size_t next_acquisition_sequence_ = 1;
     std::unordered_map<std::uint64_t, MutationState> mutations_;
