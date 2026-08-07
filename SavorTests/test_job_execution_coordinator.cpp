@@ -1491,4 +1491,64 @@ TEST(
     workers.Stop();
 }
 
+TEST(
+    JobExecutionCoordinator,
+    TerminalItemCancellationRaceRequiresExactTypedRejection) {
+    using savor::runner::parallel::savordb::WorkerCommandDisposition;
+    using savor::runner::parallel::savordb::WorkerCommandKind;
+    using savor::runner::parallel::savordb::WorkerCommandResult;
+
+    WorkerCommandResult result{
+        .disposition = WorkerCommandDisposition::DefiniteRejected,
+        .command_kind = WorkerCommandKind::CancelWorksetItem,
+        .rejection_code =
+            savor::wrms::RejectionCode::WorksetItemAlreadyTerminal,
+        .diagnostic = "Workset item is already terminal",
+    };
+    EXPECT_TRUE(result.terminal_item_cancellation_race());
+
+    result.rejection_code = savor::wrms::RejectionCode::DuplicateCancellation;
+    EXPECT_FALSE(result.terminal_item_cancellation_race());
+    auto failure = savor::runner::parallel::savordb::detail::
+        DescribeCancellationDeliveryFailure(result);
+    EXPECT_STREQ(
+        failure.warning_message,
+        "Worker cancellation was already requested");
+    EXPECT_STREQ(
+        failure.error_code,
+        "WORKER_CANCELLATION_ALREADY_REQUESTED");
+
+    result.rejection_code =
+        savor::wrms::RejectionCode::WorksetItemAlreadyTerminal;
+    result.command_kind = WorkerCommandKind::CancelWorkset;
+    EXPECT_FALSE(result.terminal_item_cancellation_race());
+
+    result.command_kind = WorkerCommandKind::CancelWorksetItem;
+    result.disposition = WorkerCommandDisposition::AmbiguousAfterWrite;
+    EXPECT_FALSE(result.terminal_item_cancellation_race());
+    failure = savor::runner::parallel::savordb::detail::
+        DescribeCancellationDeliveryFailure(result);
+    EXPECT_STREQ(
+        failure.warning_message,
+        "Worker cancellation outcome was ambiguous after write");
+    EXPECT_STREQ(
+        failure.error_code,
+        "WORKER_CANCELLATION_AMBIGUOUS_AFTER_WRITE");
+
+    result.disposition = WorkerCommandDisposition::NotFound;
+    failure = savor::runner::parallel::savordb::detail::
+        DescribeCancellationDeliveryFailure(result);
+    EXPECT_STREQ(
+        failure.warning_message,
+        "Worker cancellation route was not found");
+
+    result.disposition = WorkerCommandDisposition::DefiniteRejected;
+    result.rejection_code = savor::wrms::RejectionCode::WorksetNotFound;
+    failure = savor::runner::parallel::savordb::detail::
+        DescribeCancellationDeliveryFailure(result);
+    EXPECT_STREQ(
+        failure.warning_message,
+        "Worker cancellation workset was not resident");
+}
+
 } // namespace

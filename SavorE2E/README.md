@@ -21,8 +21,8 @@ SavorE2E \
 ```
 `--scenario` is optional, defaults to `seedprobe`.
 You can pass it multiple times or use `--scenario all` to run `seedprobe`.
-Both TAS Movie scenarios are intentionally excluded from `all` and must be
-requested alone.
+All three TAS Movie scenarios are intentionally excluded from `all` and must
+be requested alone.
 Optional:
 
 - `--migration-root <path-to-SavorDb/migration>`
@@ -59,6 +59,23 @@ liveness probes remain bounded host operations.
     artifact-atomic worksets distinct nonzero workset epochs,
   - independently verifies the RTC-patched DTM hash and durable typed `Valid`
     root/checkpoint/sidecar publication or `Invalid` quarantine result.
+- `tasmovie_seedprobe`
+  - starts from a fresh database and accepts one handcrafted `--dtm-file`, one
+    exact `--tasmovie-rtc`, 1–30 workers, and the normal SeedProbe sample and
+    combo-attempt options; it rejects an external savestate,
+  - authors one four-node graph whose guarded typed edges connect root-cursor
+    establishment to root validation, checkpoint sterilization, and then
+    `battle_seed_probe`,
+  - preserves the canonical movie-paired `.sav`/`.dtm` checkpoint and routes
+    the derived movie-inactive `.sav` with no sidecar into SeedProbe,
+  - holds execution until the requested worker fleet is ready, while every
+    unit still executes as an independent artifact-atomic workset,
+  - requires `Valid` root/checkpoint/sidecar publication and proves that the
+    SeedProbe run consumed that exact checkpoint and published accepted input
+    evidence,
+  - reports a typed TAS Movie `Invalid` as scenario failure after guarded
+    downstream units are skipped, while preserving the successful business job
+    and quarantine/alert evidence.
 - `seedprobe`
   - starts DB contexts through `DBService`,
   - seeds a starting savestate in StateDB,

@@ -213,11 +213,15 @@ TEST_F(SqliteDbFixture, TasMoviePersistenceStateRootTreeIdentityAndLineageAreImm
     const auto child_dtm = StoreArtifact(state, Sha('5'), ".dtm", "DTM", 5);
     const auto child_itinerary = StoreArtifact(state, Sha('6'), ".tmi", "TAS_MOVIE_ITINERARY", 6);
     const auto grandchild_dtm = StoreArtifact(state, Sha('7'), ".dtm", "DTM", 7);
+    const auto child_sav_artifact = StoreArtifact(state, Sha('8'), ".sav", "SAV", 8);
+    const auto grandchild_sav_artifact = StoreArtifact(state, Sha('9'), ".sav", "SAV", 9);
 
     std::string error;
     std::int64_t savestate_id = 0;
     const CreateSavestateCommand savestate{
         .artifact_id = sav_artifact,
+        .playback_state = SavestatePlaybackState::MoviePaired,
+        .dtm_artifact_id = root_dtm,
         .savestate_type = "TAS_MOVIE_ROOT_CHECKPOINT",
         .note = "canonical root checkpoint",
         .is_complete = true,
@@ -230,6 +234,30 @@ TEST_F(SqliteDbFixture, TasMoviePersistenceStateRootTreeIdentityAndLineageAreImm
     ASSERT_TRUE(state->CreateSavestate(savestate, &repeated_savestate_id, &error)) << error;
     EXPECT_EQ(repeated_savestate_id, savestate_id);
     ASSERT_TRUE(state->FindSavestateByArtifactId(sav_artifact).has_value());
+    std::int64_t child_savestate_id = 0;
+    ASSERT_TRUE(state->CreateSavestate({
+        .artifact_id = child_sav_artifact,
+        .playback_state = SavestatePlaybackState::MoviePaired,
+        .dtm_artifact_id = child_dtm,
+        .savestate_type = "TAS_MOVIE_TREE_CHECKPOINT",
+        .note = "child checkpoint",
+        .is_complete = true,
+        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(11)),
+        .correlation_id = "tas-movie-persistence-test",
+        .causation_id = "test",
+    }, &child_savestate_id, &error)) << error;
+    std::int64_t grandchild_savestate_id = 0;
+    ASSERT_TRUE(state->CreateSavestate({
+        .artifact_id = grandchild_sav_artifact,
+        .playback_state = SavestatePlaybackState::MoviePaired,
+        .dtm_artifact_id = grandchild_dtm,
+        .savestate_type = "TAS_MOVIE_TREE_CHECKPOINT",
+        .note = "grandchild checkpoint",
+        .is_complete = true,
+        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(12)),
+        .correlation_id = "tas-movie-persistence-test",
+        .causation_id = "test",
+    }, &grandchild_savestate_id, &error)) << error;
 
     const CreateTasMovieRootCommand root_command{
         .source_dtm_artifact_id = source_dtm,
@@ -270,7 +298,7 @@ TEST_F(SqliteDbFixture, TasMoviePersistenceStateRootTreeIdentityAndLineageAreImm
         .dtm_artifact_id = child_dtm,
         .itinerary_artifact_id = child_itinerary,
         .required_final_breakpoint_pc = kRootPc,
-        .checkpoint_savestate_id = savestate_id,
+        .checkpoint_savestate_id = child_savestate_id,
         .source_context_kind = "tas_movie_round",
         .source_context_id = 60,
         .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(12)),
@@ -281,6 +309,7 @@ TEST_F(SqliteDbFixture, TasMoviePersistenceStateRootTreeIdentityAndLineageAreImm
     ASSERT_TRUE(state->CreateTasMovieTree(child, &child_id, &error)) << error;
     child.parent_tas_movie_tree_id = child_id;
     child.dtm_artifact_id = grandchild_dtm;
+    child.checkpoint_savestate_id = grandchild_savestate_id;
     child.source_context_id = 61;
     std::int64_t grandchild_id = 0;
     ASSERT_TRUE(state->CreateTasMovieTree(child, &grandchild_id, &error)) << error;
@@ -300,6 +329,140 @@ TEST_F(SqliteDbFixture, TasMoviePersistenceStateRootTreeIdentityAndLineageAreImm
     });
     EXPECT_EQ(root_events, 1);
     EXPECT_EQ(tree_events, 2);
+}
+
+TEST_F(SqliteDbFixture, TasMovieCheckpointSterilizationIsTypedCanonicalAndRecoverable)
+{
+    auto* state = db_service_->StateDb();
+    auto* analysis = db_service_->AnalysisDb();
+    ASSERT_NE(state, nullptr);
+    ASSERT_NE(analysis, nullptr);
+    const auto dtm = StoreArtifact(state, Sha('a'), ".dtm", "DTM", 101);
+    const auto paired_sav = StoreArtifact(state, Sha('b'), ".sav", "SAV", 102);
+    const auto inactive_sav = StoreArtifact(state, Sha('c'), ".sav", "SAV", 103);
+    std::string error;
+
+    EXPECT_FALSE(state->CreateSavestate({
+        .artifact_id = paired_sav,
+        .playback_state = SavestatePlaybackState::MoviePaired,
+        .savestate_type = "BAD_PAIRED",
+        .is_complete = true,
+        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(101)),
+    }, nullptr, &error));
+    EXPECT_FALSE(state->CreateSavestate({
+        .artifact_id = inactive_sav,
+        .playback_state = SavestatePlaybackState::MovieInactive,
+        .dtm_artifact_id = dtm,
+        .savestate_type = "BAD_INACTIVE",
+        .is_complete = true,
+        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(102)),
+    }, nullptr, &error));
+
+    std::int64_t source_id = 0;
+    ASSERT_TRUE(state->CreateSavestate({
+        .artifact_id = paired_sav,
+        .playback_state = SavestatePlaybackState::MoviePaired,
+        .dtm_artifact_id = dtm,
+        .savestate_type = "TAS_MOVIE_ROOT_CHECKPOINT",
+        .note = "source",
+        .is_complete = true,
+        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(103)),
+        .correlation_id = "sterilization-test",
+        .causation_id = "test",
+    }, &source_id, &error)) << error;
+
+    CreateOrGetSterilizedCheckpointCommand create{
+        .from_savestate_id = source_id,
+        .artifact = {
+            .sha256 = Sha('c'),
+            .size_bytes = 103,
+            .compression_kind = 0,
+            .filename = "tas-movie-artifact-103.sav",
+            .file_ext = ".sav",
+            .artifact_kind = "SAV",
+            .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(104)),
+            .correlation_id = "sterilization-test",
+            .causation_id = "test",
+        },
+        .savestate_type = "TAS_MOVIE_STERILIZED_CHECKPOINT",
+        .note = "inactive",
+        .method_kind = "tasmovie.checkpoint_sterilize.v1",
+        .source_context_kind = "tmv_checkpoint_sterilization_request",
+        .source_context_id = 200,
+        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(104)),
+        .correlation_id = "sterilization-test",
+        .causation_id = "test",
+    };
+    CreateOrGetSterilizedCheckpointReceipt first{};
+    ASSERT_TRUE(state->CreateOrGetSterilizedCheckpoint(
+        create, &first, &error)) << error;
+    EXPECT_TRUE(first.created);
+    CreateOrGetSterilizedCheckpointReceipt repeated{};
+    ASSERT_TRUE(state->CreateOrGetSterilizedCheckpoint(
+        create, &repeated, &error)) << error;
+    EXPECT_FALSE(repeated.created);
+    EXPECT_EQ(repeated.savestate_id, first.savestate_id);
+    EXPECT_EQ(repeated.derivation_id, first.derivation_id);
+    const auto result = state->GetSavestate(first.savestate_id);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->playback_state, SavestatePlaybackState::MovieInactive);
+    EXPECT_FALSE(result->dtm_artifact_id.has_value());
+    const auto derivation = state->FindSavestateDerivationBySourceAndMethod(
+        source_id, "tasmovie.checkpoint_sterilize.v1");
+    ASSERT_TRUE(derivation.has_value());
+    EXPECT_EQ(derivation->to_savestate_id, first.savestate_id);
+
+    const auto phase = savor::runtime::tasmovie::
+        TasMovieCheckpointSterilizationFullPhaseDefinitionV1();
+    const CreateTasMovieCheckpointSterilizationRequestCommand request{
+        .materialization_key = "sterilization-request-200",
+        .workflow_instance_id = 200,
+        .workflow_step_id = 201,
+        .source_savestate_id = source_id,
+        .source_savestate_artifact_id = paired_sav,
+        .source_savestate_sha256 = Sha('b'),
+        .source_dtm_artifact_id = dtm,
+        .source_dtm_sha256 = Sha('a'),
+        .full_phase_program_kind = phase->identity().program_kind,
+        .full_phase_program_version = phase->identity().program_version,
+        .full_phase_canonical_id = phase->identity().canonical_id,
+        .full_phase_contract_revision = phase->identity().contract_revision,
+        .full_phase_sha256 = phase->identity().canonical_sha256,
+        .module_canonical_id = phase->runtime_contract().module.canonical_id,
+        .module_revision = phase->runtime_contract().module.revision,
+        .module_sha256 = phase->runtime_contract().module.canonical_hash,
+        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(105)),
+    };
+    std::int64_t request_id = 0;
+    ASSERT_TRUE(analysis->CreateTasMovieCheckpointSterilizationRequest(
+        request, &request_id, &error)) << error;
+    std::int64_t repeated_request = 0;
+    ASSERT_TRUE(analysis->CreateTasMovieCheckpointSterilizationRequest(
+        request, &repeated_request, &error)) << error;
+    EXPECT_EQ(repeated_request, request_id);
+    ASSERT_EQ(analysis->GetTasMovieCheckpointSterilizationRequestForWorkflowStep(
+        201)->sterilization_request_id, request_id);
+
+    RecordTasMovieCheckpointSterilizationAttemptCommand attempt{
+        .sterilization_request_id = request_id,
+        .source_job_id = 300,
+        .worker_terminal_sha256 = Sha('d'),
+        .candidate_savestate_sha256 = Sha('c'),
+        .produced_savestate_id = first.savestate_id,
+        .worker_id = "worker-sterilize",
+        .worker_process_generation = 4,
+        .workset_epoch = 5,
+        .recorded_at_utc = types::UtcTimePoint(std::chrono::milliseconds(106)),
+    };
+    std::int64_t attempt_id = 0;
+    ASSERT_TRUE(analysis->RecordTasMovieCheckpointSterilizationAttempt(
+        attempt, &attempt_id, &error)) << error;
+    std::int64_t repeated_attempt = 0;
+    ASSERT_TRUE(analysis->RecordTasMovieCheckpointSterilizationAttempt(
+        attempt, &repeated_attempt, &error)) << error;
+    EXPECT_EQ(repeated_attempt, attempt_id);
+    ASSERT_EQ(analysis->FindTasMovieCheckpointSterilizationAttempt(
+        300, Sha('d'))->produced_savestate_id, first.savestate_id);
 }
 
 TEST_F(SqliteDbFixture, TasMoviePersistenceAnalysisLedgerQuarantinesAndRestoresExactBytes)
@@ -721,9 +884,23 @@ TEST_F(
         },
     });
     EXPECT_EQ(decision.final_job_state, "SUCCEEDED");
-    ASSERT_EQ(decision.outputs.size(), 1u);
+    ASSERT_EQ(decision.outputs.size(), 2u);
+    const auto attempt_output = std::find_if(
+        decision.outputs.begin(), decision.outputs.end(),
+        [](const auto& output) {
+            return output.output_key == "tas_movie_validation_attempt";
+        });
+    const auto established_output = std::find_if(
+        decision.outputs.begin(), decision.outputs.end(),
+        [](const auto& output) {
+            return output.output_key
+                == "established_root_cursor_attempt";
+        });
+    ASSERT_NE(attempt_output, decision.outputs.end());
+    ASSERT_NE(established_output, decision.outputs.end());
+    EXPECT_EQ(established_output->ref_id, attempt_output->ref_id);
     const auto attempt = analysis->GetTasMovieValidationAttempt(
-        decision.outputs.front().ref_id);
+        attempt_output->ref_id);
     ASSERT_TRUE(attempt.has_value());
     EXPECT_EQ(
         attempt->outcome,
@@ -750,6 +927,7 @@ TEST_F(
         ProgramResultRecoveryDisposition::Recovered);
     ASSERT_TRUE(recovered.decision.has_value());
     EXPECT_EQ(recovered.decision->final_job_state, "SUCCEEDED");
+    ASSERT_EQ(recovered.decision->outputs.size(), 2u);
 
     SaveWorkflowGraphResult root_graph{};
     ASSERT_TRUE(authoring->SaveWorkflowGraph(
@@ -1070,14 +1248,30 @@ TEST_F(
         },
     });
     EXPECT_EQ(valid_decision.final_job_state, "SUCCEEDED");
-    ASSERT_EQ(valid_decision.outputs.size(), 1u);
+    ASSERT_EQ(valid_decision.outputs.size(), 2u);
+    const auto valid_attempt_output = std::find_if(
+        valid_decision.outputs.begin(), valid_decision.outputs.end(),
+        [](const auto& output) {
+            return output.output_key == "tas_movie_validation_attempt";
+        });
+    const auto checkpoint_output = std::find_if(
+        valid_decision.outputs.begin(), valid_decision.outputs.end(),
+        [](const auto& output) {
+            return output.output_key
+                == "validated_checkpoint_savestate";
+        });
+    ASSERT_NE(valid_attempt_output, valid_decision.outputs.end());
+    ASSERT_NE(checkpoint_output, valid_decision.outputs.end());
     const auto valid_attempt = analysis->GetTasMovieValidationAttempt(
-        valid_decision.outputs.front().ref_id);
+        valid_attempt_output->ref_id);
     ASSERT_TRUE(valid_attempt.has_value());
     ASSERT_TRUE(valid_attempt->produced_tas_movie_root_id.has_value());
     const auto root = state->GetTasMovieRoot(
         *valid_attempt->produced_tas_movie_root_id);
     ASSERT_TRUE(root.has_value());
+    EXPECT_EQ(
+        checkpoint_output->ref_id,
+        root->checkpoint_savestate_id);
     EXPECT_EQ(root->rtc_value, 7);
     EXPECT_EQ(root->source_dtm_artifact_id, source_artifact_id);
     EXPECT_EQ(
@@ -1103,6 +1297,20 @@ TEST_F(
         recovered_valid.disposition,
         ProgramResultRecoveryDisposition::Recovered);
     ASSERT_TRUE(recovered_valid.decision.has_value());
+    ASSERT_EQ(recovered_valid.decision->outputs.size(), 2u);
+    const auto recovered_checkpoint_output = std::find_if(
+        recovered_valid.decision->outputs.begin(),
+        recovered_valid.decision->outputs.end(),
+        [](const auto& output) {
+            return output.output_key
+                == "validated_checkpoint_savestate";
+        });
+    ASSERT_NE(
+        recovered_checkpoint_output,
+        recovered_valid.decision->outputs.end());
+    EXPECT_EQ(
+        recovered_checkpoint_output->ref_id,
+        root->checkpoint_savestate_id);
     EXPECT_EQ(recovered_valid.decision->final_job_state, "SUCCEEDED");
 
     const auto archive_root = temp_root_ / "tas-movie-archive";
@@ -1393,6 +1601,12 @@ TEST_F(SqliteDbFixture, TasMoviePersistenceProductionRegistryUsesOnlyClosedValid
     EXPECT_NE(registry.FindForStepKind("tasmovie.establish_root_cursor"), nullptr);
     EXPECT_NE(registry.FindForStepKind("tasmovie.validate_root"), nullptr);
     EXPECT_NE(registry.FindForStepKind("tasmovie.validate_tree"), nullptr);
+    const auto* sterilize = registry.FindForStepKind(
+        "tasmovie.checkpoint_sterilize");
+    ASSERT_NE(sterilize, nullptr);
+    EXPECT_EQ(
+        sterilize->program_kind,
+        static_cast<std::int32_t>(savor::PK_TasMovieCheckpointSterilize));
     EXPECT_EQ(registry.FindForStepKind("tas_movie"), nullptr);
     EXPECT_EQ(registry.FindForStepKind("tasmovie.play"), nullptr);
 }

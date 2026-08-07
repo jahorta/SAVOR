@@ -4,6 +4,8 @@
 #include <set>
 #include <utility>
 
+#include "../../Authoring/IAuthoringDb.h"
+
 namespace savor::db::execution::workflow {
 namespace {
 
@@ -52,7 +54,7 @@ WorkflowUnitDefinition SeedProbeUnit(
             { .ref_kind = "seed_probe_spec", .display_name = "Seed probe spec" },
         },
         .required_inputs = {
-            Port("entry_savestate", "state.savestate_id", "Entry savestate"),
+            Port("entry_savestate", "state.movie_inactive_savestate_id", "Entry savestate"),
         },
         .possible_outputs = {
             Port(
@@ -144,6 +146,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             },
             .possible_outputs = {
                 Port("tas_movie_validation_attempt", "analysis.tas_movie_validation_attempt_id", "Validation attempt"),
+                Port("established_root_cursor_attempt", "analysis.tas_movie_validation_attempt_id", "Established root cursor attempt"),
             },
             .internal_step_kinds = { "tasmovie.establish_root_cursor" },
             .step_templates = SingleStep("tasmovie.establish_root_cursor"),
@@ -161,6 +164,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             },
             .possible_outputs = {
                 Port("tas_movie_validation_attempt", "analysis.tas_movie_validation_attempt_id", "Validation attempt"),
+                Port("validated_checkpoint_savestate", "state.movie_paired_savestate_id", "Validated checkpoint savestate"),
             },
             .internal_step_kinds = { "tasmovie.validate_root" },
             .step_templates = SingleStep("tasmovie.validate_root"),
@@ -178,9 +182,27 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             },
             .possible_outputs = {
                 Port("tas_movie_validation_attempt", "analysis.tas_movie_validation_attempt_id", "Validation attempt"),
+                Port("validated_checkpoint_savestate", "state.movie_paired_savestate_id", "Validated checkpoint savestate"),
             },
             .internal_step_kinds = { "tasmovie.validate_tree" },
             .step_templates = SingleStep("tasmovie.validate_tree"),
+        },
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
+            .unit_kind = "tas_movie_checkpoint_sterilize",
+            .display_name = "TAS Movie: Sterilize Checkpoint",
+            .description = "Creates a canonical movie-inactive checkpoint from an exact movie-paired TAS Movie checkpoint.",
+            .default_activation_params_json = "{}",
+            .required_inputs = {
+                Port("paired_checkpoint_savestate", "state.movie_paired_savestate_id", "Movie-paired checkpoint"),
+            },
+            .possible_outputs = {
+                Port("sterilized_checkpoint_savestate", "state.movie_inactive_savestate_id", "Movie-inactive checkpoint"),
+            },
+            .internal_step_kinds = { "tasmovie.checkpoint_sterilize" },
+            .step_templates = SingleStep("tasmovie.checkpoint_sterilize"),
         },
         &ignored);
 
@@ -196,7 +218,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 { .ref_kind = "seed_probe_spec", .display_name = "Seed probe spec" },
             },
             .required_inputs = {
-                Port("entry_savestate", "state.savestate_id", "Entry savestate"),
+                Port("entry_savestate", "state.movie_inactive_savestate_id", "Entry savestate"),
             },
             .possible_outputs = {
                 Port(
@@ -267,11 +289,11 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 { .ref_kind = "authoring.battle_chain_spec", .display_name = "Battle chain spec" },
             },
             .required_inputs = {
-                Port("entry_savestate", "state.savestate_id", "Entry savestate"),
+                Port("entry_savestate", "state.movie_inactive_savestate_id", "Entry savestate"),
                 Port("initial_input_frames", "analysis.input_frame_set_id", "Initial input frames"),
             },
             .possible_outputs = {
-                Port("terminal_savestate", "state.savestate_id", "Terminal savestate"),
+                Port("terminal_savestate", "state.movie_inactive_savestate_id", "Terminal savestate"),
                 Port("battle_manual_followup", "analysis.battle_manual_followup_id", "Battle manual follow-up"),
             },
             .internal_step_kinds = { "battle.context_probe", "battle.single_turn" },
@@ -289,7 +311,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .breakpoint_profile_key = "battle.completion",
             .default_activation_params_json = "{}",
             .required_inputs = {
-                Port("entry_savestate", "state.savestate_id", "Battle Victory savestate"),
+                Port("entry_savestate", "state.movie_inactive_savestate_id", "Battle Victory savestate"),
             },
             .possible_outputs = {
                 Port("completion", "analysis_battle.battle_completion_id", "Battle completion"),
@@ -310,10 +332,10 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .default_activation_params_json = "{}",
             .required_inputs = {
                 Port("completion", "analysis_battle.battle_completion_id", "Battle completion"),
-                Port("seeded_savestate", "state.savestate_id", "Field-return seeded savestate"),
+                Port("seeded_savestate", "state.movie_inactive_savestate_id", "Field-return seeded savestate"),
             },
             .possible_outputs = {
-                Port("terminal_savestate", "state.savestate_id", "Battle-end terminal savestate"),
+                Port("terminal_savestate", "state.movie_inactive_savestate_id", "Battle-end terminal savestate"),
             },
             .internal_step_kinds = { "battle.results_screen" },
             .step_templates = SingleStep("battle.results_screen"),
@@ -330,7 +352,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .breakpoint_profile_key = "navigation.context_probe",
             .default_activation_params_json = "{}",
             .required_inputs = {
-                Port("entry_savestate", "state.savestate_id", "Entry savestate"),
+                Port("entry_savestate", "state.movie_inactive_savestate_id", "Entry savestate"),
             },
             .possible_outputs = {
                 Port(
@@ -353,10 +375,10 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .breakpoint_profile_key = "overworld.default",
             .default_activation_params_json = "{}",
             .required_inputs = {
-                Port("entry_savestate", "state.savestate_id", "Entry savestate"),
+                Port("entry_savestate", "state.movie_inactive_savestate_id", "Entry savestate"),
             },
             .possible_outputs = {
-                Port("terminal_savestate", "state.savestate_id", "Terminal savestate"),
+                Port("terminal_savestate", "state.movie_inactive_savestate_id", "Terminal savestate"),
             },
             .internal_step_kinds = {},
             .step_templates = SingleStep("overworld_explorer"),
@@ -373,10 +395,10 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .breakpoint_profile_key = "dungeon.default",
             .default_activation_params_json = "{}",
             .required_inputs = {
-                Port("entry_savestate", "state.savestate_id", "Entry savestate"),
+                Port("entry_savestate", "state.movie_inactive_savestate_id", "Entry savestate"),
             },
             .possible_outputs = {
-                Port("terminal_savestate", "state.savestate_id", "Terminal savestate"),
+                Port("terminal_savestate", "state.movie_inactive_savestate_id", "Terminal savestate"),
             },
             .internal_step_kinds = {},
             .step_templates = SingleStep("dungeon_explorer"),
@@ -505,6 +527,24 @@ bool WorkflowCompositionService::OutputBindingMatches(
     for (const auto& binding : composition.output_bindings) {
         if (binding.to_node_key != node.node_key || binding.input_key != input.key) {
             continue;
+        }
+
+        if ((binding.guard_kind.has_value()
+                && *binding.guard_kind
+                    != savor::db::kWorkflowOutputPresentGuard)
+            || (binding.guard_kind.has_value()
+                && binding.guard_value.has_value())
+            || (!binding.guard_kind.has_value()
+                && binding.guard_value.has_value())) {
+            if (issue_out) {
+                *issue_out = {
+                    node.node_key,
+                    input.key,
+                    input.data_kind,
+                    "unsupported workflow output binding guard",
+                };
+            }
+            return false;
         }
 
         const auto from_it = std::find_if(composition.nodes.begin(), composition.nodes.end(), [&](const auto& candidate) {

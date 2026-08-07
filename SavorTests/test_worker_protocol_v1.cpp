@@ -294,6 +294,14 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .result = { 0x01, 0x02 },
     });
 
+    ExpectPayloadRoundTrip(CommandResultPayload{
+        .command_sequence = 45,
+        .command_kind = MessageKind::CancelWorksetItem,
+        .status = CommandStatus::Rejected,
+        .rejection_code = RejectionCode::WorksetItemAlreadyTerminal,
+        .message = "Workset item is already terminal",
+    });
+
     ExpectPayloadRoundTrip(OpenSessionResultPayload{
         .success = true,
         .session_id = 55,

@@ -17,6 +17,7 @@ struct WorkflowGraphRoutingResult {
     bool graph_instance = false;
     bool routed_input_binding = false;
     bool advanced_ready_step = false;
+    int skipped_step_count = 0;
     bool workflow_completed = false;
     std::optional<std::string> blocked_reason;
 };

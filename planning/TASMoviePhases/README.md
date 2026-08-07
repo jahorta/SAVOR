@@ -961,9 +961,27 @@ Primary evidence currently includes:
   worker/execution failures and may be explicitly requeued.
 - There are no automatic retries. A terminal worker/execution failure alerts the user, who decides whether
   to requeue the same immutable job.
-- Complete-movie validation is the only singleton step in its workflow and has no next-step continuation.
-- Root RTC ranges are launcher convenience only: each RTC value becomes a separate singleton workflow,
-  request, job, and one-item workset so independent validations can run concurrently.
+- Each TAS Movie validation unit is a singleton step backed by one immutable
+  request, job, and one-item workset. The unit may be the only node in a
+  standalone validation workflow or one node in a larger authored workflow
+  graph. Composition passes only durable typed output references; it never
+  continues from worker state or affinity.
+- Every outcome emits `tas_movie_validation_attempt`. A successful
+  `RootCursorEstablished` additionally emits
+  `established_root_cursor_attempt`. A root or tree `Valid` additionally emits
+  `validated_checkpoint_savestate`, resolved from the immutable root/tree row
+  after State and Analysis persistence succeeds. `Invalid` emits neither
+  success-specific output, and recovery reproduces the identical output set.
+- Authored edges that depend on a success-specific output use the closed
+  `output_present` guard. If all providers terminate without that output, the
+  target and any descendants that can no longer receive required inputs are
+  durably skipped with `guard_not_satisfied:<node>.<output>`. External input
+  overrides remain authoritative, active alternate providers delay the
+  decision, and unguarded missing outputs remain blocked errors.
+- Root RTC ranges are launcher convenience only: each RTC value becomes a
+  separate singleton validation unit/request/job/workset so independent
+  validations can run concurrently, whether authored in separate workflows or
+  separate graph branches.
 - SAVOR expresses an RTC value as GameCube-visible seconds since 2000-01-01 and
   accepts the complete inclusive `u32` domain (`0..4294967295`). The DTM keeps
   its 64-bit Unix `recordingStartTime`; patching adds the GameCube epoch before
@@ -972,6 +990,19 @@ Primary evidence currently includes:
 - A successful first validation of a source-DTM/RTC pair publishes the exact patched DTM, its canonical
   checkpoint with same-name DTM sidecar, and one immutable root row. Revalidating an existing root and
   validating a tree movie request no checkpoint capture and reject unexpected worker artifacts.
+- Canonical root and tree checkpoints are classified `MoviePaired` and name the exact DTM artifact Dolphin
+  requires beside their native `.sav`. Validation exposes them through
+  `state.movie_paired_savestate_id`; they remain reproduction artifacts rather than direct inputs to
+  phases requiring movie-inactive guest state.
+- `tasmovie.checkpoint_sterilize` is the reusable boundary from a canonical paired checkpoint to a native
+  `MovieInactive` checkpoint. Its artifact-atomic workset privately stages the exact `.sav`/`.sav.dtm`
+  pair, restores and verifies the movie cursor, stops playback while paused, releases the movie
+  reservation, and runs a save-only Full Phase. Dolphin synchronously writes the new native `.sav`; any
+  emitted `.dtm` sidecar is an infrastructure failure.
+- Sterilization publishes one immutable derivation using `tasmovie.checkpoint_sterilize.v1`. One canonical
+  result exists per source checkpoint, and an already-proven result completes through a sealed zero-job
+  workflow step. The resulting `state.movie_inactive_savestate_id` can seed SeedProbe or any present or
+  future context or exploration phase that requires a movie-inactive starting state.
 - Only typed establishment/valid/invalid results create Analysis DB validation-attempt rows. Infrastructure,
   preflight, cancellation, and contract failures remain Execution DB evidence and do not affect eligibility.
 - The module request contains only worker-execution facts. Database identities, artifact hashes, and
@@ -1047,9 +1078,11 @@ Primary evidence currently includes:
 - The only initial capture instruction is an optional caller-declared `final_checkpoint_output`, present only
   for root validation. Its presence requests capture; no redundant capture boolean is used. The initial
   validator has no diagnostic-capture output.
-- The save action synchronously captures complete savestate and exact DTM-sidecar bytes while playback is
-  paused, then transfers those bytes to the worker-owned output transaction. The module receives only the
-  canonical pending receipt and may continue its movie-tail validation; it never owns the capture.
+- The save action keeps playback paused while Dolphin synchronously writes its native savestate file. The
+  runtime reads that completed file back into immutable bytes, captures the exact DTM-sidecar bytes, and
+  transfers both to the worker-owned output transaction. Raw `SaveToBuffer` bytes remain private
+  workset-handle state and are never published as `.sav`. The module receives only the canonical pending
+  receipt and may continue its movie-tail validation; it never owns the capture.
 - A completed state capture is appended to `ProgramResult.artifacts` only after the tail succeeds and the
   worker finalizes and commits every staged output. `ProgramExecutionFinished` is not job completion, and
   no later item may begin before the authoritative `WorkerWorksetItemTerminal` is retained. The artifact

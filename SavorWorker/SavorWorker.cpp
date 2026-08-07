@@ -185,6 +185,8 @@ savor::wrms::RejectionCode MapRejectionCode(
         return WireCode::TerminalNotFound;
     case RuntimeCode::TerminalMismatch:
         return WireCode::TerminalMismatch;
+    case RuntimeCode::WorksetItemAlreadyTerminal:
+        return WireCode::WorksetItemAlreadyTerminal;
     }
     return WireCode::InternalFailure;
 }
@@ -1165,9 +1167,25 @@ bool SubmitFrame(
                 "invalid OpenSession payload");
             return true;
         }
+        std::error_code path_error;
+        const auto absolute_user_directory = std::filesystem::absolute(
+            std::filesystem::path(payload.user_directory),
+            path_error);
+        if (path_error || absolute_user_directory.parent_path().empty()) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "OpenSession requires a resolvable worker user directory");
+            return true;
+        }
         SessionOpenOptions options;
-        options.backend.runtime_root = payload.runtime_root;
-        options.backend.user_directory = payload.user_directory;
+        // The installed worker/Dolphin image is shared and read-only.  All
+        // mutable backend files belong beside this worker's private User tree
+        // so concurrent workers cannot race on movie restore/checkpoint files.
+        options.backend.runtime_root =
+            absolute_user_directory.parent_path() / "Runtime";
+        options.backend.user_directory = absolute_user_directory;
         options.backend.dolphin_base_directory = payload.runtime_root;
         options.backend.iso_path = payload.iso_path;
         options.backend.force_resync_from_base = true;

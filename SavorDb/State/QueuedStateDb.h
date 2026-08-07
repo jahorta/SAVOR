@@ -41,6 +41,10 @@ public:
         const DeriveSavestateCommand& command,
         std::int64_t* derivation_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    bool CreateOrGetSterilizedCheckpoint(
+        const CreateOrGetSterilizedCheckpointCommand& command,
+        CreateOrGetSterilizedCheckpointReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
     std::optional<ArtifactRecord> GetArtifact(
         std::int64_t artifact_id) const override;
     std::optional<ArtifactRecord> GetArtifactBySha256(
@@ -54,6 +58,10 @@ public:
     std::vector<SavestateDerivationRecord> ListSavestateDerivationsBySourceContext(
         std::string_view source_context_kind,
         std::int64_t source_context_id) const override;
+    std::optional<SavestateDerivationRecord>
+    FindSavestateDerivationBySourceAndMethod(
+        std::int64_t from_savestate_id,
+        std::string_view method_kind) const override;
     bool CreateTasMovieRoot(
         const CreateTasMovieRootCommand& command,
         std::int64_t* tas_movie_root_id_out = nullptr,

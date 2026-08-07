@@ -209,10 +209,12 @@ struct WorkerSubmitResult {
 
 enum class WorkerCommandDisposition : std::uint8_t {
     Accepted = 0,
+    LocalRejected,
     NotFound,
     StaleRoute,
     DefiniteRejected,
-    TransportOrGenerationCanceled,
+    TransportCanceledBeforeWrite,
+    AmbiguousAfterWrite,
     CoordinatorStopped,
 };
 
@@ -229,11 +231,22 @@ struct WorkerCommandResult {
     WorkerCommandKind command_kind = WorkerCommandKind::Unknown;
     std::optional<std::size_t> worker_id;
     std::uint64_t process_generation = 0;
+    bool request_frame_written = false;
+    bool correlated_result_received = false;
+    savor::wrms::RejectionCode rejection_code =
+        savor::wrms::RejectionCode::None;
     std::string error_code;
     std::string diagnostic;
 
     [[nodiscard]] bool accepted() const noexcept {
         return disposition == WorkerCommandDisposition::Accepted;
+    }
+
+    [[nodiscard]] bool terminal_item_cancellation_race() const noexcept {
+        return disposition == WorkerCommandDisposition::DefiniteRejected
+            && command_kind == WorkerCommandKind::CancelWorksetItem
+            && rejection_code
+                == savor::wrms::RejectionCode::WorksetItemAlreadyTerminal;
     }
 };
 
@@ -409,6 +422,10 @@ private:
         std::size_t worker_id,
         std::uint64_t process_generation,
         const savor::wrms::WorksetStatePayload& payload);
+    void HandleSessionEvent(
+        std::size_t worker_id,
+        std::uint64_t process_generation,
+        const savor::wrms::SessionEventPayload& payload);
     void HandleItemStarted(
         std::size_t worker_id,
         std::uint64_t process_generation,

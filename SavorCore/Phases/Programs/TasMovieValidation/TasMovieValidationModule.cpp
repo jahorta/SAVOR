@@ -3784,4 +3784,637 @@ TasMovieValidationFullPhaseDefinitionV1()
     return definition;
 }
 
+namespace {
+
+SchemaIdentity SterilizationOutcomeSchemaIdentity()
+{
+    return composition::ExactSchema(
+        "soa.tas_movie_checkpoint_sterilize.Outcome",
+        1,
+        "enum TasMovieCheckpointSterilizationOutcome/1{Sterilized=0}");
+}
+
+SchemaIdentity SterilizationResultSchemaIdentity()
+{
+    return composition::ExactSchema(
+        "soa.tas_movie_checkpoint_sterilize.Result",
+        1,
+        "record TasMovieCheckpointSterilizationResult/1{outcome:" +
+            TypeContract(TypeRef::Named(
+                SterilizationOutcomeSchemaIdentity())) + "}");
+}
+
+TypeRef SterilizationOutcomeType()
+{
+    return TypeRef::Named(SterilizationOutcomeSchemaIdentity());
+}
+
+TypeRef SterilizationResultType()
+{
+    return TypeRef::Named(SterilizationResultSchemaIdentity());
+}
+
+bool ValidateSterilizationRequest(
+    const TasMovieCheckpointSterilizationRequestV1& request,
+    std::string* diagnostic)
+{
+    const auto valid_path = [](const std::string& value) {
+        return !value.empty() && value.size() <= MaximumPathBytes;
+    };
+    if (!valid_path(request.source_savestate_path) ||
+        !valid_path(request.source_dtm_path) ||
+        !valid_path(request.output_savestate_path))
+    {
+        SetDiagnostic(
+            diagnostic,
+            "TCS1 requires three paths containing 1..4096 bytes");
+        return false;
+    }
+    if (std::filesystem::path(request.source_dtm_path) !=
+        std::filesystem::path(request.source_savestate_path + ".dtm"))
+    {
+        SetDiagnostic(
+            diagnostic,
+            "TCS1 source DTM must be the exact <savestate>.dtm sidecar");
+        return false;
+    }
+    if (std::filesystem::path(request.output_savestate_path).extension() !=
+            ".sav" ||
+        std::filesystem::path(request.output_savestate_path) ==
+            std::filesystem::path(request.source_savestate_path))
+    {
+        SetDiagnostic(
+            diagnostic,
+            "TCS1 output must be a distinct .sav path");
+        return false;
+    }
+    return true;
+}
+
+class TcsWriter final
+{
+public:
+    TcsWriter() { bytes_.insert(bytes_.end(), {'T', 'C', 'S', '1'}); }
+    void String(std::string_view value)
+    {
+        const auto size = static_cast<std::uint32_t>(value.size());
+        for (unsigned shift = 0; shift != 32; shift += 8)
+            bytes_.push_back(static_cast<std::uint8_t>(size >> shift));
+        bytes_.insert(bytes_.end(), value.begin(), value.end());
+    }
+    std::vector<std::uint8_t> Finish() && { return std::move(bytes_); }
+private:
+    std::vector<std::uint8_t> bytes_;
+};
+
+class TcsReader final
+{
+public:
+    explicit TcsReader(std::span<const std::uint8_t> bytes) : bytes_(bytes)
+    {
+        valid_ = bytes.size() >= 4 && bytes[0] == 'T' &&
+            bytes[1] == 'C' && bytes[2] == 'S' && bytes[3] == '1';
+        if (valid_) offset_ = 4;
+    }
+    bool String(std::string& value)
+    {
+        if (!Take(4)) return false;
+        std::uint32_t size = 0;
+        for (unsigned shift = 0; shift != 32; shift += 8)
+            size |= static_cast<std::uint32_t>(bytes_[offset_++]) << shift;
+        if (size == 0 || size > MaximumPathBytes || !Take(size)) return false;
+        value.assign(
+            reinterpret_cast<const char*>(bytes_.data() + offset_), size);
+        offset_ += size;
+        return true;
+    }
+    bool done() const noexcept { return valid_ && offset_ == bytes_.size(); }
+private:
+    bool Take(std::size_t count)
+    {
+        if (!valid_ || count > bytes_.size() - offset_)
+        {
+            valid_ = false;
+            return false;
+        }
+        return true;
+    }
+    std::span<const std::uint8_t> bytes_;
+    std::size_t offset_ = 0;
+    bool valid_ = false;
+};
+
+ProgramValueGraph EncodeSterilizationResultGraph()
+{
+    ProgramValue outcome{
+        ProgramValueId(1),
+        SterilizationOutcomeType(),
+        EnumValue{
+            SterilizationOutcomeSchemaIdentity(),
+            static_cast<std::int64_t>(
+                TasMovieCheckpointSterilizationOutcomeV1::Sterilized)}};
+    ProgramValue result{
+        ProgramValueId(2),
+        SterilizationResultType(),
+        RecordValue{{outcome.id}}};
+    return {result.id, {std::move(outcome), std::move(result)}};
+}
+
+bool DecodeSterilizationResultGraph(
+    const ProgramValueGraph& graph,
+    TasMovieCheckpointSterilizationResultV1& result,
+    std::string* diagnostic)
+{
+    GraphReader reader(graph);
+    const ProgramValue* root = reader.root();
+    const auto* record = root
+        ? std::get_if<RecordValue>(&root->payload)
+        : nullptr;
+    std::int64_t outcome = -1;
+    if (!reader.valid() || !root || root->type != SterilizationResultType() ||
+        !record || record->fields.size() != 1 ||
+        !ReadEnum(
+            reader, record->fields.front(),
+            SterilizationOutcomeSchemaIdentity(), outcome) ||
+        outcome != static_cast<std::int64_t>(
+            TasMovieCheckpointSterilizationOutcomeV1::Sterilized))
+    {
+        SetDiagnostic(
+            diagnostic,
+            "checkpoint sterilization result is not the exact Result/1 shape");
+        return false;
+    }
+    result.outcome =
+        TasMovieCheckpointSterilizationOutcomeV1::Sterilized;
+    return true;
+}
+
+ProgramModule ConstructSterilizationModuleV1()
+{
+    ProgramModule module{
+        .identity = {
+            .canonical_id = std::string(SterilizationModuleCanonicalId),
+            .revision = SterilizationModuleRevision,
+        },
+    };
+    ModuleFragmentBuilder builder(
+        module,
+        "SavorCore/TasMovieCheckpointSterilizationModule",
+        "soa.tas_movie_checkpoint_sterilize/sterilize");
+    builder.AddLocalType({
+        .identity = SterilizationOutcomeSchemaIdentity(),
+        .kind = TypeSchemaKind::ClosedEnum,
+        .enum_members = {{
+            "Sterilized",
+            static_cast<std::int64_t>(
+                TasMovieCheckpointSterilizationOutcomeV1::Sterilized)}},
+    });
+    builder.AddLocalType({
+        .identity = SterilizationResultSchemaIdentity(),
+        .kind = TypeSchemaKind::Record,
+        .record_fields = {{"outcome", SterilizationOutcomeType()}},
+    });
+    AddCanonicalAction(
+        builder,
+        CanonicalAction::SavestateSaveImmutableArtifact);
+    builder.AddCapabilityImport(CanonicalRuntimePackIdentity());
+
+    const ValueDefinition request = builder.NewArgument(
+        CanonicalActionInputType(
+            CanonicalAction::SavestateSaveImmutableArtifact));
+    ProgramFunction& function = builder.AddFunction(
+        std::string(SterilizationEntrypoint),
+        std::array{request},
+        SterilizationResultType(),
+        TypeRef::Builtin(BuiltinType::Bool),
+        true);
+    BasicBlock& entry = builder.AddBlock(function);
+    (void)builder.AddInstruction(
+        function,
+        entry,
+        InstructionOpcode::AwaitAction,
+        CanonicalActionOutputType(
+            CanonicalAction::SavestateSaveImmutableArtifact),
+        std::array{request.id},
+        ActionTarget(CanonicalActionIdentity(
+            CanonicalAction::SavestateSaveImmutableArtifact)),
+        "sterilize/save-native-movie-inactive-checkpoint");
+    const ProgramValueId outcome = Constant(
+        builder,
+        function,
+        entry,
+        LiteralValue{
+            SterilizationOutcomeType(),
+            EnumValue{
+                SterilizationOutcomeSchemaIdentity(),
+                static_cast<std::int64_t>(
+                    TasMovieCheckpointSterilizationOutcomeV1::Sterilized)}},
+        "sterilize/outcome",
+        {});
+    const ProgramValueId result = Construct(
+        builder,
+        function,
+        entry,
+        SterilizationResultType(),
+        std::array{outcome},
+        "sterilize/result",
+        {});
+    const ProgramValueId domain = Constant(
+        builder,
+        function,
+        entry,
+        LiteralValue{TypeRef::Builtin(BuiltinType::Bool), true},
+        "sterilize/domain-outcome",
+        {});
+    builder.SetTerminator(
+        function,
+        entry,
+        Terminator{
+            .kind = TerminatorKind::Return,
+            .return_value = result,
+            .domain_outcome = domain,
+        },
+        "sterilize/return");
+
+    module.accepted_policies = {
+        .state_policies = {InvocationStatePolicy::RestoreBaseline},
+        .execution_intents = {ExecutionIntent::Live},
+    };
+    module.budgets = {
+        .maximum_instructions = 256,
+        .maximum_calls = 4,
+        .maximum_call_depth = 2,
+        .maximum_action_requests = 1,
+        .maximum_emissions = 1,
+        .maximum_artifacts = 1,
+        .maximum_values = 64,
+        .maximum_value_bytes = 64u * 1024u,
+        .maximum_trace_events = 128,
+    };
+    module.entrypoints = {{
+        .name = std::string(SterilizationEntrypoint),
+        .function = function.id,
+        .input_type = CanonicalActionInputType(
+            CanonicalAction::SavestateSaveImmutableArtifact),
+        .output_type = SterilizationResultType(),
+        .domain_outcome_type = TypeRef::Builtin(BuiltinType::Bool),
+        .required_capability_packs = module.required_capability_packs,
+        .accepted_policies = module.accepted_policies,
+    }};
+    module.identity.module_hash = ComputeProgramModuleHashV1(module);
+    return module;
+}
+
+std::optional<ProgramDependencyLock> VerifySterilizationModuleV1(
+    const ProgramModule& module,
+    std::string* diagnostic)
+{
+    ProgramDefinitionStore modules;
+    TypeSchemaRegistry schemas;
+    ActionRegistry actions(&schemas);
+    CapabilityPackRegistry packs(&schemas, &actions);
+    const RegistryResult registered =
+        capabilities::RegisterSourceCapabilityPacks(schemas, actions, packs);
+    if (!registered.success)
+    {
+        SetDiagnostic(diagnostic, registered.error.message);
+        return std::nullopt;
+    }
+    const auto stored = modules.RegisterCompiled(module);
+    if (!stored.success)
+    {
+        SetDiagnostic(diagnostic, stored.error.message);
+        return std::nullopt;
+    }
+    ProgramVerifier verifier(modules, schemas, actions, packs);
+    const ProgramVerificationResult verified = verifier.Verify(
+        stored.module->identity,
+        capabilities::SupportedSoaUsaCompatibility());
+    if (!verified.success || !verified.verified)
+    {
+        SetDiagnostic(
+            diagnostic,
+            verified.diagnostics.empty()
+                ? "checkpoint sterilization module verification failed"
+                : verified.diagnostics.front().message);
+        return std::nullopt;
+    }
+    return verified.verified->dependency_lock;
+}
+
+std::optional<EncodedModuleEnvelope> EncodeSterilizationModuleEnvelopeV1(
+    const ProgramModule& module,
+    std::string* diagnostic)
+{
+    const EncodeResult encoded = EncodeProgramModuleV1(module);
+    if (!encoded)
+    {
+        SetDiagnostic(diagnostic, encoded.status.message);
+        return std::nullopt;
+    }
+    return EncodedModuleEnvelope{
+        .identity = {
+            .canonical_id = module.identity.canonical_id,
+            .revision = module.identity.revision,
+            .canonical_hash = module.identity.module_hash.ToHex(),
+        },
+        .format_version = kProgramCodecVersionV1,
+        .development_only = false,
+        .payload = encoded.bytes,
+    };
+}
+
+ProgramValueGraph EncodeSterilizationModuleRequest(
+    const TasMovieCheckpointSterilizationRequestV1& request,
+    std::string* diagnostic)
+{
+    const auto bytes = ActionRequestBytes(
+        CanonicalAction::SavestateSaveImmutableArtifact,
+        request.output_savestate_path,
+        "TAS Movie sterilized checkpoint",
+        diagnostic);
+    if (!bytes) return {};
+    ProgramValue value{
+        ProgramValueId(1),
+        CanonicalActionInputType(
+            CanonicalAction::SavestateSaveImmutableArtifact),
+        *bytes};
+    return {value.id, {std::move(value)}};
+}
+
+std::optional<std::string> ComputeSterilizationCompatibilityV1(
+    const ModuleIdentity& module_identity,
+    const ProgramDependencyLock& dependencies,
+    const RuntimeProfile& runtime_profile,
+    const InvocationExecutionPolicy& execution,
+    const ProgramBudgets& limits,
+    std::string* diagnostic)
+{
+    TasMovieCheckpointSterilizationRequestV1 request{
+        .source_savestate_path = "source.sav",
+        .source_dtm_path = "source.sav.dtm",
+        .output_savestate_path = "sterilized.sav",
+    };
+    ProgramValueGraph input = EncodeSterilizationModuleRequest(
+        request, diagnostic);
+    if (!input.root) return std::nullopt;
+    ProgramInvocation invocation{
+        .invocation_id = InvocationId(1),
+        .attempt_id = AttemptId(1),
+        .module = module_identity,
+        .entrypoint = std::string(SterilizationEntrypoint),
+        .dependencies = dependencies,
+        .runtime_profile = runtime_profile,
+        .state = {
+            .policy = InvocationStatePolicy::RestoreBaseline,
+            .session_lineage = std::string(SterilizationArtifactLineage),
+        },
+        .execution = execution,
+        .input = std::move(input),
+        .limits = limits,
+    };
+    const std::string hash =
+        ComputeProgramInvocationCompatibilityHashV1(invocation);
+    return hash.size() == 64 ? std::optional<std::string>(hash) : std::nullopt;
+}
+
+bool DecodeSterilizationProgramResult(
+    std::span<const Byte> encoded_result,
+    const ModuleIdentity& expected_module,
+    const ProgramDependencyLock& expected_dependencies,
+    TasMovieCheckpointSterilizationResultV1& output,
+    std::string* diagnostic)
+{
+    const auto decoded = DecodeProgramResultV1(encoded_result);
+    if (!decoded || !decoded.value ||
+        decoded.value->module != expected_module ||
+        decoded.value->entrypoint != SterilizationEntrypoint ||
+        decoded.value->resolved_dependencies != expected_dependencies ||
+        decoded.value->infrastructure != ProgramInfrastructureStatus::Completed ||
+        decoded.value->cleanup != ProgramCleanupStatus::Clean ||
+        decoded.value->session_disposition != SessionDisposition::Clean ||
+        !decoded.value->output || !decoded.value->domain_outcome)
+    {
+        SetDiagnostic(
+            diagnostic,
+            "checkpoint sterilization ProgramResult is not an exact clean completion");
+        return false;
+    }
+    GraphReader domain(*decoded.value->domain_outcome);
+    const ProgramValue* root = domain.root();
+    const auto* succeeded = root ? std::get_if<bool>(&root->payload) : nullptr;
+    if (!domain.valid() || !root || !succeeded || !*succeeded)
+    {
+        SetDiagnostic(
+            diagnostic,
+            "checkpoint sterilization domain outcome is not true");
+        return false;
+    }
+    return DecodeSterilizationResultGraph(
+        *decoded.value->output, output, diagnostic);
+}
+
+class TasMovieCheckpointSterilizationFullPhaseDefinition final
+    : public ITasMovieCheckpointSterilizationFullPhaseDefinitionV1
+{
+public:
+    TasMovieCheckpointSterilizationFullPhaseDefinition()
+    {
+        std::string diagnostic;
+        ProgramModule module = ConstructSterilizationModuleV1();
+        auto dependencies = VerifySterilizationModuleV1(module, &diagnostic);
+        auto envelope = dependencies
+            ? EncodeSterilizationModuleEnvelopeV1(module, &diagnostic)
+            : std::nullopt;
+        if (!dependencies || !envelope)
+            throw std::logic_error(
+                "TAS Movie checkpoint sterilization Full Phase is invalid: " +
+                diagnostic);
+        const RuntimeProfile profile = InvocationRuntimeProfile(*dependencies);
+        const InvocationExecutionPolicy execution{
+            .intent = ExecutionIntent::Live,
+            .allow_movie_playback = false,
+            .allow_movie_recording = false,
+            .allow_input = false,
+            .allow_capture = false,
+            .record_trace = false,
+            .record_progress = true,
+        };
+        const auto compatibility = ComputeSterilizationCompatibilityV1(
+            module.identity, *dependencies, profile, execution,
+            module.budgets, &diagnostic);
+        if (!compatibility)
+            throw std::logic_error(
+                "TAS Movie checkpoint sterilization compatibility failed: " +
+                diagnostic);
+        module_identity_ = module.identity;
+        dependency_lock_ = *dependencies;
+        runtime_profile_ = profile;
+        module_envelope_ = std::move(*envelope);
+        const ContentHash256 dependency_hash =
+            ComputeProgramDependencyLockHashV1(dependency_lock_);
+        runtime_ = {
+            .module = module_envelope_.identity,
+            .entrypoint = std::string(SterilizationEntrypoint),
+            .dependency_lock_sha256 = dependency_hash.ToHex(),
+            .verified_dependency_sha256 = *compatibility,
+            .runtime_profile_sha256 = RuntimeProfileHash(runtime_profile_),
+            .state_policy = InvocationStatePolicy::RestoreBaseline,
+            .execution = execution,
+            .limits = module.budgets,
+            .required_capabilities =
+                CapabilityMask(WorkerCapability::WorksetDispatch),
+            .baseline_lineage = std::string(SterilizationArtifactLineage),
+            .movie_policy_sha256 = [] {
+                constexpr std::string_view value =
+                    "tasmovie.checkpoint_sterilize/detach/v1";
+                return hash::sha256(value.data(), value.size());
+            }(),
+            .service_policy_sha256 = [] {
+                constexpr std::string_view value =
+                    "tasmovie.checkpoint_sterilize/native-save/v1";
+                return hash::sha256(value.data(), value.size());
+            }(),
+        };
+        std::string canonical = "savor.full_phase/definition/v1";
+        const auto append = [&canonical](std::string_view value) {
+            canonical.push_back('\0');
+            canonical.append(value);
+        };
+        append(SterilizationModuleCanonicalId);
+        append(std::to_string(savor::PK_TasMovieCheckpointSterilize));
+        append(runtime_.module.canonical_hash);
+        append(runtime_.verified_dependency_sha256);
+        append(runtime_.baseline_lineage);
+        append("tasmovie.checkpoint_sterilize/v1");
+        identity_ = {
+            .program_kind = static_cast<std::int32_t>(
+                savor::PK_TasMovieCheckpointSterilize),
+            .program_version = 1,
+            .canonical_id = std::string(
+                SterilizationFullPhaseCanonicalId),
+            .contract_revision = 1,
+            .canonical_sha256 = hash::sha256(
+                canonical.data(), canonical.size()),
+        };
+    }
+
+    const fullphase::FullPhaseProgramIdentity& identity()
+        const noexcept override { return identity_; }
+    const fullphase::FullPhaseRuntimeContract& runtime_contract()
+        const noexcept override { return runtime_; }
+    const EncodedModuleEnvelope& module_envelope()
+        const noexcept override { return module_envelope_; }
+
+    std::optional<ProgramInvocation> BuildResolvedExecution(
+        std::span<const std::uint8_t> payload,
+        ProgramExecutionId execution_id,
+        AttemptId attempt_id,
+        std::string* diagnostic) const override
+    {
+        TasMovieCheckpointSterilizationRequestV1 request;
+        if (!DecodeTasMovieCheckpointSterilizationExecutionInputV1(
+                payload, request, diagnostic) ||
+            !execution_id || !attempt_id)
+            return std::nullopt;
+        if (!std::filesystem::is_regular_file(
+                request.source_savestate_path) ||
+            !std::filesystem::is_regular_file(request.source_dtm_path))
+        {
+            SetDiagnostic(
+                diagnostic,
+                "checkpoint sterilization source pair is unavailable");
+            return std::nullopt;
+        }
+        ProgramValueGraph input = EncodeSterilizationModuleRequest(
+            request, diagnostic);
+        if (!input.root) return std::nullopt;
+        return ProgramInvocation{
+            .invocation_id = execution_id,
+            .attempt_id = attempt_id,
+            .module = module_identity_,
+            .entrypoint = std::string(SterilizationEntrypoint),
+            .dependencies = dependency_lock_,
+            .runtime_profile = runtime_profile_,
+            .state = {
+                .policy = InvocationStatePolicy::RestoreBaseline,
+                .session_lineage = std::string(SterilizationArtifactLineage),
+            },
+            .execution = runtime_.execution,
+            .input = std::move(input),
+            .limits = runtime_.limits,
+            .provenance = {
+                .requesting_component =
+                    "SavorDb.PK_TasMovieCheckpointSterilize",
+                .attributes = {{
+                    "contract",
+                    "tasmovie.checkpoint_sterilize@1",
+                }},
+            },
+        };
+    }
+
+    bool DecodeProgramResult(
+        std::span<const Byte> encoded_result,
+        TasMovieCheckpointSterilizationResultV1& result,
+        std::string* diagnostic) const override
+    {
+        return DecodeSterilizationProgramResult(
+            encoded_result, module_identity_, dependency_lock_, result,
+            diagnostic);
+    }
+
+private:
+    fullphase::FullPhaseProgramIdentity identity_;
+    fullphase::FullPhaseRuntimeContract runtime_;
+    EncodedModuleEnvelope module_envelope_;
+    ModuleIdentity module_identity_;
+    ProgramDependencyLock dependency_lock_;
+    RuntimeProfile runtime_profile_;
+};
+
+} // namespace
+
+std::vector<std::uint8_t>
+EncodeTasMovieCheckpointSterilizationExecutionInputV1(
+    const TasMovieCheckpointSterilizationRequestV1& request,
+    std::string* diagnostic)
+{
+    if (!ValidateSterilizationRequest(request, diagnostic)) return {};
+    TcsWriter writer;
+    writer.String(request.source_savestate_path);
+    writer.String(request.source_dtm_path);
+    writer.String(request.output_savestate_path);
+    return std::move(writer).Finish();
+}
+
+bool DecodeTasMovieCheckpointSterilizationExecutionInputV1(
+    std::span<const std::uint8_t> payload,
+    TasMovieCheckpointSterilizationRequestV1& request,
+    std::string* diagnostic)
+{
+    TcsReader reader(payload);
+    TasMovieCheckpointSterilizationRequestV1 decoded;
+    if (!reader.String(decoded.source_savestate_path) ||
+        !reader.String(decoded.source_dtm_path) ||
+        !reader.String(decoded.output_savestate_path) || !reader.done() ||
+        !ValidateSterilizationRequest(decoded, diagnostic))
+    {
+        if (!diagnostic || diagnostic->empty())
+            SetDiagnostic(diagnostic, "TCS1 payload is malformed");
+        return false;
+    }
+    request = std::move(decoded);
+    return true;
+}
+
+std::shared_ptr<const
+    ITasMovieCheckpointSterilizationFullPhaseDefinitionV1>
+TasMovieCheckpointSterilizationFullPhaseDefinitionV1()
+{
+    static const auto definition = std::make_shared<const
+        TasMovieCheckpointSterilizationFullPhaseDefinition>();
+    return definition;
+}
+
 } // namespace savor::runtime::tasmovie

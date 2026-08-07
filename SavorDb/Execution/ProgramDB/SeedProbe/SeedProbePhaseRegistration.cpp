@@ -97,7 +97,8 @@ public:
             return {};
         }
 
-        const auto* savestate = FindBinding(context, "entry_savestate", "state.savestate_id");
+        const auto* savestate = FindBinding(
+            context, "entry_savestate", "state.movie_inactive_savestate_id");
         if (savestate == nullptr) {
             return {};
         }

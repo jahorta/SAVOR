@@ -219,6 +219,7 @@ enum class WorkerRejectionCode : std::uint16_t
     CapacityExceeded,
     TerminalNotFound,
     TerminalMismatch,
+    WorksetItemAlreadyTerminal,
 };
 
 enum class InvocationTerminalStatus : std::uint8_t

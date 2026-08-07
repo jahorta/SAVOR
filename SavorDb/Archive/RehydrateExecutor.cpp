@@ -804,6 +804,8 @@ RehydratePackagePreviewResult SqliteRehydrateExecutor::PreviewPackage(const Rehy
         {"analysis_seed_probe_runs", "$.probe_run_id", "analysis_seed_probe_run", "sp_probe_run", "probe_run_id", analysis_db_},
         {"analysis_seed_probe_results", "$.probe_result_id", "analysis_seed_probe_result", "sp_probe_result", "probe_result_id", analysis_db_},
         {"analysis_seed_probe_encounter_projections", "$.encounter_projection_id", "analysis_seed_probe_encounter_projection", "sp_encounter_projection", "encounter_projection_id", analysis_db_},
+        {"analysis_tas_movie_checkpoint_sterilization_requests", "$.sterilization_request_id", "analysis_tas_movie_checkpoint_sterilization_request", "tmv_checkpoint_sterilization_request", "sterilization_request_id", analysis_db_},
+        {"analysis_tas_movie_checkpoint_sterilization_attempts", "$.sterilization_attempt_id", "analysis_tas_movie_checkpoint_sterilization_attempt", "tmv_checkpoint_sterilization_attempt", "sterilization_attempt_id", analysis_db_},
     };
     ScanCollisionRules(spec, rules, &result.blocking_reasons);
 
@@ -1110,12 +1112,25 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     bool ok_type = false;
                     const auto old_savestate_id = JsonExtractInt(state_db_, line, "$.savestate_id", &ok_savestate);
                     const auto old_artifact_id = JsonExtractInt(state_db_, line, "$.artifact_id", &ok_artifact);
+                    bool ok_dtm = false;
+                    const auto old_dtm_artifact_id = JsonExtractInt(
+                        state_db_, line, "$.dtm_artifact_id", &ok_dtm);
                     const auto savestate_type = JsonExtractText(state_db_, line, "$.savestate_type", &ok_type);
                     if (!ok_savestate || !ok_artifact || !ok_type) continue;
                     const auto artifact_it = id_map["state_artifact"].find(old_artifact_id);
                     if (artifact_it == id_map["state_artifact"].end()) {
                         state_error = "artifact mapping missing for archived savestate";
                         break;
+                    }
+                    std::optional<std::int64_t> mapped_dtm;
+                    if (ok_dtm) {
+                        const auto dtm_it = id_map["state_artifact"].find(
+                            old_dtm_artifact_id);
+                        if (dtm_it == id_map["state_artifact"].end()) {
+                            state_error = "DTM artifact mapping missing for archived movie-paired savestate";
+                            break;
+                        }
+                        mapped_dtm = dtm_it->second;
                     }
 
                     auto existing = FindSavestateForArtifact(state_db_, artifact_it->second, savestate_type, &state_error);
@@ -1125,12 +1140,16 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                         Statement insert_savestate;
                         if (!Prepare(
                                 state_db_,
-                                "INSERT INTO state_savestate(artifact_id,savestate_type,note,is_complete,created_at_utc) "
-                                "VALUES(?1,json_extract(?2,'$.savestate_type'),json_extract(?2,'$.note'),json_extract(?2,'$.is_complete'),json_extract(?2,'$.created_at_utc'));",
+                                "INSERT INTO state_savestate(artifact_id,savestate_type,note,is_complete,created_at_utc,playback_state,dtm_artifact_id) "
+                                "VALUES(?1,json_extract(?2,'$.savestate_type'),json_extract(?2,'$.note'),json_extract(?2,'$.is_complete'),json_extract(?2,'$.created_at_utc'),json_extract(?2,'$.playback_state'),?3);",
                                 &insert_savestate,
                                 &state_error)) break;
                         sqlite3_bind_int64(insert_savestate.st, 1, artifact_it->second);
                         sqlite3_bind_text(insert_savestate.st, 2, line.c_str(), -1, SQLITE_TRANSIENT);
+                        if (mapped_dtm)
+                            sqlite3_bind_int64(insert_savestate.st, 3, *mapped_dtm);
+                        else
+                            sqlite3_bind_null(insert_savestate.st, 3);
                         if (!StepDone(state_db_, insert_savestate.st, &state_error)) break;
                         new_savestate_id = sqlite3_last_insert_rowid(state_db_);
                     }
@@ -2216,6 +2235,109 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 StepDone(analysis_db_, st.st, &db_error);
             });
 
+            restore_stream(
+                "analysis_tas_movie_checkpoint_sterilization_requests",
+                [&](const std::string& line) {
+                    bool ok_id = false, ok_workflow = false, ok_step = false;
+                    bool ok_source = false, ok_source_artifact = false;
+                    bool ok_dtm_artifact = false, ok_reused = false;
+                    const auto old_id = JsonExtractInt(
+                        analysis_db_, line, "$.sterilization_request_id", &ok_id);
+                    const auto old_workflow = JsonExtractInt(
+                        analysis_db_, line, "$.workflow_instance_id", &ok_workflow);
+                    const auto old_step = JsonExtractInt(
+                        analysis_db_, line, "$.workflow_step_id", &ok_step);
+                    const auto old_source = JsonExtractInt(
+                        analysis_db_, line, "$.source_savestate_id", &ok_source);
+                    const auto old_source_artifact = JsonExtractInt(
+                        analysis_db_, line, "$.source_savestate_artifact_id", &ok_source_artifact);
+                    const auto old_dtm_artifact = JsonExtractInt(
+                        analysis_db_, line, "$.source_dtm_artifact_id", &ok_dtm_artifact);
+                    const auto old_reused = JsonExtractInt(
+                        analysis_db_, line, "$.reused_savestate_id", &ok_reused);
+                    if (!ok_id || !ok_workflow || !ok_step || !ok_source
+                        || !ok_source_artifact || !ok_dtm_artifact) return;
+                    const auto new_id = map_id(
+                        "analysis_tas_movie_checkpoint_sterilization_request", old_id);
+                    const auto workflow = lookup_map("workflow_instance", old_workflow);
+                    const auto step = lookup_map("workflow_step", old_step);
+                    const auto source = lookup_map("state_savestate", old_source);
+                    const auto source_artifact = lookup_map(
+                        "state_artifact", old_source_artifact);
+                    const auto dtm_artifact = lookup_map(
+                        "state_artifact", old_dtm_artifact);
+                    const auto reused = ok_reused
+                        ? lookup_map("state_savestate", old_reused)
+                        : std::optional<std::int64_t>{};
+                    if (new_id == 0 || !workflow || !step || !source
+                        || !source_artifact || !dtm_artifact
+                        || (ok_reused && !reused)) {
+                        db_error = "TAS movie checkpoint sterilization request mapping is missing";
+                        return;
+                    }
+                    const auto materialization_key = spec.target_namespace
+                        + ":rehydrate:tmv-sterilize:" + std::to_string(old_id);
+                    Statement st;
+                    if (!Prepare(analysis_db_,
+                            "INSERT INTO tmv_checkpoint_sterilization_request(sterilization_request_id,materialization_key,workflow_instance_id,workflow_step_id,"
+                            "source_savestate_id,source_savestate_artifact_id,source_savestate_sha256,source_dtm_artifact_id,source_dtm_sha256,reused_savestate_id,"
+                            "full_phase_program_kind,full_phase_program_version,full_phase_canonical_id,full_phase_contract_revision,full_phase_sha256,module_canonical_id,"
+                            "module_revision,module_sha256,created_at_utc) VALUES(?1,?2,?3,?4,?5,?6,json_extract(?7,'$.source_savestate_sha256'),?8,"
+                            "json_extract(?7,'$.source_dtm_sha256'),?9,json_extract(?7,'$.full_phase_program_kind'),json_extract(?7,'$.full_phase_program_version'),"
+                            "json_extract(?7,'$.full_phase_canonical_id'),json_extract(?7,'$.full_phase_contract_revision'),json_extract(?7,'$.full_phase_sha256'),"
+                            "json_extract(?7,'$.module_canonical_id'),json_extract(?7,'$.module_revision'),json_extract(?7,'$.module_sha256'),json_extract(?7,'$.created_at_utc'));",
+                            &st, &db_error)) return;
+                    sqlite3_bind_int64(st.st, 1, new_id);
+                    sqlite3_bind_text(st.st, 2, materialization_key.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_int64(st.st, 3, *workflow);
+                    sqlite3_bind_int64(st.st, 4, *step);
+                    sqlite3_bind_int64(st.st, 5, *source);
+                    sqlite3_bind_int64(st.st, 6, *source_artifact);
+                    sqlite3_bind_text(st.st, 7, line.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_int64(st.st, 8, *dtm_artifact);
+                    bind_optional_int64(st.st, 9, reused);
+                    StepDone(analysis_db_, st.st, &db_error);
+                });
+
+            restore_stream(
+                "analysis_tas_movie_checkpoint_sterilization_attempts",
+                [&](const std::string& line) {
+                    bool ok_id = false, ok_request = false, ok_job = false;
+                    bool ok_result = false;
+                    const auto old_id = JsonExtractInt(
+                        analysis_db_, line, "$.sterilization_attempt_id", &ok_id);
+                    const auto old_request = JsonExtractInt(
+                        analysis_db_, line, "$.sterilization_request_id", &ok_request);
+                    const auto old_job = JsonExtractInt(
+                        analysis_db_, line, "$.source_job_id", &ok_job);
+                    const auto old_result = JsonExtractInt(
+                        analysis_db_, line, "$.produced_savestate_id", &ok_result);
+                    if (!ok_id || !ok_request || !ok_job || !ok_result) return;
+                    const auto new_id = map_id(
+                        "analysis_tas_movie_checkpoint_sterilization_attempt", old_id);
+                    const auto request_id = lookup_map(
+                        "analysis_tas_movie_checkpoint_sterilization_request", old_request);
+                    const auto job_id = lookup_map("job", old_job).value_or(old_job);
+                    const auto result_state = lookup_map("state_savestate", old_result);
+                    if (new_id == 0 || !request_id || !result_state) {
+                        db_error = "TAS movie checkpoint sterilization attempt mapping is missing";
+                        return;
+                    }
+                    Statement st;
+                    if (!Prepare(analysis_db_,
+                            "INSERT INTO tmv_checkpoint_sterilization_attempt(sterilization_attempt_id,sterilization_request_id,source_job_id,worker_terminal_sha256,"
+                            "candidate_savestate_sha256,produced_savestate_id,worker_id,worker_process_generation,workset_epoch,recorded_at_utc) "
+                            "VALUES(?1,?2,?3,json_extract(?4,'$.worker_terminal_sha256'),json_extract(?4,'$.candidate_savestate_sha256'),?5,"
+                            "json_extract(?4,'$.worker_id'),json_extract(?4,'$.worker_process_generation'),json_extract(?4,'$.workset_epoch'),json_extract(?4,'$.recorded_at_utc'));",
+                            &st, &db_error)) return;
+                    sqlite3_bind_int64(st.st, 1, new_id);
+                    sqlite3_bind_int64(st.st, 2, *request_id);
+                    sqlite3_bind_int64(st.st, 3, job_id);
+                    sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_int64(st.st, 5, *result_state);
+                    StepDone(analysis_db_, st.st, &db_error);
+                });
+
             restore_stream("analysis_tas_movie_validation_requests", [&](const std::string& line) {
                 bool ok_id = false, ok_source = false, ok_kind = false;
                 const auto old_id = JsonExtractInt(analysis_db_, line, "$.validation_request_id", &ok_id);
@@ -2828,6 +2950,11 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 if (ref_kind == "tmv_validation_request") {
                     return lookup_map("analysis_tas_movie_validation_request", old_id);
                 }
+                if (ref_kind == "tmv_checkpoint_sterilization_request") {
+                    return lookup_map(
+                        "analysis_tas_movie_checkpoint_sterilization_request",
+                        old_id);
+                }
                 if (ref_kind == "analysis.tas_movie_validation_attempt_id"
                     || ref_kind == "tmv_validation_attempt") {
                     return lookup_map("analysis_tas_movie_validation_attempt", old_id);
@@ -3138,6 +3265,8 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     || context_kind == "analysis_battle.battle_results"
                     || context_kind == "analysisbattle.battle_results"
                     || context_kind == "ab_battle_results") map_kind = "analysis_battle_results";
+                else if (context_kind == "tmv_checkpoint_sterilization_request")
+                    map_kind = "analysis_tas_movie_checkpoint_sterilization_request";
 
                 auto new_context_id = old_context_id;
                 if (!map_kind.empty()) {

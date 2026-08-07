@@ -139,6 +139,31 @@ template <typename Operation>
     }
 }
 
+[[nodiscard]] SavestateBackendBufferResult CallSaveFileBytesBackend(
+    ISavestateBackendPort& backend) noexcept
+{
+    try
+    {
+        return backend.SaveStateFileBytes();
+    }
+    catch (const std::exception& ex)
+    {
+        return {
+            SavestateBackendResult::Failure(
+                std::string("Savestate file capture threw: ") + ex.what(),
+                GuestIntegrity::Unknown),
+            {}};
+    }
+    catch (...)
+    {
+        return {
+            SavestateBackendResult::Failure(
+                "Savestate file capture threw",
+                GuestIntegrity::Unknown),
+            {}};
+    }
+}
+
 } // namespace
 
 SavestateService::SavestateService(
@@ -354,7 +379,11 @@ SavestateService::CaptureImmutableArtifact(
         return receipt;
     }
 
-    SavestateBackendBufferResult saved = CallSaveBufferBackend(backend_);
+    // Immutable artifacts must contain Dolphin's portable on-disk savestate
+    // representation. Raw SaveToBuffer bytes are reserved for process-local
+    // workset handles and cannot be published as a .sav file.
+    SavestateBackendBufferResult saved =
+        CallSaveFileBytesBackend(backend_);
     if (!saved.result.ok)
     {
         receipt.result = FromBackend(

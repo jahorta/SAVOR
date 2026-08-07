@@ -153,6 +153,27 @@ struct ProcessWorksetSubmitOutcome {
     }
 };
 
+enum class ProcessWorkerCommandDisposition : std::uint8_t {
+    Accepted = 0,
+    LocalRejected,
+    DefiniteRejected,
+    TransportCanceledBeforeWrite,
+    AmbiguousAfterWrite,
+};
+
+struct ProcessWorkerCommandOutcome {
+    ProcessWorkerCommandDisposition disposition{
+        ProcessWorkerCommandDisposition::LocalRejected};
+    bool request_frame_written{false};
+    bool correlated_result_received{false};
+    wrms::CommandResultPayload result;
+    std::string diagnostic;
+
+    [[nodiscard]] bool accepted() const noexcept {
+        return disposition == ProcessWorkerCommandDisposition::Accepted;
+    }
+};
+
 struct ProcessWorkerSnapshot {
     bool running{ false };
     bool hello_received{ false };
@@ -202,6 +223,8 @@ public:
         std::function<void(const wrms::WorksetCreditsPayload&)>;
     using WorksetSummaryCallback =
         std::function<void(const wrms::WorksetSummaryPayload&)>;
+    using SessionEventCallback =
+        std::function<void(const wrms::SessionEventPayload&)>;
 
     ProcessWorker() = default;
     explicit ProcessWorker(
@@ -249,14 +272,26 @@ public:
         std::string reason,
         wrms::CommandResultPayload* result_out = nullptr,
         std::uint32_t timeout_ms = 0);
+    ProcessWorkerCommandOutcome cancel_workset_item_with_outcome(
+        runtime::WorkerWorksetId workset_id,
+        runtime::WorkerWorksetItemId item_id,
+        std::string reason,
+        std::uint32_t timeout_ms = 0);
     bool cancel_workset(
         runtime::WorkerWorksetId workset_id,
         std::string reason,
         wrms::CommandResultPayload* result_out = nullptr,
         std::uint32_t timeout_ms = 0);
+    ProcessWorkerCommandOutcome cancel_workset_with_outcome(
+        runtime::WorkerWorksetId workset_id,
+        std::string reason,
+        std::uint32_t timeout_ms = 0);
     bool acknowledge_terminal(
         const runtime::WorkerItemTerminalCorrelation& terminal,
         wrms::CommandResultPayload* result_out = nullptr,
+        std::uint32_t timeout_ms = 0);
+    ProcessWorkerCommandOutcome acknowledge_terminal_with_outcome(
+        const runtime::WorkerItemTerminalCorrelation& terminal,
         std::uint32_t timeout_ms = 0);
     bool probe_liveness(
         wrms::CommandResultPayload* result_out = nullptr,
@@ -310,6 +345,7 @@ public:
         WorksetItemTerminalCallback callback);
     void set_workset_credits_callback(WorksetCreditsCallback callback);
     void set_workset_summary_callback(WorksetSummaryCallback callback);
+    void set_session_event_callback(SessionEventCallback callback);
 
     // Transitional convenience: launch the v1 process and explicitly open its
     // one session. This does not restore any legacy program execution path.
@@ -415,6 +451,10 @@ private:
         std::uint32_t timeout_ms,
         ProcessCommandCompletion* completion_out,
         bool allow_during_stop = false);
+    ProcessWorkerCommandOutcome request_command_with_outcome(
+        wrms::MessageKind command_kind,
+        std::span<const std::uint8_t> payload,
+        std::uint32_t timeout_ms);
     bool request_execution_control(
         wrms::ExecutionControlKind control,
         runtime::WorkerWorksetId workset_id,
@@ -516,6 +556,7 @@ private:
     WorksetItemTerminalCallback workset_item_terminal_callback_;
     WorksetCreditsCallback workset_credits_callback_;
     WorksetSummaryCallback workset_summary_callback_;
+    SessionEventCallback session_event_callback_;
 
     mutable std::mutex progress_mutex_;
     PRProgress last_progress_{};

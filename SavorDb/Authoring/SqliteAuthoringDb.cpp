@@ -3141,6 +3141,19 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
             if (error_out) *error_out = "workflow graph edge references unknown node or empty port";
             return false;
         }
+        if ((edge.guard_kind.has_value()
+                && *edge.guard_kind != kWorkflowOutputPresentGuard)
+            || (edge.guard_kind.has_value()
+                && edge.guard_value.has_value())
+            || (!edge.guard_kind.has_value()
+                && edge.guard_value.has_value())) {
+            rollback();
+            if (error_out) {
+                *error_out =
+                    "workflow graph edge guard must be output_present with no value";
+            }
+            return false;
+        }
 
         Statement insert_edge;
         if (sqlite3_prepare_v2(

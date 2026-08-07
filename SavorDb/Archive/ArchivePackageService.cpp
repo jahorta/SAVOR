@@ -1075,6 +1075,29 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
             }
         }
     }
+    if (!workflow_ids.empty()
+        && IsTablePresent(analysis_db, "tmv_checkpoint_sterilization_request", nullptr)
+        && IsTablePresent(analysis_db, "tmv_checkpoint_sterilization_attempt", nullptr)) {
+        const auto request_ids = QueryInt64Column(
+            analysis_db,
+            "SELECT sterilization_request_id FROM tmv_checkpoint_sterilization_request "
+            "WHERE workflow_instance_id IN (" + workflow_id_list
+                + ") ORDER BY sterilization_request_id;",
+            &error);
+        if (!request_ids.empty()) {
+            const auto ids = JoinIds(request_ids);
+            specs.push_back({
+                "analysis_tas_movie_checkpoint_sterilization_requests",
+                "SELECT * FROM tmv_checkpoint_sterilization_request "
+                "WHERE sterilization_request_id IN (" + ids
+                    + ") ORDER BY sterilization_request_id ASC;"});
+            specs.push_back({
+                "analysis_tas_movie_checkpoint_sterilization_attempts",
+                "SELECT * FROM tmv_checkpoint_sterilization_attempt "
+                "WHERE sterilization_request_id IN (" + ids
+                    + ") ORDER BY sterilization_attempt_id ASC;"});
+        }
+    }
     return specs;
 }
 
@@ -1222,6 +1245,7 @@ bool WriteStoredZip(
 struct SavestateArchiveRow {
     std::int64_t savestate_id = 0;
     std::int64_t artifact_id = 0;
+    std::optional<std::int64_t> dtm_artifact_id;
     std::string sha256;
     std::int64_t size_bytes = 0;
     std::string filename;
@@ -1730,7 +1754,7 @@ std::vector<SavestateArchiveRow> LoadSavestateRows(
     }
 
     const std::string query =
-        "SELECT s.savestate_id,s.artifact_id,a.sha256,a.size_bytes,a.filename,a.file_ext,a.artifact_kind "
+        "SELECT s.savestate_id,s.artifact_id,a.sha256,a.size_bytes,a.filename,a.file_ext,a.artifact_kind,s.dtm_artifact_id "
         "FROM state_savestate s JOIN state_artifact a ON a.artifact_id=s.artifact_id "
         "WHERE s.savestate_id IN (" + JoinIds(savestate_ids) + ") "
         "AND (UPPER(a.artifact_kind)='SAV' OR LOWER(a.file_ext)='.sav') "
@@ -1765,6 +1789,8 @@ std::vector<SavestateArchiveRow> LoadSavestateRows(
         row.file_ext = file_ext == nullptr ? "" : file_ext;
         const auto* artifact_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
         row.artifact_kind = artifact_kind == nullptr ? "" : artifact_kind;
+        if (sqlite3_column_type(st.st, 7) != SQLITE_NULL)
+            row.dtm_artifact_id = sqlite3_column_int64(st.st, 7);
         rows.push_back(std::move(row));
     }
     return rows;
@@ -1943,6 +1969,7 @@ std::vector<ExportSpec> BuildStateSavestateSpecs(
     for (const auto& row : rows) {
         if (row.savestate_id > 0) savestate_ids.push_back(row.savestate_id);
         artifact_ids.push_back(row.artifact_id);
+        if (row.dtm_artifact_id) artifact_ids.push_back(*row.dtm_artifact_id);
     }
     std::sort(artifact_ids.begin(), artifact_ids.end());
     artifact_ids.erase(std::unique(artifact_ids.begin(), artifact_ids.end()), artifact_ids.end());

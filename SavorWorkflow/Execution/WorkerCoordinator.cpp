@@ -37,6 +37,40 @@ bool IsTerminalWorksetState(savor::wrms::WorksetStateCode state) noexcept {
         || state == savor::wrms::WorksetStateCode::Failed;
 }
 
+bool RuntimeAcceptsWorksets(
+    const savor::ProcessWorkerSnapshot& snapshot) noexcept {
+    // Injected preflight tests may not own a live ProcessWorker transport.
+    // Once a production manifest has been observed, however, the worker's
+    // runtime/session state is authoritative for admission.
+    if (!snapshot.runtime_manifest_received) return true;
+    return snapshot.session_open
+        && snapshot.worker_state != savor::runtime::WorkerState::Tainted
+        && snapshot.worker_state != savor::runtime::WorkerState::Stopping
+        && snapshot.worker_state != savor::runtime::WorkerState::Stopped
+        && snapshot.session_disposition !=
+            savor::runtime::SessionDisposition::Tainted
+        && snapshot.session_disposition !=
+            savor::runtime::SessionDisposition::Closed;
+}
+
+WorkerCommandDisposition MapProcessWorkerCommandDisposition(
+    savor::ProcessWorkerCommandDisposition disposition) noexcept {
+    using ProcessDisposition = savor::ProcessWorkerCommandDisposition;
+    switch (disposition) {
+    case ProcessDisposition::Accepted:
+        return WorkerCommandDisposition::Accepted;
+    case ProcessDisposition::LocalRejected:
+        return WorkerCommandDisposition::LocalRejected;
+    case ProcessDisposition::DefiniteRejected:
+        return WorkerCommandDisposition::DefiniteRejected;
+    case ProcessDisposition::TransportCanceledBeforeWrite:
+        return WorkerCommandDisposition::TransportCanceledBeforeWrite;
+    case ProcessDisposition::AmbiguousAfterWrite:
+        return WorkerCommandDisposition::AmbiguousAfterWrite;
+    }
+    return WorkerCommandDisposition::LocalRejected;
+}
+
 std::string JoinDiagnostic(
     std::string_view prefix,
     std::string_view detail) {
@@ -1439,6 +1473,7 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
             };
         }
         if (!slot->ready
+            || slot->quarantine_requested
             || slot->submission_in_progress
             || (slot->active_workset_id.has_value()
                 && !(idempotent_retry
@@ -1455,6 +1490,23 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
                 .process_generation = generation,
                 .diagnostic =
                     "the explicitly targeted worker is not immediately accepting",
+            };
+        }
+        const auto process_snapshot = slot->worker->latest_snapshot();
+        if (!RuntimeAcceptsWorksets(process_snapshot)) {
+            ++submit_rejected_;
+            ++submit_temporary_unavailable_;
+            return {
+                .disposition =
+                    WorkerSubmitDisposition::TargetTemporarilyUnavailable,
+                .worker_id = slot->id,
+                .process_generation = generation,
+                .rejection_code =
+                    savor::wrms::RejectionCode::SessionTainted,
+                .error_code = "WorkerRuntimeNotReusable",
+                .diagnostic = process_snapshot.last_error.empty()
+                    ? "the worker runtime is not reusable"
+                    : process_snapshot.last_error,
             };
         }
         const auto snapshot = SnapshotReadyWorker(*slot);
@@ -1697,25 +1749,21 @@ WorkerCommandResult WorkerCoordinator::CancelWorksetItem(
         worker = slot->worker;
     }
 
-    savor::wrms::CommandResultPayload command_result;
-    if (!worker->cancel_workset_item(
-            workset_id,
-            item_id,
-            std::move(reason),
-            &command_result,
-            0)) {
+    auto outcome = worker->cancel_workset_item_with_outcome(
+        workset_id, item_id, std::move(reason), 0);
+    if (!outcome.accepted()) {
         return {
-            .disposition =
-                worker->is_running()
-                ? WorkerCommandDisposition::DefiniteRejected
-                : WorkerCommandDisposition::TransportOrGenerationCanceled,
+            .disposition = MapProcessWorkerCommandDisposition(
+                outcome.disposition),
             .command_kind = WorkerCommandKind::CancelWorksetItem,
             .worker_id = route.worker_id,
             .process_generation = route.process_generation,
-            .error_code = command_result.error_code,
-            .diagnostic = command_result.message.empty()
-                ? worker->last_error()
-                : command_result.message,
+            .request_frame_written = outcome.request_frame_written,
+            .correlated_result_received =
+                outcome.correlated_result_received,
+            .rejection_code = outcome.result.rejection_code,
+            .error_code = outcome.result.error_code,
+            .diagnostic = outcome.diagnostic,
         };
     }
     ++item_cancellation_accepted_;
@@ -1724,7 +1772,10 @@ WorkerCommandResult WorkerCoordinator::CancelWorksetItem(
         .command_kind = WorkerCommandKind::CancelWorksetItem,
         .worker_id = route.worker_id,
         .process_generation = route.process_generation,
-        .diagnostic = command_result.message,
+        .request_frame_written = outcome.request_frame_written,
+        .correlated_result_received =
+            outcome.correlated_result_received,
+        .diagnostic = outcome.result.message,
     };
 }
 
@@ -1782,24 +1833,21 @@ WorkerCommandResult WorkerCoordinator::CancelWorkset(
         worker = slot->worker;
     }
 
-    savor::wrms::CommandResultPayload command_result;
-    if (!worker->cancel_workset(
-            workset_id,
-            std::move(reason),
-            &command_result,
-            0)) {
+    auto outcome = worker->cancel_workset_with_outcome(
+        workset_id, std::move(reason), 0);
+    if (!outcome.accepted()) {
         return {
-            .disposition =
-                worker->is_running()
-                ? WorkerCommandDisposition::DefiniteRejected
-                : WorkerCommandDisposition::TransportOrGenerationCanceled,
+            .disposition = MapProcessWorkerCommandDisposition(
+                outcome.disposition),
             .command_kind = WorkerCommandKind::CancelWorkset,
             .worker_id = route.worker_id,
             .process_generation = route.process_generation,
-            .error_code = command_result.error_code,
-            .diagnostic = command_result.message.empty()
-                ? worker->last_error()
-                : command_result.message,
+            .request_frame_written = outcome.request_frame_written,
+            .correlated_result_received =
+                outcome.correlated_result_received,
+            .rejection_code = outcome.result.rejection_code,
+            .error_code = outcome.result.error_code,
+            .diagnostic = outcome.diagnostic,
         };
     }
     return {
@@ -1807,7 +1855,10 @@ WorkerCommandResult WorkerCoordinator::CancelWorkset(
         .command_kind = WorkerCommandKind::CancelWorkset,
         .worker_id = route.worker_id,
         .process_generation = route.process_generation,
-        .diagnostic = command_result.message,
+        .request_frame_written = outcome.request_frame_written,
+        .correlated_result_received =
+            outcome.correlated_result_received,
+        .diagnostic = outcome.result.message,
     };
 }
 
@@ -1870,23 +1921,20 @@ WorkerCommandResult WorkerCoordinator::AcknowledgeTerminal(
         worker = slot->worker;
     }
 
-    savor::wrms::CommandResultPayload command_result;
-    if (!worker->acknowledge_terminal(
-            terminal,
-            &command_result,
-            0)) {
+    auto outcome = worker->acknowledge_terminal_with_outcome(terminal, 0);
+    if (!outcome.accepted()) {
         return {
-            .disposition =
-                worker->is_running()
-                ? WorkerCommandDisposition::DefiniteRejected
-                : WorkerCommandDisposition::TransportOrGenerationCanceled,
+            .disposition = MapProcessWorkerCommandDisposition(
+                outcome.disposition),
             .command_kind = WorkerCommandKind::AcknowledgeTerminal,
             .worker_id = route.worker_id,
             .process_generation = route.process_generation,
-            .error_code = command_result.error_code,
-            .diagnostic = command_result.message.empty()
-                ? worker->last_error()
-                : command_result.message,
+            .request_frame_written = outcome.request_frame_written,
+            .correlated_result_received =
+                outcome.correlated_result_received,
+            .rejection_code = outcome.result.rejection_code,
+            .error_code = outcome.result.error_code,
+            .diagnostic = outcome.diagnostic,
         };
     }
 
@@ -1908,7 +1956,10 @@ WorkerCommandResult WorkerCoordinator::AcknowledgeTerminal(
         .command_kind = WorkerCommandKind::AcknowledgeTerminal,
         .worker_id = route.worker_id,
         .process_generation = route.process_generation,
-        .diagnostic = command_result.message,
+        .request_frame_written = outcome.request_frame_written,
+        .correlated_result_received =
+            outcome.correlated_result_received,
+        .diagnostic = outcome.result.message,
     };
 }
 
@@ -2098,6 +2149,45 @@ void WorkerCoordinator::ConfigureWorkerCallbacks(
             const savor::wrms::WorksetSummaryPayload& payload) {
             HandleWorksetSummary(worker_id, generation, payload);
         });
+    worker->set_session_event_callback(
+        [this, worker_id, generation](
+            const savor::wrms::SessionEventPayload& payload) {
+            HandleSessionEvent(worker_id, generation, payload);
+        });
+}
+
+void WorkerCoordinator::HandleSessionEvent(
+    std::size_t worker_id,
+    std::uint64_t process_generation,
+    const savor::wrms::SessionEventPayload& payload) {
+    if (payload.worker_state != savor::wrms::WorkerStateCode::Tainted
+        && payload.session_disposition !=
+            savor::wrms::SessionDispositionCode::Tainted) {
+        return;
+    }
+
+    const auto slot = GetWorkerSlot(worker_id);
+    if (!slot) return;
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mutex);
+        if (!slot->ready
+            || slot->process_generation != process_generation) {
+            return;
+        }
+        slot->quarantine_requested = true;
+        slot->available_item_credits = 0;
+        slot->quarantine_diagnostic = payload.message.empty()
+            ? "worker runtime reported a tainted session"
+            : "worker runtime reported a tainted session: "
+                + payload.message;
+        worker_status_.UpdateState(
+            ToTelemetryWorkerId(slot->id),
+            WorkerStateKind::Dead);
+        worker_status_.RecordError(
+            ToTelemetryWorkerId(slot->id),
+            slot->quarantine_diagnostic);
+    }
+    NotifyAvailabilityChanged();
 }
 
 WorkerCoordinatorCapabilityPreflightResult
@@ -2856,6 +2946,8 @@ void WorkerCoordinator::DetectLostWorkers() {
 
 ReadyWorkerCompatibilitySnapshot
 WorkerCoordinator::SnapshotReadyWorker(const WorkerSlot& slot) const {
+    const bool runtime_accepting = !slot.worker
+        || RuntimeAcceptsWorksets(slot.worker->latest_snapshot());
     ReadyWorkerCompatibilitySnapshot snapshot{
         .worker_id = slot.id,
         .process_generation = slot.process_generation,
@@ -2863,7 +2955,9 @@ WorkerCoordinator::SnapshotReadyWorker(const WorkerSlot& slot) const {
         .runtime_manifest = *slot.runtime_manifest,
         .available_item_credits = slot.available_item_credits,
         .accepting_workset =
-            !slot.submission_in_progress
+            runtime_accepting
+            && !slot.quarantine_requested
+            && !slot.submission_in_progress
             && !slot.active_workset_id.has_value()
             && slot.available_item_credits != 0,
         .resident_workset_id = slot.active_workset_id,
@@ -3071,6 +3165,10 @@ void WorkerCoordinator::HandleCredits(
     {
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
         if (slot->process_generation != process_generation) {
+            return;
+        }
+        if (slot->quarantine_requested) {
+            slot->available_item_credits = 0;
             return;
         }
         slot->available_item_credits =

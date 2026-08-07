@@ -392,6 +392,14 @@ runtime::BackendResult ScriptedDolphinBackend::SaveStateFile(
     return control_->save_file_result;
 }
 
+runtime::BackendBufferResult ScriptedDolphinBackend::SaveStateFileBytes()
+{
+    std::lock_guard lock(control_->mutex);
+    control_->RecordLocked("save_file_bytes");
+    control_->changed.notify_all();
+    return {control_->save_file_result, control_->save_file_bytes};
+}
+
 runtime::BackendBufferResult ScriptedDolphinBackend::SaveStateBuffer()
 {
     std::lock_guard lock(control_->mutex);

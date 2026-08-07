@@ -15,6 +15,27 @@ namespace savor::db {
 
 using ArtifactPayloadRecord = events::StateArtifactPayloadView;
 
+enum class SavestatePlaybackState {
+    Unknown = 0,
+    MovieInactive,
+    MoviePaired,
+};
+
+inline std::string_view ToDbString(SavestatePlaybackState value) {
+    switch (value) {
+    case SavestatePlaybackState::MovieInactive: return "MOVIE_INACTIVE";
+    case SavestatePlaybackState::MoviePaired: return "MOVIE_PAIRED";
+    default: return "";
+    }
+}
+
+inline SavestatePlaybackState ParseSavestatePlaybackState(
+    std::string_view value) {
+    if (value == "MOVIE_INACTIVE") return SavestatePlaybackState::MovieInactive;
+    if (value == "MOVIE_PAIRED") return SavestatePlaybackState::MoviePaired;
+    return SavestatePlaybackState::Unknown;
+}
+
 struct StoreArtifactCommand {
     std::string sha256;
     std::int64_t size_bytes = 0;
@@ -29,6 +50,9 @@ struct StoreArtifactCommand {
 
 struct CreateSavestateCommand {
     std::int64_t artifact_id = 0;
+    SavestatePlaybackState playback_state =
+        SavestatePlaybackState::MovieInactive;
+    std::optional<std::int64_t> dtm_artifact_id;
     std::string savestate_type;
     std::string note;
     bool is_complete = false;
@@ -57,6 +81,26 @@ struct ArtifactRecord {
     std::string file_ext;
     std::string artifact_kind;
     types::UtcTimePoint created_at_utc{};
+};
+
+struct CreateOrGetSterilizedCheckpointCommand {
+    std::int64_t from_savestate_id = 0;
+    StoreArtifactCommand artifact;
+    std::string savestate_type = "TAS_MOVIE_STERILIZED_CHECKPOINT";
+    std::string note;
+    std::string method_kind = "tasmovie.checkpoint_sterilize.v1";
+    std::string source_context_kind;
+    std::int64_t source_context_id = 0;
+    types::UtcTimePoint created_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct CreateOrGetSterilizedCheckpointReceipt {
+    std::int64_t savestate_id = 0;
+    std::int64_t artifact_id = 0;
+    std::int64_t derivation_id = 0;
+    bool created = false;
 };
 
 struct CreateTasMovieRootCommand {
@@ -116,6 +160,9 @@ struct TasMovieTreeRecord {
 struct SavestateRecord {
     std::int64_t savestate_id = 0;
     std::int64_t artifact_id = 0;
+    SavestatePlaybackState playback_state =
+        SavestatePlaybackState::Unknown;
+    std::optional<std::int64_t> dtm_artifact_id;
     std::string savestate_type;
     std::string note;
     bool is_complete = false;
@@ -125,6 +172,8 @@ struct SavestateRecord {
     std::string artifact_filename;
     std::string artifact_file_ext;
     std::string artifact_kind;
+    std::optional<std::string> dtm_sha256;
+    std::optional<std::string> dtm_filename;
 };
 
 struct SavestateDerivationRecord {
@@ -155,6 +204,11 @@ struct IStateDb {
         std::int64_t* derivation_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
+    virtual bool CreateOrGetSterilizedCheckpoint(
+        const CreateOrGetSterilizedCheckpointCommand& command,
+        CreateOrGetSterilizedCheckpointReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
     virtual std::optional<ArtifactRecord> GetArtifact(
         std::int64_t artifact_id) const = 0;
 
@@ -173,6 +227,11 @@ struct IStateDb {
     virtual std::vector<SavestateDerivationRecord> ListSavestateDerivationsBySourceContext(
         std::string_view source_context_kind,
         std::int64_t source_context_id) const = 0;
+
+    virtual std::optional<SavestateDerivationRecord>
+    FindSavestateDerivationBySourceAndMethod(
+        std::int64_t from_savestate_id,
+        std::string_view method_kind) const = 0;
 
     virtual bool CreateTasMovieRoot(
         const CreateTasMovieRootCommand& command,

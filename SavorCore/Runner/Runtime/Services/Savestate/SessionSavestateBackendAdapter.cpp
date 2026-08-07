@@ -86,6 +86,43 @@ SessionSavestateBackendAdapter::SaveStateBuffer()
     }
 }
 
+SavestateBackendBufferResult
+SessionSavestateBackendAdapter::SaveStateFileBytes()
+{
+    try
+    {
+        BackendBufferResult result = backend_.SaveStateFileBytes();
+        if (result.result.ok)
+        {
+            return {
+                SavestateBackendResult::Success(),
+                std::move(result.bytes)};
+        }
+        return {
+            SavestateBackendResult::Failure(
+                std::move(result.result.message),
+                result.result.integrity == BackendIntegrity::Unknown
+                    ? GuestIntegrity::Unknown
+                    : GuestIntegrity::Preserved),
+            {}};
+    }
+    catch (const std::exception& ex)
+    {
+        return {
+            SavestateBackendResult::Failure(
+                ex.what(), GuestIntegrity::Unknown),
+            {}};
+    }
+    catch (...)
+    {
+        return {
+            SavestateBackendResult::Failure(
+                "Dolphin state-file capture threw",
+                GuestIntegrity::Unknown),
+            {}};
+    }
+}
+
 SavestateBackendResult SessionSavestateBackendAdapter::RestoreStateBuffer(
     const std::vector<std::uint8_t>& bytes)
 {

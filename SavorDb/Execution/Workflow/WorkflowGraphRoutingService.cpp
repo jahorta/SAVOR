@@ -1,6 +1,7 @@
 #include "WorkflowGraphRoutingService.h"
 
 #include <algorithm>
+#include <deque>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -184,118 +185,247 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
         }
     }
 
-    const auto outputs = query_service_->ListStepOutputs(snapshot.workflow_instance_id);
-    std::vector<std::string> touched_targets;
-    std::unordered_set<std::string> satisfied_bindings;
-    std::unordered_map<std::string, const WorkflowInstanceInputBindingRecord*> binding_by_key;
-    for (const auto& binding : execution_graph->input_bindings) {
-        const auto key = BindingKey(binding.node_key, binding.input_key);
-        satisfied_bindings.insert(key);
-        binding_by_key.emplace(key, &binding);
-    }
-    const auto touch_target = [&touched_targets](const std::string& node_key) {
-        if (std::find(touched_targets.begin(), touched_targets.end(), node_key) == touched_targets.end()) {
-            touched_targets.push_back(node_key);
-        }
-    };
-
-    for (const auto& edge : authored_graph->edges) {
-        if (edge.from_node_key != graph_node_key) {
+    std::deque<std::string> terminal_sources;
+    terminal_sources.push_back(graph_node_key);
+    std::unordered_set<std::string> evaluated_sources;
+    while (!terminal_sources.empty()) {
+        const std::string source_node_key =
+            std::move(terminal_sources.front());
+        terminal_sources.pop_front();
+        if (!evaluated_sources.emplace(source_node_key).second) {
             continue;
         }
 
-        const auto target_binding_key = BindingKey(edge.to_node_key, edge.input_key);
-        const auto existing_binding = binding_by_key.find(target_binding_key);
-        if (existing_binding != binding_by_key.end()
-            && existing_binding->second->source_kind == "external_override") {
-            satisfied_bindings.insert(target_binding_key);
-            touch_target(edge.to_node_key);
-            continue;
+        execution_graph = query_service_->GetWorkflowGraph(
+            snapshot.workflow_instance_id);
+        if (!execution_graph) {
+            if (error_out) *error_out = "workflow execution graph disappeared during routing";
+            return false;
+        }
+        const auto outputs = query_service_->ListStepOutputs(
+            snapshot.workflow_instance_id);
+        std::unordered_map<
+            std::string,
+            const WorkflowInstanceInputBindingRecord*> binding_by_key;
+        for (const auto& binding : execution_graph->input_bindings) {
+            binding_by_key.emplace(
+                BindingKey(binding.node_key, binding.input_key),
+                &binding);
         }
 
-        const auto* output = FindOutput(outputs, edge.from_node_key, edge.output_key);
-        if (output == nullptr) {
-            if (HasActiveWorkForGraphNode(*execution_graph, graph_node_key)) {
-                if (result_out) {
-                    *result_out = result;
+        std::vector<std::string> touched_targets;
+        for (const auto& edge : authored_graph->edges) {
+            if (edge.from_node_key != source_node_key) {
+                continue;
+            }
+            if (std::find(
+                    touched_targets.begin(),
+                    touched_targets.end(),
+                    edge.to_node_key) == touched_targets.end()) {
+                touched_targets.push_back(edge.to_node_key);
+            }
+        }
+
+        for (const auto& target_node_key : touched_targets) {
+            const auto* target_node = FindNode(
+                *authored_graph, target_node_key);
+            if (target_node == nullptr) {
+                if (error_out) *error_out = "workflow graph edge references unknown target node";
+                return false;
+            }
+
+            bool all_required_satisfied = true;
+            bool should_wait = false;
+            std::optional<std::string> skip_reason;
+            for (const auto& input : target_node->inputs) {
+                if (!input.required) {
+                    continue;
                 }
-                return true;
+                const auto input_key = BindingKey(
+                    target_node_key, input.input_key);
+                const auto existing_binding = binding_by_key.find(input_key);
+                if (existing_binding != binding_by_key.end()) {
+                    continue;
+                }
+
+                bool has_provider = false;
+                bool provider_active = false;
+                bool guarded_provider_absent = false;
+                std::optional<std::string> unguarded_missing;
+                for (const auto& edge : authored_graph->edges) {
+                    if (edge.to_node_key != target_node_key
+                        || edge.input_key != input.input_key) {
+                        continue;
+                    }
+                    has_provider = true;
+                    if ((edge.guard_kind.has_value()
+                            && *edge.guard_kind
+                                != savor::db::kWorkflowOutputPresentGuard)
+                        || edge.guard_value.has_value()) {
+                        if (error_out) {
+                            *error_out =
+                                "workflow graph contains an unsupported edge guard";
+                        }
+                        return false;
+                    }
+
+                    const auto* output = FindOutput(
+                        outputs,
+                        edge.from_node_key,
+                        edge.output_key);
+                    if (output != nullptr) {
+                        if (!input.data_kind.empty()
+                            && input.data_kind != output->data_kind) {
+                            if (error_out) {
+                                *error_out =
+                                    "workflow graph edge data_kind mismatch";
+                            }
+                            return false;
+                        }
+                        std::string command_error;
+                        if (!command_service_->RecordInputBinding(
+                                {
+                                    .workflow_instance_id =
+                                        snapshot.workflow_instance_id,
+                                    .workflow_graph_revision_id =
+                                        *snapshot.workflow_graph_revision_id,
+                                    .node_key = target_node_key,
+                                    .input_key = input.input_key,
+                                    .data_kind = output->data_kind,
+                                    .ref_kind = output->ref_kind,
+                                    .ref_id = output->ref_id,
+                                    .source_kind = "upstream",
+                                    .requested_by =
+                                        "workflow_graph_routing",
+                                },
+                                &command_error)) {
+                            if (error_out) *error_out = command_error;
+                            return false;
+                        }
+                        result.routed_input_binding = true;
+                        binding_by_key.emplace(input_key, nullptr);
+                        break;
+                    }
+
+                    if (HasActiveWorkForGraphNode(
+                            *execution_graph, edge.from_node_key)) {
+                        provider_active = true;
+                        continue;
+                    }
+                    if (edge.guard_kind.has_value()) {
+                        guarded_provider_absent = true;
+                    } else {
+                        unguarded_missing =
+                            "graph_output_missing:" + edge.from_node_key
+                            + "." + edge.output_key;
+                    }
+                }
+
+                if (binding_by_key.contains(input_key)) {
+                    continue;
+                }
+                all_required_satisfied = false;
+                if (provider_active) {
+                    should_wait = true;
+                    continue;
+                }
+                if (unguarded_missing) {
+                    result.blocked_reason = *unguarded_missing;
+                    if (result_out) *result_out = result;
+                    return true;
+                }
+                if (has_provider && guarded_provider_absent) {
+                    const auto absent_edge = std::find_if(
+                        authored_graph->edges.begin(),
+                        authored_graph->edges.end(),
+                        [&](const auto& edge) {
+                            return edge.to_node_key == target_node_key
+                                && edge.input_key == input.input_key
+                                && edge.guard_kind.has_value();
+                        });
+                    skip_reason = "guard_not_satisfied:"
+                        + absent_edge->from_node_key + "."
+                        + absent_edge->output_key;
+                } else if (!has_provider) {
+                    result.blocked_reason =
+                        "graph_input_unbound:" + target_node_key + "."
+                        + input.input_key;
+                    if (result_out) *result_out = result;
+                    return true;
+                }
             }
-            std::ostringstream reason;
-            reason << "graph_output_missing:" << edge.from_node_key << "." << edge.output_key;
-            result.blocked_reason = reason.str();
-            if (result_out) {
-                *result_out = result;
+
+            if (skip_reason && !should_wait) {
+                bool skipped_target = false;
+                for (const auto& step : execution_graph->steps) {
+                    const auto step_node_key = step.graph_node_key.empty()
+                        ? step.step_key
+                        : step.graph_node_key;
+                    if (step_node_key != target_node_key
+                        || step.state == WorkflowStepState::Skipped
+                        || IsTerminal(step.state)) {
+                        continue;
+                    }
+                    if (step.state != WorkflowStepState::Waiting
+                        && step.state != WorkflowStepState::Ready) {
+                        if (error_out) {
+                            *error_out =
+                                "guarded workflow target became active before its required output was available";
+                        }
+                        return false;
+                    }
+                    std::string command_error;
+                    if (!command_service_->SkipStep(
+                            {
+                                .workflow_step_id = step.workflow_step_id,
+                                .reason = *skip_reason,
+                                .requested_by = "workflow_graph_routing",
+                            },
+                            &command_error)) {
+                        if (error_out) *error_out = command_error;
+                        return false;
+                    }
+                    ++result.skipped_step_count;
+                    skipped_target = true;
+                }
+                if (skipped_target) {
+                    terminal_sources.push_back(target_node_key);
+                }
+                continue;
             }
-            return true;
-        }
+            if (!all_required_satisfied || should_wait) {
+                continue;
+            }
 
-        const auto* to_node = FindNode(*authored_graph, edge.to_node_key);
-        if (to_node == nullptr) {
-            if (error_out) *error_out = "workflow graph edge references unknown target node";
-            return false;
+            const auto target_step = std::find_if(
+                execution_graph->steps.begin(),
+                execution_graph->steps.end(),
+                [&](const auto& step) {
+                    const auto step_node_key = step.graph_node_key.empty()
+                        ? step.step_key
+                        : step.graph_node_key;
+                    return step_node_key == target_node_key;
+                });
+            if (target_step == execution_graph->steps.end()
+                || target_step->state != WorkflowStepState::Waiting) {
+                continue;
+            }
+            std::string command_error;
+            if (!command_service_->MarkStepReady(
+                    {
+                        .workflow_instance_id = snapshot.workflow_instance_id,
+                        .step_key = target_step->step_key,
+                        .requested_by = "workflow_graph_routing",
+                        .ready_priority =
+                            snapshot.priority
+                            + successor_step_priority_boost_,
+                    },
+                    &command_error)) {
+                if (error_out) *error_out = command_error;
+                return false;
+            }
+            result.advanced_ready_step = true;
         }
-        const auto* target_input = FindInput(*to_node, edge.input_key);
-        if (target_input == nullptr) {
-            if (error_out) *error_out = "workflow graph edge references unknown target input";
-            return false;
-        }
-        if (!target_input->data_kind.empty() && target_input->data_kind != output->data_kind) {
-            if (error_out) *error_out = "workflow graph edge data_kind mismatch";
-            return false;
-        }
-
-        std::string command_error;
-        if (!command_service_->RecordInputBinding(
-                {
-                    .workflow_instance_id = snapshot.workflow_instance_id,
-                    .workflow_graph_revision_id = *snapshot.workflow_graph_revision_id,
-                    .node_key = edge.to_node_key,
-                    .input_key = edge.input_key,
-                    .data_kind = output->data_kind,
-                    .ref_kind = output->ref_kind,
-                    .ref_id = output->ref_id,
-                    .source_kind = "upstream",
-                    .requested_by = "workflow_graph_routing",
-                },
-                &command_error)) {
-            if (error_out) *error_out = command_error;
-            return false;
-        }
-        result.routed_input_binding = true;
-        satisfied_bindings.insert(target_binding_key);
-        touch_target(edge.to_node_key);
-    }
-
-    for (const auto& target_node_key : touched_targets) {
-        const auto* target_node = FindNode(*authored_graph, target_node_key);
-        if (target_node == nullptr) {
-            continue;
-        }
-
-        const bool ready = std::all_of(
-            target_node->inputs.begin(),
-            target_node->inputs.end(),
-            [&](const auto& input) {
-                return !input.required || satisfied_bindings.find(BindingKey(target_node_key, input.input_key)) != satisfied_bindings.end();
-            });
-        if (!ready) {
-            continue;
-        }
-
-        std::string command_error;
-        if (!command_service_->MarkStepReady(
-                {
-                    .workflow_instance_id = snapshot.workflow_instance_id,
-                    .step_key = target_node_key,
-                    .requested_by = "workflow_graph_routing",
-                    .ready_priority = snapshot.priority + successor_step_priority_boost_,
-                },
-                &command_error)) {
-            if (error_out) *error_out = command_error;
-            return false;
-        }
-        result.advanced_ready_step = true;
     }
 
     execution_graph = query_service_->GetWorkflowGraph(snapshot.workflow_instance_id);

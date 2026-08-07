@@ -816,12 +816,6 @@ std::vector<std::string> BuildProgressLines(
     return lines;
 }
 
-enum class SeedProbeInfrastructureHealth {
-    Clean = 0,
-    Degraded,
-    Failed,
-};
-
 const char* InfrastructureHealthName(
     SeedProbeInfrastructureHealth health) {
     switch (health) {
@@ -840,6 +834,7 @@ bool ValidateSplitCoordinatorExecution(
     const std::vector<ReadyWorkerCompatibilitySnapshot>& ready_workers,
     const savor::runtime::ProgramModuleIdentity&
         expected_seed_probe_module,
+    const SeedProbeWorkflowValidationOptions& options,
     SeedProbeInfrastructureHealth* health_out,
     std::vector<std::string>* health_issues_out,
     std::string* error_out) {
@@ -862,20 +857,32 @@ bool ValidateSplitCoordinatorExecution(
         require(
             graph->instance.state == WorkflowInstanceState::Completed,
             "workflow instance did not reach COMPLETED");
+        const auto seed_step = std::find_if(
+            graph->steps.begin(),
+            graph->steps.end(),
+            [&](const auto& step) {
+                const auto node_key = step.graph_node_key.empty()
+                    ? step.step_key
+                    : step.graph_node_key;
+                return step.step_kind == "seedprobe.run"
+                    && node_key == options.graph_node_key;
+            });
         require(
-            graph->steps.size() == 1,
-            "SeedProbe E2E must contain exactly one workflow step");
-        for (const auto& step : graph->steps) {
+            seed_step != graph->steps.end(),
+            "SeedProbe workflow step is unavailable at graph node: "
+                + options.graph_node_key);
+        if (options.require_single_seedprobe_step) {
             require(
-                step.step_kind == "seedprobe.run",
-                "workflow contains a non-SeedProbe step kind: "
-                    + step.step_kind);
+                graph->steps.size() == 1,
+                "standalone SeedProbe E2E must contain exactly one workflow step");
+        }
+        if (seed_step != graph->steps.end()) {
             require(
-                step.step_key != "Neutral"
-                    && step.step_key != "Grid"
-                    && step.step_key != "Unique",
+                seed_step->step_key != "Neutral"
+                    && seed_step->step_key != "Grid"
+                    && seed_step->step_key != "Unique",
                 "legacy SeedProbe workflow step was materialized: "
-                    + step.step_key);
+                    + seed_step->step_key);
         }
         if (execution_db != nullptr
             && execution_db->WorkflowQueryService() != nullptr) {
@@ -886,8 +893,10 @@ bool ValidateSplitCoordinatorExecution(
                 std::find_if(
                     outputs.begin(),
                     outputs.end(),
-                    [](const auto& output) {
-                        return output.output_key
+                    [&](const auto& output) {
+                        return output.graph_node_key
+                                == options.graph_node_key
+                            && output.output_key
                                 == "seed_probe_run"
                             && output.data_kind
                                 == "analysis.seed_probe_run"
@@ -901,20 +910,22 @@ bool ValidateSplitCoordinatorExecution(
                 std::none_of(
                     outputs.begin(),
                     outputs.end(),
-                    [](const auto& output) {
-                        return output.data_kind
-                                == "state.savestate_id"
+                    [&](const auto& output) {
+                        return output.graph_node_key
+                                == options.graph_node_key
+                            && (output.data_kind
+                                == "state.movie_inactive_savestate_id"
                             || output.output_key.find("savestate")
-                                != std::string::npos;
+                                != std::string::npos);
                     }),
                 "SeedProbe workflow published a forbidden savestate output");
         }
 
-        if (graph->steps.size() == 1
-            && graph->steps.front().job_set_id.has_value()
+        if (seed_step != graph->steps.end()
+            && seed_step->job_set_id.has_value()
             && execution_db != nullptr) {
             const auto root_job_set_id =
-                *graph->steps.front().job_set_id;
+                *seed_step->job_set_id;
             const auto root =
                 execution_db->GetJobSetProgress(root_job_set_id);
             const auto survey_jobs =
@@ -984,7 +995,6 @@ bool ValidateSplitCoordinatorExecution(
                         + " did not become business-final");
             }
 
-            std::size_t jobs_with_worker_terminals = 0;
             for (const auto job_set_id : all_job_set_ids) {
                 const auto jobs =
                     execution_db->ListJobsInJobSet(job_set_id);
@@ -1020,7 +1030,6 @@ bool ValidateSplitCoordinatorExecution(
                             + std::to_string(job->job_id)
                             + " recorded a result-processing failure");
                     if (job->worker_terminal_status.has_value()) {
-                        ++jobs_with_worker_terminals;
                         require(
                             job->result_processing_state
                                 == std::optional<std::string>(
@@ -1031,14 +1040,51 @@ bool ValidateSplitCoordinatorExecution(
                     }
                 }
             }
-            require_clean(
-                jobs_with_worker_terminals
-                    == telemetry.execution.worker_terminals_staged,
-                "durable worker-terminal job count differs from "
-                "JobExecutionCoordinator telemetry");
         } else {
             failures.push_back(
                 "SeedProbe workflow step has no root job set");
+        }
+
+        if (execution_db != nullptr) {
+            std::unordered_set<std::int64_t> workflow_job_set_ids;
+            std::deque<std::int64_t> job_sets_to_visit;
+            for (const auto& step : graph->steps) {
+                if (step.job_set_id.has_value()
+                    && workflow_job_set_ids.insert(*step.job_set_id).second) {
+                    job_sets_to_visit.push_back(*step.job_set_id);
+                }
+            }
+            while (!job_sets_to_visit.empty()) {
+                const auto parent = job_sets_to_visit.front();
+                job_sets_to_visit.pop_front();
+                for (const auto& child :
+                     execution_db->GetChildJobSetProgress(parent)) {
+                    if (workflow_job_set_ids.insert(child.job_set_id).second) {
+                        job_sets_to_visit.push_back(child.job_set_id);
+                    }
+                }
+            }
+
+            std::size_t workflow_jobs_with_worker_terminals = 0;
+            for (const auto job_set_id : workflow_job_set_ids) {
+                for (const auto& listed :
+                     execution_db->ListJobsInJobSet(job_set_id)) {
+                    const auto job = execution_db->GetJob(listed.job_id);
+                    require(
+                        job.has_value(),
+                        "execution job disappeared from workflow job set "
+                            + std::to_string(job_set_id));
+                    if (job.has_value()
+                        && job->worker_terminal_status.has_value()) {
+                        ++workflow_jobs_with_worker_terminals;
+                    }
+                }
+            }
+            require_clean(
+                workflow_jobs_with_worker_terminals
+                    == telemetry.execution.worker_terminals_staged,
+                "durable workflow worker-terminal job count differs from "
+                "JobExecutionCoordinator telemetry");
         }
     }
 
@@ -1279,12 +1325,30 @@ bool ValidateSeedProbeAcceptedEvidence(
     savor::db::IAnalysisDb* analysis_db,
     const std::optional<
         savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
+    const SeedProbeWorkflowValidationOptions& options,
     std::string* error_out) {
+    const savor::db::execution::workflow::WorkflowStepRecord* seed_step =
+        nullptr;
+    if (graph.has_value()) {
+        const auto found = std::find_if(
+            graph->steps.begin(),
+            graph->steps.end(),
+            [&](const auto& step) {
+                const auto node_key = step.graph_node_key.empty()
+                    ? step.step_key
+                    : step.graph_node_key;
+                return step.step_kind == "seedprobe.run"
+                    && node_key == options.graph_node_key;
+            });
+        if (found != graph->steps.end()) {
+            seed_step = &*found;
+        }
+    }
     if (execution_db == nullptr || analysis_db == nullptr
         || !graph.has_value()
-        || graph->steps.size() != 1
-        || !graph->steps.front().input_ref_id.has_value()
-        || *graph->steps.front().input_ref_id <= 0) {
+        || seed_step == nullptr
+        || !seed_step->input_ref_id.has_value()
+        || *seed_step->input_ref_id <= 0) {
         if (error_out) {
             *error_out =
                 "completed SeedProbe step does not identify its probe run";
@@ -1292,12 +1356,21 @@ bool ValidateSeedProbeAcceptedEvidence(
         return false;
     }
 
-    const auto probe_run_id = *graph->steps.front().input_ref_id;
+    const auto probe_run_id = *seed_step->input_ref_id;
     const auto run = analysis_db->GetSeedProbeRun(probe_run_id);
     if (!run.has_value()) {
         if (error_out) {
             *error_out =
                 "completed SeedProbe run is missing from Analysis DB";
+        }
+        return false;
+    }
+    if (options.expected_entry_savestate_id.has_value()
+        && run->entry_savestate_id
+            != *options.expected_entry_savestate_id) {
+        if (error_out) {
+            *error_out =
+                "SeedProbe run did not use the expected TAS Movie checkpoint";
         }
         return false;
     }
@@ -1589,6 +1662,59 @@ bool ValidateSeedProbeAcceptedEvidence(
 }
 
 } // namespace
+
+bool ValidateSeedProbeWorkflowExecution(
+    savor::db::IExecutionDb* execution_db,
+    savor::db::IAnalysisDb* analysis_db,
+    const std::optional<
+        savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
+    const SplitCoordinatorTelemetry& telemetry,
+    const std::vector<ReadyWorkerCompatibilitySnapshot>& ready_workers,
+    const savor::runtime::ProgramModuleIdentity& expected_seed_probe_module,
+    const SeedProbeWorkflowValidationOptions& options,
+    SeedProbeInfrastructureHealth* health_out,
+    std::vector<std::string>* health_issues_out,
+    std::string* error_out) {
+    SeedProbeInfrastructureHealth health =
+        SeedProbeInfrastructureHealth::Failed;
+    std::vector<std::string> issues;
+    std::string coordinator_error;
+    const bool coordinator_valid = ValidateSplitCoordinatorExecution(
+        execution_db,
+        graph,
+        telemetry,
+        ready_workers,
+        expected_seed_probe_module,
+        options,
+        &health,
+        &issues,
+        &coordinator_error);
+    std::string evidence_error;
+    const bool evidence_valid = coordinator_valid
+        && ValidateSeedProbeAcceptedEvidence(
+            execution_db,
+            analysis_db,
+            graph,
+            options,
+            &evidence_error);
+    if (!coordinator_valid && !coordinator_error.empty()) {
+        issues.push_back(coordinator_error);
+    }
+    if (!evidence_valid) {
+        health = SeedProbeInfrastructureHealth::Failed;
+        if (!evidence_error.empty()) {
+            issues.push_back(evidence_error);
+        }
+    }
+    if (health_out) *health_out = health;
+    if (health_issues_out) *health_issues_out = issues;
+    if (error_out) {
+        *error_out = !coordinator_error.empty()
+            ? coordinator_error
+            : evidence_error;
+    }
+    return coordinator_valid && evidence_valid;
+}
 
 bool RunSeedProbeRealWorkerSmokeImpl(
     const CliOptions& options,
@@ -2261,42 +2387,24 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     SeedProbeInfrastructureHealth infrastructure_health =
         SeedProbeInfrastructureHealth::Failed;
     std::vector<std::string> infrastructure_issues;
-    std::string coordinator_validation_error;
-    const bool coordinator_valid = ValidateSplitCoordinatorExecution(
-            execution_db,
-            final_graph,
-            final_telemetry,
-            final_ready_workers,
-            expected_seed_probe_module,
-            &infrastructure_health,
-            &infrastructure_issues,
-            &coordinator_validation_error);
-    std::string evidence_validation_error;
-    const bool evidence_valid = coordinator_valid
-        && ValidateSeedProbeAcceptedEvidence(
-            execution_db,
-            db_service->AnalysisDb(),
-            final_graph,
-            &evidence_validation_error);
-    if (!coordinator_valid && !coordinator_validation_error.empty()) {
-        infrastructure_issues.push_back(
-            coordinator_validation_error);
-    }
-    if (!evidence_valid) {
-        infrastructure_health = SeedProbeInfrastructureHealth::Failed;
-        if (!evidence_validation_error.empty()) {
-            infrastructure_issues.push_back(
-                evidence_validation_error);
-        }
-    }
+    std::string validation_error;
+    const bool execution_valid = ValidateSeedProbeWorkflowExecution(
+        execution_db,
+        db_service->AnalysisDb(),
+        final_graph,
+        final_telemetry,
+        final_ready_workers,
+        expected_seed_probe_module,
+        SeedProbeWorkflowValidationOptions{},
+        &infrastructure_health,
+        &infrastructure_issues,
+        &validation_error);
     emit_infrastructure_health(
         infrastructure_health,
         infrastructure_issues);
-    if (!coordinator_valid || !evidence_valid) {
+    if (!execution_valid) {
         if (error_out != nullptr) {
-            *error_out = !coordinator_validation_error.empty()
-                ? coordinator_validation_error
-                : evidence_validation_error;
+            *error_out = validation_error;
         }
         return false;
     }

@@ -200,7 +200,8 @@ bool RecomputeUnitActivationState(
             "COUNT(1),"
             "SUM(CASE WHEN state='FAILED' THEN 1 ELSE 0 END),"
             "SUM(CASE WHEN state IN ('COMPLETED','FAILED','SKIPPED') THEN 1 ELSE 0 END),"
-            "SUM(CASE WHEN state IN ('MATERIALIZED','RUNNING') THEN 1 ELSE 0 END) "
+            "SUM(CASE WHEN state IN ('MATERIALIZED','RUNNING') THEN 1 ELSE 0 END),"
+            "SUM(CASE WHEN state='SKIPPED' THEN 1 ELSE 0 END) "
             "FROM exec_workflow_step WHERE workflow_unit_activation_id=?1;",
             &summary,
             error_out)) {
@@ -215,10 +216,13 @@ bool RecomputeUnitActivationState(
     const auto failed = sqlite3_column_int64(summary.st, 1);
     const auto terminal = sqlite3_column_int64(summary.st, 2);
     const auto active = sqlite3_column_int64(summary.st, 3);
+    const auto skipped = sqlite3_column_int64(summary.st, 4);
     const auto now = NowUtc();
     const char* state = "WAITING";
     if (failed > 0) {
         state = "FAILED";
+    } else if (total > 0 && skipped == total) {
+        state = "SKIPPED";
     } else if (total > 0 && terminal == total) {
         state = "COMPLETED";
     } else if (active > 0) {
@@ -243,7 +247,7 @@ bool RecomputeUnitActivationState(
             "UPDATE exec_workflow_unit_activation "
             "SET state=?2,"
             "started_at_utc=CASE WHEN ?2='RUNNING' THEN COALESCE(started_at_utc, ?3) ELSE started_at_utc END,"
-            "completed_at_utc=CASE WHEN ?2='COMPLETED' THEN COALESCE(completed_at_utc, ?3) ELSE completed_at_utc END,"
+            "completed_at_utc=CASE WHEN ?2 IN ('COMPLETED','SKIPPED') THEN COALESCE(completed_at_utc, ?3) ELSE completed_at_utc END,"
             "failed_at_utc=CASE WHEN ?2='FAILED' THEN COALESCE(failed_at_utc, ?3) ELSE failed_at_utc END,"
             "failure_code=CASE WHEN ?2='FAILED' THEN COALESCE(failure_code, 'CHILD_STEP_FAILED') ELSE failure_code END,"
             "failure_text=CASE WHEN ?2='FAILED' THEN COALESCE(failure_text, 'child workflow step failed') ELSE failure_text END "
@@ -1233,7 +1237,6 @@ bool SqliteWorkflowOrchestrationCommandService::RetryFailedStep(const WorkflowRe
         return false;
     }
     const auto workflow_instance_id = sqlite3_column_int64(lookup.st, 0);
-
     if (!EmitLifecycleEvent(workflow_instance_id, command.workflow_step_id, "Execution.WorkflowStepReady.v1", "retry", error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
@@ -1281,7 +1284,7 @@ bool SqliteWorkflowOrchestrationCommandService::SkipStep(const WorkflowSkipStepC
     }
 
     Statement lookup;
-    if (!Prepare(db_, "SELECT workflow_instance_id FROM exec_workflow_step WHERE workflow_step_id=?1;", &lookup, error_out)) {
+    if (!Prepare(db_, "SELECT workflow_instance_id, workflow_unit_activation_id FROM exec_workflow_step WHERE workflow_step_id=?1;", &lookup, error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
     }
@@ -1292,6 +1295,14 @@ bool SqliteWorkflowOrchestrationCommandService::SkipStep(const WorkflowSkipStepC
         return false;
     }
     const auto workflow_instance_id = sqlite3_column_int64(lookup.st, 0);
+    const auto workflow_unit_activation_id = ColumnInt64Optional(lookup.st, 1);
+
+    if (workflow_unit_activation_id.has_value()
+        && !RecomputeUnitActivationState(
+            db_, *workflow_unit_activation_id, error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
 
     if (!EmitLifecycleEvent(workflow_instance_id, command.workflow_step_id, "Execution.WorkflowStepCompleted.v1", "skip", error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
@@ -1995,9 +2006,7 @@ bool SqliteWorkflowOrchestrationCommandService::RecordStepOutput(
         "SET output_ref_kind=COALESCE(output_ref_kind, ?2), "
         "output_ref_id=COALESCE(output_ref_id, ?3) "
         "WHERE workflow_step_id=?1 "
-        "  AND state IN ('READY','MATERIALIZED','RUNNING','COMPLETED','FAILED') "
-        "  AND (output_ref_kind IS NULL OR output_ref_kind=?2) "
-        "  AND (output_ref_id IS NULL OR output_ref_id=?3);",
+        "  AND state IN ('READY','MATERIALIZED','RUNNING','COMPLETED','FAILED');",
         &update,
         error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);

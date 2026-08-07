@@ -262,15 +262,13 @@ asynchronous cancellation path below rather than an authorization roundtrip.
    The coordinator consumes that event and appends the existing per-job `JobStarted` event before
    processing that child's later terminal. Recording the start is durable lifecycle bookkeeping, not
    permission for the worker to continue.
-8. When execution ends, the invocation fully unwinds. If a state artifact was requested, paused
-   immutable-byte/movie-metadata capture is synchronously promoted into the worker-global completion
-   ledger and bounded background finalization begins. The next child may become the sole active
-   invocation after unwind when credits permit; the pending finalizer is not a program or session owner.
-9. At synchronous execution completion or an unstarted disposition, the actor assigns the item one
-   monotonic terminal-order ordinal across worksets. It assembles and publishes the authoritative
-   per-item result only after mandatory finalization completes, never allowing a later ordinal to
-   overtake it. Correlated later start/progress events may be visible while an earlier item finalizes;
-   each published event still receives the next global outbound sequence.
+8. When execution ends, the invocation fully unwinds. If a state artifact was requested, Dolphin's native
+   savestate file has already been written and read back into immutable bytes together with its exact
+   movie metadata. The active item's output transaction begins bounded host-only finalization, while the
+   item remains active and blocks every later child from restoring or advancing guest state.
+9. The actor assembles and publishes the authoritative per-item result only after mandatory finalization
+   completes. It then retains the terminal and only afterward releases the item so another child or
+   workset may begin.
 10. On receipt of an authoritative terminal, the coordinator immediately validates and projects it
     through the existing per-job result/artifact transaction and acknowledges the exact item after that
     durable projection succeeds.

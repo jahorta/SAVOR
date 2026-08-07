@@ -23,6 +23,8 @@ ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(
     ProductionProgramKindRegistryConfig config{};
     config.tas_movie_validation.working_dir_root =
         runtime_working_dir_root / "tasmovie-validation";
+    config.tas_movie_checkpoint_sterilization.working_dir_root =
+        runtime_working_dir_root / "tasmovie-checkpoint-sterilization";
     config.seed_probe.working_dir_root =
         runtime_working_dir_root / "seedprobe";
     config.battle_context.working_dir_root =
@@ -118,6 +120,32 @@ bool BuildProductionProgramKindRegistry(
                 tas_movie_validation)) {
             return Fail(
                 "TAS Movie validation production descriptor registration failed",
+                error_out);
+        }
+
+        auto tas_movie_checkpoint_sterilization =
+            tasmoviecheckpointsterilization::
+                BuildTasMovieCheckpointSterilizationProgramDescriptor(
+                    dependencies.execution_db,
+                    dependencies.state_db,
+                    dependencies.analysis_db,
+                    std::move(config.tas_movie_checkpoint_sterilization));
+        if (tas_movie_checkpoint_sterilization.program_kind
+                != static_cast<std::int32_t>(
+                    savor::PK_TasMovieCheckpointSterilize)
+            || tas_movie_checkpoint_sterilization.job_materializer == nullptr
+            || tas_movie_checkpoint_sterilization.workset_reconstruction == nullptr
+            || tas_movie_checkpoint_sterilization.result_handler == nullptr) {
+            return Fail(
+                "TAS Movie checkpoint sterilization production descriptor is incomplete",
+                error_out);
+        }
+        if (!registry.Register(tas_movie_checkpoint_sterilization)
+            || !registry.RegisterForStepKind(
+                "tasmovie.checkpoint_sterilize",
+                tas_movie_checkpoint_sterilization)) {
+            return Fail(
+                "TAS Movie checkpoint sterilization production descriptor registration failed",
                 error_out);
         }
 

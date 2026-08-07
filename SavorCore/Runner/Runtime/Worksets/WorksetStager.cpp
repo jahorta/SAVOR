@@ -4,6 +4,7 @@
 #include "Tas/DtmFile.h"
 #include "Utils/Hash.h"
 
+#include <algorithm>
 #include <exception>
 #include <filesystem>
 #include <utility>
@@ -227,6 +228,51 @@ WorksetStagingCompletion WorksetStager::Process(
                     return completion;
                 }
             }
+        }
+        if (job.definition.phase_invocation.program.canonical_id ==
+            "savor.full_phase.tas_movie_checkpoint_sterilize")
+        {
+            const ProgramBaselineArtifact& baseline =
+                job.definition.baseline.artifact;
+            if (baseline.kind != ProgramBaselineArtifactKind::Savestate ||
+                !baseline.movie_path ||
+                job.definition.baseline.components.size() != 1 ||
+                job.definition.baseline.components.front() !=
+                    MakeTasMovieCheckpointSterilizationBaselineComponent())
+            {
+                completion.result = Invalid(
+                    "TAS Movie checkpoint sterilization requires one exact paired-savestate baseline and detach component");
+                return completion;
+            }
+            for (const WorksetItemTemplate& item : job.definition.items)
+            {
+                tasmovie::TasMovieCheckpointSterilizationRequestV1 request;
+                std::string diagnostic;
+                if (!tasmovie::DecodeTasMovieCheckpointSterilizationExecutionInputV1(
+                        item.execution.input_payload, request, &diagnostic) ||
+                    std::filesystem::path(request.source_savestate_path) !=
+                        baseline.state_path ||
+                    std::filesystem::path(request.source_dtm_path) !=
+                        *baseline.movie_path)
+                {
+                    completion.result = Invalid(
+                        diagnostic.empty()
+                            ? "TAS Movie checkpoint sterilization scalar input disagrees with its paired baseline"
+                            : std::move(diagnostic));
+                    return completion;
+                }
+            }
+        }
+        else if (std::ranges::any_of(
+                     job.definition.baseline.components,
+                     [](const ProgramBaselineComponent& component) {
+                         return component.canonical_id ==
+                             kTasMovieCheckpointSterilizationBaselineComponentId;
+                     }))
+        {
+            completion.result = Invalid(
+                "The checkpoint sterilization baseline component is restricted to its exact Full Phase");
+            return completion;
         }
 
         const ProgramBaselineKey baseline =

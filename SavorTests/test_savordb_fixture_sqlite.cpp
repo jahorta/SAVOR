@@ -2724,7 +2724,6 @@ VALUES(22000, 220, 1, 1, 'mock_spec', 44, 'fp-22', 0, 'SUCCEEDED', 0, 1, unixepo
             .requested_by = "test",
         },
         &err)) << err;
-
     savor::db::execution::programdb::ProgramKindRegistry registry;
     savor::db::execution::programdb::ProgramKindDescriptor descriptor{};
     descriptor.program_kind = 1;
@@ -2757,6 +2756,77 @@ VALUES(22000, 220, 1, 1, 'mock_spec', 44, 'fp-22', 0, 'SUCCEEDED', 0, 1, unixepo
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)), "mock.result");
     EXPECT_EQ(sqlite3_column_int64(st, 2), 2222);
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 3)), "READY");
+    sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage5WorkflowStepRecordsDistinctNamedOutputs) {
+    using namespace savor::db::execution::workflow;
+
+    const savor::db::migrations::MigrationSourceOptions embedded_options{
+        .source_kind = savor::db::migrations::MigrationSourceKind::Embedded,
+    };
+    std::string err;
+    ASSERT_TRUE(savor::db::migrations::ApplyContextMigrations(
+        db_,
+        savor::db::migrations::MigrationContext::Execution,
+        embedded_options,
+        &err)) << err;
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id, workflow_kind, state, root_scope_kind,
+    created_by, created_at_utc)
+VALUES(23, 'workflow_graph', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_workflow_step(
+    workflow_step_id, workflow_instance_id, step_key, step_kind, state,
+    priority, attempts, max_attempts, created_at_utc)
+VALUES(2300, 23, 'source', 'mock.source', 'READY', 0, 0, 1, unixepoch()*1000);
+)SQL"));
+
+    SqliteWorkflowOrchestrationQueryService query_service(db_);
+    SqliteWorkflowOrchestrationCommandService command_service(db_);
+    ASSERT_TRUE(command_service.RecordStepOutput(
+        {
+            .workflow_step_id = 2300,
+            .output_key = "attempt",
+            .output_data_kind = "analysis.attempt_id",
+            .output_ref_kind = "analysis.attempt",
+            .output_ref_id = 2222,
+            .requested_by = "test",
+        },
+        &err)) << err;
+    ASSERT_TRUE(command_service.RecordStepOutput(
+        {
+            .workflow_step_id = 2300,
+            .output_key = "checkpoint",
+            .output_data_kind = "state.savestate_id",
+            .output_ref_kind = "state.savestate",
+            .output_ref_id = 3333,
+            .requested_by = "test",
+        },
+        &err)) << err;
+
+    const auto outputs = query_service.ListStepOutputs(23);
+    ASSERT_EQ(outputs.size(), 2u);
+    EXPECT_EQ(outputs[0].output_key, "attempt");
+    EXPECT_EQ(outputs[0].ref_kind, "analysis.attempt");
+    EXPECT_EQ(outputs[0].ref_id, 2222);
+    EXPECT_EQ(outputs[1].output_key, "checkpoint");
+    EXPECT_EQ(outputs[1].ref_kind, "state.savestate");
+    EXPECT_EQ(outputs[1].ref_id, 3333);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT output_ref_kind, output_ref_id "
+        "FROM exec_workflow_step WHERE workflow_step_id=2300;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_STREQ(
+        reinterpret_cast<const char*>(sqlite3_column_text(st, 0)),
+        "analysis.attempt");
+    EXPECT_EQ(sqlite3_column_int64(st, 1), 2222);
     sqlite3_finalize(st);
 }
 
@@ -5746,7 +5816,6 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunAcceptsSameNumericEpochFromDifferentWo
             .causation_id = "an-probe-confirmed-input-set-owner",
         },
         &err)) << err;
-
     const auto frames = analysis_db->ListAnalysisInputSetFrames(probe_run->accepted_input_set_id);
     ASSERT_EQ(frames.size(), 1);
     EXPECT_EQ(frames[0].ordinal, 0);
@@ -6849,7 +6918,14 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
                 },
             },
             .edges = {
-                { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
+                {
+                    .from_node_key = "tas_1",
+                    .output_key = "savestate",
+                    .to_node_key = "probe_1",
+                    .input_key = "entry_savestate",
+                    .guard_kind = std::string(
+                        kWorkflowOutputPresentGuard),
+                },
             },
             .created_at_utc = now,
             .correlation_id = "au-workflow-graph-routing-override",
@@ -6946,6 +7022,401 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
                 && binding.source_kind == "external_override";
         });
     EXPECT_EQ(override_count, 1);
+}
+
+TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentWaitsForAlternateProvider) {
+    using namespace savor::db;
+    using namespace savor::db::execution::workflow;
+
+    auto* authoring_db = db_service_->AuthoringDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(authoring_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+    std::string err;
+    const auto now = types::UtcTimePoint(
+        std::chrono::milliseconds(1712304000791));
+    SaveWorkflowGraphResult saved{};
+    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
+        {
+            .name = "route-output-present-alternate",
+            .description = "A missing guarded output waits for an active alternate provider",
+            .graph_version = 1,
+            .graph_hash = "graph-hash-route-output-present-alternate",
+            .nodes = {
+                {
+                    .node_key = "left_1",
+                    .unit_kind = "source",
+                    .display_name = "Left",
+                    .possible_outputs = {{
+                        .output_key = "value",
+                        .data_kind = "test.ref",
+                        .display_name = "Value",
+                    }},
+                },
+                {
+                    .node_key = "right_1",
+                    .unit_kind = "source",
+                    .display_name = "Right",
+                    .possible_outputs = {{
+                        .output_key = "value",
+                        .data_kind = "test.ref",
+                        .display_name = "Value",
+                    }},
+                },
+                {
+                    .node_key = "target_1",
+                    .unit_kind = "target",
+                    .display_name = "Target",
+                    .inputs = {{
+                        .input_key = "input",
+                        .data_kind = "test.ref",
+                        .display_name = "Input",
+                    }},
+                },
+            },
+            .edges = {
+                {
+                    .from_node_key = "left_1",
+                    .output_key = "value",
+                    .to_node_key = "target_1",
+                    .input_key = "input",
+                    .guard_kind = std::string(
+                        kWorkflowOutputPresentGuard),
+                },
+                {
+                    .from_node_key = "right_1",
+                    .output_key = "value",
+                    .to_node_key = "target_1",
+                    .input_key = "input",
+                    .guard_kind = std::string(
+                        kWorkflowOutputPresentGuard),
+                },
+            },
+            .created_at_utc = now,
+            .correlation_id = "au-output-present-alternate",
+        },
+        &saved,
+        &err)) << err;
+
+    std::int64_t workflow_instance_id = 0;
+    WorkflowCreateInstanceCommand create{};
+    create.workflow_kind = "workflow_graph";
+    create.root_scope_kind = "manual";
+    create.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    create.created_by = "sqlite-fixture";
+    create.created_at_utc = now.time_since_epoch().count();
+    create.unit_activations.push_back(
+        TestUnitActivation("left_1", "source", "Left", {}, 10, 1));
+    create.unit_activations.push_back(
+        TestUnitActivation("right_1", "source", "Right", {}, 10, 1));
+    create.unit_activations.push_back(TestUnitActivation(
+        "target_1", "target", "Target",
+        {"left_1", "right_1"}, 1, 1));
+    ASSERT_TRUE(execution_db->WorkflowCommandService()
+        ->CreateWorkflowInstance(
+            create, &workflow_instance_id, &err)) << err;
+
+    auto find_step = [&](std::string_view node_key) {
+        const auto graph = execution_db->WorkflowQueryService()
+            ->GetWorkflowGraph(workflow_instance_id);
+        EXPECT_TRUE(graph.has_value());
+        if (!graph) return WorkflowStepRecord{};
+        const auto step = std::find_if(
+            graph->steps.begin(), graph->steps.end(),
+            [&](const auto& candidate) {
+                return candidate.graph_node_key == node_key;
+            });
+        EXPECT_NE(step, graph->steps.end());
+        return step == graph->steps.end()
+            ? WorkflowStepRecord{}
+            : *step;
+    };
+    auto finish_source = [&](std::string_view node_key,
+                             std::optional<std::int64_t> output_ref) {
+        const auto step = find_step(node_key);
+        std::int64_t job_set_id = 0;
+        EXPECT_TRUE(execution_db->CreateJobSet(
+            {
+                .program_kind = 10,
+                .purpose = "Guard source",
+                .created_by = std::string("test"),
+                .expected_total = 1,
+            },
+            &job_set_id,
+            &err)) << err;
+        EXPECT_TRUE(execution_db->WorkflowCommandService()
+            ->MarkStepMaterialized(
+                {
+                    .workflow_step_id = step.workflow_step_id,
+                    .job_set_id = job_set_id,
+                    .requested_by = "test",
+                },
+                &err)) << err;
+        std::int64_t job_id = 0;
+        EXPECT_TRUE(execution_db->EnqueueJob(
+            {
+                .job_set_id = job_set_id,
+                .program_kind = 10,
+                .program_version = 1,
+                .program_ref_kind = "test",
+                .program_ref_id = step.workflow_step_id,
+                .fingerprint = std::string(node_key) + "-job",
+                .priority = 0,
+                .max_attempts = 1,
+            },
+            &job_id,
+            &err)) << err;
+        EXPECT_TRUE(execution_db->JobCommandService()
+            ->AppendLifecycleEvent(
+                {
+                    .kind = execution::jobs::JobLifecycleEventKind::JobCompleted,
+                    .job_id = job_id,
+                    .terminal_state = std::string("SUCCEEDED"),
+                },
+                &err)) << err;
+        if (output_ref) {
+            EXPECT_TRUE(execution_db->RecordJobOutput(
+                {
+                    .job_id = job_id,
+                    .output_key = "value",
+                    .data_kind = "test.ref",
+                    .ref_kind = "test.ref",
+                    .ref_id = *output_ref,
+                    .requested_by = "test",
+                },
+                &err)) << err;
+        }
+        EXPECT_TRUE(execution_db->WorkflowCommandService()->MarkStepTerminal(
+            {
+                .workflow_step_id = step.workflow_step_id,
+                .terminal_state = "COMPLETED",
+                .requested_by = "test",
+            },
+            &err)) << err;
+        return WorkflowStepTerminalSnapshot{
+            .workflow_instance_id = workflow_instance_id,
+            .workflow_step_id = step.workflow_step_id,
+            .job_set_id = job_set_id,
+            .workflow_kind = "workflow_graph",
+            .workflow_graph_revision_id = saved.workflow_graph_revision_id,
+            .step_key = std::string(node_key),
+            .graph_node_key = std::string(node_key),
+            .step_kind = "source",
+            .priority = 10,
+            .expected_total = 1,
+            .discovered_total = 1,
+            .terminal_total = 1,
+            .failed_total = 0,
+        };
+    };
+
+    WorkflowGraphRoutingService router(
+        execution_db, authoring_db,
+        execution_db->WorkflowQueryService(),
+        execution_db->WorkflowCommandService());
+    auto terminal = finish_source("left_1", std::nullopt);
+    WorkflowGraphRoutingResult result{};
+    ASSERT_TRUE(router.RouteTerminalStep(terminal, &result, &err)) << err;
+    EXPECT_FALSE(result.routed_input_binding);
+    EXPECT_EQ(result.skipped_step_count, 0);
+    EXPECT_EQ(find_step("target_1").state, WorkflowStepState::Waiting);
+
+    terminal = finish_source("right_1", 88001);
+    result = {};
+    ASSERT_TRUE(router.RouteTerminalStep(terminal, &result, &err)) << err;
+    EXPECT_TRUE(result.routed_input_binding);
+    EXPECT_TRUE(result.advanced_ready_step);
+    EXPECT_EQ(find_step("target_1").state, WorkflowStepState::Ready);
+}
+
+TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentSkipsImpossibleDescendants) {
+    using namespace savor::db;
+    using namespace savor::db::execution::workflow;
+
+    auto* authoring_db = db_service_->AuthoringDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(authoring_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+    std::string err;
+    const auto now = types::UtcTimePoint(
+        std::chrono::milliseconds(1712304000791));
+    SaveWorkflowGraphResult saved{};
+    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
+        {
+            .name = "route-output-present-skip",
+            .description = "Missing guarded output skips the impossible branch",
+            .graph_version = 1,
+            .graph_hash = "graph-hash-route-output-present-skip",
+            .nodes = {
+                {
+                    .node_key = "root_1",
+                    .unit_kind = "root",
+                    .display_name = "Root",
+                    .possible_outputs = {{
+                        .output_key = "next",
+                        .data_kind = "test.ref",
+                        .display_name = "Next",
+                    }},
+                },
+                {
+                    .node_key = "middle_1",
+                    .unit_kind = "middle",
+                    .display_name = "Middle",
+                    .inputs = {{
+                        .input_key = "input",
+                        .data_kind = "test.ref",
+                        .display_name = "Input",
+                    }},
+                    .possible_outputs = {{
+                        .output_key = "next",
+                        .data_kind = "test.ref",
+                        .display_name = "Next",
+                    }},
+                },
+                {
+                    .node_key = "leaf_1",
+                    .unit_kind = "leaf",
+                    .display_name = "Leaf",
+                    .inputs = {{
+                        .input_key = "input",
+                        .data_kind = "test.ref",
+                        .display_name = "Input",
+                    }},
+                },
+            },
+            .edges = {
+                {
+                    .from_node_key = "root_1",
+                    .output_key = "next",
+                    .to_node_key = "middle_1",
+                    .input_key = "input",
+                    .guard_kind = std::string(
+                        kWorkflowOutputPresentGuard),
+                },
+                {
+                    .from_node_key = "middle_1",
+                    .output_key = "next",
+                    .to_node_key = "leaf_1",
+                    .input_key = "input",
+                    .guard_kind = std::string(
+                        kWorkflowOutputPresentGuard),
+                },
+            },
+            .created_at_utc = now,
+            .correlation_id = "au-output-present-skip",
+        },
+        &saved,
+        &err)) << err;
+
+    std::int64_t workflow_instance_id = 0;
+    WorkflowCreateInstanceCommand create{};
+    create.workflow_kind = "workflow_graph";
+    create.root_scope_kind = "manual";
+    create.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    create.created_by = "sqlite-fixture";
+    create.created_at_utc = now.time_since_epoch().count();
+    create.unit_activations.push_back(
+        TestUnitActivation("root_1", "root", "Root", {}, 10, 1));
+    create.unit_activations.push_back(
+        TestUnitActivation(
+            "middle_1", "middle", "Middle", {"root_1"}, 5, 1));
+    create.unit_activations.push_back(
+        TestUnitActivation(
+            "leaf_1", "leaf", "Leaf", {"middle_1"}, 1, 1));
+    ASSERT_TRUE(execution_db->WorkflowCommandService()
+        ->CreateWorkflowInstance(
+            create, &workflow_instance_id, &err)) << err;
+
+    auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(
+        workflow_instance_id);
+    ASSERT_TRUE(graph.has_value());
+    const auto root_step = std::find_if(
+        graph->steps.begin(), graph->steps.end(),
+        [](const auto& step) { return step.graph_node_key == "root_1"; });
+    ASSERT_NE(root_step, graph->steps.end());
+    std::int64_t root_job_set_id = 0;
+    ASSERT_TRUE(execution_db->CreateJobSet(
+        {
+            .program_kind = 10,
+            .purpose = "Guard root",
+            .created_by = std::string("test"),
+            .expected_total = 1,
+        },
+        &root_job_set_id,
+        &err)) << err;
+    ASSERT_TRUE(execution_db->WorkflowCommandService()
+        ->MarkStepMaterialized(
+            {
+                .workflow_step_id = root_step->workflow_step_id,
+                .job_set_id = root_job_set_id,
+                .requested_by = "test",
+            },
+            &err)) << err;
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->MarkStepTerminal(
+        {
+            .workflow_step_id = root_step->workflow_step_id,
+            .terminal_state = "COMPLETED",
+            .requested_by = "test",
+        },
+        &err)) << err;
+
+    WorkflowGraphRoutingService router(
+        execution_db, authoring_db,
+        execution_db->WorkflowQueryService(),
+        execution_db->WorkflowCommandService());
+    const WorkflowStepTerminalSnapshot terminal{
+        .workflow_instance_id = workflow_instance_id,
+        .workflow_step_id = root_step->workflow_step_id,
+        .job_set_id = root_job_set_id,
+        .workflow_kind = "workflow_graph",
+        .workflow_graph_revision_id = saved.workflow_graph_revision_id,
+        .step_key = "root_1",
+        .graph_node_key = "root_1",
+        .step_kind = "root",
+        .priority = 10,
+        .expected_total = 1,
+        .discovered_total = 1,
+        .terminal_total = 1,
+        .failed_total = 0,
+    };
+    WorkflowGraphRoutingResult result{};
+    ASSERT_TRUE(router.RouteTerminalStep(terminal, &result, &err)) << err;
+    EXPECT_EQ(result.skipped_step_count, 2);
+    EXPECT_TRUE(result.workflow_completed);
+
+    graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(
+        workflow_instance_id);
+    ASSERT_TRUE(graph.has_value());
+    EXPECT_EQ(graph->instance.state, WorkflowInstanceState::Completed);
+    const auto expect_skipped = [&](std::string_view node_key,
+                                    std::string_view reason) {
+        const auto step = std::find_if(
+            graph->steps.begin(), graph->steps.end(),
+            [&](const auto& candidate) {
+                return candidate.graph_node_key == node_key;
+            });
+        ASSERT_NE(step, graph->steps.end());
+        EXPECT_EQ(step->state, WorkflowStepState::Skipped);
+        EXPECT_EQ(step->blocked_reason, std::optional<std::string>(reason));
+        const auto activation = std::find_if(
+            graph->unit_activations.begin(),
+            graph->unit_activations.end(),
+            [&](const auto& candidate) {
+                return candidate.graph_node_key == node_key;
+            });
+        ASSERT_NE(activation, graph->unit_activations.end());
+        EXPECT_EQ(
+            activation->state,
+            WorkflowUnitActivationState::Skipped);
+    };
+    expect_skipped(
+        "middle_1", "guard_not_satisfied:root_1.next");
+    expect_skipped(
+        "leaf_1", "guard_not_satisfied:middle_1.next");
+
+    result = {};
+    ASSERT_TRUE(router.RouteTerminalStep(terminal, &result, &err)) << err;
+    EXPECT_EQ(result.skipped_step_count, 0);
 }
 
 

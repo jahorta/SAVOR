@@ -67,6 +67,16 @@ bool SeedTasMovieRootValidationWorkflow(
     std::int64_t* workflow_instance_id_out,
     std::string* error_out);
 
+bool SeedTasMovieSeedProbeWorkflow(
+    savor::db::IAuthoringDb* authoring_db,
+    savor::db::IExecutionDb* execution_db,
+    std::int64_t dtm_artifact_id,
+    std::int64_t seed_probe_spec_id,
+    std::int64_t rtc_value,
+    const CliOptions& options,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out);
+
 constexpr int kSeedProbeSamplesPerAxis = 5;
 
 } // namespace savor::e2e

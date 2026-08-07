@@ -235,6 +235,7 @@ enum class RejectionCode : std::uint16_t {
     CapacityExceeded = 20,
     TerminalNotFound = 21,
     TerminalMismatch = 22,
+    WorksetItemAlreadyTerminal = 23,
 };
 
 struct ProcessHelloPayload {

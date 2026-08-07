@@ -285,7 +285,10 @@ Artifacts are immutable after publication. Correction creates another artifact w
 lineage; it never replaces an earlier object in place.
 
 For a state artifact, publication follows document 04's split lifecycle. The save action remains paused
-until it has synchronously serialized the complete immutable savestate bytes and exact DTM sidecar bytes.
+until Dolphin has synchronously written its native savestate file, the runtime has read that completed file
+back into immutable bytes, and the exact DTM sidecar bytes have been captured. Dolphin's raw
+`SaveToBuffer` representation is reserved for process-local workset handles and is never published as a
+`.sav` artifact.
 Its actor-only result transfers that staged capture to `WorkerRuntime`; the program receives only its
 canonical pending receipt and never receives host artifact ownership. The active workset item then owns an
 `InvocationOutputTransaction` while bounded finalizers hash, publish, and validate the immutable files.
@@ -525,6 +528,14 @@ result-publication, and recovery mechanisms remain unchanged.
 - State-artifact finalization may overlap a later sole active invocation only after immutable paused
   capture is promoted into the bounded worker-global completion ledger. Result projection still begins
   only from the one final authoritative `ProgramResult`.
+- Native savestate playback classification is part of the immutable State contract. A `MoviePaired`
+  savestate carries its exact registered DTM; a `MovieInactive` savestate carries none. Workflow ports use
+  distinct data kinds so a paired reproduction checkpoint cannot enter a phase expecting detached guest
+  state.
+- TAS Movie checkpoint sterilization restores a paired baseline inside one workset, detaches playback as a
+  fixed baseline component before invocation, and runs a save-only Full Phase. Its authoritative terminal
+  is retained only after the native movie-inactive `.sav` is finalized and absence of a `.dtm` sidecar is
+  proven.
 - Narrow workset-specific execution interfaces may expose ordered batch claim, exact-set lease renewal,
   claim/start validation, and targeted terminal reconciliation as described in document 06. They
   operate the same rows, lifecycle, idempotency, and per-item semantics and add no persisted runtime

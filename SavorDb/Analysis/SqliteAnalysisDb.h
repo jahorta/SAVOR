@@ -35,6 +35,27 @@ public:
         std::string_view worker_terminal_sha256) const override;
     std::optional<TasMovieValidationStatusRecord> GetTasMovieValidationStatus(
         std::string_view effective_dtm_sha256) const override;
+    bool CreateTasMovieCheckpointSterilizationRequest(
+        const CreateTasMovieCheckpointSterilizationRequestCommand& command,
+        std::int64_t* request_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<TasMovieCheckpointSterilizationRequestRecord>
+    GetTasMovieCheckpointSterilizationRequest(
+        std::int64_t request_id) const override;
+    std::optional<TasMovieCheckpointSterilizationRequestRecord>
+    GetTasMovieCheckpointSterilizationRequestForWorkflowStep(
+        std::int64_t workflow_step_id) const override;
+    bool RecordTasMovieCheckpointSterilizationAttempt(
+        const RecordTasMovieCheckpointSterilizationAttemptCommand& command,
+        std::int64_t* attempt_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<TasMovieCheckpointSterilizationAttemptRecord>
+    GetTasMovieCheckpointSterilizationAttempt(
+        std::int64_t attempt_id) const override;
+    std::optional<TasMovieCheckpointSterilizationAttemptRecord>
+    FindTasMovieCheckpointSterilizationAttempt(
+        std::int64_t source_job_id,
+        std::string_view worker_terminal_sha256) const override;
 
     std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const override;
     std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const override;

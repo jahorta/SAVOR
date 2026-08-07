@@ -60,10 +60,11 @@ namespace {
 savor::runtime::WorkerRuntimeManifest CompleteCoordinatorTestManifest() {
     static constexpr std::array<
         std::pair<std::string_view, std::string_view>,
-        2>
+        3>
         kModules{{
             {"soa.seed_probe", "probe"},
             {"soa.tas_movie_validation", "validate"},
+            {"soa.tas_movie_checkpoint_sterilize", "sterilize"},
         }};
 
     savor::runtime::WorkerRuntimeManifest manifest;
@@ -155,29 +156,53 @@ TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
     const auto* establish = registry.Find("tas_movie_establish_root_cursor");
     const auto* validate_root = registry.Find("tas_movie_validate_root");
     const auto* validate_tree = registry.Find("tas_movie_validate_tree");
+    const auto* sterilize = registry.Find("tas_movie_checkpoint_sterilize");
     const auto* seed_probe = registry.Find("seed_probe_chain");
     const auto* battle = registry.Find("battle_chain");
     ASSERT_NE(establish, nullptr);
     ASSERT_NE(validate_root, nullptr);
     ASSERT_NE(validate_tree, nullptr);
+    ASSERT_NE(sterilize, nullptr);
     ASSERT_NE(seed_probe, nullptr);
     ASSERT_NE(battle, nullptr);
 
     ASSERT_EQ(establish->required_inputs.size(), 1u);
     EXPECT_EQ(establish->required_inputs[0].data_kind, "state_artifact.dtm_artifact_id");
-    ASSERT_EQ(establish->possible_outputs.size(), 1u);
-    EXPECT_EQ(establish->possible_outputs[0].data_kind, "analysis.tas_movie_validation_attempt_id");
+    ASSERT_EQ(establish->possible_outputs.size(), 2u);
+    EXPECT_TRUE(std::any_of(
+        establish->possible_outputs.begin(),
+        establish->possible_outputs.end(),
+        [](const auto& output) {
+            return output.key == "established_root_cursor_attempt"
+                && output.data_kind
+                    == "analysis.tas_movie_validation_attempt_id";
+        }));
     ASSERT_EQ(validate_root->required_inputs.size(), 1u);
     EXPECT_EQ(validate_root->required_inputs[0].data_kind, "analysis.tas_movie_validation_attempt_id");
+    EXPECT_TRUE(std::any_of(
+        validate_root->possible_outputs.begin(),
+        validate_root->possible_outputs.end(),
+        [](const auto& output) {
+            return output.key == "validated_checkpoint_savestate"
+                && output.data_kind == "state.movie_paired_savestate_id";
+        }));
     ASSERT_EQ(validate_tree->required_inputs.size(), 1u);
     EXPECT_EQ(validate_tree->required_inputs[0].data_kind, "state.tas_movie_tree_id");
+    ASSERT_EQ(sterilize->required_inputs.size(), 1u);
+    EXPECT_EQ(sterilize->required_inputs[0].data_kind,
+        "state.movie_paired_savestate_id");
+    ASSERT_EQ(sterilize->possible_outputs.size(), 1u);
+    EXPECT_EQ(sterilize->possible_outputs[0].data_kind,
+        "state.movie_inactive_savestate_id");
     EXPECT_EQ(registry.Find("tas_movie"), nullptr);
     ASSERT_EQ(seed_probe->required_inputs.size(), 1u);
-    EXPECT_EQ(seed_probe->required_inputs[0].data_kind, "state.savestate_id");
+    EXPECT_EQ(seed_probe->required_inputs[0].data_kind,
+        "state.movie_inactive_savestate_id");
     ASSERT_EQ(seed_probe->possible_outputs.size(), 1u);
     EXPECT_EQ(seed_probe->possible_outputs[0].data_kind, "analysis.input_frame_set_id");
     ASSERT_EQ(battle->required_inputs.size(), 2u);
-    EXPECT_EQ(battle->required_inputs[0].data_kind, "state.savestate_id");
+    EXPECT_EQ(battle->required_inputs[0].data_kind,
+        "state.movie_inactive_savestate_id");
     EXPECT_EQ(battle->required_inputs[1].data_kind, "analysis.input_frame_set_id");
 }
 
@@ -202,6 +227,46 @@ TEST(Stage5WorkflowComposition, ValidatesTasSeedProbeBattleCompatibility) {
     EXPECT_EQ(preview.nodes[0].resolved_inputs.size(), 1u);
 }
 
+TEST(Stage5WorkflowComposition, AcceptsOnlyOutputPresentGuardWithoutValue) {
+    using namespace savor::db::execution::workflow;
+
+    const auto registry = BuildDefaultWorkflowUnitRegistry();
+    const WorkflowCompositionService service(&registry);
+    WorkflowCompositionSpec composition;
+    composition.nodes = {
+        { .node_key = "validate", .unit_kind = "tas_movie_validate_root" },
+        { .node_key = "sterilize", .unit_kind = "tas_movie_checkpoint_sterilize" },
+        { .node_key = "probe", .unit_kind = "battle_seed_probe" },
+    };
+    composition.external_inputs = {{
+        .node_key = "validate",
+        .input_key = "root_establishment",
+        .data_kind = "analysis.tas_movie_validation_attempt_id",
+        .ref_id = 7,
+    }};
+    composition.output_bindings = {{
+        .from_node_key = "validate",
+        .output_key = "validated_checkpoint_savestate",
+        .to_node_key = "sterilize",
+        .input_key = "paired_checkpoint_savestate",
+        .guard_kind = std::string(savor::db::kWorkflowOutputPresentGuard),
+    }, {
+        .from_node_key = "sterilize",
+        .output_key = "sterilized_checkpoint_savestate",
+        .to_node_key = "probe",
+        .input_key = "entry_savestate",
+        .guard_kind = std::string(savor::db::kWorkflowOutputPresentGuard),
+    }};
+    EXPECT_TRUE(service.Preview(composition).valid);
+
+    composition.output_bindings.back().guard_kind = "unknown_guard";
+    EXPECT_FALSE(service.Preview(composition).valid);
+    composition.output_bindings.back().guard_kind =
+        std::string(savor::db::kWorkflowOutputPresentGuard);
+    composition.output_bindings.back().guard_value = "illegal";
+    EXPECT_FALSE(service.Preview(composition).valid);
+}
+
 TEST(Stage5WorkflowComposition, ReportsUnresolvedAndMismatchedInputs) {
     using namespace savor::db::execution::workflow;
 
@@ -222,7 +287,7 @@ TEST(Stage5WorkflowComposition, ReportsUnresolvedAndMismatchedInputs) {
         { .node_key = "battle_1", .unit_kind = "battle_chain" },
     };
     mismatched.external_inputs = {
-        { .node_key = "probe_1", .input_key = "entry_savestate", .data_kind = "state.savestate_id", .ref_id = 99 },
+        { .node_key = "probe_1", .input_key = "entry_savestate", .data_kind = "state.movie_inactive_savestate_id", .ref_id = 99 },
     };
     mismatched.output_bindings = {
         { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "entry_savestate" },

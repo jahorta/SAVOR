@@ -728,8 +728,10 @@ prove:
 - each child's start event is actor-ordered before its first effect. `ProgramExecutionFinished` is an
   internal handoff, not job completion: the active item retains its result draft, output transaction, and
   finalization identities, and no later child may restore its baseline or begin guest activity;
-- immutable state and exact sidecar bytes are captured synchronously while paused and adopted by the
-  worker before the action resolution reaches `ProgramRuntime`. Bounded host-only finalizers may run after
+- Dolphin writes each immutable state through its native file serializer while paused; the completed file
+  is read back into immutable bytes together with the exact sidecar and adopted by the worker before the
+  action resolution reaches `ProgramRuntime`. Raw process-local state-buffer bytes are never published.
+  Bounded host-only finalizers may run after
   execution resumes, but the authoritative terminal is reserved and retained only after every output has
   been published or abandoned and the final `ProgramResult` has been encoded;
 - terminal results from every accepted workset remain non-lossy in one worker-global ledger until exact

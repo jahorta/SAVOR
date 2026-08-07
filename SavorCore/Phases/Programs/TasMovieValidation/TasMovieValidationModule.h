@@ -208,4 +208,63 @@ EncodeTasMovieValidationExecutionInputV1(
     const ITasMovieValidationFullPhaseDefinitionV1>
 TasMovieValidationFullPhaseDefinitionV1();
 
+inline constexpr std::string_view SterilizationModuleCanonicalId =
+    "soa.tas_movie_checkpoint_sterilize";
+inline constexpr std::uint32_t SterilizationModuleRevision = 1;
+inline constexpr std::string_view SterilizationEntrypoint = "sterilize";
+inline constexpr std::string_view SterilizationArtifactLineage =
+    "soa.tas_movie_checkpoint_sterilize/movie-paired-savestate/v1";
+inline constexpr std::string_view SterilizationDerivationMethod =
+    "tasmovie.checkpoint_sterilize.v1";
+inline constexpr std::string_view SterilizationFullPhaseCanonicalId =
+    "savor.full_phase.tas_movie_checkpoint_sterilize";
+
+enum class TasMovieCheckpointSterilizationOutcomeV1 : std::int64_t
+{
+    Sterilized = 0,
+};
+
+struct TasMovieCheckpointSterilizationRequestV1
+{
+    std::string source_savestate_path;
+    std::string source_dtm_path;
+    std::string output_savestate_path;
+
+    auto operator<=>(
+        const TasMovieCheckpointSterilizationRequestV1&) const = default;
+};
+
+struct TasMovieCheckpointSterilizationResultV1
+{
+    TasMovieCheckpointSterilizationOutcomeV1 outcome =
+        TasMovieCheckpointSterilizationOutcomeV1::Sterilized;
+
+    auto operator<=>(
+        const TasMovieCheckpointSterilizationResultV1&) const = default;
+};
+
+class ITasMovieCheckpointSterilizationFullPhaseDefinitionV1
+    : public fullphase::IFullPhaseProgramDefinition
+{
+public:
+    [[nodiscard]] virtual bool DecodeProgramResult(
+        std::span<const program::Byte> encoded_result,
+        TasMovieCheckpointSterilizationResultV1& result,
+        std::string* diagnostic = nullptr) const = 0;
+};
+
+[[nodiscard]] std::vector<std::uint8_t>
+EncodeTasMovieCheckpointSterilizationExecutionInputV1(
+    const TasMovieCheckpointSterilizationRequestV1& request,
+    std::string* diagnostic = nullptr);
+[[nodiscard]] bool
+DecodeTasMovieCheckpointSterilizationExecutionInputV1(
+    std::span<const std::uint8_t> payload,
+    TasMovieCheckpointSterilizationRequestV1& request,
+    std::string* diagnostic = nullptr);
+
+[[nodiscard]] std::shared_ptr<const
+    ITasMovieCheckpointSterilizationFullPhaseDefinitionV1>
+TasMovieCheckpointSterilizationFullPhaseDefinitionV1();
+
 } // namespace savor::runtime::tasmovie

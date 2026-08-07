@@ -181,6 +181,21 @@ bool QueuedStateDb::CreateTasMovieRoot(
         error_out);
 }
 
+bool QueuedStateDb::CreateOrGetSterilizedCheckpoint(
+    const CreateOrGetSterilizedCheckpointCommand& command,
+    CreateOrGetSterilizedCheckpointReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->CreateOrGetSterilizedCheckpoint(
+                      command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
 std::optional<TasMovieRootRecord> QueuedStateDb::GetTasMovieRoot(
     std::int64_t tas_movie_root_id) const {
     return ExecuteRead<std::optional<TasMovieRootRecord>>(
@@ -254,6 +269,21 @@ std::vector<TasMovieTreeRecord> QueuedStateDb::ListTasMovieTreeLineage(
                 : std::vector<TasMovieTreeRecord>{};
         },
         {});
+}
+
+std::optional<SavestateDerivationRecord>
+QueuedStateDb::FindSavestateDerivationBySourceAndMethod(
+    std::int64_t from_savestate_id,
+    std::string_view method_kind) const {
+    const auto method = std::string(method_kind);
+    return ExecuteRead<std::optional<SavestateDerivationRecord>>(
+        [this, from_savestate_id, method]() {
+            return inner_ != nullptr
+                ? inner_->FindSavestateDerivationBySourceAndMethod(
+                      from_savestate_id, method)
+                : std::nullopt;
+        },
+        std::nullopt);
 }
 
 std::optional<std::string> QueuedStateDb::MaterializeArtifactToDirectory(

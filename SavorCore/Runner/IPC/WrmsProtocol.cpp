@@ -88,7 +88,8 @@ constexpr bool IsKnownSessionDisposition(std::uint8_t value) noexcept
 
 constexpr bool IsKnownRejectionCode(std::uint16_t value) noexcept
 {
-    return value <= static_cast<std::uint16_t>(RejectionCode::TerminalMismatch);
+    return value <= static_cast<std::uint16_t>(
+        RejectionCode::WorksetItemAlreadyTerminal);
 }
 
 void AppendU16(std::vector<std::uint8_t>& output, std::uint16_t value)

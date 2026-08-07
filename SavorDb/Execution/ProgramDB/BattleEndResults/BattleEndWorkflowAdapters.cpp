@@ -425,7 +425,8 @@ public:
             || context.unit_kind != kCompletionUnit || context.step_kind != kCompletionStep) {
             return ScheduleFailure(context, "invalid_context_or_db");
         }
-        const auto* binding = FindBinding(context, "entry_savestate", "state.savestate_id");
+        const auto* binding = FindBinding(
+            context, "entry_savestate", "state.movie_inactive_savestate_id");
         if (binding == nullptr || context.input_bindings.size() != 1 || binding->source_kind != "external"
             || binding->ref_kind != "state.savestate") {
             return ScheduleFailure(context, "invalid_victory_binding");
@@ -1550,7 +1551,7 @@ public:
         payload.result_kind = "state.field_return_seeded.savestate";
         payload.result_ref_id = *output_state;
         payload.output_key = "seeded_savestate";
-        payload.output_data_kind = "state.savestate_id";
+        payload.output_data_kind = "state.movie_inactive_savestate_id";
         payload.output_ref_kind = "state.savestate";
         payload.output_ref_id = *output_state;
         payload.event_lines.push_back("[field-return-materialize-result] ok=true savestate_id="
@@ -1813,7 +1814,8 @@ public:
             return ScheduleFailure(context, "invalid_results_context");
         }
         const auto* completion_binding = FindBinding(context, "completion", kCompletionData);
-        const auto* state_binding = FindBinding(context, "seeded_savestate", "state.savestate_id");
+        const auto* state_binding = FindBinding(
+            context, "seeded_savestate", "state.movie_inactive_savestate_id");
         if (completion_binding == nullptr || state_binding == nullptr || context.input_bindings.size() != 2
             || completion_binding->ref_kind != kCompletionRef || completion_binding->source_kind != "upstream"
             || state_binding->ref_kind != "state.savestate" || state_binding->source_kind != "upstream") {
@@ -2213,7 +2215,7 @@ public:
         payload.result_kind = "state.battle_end.savestate";
         payload.result_ref_id = *final_state;
         payload.output_key = "terminal_savestate";
-        payload.output_data_kind = "state.savestate_id";
+        payload.output_data_kind = "state.movie_inactive_savestate_id";
         payload.output_ref_kind = "state.savestate";
         payload.output_ref_id = *final_state;
         payload.event_lines.push_back("[battle-results-result] ok=true battle_results_id="

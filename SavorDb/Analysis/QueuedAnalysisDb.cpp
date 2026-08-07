@@ -131,6 +131,78 @@ std::optional<TasMovieValidationStatusRecord> QueuedAnalysisDb::GetTasMovieValid
         }, std::nullopt);
 }
 
+bool QueuedAnalysisDb::CreateTasMovieCheckpointSterilizationRequest(
+    const CreateTasMovieCheckpointSterilizationRequestCommand& command,
+    std::int64_t* request_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, request_id_out, error_out]() {
+            return inner_ != nullptr &&
+                inner_->CreateTasMovieCheckpointSterilizationRequest(
+                    command, request_id_out, error_out);
+        }, false, error_out);
+}
+
+std::optional<TasMovieCheckpointSterilizationRequestRecord>
+QueuedAnalysisDb::GetTasMovieCheckpointSterilizationRequest(
+    std::int64_t request_id) const {
+    return ExecuteRead<std::optional<TasMovieCheckpointSterilizationRequestRecord>>(
+        [this, request_id]() {
+            return inner_ != nullptr
+                ? inner_->GetTasMovieCheckpointSterilizationRequest(request_id)
+                : std::nullopt;
+        }, std::nullopt);
+}
+
+std::optional<TasMovieCheckpointSterilizationRequestRecord>
+QueuedAnalysisDb::GetTasMovieCheckpointSterilizationRequestForWorkflowStep(
+    std::int64_t workflow_step_id) const {
+    return ExecuteRead<std::optional<TasMovieCheckpointSterilizationRequestRecord>>(
+        [this, workflow_step_id]() {
+            return inner_ != nullptr
+                ? inner_->GetTasMovieCheckpointSterilizationRequestForWorkflowStep(
+                      workflow_step_id)
+                : std::nullopt;
+        }, std::nullopt);
+}
+
+bool QueuedAnalysisDb::RecordTasMovieCheckpointSterilizationAttempt(
+    const RecordTasMovieCheckpointSterilizationAttemptCommand& command,
+    std::int64_t* attempt_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, attempt_id_out, error_out]() {
+            return inner_ != nullptr &&
+                inner_->RecordTasMovieCheckpointSterilizationAttempt(
+                    command, attempt_id_out, error_out);
+        }, false, error_out);
+}
+
+std::optional<TasMovieCheckpointSterilizationAttemptRecord>
+QueuedAnalysisDb::GetTasMovieCheckpointSterilizationAttempt(
+    std::int64_t attempt_id) const {
+    return ExecuteRead<std::optional<TasMovieCheckpointSterilizationAttemptRecord>>(
+        [this, attempt_id]() {
+            return inner_ != nullptr
+                ? inner_->GetTasMovieCheckpointSterilizationAttempt(attempt_id)
+                : std::nullopt;
+        }, std::nullopt);
+}
+
+std::optional<TasMovieCheckpointSterilizationAttemptRecord>
+QueuedAnalysisDb::FindTasMovieCheckpointSterilizationAttempt(
+    std::int64_t source_job_id,
+    std::string_view worker_terminal_sha256) const {
+    const auto hash = std::string(worker_terminal_sha256);
+    return ExecuteRead<std::optional<TasMovieCheckpointSterilizationAttemptRecord>>(
+        [this, source_job_id, hash]() {
+            return inner_ != nullptr
+                ? inner_->FindTasMovieCheckpointSterilizationAttempt(
+                      source_job_id, hash)
+                : std::nullopt;
+        }, std::nullopt);
+}
+
 std::optional<std::int64_t> QueuedAnalysisDb::LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const {
     return ExecuteRead<std::optional<std::int64_t>>(
         [this, probe_run_id]() {

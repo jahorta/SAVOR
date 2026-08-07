@@ -61,6 +61,8 @@ struct WorkflowUnitOutputBinding {
     std::string output_key;
     std::string to_node_key;
     std::string input_key;
+    std::optional<std::string> guard_kind;
+    std::optional<std::string> guard_value;
 };
 
 struct WorkflowCompositionNode {

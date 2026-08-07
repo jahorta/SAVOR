@@ -544,6 +544,7 @@ struct DolphinWrapperBackend::Impl
     std::vector<std::filesystem::path> owned_movie_restore_paths;
     ArtifactCompatibilityToken compatibility;
     std::uint64_t movie_checkpoint_sequence = 1;
+    std::uint64_t savestate_file_capture_sequence = 1;
 
     void DetachStateCallback() noexcept
     {
@@ -1220,6 +1221,74 @@ BackendResult DolphinWrapperBackend::SaveStateFile(const std::filesystem::path& 
         "Dolphin failed to save the savestate");
 }
 
+BackendBufferResult DolphinWrapperBackend::SaveStateFileBytes()
+{
+    if (BackendResult open = impl_->RequireOpen(); !open.ok)
+        return {std::move(open), {}};
+    if (impl_->last_open_options.runtime_root.empty() ||
+        impl_->savestate_file_capture_sequence == 0)
+    {
+        return {
+            BackendResult::Failure(
+                BackendErrorCode::InvalidState,
+                "Native savestate-file capture requires a private runtime root and available sequence"),
+            {}};
+    }
+
+    std::error_code error;
+    const std::filesystem::path directory =
+        impl_->last_open_options.runtime_root / "savestate-capture";
+    std::filesystem::create_directories(directory, error);
+    if (error)
+    {
+        return {
+            BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "Native savestate capture directory could not be created: " +
+                    error.message()),
+            {}};
+    }
+
+    const std::uint64_t sequence =
+        impl_->savestate_file_capture_sequence++;
+    const std::filesystem::path staging = directory /
+        ("capture-" + std::to_string(sequence) + ".sav");
+    std::filesystem::remove(staging, error);
+    error.clear();
+
+    if (!impl_->wrapper->saveSavestateBlocking(staging.string()))
+    {
+        std::filesystem::remove(staging, error);
+        return {
+            BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "Dolphin failed to serialize the native savestate file"),
+            {}};
+    }
+
+    std::vector<std::uint8_t> bytes;
+    const bool read = ReadBinaryFile(staging, bytes);
+    std::filesystem::remove(staging, error);
+    if (!read || bytes.empty())
+    {
+        return {
+            BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "Completed native savestate file could not be read back"),
+            {}};
+    }
+    if (error)
+    {
+        return {
+            BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "Native savestate capture staging file could not be removed: " +
+                    error.message()),
+            {}};
+    }
+    return {BackendResult::Success(), std::move(bytes)};
+}
+
 BackendBufferResult DolphinWrapperBackend::SaveStateBuffer()
 {
     if (BackendResult open = impl_->RequireOpen(); !open.ok)
@@ -1396,6 +1465,10 @@ MovieBackendResult DolphinWrapperBackend::StopMovie() noexcept
         if (movie.IsMovieActive())
             movie.EndPlayInput(false);
         movie.SetReadOnly(true);
+        // Explicit detachment establishes an inactive movie boundary. The
+        // sticky observation remains useful for detecting a natural movie
+        // end, but must not leak that terminal state into a later workset.
+        impl_->observed_movie_playing = false;
         return MovieBackendResult::Success();
     }
     catch (const std::exception& ex)

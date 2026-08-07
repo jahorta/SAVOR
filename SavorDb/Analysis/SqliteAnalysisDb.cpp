@@ -244,6 +244,83 @@ bool TasMovieValidationAttemptIdentityMatches(
         && row.workset_epoch == command.workset_epoch;
 }
 
+TasMovieCheckpointSterilizationRequestRecord
+ReadTasMovieCheckpointSterilizationRequest(sqlite3_stmt* st) {
+    TasMovieCheckpointSterilizationRequestRecord row{};
+    row.sterilization_request_id = sqlite3_column_int64(st, 0);
+    row.materialization_key = ColumnText(st, 1);
+    row.workflow_instance_id = sqlite3_column_int64(st, 2);
+    row.workflow_step_id = sqlite3_column_int64(st, 3);
+    row.source_savestate_id = sqlite3_column_int64(st, 4);
+    row.source_savestate_artifact_id = sqlite3_column_int64(st, 5);
+    row.source_savestate_sha256 = ColumnText(st, 6);
+    row.source_dtm_artifact_id = sqlite3_column_int64(st, 7);
+    row.source_dtm_sha256 = ColumnText(st, 8);
+    row.reused_savestate_id = ColumnInt64Optional(st, 9);
+    row.full_phase_program_kind = sqlite3_column_int64(st, 10);
+    row.full_phase_program_version = sqlite3_column_int64(st, 11);
+    row.full_phase_canonical_id = ColumnText(st, 12);
+    row.full_phase_contract_revision = sqlite3_column_int64(st, 13);
+    row.full_phase_sha256 = ColumnText(st, 14);
+    row.module_canonical_id = ColumnText(st, 15);
+    row.module_revision = sqlite3_column_int64(st, 16);
+    row.module_sha256 = ColumnText(st, 17);
+    row.created_at_utc = ColumnTime(st, 18);
+    return row;
+}
+
+TasMovieCheckpointSterilizationAttemptRecord
+ReadTasMovieCheckpointSterilizationAttempt(sqlite3_stmt* st) {
+    TasMovieCheckpointSterilizationAttemptRecord row{};
+    row.sterilization_attempt_id = sqlite3_column_int64(st, 0);
+    row.sterilization_request_id = sqlite3_column_int64(st, 1);
+    row.source_job_id = sqlite3_column_int64(st, 2);
+    row.worker_terminal_sha256 = ColumnText(st, 3);
+    row.candidate_savestate_sha256 = ColumnText(st, 4);
+    row.produced_savestate_id = sqlite3_column_int64(st, 5);
+    row.worker_id = ColumnText(st, 6);
+    row.worker_process_generation =
+        static_cast<std::uint64_t>(sqlite3_column_int64(st, 7));
+    row.workset_epoch = static_cast<std::uint64_t>(sqlite3_column_int64(st, 8));
+    row.recorded_at_utc = ColumnTime(st, 9);
+    return row;
+}
+
+bool TasMovieCheckpointSterilizationRequestIdentityMatches(
+    const TasMovieCheckpointSterilizationRequestRecord& row,
+    const CreateTasMovieCheckpointSterilizationRequestCommand& command) {
+    return row.materialization_key == command.materialization_key
+        && row.workflow_instance_id == command.workflow_instance_id
+        && row.workflow_step_id == command.workflow_step_id
+        && row.source_savestate_id == command.source_savestate_id
+        && row.source_savestate_artifact_id == command.source_savestate_artifact_id
+        && row.source_savestate_sha256 == command.source_savestate_sha256
+        && row.source_dtm_artifact_id == command.source_dtm_artifact_id
+        && row.source_dtm_sha256 == command.source_dtm_sha256
+        && row.reused_savestate_id == command.reused_savestate_id
+        && row.full_phase_program_kind == command.full_phase_program_kind
+        && row.full_phase_program_version == command.full_phase_program_version
+        && row.full_phase_canonical_id == command.full_phase_canonical_id
+        && row.full_phase_contract_revision == command.full_phase_contract_revision
+        && row.full_phase_sha256 == command.full_phase_sha256
+        && row.module_canonical_id == command.module_canonical_id
+        && row.module_revision == command.module_revision
+        && row.module_sha256 == command.module_sha256;
+}
+
+bool TasMovieCheckpointSterilizationAttemptIdentityMatches(
+    const TasMovieCheckpointSterilizationAttemptRecord& row,
+    const RecordTasMovieCheckpointSterilizationAttemptCommand& command) {
+    return row.sterilization_request_id == command.sterilization_request_id
+        && row.source_job_id == command.source_job_id
+        && row.worker_terminal_sha256 == command.worker_terminal_sha256
+        && row.candidate_savestate_sha256 == command.candidate_savestate_sha256
+        && row.produced_savestate_id == command.produced_savestate_id
+        && row.worker_id == command.worker_id
+        && row.worker_process_generation == command.worker_process_generation
+        && row.workset_epoch == command.workset_epoch;
+}
+
 SeedProbeResultRow ReadSeedProbeResultRow(sqlite3_stmt* st) {
     SeedProbeResultRow row{};
     row.probe_result_id = sqlite3_column_int64(st, 0);
@@ -1152,6 +1229,227 @@ std::optional<TasMovieValidationStatusRecord> SqliteAnalysisDb::GetTasMovieValid
     row.validation_attempt_id = sqlite3_column_int64(st.st, 2);
     row.updated_at_utc = ColumnTime(st.st, 3);
     return row;
+}
+
+std::optional<TasMovieCheckpointSterilizationRequestRecord>
+SqliteAnalysisDb::GetTasMovieCheckpointSterilizationRequest(
+    std::int64_t request_id) const {
+    if (db_ == nullptr || request_id <= 0) return std::nullopt;
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT sterilization_request_id,materialization_key,workflow_instance_id,workflow_step_id,"
+        "source_savestate_id,source_savestate_artifact_id,source_savestate_sha256,"
+        "source_dtm_artifact_id,source_dtm_sha256,reused_savestate_id,"
+        "full_phase_program_kind,full_phase_program_version,full_phase_canonical_id,"
+        "full_phase_contract_revision,full_phase_sha256,module_canonical_id,module_revision,"
+        "module_sha256,created_at_utc FROM tmv_checkpoint_sterilization_request "
+        "WHERE sterilization_request_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK)
+        return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, request_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return ReadTasMovieCheckpointSterilizationRequest(st.st);
+}
+
+std::optional<TasMovieCheckpointSterilizationRequestRecord>
+SqliteAnalysisDb::GetTasMovieCheckpointSterilizationRequestForWorkflowStep(
+    std::int64_t workflow_step_id) const {
+    if (db_ == nullptr || workflow_step_id <= 0) return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT sterilization_request_id FROM tmv_checkpoint_sterilization_request "
+            "WHERE workflow_step_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, workflow_step_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieCheckpointSterilizationRequest(sqlite3_column_int64(st.st, 0));
+}
+
+bool SqliteAnalysisDb::CreateTasMovieCheckpointSterilizationRequest(
+    const CreateTasMovieCheckpointSterilizationRequestCommand& command,
+    std::int64_t* request_id_out,
+    std::string* error_out) {
+    if (db_ == nullptr || command.materialization_key.empty()
+        || command.workflow_instance_id <= 0 || command.workflow_step_id <= 0
+        || command.source_savestate_id <= 0
+        || command.source_savestate_artifact_id <= 0
+        || !IsLowerHexSha256(command.source_savestate_sha256)
+        || command.source_dtm_artifact_id <= 0
+        || !IsLowerHexSha256(command.source_dtm_sha256)
+        || (command.reused_savestate_id && *command.reused_savestate_id <= 0)
+        || command.full_phase_program_kind != 11
+        || command.full_phase_program_version <= 0
+        || command.full_phase_canonical_id.empty()
+        || command.full_phase_contract_revision <= 0
+        || !IsLowerHexSha256(command.full_phase_sha256)
+        || command.module_canonical_id.empty() || command.module_revision <= 0
+        || !IsLowerHexSha256(command.module_sha256)) {
+        if (error_out)
+            *error_out = "invalid immutable TAS movie checkpoint sterilization request";
+        return false;
+    }
+    if (const auto existing =
+            GetTasMovieCheckpointSterilizationRequestForWorkflowStep(
+                command.workflow_step_id);
+        existing.has_value()) {
+        if (!TasMovieCheckpointSterilizationRequestIdentityMatches(*existing, command)) {
+            if (error_out)
+                *error_out = "workflow step already has a different TAS movie checkpoint sterilization request";
+            return false;
+        }
+        if (request_id_out)
+            *request_id_out = existing->sterilization_request_id;
+        return true;
+    }
+
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO tmv_checkpoint_sterilization_request("
+        "materialization_key,workflow_instance_id,workflow_step_id,source_savestate_id,"
+        "source_savestate_artifact_id,source_savestate_sha256,source_dtm_artifact_id,"
+        "source_dtm_sha256,reused_savestate_id,full_phase_program_kind,"
+        "full_phase_program_version,full_phase_canonical_id,full_phase_contract_revision,"
+        "full_phase_sha256,module_canonical_id,module_revision,module_sha256,created_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18);";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_text(st.st, 1, command.materialization_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 2, command.workflow_instance_id);
+    sqlite3_bind_int64(st.st, 3, command.workflow_step_id);
+    sqlite3_bind_int64(st.st, 4, command.source_savestate_id);
+    sqlite3_bind_int64(st.st, 5, command.source_savestate_artifact_id);
+    sqlite3_bind_text(st.st, 6, command.source_savestate_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 7, command.source_dtm_artifact_id);
+    sqlite3_bind_text(st.st, 8, command.source_dtm_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.reused_savestate_id)
+        sqlite3_bind_int64(st.st, 9, *command.reused_savestate_id);
+    else
+        sqlite3_bind_null(st.st, 9);
+    sqlite3_bind_int64(st.st, 10, command.full_phase_program_kind);
+    sqlite3_bind_int64(st.st, 11, command.full_phase_program_version);
+    sqlite3_bind_text(st.st, 12, command.full_phase_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 13, command.full_phase_contract_revision);
+    sqlite3_bind_text(st.st, 14, command.full_phase_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 15, command.module_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 16, command.module_revision);
+    sqlite3_bind_text(st.st, 17, command.module_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 18, command.created_at_utc.time_since_epoch().count());
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (request_id_out) *request_id_out = sqlite3_last_insert_rowid(db_);
+    return true;
+}
+
+std::optional<TasMovieCheckpointSterilizationAttemptRecord>
+SqliteAnalysisDb::GetTasMovieCheckpointSterilizationAttempt(
+    std::int64_t attempt_id) const {
+    if (db_ == nullptr || attempt_id <= 0) return std::nullopt;
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT sterilization_attempt_id,sterilization_request_id,source_job_id,"
+        "worker_terminal_sha256,candidate_savestate_sha256,produced_savestate_id,worker_id,"
+        "worker_process_generation,workset_epoch,recorded_at_utc "
+        "FROM tmv_checkpoint_sterilization_attempt WHERE sterilization_attempt_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK)
+        return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, attempt_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return ReadTasMovieCheckpointSterilizationAttempt(st.st);
+}
+
+std::optional<TasMovieCheckpointSterilizationAttemptRecord>
+SqliteAnalysisDb::FindTasMovieCheckpointSterilizationAttempt(
+    std::int64_t source_job_id,
+    std::string_view worker_terminal_sha256) const {
+    if (db_ == nullptr || source_job_id <= 0
+        || !IsLowerHexSha256(worker_terminal_sha256)) {
+        return std::nullopt;
+    }
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT sterilization_attempt_id FROM tmv_checkpoint_sterilization_attempt "
+            "WHERE source_job_id=?1 AND worker_terminal_sha256=?2;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, source_job_id);
+    sqlite3_bind_text(st.st, 2, worker_terminal_sha256.data(),
+        static_cast<int>(worker_terminal_sha256.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieCheckpointSterilizationAttempt(sqlite3_column_int64(st.st, 0));
+}
+
+bool SqliteAnalysisDb::RecordTasMovieCheckpointSterilizationAttempt(
+    const RecordTasMovieCheckpointSterilizationAttemptCommand& command,
+    std::int64_t* attempt_id_out,
+    std::string* error_out) {
+    constexpr auto kI64Max =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (db_ == nullptr || command.sterilization_request_id <= 0
+        || command.source_job_id <= 0
+        || !IsLowerHexSha256(command.worker_terminal_sha256)
+        || !IsLowerHexSha256(command.candidate_savestate_sha256)
+        || command.produced_savestate_id <= 0 || command.worker_id.empty()
+        || command.worker_process_generation > kI64Max
+        || command.workset_epoch == 0 || command.workset_epoch > kI64Max
+        || !GetTasMovieCheckpointSterilizationRequest(
+                command.sterilization_request_id)
+                .has_value()) {
+        if (error_out)
+            *error_out = "invalid immutable TAS movie checkpoint sterilization attempt";
+        return false;
+    }
+    if (const auto existing = FindTasMovieCheckpointSterilizationAttempt(
+            command.source_job_id, command.worker_terminal_sha256);
+        existing.has_value()) {
+        if (!TasMovieCheckpointSterilizationAttemptIdentityMatches(*existing, command)) {
+            if (error_out)
+                *error_out = "worker terminal already identifies a different TAS movie checkpoint sterilization attempt";
+            return false;
+        }
+        if (attempt_id_out) *attempt_id_out = existing->sterilization_attempt_id;
+        return true;
+    }
+
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO tmv_checkpoint_sterilization_attempt(sterilization_request_id,"
+        "source_job_id,worker_terminal_sha256,candidate_savestate_sha256,"
+        "produced_savestate_id,worker_id,worker_process_generation,workset_epoch,recorded_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, command.sterilization_request_id);
+    sqlite3_bind_int64(st.st, 2, command.source_job_id);
+    sqlite3_bind_text(st.st, 3, command.worker_terminal_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 4, command.candidate_savestate_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 5, command.produced_savestate_id);
+    sqlite3_bind_text(st.st, 6, command.worker_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 7, static_cast<std::int64_t>(command.worker_process_generation));
+    sqlite3_bind_int64(st.st, 8, static_cast<std::int64_t>(command.workset_epoch));
+    sqlite3_bind_int64(st.st, 9, command.recorded_at_utc.time_since_epoch().count());
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (attempt_id_out) *attempt_id_out = sqlite3_last_insert_rowid(db_);
+    return true;
 }
 
 std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const {

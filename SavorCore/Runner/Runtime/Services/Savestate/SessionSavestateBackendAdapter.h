@@ -18,6 +18,7 @@ public:
     CurrentCompatibility() const override;
 
     SavestateBackendBufferResult SaveStateBuffer() override;
+    SavestateBackendBufferResult SaveStateFileBytes() override;
     SavestateBackendResult RestoreStateBuffer(
         const std::vector<std::uint8_t>& bytes) override;
     SavestateBackendResult SaveStateFile(

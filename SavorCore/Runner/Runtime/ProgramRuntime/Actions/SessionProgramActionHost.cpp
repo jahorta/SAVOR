@@ -930,30 +930,53 @@ bool DecodeStopReceipt(
     const ProgramValueGraph& graph,
     const ProgramValue& value,
     WorksetEpoch current_epoch,
-    CanonicalActionPayload& payload)
+    CanonicalActionPayload& payload,
+    std::string& diagnostic)
 {
     if (value.type != CanonicalActionOutputType(
             CanonicalAction::ExecutionContinueUntil))
     {
+        diagnostic = "Observation stop receipt has the wrong result type";
         return false;
     }
     const auto* record =
         std::get_if<RecordValue>(&value.payload);
     if (!record || record->fields.size() != 5)
+    {
+        diagnostic = "Observation stop receipt has the wrong result shape";
         return false;
+    }
     const ProgramValue* reason_value = FindValue(
         graph,
         record->fields[0]);
     const auto* reason = reason_value
         ? std::get_if<EnumValue>(&reason_value->payload)
         : nullptr;
-    if (!reason_value ||
-        reason_value->type != CanonicalRuntimeType(
-            CanonicalRuntimeSchema::ContinueUntilCompletionReason) ||
-        !reason ||
-        reason->value != static_cast<std::int64_t>(
+    if (!reason_value)
+    {
+        diagnostic =
+            "Observation stop receipt lacks a completion reason";
+        return false;
+    }
+    if (reason_value->type != CanonicalRuntimeType(
+            CanonicalRuntimeSchema::ContinueUntilCompletionReason))
+    {
+        diagnostic =
+            "Observation stop receipt has the wrong completion-reason type";
+        return false;
+    }
+    if (!reason)
+    {
+        diagnostic =
+            "Observation stop receipt has a malformed completion reason";
+        return false;
+    }
+    if (reason->value != static_cast<std::int64_t>(
             ContinueUntilCompletionReasonV1::Breakpoint))
     {
+        diagnostic =
+            "Observation stop receipt did not complete at a breakpoint: reason=" +
+            std::to_string(reason->value);
         return false;
     }
     const ProgramValue* routed_value = nullptr;
@@ -966,12 +989,18 @@ bool DecodeStopReceipt(
         routed_value->type != CanonicalRuntimeType(
             CanonicalRuntimeSchema::RoutedStopReceipt))
     {
+        diagnostic =
+            "Observation stop receipt lacks its routed breakpoint evidence";
         return false;
     }
     const auto* routed = std::get_if<RecordValue>(
         &routed_value->payload);
     if (!routed || routed->fields.size() != 5)
+    {
+        diagnostic =
+            "Observation routed stop receipt has the wrong shape";
         return false;
+    }
     std::uint64_t sequence = 0;
     std::uint64_t epoch = 0;
     std::uint32_t routed_pc = 0;
@@ -986,27 +1015,62 @@ bool DecodeStopReceipt(
         ? std::get_if<std::vector<Byte>>(
               &evidence->payload)
         : nullptr;
-    return ScalarValue(
-               graph,
-               routed->fields[0],
-               sequence) &&
-        ScalarValue(graph, routed->fields[1], epoch) &&
-        ScalarValue(graph, routed->fields[2], routed_pc) &&
-        ScalarValue(graph, routed->fields[3], sample) &&
-        ScalarValue(graph, record->fields[2], result_pc) &&
-        evidence_bytes && evidence_bytes->size() >= 4 &&
-        (*evidence_bytes)[0] == static_cast<Byte>('R') &&
-        (*evidence_bytes)[1] == static_cast<Byte>('S') &&
-        (*evidence_bytes)[2] == static_cast<Byte>('E') &&
-        (*evidence_bytes)[3] == static_cast<Byte>('1') &&
-        sequence != 0 && sample != 0 && routed_pc != 0 &&
-        routed_pc == result_pc &&
-        epoch == current_epoch.value() &&
-        payload.AddUnsigned(
+    if (!ScalarValue(graph, routed->fields[0], sequence) ||
+        !ScalarValue(graph, routed->fields[1], epoch) ||
+        !ScalarValue(graph, routed->fields[2], routed_pc) ||
+        !ScalarValue(graph, routed->fields[3], sample) ||
+        !ScalarValue(graph, record->fields[2], result_pc))
+    {
+        diagnostic =
+            "Observation routed stop receipt has malformed scalar evidence";
+        return false;
+    }
+    if (!evidence_bytes || evidence_bytes->size() < 4 ||
+        (*evidence_bytes)[0] != static_cast<Byte>('R') ||
+        (*evidence_bytes)[1] != static_cast<Byte>('S') ||
+        (*evidence_bytes)[2] != static_cast<Byte>('E') ||
+        (*evidence_bytes)[3] != static_cast<Byte>('1'))
+    {
+        diagnostic =
+            "Observation routed stop receipt has malformed evidence bytes";
+        return false;
+    }
+    if (sequence == 0 || sample == 0 || routed_pc == 0)
+    {
+        diagnostic =
+            "Observation routed stop receipt has a zero identity: sequence=" +
+            std::to_string(sequence) + ", sample=" +
+            std::to_string(sample) + ", pc=" +
+            std::to_string(routed_pc);
+        return false;
+    }
+    if (routed_pc != result_pc)
+    {
+        diagnostic =
+            "Observation routed stop PC disagrees with the paused result PC: routed=" +
+            std::to_string(routed_pc) + ", result=" +
+            std::to_string(result_pc);
+        return false;
+    }
+    if (epoch != current_epoch.value())
+    {
+        diagnostic =
+            "Observation routed stop belongs to another WorksetEpoch: routed=" +
+            std::to_string(epoch) + ", active=" +
+            std::to_string(current_epoch.value());
+        return false;
+    }
+    if (!payload.AddUnsigned(
             Field::ResultStopSequence,
-            sequence) &&
-        payload.AddUnsigned(Field::ResultEpoch, epoch) &&
-        payload.AddUnsigned(Field::ResultPc, routed_pc);
+            sequence) ||
+        !payload.AddUnsigned(Field::ResultEpoch, epoch) ||
+        !payload.AddUnsigned(Field::ResultPc, routed_pc))
+    {
+        diagnostic =
+            "Observation routed stop receipt could not be encoded";
+        return false;
+    }
+    return true;
 }
 
 const SemanticPointDescriptor* FindSourcePoint(
@@ -1813,9 +1877,14 @@ bool DecodeTypedCanonicalRequest(
                  graph,
                  *stop,
                  current_epoch,
-                 payload)))
+                 payload,
+                 diagnostic)))
         {
-            diagnostic = "Observation request has a malformed stop receipt";
+            if (diagnostic.empty())
+            {
+                diagnostic =
+                    "Observation request has a malformed stop receipt";
+            }
             return false;
         }
         const std::size_t config_index =

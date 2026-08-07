@@ -3,6 +3,7 @@
 #include "Utils/Hash.h"
 
 #include <algorithm>
+#include <array>
 #include <exception>
 #include <utility>
 
@@ -185,6 +186,101 @@ InlineProgramBaselineComponentProvider::Activate(
     // template. It contributes to exact baseline identity but owns no Dolphin
     // authority.
     return ProgramBaselineComponentResult::Success();
+}
+
+std::string
+TasMovieCheckpointSterilizationBaselineComponentProvider::canonical_id()
+    const
+{
+    return std::string(
+        kTasMovieCheckpointSterilizationBaselineComponentId);
+}
+
+std::uint32_t
+TasMovieCheckpointSterilizationBaselineComponentProvider::revision()
+    const noexcept
+{
+    return 1;
+}
+
+ProgramBaselineComponentResult
+TasMovieCheckpointSterilizationBaselineComponentProvider::Stage(
+    ProgramBaselineComponent& component)
+{
+    const auto expected =
+        MakeTasMovieCheckpointSterilizationBaselineComponent();
+    if (component != expected)
+    {
+        return ProgramBaselineComponentResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "TAS Movie checkpoint sterilization baseline component is not canonical");
+    }
+    return ProgramBaselineComponentResult::Success();
+}
+
+ProgramBaselineComponentResult
+TasMovieCheckpointSterilizationBaselineComponentProvider::Activate(
+    const ProgramBaselineComponent& component,
+    EmulationSession& session,
+    bool reset)
+{
+    if (component !=
+        MakeTasMovieCheckpointSterilizationBaselineComponent())
+    {
+        return ProgramBaselineComponentResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "TAS Movie checkpoint sterilization baseline component changed after staging");
+    }
+    MovieService* movies = session.movie_service();
+    if (!movies)
+    {
+        return ProgramBaselineComponentResult::Failure(
+            WorkerRejectionCode::SessionUnavailable,
+            "MovieService is unavailable during checkpoint sterilization");
+    }
+    if (reset && movies->activity() == MovieActivity::Inactive &&
+        !movies->reservation())
+    {
+        return ProgramBaselineComponentResult::Success();
+    }
+    if (movies->activity() != MovieActivity::ReadOnlyPlayback ||
+        !movies->reservation())
+    {
+        return ProgramBaselineComponentResult::Failure(
+            WorkerRejectionCode::InvalidState,
+            "Checkpoint sterilization requires verified read-only baseline playback");
+    }
+    const MovieOperationReceipt stopped = movies->StopPlayback();
+    if (!stopped.result.ok || movies->activity() != MovieActivity::Inactive ||
+        movies->reservation())
+    {
+        return ProgramBaselineComponentResult::Failure(
+            stopped.result.integrity == GuestIntegrity::Unknown
+                ? WorkerRejectionCode::SessionTainted
+                : WorkerRejectionCode::BackendFailure,
+            stopped.result.message.empty()
+                ? "Checkpoint sterilization could not detach movie playback"
+                : stopped.result.message);
+    }
+    return ProgramBaselineComponentResult::Success();
+}
+
+ProgramBaselineComponent
+MakeTasMovieCheckpointSterilizationBaselineComponent()
+{
+    static constexpr std::array<std::uint8_t, 5> kBytes{
+        'T', 'C', 'S', 'B', '1'};
+    ProgramBaselineComponent component;
+    component.canonical_id =
+        kTasMovieCheckpointSterilizationBaselineComponentId;
+    component.revision = 1;
+    component.schema_id =
+        kTasMovieCheckpointSterilizationBaselineSchemaId;
+    component.policy = ProgramBaselineComponentPolicy::ResetForEveryItem;
+    component.immutable_bytes.assign(kBytes.begin(), kBytes.end());
+    component.content_sha256 = hash::sha256(
+        component.immutable_bytes.data(), component.immutable_bytes.size());
+    return component;
 }
 
 WorksetStateCoordinator::WorksetStateCoordinator(
@@ -450,6 +546,21 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Release()
                 released, "Workset-owned baseline release failed");
     }
     active_handle_.reset();
+    ProgramBaselineComponentResult staged_result =
+        ProgramBaselineComponentResult::Success();
+    if (staged_source_root_)
+    {
+        std::error_code error;
+        std::filesystem::remove_all(*staged_source_root_, error);
+        if (error)
+        {
+            staged_result = ProgramBaselineComponentResult::Failure(
+                WorkerRejectionCode::BackendFailure,
+                "Worker-private baseline staging cleanup failed: " +
+                    error.message());
+        }
+        staged_source_root_.reset();
+    }
     ProgramBaselineComponentResult scope_result = CloseScope();
     ProgramBaselineComponentResult end_result =
         ProgramBaselineComponentResult::Success();
@@ -475,6 +586,8 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Release()
     multi_item_ = false;
     if (!handle_result.ok)
         return handle_result;
+    if (!staged_result.ok)
+        return staged_result;
     if (!scope_result.ok)
         return scope_result;
     return end_result;
@@ -510,14 +623,55 @@ ProgramBaselineComponentResult WorksetStateCoordinator::PrepareSource(
         return ProgramBaselineComponentResult::Success();
     }
     const ProgramBaselineArtifact& artifact = definition.artifact;
+    std::filesystem::path state_path = artifact.state_path;
+    std::optional<std::filesystem::path> movie_path = artifact.movie_path;
+    if (artifact.movie_path)
+    {
+        try
+        {
+            const SessionSnapshot current = session_.snapshot();
+            const std::filesystem::path root =
+                std::filesystem::temp_directory_path() /
+                "savor-workset-baselines" /
+                (std::to_string(current.session_id.value()) + "-" +
+                 std::to_string(current.workset_epoch.value()) + "-" +
+                 active_key_.sha256);
+            std::error_code error;
+            std::filesystem::create_directories(root, error);
+            if (error)
+            {
+                return ProgramBaselineComponentResult::Failure(
+                    WorkerRejectionCode::BackendFailure,
+                    "Worker-private baseline staging directory failed: " +
+                        error.message());
+            }
+            state_path = root / "baseline.sav";
+            movie_path = std::filesystem::path(
+                state_path.string() + ".dtm");
+            std::filesystem::copy_file(
+                artifact.state_path, state_path,
+                std::filesystem::copy_options::overwrite_existing);
+            std::filesystem::copy_file(
+                *artifact.movie_path, *movie_path,
+                std::filesystem::copy_options::overwrite_existing);
+            staged_source_root_ = root;
+        }
+        catch (const std::exception& exception)
+        {
+            return ProgramBaselineComponentResult::Failure(
+                WorkerRejectionCode::BackendFailure,
+                std::string("Worker-private baseline staging failed: ") +
+                    exception.what());
+        }
+    }
     SavestateImportRequest request;
-    request.path = artifact.state_path;
+    request.path = state_path;
     request.expected_sha256 = artifact.state_sha256;
     request.compatibility = artifact.compatibility;
     request.movie_mode = artifact.movie_path
         ? ExternalMovieImportMode::ReadOnlyPlayback
         : ExternalMovieImportMode::NoMovie;
-    request.dtm_path = artifact.movie_path;
+    request.dtm_path = movie_path;
     request.expected_dtm_sha256 = artifact.movie_sha256;
     request.lineage = artifact.lineage;
     const SavestateFileArtifactReceipt imported =

@@ -15,6 +15,9 @@
 
 namespace savor::db {
 
+inline constexpr std::string_view kWorkflowOutputPresentGuard =
+    "output_present";
+
 enum class BattlePlanTargetKind : int {
     SingleEnemy = 0,
     MultipleEnemies = 1,

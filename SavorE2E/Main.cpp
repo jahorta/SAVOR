@@ -68,11 +68,13 @@ int main(int argc, char** argv) {
         { "tasmovie", &RunTasMovieRealWorkerSmoke },
         { "tasmovie_with_validation",
             &RunTasMovieWithValidationRealWorkerSmoke },
+        { "tasmovie_seedprobe", &RunTasMovieSeedProbeRealWorkerSmoke },
     };
 
     if (options.scenarios.size() == 1
         && (options.scenarios.front() == "tasmovie"
-            || options.scenarios.front() == "tasmovie_with_validation")) {
+            || options.scenarios.front() == "tasmovie_with_validation"
+            || options.scenarios.front() == "tasmovie_seedprobe")) {
         std::filesystem::path reset_root;
         std::string reset_error;
         if (!ResetTasMovieScenarioWorkspace(options, &reset_root, &reset_error)) {

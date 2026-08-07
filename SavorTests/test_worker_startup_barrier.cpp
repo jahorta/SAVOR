@@ -159,19 +159,9 @@ TEST(TasMovieEstablishmentCli, RejectsCombinationRepeatAndRtcModes) {
     EXPECT_NE(error.find("exactly one worker"), std::string::npos);
 }
 
-TEST(TasMovieEstablishmentCli, RemovesLegacyCombinationScenarios) {
+TEST(TasMovieEstablishmentCli, TasMovieScenariosRemainExcludedFromAll) {
     savor::e2e::CliOptions options;
     std::string error;
-    EXPECT_FALSE(ParseSeedProbeArgs(
-        {
-            "SavorE2E", "--scenario", "tasmovie_seedprobe",
-            "--iso", ".", "--dolphin-base-dir", ".",
-        },
-        &options,
-        &error));
-    EXPECT_NE(error.find("unknown --scenario"), std::string::npos);
-
-    error.clear();
     ASSERT_TRUE(ParseSeedProbeArgs(
         {
             "SavorE2E", "--scenario", "all", "--iso", ".",
@@ -190,6 +180,11 @@ TEST(TasMovieEstablishmentCli, RemovesLegacyCombinationScenarios) {
             options.scenarios.begin(), options.scenarios.end(),
             "tasmovie_with_validation"),
         options.scenarios.end());
+    EXPECT_EQ(
+        std::find(
+            options.scenarios.begin(), options.scenarios.end(),
+            "tasmovie_seedprobe"),
+        options.scenarios.end());
 
     for (const auto* removed : {
              "seedprobe_battle", "battle", "battle_macro_probe",
@@ -201,6 +196,60 @@ TEST(TasMovieEstablishmentCli, RemovesLegacyCombinationScenarios) {
             &error));
         EXPECT_NE(error.find("unknown --scenario"), std::string::npos);
     }
+}
+
+TEST(TasMovieSeedProbeCli, AcceptsRtcEndpointsWorkersAndSeedProbeOptions) {
+    for (const auto* rtc : {"0", "4294967295"}) {
+        for (const auto* workers : {"1", "30"}) {
+            savor::e2e::CliOptions options;
+            std::string error;
+            ASSERT_TRUE(ParseSeedProbeArgs(
+                {
+                    "SavorE2E", "--scenario", "tasmovie_seedprobe",
+                    "--tasmovie-rtc", rtc,
+                    "--worker-count", workers,
+                    "--seedprobe-samples-per-axis", "5",
+                    "--seedprobe-combo-attempts-per-target", "32",
+                    "--iso", ".", "--dolphin-base-dir", ".",
+                    "--dtm-file", ".",
+                },
+                &options,
+                &error)) << error;
+            EXPECT_EQ(options.scenarios.front(), "tasmovie_seedprobe");
+            EXPECT_EQ(options.worker_count, std::stoi(workers));
+            EXPECT_EQ(options.seedprobe_samples_per_axis, 5);
+            EXPECT_EQ(options.seedprobe_combo_attempts_per_target, 32);
+        }
+    }
+}
+
+TEST(TasMovieSeedProbeCli, RejectsInvalidCompositionArguments) {
+    const auto reject = [](std::initializer_list<const char*> extra) {
+        std::vector<std::string> storage{
+            "SavorE2E", "--scenario", "tasmovie_seedprobe",
+            "--iso", ".", "--dolphin-base-dir", ".",
+            "--dtm-file", ".",
+        };
+        storage.insert(storage.end(), extra.begin(), extra.end());
+        std::vector<char*> argv;
+        for (auto& value : storage) argv.push_back(value.data());
+        savor::e2e::CliOptions options;
+        std::string error;
+        return !savor::e2e::ParseArgs(
+            static_cast<int>(argv.size()), argv.data(), &options, &error);
+    };
+
+    EXPECT_TRUE(reject({}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc-min", "0", "--tasmovie-rtc-max", "1"}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "0", "--tasmovie-rtc-min", "0"}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "-1"}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "4294967296"}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "0", "--repeat", "2"}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "0", "--worker-count", "31"}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "0", "--savestate-file", "."}));
+    EXPECT_TRUE(reject({
+        "--tasmovie-rtc", "0", "--scenario", "seedprobe",
+        "--savestate-file", "."}));
 }
 
 TEST(TasMovieWithValidationCli, AcceptsExactFullU32RtcDomain) {

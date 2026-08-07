@@ -58,6 +58,8 @@ const FullPhaseProgramRegistry& ProductionRegistry()
             seedprobe::SeedProbeFullPhaseDefinitionV2());
         (void)value.Register(
             tasmovie::TasMovieValidationFullPhaseDefinitionV1());
+        (void)value.Register(
+            tasmovie::TasMovieCheckpointSterilizationFullPhaseDefinitionV1());
         return value;
     }();
     return registry;

@@ -566,6 +566,94 @@ TEST(TasMovieValidationContracts, ResultCodecEnforcesOutcomeFieldMatrix)
         &diagnostic));
 }
 
+TEST(TasMovieValidationContracts, Tcs1RoundTripsExactPairAndRejectsDrift)
+{
+    const TasMovieCheckpointSterilizationRequestV1 request{
+        .source_savestate_path = "checkpoint.sav",
+        .source_dtm_path = "checkpoint.sav.dtm",
+        .output_savestate_path = "sterilized.sav",
+    };
+    std::string diagnostic;
+    const auto encoded =
+        EncodeTasMovieCheckpointSterilizationExecutionInputV1(
+            request, &diagnostic);
+    ASSERT_FALSE(encoded.empty()) << diagnostic;
+    TasMovieCheckpointSterilizationRequestV1 decoded;
+    ASSERT_TRUE(DecodeTasMovieCheckpointSterilizationExecutionInputV1(
+        encoded, decoded, &diagnostic)) << diagnostic;
+    EXPECT_EQ(decoded, request);
+
+    auto trailing = encoded;
+    trailing.push_back(0);
+    EXPECT_FALSE(DecodeTasMovieCheckpointSterilizationExecutionInputV1(
+        trailing, decoded, &diagnostic));
+    auto mismatched = request;
+    mismatched.source_dtm_path = "another.dtm";
+    EXPECT_TRUE(EncodeTasMovieCheckpointSterilizationExecutionInputV1(
+        mismatched, &diagnostic).empty());
+    auto overwriting = request;
+    overwriting.output_savestate_path = request.source_savestate_path;
+    EXPECT_TRUE(EncodeTasMovieCheckpointSterilizationExecutionInputV1(
+        overwriting, &diagnostic).empty());
+}
+
+TEST(TasMovieValidationModule, SterilizationDefinitionIsSaveOnlyAndResolvesExactPair)
+{
+    const auto phase =
+        TasMovieCheckpointSterilizationFullPhaseDefinitionV1();
+    ASSERT_NE(phase, nullptr);
+    EXPECT_EQ(
+        phase->identity().program_kind,
+        static_cast<std::int32_t>(savor::PK_TasMovieCheckpointSterilize));
+    EXPECT_EQ(
+        phase->identity().canonical_id,
+        SterilizationFullPhaseCanonicalId);
+    EXPECT_EQ(phase->runtime_contract().state_policy,
+        InvocationStatePolicy::RestoreBaseline);
+    EXPECT_FALSE(phase->runtime_contract().execution.allow_movie_playback);
+    EXPECT_FALSE(phase->runtime_contract().execution.allow_input);
+
+    const auto decoded_module = DecodeProgramModuleV1(
+        phase->module_envelope().payload);
+    ASSERT_TRUE(decoded_module) << decoded_module.status.message;
+    ASSERT_EQ(decoded_module.value->action_imports.size(), 1u);
+    EXPECT_EQ(
+        decoded_module.value->action_imports.front().canonical_id,
+        CanonicalActionIdentity(
+            CanonicalAction::SavestateSaveImmutableArtifact).canonical_id);
+    ASSERT_NE(
+        FindInstruction(*decoded_module.value,
+            "sterilize/save-native-movie-inactive-checkpoint"),
+        nullptr);
+
+    const auto root = std::filesystem::temp_directory_path()
+        / ("savor-sterilization-contract-"
+            + std::to_string(std::chrono::steady_clock::now()
+                .time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    const auto source = root / "checkpoint.sav";
+    const auto dtm = root / "checkpoint.sav.dtm";
+    const auto output = root / "sterilized.sav";
+    {
+        std::ofstream(source, std::ios::binary).put('s');
+        std::ofstream(dtm, std::ios::binary).put('d');
+    }
+    const TasMovieCheckpointSterilizationRequestV1 request{
+        .source_savestate_path = source.string(),
+        .source_dtm_path = dtm.string(),
+        .output_savestate_path = output.string(),
+    };
+    std::string diagnostic;
+    const auto payload =
+        EncodeTasMovieCheckpointSterilizationExecutionInputV1(
+            request, &diagnostic);
+    const auto invocation = phase->BuildResolvedExecution(
+        payload, ProgramExecutionId(901), AttemptId(902), &diagnostic);
+    EXPECT_TRUE(invocation.has_value()) << diagnostic;
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
 TEST(TasMovieValidationModule, ProductionDefinitionVerifiesAndIsExactTasMovieKind)
 {
     const auto phase = TasMovieValidationFullPhaseDefinitionV1();

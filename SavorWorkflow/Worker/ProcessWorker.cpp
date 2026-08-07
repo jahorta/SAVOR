@@ -134,6 +134,8 @@ runtime::WorkerRejectionCode MapRejectionCode(
     case Wire::CapacityExceeded: return Runtime::CapacityExceeded;
     case Wire::TerminalNotFound: return Runtime::TerminalNotFound;
     case Wire::TerminalMismatch: return Runtime::TerminalMismatch;
+    case Wire::WorksetItemAlreadyTerminal:
+        return Runtime::WorksetItemAlreadyTerminal;
     }
     return Runtime::InternalFailure;
 }
@@ -716,6 +718,22 @@ bool ProcessWorker::cancel_workset_item(
     wrms::CommandResultPayload* result_out,
     std::uint32_t timeout_ms)
 {
+    auto outcome = cancel_workset_item_with_outcome(
+        workset_id, item_id, std::move(reason), timeout_ms);
+    if (result_out)
+        *result_out = outcome.result;
+    if (!outcome.accepted() && !outcome.diagnostic.empty())
+        set_last_error(outcome.diagnostic);
+    return outcome.accepted();
+}
+
+ProcessWorkerCommandOutcome
+ProcessWorker::cancel_workset_item_with_outcome(
+    runtime::WorkerWorksetId workset_id,
+    runtime::WorkerWorksetItemId item_id,
+    std::string reason,
+    std::uint32_t timeout_ms)
+{
     wrms::CancelWorksetItemPayload request{
         .workset_id = workset_id.value(),
         .item_id = item_id.value(),
@@ -723,30 +741,20 @@ bool ProcessWorker::cancel_workset_item(
     std::vector<std::uint8_t> payload;
     if (!EncodeTypedPayload(request, &payload))
     {
-        set_last_error("failed encoding CancelWorksetItem payload");
-        return false;
+        return {
+            .disposition = ProcessWorkerCommandDisposition::LocalRejected,
+            .result = {
+                .command_kind = wrms::MessageKind::CancelWorksetItem,
+                .status = wrms::CommandStatus::Rejected,
+                .rejection_code = wrms::RejectionCode::InvalidArgument,
+                .error_code = "LocalCancelWorksetItemEncodingFailed",
+                .message = "failed encoding CancelWorksetItem payload",
+            },
+            .diagnostic = "failed encoding CancelWorksetItem payload",
+        };
     }
-    ProcessCommandCompletion completion;
-    if (!request_response(
-            wrms::MessageKind::CancelWorksetItem,
-            payload,
-            wrms::MessageKind::CommandResult,
-            timeout_ms,
-            &completion))
-    {
-        return false;
-    }
-    wrms::CommandResultPayload result;
-    if (!wrms::DecodePayload(completion.payload, result))
-    {
-        set_last_error("invalid CancelWorksetItem command result");
-        return false;
-    }
-    if (result_out)
-        *result_out = result;
-    if (result.status != wrms::CommandStatus::Succeeded)
-        return false;
-    return true;
+    return request_command_with_outcome(
+        wrms::MessageKind::CancelWorksetItem, payload, timeout_ms);
 }
 
 bool ProcessWorker::cancel_workset(
@@ -755,41 +763,58 @@ bool ProcessWorker::cancel_workset(
     wrms::CommandResultPayload* result_out,
     std::uint32_t timeout_ms)
 {
+    auto outcome = cancel_workset_with_outcome(
+        workset_id, std::move(reason), timeout_ms);
+    if (result_out)
+        *result_out = outcome.result;
+    if (!outcome.accepted() && !outcome.diagnostic.empty())
+        set_last_error(outcome.diagnostic);
+    return outcome.accepted();
+}
+
+ProcessWorkerCommandOutcome ProcessWorker::cancel_workset_with_outcome(
+    runtime::WorkerWorksetId workset_id,
+    std::string reason,
+    std::uint32_t timeout_ms)
+{
     wrms::CancelWorksetPayload request{
         .workset_id = workset_id.value(),
         .reason = std::move(reason)};
     std::vector<std::uint8_t> payload;
     if (!EncodeTypedPayload(request, &payload))
     {
-        set_last_error("failed encoding CancelWorkset payload");
-        return false;
+        return {
+            .disposition = ProcessWorkerCommandDisposition::LocalRejected,
+            .result = {
+                .command_kind = wrms::MessageKind::CancelWorkset,
+                .status = wrms::CommandStatus::Rejected,
+                .rejection_code = wrms::RejectionCode::InvalidArgument,
+                .error_code = "LocalCancelWorksetEncodingFailed",
+                .message = "failed encoding CancelWorkset payload",
+            },
+            .diagnostic = "failed encoding CancelWorkset payload",
+        };
     }
-    ProcessCommandCompletion completion;
-    if (!request_response(
-            wrms::MessageKind::CancelWorkset,
-            payload,
-            wrms::MessageKind::CommandResult,
-            timeout_ms,
-            &completion))
-    {
-        return false;
-    }
-    wrms::CommandResultPayload result;
-    if (!wrms::DecodePayload(completion.payload, result))
-    {
-        set_last_error("invalid CancelWorkset command result");
-        return false;
-    }
-    if (result_out)
-        *result_out = result;
-    if (result.status != wrms::CommandStatus::Succeeded)
-        return false;
-    return true;
+    return request_command_with_outcome(
+        wrms::MessageKind::CancelWorkset, payload, timeout_ms);
 }
 
 bool ProcessWorker::acknowledge_terminal(
     const runtime::WorkerItemTerminalCorrelation& terminal,
     wrms::CommandResultPayload* result_out,
+    std::uint32_t timeout_ms)
+{
+    auto outcome = acknowledge_terminal_with_outcome(terminal, timeout_ms);
+    if (result_out)
+        *result_out = outcome.result;
+    if (!outcome.accepted() && !outcome.diagnostic.empty())
+        set_last_error(outcome.diagnostic);
+    return outcome.accepted();
+}
+
+ProcessWorkerCommandOutcome
+ProcessWorker::acknowledge_terminal_with_outcome(
+    const runtime::WorkerItemTerminalCorrelation& terminal,
     std::uint32_t timeout_ms)
 {
     wrms::AcknowledgeTerminalPayload request{
@@ -803,28 +828,75 @@ bool ProcessWorker::acknowledge_terminal(
     std::vector<std::uint8_t> payload;
     if (!EncodeTypedPayload(request, &payload))
     {
-        set_last_error("failed encoding AcknowledgeTerminal payload");
-        return false;
+        return {
+            .disposition = ProcessWorkerCommandDisposition::LocalRejected,
+            .result = {
+                .command_kind = wrms::MessageKind::AcknowledgeTerminal,
+                .status = wrms::CommandStatus::Rejected,
+                .rejection_code = wrms::RejectionCode::InvalidArgument,
+                .error_code = "LocalAcknowledgeTerminalEncodingFailed",
+                .message = "failed encoding AcknowledgeTerminal payload",
+            },
+            .diagnostic = "failed encoding AcknowledgeTerminal payload",
+        };
     }
+    return request_command_with_outcome(
+        wrms::MessageKind::AcknowledgeTerminal, payload, timeout_ms);
+}
+
+ProcessWorkerCommandOutcome ProcessWorker::request_command_with_outcome(
+    wrms::MessageKind command_kind,
+    std::span<const std::uint8_t> payload,
+    std::uint32_t timeout_ms)
+{
+    ProcessWorkerCommandOutcome outcome;
+    outcome.result.command_kind = command_kind;
+    outcome.result.status = wrms::CommandStatus::Rejected;
     ProcessCommandCompletion completion;
     if (!request_response(
-            wrms::MessageKind::AcknowledgeTerminal,
+            command_kind,
             payload,
             wrms::MessageKind::CommandResult,
             timeout_ms,
             &completion))
     {
-        return false;
+        outcome.request_frame_written = completion.request_frame_written;
+        outcome.correlated_result_received =
+            completion.correlated_response_received;
+        outcome.disposition = completion.request_frame_written
+            ? ProcessWorkerCommandDisposition::AmbiguousAfterWrite
+            : ProcessWorkerCommandDisposition::TransportCanceledBeforeWrite;
+        outcome.diagnostic = last_error();
+        outcome.result.error_code = completion.request_frame_written
+            ? "WorkerCommandOutcomeAmbiguousAfterWrite"
+            : "WorkerCommandNotWritten";
+        outcome.result.message = outcome.diagnostic;
+        return outcome;
     }
+    outcome.request_frame_written = completion.request_frame_written;
+    outcome.correlated_result_received =
+        completion.correlated_response_received;
     wrms::CommandResultPayload result;
     if (!wrms::DecodePayload(completion.payload, result))
     {
-        set_last_error("invalid AcknowledgeTerminal command result");
-        return false;
+        outcome.disposition =
+            ProcessWorkerCommandDisposition::AmbiguousAfterWrite;
+        outcome.diagnostic = "invalid worker command result";
+        outcome.result.error_code = "MalformedWorkerCommandResult";
+        outcome.result.message = outcome.diagnostic;
+        return outcome;
     }
-    if (result_out)
-        *result_out = result;
-    return result.status == wrms::CommandStatus::Succeeded;
+    outcome.result = std::move(result);
+    if (outcome.result.status == wrms::CommandStatus::Succeeded)
+    {
+        outcome.disposition = ProcessWorkerCommandDisposition::Accepted;
+        return outcome;
+    }
+    outcome.disposition = ProcessWorkerCommandDisposition::DefiniteRejected;
+    outcome.diagnostic = outcome.result.message.empty()
+        ? "worker definitively rejected command"
+        : outcome.result.message;
+    return outcome;
 }
 
 bool ProcessWorker::probe_liveness(
@@ -1313,6 +1385,13 @@ void ProcessWorker::set_workset_summary_callback(
 {
     std::lock_guard<std::mutex> lock(callback_mutex_);
     workset_summary_callback_ = std::move(callback);
+}
+
+void ProcessWorker::set_session_event_callback(
+    SessionEventCallback callback)
+{
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    session_event_callback_ = std::move(callback);
 }
 
 bool ProcessWorker::start(ProcStartParams& params, TSQueue<PRResult>* out_queue)
@@ -2338,30 +2417,48 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             fail_protocol("invalid WRMS SessionEvent");
             return;
         }
-        std::lock_guard<std::mutex> lock(snapshot_mutex_);
-        snapshot_.session_id = runtime::SessionId{event.session_id};
-        snapshot_.workset_epoch = runtime::WorksetEpoch{event.workset_epoch};
-        snapshot_.session_capabilities = event.capability_mask;
-        snapshot_.worker_state = MapWorkerState(event.worker_state);
-        snapshot_.session_disposition =
-            MapSessionDisposition(event.session_disposition);
-        snapshot_.session_open =
-            event.session_disposition !=
-            wrms::SessionDispositionCode::Closed;
-        if (!snapshot_.session_open)
         {
-            snapshot_.session_visual_intent = false;
-            snapshot_.execution_activity =
-                wrms::ExecutionActivityCode::IdlePaused;
-            snapshot_.execution_operation_id = 0;
-            snapshot_.active_execution_control.reset();
-            snapshot_.execution_completed_count = 0;
-            snapshot_.execution_program_counter = 0;
+            std::lock_guard<std::mutex> lock(snapshot_mutex_);
+            snapshot_.session_id = runtime::SessionId{event.session_id};
+            snapshot_.workset_epoch = runtime::WorksetEpoch{event.workset_epoch};
+            snapshot_.session_capabilities = event.capability_mask;
+            snapshot_.worker_state = MapWorkerState(event.worker_state);
+            snapshot_.session_disposition =
+                MapSessionDisposition(event.session_disposition);
+            snapshot_.session_open =
+                event.session_disposition !=
+                wrms::SessionDispositionCode::Closed;
+            if (!snapshot_.session_open)
+            {
+                snapshot_.session_visual_intent = false;
+                snapshot_.execution_activity =
+                    wrms::ExecutionActivityCode::IdlePaused;
+                snapshot_.execution_operation_id = 0;
+                snapshot_.active_execution_control.reset();
+                snapshot_.execution_completed_count = 0;
+                snapshot_.execution_program_counter = 0;
+            }
+            snapshot_.last_rejection_code =
+                MapRejectionCode(event.rejection_code);
+            if (!event.message.empty())
+                snapshot_.last_error = event.message;
         }
-        snapshot_.last_rejection_code =
-            MapRejectionCode(event.rejection_code);
-        if (!event.message.empty())
-            snapshot_.last_error = event.message;
+        SessionEventCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            callback = session_event_callback_;
+        }
+        if (callback &&
+            !enqueue_callback(
+                [callback = std::move(callback), event]() {
+                    callback(event);
+                },
+                true,
+                sizeof(event) + event.message.size()))
+        {
+            fail_protocol(
+                "authoritative SessionEvent callback queue is full");
+        }
         return;
     }
     case wrms::MessageKind::InvocationProgress:

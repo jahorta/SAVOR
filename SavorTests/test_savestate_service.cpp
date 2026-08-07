@@ -2,6 +2,7 @@
 
 #include "Runner/Runtime/Services/Savestate/SavestateService.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -34,6 +35,13 @@ public:
             throw std::runtime_error("save exception");
         return {save_result, bytes};
     }
+    SavestateBackendBufferResult SaveStateFileBytes() override
+    {
+        ++save_file_bytes_count;
+        if (throw_save_file)
+            throw std::runtime_error("save file exception");
+        return {save_file_result, file_bytes};
+    }
     SavestateBackendResult RestoreStateBuffer(
         const std::vector<std::uint8_t>& restored) override
     {
@@ -47,8 +55,8 @@ public:
         const std::filesystem::path& path) override
     {
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
-        output.write(reinterpret_cast<const char*>(bytes.data()),
-                     static_cast<std::streamsize>(bytes.size()));
+        output.write(reinterpret_cast<const char*>(file_bytes.data()),
+                     static_cast<std::streamsize>(file_bytes.size()));
         return output.good() ? SavestateBackendResult::Success()
                              : SavestateBackendResult::Failure("save failed");
     }
@@ -60,15 +68,44 @@ public:
     }
 
     SavestateBackendResult save_result = SavestateBackendResult::Success();
+    SavestateBackendResult save_file_result = SavestateBackendResult::Success();
     SavestateBackendResult restore_result = SavestateBackendResult::Success();
     std::vector<std::uint8_t> bytes{1, 2, 3, 4};
+    std::vector<std::uint8_t> file_bytes{9, 8, 7, 6, 5};
     std::vector<std::uint8_t> last_restored;
     int save_buffer_count = 0;
+    int save_file_bytes_count = 0;
     int restore_buffer_count = 0;
     int restore_file_count = 0;
     bool throw_save = false;
+    bool throw_save_file = false;
     bool throw_restore = false;
 };
+
+TEST(SavestateService, ImmutableArtifactUsesNativeFileBytesNotMemoryHandleBytes)
+{
+    Backend backend;
+    SavestateService service(backend, WorksetEpoch(5), Compatibility());
+
+    const auto handle = service.CaptureMemoryHandle({});
+    ASSERT_TRUE(handle.result.ok) << handle.result.message;
+    EXPECT_EQ(backend.save_buffer_count, 1);
+    EXPECT_EQ(backend.save_file_bytes_count, 0);
+
+    const auto artifact = service.CaptureImmutableArtifact({
+        .path = "native-file.sav",
+        .lineage = {.edge = "test", .producer = "SavestateService"}});
+    ASSERT_TRUE(artifact.result.ok) << artifact.result.message;
+    EXPECT_EQ(backend.save_buffer_count, 1);
+    EXPECT_EQ(backend.save_file_bytes_count, 1);
+    ASSERT_EQ(artifact.state_bytes.size(), backend.file_bytes.size());
+    EXPECT_TRUE(std::equal(
+        backend.file_bytes.begin(), backend.file_bytes.end(),
+        artifact.state_bytes.data()));
+
+    EXPECT_TRUE(service.AbandonImmutableArtifact(artifact.artifact).ok);
+    EXPECT_TRUE(service.ReleaseMemoryHandle(handle.handle).ok);
+}
 
 TEST(SavestateService, MemoryHandleRestoresWithoutChangingWorksetEpoch)
 {

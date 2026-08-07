@@ -2316,7 +2316,7 @@ TEST(
                     WorkerWorksetItemId(1)})
             .get()
             .error.code,
-        WorkerRejectionCode::DuplicateCancellation);
+        WorkerRejectionCode::WorksetItemAlreadyTerminal);
     ASSERT_TRUE(harness.program->EmitTerminal(
         InvocationTerminalStatus::Completed));
     ASSERT_TRUE(

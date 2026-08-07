@@ -198,7 +198,7 @@ std::optional<std::int64_t> SaveNavigationContextGraph(
                         .inputs = {
                             {
                                 .input_key = "entry_savestate",
-                                .data_kind = "state.savestate_id",
+                                .data_kind = "state.movie_inactive_savestate_id",
                                 .display_name = "Entry savestate",
                             },
                         },
@@ -279,7 +279,7 @@ std::optional<ScheduledProbe> CreateAndScheduleProbe(
     command.input_bindings.push_back({
         .node_key = "navigation",
         .input_key = "entry_savestate",
-        .data_kind = "state.savestate_id",
+        .data_kind = "state.movie_inactive_savestate_id",
         .ref_kind = "state.savestate",
         .ref_id = source_savestate_id,
         .source_kind = "external",
@@ -442,7 +442,7 @@ TEST(NavigationContextDb, HiddenUnitExposesOnlyTheCaptureContract) {
     EXPECT_EQ(unit->required_inputs.front().key, "entry_savestate");
     EXPECT_EQ(
         unit->required_inputs.front().data_kind,
-        "state.savestate_id");
+        "state.movie_inactive_savestate_id");
     ASSERT_EQ(unit->possible_outputs.size(), 1u);
     EXPECT_EQ(unit->possible_outputs.front().key, "navigation_context");
     EXPECT_EQ(

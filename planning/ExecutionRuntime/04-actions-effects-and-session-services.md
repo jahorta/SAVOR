@@ -419,13 +419,12 @@ writer, action continuation, guest-derived pointer, or other mutable invocation 
 Only immutable artifact declarations and compiled definitions survive according to their contracts;
 every mutable child resource is reacquired.
 
-The worker-global completion/acknowledgement ledger is host-only lifecycle state rather than another
-program or session scope. An invocation may promote a synchronously captured immutable state buffer and
-its exact movie metadata into that ledger during terminal preparation. Promotion transfers ownership
-out of the invocation before its root unwinds; it does not promote a backend handle, guest pointer,
-current epoch, or service authority. Background finalization and retained terminal results may
-therefore outlive the invocation and workset scopes that produced them without keeping a
-`ProgramInstance` active.
+The active item's output transaction is host-only lifecycle state rather than another program or session
+scope. Dolphin synchronously writes a native savestate file while paused; the runtime reads the completed
+file back into immutable bytes and adopts those bytes plus exact movie metadata before resolving the save
+action. Raw state-buffer bytes remain private to workset memory handles. Finalization may continue after
+the `ProgramInstance` unwinds, but the item and workset stay active and no later guest activity begins
+until the authoritative terminal has been retained.
 
 Resources include:
 

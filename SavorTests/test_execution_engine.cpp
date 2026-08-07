@@ -1630,6 +1630,31 @@ TEST_F(ExecutionEngineFixture, MovieEndCompletesAccordingToPolicy)
 
 TEST_F(
     ExecutionEngineFixture,
+    MovieEndFailureBeforeInitialResumePreservesItsError)
+{
+    execution_control->SetMovieState(BackendMovieState::Ended);
+    CreateEngine();
+    ExecutionRequestPolicy policy = Policy();
+    policy.movie_ended = MovieEndedPolicy::Fail;
+
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = std::move(policy),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::MovieEnded);
+    EXPECT_EQ(terminal->error.code, ExecutionErrorCode::InvalidState);
+    EXPECT_EQ(
+        terminal->error.message,
+        "movie ended before the requested completion");
+    EXPECT_EQ(CountCall(execution_control->Calls(), "resume"), 0u);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
     CursorOverrunBeforeInitialResumeCompletesWithoutResuming)
 {
     execution_control->SetMovieState(BackendMovieState::Playing);

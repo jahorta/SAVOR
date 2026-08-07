@@ -721,7 +721,24 @@ namespace savor {
         // mode itself pauses at the boot PC, so suppress that gate until
         // Dolphin's after-load callback restores both debugging and Paused
         // before the CPU callback returns.
-        std::atomic<bool> paused_restore_completed{false};
+        // Dolphin's after-load callback is the completion fence for the
+        // synchronous CPU-thread load. Do not require PC or TBR to change:
+        // restoring an exact checkpoint over the identical guest instant is
+        // valid (for example on the worker that produced a sterilized state).
+        std::atomic<bool> load_completed{false};
+        State::SetOnAfterLoadCallback([&] {
+            if (restore_paused)
+            {
+                if (debugging_enabled)
+                {
+                    Config::SetCurrent(
+                        Config::MAIN_ENABLE_DEBUGGING,
+                        true);
+                }
+                Core::SetState(*m_system, Core::State::Paused);
+            }
+            load_completed.store(true, std::memory_order_release);
+        });
         if (restore_paused)
         {
             if (debugging_enabled)
@@ -731,25 +748,11 @@ namespace savor {
                     false);
             }
             Core::SetState(*m_system, Core::State::Running);
-            State::SetOnAfterLoadCallback([&] {
-                if (debugging_enabled)
-                {
-                    Config::SetCurrent(
-                        Config::MAIN_ENABLE_DEBUGGING,
-                        true);
-                }
-                Core::SetState(*m_system, Core::State::Paused);
-                paused_restore_completed.store(
-                    true,
-                    std::memory_order_release);
-            });
         }
         State::LoadAs(*m_system, state_path);
         const bool scheduled =
-            !restore_paused ||
-            paused_restore_completed.load(std::memory_order_acquire);
-        if (restore_paused)
-            State::SetOnAfterLoadCallback({});
+            load_completed.load(std::memory_order_acquire);
+        State::SetOnAfterLoadCallback({});
 
         // (you already do pc_before/tbr_before)
         SCLOGD("[DW] loadSavestate scheduled=%d", scheduled ? 1 : 0);
@@ -776,7 +779,7 @@ namespace savor {
             (int)Core::GetState(*m_system), pc_before, pc_after,
             (unsigned long long)tbr_before, (unsigned long long)tbr_after);
 
-        if (Core::IsRunning(*m_system) && (pc_before != pc_after || tbr_before != tbr_after || state_path._Equal(m_last_save_state))) {
+        if (Core::IsRunning(*m_system)) {
             m_last_save_state = state_path;
             return true;
         }

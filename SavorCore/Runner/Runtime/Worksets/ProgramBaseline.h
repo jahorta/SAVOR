@@ -13,6 +13,13 @@
 
 namespace savor::runtime {
 
+inline constexpr std::string_view
+    kTasMovieCheckpointSterilizationBaselineComponentId =
+        "savor.baseline.tas_movie_checkpoint_sterilize";
+inline constexpr std::string_view
+    kTasMovieCheckpointSterilizationBaselineSchemaId =
+        "TasMovieCheckpointSterilizationBaseline/1";
+
 struct ProgramBaselineComponentResult
 {
     bool ok = false;
@@ -107,6 +114,23 @@ private:
     std::uint32_t revision_ = 1;
 };
 
+class TasMovieCheckpointSterilizationBaselineComponentProvider final
+    : public IProgramBaselineComponentProvider
+{
+public:
+    [[nodiscard]] std::string canonical_id() const override;
+    [[nodiscard]] std::uint32_t revision() const noexcept override;
+    [[nodiscard]] ProgramBaselineComponentResult Stage(
+        ProgramBaselineComponent& component) override;
+    [[nodiscard]] ProgramBaselineComponentResult Activate(
+        const ProgramBaselineComponent& component,
+        EmulationSession& session,
+        bool reset) override;
+};
+
+[[nodiscard]] ProgramBaselineComponent
+MakeTasMovieCheckpointSterilizationBaselineComponent();
+
 struct WorksetBaselineSnapshot
 {
     bool active = false;
@@ -159,6 +183,7 @@ private:
     ProgramBaselineKey active_key_;
     PreparedProgramBaselineReceipt active_receipt_;
     std::optional<SavestateHandleReceipt> active_handle_;
+    std::optional<std::filesystem::path> staged_source_root_;
     ResourceScopeId workset_scope_;
     bool multi_item_ = false;
     bool stopped_ = false;

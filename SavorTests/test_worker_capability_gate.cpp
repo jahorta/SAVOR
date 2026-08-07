@@ -111,10 +111,11 @@ savor::runtime::WorkerRuntimeManifest CompleteTestManifest(
 {
     static constexpr std::array<
         std::pair<std::string_view, std::string_view>,
-        2>
+        3>
         kModules{{
             {"soa.seed_probe", "probe"},
             {"soa.tas_movie_validation", "validate"},
+            {"soa.tas_movie_checkpoint_sterilize", "sterilize"},
         }};
     savor::runtime::WorkerRuntimeManifest manifest{};
     manifest.catalog_status =

@@ -9,6 +9,7 @@
 #include "ProgramKindRegistry.h"
 #include "SeedProbe/SeedProbeProgram.h"
 #include "TasMovieValidation/TasMovieValidationProgram.h"
+#include "TasMovieValidation/TasMovieCheckpointSterilizationProgram.h"
 
 namespace savor::db::execution::programdb {
 
@@ -21,6 +22,8 @@ struct ProductionProgramKindRegistryDependencies {
 
 struct ProductionProgramKindRegistryConfig {
     tasmovievalidation::TasMovieValidationProgramConfig tas_movie_validation;
+    tasmoviecheckpointsterilization::TasMovieCheckpointSterilizationProgramConfig
+        tas_movie_checkpoint_sterilization;
     seedprobe::SeedProbeProgramConfig seed_probe;
     battlecontext::BattleContextProbePhaseRegistrationConfig battle_context;
     battle::BattleSingleTurnPhaseRegistrationConfig battle_single_turn;

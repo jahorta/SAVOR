@@ -896,7 +896,7 @@ public:
         const auto* entry_savestate = FindGraphBinding(
             context,
             "entry_savestate",
-            "state.savestate_id");
+            "state.movie_inactive_savestate_id");
         if (entry_savestate == nullptr
             || entry_savestate->ref_kind != "state.savestate"
             || entry_savestate->ref_id <= 0) {

@@ -136,6 +136,8 @@ std::optional<std::int64_t> ResolveEntrySavestate(
     for (const auto& binding :
          context.graph->input_bindings) {
         if (binding.input_key == "entry_savestate"
+            && binding.data_kind == "state.movie_inactive_savestate_id"
+            && binding.ref_kind == "state.savestate"
             && binding.ref_id > 0) {
             return binding.ref_id;
         }
@@ -303,9 +305,11 @@ public:
         }
         const auto savestate =
             state_db_->GetSavestate(*entry_savestate);
-        if (!savestate.has_value() || !savestate->is_complete) {
+        if (!savestate.has_value() || !savestate->is_complete
+            || savestate->playback_state != SavestatePlaybackState::MovieInactive
+            || savestate->dtm_artifact_id.has_value()) {
             return Fail(
-                "SeedProbe entry savestate is missing or incomplete",
+                "SeedProbe entry savestate is not a complete movie-inactive state",
                 error_out);
         }
 

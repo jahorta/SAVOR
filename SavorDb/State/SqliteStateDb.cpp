@@ -417,15 +417,31 @@ bool SqliteStateDb::CreateSavestate(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.artifact_id <= 0 || command.savestate_type.empty()) {
+    const bool paired = command.playback_state ==
+        SavestatePlaybackState::MoviePaired;
+    if (command.artifact_id <= 0 || command.savestate_type.empty()
+        || command.playback_state == SavestatePlaybackState::Unknown
+        || paired != command.dtm_artifact_id.has_value()) {
         if (error_out) *error_out = "required command fields are missing";
+        return false;
+    }
+
+    const auto state_artifact = GetArtifact(command.artifact_id);
+    const auto dtm_artifact = command.dtm_artifact_id
+        ? GetArtifact(*command.dtm_artifact_id)
+        : std::nullopt;
+    if (!state_artifact || state_artifact->artifact_kind != "SAV"
+        || (paired && (!dtm_artifact || dtm_artifact->artifact_kind != "DTM"))) {
+        if (error_out) *error_out = "savestate playback artifacts are invalid";
         return false;
     }
 
     if (const auto existing = FindSavestateByArtifactId(command.artifact_id); existing.has_value()) {
         if (existing->savestate_type != command.savestate_type
             || existing->note != command.note
-            || existing->is_complete != command.is_complete) {
+            || existing->is_complete != command.is_complete
+            || existing->playback_state != command.playback_state
+            || existing->dtm_artifact_id != command.dtm_artifact_id) {
             if (error_out) *error_out = "savestate artifact is already bound with different immutable fields";
             return false;
         }
@@ -443,8 +459,8 @@ bool SqliteStateDb::CreateSavestate(
     Statement insert_savestate;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO state_savestate(artifact_id,savestate_type,note,is_complete,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5);",
+            "INSERT INTO state_savestate(artifact_id,savestate_type,note,is_complete,created_at_utc,playback_state,dtm_artifact_id) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7);",
             -1,
             &insert_savestate.st,
             nullptr)
@@ -463,6 +479,15 @@ bool SqliteStateDb::CreateSavestate(
     }
     sqlite3_bind_int(insert_savestate.st, 4, command.is_complete ? 1 : 0);
     sqlite3_bind_int64(insert_savestate.st, 5, command.created_at_utc.time_since_epoch().count());
+    const auto playback = ToDbString(command.playback_state);
+    sqlite3_bind_text(
+        insert_savestate.st, 6, playback.data(),
+        static_cast<int>(playback.size()), SQLITE_TRANSIENT);
+    if (command.dtm_artifact_id) {
+        sqlite3_bind_int64(insert_savestate.st, 7, *command.dtm_artifact_id);
+    } else {
+        sqlite3_bind_null(insert_savestate.st, 7);
+    }
 
     if (sqlite3_step(insert_savestate.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
@@ -678,9 +703,11 @@ std::optional<SavestateRecord> SqliteStateDb::GetSavestate(
     Statement st;
     constexpr const char* kSql =
         "SELECT s.savestate_id,s.artifact_id,s.savestate_type,s.note,s.is_complete,s.created_at_utc,"
-        "a.sha256,a.size_bytes,a.filename,a.file_ext,a.artifact_kind "
+        "a.sha256,a.size_bytes,a.filename,a.file_ext,a.artifact_kind,"
+        "s.playback_state,s.dtm_artifact_id,d.sha256,d.filename "
         "FROM state_savestate s "
         "JOIN state_artifact a ON a.artifact_id=s.artifact_id "
+        "LEFT JOIN state_artifact d ON d.artifact_id=s.dtm_artifact_id "
         "WHERE s.savestate_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return std::nullopt;
@@ -707,6 +734,18 @@ std::optional<SavestateRecord> SqliteStateDb::GetSavestate(
     row.artifact_file_ext = extension == nullptr ? "" : reinterpret_cast<const char*>(extension);
     const auto* artifact_kind = sqlite3_column_text(st.st, 10);
     row.artifact_kind = artifact_kind == nullptr ? "" : reinterpret_cast<const char*>(artifact_kind);
+    const auto* playback = sqlite3_column_text(st.st, 11);
+    row.playback_state = ParseSavestatePlaybackState(
+        playback == nullptr ? "" : reinterpret_cast<const char*>(playback));
+    if (sqlite3_column_type(st.st, 12) != SQLITE_NULL) {
+        row.dtm_artifact_id = sqlite3_column_int64(st.st, 12);
+    }
+    if (const auto* hash = sqlite3_column_text(st.st, 13); hash != nullptr) {
+        row.dtm_sha256 = reinterpret_cast<const char*>(hash);
+    }
+    if (const auto* name = sqlite3_column_text(st.st, 14); name != nullptr) {
+        row.dtm_filename = reinterpret_cast<const char*>(name);
+    }
     return row;
 }
 
@@ -856,7 +895,9 @@ bool SqliteStateDb::CreateTasMovieRoot(
     if (!source_artifact || source_artifact->artifact_kind != "DTM"
         || !dtm_artifact || dtm_artifact->artifact_kind != "DTM"
         || !itinerary_artifact || itinerary_artifact->artifact_kind != "TAS_MOVIE_ITINERARY"
-        || !checkpoint || checkpoint->artifact_kind != "SAV") {
+        || !checkpoint || checkpoint->artifact_kind != "SAV"
+        || checkpoint->playback_state != SavestatePlaybackState::MoviePaired
+        || checkpoint->dtm_artifact_id != command.dtm_artifact_id) {
         if (error_out) *error_out = "TAS movie root artifacts do not satisfy their immutable kinds";
         return false;
     }
@@ -913,6 +954,193 @@ bool SqliteStateDb::CreateTasMovieRoot(
         return false;
     }
     if (tas_movie_root_id_out) *tas_movie_root_id_out = id;
+    return true;
+}
+
+bool SqliteStateDb::CreateOrGetSterilizedCheckpoint(
+    const CreateOrGetSterilizedCheckpointCommand& command,
+    CreateOrGetSterilizedCheckpointReceipt* receipt_out,
+    std::string* error_out) {
+    if (db_ == nullptr || command.from_savestate_id <= 0
+        || command.artifact.sha256.empty()
+        || command.artifact.filename.empty()
+        || command.artifact.file_ext != ".sav"
+        || command.artifact.artifact_kind != "SAV"
+        || command.savestate_type.empty()
+        || command.method_kind != "tasmovie.checkpoint_sterilize.v1"
+        || command.source_context_kind.empty()
+        || command.source_context_id <= 0) {
+        if (error_out) *error_out = "sterilized checkpoint command is incomplete";
+        return false;
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    const auto rollback = [&]() {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    };
+    const auto fail = [&](std::string message) {
+        rollback();
+        if (error_out) *error_out = std::move(message);
+        return false;
+    };
+
+    Statement existing;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT d.derivation_id,d.to_savestate_id,s.artifact_id "
+            "FROM state_savestate_derivation d "
+            "JOIN state_savestate s ON s.savestate_id=d.to_savestate_id "
+            "WHERE d.from_savestate_id=?1 AND d.method_kind=?2;",
+            -1, &existing.st, nullptr) != SQLITE_OK) {
+        return fail(sqlite3_errmsg(db_));
+    }
+    sqlite3_bind_int64(existing.st, 1, command.from_savestate_id);
+    sqlite3_bind_text(existing.st, 2, command.method_kind.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(existing.st) == SQLITE_ROW) {
+        CreateOrGetSterilizedCheckpointReceipt receipt{
+            .savestate_id = sqlite3_column_int64(existing.st, 1),
+            .artifact_id = sqlite3_column_int64(existing.st, 2),
+            .derivation_id = sqlite3_column_int64(existing.st, 0),
+            .created = false,
+        };
+        if (sqlite3_step(existing.st) == SQLITE_ROW) {
+            return fail("multiple canonical sterilizations exist for one source checkpoint");
+        }
+        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            return fail(sqlite3_errmsg(db_));
+        }
+        if (receipt_out) *receipt_out = receipt;
+        if (error_out) error_out->clear();
+        return true;
+    }
+
+    Statement source;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT 1 FROM state_savestate s JOIN state_artifact d "
+            "ON d.artifact_id=s.dtm_artifact_id "
+            "WHERE s.savestate_id=?1 AND s.is_complete=1 "
+            "AND s.playback_state='MOVIE_PAIRED' AND d.artifact_kind='DTM';",
+            -1, &source.st, nullptr) != SQLITE_OK) {
+        return fail(sqlite3_errmsg(db_));
+    }
+    sqlite3_bind_int64(source.st, 1, command.from_savestate_id);
+    if (sqlite3_step(source.st) != SQLITE_ROW) {
+        return fail("sterilization source is not a complete movie-paired checkpoint");
+    }
+
+    Statement artifact;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO state_artifact(sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7) "
+            "ON CONFLICT(sha256) DO UPDATE SET "
+            "size_bytes=excluded.size_bytes,compression_kind=excluded.compression_kind,"
+            "filename=excluded.filename,file_ext=excluded.file_ext,artifact_kind=excluded.artifact_kind "
+            "RETURNING artifact_id;",
+            -1, &artifact.st, nullptr) != SQLITE_OK) {
+        return fail(sqlite3_errmsg(db_));
+    }
+    sqlite3_bind_text(artifact.st, 1, command.artifact.sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(artifact.st, 2, command.artifact.size_bytes);
+    sqlite3_bind_int(artifact.st, 3, command.artifact.compression_kind);
+    sqlite3_bind_text(artifact.st, 4, command.artifact.filename.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(artifact.st, 5, command.artifact.file_ext.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(artifact.st, 6, command.artifact.artifact_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(artifact.st, 7, command.created_at_utc.time_since_epoch().count());
+    if (sqlite3_step(artifact.st) != SQLITE_ROW) return fail(sqlite3_errmsg(db_));
+    const auto artifact_id = sqlite3_column_int64(artifact.st, 0);
+    sqlite3_finalize(artifact.st);
+    artifact.st = nullptr;
+
+    Statement insert_state;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO state_savestate(artifact_id,savestate_type,note,is_complete,created_at_utc,playback_state,dtm_artifact_id) "
+            "VALUES(?1,?2,?3,1,?4,'MOVIE_INACTIVE',NULL) "
+            "ON CONFLICT(artifact_id) DO NOTHING;",
+            -1, &insert_state.st, nullptr) != SQLITE_OK) return fail(sqlite3_errmsg(db_));
+    sqlite3_bind_int64(insert_state.st, 1, artifact_id);
+    sqlite3_bind_text(insert_state.st, 2, command.savestate_type.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.note.empty()) sqlite3_bind_null(insert_state.st, 3);
+    else sqlite3_bind_text(insert_state.st, 3, command.note.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_state.st, 4, command.created_at_utc.time_since_epoch().count());
+    if (sqlite3_step(insert_state.st) != SQLITE_DONE) return fail(sqlite3_errmsg(db_));
+    const bool state_created = sqlite3_changes(db_) != 0;
+
+    Statement select_state;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT savestate_id,savestate_type,COALESCE(note,''),is_complete,playback_state,dtm_artifact_id "
+            "FROM state_savestate WHERE artifact_id=?1;",
+            -1, &select_state.st, nullptr) != SQLITE_OK) return fail(sqlite3_errmsg(db_));
+    sqlite3_bind_int64(select_state.st, 1, artifact_id);
+    if (sqlite3_step(select_state.st) != SQLITE_ROW) return fail("sterilized savestate row was not created");
+    const auto savestate_id = sqlite3_column_int64(select_state.st, 0);
+    const std::string type = reinterpret_cast<const char*>(sqlite3_column_text(select_state.st, 1));
+    const std::string note = reinterpret_cast<const char*>(sqlite3_column_text(select_state.st, 2));
+    const std::string playback = reinterpret_cast<const char*>(sqlite3_column_text(select_state.st, 4));
+    if (type != command.savestate_type || note != command.note
+        || sqlite3_column_int(select_state.st, 3) != 1
+        || playback != "MOVIE_INACTIVE"
+        || sqlite3_column_type(select_state.st, 5) != SQLITE_NULL) {
+        return fail("sterilized artifact is already bound to incompatible immutable state");
+    }
+
+    Statement derivation;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO state_savestate_derivation(from_savestate_id,to_savestate_id,method_kind,source_context_kind,source_context_id,created_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6);",
+            -1, &derivation.st, nullptr) != SQLITE_OK) return fail(sqlite3_errmsg(db_));
+    sqlite3_bind_int64(derivation.st, 1, command.from_savestate_id);
+    sqlite3_bind_int64(derivation.st, 2, savestate_id);
+    sqlite3_bind_text(derivation.st, 3, command.method_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(derivation.st, 4, command.source_context_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(derivation.st, 5, command.source_context_id);
+    sqlite3_bind_int64(derivation.st, 6, command.created_at_utc.time_since_epoch().count());
+    if (sqlite3_step(derivation.st) != SQLITE_DONE) return fail(sqlite3_errmsg(db_));
+    const auto derivation_id = sqlite3_last_insert_rowid(db_);
+
+    if (!InsertStateOutboxEvent(
+            db_, "State.ArtifactStored.v1", "artifact",
+            std::to_string(artifact_id), command.correlation_id,
+            command.causation_id, command.created_at_utc.time_since_epoch().count(),
+            "artifact", artifact_id, error_out)) {
+        rollback();
+        return false;
+    }
+    if (state_created && !InsertStateOutboxEvent(
+            db_, "State.SavestateCreated.v1", "savestate",
+            std::to_string(savestate_id), command.correlation_id,
+            command.causation_id, command.created_at_utc.time_since_epoch().count(),
+            "savestate", savestate_id, error_out)) {
+        rollback();
+        return false;
+    }
+
+    if (!InsertStateOutboxEvent(
+            db_, "State.SavestateDerived.v1", "savestate_derivation",
+            std::to_string(savestate_id), command.correlation_id,
+            command.causation_id, command.created_at_utc.time_since_epoch().count(),
+            "savestate_derivation", derivation_id, error_out)) {
+        rollback();
+        return false;
+    }
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        return fail(sqlite3_errmsg(db_));
+    }
+    if (receipt_out) {
+        *receipt_out = {
+            .savestate_id = savestate_id,
+            .artifact_id = artifact_id,
+            .derivation_id = derivation_id,
+            .created = true,
+        };
+    }
+    if (error_out) error_out->clear();
     return true;
 }
 
@@ -975,7 +1203,9 @@ bool SqliteStateDb::CreateTasMovieTree(
     const auto checkpoint = GetSavestate(command.checkpoint_savestate_id);
     if (!dtm_artifact || dtm_artifact->artifact_kind != "DTM"
         || !itinerary_artifact || itinerary_artifact->artifact_kind != "TAS_MOVIE_ITINERARY"
-        || !checkpoint || checkpoint->artifact_kind != "SAV") {
+        || !checkpoint || checkpoint->artifact_kind != "SAV"
+        || checkpoint->playback_state != SavestatePlaybackState::MoviePaired
+        || checkpoint->dtm_artifact_id != command.dtm_artifact_id) {
         if (error_out) *error_out = "TAS movie tree artifacts do not satisfy their immutable kinds";
         return false;
     }
@@ -1069,6 +1299,41 @@ std::vector<TasMovieTreeRecord> SqliteStateDb::ListTasMovieTreeLineage(
         if (auto row = GetTasMovieTree(sqlite3_column_int64(st.st, 0)); row.has_value()) rows.push_back(*row);
     }
     return rows;
+}
+
+std::optional<SavestateDerivationRecord>
+SqliteStateDb::FindSavestateDerivationBySourceAndMethod(
+    std::int64_t from_savestate_id,
+    std::string_view method_kind) const {
+    if (db_ == nullptr || from_savestate_id <= 0 || method_kind.empty()) {
+        return std::nullopt;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT derivation_id,from_savestate_id,to_savestate_id,method_kind,"
+        "source_context_kind,source_context_id,created_at_utc "
+        "FROM state_savestate_derivation "
+        "WHERE from_savestate_id=?1 AND method_kind=?2 "
+        "ORDER BY derivation_id ASC LIMIT 2;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, from_savestate_id);
+    sqlite3_bind_text(
+        st.st, 2, method_kind.data(), static_cast<int>(method_kind.size()),
+        SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    SavestateDerivationRecord row{};
+    row.derivation_id = sqlite3_column_int64(st.st, 0);
+    row.from_savestate_id = sqlite3_column_int64(st.st, 1);
+    row.to_savestate_id = sqlite3_column_int64(st.st, 2);
+    row.method_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 3));
+    row.source_context_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 4));
+    row.source_context_id = sqlite3_column_int64(st.st, 5);
+    row.created_at_utc = types::UtcTimePoint(
+        std::chrono::milliseconds(sqlite3_column_int64(st.st, 6)));
+    if (sqlite3_step(st.st) == SQLITE_ROW) return std::nullopt;
+    return row;
 }
 
 std::optional<std::string> SqliteStateDb::MaterializeArtifactToDirectory(

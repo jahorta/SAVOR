@@ -109,6 +109,11 @@ public:
 
     virtual BackendResult RestoreStateFile(const std::filesystem::path& path) = 0;
     virtual BackendResult SaveStateFile(const std::filesystem::path& path) = 0;
+    // Serialize through Dolphin's native file writer, wait for the file to be
+    // complete, then read those exact file bytes back for transactional
+    // artifact ownership. This is deliberately distinct from SaveStateBuffer,
+    // whose raw bytes are only valid for process-local memory-handle restores.
+    virtual BackendBufferResult SaveStateFileBytes() = 0;
     virtual BackendBufferResult SaveStateBuffer() = 0;
     virtual BackendResult RestoreStateBuffer(const std::vector<std::uint8_t>& bytes) = 0;
 

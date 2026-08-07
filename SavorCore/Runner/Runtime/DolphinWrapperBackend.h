@@ -47,6 +47,7 @@ public:
 
     BackendResult RestoreStateFile(const std::filesystem::path& path) override;
     BackendResult SaveStateFile(const std::filesystem::path& path) override;
+    BackendBufferResult SaveStateFileBytes() override;
     BackendBufferResult SaveStateBuffer() override;
     BackendResult RestoreStateBuffer(const std::vector<std::uint8_t>& bytes) override;
 

@@ -660,11 +660,41 @@ public:
                 return FinalDecision("FAILED", "TAS_MOVIE_UNEXPECTED_ARTIFACT", "validation without capture authority returned an artifact");
         } else return FinalDecision("FAILED", "TAS_MOVIE_VALIDATION_OUTCOME_UNKNOWN", "worker returned an unknown typed outcome");
 
+        std::optional<std::int64_t> validated_checkpoint_savestate_id;
+        if (attempt.outcome == TasMovieValidationOutcome::Valid) {
+            validated_checkpoint_savestate_id = ResolveValidatedCheckpoint(
+                *request,
+                attempt,
+                &error);
+            if (!validated_checkpoint_savestate_id) {
+                throw std::runtime_error(
+                    error.empty()
+                        ? "validated TAS Movie checkpoint is unavailable"
+                        : error);
+            }
+        }
+
         std::int64_t attempt_id = 0;
         if (!analysis_db_->RecordTasMovieValidationAttempt(attempt, &attempt_id, &error)) throw std::runtime_error(error);
         ProgramResultDecision decision = FinalDecision("SUCCEEDED");
         decision.outputs.push_back({.output_key = "tas_movie_validation_attempt",
             .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .ref_id = attempt_id});
+        if (attempt.outcome == TasMovieValidationOutcome::RootCursorEstablished) {
+            decision.outputs.push_back({
+                .output_key = "established_root_cursor_attempt",
+                .data_kind = "analysis.tas_movie_validation_attempt_id",
+                .ref_kind = "tmv_validation_attempt",
+                .ref_id = attempt_id,
+            });
+        }
+        if (validated_checkpoint_savestate_id) {
+            decision.outputs.push_back({
+                .output_key = "validated_checkpoint_savestate",
+                .data_kind = "state.movie_paired_savestate_id",
+                .ref_kind = "state.savestate",
+                .ref_id = *validated_checkpoint_savestate_id,
+            });
+        }
         if (attempt.outcome == TasMovieValidationOutcome::Invalid) {
             decision.error_code = "TAS_MOVIE_INVALID";
             decision.error_text = "TAS movie validation reported a durable domain invalidity";
@@ -691,6 +721,34 @@ public:
         decision.outputs.push_back({.output_key = "tas_movie_validation_attempt",
             .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt",
             .ref_id = attempt->validation_attempt_id});
+        if (attempt->outcome == TasMovieValidationOutcome::RootCursorEstablished) {
+            decision.outputs.push_back({
+                .output_key = "established_root_cursor_attempt",
+                .data_kind = "analysis.tas_movie_validation_attempt_id",
+                .ref_kind = "tmv_validation_attempt",
+                .ref_id = attempt->validation_attempt_id,
+            });
+        }
+        if (attempt->outcome == TasMovieValidationOutcome::Valid) {
+            const auto checkpoint = ResolveValidatedCheckpoint(
+                *request,
+                *attempt,
+                &recovery_error);
+            if (!checkpoint) {
+                return {
+                    .disposition = ProgramResultRecoveryDisposition::Inconsistent,
+                    .diagnostic = recovery_error.empty()
+                        ? "persisted Valid TAS Movie checkpoint is unavailable"
+                        : std::move(recovery_error),
+                };
+            }
+            decision.outputs.push_back({
+                .output_key = "validated_checkpoint_savestate",
+                .data_kind = "state.movie_paired_savestate_id",
+                .ref_kind = "state.savestate",
+                .ref_id = *checkpoint,
+            });
+        }
         if (attempt->outcome == TasMovieValidationOutcome::Invalid) {
             decision.error_code = "TAS_MOVIE_INVALID";
             decision.error_text = "TAS movie validation reported a durable domain invalidity";
@@ -700,6 +758,77 @@ public:
     }
 
 private:
+    std::optional<std::int64_t> ResolveValidatedCheckpoint(
+        const TasMovieValidationRequestRecord& request,
+        const RecordTasMovieValidationAttemptCommand& attempt,
+        std::string* error_out) const {
+        const auto fail = [&](std::string message)
+            -> std::optional<std::int64_t> {
+            if (error_out) *error_out = std::move(message);
+            return std::nullopt;
+        };
+        if (attempt.outcome != TasMovieValidationOutcome::Valid
+            || request.operation != TasMovieValidationOperation::Validate) {
+            return fail("validated checkpoint requires a typed Valid outcome");
+        }
+
+        std::int64_t checkpoint_savestate_id = 0;
+        std::int64_t dtm_artifact_id = 0;
+        std::int64_t itinerary_artifact_id = 0;
+        std::uint32_t final_pc = 0;
+        if (request.source_kind == TasMovieValidationSourceKind::RootEstablishment) {
+            std::optional<TasMovieRootRecord> root;
+            if (attempt.produced_tas_movie_root_id) {
+                root = state_db_->GetTasMovieRoot(
+                    *attempt.produced_tas_movie_root_id);
+            } else if (request.rtc_value) {
+                root = state_db_->FindTasMovieRootBySourceRtc(
+                    request.source_dtm_artifact_id,
+                    *request.rtc_value);
+            }
+            if (!root || !request.rtc_value
+                || root->source_dtm_artifact_id
+                    != request.source_dtm_artifact_id
+                || root->rtc_value != *request.rtc_value) {
+                return fail("validated root checkpoint identity is unavailable");
+            }
+            checkpoint_savestate_id = root->checkpoint_savestate_id;
+            dtm_artifact_id = root->dtm_artifact_id;
+            itinerary_artifact_id = root->itinerary_artifact_id;
+            final_pc = root->required_final_breakpoint_pc;
+        } else if (request.source_kind == TasMovieValidationSourceKind::Tree) {
+            const auto tree = state_db_->GetTasMovieTree(
+                request.source_ref_id);
+            if (!tree) {
+                return fail("validated tree checkpoint identity is unavailable");
+            }
+            checkpoint_savestate_id = tree->checkpoint_savestate_id;
+            dtm_artifact_id = tree->dtm_artifact_id;
+            itinerary_artifact_id = tree->itinerary_artifact_id;
+            final_pc = tree->required_final_breakpoint_pc;
+        } else {
+            return fail("validated checkpoint source kind is unsupported");
+        }
+
+        if (checkpoint_savestate_id <= 0
+            || !request.itinerary_artifact_id
+            || itinerary_artifact_id != *request.itinerary_artifact_id
+            || final_pc != request.required_final_breakpoint_pc) {
+            return fail(
+                "validated checkpoint row drifted from its immutable request");
+        }
+        const auto checkpoint = state_db_->GetSavestate(
+            checkpoint_savestate_id);
+        const auto dtm = state_db_->GetArtifact(dtm_artifact_id);
+        if (!dtm || dtm->artifact_kind != "DTM"
+            || dtm->sha256 != request.effective_dtm_sha256
+            || !checkpoint || !checkpoint->is_complete
+            || checkpoint->artifact_kind != "SAV") {
+            return fail("validated checkpoint savestate is incomplete");
+        }
+        return checkpoint_savestate_id;
+    }
+
     bool VerifyRecoverySideEffects(
         const TasMovieValidationRequestRecord& request,
         const TasMovieValidationAttemptRecord& attempt,
@@ -856,7 +985,10 @@ private:
                 .created_at_utc = types::UtcNow(), .correlation_id = "tmv-request-" + std::to_string(request.validation_request_id),
                 .causation_id = "execution-job-" + std::to_string(source_job_id)}, &sav_artifact_id, error_out)) return std::nullopt;
         std::int64_t savestate_id = 0;
-        if (!state_db_->CreateSavestate({.artifact_id = sav_artifact_id, .savestate_type = "TAS_MOVIE_ROOT_CHECKPOINT",
+        if (!state_db_->CreateSavestate({.artifact_id = sav_artifact_id,
+                .playback_state = SavestatePlaybackState::MoviePaired,
+                .dtm_artifact_id = dtm_artifact_id,
+                .savestate_type = "TAS_MOVIE_ROOT_CHECKPOINT",
                 .note = "Canonical RTC-specific TAS movie root checkpoint", .is_complete = true,
                 .created_at_utc = types::UtcNow(), .correlation_id = "tmv-request-" + std::to_string(request.validation_request_id),
                 .causation_id = "execution-job-" + std::to_string(source_job_id)}, &savestate_id, error_out)) return std::nullopt;

@@ -220,6 +220,9 @@
     <ClInclude Include="Execution\ProgramDB\TasMovieValidation\TasMovieValidationProgram.h">
       <Filter>Programs\TasMovie</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\TasMovieValidation\TasMovieCheckpointSterilizationProgram.h">
+      <Filter>Programs\TasMovie</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.h">
       <Filter>Programs\BattleSingleTurn</Filter>
     </ClInclude>
@@ -391,6 +394,9 @@
       <Filter>Programs\SeedProbe</Filter>
     </ClCompile>
     <ClCompile Include="Execution\ProgramDB\TasMovieValidation\TasMovieValidationProgram.cpp">
+      <Filter>Programs\TasMovie</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\TasMovieValidation\TasMovieCheckpointSterilizationProgram.cpp">
       <Filter>Programs\TasMovie</Filter>
     </ClCompile>
     <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.cpp">

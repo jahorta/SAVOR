@@ -981,6 +981,49 @@ struct TasMovieValidationStatusRecord {
     types::UtcTimePoint updated_at_utc{};
 };
 
+struct CreateTasMovieCheckpointSterilizationRequestCommand {
+    std::string materialization_key;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t source_savestate_id = 0;
+    std::int64_t source_savestate_artifact_id = 0;
+    std::string source_savestate_sha256;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::string source_dtm_sha256;
+    std::optional<std::int64_t> reused_savestate_id;
+    std::int64_t full_phase_program_kind = 0;
+    std::int64_t full_phase_program_version = 0;
+    std::string full_phase_canonical_id;
+    std::int64_t full_phase_contract_revision = 0;
+    std::string full_phase_sha256;
+    std::string module_canonical_id;
+    std::int64_t module_revision = 0;
+    std::string module_sha256;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct TasMovieCheckpointSterilizationRequestRecord
+    : CreateTasMovieCheckpointSterilizationRequestCommand {
+    std::int64_t sterilization_request_id = 0;
+};
+
+struct RecordTasMovieCheckpointSterilizationAttemptCommand {
+    std::int64_t sterilization_request_id = 0;
+    std::int64_t source_job_id = 0;
+    std::string worker_terminal_sha256;
+    std::string candidate_savestate_sha256;
+    std::int64_t produced_savestate_id = 0;
+    std::string worker_id;
+    std::uint64_t worker_process_generation = 0;
+    std::uint64_t workset_epoch = 0;
+    types::UtcTimePoint recorded_at_utc{};
+};
+
+struct TasMovieCheckpointSterilizationAttemptRecord
+    : RecordTasMovieCheckpointSterilizationAttemptCommand {
+    std::int64_t sterilization_attempt_id = 0;
+};
+
 struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
 
@@ -1003,6 +1046,27 @@ struct IAnalysisDb {
         std::string_view worker_terminal_sha256) const = 0;
     virtual std::optional<TasMovieValidationStatusRecord> GetTasMovieValidationStatus(
         std::string_view effective_dtm_sha256) const = 0;
+    virtual bool CreateTasMovieCheckpointSterilizationRequest(
+        const CreateTasMovieCheckpointSterilizationRequestCommand& command,
+        std::int64_t* request_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<TasMovieCheckpointSterilizationRequestRecord>
+    GetTasMovieCheckpointSterilizationRequest(
+        std::int64_t request_id) const = 0;
+    virtual std::optional<TasMovieCheckpointSterilizationRequestRecord>
+    GetTasMovieCheckpointSterilizationRequestForWorkflowStep(
+        std::int64_t workflow_step_id) const = 0;
+    virtual bool RecordTasMovieCheckpointSterilizationAttempt(
+        const RecordTasMovieCheckpointSterilizationAttemptCommand& command,
+        std::int64_t* attempt_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<TasMovieCheckpointSterilizationAttemptRecord>
+    GetTasMovieCheckpointSterilizationAttempt(
+        std::int64_t attempt_id) const = 0;
+    virtual std::optional<TasMovieCheckpointSterilizationAttemptRecord>
+    FindTasMovieCheckpointSterilizationAttempt(
+        std::int64_t source_job_id,
+        std::string_view worker_terminal_sha256) const = 0;
 
     virtual std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const = 0;
     virtual std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const = 0;

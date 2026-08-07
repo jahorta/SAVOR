@@ -1865,10 +1865,17 @@ ExecutionSubmissionReceipt ExecutionEngine::Submit(ExecutionRequest request)
     {
         const ExecutionTerminalStatus status =
             *impl_->active->pending_terminal;
+        ExecutionError error = impl_->active->pending_error
+            ? std::move(*impl_->active->pending_error)
+            : ExecutionError{};
         std::optional<StopRouteReceipt> stop =
             std::move(impl_->active->pending_stop);
         impl_->active->pending_terminal.reset();
-        impl_->BeginFinish(status, {}, std::move(stop));
+        impl_->active->pending_error.reset();
+        impl_->BeginFinish(
+            status,
+            std::move(error),
+            std::move(stop));
     }
     else
     {

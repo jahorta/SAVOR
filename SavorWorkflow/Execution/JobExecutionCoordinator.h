@@ -40,6 +40,15 @@ struct DispatchRetirementFacts {
 [[nodiscard]] bool DispatchReadyToRetire(
     const DispatchRetirementFacts& facts) noexcept;
 
+struct CancellationDeliveryFailureDescription {
+    const char* warning_message = nullptr;
+    const char* error_code = nullptr;
+};
+
+[[nodiscard]] CancellationDeliveryFailureDescription
+DescribeCancellationDeliveryFailure(
+    const WorkerCommandResult& result) noexcept;
+
 } // namespace detail
 
 struct JobExecutionCoordinatorConfig {

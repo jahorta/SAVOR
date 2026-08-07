@@ -451,9 +451,17 @@ struct WorkerRuntime::Impl
           event_sink(std::move(event_sink)),
           test_hooks(std::move(test_hooks))
     {
+        const bool using_injected_baseline_components =
+            static_cast<bool>(injected_baseline_components);
         baseline_components = injected_baseline_components
             ? std::move(injected_baseline_components)
             : std::make_shared<ProgramBaselineComponentRegistry>();
+        if (!using_injected_baseline_components)
+        {
+            (void)baseline_components->Register(
+                std::make_shared<
+                    TasMovieCheckpointSterilizationBaselineComponentProvider>());
+        }
         baseline_components->Freeze();
         workset_stager = std::make_unique<WorksetStager>(
             workset_limits,
@@ -2201,7 +2209,7 @@ struct WorkerRuntime::Impl
         {
             Reject(
                 queued,
-                WorkerRejectionCode::DuplicateCancellation,
+                WorkerRejectionCode::WorksetItemAlreadyTerminal,
                 "Workset item is already terminal");
             return;
         }

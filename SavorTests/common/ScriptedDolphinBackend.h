@@ -143,6 +143,7 @@ public:
         const std::filesystem::path& path) override;
     runtime::BackendResult SaveStateFile(
         const std::filesystem::path& path) override;
+    runtime::BackendBufferResult SaveStateFileBytes() override;
     runtime::BackendBufferResult SaveStateBuffer() override;
     runtime::BackendResult RestoreStateBuffer(
         const std::vector<std::uint8_t>& bytes) override;

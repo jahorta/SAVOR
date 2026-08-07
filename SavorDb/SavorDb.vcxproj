@@ -196,7 +196,8 @@
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeExecutionAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeJobSpec.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeProgram.h" />
-    <ClInclude Include="Execution\ProgramDB\TasMovieValidation\TasMovieValidationProgram.h" />
+      <ClInclude Include="Execution\ProgramDB\TasMovieValidation\TasMovieValidationProgram.h" />
+      <ClInclude Include="Execution\ProgramDB\TasMovieValidation\TasMovieCheckpointSterilizationProgram.h" />
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h" />
     <ClInclude Include="Common\Migrations\MigrationContext.h" />
     <ClInclude Include="Common\Migrations\MigrationRunner.h" />
@@ -259,7 +260,8 @@
     <ClCompile Include="Execution\ProgramDB\WorkerResultBlobCleanupService.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeExecutionAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeProgram.cpp" />
-    <ClCompile Include="Execution\ProgramDB\TasMovieValidation\TasMovieValidationProgram.cpp" />
+      <ClCompile Include="Execution\ProgramDB\TasMovieValidation\TasMovieValidationProgram.cpp" />
+      <ClCompile Include="Execution\ProgramDB\TasMovieValidation\TasMovieCheckpointSterilizationProgram.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteExecutionDb.cpp" />
     <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp" />

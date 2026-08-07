@@ -1312,6 +1312,44 @@ TEST(
     ExpectErrorContains(worker, "duplicated");
 }
 
+TEST(
+    ProcessWorkerV1,
+    TaintedSessionEventIsPublishedToTheAuthoritativeCallback)
+{
+    savor::ProcessWorker worker;
+    std::optional<savor::wrms::SessionEventPayload> observed;
+    worker.set_session_event_callback(
+        [&](const savor::wrms::SessionEventPayload& payload)
+        {
+            observed = payload;
+        });
+
+    const savor::wrms::SessionEventPayload event{
+        .event_type = savor::wrms::SessionEventType::Tainted,
+        .session_id = 41,
+        .workset_epoch = 7,
+        .worker_state = savor::wrms::WorkerStateCode::Tainted,
+        .session_disposition =
+            savor::wrms::SessionDispositionCode::Tainted,
+        .rejection_code = savor::wrms::RejectionCode::SessionTainted,
+        .message = "exact runtime taint",
+    };
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::SessionEvent,
+        event));
+    savor::ProcessWorkerTestPeer::DrainCallbacks(worker);
+
+    ASSERT_TRUE(observed.has_value());
+    EXPECT_EQ(*observed, event);
+    const auto snapshot = worker.latest_snapshot();
+    EXPECT_EQ(snapshot.worker_state, savor::runtime::WorkerState::Tainted);
+    EXPECT_EQ(
+        snapshot.session_disposition,
+        savor::runtime::SessionDisposition::Tainted);
+    EXPECT_EQ(snapshot.last_error, "exact runtime taint");
+}
+
 TEST(ProcessWorkerV1, DuplicateCorrelatedCommandResultFailsProtocol)
 {
     savor::ProcessWorker worker;
@@ -2113,6 +2151,27 @@ TEST(ProcessWorkerV1, RejectedDuplicateOpenPreservesExistingSessionSnapshot)
     EXPECT_EQ(
         rejected.last_error,
         "the process already owns a session");
+}
+
+TEST(
+    ProcessWorkerV1,
+    UnlaunchedCancellationIsTypedAsTransportCanceledBeforeWrite)
+{
+    savor::ProcessWorker worker;
+    const auto outcome = worker.cancel_workset_item_with_outcome(
+        savor::runtime::WorkerWorksetId{1},
+        savor::runtime::WorkerWorksetItemId{1},
+        "test cancellation",
+        1);
+    EXPECT_EQ(
+        outcome.disposition,
+        savor::ProcessWorkerCommandDisposition::
+            TransportCanceledBeforeWrite);
+    EXPECT_FALSE(outcome.request_frame_written);
+    EXPECT_FALSE(outcome.correlated_result_received);
+    EXPECT_EQ(
+        outcome.result.error_code,
+        "WorkerCommandNotWritten");
 }
 
 TEST(ProcessWorkerV1, RuntimeDiagnosticPreservesSessionAndProgressCarriesAttemptId)

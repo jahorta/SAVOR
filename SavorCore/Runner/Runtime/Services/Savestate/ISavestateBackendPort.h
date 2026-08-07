@@ -43,6 +43,9 @@ public:
     CurrentCompatibility() const = 0;
 
     virtual SavestateBackendBufferResult SaveStateBuffer() = 0;
+    // Returns bytes read back from a completed native Dolphin savestate file,
+    // never the raw SaveToBuffer representation.
+    virtual SavestateBackendBufferResult SaveStateFileBytes() = 0;
     virtual SavestateBackendResult RestoreStateBuffer(
         const std::vector<std::uint8_t>& bytes) = 0;
     virtual SavestateBackendResult SaveStateFile(

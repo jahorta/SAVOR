@@ -36,6 +36,179 @@ bool detail::DispatchReadyToRetire(
     }
 }
 
+detail::CancellationDeliveryFailureDescription
+detail::DescribeCancellationDeliveryFailure(
+    const WorkerCommandResult& result) noexcept {
+    using Disposition = WorkerCommandDisposition;
+    using Rejection = savor::wrms::RejectionCode;
+    switch (result.disposition) {
+    case Disposition::LocalRejected:
+        return {
+            "Worker cancellation request was rejected locally",
+            "WORKER_CANCELLATION_LOCAL_REJECTION",
+        };
+    case Disposition::NotFound:
+        return {
+            "Worker cancellation route was not found",
+            "WORKER_CANCELLATION_ROUTE_NOT_FOUND",
+        };
+    case Disposition::StaleRoute:
+        return {
+            "Worker cancellation route was stale",
+            "WORKER_CANCELLATION_STALE_ROUTE",
+        };
+    case Disposition::TransportCanceledBeforeWrite:
+        return {
+            "Worker cancellation command was not written",
+            "WORKER_CANCELLATION_NOT_WRITTEN",
+        };
+    case Disposition::AmbiguousAfterWrite:
+        return {
+            "Worker cancellation outcome was ambiguous after write",
+            "WORKER_CANCELLATION_AMBIGUOUS_AFTER_WRITE",
+        };
+    case Disposition::CoordinatorStopped:
+        return {
+            "Worker cancellation coordinator was stopped",
+            "WORKER_CANCELLATION_COORDINATOR_STOPPED",
+        };
+    case Disposition::Accepted:
+        return {
+            "Accepted worker cancellation was classified as a failure",
+            "WORKER_CANCELLATION_CLASSIFICATION_ERROR",
+        };
+    case Disposition::DefiniteRejected:
+        break;
+    }
+
+    switch (result.rejection_code) {
+    case Rejection::None:
+        return {
+            "Worker cancellation was rejected without a rejection code",
+            "WORKER_CANCELLATION_REJECTED_WITHOUT_CODE",
+        };
+    case Rejection::Unsupported:
+        return {
+            "Worker cancellation command was unsupported",
+            "WORKER_CANCELLATION_UNSUPPORTED",
+        };
+    case Rejection::InvalidState:
+        return {
+            "Worker cancellation was rejected for invalid worker state",
+            "WORKER_CANCELLATION_INVALID_STATE",
+        };
+    case Rejection::InvalidArgument:
+        return {
+            "Worker cancellation was rejected for an invalid argument",
+            "WORKER_CANCELLATION_INVALID_ARGUMENT",
+        };
+    case Rejection::SessionUnavailable:
+        return {
+            "Worker cancellation session was unavailable",
+            "WORKER_CANCELLATION_SESSION_UNAVAILABLE",
+        };
+    case Rejection::SessionMismatch:
+        return {
+            "Worker cancellation session did not match",
+            "WORKER_CANCELLATION_SESSION_MISMATCH",
+        };
+    case Rejection::SessionTainted:
+        return {
+            "Worker cancellation session was tainted",
+            "WORKER_CANCELLATION_SESSION_TAINTED",
+        };
+    case Rejection::ProgramRuntimeUnavailable:
+        return {
+            "Worker cancellation program runtime was unavailable",
+            "WORKER_CANCELLATION_RUNTIME_UNAVAILABLE",
+        };
+    case Rejection::InvocationAlreadyActive:
+        return {
+            "Worker cancellation encountered an already-active invocation",
+            "WORKER_CANCELLATION_INVOCATION_ALREADY_ACTIVE",
+        };
+    case Rejection::InvocationNotActive:
+        return {
+            "Worker cancellation invocation was not active",
+            "WORKER_CANCELLATION_INVOCATION_NOT_ACTIVE",
+        };
+    case Rejection::InvocationMismatch:
+        return {
+            "Worker cancellation invocation did not match",
+            "WORKER_CANCELLATION_INVOCATION_MISMATCH",
+        };
+    case Rejection::DuplicateCancellation:
+        return {
+            "Worker cancellation was already requested",
+            "WORKER_CANCELLATION_ALREADY_REQUESTED",
+        };
+    case Rejection::WorksetEpochMismatch:
+        return {
+            "Worker cancellation workset epoch did not match",
+            "WORKER_CANCELLATION_WORKSET_EPOCH_MISMATCH",
+        };
+    case Rejection::BackendFailure:
+        return {
+            "Worker cancellation backend failed",
+            "WORKER_CANCELLATION_BACKEND_FAILURE",
+        };
+    case Rejection::RuntimeStopping:
+        return {
+            "Worker cancellation runtime was stopping",
+            "WORKER_CANCELLATION_RUNTIME_STOPPING",
+        };
+    case Rejection::InternalFailure:
+        return {
+            "Worker cancellation encountered an internal failure",
+            "WORKER_CANCELLATION_INTERNAL_FAILURE",
+        };
+    case Rejection::WorksetAlreadyActive:
+        return {
+            "Worker cancellation encountered an already-active workset",
+            "WORKER_CANCELLATION_WORKSET_ALREADY_ACTIVE",
+        };
+    case Rejection::WorksetNotFound:
+        return {
+            "Worker cancellation workset was not resident",
+            "WORKER_CANCELLATION_WORKSET_NOT_FOUND",
+        };
+    case Rejection::WorksetItemNotFound:
+        return {
+            "Worker cancellation item was not resident",
+            "WORKER_CANCELLATION_ITEM_NOT_FOUND",
+        };
+    case Rejection::WorksetCatalogMismatch:
+        return {
+            "Worker cancellation workset catalog did not match",
+            "WORKER_CANCELLATION_WORKSET_CATALOG_MISMATCH",
+        };
+    case Rejection::CapacityExceeded:
+        return {
+            "Worker cancellation exceeded runtime capacity",
+            "WORKER_CANCELLATION_CAPACITY_EXCEEDED",
+        };
+    case Rejection::TerminalNotFound:
+        return {
+            "Worker cancellation terminal was not found",
+            "WORKER_CANCELLATION_TERMINAL_NOT_FOUND",
+        };
+    case Rejection::TerminalMismatch:
+        return {
+            "Worker cancellation terminal did not match",
+            "WORKER_CANCELLATION_TERMINAL_MISMATCH",
+        };
+    case Rejection::WorksetItemAlreadyTerminal:
+        return {
+            "Worker returned an item-terminal rejection for an incompatible cancellation command",
+            "WORKER_CANCELLATION_UNEXPECTED_ITEM_TERMINAL",
+        };
+    }
+    return {
+        "Worker cancellation returned an unknown rejection code",
+        "WORKER_CANCELLATION_UNKNOWN_REJECTION",
+    };
+}
+
 namespace {
 
 std::atomic<std::uint64_t> g_coordinator_sequence{1};
@@ -4363,10 +4536,15 @@ void JobExecutionCoordinator::Impl::CompleteCancellationDelivery(
             Clock::now() - enqueued_at).count());
     cancellation_delivery_total_latency_ms_.fetch_add(latency);
     StoreMaximum(cancellation_delivery_max_latency_ms_, latency);
+    if (result.terminal_item_cancellation_race()) {
+        return;
+    }
     if (!result.accepted()) {
+        const auto failure =
+            detail::DescribeCancellationDeliveryFailure(result);
         ++worker_control_commands_failed_;
         RecordWarning(
-            "Worker cancellation delivery was not accepted",
+            failure.warning_message,
             result.diagnostic,
             result.worker_id.has_value()
                 ? static_cast<std::int64_t>(*result.worker_id)
@@ -4374,7 +4552,8 @@ void JobExecutionCoordinator::Impl::CompleteCancellationDelivery(
             cancellation.job_id);
         EnqueueAuthority(
             [this, cancellation = std::move(cancellation),
-             diagnostic = result.diagnostic]() mutable {
+             diagnostic = result.diagnostic,
+             failure]() mutable {
                 QueueCancellationMutation(
                     {
                         .mutation = savor::db::
@@ -4385,10 +4564,9 @@ void JobExecutionCoordinator::Impl::CompleteCancellationDelivery(
                                 .cancellation_request_id =
                                     cancellation.cancellation_request_id,
                                 .job_id = cancellation.job_id,
-                                .error_code =
-                                    "WORKER_CANCELLATION_DELIVERY_FAILED",
+                                .error_code = failure.error_code,
                                 .error_text = diagnostic.empty()
-                                    ? "worker cancellation command was not accepted"
+                                    ? failure.warning_message
                                     : std::move(diagnostic),
                                 .requested_by =
                                     "job_execution_coordinator",

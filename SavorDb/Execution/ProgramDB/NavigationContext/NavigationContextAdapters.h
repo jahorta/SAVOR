@@ -16,7 +16,7 @@ inline constexpr std::string_view UnitKind = "navigation.context_probe";
 inline constexpr std::string_view StepKind = "navigation.context_probe";
 inline constexpr std::string_view ProgramRefKind = "state_savestate";
 inline constexpr std::string_view InputKey = "entry_savestate";
-inline constexpr std::string_view InputDataKind = "state.savestate_id";
+inline constexpr std::string_view InputDataKind = "state.movie_inactive_savestate_id";
 inline constexpr std::string_view OutputKey = "navigation_context";
 inline constexpr std::string_view OutputDataKind =
     "state_artifact.navigation_context_id";

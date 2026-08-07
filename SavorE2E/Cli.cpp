@@ -31,7 +31,8 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
         return {.requires_savestate_file = true};
     }
     if (scenario == "tasmovie"
-        || scenario == "tasmovie_with_validation") {
+        || scenario == "tasmovie_with_validation"
+        || scenario == "tasmovie_seedprobe") {
         return {.requires_dtm_file = true};
     }
     return {};
@@ -39,7 +40,8 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
 
 bool IsSupportedScenario(const std::string_view scenario) {
     if (scenario == "all" || scenario == "tasmovie"
-        || scenario == "tasmovie_with_validation") {
+        || scenario == "tasmovie_with_validation"
+        || scenario == "tasmovie_seedprobe") {
         return true;
     }
     for (const auto& supported : kAllScenarioOrder) {
@@ -52,7 +54,8 @@ bool IsSupportedScenario(const std::string_view scenario) {
 
 bool IsFreshTasMovieScenario(const std::string_view scenario) {
     return scenario == "tasmovie"
-        || scenario == "tasmovie_with_validation";
+        || scenario == "tasmovie_with_validation"
+        || scenario == "tasmovie_seedprobe";
 }
 
 std::vector<std::string> ExpandScenarioArguments(const std::vector<std::string>& requested_scenarios) {
@@ -259,7 +262,7 @@ void PrintUsage() {
               << " [--savestate-file <path>]"
               << " [--source-savestate-id <id>]"
               << " [--dtm-file <path>]"
-              << " [--scenario seedprobe|tasmovie|tasmovie_with_validation|all]"
+              << " [--scenario seedprobe|tasmovie|tasmovie_with_validation|tasmovie_seedprobe|all]"
               << " [--poll-ms <100..5000 - default 100>]"
               << " [--worker-count <1..30 - default 1>]"
               << " [--wait-for-workers-ready]"
@@ -283,9 +286,10 @@ void PrintUsage() {
     std::cout << "E2E perf mode requires Release builds and load-level low|mid|high; worker-count defaults to 15 and accepts 1..30.\n";
     std::cout << "The tasmovie scenario establishes the handcrafted root cursor only; it takes no RTC and must run alone.\n";
     std::cout << "The tasmovie_with_validation scenario requires one exact --tasmovie-rtc in 0..4294967295 and must run alone.\n";
+    std::cout << "The tasmovie_seedprobe scenario composes validation with SeedProbe, requires an exact RTC and no external savestate, and must run alone.\n";
     std::cout << "Visual worker locks worker count to 1.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
-    std::cout << "Scenarios: all, seedprobe, tasmovie, tasmovie_with_validation\n";
+    std::cout << "Scenarios: all, seedprobe, tasmovie, tasmovie_with_validation, tasmovie_seedprobe\n";
     std::cout << "You may pass --scenario multiple times and they will run in order.\n\n";
 }
 
@@ -575,6 +579,7 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
 
     bool is_tasmovie_establishment = false;
     bool is_tasmovie_with_validation = false;
+    bool is_tasmovie_seedprobe = false;
     bool is_fresh_tasmovie = false;
     bool needs_savestate = false;
     bool needs_source_savestate_id = false;
@@ -599,6 +604,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             || scenario == "tasmovie";
         is_tasmovie_with_validation = is_tasmovie_with_validation
             || scenario == "tasmovie_with_validation";
+        is_tasmovie_seedprobe = is_tasmovie_seedprobe
+            || scenario == "tasmovie_seedprobe";
         is_fresh_tasmovie = is_fresh_tasmovie
             || IsFreshTasMovieScenario(scenario);
         const auto req = GetScenarioRequirement(scenario);
@@ -625,7 +632,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "TAS Movie scenarios require --repeat 1";
         return false;
     }
-    if (is_fresh_tasmovie && options.worker_count != 1) {
+    if ((is_tasmovie_establishment || is_tasmovie_with_validation)
+        && options.worker_count != 1) {
         if (error_out) *error_out = "TAS Movie scenarios require exactly one worker";
         return false;
     }
@@ -641,6 +649,21 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             || options.tasmovie_rtc_max.has_value())) {
         if (error_out) {
             *error_out = "tasmovie_with_validation requires exactly one --tasmovie-rtc and does not accept RTC range arguments";
+        }
+        return false;
+    }
+    if (is_tasmovie_seedprobe
+        && (!options.tasmovie_rtc.has_value()
+            || options.tasmovie_rtc_min.has_value()
+            || options.tasmovie_rtc_max.has_value())) {
+        if (error_out) {
+            *error_out = "tasmovie_seedprobe requires exactly one --tasmovie-rtc and does not accept RTC range arguments";
+        }
+        return false;
+    }
+    if (is_tasmovie_seedprobe && !options.savestate_file.empty()) {
+        if (error_out) {
+            *error_out = "tasmovie_seedprobe does not accept --savestate-file; SeedProbe uses the validated checkpoint";
         }
         return false;
     }
