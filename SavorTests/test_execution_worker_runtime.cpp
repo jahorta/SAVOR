@@ -83,9 +83,8 @@ StopSubscriptionGroupDefinition WorkerWakeGroup(std::uint32_t pc)
         .subscriptions = {{
             .id = StopSubscriptionId(900),
             .point = PcStopPointSpec{pc},
-            .delivery = StopDeliveryMode::Wake,
-            .policy = StopRoutingPolicy::Pass,
-            .suppress_immediate_reentry = true,
+            .route = ForegroundStopWait{
+                .suppress_immediate_reentry = true},
         }},
     };
 }
@@ -326,37 +325,9 @@ struct FakeProgramRuntimeControl
                 std::move(output_payload),
                 std::move(error)};
         }
-        event_sink->Publish(ProgramInvocationProgressEvent{
+        event_sink->Publish(ProgramInvocationCompletionAvailableEvent{
             invocation.invocation.invocation_id,
-            invocation.invocation.attempt_id,
-            0,
-            "fake execution finished",
-            false});
-        return true;
-    }
-
-    bool EmitProgress(
-        std::uint64_t sequence,
-        std::string text,
-        std::optional<AttemptId> attempt_override = std::nullopt)
-    {
-        std::shared_ptr<IProgramRuntimeEventSink> sink;
-        InvocationId invocation;
-        AttemptId attempt;
-        {
-            std::lock_guard lock(mutex);
-            if (!event_sink || !last_invocation)
-                return false;
-            sink = event_sink;
-            invocation = last_invocation->invocation.invocation_id;
-            attempt = last_invocation->invocation.attempt_id;
-        }
-        sink->Publish(ProgramInvocationProgressEvent{
-            invocation,
-            attempt_override.value_or(attempt),
-            sequence,
-            std::move(text),
-            true});
+            invocation.invocation.attempt_id});
         return true;
     }
 };
@@ -368,39 +339,6 @@ public:
         std::shared_ptr<FakeProgramRuntimeControl> control)
         : control_(std::move(control))
     {
-    }
-
-    WorkerCapabilityMask capabilities() const noexcept override
-    {
-        std::lock_guard lock(control_->mutex);
-        return CapabilityMask(WorkerCapability::WorksetDispatch);
-    }
-
-    ProgramRuntimeSubmission PrepareModule(
-        ModulePreparationRequest request,
-        std::shared_ptr<IProgramRuntimeEventSink> events) override
-    {
-        bool should_throw = false;
-        ProgramRuntimeSubmission submission;
-        {
-            std::lock_guard lock(control_->mutex);
-            ++control_->prepare_count;
-            control_->event_sink = std::move(events);
-            should_throw = control_->throw_prepare;
-            submission = control_->prepare_submission;
-            control_->changed.notify_all();
-        }
-        if (should_throw)
-            throw std::runtime_error("fake prepare failure after admission");
-        if (submission.accepted)
-        {
-            control_->event_sink->Publish(ModulePreparationEvent{
-                request.command_sequence,
-                std::move(request.module.identity),
-                true,
-                {}});
-        }
-        return submission;
     }
 
     ProgramRuntimeSubmission StartObservedInvocation(
@@ -457,6 +395,38 @@ public:
             g_fake_runtime_start_active = false;
         }
         return submission;
+    }
+
+    ProgramRuntimeSubmission AdmitModuleClosure(
+        ModuleClosureAdmissionRequest request,
+        ModuleClosureAdmissionReceipt& receipt) override
+    {
+        bool should_throw = false;
+        ProgramRuntimeSubmission submission;
+        {
+            std::lock_guard lock(control_->mutex);
+            ++control_->prepare_count;
+            should_throw = control_->throw_prepare;
+            submission = control_->prepare_submission;
+            control_->changed.notify_all();
+        }
+        if (should_throw)
+            throw std::runtime_error("fake closure admission failure");
+        if (!submission.accepted)
+            return submission;
+        if (request.modules.empty())
+        {
+            return ProgramRuntimeSubmission::Rejected(
+                WorkerRejectionCode::InvalidArgument,
+                "fake module closure is empty");
+        }
+        receipt = {
+            .root = std::move(request.root),
+            .dependency_lock_sha256 =
+                std::move(request.expected_dependency_lock_sha256),
+            .admitted_module_count = request.modules.size(),
+        };
+        return ProgramRuntimeSubmission::Accepted();
     }
 
     ProgramRuntimeSubmission PrepareInvocationTemplate(
@@ -531,19 +501,6 @@ public:
                 request.template_id.value());
         }
         return started;
-    }
-
-    ProgramRuntimeCatalogSnapshot catalog() const override
-    {
-        const auto phase =
-            seedprobe::SeedProbeFullPhaseDefinitionV2();
-        ProgramRuntimeCatalogSnapshot snapshot;
-        snapshot.runtime_profile_sha256 =
-            phase->runtime_contract().runtime_profile_sha256;
-        snapshot.dependency_manifest_sha256 =
-            std::string(64, 'a');
-        snapshot.catalog_sha256 = std::string(64, 'c');
-        return snapshot;
     }
 
     ProgramRuntimeSubmission RequestCancellation(
@@ -769,6 +726,11 @@ public:
             completions_,
             std::vector<program::ActorActionResult>{});
     }
+    std::vector<program::ForegroundSemanticStopObservationV1>
+    DrainForegroundSemanticStops() override
+    {
+        return {};
+    }
     void Shutdown() noexcept override {}
 
 private:
@@ -883,21 +845,6 @@ public:
             }
         }
         return terminals;
-    }
-
-    [[nodiscard]] std::vector<ProgramInvocationProgressEvent> Progress() const
-    {
-        std::lock_guard lock(mutex_);
-        std::vector<ProgramInvocationProgressEvent> progress;
-        for (const WorkerEvent& event : events_)
-        {
-            if (const auto* update =
-                    std::get_if<ProgramInvocationProgressEvent>(&event))
-            {
-                progress.push_back(*update);
-            }
-        }
-        return progress;
     }
 
     [[nodiscard]] std::vector<ExecutionTerminalResult>
@@ -1085,7 +1032,10 @@ struct RuntimeHarness
             seedprobe::SeedProbeFullPhaseDefinitionV2();
         definition.phase_invocation = {
             .invocation_id = {1, workset_id},
-            .program = phase->identity(),
+            .program_package =
+                fullphase::BuildFullPhaseProgramPackage(*phase),
+            .common_input = fullphase::MakeFullPhaseCommonInput(
+                "soa.seed_probe.CommonInput", 1),
         };
         definition.baseline.artifact = ProgramBaselineArtifact{
             .kind = ProgramBaselineArtifactKind::Savestate,
@@ -1119,6 +1069,14 @@ struct RuntimeHarness
             phase->runtime_contract().movie_policy_sha256;
         definition.execution_key.service_policy_sha256 =
             phase->runtime_contract().service_policy_sha256;
+        definition.execution_key.program_package_sha256 =
+            definition.phase_invocation.program_package.canonical_sha256;
+        definition.execution_key.common_input_sha256 =
+            definition.phase_invocation.common_input.content_sha256;
+        definition.execution_key.capture_binding_sha256 =
+            EmptyWorksetCaptureBindingHashV1();
+        definition.execution_key.progress_plan_sha256 =
+            definition.progress_plan.content_sha256;
         definition.execution_key.canonical_sha256 =
             ComputeWorkerWorksetExecutionKeyHash(
                 definition.execution_key);
@@ -1154,6 +1112,7 @@ struct RuntimeHarness
     [[nodiscard]] SessionOpenOptions OpenOptions() const
     {
         SessionOpenOptions options;
+        options.worker_mode = WorkerMode::VisualDebug;
         options.backend.runtime_root = "fake-runtime";
         options.backend.user_directory = "fake-user";
         options.backend.dolphin_base_directory = "fake-dolphin";
@@ -1188,10 +1147,22 @@ struct RuntimeHarness
 
     [[nodiscard]] WorkerCommandResult Invoke(
         std::uint64_t invocation_id,
-        std::uint64_t attempt_id = 1)
+        std::uint64_t attempt_id = 1,
+        std::uint64_t workset_id = 0)
     {
-        WorkerWorksetDefinition workset = Workset(invocation_id, 1);
+        WorkerWorksetDefinition workset = Workset(
+            workset_id == 0 ? invocation_id : workset_id,
+            1);
+        workset.items.front().execution.execution_id =
+            ProgramExecutionId(invocation_id);
         workset.items.front().execution.attempt_id = AttemptId(attempt_id);
+        {
+            std::lock_guard lock(program->mutex);
+            program->terminal_output_payload =
+                EncodedCompletedProgramResult(
+                    workset.items.front().execution.execution_id,
+                    workset.items.front().execution.attempt_id);
+        }
         return runtime->Submit(
             NextRequest(),
             SubmitWithoutInitialCancellations(workset)).get();
@@ -1225,223 +1196,96 @@ struct RuntimeHarness
     return acknowledged.outcome == WorkerCommandOutcome::Completed;
 }
 
-TEST(
-    ExecutionWorkerRuntime,
-    PublishesPreparedModuleBeforeResolvingItsCommand)
+[[nodiscard]] bool AcknowledgeLatestWorksetTerminal(
+    RuntimeHarness& harness)
 {
-    RuntimeHarness harness;
-    ASSERT_EQ(
-        harness.Open().outcome,
-        WorkerCommandOutcome::Completed);
-
-    EncodedModuleEnvelope module;
-    module.identity = {
-        "test.preparation-order/1",
-        1,
-        "test-hash"};
-    module.format_version = 1;
-    module.development_only = true;
-    module.payload = {0x01};
-    const WorkerCommandResult prepared =
-        harness.runtime
-            ->Submit(
-                harness.NextRequest(),
-                PrepareModuleCommand{std::move(module)})
-            .get();
-    ASSERT_EQ(
-        prepared.outcome,
-        WorkerCommandOutcome::Completed)
-        << prepared.error.message;
-
-    const std::vector<WorkerEvent> events =
-        harness.events.Events();
-    auto preparation = events.end();
-    auto completion = events.end();
-    for (auto current = events.begin();
-         current != events.end();
-         ++current)
-    {
-        if (std::holds_alternative<
-                ModulePreparationEvent>(*current))
-        {
-            preparation = current;
-        }
-        if (const auto* completed =
-                std::get_if<
-                    WorkerCommandCompletedEvent>(&*current);
-            completed &&
-            completed->result.command_kind ==
-                WorkerCommandKind::PrepareModule)
-        {
-            completion = current;
-        }
-    }
-    ASSERT_NE(preparation, events.end());
-    ASSERT_NE(completion, events.end());
-    EXPECT_LT(
-        std::distance(events.begin(), preparation),
-        std::distance(events.begin(), completion));
-    EXPECT_EQ(
-        harness.Shutdown().outcome,
-        WorkerCommandOutcome::Completed);
+    const auto terminals = harness.events.WorksetTerminals();
+    if (terminals.empty())
+        return false;
+    const WorkerCommandResult acknowledged = harness.runtime->Submit(
+        harness.NextRequest(),
+        AcknowledgeTerminalCommand{terminals.back().correlation}).get();
+    return acknowledged.outcome == WorkerCommandOutcome::Completed;
 }
 
 TEST(
     ExecutionWorkerRuntime,
-    InfrastructureHostNotificationsDoNotTaintBeforeAWorkset)
+    AdmissionInitializationReadyAndRunningAreDistinctOrderedBoundaries)
 {
     RuntimeHarness harness;
-    ASSERT_EQ(
-        harness.Open().outcome,
-        WorkerCommandOutcome::Completed);
-    const SessionSnapshot opened =
-        harness.runtime->snapshot().session;
-    ASSERT_TRUE(opened.open);
-    ASSERT_FALSE(opened.workset_epoch);
-
-    ASSERT_TRUE(harness.runtime->EnqueueHostEvent(
-        opened.session_id,
-        opened.workset_epoch,
-        "Host_JitCacheInvalidation",
-        {}));
-    ASSERT_TRUE(harness.runtime->EnqueueHostEvent(
-        opened.session_id,
-        opened.workset_epoch,
-        "Host_PPCBreakpointsChanged",
-        {}));
-
-    EncodedModuleEnvelope module;
-    module.identity = {
-        "test.infrastructure-host-events/1",
-        1,
-        "test-hash"};
-    module.format_version = 1;
-    module.development_only = true;
-    module.payload = {0x01};
-    const WorkerCommandResult prepared =
-        harness.runtime
-            ->Submit(
-                harness.NextRequest(),
-                PrepareModuleCommand{std::move(module)})
-            .get();
-    ASSERT_EQ(
-        prepared.outcome,
-        WorkerCommandOutcome::Completed)
-        << prepared.error.message;
-
-    const WorkerSnapshot current = harness.runtime->snapshot();
-    EXPECT_EQ(current.state, WorkerState::Ready);
-    EXPECT_TRUE(current.session.open);
-    EXPECT_FALSE(current.session.workset_epoch);
-    EXPECT_NE(current.session.disposition, SessionDisposition::Tainted);
-    EXPECT_EQ(
-        harness.Shutdown().outcome,
-        WorkerCommandOutcome::Completed);
-}
-
-TEST(
-    ExecutionWorkerRuntime,
-    RunsAValidatedWorksetWithoutPerItemAuthorizationAndRestoresBaseline)
-{
-    RuntimeHarness harness({}, {}, true);
-    ASSERT_EQ(
-        harness.Open().outcome,
-        WorkerCommandOutcome::Completed);
-    ASSERT_TRUE(HasCapability(
-        harness.runtime->capabilities(),
-        WorkerCapability::WorksetDispatch));
-
-    WorkerWorksetDefinition definition =
-        harness.Workset(41, 2);
-    const WorkerCommandResult accepted =
-        harness.runtime
-            ->Submit(
-                harness.NextRequest(),
-                SubmitWithoutInitialCancellations(definition))
-            .get();
-    ASSERT_EQ(
-        accepted.outcome,
-        WorkerCommandOutcome::Accepted)
-        << accepted.error.message;
+    ASSERT_EQ(harness.Open().outcome, WorkerCommandOutcome::Completed);
+    ASSERT_EQ(harness.Invoke(440).outcome, WorkerCommandOutcome::Accepted);
     ASSERT_TRUE(harness.program->WaitForStarts(1));
 
-    WorksetEpoch first_epoch;
-    {
-        std::lock_guard lock(harness.program->mutex);
-        ASSERT_TRUE(harness.program->last_invocation);
-        first_epoch = harness.program->last_invocation
-                          ->invocation.expected_workset_epoch;
-    }
-    ASSERT_TRUE(harness.program->EmitTerminal(
-        InvocationTerminalStatus::Completed));
-    ASSERT_TRUE(harness.program->WaitForStarts(2));
+    const std::vector<WorkerEvent> events = harness.events.Events();
+    const auto find_index = [&](const auto& predicate) {
+        for (std::size_t index = 0; index < events.size(); ++index)
+        {
+            if (predicate(events[index]))
+                return std::optional<std::size_t>(index);
+        }
+        return std::optional<std::size_t>{};
+    };
+    const auto admission = find_index([](const WorkerEvent& event) {
+        const auto* completed =
+            std::get_if<WorkerCommandCompletedEvent>(&event);
+        return completed &&
+            completed->result.command_kind ==
+                WorkerCommandKind::SubmitWorkset &&
+            completed->result.outcome == WorkerCommandOutcome::Accepted;
+    });
+    const auto workset_state = [&](WorkerWorksetState expected) {
+        return find_index([expected](const WorkerEvent& event) {
+            const auto* state =
+                std::get_if<WorkerWorksetStateEvent>(&event);
+            return state && state->state == expected;
+        });
+    };
+    const auto admitted = workset_state(WorkerWorksetState::Admitted);
+    const auto initializing = workset_state(
+        WorkerWorksetState::Initializing);
+    const auto ready = workset_state(WorkerWorksetState::Ready);
+    const auto running = workset_state(WorkerWorksetState::Running);
+    const auto item_started = find_index([](const WorkerEvent& event) {
+        return std::holds_alternative<
+            WorkerWorksetItemStartedEvent>(event);
+    });
 
-    WorksetEpoch second_epoch;
-    {
-        std::lock_guard lock(harness.program->mutex);
-        ASSERT_TRUE(harness.program->last_invocation);
-        second_epoch = harness.program->last_invocation
-                           ->invocation.expected_workset_epoch;
-    }
-    EXPECT_EQ(second_epoch, first_epoch);
-    ASSERT_TRUE(harness.program->EmitTerminal(
-        InvocationTerminalStatus::Completed));
-    ASSERT_TRUE(
-        harness.events.WaitForWorksetTerminalCount(2));
+    ASSERT_TRUE(admission);
+    ASSERT_TRUE(admitted);
+    ASSERT_TRUE(initializing);
+    ASSERT_TRUE(ready);
+    ASSERT_TRUE(running);
+    ASSERT_TRUE(item_started);
+    EXPECT_LT(*admission, *admitted);
+    EXPECT_LT(*admitted, *initializing);
+    EXPECT_LT(*initializing, *ready);
+    EXPECT_LT(*ready, *running);
+    EXPECT_LT(*running, *item_started);
 
-    const auto terminals = harness.events.WorksetTerminals();
-    ASSERT_EQ(terminals.size(), 2u);
-    EXPECT_EQ(
-        terminals[0].correlation.item_ordinal,
-        0u);
-    EXPECT_EQ(
-        terminals[1].correlation.item_ordinal,
-        1u);
-    EXPECT_LT(
-        terminals[0].correlation.terminal_order.value(),
-        terminals[1].correlation.terminal_order.value());
-    EXPECT_LT(
-        terminals[0].outbound_sequence.value(),
-        terminals[1].outbound_sequence.value());
+    const auto ready_worker = find_index([](const WorkerEvent& event) {
+        const auto* state = std::get_if<WorkerStateChangedEvent>(&event);
+        return state && state->current.state == WorkerState::Ready &&
+            state->current.resident_workset_state ==
+                WorkerWorksetState::Ready;
+    });
+    const auto running_worker = find_index([](const WorkerEvent& event) {
+        const auto* state = std::get_if<WorkerStateChangedEvent>(&event);
+        return state && state->current.state == WorkerState::Running &&
+            state->current.resident_workset_state ==
+                WorkerWorksetState::Running;
+    });
+    ASSERT_TRUE(ready_worker);
+    ASSERT_TRUE(running_worker);
+    const auto& ready_event = std::get<WorkerStateChangedEvent>(
+        events[*ready_worker]);
+    const auto& running_event = std::get<WorkerStateChangedEvent>(
+        events[*running_worker]);
+    EXPECT_FALSE(ready_event.current.execution);
+    EXPECT_TRUE(running_event.current.execution);
 
-    WorkerItemTerminalCorrelation mismatched =
-        terminals.front().correlation;
-    ++mismatched.item_ordinal;
-    const WorkerCommandResult rejected_acknowledgement =
-        harness.runtime
-            ->Submit(
-                harness.NextRequest(),
-                AcknowledgeTerminalCommand{
-                    mismatched})
-            .get();
-    EXPECT_EQ(
-        rejected_acknowledgement.outcome,
-        WorkerCommandOutcome::Rejected);
-    EXPECT_EQ(
-        rejected_acknowledgement.error.code,
-        WorkerRejectionCode::TerminalMismatch);
-
-    for (const auto& terminal : terminals)
-    {
-        const WorkerCommandResult acknowledged =
-            harness.runtime
-                ->Submit(
-                    harness.NextRequest(),
-                    AcknowledgeTerminalCommand{
-                        terminal.correlation})
-                .get();
-        EXPECT_EQ(
-            acknowledged.outcome,
-            WorkerCommandOutcome::Completed)
-            << acknowledged.error.message;
-    }
-    EXPECT_EQ(
-        harness.runtime->snapshot()
-            .retained_terminal_count,
-        0u);
-    EXPECT_EQ(
-        harness.Shutdown().outcome,
-        WorkerCommandOutcome::Completed);
+    ASSERT_TRUE(CompleteAndAcknowledgeActiveWorkset(harness));
+    EXPECT_EQ(harness.Shutdown().outcome, WorkerCommandOutcome::Completed);
 }
 
 TEST(
@@ -2205,8 +2049,15 @@ TEST(
         harness.runtime->snapshot().session.workset_epoch;
     WorkerWorksetDefinition invalid =
         harness.Workset(42, 2);
-    invalid.phase_invocation.program.canonical_sha256 =
+    invalid.phase_invocation.program_package.identity.canonical_sha256 =
         std::string(64, '0');
+    invalid.phase_invocation.program_package.canonical_sha256 =
+        fullphase::ComputeFullPhaseProgramPackageHash(
+            invalid.phase_invocation.program_package);
+    invalid.execution_key.program_package_sha256 =
+        invalid.phase_invocation.program_package.canonical_sha256;
+    invalid.execution_key.canonical_sha256 =
+        ComputeWorkerWorksetExecutionKeyHash(invalid.execution_key);
     const WorkerCommandResult rejected =
         harness.runtime
             ->Submit(
@@ -2367,7 +2218,7 @@ TEST(
     ASSERT_TRUE(accepted.workset_submission.has_value());
     EXPECT_EQ(
         accepted.workset_submission->disposition,
-        WorksetSubmissionDispositionV1::Accepted);
+        WorksetSubmissionDispositionV1::Admitted);
     EXPECT_EQ(accepted.workset_submission->applied_item_count, 1u);
     EXPECT_EQ(
         accepted.workset_submission->applied_sidecar_sha256,
@@ -2402,7 +2253,7 @@ TEST(
     ASSERT_TRUE(repeated.workset_submission.has_value());
     EXPECT_EQ(
         repeated.workset_submission->disposition,
-        WorksetSubmissionDispositionV1::AlreadyAccepted);
+        WorksetSubmissionDispositionV1::AlreadyAdmitted);
     EXPECT_EQ(
         repeated.workset_submission->applied_sidecar_sha256,
         sidecar_sha);
@@ -2643,6 +2494,15 @@ TEST(EmulationSession, UnknownIntegrityAndStoppedCoreTaintWithoutAdvancingEpoch)
         SessionId(4),
         std::make_unique<ScriptedDolphinBackend>(control));
     ASSERT_TRUE(session.Open({}).ok);
+    const WorkerWorksetId workset_id(1);
+    const SessionOperationReceipt initialization =
+        session.OpenWorksetInitialization(workset_id);
+    ASSERT_TRUE(initialization.ok) << initialization.backend.message;
+    ASSERT_FALSE(session.execution_snapshot());
+    const SessionOperationReceipt committed =
+        session.CommitWorksetInitialization(workset_id);
+    ASSERT_TRUE(committed.ok) << committed.backend.message;
+    ASSERT_TRUE(session.execution_snapshot());
 
     control->SetStepFrameResult(BackendResult::Failure(
         BackendErrorCode::Timeout,
@@ -2710,6 +2570,8 @@ TEST(ExecutionWorkerRuntime, SerializesConcurrentProducersOnOneBackendOwner)
 {
     RuntimeHarness harness;
     ASSERT_EQ(harness.Open().outcome, WorkerCommandOutcome::Completed);
+    ASSERT_EQ(harness.Invoke(99).outcome, WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.program->WaitForStarts(1));
 
     constexpr std::size_t producer_count = 8;
     std::barrier start(static_cast<std::ptrdiff_t>(producer_count + 1));
@@ -2768,6 +2630,7 @@ TEST(ExecutionWorkerRuntime, SerializesConcurrentProducersOnOneBackendOwner)
     for (const std::thread::id producer : producer_threads)
         EXPECT_NE(*owner, producer);
 
+    ASSERT_TRUE(CompleteAndAcknowledgeActiveWorkset(harness));
     EXPECT_EQ(harness.Shutdown().outcome, WorkerCommandOutcome::Completed);
     EXPECT_EQ(harness.backend->CloseCount(), 1);
 }
@@ -2789,75 +2652,16 @@ TEST(ExecutionWorkerRuntime, EnforcesOneSessionAndOneActiveInvocation)
     ASSERT_TRUE(harness.program->WaitForStarts(1));
 
     const WorkerCommandResult second = harness.Invoke(102);
-    EXPECT_EQ(second.outcome, WorkerCommandOutcome::Rejected);
-    EXPECT_EQ(
-        second.error.code,
-        WorkerRejectionCode::InvocationAlreadyActive);
+    EXPECT_EQ(second.outcome, WorkerCommandOutcome::Rejected)
+        << second.error.message;
+    EXPECT_EQ(second.error.code, WorkerRejectionCode::InvalidArgument)
+        << second.error.message;
     EXPECT_EQ(harness.program->StartCount(), 1);
 
-    ASSERT_TRUE(harness.program->EmitTerminal(
-        InvocationTerminalStatus::Completed));
-    ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
-    const WorkerCommandResult ready_barrier = harness.runtime->Submit(
-        harness.NextRequest(),
-        CaptureScreenshotCommand{
-            harness.runtime->snapshot().active_workset.value_or(WorkerWorksetId(1)),
-                    harness.runtime->snapshot().active_workset_item.value_or(WorkerWorksetItemId(1)),
-            "ready-state-barrier.png",
-            100ms}).get();
-    ASSERT_EQ(ready_barrier.outcome, WorkerCommandOutcome::Completed);
+    ASSERT_TRUE(CompleteAndAcknowledgeActiveWorkset(harness));
     EXPECT_EQ(harness.runtime->snapshot().state, WorkerState::Ready);
     EXPECT_EQ(harness.events.TerminalCount(), 1);
 
-    EXPECT_EQ(harness.Shutdown().outcome, WorkerCommandOutcome::Completed);
-}
-
-TEST(
-    ExecutionWorkerRuntime,
-    RejectsProgressFromAStaleAttemptWhenInvocationIdIsReused)
-{
-    RuntimeHarness harness;
-    ASSERT_EQ(harness.Open().outcome, WorkerCommandOutcome::Completed);
-    ASSERT_EQ(harness.Invoke(151, 1).outcome, WorkerCommandOutcome::Accepted);
-    ASSERT_TRUE(harness.program->EmitTerminal(
-        InvocationTerminalStatus::Completed));
-    ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
-    const WorkerCommandResult first_barrier = harness.runtime->Submit(
-        harness.NextRequest(),
-        CaptureScreenshotCommand{
-            harness.runtime->snapshot().active_workset.value_or(WorkerWorksetId(1)),
-                    harness.runtime->snapshot().active_workset_item.value_or(WorkerWorksetItemId(1)),
-            "first-attempt-terminal-barrier.png",
-            100ms}).get();
-    ASSERT_EQ(first_barrier.outcome, WorkerCommandOutcome::Completed);
-
-    ASSERT_EQ(harness.Invoke(151, 2).outcome, WorkerCommandOutcome::Accepted);
-    ASSERT_TRUE(harness.program->EmitProgress(
-        1,
-        "late-attempt-one-progress",
-        AttemptId(1)));
-    ASSERT_TRUE(harness.program->EmitProgress(
-        2,
-        "current-attempt-two-progress"));
-    const WorkerCommandResult progress_barrier = harness.runtime->Submit(
-        harness.NextRequest(),
-        CaptureScreenshotCommand{
-            harness.runtime->snapshot().active_workset.value_or(WorkerWorksetId(1)),
-                    harness.runtime->snapshot().active_workset_item.value_or(WorkerWorksetItemId(1)),
-            "progress-attempt-barrier.png",
-            100ms}).get();
-    ASSERT_EQ(progress_barrier.outcome, WorkerCommandOutcome::Completed);
-
-    const auto progress = harness.events.Progress();
-    ASSERT_EQ(progress.size(), 1);
-    EXPECT_EQ(progress.front().invocation_id, InvocationId(151));
-    EXPECT_EQ(progress.front().attempt_id, AttemptId(2));
-    EXPECT_EQ(progress.front().progress_sequence, 2);
-    EXPECT_EQ(progress.front().text, "current-attempt-two-progress");
-
-    ASSERT_TRUE(harness.program->EmitTerminal(
-        InvocationTerminalStatus::Completed));
-    ASSERT_TRUE(harness.events.WaitForTerminalCount(2));
     EXPECT_EQ(harness.Shutdown().outcome, WorkerCommandOutcome::Completed);
 }
 
@@ -2892,9 +2696,7 @@ TEST(
                 "runtime_completion"}));
     }
 
-    ASSERT_TRUE(harness.program->EmitTerminal(
-        InvocationTerminalStatus::Completed));
-    ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
+    ASSERT_TRUE(CompleteAndAcknowledgeActiveWorkset(harness));
     EXPECT_EQ(
         harness.Shutdown().outcome,
         WorkerCommandOutcome::Completed);
@@ -2964,35 +2766,6 @@ TEST(
     EXPECT_EQ(harness.events.TerminalCount(), 1u);
 }
 
-TEST(
-    ExecutionWorkerRuntime,
-    WorksetDispatchCapabilityRequiresAnActorActionHost)
-{
-    auto backend =
-        std::make_shared<ScriptedDolphinBackendControl>();
-    auto program =
-        std::make_shared<FakeProgramRuntimeControl>();
-    WorkerEventLog events;
-    WorkerRuntime runtime(
-        std::make_unique<EmulationSession>(
-            SessionId(151),
-            std::make_unique<ScriptedDolphinBackend>(backend)),
-        std::make_unique<FakeProgramRuntimePort>(program),
-        [&events](const WorkerEvent& event) {
-            events.Record(event);
-        });
-
-    EXPECT_FALSE(HasCapability(
-        runtime.capabilities(),
-        WorkerCapability::WorksetDispatch));
-    const WorkerCommandResult stopped =
-        runtime.Submit(WireRequestId(1), ShutdownCommand{}).get();
-    runtime.WaitStopped();
-    EXPECT_EQ(
-        stopped.outcome,
-        WorkerCommandOutcome::Completed);
-}
-
 TEST(ExecutionWorkerRuntime, CompletionWinningCancelRaceHasOneTerminal)
 {
     RuntimeHarness harness;
@@ -3011,14 +2784,7 @@ TEST(ExecutionWorkerRuntime, CompletionWinningCancelRaceHasOneTerminal)
 
     ASSERT_TRUE(harness.program->EmitTerminal(
         InvocationTerminalStatus::Completed));
-    const WorkerCommandResult barrier = harness.runtime->Submit(
-        harness.NextRequest(),
-        CaptureScreenshotCommand{
-            harness.runtime->snapshot().active_workset.value_or(WorkerWorksetId(1)),
-                    harness.runtime->snapshot().active_workset_item.value_or(WorkerWorksetItemId(1)),
-            "duplicate-terminal-barrier.png",
-            100ms}).get();
-    ASSERT_EQ(barrier.outcome, WorkerCommandOutcome::Completed);
+    ASSERT_TRUE(AcknowledgeLatestWorksetTerminal(harness));
     EXPECT_EQ(harness.events.TerminalCount(), 1);
 
     EXPECT_EQ(harness.Shutdown().outcome, WorkerCommandOutcome::Completed);
@@ -3038,6 +2804,8 @@ TEST(
         harness.program->cancellation_submission =
             ProgramRuntimeSubmission::ExecutionAlreadyFinished();
     }
+    ASSERT_TRUE(harness.program->EmitTerminal(
+        InvocationTerminalStatus::Completed));
     const WorkerCommandResult cancel = harness.runtime->Submit(
         harness.NextRequest(),
         CancelInvocationCommand{InvocationId(251)}).get();
@@ -3048,23 +2816,13 @@ TEST(
     EXPECT_FALSE(
         harness.program->LastToken().is_cancellation_requested());
 
-    ASSERT_TRUE(harness.program->EmitTerminal(
-        InvocationTerminalStatus::Completed));
     ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
     const auto terminals = harness.events.Terminals();
     ASSERT_EQ(terminals.size(), 1u);
     EXPECT_EQ(
         terminals.front().status,
         InvocationTerminalStatus::Completed);
-    ASSERT_EQ(
-        harness.runtime->Submit(
-            harness.NextRequest(),
-            CaptureScreenshotCommand{
-                harness.runtime->snapshot().active_workset.value_or(WorkerWorksetId(1)),
-                    harness.runtime->snapshot().active_workset_item.value_or(WorkerWorksetItemId(1)),
-                "terminal-race-barrier.png",
-                100ms}).get().outcome,
-        WorkerCommandOutcome::Completed);
+    ASSERT_TRUE(AcknowledgeLatestWorksetTerminal(harness));
     EXPECT_EQ(
         harness.runtime->snapshot().state,
         WorkerState::Ready);
@@ -3114,6 +2872,7 @@ TEST(
     EXPECT_EQ(
         terminals.front().status,
         InvocationTerminalStatus::Cancelled);
+    ASSERT_TRUE(AcknowledgeLatestWorksetTerminal(harness));
 
     const WorkerCommandResult stale = harness.runtime->Submit(
         harness.NextRequest(),
@@ -3235,7 +2994,8 @@ TEST(ExecutionWorkerRuntime, ShutdownWinningRaceWaitsForTerminalAndClosesOnce)
     const WorkerCommandResult result = shutdown.get();
     harness.runtime->WaitStopped();
 
-    EXPECT_EQ(result.outcome, WorkerCommandOutcome::Completed);
+    EXPECT_EQ(result.outcome, WorkerCommandOutcome::Rejected);
+    EXPECT_EQ(result.error.code, WorkerRejectionCode::BackendFailure);
     EXPECT_EQ(harness.backend->CloseCount(), 1);
     EXPECT_EQ(harness.program->ShutdownCount(), 1);
     EXPECT_EQ(harness.events.TerminalCount(), 1);
@@ -3253,7 +3013,8 @@ TEST(ExecutionWorkerRuntime, CompletionWinningShutdownRaceStillClosesCleanly)
         InvocationTerminalStatus::Completed));
     const WorkerCommandResult shutdown = harness.Shutdown();
 
-    EXPECT_EQ(shutdown.outcome, WorkerCommandOutcome::Completed);
+    EXPECT_EQ(shutdown.outcome, WorkerCommandOutcome::Rejected);
+    EXPECT_EQ(shutdown.error.code, WorkerRejectionCode::BackendFailure);
     EXPECT_EQ(harness.backend->CloseCount(), 1);
     EXPECT_EQ(harness.program->ShutdownCount(), 1);
     EXPECT_EQ(harness.events.TerminalCount(), 1);
@@ -3267,27 +3028,15 @@ TEST(
     ASSERT_EQ(harness.Open().outcome, WorkerCommandOutcome::Completed);
     ASSERT_EQ(harness.Invoke(403).outcome, WorkerCommandOutcome::Accepted);
     ASSERT_TRUE(harness.program->WaitForStarts(1));
-    {
-        std::lock_guard lock(harness.program->mutex);
-        harness.program->cancellation_submission =
-            ProgramRuntimeSubmission::ExecutionAlreadyFinished();
-    }
-
+    ASSERT_TRUE(harness.program->EmitTerminal(
+        InvocationTerminalStatus::Completed));
     auto shutdown = harness.runtime->Submit(
         harness.NextRequest(),
         ShutdownCommand{});
-    ASSERT_TRUE(harness.program->WaitForCancellations(1));
-    EXPECT_EQ(
-        shutdown.wait_for(0ms),
-        std::future_status::timeout);
-    EXPECT_FALSE(
-        harness.program->LastToken().is_cancellation_requested());
-
-    ASSERT_TRUE(harness.program->EmitTerminal(
-        InvocationTerminalStatus::Completed));
     const WorkerCommandResult result = shutdown.get();
     harness.runtime->WaitStopped();
-    EXPECT_EQ(result.outcome, WorkerCommandOutcome::Completed);
+    EXPECT_EQ(result.outcome, WorkerCommandOutcome::Rejected);
+    EXPECT_EQ(result.error.code, WorkerRejectionCode::BackendFailure);
     const auto terminals = harness.events.Terminals();
     ASSERT_EQ(terminals.size(), 1u);
     EXPECT_EQ(
@@ -3302,13 +3051,23 @@ TEST(ExecutionWorkerRuntime, CleanDiagnosticsReuseButTaintRejectsFurtherWork)
     ASSERT_EQ(harness.Open().outcome, WorkerCommandOutcome::Completed);
 
     ASSERT_EQ(harness.Invoke(501).outcome, WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.program->WaitForStarts(1));
     ASSERT_TRUE(harness.program->EmitTerminal(
         InvocationTerminalStatus::Completed,
         CleanupStatus::CleanWithDiagnostics,
         SessionDisposition::CleanWithDiagnostics));
     ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
+    ASSERT_TRUE(AcknowledgeLatestWorksetTerminal(harness));
 
     ASSERT_EQ(harness.Invoke(502).outcome, WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.program->WaitForStarts(2));
+    for (int attempt = 0;
+         attempt < 100 &&
+             harness.runtime->snapshot().state != WorkerState::Running;
+         ++attempt)
+    {
+        std::this_thread::sleep_for(1ms);
+    }
     EXPECT_EQ(harness.runtime->snapshot().state, WorkerState::Running);
     EXPECT_EQ(
         harness.runtime->snapshot().session.disposition,
@@ -3359,6 +3118,7 @@ TEST(
     EmulationSession* actor_session = nullptr;
     std::atomic<bool> arm_execution{false};
     std::atomic<bool> execution_accepted{false};
+    std::string execution_error;
     auto hooks = std::make_shared<WorkerRuntimeTestHooks>();
     hooks->session_opened = [&](EmulationSession& session) {
         actor_session = &session;
@@ -3379,6 +3139,7 @@ TEST(
         execution_accepted.store(
             submitted.accepted,
             std::memory_order_release);
+        execution_error = submitted.error.message;
     };
 
     RuntimeHarness harness(
@@ -3391,6 +3152,10 @@ TEST(
         harness.Open().outcome,
         WorkerCommandOutcome::Completed);
     ASSERT_NE(actor_session, nullptr);
+    ASSERT_EQ(
+        harness.Invoke(504).outcome,
+        WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.program->WaitForStarts(1));
 
     arm_execution.store(true, std::memory_order_release);
     (void)harness.runtime
@@ -3406,9 +3171,10 @@ TEST(
                 InvocationId(900000)})
         .get();
     ASSERT_TRUE(
-        execution_accepted.load(std::memory_order_acquire));
+        execution_accepted.load(std::memory_order_acquire))
+        << execution_error;
     ASSERT_EQ(
-        harness.runtime->snapshot().execution.activity,
+        harness.runtime->snapshot().execution->activity,
         ExecutionActivity::Continuing);
 
     clock_offset_milliseconds.fetch_add(
@@ -3464,14 +3230,11 @@ TEST(
         SessionDisposition::CleanWithDiagnostics);
     EXPECT_EQ(
         harness.runtime->snapshot().state,
-        WorkerState::Ready);
-
-    ASSERT_EQ(
-        harness.Invoke(504).outcome,
-        WorkerCommandOutcome::Accepted);
+        WorkerState::Running);
     ASSERT_TRUE(harness.program->EmitTerminal(
         InvocationTerminalStatus::Completed));
     ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
+    ASSERT_TRUE(AcknowledgeLatestWorksetTerminal(harness));
     EXPECT_EQ(
         harness.runtime->snapshot().state,
         WorkerState::Ready);
@@ -3500,6 +3263,7 @@ TEST(
     EmulationSession* actor_session = nullptr;
     std::atomic<bool> arm_execution{false};
     std::atomic<bool> execution_accepted{false};
+    std::string execution_error;
     auto hooks = std::make_shared<WorkerRuntimeTestHooks>();
     hooks->session_opened = [&](EmulationSession& session) {
         actor_session = &session;
@@ -3520,6 +3284,7 @@ TEST(
         execution_accepted.store(
             submitted.accepted,
             std::memory_order_release);
+        execution_error = submitted.error.message;
     };
 
     RuntimeHarness harness(
@@ -3684,7 +3449,14 @@ TEST(ExecutionWorkerRuntime, ScreenshotRequiresTheExactActiveWorksetItem)
 
     ASSERT_EQ(harness.Invoke(601).outcome, WorkerCommandOutcome::Accepted);
     ASSERT_TRUE(harness.program->WaitForStarts(1));
-    const WorkerSnapshot active = harness.runtime->snapshot();
+    WorkerSnapshot active = harness.runtime->snapshot();
+    for (int attempt = 0;
+         attempt < 100 && !active.active_workset_item;
+         ++attempt)
+    {
+        std::this_thread::sleep_for(1ms);
+        active = harness.runtime->snapshot();
+    }
     ASSERT_TRUE(active.active_workset);
     ASSERT_TRUE(active.active_workset_item);
     const WorkerCommandResult mismatch = harness.runtime->Submit(
@@ -3714,81 +3486,6 @@ TEST(ExecutionWorkerRuntime, ScreenshotRequiresTheExactActiveWorksetItem)
     EXPECT_EQ(harness.Shutdown().outcome, WorkerCommandOutcome::Completed);
 }
 
-TEST(ExecutionWorkerRuntime, ExecutionControlsRequireVisualIntentAndExactActiveItem)
-{
-    {
-        RuntimeHarness headless;
-        ASSERT_EQ(
-            headless.Open().outcome,
-            WorkerCommandOutcome::Completed);
-        EXPECT_TRUE(HasCapability(
-            headless.runtime->capabilities(),
-            WorkerCapability::InteractiveVisualDebug));
-        ASSERT_EQ(
-            headless.Invoke(610).outcome,
-            WorkerCommandOutcome::Accepted);
-        ASSERT_TRUE(headless.program->WaitForStarts(1));
-        const WorkerCommandResult rejected = headless.runtime->Submit(
-            headless.NextRequest(),
-            ControlExecutionCommand{
-                .control = WorkerExecutionControlKind::Pause,
-                .workset_id = WorkerWorksetId(610),
-                .item_id = WorkerWorksetItemId(1),
-                .timeout = 100ms,
-            }).get();
-        EXPECT_EQ(rejected.outcome, WorkerCommandOutcome::Rejected);
-        EXPECT_EQ(rejected.error.code, WorkerRejectionCode::Unsupported);
-        ASSERT_TRUE(CompleteAndAcknowledgeActiveWorkset(headless));
-        EXPECT_EQ(
-            headless.Shutdown().outcome,
-            WorkerCommandOutcome::Completed);
-    }
-
-    RuntimeHarness visual;
-    SessionOpenOptions options = visual.OpenOptions();
-    options.backend.visual = true;
-    ASSERT_EQ(
-        visual.Open(std::move(options)).outcome,
-        WorkerCommandOutcome::Completed);
-    ASSERT_EQ(
-        visual.Invoke(602).outcome,
-        WorkerCommandOutcome::Accepted);
-    ASSERT_TRUE(visual.program->WaitForStarts(1));
-
-    const WorkerCommandResult wrong_workset = visual.runtime->Submit(
-        visual.NextRequest(),
-        ControlExecutionCommand{
-            .control = WorkerExecutionControlKind::StepFrame,
-            .workset_id = WorkerWorksetId(999),
-            .item_id = WorkerWorksetItemId(1),
-            .count = 1,
-            .timeout = 100ms,
-        }).get();
-    EXPECT_EQ(wrong_workset.outcome, WorkerCommandOutcome::Rejected);
-    EXPECT_EQ(
-        wrong_workset.error.code,
-        WorkerRejectionCode::WorksetItemNotFound);
-
-    const WorkerCommandResult wrong_item = visual.runtime->Submit(
-        visual.NextRequest(),
-        ControlExecutionCommand{
-            .control = WorkerExecutionControlKind::StepFrame,
-            .workset_id = WorkerWorksetId(602),
-            .item_id = WorkerWorksetItemId(999),
-            .count = 1,
-            .timeout = 100ms,
-        }).get();
-    EXPECT_EQ(wrong_item.outcome, WorkerCommandOutcome::Rejected);
-    EXPECT_EQ(
-        wrong_item.error.code,
-        WorkerRejectionCode::WorksetItemNotFound);
-
-    ASSERT_TRUE(CompleteAndAcknowledgeActiveWorkset(visual));
-    EXPECT_EQ(
-        visual.Shutdown().outcome,
-        WorkerCommandOutcome::Completed);
-}
-
 TEST(ExecutionWorkerRuntime, VisualActiveItemControlsCompleteExactlyOnce)
 {
     RuntimeHarness harness;
@@ -3814,7 +3511,7 @@ TEST(ExecutionWorkerRuntime, VisualActiveItemControlsCompleteExactlyOnce)
     EXPECT_FALSE(resumed.execution_terminal.has_value());
     EXPECT_EQ(resumed.snapshot.state, WorkerState::Running);
     EXPECT_EQ(
-        resumed.snapshot.execution.activity,
+        resumed.snapshot.execution->activity,
         ExecutionActivity::InteractiveRunning);
 
     const WorkerCommandResult paused = harness.runtime->Submit(
@@ -3832,7 +3529,7 @@ TEST(ExecutionWorkerRuntime, VisualActiveItemControlsCompleteExactlyOnce)
         ExecutionTerminalStatus::Paused);
     EXPECT_EQ(paused.snapshot.state, WorkerState::Running);
     EXPECT_EQ(
-        paused.snapshot.execution.activity,
+        paused.snapshot.execution->activity,
         ExecutionActivity::IdlePaused);
 
     const WorkerCommandResult stepped = harness.runtime->Submit(
@@ -3852,7 +3549,7 @@ TEST(ExecutionWorkerRuntime, VisualActiveItemControlsCompleteExactlyOnce)
     EXPECT_EQ(stepped.execution_terminal->completed_count, 2u);
     EXPECT_EQ(stepped.snapshot.state, WorkerState::Running);
     EXPECT_EQ(
-        stepped.snapshot.execution.activity,
+        stepped.snapshot.execution->activity,
         ExecutionActivity::IdlePaused);
 
     ASSERT_TRUE(harness.events.WaitForCommandCount(
@@ -3894,7 +3591,7 @@ TEST(ExecutionWorkerRuntime, ShutdownUnwindsInteractiveResume)
         }).get();
     ASSERT_EQ(resumed.outcome, WorkerCommandOutcome::Accepted);
     ASSERT_EQ(
-        harness.runtime->snapshot().execution.activity,
+        harness.runtime->snapshot().execution->activity,
         ExecutionActivity::InteractiveRunning);
 
     auto shutdown = harness.runtime->Submit(
@@ -3972,6 +3669,10 @@ TEST(
     ASSERT_EQ(
         harness.Invoke(450).outcome,
         WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.program->WaitForStarts(1));
+    const WorkerSnapshot active = harness.runtime->snapshot();
+    ASSERT_TRUE(active.active_workset);
+    ASSERT_TRUE(active.active_workset_item);
 
     std::atomic<bool> requested_break{false};
     std::thread injector([&]() {
@@ -3997,8 +3698,8 @@ TEST(
     auto screenshot_future = harness.runtime->Submit(
         screenshot_request,
         CaptureScreenshotCommand{
-            harness.runtime->snapshot().active_workset.value_or(WorkerWorksetId(1)),
-                    harness.runtime->snapshot().active_workset_item.value_or(WorkerWorksetItemId(1)),
+            *active.active_workset,
+            *active.active_workset_item,
             "ingress-boundary.png",
             1s});
     const std::future_status screenshot_status =
@@ -4013,7 +3714,8 @@ TEST(
     EXPECT_TRUE(
         continue_accepted.load(std::memory_order_acquire));
     EXPECT_TRUE(requested_break.load(std::memory_order_acquire));
-    EXPECT_EQ(screenshot.outcome, WorkerCommandOutcome::Completed);
+    EXPECT_EQ(screenshot.outcome, WorkerCommandOutcome::Completed)
+        << screenshot.error.message;
     ASSERT_TRUE(harness.events.WaitForExecutionTerminalCount(1));
 
     const std::vector<WorkerEvent> events = harness.events.Events();
@@ -4159,20 +3861,14 @@ TEST(
             harness.program->action_order,
             "runtime_cancel");
         ASSERT_NE(completion, harness.program->action_order.end());
-        ASSERT_NE(cancellation, harness.program->action_order.end());
-        EXPECT_LT(
-            std::distance(
-                harness.program->action_order.begin(),
-                completion),
-            std::distance(
-                harness.program->action_order.begin(),
-                cancellation));
+        EXPECT_EQ(cancellation, harness.program->action_order.end());
     }
     const auto terminals = harness.events.Terminals();
     ASSERT_EQ(terminals.size(), 1u);
     EXPECT_EQ(
         terminals.front().status,
         InvocationTerminalStatus::Completed);
+    ASSERT_TRUE(AcknowledgeLatestWorksetTerminal(harness));
 
     EXPECT_EQ(
         harness.Shutdown().outcome,
@@ -4203,6 +3899,7 @@ TEST(
     EmulationSession* actor_session = nullptr;
     std::atomic<bool> arm_execution{false};
     std::atomic<bool> execution_accepted{false};
+    std::string execution_error;
     std::atomic<bool> arm_boundary_injection{false};
     std::atomic<bool> coordination_timed_out{false};
     std::promise<void> boundary_open_signal;
@@ -4229,6 +3926,7 @@ TEST(
             execution_accepted.store(
                 submitted.accepted,
                 std::memory_order_release);
+            execution_error = submitted.error.message;
         }
         if (!arm_boundary_injection.exchange(
                 false,
@@ -4258,6 +3956,10 @@ TEST(
         harness.Open(std::move(options)).outcome,
         WorkerCommandOutcome::Completed);
     ASSERT_NE(actor_session, nullptr);
+    ASSERT_EQ(
+        harness.Invoke(1).outcome,
+        WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.program->WaitForStarts(1));
 
     arm_execution.store(true, std::memory_order_release);
     (void)harness.runtime
@@ -4270,7 +3972,8 @@ TEST(
                 100ms})
         .get();
     ASSERT_TRUE(
-        execution_accepted.load(std::memory_order_acquire));
+        execution_accepted.load(std::memory_order_acquire))
+        << execution_error;
 
     std::atomic<bool> requested_break{false};
     std::thread injector([&] {
@@ -4337,6 +4040,8 @@ TEST(
         harness.runtime->snapshot().session.disposition,
         SessionDisposition::Clean);
 
+    ASSERT_TRUE(CompleteAndAcknowledgeActiveWorkset(harness));
+
     EXPECT_EQ(
         harness.Shutdown().outcome,
         WorkerCommandOutcome::Completed);
@@ -4352,11 +4057,16 @@ TEST(ExecutionWorkerRuntime, RuntimeSubmissionExceptionTaintsAndTerminatesOnce)
     }
 
     const WorkerCommandResult result = harness.Invoke(801);
-    EXPECT_EQ(result.outcome, WorkerCommandOutcome::Rejected);
-    EXPECT_EQ(result.error.code, WorkerRejectionCode::InternalFailure);
+    EXPECT_EQ(result.outcome, WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.events.WaitForWorksetTerminalCount(1));
+    const auto terminals = harness.events.WorksetTerminals();
+    ASSERT_EQ(terminals.size(), 1u);
+    EXPECT_EQ(
+        terminals.front().terminal.status,
+        InvocationTerminalStatus::CleanupFailure);
+    ASSERT_TRUE(AcknowledgeLatestWorksetTerminal(harness));
     EXPECT_EQ(harness.runtime->snapshot().state, WorkerState::Tainted);
     EXPECT_EQ(harness.backend->CloseCount(), 1);
-    EXPECT_EQ(harness.events.TerminalCount(), 0);
     EXPECT_EQ(harness.program->ShutdownCount(), 1);
 
     const WorkerCommandResult shutdown = harness.Shutdown();

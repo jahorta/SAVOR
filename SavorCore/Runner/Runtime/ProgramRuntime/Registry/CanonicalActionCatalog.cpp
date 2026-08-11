@@ -11,53 +11,70 @@
 namespace savor::runtime::program {
 namespace {
 
-struct CatalogEntry
+constexpr std::array<CanonicalActionDefinition, 23> kActions{{
+    {CanonicalAction::SavestateSaveImmutableArtifact, "runtime.savestate.save_immutable_artifact", "(SavestateArtifactSaveRequest)->PendingSavestateArtifactPublicationReceipt"},
+    {CanonicalAction::ExecutionContinueUntil, "runtime.execution.continue_until", "(ContinueUntilRequest)->ContinueUntilResult"},
+    {CanonicalAction::ExecutionStepFrames, "runtime.execution.step_frames", "(StepFramesRequest)->ExecutionResult"},
+    {CanonicalAction::InputAcquireLease, "runtime.input.acquire_lease", "(InputLeaseRequest)->InputLeaseHandle"},
+    {CanonicalAction::InputApplyState, "runtime.input.apply_state", "(InputStateRequest)->InputExecutionBinding"},
+    {CanonicalAction::InputBeginDelivery, "runtime.input.begin_delivery", "(InputDeliveryRequest)->InputExecutionBinding"},
+    {CanonicalAction::InputCompleteDelivery, "runtime.input.complete_delivery", "(CompleteInputDeliveryRequest)->InputDeliveryReceipt"},
+    {CanonicalAction::MoviePrepareReadOnlyPlayback, "runtime.movie.prepare_read_only_playback", "(MoviePlaybackRequest)->PreparedMoviePlaybackHandle"},
+    {CanonicalAction::MovieStartPlayback, "runtime.movie.start_playback", "(PreparedMoviePlaybackHandle)->MovieSessionHandle"},
+    {CanonicalAction::MovieStopPlayback, "runtime.movie.stop_playback", "(MovieSessionHandle)->MovieTerminalReceipt"},
+    {CanonicalAction::MovieStartRecording, "runtime.movie.start_recording", "(MovieRecordingRequest)->MovieSessionHandle"},
+    {CanonicalAction::MovieStopRecording, "runtime.movie.stop_recording", "(MovieSessionHandle)->MovieArtifactRef"},
+    {CanonicalAction::GuestReadU8, "runtime.guest.read_u8", "(GuestScalarReadRequest)->u8"},
+    {CanonicalAction::GuestReadU16, "runtime.guest.read_u16", "(GuestScalarReadRequest)->u16"},
+    {CanonicalAction::GuestReadU32, "runtime.guest.read_u32", "(GuestScalarReadRequest)->u32"},
+    {CanonicalAction::GuestReadU64, "runtime.guest.read_u64", "(GuestScalarReadRequest)->u64"},
+    {CanonicalAction::GuestRunCoherentQuery, "runtime.guest.run_coherent_query", "(CoherentQueryRequest)->TypedObservation"},
+    {CanonicalAction::GuestWriteData, "runtime.guest.write_data", "(GuestDataWriteRequest)->GuestMutationHandle"},
+    {CanonicalAction::GuestPatchExecutable, "runtime.guest.patch_executable", "(ExecutablePatchRequest)->GuestMutationHandle"},
+    {CanonicalAction::CaptureMark, "runtime.capture.mark", "(CaptureMarkerRequest)->CaptureMarkerReceipt"},
+    {CanonicalAction::ScreenshotCapture, "runtime.screenshot.capture", "(ScreenshotRequest)->ScreenshotArtifactRef"},
+    {CanonicalAction::TelemetryEmit, "runtime.telemetry.emit", "(TypedTelemetryRecord)->TelemetryReceipt"},
+    {CanonicalAction::ExecutionRequirePausedPc, "runtime.execution.require_paused_pc", "(RequirePausedPcRequest)->PausedPcReceipt"},
+}};
+
+consteval bool CanonicalActionDefinitionsAreComplete()
 {
-    std::string_view name;
-    std::string_view signature;
-};
+    constexpr auto expected = static_cast<std::size_t>(
+        CanonicalAction::ExecutionRequirePausedPc) + 1u;
+    if (kActions.size() != expected)
+        return false;
+    std::array<bool, expected> seen{};
+    for (std::size_t index = 0; index < kActions.size(); ++index)
+    {
+        const auto& entry = kActions[index];
+        const auto key = static_cast<std::size_t>(entry.action);
+        if (key >= expected || seen[key] || entry.name.empty() ||
+            entry.signature.empty())
+        {
+            return false;
+        }
+        seen[key] = true;
+        for (std::size_t other = 0; other < index; ++other)
+            if (kActions[other].name == entry.name) return false;
+    }
+    return std::ranges::all_of(seen, [](bool value) { return value; });
+}
 
-constexpr std::array<CatalogEntry, 28> kActions{{
-    {"runtime.savestate.save_immutable_artifact", "(SavestateArtifactSaveRequest)->PendingSavestateArtifactPublicationReceipt"},
-    {"runtime.execution.continue_until", "(ContinueUntilRequest)->ContinueUntilResult"},
-    {"runtime.execution.step_frames", "(StepFramesRequest)->ExecutionResult"},
-    {"runtime.stop_points.subscribe_group", "(StopGroupDefinition)->StopGroupHandle"},
-    {"runtime.stop_points.replace_group", "(StopGroupReplacement)->StopGroupHandle"},
-    {"runtime.input.acquire_lease", "(InputLeaseRequest)->InputLeaseHandle"},
-    {"runtime.input.publish_held", "(HeldInputRequest)->InputPublicationReceipt"},
-    {"runtime.input.publish_pulse", "(PulseInputRequest)->InputPublicationReceipt"},
-    {"runtime.input.neutralize", "(NeutralInputRequest)->InputNeutralWitness"},
-    {"runtime.input.publish_sequence", "(BoundedInputSequence)->InputPublicationReceipt"},
-    {"runtime.input.await_guest_poll", "(InputPollRequest)->InputPollReceipt"},
-    {"runtime.movie.prepare_read_only_playback", "(MoviePlaybackRequest)->PreparedMoviePlaybackHandle"},
-    {"runtime.movie.start_playback", "(PreparedMoviePlaybackHandle)->MovieSessionHandle"},
-    {"runtime.movie.stop_playback", "(MovieSessionHandle)->MovieTerminalReceipt"},
-    {"runtime.movie.start_recording", "(MovieRecordingRequest)->MovieSessionHandle"},
-    {"runtime.movie.stop_recording", "(MovieSessionHandle)->MovieArtifactRef"},
-    {"runtime.guest.read_u8", "(GuestScalarReadRequest)->u8"},
-    {"runtime.guest.read_u16", "(GuestScalarReadRequest)->u16"},
-    {"runtime.guest.read_u32", "(GuestScalarReadRequest)->u32"},
-    {"runtime.guest.read_u64", "(GuestScalarReadRequest)->u64"},
-    {"runtime.guest.run_coherent_query", "(CoherentQueryRequest)->TypedObservation"},
-    {"runtime.guest.write_data", "(GuestDataWriteRequest)->GuestMutationHandle"},
-    {"runtime.guest.patch_executable", "(ExecutablePatchRequest)->GuestMutationHandle"},
-    {"runtime.capture.attach", "(CaptureAttachRequest)->CaptureAttachmentHandle"},
-    {"runtime.capture.mark", "(CaptureMarkerRequest)->CaptureMarkerReceipt"},
-    {"runtime.capture.finalize", "(CaptureAttachmentHandle)->CaptureArtifactRefs"},
-    {"runtime.screenshot.capture", "(ScreenshotRequest)->ScreenshotArtifactRef"},
-    {"runtime.telemetry.emit", "(TypedTelemetryRecord)->TelemetryReceipt"},
-}};
+static_assert(CanonicalActionDefinitionsAreComplete());
 
-constexpr std::array<CatalogEntry, 1> kReducers{{
-    {"soa.battle.materialize_turn_input", "(soa.battle.BattleContext/1,soa.battle.BattleTurnExecutionSpec/1)->soa.battle.TurnInputMaterialization/1"},
-}};
+const CanonicalActionDefinition* FindActionDefinition(
+    CanonicalAction action) noexcept
+{
+    const auto found = std::ranges::find(
+        kActions, action, &CanonicalActionDefinition::action);
+    return found == kActions.end() ? nullptr : &*found;
+}
 
 enum class ActionOutputShape : std::uint8_t
 {
     SapReceipt,
     ResourceHandle,
     ArtifactReference,
-    ArtifactReferenceList,
     U8,
     U16,
     U32,
@@ -102,12 +119,11 @@ std::string TypeContract(const TypeRef& type)
 ExactDependencyIdentity Identity(
     CanonicalAction action)
 {
-    const auto index = static_cast<std::size_t>(action);
-    if (index >= kActions.size())
+    const CanonicalActionDefinition* entry = FindActionDefinition(action);
+    if (entry == nullptr)
         throw std::out_of_range("Unknown canonical action");
-    const CatalogEntry& entry = kActions[index];
     return {
-        .canonical_id = std::string(entry.name),
+        .canonical_id = std::string(entry->name),
         .version = 1,
     };
 }
@@ -118,18 +134,16 @@ bool UsesTypedRequestRecord(CanonicalAction action) noexcept
     {
     case CanonicalAction::ExecutionContinueUntil:
     case CanonicalAction::ExecutionStepFrames:
-    case CanonicalAction::StopPointsSubscribeGroup:
     case CanonicalAction::InputAcquireLease:
-    case CanonicalAction::InputPublishHeld:
-    case CanonicalAction::InputPublishPulse:
-    case CanonicalAction::InputNeutralize:
-    case CanonicalAction::InputPublishSequence:
-    case CanonicalAction::InputAwaitGuestPoll:
+    case CanonicalAction::InputApplyState:
+    case CanonicalAction::InputBeginDelivery:
+    case CanonicalAction::InputCompleteDelivery:
     case CanonicalAction::GuestReadU8:
     case CanonicalAction::GuestReadU16:
     case CanonicalAction::GuestReadU32:
     case CanonicalAction::GuestReadU64:
     case CanonicalAction::GuestRunCoherentQuery:
+    case CanonicalAction::ExecutionRequirePausedPc:
         return true;
     default:
         return false;
@@ -140,23 +154,18 @@ ActionOutputShape OutputShape(CanonicalAction action) noexcept
 {
     switch (action)
     {
-    case CanonicalAction::StopPointsSubscribeGroup:
-    case CanonicalAction::StopPointsReplaceGroup:
     case CanonicalAction::InputAcquireLease:
     case CanonicalAction::MoviePrepareReadOnlyPlayback:
     case CanonicalAction::MovieStartPlayback:
     case CanonicalAction::MovieStartRecording:
     case CanonicalAction::GuestWriteData:
     case CanonicalAction::GuestPatchExecutable:
-    case CanonicalAction::CaptureAttach:
         return ActionOutputShape::ResourceHandle;
     case CanonicalAction::MovieStopRecording:
     case CanonicalAction::ScreenshotCapture:
         return ActionOutputShape::ArtifactReference;
     case CanonicalAction::SavestateSaveImmutableArtifact:
         return ActionOutputShape::SapReceipt;
-    case CanonicalAction::CaptureFinalize:
-        return ActionOutputShape::ArtifactReferenceList;
     case CanonicalAction::GuestReadU8:
         return ActionOutputShape::U8;
     case CanonicalAction::GuestReadU16:
@@ -192,20 +201,19 @@ std::optional<SchemaIdentity> SharedOutputSchemaIdentity(
         return RuntimeSchemaIdentity(
             "runtime.execution.ExecutionResult",
             "bytes(max=65536;ExecutionResult/1)");
-    case CanonicalAction::InputPublishHeld:
-    case CanonicalAction::InputPublishPulse:
-    case CanonicalAction::InputPublishSequence:
+    case CanonicalAction::ExecutionRequirePausedPc:
         return RuntimeSchemaIdentity(
-            "runtime.input.InputPublicationReceipt",
-            "bytes(max=65536;InputPublicationReceipt/1)");
-    case CanonicalAction::InputNeutralize:
+            "runtime.execution.PausedPcReceipt",
+            "record PausedPcReceipt/1(pc:u32,vi_count:u64,workset_epoch:u64)");
+    case CanonicalAction::InputApplyState:
+    case CanonicalAction::InputBeginDelivery:
         return RuntimeSchemaIdentity(
-            "runtime.input.InputNeutralWitness",
-            "bytes(max=65536;InputNeutralWitness/1)");
-    case CanonicalAction::InputAwaitGuestPoll:
+            "runtime.input.InputExecutionBinding",
+            "bytes(max=65536;InputExecutionBinding/1)");
+    case CanonicalAction::InputCompleteDelivery:
         return RuntimeSchemaIdentity(
-            "runtime.input.InputPollReceipt",
-            "bytes(max=65536;InputPollReceipt/1)");
+            "runtime.input.InputDeliveryReceipt",
+            "bytes(max=65536;InputDeliveryReceipt/1)");
     default:
         return std::nullopt;
     }
@@ -222,8 +230,6 @@ std::optional<CanonicalAction> DirectHandleInput(
         return CanonicalAction::MovieStartPlayback;
     case CanonicalAction::MovieStopRecording:
         return CanonicalAction::MovieStartRecording;
-    case CanonicalAction::CaptureFinalize:
-        return CanonicalAction::CaptureAttach;
     default:
         return std::nullopt;
     }
@@ -234,15 +240,15 @@ SchemaIdentity ActionSchemaIdentity(
     std::string_view suffix,
     std::string_view representation)
 {
-    const auto index = static_cast<std::size_t>(action);
-    if (index >= kActions.size())
+    const CanonicalActionDefinition* entry = FindActionDefinition(action);
+    if (entry == nullptr)
         throw std::out_of_range("Unknown canonical action");
     const std::string id =
-        std::string(kActions[index].name) + "." +
+        std::string(entry->name) + "." +
         std::string(suffix);
     const std::string contract =
         id + "/1:" + std::string(representation) +
-        ";semantic=" + std::string(kActions[index].signature);
+        ";semantic=" + std::string(entry->signature);
     return {
         .canonical_id = id,
         .version = 1,
@@ -266,39 +272,23 @@ SchemaIdentity ArtifactPayloadIdentity(CanonicalAction action)
         "bytes(max=65536;artifact-payload-contract)");
 }
 
-SchemaIdentity CaptureArtifactReferenceIdentity()
-{
-    const SchemaIdentity payload =
-        ArtifactPayloadIdentity(
-            CanonicalAction::CaptureFinalize);
-    const std::string representation =
-        "artifact-reference<" +
-        payload.canonical_id + "/" +
-        std::to_string(payload.version) + "#" +
-        payload.schema_hash.ToHex() + ">";
-    return ActionSchemaIdentity(
-        CanonicalAction::CaptureFinalize,
-        "ArtifactReference",
-        representation);
-}
-
 std::vector<RecordFieldDefinition> TypedRequestFields(
     CanonicalAction action)
 {
     const TypeRef u64 = TypeRef::Builtin(BuiltinType::U64);
-    const TypeRef stop_group = CanonicalActionOutputType(
-        CanonicalAction::StopPointsSubscribeGroup);
     const TypeRef input_lease = CanonicalActionOutputType(
         CanonicalAction::InputAcquireLease);
     switch (action)
     {
     case CanonicalAction::ExecutionContinueUntil:
         return {
-            {"wake_group", stop_group},
-            {"input_publication",
+            {"semantic_points",
+             CanonicalRuntimeType(
+                 CanonicalRuntimeSchema::SemanticPointSet)},
+            {"input_binding",
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
-                     OptionalInputPublicationReceipt)},
+                     OptionalInputExecutionBinding)},
             {"playback_session",
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
@@ -315,22 +305,15 @@ std::vector<RecordFieldDefinition> TypedRequestFields(
     case CanonicalAction::ExecutionStepFrames:
         return {
             {"count", u64},
-            {"neutral_witness",
+            {"input_binding",
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
-                     OptionalInputNeutralWitness)},
+                     OptionalInputExecutionBinding)},
             {"static_config",
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
                      ExecutionAdvanceStaticConfig)},
         };
-    case CanonicalAction::StopPointsSubscribeGroup:
-        return {{
-            "static_config",
-            CanonicalRuntimeType(
-                CanonicalRuntimeSchema::
-                    StopGroupStaticConfig),
-        }};
     case CanonicalAction::InputAcquireLease:
         return {{
             "static_config",
@@ -338,52 +321,19 @@ std::vector<RecordFieldDefinition> TypedRequestFields(
                 CanonicalRuntimeSchema::
                     InputLeaseStaticConfig),
         }};
-    case CanonicalAction::InputPublishHeld:
-    case CanonicalAction::InputPublishPulse:
+    case CanonicalAction::InputApplyState:
+    case CanonicalAction::InputBeginDelivery:
         return {
             {"lease", input_lease},
             {"input",
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::InputFramePayload)},
-            {"static_config",
-             CanonicalRuntimeType(
-                 CanonicalRuntimeSchema::
-                     InputPublicationStaticConfig)},
         };
-    case CanonicalAction::InputPublishSequence:
+    case CanonicalAction::InputCompleteDelivery:
         return {
             {"lease", input_lease},
-            {"inputs",
-             CanonicalRuntimeType(
-                 CanonicalRuntimeSchema::InputSequencePayload)},
-            {"static_config",
-             CanonicalRuntimeType(
-                 CanonicalRuntimeSchema::
-                     InputPublicationStaticConfig)},
-        };
-    case CanonicalAction::InputNeutralize:
-        return {
-            {"lease", input_lease},
-            {"static_config",
-             CanonicalRuntimeType(
-                 CanonicalRuntimeSchema::
-                     InputNeutralStaticConfig)},
-        };
-    case CanonicalAction::InputAwaitGuestPoll:
-        return {
-            {"lease", input_lease},
-            {"input_publication",
-             CanonicalRuntimeType(
-                 CanonicalRuntimeSchema::
-                     OptionalInputPublicationReceipt)},
-            {"neutral_witness",
-             CanonicalRuntimeType(
-                 CanonicalRuntimeSchema::
-                     OptionalInputNeutralWitness)},
-            {"static_config",
-             CanonicalRuntimeType(
-                 CanonicalRuntimeSchema::
-                     InputPollStaticConfig)},
+            {"binding", CanonicalActionOutputType(
+                 CanonicalAction::InputBeginDelivery)},
         };
     case CanonicalAction::GuestReadU8:
     case CanonicalAction::GuestReadU16:
@@ -411,6 +361,8 @@ std::vector<RecordFieldDefinition> TypedRequestFields(
                  CanonicalRuntimeSchema::
                      ObservationStaticConfig)},
         };
+    case CanonicalAction::ExecutionRequirePausedPc:
+        return {{"expected_pc", u64}};
     default:
         return {};
     }
@@ -451,9 +403,7 @@ ActionDescriptor Descriptor(
     const bool cancellation_driven =
         action == CanonicalAction::ExecutionContinueUntil ||
         action == CanonicalAction::ExecutionStepFrames ||
-        action == CanonicalAction::InputPublishPulse ||
-        action == CanonicalAction::InputPublishSequence ||
-        action == CanonicalAction::InputAwaitGuestPoll;
+        false;
     const TypeRef input = CanonicalActionInputType(action);
     const TypeRef output = CanonicalActionOutputType(action);
     std::vector<std::string> diagnostic_categories{
@@ -507,17 +457,29 @@ ActionDescriptor Descriptor(
 
 std::string_view CanonicalActionName(CanonicalAction action) noexcept
 {
-    const auto index = static_cast<std::size_t>(action);
-    return index < kActions.size() ? kActions[index].name
-                                   : std::string_view{};
+    const CanonicalActionDefinition* entry = FindActionDefinition(action);
+    return entry == nullptr ? std::string_view{} : entry->name;
+}
+
+std::span<const CanonicalActionDefinition>
+CanonicalActionDefinitions() noexcept
+{
+    return kActions;
 }
 
 ExactDependencyIdentity CanonicalActionIdentity(CanonicalAction action)
 {
-    const auto index = static_cast<std::size_t>(action);
-    if (index >= kActions.size())
+    const auto descriptors = BuildCanonicalRuntimeActionDescriptors();
+    const auto found = std::ranges::find(
+        descriptors,
+        CanonicalActionName(action),
+        [](const ActionDescriptor& descriptor)
+        {
+            return std::string_view(descriptor.identity.canonical_id);
+        });
+    if (found == descriptors.end())
         throw std::out_of_range("Unknown canonical action");
-    return BuildCanonicalRuntimeActionDescriptors()[index].identity;
+    return found->identity;
 }
 
 std::optional<CanonicalAction> FindCanonicalAction(
@@ -526,22 +488,12 @@ std::optional<CanonicalAction> FindCanonicalAction(
     const auto found = std::ranges::find(
         kActions,
         identity.canonical_id,
-        &CatalogEntry::name);
+        &CanonicalActionDefinition::name);
     if (found == kActions.end() || identity.version != 1)
         return std::nullopt;
-    const auto action = static_cast<CanonicalAction>(
-        static_cast<std::size_t>(found - kActions.begin()));
-    return CanonicalActionIdentity(action) == identity
-        ? std::optional<CanonicalAction>(action)
+    return CanonicalActionIdentity(found->action) == identity
+        ? std::optional<CanonicalAction>(found->action)
         : std::nullopt;
-}
-
-std::string_view CanonicalReducerName(
-    CanonicalReducer reducer) noexcept
-{
-    const auto index = static_cast<std::size_t>(reducer);
-    return index < kReducers.size() ? kReducers[index].name
-                                    : std::string_view{};
 }
 
 std::optional<SchemaIdentity>
@@ -607,19 +559,6 @@ CanonicalActionOutputSchemaIdentity(CanonicalAction action)
             "Result",
             representation);
     }
-    case ActionOutputShape::ArtifactReferenceList:
-    {
-        const SchemaIdentity reference =
-            CaptureArtifactReferenceIdentity();
-        const std::string representation =
-            "list<" + reference.canonical_id + "/" +
-            std::to_string(reference.version) + "#" +
-            reference.schema_hash.ToHex() + ">(max=256)";
-        return ActionSchemaIdentity(
-            action,
-            "Result",
-            representation);
-    }
     }
     return std::nullopt;
 }
@@ -644,8 +583,7 @@ CanonicalActionArtifactPayloadSchemaIdentity(
         return ArtifactPayloadIdentity(action);
     }
     const ActionOutputShape shape = OutputShape(action);
-    return shape == ActionOutputShape::ArtifactReference ||
-            shape == ActionOutputShape::ArtifactReferenceList
+    return shape == ActionOutputShape::ArtifactReference
         ? std::optional<SchemaIdentity>(
               ArtifactPayloadIdentity(action))
         : std::nullopt;
@@ -659,8 +597,6 @@ CanonicalActionArtifactReferenceSchemaIdentity(
     {
     case ActionOutputShape::ArtifactReference:
         return CanonicalActionOutputSchemaIdentity(action);
-    case ActionOutputShape::ArtifactReferenceList:
-        return CaptureArtifactReferenceIdentity();
     default:
         return std::nullopt;
     }
@@ -706,14 +642,10 @@ SchemaIdentity CanonicalRuntimeSchemaIdentity(
         return RuntimeSchemaIdentity(
             "runtime.input.InputFramePayload",
             "bytes(max=64;canonical controller-frame payload)");
-    case CanonicalRuntimeSchema::InputSequencePayload:
+    case CanonicalRuntimeSchema::SemanticPointSet:
         return RuntimeSchemaIdentity(
-            "runtime.input.InputSequencePayload",
-            "bytes(max=65536;canonical bounded controller-sequence payload)");
-    case CanonicalRuntimeSchema::StopGroupStaticConfig:
-        return RuntimeSchemaIdentity(
-            "runtime.stop_points.StopGroupStaticConfig",
-            "bytes(max=65536;SGC1 ordered alternatives, bounded samples, passive scoped routing)");
+            "runtime.stop_points.SemanticPointSetV1",
+            "bytes(max=65536;SPS1 ordered semantic alternatives and bounded hit-time samples)");
     case CanonicalRuntimeSchema::ContinueUntilStaticConfig:
         return RuntimeSchemaIdentity(
             "runtime.execution.ContinueUntilStaticConfig",
@@ -725,19 +657,7 @@ SchemaIdentity CanonicalRuntimeSchemaIdentity(
     case CanonicalRuntimeSchema::InputLeaseStaticConfig:
         return RuntimeSchemaIdentity(
             "runtime.input.InputLeaseStaticConfig",
-            "bytes(max=4096;ILC1 port, priority, suspension, interruption borrowing, neutral acknowledgement, movie exclusion)");
-    case CanonicalRuntimeSchema::InputPublicationStaticConfig:
-        return RuntimeSchemaIdentity(
-            "runtime.input.InputPublicationStaticConfig",
-            "bytes(max=4096;IPC1 publication and acknowledgement policy)");
-    case CanonicalRuntimeSchema::InputNeutralStaticConfig:
-        return RuntimeSchemaIdentity(
-            "runtime.input.InputNeutralStaticConfig",
-            "bytes(max=4096;INC1 neutral publication and cleanup policy)");
-    case CanonicalRuntimeSchema::InputPollStaticConfig:
-        return RuntimeSchemaIdentity(
-            "runtime.input.InputPollStaticConfig",
-            "bytes(max=16384;IGP1 request-or-release witness and bounded retry policy)");
+            "bytes(max=4096;ILC2 port, priority, suspension, interruption borrowing, movie exclusion)");
     case CanonicalRuntimeSchema::ObservationStaticConfig:
         return RuntimeSchemaIdentity(
             "runtime.guest.ObservationStaticConfig",
@@ -746,20 +666,12 @@ SchemaIdentity CanonicalRuntimeSchemaIdentity(
         return RuntimeSchemaIdentity(
             "runtime.stop_points.StopEvidencePayload",
             "bytes(max=65536;bounded router-side sample and physical-evidence payload)");
-    case CanonicalRuntimeSchema::OptionalInputPublicationReceipt:
+    case CanonicalRuntimeSchema::OptionalInputExecutionBinding:
     {
         const TypeRef element = CanonicalActionOutputType(
-            CanonicalAction::InputPublishHeld);
+            CanonicalAction::InputApplyState);
         return RuntimeSchemaIdentity(
-            "runtime.input.OptionalInputPublicationReceipt",
-            "optional<" + TypeContract(element) + ">");
-    }
-    case CanonicalRuntimeSchema::OptionalInputNeutralWitness:
-    {
-        const TypeRef element = CanonicalActionOutputType(
-            CanonicalAction::InputNeutralize);
-        return RuntimeSchemaIdentity(
-            "runtime.input.OptionalInputNeutralWitness",
+            "runtime.input.OptionalInputExecutionBinding",
             "optional<" + TypeContract(element) + ">");
     }
     case CanonicalRuntimeSchema::OptionalMoviePlaybackSession:
@@ -841,16 +753,10 @@ BuildCanonicalRuntimeActionSchemas()
         .kind = TypeSchemaKind::BoundedBytes,
         .maximum_size = 64,
     });
-    append({
-        .identity = CanonicalRuntimeSchemaIdentity(
-            CanonicalRuntimeSchema::InputSequencePayload),
-        .kind = TypeSchemaKind::BoundedBytes,
-        .maximum_size = 65536,
-    });
     for (const auto [schema, maximum] :
          std::array{
              std::pair{
-                 CanonicalRuntimeSchema::StopGroupStaticConfig,
+                  CanonicalRuntimeSchema::SemanticPointSet,
                  std::uint64_t{65536}},
              std::pair{
                  CanonicalRuntimeSchema::ContinueUntilStaticConfig,
@@ -861,15 +767,6 @@ BuildCanonicalRuntimeActionSchemas()
              std::pair{
                  CanonicalRuntimeSchema::InputLeaseStaticConfig,
                  std::uint64_t{4096}},
-             std::pair{
-                 CanonicalRuntimeSchema::InputPublicationStaticConfig,
-                 std::uint64_t{4096}},
-             std::pair{
-                 CanonicalRuntimeSchema::InputNeutralStaticConfig,
-                 std::uint64_t{4096}},
-             std::pair{
-                 CanonicalRuntimeSchema::InputPollStaticConfig,
-                 std::uint64_t{16384}},
              std::pair{
                  CanonicalRuntimeSchema::ObservationStaticConfig,
                  std::uint64_t{16384}},
@@ -887,18 +784,10 @@ BuildCanonicalRuntimeActionSchemas()
     append({
         .identity = CanonicalRuntimeSchemaIdentity(
             CanonicalRuntimeSchema::
-                OptionalInputPublicationReceipt),
+                OptionalInputExecutionBinding),
         .kind = TypeSchemaKind::Optional,
         .element_type = CanonicalActionOutputType(
-            CanonicalAction::InputPublishHeld),
-    });
-    append({
-        .identity = CanonicalRuntimeSchemaIdentity(
-            CanonicalRuntimeSchema::
-                OptionalInputNeutralWitness),
-        .kind = TypeSchemaKind::Optional,
-        .element_type = CanonicalActionOutputType(
-            CanonicalAction::InputNeutralize),
+            CanonicalAction::InputApplyState),
     });
     append({
         .identity = CanonicalRuntimeSchemaIdentity(
@@ -955,9 +844,9 @@ BuildCanonicalRuntimeActionSchemas()
             CanonicalAction::ExecutionContinueUntil),
     });
 
-    for (std::size_t index = 0; index < kActions.size(); ++index)
+    for (const CanonicalActionDefinition& definition : kActions)
     {
-        const auto action = static_cast<CanonicalAction>(index);
+        const CanonicalAction action = definition.action;
         if (!DirectHandleInput(action))
         {
             if (UsesTypedRequestRecord(action))
@@ -1001,6 +890,20 @@ BuildCanonicalRuntimeActionSchemas()
                      TypeRef::Builtin(BuiltinType::U64)},
                     {"workset_epoch",
                      TypeRef::Builtin(BuiltinType::U64)},
+                },
+            });
+            continue;
+        }
+        if (action == CanonicalAction::ExecutionRequirePausedPc)
+        {
+            append({
+                .identity =
+                    *CanonicalActionOutputSchemaIdentity(action),
+                .kind = TypeSchemaKind::Record,
+                .record_fields = {
+                    {"pc", TypeRef::Builtin(BuiltinType::U32)},
+                    {"vi_count", TypeRef::Builtin(BuiltinType::U64)},
+                    {"workset_epoch", TypeRef::Builtin(BuiltinType::U64)},
                 },
             });
             continue;
@@ -1049,33 +952,6 @@ BuildCanonicalRuntimeActionSchemas()
                     *CanonicalActionOutputSchemaIdentity(action),
                 .kind = TypeSchemaKind::ArtifactReference,
                 .element_type = TypeRef::Named(payload),
-            });
-            break;
-        }
-        case ActionOutputShape::ArtifactReferenceList:
-        {
-            const SchemaIdentity payload =
-                *CanonicalActionArtifactPayloadSchemaIdentity(
-                    action);
-            const SchemaIdentity reference =
-                *CanonicalActionArtifactReferenceSchemaIdentity(
-                    action);
-            append({
-                .identity = payload,
-                .kind = TypeSchemaKind::BoundedBytes,
-                .maximum_size = kMaximumSapBytes,
-            });
-            append({
-                .identity = reference,
-                .kind = TypeSchemaKind::ArtifactReference,
-                .element_type = TypeRef::Named(payload),
-            });
-            append({
-                .identity =
-                    *CanonicalActionOutputSchemaIdentity(action),
-                .kind = TypeSchemaKind::BoundedList,
-                .maximum_size = 256,
-                .element_type = TypeRef::Named(reference),
             });
             break;
         }
@@ -1241,29 +1117,6 @@ BuildCanonicalRuntimeActionDescriptors()
         effect(ActionEffect::AdvanceEmulation),
         0));
     result.push_back(Descriptor(
-        CanonicalAction::StopPointsSubscribeGroup,
-        service(SessionServiceCapability::StopPoints),
-        0,
-        5000,
-        ActionEpochPolicy::RequiresCurrentEpoch,
-        ActionReplayClass::Deterministic,
-        ActionCancellationMode::CleanupRequired,
-        ActionResourceBehavior::Promotable,
-        ActionCleanupGuarantee::Automatic));
-    result.push_back(Descriptor(
-        CanonicalAction::StopPointsReplaceGroup,
-        service(SessionServiceCapability::StopPoints),
-        0,
-        5000,
-        ActionEpochPolicy::RequiresCurrentEpoch,
-        ActionReplayClass::Deterministic,
-        ActionCancellationMode::CleanupRequired,
-        ActionResourceBehavior::Promotable,
-        ActionCleanupGuarantee::Automatic,
-        true,
-        ActionIdempotency::ReceiptProven));
-
-    result.push_back(Descriptor(
         CanonicalAction::InputAcquireLease,
         service(SessionServiceCapability::Input),
         0,
@@ -1275,7 +1128,8 @@ BuildCanonicalRuntimeActionDescriptors()
         ActionCleanupGuarantee::VerifiedCompensation,
         true));
     for (CanonicalAction action : {
-             CanonicalAction::InputPublishHeld,
+             CanonicalAction::InputApplyState,
+             CanonicalAction::InputBeginDelivery,
          })
     {
         result.push_back(Descriptor(
@@ -1290,44 +1144,18 @@ BuildCanonicalRuntimeActionDescriptors()
             ActionCleanupGuarantee::VerifiedCompensation,
             true));
     }
-    for (CanonicalAction action : {
-             CanonicalAction::InputPublishPulse,
-             CanonicalAction::InputPublishSequence,
-         })
-    {
-        result.push_back(Descriptor(
-            action,
-            services(
-                SessionServiceCapability::Input,
-                SessionServiceCapability::Execution),
-            effects(
-                ActionEffect::PublishInput,
-                ActionEffect::AdvanceEmulation),
-            0,
-            ActionEpochPolicy::RequiresCurrentEpoch,
-            ActionReplayClass::RecordedEvidence,
-            ActionCancellationMode::CleanupRequired,
-            ActionResourceBehavior::None,
-            ActionCleanupGuarantee::VerifiedCompensation,
-            true));
-    }
     result.push_back(Descriptor(
-        CanonicalAction::InputNeutralize,
-        service(SessionServiceCapability::Input),
-        effect(ActionEffect::PublishInput),
-        30000,
-        ActionEpochPolicy::RequiresCurrentEpoch,
-        ActionReplayClass::RecordedEvidence,
-        ActionCancellationMode::CleanupRequired,
-        ActionResourceBehavior::None,
-        ActionCleanupGuarantee::VerifiedCompensation,
-        true,
-        ActionIdempotency::NaturallyIdempotent));
-    result.push_back(Descriptor(
-        CanonicalAction::InputAwaitGuestPoll,
+        CanonicalAction::InputCompleteDelivery,
         service(SessionServiceCapability::Input),
         0,
-        0));
+        5000,
+        ActionEpochPolicy::RequiresCurrentEpoch,
+        ActionReplayClass::RecordedEvidence,
+        ActionCancellationMode::BeforeMutationOnly,
+        ActionResourceBehavior::None,
+        ActionCleanupGuarantee::None,
+        false,
+        ActionIdempotency::ReceiptProven));
 
     result.push_back(Descriptor(
         CanonicalAction::MoviePrepareReadOnlyPlayback,
@@ -1431,35 +1259,10 @@ BuildCanonicalRuntimeActionDescriptors()
     }
 
     result.push_back(Descriptor(
-        CanonicalAction::CaptureAttach,
-        service(SessionServiceCapability::Capture),
-        effect(ActionEffect::Capture),
-        30000,
-        ActionEpochPolicy::RequiresCurrentEpoch,
-        ActionReplayClass::RecordedEvidence,
-        ActionCancellationMode::CleanupRequired,
-        ActionResourceBehavior::Promotable,
-        ActionCleanupGuarantee::VerifiedCompensation,
-        true));
-    result.push_back(Descriptor(
         CanonicalAction::CaptureMark,
         service(SessionServiceCapability::Capture),
         effect(ActionEffect::Capture),
         5000));
-    result.push_back(Descriptor(
-        CanonicalAction::CaptureFinalize,
-        services(
-            SessionServiceCapability::Capture,
-            SessionServiceCapability::Artifact),
-        effects(ActionEffect::Capture, ActionEffect::ArtifactIo),
-        60000,
-        ActionEpochPolicy::RequiresCurrentEpoch,
-        ActionReplayClass::ExternalCommit,
-        ActionCancellationMode::CleanupRequired,
-        ActionResourceBehavior::None,
-        ActionCleanupGuarantee::VerifiedCompensation,
-        true,
-        ActionIdempotency::ReceiptProven));
     result.push_back(Descriptor(
         CanonicalAction::ScreenshotCapture,
         services(
@@ -1486,24 +1289,45 @@ BuildCanonicalRuntimeActionDescriptors()
         ActionCleanupGuarantee::None,
         false,
         ActionIdempotency::ReceiptProven));
+    result.push_back(Descriptor(
+        CanonicalAction::ExecutionRequirePausedPc,
+        service(SessionServiceCapability::Execution),
+        0,
+        5000,
+        ActionEpochPolicy::RequiresCurrentEpoch,
+        ActionReplayClass::RecordedEvidence,
+        ActionCancellationMode::BeforeMutationOnly,
+        ActionResourceBehavior::None,
+        ActionCleanupGuarantee::None,
+        false,
+        ActionIdempotency::NaturallyIdempotent));
+
+    if (result.size() != kActions.size())
+        throw std::logic_error("Canonical action descriptor catalog is incomplete");
+
+    for (const CanonicalActionDefinition& definition : kActions)
+    {
+        const auto found = std::ranges::find(
+            result,
+            definition.name,
+            [](const ActionDescriptor& descriptor)
+            {
+                return std::string_view(descriptor.identity.canonical_id);
+            });
+        if (found == result.end())
+            throw std::logic_error(
+                "Canonical action descriptor catalog is incomplete");
+    }
 
     std::ranges::sort(
         result,
-        [](const ActionDescriptor& lhs,
-           const ActionDescriptor& rhs) {
-            const auto index = [](std::string_view name) {
-                const auto found = std::ranges::find(
-                    kActions,
-                    name,
-                    &CatalogEntry::name);
-                return static_cast<std::size_t>(
-                    found - kActions.begin());
-            };
-            return index(lhs.identity.canonical_id) <
-                index(rhs.identity.canonical_id);
+        {},
+        [](const ActionDescriptor& descriptor)
+        {
+            return std::pair{
+                descriptor.identity.canonical_id,
+                descriptor.identity.version};
         });
-    if (result.size() != kActions.size())
-        throw std::logic_error("Canonical action descriptor catalog is incomplete");
 
     for (ActionDescriptor& descriptor : result)
     {

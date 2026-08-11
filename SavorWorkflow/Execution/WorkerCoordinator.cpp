@@ -40,9 +40,7 @@ bool IsTerminalWorksetState(savor::wrms::WorksetStateCode state) noexcept {
 bool RuntimeAcceptsWorksets(
     const savor::ProcessWorkerSnapshot& snapshot) noexcept {
     // Injected preflight tests may not own a live ProcessWorker transport.
-    // Once a production manifest has been observed, however, the worker's
-    // runtime/session state is authoritative for admission.
-    if (!snapshot.runtime_manifest_received) return true;
+    if (!snapshot.runtime_contract_received) return true;
     return snapshot.session_open
         && snapshot.worker_state != savor::runtime::WorkerState::Tainted
         && snapshot.worker_state != savor::runtime::WorkerState::Stopping
@@ -83,168 +81,34 @@ std::string JoinDiagnostic(
     return result;
 }
 
-bool ManifestContainsExactModule(
-    const savor::runtime::WorkerRuntimeManifest& manifest,
-    const savor::runtime::fullphase::IFullPhaseProgramDefinition& required) {
-    const auto& contract = required.runtime_contract();
-    return std::any_of(
-        manifest.modules.begin(),
-        manifest.modules.end(),
-        [&](const auto& module) {
-            return module.module == contract.module
-                && std::find(
-                    module.entrypoints.begin(),
-                    module.entrypoints.end(),
-                    contract.entrypoint) != module.entrypoints.end()
-                && module.dependency_manifest_sha256
-                    == contract.dependency_lock_sha256
-                && manifest.runtime_profile_sha256
-                    == contract.runtime_profile_sha256
-                && !module.development_only;
-        });
-}
-
-bool LimitsSatisfy(
-    const savor::runtime::WorkerWorksetLimits& actual,
-    const savor::runtime::WorkerWorksetLimits& required) noexcept {
-    return actual.maximum_items_per_workset
-            >= required.maximum_items_per_workset
-        && actual.maximum_encoded_workset_bytes
-            >= required.maximum_encoded_workset_bytes
-        && actual.maximum_item_credits >= required.maximum_item_credits
-        && actual.maximum_active_and_staged_items
-            >= required.maximum_active_and_staged_items
-        && actual.finalizer_threads >= required.finalizer_threads
-        && actual.maximum_pending_finalizers
-            >= required.maximum_pending_finalizers
-        && actual.maximum_pending_finalizer_bytes
-            >= required.maximum_pending_finalizer_bytes
-        && actual.maximum_retained_terminals
-            >= required.maximum_retained_terminals
-        && actual.maximum_retained_terminal_bytes
-            >= required.maximum_retained_terminal_bytes
-        && actual.progressive_start_concurrency
-            >= required.progressive_start_concurrency;
-}
-
 bool ValidateHomogeneousPoolConfiguration(
     const WorkerCoordinatorConfig& config,
     std::string* diagnostic_out) {
-    std::unordered_set<std::int32_t> seen;
-    if (config.enabled_program_kinds.empty()) {
+    const auto validated =
+        savor::runtime::ValidateWorkerRuntimeContractV1(
+            config.expected_runtime_contract);
+    if (!validated.ok) {
         if (diagnostic_out) {
-            *diagnostic_out =
-                "homogeneous worker pool requires at least one enabled FullPhase";
+            *diagnostic_out = JoinDiagnostic(
+                "homogeneous worker pool has an invalid expected runtime contract",
+                validated.error.message);
         }
         return false;
     }
-    for (const auto program_kind : config.enabled_program_kinds) {
-        if (!seen.insert(program_kind).second) {
-            if (diagnostic_out) {
-                *diagnostic_out =
-                    "homogeneous worker pool contains a duplicate enabled program kind: "
-                    + std::to_string(program_kind);
-            }
-            return false;
+    if (!savor::runtime::IsNormalWorkerMode(config.worker_mode)) {
+        if (diagnostic_out) {
+            *diagnostic_out =
+                "JobExecutionCoordinator worker pools permit only Headless or Visual mode";
         }
-        const auto* phase = savor::runtime::fullphase::
-            ProductionRegistry().Find(program_kind);
-        if (phase == nullptr) {
-            if (diagnostic_out) {
-                *diagnostic_out =
-                    "enabled program kind is absent from the production FullPhase registry: "
-                    + std::to_string(program_kind);
-            }
-            return false;
-        }
-        if ((phase->runtime_contract().required_capabilities
-                & savor::runtime::CapabilityMask(
-                    savor::runtime::WorkerCapability::
-                        InteractiveVisualDebug)) != 0) {
-            if (diagnostic_out) {
-                *diagnostic_out =
-                    "InteractiveVisualDebug cannot be a FullPhase requirement";
-            }
-            return false;
-        }
+        return false;
     }
     if (diagnostic_out) diagnostic_out->clear();
     return true;
 }
 
-void PrepareConfiguredModules(
-    const WorkerCoordinatorConfig& config,
-    const std::shared_ptr<savor::ProcessWorker>& worker,
-    WorkerCoordinatorCapabilityPreflightResult* preflight) {
-    if (preflight == nullptr
-        || config.enabled_program_kinds.empty()
-        || !preflight->process_ready
-        || !preflight->error.empty()) {
-        return;
-    }
-    if (!worker) {
-        preflight->error =
-            "worker disappeared before module preparation";
-        return;
-    }
-
-    for (const auto program_kind : config.enabled_program_kinds) {
-        const auto* phase = savor::runtime::fullphase::
-            ProductionRegistry().Find(program_kind);
-        if (phase == nullptr) {
-            preflight->error =
-                "enabled program kind is absent from the local production registry: "
-                + std::to_string(program_kind);
-            return;
-        }
-        const auto& module = phase->module_envelope();
-        savor::wrms::CommandResultPayload result{};
-        if (!worker->prepare_encoded_module(
-                module,
-                &result,
-                config.module_prepare_timeout_ms)) {
-            auto detail = !result.message.empty()
-                ? result.message
-                : !result.error_code.empty()
-                ? result.error_code
-                : worker->last_error();
-            preflight->error = JoinDiagnostic(
-                "worker module preparation failed for "
-                    + phase->identity().canonical_id,
-                detail);
-            return;
-        }
-    }
-
-    preflight->runtime_manifest = worker->runtime_manifest();
-    if (!preflight->runtime_manifest.has_value()) {
-        preflight->error =
-            "worker did not publish a post-prepare runtime manifest";
-        return;
-    }
-    for (const auto program_kind : config.enabled_program_kinds) {
-        const auto* phase = savor::runtime::fullphase::
-            ProductionRegistry().Find(program_kind);
-        if (phase == nullptr) {
-            preflight->error =
-                "enabled program kind disappeared from the local production registry: "
-                + std::to_string(program_kind);
-            return;
-        }
-        if (!ManifestContainsExactModule(
-                *preflight->runtime_manifest,
-                *phase)) {
-            preflight->error =
-                "post-prepare runtime manifest omitted exact module "
-                + phase->runtime_contract().module.canonical_id;
-            return;
-        }
-    }
-}
-
 bool ValidatePreflight(
     const WorkerCoordinatorConfig& config,
-    const WorkerCoordinatorCapabilityPreflightResult& preflight,
+    const WorkerCoordinatorRuntimePreflightResult& preflight,
     std::string* diagnostic_out) {
     auto fail = [&](std::string diagnostic) {
         if (diagnostic_out != nullptr) {
@@ -261,59 +125,20 @@ bool ValidatePreflight(
     if (!preflight.error.empty()) {
         return fail(preflight.error);
     }
-    if (!savor::runtime::HasCapability(
-            preflight.capabilities,
-            savor::runtime::WorkerCapability::WorksetDispatch)) {
-        return fail("worker does not advertise WorksetDispatch");
+    if (!preflight.runtime_contract.has_value()) {
+        return fail("worker did not publish a runtime contract");
     }
-    if (!preflight.runtime_manifest.has_value()) {
-        return fail("worker did not publish a runtime manifest");
-    }
-    const auto manifest_validation =
-        savor::runtime::ValidateWorkerRuntimeManifest(
-            *preflight.runtime_manifest);
-    if (!manifest_validation.ok) {
+    const auto contract_validation =
+        savor::runtime::ValidateWorkerRuntimeContractV1(
+            *preflight.runtime_contract);
+    if (!contract_validation.ok) {
         return fail(JoinDiagnostic(
-            "worker runtime manifest is invalid",
-            manifest_validation.error.message));
+            "worker runtime contract is invalid",
+            contract_validation.error.message));
     }
-
-    const auto& manifest = *preflight.runtime_manifest;
-    if (!LimitsSatisfy(manifest.limits, config.required_workset_limits)) {
+    if (*preflight.runtime_contract != config.expected_runtime_contract) {
         return fail(
-            "worker runtime manifest falls below the homogeneous pool limits");
-    }
-    savor::runtime::WorkerCapabilityMask required_capabilities =
-        savor::runtime::CapabilityMask(
-            savor::runtime::WorkerCapability::WorksetDispatch);
-    for (const auto program_kind : config.enabled_program_kinds) {
-        const auto* phase = savor::runtime::fullphase::
-            ProductionRegistry().Find(program_kind);
-        if (phase == nullptr) {
-            return fail(
-                "enabled program kind is absent from the local production registry: "
-                + std::to_string(program_kind));
-        }
-        const auto phase_capabilities =
-            phase->runtime_contract().required_capabilities;
-        if ((phase_capabilities
-                & savor::runtime::CapabilityMask(
-                    savor::runtime::WorkerCapability::
-                        InteractiveVisualDebug)) != 0) {
-            return fail(
-                "InteractiveVisualDebug is a deployment capability and cannot be required by a FullPhase");
-        }
-        required_capabilities |= phase_capabilities;
-        if (!ManifestContainsExactModule(manifest, *phase)) {
-            return fail(
-                "worker runtime manifest does not advertise exact module "
-                + phase->runtime_contract().module.canonical_id);
-        }
-    }
-    if ((preflight.capabilities & required_capabilities)
-        != required_capabilities) {
-        return fail(
-            "worker does not advertise every capability required by the enabled FullPhase set");
+            "worker runtime contract does not match the coordinator's expected homogeneous runtime identity");
     }
     if (diagnostic_out != nullptr) {
         diagnostic_out->clear();
@@ -428,7 +253,7 @@ bool WriteStringToFile(
     if (!output) {
         if (error_out != nullptr) {
             *error_out =
-                "open runtime manifest failed: " + path.string();
+                "open runtime identity file failed: " + path.string();
         }
         return false;
     }
@@ -437,7 +262,7 @@ bool WriteStringToFile(
     if (!output) {
         if (error_out != nullptr) {
             *error_out =
-                "write runtime manifest failed: " + path.string();
+                "write runtime identity file failed: " + path.string();
         }
         return false;
     }
@@ -445,7 +270,7 @@ bool WriteStringToFile(
     if (!output) {
         if (error_out != nullptr) {
             *error_out =
-                "close runtime manifest failed: " + path.string();
+                "close runtime identity file failed: " + path.string();
         }
         return false;
     }
@@ -622,11 +447,11 @@ std::optional<WorkerRuntimeSourceSnapshot> InspectWorkerRuntimeSource(
     return source;
 }
 
-std::string ExpectedRuntimeManifest(
+std::string ExpectedRuntimeImageIdentity(
     const WorkerRuntimeSourceSnapshot& source) {
-    std::ostringstream manifest;
-    manifest
-        << "savor_worker_runtime_manifest_version=3\n"
+    std::ostringstream identity;
+    identity
+        << "savor_worker_runtime_image_identity_version=4\n"
         << "layout=shared_immutable\n"
         << "fingerprint=" << source.fingerprint << '\n'
         << "source_worker_exe="
@@ -638,7 +463,7 @@ std::string ExpectedRuntimeManifest(
         << "portable_stamp=" << source.portable_stamp << '\n'
         << "exe_materialization=copy\n"
         << "user_template=empty\n";
-    return manifest.str();
+    return identity.str();
 }
 
 bool ValidateRuntimeImage(
@@ -650,15 +475,15 @@ bool ValidateRuntimeImage(
     const auto runtime_sys = runtime_root / "Sys";
     const auto runtime_user = runtime_root / "User";
     const auto runtime_portable = runtime_root / "portable.txt";
-    const auto manifest_path =
-        runtime_root / "worker-runtime.manifest";
+    const auto identity_path =
+        runtime_root / "worker-runtime.identity";
 
-    std::string manifest;
-    if (!ReadFileToString(manifest_path, &manifest)
-        || manifest != ExpectedRuntimeManifest(source)) {
+    std::string identity;
+    if (!ReadFileToString(identity_path, &identity)
+        || identity != ExpectedRuntimeImageIdentity(source)) {
         if (error_out != nullptr) {
             *error_out =
-                "runtime manifest is missing or does not match its source";
+                "runtime image identity is missing or does not match its source";
         }
         return false;
     }
@@ -935,11 +760,11 @@ bool EnsureSharedWorkerRuntime(
             "being copied");
     }
     if (!WriteStringToFile(
-            staging_root / "worker-runtime.manifest",
-            ExpectedRuntimeManifest(*source),
+            staging_root / "worker-runtime.identity",
+            ExpectedRuntimeImageIdentity(*source),
             error_out)) {
         return fail_pending(
-            "write shared worker runtime manifest failed");
+            "write shared worker runtime identity failed");
     }
     validation_error.clear();
     if (!ValidateRuntimeImage(
@@ -1136,15 +961,20 @@ bool WorkerCoordinator::IsStarted() const noexcept {
         && !stopping_.load(std::memory_order_acquire);
 }
 
+const savor::runtime::WorkerRuntimeContractV1&
+WorkerCoordinator::RuntimeContract() const noexcept {
+    return config_.expected_runtime_contract;
+}
+
 void WorkerCoordinator::SetCallbacks(
     WorkerCoordinatorCallbacks callbacks) {
     std::lock_guard<std::mutex> callback_lock(callbacks_mutex_);
     callbacks_ = std::move(callbacks);
 }
 
-std::vector<ReadyWorkerCompatibilitySnapshot>
+std::vector<ReadyWorkerDispatchSnapshot>
 WorkerCoordinator::SnapshotReadyWorkers() const {
-    std::vector<ReadyWorkerCompatibilitySnapshot> snapshots;
+    std::vector<ReadyWorkerDispatchSnapshot> snapshots;
     const auto slots = CopyWorkerSlots();
     snapshots.reserve(slots.size());
     for (const auto& slot : slots) {
@@ -1152,7 +982,7 @@ WorkerCoordinator::SnapshotReadyWorkers() const {
             continue;
         }
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
-        if (!slot->ready || !slot->runtime_manifest.has_value()) {
+        if (!slot->ready || slot->runtime_contract_sha256.empty()) {
             continue;
         }
         auto snapshot = SnapshotReadyWorker(*slot);
@@ -1178,7 +1008,7 @@ FleetStartupSnapshot WorkerCoordinator::SnapshotFleetStartup() const {
             1,
             config_.max_worker_start_attempts);
     const auto slots = CopyWorkerSlots();
-    snapshot.slots.reserve(slots.size());
+    snapshot.worker_slots.reserve(slots.size());
     for (const auto& slot : slots) {
         if (!slot) {
             continue;
@@ -1191,7 +1021,7 @@ FleetStartupSnapshot WorkerCoordinator::SnapshotFleetStartup() const {
                 slot->observed_start_attempts;
             slot_snapshot.maximum_attempts = maximum_attempts;
             slot_snapshot.ready =
-                slot->ready && slot->runtime_manifest.has_value();
+                slot->ready && !slot->runtime_contract_sha256.empty();
             slot_snapshot.starting = slot->startup_in_progress;
             slot_snapshot.exhausted =
                 !slot_snapshot.ready
@@ -1212,7 +1042,7 @@ FleetStartupSnapshot WorkerCoordinator::SnapshotFleetStartup() const {
         snapshot.retry_pending +=
             slot_snapshot.retry_pending ? 1u : 0u;
         snapshot.exhausted += slot_snapshot.exhausted ? 1u : 0u;
-        snapshot.slots.push_back(std::move(slot_snapshot));
+        snapshot.worker_slots.push_back(std::move(slot_snapshot));
     }
     return snapshot;
 }
@@ -1231,8 +1061,6 @@ WorkerCoordinatorTelemetry WorkerCoordinator::SnapshotTelemetry() const {
             submit_temporary_unavailable_.load(std::memory_order_relaxed),
         .submit_stale_generation =
             submit_stale_generation_.load(std::memory_order_relaxed),
-        .submit_incompatible =
-            submit_incompatible_.load(std::memory_order_relaxed),
         .submit_deterministic_rejection =
             submit_deterministic_rejection_.load(std::memory_order_relaxed),
         .submit_transport_canceled_before_write =
@@ -1261,17 +1089,6 @@ WorkerCoordinatorStartResult
 WorkerCoordinator::SnapshotStartResult() const {
     std::lock_guard<std::mutex> result_lock(start_result_mutex_);
     return start_result_;
-}
-
-std::vector<std::int32_t> WorkerCoordinator::EnabledProgramKinds() const {
-    auto kinds = config_.enabled_program_kinds;
-    std::sort(kinds.begin(), kinds.end());
-    return kinds;
-}
-
-savor::runtime::WorkerWorksetLimits
-WorkerCoordinator::RequiredWorksetLimits() const noexcept {
-    return config_.required_workset_limits;
 }
 
 bool WorkerCoordinator::ConfirmWorksetResidence(
@@ -1400,7 +1217,7 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
         };
     }
 
-    const auto requirement = CompatibilityOf(workset);
+    const auto dispatch = DispatchInfoOf(workset);
     const auto slot = GetWorkerSlot(target.worker_id);
     if (!slot) {
         ++submit_rejected_;
@@ -1479,8 +1296,9 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
                 && !(idempotent_retry
                     && *slot->active_workset_id == workset_id))
             || !slot->worker
-            || !slot->runtime_manifest.has_value()
-            || slot->available_item_credits < requirement.item_count) {
+            || slot->runtime_contract_sha256.empty()
+            || !savor::runtime::IsNormalWorkerMode(slot->mode)
+            || slot->available_item_credits < dispatch.item_count) {
             ++submit_rejected_;
             ++submit_temporary_unavailable_;
             return {
@@ -1509,24 +1327,10 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
                     : process_snapshot.last_error,
             };
         }
-        const auto snapshot = SnapshotReadyWorker(*slot);
-        std::string compatibility_error;
-        if (!IsCompatible(snapshot, requirement, &compatibility_error)) {
-            ++submit_rejected_;
-            ++submit_incompatible_;
-            return {
-                .disposition =
-                    WorkerSubmitDisposition::IncompatibleWorkset,
-                .worker_id = slot->id,
-                .process_generation = generation,
-                .error_code = "ExplicitTargetIncompatible",
-                .diagnostic = std::move(compatibility_error),
-            };
-        }
         const auto validation =
             savor::runtime::ValidateWorkerWorksetDefinition(
                 workset,
-                slot->runtime_manifest->limits);
+                config_.expected_runtime_contract.limits);
         if (!validation.ok) {
             ++submit_rejected_;
             ++submit_deterministic_rejection_;
@@ -1595,11 +1399,11 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
             .applied_item_count = payload.applied_item_count,
             .applied_sidecar_sha256 =
                 std::move(payload.applied_sidecar_sha256),
-            .disposition = payload.already_accepted
+            .disposition = payload.already_admitted
                 ? savor::runtime::WorksetSubmissionDispositionV1::
-                    AlreadyAccepted
+                    AlreadyAdmitted
                 : savor::runtime::WorksetSubmissionDispositionV1::
-                    Accepted,
+                    Admitted,
             };
         }
     }
@@ -1626,8 +1430,8 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
                 }
                 slot->warm_execution_key_sha256 =
                     workset.execution_key.canonical_sha256;
-                slot->warm_program_module_id =
-                    workset.execution_key.module.canonical_id;
+                slot->warm_program_package_sha256 =
+                    dispatch.program_package_sha256;
                 ++slot->accepted_worksets;
                 worker_status_.UpdateState(
                     ToTelemetryWorkerId(slot->id),
@@ -1987,17 +1791,13 @@ bool WorkerCoordinator::SetWorkerVisualSurface(
     return true;
 }
 
-WorkerWorksetCompatibility WorkerCoordinator::CompatibilityOf(
+WorkerWorksetDispatchInfo WorkerCoordinator::DispatchInfoOf(
     const savor::runtime::WorkerWorksetDefinition& workset) {
     return {
-        .module = workset.execution_key.module,
-        .entrypoint = workset.execution_key.entrypoint,
-        .verified_dependency_sha256 =
-            workset.execution_key.verified_dependency_sha256,
-        .runtime_profile_sha256 =
-            workset.execution_key.runtime_profile_sha256,
         .execution_key_sha256 =
             workset.execution_key.canonical_sha256,
+        .program_package_sha256 =
+            workset.execution_key.program_package_sha256,
         .baseline_sha256 =
             workset.execution_key.baseline.sha256,
         .item_count = static_cast<std::uint32_t>(
@@ -2006,60 +1806,6 @@ WorkerWorksetCompatibility WorkerCoordinator::CompatibilityOf(
                 std::numeric_limits<std::uint32_t>::max())),
         .encoded_size_bytes = workset.encoded_size_bytes,
     };
-}
-
-bool WorkerCoordinator::IsCompatible(
-    const ReadyWorkerCompatibilitySnapshot& worker,
-    const WorkerWorksetCompatibility& requirement,
-    std::string* diagnostic_out) {
-    auto fail = [&](std::string diagnostic) {
-        if (diagnostic_out != nullptr) {
-            *diagnostic_out = std::move(diagnostic);
-        }
-        return false;
-    };
-
-    if (!savor::runtime::HasCapability(
-            worker.capabilities,
-            savor::runtime::WorkerCapability::WorksetDispatch)) {
-        return fail("worker does not advertise WorksetDispatch");
-    }
-    if (worker.runtime_manifest.runtime_profile_sha256
-        != requirement.runtime_profile_sha256) {
-        return fail("worker runtime profile is incompatible");
-    }
-    if (requirement.item_count == 0
-        || requirement.item_count
-            > worker.runtime_manifest.limits.maximum_items_per_workset) {
-        return fail("workset item count exceeds worker limits");
-    }
-    if (requirement.encoded_size_bytes == 0
-        || requirement.encoded_size_bytes
-            > worker.runtime_manifest.limits
-                .maximum_encoded_workset_bytes) {
-        return fail("workset encoded size exceeds worker limits");
-    }
-
-    const auto module_it = std::find_if(
-        worker.runtime_manifest.modules.begin(),
-        worker.runtime_manifest.modules.end(),
-        [&](const savor::runtime::RuntimeModuleManifestEntry& module) {
-            return module.module == requirement.module;
-        });
-    if (module_it == worker.runtime_manifest.modules.end()) {
-        return fail("worker does not advertise the required module");
-    }
-    if (std::find(
-            module_it->entrypoints.begin(),
-            module_it->entrypoints.end(),
-            requirement.entrypoint)
-        == module_it->entrypoints.end()) {
-        return fail("worker does not advertise the required entrypoint");
-    }
-    if (diagnostic_out != nullptr) {
-        diagnostic_out->clear();
-    }
-    return true;
 }
 
 WorkerCoordinator::WorkerSlotPtr WorkerCoordinator::MakeWorkerSlot(
@@ -2190,7 +1936,7 @@ void WorkerCoordinator::HandleSessionEvent(
     NotifyAvailabilityChanged();
 }
 
-WorkerCoordinatorCapabilityPreflightResult
+WorkerCoordinatorRuntimePreflightResult
 WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
     if (!slot) {
         return {
@@ -2212,9 +1958,9 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
             .error = "worker process object is unavailable",
         };
     }
-    if (config_.worker_capability_preflight) {
+    if (config_.worker_runtime_preflight) {
         try {
-            return config_.worker_capability_preflight(
+            return config_.worker_runtime_preflight(
                 worker_id,
                 config_,
                 worker);
@@ -2265,13 +2011,11 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
         };
     }
 
-    const auto process_capabilities = worker->process_capabilities();
-    const auto runtime_manifest = worker->runtime_manifest();
-    if (!runtime_manifest.has_value()) {
+    const auto runtime_contract = worker->runtime_contract();
+    if (!runtime_contract.has_value()) {
         return {
             .process_ready = true,
-            .capabilities = process_capabilities,
-            .error = "worker did not publish a runtime manifest",
+            .error = "worker did not publish a runtime contract",
         };
     }
 
@@ -2282,8 +2026,7 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
     if (filesystem_error) {
         return {
             .process_ready = true,
-            .capabilities = process_capabilities,
-            .runtime_manifest = runtime_manifest,
+            .runtime_contract = runtime_contract,
             .error = JoinDiagnostic(
                 "worker user-directory creation failed",
                 filesystem_error.message()),
@@ -2296,7 +2039,7 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
                 .runtime_root = executable.parent_path().string(),
                 .user_directory = user_directory.string(),
                 .iso_path = config_.iso_path,
-                .visual = config_.visual_workers,
+                .worker_mode = config_.worker_mode,
                 .render_widget_handle = render_widget_handle,
                 .runtime_artifact_root =
                     config_.runtime_artifact_root,
@@ -2306,8 +2049,7 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
             config_.worker_start_timeout_ms)) {
         return {
             .process_ready = true,
-            .capabilities = process_capabilities,
-            .runtime_manifest = runtime_manifest,
+            .runtime_contract = runtime_contract,
             .error = error.empty()
                 ? "worker OpenSession failed"
                 : error,
@@ -2315,8 +2057,7 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
     }
     return {
         .process_ready = true,
-        .capabilities = open_result.capability_mask,
-        .runtime_manifest = runtime_manifest,
+        .runtime_contract = runtime_contract,
     };
 }
 
@@ -2452,19 +2193,10 @@ void WorkerCoordinator::CompleteWorkerSlotStart(
     const WorkerSlotPtr& slot,
     std::uint32_t attempt) {
     auto preflight = PreflightWorkerSlot(slot);
-    std::shared_ptr<savor::ProcessWorker> preflight_worker;
-    {
-        std::lock_guard<std::mutex> slot_lock(slot->mutex);
-        preflight_worker = slot->worker;
-    }
-    // The injected preflight is the test/deployment seam for a completely
-    // prepared generation. Normal production startup owns module preparation
-    // here; an injected preflight supplies the resulting factual manifest.
-    if (!config_.worker_capability_preflight) {
-        PrepareConfiguredModules(
-            config_,
-            preflight_worker,
-            &preflight);
+    if (preflight.runtime_contract.has_value()
+        && *preflight.runtime_contract
+            != config_.expected_runtime_contract) {
+        preflight.retryable = false;
     }
     std::string validation_error;
     const bool preflight_ready =
@@ -2483,10 +2215,11 @@ void WorkerCoordinator::CompleteWorkerSlotStart(
         slot->startup_in_progress = false;
         if (ready) {
             slot->ready = true;
-            slot->capabilities = preflight.capabilities;
-            slot->runtime_manifest = preflight.runtime_manifest;
+            slot->mode = config_.worker_mode;
+            slot->runtime_contract_sha256 =
+                preflight.runtime_contract->canonical_sha256;
             slot->available_item_credits =
-                preflight.runtime_manifest->limits.maximum_item_credits;
+                preflight.runtime_contract->limits.maximum_item_credits;
             if (slot->worker) {
                 const auto process_snapshot =
                     slot->worker->latest_snapshot();
@@ -2522,8 +2255,7 @@ void WorkerCoordinator::CompleteWorkerSlotStart(
         } else {
             ++start_failures_;
             slot->ready = false;
-            slot->capabilities = 0;
-            slot->runtime_manifest.reset();
+            slot->runtime_contract_sha256.clear();
             slot->available_item_credits = 0;
             slot->last_start_error =
                 validation_error.empty()
@@ -2581,10 +2313,7 @@ void WorkerCoordinator::StopWorkerSlot(const WorkerSlotPtr& slot) {
         slot->quarantine_requested = false;
         slot->quarantine_diagnostic.clear();
         slot->submitting_workset_id.reset();
-        if (slot->runtime_manifest.has_value()) {
-            protocol_version =
-                slot->runtime_manifest->wrms_protocol_version;
-        }
+        protocol_version = savor::wrms::ProtocolVersion;
         worker = slot->worker;
     }
 
@@ -2599,8 +2328,7 @@ void WorkerCoordinator::StopWorkerSlot(const WorkerSlotPtr& slot) {
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
         if (slot->process_generation == generation) {
             slot->active_workset_id.reset();
-            slot->capabilities = 0;
-            slot->runtime_manifest.reset();
+            slot->runtime_contract_sha256.clear();
             slot->available_item_credits = 0;
             slot->worker.reset();
         }
@@ -2649,13 +2377,12 @@ void WorkerCoordinator::ResetWorkerSlot(const WorkerSlotPtr& slot) {
         slot->quarantine_diagnostic.clear();
         slot->submitting_workset_id.reset();
         slot->active_workset_id.reset();
-        slot->capabilities = 0;
-        slot->runtime_manifest.reset();
+        slot->runtime_contract_sha256.clear();
         slot->available_item_credits = 0;
         slot->next_liveness_probe = {};
         slot->consecutive_liveness_failures = 0;
         slot->warm_execution_key_sha256.reset();
-        slot->warm_program_module_id.reset();
+        slot->warm_program_package_sha256.reset();
     }
     ConfigureWorkerCallbacks(slot);
     if (old_worker) {
@@ -2888,9 +2615,15 @@ void WorkerCoordinator::DetectLostWorkers() {
             worker_id = slot->id;
             generation = slot->process_generation;
             worker = slot->worker;
+            // An injected preflight is a deterministic unit-test seam: it
+            // supplies the admitted contract without launching a transport.
+            // Production slots always take the live-process branch.
+            const bool requires_live_transport =
+                !static_cast<bool>(config_.worker_runtime_preflight);
             lost = slot->quarantine_requested
                 || (slot->ready
-                    && (!worker || !worker->is_running()));
+                    && (!worker || (requires_live_transport
+                        && !worker->is_running())));
             if (!lost) {
                 continue;
             }
@@ -2898,10 +2631,7 @@ void WorkerCoordinator::DetectLostWorkers() {
                 slot->quarantine_diagnostic.empty()
                 ? "worker process became unavailable"
                 : slot->quarantine_diagnostic;
-            if (slot->runtime_manifest.has_value()) {
-                protocol_version =
-                    slot->runtime_manifest->wrms_protocol_version;
-            }
+            protocol_version = savor::wrms::ProtocolVersion;
             slot->ready = false;
             slot->submission_in_progress = false;
             slot->submitting_workset_id.reset();
@@ -2944,15 +2674,15 @@ void WorkerCoordinator::DetectLostWorkers() {
     }
 }
 
-ReadyWorkerCompatibilitySnapshot
+ReadyWorkerDispatchSnapshot
 WorkerCoordinator::SnapshotReadyWorker(const WorkerSlot& slot) const {
     const bool runtime_accepting = !slot.worker
         || RuntimeAcceptsWorksets(slot.worker->latest_snapshot());
-    ReadyWorkerCompatibilitySnapshot snapshot{
+    ReadyWorkerDispatchSnapshot snapshot{
         .worker_id = slot.id,
         .process_generation = slot.process_generation,
-        .capabilities = slot.capabilities,
-        .runtime_manifest = *slot.runtime_manifest,
+        .mode = slot.mode,
+        .runtime_contract_sha256 = slot.runtime_contract_sha256,
         .available_item_credits = slot.available_item_credits,
         .accepting_workset =
             runtime_accepting
@@ -2963,8 +2693,8 @@ WorkerCoordinator::SnapshotReadyWorker(const WorkerSlot& slot) const {
         .resident_workset_id = slot.active_workset_id,
         .warm_execution_key_sha256 =
             slot.warm_execution_key_sha256,
-        .warm_program_module_id =
-            slot.warm_program_module_id,
+        .warm_program_package_sha256 =
+            slot.warm_program_package_sha256,
     };
     return snapshot;
 }
@@ -2974,10 +2704,7 @@ WorkerCoordinatorEventContext WorkerCoordinator::EventContext(
     return {
         .worker_id = slot.id,
         .process_generation = slot.process_generation,
-        .wrms_protocol_version = slot.runtime_manifest.has_value()
-            ? static_cast<std::uint16_t>(
-                slot.runtime_manifest->wrms_protocol_version)
-            : std::uint16_t{0},
+        .wrms_protocol_version = savor::wrms::ProtocolVersion,
     };
 }
 
@@ -3014,10 +2741,12 @@ void WorkerCoordinator::HandleWorksetState(
                 ToTelemetryWorkerId(worker_id),
                 WorkerStateKind::Idle);
         } else if (
-            payload.state == savor::wrms::WorksetStateCode::Staged
+            payload.state == savor::wrms::WorksetStateCode::Admitted
             || payload.state
-                == savor::wrms::WorksetStateCode::PreparingBaseline
+                == savor::wrms::WorksetStateCode::Initializing
+            || payload.state == savor::wrms::WorksetStateCode::Ready
             || payload.state == savor::wrms::WorksetStateCode::Running
+            || payload.state == savor::wrms::WorksetStateCode::ResettingItem
             || payload.state == savor::wrms::WorksetStateCode::Draining) {
             slot->active_workset_id = payload.workset_id;
             worker_status_.UpdateState(
@@ -3092,8 +2821,10 @@ void WorkerCoordinator::HandleItemProgress(
     worker_status_.RecordHeartbeat(ToTelemetryWorkerId(worker_id));
     worker_status_.RecordProgress(
         ToTelemetryWorkerId(worker_id),
-        "workset progress ordinal "
-            + std::to_string(payload.ordinal));
+        payload.display_text.empty()
+            ? "workset progress ordinal "
+                + std::to_string(payload.ordinal)
+            : payload.display_text);
 
     std::function<void(
         const WorkerCoordinatorEventContext&,
@@ -3233,7 +2964,7 @@ WorkerCoordinator::CurrentEventContext(
     }
     std::lock_guard<std::mutex> slot_lock(slot->mutex);
     if (slot->process_generation != process_generation
-        || !slot->runtime_manifest.has_value()) {
+        || slot->runtime_contract_sha256.empty()) {
         return std::nullopt;
     }
     return EventContext(*slot);
@@ -3275,7 +3006,7 @@ void WorkerCoordinator::RefreshStartResult(std::string diagnostic) {
         && fleet.exhausted == desired;
     std::string exhaustion_diagnostic;
     if (startup_exhausted) {
-        for (const auto& slot : fleet.slots) {
+        for (const auto& slot : fleet.worker_slots) {
             if (exhaustion_diagnostic.empty()
                 && !slot.terminal_diagnostic.empty()) {
                 exhaustion_diagnostic =

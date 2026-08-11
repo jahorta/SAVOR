@@ -11,65 +11,117 @@
 #include <sstream>
 #include <vector>
 
-#include "Phases/Programs/BattleMacroProbe/BattleMacroProbePayload.h"
-
 namespace savor::e2e {
 namespace {
 
-constexpr auto kAllScenarioOrder = std::to_array<std::string_view>({
-    "seedprobe",
+constexpr auto kScenarioCatalog = std::to_array<E2eScenarioDescriptor>({
+    {
+        .name = "seedprobe",
+        .kind = E2eScenarioKind::SeedProbe,
+        .supported_entry_sources =
+            EntrySourceBit(E2eScenarioEntrySource::ImportedSavestateFile)
+            | EntrySourceBit(
+                E2eScenarioEntrySource::PreparedSterilizedCheckpoint),
+        .default_entry_source =
+            E2eScenarioEntrySource::ImportedSavestateFile,
+        .include_in_all = true,
+    },
+    {
+        .name = "battle",
+        .kind = E2eScenarioKind::Battle,
+        .supported_entry_sources =
+            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation)
+            | EntrySourceBit(
+                E2eScenarioEntrySource::PreparedSterilizedCheckpoint),
+        .default_entry_source =
+            E2eScenarioEntrySource::FreshTasMovieValidation,
+        .must_run_alone = true,
+        .requires_repeat_one = true,
+    },
+    {
+        .name = "tasmovie",
+        .kind = E2eScenarioKind::TasMovie,
+        .supported_entry_sources =
+            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation),
+        .default_entry_source =
+            E2eScenarioEntrySource::FreshTasMovieValidation,
+        .must_run_alone = true,
+        .requires_repeat_one = true,
+        .requires_one_worker = true,
+    },
+    {
+        .name = "tasmovie_with_validation",
+        .kind = E2eScenarioKind::TasMovieWithValidation,
+        .supported_entry_sources =
+            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation),
+        .default_entry_source =
+            E2eScenarioEntrySource::FreshTasMovieValidation,
+        .must_run_alone = true,
+        .requires_repeat_one = true,
+        .requires_one_worker = true,
+    },
+    {
+        .name = "tasmovie_seedprobe",
+        .kind = E2eScenarioKind::TasMovieSeedProbe,
+        .supported_entry_sources =
+            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation),
+        .default_entry_source =
+            E2eScenarioEntrySource::FreshTasMovieValidation,
+        .must_run_alone = true,
+        .requires_repeat_one = true,
+    },
 });
 
-struct ScenarioRequirement {
-    bool requires_dtm_file = false;
-    bool requires_savestate_file = false;
-    bool requires_source_savestate_id = false;
-};
-
-ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
-    if (scenario == "seedprobe") {
-        return {.requires_savestate_file = true};
-    }
-    if (scenario == "tasmovie"
-        || scenario == "tasmovie_with_validation"
-        || scenario == "tasmovie_seedprobe") {
-        return {.requires_dtm_file = true};
-    }
-    return {};
-}
-
 bool IsSupportedScenario(const std::string_view scenario) {
-    if (scenario == "all" || scenario == "tasmovie"
-        || scenario == "tasmovie_with_validation"
-        || scenario == "tasmovie_seedprobe") {
-        return true;
-    }
-    for (const auto& supported : kAllScenarioOrder) {
-        if (scenario == supported) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool IsFreshTasMovieScenario(const std::string_view scenario) {
-    return scenario == "tasmovie"
-        || scenario == "tasmovie_with_validation"
-        || scenario == "tasmovie_seedprobe";
+    return scenario == "all" || FindE2eScenarioDescriptor(scenario) != nullptr;
 }
 
 std::vector<std::string> ExpandScenarioArguments(const std::vector<std::string>& requested_scenarios) {
     std::vector<std::string> expanded;
     for (const auto& requested : requested_scenarios) {
         if (requested == "all") {
-            for (const auto& scenario : kAllScenarioOrder) {
-                expanded.push_back(std::string(scenario));
+            for (const auto& scenario : kScenarioCatalog) {
+                if (scenario.include_in_all) {
+                    expanded.push_back(std::string(scenario.name));
+                }
             }
         } else {
             expanded.push_back(requested);
         }
     }
     return expanded;
+}
+
+bool HasAnyRtcArgument(const CliOptions& options) {
+    return options.tasmovie_rtc.has_value()
+        || options.tasmovie_rtc_min.has_value()
+        || options.tasmovie_rtc_max.has_value();
+}
+
+bool IsCompletePreparedWorkspace(
+    const std::filesystem::path& root,
+    std::string* error_out) {
+    if (root.empty() || !std::filesystem::is_directory(root)) {
+        if (error_out) {
+            *error_out = "prepared-checkpoint mode requires an existing --workspace-root";
+        }
+        return false;
+    }
+    constexpr std::array<std::string_view, 6> database_names{
+        "execution.db", "state.db", "analysis.db", "authoring.db",
+        "ui_read.db", "archive.db",
+    };
+    for (const auto name : database_names) {
+        const auto path = root / name;
+        if (!std::filesystem::is_regular_file(path)) {
+            if (error_out) {
+                *error_out = "prepared-checkpoint workspace is incomplete; missing "
+                    + path.string();
+            }
+            return false;
+        }
+    }
+    return true;
 }
 
 std::vector<std::string> RemoveDuplicateScenarios(
@@ -198,8 +250,6 @@ bool ParseDurableLineMask(const std::string& value, std::uint32_t* mask_out, std
 
 struct LoadProfile {
     int samples_per_axis = 3;
-    int fake_attack_low = 0;
-    int fake_attack_high = 2;
 };
 
 bool ResolveLoadProfile(const std::string& raw_value, LoadProfile* profile_out, std::string* error_out) {
@@ -208,15 +258,15 @@ bool ResolveLoadProfile(const std::string& raw_value, LoadProfile* profile_out, 
     }
     const auto value = LowerAscii(raw_value);
     if (value == "low") {
-        *profile_out = LoadProfile{ .samples_per_axis = 3, .fake_attack_low = 0, .fake_attack_high = 2 };
+        *profile_out = LoadProfile{ .samples_per_axis = 3 };
         return true;
     }
     if (value == "mid") {
-        *profile_out = LoadProfile{ .samples_per_axis = 5, .fake_attack_low = 0, .fake_attack_high = 10 };
+        *profile_out = LoadProfile{ .samples_per_axis = 5 };
         return true;
     }
     if (value == "high") {
-        *profile_out = LoadProfile{ .samples_per_axis = 20, .fake_attack_low = 0, .fake_attack_high = 20 };
+        *profile_out = LoadProfile{ .samples_per_axis = 20 };
         return true;
     }
     if (error_out != nullptr) {
@@ -226,6 +276,41 @@ bool ResolveLoadProfile(const std::string& raw_value, LoadProfile* profile_out, 
 }
 
 } // namespace
+
+std::span<const E2eScenarioDescriptor> E2eScenarioCatalog() {
+    return kScenarioCatalog;
+}
+
+const E2eScenarioDescriptor* FindE2eScenarioDescriptor(
+    const std::string_view name) {
+    const auto it = std::ranges::find(
+        kScenarioCatalog, name, &E2eScenarioDescriptor::name);
+    return it == kScenarioCatalog.end() ? nullptr : &*it;
+}
+
+E2eScenarioEntrySource SelectE2eScenarioEntrySource(
+    const E2eScenarioDescriptor& descriptor,
+    const CliOptions& options) {
+    return options.source_savestate_id.has_value()
+        ? E2eScenarioEntrySource::PreparedSterilizedCheckpoint
+        : descriptor.default_entry_source;
+}
+
+std::string_view ToString(const E2eScenarioEntrySource source) {
+    switch (source) {
+    case E2eScenarioEntrySource::ImportedSavestateFile:
+        return "ImportedSavestateFile";
+    case E2eScenarioEntrySource::FreshTasMovieValidation:
+        return "FreshTasMovieValidation";
+    case E2eScenarioEntrySource::PreparedSterilizedCheckpoint:
+        return "PreparedSterilizedCheckpoint";
+    }
+    return "Unknown";
+}
+
+bool EntrySourceRequiresFreshWorkspace(const E2eScenarioEntrySource source) {
+    return source != E2eScenarioEntrySource::PreparedSterilizedCheckpoint;
+}
 
 std::filesystem::path ResolveWorkerExePath(const char* argv0) {
     const auto exe_path = std::filesystem::absolute(std::filesystem::path(argv0));
@@ -262,7 +347,7 @@ void PrintUsage() {
               << " [--savestate-file <path>]"
               << " [--source-savestate-id <id>]"
               << " [--dtm-file <path>]"
-              << " [--scenario seedprobe|tasmovie|tasmovie_with_validation|tasmovie_seedprobe|all]"
+              << " [--scenario seedprobe|battle|tasmovie|tasmovie_with_validation|tasmovie_seedprobe|all]"
               << " [--poll-ms <100..5000 - default 100>]"
               << " [--worker-count <1..30 - default 1>]"
               << " [--wait-for-workers-ready]"
@@ -284,12 +369,35 @@ void PrintUsage() {
               << "\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
     std::cout << "E2E perf mode requires Release builds and load-level low|mid|high; worker-count defaults to 15 and accepts 1..30.\n";
+    std::cout << "Prepared checkpoint mode is selected by --source-savestate-id and preserves the complete existing workspace.\n";
     std::cout << "The tasmovie scenario establishes the handcrafted root cursor only; it takes no RTC and must run alone.\n";
     std::cout << "The tasmovie_with_validation scenario requires one exact --tasmovie-rtc in 0..4294967295 and must run alone.\n";
     std::cout << "The tasmovie_seedprobe scenario composes validation with SeedProbe, requires an exact RTC and no external savestate, and must run alone.\n";
+    std::cout << "The battle scenario validates the approved DTM, sterilizes its checkpoint, and requires an exact RTC with no external savestate.\n";
     std::cout << "Visual worker locks worker count to 1.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
-    std::cout << "Scenarios: all, seedprobe, tasmovie, tasmovie_with_validation, tasmovie_seedprobe\n";
+    std::cout << "Scenarios: all";
+    for (const auto& descriptor : E2eScenarioCatalog()) {
+        std::cout << ", " << descriptor.name;
+    }
+    std::cout << "\nEntry sources:\n";
+    for (const auto& descriptor : E2eScenarioCatalog()) {
+        std::cout << "  " << descriptor.name << ": ";
+        bool first = true;
+        for (const auto source : {
+                 E2eScenarioEntrySource::ImportedSavestateFile,
+                 E2eScenarioEntrySource::FreshTasMovieValidation,
+                 E2eScenarioEntrySource::PreparedSterilizedCheckpoint}) {
+            if ((descriptor.supported_entry_sources & EntrySourceBit(source)) == 0) {
+                continue;
+            }
+            if (!first) std::cout << ", ";
+            std::cout << ToString(source);
+            if (source == descriptor.default_entry_source) std::cout << " (default)";
+            first = false;
+        }
+        std::cout << '\n';
+    }
     std::cout << "You may pass --scenario multiple times and they will run in order.\n\n";
 }
 
@@ -298,8 +406,6 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     std::vector<std::string> requested_scenarios;
     bool worker_count_explicit = false;
     bool samples_per_axis_explicit = false;
-    bool fake_attack_low_explicit = false;
-    bool fake_attack_high_explicit = false;
     bool tasmovie_rtc_explicit = false;
     bool tasmovie_rtc_min_explicit = false;
     bool tasmovie_rtc_max_explicit = false;
@@ -458,70 +564,6 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
             options.seedprobe_combo_attempts_per_target = v;
-        } else if (arg == "--battle-fake-attack-low" || arg == "--fake-attack-low") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
-            options.battle_fake_attack_low = v;
-            fake_attack_low_explicit = true;
-        } else if (arg == "--battle-fake-attack-high" || arg == "--fake-attack-high") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
-            options.battle_fake_attack_high = v;
-            fake_attack_high_explicit = true;
-        } else if (arg == "--battle-plan") {
-            std::string v;
-            if (!require_value("--battle-plan", &v)) return false;
-            std::vector<phase::battle::macroprobe::MacroCommand> commands;
-            std::string parse_error;
-            if (!phase::battle::macroprobe::ParseCommandPlanSpec(v, &commands, &parse_error)) {
-                if (error_out) *error_out = parse_error;
-                return false;
-            }
-            options.battle_macro_plan_spec = phase::battle::macroprobe::FormatCommandPlanSpec(commands);
-            options.battle_macro_args_supplied = true;
-        } else if (arg == "--battle-macro") {
-            std::string v;
-            if (!require_value("--battle-macro", &v)) return false;
-            options.battle_macro_mode = LowerAscii(v);
-            options.battle_macro_args_supplied = true;
-        } else if (arg == "--battle-macro-target-slot" || arg == "--target-slot") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
-            options.battle_macro_target_slot = v;
-            options.battle_macro_args_supplied = true;
-        } else if (arg == "--battle-fake-attacks") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
-            options.battle_macro_fake_attacks = v;
-        } else if (arg == "--battle-fake-attack-sweep") {
-            options.battle_fake_attack_sweep = true;
-            options.battle_macro_args_supplied = true;
-        } else if (arg == "--battle-fake-sweep-trials") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
-            options.battle_fake_sweep_trials = v;
-        } else if (arg == "--battle-fake-sweep-min-target-neutral") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
-            options.battle_fake_sweep_min_target_neutral = v;
-        } else if (arg == "--battle-fake-sweep-max-target-neutral") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
-            options.battle_fake_sweep_max_target_neutral = v;
-        } else if (arg == "--battle-fake-sweep-min-input-neutral") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
-            options.battle_fake_sweep_min_input_neutral = v;
-        } else if (arg == "--battle-fake-sweep-max-input-neutral") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
-            options.battle_fake_sweep_max_input_neutral = v;
-        } else if (arg == "--battle-fake-sweep-output") {
-            std::string v;
-            if (!require_value("--battle-fake-sweep-output", &v)) return false;
-            options.battle_fake_sweep_output = std::filesystem::path(v);
-        } else if (arg == "--battle-macro-debug") {
-            options.battle_macro_debug = true;
         } else if (arg == "--help" || arg == "-h") {
             PrintUsage();
             std::exit(0);
@@ -569,23 +611,15 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (perf_mode || !samples_per_axis_explicit) {
             options.seedprobe_samples_per_axis = profile.samples_per_axis;
         }
-        if (perf_mode || !fake_attack_low_explicit) {
-            options.battle_fake_attack_low = profile.fake_attack_low;
-        }
-        if (perf_mode || !fake_attack_high_explicit) {
-            options.battle_fake_attack_high = profile.fake_attack_high;
-        }
     }
 
     bool is_tasmovie_establishment = false;
     bool is_tasmovie_with_validation = false;
     bool is_tasmovie_seedprobe = false;
-    bool is_fresh_tasmovie = false;
+    bool is_battle = false;
     bool needs_savestate = false;
-    bool needs_source_savestate_id = false;
     bool needs_dtm = false;
     std::vector<std::string> savestate_required_scenarios;
-    std::vector<std::string> source_savestate_required_scenarios;
     std::vector<std::string> dtm_required_scenarios;
 
     const auto join = [](const std::vector<std::string>& names) {
@@ -599,43 +633,76 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         return oss.str();
     };
 
+    bool prepared_checkpoint_mode = false;
     for (const auto& scenario : options.scenarios) {
+        const auto* descriptor = FindE2eScenarioDescriptor(scenario);
+        if (descriptor == nullptr) {
+            if (error_out) *error_out = "unknown --scenario: " + scenario;
+            return false;
+        }
+        const auto source = SelectE2eScenarioEntrySource(*descriptor, options);
+        if ((descriptor->supported_entry_sources & EntrySourceBit(source)) == 0) {
+            if (error_out) {
+                *error_out = "scenario '" + scenario + "' does not support entry source "
+                    + std::string(ToString(source));
+            }
+            return false;
+        }
+        if (descriptor->must_run_alone && options.scenarios.size() != 1) {
+            if (error_out) *error_out = "scenario '" + scenario + "' must run alone";
+            return false;
+        }
+        if (descriptor->requires_repeat_one && options.repeat != 1) {
+            if (error_out) *error_out = "scenario '" + scenario + "' requires --repeat 1";
+            return false;
+        }
+        if (descriptor->requires_one_worker && options.worker_count != 1) {
+            if (error_out) *error_out = "scenario '" + scenario + "' requires exactly one worker";
+            return false;
+        }
+
         is_tasmovie_establishment = is_tasmovie_establishment
-            || scenario == "tasmovie";
+            || descriptor->kind == E2eScenarioKind::TasMovie;
         is_tasmovie_with_validation = is_tasmovie_with_validation
-            || scenario == "tasmovie_with_validation";
+            || descriptor->kind == E2eScenarioKind::TasMovieWithValidation;
         is_tasmovie_seedprobe = is_tasmovie_seedprobe
-            || scenario == "tasmovie_seedprobe";
-        is_fresh_tasmovie = is_fresh_tasmovie
-            || IsFreshTasMovieScenario(scenario);
-        const auto req = GetScenarioRequirement(scenario);
-        needs_savestate = needs_savestate || req.requires_savestate_file;
-        needs_source_savestate_id = needs_source_savestate_id || req.requires_source_savestate_id;
-        needs_dtm = needs_dtm || req.requires_dtm_file;
+            || descriptor->kind == E2eScenarioKind::TasMovieSeedProbe;
+        is_battle = is_battle || descriptor->kind == E2eScenarioKind::Battle;
 
-        if (req.requires_savestate_file) {
+        switch (source) {
+        case E2eScenarioEntrySource::ImportedSavestateFile:
+            needs_savestate = true;
             savestate_required_scenarios.push_back(scenario);
-        }
-        if (req.requires_source_savestate_id) {
-            source_savestate_required_scenarios.push_back(scenario);
-        }
-        if (req.requires_dtm_file) {
+            break;
+        case E2eScenarioEntrySource::FreshTasMovieValidation:
+            needs_dtm = true;
             dtm_required_scenarios.push_back(scenario);
+            break;
+        case E2eScenarioEntrySource::PreparedSterilizedCheckpoint:
+            prepared_checkpoint_mode = true;
+            break;
         }
     }
 
-    if (is_fresh_tasmovie && options.scenarios.size() != 1) {
-        if (error_out) *error_out = "TAS Movie scenarios must run alone because they start from a fresh database";
-        return false;
-    }
-    if (is_fresh_tasmovie && options.repeat != 1) {
-        if (error_out) *error_out = "TAS Movie scenarios require --repeat 1";
-        return false;
-    }
-    if ((is_tasmovie_establishment || is_tasmovie_with_validation)
-        && options.worker_count != 1) {
-        if (error_out) *error_out = "TAS Movie scenarios require exactly one worker";
-        return false;
+    if (prepared_checkpoint_mode) {
+        if (!options.source_savestate_id.has_value()
+            || *options.source_savestate_id <= 0) {
+            if (error_out) {
+                *error_out = "prepared-checkpoint mode requires a positive --source-savestate-id";
+            }
+            return false;
+        }
+        if (!options.workspace_root.has_value()
+            || !IsCompletePreparedWorkspace(*options.workspace_root, error_out)) {
+            return false;
+        }
+        if (!options.savestate_file.empty() || !options.dtm_file.empty()
+            || HasAnyRtcArgument(options)) {
+            if (error_out) {
+                *error_out = "prepared-checkpoint mode rejects --savestate-file, --dtm-file, and all RTC arguments";
+            }
+            return false;
+        }
     }
     if (is_tasmovie_establishment && (options.tasmovie_rtc.has_value()
         || options.tasmovie_rtc_min.has_value()
@@ -643,16 +710,17 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "tasmovie establishment does not accept RTC arguments";
         return false;
     }
-    if (is_tasmovie_with_validation
+    if (!prepared_checkpoint_mode
+        && (is_tasmovie_with_validation || is_battle)
         && (!options.tasmovie_rtc.has_value()
             || options.tasmovie_rtc_min.has_value()
             || options.tasmovie_rtc_max.has_value())) {
         if (error_out) {
-            *error_out = "tasmovie_with_validation requires exactly one --tasmovie-rtc and does not accept RTC range arguments";
+            *error_out = "the selected validation-backed scenario requires exactly one --tasmovie-rtc and does not accept RTC range arguments";
         }
         return false;
     }
-    if (is_tasmovie_seedprobe
+    if (!prepared_checkpoint_mode && is_tasmovie_seedprobe
         && (!options.tasmovie_rtc.has_value()
             || options.tasmovie_rtc_min.has_value()
             || options.tasmovie_rtc_max.has_value())) {
@@ -661,9 +729,10 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         }
         return false;
     }
-    if (is_tasmovie_seedprobe && !options.savestate_file.empty()) {
+    if (!prepared_checkpoint_mode && (is_tasmovie_seedprobe || is_battle) &&
+        !options.savestate_file.empty()) {
         if (error_out) {
-            *error_out = "tasmovie_seedprobe does not accept --savestate-file; SeedProbe uses the validated checkpoint";
+            *error_out = "validation-backed Battle scenarios do not accept --savestate-file; downstream phases use the sterilized validation checkpoint";
         }
         return false;
     }
@@ -698,14 +767,6 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     }    
     if (options.worker_count < 1 || options.worker_count > 30) {
         if (error_out) *error_out = "--worker-count must be between 1 and 30";
-        return false;
-    }
-    if (needs_source_savestate_id
-        && (!options.source_savestate_id.has_value() || *options.source_savestate_id <= 0)) {
-        if (error_out) {
-            *error_out = "--source-savestate-id with a positive StateDB savestate id is required for: "
-                + join(source_savestate_required_scenarios);
-        }
         return false;
     }
     if (options.poll_ms > 5000) {
@@ -758,67 +819,7 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "--seedprobe-combo-attempts-per-target must be > 0";
         return false;
     }
-    if (options.battle_fake_attack_low.has_value() && *options.battle_fake_attack_low < 0) {
-        if (error_out) *error_out = "--battle-fake-attack-low must be >= 0";
-        return false;
-    }
-    if (options.battle_fake_attack_high.has_value() && *options.battle_fake_attack_high < 0) {
-        if (error_out) *error_out = "--battle-fake-attack-high must be >= 0";
-        return false;
-    }
-    if (options.battle_fake_attack_low.has_value()
-        && options.battle_fake_attack_high.has_value()
-        && *options.battle_fake_attack_low > *options.battle_fake_attack_high) {
-        if (error_out) *error_out = "--battle-fake-attack-low must be <= --battle-fake-attack-high";
-        return false;
-    }
-    if (options.battle_macro_mode != "attack"
-        && options.battle_macro_mode != "focus"
-        && options.battle_macro_mode != "block"
-        && options.battle_macro_mode != "defend") {
-        if (error_out) *error_out = "--battle-macro must be attack, focus, or block";
-        return false;
-    }
-    if (options.battle_macro_target_slot.has_value()
-        && (*options.battle_macro_target_slot < 4 || *options.battle_macro_target_slot > 11)) {
-        if (error_out) *error_out = "--battle-macro-target-slot must be between 4 and 11";
-        return false;
-    }
-    if (options.battle_macro_fake_attacks.has_value()
-        && (*options.battle_macro_fake_attacks < 0 || *options.battle_macro_fake_attacks > 255)) {
-        if (error_out) *error_out = "--battle-fake-attacks must be between 0 and 255";
-        return false;
-    }
-    if (options.battle_fake_sweep_trials <= 0 || options.battle_fake_sweep_trials > 1000) {
-        if (error_out) *error_out = "--battle-fake-sweep-trials must be between 1 and 1000";
-        return false;
-    }
-    if (options.battle_fake_sweep_min_target_neutral < 0 || options.battle_fake_sweep_min_target_neutral > 120) {
-        if (error_out) *error_out = "--battle-fake-sweep-min-target-neutral must be between 0 and 120";
-        return false;
-    }
-    if (options.battle_fake_sweep_max_target_neutral < 0 || options.battle_fake_sweep_max_target_neutral > 120) {
-        if (error_out) *error_out = "--battle-fake-sweep-max-target-neutral must be between 0 and 120";
-        return false;
-    }
-    if (options.battle_fake_sweep_min_target_neutral > options.battle_fake_sweep_max_target_neutral) {
-        if (error_out) *error_out = "--battle-fake-sweep-min-target-neutral must be <= --battle-fake-sweep-max-target-neutral";
-        return false;
-    }
-    if (options.battle_fake_sweep_min_input_neutral < 0 || options.battle_fake_sweep_min_input_neutral > 120) {
-        if (error_out) *error_out = "--battle-fake-sweep-min-input-neutral must be between 0 and 120";
-        return false;
-    }
-    if (options.battle_fake_sweep_max_input_neutral < 0 || options.battle_fake_sweep_max_input_neutral > 120) {
-        if (error_out) *error_out = "--battle-fake-sweep-max-input-neutral must be between 0 and 120";
-        return false;
-    }
-    if (options.battle_fake_sweep_min_input_neutral > options.battle_fake_sweep_max_input_neutral) {
-        if (error_out) *error_out = "--battle-fake-sweep-min-input-neutral must be <= --battle-fake-sweep-max-input-neutral";
-        return false;
-    }
-
-    if (options.visual_worker || options.battle_macro_debug) {
+    if (options.visual_worker) {
         options.worker_count = 1;
     }
 

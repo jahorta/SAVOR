@@ -98,7 +98,8 @@ private:
     MoviePlaybackPrepareResult PrepareReadOnlyPlaybackForRestart(
         const std::filesystem::path& dtm_path) override;
     MovieBackendResult StopCoreForPreparedReadOnlyMovie() override;
-    MovieBackendResult StartPreparedReadOnlyMovie() override;
+    MovieBackendResult StartPreparedReadOnlyMovieCorePaused() override;
+    MovieBackendResult ActivatePreparedReadOnlyMoviePlayback() override;
     MovieBackendResult DiscardPreparedReadOnlyMovie() noexcept override;
     MovieBackendResult StopMovie() noexcept override;
     MovieBackendResult BeginRecording() override;

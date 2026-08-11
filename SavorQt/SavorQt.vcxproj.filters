@@ -131,9 +131,6 @@
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.cpp">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </ClCompile>
     <ClCompile Include="GUI\Panes\BattleRunsPane\BattleRunsWidget.cpp">
       <Filter>GUI\Panes\BattleRuns</Filter>
     </ClCompile>
@@ -295,9 +292,6 @@
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunsPane\BattleRunsWidget.h">

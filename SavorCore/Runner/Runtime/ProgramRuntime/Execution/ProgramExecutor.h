@@ -55,6 +55,7 @@ struct ProgramExecutorPumpResult
     bool runnable = false;
     std::optional<ExecutorHostRequest> host_request;
     std::optional<ProgramResult> terminal;
+    std::optional<ProgramEmission> emission;
 };
 
 using PureReducerInvoker = std::function<std::optional<ProgramValueGraph>(

@@ -17,7 +17,7 @@ public:
     }
     bool CreateJobSet(const savor::db::CreateJobSetCommand&, std::int64_t*, std::string*) override { return false; }
     bool EnqueueJob(const savor::db::EnqueueJobCommand&, std::int64_t*, std::string*) override { return false; }
-    std::optional<savor::db::ExecutionJobRecord> GetJob(std::int64_t) const override { return std::nullopt; }
+    std::optional<savor::db::ExecutionJobRecord> GetExecutionJob(std::int64_t) const override { return std::nullopt; }
     bool MarkQueuedJobsSuperseded(std::int64_t, std::int64_t, std::string*, int*) override { return false; }
     savor::db::retention::OutboxRetentionPreview PreviewOutboxRetention(
         const std::vector<savor::db::retention::OutboxSubscriptionSnapshot>&,

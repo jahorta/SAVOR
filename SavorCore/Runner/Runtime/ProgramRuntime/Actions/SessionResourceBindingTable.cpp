@@ -51,7 +51,7 @@ SessionResourceBindingReceipt SessionResourceBindingTable::Bind(
     const ResourceExternalId identity(next_external_id_++);
     try
     {
-        bindings_.push_back(BindingRecord{
+        relationships_.push_back(BindingRecord{
             identity,
             std::move(definition)});
     }
@@ -76,13 +76,13 @@ ResourceReleaseResult SessionResourceBindingTable::Release(
     }
 
     const auto found = std::find_if(
-        bindings_.begin(),
-        bindings_.end(),
+        relationships_.begin(),
+        relationships_.end(),
         [&request](const BindingRecord& candidate) {
             return candidate.external_id ==
                 request.receipt.release.external_id;
         });
-    if (found == bindings_.end())
+    if (found == relationships_.end())
     {
         // A repeated ledger unwind is idempotent even after the concrete
         // binding has already been removed.
@@ -114,7 +114,7 @@ ResourceReleaseResult SessionResourceBindingTable::Release(
     }
 
     if (result.status == ResourceReleaseStatus::Released)
-        bindings_.erase(found);
+        relationships_.erase(found);
     return result;
 }
 
@@ -122,8 +122,8 @@ bool SessionResourceBindingTable::Contains(
     ResourceExternalId external_id) const noexcept
 {
     return std::any_of(
-        bindings_.begin(),
-        bindings_.end(),
+        relationships_.begin(),
+        relationships_.end(),
         [external_id](const BindingRecord& candidate) {
             return candidate.external_id == external_id;
         });
@@ -131,7 +131,7 @@ bool SessionResourceBindingTable::Contains(
 
 std::size_t SessionResourceBindingTable::size() const noexcept
 {
-    return bindings_.size();
+    return relationships_.size();
 }
 
 bool SessionResourceBindingTable::OnOwnerThread() const noexcept

@@ -99,195 +99,6 @@ void BindOptionalText(sqlite3_stmt* st, int index, const std::optional<std::stri
     }
 }
 
-bool IsKnownBreakpoint(BPKey key) {
-    return key != 0 && bp::BpRegistry::FindRuntime(key) != nullptr;
-}
-
-bool IsPredicateBreakpoint(BPKey key) {
-    return key != 0
-        && bp::BpRegistry::IsAllowed(key, BreakpointConsumer::Predicate);
-}
-
-bool ValidatePredicateSpecCommand(const SavePredicateSpecCommand& command, std::string* error_out) {
-    std::vector<BPKey> required_bps = command.required_breakpoint_ids;
-    if (required_bps.empty() && command.breakpoint_id != 0) {
-        required_bps.push_back(command.breakpoint_id);
-    }
-    if (command.name.empty()
-        || required_bps.empty()
-        || (command.width != 1 && command.width != 2 && command.width != 4 && command.width != 8)) {
-        if (error_out) *error_out = "required command fields are missing";
-        return false;
-    }
-    for (const auto bp_key : required_bps) {
-        if (!IsPredicateBreakpoint(bp_key)) {
-            if (error_out) *error_out = "required breakpoint is invalid or unavailable";
-            return false;
-        }
-    }
-    const auto flags = static_cast<std::uint32_t>(command.flag_mask.value_or(0));
-    if ((flags & static_cast<std::uint32_t>(savor::pred::PredFlag::RhsIsDelta)) != 0) {
-        if (command.baseline_breakpoint_ids.empty()) {
-            if (error_out) *error_out = "delta RHS predicates require at least one baseline breakpoint";
-            return false;
-        }
-        for (const auto bp_key : command.baseline_breakpoint_ids) {
-            if (!IsPredicateBreakpoint(bp_key)) {
-                if (error_out) *error_out = "baseline breakpoint is invalid or unavailable";
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-std::vector<BPKey> NormalizeRequiredBreakpointIds(const SavePredicateSpecCommand& command) {
-    std::vector<BPKey> out = command.required_breakpoint_ids;
-    if (out.empty() && command.breakpoint_id != 0) {
-        out.push_back(command.breakpoint_id);
-    }
-    std::vector<BPKey> normalized;
-    normalized.reserve(out.size());
-    for (const auto bp_key : out) {
-        if (!IsPredicateBreakpoint(bp_key)) {
-            continue;
-        }
-        if (std::find(normalized.begin(), normalized.end(), bp_key) == normalized.end()) {
-            normalized.push_back(bp_key);
-        }
-    }
-    return normalized;
-}
-
-std::vector<BPKey> NormalizeReadRequiredBreakpointIds(std::vector<BPKey> values, BPKey fallback) {
-    std::vector<BPKey> normalized;
-    normalized.reserve(values.size());
-    for (const auto bp_key : values) {
-        if (!IsKnownBreakpoint(bp_key)) {
-            continue;
-        }
-        if (std::find(normalized.begin(), normalized.end(), bp_key) == normalized.end()) {
-            normalized.push_back(bp_key);
-        }
-    }
-    if (normalized.empty() && IsKnownBreakpoint(fallback)) {
-        normalized.push_back(fallback);
-    }
-    return normalized;
-}
-
-bool ReplacePredicateRequiredBreakpoints(
-    sqlite3* db,
-    std::int64_t predicate_spec_id,
-    const std::vector<BPKey>& required_bps,
-    std::string* error_out) {
-    Statement delete_existing;
-    if (sqlite3_prepare_v2(
-            db,
-            "DELETE FROM au_predicate_spec_required_breakpoint WHERE predicate_spec_id=?1;",
-            -1,
-            &delete_existing.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db);
-        return false;
-    }
-    sqlite3_bind_int64(delete_existing.st, 1, predicate_spec_id);
-    if (sqlite3_step(delete_existing.st) != SQLITE_DONE) {
-        if (error_out) *error_out = sqlite3_errmsg(db);
-        return false;
-    }
-
-    for (int ordinal = 0; ordinal < static_cast<int>(required_bps.size()); ++ordinal) {
-        Statement insert_bp;
-        if (sqlite3_prepare_v2(
-                db,
-                "INSERT INTO au_predicate_spec_required_breakpoint(predicate_spec_id,breakpoint_id,ordinal) "
-                "VALUES(?1,?2,?3);",
-                -1,
-                &insert_bp.st,
-                nullptr)
-            != SQLITE_OK) {
-            if (error_out) *error_out = sqlite3_errmsg(db);
-            return false;
-        }
-        sqlite3_bind_int64(insert_bp.st, 1, predicate_spec_id);
-        sqlite3_bind_int(insert_bp.st, 2, static_cast<int>(required_bps[ordinal]));
-        sqlite3_bind_int(insert_bp.st, 3, ordinal);
-        if (sqlite3_step(insert_bp.st) != SQLITE_DONE) {
-            if (error_out) *error_out = sqlite3_errmsg(db);
-            return false;
-        }
-    }
-    return true;
-}
-
-std::vector<BPKey> LoadPredicateRequiredBreakpoints(sqlite3* db, std::int64_t predicate_spec_id) {
-    std::vector<BPKey> out;
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db,
-            "SELECT breakpoint_id FROM au_predicate_spec_required_breakpoint "
-            "WHERE predicate_spec_id=?1 ORDER BY ordinal ASC;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return out;
-    }
-    sqlite3_bind_int64(st.st, 1, predicate_spec_id);
-    while (sqlite3_step(st.st) == SQLITE_ROW) {
-        out.push_back(static_cast<BPKey>(sqlite3_column_int(st.st, 0)));
-    }
-    return out;
-}
-
-std::string FormatBpKeyList(const std::vector<BPKey>& values) {
-    std::vector<BPKey> unique_values;
-    unique_values.reserve(values.size());
-    for (const auto value : values) {
-        if (IsPredicateBreakpoint(value)) {
-            unique_values.push_back(value);
-        }
-    }
-    std::sort(unique_values.begin(), unique_values.end());
-    unique_values.erase(std::unique(unique_values.begin(), unique_values.end()), unique_values.end());
-
-    std::string out;
-    for (const auto value : unique_values) {
-        if (!out.empty()) {
-            out.push_back(',');
-        }
-        out += std::to_string(static_cast<unsigned int>(value));
-    }
-    return out;
-}
-
-std::vector<BPKey> ParseBpKeyList(std::string_view text) {
-    std::vector<BPKey> out;
-    while (!text.empty()) {
-        const auto comma = text.find(',');
-        const auto token = text.substr(0, comma == std::string_view::npos ? text.size() : comma);
-        unsigned int value = 0;
-        const char* first = token.data();
-        const char* last = token.data() + token.size();
-        const auto [ptr, ec] = std::from_chars(first, last, value);
-        if (ec == std::errc{} && ptr == last && value > 0 && value <= std::numeric_limits<BPKey>::max()) {
-            const auto bp_key = static_cast<BPKey>(value);
-            if (IsKnownBreakpoint(bp_key)) {
-                out.push_back(bp_key);
-            }
-        }
-        if (comma == std::string_view::npos) {
-            break;
-        }
-        text.remove_prefix(comma + 1);
-    }
-    std::sort(out.begin(), out.end());
-    out.erase(std::unique(out.begin(), out.end()), out.end());
-    return out;
-}
-
 bool ValidFrameByte(std::int32_t value) {
     return value >= 0 && value <= 255;
 }
@@ -319,11 +130,6 @@ std::string_view AuthoringAggregateKindForEvent(std::string_view event_type) {
     if (event_type == "Authoring.BattlePlanActionPresetSaved.v1"
         || event_type == "Authoring.BattlePlanActionPresetRenamed.v1") {
         return "battle_plan_action_preset";
-    }
-    if (event_type == "Authoring.PredicateSpecSaved.v1"
-        || event_type == "Authoring.PredicateSpecUpdated.v1"
-        || event_type == "Authoring.PredicateSpecDeleted.v1") {
-        return "predicate_spec";
     }
     if (event_type == "Authoring.SettingsSaved.v1") return "explorer_settings";
     if (event_type == "Authoring.BattleChainSpecSaved.v1") return "battle_chain_spec";
@@ -1374,7 +1180,7 @@ bool SqliteAuthoringDb::SavePlan(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.name.empty() || command.fingerprint.empty() || command.num_turns < 0) {
+    if (command.name.empty() || command.fingerprint.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1389,7 +1195,7 @@ bool SqliteAuthoringDb::SavePlan(
     Statement insert_plan;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO au_battle_plan(name,fingerprint,num_turns,created_at_utc) VALUES(?1,?2,?3,?4);",
+            "INSERT INTO au_battle_plan(name,fingerprint,created_at_utc) VALUES(?1,?2,?3);",
             -1,
             &insert_plan.st,
             nullptr)
@@ -1401,8 +1207,7 @@ bool SqliteAuthoringDb::SavePlan(
 
     sqlite3_bind_text(insert_plan.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(insert_plan.st, 2, command.fingerprint.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(insert_plan.st, 3, command.num_turns);
-    sqlite3_bind_int64(insert_plan.st, 4, ToEpochMillis(command.created_at_utc));
+    sqlite3_bind_int64(insert_plan.st, 3, ToEpochMillis(command.created_at_utc));
 
     if (sqlite3_step(insert_plan.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
@@ -1655,7 +1460,7 @@ bool SqliteAuthoringDb::SaveBattlePlanTurn(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.plan_id <= 0 || command.turn_index < 0) {
+    if (command.plan_id <= 0 || command.turn_index <= 0) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1668,8 +1473,8 @@ bool SqliteAuthoringDb::SaveBattlePlanTurn(
     Statement upsert_turn;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO au_battle_plan_turn(plan_id,turn_index) VALUES(?1,?2) "
-            "ON CONFLICT(plan_id, turn_index) DO NOTHING;",
+            "INSERT INTO au_battle_plan_turn(plan_id,turn_index,default_predicate_bundle_revision_id) VALUES(?1,?2,?3) "
+            "ON CONFLICT(plan_id, turn_index) DO UPDATE SET default_predicate_bundle_revision_id=excluded.default_predicate_bundle_revision_id;",
             -1,
             &upsert_turn.st,
             nullptr)
@@ -1680,6 +1485,12 @@ bool SqliteAuthoringDb::SaveBattlePlanTurn(
     }
     sqlite3_bind_int64(upsert_turn.st, 1, command.plan_id);
     sqlite3_bind_int(upsert_turn.st, 2, command.turn_index);
+    if (command.default_predicate_bundle_revision_id.has_value()) {
+        sqlite3_bind_int64(upsert_turn.st, 3,
+            *command.default_predicate_bundle_revision_id);
+    } else {
+        sqlite3_bind_null(upsert_turn.st, 3);
+    }
     if (sqlite3_step(upsert_turn.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
@@ -1793,7 +1604,7 @@ std::optional<BattlePlanSnapshot> SqliteAuthoringDb::GetBattlePlan(
     Statement plan_st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT plan_id,name,fingerprint,num_turns FROM au_battle_plan WHERE plan_id=?1;",
+            "SELECT plan_id,name,fingerprint FROM au_battle_plan WHERE plan_id=?1;",
             -1,
             &plan_st.st,
             nullptr)
@@ -1809,12 +1620,11 @@ std::optional<BattlePlanSnapshot> SqliteAuthoringDb::GetBattlePlan(
     out.plan_id = sqlite3_column_int64(plan_st.st, 0);
     out.name = ColumnText(plan_st.st, 1);
     out.fingerprint = ColumnText(plan_st.st, 2);
-    out.num_turns = sqlite3_column_int(plan_st.st, 3);
 
     Statement turn_st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT plan_turn_id, plan_id, turn_index FROM au_battle_plan_turn WHERE plan_id=?1 ORDER BY turn_index ASC;",
+            "SELECT plan_turn_id,plan_id,turn_index,default_predicate_bundle_revision_id FROM au_battle_plan_turn WHERE plan_id=?1 ORDER BY turn_index ASC;",
             -1,
             &turn_st.st,
             nullptr)
@@ -1827,6 +1637,8 @@ std::optional<BattlePlanSnapshot> SqliteAuthoringDb::GetBattlePlan(
         turn.plan_turn_id = sqlite3_column_int64(turn_st.st, 0);
         turn.plan_id = sqlite3_column_int64(turn_st.st, 1);
         turn.turn_index = sqlite3_column_int(turn_st.st, 2);
+        turn.default_predicate_bundle_revision_id =
+            ColumnInt64Optional(turn_st.st, 3);
 
         Statement action_st;
         if (sqlite3_prepare_v2(
@@ -1897,679 +1709,6 @@ std::vector<BattlePlanSnapshot> SqliteAuthoringDb::ListBattlePlans(
     return out;
 }
 
-bool SqliteAuthoringDb::EnsureAddressProgram(
-    const EnsureAddressProgramCommand& command,
-    std::int64_t* address_program_id_out,
-    std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (command.program_version <= 0 || command.prog_bytes.empty()) {
-        if (error_out) *error_out = "required command fields are missing";
-        return false;
-    }
-
-    Statement select_existing;
-    constexpr const char* kSelectSql =
-        "SELECT address_program_id FROM au_address_program "
-        "WHERE program_version=?1 AND prog_bytes=?2 "
-        "AND COALESCE(derived_buffer_version,0)=COALESCE(?3,0) "
-        "AND COALESCE(derived_buffer_schema_hash,'')=COALESCE(?4,'') "
-        "AND COALESCE(soa_structs_hash,'')=COALESCE(?5,'') "
-        "LIMIT 1;";
-    if (sqlite3_prepare_v2(db_, kSelectSql, -1, &select_existing.st, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-    sqlite3_bind_int(select_existing.st, 1, command.program_version);
-    sqlite3_bind_blob(
-        select_existing.st,
-        2,
-        command.prog_bytes.data(),
-        static_cast<int>(command.prog_bytes.size()),
-        SQLITE_TRANSIENT);
-    if (command.derived_buffer_version.has_value()) sqlite3_bind_int(select_existing.st, 3, *command.derived_buffer_version);
-    else sqlite3_bind_null(select_existing.st, 3);
-    if (command.derived_buffer_schema_hash.has_value()) {
-        sqlite3_bind_text(select_existing.st, 4, command.derived_buffer_schema_hash->c_str(), -1, SQLITE_TRANSIENT);
-    } else {
-        sqlite3_bind_null(select_existing.st, 4);
-    }
-    if (command.soa_structs_hash.has_value()) {
-        sqlite3_bind_text(select_existing.st, 5, command.soa_structs_hash->c_str(), -1, SQLITE_TRANSIENT);
-    } else {
-        sqlite3_bind_null(select_existing.st, 5);
-    }
-
-    if (sqlite3_step(select_existing.st) == SQLITE_ROW) {
-        if (address_program_id_out) {
-            *address_program_id_out = sqlite3_column_int64(select_existing.st, 0);
-        }
-        return true;
-    }
-
-    Statement insert_program;
-    constexpr const char* kInsertSql =
-        "INSERT INTO au_address_program("
-        "program_version,prog_bytes,derived_buffer_version,derived_buffer_schema_hash,soa_structs_hash,description) "
-        "VALUES(?1,?2,?3,?4,?5,?6);";
-    if (sqlite3_prepare_v2(db_, kInsertSql, -1, &insert_program.st, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-    sqlite3_bind_int(insert_program.st, 1, command.program_version);
-    sqlite3_bind_blob(
-        insert_program.st,
-        2,
-        command.prog_bytes.data(),
-        static_cast<int>(command.prog_bytes.size()),
-        SQLITE_TRANSIENT);
-    if (command.derived_buffer_version.has_value()) sqlite3_bind_int(insert_program.st, 3, *command.derived_buffer_version);
-    else sqlite3_bind_null(insert_program.st, 3);
-    if (command.derived_buffer_schema_hash.has_value()) {
-        sqlite3_bind_text(insert_program.st, 4, command.derived_buffer_schema_hash->c_str(), -1, SQLITE_TRANSIENT);
-    } else {
-        sqlite3_bind_null(insert_program.st, 4);
-    }
-    if (command.soa_structs_hash.has_value()) {
-        sqlite3_bind_text(insert_program.st, 5, command.soa_structs_hash->c_str(), -1, SQLITE_TRANSIENT);
-    } else {
-        sqlite3_bind_null(insert_program.st, 5);
-    }
-    if (command.description.empty()) sqlite3_bind_null(insert_program.st, 6);
-    else sqlite3_bind_text(insert_program.st, 6, command.description.c_str(), -1, SQLITE_TRANSIENT);
-
-    if (sqlite3_step(insert_program.st) != SQLITE_DONE) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    if (address_program_id_out) {
-        *address_program_id_out = sqlite3_last_insert_rowid(db_);
-    }
-    return true;
-}
-
-std::optional<AddressProgramSnapshot> SqliteAuthoringDb::GetAddressProgram(
-    std::int64_t address_program_id) const {
-    if (db_ == nullptr || address_program_id <= 0) {
-        return std::nullopt;
-    }
-
-    Statement st;
-    constexpr const char* kSql =
-        "SELECT address_program_id,program_version,prog_bytes,derived_buffer_version,"
-        "derived_buffer_schema_hash,soa_structs_hash,description "
-        "FROM au_address_program WHERE address_program_id=?1;";
-    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
-        return std::nullopt;
-    }
-    sqlite3_bind_int64(st.st, 1, address_program_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-
-    AddressProgramSnapshot out{};
-    out.address_program_id = sqlite3_column_int64(st.st, 0);
-    out.program_version = sqlite3_column_int(st.st, 1);
-    out.prog_bytes = ColumnBlob(st.st, 2);
-    out.derived_buffer_version = ColumnIntOptional(st.st, 3);
-    const auto* derived_hash = sqlite3_column_text(st.st, 4);
-    out.derived_buffer_schema_hash = derived_hash
-        ? std::optional<std::string>(reinterpret_cast<const char*>(derived_hash))
-        : std::nullopt;
-    const auto* structs_hash = sqlite3_column_text(st.st, 5);
-    out.soa_structs_hash = structs_hash
-        ? std::optional<std::string>(reinterpret_cast<const char*>(structs_hash))
-        : std::nullopt;
-    out.description = ColumnText(st.st, 6);
-    return out;
-}
-
-bool SqliteAuthoringDb::SavePredicateSpec(
-    const SavePredicateSpecCommand& command,
-    std::int64_t* predicate_spec_id_out,
-    std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (!ValidatePredicateSpecCommand(command, error_out)) {
-        return false;
-    }
-    const auto required_bps = NormalizeRequiredBreakpointIds(command);
-    const auto first_required_bp = required_bps.front();
-    const auto* first_required = bp::BpRegistry::FindRuntime(first_required_bp);
-    if (first_required == nullptr) {
-        if (error_out) *error_out = "required breakpoint is invalid or unavailable";
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        return false;
-    }
-
-    Statement insert_spec;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO au_predicate_spec("
-            "name,breakpoint_name,breakpoint_id,lhs_value,rhs_value,baseline_bps,cmp_op,width,flag_mask,value_mask,"
-            "lhs_address_program_id,rhs_address_program_id,abort_on_fail,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14);",
-            -1,
-            &insert_spec.st,
-            nullptr)
-        != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    sqlite3_bind_text(insert_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert_spec.st, 2, first_required->name, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(insert_spec.st, 3, static_cast<int>(first_required_bp));
-    const auto baseline_bps = FormatBpKeyList(command.baseline_breakpoint_ids);
-    const auto cmp_op = ToDbString(command.cmp_op);
-    sqlite3_bind_int64(insert_spec.st, 4, command.lhs_value);
-    sqlite3_bind_int64(insert_spec.st, 5, command.rhs_value);
-    sqlite3_bind_text(insert_spec.st, 6, baseline_bps.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert_spec.st, 7, cmp_op.data(), static_cast<int>(cmp_op.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int(insert_spec.st, 8, command.width);
-    BindOptionalInt64(insert_spec.st, 9, command.flag_mask);
-    BindOptionalInt64(insert_spec.st, 10, command.value_mask);
-    BindOptionalInt64(insert_spec.st, 11, command.lhs_address_program_id);
-    BindOptionalInt64(insert_spec.st, 12, command.rhs_address_program_id);
-    sqlite3_bind_int(insert_spec.st, 13, command.abort_on_fail ? 1 : 0);
-    sqlite3_bind_int64(insert_spec.st, 14, ToEpochMillis(command.created_at_utc));
-
-    if (sqlite3_step(insert_spec.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    const auto predicate_spec_id = sqlite3_last_insert_rowid(db_);
-    if (!ReplacePredicateRequiredBreakpoints(db_, predicate_spec_id, required_bps, error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (!InsertAuthoringOutboxEvent(
-            db_,
-            "Authoring.PredicateSpecSaved.v1",
-            std::to_string(predicate_spec_id),
-            command.correlation_id,
-            command.causation_id,
-            ToEpochMillis(command.created_at_utc),
-            predicate_spec_id,
-            error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (predicate_spec_id_out) {
-        *predicate_spec_id_out = predicate_spec_id;
-    }
-
-    return true;
-}
-
-bool SqliteAuthoringDb::UpdatePredicateSpec(
-    std::int64_t predicate_spec_id,
-    const SavePredicateSpecCommand& command,
-    std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (predicate_spec_id <= 0) {
-        if (error_out) *error_out = "predicate spec id is required";
-        return false;
-    }
-    if (!ValidatePredicateSpecCommand(command, error_out)) {
-        return false;
-    }
-    const auto required_bps = NormalizeRequiredBreakpointIds(command);
-    const auto first_required_bp = required_bps.front();
-    const auto* first_required = bp::BpRegistry::FindRuntime(first_required_bp);
-    if (first_required == nullptr) {
-        if (error_out) *error_out = "required breakpoint is invalid or unavailable";
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    if (!GetPredicateSpec(predicate_spec_id).has_value()) {
-        if (error_out) *error_out = "predicate spec not found";
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    const auto usage = GetPredicateSpecUsage(predicate_spec_id);
-    if (usage.used()) {
-        if (error_out) *error_out = "predicate spec is already used by a predicate set";
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    Statement update_spec;
-    constexpr const char* kUpdateSql =
-        "UPDATE au_predicate_spec SET "
-        "name=?1,breakpoint_name=?2,breakpoint_id=?3,lhs_value=?4,rhs_value=?5,baseline_bps=?6,"
-        "cmp_op=?7,width=?8,flag_mask=?9,value_mask=?10,lhs_address_program_id=?11,rhs_address_program_id=?12,"
-        "abort_on_fail=?13 "
-        "WHERE predicate_spec_id=?14;";
-    if (sqlite3_prepare_v2(db_, kUpdateSql, -1, &update_spec.st, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    sqlite3_bind_text(update_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(update_spec.st, 2, first_required->name, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(update_spec.st, 3, static_cast<int>(first_required_bp));
-    const auto baseline_bps = FormatBpKeyList(command.baseline_breakpoint_ids);
-    const auto cmp_op = ToDbString(command.cmp_op);
-    sqlite3_bind_int64(update_spec.st, 4, command.lhs_value);
-    sqlite3_bind_int64(update_spec.st, 5, command.rhs_value);
-    sqlite3_bind_text(update_spec.st, 6, baseline_bps.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(update_spec.st, 7, cmp_op.data(), static_cast<int>(cmp_op.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int(update_spec.st, 8, command.width);
-    BindOptionalInt64(update_spec.st, 9, command.flag_mask);
-    BindOptionalInt64(update_spec.st, 10, command.value_mask);
-    BindOptionalInt64(update_spec.st, 11, command.lhs_address_program_id);
-    BindOptionalInt64(update_spec.st, 12, command.rhs_address_program_id);
-    sqlite3_bind_int(update_spec.st, 13, command.abort_on_fail ? 1 : 0);
-    sqlite3_bind_int64(update_spec.st, 14, predicate_spec_id);
-
-    if (sqlite3_step(update_spec.st) != SQLITE_DONE) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (!ReplacePredicateRequiredBreakpoints(db_, predicate_spec_id, required_bps, error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (!InsertAuthoringOutboxEvent(
-            db_,
-            "Authoring.PredicateSpecUpdated.v1",
-            std::to_string(predicate_spec_id),
-            command.correlation_id,
-            command.causation_id,
-            ToEpochMillis(command.created_at_utc),
-            predicate_spec_id,
-            error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    return true;
-}
-
-bool SqliteAuthoringDb::DeletePredicateSpec(
-    const DeletePredicateSpecCommand& command,
-    std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (command.predicate_spec_id <= 0) {
-        if (error_out) *error_out = "required command fields are missing";
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    if (!GetPredicateSpec(command.predicate_spec_id).has_value()) {
-        if (error_out) *error_out = "predicate spec not found";
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    const auto usage = GetPredicateSpecUsage(command.predicate_spec_id);
-    if (usage.used()) {
-        if (error_out) *error_out = "predicate spec is already used by a predicate set";
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    Statement delete_required_bps;
-    if (sqlite3_prepare_v2(
-            db_,
-            "DELETE FROM au_predicate_spec_required_breakpoint WHERE predicate_spec_id=?1;",
-            -1,
-            &delete_required_bps.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    sqlite3_bind_int64(delete_required_bps.st, 1, command.predicate_spec_id);
-    if (sqlite3_step(delete_required_bps.st) != SQLITE_DONE) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    Statement delete_spec;
-    if (sqlite3_prepare_v2(
-            db_,
-            "DELETE FROM au_predicate_spec WHERE predicate_spec_id=?1;",
-            -1,
-            &delete_spec.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    sqlite3_bind_int64(delete_spec.st, 1, command.predicate_spec_id);
-    if (sqlite3_step(delete_spec.st) != SQLITE_DONE) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (!InsertAuthoringOutboxEvent(
-            db_,
-            "Authoring.PredicateSpecDeleted.v1",
-            std::to_string(command.predicate_spec_id),
-            command.correlation_id,
-            command.causation_id,
-            ToEpochMillis(command.deleted_at_utc),
-            command.predicate_spec_id,
-            error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    return true;
-}
-
-std::optional<PredicateSpecSnapshot> SqliteAuthoringDb::GetPredicateSpec(
-    std::int64_t predicate_spec_id) const {
-    if (db_ == nullptr || predicate_spec_id <= 0) {
-        return std::nullopt;
-    }
-
-    Statement st;
-    constexpr const char* kSql =
-        "SELECT predicate_spec_id,name,breakpoint_id,lhs_value,rhs_value,baseline_bps,cmp_op,"
-        "width,flag_mask,value_mask,lhs_address_program_id,rhs_address_program_id,abort_on_fail "
-        "FROM au_predicate_spec WHERE predicate_spec_id=?1;";
-    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
-        return std::nullopt;
-    }
-    sqlite3_bind_int64(st.st, 1, predicate_spec_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-
-    PredicateSpecSnapshot out{};
-    out.predicate_spec_id = sqlite3_column_int64(st.st, 0);
-    out.name = ColumnText(st.st, 1);
-    out.breakpoint_id = static_cast<BPKey>(sqlite3_column_int(st.st, 2));
-    out.required_breakpoint_ids = NormalizeReadRequiredBreakpointIds(
-        LoadPredicateRequiredBreakpoints(db_, out.predicate_spec_id),
-        out.breakpoint_id);
-    out.lhs_value = sqlite3_column_int64(st.st, 3);
-    out.rhs_value = sqlite3_column_int64(st.st, 4);
-    out.baseline_breakpoint_ids = ParseBpKeyList(ColumnText(st.st, 5));
-    out.cmp_op = ParsePredicateComparisonOp(ColumnText(st.st, 6));
-    out.width = sqlite3_column_int(st.st, 7);
-    out.flag_mask = ColumnInt64Optional(st.st, 8);
-    out.value_mask = ColumnInt64Optional(st.st, 9);
-    out.lhs_address_program_id = ColumnInt64Optional(st.st, 10);
-    out.rhs_address_program_id = ColumnInt64Optional(st.st, 11);
-    out.abort_on_fail = sqlite3_column_int(st.st, 12) != 0;
-    return out;
-}
-
-PredicateSpecUsageSnapshot SqliteAuthoringDb::GetPredicateSpecUsage(
-    std::int64_t predicate_spec_id) const {
-    PredicateSpecUsageSnapshot out{};
-    out.predicate_spec_id = predicate_spec_id;
-    if (db_ == nullptr || predicate_spec_id <= 0) {
-        return out;
-    }
-
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT COUNT(DISTINCT predicate_set_id) FROM au_predicate_set_item WHERE predicate_spec_id=?1;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return out;
-    }
-    sqlite3_bind_int64(st.st, 1, predicate_spec_id);
-    if (sqlite3_step(st.st) == SQLITE_ROW) {
-        out.predicate_set_count = sqlite3_column_int(st.st, 0);
-    }
-    return out;
-}
-
-std::vector<PredicateSpecSnapshot> SqliteAuthoringDb::ListPredicateSpecs(
-    int max_count) const {
-    std::vector<PredicateSpecSnapshot> out;
-    if (db_ == nullptr) {
-        return out;
-    }
-
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT predicate_spec_id FROM au_predicate_spec ORDER BY predicate_spec_id DESC LIMIT ?1;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return out;
-    }
-    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
-    while (sqlite3_step(st.st) == SQLITE_ROW) {
-        if (auto snapshot = GetPredicateSpec(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
-            out.push_back(std::move(*snapshot));
-        }
-    }
-    return out;
-}
-
-bool SqliteAuthoringDb::SavePredicateSet(
-    const SavePredicateSetCommand& command,
-    std::int64_t* predicate_set_id_out,
-    std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (command.name.empty()) {
-        if (error_out) *error_out = "predicate set name is required";
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    Statement insert_set;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO au_predicate_set(name,created_at_utc) VALUES(?1,?2);",
-            -1,
-            &insert_set.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    sqlite3_bind_text(insert_set.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_set.st, 2, ToEpochMillis(command.created_at_utc));
-    if (sqlite3_step(insert_set.st) != SQLITE_DONE) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    const auto predicate_set_id = sqlite3_last_insert_rowid(db_);
-
-    for (int ordinal = 0; ordinal < static_cast<int>(command.predicate_spec_ids.size()); ++ordinal) {
-        Statement insert_item;
-        if (sqlite3_prepare_v2(
-                db_,
-                "INSERT INTO au_predicate_set_item(predicate_set_id,predicate_spec_id,ordinal) VALUES(?1,?2,?3);",
-                -1,
-                &insert_item.st,
-                nullptr)
-            != SQLITE_OK) {
-            if (error_out) *error_out = sqlite3_errmsg(db_);
-            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-            return false;
-        }
-        sqlite3_bind_int64(insert_item.st, 1, predicate_set_id);
-        sqlite3_bind_int64(insert_item.st, 2, command.predicate_spec_ids[ordinal]);
-        sqlite3_bind_int(insert_item.st, 3, ordinal);
-        if (sqlite3_step(insert_item.st) != SQLITE_DONE) {
-            if (error_out) *error_out = sqlite3_errmsg(db_);
-            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-            return false;
-        }
-    }
-
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    if (predicate_set_id_out) {
-        *predicate_set_id_out = predicate_set_id;
-    }
-    return true;
-}
-
-std::optional<PredicateSetSnapshot> SqliteAuthoringDb::GetPredicateSet(
-    std::int64_t predicate_set_id) const {
-    if (db_ == nullptr || predicate_set_id <= 0) {
-        return std::nullopt;
-    }
-
-    Statement exists;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT predicate_set_id,name FROM au_predicate_set WHERE predicate_set_id=?1;",
-            -1,
-            &exists.st,
-            nullptr)
-        != SQLITE_OK) {
-        return std::nullopt;
-    }
-    sqlite3_bind_int64(exists.st, 1, predicate_set_id);
-    if (sqlite3_step(exists.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-
-    PredicateSetSnapshot out{};
-    out.predicate_set_id = sqlite3_column_int64(exists.st, 0);
-    out.name = ColumnText(exists.st, 1);
-
-    Statement st;
-    constexpr const char* kSql =
-        "SELECT ps.predicate_spec_id,ps.name,ps.breakpoint_id,ps.lhs_value,ps.rhs_value,ps.baseline_bps,"
-        "ps.cmp_op,ps.width,ps.flag_mask,ps.value_mask,ps.lhs_address_program_id,ps.rhs_address_program_id,ps.abort_on_fail "
-        "FROM au_predicate_set_item item "
-        "JOIN au_predicate_spec ps ON ps.predicate_spec_id=item.predicate_spec_id "
-        "WHERE item.predicate_set_id=?1 ORDER BY item.ordinal ASC;";
-    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
-        return out;
-    }
-    sqlite3_bind_int64(st.st, 1, predicate_set_id);
-    while (sqlite3_step(st.st) == SQLITE_ROW) {
-        PredicateSpecSnapshot pred{};
-        pred.predicate_spec_id = sqlite3_column_int64(st.st, 0);
-        pred.name = ColumnText(st.st, 1);
-        pred.breakpoint_id = static_cast<BPKey>(sqlite3_column_int(st.st, 2));
-        pred.required_breakpoint_ids = NormalizeReadRequiredBreakpointIds(
-            LoadPredicateRequiredBreakpoints(db_, pred.predicate_spec_id),
-            pred.breakpoint_id);
-        pred.lhs_value = sqlite3_column_int64(st.st, 3);
-        pred.rhs_value = sqlite3_column_int64(st.st, 4);
-        pred.baseline_breakpoint_ids = ParseBpKeyList(ColumnText(st.st, 5));
-        pred.cmp_op = ParsePredicateComparisonOp(ColumnText(st.st, 6));
-        pred.width = sqlite3_column_int(st.st, 7);
-        pred.flag_mask = ColumnInt64Optional(st.st, 8);
-        pred.value_mask = ColumnInt64Optional(st.st, 9);
-        pred.lhs_address_program_id = ColumnInt64Optional(st.st, 10);
-        pred.rhs_address_program_id = ColumnInt64Optional(st.st, 11);
-        pred.abort_on_fail = sqlite3_column_int(st.st, 12) != 0;
-        out.predicates.push_back(std::move(pred));
-    }
-    return out;
-}
-
-std::vector<PredicateSetSnapshot> SqliteAuthoringDb::ListPredicateSets(
-    int max_count) const {
-    std::vector<PredicateSetSnapshot> out;
-    if (db_ == nullptr) {
-        return out;
-    }
-
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT predicate_set_id FROM au_predicate_set ORDER BY predicate_set_id DESC LIMIT ?1;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return out;
-    }
-    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
-    while (sqlite3_step(st.st) == SQLITE_ROW) {
-        if (auto snapshot = GetPredicateSet(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
-            out.push_back(std::move(*snapshot));
-        }
-    }
-    return out;
-}
-
 bool SqliteAuthoringDb::SaveExplorerSettings(
     const SaveExplorerSettingsCommand& command,
     std::int64_t* explorer_settings_id_out,
@@ -2593,8 +1732,8 @@ bool SqliteAuthoringDb::SaveExplorerSettings(
     Statement insert_settings;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO au_explorer_settings(name,description,default_plan_id,default_predicate_set_id,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5);",
+            "INSERT INTO au_explorer_settings(name,description,default_plan_id,created_at_utc) "
+            "VALUES(?1,?2,?3,?4);",
             -1,
             &insert_settings.st,
             nullptr)
@@ -2609,12 +1748,7 @@ bool SqliteAuthoringDb::SaveExplorerSettings(
     else sqlite3_bind_text(insert_settings.st, 2, command.description.c_str(), -1, SQLITE_TRANSIENT);
     if (command.default_plan_id.has_value()) sqlite3_bind_int64(insert_settings.st, 3, command.default_plan_id.value());
     else sqlite3_bind_null(insert_settings.st, 3);
-    if (command.default_predicate_set_id.has_value()) {
-        sqlite3_bind_int64(insert_settings.st, 4, command.default_predicate_set_id.value());
-    } else {
-        sqlite3_bind_null(insert_settings.st, 4);
-    }
-    sqlite3_bind_int64(insert_settings.st, 5, ToEpochMillis(command.created_at_utc));
+    sqlite3_bind_int64(insert_settings.st, 4, ToEpochMillis(command.created_at_utc));
 
     if (sqlite3_step(insert_settings.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
@@ -2662,7 +1796,7 @@ std::optional<ExplorerSettingsSnapshot> SqliteAuthoringDb::GetExplorerSettings(
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT explorer_settings_id,name,description,default_plan_id,default_predicate_set_id "
+            "SELECT explorer_settings_id,name,description,default_plan_id "
             "FROM au_explorer_settings WHERE explorer_settings_id=?1;",
             -1,
             &st.st,
@@ -2680,7 +1814,6 @@ std::optional<ExplorerSettingsSnapshot> SqliteAuthoringDb::GetExplorerSettings(
     out.name = ColumnText(st.st, 1);
     out.description = ColumnText(st.st, 2);
     out.default_plan_id = ColumnInt64Optional(st.st, 3);
-    out.default_predicate_set_id = ColumnInt64Optional(st.st, 4);
     return out;
 }
 

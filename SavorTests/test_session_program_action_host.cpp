@@ -85,15 +85,31 @@ public:
     {
     }
 
-    bool Open(SessionProgramActionHostConfig config = {})
+    bool Open(
+        SessionProgramActionHostConfig config = {},
+        std::optional<std::filesystem::path> movie = std::nullopt)
     {
         const SessionOperationReceipt opened =
             session.Open({});
         if (!opened.ok)
             return false;
-        const SessionOperationReceipt begun =
-            session.BeginWorkset(WorkerWorksetId(1));
-        if (!begun.ok)
+        const SessionOperationReceipt initialization =
+            session.OpenWorksetInitialization(WorkerWorksetId(1));
+        if (!initialization.ok || session.execution_snapshot())
+            return false;
+        if (movie)
+        {
+            MovieService* movies = session.movie_service();
+            if (!movies)
+                return false;
+            const MovieOperationReceipt prepared =
+                movies->PrepareReadOnlyPlayback({.dtm_path = *movie});
+            if (!prepared.result.ok || !prepared.preparation)
+                return false;
+        }
+        const SessionOperationReceipt committed =
+            session.CommitWorksetInitialization(WorkerWorksetId(1));
+        if (!committed.ok || !session.execution_snapshot())
             return false;
         host = std::make_unique<
             SessionProgramActionHost>(
@@ -299,7 +315,8 @@ private:
 
 ProgramValueGraph StepFramesRequestGraph(
     std::uint64_t count,
-    std::vector<Byte> config = {})
+    std::vector<Byte> config = {},
+    const ProgramValue* input_binding = nullptr)
 {
     if (config.empty())
     {
@@ -314,11 +331,14 @@ ProgramValueGraph StepFramesRequestGraph(
     const ProgramValueId count_id = builder.Add(
         TypeRef::Builtin(BuiltinType::U64),
         count);
-    const ProgramValueId witness = builder.Add(
+    std::optional<ProgramValueId> binding_value;
+    if (input_binding)
+        binding_value = builder.AddFrom(*input_binding);
+    const ProgramValueId binding = builder.Add(
         CanonicalRuntimeType(
             CanonicalRuntimeSchema::
-                OptionalInputNeutralWitness),
-        OptionalValue{});
+                OptionalInputExecutionBinding),
+        OptionalValue{binding_value});
     const ProgramValueId static_config = builder.Add(
         CanonicalRuntimeType(
             CanonicalRuntimeSchema::
@@ -326,18 +346,28 @@ ProgramValueGraph StepFramesRequestGraph(
         std::move(config));
     return builder.Finish(
         CanonicalAction::ExecutionStepFrames,
-        {count_id, witness, static_config});
+        {count_id, binding, static_config});
 }
 
-ProgramValueGraph InputLeaseRequestGraph(
-    bool require_neutral_acknowledgement)
+ProgramValueGraph RequirePausedPcRequestGraph(
+    std::uint32_t expected_pc)
 {
-    TestStaticConfigWriter writer({'I', 'L', 'C', '1'});
+    TestValueGraphBuilder builder;
+    const ProgramValueId pc = builder.Add(
+        TypeRef::Builtin(BuiltinType::U64),
+        static_cast<std::uint64_t>(expected_pc));
+    return builder.Finish(
+        CanonicalAction::ExecutionRequirePausedPc,
+        {pc});
+}
+
+ProgramValueGraph InputLeaseRequestGraph()
+{
+    TestStaticConfigWriter writer({'I', 'L', 'C', '2'});
     writer.U32(0);
     writer.U32(0);
     writer.Bool(true);
     writer.Bool(true);
-    writer.Bool(require_neutral_acknowledgement);
     writer.Bool(false);
     TestValueGraphBuilder builder;
     const ProgramValueId config = builder.Add(
@@ -349,50 +379,32 @@ ProgramValueGraph InputLeaseRequestGraph(
         {config});
 }
 
-ProgramValueGraph InputSequenceRequestGraph(
-    const ProgramValue& lease,
-    std::vector<Byte> frames)
-{
-    TestStaticConfigWriter writer({'I', 'P', 'C', '1'});
-    writer.U8(3);
-    writer.U8(0);
-    TestValueGraphBuilder builder;
-    const ProgramValueId lease_id = builder.AddFrom(lease);
-    const ProgramValueId frames_id = builder.Add(
-        CanonicalRuntimeType(
-            CanonicalRuntimeSchema::InputSequencePayload),
-        std::move(frames));
-    const ProgramValueId config = builder.Add(
-        CanonicalRuntimeType(
-            CanonicalRuntimeSchema::
-                InputPublicationStaticConfig),
-        writer.Finish());
-    return builder.Finish(
-        CanonicalAction::InputPublishSequence,
-        {lease_id, frames_id, config});
-}
-
-ProgramValueGraph InputPulseRequestGraph(
+ProgramValueGraph InputStateRequestGraph(
+    CanonicalAction action,
     const ProgramValue& lease,
     std::vector<Byte> frame)
 {
-    TestStaticConfigWriter writer({'I', 'P', 'C', '1'});
-    writer.U8(1);
-    writer.U8(0);
     TestValueGraphBuilder builder;
     const ProgramValueId lease_id = builder.AddFrom(lease);
     const ProgramValueId frame_id = builder.Add(
         CanonicalRuntimeType(
             CanonicalRuntimeSchema::InputFramePayload),
         std::move(frame));
-    const ProgramValueId config = builder.Add(
-        CanonicalRuntimeType(
-            CanonicalRuntimeSchema::
-                InputPublicationStaticConfig),
-        writer.Finish());
     return builder.Finish(
-        CanonicalAction::InputPublishPulse,
-        {lease_id, frame_id, config});
+        action,
+        {lease_id, frame_id});
+}
+
+ProgramValueGraph CompleteInputDeliveryRequestGraph(
+    const ProgramValue& lease,
+    const ProgramValue& binding)
+{
+    TestValueGraphBuilder builder;
+    const ProgramValueId lease_id = builder.AddFrom(lease);
+    const ProgramValueId binding_id = builder.AddFrom(binding);
+    return builder.Finish(
+        CanonicalAction::InputCompleteDelivery,
+        {lease_id, binding_id});
 }
 
 struct TestPoint
@@ -412,7 +424,7 @@ TestPoint FirstRegisteredPcPoint()
             manifest.semantic_points,
             [](const SemanticPointDescriptor& candidate) {
                 return candidate.kind ==
-                        SemanticPointPhysicalKind::
+                        SemanticPointKind::
                             ProgramCounter &&
                     candidate.pc != 0;
             });
@@ -422,42 +434,23 @@ TestPoint FirstRegisteredPcPoint()
     throw std::logic_error("test source pack has no PC point");
 }
 
-ProgramValueGraph SubscribeRequestGraph(
-    const TestPoint& target)
-{
-    TestStaticConfigWriter writer({'S', 'G', 'C', '1'});
-    writer.U32(1);
-    writer.String(target.pack.canonical_id);
-    writer.U32(target.pack.version);
-    writer.Hash(target.pack.manifest_hash);
-    writer.String(target.point.canonical_id);
-    writer.U8(static_cast<std::uint8_t>(
-        SemanticPointPhysicalKind::ProgramCounter));
-    writer.U32(target.point.pc);
-    writer.U32(0);
-    writer.U8(static_cast<std::uint8_t>(
-        StopDeliveryMode::Observe));
-    writer.U8(static_cast<std::uint8_t>(
-        StopRoutingPolicy::Pass));
-    writer.U8(static_cast<std::uint8_t>(
-        StopSubscriptionLifetime::Scoped));
-
-    TestValueGraphBuilder builder;
-    const ProgramValueId config = builder.Add(
-        CanonicalRuntimeType(
-            CanonicalRuntimeSchema::StopGroupStaticConfig),
-        writer.Finish());
-    return builder.Finish(
-        CanonicalAction::StopPointsSubscribeGroup,
-        {config});
-}
-
 ProgramValueGraph ContinueRequestGraph(
-    const ProgramValue& stop_group,
-    const ProgramValue* input_publication = nullptr,
+    const TestPoint& target,
+    const ProgramValue* input_binding = nullptr,
     const ProgramValue* playback_session = nullptr,
     std::optional<std::uint64_t> expected_movie_input_count = std::nullopt)
 {
+    TestStaticConfigWriter points_writer({'S', 'P', 'S', '1'});
+    points_writer.U32(1);
+    points_writer.String(target.pack.canonical_id);
+    points_writer.U32(target.pack.version);
+    points_writer.Hash(target.pack.manifest_hash);
+    points_writer.String(target.point.canonical_id);
+    points_writer.U8(static_cast<std::uint8_t>(
+        SemanticPointKind::ProgramCounter));
+    points_writer.U32(target.point.pc);
+    points_writer.U32(0);
+
     TestStaticConfigWriter writer({'C', 'U', 'C', '1'});
     writer.U8(1);
     writer.Bool(true);
@@ -466,18 +459,21 @@ ProgramValueGraph ContinueRequestGraph(
     writer.U8(0);
 
     TestValueGraphBuilder builder;
-    const ProgramValueId group = builder.AddFrom(stop_group);
-    std::optional<ProgramValueId> publication_value;
-    if (input_publication)
+    const ProgramValueId points = builder.Add(
+        CanonicalRuntimeType(
+            CanonicalRuntimeSchema::SemanticPointSet),
+        points_writer.Finish());
+    std::optional<ProgramValueId> binding_value;
+    if (input_binding)
     {
-        publication_value =
-            builder.AddFrom(*input_publication);
+        binding_value =
+            builder.AddFrom(*input_binding);
     }
-    const ProgramValueId publication = builder.Add(
+    const ProgramValueId binding = builder.Add(
         CanonicalRuntimeType(
             CanonicalRuntimeSchema::
-                OptionalInputPublicationReceipt),
-        OptionalValue{publication_value});
+                OptionalInputExecutionBinding),
+        OptionalValue{binding_value});
     std::optional<ProgramValueId> playback_value;
     if (playback_session)
         playback_value = builder.AddFrom(*playback_session);
@@ -505,47 +501,7 @@ ProgramValueGraph ContinueRequestGraph(
         writer.Finish());
     return builder.Finish(
         CanonicalAction::ExecutionContinueUntil,
-        {group, publication, playback, expected_count, config});
-}
-
-ProgramValueGraph InputPollRequestGraph(
-    const ProgramValue& lease,
-    const ProgramValue& publication)
-{
-    TestStaticConfigWriter writer({'I', 'G', 'P', '1'});
-    writer.Bool(false);
-    writer.String("test-publication");
-    writer.U32(1);
-    writer.Bool(true);
-
-    TestValueGraphBuilder builder;
-    const ProgramValueId lease_id =
-        builder.AddFrom(lease);
-    const ProgramValueId publication_value =
-        builder.AddFrom(publication);
-    const ProgramValueId optional_publication =
-        builder.Add(
-            CanonicalRuntimeType(
-                CanonicalRuntimeSchema::
-                    OptionalInputPublicationReceipt),
-            OptionalValue{publication_value});
-    const ProgramValueId optional_witness =
-        builder.Add(
-            CanonicalRuntimeType(
-                CanonicalRuntimeSchema::
-                    OptionalInputNeutralWitness),
-            OptionalValue{});
-    const ProgramValueId config = builder.Add(
-        CanonicalRuntimeType(
-            CanonicalRuntimeSchema::InputPollStaticConfig),
-        writer.Finish());
-    return builder.Finish(
-        CanonicalAction::InputAwaitGuestPoll,
-        {
-            lease_id,
-            optional_publication,
-            optional_witness,
-            config});
+        {points, binding, playback, expected_count, config});
 }
 
 void PutU32(
@@ -593,26 +549,21 @@ ProgramValueGraph ContextRequest(
     WorksetEpoch epoch,
     std::uint32_t pc)
 {
-    ProgramValue sequence{
-        ProgramValueId(1),
-        TypeRef::Builtin(BuiltinType::U64),
-        std::uint64_t{1}};
     ProgramValue epoch_value{
-        ProgramValueId(2),
+        ProgramValueId(1),
         TypeRef::Builtin(BuiltinType::U64),
         epoch.value()};
     ProgramValue pc_value{
-        ProgramValueId(3),
+        ProgramValueId(2),
         TypeRef::Builtin(BuiltinType::U32),
         pc};
     ProgramValue root{
-        ProgramValueId(4),
+        ProgramValueId(3),
         TypeRef::Named(SourceSchema(schema)),
-        RecordValue{{sequence.id, epoch_value.id, pc_value.id}}};
+        RecordValue{{epoch_value.id, pc_value.id}}};
     return {
         root.id,
-        {std::move(sequence),
-         std::move(epoch_value),
+        {std::move(epoch_value),
          std::move(pc_value),
          std::move(root)}};
 }
@@ -664,20 +615,6 @@ void PumpHostExecution(HostHarness& harness)
             harness.host->HandleExecutionEvent(
                 std::move(event));
     }
-}
-
-void AcknowledgeInputAndPumpOnce(HostHarness& harness)
-{
-    {
-        std::lock_guard lock(harness.control->mutex);
-        harness.control->input_callback_count = 1;
-    }
-    harness.session.PumpExecution();
-    std::vector<ExecutionEvent> events =
-        harness.session.DrainExecutionEvents();
-    for (ExecutionEvent& event : events)
-        harness.host->HandleExecutionEvent(
-            std::move(event));
 }
 
 TEST(
@@ -1106,7 +1043,7 @@ TEST(
 
 TEST(
     SessionProgramActionHost,
-    PromotesRetainedPassiveGroupForContinueAndQueuesTypedReceipt)
+    DirectSemanticPointContinueQueuesTypedReceipt)
 {
     HostHarness harness;
     ASSERT_TRUE(harness.Open());
@@ -1115,29 +1052,10 @@ TEST(
         "typed-continue").accepted);
     const TestPoint target = FirstRegisteredPcPoint();
 
-    ProgramActionDispatchResult subscribed =
-        harness.InvokeGraph(
-            CanonicalAction::StopPointsSubscribeGroup,
-            SubscribeRequestGraph(target));
-    ASSERT_TRUE(subscribed.accepted);
-    ASSERT_TRUE(subscribed.immediate_result);
-    const ProgramValue* group =
-        Root(subscribed.immediate_result->resolution.output);
-    ASSERT_NE(group, nullptr);
-    ASSERT_NE(
-        std::get_if<ResourceHandleValue>(&group->payload),
-        nullptr);
-    ASSERT_NE(harness.session.stop_points(), nullptr);
-    ASSERT_EQ(
-        harness.session.stop_points()
-            ->DesiredPhysicalPlan()
-            .pcs.size(),
-        1u);
-
     ProgramActionDispatchResult continued =
         harness.InvokeGraph(
             CanonicalAction::ExecutionContinueUntil,
-            ContinueRequestGraph(*group));
+            ContinueRequestGraph(target));
     ASSERT_TRUE(continued.accepted)
         << continued.diagnostic;
     EXPECT_FALSE(continued.immediate_result);
@@ -1227,19 +1145,12 @@ TEST(
             evidence_bytes->begin(),
             evidence_bytes->begin() + 4),
         "RSE1");
-    // ExecutionEngine released only its temporary Wake group; the passive
-    // source-scoped group and its physical union remain live.
-    ASSERT_EQ(
+    // ExecutionEngine owns and releases the foreground registration with the
+    // completed operation.
+    EXPECT_TRUE(
         harness.session.stop_points()
             ->DesiredPhysicalPlan()
-            .pcs.size(),
-        1u);
-    EXPECT_EQ(
-        harness.session.stop_points()
-            ->DesiredPhysicalPlan()
-            .pcs.front()
-            .pc,
-        target.point.pc);
+            .pcs.empty());
 
     ASSERT_TRUE(harness.Finish().accepted);
     harness.host->Shutdown();
@@ -1312,7 +1223,7 @@ TEST(
 
     HostHarness harness;
     harness.control->movie_available = true;
-    ASSERT_TRUE(harness.Open());
+    ASSERT_TRUE(harness.Open({}, dtm));
     ASSERT_TRUE(harness.Prepare(
         InvocationStatePolicy::EstablishBaseline,
         "movie-test",
@@ -1365,6 +1276,81 @@ TEST(
 
 TEST(
     SessionProgramActionHost,
+    RequiresExactPausedPcWithoutAdvancingEmulation)
+{
+    HostHarness harness;
+    {
+        std::lock_guard lock(harness.control->mutex);
+        harness.control->pc = 0x80101e48u;
+        harness.control->vi_count = 417;
+    }
+    ASSERT_TRUE(harness.Open());
+    ASSERT_TRUE(harness.Prepare(
+        InvocationStatePolicy::RestoreBaseline,
+        "battle-entry").accepted);
+
+    const std::size_t calls_before =
+        harness.control->Calls().size();
+    const ProgramActionDispatchResult mismatch =
+        harness.InvokeGraph(
+            CanonicalAction::ExecutionRequirePausedPc,
+            RequirePausedPcRequestGraph(0x800715dcu));
+    ASSERT_TRUE(mismatch.immediate_result);
+    EXPECT_EQ(
+        mismatch.immediate_result->resolution.status,
+        ProgramActionResolutionStatus::Failed);
+    EXPECT_EQ(
+        mismatch.immediate_result->resolution.code,
+        "paused_pc_mismatch");
+    EXPECT_EQ(harness.control->Calls().size(), calls_before);
+
+    const ProgramActionDispatchResult matched =
+        harness.InvokeGraph(
+            CanonicalAction::ExecutionRequirePausedPc,
+            RequirePausedPcRequestGraph(0x80101e48u));
+    ASSERT_TRUE(matched.immediate_result);
+    EXPECT_EQ(
+        matched.immediate_result->resolution.status,
+        ProgramActionResolutionStatus::Completed);
+    const ProgramValue* receipt = Root(
+        matched.immediate_result->resolution.output);
+    ASSERT_NE(receipt, nullptr);
+    const auto* fields = std::get_if<RecordValue>(
+        &receipt->payload);
+    ASSERT_NE(fields, nullptr);
+    ASSERT_EQ(fields->fields.size(), 3u);
+    EXPECT_EQ(harness.control->Calls().size(), calls_before);
+
+    ASSERT_TRUE(harness.Finish().accepted);
+    harness.host->Shutdown();
+    EXPECT_TRUE(harness.session.Shutdown().ok);
+}
+
+TEST(
+    SourceCapabilityPacks,
+    BattlePredicateSurfaceKeepsStartTurnAndExcludesStartAction)
+{
+    const SourceCapabilityPackCatalog catalog =
+        BuildSourceCapabilityPackCatalog();
+    const CapabilityPackIdentity battle = BattlePackIdentity();
+    const auto manifest = std::ranges::find(
+        catalog.manifests,
+        battle,
+        &CapabilityPackManifest::identity);
+    ASSERT_NE(manifest, catalog.manifests.end());
+    const auto has_point = [&](std::string_view suffix) {
+        return std::ranges::any_of(
+            manifest->semantic_points,
+            [&](const SemanticPointDescriptor& point) {
+                return point.canonical_id.ends_with(suffix);
+            });
+    };
+    EXPECT_TRUE(has_point(".point.StartTurn"));
+    EXPECT_FALSE(has_point(".point.StartAction"));
+}
+
+TEST(
+    SessionProgramActionHost,
     OwnedPlaybackContinueRequiresExactHandleAndReturnsTypedMovieEnd)
 {
     TemporaryDirectory temporary;
@@ -1374,7 +1360,7 @@ TEST(
 
     HostHarness harness;
     harness.control->movie_available = true;
-    ASSERT_TRUE(harness.Open());
+    ASSERT_TRUE(harness.Open({}, dtm));
     ASSERT_TRUE(harness.Prepare(
         InvocationStatePolicy::EstablishBaseline,
         "owned-playback-continue",
@@ -1391,18 +1377,9 @@ TEST(
     ASSERT_NE(movie_handle, nullptr);
 
     const TestPoint target = FirstRegisteredPcPoint();
-    ProgramActionDispatchResult subscribed = harness.InvokeGraph(
-        CanonicalAction::StopPointsSubscribeGroup,
-        SubscribeRequestGraph(target));
-    ASSERT_TRUE(subscribed.accepted);
-    ASSERT_TRUE(subscribed.immediate_result);
-    const ProgramValue* group =
-        Root(subscribed.immediate_result->resolution.output);
-    ASSERT_NE(group, nullptr);
-
     ProgramActionDispatchResult missing_handle = harness.InvokeGraph(
         CanonicalAction::ExecutionContinueUntil,
-        ContinueRequestGraph(*group, nullptr, nullptr, 5));
+        ContinueRequestGraph(target, nullptr, nullptr, 5));
     EXPECT_FALSE(missing_handle.accepted);
 
     {
@@ -1412,7 +1389,7 @@ TEST(
     }
     ProgramActionDispatchResult continued = harness.InvokeGraph(
         CanonicalAction::ExecutionContinueUntil,
-        ContinueRequestGraph(*group, nullptr, movie_handle, 5));
+        ContinueRequestGraph(target, nullptr, movie_handle, 5));
     ASSERT_TRUE(continued.accepted) << continued.diagnostic;
     PumpHostExecution(harness);
     std::vector<ActorActionResult> completions =
@@ -1455,7 +1432,7 @@ TEST(
 
 TEST(
     SessionProgramActionHost,
-    EstablishBaselineRequiresPreparationBeforePassiveStopsAndPlayback)
+    EstablishBaselineRequiresPlaybackBeforeGuestExecution)
 {
     TemporaryDirectory temporary;
     const std::filesystem::path dtm =
@@ -1464,7 +1441,7 @@ TEST(
 
     HostHarness harness;
     harness.control->movie_available = true;
-    ASSERT_TRUE(harness.Open());
+    ASSERT_TRUE(harness.Open({}, dtm));
     ProgramActionDispatchResult prepared = harness.Prepare(
         InvocationStatePolicy::EstablishBaseline,
         "read-only-movie",
@@ -1473,21 +1450,15 @@ TEST(
     ASSERT_TRUE(prepared.immediate_result);
 
     const TestPoint target = FirstRegisteredPcPoint();
-    ProgramActionDispatchResult early_subscription = harness.InvokeGraph(
-        CanonicalAction::StopPointsSubscribeGroup,
-        SubscribeRequestGraph(
-            target));
-    EXPECT_FALSE(early_subscription.accepted);
+    ProgramActionDispatchResult early_execution = harness.InvokeGraph(
+        CanonicalAction::ExecutionContinueUntil,
+        ContinueRequestGraph(target));
+    EXPECT_FALSE(early_execution.accepted);
 
     ProgramActionDispatchResult movie_prepared =
         PrepareMoviePlayback(harness, dtm);
     ASSERT_TRUE(movie_prepared.accepted) << movie_prepared.diagnostic;
     ASSERT_TRUE(movie_prepared.immediate_result);
-    ProgramActionDispatchResult subscribed = harness.InvokeGraph(
-        CanonicalAction::StopPointsSubscribeGroup,
-        SubscribeRequestGraph(target));
-    ASSERT_TRUE(subscribed.accepted) << subscribed.diagnostic;
-
     ProgramActionDispatchResult early_return = harness.Finish();
     EXPECT_FALSE(early_return.accepted);
     ASSERT_TRUE(early_return.immediate_result);
@@ -1515,90 +1486,18 @@ TEST(
 
 TEST(
     SessionProgramActionHost,
-    RejectedExecutionCompensatesItsInputAdvanceBinding)
+    HeldInputReturnsExactExecutionBindingConsumedByAdvancement)
 {
     HostHarness harness;
     ASSERT_TRUE(harness.Open());
     ASSERT_TRUE(harness.Prepare(
         InvocationStatePolicy::RestoreBaseline,
-        "input-compensation").accepted);
-    const WorksetEpoch epoch =
-        harness.session.snapshot().workset_epoch;
+        "exact-input-binding").accepted);
 
     ProgramActionDispatchResult leased =
         harness.InvokeGraph(
             CanonicalAction::InputAcquireLease,
-            InputLeaseRequestGraph(false));
-    ASSERT_TRUE(leased.accepted);
-    ASSERT_TRUE(leased.immediate_result);
-    const ProgramValue* lease_root =
-        Root(leased.immediate_result->resolution.output);
-    ASSERT_NE(lease_root, nullptr);
-    const auto* lease =
-        std::get_if<ResourceHandleValue>(
-            &lease_root->payload);
-    ASSERT_NE(lease, nullptr);
-
-    const ExecutionSubmissionReceipt busy =
-        harness.session.SubmitExecution(
-            InteractiveResumeRequest{
-                .expected_epoch = epoch});
-    ASSERT_TRUE(busy.accepted) << busy.error.message;
-
-    ProgramActionDispatchResult rejected =
-        harness.InvokeGraph(
-            CanonicalAction::InputPublishSequence,
-            InputSequenceRequestGraph(
-                *lease_root,
-                std::vector<Byte>(8, 0)));
-    EXPECT_FALSE(rejected.accepted);
-    ASSERT_TRUE(rejected.immediate_result);
-    EXPECT_EQ(
-        rejected.immediate_result->resolution.code,
-        "execution_rejected");
-    ASSERT_NE(harness.session.input_arbiter(), nullptr);
-    EXPECT_EQ(
-        harness.session.input_arbiter()
-            ->snapshot()
-            .binding_count,
-        0u);
-
-    (void)harness.session.CancelExecution(
-        CancellationReason::ExternalRequest);
-    for (int pump = 0; pump < 16; ++pump)
-    {
-        harness.session.PumpExecution();
-        const std::vector<ExecutionEvent> events =
-            harness.session.DrainExecutionEvents();
-        if (std::ranges::any_of(
-                events,
-                [](const ExecutionEvent& event) {
-                    return event.kind ==
-                        ExecutionEventKind::Terminal;
-                }))
-        {
-            break;
-        }
-    }
-    ASSERT_TRUE(harness.Finish().accepted);
-    harness.host->Shutdown();
-    EXPECT_TRUE(harness.session.Shutdown().ok);
-}
-
-TEST(
-    SessionProgramActionHost,
-    SequenceReturnsExactPublicationUsableByPollAndContinue)
-{
-    HostHarness harness;
-    ASSERT_TRUE(harness.Open());
-    ASSERT_TRUE(harness.Prepare(
-        InvocationStatePolicy::RestoreBaseline,
-        "exact-input-publication").accepted);
-
-    ProgramActionDispatchResult leased =
-        harness.InvokeGraph(
-            CanonicalAction::InputAcquireLease,
-            InputLeaseRequestGraph(false));
+            InputLeaseRequestGraph());
     ASSERT_TRUE(leased.accepted);
     ASSERT_TRUE(leased.immediate_result);
     const ProgramValue* lease =
@@ -1615,69 +1514,37 @@ TEST(
         0,
         0};
 
-    ProgramActionDispatchResult pulse =
-        harness.InvokeGraph(
-            CanonicalAction::InputPublishPulse,
-            InputPulseRequestGraph(*lease, frame));
-    ASSERT_TRUE(pulse.accepted)
-        << pulse.diagnostic;
-    AcknowledgeInputAndPumpOnce(harness);
-    ASSERT_TRUE(
-        harness.host->snapshot().execution_pending);
-    AcknowledgeInputAndPumpOnce(harness);
-    std::vector<ActorActionResult>
-        pulse_completions =
-            harness.host->DrainResults();
-    ASSERT_EQ(pulse_completions.size(), 1u);
-    CanonicalActionPayload pulse_receipt;
-    ASSERT_TRUE(DecodeCanonicalActionPayload(
-        pulse_completions.front().resolution.output,
-        *CanonicalActionOutputSchemaIdentity(
-            CanonicalAction::InputPublishPulse),
-        pulse_receipt));
-    const std::vector<Byte> neutral{
-        0,
-        0,
-        128,
-        128,
-        128,
-        128,
-        0,
-        0};
-    ASSERT_TRUE(pulse_receipt.Bytes(
-        CanonicalActionPayloadField::ResultFrame));
-    EXPECT_TRUE(std::ranges::equal(
-        *pulse_receipt.Bytes(
-            CanonicalActionPayloadField::ResultFrame),
-        neutral));
-
     ProgramActionDispatchResult dispatched =
         harness.InvokeGraph(
-            CanonicalAction::InputPublishSequence,
-            InputSequenceRequestGraph(*lease, frame));
+            CanonicalAction::InputApplyState,
+            InputStateRequestGraph(
+                CanonicalAction::InputApplyState,
+                *lease,
+                frame));
     ASSERT_TRUE(dispatched.accepted)
         << dispatched.diagnostic;
-    AcknowledgeInputAndPumpOnce(harness);
-    std::vector<ActorActionResult> completions =
-        harness.host->DrainResults();
-    ASSERT_EQ(completions.size(), 1u);
+    ASSERT_TRUE(dispatched.immediate_result);
     ASSERT_EQ(
-        completions.front().resolution.status,
+        dispatched.immediate_result->resolution.status,
         ProgramActionResolutionStatus::Completed);
-    const ProgramValue* publication =
-        Root(completions.front().resolution.output);
-    ASSERT_NE(publication, nullptr);
+    const ProgramValue* binding =
+        Root(dispatched.immediate_result->resolution.output);
+    ASSERT_NE(binding, nullptr);
 
     CanonicalActionPayload receipt;
     ASSERT_TRUE(DecodeCanonicalActionPayload(
-        completions.front().resolution.output,
+        dispatched.immediate_result->resolution.output,
         *CanonicalActionOutputSchemaIdentity(
-            CanonicalAction::InputPublishSequence),
+            CanonicalAction::InputApplyState),
         receipt));
     EXPECT_TRUE(receipt.Unsigned(
         CanonicalActionPayloadField::Handle));
     EXPECT_TRUE(receipt.Unsigned(
-        CanonicalActionPayloadField::Publication));
+            CanonicalActionPayloadField::Publication));
+    EXPECT_TRUE(receipt.Unsigned(
+            CanonicalActionPayloadField::Binding));
+    EXPECT_TRUE(receipt.Unsigned(
+            CanonicalActionPayloadField::StateGeneration));
     EXPECT_EQ(
         receipt.Unsigned(
             CanonicalActionPayloadField::ResultEpoch),
@@ -1689,52 +1556,26 @@ TEST(
             CanonicalActionPayloadField::ResultFrame),
         frame));
 
-    ProgramActionDispatchResult polled =
+    ProgramActionDispatchResult stepped =
         harness.InvokeGraph(
-            CanonicalAction::InputAwaitGuestPoll,
-            InputPollRequestGraph(
-                *lease,
-                *publication));
-    ASSERT_TRUE(polled.accepted)
-        << polled.diagnostic;
-    ASSERT_TRUE(polled.immediate_result);
-    CanonicalActionPayload poll_result;
-    ASSERT_TRUE(DecodeCanonicalActionPayload(
-        polled.immediate_result->resolution.output,
-        *CanonicalActionOutputSchemaIdentity(
-            CanonicalAction::InputAwaitGuestPoll),
-        poll_result));
-    EXPECT_EQ(
-        poll_result.Boolean(
-            CanonicalActionPayloadField::
-                ResultAcknowledged),
-        true);
-
-    const TestPoint target = FirstRegisteredPcPoint();
-    ProgramActionDispatchResult subscribed =
-        harness.InvokeGraph(
-            CanonicalAction::StopPointsSubscribeGroup,
-            SubscribeRequestGraph(target));
-    ASSERT_TRUE(subscribed.accepted);
-    ASSERT_TRUE(subscribed.immediate_result);
-    const ProgramValue* group =
-        Root(subscribed.immediate_result->resolution.output);
-    ASSERT_NE(group, nullptr);
-    ProgramActionDispatchResult continued =
-        harness.InvokeGraph(
-            CanonicalAction::ExecutionContinueUntil,
-            ContinueRequestGraph(
-                *group,
-                publication));
-    ASSERT_TRUE(continued.accepted)
-        << continued.diagnostic;
+            CanonicalAction::ExecutionStepFrames,
+            StepFramesRequestGraph(1, {}, binding));
+    ASSERT_TRUE(stepped.accepted) << stepped.diagnostic;
+    EXPECT_FALSE(stepped.immediate_result);
+    ASSERT_TRUE(harness.session.execution_snapshot());
     EXPECT_TRUE(
-        harness.session.execution_snapshot().input_bound);
-
-    ASSERT_TRUE(harness.session.CancelExecution(
-        CancellationReason::ExternalRequest).accepted);
+        harness.session.execution_snapshot()->input_bound);
+    {
+        std::lock_guard lock(harness.control->mutex);
+        harness.control->input_callback_count = 1;
+    }
     PumpHostExecution(harness);
-    (void)harness.host->DrainResults();
+    const std::vector<ActorActionResult> completions =
+        harness.host->DrainResults();
+    ASSERT_EQ(completions.size(), 1u);
+    EXPECT_EQ(
+        completions.front().resolution.status,
+        ProgramActionResolutionStatus::Completed);
 
     CanonicalActionPayload forged;
     ASSERT_TRUE(forged.AddUnsigned(
@@ -1746,9 +1587,17 @@ TEST(
         *receipt.Unsigned(
             CanonicalActionPayloadField::Publication)));
     ASSERT_TRUE(forged.AddUnsigned(
+        CanonicalActionPayloadField::Binding,
+        *receipt.Unsigned(
+            CanonicalActionPayloadField::Binding)));
+    ASSERT_TRUE(forged.AddUnsigned(
         CanonicalActionPayloadField::ResultEpoch,
         *receipt.Unsigned(
             CanonicalActionPayloadField::ResultEpoch)));
+    ASSERT_TRUE(forged.AddUnsigned(
+        CanonicalActionPayloadField::StateGeneration,
+        *receipt.Unsigned(
+            CanonicalActionPayloadField::StateGeneration)));
     ASSERT_TRUE(forged.AddBytes(
         CanonicalActionPayloadField::ResultFrame,
         std::vector<Byte>(
@@ -1762,24 +1611,99 @@ TEST(
         EncodeCanonicalActionPayload(
             forged,
             *CanonicalActionOutputSchemaIdentity(
-                CanonicalAction::InputPublishSequence));
+                CanonicalAction::InputApplyState));
     ASSERT_TRUE(forged_graph.ok);
-    const ProgramValue* forged_publication =
+    const ProgramValue* forged_binding =
         Root(forged_graph.graph);
-    ASSERT_NE(forged_publication, nullptr);
+    ASSERT_NE(forged_binding, nullptr);
     ProgramActionDispatchResult rejected =
         harness.InvokeGraph(
-            CanonicalAction::ExecutionContinueUntil,
-            ContinueRequestGraph(
-                *group,
-                forged_publication));
+            CanonicalAction::ExecutionStepFrames,
+            StepFramesRequestGraph(1, {}, forged_binding));
     EXPECT_FALSE(rejected.accepted);
     ASSERT_TRUE(rejected.immediate_result);
     EXPECT_EQ(
         rejected.immediate_result->resolution.code,
-        "input_relationship_invalid");
+        "input_binding_invalid");
 
     ASSERT_TRUE(harness.Finish().accepted);
+    harness.host->Shutdown();
+    EXPECT_TRUE(harness.session.Shutdown().ok);
+}
+
+TEST(
+    SessionProgramActionHost,
+    NeutralOneShotDeliveryPublishesOnceAndReturnsOneTypedReceipt)
+{
+    HostHarness harness;
+    ASSERT_TRUE(harness.Open());
+    ASSERT_TRUE(harness.Prepare(
+        InvocationStatePolicy::RestoreBaseline,
+        "neutral-one-shot-delivery").accepted);
+
+    ProgramActionDispatchResult leased = harness.InvokeGraph(
+        CanonicalAction::InputAcquireLease,
+        InputLeaseRequestGraph());
+    ASSERT_TRUE(leased.accepted);
+    ASSERT_TRUE(leased.immediate_result);
+    const ProgramValue* lease =
+        Root(leased.immediate_result->resolution.output);
+    ASSERT_NE(lease, nullptr);
+
+    const std::size_t publications_before = std::ranges::count(
+        harness.control->Calls(), std::string("input.publish"));
+    ProgramActionDispatchResult begun = harness.InvokeGraph(
+        CanonicalAction::InputBeginDelivery,
+        InputStateRequestGraph(
+            CanonicalAction::InputBeginDelivery,
+            *lease,
+            std::vector<Byte>{0, 0, 128, 128, 128, 128, 0, 0}));
+    ASSERT_TRUE(begun.accepted) << begun.diagnostic;
+    ASSERT_TRUE(begun.immediate_result);
+    const ProgramValue* binding =
+        Root(begun.immediate_result->resolution.output);
+    ASSERT_NE(binding, nullptr);
+
+    ProgramActionDispatchResult stepped = harness.InvokeGraph(
+        CanonicalAction::ExecutionStepFrames,
+        StepFramesRequestGraph(1, {}, binding));
+    ASSERT_TRUE(stepped.accepted) << stepped.diagnostic;
+    {
+        std::lock_guard lock(harness.control->mutex);
+        harness.control->input_callback_count = 1;
+    }
+    PumpHostExecution(harness);
+    ASSERT_EQ(harness.host->DrainResults().size(), 1u);
+
+    ProgramActionDispatchResult completed = harness.InvokeGraph(
+        CanonicalAction::InputCompleteDelivery,
+        CompleteInputDeliveryRequestGraph(*lease, *binding));
+    ASSERT_TRUE(completed.accepted) << completed.diagnostic;
+    ASSERT_TRUE(completed.immediate_result);
+    CanonicalActionPayload receipt;
+    ASSERT_TRUE(DecodeCanonicalActionPayload(
+        completed.immediate_result->resolution.output,
+        *CanonicalActionOutputSchemaIdentity(
+            CanonicalAction::InputCompleteDelivery),
+        receipt));
+    EXPECT_TRUE(receipt.Unsigned(
+        CanonicalActionPayloadField::DeliveryId));
+    EXPECT_TRUE(receipt.Unsigned(
+        CanonicalActionPayloadField::ResultSequence));
+    EXPECT_EQ(receipt.Unsigned(
+        CanonicalActionPayloadField::CompletedCount), 1u);
+    EXPECT_EQ(
+        std::ranges::count(
+            harness.control->Calls(),
+            std::string("input.publish")),
+        publications_before + 1);
+
+    ASSERT_TRUE(harness.Finish().accepted);
+    EXPECT_EQ(
+        std::ranges::count(
+            harness.control->Calls(),
+            std::string("input.publish")),
+        publications_before + 1);
     harness.host->Shutdown();
     EXPECT_TRUE(harness.session.Shutdown().ok);
 }
@@ -1816,6 +1740,44 @@ TEST(
 
     const WorksetEpoch epoch =
         harness.session.snapshot().workset_epoch;
+    ProgramActionRequest wrong_pc = harness.Request(
+        ProgramHostOperation::InvokeAction,
+        epoch);
+    wrong_pc.action = NavigationCaptureContextActionIdentity();
+    wrong_pc.input = ContextRequest(
+        "soa.navigation.CaptureContextRequest",
+        epoch,
+        soa::navigation::ctx::CapturePc + 4);
+    ProgramActionDispatchResult wrong_pc_result =
+        harness.host->Dispatch(std::move(wrong_pc));
+    EXPECT_FALSE(wrong_pc_result.accepted);
+    ASSERT_TRUE(wrong_pc_result.immediate_result);
+    EXPECT_EQ(
+        wrong_pc_result.immediate_result->resolution.status,
+        ProgramActionResolutionStatus::Failed);
+    EXPECT_EQ(
+        wrong_pc_result.immediate_result->resolution.code,
+        "observation_point_unavailable");
+
+    ProgramActionRequest wrong_epoch = harness.Request(
+        ProgramHostOperation::InvokeAction,
+        epoch);
+    wrong_epoch.action = NavigationCaptureContextActionIdentity();
+    wrong_epoch.input = ContextRequest(
+        "soa.navigation.CaptureContextRequest",
+        WorksetEpoch(epoch.value() + 1),
+        soa::navigation::ctx::CapturePc);
+    ProgramActionDispatchResult wrong_epoch_result =
+        harness.host->Dispatch(std::move(wrong_epoch));
+    EXPECT_FALSE(wrong_epoch_result.accepted);
+    ASSERT_TRUE(wrong_epoch_result.immediate_result);
+    EXPECT_EQ(
+        wrong_epoch_result.immediate_result->resolution.status,
+        ProgramActionResolutionStatus::Rejected);
+    EXPECT_EQ(
+        wrong_epoch_result.immediate_result->resolution.code,
+        "invalid_context_request");
+
     ProgramActionRequest query = harness.Request(
         ProgramHostOperation::InvokeAction,
         epoch);

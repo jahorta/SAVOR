@@ -51,7 +51,7 @@ InputMovieReservationAdapter::AcquireUnsuspendableMovieReservation()
     }
     if (next_reservation_ == std::numeric_limits<std::uint64_t>::max())
     {
-        (void)input_.BeginRelease(acquired.lease, epoch);
+        (void)input_.CloseLease(acquired.lease, epoch);
         return {
             Failure("Movie reservation identity space is exhausted"),
             {}};
@@ -75,7 +75,7 @@ InputMovieReservationAdapter::ReleaseMovieReservation(
     WorksetEpoch epoch = current_epoch_ ? current_epoch_() : WorksetEpoch{};
     if (!epoch)
         return Failure("A movie input reservation cannot be released outside its workset");
-    InputReleaseReceipt released = input_.BeginRelease(lease_, epoch);
+    InputLeaseCloseReceipt released = input_.CloseLease(lease_, epoch);
     if (!released.ok ||
         released.status != InputLeaseStatus::Released)
     {
@@ -106,7 +106,6 @@ InputLeaseReceipt InputMovieReservationAdapter::AcquireLease(
     request.priority = std::numeric_limits<std::int32_t>::max();
     request.suspendable = false;
     request.interruption_borrowable = false;
-    request.require_neutral_acknowledgement = false;
     request.movie_exclusive = true;
     return input_.Acquire(request, epoch);
 }

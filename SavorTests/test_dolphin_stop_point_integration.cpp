@@ -117,29 +117,32 @@ private:
     StopSubscriptionGroupId group_id,
     StopSourceId source_id,
     StopSubscriptionId subscription_id,
-    StopDeliveryMode delivery,
+    StopSubscriptionRoute route,
     bool lossless,
     IStopPointConsumer& consumer)
 {
+    const bool foreground =
+        std::holds_alternative<ForegroundStopWait>(route);
+    if (auto* passive =
+            std::get_if<PassiveStopObservation>(&route))
+    {
+        passive->lossless = lossless;
+    }
     return {
         .id = group_id,
         .source = {
             .id = source_id,
-            .stable_name = delivery == StopDeliveryMode::Wake
+            .stable_name = foreground
                 ? "integration.game_mode_controller.wake"
                 : "integration.game_mode_controller.observe",
-            .diagnostic_label = delivery == StopDeliveryMode::Wake
+            .diagnostic_label = foreground
                 ? "live JIT router wake guard"
                 : "live JIT router passive guard",
         },
         .subscriptions = {{
             .id = subscription_id,
             .point = PcStopPointSpec{kGameModeControllerPc},
-            .delivery = delivery,
-            .policy = StopRoutingPolicy::Pass,
-            .lossless = lossless,
-            .suppress_immediate_reentry =
-                delivery == StopDeliveryMode::Wake,
+            .route = std::move(route),
             .consumer = &consumer,
         }},
     };
@@ -165,10 +168,8 @@ private:
         .subscriptions = {{
             .id = kWakeSubscription,
             .point = PcStopPointSpec{kGameModeControllerPc},
-            .delivery = StopDeliveryMode::Wake,
-            .policy = StopRoutingPolicy::Pass,
-            .lossless = true,
-            .suppress_immediate_reentry = true,
+            .route = ForegroundStopWait{
+                .suppress_immediate_reentry = true},
         }},
     };
 }
@@ -278,7 +279,16 @@ TEST(
     const SessionOperationReceipt opened = session.Open(open_options);
     ASSERT_TRUE(opened.ok) << opened.backend.message;
     ASSERT_EQ(opened.workset_epoch, WorksetEpoch{});
-    ASSERT_EQ(opened.workset_epoch, WorksetEpoch(1));
+    ASSERT_FALSE(session.execution_snapshot());
+    const SessionOperationReceipt initialization =
+        session.OpenWorksetInitialization(WorkerWorksetId(1));
+    ASSERT_TRUE(initialization.ok) << initialization.backend.message;
+    ASSERT_EQ(initialization.workset_epoch, WorksetEpoch(1));
+    ASSERT_FALSE(session.execution_snapshot());
+    const SessionOperationReceipt committed =
+        session.CommitWorksetInitialization(WorkerWorksetId(1));
+    ASSERT_TRUE(committed.ok) << committed.backend.message;
+    ASSERT_TRUE(session.execution_snapshot());
     ASSERT_TRUE(savor::probe::NativeStopHooksInstalled());
 
     StopPointRouter* const router = session.stop_points();
@@ -306,7 +316,7 @@ TEST(
         << original_instruction.message;
     ASSERT_EQ(original_instruction.value, 0x9421fff0u);
     const ExecutionSnapshot before_patch =
-        session.execution_snapshot();
+        *session.execution_snapshot();
     const GuestMutationReceipt patch = mutations->Apply({
         .owner = MutationOwnerId(0x7101u),
         .scope = MutationScopeId(0x7101u),
@@ -325,7 +335,7 @@ TEST(
     ASSERT_TRUE(patched_instruction.ok);
     EXPECT_EQ(patched_instruction.value, 0x60000000u);
     EXPECT_EQ(
-        session.execution_snapshot().evidence.vi_count,
+        session.execution_snapshot()->evidence.vi_count,
         before_patch.evidence.vi_count);
     const GuestMutationReceipt restored_patch =
         mutations->Restore(patch.mutation, WorksetEpoch(1));
@@ -339,14 +349,14 @@ TEST(
         restored_instruction.value,
         original_instruction.value);
     EXPECT_EQ(
-        session.execution_snapshot().evidence.vi_count,
+        session.execution_snapshot()->evidence.vi_count,
         before_patch.evidence.vi_count);
 
     // Compile and execute the recurring game loop before installing the
     // physical PC. A later hit therefore exercises Dolphin's ordinary
     // address-specific JIT invalidation path.
     const ExecutionEnvironmentEvidence initial_evidence =
-        session.execution_snapshot().evidence;
+        session.execution_snapshot()->evidence;
     const ExecutionSubmissionReceipt initial_step =
         session.SubmitExecution(StepFramesRequest{
             .policy = MakeExecutionPolicy(WorksetEpoch(1)),
@@ -388,7 +398,7 @@ TEST(
         kObserveGroup,
         kObserveSource,
         kObserveSubscription,
-        StopDeliveryMode::Observe,
+        PassiveStopObservation{},
         false,
         observe_consumer));
     ASSERT_TRUE(observe_registration.receipt.ok)
@@ -421,7 +431,7 @@ TEST(
         << first_terminal->error.message;
     ASSERT_TRUE(first_terminal->stop.has_value());
     const StopRouteReceipt& first_wake = *first_terminal->stop;
-    ASSERT_EQ(first_wake.terminal, StopRouteTerminal::WokeForeground);
+    ASSERT_EQ(first_wake.terminal, StopRouteTerminal::ForegroundMatched);
     ASSERT_TRUE(first_wake.event.has_value());
     const RoutedStopEvent& event = *first_wake.event;
     const auto* const routed_pc =
@@ -431,7 +441,7 @@ TEST(
     EXPECT_EQ(event.evidence.hit_pc, kGameModeControllerPc);
     EXPECT_EQ(event.evidence.path, NativeStopPath::Jit);
     EXPECT_EQ(event.identity.workset_epoch, session.snapshot().workset_epoch);
-    EXPECT_TRUE(event.active_foreground_wake);
+    EXPECT_TRUE(event.active_foreground_wait);
     EXPECT_TRUE(event.authoritative);
     EXPECT_FALSE(router->authoritative_overflowed());
     EXPECT_EQ(router->passive_drop_count(), 0u);
@@ -441,7 +451,7 @@ TEST(
         first_wake.deliveries.begin(),
         first_wake.deliveries.end(),
         [](const StopDelivery& delivery) {
-            return delivery.delivery == StopDeliveryMode::Wake;
+            return delivery.subscription_id == kWakeSubscription;
         });
     ASSERT_NE(wake_delivery, first_wake.deliveries.end());
     for (const StopDelivery& delivery : first_wake.deliveries)
@@ -497,7 +507,7 @@ TEST(
     // followed by the later hit that satisfies the Wake.
     ASSERT_EQ(observe_consumer.deliveries.size(), 3u);
     EXPECT_FALSE(
-        observe_consumer.deliveries[1].event.active_foreground_wake);
+        observe_consumer.deliveries[1].event.active_foreground_wait);
     EXPECT_LT(
         observe_consumer.deliveries[1].event.identity.sequence,
         second_terminal->stop->identity.sequence);
@@ -506,7 +516,7 @@ TEST(
         second_terminal->stop->identity);
 
     const auto before_final_step =
-        session.execution_snapshot().evidence.vi_count;
+        session.execution_snapshot()->evidence.vi_count;
     const ExecutionSubmissionReceipt final_step =
         session.SubmitExecution(StepFramesRequest{
             .policy = MakeExecutionPolicy(WorksetEpoch(1)),

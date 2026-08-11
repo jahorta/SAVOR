@@ -1,6 +1,6 @@
 #include "BattlePredictionDbInput.h"
 
-#include "BattleJobRunOptions.h"
+#include "DbCopy.h"
 #include "BattlePredictionScenario.h"
 
 #include <Core/Input/SoaBattle/BattleCommandCodec.h>

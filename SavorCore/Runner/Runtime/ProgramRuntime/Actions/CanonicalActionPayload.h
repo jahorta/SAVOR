@@ -40,14 +40,12 @@ enum class CanonicalActionPayloadField : std::uint16_t
     GroupId = 19,
     SourceId = 20,
     SubscriptionId = 21,
-    Delivery = 22,
-    RoutingPolicy = 23,
-    Lifetime = 25,
+    // 22, 23, and 25 were removed with generic stop-routing policies.
     CurrentPointPolicy = 26,
     MovieEndedPolicy = 27,
     ThrottlePolicy = 28,
     // 29 and 30 are reserved legacy fields.
-    ProfileJson = 31,
+    // 31 was removed with phase-owned capture attachment.
     MarkerId = 32,
     MarkerValue = 33,
     TelemetrySource = 34,
@@ -79,16 +77,22 @@ enum class CanonicalActionPayloadField : std::uint16_t
     MemorySize = 61,
     MemoryAccess = 62,
     InterruptionPolicy = 63,
-    Lossless = 64,
-    RequireNeutralAcknowledgement = 65,
+    // 64 was removed with phase-owned stop subscriptions.
+    // 65 is reserved legacy input-acknowledgement state.
     Suspendable = 66,
     InterruptionBorrowable = 67,
     MovieExclusive = 68,
     ReadOnly = 69,
-    RecordProgress = 70,
+    // 70 was removed; telemetry is never canonical progress.
     TelemetryLossPolicy = 71,
     PlaybackHandle = 72,
     ExpectedMovieInputCount = 73,
+    ExpectedPc = 74,
+    ResultViCount = 75,
+    Binding = 76,
+    StateGeneration = 77,
+    DeliveryId = 78,
+    HitTimeSampleDescriptorIds = 79,
 };
 
 enum class CanonicalActionPayloadKind : std::uint8_t

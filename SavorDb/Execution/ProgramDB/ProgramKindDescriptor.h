@@ -8,11 +8,6 @@
 
 #include "../../../SavorCore/Runner/Runtime/Worksets/WorksetTypes.h"
 #include "../../../SavorCore/Runner/Runtime/FullPhase/FullPhaseProgram.h"
-#include "../../../SavorCore/Runner/Script/PhaseScriptVM.h"
-
-namespace savor {
-struct PRResult;
-}
 
 namespace savor::db::execution::programdb {
 
@@ -148,32 +143,6 @@ struct IProgramJobMaterializer {
     }
 };
 
-struct RuntimeInitRequest {
-    std::string savestate_ref_kind;
-    std::int64_t savestate_ref_id = 0;
-    std::string bootstrap_profile;
-    savor::DBuf derived_buffer_type = savor::DBuf::DK_None;
-    // Complete adapter-declared workset compatibility identity. Empty means
-    // the job is intentionally singleton until its native phase adapter can
-    // name the exact savestate/movie/derived-state baseline and policies.
-    std::optional<std::string> workset_execution_key;
-};
-
-struct ResultArtifactRef {
-    std::string artifact_role;
-    std::int64_t artifact_id = 0;
-};
-
-struct ResultMapPayload {
-    std::string result_kind;
-    std::int64_t result_ref_id = 0;
-    std::string output_key;
-    std::string output_data_kind;
-    std::string output_ref_kind;
-    std::int64_t output_ref_id = 0;
-    std::vector<std::string> event_lines;
-};
-
 // Durable workset membership and dispatch authority are selected by the
 // execution DB. A descriptor may reconstruct runtime payloads for that exact
 // ordered membership, but it may not regroup, omit, or add jobs here.
@@ -197,8 +166,10 @@ struct WorksetReconstructionContext {
     std::int64_t workflow_step_id = 0;
     std::int64_t root_job_set_id = 0;
     std::string dispatch_token;
-    std::string compatibility_key;
+    std::string contract_key;
     savor::runtime::ArtifactCompatibilityToken state_compatibility;
+    std::optional<savor::runtime::WorksetCaptureBindingV1> capture;
+    savor::runtime::progress::ProgressPlanV1 progress_plan;
     std::vector<WorksetReconstructionItem> items;
 };
 
@@ -316,11 +287,6 @@ struct IProgramResultHandler {
     }
 };
 
-struct IResultPayloadWriter {
-    virtual ~IResultPayloadWriter() = default;
-    virtual bool Persist(const ResultMapPayload& payload, std::string* error_out) = 0;
-};
-
 struct WorkflowTransitionContext {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
@@ -360,31 +326,6 @@ struct WorkflowTransitionDecision {
     std::vector<DynamicStep> spawn_steps;
 };
 
-struct IJobPersistenceAdapter {
-    virtual ~IJobPersistenceAdapter() = default;
-    virtual WorkflowStepScheduleResult EncodeForQueueing(const WorkflowStepScheduleContext& context) const = 0;
-    virtual std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const = 0;
-};
-
-struct IWorkflowGraphJobPersistenceAdapter {
-    virtual ~IWorkflowGraphJobPersistenceAdapter() = default;
-    virtual WorkflowStepScheduleResult EncodeForGraphQueueing(
-        const WorkflowGraphStepScheduleContext& context) const = 0;
-};
-
-struct IRuntimeInitAdapter {
-    virtual ~IRuntimeInitAdapter() = default;
-    virtual RuntimeInitRequest BuildRuntimeInit(std::int64_t job_id) const = 0;
-    virtual std::optional<savor::PSJob> MaterializePsJob(std::int64_t job_id, const RuntimeInitRequest& request) const = 0;
-};
-
-struct IResultMapper {
-    virtual ~IResultMapper() = default;
-    virtual std::string BuildResultIniFromPrResult(std::int64_t job_id, const savor::PRResult& result) const = 0;
-    virtual ResultMapPayload MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const = 0;
-    virtual std::optional<ResultArtifactRef> MapPrimaryArtifact(std::int64_t job_id) const = 0;
-};
-
 struct IWorkflowTransitionHandler {
     virtual ~IWorkflowTransitionHandler() = default;
     virtual WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext& context) const = 0;
@@ -395,17 +336,16 @@ struct ProgramKindDescriptor {
     std::string program_name;
     std::optional<savor::runtime::fullphase::FullPhaseProgramIdentity>
         full_phase_identity;
+    // Presence is mandatory, including when the explicit default is empty.
+    // Coordination resolves these registered libraries into a concrete
+    // workset ProgressPlanV1 before dispatch.
+    std::optional<std::vector<std::string>>
+        default_progress_library_ids;
+    std::vector<std::uint32_t> default_progress_runtime_trigger_pcs;
 
-    std::shared_ptr<IJobPersistenceAdapter> job_persistence;
-    std::shared_ptr<IWorkflowGraphJobPersistenceAdapter> graph_job_persistence;
-    std::shared_ptr<IRuntimeInitAdapter> runtime_init;
-    std::shared_ptr<IResultMapper> result_mapper;
-    std::shared_ptr<IResultPayloadWriter> result_payload_writer;
     std::shared_ptr<IWorkflowTransitionHandler> workflow_transition;
 
-    // Coordinator architecture contracts. Legacy phase adapters remain
-    // source-visible during the cutover but production workflow scheduling
-    // accepts only descriptors providing all three contracts.
+    // Complete production coordination contracts.
     std::shared_ptr<IProgramJobMaterializer> job_materializer;
     std::shared_ptr<IWorksetReconstructionAdapter> workset_reconstruction;
     std::shared_ptr<IProgramResultHandler> result_handler;

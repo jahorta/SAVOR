@@ -85,79 +85,27 @@ static_assert(!std::is_convertible_v<ProgramExecutionId, AttemptId>);
 static_assert(!std::is_convertible_v<WorkerWorksetId, WorkerWorksetItemId>);
 static_assert(!std::is_convertible_v<WorkerTerminalId, WorkerTerminalOrder>);
 
-enum class WorkerCapability : std::uint64_t
+// Deployment mode is the only intentional distinction between production
+// workers. It controls presentation and interactive-debug policy; it never
+// participates in Full Phase admission or workset scheduling.
+enum class WorkerMode : std::uint8_t
 {
-    None = 0,
-    SessionLifecycle = 1ull << 0,
-    Screenshot = 1ull << 1,
-    HostEvents = 1ull << 2,
-    CancellationProtocol = 1ull << 3,
-    Shutdown = 1ull << 4,
-    InteractiveVisualDebug = 1ull << 6,
-    WorksetDispatch = 1ull << 7,
+    Headless = 0,
+    Visual = 1,
+    VisualDebug = 2,
 };
 
-using WorkerCapabilityMask = std::uint64_t;
-
-[[nodiscard]] constexpr WorkerCapabilityMask CapabilityMask(WorkerCapability capability) noexcept
+[[nodiscard]] constexpr bool IsNormalWorkerMode(WorkerMode mode) noexcept
 {
-    return static_cast<WorkerCapabilityMask>(capability);
+    return mode == WorkerMode::Headless || mode == WorkerMode::Visual;
 }
-
-[[nodiscard]] constexpr WorkerCapabilityMask operator|(
-    WorkerCapability lhs,
-    WorkerCapability rhs) noexcept
-{
-    return CapabilityMask(lhs) | CapabilityMask(rhs);
-}
-
-[[nodiscard]] constexpr WorkerCapabilityMask operator|(
-    WorkerCapabilityMask lhs,
-    WorkerCapability rhs) noexcept
-{
-    return lhs | CapabilityMask(rhs);
-}
-
-[[nodiscard]] constexpr WorkerCapabilityMask operator|(
-    WorkerCapability lhs,
-    WorkerCapabilityMask rhs) noexcept
-{
-    return CapabilityMask(lhs) | rhs;
-}
-
-[[nodiscard]] constexpr WorkerCapabilityMask AddCapability(
-    WorkerCapabilityMask capabilities,
-    WorkerCapability capability) noexcept
-{
-    return capabilities | CapabilityMask(capability);
-}
-
-[[nodiscard]] constexpr WorkerCapabilityMask RemoveCapability(
-    WorkerCapabilityMask capabilities,
-    WorkerCapability capability) noexcept
-{
-    return capabilities & ~CapabilityMask(capability);
-}
-
-[[nodiscard]] constexpr bool HasCapability(
-    WorkerCapabilityMask capabilities,
-    WorkerCapability capability) noexcept
-{
-    return (capabilities & CapabilityMask(capability)) == CapabilityMask(capability);
-}
-
-inline constexpr WorkerCapabilityMask kSlice1ProductionCapabilities =
-    WorkerCapability::SessionLifecycle |
-    WorkerCapability::Screenshot |
-    WorkerCapability::HostEvents |
-    WorkerCapability::CancellationProtocol |
-    WorkerCapability::Shutdown;
 
 enum class WorkerState : std::uint8_t
 {
     Starting,
     AwaitingSession,
     Ready,
+    InitializingWorkset,
     Running,
     Cancelling,
     Tainted,
@@ -176,7 +124,6 @@ enum class SessionDisposition : std::uint8_t
 enum class WorkerCommandKind : std::uint8_t
 {
     OpenSession,
-    PrepareModule,
     CancelInvocation,
     CaptureScreenshot,
     ControlExecution,
@@ -215,7 +162,7 @@ enum class WorkerRejectionCode : std::uint16_t
     WorksetAlreadyActive,
     WorksetNotFound,
     WorksetItemNotFound,
-    WorksetCatalogMismatch,
+    ProgramPackageRejected,
     CapacityExceeded,
     TerminalNotFound,
     TerminalMismatch,

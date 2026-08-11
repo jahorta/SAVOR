@@ -156,7 +156,7 @@ public:
     [[nodiscard]] ProgramBaselineComponentResult Stage(
         ProgramBaselineDefinition& definition) const;
 
-    [[nodiscard]] ProgramBaselineComponentResult Prepare(
+    [[nodiscard]] ProgramBaselineComponentResult Initialize(
         WorkerWorksetId workset_id,
         const ProgramBaselineDefinition& definition,
         bool multi_item,
@@ -186,6 +186,7 @@ private:
     std::optional<std::filesystem::path> staged_source_root_;
     ResourceScopeId workset_scope_;
     bool multi_item_ = false;
+    bool initialization_committed_ = false;
     bool stopped_ = false;
 };
 

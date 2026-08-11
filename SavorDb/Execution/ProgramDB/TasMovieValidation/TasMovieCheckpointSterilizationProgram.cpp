@@ -1,4 +1,6 @@
 #include "TasMovieCheckpointSterilizationProgram.h"
+#include "PreparedSterilizedCheckpointEvidence.h"
+#include "../WorksetObservationBinding.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -16,7 +18,7 @@
 #include "../../../State/IStateDb.h"
 #include "../../../../SavorCore/Phases/Programs/TasMovieValidation/TasMovieValidationModule.h"
 #include "../../../../SavorCore/Runner/IPC/DurableWorkerTerminalEnvelope.h"
-#include "../../../../SavorCore/Runner/IPC/Wire.h"
+#include "../../../../SavorCore/Runner/Runtime/ProgramKind.h"
 #include "../../../../SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
 #include "../../../../SavorCore/Runner/Runtime/Worksets/ProgramBaseline.h"
 #include "../../../../SavorCore/Runner/Runtime/Worksets/WorksetWireCodec.h"
@@ -35,6 +37,12 @@ constexpr std::string_view kOutputKey = "sterilized_checkpoint_savestate";
 constexpr std::string_view kOutputDataKind = "state.movie_inactive_savestate_id";
 constexpr std::string_view kStateRefKind = "state.savestate";
 constexpr std::size_t kDeclaredTerminalBytes = 128ull * 1024ull;
+
+const WorksetObservationDefaultsV1& ObservationDefaults()
+{
+    static const WorksetObservationDefaultsV1 defaults{};
+    return defaults;
+}
 
 std::int64_t NowMs() { return types::UtcNow().time_since_epoch().count(); }
 
@@ -113,20 +121,8 @@ bool VerifySourceSnapshot(
     const TasMovieCheckpointSterilizationRequestRecord& request,
     SavestateRecord* source_out,
     std::string* error_out) {
-    const auto source = state_db ? state_db->GetSavestate(request.source_savestate_id)
-                                 : std::nullopt;
-    if (!source || !source->is_complete
-        || source->playback_state != SavestatePlaybackState::MoviePaired
-        || source->artifact_id != request.source_savestate_artifact_id
-        || source->artifact_sha256 != request.source_savestate_sha256
-        || source->dtm_artifact_id != request.source_dtm_artifact_id
-        || source->dtm_sha256 != request.source_dtm_sha256
-        || !source->dtm_filename) {
-        if (error_out) *error_out = "movie-paired checkpoint snapshot drifted";
-        return false;
-    }
-    if (source_out) *source_out = *source;
-    return true;
+    return tasmovieevidence::VerifyMoviePairedCheckpointSnapshot(
+        state_db, request, source_out, error_out);
 }
 
 bool VerifyCanonicalResult(
@@ -135,34 +131,8 @@ bool VerifyCanonicalResult(
     std::int64_t result_savestate_id,
     std::optional<std::string_view> expected_sha,
     std::string* error_out) {
-    const auto result = state_db ? state_db->GetSavestate(result_savestate_id)
-                                 : std::nullopt;
-    const auto derivation = state_db
-        ? state_db->FindSavestateDerivationBySourceAndMethod(
-              request.source_savestate_id,
-              savor::runtime::tasmovie::SterilizationDerivationMethod)
-        : std::nullopt;
-    if (!result || !result->is_complete || result->artifact_kind != "SAV"
-        || result->playback_state != SavestatePlaybackState::MovieInactive
-        || result->dtm_artifact_id || result->dtm_sha256 || result->dtm_filename
-        || !derivation || derivation->to_savestate_id != result_savestate_id) {
-        if (error_out) *error_out = "canonical sterilized checkpoint evidence drifted";
-        return false;
-    }
-    if (expected_sha && result->artifact_sha256 != *expected_sha) {
-        if (error_out) *error_out = "canonical sterilized checkpoint conflicts with worker bytes";
-        return false;
-    }
-    if (std::filesystem::is_regular_file(result->artifact_filename + ".dtm")) {
-        if (error_out) *error_out = "movie-inactive checkpoint unexpectedly has a DTM sidecar";
-        return false;
-    }
-    const auto actual_sha = HashFile(result->artifact_filename);
-    if (!actual_sha || *actual_sha != result->artifact_sha256) {
-        if (error_out) *error_out = "sterilized checkpoint artifact hash drifted";
-        return false;
-    }
-    return true;
+    return tasmovieevidence::VerifyCanonicalSterilizedCheckpoint(
+        state_db, request, result_savestate_id, expected_sha, error_out);
 }
 
 class Materializer final : public IProgramJobMaterializer {
@@ -204,6 +174,17 @@ public:
                 return Fail("canonical sterilization derivation is inconsistent", error_out);
             }
             reused = existing->savestate_id;
+        }
+
+        ResolvedWorksetObservationBindingV1 observation;
+        if (!reused && !ResolveWorksetObservationBindingV1(
+                context,
+                ObservationDefaults(),
+                WorkingRoot(config_.working_dir_root) / "captures",
+                &observation,
+                error_out))
+        {
+            return false;
         }
 
         const auto& identity = phase_->identity();
@@ -291,8 +272,8 @@ public:
                 .workset_key = command.materialization_key + ".workset.0",
                 .program_kind = static_cast<std::int32_t>(savor::PK_TasMovieCheckpointSterilize),
                 .program_version = 1,
-                .compatibility = {
-                    .compatibility_key = "tasmovie-checkpoint-sterilize:v1:request:"
+                .contract = {
+                    .contract_key = "tasmovie-checkpoint-sterilize:v1:request:"
                         + std::to_string(request_id) + ":phase:" + request->full_phase_sha256,
                     .module_canonical_id = runtime.module.canonical_id,
                     .module_version = static_cast<std::int32_t>(runtime.module.revision),
@@ -300,8 +281,19 @@ public:
                     .entrypoint = runtime.entrypoint,
                     .verified_dependency_sha256 = runtime.verified_dependency_sha256,
                     .runtime_profile_sha256 = runtime.runtime_profile_sha256,
-                    .required_capability_mask = runtime.required_capabilities,
+                    .program_package_sha256 = savor::runtime::fullphase::
+                        BuildFullPhaseProgramPackage(*phase_).canonical_sha256,
                     .estimated_payload_bytes = 128ull * 1024ull,
+                },
+                .observation = {
+                    .capture_binding_payload =
+                        observation.encoded_capture_binding,
+                    .capture_binding_sha256 =
+                        observation.capture_binding_sha256,
+                    .progress_plan_payload =
+                        observation.encoded_progress_plan,
+                    .progress_plan_sha256 =
+                        observation.progress_plan_sha256,
                 },
                 .priority = context.step.step_priority,
                 .ordered_job_ids = {jobs.front().job_id},
@@ -347,7 +339,7 @@ public:
         } else {
             const auto jobs = execution_db_->ListJobsInJobSet(context.root_job_set_id);
             if (jobs.size() != 1) return Fail("sterilization continuation lost singleton shape", error_out);
-            const auto job = execution_db_->GetJob(jobs.front().job_id);
+            const auto job = execution_db_->GetExecutionJob(jobs.front().job_id);
             if (!job || !job->worker_terminal_fingerprint)
                 return Fail("sterilization worker terminal identity is missing", error_out);
             const auto attempt = analysis_db_->FindTasMovieCheckpointSterilizationAttempt(
@@ -457,7 +449,12 @@ public:
                 .workflow_step_id = static_cast<std::uint64_t>(context.workflow_step_id),
                 .root_job_set_id = static_cast<std::uint64_t>(context.root_job_set_id),
             },
-            .program = phase_->identity(),
+            .program_package =
+                savor::runtime::fullphase::
+                    BuildFullPhaseProgramPackage(*phase_),
+            .common_input =
+                savor::runtime::fullphase::MakeFullPhaseCommonInput(
+                    "soa.tas_movie_checkpoint_sterilize.CommonInput", 1),
         };
         workset.baseline = {
             .artifact = {
@@ -477,6 +474,8 @@ public:
                 savor::runtime::MakeTasMovieCheckpointSterilizationBaselineComponent(),
             },
         };
+        workset.capture = context.capture;
+        workset.progress_plan = context.progress_plan;
         workset.execution_key = {
             .module = runtime.module,
             .entrypoint = runtime.entrypoint,
@@ -485,6 +484,17 @@ public:
             .baseline = savor::runtime::ComputeProgramBaselineKey(workset.baseline),
             .movie_policy_sha256 = runtime.movie_policy_sha256,
             .service_policy_sha256 = runtime.service_policy_sha256,
+            .program_package_sha256 =
+                workset.phase_invocation.program_package
+                    .canonical_sha256,
+            .common_input_sha256 =
+                workset.phase_invocation.common_input
+                    .content_sha256,
+            .capture_binding_sha256 = workset.capture
+                ? workset.capture->content_sha256
+                : savor::runtime::EmptyWorksetCaptureBindingHashV1(),
+            .progress_plan_sha256 =
+                workset.progress_plan.content_sha256,
         };
         workset.execution_key.canonical_sha256 =
             savor::runtime::ComputeWorkerWorksetExecutionKeyHash(workset.execution_key);
@@ -502,11 +512,11 @@ public:
             .correlation = {
                 .durable_job_id = std::to_string(item.job_id),
                 .claim_token = item.claim_token,
-                .parent_correlation = context.compatibility_key,
+                .parent_correlation = context.contract_key,
             },
         });
         std::vector<std::uint8_t> encoded;
-        const auto status = savor::runtime::EncodeWorkerWorksetV2(workset, encoded);
+        const auto status = savor::runtime::EncodeWorkerWorksetV4(workset, encoded);
         if (!status) return fail("sterilization workset encoding failed: " + status.message);
         workset.encoded_size_bytes = encoded.size();
         return WorksetReconstructionResult{
@@ -723,6 +733,10 @@ ProgramKindDescriptor BuildTasMovieCheckpointSterilizationProgramDescriptor(
     descriptor.program_name = "TAS Movie Checkpoint Sterilization";
     descriptor.full_phase_identity = savor::runtime::tasmovie::
         TasMovieCheckpointSterilizationFullPhaseDefinitionV1()->identity();
+    descriptor.default_progress_library_ids =
+        ObservationDefaults().progress_library_ids;
+    descriptor.default_progress_runtime_trigger_pcs =
+        ObservationDefaults().runtime_sample_trigger_pcs;
     descriptor.job_materializer = std::make_shared<Materializer>(
         execution_db, state_db, analysis_db, config);
     descriptor.workset_reconstruction = std::make_shared<Reconstruction>(

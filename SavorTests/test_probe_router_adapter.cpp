@@ -116,13 +116,12 @@ StopDelivery PcDelivery(
     std::uint64_t sequence,
     std::uint64_t snapshot,
     std::uint64_t epoch,
-    bool active_foreground_wake = false)
+    bool active_foreground_wait = false)
 {
     StopDelivery delivery;
     delivery.source_id = config.source.id;
     delivery.group_id = config.group_id;
     delivery.subscription_id = config.first_subscription_id;
-    delivery.delivery = StopDeliveryMode::Observe;
     delivery.event.identity = {
         RoutedStopSequence(sequence),
         StopSampleSnapshotId(snapshot),
@@ -136,8 +135,8 @@ StopDelivery PcDelivery(
         0,
         false,
     };
-    delivery.event.active_foreground_wake =
-        active_foreground_wake;
+    delivery.event.active_foreground_wait =
+        active_foreground_wait;
     return delivery;
 }
 
@@ -152,7 +151,6 @@ StopDelivery MemoryDelivery(
     delivery.source_id = config.source.id;
     delivery.group_id = config.group_id;
     delivery.subscription_id = config.first_subscription_id;
-    delivery.delivery = StopDeliveryMode::Observe;
     delivery.event.identity = {
         RoutedStopSequence(sequence),
         StopSampleSnapshotId(snapshot),
@@ -239,12 +237,12 @@ TEST(CaptureRouterAdapter, LowersOnlySourceScopedPassiveRequirements)
     ASSERT_NE(progress, nullptr);
     ASSERT_NE(activation, nullptr);
     ASSERT_NE(memory, nullptr);
-    EXPECT_EQ(capture->delivery, StopDeliveryMode::Observe);
-    EXPECT_TRUE(capture->lossless);
-    EXPECT_EQ(progress->delivery, StopDeliveryMode::Progress);
-    EXPECT_FALSE(progress->lossless);
-    EXPECT_EQ(activation->delivery, StopDeliveryMode::Observe);
-    EXPECT_TRUE(activation->lossless);
+    ASSERT_TRUE(std::holds_alternative<PassiveStopObservation>(capture->route));
+    EXPECT_TRUE(std::get<PassiveStopObservation>(capture->route).lossless);
+    ASSERT_TRUE(std::holds_alternative<PassiveStopObservation>(progress->route));
+    EXPECT_FALSE(std::get<PassiveStopObservation>(progress->route).lossless);
+    ASSERT_TRUE(std::holds_alternative<PassiveStopObservation>(activation->route));
+    EXPECT_TRUE(std::get<PassiveStopObservation>(activation->route).lossless);
     ASSERT_TRUE(std::holds_alternative<MemoryStopPointSpec>(
         memory->point));
     const auto memory_point =
@@ -255,16 +253,14 @@ TEST(CaptureRouterAdapter, LowersOnlySourceScopedPassiveRequirements)
     for (const auto& subscription :
         built.definition.subscriptions)
     {
-        EXPECT_TRUE(
-            subscription.delivery == StopDeliveryMode::Observe ||
-            subscription.delivery == StopDeliveryMode::Progress);
-        EXPECT_EQ(subscription.policy, StopRoutingPolicy::Pass);
+        ASSERT_TRUE(std::holds_alternative<PassiveStopObservation>(
+            subscription.route));
         EXPECT_EQ(
             subscription.lifetime,
             StopSubscriptionLifetime::Scoped);
-        EXPECT_TRUE(subscription.interruption_handler_key.empty());
         EXPECT_EQ(
-            subscription.cpu_observer_descriptor_id,
+            std::get<PassiveStopObservation>(subscription.route)
+                .cpu_observer_descriptor_id,
             config.cpu_observer_descriptor_id);
         EXPECT_EQ(subscription.consumer, &adapter);
     }
@@ -317,7 +313,7 @@ TEST(
 
 TEST(
     CaptureRouterAdapter,
-    ActiveForegroundWakeQualifiesControlAndRetainsRoutedIdentity)
+    ActiveForegroundWaitQualifiesControlAndRetainsRoutedIdentity)
 {
     Profile profile = BaseProfile();
     ASSERT_FALSE(profile.expected_module_sha256.empty());
@@ -595,8 +591,7 @@ TEST(
             StopSubscriptionDefinition{
                 .id = StopSubscriptionId(881),
                 .point = PcStopPointSpec{kActivationPc},
-                .delivery = StopDeliveryMode::Wake,
-                .policy = StopRoutingPolicy::Consume,
+                .route = ForegroundStopWait{},
                 .lifetime = StopSubscriptionLifetime::Scoped,
                 .consumer = &wake_consumer,
             },
@@ -624,10 +619,10 @@ TEST(
     ASSERT_EQ(receipts.size(), 1u);
     EXPECT_EQ(
         receipts[0].terminal,
-        StopRouteTerminal::WokeForeground);
+        StopRouteTerminal::ForegroundMatched);
     EXPECT_TRUE(receipts[0].core_must_remain_stopped);
     ASSERT_TRUE(receipts[0].event.has_value());
-    EXPECT_TRUE(receipts[0].event->active_foreground_wake);
+    EXPECT_TRUE(receipts[0].event->active_foreground_wait);
     EXPECT_TRUE(
         receipts[0].event
             ->requires_physical_reconcile_before_resume);

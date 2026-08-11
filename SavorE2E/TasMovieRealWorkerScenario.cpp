@@ -30,6 +30,7 @@
 #include "DbSetup.h"
 #include "DurableLogFile.h"
 #include "SeedProbeRealWorkerScenario.h"
+#include "ScenarioAssessment.h"
 #include "SplitCoordinatorRuntime.h"
 #include "WorkerStartupBarrier.h"
 
@@ -41,6 +42,7 @@ constexpr std::uint32_t kRootTerminalPc =
 constexpr std::uint32_t kWorkerStartupOperationTimeoutMs = 60'000;
 
 struct VerifiedRootCursorAttempt {
+    bool established = false;
     std::int64_t validation_attempt_id = 0;
     std::int64_t itinerary_artifact_id = 0;
     std::string itinerary_sha256;
@@ -52,6 +54,7 @@ struct VerifiedRootCursorAttempt {
 };
 
 struct VerifiedRootValidationAttempt {
+    bool valid = false;
     std::int64_t validation_attempt_id = 0;
     std::int64_t tas_movie_root_id = 0;
     std::int64_t checkpoint_savestate_id = 0;
@@ -128,7 +131,7 @@ bool FindTerminalInfrastructureJobFailure(
                 && member.state != "CANCELED") {
                 continue;
             }
-            const auto job = execution_db->GetJob(member.job_id);
+            const auto job = execution_db->GetExecutionJob(member.job_id);
             std::ostringstream diagnostic;
             diagnostic << "workflow job " << member.job_id
                 << " reached infrastructure state " << member.state;
@@ -491,13 +494,6 @@ bool VerifyRootCursorAttempt(
                 && output.ref_kind == "tmv_validation_attempt"
                 && output.ref_id == attempt_outputs.front()->ref_id;
         });
-    if (established_output == outputs.end()) {
-        if (error_out) {
-            *error_out = "completed establishment workflow lacks its exact success-specific cursor output";
-        }
-        return false;
-    }
-
     const auto attempt = db_service->AnalysisDb()
         ->GetTasMovieValidationAttempt(attempt_outputs.front()->ref_id);
     if (!attempt) {
@@ -549,6 +545,16 @@ bool VerifyRootCursorAttempt(
     }
 
     if (attempt->outcome == TasMovieValidationOutcome::Invalid) {
+        if (attempt->failure_reason == TasMovieValidationFailureReason::None
+            || attempt->candidate_itinerary_artifact_id
+            || attempt->candidate_itinerary_sha256
+            || attempt->produced_tas_movie_root_id
+            || established_output != outputs.end()) {
+            if (error_out) {
+                *error_out = "durable Invalid root-cursor result has an illegal result shape";
+            }
+            return false;
+        }
         std::ostringstream diagnostic;
         diagnostic << "root cursor establishment returned durable Invalid: reason="
             << ToString(attempt->failure_reason)
@@ -564,8 +570,19 @@ bool VerifyRootCursorAttempt(
             << " actual_count=" << attempt->actual_input_count
             << " attempt=" << attempt->validation_attempt_id;
         std::cout << "[tasmovie-domain-invalid] " << diagnostic.str() << '\n';
-        if (error_out) *error_out = diagnostic.str();
-        return false;
+        if (verified_out) {
+            *verified_out = {
+                .established = false,
+                .validation_attempt_id = attempt->validation_attempt_id,
+                .pc = attempt->actual_pc,
+                .input_count = attempt->actual_input_count,
+                .worker_id = attempt->worker_id,
+                .worker_process_generation =
+                    attempt->worker_process_generation,
+                .workset_epoch = attempt->workset_epoch,
+            };
+        }
+        return true;
     }
 
     if (attempt->outcome != TasMovieValidationOutcome::RootCursorEstablished
@@ -580,6 +597,12 @@ bool VerifyRootCursorAttempt(
         || attempt->produced_tas_movie_root_id.has_value()) {
         if (error_out) {
             *error_out = "persisted TAS Movie root-cursor attempt has an illegal result shape";
+        }
+        return false;
+    }
+    if (established_output == outputs.end()) {
+        if (error_out) {
+            *error_out = "RootCursorEstablished lacks its exact success-specific cursor output";
         }
         return false;
     }
@@ -679,6 +702,7 @@ bool VerifyRootCursorAttempt(
         << " materialized=\"" << *materialized << "\"\n";
     if (verified_out) {
         *verified_out = {
+            .established = true,
             .validation_attempt_id = attempt->validation_attempt_id,
             .itinerary_artifact_id = artifact->artifact_id,
             .itinerary_sha256 = artifact->sha256,
@@ -714,7 +738,6 @@ bool VerifyRootValidationAttempt(
     std::int64_t rtc_value,
     const VerifiedRootCursorAttempt& establishment,
     std::string_view graph_node_key,
-    bool require_same_worker_process,
     VerifiedRootValidationAttempt* verified_out,
     std::string* error_out) {
     using savor::db::TasMovieValidationFailureReason;
@@ -812,22 +835,10 @@ bool VerifyRootValidationAttempt(
         return false;
     }
     if (attempt->workset_epoch == 0
-        || establishment.workset_epoch == 0
-        || (require_same_worker_process
-            && (attempt->worker_id != establishment.worker_id
-                || attempt->worker_process_generation
-                    != establishment.worker_process_generation
-                || attempt->workset_epoch
-                    == establishment.workset_epoch))
-        || (!require_same_worker_process
-            && attempt->worker_id == establishment.worker_id
-            && attempt->worker_process_generation
-                == establishment.worker_process_generation
-            && attempt->workset_epoch == establishment.workset_epoch)) {
+        || establishment.workset_epoch == 0) {
         if (error_out) {
-            *error_out = require_same_worker_process
-                ? "sequential TAS Movie attempts did not use one worker process with distinct nonzero workset epochs"
-                : "composed TAS Movie attempts did not record nonzero workset epochs";
+            *error_out =
+                "TAS Movie attempts did not record nonzero workset epochs";
         }
         return false;
     }
@@ -845,12 +856,18 @@ bool VerifyRootValidationAttempt(
     if (attempt->outcome == TasMovieValidationOutcome::Invalid) {
         const auto root = db_service->StateDb()->FindTasMovieRootBySourceRtc(
             source_dtm_artifact_id, rtc_value);
+        const auto checkpoint_output = std::find_if(
+            outputs.begin(), outputs.end(), [&](const auto& output) {
+                return output.graph_node_key == graph_node_key
+                    && output.output_key
+                        == "validated_checkpoint_savestate";
+            });
         if (attempt->failure_reason == TasMovieValidationFailureReason::None
             || attempt->candidate_itinerary_artifact_id
             || attempt->candidate_itinerary_sha256
             || attempt->produced_tas_movie_root_id
             || status->status != TasMovieValidationStatus::Quarantined
-            || root.has_value()) {
+            || root.has_value() || checkpoint_output != outputs.end()) {
             if (error_out) {
                 *error_out = "durable Invalid result did not quarantine exactly the DTM without publishing root state";
             }
@@ -880,8 +897,18 @@ bool VerifyRootValidationAttempt(
             << " attempt=" << attempt->validation_attempt_id;
         std::cout << "[tasmovie-validation-invalid] "
                   << diagnostic.str() << '\n';
-        if (error_out) *error_out = diagnostic.str();
-        return false;
+        if (verified_out) {
+            *verified_out = {
+                .valid = false,
+                .validation_attempt_id = attempt->validation_attempt_id,
+                .effective_dtm_sha256 = expected_dtm_sha256,
+                .worker_id = attempt->worker_id,
+                .worker_process_generation =
+                    attempt->worker_process_generation,
+                .workset_epoch = attempt->workset_epoch,
+            };
+        }
+        return true;
     }
 
     if (attempt->outcome != TasMovieValidationOutcome::Valid
@@ -972,6 +999,7 @@ bool VerifyRootValidationAttempt(
         << " validate_epoch=" << attempt->workset_epoch << '\n';
     if (verified_out) {
         *verified_out = {
+            .valid = true,
             .validation_attempt_id = attempt->validation_attempt_id,
             .tas_movie_root_id = root->tas_movie_root_id,
             .checkpoint_savestate_id = root->checkpoint_savestate_id,
@@ -1082,7 +1110,7 @@ bool VerifyCheckpointSterilization(
             if (error_out) *error_out = "executed sterilization is not singleton";
             return false;
         }
-        const auto job = db_service->ExecutionDb()->GetJob(jobs.front().job_id);
+        const auto job = db_service->ExecutionDb()->GetExecutionJob(jobs.front().job_id);
         const auto attempt = job && job->worker_terminal_fingerprint
             ? db_service->AnalysisDb()->FindTasMovieCheckpointSterilizationAttempt(
                   job->job_id, *job->worker_terminal_fingerprint)
@@ -1247,11 +1275,11 @@ bool RunTasMovieScenario(
                 / "savor-e2e-workers").string(),
         .worker_binary_runtime_root =
             (scenario_workspace_root / "worker-runtime").string(),
-        .visual_workers = options.visual_worker,
-        .auto_resume_visual_workers = false,
+        .worker_mode = options.visual_worker
+            ? savor::runtime::WorkerMode::Visual
+            : savor::runtime::WorkerMode::Headless,
         .runtime_artifact_root =
             (scenario_workspace_root / "runtime-artifacts").string(),
-        .enabled_program_kinds = registry.RegisteredProgramKinds(),
     };
 
     SplitCoordinatorRuntime coordinators;
@@ -1321,8 +1349,9 @@ bool RunTasMovieScenario(
         ready << "[tasmovie-ready-worker] worker_id=" << worker.worker_id
               << " accepting_workset="
               << (worker.accepting_workset ? 1 : 0)
-              << " capabilities=" << worker.capabilities
-              << " modules=" << worker.runtime_manifest.modules.size();
+              << " mode=" << static_cast<int>(worker.mode)
+              << " runtime_contract="
+              << worker.runtime_contract_sha256;
         push_line(ready.str());
     }
 
@@ -1399,7 +1428,13 @@ bool RunTasMovieScenario(
                 &establishment, &pre_stop_error)) {
             // The durable typed establishment result is authoritative. A
             // failed check prevents validation from being materialized.
-        } else if (with_validation) {
+        } else {
+            push_line("[tasmovie-trajectory] phase=root_cursor outcome="
+                + std::string(establishment.established
+                    ? "RootCursorEstablished" : "Invalid")
+                + " attempt="
+                + std::to_string(establishment.validation_attempt_id));
+            if (with_validation && establishment.established) {
             std::size_t quiescence_polls = 0;
             std::string quiescence_diagnostics;
             while (!CheckWorkflowQuiescence(
@@ -1494,10 +1529,14 @@ bool RunTasMovieScenario(
                         : "validation workflow stopped before reaching COMPLETED state";
                 }
             }
+            }
         }
     }
 
-    if (with_validation && validation_completed && pre_stop_error.empty()) {
+    const bool all_requested_workflows_terminal = completed
+        && (!with_validation || !establishment.established
+            || validation_completed);
+    if (all_requested_workflows_terminal && pre_stop_error.empty()) {
         std::size_t drain_polls = 0;
         while (true) {
             std::string quiescence_diagnostics;
@@ -1505,10 +1544,12 @@ bool RunTasMovieScenario(
                 db_service->ExecutionDb(), &quiescence_diagnostics);
             const auto telemetry = coordinators.SnapshotTelemetry();
             if (workflow_quiescent
-                && telemetry.execution.worksets_submitted == 2
-                && telemetry.execution.draining_transitions == 2
-                && telemetry.execution.worker_terminals_staged == 2
-                && telemetry.execution.worker_terminal_acks == 2) {
+                && telemetry.execution.draining_transitions
+                    == telemetry.execution.worksets_submitted
+                && telemetry.execution.worker_terminal_acks
+                    == telemetry.execution.worker_terminals_staged
+                && telemetry.execution.worker_terminals_observed
+                    == telemetry.execution.worker_terminals_staged) {
                 break;
             }
             ++drain_polls;
@@ -1529,6 +1570,7 @@ bool RunTasMovieScenario(
         }
     }
     const auto final_telemetry = coordinators.SnapshotTelemetry();
+    const auto final_ready_workers = coordinators.SnapshotReadyWorkers();
     const auto final_warnings = coordinators.SnapshotExecutionWarnings();
     std::string stop_error;
     const bool stopped = coordinators.Stop(&stop_error);
@@ -1545,74 +1587,94 @@ bool RunTasMovieScenario(
         << (completed ? "success" : failed ? "failure" : "incomplete")
         << '\n';
     std::cout << "  " << latest_state << '\n';
-    if (!stopped) {
-        if (error_out != nullptr) {
-            *error_out = "split TAS Movie coordinator shutdown failed: "
-                + stop_error;
-        }
-        return false;
-    }
-    if (!pre_stop_error.empty()) {
-        if (error_out) *error_out = pre_stop_error;
-        return false;
-    }
-    if (!VerifySingletonEstablishmentGraph(final_graph, error_out)) {
-        return false;
-    }
-    if (!with_validation) {
-        return true;
-    }
+    const auto final_sink = [&](const std::string& line) {
+        durable_log.AppendLine(line);
+        std::cout << line << '\n';
+    };
+    ScenarioAssessment assessment;
+    assessment.Require(
+        stopped,
+        "split TAS Movie coordinator shutdown failed: " + stop_error);
+    assessment.Require(
+        pre_stop_error.empty(),
+        pre_stop_error.empty()
+            ? "TAS Movie scenario stopped before terminal execution"
+            : pre_stop_error);
+    std::string invariant_error;
+    const bool establishment_graph_valid =
+        VerifySingletonEstablishmentGraph(final_graph, &invariant_error);
+    assessment.Require(
+        establishment_graph_valid,
+        invariant_error.empty()
+            ? "TAS Movie establishment graph contract failed"
+            : invariant_error);
 
-    const auto validation_graph = db_service->ExecutionDb()
-        ->WorkflowQueryService()->GetWorkflowGraph(validation_workflow_id);
-    if (!VerifySingletonRootValidationGraph(
-            validation_graph,
-            establishment.validation_attempt_id,
-            *options.tasmovie_rtc,
-            error_out)) {
-        return false;
+    std::vector<savor::db::execution::workflow::WorkflowGraphSnapshot>
+        workflow_snapshots;
+    if (final_graph) workflow_snapshots.push_back(*final_graph);
+    if (with_validation && establishment.established) {
+        const auto validation_graph = db_service->ExecutionDb()
+            ->WorkflowQueryService()->GetWorkflowGraph(validation_workflow_id);
+        invariant_error.clear();
+        const bool validation_graph_valid =
+            VerifySingletonRootValidationGraph(
+                validation_graph, establishment.validation_attempt_id,
+                *options.tasmovie_rtc, &invariant_error);
+        assessment.Require(
+            validation_graph_valid,
+            invariant_error.empty()
+                ? "TAS Movie validation graph contract failed"
+                : invariant_error);
+        if (validation_graph) workflow_snapshots.push_back(*validation_graph);
+        VerifiedRootValidationAttempt validation{};
+        invariant_error.clear();
+        const bool validation_attempt_valid =
+            VerifyRootValidationAttempt(
+                db_service, validation_workflow_id, dtm_artifact_id,
+                options.dtm_file, *options.tasmovie_rtc, establishment,
+                "tas_validate_1", &validation, &invariant_error);
+        assessment.Require(
+            validation_attempt_valid,
+            invariant_error.empty()
+                ? "TAS Movie validation attempt contract failed"
+                : invariant_error);
+        if (validation_attempt_valid) {
+            final_sink("[tasmovie-trajectory] phase=validation outcome="
+                + std::string(validation.valid ? "Valid" : "Invalid")
+                + " attempt="
+                + std::to_string(validation.validation_attempt_id));
+        }
+    } else if (with_validation) {
+        final_sink("[tasmovie-trajectory] phase=validation outcome=NOT_ACTIVATED reason=root_cursor_invalid");
     }
-    if (final_telemetry.execution.worksets_submitted != 2
-        || final_telemetry.execution.draining_transitions != 2
-        || final_telemetry.execution.worker_terminals_staged != 2
-        || final_telemetry.execution.worker_terminal_acks != 2
-        || final_telemetry.execution.worker_terminals_observed != 2
-        || !final_warnings.empty()) {
+    AssessCommonScenarioExecution(
+        db_service->ExecutionDb(), workflow_snapshots, final_telemetry,
+        final_ready_workers, &assessment);
+    for (const auto& warning : final_warnings) {
+        assessment.Warn("coordinator warning "
+            + std::to_string(warning.sequence) + ": " + warning.message
+            + (warning.detail.empty() ? "" : " (" + warning.detail + ")"));
+    }
+    ReportCommonScenarioTrajectory(
+        db_service, workflow_snapshots,
+        with_validation ? "tasmovie_with_validation" : "tasmovie",
+        final_sink, &assessment);
+    EmitScenarioAssessment(
+        with_validation ? "tasmovie_with_validation" : "tasmovie",
+        assessment, final_sink);
+    if (!assessment.Passed()) {
         if (error_out) {
-            std::ostringstream diagnostic;
-            diagnostic << "sequential TAS Movie coordinator telemetry did not reconcile: submitted="
-                << final_telemetry.execution.worksets_submitted
-                << " draining="
-                << final_telemetry.execution.draining_transitions
-                << " observed="
-                << final_telemetry.execution.worker_terminals_observed
-                << " staged="
-                << final_telemetry.execution.worker_terminals_staged
-                << " acked="
-                << final_telemetry.execution.worker_terminal_acks
-                << " warnings=" << final_warnings.size();
-            *error_out = diagnostic.str();
+            *error_out = assessment.FailureSummary(
+                with_validation ? "tasmovie_with_validation" : "tasmovie");
         }
         return false;
     }
-    std::cout << "[tasmovie-sequential-telemetry] worksets_submitted=2"
-              << " draining_transitions=2 terminals=2 acknowledgements=2"
-              << " coordinator_warnings=0\n";
-    return VerifyRootValidationAttempt(
-        db_service,
-        validation_workflow_id,
-        dtm_artifact_id,
-        options.dtm_file,
-        *options.tasmovie_rtc,
-        establishment,
-        "tas_validate_1",
-        true,
-        nullptr,
-        error_out);
+    return true;
 }
 
 bool RunComposedTasMovieSeedProbeScenario(
     const CliOptions& options,
+    const ResolvedE2eScenarioEntry& entry,
     const char* argv0,
     savor::db::core::DBService* db_service,
     std::string* error_out) {
@@ -1643,7 +1705,7 @@ bool RunComposedTasMovieSeedProbeScenario(
             db_service->StateDb(), options.dtm_file,
             &dtm_artifact_id, &error)
         || !SeedAuthoringSpec(
-            db_service->AuthoringDb(), options,
+            db_service->AuthoringDb(), options, entry.run_identity,
             &seed_probe_spec_id, &error)
         || !SeedTasMovieSeedProbeWorkflow(
             db_service->AuthoringDb(), db_service->ExecutionDb(),
@@ -1751,11 +1813,11 @@ bool RunComposedTasMovieSeedProbeScenario(
                 / "savor-e2e-workers").string(),
         .worker_binary_runtime_root =
             (scenario_workspace_root / "worker-runtime").string(),
-        .visual_workers = options.visual_worker,
-        .auto_resume_visual_workers = false,
+        .worker_mode = options.visual_worker
+            ? savor::runtime::WorkerMode::Visual
+            : savor::runtime::WorkerMode::Headless,
         .runtime_artifact_root =
             (scenario_workspace_root / "runtime-artifacts").string(),
-        .enabled_program_kinds = registry.RegisteredProgramKinds(),
     };
 
     SplitCoordinatorRuntime coordinators;
@@ -1910,101 +1972,194 @@ bool RunComposedTasMovieSeedProbeScenario(
     for (const auto& line : drain_lines()) {
         std::cout << line << '\n';
     }
-    if (!stopped) {
-        if (error_out) {
-            *error_out = "split combined coordinator shutdown failed: "
-                + stop_error;
-        }
-        return false;
-    }
-    if (!workflow_completed) {
-        if (error_out) {
-            *error_out = terminal_error.empty()
-                ? "composed workflow stopped before completion"
-                : terminal_error;
-        }
-        return false;
-    }
-    if (!VerifyComposedTasMovieSeedProbeGraph(
-            db_service->AuthoringDb(), final_graph,
-            dtm_artifact_id, seed_probe_spec_id,
-            *options.tasmovie_rtc, false, error_out)) {
-        return false;
-    }
+    const auto final_sink = [&](const std::string& line) {
+        durable_log.AppendLine(line);
+        std::cout << line << '\n';
+    };
+    ScenarioAssessment assessment;
+    assessment.Require(
+        stopped,
+        "split combined coordinator shutdown failed: " + stop_error);
+    assessment.Require(
+        workflow_completed,
+        terminal_error.empty()
+            ? "composed workflow stopped before completion"
+            : terminal_error);
+    std::string invariant_error;
+    const bool graph_valid = VerifyComposedTasMovieSeedProbeGraph(
+        db_service->AuthoringDb(), final_graph,
+        dtm_artifact_id, seed_probe_spec_id,
+        *options.tasmovie_rtc, false, &invariant_error);
+    assessment.Require(
+        graph_valid,
+        invariant_error.empty()
+            ? "composed TAS Movie/SeedProbe graph contract failed"
+            : invariant_error);
 
     VerifiedRootCursorAttempt establishment{};
     VerifiedRootValidationAttempt validation{};
     VerifiedSterilizationAttempt sterilization{};
-    if (!VerifyRootCursorAttempt(
+    bool establishment_valid = false;
+    if (graph_valid && workflow_completed) {
+        invariant_error.clear();
+        establishment_valid = VerifyRootCursorAttempt(
             db_service, workflow_instance_id, dtm_artifact_id,
             options.dtm_file, scenario_workspace_root,
-            "tas_establish_1", &establishment, error_out)
-        || !VerifyRootValidationAttempt(
-            db_service, workflow_instance_id, dtm_artifact_id,
-            options.dtm_file, *options.tasmovie_rtc,
-            establishment, "tas_validate_1", false,
-            &validation, error_out)
-        || !VerifyCheckpointSterilization(
-            db_service, workflow_instance_id, final_graph,
-            validation.checkpoint_savestate_id,
-            &sterilization, error_out)) {
-        return false;
+            "tas_establish_1", &establishment, &invariant_error);
+        assessment.Require(
+            establishment_valid,
+            invariant_error.empty()
+                ? "root-cursor result contract failed"
+                : invariant_error);
     }
 
-    SeedProbeInfrastructureHealth infrastructure_health =
-        SeedProbeInfrastructureHealth::Failed;
-    std::vector<std::string> infrastructure_issues;
-    std::string seed_probe_error;
-    const bool seed_probe_valid = ValidateSeedProbeWorkflowExecution(
-        db_service->ExecutionDb(), db_service->AnalysisDb(), final_graph,
-        final_telemetry, final_ready_workers,
-        expected_seed_probe_module,
-        SeedProbeWorkflowValidationOptions{
-            .graph_node_key = "probe_1",
-            .expected_entry_savestate_id =
-                sterilization.savestate_id,
-            .require_single_seedprobe_step = false,
-        },
-        &infrastructure_health, &infrastructure_issues,
-        &seed_probe_error);
-    if (!seed_probe_valid
-        || infrastructure_health != SeedProbeInfrastructureHealth::Clean
-        || !infrastructure_issues.empty() || !final_warnings.empty()) {
-        if (error_out) {
-            std::ostringstream diagnostic;
-            diagnostic << "composed TAS Movie/SeedProbe validation failed";
-            if (!seed_probe_error.empty()) {
-                diagnostic << ": " << seed_probe_error;
-            }
-            diagnostic << " infrastructure_issues="
-                << infrastructure_issues.size()
-                << " coordinator_warnings=" << final_warnings.size();
+    const auto find_step = [&](std::string_view node_key) {
+        if (!final_graph) {
+            return static_cast<const savor::db::execution::workflow::
+                WorkflowStepRecord*>(nullptr);
+        }
+        const auto found = std::ranges::find_if(
+            final_graph->steps, [&](const auto& step) {
+                return step.graph_node_key == node_key;
+            });
+        return found == final_graph->steps.end() ? nullptr : &*found;
+    };
+    const auto require_skipped = [&](std::string_view node_key,
+                                     std::string_view reason) {
+        const auto* step = find_step(node_key);
+        assessment.Require(
+            step != nullptr
+                && step->state
+                    == savor::db::execution::workflow::WorkflowStepState::Skipped,
+            std::string(node_key) + " was not guard-skipped after "
+                + std::string(reason));
+    };
+
+    if (establishment_valid) {
+        final_sink("[tasmovie-trajectory] phase=root_cursor outcome="
+            + std::string(establishment.established
+                              ? "RootCursorEstablished" : "Invalid")
+            + " attempt="
+            + std::to_string(establishment.validation_attempt_id)
+            + " actual_pc=" + HexPc(establishment.pc)
+            + " input_count=" + std::to_string(establishment.input_count));
+    }
+
+    bool validation_contract_valid = false;
+    if (establishment_valid && !establishment.established) {
+        require_skipped("tas_validate_1", "root-cursor Invalid");
+        require_skipped("tas_sterilize_1", "root-cursor Invalid");
+        require_skipped("probe_1", "root-cursor Invalid");
+        final_sink("[tasmovie-trajectory] phase=validation outcome=NOT_ACTIVATED reason=root_cursor_invalid");
+        final_sink("[tasmovie-trajectory] phase=sterilization outcome=NOT_ACTIVATED reason=root_cursor_invalid");
+        final_sink("[seedprobe-trajectory] outcome=NOT_ACTIVATED reason=root_cursor_invalid");
+    } else if (establishment_valid) {
+        invariant_error.clear();
+        validation_contract_valid = VerifyRootValidationAttempt(
+            db_service, workflow_instance_id, dtm_artifact_id,
+            options.dtm_file, *options.tasmovie_rtc,
+            establishment, "tas_validate_1", &validation,
+            &invariant_error);
+        assessment.Require(
+            validation_contract_valid,
+            invariant_error.empty()
+                ? "root-validation result contract failed"
+                : invariant_error);
+        if (validation_contract_valid) {
+            final_sink("[tasmovie-trajectory] phase=validation outcome="
+                + std::string(validation.valid ? "Valid" : "Invalid")
+                + " attempt="
+                + std::to_string(validation.validation_attempt_id));
+        }
+    }
+
+    if (validation_contract_valid && !validation.valid) {
+        require_skipped("tas_sterilize_1", "root validation Invalid");
+        require_skipped("probe_1", "root validation Invalid");
+        final_sink("[tasmovie-trajectory] phase=sterilization outcome=NOT_ACTIVATED reason=validation_invalid");
+        final_sink("[seedprobe-trajectory] outcome=NOT_ACTIVATED reason=validation_invalid");
+    } else if (validation_contract_valid) {
+        invariant_error.clear();
+        const bool sterilization_valid = VerifyCheckpointSterilization(
+            db_service, workflow_instance_id, final_graph,
+            validation.checkpoint_savestate_id,
+            &sterilization, &invariant_error);
+        assessment.Require(
+            sterilization_valid,
+            invariant_error.empty()
+                ? "checkpoint sterilization contract failed"
+                : invariant_error);
+        if (sterilization_valid) {
+            final_sink("[tasmovie-trajectory] phase=sterilization outcome=Sterilized checkpoint="
+                + std::to_string(sterilization.savestate_id)
+                + " attempt="
+                + std::to_string(sterilization.sterilization_attempt_id));
+
+            SeedProbeInfrastructureHealth infrastructure_health =
+                SeedProbeInfrastructureHealth::Failed;
+            std::vector<std::string> infrastructure_issues;
+            std::string seed_probe_error;
+            const SeedProbeWorkflowValidationOptions seed_probe_options{
+                .graph_node_key = "probe_1",
+                .expected_entry_savestate_id = sterilization.savestate_id,
+                .require_single_seedprobe_step = false,
+            };
+            const bool seed_probe_valid = CheckSeedProbeInvariants(
+                db_service->ExecutionDb(), db_service->AnalysisDb(),
+                final_graph, final_telemetry, final_ready_workers,
+                expected_seed_probe_module, seed_probe_options,
+                &infrastructure_health, &infrastructure_issues,
+                &seed_probe_error);
+            assessment.Require(
+                seed_probe_valid,
+                seed_probe_error.empty()
+                    ? "SeedProbe durable contract assessment failed"
+                    : seed_probe_error);
             for (const auto& issue : infrastructure_issues) {
-                diagnostic << "\n  - " << issue;
+                if (seed_probe_valid) assessment.Warn(issue);
             }
-            for (const auto& warning : final_warnings) {
-                diagnostic << "\n  - coordinator warning "
-                    << warning.sequence
-                    << " worker_id=" << warning.worker_id
-                    << " job_id=" << warning.job_id
-                    << ": " << warning.message;
-                if (!warning.detail.empty()) {
-                    diagnostic << " (" << warning.detail << ')';
-                }
-            }
-            *error_out = diagnostic.str();
+            ReportSeedProbeTrajectory(
+                db_service->ExecutionDb(), db_service->AnalysisDb(),
+                final_graph, seed_probe_options, final_sink);
+        }
+    }
+
+    std::vector<savor::db::execution::workflow::WorkflowGraphSnapshot>
+        workflow_snapshots;
+    if (final_graph) workflow_snapshots.push_back(*final_graph);
+    AssessCommonScenarioExecution(
+        db_service->ExecutionDb(), workflow_snapshots, final_telemetry,
+        final_ready_workers, &assessment);
+    for (const auto& warning : final_warnings) {
+        assessment.Warn("coordinator warning "
+            + std::to_string(warning.sequence) + ": " + warning.message
+            + (warning.detail.empty() ? "" : " (" + warning.detail + ")"));
+    }
+    ReportCommonScenarioTrajectory(
+        db_service, workflow_snapshots, "tasmovie_seedprobe", final_sink,
+        &assessment);
+    EmitScenarioAssessment("tasmovie_seedprobe", assessment, final_sink);
+    if (!assessment.Passed()) {
+        if (error_out) {
+            *error_out = assessment.FailureSummary("tasmovie_seedprobe");
         }
         return false;
     }
 
-    std::cout << "[tasmovie-seedprobe-valid] workflow="
-        << workflow_instance_id
-        << " checkpoint=" << validation.checkpoint_savestate_id
-        << " sterilized_checkpoint=" << sterilization.savestate_id
-        << " rtc=" << *options.tasmovie_rtc
-        << " worksets=" << final_telemetry.execution.worksets_submitted
-        << " ready_workers=" << final_ready_workers.size()
-        << " coordinator_warnings=0\n";
+    final_sink("[tasmovie-seedprobe-summary] workflow="
+        + std::to_string(workflow_instance_id)
+        + " root="
+        + (establishment.established
+               ? "RootCursorEstablished" : "Invalid")
+        + " validation="
+        + (!establishment.established
+               ? "NOT_ACTIVATED"
+               : validation.valid ? "Valid" : "Invalid")
+        + " sterilized_checkpoint="
+        + (sterilization.savestate_id > 0
+               ? std::to_string(sterilization.savestate_id) : "none")
+        + " worksets="
+        + std::to_string(final_telemetry.execution.worksets_submitted));
     return true;
 }
 
@@ -2012,6 +2167,7 @@ bool RunComposedTasMovieSeedProbeScenario(
 
 bool RunTasMovieRealWorkerSmoke(
     const CliOptions& options,
+    const ResolvedE2eScenarioEntry&,
     const char* argv0,
     savor::db::core::DBService* db_service,
     std::string* error_out) {
@@ -2021,6 +2177,7 @@ bool RunTasMovieRealWorkerSmoke(
 
 bool RunTasMovieWithValidationRealWorkerSmoke(
     const CliOptions& options,
+    const ResolvedE2eScenarioEntry&,
     const char* argv0,
     savor::db::core::DBService* db_service,
     std::string* error_out) {
@@ -2030,11 +2187,12 @@ bool RunTasMovieWithValidationRealWorkerSmoke(
 
 bool RunTasMovieSeedProbeRealWorkerSmoke(
     const CliOptions& options,
+    const ResolvedE2eScenarioEntry& entry,
     const char* argv0,
     savor::db::core::DBService* db_service,
     std::string* error_out) {
     return RunComposedTasMovieSeedProbeScenario(
-        options, argv0, db_service, error_out);
+        options, entry, argv0, db_service, error_out);
 }
 
 } // namespace savor::e2e

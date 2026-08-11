@@ -12,7 +12,7 @@
 #include <filesystem>
 #include <vector>
 
-#include "Input/InputPlan.h"
+#include "Input/GCInputFrame.h"
 #include "Config/SimConfig.h"
 #include "Core/InputCommon/GCPadStatus.h"
 #include "Input/GCPadOverride.h"
@@ -91,9 +91,6 @@ namespace savor {
 
 
         // Input functions
-        void setInputPlan(const InputPlan& p) { m_plan = p; m_cursor = 0; }
-        void applyNextInputFrame();
-        void setInput(const GCInputFrame& f);
         struct InputPollReceipt {
             uint64_t epoch{0};
             uint32_t callback_count{0};
@@ -110,28 +107,6 @@ namespace savor {
         {
             return m_system_pad_is_inited;
         }
-        size_t remainingInputs() const { return (m_cursor < m_plan.size()) ? (m_plan.size() - m_cursor) : 0; }
-
-        struct InputTapePlaybackOptions {
-            uint32_t max_unacked_replays = 2;
-            bool safe_mode = false;
-            const char* label = "input_tape";
-        };
-
-        struct InputTapePlaybackResult {
-            bool ok = false;
-            uint32_t failed_index = UINT32_MAX;
-            uint32_t unacked_count = 0;
-            InputPlan attempted_frames;
-            std::vector<uint32_t> vi_durations;
-        };
-
-        InputTapePlaybackResult playInputTapeBlocking(
-            const InputPlan& plan,
-            const InputTapePlaybackOptions& options = {});
-
-        bool stepOneFrameBlocking(int timeout_ms = 1000);
-
         // Returns an approximate VI field count since the last reset.
         uint64_t getViFieldCountApproxFromBaseline() const;
         uint64_t getFrameCountApprox(bool interlaced = false) const;
@@ -182,63 +157,6 @@ namespace savor {
         // Width-aware read into 64-bit bucket; returns the actual width via out_width (1,2,4,8).
         bool readByKeyAny(addr::AddrKey k, uint8_t width, uint64_t& out, uint8_t& out_width) const;
 
-        enum class MemoryWatchpointAccess : uint32_t {
-            Read = 1,
-            Write = 2,
-            Access = 3,
-        };
-
-        enum class DebugStopKind : uint32_t {
-            None = 0,
-            PcBreakpoint = 1,
-            Memcheck = 2,
-        };
-
-        struct MemoryWatchpointSpec {
-            uint32_t id = 0;
-            uint32_t address = 0;
-            uint32_t size = 0;
-            MemoryWatchpointAccess access = MemoryWatchpointAccess::Write;
-        };
-
-        struct MemoryWatchpointHit {
-            uint32_t id = 0;
-            uint32_t address = 0;
-            uint32_t size = 0;
-            MemoryWatchpointAccess access = MemoryWatchpointAccess::Write;
-            uint32_t hit_pc = 0;
-            uint32_t num_hits_before = 0;
-            uint32_t num_hits_after = 0;
-            bool confirmed_current_instruction = false;
-        };
-
-        struct RunUntilHitResult {
-            bool hit = false;
-            uint32_t pc = 0;
-            const char* reason = nullptr;
-            DebugStopKind stop_kind = DebugStopKind::None;
-            std::optional<MemoryWatchpointHit> memory_watchpoint;
-        };
-
-        // Deprecated hard-cutover facades retained only so the disconnected
-        // PhaseScriptVM remains buildable as translation evidence. Every
-        // method below fails locally and cannot mutate Dolphin stop points,
-        // start capture, or execute a legacy run-until loop.
-        bool armPcBreakpoints(const std::vector<uint32_t>& pcs);
-        bool disarmPcBreakpoints(const std::vector<uint32_t>& pcs);
-        void clearAllPcBreakpoints();
-        bool setEnableBreakpoint(uint32_t pc, bool enabled);
-        bool setEnableAllBreakpoints(bool enabled);
-        bool setEnabledPcBreakpointsOnly(const std::vector<uint32_t>& enabled_pcs);
-        bool armMemoryWatchpoints(const std::vector<MemoryWatchpointSpec>& specs);
-        void clearMemoryWatchpoints();
-
-        using ProgressSink = std::function<void(const char* text, const bool record)>;
-
-        ProgressSink getProgressSink() const;
-        void setProgressSink(ProgressSink s);
-        void emitProgress(const std::string& text, bool record_progress) const;
-
         bool startProbeJob(
             const std::filesystem::path& profile_path,
             const std::filesystem::path& capture_path,
@@ -249,9 +167,6 @@ namespace savor {
         bool probeJobActive() const;
         void emitProbeMarker(std::string_view marker, std::uint64_t value = 0) const;
 
-        void disableThrottle();
-        void enableThrottle();
-
         void silenceStdOutInfo();
         void restoreStdOutInfo();
 
@@ -260,8 +175,6 @@ namespace savor {
         bool isMoviePlaybackEnded() const;
         uint64_t getCurrentMovieInputCount() const;
         bool setGCMemoryCardA(const std::string& raw_path);
-        bool pauseEmulationBlocking(uint32_t timeout_ms = 1000);
-        bool resumeEmulation();
         bool isEmulationPaused() const;
 
     private:
@@ -280,9 +193,7 @@ namespace savor {
         std::string m_last_game_iso_path{""};
         WindowSystemInfo m_wsi;
 
-        InputPlan m_plan;
-        size_t m_cursor = 0;
-        uint64_t m_input_playback_sequence = 0;
+        uint64_t m_input_publication_epoch = 0;
 
         bool waitForPausedCoreState(uint32_t timeout_ms, uint32_t poll_rate = 10);
         // State-load bootstrap only. This is not a guest execution command
@@ -298,8 +209,6 @@ namespace savor {
         void* m_render_window_handle = nullptr;
         bool createRenderSurfaceWindow();
         void destroyRenderSurfaceWindow();
-        ProgressSink m_progress_sink{};
-        mutable std::mutex m_progress_sink_mutex;
     };
 
 } // namespace savor

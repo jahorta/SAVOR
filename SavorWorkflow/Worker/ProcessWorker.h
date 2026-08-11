@@ -23,16 +23,10 @@
 #include "Runner/Runtime/IProgramRuntimePort.h"
 #include "Runner/Runtime/RuntimeTypes.h"
 #include "Runner/Runtime/Worksets/WorksetTypes.h"
-#include "Runner/Script/PhaseScriptProgram.h"
-#include "Runner/Parallel/PRTypes.h"
-#include "TSQueue.h"
 #include "WorkerTelemetry.h"
 
 namespace savor {
 
-inline constexpr const char* kDisconnectedWorkerApiDiagnostic =
-    "legacy worker execution is disconnected during the hard-cutover refactor; "
-    "canonical ProgramRuntime is not available";
 inline constexpr std::chrono::milliseconds kProcessWorkerDefaultStopGrace{
     5000};
 inline constexpr std::chrono::milliseconds
@@ -102,26 +96,8 @@ struct ProcessOpenSessionOptions {
     std::string runtime_root;
     std::string user_directory;
     std::string iso_path;
-    bool visual{ false };
+    runtime::WorkerMode worker_mode{ runtime::WorkerMode::Headless };
     std::uint64_t render_widget_handle{ 0 };
-    std::string runtime_artifact_root;
-};
-
-// Retained as a source-compatible launch description while callers migrate to
-// launch_and_negotiate() plus open_session(). No session concern is placed on
-// the child command line.
-struct ProcStartParams {
-    std::size_t worker_id{ 0 };
-    std::string exe_path;
-    std::string iso_path;
-    std::string dolphin_base_dir;
-    std::string user_dir;
-    bool vm_control{ false };
-    bool visual{ false };
-    bool visual_debug{ false };
-    std::uint64_t render_widget_handle{ 0 };
-    std::string visual_control_pipe_name;
-    std::string visual_host_events_pipe_name;
     std::string runtime_artifact_root;
 };
 
@@ -177,12 +153,12 @@ struct ProcessWorkerCommandOutcome {
 struct ProcessWorkerSnapshot {
     bool running{ false };
     bool hello_received{ false };
-    runtime::WorkerCapabilityMask process_capabilities{ 0 };
+    bool runtime_contract_received{ false };
+    std::string runtime_contract_sha256;
     bool session_open{ false };
-    bool session_visual_intent{ false };
+    runtime::WorkerMode worker_mode{ runtime::WorkerMode::Headless };
     runtime::SessionId session_id;
     runtime::WorksetEpoch workset_epoch;
-    runtime::WorkerCapabilityMask session_capabilities{ 0 };
     runtime::WorkerState worker_state{ runtime::WorkerState::Starting };
     runtime::SessionDisposition session_disposition{ runtime::SessionDisposition::Closed };
     wrms::ExecutionActivityCode execution_activity{
@@ -195,7 +171,6 @@ struct ProcessWorkerSnapshot {
         runtime::WorkerRejectionCode::None};
     bool shutdown_graceful{ false };
     std::string last_error;
-    bool runtime_manifest_received{ false };
     std::optional<runtime::WorkerWorksetId> active_workset;
     std::optional<runtime::WorkerWorksetItemId> active_workset_item;
     std::optional<runtime::WorkerWorksetId> staged_workset;
@@ -246,10 +221,6 @@ public:
         std::string* error_out = nullptr,
         std::uint32_t timeout_ms = 30000);
 
-    bool prepare_encoded_module(
-        const runtime::EncodedModuleEnvelope& module,
-        wrms::CommandResultPayload* result_out = nullptr,
-        std::uint32_t timeout_ms = 10000);
     bool submit_workset(
         const runtime::WorkerWorksetDefinition& workset,
         wrms::CommandResultPayload* result_out = nullptr,
@@ -327,12 +298,8 @@ public:
         std::uint32_t operation_timeout_ms = 3000,
         std::uint32_t command_timeout_ms = 10000);
 
-    runtime::WorkerCapabilityMask process_capabilities() const;
-    runtime::WorkerCapabilityMask session_capabilities() const;
-    bool has_process_capability(runtime::WorkerCapability capability) const;
-    bool has_session_capability(runtime::WorkerCapability capability) const;
     ProcessWorkerSnapshot latest_snapshot() const;
-    std::optional<runtime::WorkerRuntimeManifest> runtime_manifest() const;
+    std::optional<runtime::WorkerRuntimeContractV1> runtime_contract() const;
     std::string last_error() const;
 
     void set_invocation_progress_callback(InvocationProgressCallback callback);
@@ -346,19 +313,6 @@ public:
     void set_workset_credits_callback(WorksetCreditsCallback callback);
     void set_workset_summary_callback(WorksetSummaryCallback callback);
     void set_session_event_callback(SessionEventCallback callback);
-
-    // Transitional convenience: launch the v1 process and explicitly open its
-    // one session. This does not restore any legacy program execution path.
-    bool start(ProcStartParams& params, TSQueue<PRResult>* out_queue);
-
-    // Deprecated hard-cutover APIs. They fail locally and never write a frame.
-    bool send_job(std::uint64_t job_id, std::uint64_t dispatch_epoch, const PSJob& job);
-    bool ctl_set_program(std::uint8_t init_kind, std::uint8_t main_kind, const PSInit& init);
-    bool ctl_run_init_once();
-    bool ctl_activate_main();
-    bool visual_pause_emulation();
-    bool visual_resume_emulation();
-    bool visual_step_vm();
 
     void stop();
     ProcessWorkerStopSnapshot last_stop_snapshot() const;
@@ -380,9 +334,6 @@ public:
     }
     void release_slot() { busy_.store(false, std::memory_order_release); }
     bool has_slot() const { return !busy_.load(std::memory_order_acquire); }
-
-    void set_progress_queue(TSQueue<PRProgress>* queue) { progress_out_ = queue; }
-    bool try_get_last_progress(PRProgress& out) const;
 
     std::int64_t GetPid() const { return static_cast<std::int64_t>(process_id_); }
 
@@ -506,7 +457,6 @@ private:
         std::uint64_t sequence);
     void fail_protocol(std::string error);
     void set_last_error(std::string error);
-    bool fail_disconnected(const char* operation);
     void close_process_handles(ProcessWorkerStopSnapshot* snapshot);
 
     HANDLE child_stdin_write_{ nullptr };
@@ -544,7 +494,7 @@ private:
     mutable std::mutex snapshot_mutex_;
     ProcessWorkerSnapshot snapshot_;
     wrms::ProcessHelloPayload hello_;
-    std::optional<runtime::WorkerRuntimeManifest> runtime_manifest_;
+    std::optional<runtime::WorkerRuntimeContractV1> runtime_contract_;
     std::condition_variable hello_cv_;
 
     mutable std::mutex callback_mutex_;
@@ -558,11 +508,6 @@ private:
     WorksetSummaryCallback workset_summary_callback_;
     SessionEventCallback session_event_callback_;
 
-    mutable std::mutex progress_mutex_;
-    PRProgress last_progress_{};
-    bool have_progress_{ false };
-    TSQueue<PRProgress>* progress_out_{ nullptr };
-    TSQueue<PRResult>* legacy_result_out_{ nullptr };
     std::size_t worker_id_{ 0 };
 
     mutable std::mutex stop_mutex_;

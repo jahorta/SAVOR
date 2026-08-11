@@ -54,7 +54,6 @@ enum class ResourceKind : std::uint8_t
     GuestMutation,
     PreparedMoviePlayback,
     MovieSession,
-    CaptureAttachment,
     ArtifactWriter,
     TelemetrySubscription,
     HostResource,

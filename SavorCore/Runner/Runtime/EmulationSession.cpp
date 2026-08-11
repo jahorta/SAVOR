@@ -194,22 +194,22 @@ SessionOperationReceipt EmulationSession::Open(const SessionOpenOptions& options
     return Complete(SessionOperation::Open, std::move(result));
 }
 
-SessionOperationReceipt EmulationSession::BeginWorkset(
+SessionOperationReceipt EmulationSession::OpenWorksetInitialization(
     WorkerWorksetId workset_id)
 {
     if (!BindOrCheckOwner() || !opened_ || shutdown_ || !backend_ ||
         disposition_ == SessionDisposition::Tainted)
     {
         return Reject(
-            SessionOperation::BeginWorkset,
+            SessionOperation::OpenWorksetInitialization,
             BackendErrorCode::InvalidState,
-            "EmulationSession cannot begin a workset in its current state");
+            "EmulationSession cannot open workset initialization in its current state");
     }
     if (!workset_id || active_workset_id_ || workset_epoch_ ||
         execution_engine_ || stop_router_ || savestate_service_)
     {
         return Reject(
-            SessionOperation::BeginWorkset,
+            SessionOperation::OpenWorksetInitialization,
             BackendErrorCode::InvalidState,
             "Another workset runtime is already active");
     }
@@ -217,7 +217,7 @@ SessionOperationReceipt EmulationSession::BeginWorkset(
     {
         MarkTainted("WorksetEpoch is exhausted");
         return Reject(
-            SessionOperation::BeginWorkset,
+            SessionOperation::OpenWorksetInitialization,
             BackendErrorCode::InvalidState,
             taint_diagnostic_);
     }
@@ -225,14 +225,13 @@ SessionOperationReceipt EmulationSession::BeginWorkset(
     const WorksetEpoch activated(next_workset_epoch_++);
     workset_epoch_ = activated;
     active_workset_id_ = workset_id;
+    guest_state_transaction_ = GuestStateTransaction::Initializing;
 
     BackendResult result = InitializeServiceComposition();
     if (result.ok)
         result = InitializeServices(activated);
     if (result.ok)
         result = InitializeStopPoints(activated);
-    if (result.ok)
-        result = InitializeExecution(activated);
     if (result.ok && resource_ledger_)
     {
         const ResourceOperationResult initialized = resource_ledger_->Initialize(
@@ -258,15 +257,122 @@ SessionOperationReceipt EmulationSession::BeginWorkset(
         }
         active_workset_id_ = {};
         workset_epoch_ = {};
+        guest_state_transaction_ = GuestStateTransaction::None;
         ApplyBackendFailure(result);
         return {
-            SessionOperation::BeginWorkset,
+            SessionOperation::OpenWorksetInitialization,
             false,
             activated,
             disposition_,
             std::move(result)};
     }
-    return Complete(SessionOperation::BeginWorkset, BackendResult::Success());
+    return Complete(
+        SessionOperation::OpenWorksetInitialization,
+        BackendResult::Success());
+}
+
+SessionOperationReceipt EmulationSession::CommitWorksetInitialization(
+    WorkerWorksetId workset_id)
+{
+    if (!BindOrCheckOwner() || !active_workset_id_ ||
+        workset_id != active_workset_id_ || !workset_epoch_ ||
+        execution_engine_ || guest_state_transaction_ !=
+            GuestStateTransaction::Initializing)
+    {
+        return Reject(
+            SessionOperation::CommitWorksetInitialization,
+            BackendErrorCode::InvalidState,
+            "EmulationSession has no open workset initialization to commit");
+    }
+    BackendResult result = InitializeExecution(workset_epoch_);
+    if (result.ok)
+        guest_state_transaction_ = GuestStateTransaction::None;
+    if (!result.ok)
+        ApplyBackendFailure(result);
+    return {
+        SessionOperation::CommitWorksetInitialization,
+        result.ok,
+        workset_epoch_,
+        disposition_,
+        std::move(result)};
+}
+
+SessionOperationReceipt EmulationSession::AbortWorksetInitialization(
+    WorkerWorksetId workset_id)
+{
+    if (!BindOrCheckOwner() || !active_workset_id_ ||
+        workset_id != active_workset_id_ || !workset_epoch_)
+    {
+        return Reject(
+            SessionOperation::AbortWorksetInitialization,
+            BackendErrorCode::InvalidState,
+            "EmulationSession has no matching workset initialization to abort");
+    }
+    const WorksetEpoch aborted = workset_epoch_;
+    BackendResult result = CleanupRuntimeComposition();
+    active_workset_id_ = {};
+    workset_epoch_ = {};
+    guest_state_transaction_ = GuestStateTransaction::None;
+    if (!result.ok)
+        ApplyBackendFailure(result);
+    return {
+        SessionOperation::AbortWorksetInitialization,
+        result.ok,
+        aborted,
+        disposition_,
+        std::move(result)};
+}
+
+SessionOperationReceipt EmulationSession::BeginWorksetItemReset(
+    WorkerWorksetId workset_id)
+{
+    if (!BindOrCheckOwner() || !active_workset_id_ ||
+        workset_id != active_workset_id_ || !workset_epoch_ ||
+        !execution_engine_ || guest_state_transaction_ !=
+            GuestStateTransaction::None)
+    {
+        return Reject(
+            SessionOperation::BeginWorksetItemReset,
+            BackendErrorCode::InvalidState,
+            "EmulationSession cannot begin an item reset in its current state");
+    }
+    BackendResult result = RemoveExecutionEngine();
+    if (result.ok)
+        guest_state_transaction_ = GuestStateTransaction::ResettingItem;
+    if (!result.ok)
+        ApplyBackendFailure(result);
+    return {
+        SessionOperation::BeginWorksetItemReset,
+        result.ok,
+        workset_epoch_,
+        disposition_,
+        std::move(result)};
+}
+
+SessionOperationReceipt EmulationSession::CommitWorksetItemReset(
+    WorkerWorksetId workset_id)
+{
+    if (!BindOrCheckOwner() || !active_workset_id_ ||
+        workset_id != active_workset_id_ || !workset_epoch_ ||
+        execution_engine_ || guest_state_transaction_ !=
+            GuestStateTransaction::ResettingItem)
+    {
+        return Reject(
+            SessionOperation::CommitWorksetItemReset,
+            BackendErrorCode::InvalidState,
+            "EmulationSession has no open item reset to commit");
+    }
+    BackendResult result = InitializeExecution(workset_epoch_);
+    if (result.ok)
+        guest_state_transaction_ = GuestStateTransaction::None;
+    if (!result.ok)
+        ApplyBackendFailure(result);
+    return {
+        SessionOperation::CommitWorksetItemReset,
+        result.ok,
+        workset_epoch_,
+        disposition_,
+        std::move(result)};
 }
 
 SessionOperationReceipt EmulationSession::EndWorkset(
@@ -284,6 +390,7 @@ SessionOperationReceipt EmulationSession::EndWorkset(
     BackendResult result = CleanupRuntimeComposition();
     active_workset_id_ = {};
     workset_epoch_ = {};
+    guest_state_transaction_ = GuestStateTransaction::None;
     if (!result.ok)
         ApplyBackendFailure(result);
     return {
@@ -507,17 +614,17 @@ SavestateRestoreReceipt EmulationSession::RestoreWorksetBaselineTransaction(
             }
             restored.result.integrity = GuestIntegrity::Unknown;
         };
-    if (!stop_router_ || !execution_engine_ ||
-        execution_engine_->snapshot().activity != ExecutionActivity::IdlePaused)
+    if (!stop_router_ || execution_engine_ ||
+        guest_state_transaction_ == GuestStateTransaction::None)
     {
         restored.result = SavestateServiceResult::Failure(
             SavestateServiceErrorCode::InvalidState,
-            "Workset baseline restoration requires an idle paused runtime");
+            "Workset baseline restoration requires an open guest-state transaction without execution evidence");
         return restored;
     }
     if ((resource_ledger_ &&
          resource_ledger_->snapshot().active_resource_count != 0) ||
-        (resource_bindings_ && resource_bindings_->size() != 0) ||
+        (resource_relationships_ && resource_relationships_->size() != 0) ||
         (capture_service_ && capture_service_->snapshot().attached))
     {
         restored.result = SavestateServiceResult::Failure(
@@ -802,7 +909,7 @@ std::vector<StopRouteReceipt> EmulationSession::DrainStopPointEvents()
                     ? "CaptureService reconciliation failed"
                     : capture.error.message);
             StopRouteReceipt failure;
-            failure.terminal = StopRouteTerminal::Failed;
+            failure.terminal = StopRouteTerminal::RoutingFailure;
             failure.error = {
                 capture.requires_session_taint
                     ? StopPointErrorCode::PhysicalIntegrityUnknown
@@ -958,10 +1065,10 @@ std::vector<ExecutionEvent> EmulationSession::DrainExecutionEvents()
     return events;
 }
 
-ExecutionSnapshot EmulationSession::execution_snapshot() const
+std::optional<ExecutionSnapshot> EmulationSession::execution_snapshot() const
 {
     if (!execution_engine_)
-        return {};
+        return std::nullopt;
     return execution_engine_->snapshot();
 }
 
@@ -1178,6 +1285,31 @@ SessionOperationReceipt EmulationSession::Reject(
         BackendResult::Failure(code, std::move(message))};
 }
 
+MovieOperationReceipt EmulationSession::StartPreparedReadOnlyPlayback(
+    MoviePreparationId preparation)
+{
+    MovieOperationReceipt receipt;
+    receipt.operation = MovieOperation::StartPlayback;
+    receipt.workset_epoch = workset_epoch_;
+    if (!BindOrCheckOwner() || !CanOperate() || !movie_service_ ||
+        !execution_engine_ || !preparation)
+    {
+        receipt.result = MovieServiceResult::Failure(
+            MovieServiceErrorCode::InvalidState,
+            "Prepared movie start requires committed workset execution evidence");
+        return receipt;
+    }
+    // Initialization already booted and proved the exact movie core while it
+    // was paused. Activation only transfers the prepared playback into the
+    // invocation after subscriptions are installed; it must not replace the
+    // guest or invalidate the committed execution engine.
+    receipt = movie_service_->StartPreparedReadOnlyPlayback(preparation);
+    if (!receipt.result.ok &&
+        receipt.result.integrity == GuestIntegrity::Unknown)
+        MarkTainted(receipt.result.message);
+    return receipt;
+}
+
 
 SessionOperationReceipt EmulationSession::Complete(
     SessionOperation operation,
@@ -1249,12 +1381,20 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
 
     try
     {
+        stop_cpu_evaluator_ =
+            program::BuildCanonicalStopPointCpuEvaluator();
+        if (!stop_cpu_evaluator_)
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "canonical stop-point CPU sampler registry is invalid");
+        }
         physical_stop_manager_ =
             std::make_unique<PhysicalStopPointManager>(*port);
         stop_router_ =
             std::make_unique<StopPointRouter>(
                 *physical_stop_manager_,
-                nullptr,
+                stop_cpu_evaluator_.get(),
                 capture_service_.get(),
                 &host_activity_);
     }
@@ -1262,6 +1402,7 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
     {
         stop_router_.reset();
         physical_stop_manager_.reset();
+        stop_cpu_evaluator_.reset();
         return BackendResult::Failure(
             BackendErrorCode::OperationFailed,
             std::string("failed constructing session stop-point ownership: ") +
@@ -1271,6 +1412,7 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
     {
         stop_router_.reset();
         physical_stop_manager_.reset();
+        stop_cpu_evaluator_.reset();
         return BackendResult::Failure(
             BackendErrorCode::OperationFailed,
             "failed constructing session stop-point ownership");
@@ -1282,6 +1424,7 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
     {
         stop_router_.reset();
         physical_stop_manager_.reset();
+        stop_cpu_evaluator_.reset();
         return BackendResult::Failure(
             BackendErrorCode::OperationFailed,
             "failed configuring stop-point ingress notification: " +
@@ -1294,6 +1437,7 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
     {
         stop_router_.reset();
         physical_stop_manager_.reset();
+        stop_cpu_evaluator_.reset();
         return BackendResult::Failure(
             BackendErrorCode::OperationFailed,
             "failed configuring stop-point ingress notifier: " +
@@ -1308,6 +1452,7 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
             FromStopPointLifecycle("stop-point initialization", initialized);
         stop_router_.reset();
         physical_stop_manager_.reset();
+        stop_cpu_evaluator_.reset();
         return failure;
     }
     if (capture_service_)
@@ -1329,6 +1474,7 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
             (void)stop_router_->StopIngressDrainAndCleanup();
             stop_router_.reset();
             physical_stop_manager_.reset();
+            stop_cpu_evaluator_.reset();
             return failure;
         }
     }
@@ -1427,7 +1573,7 @@ BackendResult EmulationSession::InitializeServiceComposition()
                 });
         }
 
-        resource_bindings_ =
+        resource_relationships_ =
             std::make_unique<
                 program::SessionResourceBindingTable>(
                 std::this_thread::get_id());
@@ -1498,7 +1644,7 @@ BackendResult EmulationSession::InitializeExecution(WorksetEpoch first_epoch)
     try
     {
         ExecutionEngineConfig config = execution_engine_config_;
-        config.input_advance = input_arbiter_.get();
+        config.input_relationships = input_arbiter_.get();
         config.host_activity = &host_activity_;
         execution_engine_ =
             std::make_unique<ExecutionEngine>(
@@ -1523,6 +1669,16 @@ BackendResult EmulationSession::InitializeExecution(WorksetEpoch first_epoch)
     if (!initialized.ok)
         execution_engine_.reset();
     return initialized;
+}
+
+BackendResult EmulationSession::RemoveExecutionEngine() noexcept
+{
+    if (!execution_engine_)
+        return BackendResult::Success();
+    BackendResult result = execution_engine_->Shutdown();
+    execution_engine_.reset();
+    retained_execution_events_.clear();
+    return result;
 }
 
 BackendResult EmulationSession::CleanupServices() noexcept
@@ -1559,10 +1715,10 @@ BackendResult EmulationSession::CleanupServices() noexcept
     // Invocation/action resources must unwind while every owning service is
     // still alive. The binding table is the concrete dispatcher for the
     // ledger's otherwise opaque external identities.
-    if (resource_ledger_ && resource_bindings_)
+    if (resource_ledger_ && resource_relationships_)
     {
         const ResourceUnwindResult resources =
-            resource_ledger_->Shutdown(*resource_bindings_);
+            resource_ledger_->Shutdown(*resource_relationships_);
         const ResourceLedgerSnapshot resource_snapshot =
             resource_ledger_->snapshot();
         const bool diagnostic_cleanup_failure =
@@ -1666,7 +1822,7 @@ BackendResult EmulationSession::CleanupServices() noexcept
         }
     }
     movie_input_reservations_.reset();
-    resource_bindings_.reset();
+    resource_relationships_.reset();
     screenshot_service_.reset();
     artifact_sink_.reset();
     if (guest_mutations_)
@@ -1784,13 +1940,9 @@ BackendResult EmulationSession::TaintAndRetireSessionAfterStopPointFailure(
 BackendResult EmulationSession::CleanupRuntimeComposition() noexcept
 {
     BackendResult result = BackendResult::Success();
-    if (execution_engine_)
-    {
-        BackendResult execution = execution_engine_->Shutdown();
-        if (!execution.ok)
-            result = std::move(execution);
-    }
-    execution_engine_.reset();
+    BackendResult execution = RemoveExecutionEngine();
+    if (!execution.ok)
+        result = std::move(execution);
 
     // Resource bindings release through their owning services. Unwind the
     // ledger and shut those services down while the stop-point router is
@@ -1811,6 +1963,7 @@ BackendResult EmulationSession::CleanupRuntimeComposition() noexcept
         result = stop_points;
     stop_router_.reset();
     physical_stop_manager_.reset();
+    stop_cpu_evaluator_.reset();
 
     savestate_service_.reset();
     savestate_backend_adapter_.reset();

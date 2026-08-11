@@ -2,6 +2,7 @@
 
 #include "../IProgramRuntimePort.h"
 #include "../FullPhase/FullPhaseProgram.h"
+#include "../Progress/ProgressTypes.h"
 #include "../Services/Savestate/SavestateTypes.h"
 
 #include <cstddef>
@@ -19,26 +20,11 @@ inline constexpr std::size_t kMinimumWorksetTerminalReservationBytes = 1024;
 inline constexpr std::size_t kMaximumWorksetTerminalReservationBytes =
     63ull * 1024ull * 1024ull;
 
-enum class RuntimeCatalogStatus : std::uint8_t
-{
-    Partial,
-    CompleteExact,
-};
-
-struct RuntimeModuleManifestEntry
-{
-    ProgramModuleIdentity module;
-    std::vector<std::string> entrypoints;
-    std::string dependency_manifest_sha256;
-    bool development_only = false;
-
-    auto operator<=>(const RuntimeModuleManifestEntry&) const = default;
-};
-
 struct WorkerWorksetLimits
 {
     std::uint32_t maximum_items_per_workset = 16;
     std::size_t maximum_encoded_workset_bytes = 32ull * 1024ull * 1024ull;
+    std::size_t maximum_capture_profile_bytes = 4ull * 1024ull * 1024ull;
     std::uint32_t maximum_item_credits = 64;
     std::uint32_t maximum_active_and_staged_items = 32;
     std::uint32_t finalizer_threads = 2;
@@ -53,21 +39,37 @@ struct WorkerWorksetLimits
     auto operator<=>(const WorkerWorksetLimits&) const = default;
 };
 
-struct WorkerRuntimeManifest
+// One immutable identity for the uniform worker runtime. This deliberately
+// describes the static execution ABI as a single hash; it never advertises
+// program kinds, modules, entrypoints, or optional capabilities.
+struct WorkerRuntimeContractV1
 {
-    std::uint16_t wrms_protocol_version = 1;
+    std::uint32_t contract_version = 1;
+    std::uint16_t wrms_protocol_version = 2;
+    std::uint32_t workset_wire_version = 4;
     std::uint32_t program_module_format_version = 1;
     std::uint32_t program_invocation_format_version = 1;
     std::uint32_t program_result_format_version = 1;
-    std::string runtime_profile_sha256;
-    std::string dependency_manifest_sha256;
-    RuntimeCatalogStatus catalog_status = RuntimeCatalogStatus::Partial;
-    std::uint64_t catalog_generation = 1;
-    std::string catalog_sha256;
-    std::vector<RuntimeModuleManifestEntry> modules;
+    std::string supported_game_id;
+    std::string executable_identity;
+    std::string address_map_revision;
+    std::string emulator_bridge_revision;
+    std::string build_identity;
+    std::string static_runtime_abi_sha256;
     WorkerWorksetLimits limits;
+    std::string canonical_sha256;
 
-    auto operator<=>(const WorkerRuntimeManifest&) const = default;
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return contract_version == 1 && wrms_protocol_version == 2 &&
+            workset_wire_version == 4 && !supported_game_id.empty() &&
+            !executable_identity.empty() && !address_map_revision.empty() &&
+            !emulator_bridge_revision.empty() && !build_identity.empty() &&
+            static_runtime_abi_sha256.size() == 64 &&
+            canonical_sha256.size() == 64;
+    }
+
+    auto operator<=>(const WorkerRuntimeContractV1&) const = default;
 };
 
 enum class ProgramBaselineArtifactKind : std::uint8_t
@@ -162,21 +164,59 @@ struct WorkerWorksetExecutionKey
     ProgramBaselineKey baseline;
     std::string movie_policy_sha256;
     std::string service_policy_sha256;
+    std::string program_package_sha256;
+    std::string common_input_sha256;
+    std::string capture_binding_sha256;
+    std::string progress_plan_sha256;
     std::string canonical_sha256;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
         return !module.canonical_id.empty() && !entrypoint.empty() &&
-            static_cast<bool>(baseline) && canonical_sha256.size() == 64;
+            static_cast<bool>(baseline) &&
+            program_package_sha256.size() == 64 &&
+            common_input_sha256.size() == 64 &&
+            capture_binding_sha256.size() == 64 &&
+            progress_plan_sha256.size() == 64 &&
+            canonical_sha256.size() == 64;
     }
 
     auto operator<=>(const WorkerWorksetExecutionKey&) const = default;
 };
 
+enum class CaptureProfileStorageV1 : std::uint8_t
+{
+    Inline = 1,
+    ContentAddressedSidecar = 2,
+};
+
+struct WorksetCaptureBindingV1
+{
+    std::uint32_t version = 1;
+    CaptureProfileStorageV1 storage = CaptureProfileStorageV1::Inline;
+    std::string profile_json;
+    std::filesystem::path profile_sidecar_path;
+    std::string profile_sha256;
+    std::string expected_module_sha256;
+    std::string resolved_observation_sha256;
+    std::filesystem::path output_directory;
+    std::string content_sha256;
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return version == 1 && profile_sha256.size() == 64 &&
+            resolved_observation_sha256.size() == 64 &&
+            content_sha256.size() == 64 && !output_directory.empty();
+    }
+
+    auto operator<=>(const WorksetCaptureBindingV1&) const = default;
+};
+
 struct FullPhaseInvocationEnvelope
 {
     ProgramInvocationId invocation_id;
-    fullphase::FullPhaseProgramIdentity program;
+    fullphase::FullPhaseProgramPackage program_package;
+    fullphase::FullPhaseCommonInput common_input;
 
     auto operator<=>(const FullPhaseInvocationEnvelope&) const = default;
 };
@@ -220,6 +260,8 @@ struct WorkerWorksetDefinition
     FullPhaseInvocationEnvelope phase_invocation;
     WorkerWorksetExecutionKey execution_key;
     ProgramBaselineDefinition baseline;
+    std::optional<WorksetCaptureBindingV1> capture;
+    progress::ProgressPlanV1 progress_plan;
     std::vector<WorksetItemTemplate> items;
     std::size_t encoded_size_bytes = 0;
 
@@ -242,8 +284,8 @@ struct InitialWorksetCancellationSidecarV1
 
 enum class WorksetSubmissionDispositionV1 : std::uint8_t
 {
-    Accepted = 0,
-    AlreadyAccepted,
+    Admitted = 0,
+    AlreadyAdmitted,
 };
 
 struct SubmitWorksetResultV1
@@ -254,7 +296,7 @@ struct SubmitWorksetResultV1
     std::uint32_t applied_item_count = 0;
     std::string applied_sidecar_sha256;
     WorksetSubmissionDispositionV1 disposition =
-        WorksetSubmissionDispositionV1::Accepted;
+        WorksetSubmissionDispositionV1::Admitted;
 
     auto operator<=>(const SubmitWorksetResultV1&) const = default;
 };
@@ -270,9 +312,11 @@ ValidateInitialWorksetCancellationSidecar(
 enum class WorkerWorksetState : std::uint8_t
 {
     Validating,
-    Staged,
-    PreparingBaseline,
+    Admitted,
+    Initializing,
+    Ready,
     Running,
+    ResettingItem,
     Draining,
     Completed,
     Cancelled,
@@ -358,15 +402,22 @@ struct WorksetValidationResult
 [[nodiscard]] std::string ComputeWorkerWorksetExecutionKeyHash(
     const WorkerWorksetExecutionKey& key);
 
+[[nodiscard]] std::string ComputeWorksetCaptureBindingHashV1(
+    const WorksetCaptureBindingV1& binding);
+
+[[nodiscard]] std::string EmptyWorksetCaptureBindingHashV1();
+
 [[nodiscard]] WorksetValidationResult ValidateWorkerWorksetDefinition(
     const WorkerWorksetDefinition& definition,
     const WorkerWorksetLimits& limits);
 
-[[nodiscard]] std::string ComputeRuntimeCatalogHash(
-    const std::vector<RuntimeModuleManifestEntry>& modules,
-    RuntimeCatalogStatus status);
+[[nodiscard]] std::string ComputeWorkerRuntimeContractHashV1(
+    const WorkerRuntimeContractV1& contract);
 
-[[nodiscard]] WorksetValidationResult ValidateWorkerRuntimeManifest(
-    const WorkerRuntimeManifest& manifest);
+[[nodiscard]] WorkerRuntimeContractV1
+BuildProductionWorkerRuntimeContractV1();
+
+[[nodiscard]] WorksetValidationResult ValidateWorkerRuntimeContractV1(
+    const WorkerRuntimeContractV1& contract);
 
 } // namespace savor::runtime

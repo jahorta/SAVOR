@@ -3,7 +3,6 @@
 #include "AuthoringSpecEditorWindows.h"
 #include "BattlePlanEditorWindow.h"
 #include "DB/SavorDbAuthoringService.h"
-#include "PredicateSpecEditorWindow.h"
 
 #include <QtCore/QDateTime>
 #include <QtWidgets/QFrame>
@@ -171,147 +170,6 @@ public:
 
 private:
     std::vector<savor::db::BattleRunSpecSnapshot> rows_;
-};
-
-class PredicateSpecLibraryAdapter final : public ISpecLibraryAdapter {
-public:
-    AuthoringLibraryKey key() const override { return AuthoringLibraryKey::Predicate; }
-    QString title() const override { return QStringLiteral("Predicates"); }
-    QString placeholderText() const override { return QStringLiteral("Create a new predicate, or select one from the library to edit it."); }
-    bool supportsDelete() const override { return true; }
-    bool editCreatesCopy() const override { return false; }
-
-    std::vector<SpecLibraryRow> refreshRows(QString* errorText) override
-    {
-        const auto result = savorqt::db::SavorDbAuthoringService::ListPredicateSpecs();
-        if (!result.ok) {
-            if (errorText != nullptr) *errorText = QString::fromStdString(result.error.message);
-            return {};
-        }
-        rows_ = result.value;
-        std::vector<SpecLibraryRow> rows;
-        rows.reserve(rows_.size());
-        for (const auto& row : rows_) {
-            const auto requiredBpCount = row.required_breakpoint_ids.empty()
-                ? (row.breakpoint_id == 0 ? 0 : 1)
-                : static_cast<int>(row.required_breakpoint_ids.size());
-            rows.push_back(SpecLibraryRow{
-                static_cast<qint64>(row.predicate_spec_id),
-                QStringLiteral("#%1  %2 (%3 bp%4)")
-                    .arg(static_cast<qint64>(row.predicate_spec_id))
-                    .arg(QString::fromStdString(row.name))
-                    .arg(requiredBpCount)
-                    .arg(requiredBpCount == 1 ? QString() : QStringLiteral("s"))
-            });
-        }
-        return rows;
-    }
-
-    QWidget* createNewEditor(QWidget* parent, SpecLibraryCallbacks callbacks) override
-    {
-        auto* editor = new PredicateSpecEditorWindow(parent, true);
-        attachCallbacks(editor, callbacks);
-        return editor;
-    }
-
-    QWidget* createEditorForRow(int row, bool duplicate, QWidget* parent, SpecLibraryCallbacks callbacks) override
-    {
-        if (row < 0 || row >= static_cast<int>(rows_.size())) return nullptr;
-        auto* editor = new PredicateSpecEditorWindow(parent, true);
-        attachCallbacks(editor, callbacks);
-        editor->loadSnapshot(rows_[static_cast<std::size_t>(row)], duplicate);
-        return editor;
-    }
-
-    SpecLibraryOperationResult deleteRow(int row, QWidget* parent) override
-    {
-        if (row < 0 || row >= static_cast<int>(rows_.size())) {
-            return { false, QStringLiteral("Select a predicate to delete."), StatusToast::Severity::Warn };
-        }
-
-        const auto& predicate = rows_[static_cast<std::size_t>(row)];
-        const auto usage = savorqt::db::SavorDbAuthoringService::GetPredicateSpecUsage(predicate.predicate_spec_id);
-        if (!usage.ok) {
-            return { false, QString::fromStdString(usage.error.message), StatusToast::Severity::Error };
-        }
-        if (usage.value.used()) {
-            return {
-                false,
-                QStringLiteral("Predicate is used by %1 predicate set(s) and cannot be deleted.")
-                    .arg(usage.value.predicate_set_count),
-                StatusToast::Severity::Warn
-            };
-        }
-
-        const auto response = QMessageBox::question(
-            parent,
-            QStringLiteral("Delete Predicate"),
-            QStringLiteral("Delete predicate #%1 \"%2\"?")
-                .arg(static_cast<qint64>(predicate.predicate_spec_id))
-                .arg(QString::fromStdString(predicate.name)),
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::No);
-        if (response != QMessageBox::Yes) {
-            return { false, QString(), StatusToast::Severity::Info };
-        }
-
-        const auto result = savorqt::db::SavorDbAuthoringService::DeletePredicateSpec(predicate.predicate_spec_id);
-        if (!result.ok) {
-            return { false, QString::fromStdString(result.error.message), StatusToast::Severity::Error };
-        }
-        return { true, QStringLiteral("Deleted predicate."), StatusToast::Severity::Info };
-    }
-
-private:
-    std::vector<savor::db::PredicateSpecSnapshot> rows_;
-};
-
-class PredicateSetSpecLibraryAdapter final : public ISpecLibraryAdapter {
-public:
-    AuthoringLibraryKey key() const override { return AuthoringLibraryKey::PredicateSet; }
-    QString title() const override { return QStringLiteral("Predicate Sets"); }
-    QString placeholderText() const override { return QStringLiteral("Create a new predicate set, or select one from the library to edit a copy."); }
-
-    std::vector<SpecLibraryRow> refreshRows(QString* errorText) override
-    {
-        const auto result = savorqt::db::SavorDbAuthoringService::ListPredicateSets();
-        if (!result.ok) {
-            if (errorText != nullptr) *errorText = QString::fromStdString(result.error.message);
-            return {};
-        }
-        rows_ = result.value;
-        std::vector<SpecLibraryRow> rows;
-        rows.reserve(rows_.size());
-        for (const auto& row : rows_) {
-            rows.push_back(SpecLibraryRow{
-                static_cast<qint64>(row.predicate_set_id),
-                QStringLiteral("#%1  %2 (%3 predicates)")
-                    .arg(static_cast<qint64>(row.predicate_set_id))
-                    .arg(QString::fromStdString(row.name))
-                    .arg(static_cast<int>(row.predicates.size()))
-            });
-        }
-        return rows;
-    }
-
-    QWidget* createNewEditor(QWidget* parent, SpecLibraryCallbacks callbacks) override
-    {
-        auto* editor = new PredicateSetEditorWindow(parent, true);
-        attachCallbacks(editor, callbacks);
-        return editor;
-    }
-
-    QWidget* createEditorForRow(int row, bool duplicate, QWidget* parent, SpecLibraryCallbacks callbacks) override
-    {
-        if (row < 0 || row >= static_cast<int>(rows_.size())) return nullptr;
-        auto* editor = new PredicateSetEditorWindow(parent, true);
-        attachCallbacks(editor, callbacks);
-        editor->loadSnapshot(rows_[static_cast<std::size_t>(row)], duplicate);
-        return editor;
-    }
-
-private:
-    std::vector<savor::db::PredicateSetSnapshot> rows_;
 };
 
 class BattlePlanSpecLibraryAdapter final : public ISpecLibraryAdapter {
@@ -527,8 +385,6 @@ void AuthoringLibraryWidget::createAdapters()
     adapters_.push_back(std::make_unique<ExplorerSettingsSpecLibraryAdapter>());
     adapters_.push_back(std::make_unique<BattleChainSpecLibraryAdapter>());
     adapters_.push_back(std::make_unique<BattlePlanSpecLibraryAdapter>());
-    adapters_.push_back(std::make_unique<PredicateSpecLibraryAdapter>());
-    adapters_.push_back(std::make_unique<PredicateSetSpecLibraryAdapter>());
 }
 
 void AuthoringLibraryWidget::createWidgets()

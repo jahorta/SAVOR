@@ -60,7 +60,7 @@ private:
 
     std::thread::id owner_thread_;
     std::uint64_t next_external_id_ = 1;
-    std::vector<BindingRecord> bindings_;
+    std::vector<BindingRecord> relationships_;
 };
 
 } // namespace savor::runtime::program

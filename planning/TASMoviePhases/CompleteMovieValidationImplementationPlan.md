@@ -99,8 +99,10 @@ The current refactor already supplies most of the required mechanics:
 - `ProgramKindDescriptor` provides the production materializer, workset-reconstruction, and result-handler
   contracts.
 - `MovieStartPlayback` starts read-only DTM playback and performs Dolphin's required movie-aware reboot.
-- `StopPointsSubscribeGroup` and `ExecutionContinueUntil` provide passive breakpoint ownership and
-  cancellation-driven execution.
+- the shared `SPS1` codec describes the allowed semantic endpoints and
+  `ExecutionContinueUntil` installs its own operation-scoped foreground wait;
+  passive capture/progress observes the same routed identity without owning
+  playback.
 - `ExecutionEngine` already polls `BackendExecutionSnapshot` during maintenance, and that snapshot already
   contains PC, VI, movie state, and `movie_input_count`.
 - `StateSaveImmutableArtifact` captures an idle-paused state while movie playback remains active. The state

@@ -282,12 +282,12 @@ std::vector<WorkerSnapshot> SplitCoordinatorRuntime::SnapshotWorkers() const {
 }
 
 std::vector<savor::runner::parallel::savordb::
-    ReadyWorkerCompatibilitySnapshot>
+    ReadyWorkerDispatchSnapshot>
 SplitCoordinatorRuntime::SnapshotReadyWorkers() const {
     return worker_coordinator_ != nullptr
         ? worker_coordinator_->SnapshotReadyWorkers()
         : std::vector<savor::runner::parallel::savordb::
-            ReadyWorkerCompatibilitySnapshot>{};
+            ReadyWorkerDispatchSnapshot>{};
 }
 
 std::vector<savor::runner::parallel::savordb::

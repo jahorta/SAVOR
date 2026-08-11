@@ -51,7 +51,7 @@ constexpr int kMaxPlayerCombatants = 4;
 
 std::string fingerprintForDraft(const savorqt::db::BattlePlanDraft& draft)
 {
-    std::string content = draft.name + ":" + std::to_string(draft.num_turns) + "\n";
+    std::string content = draft.name + "\n";
     for (const auto& turn : draft.turns) {
         content += "turn:" + std::to_string(turn.turn_index) + "\n";
         for (const auto& action : turn.actions) {
@@ -246,7 +246,10 @@ void BattlePlanEditorWindow::loadSnapshot(const savor::db::BattlePlanSnapshot& s
     nameEdit_->setText(QString::fromStdString(snapshot.name) + (duplicate ? QStringLiteral(" copy") : QString()));
 
     turns_.clear();
-    const int turnCount = std::max(1, snapshot.num_turns);
+    int turnCount = 1;
+    for (const auto& turn : snapshot.turns) {
+        turnCount = std::max(turnCount, turn.turn_index);
+    }
     turns_.resize(static_cast<std::size_t>(turnCount));
     int combatantCount = kMinPlayerCombatants;
     for (int index = 0; index < turnCount; ++index) {
@@ -930,7 +933,6 @@ void BattlePlanEditorWindow::saveBattlePlan()
 
     savorqt::db::BattlePlanDraft draft{};
     draft.name = nameEdit_->text().trimmed().toStdString();
-    draft.num_turns = static_cast<int>(turns_.size());
     draft.turns.resize(turns_.size());
 
     for (int turnIndex = 0; turnIndex < static_cast<int>(turns_.size()); ++turnIndex) {

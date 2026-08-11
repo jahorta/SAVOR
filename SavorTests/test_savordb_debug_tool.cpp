@@ -16,7 +16,7 @@
 #include "Common/DbService.h"
 #include "Common/Migrations/MigrationRunner.h"
 #include "Execution/IExecutionDb.h"
-#include "Runner/IPC/Wire.h"
+#include "Runner/Runtime/ProgramKind.h"
 #include "common/savordb_helpers.h"
 
 namespace {

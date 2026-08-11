@@ -34,18 +34,6 @@ bool ValidateStableId(std::string_view id, std::string_view expected_prefix, std
     return true;
 }
 
-PSOp LowerReadOp(SymbolicOp::Kind kind, uint32_t address, savor::context::key::KeyId dst)
-{
-    switch (kind) {
-    case SymbolicOp::Kind::ReadU8: return OpReadU8(address, dst);
-    case SymbolicOp::Kind::ReadU16: return OpReadU16(address, dst);
-    case SymbolicOp::Kind::ReadU32: return OpReadU32(address, dst);
-    case SymbolicOp::Kind::ReadF32: return OpReadF32(address, dst);
-    case SymbolicOp::Kind::ReadF64: return OpReadF64(address, dst);
-    default: return {};
-    }
-}
-
 } // namespace
 
 std::string_view ToString(ContextValueType type)
@@ -254,104 +242,6 @@ BreakpointMap RuntimeSymbolRegistry::BuildBreakpointMap() const
         });
     }
     return map;
-}
-
-bool RuntimeSymbolRegistry::LowerSymbolicPhaseScript(
-    const SymbolicPhaseScript& symbolic,
-    PhaseScript& out,
-    std::string* error_out) const
-{
-    out = PhaseScript{};
-    for (const auto& id : symbolic.canonical_breakpoint_ids) {
-        const auto* bp = FindBreakpoint(id);
-        if (bp == nullptr) {
-            if (error_out) *error_out = "unknown breakpoint symbol: " + id;
-            return false;
-        }
-        if (bp->visibility != BreakpointVisibility::PlayerVisible) {
-            if (error_out) *error_out = "breakpoint symbol is unavailable";
-            return false;
-        }
-        out.canonical_bp_keys.push_back(bp->key);
-    }
-
-    for (const auto& op : symbolic.ops) {
-        switch (op.kind) {
-        case SymbolicOp::Kind::Label:
-            out.ops.push_back(OpLabel(op.label));
-            break;
-        case SymbolicOp::Kind::Goto:
-            out.ops.push_back(OpGoto(op.label));
-            break;
-        case SymbolicOp::Kind::RunUntilBp:
-            out.ops.push_back(OpRunUntilBp());
-            break;
-        case SymbolicOp::Kind::GotoIf: {
-            const auto* left = FindContext(op.left_key_id);
-            if (left == nullptr) {
-                if (error_out) *error_out = "unknown context symbol: " + op.left_key_id;
-                return false;
-            }
-            out.ops.push_back(OpGotoIf(left->key, op.cmp, op.imm, op.label));
-            break;
-        }
-        case SymbolicOp::Kind::GotoIfKeys: {
-            const auto* left = FindContext(op.left_key_id);
-            const auto* right = FindContext(op.right_key_id);
-            if (left == nullptr || right == nullptr) {
-                if (error_out) *error_out = "unknown context symbol in key comparison";
-                return false;
-            }
-            out.ops.push_back(OpGotoIfKeys(left->key, op.cmp, right->key, op.label));
-            break;
-        }
-        case SymbolicOp::Kind::ReturnResult: {
-            const auto* key = FindContext(op.left_key_id);
-            if (key == nullptr) {
-                if (error_out) *error_out = "unknown result context symbol: " + op.left_key_id;
-                return false;
-            }
-            out.ops.push_back(OpReturnResult(key->key, op.imm));
-            break;
-        }
-        case SymbolicOp::Kind::EmitResult: {
-            const auto* key = FindContext(op.left_key_id);
-            if (key == nullptr) {
-                if (error_out) *error_out = "unknown emit context symbol: " + op.left_key_id;
-                return false;
-            }
-            out.ops.push_back(OpEmitResult(key->key));
-            break;
-        }
-        case SymbolicOp::Kind::SetU32:
-        case SymbolicOp::Kind::AddU32: {
-            const auto* key = FindContext(op.left_key_id);
-            if (key == nullptr) {
-                if (error_out) *error_out = "unknown context symbol: " + op.left_key_id;
-                return false;
-            }
-            out.ops.push_back(op.kind == SymbolicOp::Kind::SetU32
-                ? OpSetU32(key->key, op.imm)
-                : OpAddU32(key->key, op.imm));
-            break;
-        }
-        case SymbolicOp::Kind::ReadU8:
-        case SymbolicOp::Kind::ReadU16:
-        case SymbolicOp::Kind::ReadU32:
-        case SymbolicOp::Kind::ReadF32:
-        case SymbolicOp::Kind::ReadF64: {
-            const auto* address = FindAddress(op.address_id);
-            const auto* dst = FindContext(op.left_key_id);
-            if (address == nullptr || dst == nullptr) {
-                if (error_out) *error_out = "unknown address or destination context symbol";
-                return false;
-            }
-            out.ops.push_back(LowerReadOp(op.kind, address->base, dst->key));
-            break;
-        }
-        }
-    }
-    return true;
 }
 
 savor::context::key::KeyId RuntimeSymbolRegistry::NextCustomContextKey() const

@@ -94,9 +94,7 @@
     <ClInclude Include="Common\QueuedDb.h">
       <Filter>Common</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.h">
-      <Filter>Workflows</Filter>
-    </ClInclude>
+    
     <ClInclude Include="Execution\Workflow\WorkflowTerminalAdvancementService.h">
       <Filter>Workflows</Filter>
     </ClInclude>
@@ -199,6 +197,9 @@
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h">
       <Filter>Programs</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\WorksetObservationBinding.h">
+      <Filter>Programs</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\ProgramDB\ProgramResultProcessor.h">
       <Filter>Programs</Filter>
     </ClInclude>
@@ -223,24 +224,19 @@
     <ClInclude Include="Execution\ProgramDB\TasMovieValidation\TasMovieCheckpointSterilizationProgram.h">
       <Filter>Programs\TasMovie</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.h">
+    <ClInclude Include="Execution\ProgramDB\TasMovieValidation\PreparedSterilizedCheckpointEvidence.h">
+      <Filter>Programs\TasMovie</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnProgram.h">
       <Filter>Programs\BattleSingleTurn</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.h">
-      <Filter>Programs\BattleSingleTurn</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.h">
+    
+    <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProgram.h">
       <Filter>Programs\BattleContext</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h">
-      <Filter>Programs\BattleContext</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\NavigationContext\NavigationContextAdapters.h">
-      <Filter>Programs\NavigationContext</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\NavigationContext\NavigationContextPhaseRegistration.h">
-      <Filter>Programs\NavigationContext</Filter>
-    </ClInclude>
+    
+    
+    
     <ClInclude Include="UIRead\Projectors\AttachedUiReadProjectionService.h">
       <Filter>UiRead</Filter>
     </ClInclude>
@@ -256,9 +252,7 @@
     <ClInclude Include="UIRead\QueuedUiReadDb.h">
       <Filter>UiRead</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\Workflow\AdapterChainOrchestrator.h">
-      <Filter>Workflows</Filter>
-    </ClInclude>
+    
     <ClInclude Include="Common\Migrations\MigrationRunner.h">
       <Filter>Common</Filter>
     </ClInclude>
@@ -303,9 +297,7 @@
     <ClCompile Include="Common\QueuedDb.cpp">
       <Filter>Common</Filter>
     </ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.cpp">
-      <Filter>Workflows</Filter>
-    </ClCompile>
+    
     <ClCompile Include="Execution\Workflow\WorkflowTerminalAdvancementService.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
@@ -340,6 +332,9 @@
       <Filter>Archive</Filter>
     </ClCompile>
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp">
+      <Filter>Authoring</Filter>
+    </ClCompile>
+    <ClCompile Include="Authoring\RelationalPredicateAuthoring.cpp">
       <Filter>Authoring</Filter>
     </ClCompile>
     <ClCompile Include="Authoring\QueuedAuthoringDb.cpp">
@@ -384,6 +379,9 @@
     <ClCompile Include="Execution\ProgramDB\ProductionProgramKindRegistry.cpp">
       <Filter>Programs</Filter>
     </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\WorksetObservationBinding.cpp">
+      <Filter>Programs</Filter>
+    </ClCompile>
     <ClCompile Include="Execution\ProgramDB\WorkerResultBlobCleanupService.cpp">
       <Filter>Programs</Filter>
     </ClCompile>
@@ -399,24 +397,19 @@
     <ClCompile Include="Execution\ProgramDB\TasMovieValidation\TasMovieCheckpointSterilizationProgram.cpp">
       <Filter>Programs\TasMovie</Filter>
     </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.cpp">
+    <ClCompile Include="Execution\ProgramDB\TasMovieValidation\PreparedSterilizedCheckpointEvidence.cpp">
+      <Filter>Programs\TasMovie</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnProgram.cpp">
       <Filter>Programs\BattleSingleTurn</Filter>
     </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.cpp">
-      <Filter>Programs\BattleSingleTurn</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.cpp">
+    
+    <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProgram.cpp">
       <Filter>Programs\BattleContext</Filter>
     </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.cpp">
-      <Filter>Programs\BattleContext</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\NavigationContext\NavigationContextAdapters.cpp">
-      <Filter>Programs\NavigationContext</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\NavigationContext\NavigationContextPhaseRegistration.cpp">
-      <Filter>Programs\NavigationContext</Filter>
-    </ClCompile>
+    
+    
+    
     <ClCompile Include="UIRead\Projectors\AttachedUiReadProjectionService.cpp">
       <Filter>UiRead</Filter>
     </ClCompile>
@@ -429,9 +422,7 @@
     <ClCompile Include="UIRead\QueuedUiReadDb.cpp">
       <Filter>UiRead</Filter>
     </ClCompile>
-    <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp">
-      <Filter>Workflows</Filter>
-    </ClCompile>
+    
     <ClCompile Include="UIRead\Projectors\ProjectorContract.cpp">
       <Filter>Common</Filter>
     </ClCompile>
@@ -561,6 +552,9 @@
     <None Include="migration\Execution\202608011000_execution_work_availability.sql">
       <Filter>Migrations\Execution</Filter>
     </None>
+    <None Include="migration\Execution\202608091000_execution_structured_job_progress.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
     <None Include="migration\State\202604051000_state_stage2_schema.sql">
       <Filter>Migrations\State</Filter>
     </None>
@@ -628,6 +622,9 @@
       <Filter>Migrations\UiRead</Filter>
     </None>
     <None Include="migration\UIRead\202607291100_uiread_result_processing_visibility.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202608091000_uiread_structured_job_progress.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
   </ItemGroup>

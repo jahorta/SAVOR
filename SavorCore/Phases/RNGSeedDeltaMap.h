@@ -3,9 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "../Core/Input/InputPlan.h"
-
-namespace savor { class ParallelPhaseScriptRunner; }
+#include "../Core/Input/GCInputFrame.h"
 
 namespace savor {
 

@@ -37,7 +37,7 @@ std::vector<std::uint8_t> MakeFrame(
     return std::move(encoded.bytes);
 }
 
-TEST(WorkerProtocolV1, EncodesExactWrmsLittleEndianGoldenFrame)
+TEST(WorkerProtocolV2, EncodesExactWrmsLittleEndianGoldenFrame)
 {
     constexpr std::array<std::uint8_t, 2> payload{ 0xaa, 0xbb };
     constexpr std::uint64_t request_id = 0x1122334455667788ull;
@@ -50,7 +50,7 @@ TEST(WorkerProtocolV1, EncodesExactWrmsLittleEndianGoldenFrame)
     ASSERT_EQ(encoded.error, FrameError::None);
     const std::vector<std::uint8_t> expected{
         0x57, 0x52, 0x4d, 0x53, // WRMS
-        0x01, 0x00,             // protocol version 1
+        0x02, 0x00,             // protocol version 2
         0x17, 0x00,             // SubmitWorkset
         0x02, 0x00, 0x00, 0x00, // payload length
         0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // request ID
@@ -74,7 +74,7 @@ TEST(WorkerProtocolV1, EncodesExactWrmsLittleEndianGoldenFrame)
         std::vector<std::uint8_t>(payload.begin(), payload.end()));
 }
 
-TEST(WorkerProtocolV1, CoreStalledRetainsTheFormerViStallWireValue)
+TEST(WorkerProtocolV2, CoreStalledRetainsTheFormerViStallWireValue)
 {
     EXPECT_EQ(
         static_cast<std::uint8_t>(
@@ -82,7 +82,7 @@ TEST(WorkerProtocolV1, CoreStalledRetainsTheFormerViStallWireValue)
         5u);
 }
 
-TEST(WorkerProtocolV1, EncodesExactAdditiveExecutionGoldenFrames)
+TEST(WorkerProtocolV2, EncodesExactAdditiveExecutionGoldenFrames)
 {
     {
         std::vector<std::uint8_t> payload;
@@ -102,7 +102,7 @@ TEST(WorkerProtocolV1, EncodesExactAdditiveExecutionGoldenFrames)
         ASSERT_EQ(encoded.error, FrameError::None);
         const std::vector<std::uint8_t> expected{
             0x57, 0x52, 0x4d, 0x53, // WRMS
-            0x01, 0x00,             // protocol version 1
+            0x02, 0x00,             // protocol version 2
             0x16, 0x00,             // ControlExecution
             0x19, 0x00, 0x00, 0x00, // payload length
             0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21,
@@ -125,6 +125,7 @@ TEST(WorkerProtocolV1, EncodesExactAdditiveExecutionGoldenFrames)
                 .session_id = 0x1112131415161718ull,
                 .workset_epoch = 0x2122232425262728ull,
                 .operation_id = 0x3132333435363738ull,
+                .has_execution_state = true,
                 .activity = ExecutionActivityCode::IdlePaused,
                 .has_terminal_status = true,
                 .terminal_status =
@@ -141,9 +142,9 @@ TEST(WorkerProtocolV1, EncodesExactAdditiveExecutionGoldenFrames)
         ASSERT_EQ(encoded.error, FrameError::None);
         const std::vector<std::uint8_t> expected{
             0x57, 0x52, 0x4d, 0x53, // WRMS
-            0x01, 0x00,             // protocol version 1
+            0x02, 0x00,             // protocol version 2
             0x09, 0x01,             // ExecutionResult
-            0x3b, 0x00, 0x00, 0x00, // payload length
+            0x3c, 0x00, 0x00, 0x00, // payload length
             0x48, 0x47, 0x46, 0x45, 0x44, 0x43, 0x42, 0x41,
             0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
             0x03, // StepFrame
@@ -151,6 +152,7 @@ TEST(WorkerProtocolV1, EncodesExactAdditiveExecutionGoldenFrames)
             0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11,
             0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21,
             0x38, 0x37, 0x36, 0x35, 0x34, 0x33, 0x32, 0x31,
+            0x01, // has execution state
             0x00, // IdlePaused
             0x01, // has terminal status
             0x01, // StepsCompleted
@@ -185,7 +187,7 @@ TEST(WorkerProtocolV1, EncodesExactAdditiveExecutionGoldenFrames)
         ASSERT_EQ(encoded.error, FrameError::None);
         const std::vector<std::uint8_t> expected{
             0x57, 0x52, 0x4d, 0x53, // WRMS
-            0x01, 0x00,             // protocol version 1
+            0x02, 0x00,             // protocol version 2
             0x0a, 0x01,             // ExecutionState
             0x31, 0x00, 0x00, 0x00, // payload length
             0x58, 0x57, 0x56, 0x55, 0x54, 0x53, 0x52, 0x51,
@@ -205,33 +207,21 @@ TEST(WorkerProtocolV1, EncodesExactAdditiveExecutionGoldenFrames)
     }
 }
 
-TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
+TEST(WorkerProtocolV2, RoundTripsEveryTypedPayload)
 {
     ExpectPayloadRoundTrip(ProcessHelloPayload{
-        17,
-        4242,
-        0x1020304050607080ull,
-        "savor-worker-test",
+        .worker_id = 17,
+        .process_id = 4242,
+        .encoded_runtime_contract = {0x01, 0x02, 0x03},
     });
-    ExpectPayloadRoundTrip(RuntimeManifestPayload{
-        .encoded_manifest = {0x01, 0x02, 0x03}});
 
     ExpectPayloadRoundTrip(OpenSessionPayload{
         .runtime_root = "C:/runtime",
         .user_directory = "C:/users/worker-17",
         .iso_path = "D:/games/soa.gcm",
-        .visual_requested = true,
+        .worker_mode = WorkerModeCode::Visual,
         .render_window_handle = 0xfedcba9876543210ull,
         .runtime_artifact_root = "C:/artifacts",
-    });
-
-    ExpectPayloadRoundTrip(PrepareModulePayload{
-        .canonical_id = "battle.single-turn",
-        .revision = 7,
-        .canonical_hash = "sha256:0123456789abcdef",
-        .format_version = 3,
-        .development_only = true,
-        .encoded_module = { 0x00, 0x10, 0x20, 0xff },
     });
 
     ExpectPayloadRoundTrip(SubmitWorksetPayload{
@@ -245,7 +235,7 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .sidecar_version = 1,
         .applied_item_count = 2,
         .applied_sidecar_sha256 = std::string(64, 'b'),
-        .already_accepted = true});
+        .already_admitted = true});
     ExpectPayloadRoundTrip(CancelWorksetItemPayload{
         .workset_id = 500,
         .item_id = 3,
@@ -306,7 +296,7 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .success = true,
         .session_id = 55,
         .workset_epoch = 3,
-        .capability_mask = 0x55aa55aa55aa55aaull,
+        .worker_mode = WorkerModeCode::Visual,
         .worker_state = WorkerStateCode::Ready,
         .session_disposition = SessionDispositionCode::Clean,
         .rejection_code = RejectionCode::None,
@@ -336,7 +326,7 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .event_type = SessionEventType::Tainted,
         .session_id = 55,
         .workset_epoch = 4,
-        .capability_mask = 0x000000000000000full,
+        .worker_mode = WorkerModeCode::VisualDebug,
         .worker_state = WorkerStateCode::Stopping,
         .session_disposition = SessionDispositionCode::Tainted,
         .rejection_code = RejectionCode::SessionTainted,
@@ -351,7 +341,19 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .item_id = 3,
         .item_ordinal = 2,
         .ordinal = 9,
-        .progress = { 0x01, 0x00, 0x01, 0x00 },
+        .durable_job_id = "job-3",
+        .library_id = "soa.progress.runtime.vi/1",
+        .library_revision = 1,
+        .progress_point_id = "vi.sample",
+        .has_routed_provenance = true,
+        .routed_sequence = 17,
+        .sample_snapshot_id = 19,
+        .trigger_epoch = 4,
+        .schema_id = "soa.progress.runtime.vi/1.Sample",
+        .schema_revision = 1,
+        .schema_sha256 = std::string(64, 'a'),
+        .typed_payload = { 0x01, 0x00, 0x01, 0x00 },
+        .display_text = "VI 65537",
     });
 
     ExpectPayloadRoundTrip(WorksetStatePayload{
@@ -451,9 +453,9 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
     });
 }
 
-TEST(WorkerProtocolV1, KeepsExecutionControlAdditiveAndDirectional)
+TEST(WorkerProtocolV2, KeepsExecutionControlAdditiveAndDirectional)
 {
-    EXPECT_EQ(ProtocolVersion, 1u);
+    EXPECT_EQ(ProtocolVersion, 2u);
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::ControlExecution));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::ExecutionResult));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::ExecutionState));
@@ -468,10 +470,9 @@ TEST(WorkerProtocolV1, KeepsExecutionControlAdditiveAndDirectional)
         MessageDirection::WorkerToParent);
 }
 
-TEST(WorkerProtocolV1, ExposesOnlyWorksetProgramTransport)
+TEST(WorkerProtocolV2, ExposesOnlyWorksetProgramTransport)
 {
-    EXPECT_EQ(ProtocolVersion, 1u);
-    EXPECT_TRUE(IsKnownMessageKind(MessageKind::RuntimeManifest));
+    EXPECT_EQ(ProtocolVersion, 2u);
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::SubmitWorkset));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::CancelWorksetItem));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::CancelWorkset));
@@ -487,14 +488,11 @@ TEST(WorkerProtocolV1, ExposesOnlyWorksetProgramTransport)
         DirectionOf(MessageKind::LivenessProbe),
         MessageDirection::ParentToWorker);
     EXPECT_EQ(
-        DirectionOf(MessageKind::RuntimeManifest),
-        MessageDirection::WorkerToParent);
-    EXPECT_EQ(
         DirectionOf(MessageKind::WorksetItemTerminal),
         MessageDirection::WorkerToParent);
 }
 
-TEST(WorkerProtocolV1, RejectsInvalidExecutionControlWithoutPublishingOutput)
+TEST(WorkerProtocolV2, RejectsInvalidExecutionControlWithoutPublishingOutput)
 {
     const ControlExecutionPayload valid{
         .control = ExecutionControlKind::Pause,
@@ -536,24 +534,7 @@ TEST(WorkerProtocolV1, RejectsInvalidExecutionControlWithoutPublishingOutput)
     EXPECT_EQ(decoded_reserved.error, PayloadError::InvalidEnumValue);
 }
 
-TEST(WorkerProtocolV1, PreservesCompleteEncodedEnvelopeMetadata)
-{
-    const PrepareModulePayload module{
-        .canonical_id = "navigation.context",
-        .revision = 19,
-        .canonical_hash = "sha256:module-hash",
-        .format_version = 4,
-        .encoded_module = { 0x00, 0x7f, 0x80, 0xff },
-    };
-    std::vector<std::uint8_t> encoded;
-    ASSERT_TRUE(EncodePayload(module, encoded));
-    PrepareModulePayload decoded_module;
-    ASSERT_TRUE(DecodePayload(encoded, decoded_module));
-    EXPECT_EQ(decoded_module, module);
-
-}
-
-TEST(WorkerProtocolV1, PreservesAttemptIdentityAcrossProgressAndWorksetTerminal)
+TEST(WorkerProtocolV2, PreservesAttemptIdentityAcrossProgressAndWorksetTerminal)
 {
     constexpr std::uint64_t invocation_id = 91;
     constexpr std::uint64_t first_attempt = 4;
@@ -566,7 +547,15 @@ TEST(WorkerProtocolV1, PreservesAttemptIdentityAcrossProgressAndWorksetTerminal)
         .item_id = 3,
         .item_ordinal = 2,
         .ordinal = 12,
-        .progress = { 0x44 },
+        .durable_job_id = "job-3",
+        .library_id = "soa.progress.runtime.vi/1",
+        .library_revision = 1,
+        .progress_point_id = "vi.sample",
+        .schema_id = "soa.progress.runtime.vi/1.Sample",
+        .schema_revision = 1,
+        .schema_sha256 = std::string(64, 'b'),
+        .typed_payload = { 0x44 },
+        .display_text = "VI 68",
     };
     std::vector<std::uint8_t> encoded;
     ASSERT_TRUE(EncodePayload(progress, encoded));
@@ -601,7 +590,7 @@ TEST(WorkerProtocolV1, PreservesAttemptIdentityAcrossProgressAndWorksetTerminal)
         InvocationTerminalStatus::TimedOut);
 }
 
-TEST(WorkerProtocolV1, RuntimeDiagnosticsAreNotSessionEvents)
+TEST(WorkerProtocolV2, RuntimeDiagnosticsAreNotSessionEvents)
 {
     const RuntimeDiagnosticPayload diagnostic{
         .rejection_code = RejectionCode::InvocationMismatch,
@@ -625,7 +614,7 @@ TEST(WorkerProtocolV1, RuntimeDiagnosticsAreNotSessionEvents)
         MessageDirection::WorkerToParent);
 }
 
-TEST(WorkerProtocolV1, OversizedTerminalCanBeReplacedByBoundedFailure)
+TEST(WorkerProtocolV2, OversizedTerminalCanBeReplacedByBoundedFailure)
 {
     WorksetItemTerminalPayload oversized{
         .outbound_sequence = 1,
@@ -661,7 +650,7 @@ TEST(WorkerProtocolV1, OversizedTerminalCanBeReplacedByBoundedFailure)
     EXPECT_LT(output.size(), MaximumPayloadSize);
 }
 
-TEST(WorkerProtocolV1, RejectsUnknownRuntimeEnumsWithoutPublishingOutput)
+TEST(WorkerProtocolV2, RejectsUnknownRuntimeEnumsWithoutPublishingOutput)
 {
     const OpenSessionResultPayload valid{
         .success = true,
@@ -684,10 +673,12 @@ TEST(WorkerProtocolV1, RejectsUnknownRuntimeEnumsWithoutPublishingOutput)
         EXPECT_EQ(unchanged.session_id, 777u);
     };
 
-    // bool + session + epoch + capabilities
-    constexpr std::size_t worker_state_offset = 1 + 8 + 8 + 8;
+    // bool + session + epoch + worker mode
+    constexpr std::size_t worker_mode_offset = 1 + 8 + 8;
+    constexpr std::size_t worker_state_offset = worker_mode_offset + 1;
     constexpr std::size_t disposition_offset = worker_state_offset + 1;
     constexpr std::size_t rejection_offset = disposition_offset + 1;
+    expect_invalid(worker_mode_offset, 0xff);
     expect_invalid(worker_state_offset, 0xff);
     expect_invalid(disposition_offset, 0xff);
     expect_invalid(rejection_offset, 0xff);
@@ -731,7 +722,7 @@ TEST(WorkerProtocolV1, RejectsUnknownRuntimeEnumsWithoutPublishingOutput)
     EXPECT_EQ(unchanged_output, (std::vector<std::uint8_t>{ 0xa5 }));
 }
 
-TEST(WorkerProtocolV1, ReportsNeedMoreDataForEveryFragment)
+TEST(WorkerProtocolV2, ReportsNeedMoreDataForEveryFragment)
 {
     constexpr std::array<std::uint8_t, 5> payload{ 1, 2, 3, 4, 5 };
     const auto frame = MakeFrame(MessageKind::HostEvent, 99, payload);
@@ -754,7 +745,7 @@ TEST(WorkerProtocolV1, ReportsNeedMoreDataForEveryFragment)
     EXPECT_EQ(complete.status, FrameDecodeStatus::Complete);
 }
 
-TEST(WorkerProtocolV1, EndOfStreamTurnsFragmentsIntoTypedTruncationErrors)
+TEST(WorkerProtocolV2, EndOfStreamTurnsFragmentsIntoTypedTruncationErrors)
 {
     constexpr std::array<std::uint8_t, 4> payload{ 9, 8, 7, 6 };
     const auto frame = MakeFrame(MessageKind::CommandResult, 5, payload);
@@ -776,7 +767,7 @@ TEST(WorkerProtocolV1, EndOfStreamTurnsFragmentsIntoTypedTruncationErrors)
     EXPECT_EQ(partial_payload.error, FrameError::TruncatedPayload);
 }
 
-TEST(WorkerProtocolV1, RejectsInvalidHeaderFields)
+TEST(WorkerProtocolV2, RejectsInvalidHeaderFields)
 {
     constexpr std::array<std::uint8_t, 1> payload{ 0x42 };
     const auto valid = MakeFrame(MessageKind::OpenSession, 123, payload);
@@ -788,7 +779,7 @@ TEST(WorkerProtocolV1, RejectsInvalidHeaderFields)
     EXPECT_EQ(result.error, FrameError::WrongMagic);
 
     auto wrong_version = valid;
-    wrong_version[4] = 2;
+    wrong_version[4] = 1;
     wrong_version[5] = 0;
     result = DecodeFrame(wrong_version);
     EXPECT_EQ(result.status, FrameDecodeStatus::Error);
@@ -802,9 +793,9 @@ TEST(WorkerProtocolV1, RejectsInvalidHeaderFields)
     EXPECT_EQ(result.error, FrameError::UnknownMessageKind);
 }
 
-TEST(WorkerProtocolV1, RejectsOversizedLengthBeforeExposingOrAllocatingPayload)
+TEST(WorkerProtocolV2, RejectsOversizedLengthBeforeExposingOrAllocatingPayload)
 {
-    auto header = MakeFrame(MessageKind::PrepareModule, 77, {});
+    auto header = MakeFrame(MessageKind::SubmitWorkset, 77, {});
     ASSERT_EQ(header.size(), HeaderSize);
 
     constexpr auto oversized = static_cast<std::uint32_t>(MaximumPayloadSize + 1);
@@ -821,7 +812,7 @@ TEST(WorkerProtocolV1, RejectsOversizedLengthBeforeExposingOrAllocatingPayload)
     EXPECT_TRUE(result.frame.payload.empty());
 }
 
-TEST(WorkerProtocolV1, RejectsTrailingAndInvalidTypedPayloadWithoutPublishingOutput)
+TEST(WorkerProtocolV2, RejectsTrailingAndInvalidTypedPayloadWithoutPublishingOutput)
 {
     const ShutdownPayload expected_shutdown{ 5000 };
     std::vector<std::uint8_t> encoded_shutdown;
@@ -841,12 +832,12 @@ TEST(WorkerProtocolV1, RejectsTrailingAndInvalidTypedPayloadWithoutPublishingOut
         EncodePayload(valid_session, encoded_session).error,
         PayloadError::None);
     ASSERT_GT(encoded_session.size(), 12u);
-    encoded_session[12] = 2; // visual_requested must be exactly zero or one.
+    encoded_session[12] = 0xff; // worker mode must be a known enum value.
 
     OpenSessionPayload unchanged_session;
     unchanged_session.runtime_root = "unchanged";
     result = DecodePayload(encoded_session, unchanged_session);
-    EXPECT_EQ(result.error, PayloadError::InvalidBoolean);
+    EXPECT_EQ(result.error, PayloadError::InvalidEnumValue);
     EXPECT_EQ(unchanged_session.runtime_root, "unchanged");
 
     ScreenshotResultPayload valid_screenshot;
@@ -864,7 +855,7 @@ TEST(WorkerProtocolV1, RejectsTrailingAndInvalidTypedPayloadWithoutPublishingOut
     EXPECT_EQ(unchanged_screenshot.output_path, "unchanged.png");
 }
 
-TEST(WorkerProtocolV1, PreservesRequestIdsAcrossBackToBackFrames)
+TEST(WorkerProtocolV2, PreservesRequestIdsAcrossBackToBackFrames)
 {
     const auto first = MakeFrame(MessageKind::OpenSession, 0x1111222233334444ull, {});
     const auto second = MakeFrame(MessageKind::Shutdown, 0xaaaabbbbccccddddull, {});
@@ -884,7 +875,7 @@ TEST(WorkerProtocolV1, PreservesRequestIdsAcrossBackToBackFrames)
     EXPECT_EQ(second_result.consumed_size, second.size());
 }
 
-TEST(WorkerProtocolV1, RejectsLegacyTagPrefixWithoutDispatch)
+TEST(WorkerProtocolV2, RejectsLegacyTagPrefixWithoutDispatch)
 {
     int dispatch_count = 0;
     const auto decode_and_dispatch = [&dispatch_count](

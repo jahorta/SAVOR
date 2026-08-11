@@ -3,6 +3,7 @@
 #include "Phases/Programs/SeedProbe/SeedProbeModule.h"
 #include "Phases/Programs/TasMovieValidation/TasMovieValidationModule.h"
 #include "Runner/Runtime/Worksets/WorksetStager.h"
+#include "ProbeRuntime.h"
 #include "Utils/Hash.h"
 #include "common/ScriptedDolphinBackend.h"
 
@@ -146,7 +147,10 @@ WorkerWorksetDefinition ArtifactWorkset(
     const auto phase = seedprobe::SeedProbeFullPhaseDefinitionV2();
     definition.phase_invocation = {
         .invocation_id = {1, 1},
-        .program = phase->identity(),
+        .program_package =
+            fullphase::BuildFullPhaseProgramPackage(*phase),
+        .common_input = fullphase::MakeFullPhaseCommonInput(
+            "soa.seed_probe.CommonInput", 1),
     };
     definition.baseline.artifact = ProgramBaselineArtifact{
         .kind = ProgramBaselineArtifactKind::Savestate,
@@ -183,6 +187,14 @@ WorkerWorksetDefinition ArtifactWorkset(
         phase->runtime_contract().movie_policy_sha256;
     definition.execution_key.service_policy_sha256 =
         phase->runtime_contract().service_policy_sha256;
+    definition.execution_key.program_package_sha256 =
+        definition.phase_invocation.program_package.canonical_sha256;
+    definition.execution_key.common_input_sha256 =
+        definition.phase_invocation.common_input.content_sha256;
+    definition.execution_key.capture_binding_sha256 =
+        EmptyWorksetCaptureBindingHashV1();
+    definition.execution_key.progress_plan_sha256 =
+        definition.progress_plan.content_sha256;
     definition.execution_key.canonical_sha256 =
         ComputeWorkerWorksetExecutionKeyHash(
             definition.execution_key);
@@ -236,7 +248,10 @@ WorkerWorksetDefinition MovieWorkset(
     definition.workset_id = WorkerWorksetId(workset_id);
     definition.phase_invocation = {
         .invocation_id = {workset_id, 1},
-        .program = phase->identity(),
+        .program_package =
+            fullphase::BuildFullPhaseProgramPackage(*phase),
+        .common_input = fullphase::MakeFullPhaseCommonInput(
+            "soa.tas_movie_validation.CommonInput", 1),
     };
     definition.baseline.artifact = ProgramBaselineArtifact{
         .kind = ProgramBaselineArtifactKind::ReadOnlyMovie,
@@ -269,6 +284,14 @@ WorkerWorksetDefinition MovieWorkset(
         phase->runtime_contract().movie_policy_sha256;
     definition.execution_key.service_policy_sha256 =
         phase->runtime_contract().service_policy_sha256;
+    definition.execution_key.program_package_sha256 =
+        definition.phase_invocation.program_package.canonical_sha256;
+    definition.execution_key.common_input_sha256 =
+        definition.phase_invocation.common_input.content_sha256;
+    definition.execution_key.capture_binding_sha256 =
+        EmptyWorksetCaptureBindingHashV1();
+    definition.execution_key.progress_plan_sha256 =
+        definition.progress_plan.content_sha256;
     definition.execution_key.canonical_sha256 =
         ComputeWorkerWorksetExecutionKeyHash(
             definition.execution_key);
@@ -409,6 +432,116 @@ TEST(WorksetStager, RejectsMismatchedArtifactHashWithoutSessionAuthority)
         completed[0].result.code,
         WorksetStagerErrorCode::ArtifactFailure);
     EXPECT_FALSE(completed[0].package);
+}
+
+TEST(WorksetStager, InlineAndContentAddressedCaptureBindingsAdmitIdentically)
+{
+    TemporaryDirectory temp;
+    const std::filesystem::path state = temp.path() / "input.sav";
+    {
+        std::ofstream output(state, std::ios::binary);
+        output << "state";
+    }
+
+    std::string module_error;
+    const std::string module_sha256 =
+        savor::probe::current_module_sha256(&module_error);
+    ASSERT_EQ(module_sha256.size(), 64u) << module_error;
+    savor::probe::Profile profile;
+    profile.name = "workset-capture-binding";
+    profile.expected_module_sha256 = module_sha256;
+    profile.probes.push_back({
+        .id = "capture-only",
+        .kind = savor::probe::ProbeKind::Pc,
+        .subscriptions = savor::probe::Subscription::Capture,
+        .address = 0x80000100u,
+    });
+    const std::string profile_json =
+        savor::probe::serialize_profile_json(profile);
+
+    WorksetCaptureBindingV1 inline_binding{
+        .storage = CaptureProfileStorageV1::Inline,
+        .profile_json = profile_json,
+        .profile_sha256 = hash::sha256(
+            profile_json.data(),
+            profile_json.size()),
+        .expected_module_sha256 = module_sha256,
+        .resolved_observation_sha256 =
+            progress::ComputeResolvedObservationHashV1(
+                profile,
+                progress::ProgressPlanV1{}),
+        .output_directory = temp.path() / "inline-output",
+    };
+    inline_binding.content_sha256 =
+        ComputeWorksetCaptureBindingHashV1(inline_binding);
+
+    const std::filesystem::path sidecar_path =
+        temp.path() / "profile.json";
+    {
+        std::ofstream output(sidecar_path, std::ios::binary);
+        output.write(
+            profile_json.data(),
+            static_cast<std::streamsize>(profile_json.size()));
+    }
+    WorksetCaptureBindingV1 sidecar_binding = inline_binding;
+    sidecar_binding.storage =
+        CaptureProfileStorageV1::ContentAddressedSidecar;
+    sidecar_binding.profile_json.clear();
+    sidecar_binding.profile_sidecar_path = sidecar_path;
+    sidecar_binding.output_directory = temp.path() / "sidecar-output";
+    EXPECT_EQ(
+        ComputeWorksetCaptureBindingHashV1(sidecar_binding),
+        inline_binding.content_sha256);
+
+    const auto with_capture = [&](std::uint64_t id,
+                                  WorksetCaptureBindingV1 binding) {
+        WorkerWorksetDefinition definition = ArtifactWorkset(id, state);
+        definition.baseline.components.clear();
+        definition.execution_key.baseline =
+            ComputeProgramBaselineKey(definition.baseline);
+        definition.capture = std::move(binding);
+        definition.execution_key.capture_binding_sha256 =
+            definition.capture->content_sha256;
+        definition.execution_key.canonical_sha256 =
+            ComputeWorkerWorksetExecutionKeyHash(
+                definition.execution_key);
+        return definition;
+    };
+    const auto stage = [](WorkerWorksetDefinition definition) {
+        WorksetStager stager;
+        const WorksetStagingSubmission submitted =
+            stager.Submit(std::move(definition));
+        EXPECT_TRUE(submitted.result.ok) << submitted.result.message;
+        stager.Shutdown();
+        return stager.DrainResults();
+    };
+
+    const auto inline_result = stage(with_capture(25, inline_binding));
+    const auto sidecar_result = stage(with_capture(26, sidecar_binding));
+    ASSERT_EQ(inline_result.size(), 1u);
+    ASSERT_EQ(sidecar_result.size(), 1u);
+    ASSERT_TRUE(inline_result.front().result.ok)
+        << inline_result.front().result.message;
+    ASSERT_TRUE(sidecar_result.front().result.ok)
+        << sidecar_result.front().result.message;
+    ASSERT_TRUE(inline_result.front().package->capture);
+    ASSERT_TRUE(sidecar_result.front().package->capture);
+    EXPECT_EQ(
+        inline_result.front().package->capture->profile_json,
+        sidecar_result.front().package->capture->profile_json);
+
+    {
+        std::ofstream output(
+            sidecar_path,
+            std::ios::binary | std::ios::trunc);
+        output << "{}";
+    }
+    const auto tampered = stage(with_capture(27, sidecar_binding));
+    ASSERT_EQ(tampered.size(), 1u);
+    EXPECT_FALSE(tampered.front().result.ok);
+    EXPECT_EQ(
+        tampered.front().result.code,
+        WorksetStagerErrorCode::InvalidArgument);
 }
 
 TEST(

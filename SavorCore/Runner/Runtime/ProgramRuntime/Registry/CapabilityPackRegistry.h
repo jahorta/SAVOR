@@ -24,26 +24,16 @@ struct RuntimeCompatibility
     auto operator<=>(const RuntimeCompatibility&) const = default;
 };
 
-enum class SemanticPointPhysicalKind : std::uint8_t
-{
-    ProgramCounter,
-    Memory,
-    Synthetic,
-};
-
 struct SemanticPointDescriptor
 {
     std::string canonical_id;
-    SemanticPointPhysicalKind kind =
-        SemanticPointPhysicalKind::ProgramCounter;
+    SemanticPointKind kind = SemanticPointKind::ProgramCounter;
     std::uint32_t pc = 0;
     std::uint32_t memory_address = 0;
     std::uint32_t memory_size = 0;
     bool memory_read = false;
     bool memory_write = false;
     std::string synthetic_identity;
-    std::string legacy_key;
-
     auto operator<=>(const SemanticPointDescriptor&) const = default;
 };
 
@@ -79,6 +69,16 @@ enum class CpuEvaluatorOperation : std::uint8_t
 struct CpuEvaluatorDescriptor
 {
     std::string canonical_id;
+    // Stable router-local sample identity carried by routed stop evidence.
+    // This is part of the homogeneous runtime ABI and never supplied by a
+    // workset.
+    std::uint32_t routed_sample_descriptor_id = 0;
+    // Empty only for evaluators whose value comes from the native hit itself.
+    // Guest-memory evaluators name an address symbol in this manifest.
+    std::string address_dependency;
+    // Exact IR type produced by this static evaluator. SPS1 requirements must
+    // link to this type during program verification.
+    TypeRef result_type;
     std::vector<CpuEvaluatorOperation> operations;
     std::uint32_t maximum_reads = 0;
     std::uint32_t maximum_output_bytes = 0;

@@ -10,6 +10,7 @@
 #include "Worksets/WorkerCompletionLedger.h"
 #include "Worksets/WorksetStager.h"
 #include "Worksets/WorksetWireCodec.h"
+#include "Core/Memory/Soa/SoaAddrRegistry.h"
 #include "Utils/Hash.h"
 
 #include <algorithm>
@@ -21,6 +22,7 @@
 #include <iterator>
 #include <limits>
 #include <mutex>
+#include <sstream>
 #include <set>
 #include <string_view>
 #include <thread>
@@ -46,7 +48,6 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
     return std::visit(
         Overloaded{
             [](const OpenSessionCommand&) { return WorkerCommandKind::OpenSession; },
-            [](const PrepareModuleCommand&) { return WorkerCommandKind::PrepareModule; },
             [](const SubmitWorksetCommand&) { return WorkerCommandKind::SubmitWorkset; },
             [](const CancelInvocationCommand&) { return WorkerCommandKind::CancelInvocation; },
             [](const CancelWorksetItemCommand&) { return WorkerCommandKind::CancelWorksetItem; },
@@ -136,6 +137,13 @@ struct WorkerRuntime::Impl
         bool completed = false;
     };
 
+    struct CaptureProgressBuffer
+    {
+        std::mutex mutex;
+        std::deque<savor::capture_format::Event> events;
+        bool notification_queued = false;
+    };
+
     enum class MailboxItemKind : std::uint8_t
     {
         Command,
@@ -143,6 +151,8 @@ struct WorkerRuntime::Impl
         ProgramActionRequest,
         ProgramActionResolution,
         ProgramPump,
+        CaptureProgress,
+        BeginWorksetExecution,
         HostEvent,
         ForceStop,
     };
@@ -166,6 +176,8 @@ struct WorkerRuntime::Impl
         std::optional<program::ProgramActionResolution>
             program_action_resolution;
         std::optional<PendingHostEvent> host_event;
+        InvocationId capture_invocation_id;
+        AttemptId capture_attempt_id;
     };
 
     struct Mailbox
@@ -182,6 +194,7 @@ struct WorkerRuntime::Impl
         bool accept_program_actions = true;
         bool accept_host_events = true;
         bool program_pump_queued = false;
+        bool workset_begin_queued = false;
     };
 
     static void SignalMailbox(Mailbox& mailbox) noexcept
@@ -349,6 +362,12 @@ struct WorkerRuntime::Impl
         OutputTransaction outputs;
         std::optional<ProgramExecutionFinished> execution_finished;
         std::optional<ProgramInvocationTerminalEvent> terminal_draft;
+        std::optional<CaptureAttachmentId> capture_attachment;
+        std::optional<std::filesystem::path> capture_path;
+        std::optional<program::ArtifactReferenceValue> capture_artifact;
+        std::vector<std::string> capture_diagnostics;
+        std::shared_ptr<CaptureProgressBuffer> capture_progress;
+        std::uint64_t next_progress_ordinal = 1;
 
         ActiveInvocation(
             InvocationId invocation,
@@ -364,9 +383,50 @@ struct WorkerRuntime::Impl
         }
     };
 
+    static void EnqueueCaptureProgress(
+        const std::weak_ptr<Mailbox>& weak_mailbox,
+        const std::shared_ptr<CaptureProgressBuffer>& buffer,
+        InvocationId invocation_id,
+        AttemptId attempt_id,
+        savor::capture_format::Event event) noexcept
+    {
+        bool notify = false;
+        try
+        {
+            std::lock_guard lock(buffer->mutex);
+            buffer->events.push_back(std::move(event));
+            if (!buffer->notification_queued)
+            {
+                buffer->notification_queued = true;
+                notify = true;
+            }
+        }
+        catch (...)
+        {
+            return;
+        }
+        if (!notify)
+            return;
+        const std::shared_ptr<Mailbox> mailbox = weak_mailbox.lock();
+        if (!mailbox)
+            return;
+        {
+            std::lock_guard lock(mailbox->mutex);
+            if (!mailbox->accept_program_events)
+                return;
+            MailboxItem item;
+            item.kind = MailboxItemKind::CaptureProgress;
+            item.capture_invocation_id = invocation_id;
+            item.capture_attempt_id = attempt_id;
+            mailbox->items.push_back(std::move(item));
+        }
+        SignalMailbox(*mailbox);
+    }
+
     struct WorksetPackage
     {
         WorkerWorksetDefinition definition;
+        std::optional<HostStagedCaptureProfile> capture;
         std::vector<PreparedInvocationTemplateReceipt> prepared;
         std::vector<bool> cancelled;
         std::vector<bool> initially_suppressed;
@@ -482,36 +542,7 @@ struct WorkerRuntime::Impl
                 workset_limits,
                 baseline_components);
         }
-        capabilities_value = kSlice1ProductionCapabilities;
-        if (this->session)
-        {
-            const BackendExecutionCapabilityMask execution_capabilities =
-                this->session->execution_capabilities();
-            if (HasExecutionCapability(
-                    execution_capabilities,
-                    BackendExecutionCapability::Pause) &&
-                HasExecutionCapability(
-                    execution_capabilities,
-                    BackendExecutionCapability::Resume) &&
-                HasExecutionCapability(
-                    execution_capabilities,
-                    BackendExecutionCapability::FrameStep))
-            {
-                capabilities_value = AddCapability(
-                    capabilities_value,
-                    WorkerCapability::InteractiveVisualDebug);
-            }
-        }
-        if (this->program_runtime && this->program_action_host &&
-            HasCapability(
-                this->program_runtime->capabilities(),
-                WorkerCapability::WorksetDispatch))
-        {
-            capabilities_value = AddCapability(
-                capabilities_value,
-                WorkerCapability::WorksetDispatch);
-        }
-        BuildRuntimeManifest();
+        runtime_contract_value = BuildProductionWorkerRuntimeContractV1();
         if (this->program_runtime)
         {
             this->program_runtime->BindActionSink(
@@ -519,7 +550,8 @@ struct WorkerRuntime::Impl
         }
 
         current_snapshot.state = WorkerState::Starting;
-        current_snapshot.capabilities = capabilities_value;
+        current_snapshot.runtime_contract_sha256 =
+            runtime_contract_value.canonical_sha256;
         current_snapshot.available_item_credits =
             workset_limits.maximum_item_credits;
         if (this->session)
@@ -529,8 +561,7 @@ struct WorkerRuntime::Impl
                 mailbox.get(),
                 &NotifyStopPointIngress);
             current_snapshot.session = this->session->snapshot();
-            current_snapshot.execution =
-                this->session->execution_snapshot();
+            current_snapshot.execution.reset();
         }
 
         actor = std::thread([this] { ActorMain(); });
@@ -604,10 +635,9 @@ struct WorkerRuntime::Impl
         return current_snapshot;
     }
 
-    WorkerRuntimeManifest RuntimeManifest() const
+    WorkerRuntimeContractV1 RuntimeContract() const
     {
-        std::lock_guard lock(manifest_mutex);
-        return runtime_manifest_value;
+        return runtime_contract_value;
     }
 
     bool EnqueueHostEvent(
@@ -731,6 +761,11 @@ struct WorkerRuntime::Impl
                     mailbox->items.pop_front();
                     if (item.kind == MailboxItemKind::ProgramPump)
                         mailbox->program_pump_queued = false;
+                    if (item.kind ==
+                        MailboxItemKind::BeginWorksetExecution)
+                    {
+                        mailbox->workset_begin_queued = false;
+                    }
                     has_item = true;
                 }
             }
@@ -832,6 +867,16 @@ struct WorkerRuntime::Impl
             {
                 PumpProgramRuntime();
             }
+            else if (item.kind == MailboxItemKind::CaptureProgress)
+            {
+                DrainActiveCaptureProgress(
+                    item.capture_invocation_id,
+                    item.capture_attempt_id);
+            }
+            else if (item.kind == MailboxItemKind::BeginWorksetExecution)
+            {
+                BeginReadyWorksetExecution();
+            }
             else if (item.kind == MailboxItemKind::HostEvent)
             {
                 if (item.host_event)
@@ -881,9 +926,6 @@ struct WorkerRuntime::Impl
             Overloaded{
                 [this, &queued](const OpenSessionCommand& command) {
                     HandleOpen(queued, command);
-                },
-                [this, &queued](const PrepareModuleCommand& command) {
-                    HandlePrepareModule(queued, command);
                 },
                 [this, &queued](const SubmitWorksetCommand& command) {
                     HandleSubmitWorkset(queued, command);
@@ -938,77 +980,45 @@ struct WorkerRuntime::Impl
                 receipt);
             return;
         }
+        if (command.options.worker_mode == WorkerMode::VisualDebug)
+        {
+            const auto execution_capabilities =
+                session->execution_capabilities();
+            if (!HasExecutionCapability(
+                    execution_capabilities,
+                    BackendExecutionCapability::Pause) ||
+                !HasExecutionCapability(
+                    execution_capabilities,
+                    BackendExecutionCapability::Resume) ||
+                !HasExecutionCapability(
+                    execution_capabilities,
+                    BackendExecutionCapability::FrameStep))
+            {
+                (void)session->Shutdown();
+                RefreshSnapshot();
+                Reject(
+                    queued,
+                    WorkerRejectionCode::BackendFailure,
+                    "VisualDebug mode requires pause, resume, and frame-step backend services");
+                return;
+            }
+        }
         if (test_hooks && test_hooks->session_opened)
             test_hooks->session_opened(*session);
         RefreshSnapshot();
 
         ChangeState(WorkerState::Ready);
-        session_visual_intent = command.options.backend.visual;
+        worker_mode = command.options.worker_mode;
+        {
+            std::lock_guard lock(snapshot_mutex);
+            current_snapshot.mode = worker_mode;
+        }
         Complete(
             queued,
             WorkerCommandOutcome::Completed,
             {},
             {},
             std::move(receipt));
-    }
-
-    void HandlePrepareModule(
-        const std::shared_ptr<QueuedCommand>& queued,
-        const PrepareModuleCommand& command)
-    {
-        if (!RequireReadyProgramRuntime(queued))
-            return;
-        if (command.module.identity.canonical_id.empty() ||
-            command.module.payload.empty())
-        {
-            Reject(
-                queued,
-                WorkerRejectionCode::InvalidArgument,
-                "PrepareModule requires a canonical identity and encoded payload");
-            return;
-        }
-
-        ProgramRuntimeSubmission submission;
-        try
-        {
-            submission = program_runtime->PrepareModule(
-                ModulePreparationRequest{queued->sequence, command.module},
-                program_event_ingress);
-        }
-        catch (const std::exception& ex)
-        {
-            EnterTainted(
-                std::string("ProgramRuntime module submission threw: ") + ex.what());
-            Reject(
-                queued,
-                WorkerRejectionCode::InternalFailure,
-                std::string("ProgramRuntime module submission threw: ") + ex.what());
-            return;
-        }
-        catch (...)
-        {
-            EnterTainted("ProgramRuntime module submission threw");
-            Reject(
-                queued,
-                WorkerRejectionCode::InternalFailure,
-                "ProgramRuntime module submission threw");
-            return;
-        }
-
-        if (!submission.accepted)
-        {
-            Reject(
-                queued,
-                submission.error.code == WorkerRejectionCode::None
-                    ? WorkerRejectionCode::InternalFailure
-                    : submission.error.code,
-                submission.error.message);
-            return;
-        }
-
-        pending_module_commands.emplace(
-            queued->sequence.value(),
-            queued);
     }
 
     [[nodiscard]] static bool BaselinePolicyMatches(
@@ -1048,12 +1058,28 @@ struct WorkerRuntime::Impl
         if (!current.workset_epoch)
             return true;
 
-        const ExecutionSnapshot execution =
+        const std::optional<ExecutionSnapshot> execution =
             session->execution_snapshot();
         return
-            execution.activity == ExecutionActivity::IdlePaused &&
-            !execution.active_operation &&
-            execution.interruption_depth == 0;
+            execution &&
+            execution->activity == ExecutionActivity::IdlePaused &&
+            !execution->active_operation &&
+            execution->interruption_depth == 0;
+    }
+
+    [[nodiscard]] std::optional<ExecutionSnapshot>
+    ProjectExecutionSnapshot() const
+    {
+        // The committed engine is internally usable at Ready, but ordinary
+        // worker telemetry becomes authoritative only once the workset has
+        // crossed into Running. Initialization and item reset deliberately
+        // project no execution state.
+        if (!session || !active_workset ||
+            active_workset->state != WorkerWorksetState::Running)
+        {
+            return std::nullopt;
+        }
+        return session->execution_snapshot();
     }
 
     [[nodiscard]] static std::size_t
@@ -1217,6 +1243,7 @@ struct WorkerRuntime::Impl
     {
         WorksetPackage package;
         package.definition = std::move(source.definition);
+        package.capture = std::move(source.capture);
         const WorksetValidationResult validated =
             ValidateWorkerWorksetDefinition(
                 package.definition,
@@ -1251,18 +1278,6 @@ struct WorkerRuntime::Impl
                 "Staged program baseline does not match its exact execution key"};
             return std::nullopt;
         }
-        const ProgramRuntimeCatalogSnapshot catalog =
-            program_runtime->catalog();
-        if (catalog.runtime_profile_sha256.empty() ||
-            package.definition.execution_key.runtime_profile_sha256 !=
-                catalog.runtime_profile_sha256)
-        {
-            error = {
-                WorkerRejectionCode::WorksetCatalogMismatch,
-                "WorkerWorkset runtime profile does not match the installed runtime"};
-            return std::nullopt;
-        }
-
         package.cancelled.resize(
             package.definition.items.size(),
             false);
@@ -1291,13 +1306,41 @@ struct WorkerRuntime::Impl
                 ++package.initially_suppressed_count;
             }
         }
+        const auto& prepared_program =
+            package.definition.phase_invocation.program_package;
+        const auto& runtime_contract =
+            prepared_program.runtime_contract;
         const auto* phase = fullphase::ProductionRegistry().Find(
-            package.definition.phase_invocation.program);
+            prepared_program.identity.program_kind);
         if (phase == nullptr)
         {
             error = {
-                WorkerRejectionCode::WorksetCatalogMismatch,
+                WorkerRejectionCode::ProgramPackageRejected,
                 "WorkerWorkset Full Phase definition is unavailable"};
+            return std::nullopt;
+        }
+        ModuleClosureAdmissionReceipt module_receipt;
+        const ProgramRuntimeSubmission admitted =
+            program_runtime->AdmitModuleClosure(
+                {
+                    .root = runtime_contract.module,
+                    .expected_dependency_lock_sha256 =
+                        runtime_contract.dependency_lock_sha256,
+                    .modules = prepared_program.module_closure,
+                },
+                module_receipt);
+        if (!admitted.accepted || !module_receipt ||
+            module_receipt.root != runtime_contract.module ||
+            module_receipt.dependency_lock_sha256 !=
+                runtime_contract.dependency_lock_sha256 ||
+            module_receipt.admitted_module_count !=
+                prepared_program.module_closure.size())
+        {
+            error = admitted.accepted
+                ? RuntimeError{
+                      WorkerRejectionCode::ProgramPackageRejected,
+                      "Workset Full Phase module closure admission receipt is invalid"}
+                : admitted.error;
             return std::nullopt;
         }
         for (std::size_t ordinal = 0;
@@ -1310,6 +1353,8 @@ struct WorkerRuntime::Impl
                 package.definition.items[ordinal];
             std::string build_diagnostic;
             const auto execution = phase->BuildResolvedExecution(
+                prepared_program,
+                package.definition.phase_invocation.common_input.payload,
                 item.execution.input_payload,
                 item.execution.execution_id,
                 item.execution.attempt_id,
@@ -1337,8 +1382,8 @@ struct WorkerRuntime::Impl
             envelope.invocation_id =
                 item.execution.execution_id;
             envelope.attempt_id = item.execution.attempt_id;
-            envelope.module = phase->runtime_contract().module;
-            envelope.entrypoint = phase->runtime_contract().entrypoint;
+            envelope.module = runtime_contract.module;
+            envelope.entrypoint = runtime_contract.entrypoint;
             envelope.expected_workset_epoch = {};
             envelope.input_payload = encoded.bytes;
 
@@ -1356,9 +1401,8 @@ struct WorkerRuntime::Impl
                     item.execution.execution_id ||
                 receipt.attempt_id !=
                     item.execution.attempt_id ||
-                receipt.module != phase->runtime_contract().module ||
-                receipt.entrypoint !=
-                    phase->runtime_contract().entrypoint ||
+                receipt.module != runtime_contract.module ||
+                receipt.entrypoint != runtime_contract.entrypoint ||
                 receipt.program_compatibility_sha256 !=
                     package.definition.execution_key
                         .verified_dependency_sha256 ||
@@ -1384,7 +1428,7 @@ struct WorkerRuntime::Impl
                 error = prepared.accepted
                     ? RuntimeError{
                           WorkerRejectionCode::
-                              WorksetCatalogMismatch,
+                              ProgramPackageRejected,
                           "Workset item does not match its exact execution key"}
                     : prepared.error;
                 if (!error)
@@ -1397,7 +1441,7 @@ struct WorkerRuntime::Impl
             }
             package.prepared[ordinal] = std::move(receipt);
         }
-        package.state = WorkerWorksetState::Staged;
+        package.state = WorkerWorksetState::Admitted;
         return package;
     }
 
@@ -1412,7 +1456,7 @@ struct WorkerRuntime::Impl
             ComputeInitialWorksetCancellationSidecarSha256(
                 command.initial_cancellations);
         std::vector<std::uint8_t> encoded_definition;
-        const auto encoded = EncodeWorkerWorksetV2(
+        const auto encoded = EncodeWorkerWorksetV4(
             command.definition,
             encoded_definition);
         const auto definition_sha256 = encoded.ok
@@ -1451,7 +1495,7 @@ struct WorkerRuntime::Impl
             }
             auto receipt = accepted->second.receipt;
             receipt.disposition =
-                WorksetSubmissionDispositionV1::AlreadyAccepted;
+                WorksetSubmissionDispositionV1::AlreadyAdmitted;
             Complete(
                 queued,
                 WorkerCommandOutcome::Accepted,
@@ -1471,9 +1515,7 @@ struct WorkerRuntime::Impl
                 "WorkerWorkset submission requires a ready or running session");
             return;
         }
-        if (!HasCapability(
-                capabilities_value,
-                WorkerCapability::WorksetDispatch))
+        if (!program_runtime || !program_action_host)
         {
             Reject(
                 queued,
@@ -1715,7 +1757,7 @@ struct WorkerRuntime::Impl
                 .applied_sidecar_sha256 =
                     pending.cancellation_sidecar_sha256,
                 .disposition =
-                    WorksetSubmissionDispositionV1::Accepted,
+                    WorksetSubmissionDispositionV1::Admitted,
             };
             accepted_workset_submissions.insert_or_assign(
                 accepted_id.value(),
@@ -1730,7 +1772,7 @@ struct WorkerRuntime::Impl
                 {}, {}, {}, {}, {}, submission_receipt);
             PublishWorksetState(
                 accepted_id,
-                WorkerWorksetState::Staged);
+                WorkerWorksetState::Admitted);
             PublishCredits();
             if (activate_now)
                 ActivateCurrentWorkset();
@@ -1754,12 +1796,13 @@ struct WorkerRuntime::Impl
             return;
         }
         active_workset->state =
-            WorkerWorksetState::PreparingBaseline;
+            WorkerWorksetState::Initializing;
+        ChangeState(WorkerState::InitializingWorkset);
         PublishWorksetState(
             active_workset->definition.workset_id,
             active_workset->state);
         ProgramBaselineComponentResult prepared =
-            workset_state->Prepare(
+            workset_state->Initialize(
                 active_workset->definition.workset_id,
                 active_workset->definition.baseline,
                 active_workset->definition.items.size() > 1,
@@ -1781,11 +1824,479 @@ struct WorkerRuntime::Impl
             }
             return;
         }
+        active_workset->state = WorkerWorksetState::Ready;
+        PublishWorksetState(
+            active_workset->definition.workset_id,
+            active_workset->state);
+        ChangeState(WorkerState::Ready);
+        QueueWorksetBegin();
+    }
+
+    void BeginReadyWorksetExecution()
+    {
+        if (!active_workset || active_invocation ||
+            active_workset->state != WorkerWorksetState::Ready)
+        {
+            return;
+        }
         active_workset->state = WorkerWorksetState::Running;
         PublishWorksetState(
             active_workset->definition.workset_id,
             active_workset->state);
+        ChangeState(WorkerState::Running);
         StartNextWorksetItem();
+    }
+
+    void DrainActiveCaptureProgress(
+        InvocationId invocation_id,
+        AttemptId attempt_id)
+    {
+        if (!active_invocation || !active_workset ||
+            active_invocation->invocation_id != invocation_id ||
+            active_invocation->attempt_id != attempt_id ||
+            !active_invocation->capture_progress)
+        {
+            return;
+        }
+        std::deque<savor::capture_format::Event> events;
+        {
+            std::lock_guard lock(
+                active_invocation->capture_progress->mutex);
+            events.swap(active_invocation->capture_progress->events);
+            active_invocation->capture_progress
+                ->notification_queued = false;
+        }
+        if (!active_workset->capture)
+            return;
+        const auto& profile = active_workset->capture->profile;
+        const auto& plan = active_workset->definition.progress_plan;
+        const WorksetItemTemplate& item =
+            active_workset->definition.items[
+                active_invocation->workset_item_ordinal];
+        for (const savor::capture_format::Event& observed : events)
+        {
+            const auto probe = std::ranges::find_if(
+                profile.probes,
+                [&](const savor::probe::ProbeDefinition& candidate) {
+                    return candidate.id == observed.probe_id;
+                });
+            if (probe == profile.probes.end())
+                continue;
+            const auto binding = std::ranges::find_if(
+                plan.points,
+                [&](const progress::ProgressPointBindingV1& point) {
+                    return point.formatter.canonical_id ==
+                        probe->progress_formatter;
+                });
+            if (binding == plan.points.end())
+            {
+                Publish(WorkerRuntimeDiagnosticEvent{
+                    WorkerRejectionCode::InvalidArgument,
+                    "Capture progress event did not resolve to the admitted progress plan",
+                    invocation_id});
+                continue;
+            }
+            const progress::ProgressPointDescriptor* descriptor =
+                progress::ProductionProgressRegistry().FindPoint(
+                    binding->library_id,
+                    binding->library_revision,
+                    binding->point_id);
+            if (descriptor == nullptr)
+                continue;
+            progress::CanonicalProgressEventV1 event;
+            event.workset_id = active_workset->definition.workset_id;
+            event.item_id = item.item_id;
+            event.durable_job_id = item.correlation.durable_job_id;
+            event.invocation_id = invocation_id;
+            event.attempt_id = attempt_id;
+            event.ordinal =
+                active_invocation->next_progress_ordinal++;
+            event.library_id = binding->library_id;
+            event.library_revision = binding->library_revision;
+            event.progress_point_id = binding->point_id;
+            if (observed.capture_sequence != 0)
+            {
+                event.routed_sequence =
+                    RoutedStopSequence(observed.capture_sequence);
+            }
+            if (observed.snapshot_id != 0)
+            {
+                event.sample_snapshot_id =
+                    StopSampleSnapshotId(observed.snapshot_id);
+            }
+            if (observed.guest_workset_epoch != 0)
+            {
+                event.trigger_epoch =
+                    WorksetEpoch(observed.guest_workset_epoch);
+            }
+            event.schema = binding->schema;
+            event.typed_payload =
+                progress::EncodeCaptureEventPayloadV1(observed);
+            event.display_text =
+                progress::FormatCaptureProgressText(
+                    *descriptor,
+                    observed);
+            Publish(std::move(event));
+        }
+    }
+
+    void PublishRuntimeSampleProgress(
+        const program::ForegroundSemanticStopObservationV1& observation)
+    {
+        if (!active_invocation || !active_workset ||
+            observation.invocation_id !=
+                active_invocation->invocation_id ||
+            observation.attempt_id != active_invocation->attempt_id)
+        {
+            return;
+        }
+        const std::uint32_t trigger_pc =
+            observation.routed_event.evidence.hit_pc;
+        const WorksetItemTemplate& item =
+            active_workset->definition.items[
+                active_invocation->workset_item_ordinal];
+        for (const progress::ProgressPointBindingV1& point :
+             active_workset->definition.progress_plan.points)
+        {
+            if (point.provider !=
+                    progress::ProgressProviderKind::RuntimeSample ||
+                !std::ranges::contains(
+                    point.runtime_sample_trigger_pcs,
+                    trigger_pc))
+            {
+                continue;
+            }
+
+            progress::CanonicalProgressEventV1 event;
+            event.workset_id = active_workset->definition.workset_id;
+            event.item_id = item.item_id;
+            event.durable_job_id = item.correlation.durable_job_id;
+            event.invocation_id = observation.invocation_id;
+            event.attempt_id = observation.attempt_id;
+            event.ordinal = active_invocation->next_progress_ordinal++;
+            event.library_id = point.library_id;
+            event.library_revision = point.library_revision;
+            event.progress_point_id = point.point_id;
+            event.routed_sequence =
+                observation.routed_event.identity.sequence;
+            event.sample_snapshot_id =
+                observation.routed_event.identity.sample_snapshot;
+            event.trigger_epoch =
+                observation.routed_event.identity.workset_epoch;
+            event.schema = point.schema;
+
+            if (point.library_id == "soa.progress.runtime.vi/1" &&
+                point.point_id == "vi.current")
+            {
+                event.typed_payload =
+                    progress::EncodeViProgressPayloadV1(
+                        observation.execution_evidence.vi_count);
+                event.display_text = "VI " + std::to_string(
+                    observation.execution_evidence.vi_count);
+            }
+            else if (
+                point.library_id ==
+                    "soa.progress.soa.script_location/1" &&
+                point.point_id == "script_location.current")
+            {
+                GuestMemory* memory = session->guest_memory();
+                const WorksetEpoch epoch =
+                    observation.routed_event.identity.workset_epoch;
+                const GuestReadReceipt file_number = memory
+                    ? memory->ReadScalar(
+                          addr::AddrRegistry::base(
+                              addr::core::SCT_FILE_NUM),
+                          GuestScalarWidth::U32,
+                          epoch)
+                    : GuestReadReceipt{};
+                const GuestReadReceipt file_letter = memory
+                    ? memory->ReadScalar(
+                          addr::AddrRegistry::base(
+                              addr::core::SCT_FILE_LTTR),
+                          GuestScalarWidth::U8,
+                          epoch)
+                    : GuestReadReceipt{};
+                const GuestReadReceipt first_instruction = memory
+                    ? memory->ReadScalar(
+                          addr::AddrRegistry::base(
+                              addr::core::SCT_FIRST_INST),
+                          GuestScalarWidth::U32,
+                          epoch)
+                    : GuestReadReceipt{};
+                const GuestReadReceipt current_instruction = memory
+                    ? memory->ReadScalar(
+                          addr::AddrRegistry::base(
+                              addr::core::SCT_CURRENT_INST),
+                          GuestScalarWidth::U32,
+                          epoch)
+                    : GuestReadReceipt{};
+                if (!file_number.ok || !file_letter.ok ||
+                    !first_instruction.ok || !current_instruction.ok)
+                {
+                    Publish(WorkerRuntimeDiagnosticEvent{
+                        WorkerRejectionCode::BackendFailure,
+                        "Script-location progress could not read its registered guest fields",
+                        observation.invocation_id});
+                    continue;
+                }
+                std::string file = "SCT_FILE:";
+                const std::string numeric =
+                    std::to_string(file_number.value);
+                if (numeric.size() < 3)
+                    file.append(3 - numeric.size(), '0');
+                file += numeric;
+                const char letter = static_cast<char>(file_letter.value);
+                file.push_back(
+                    letter >= 0x20 && letter <= 0x7e
+                    ? letter
+                    : '?');
+                std::ostringstream section;
+                section << "instruction+0x" << std::hex;
+                if (current_instruction.value >=
+                    first_instruction.value)
+                {
+                    section << (current_instruction.value -
+                        first_instruction.value);
+                }
+                else
+                {
+                    section << current_instruction.value;
+                }
+                const std::string section_text = section.str();
+                event.typed_payload =
+                    progress::EncodeScriptLocationProgressPayloadV1(
+                        file,
+                        section_text,
+                        trigger_pc);
+                event.display_text = file + ":" + section_text +
+                    " at 0x";
+                std::ostringstream pc_text;
+                pc_text << std::hex << trigger_pc;
+                event.display_text += pc_text.str();
+            }
+            else
+            {
+                Publish(WorkerRuntimeDiagnosticEvent{
+                    WorkerRejectionCode::InvalidArgument,
+                    "Admitted progress plan names an unavailable runtime-sample provider",
+                    observation.invocation_id});
+                continue;
+            }
+            Publish(std::move(event));
+        }
+    }
+
+    [[nodiscard]] RuntimeError AttachActiveWorksetCapture(
+        const SessionSnapshot& current)
+    {
+        if (!active_invocation || !active_workset ||
+            !active_workset->capture)
+        {
+            return {};
+        }
+        CaptureService* capture = session->capture_service();
+        if (capture == nullptr)
+        {
+            return {
+                WorkerRejectionCode::Unsupported,
+                "Workset observation binding requires CaptureService"};
+        }
+        auto progress_buffer =
+            std::make_shared<CaptureProgressBuffer>();
+        savor::probe::SessionOptions options;
+        options.metadata.session_id =
+            std::to_string(current.session_id.value());
+        options.metadata.source_identity =
+            "worker-workset:" +
+            std::to_string(
+                active_workset->definition.workset_id.value());
+        options.metadata.executable_sha256 =
+            active_workset->capture->profile
+                .expected_module_sha256;
+        if (active_workset->capture->output_directory)
+        {
+            try
+            {
+                std::filesystem::create_directories(
+                    *active_workset->capture->output_directory);
+                const WorksetItemTemplate& item =
+                    active_workset->definition.items[
+                        active_invocation->workset_item_ordinal];
+                active_invocation->capture_path =
+                    *active_workset->capture->output_directory /
+                    ("workset-" + std::to_string(
+                         active_workset->definition.workset_id.value()) +
+                     "-item-" + std::to_string(item.item_id.value()) +
+                     "-attempt-" + std::to_string(
+                         active_invocation->attempt_id.value()) +
+                     ".scap");
+                options.capture_path =
+                    *active_invocation->capture_path;
+            }
+            catch (const std::exception& exception)
+            {
+                return {
+                    WorkerRejectionCode::BackendFailure,
+                    std::string(
+                        "Capture output path could not be prepared: ") +
+                        exception.what()};
+            }
+        }
+        const InvocationId invocation_id =
+            active_invocation->invocation_id;
+        const AttemptId attempt_id = active_invocation->attempt_id;
+        options.progress_callback =
+            [weak_mailbox = std::weak_ptr<Mailbox>(mailbox),
+             progress_buffer,
+             invocation_id,
+             attempt_id](const savor::capture_format::Event& event,
+                         bool) {
+                EnqueueCaptureProgress(
+                    weak_mailbox,
+                    progress_buffer,
+                    invocation_id,
+                    attempt_id,
+                    event);
+            };
+        CaptureAttachmentRequest request;
+        request.profile_json =
+            active_workset->capture->profile_json;
+        request.profile = active_workset->capture->profile;
+        request.options = std::move(options);
+        request.expected_epoch = current.workset_epoch;
+        const CaptureServiceReceipt attached =
+            capture->Attach(std::move(request));
+        if (!attached.ok)
+        {
+            return {
+                attached.requires_session_taint
+                    ? WorkerRejectionCode::SessionTainted
+                    : WorkerRejectionCode::BackendFailure,
+                attached.error.message.empty()
+                    ? "Workset capture session could not be attached"
+                    : attached.error.message};
+        }
+        active_invocation->capture_attachment =
+            attached.attachment;
+        active_invocation->capture_progress =
+            std::move(progress_buffer);
+        return {};
+    }
+
+    [[nodiscard]] RuntimeError FinalizeActiveWorksetCapture(
+        ProgramInvocationTerminalEvent& terminal,
+        bool& requires_taint)
+    {
+        requires_taint = false;
+        if (!active_invocation ||
+            !active_invocation->capture_attachment)
+        {
+            return {};
+        }
+        CaptureService* capture = session->capture_service();
+        if (capture == nullptr)
+        {
+            requires_taint = true;
+            return {
+                WorkerRejectionCode::SessionTainted,
+                "Active workset capture lost CaptureService during unwind"};
+        }
+        const CaptureAttachmentId attachment =
+            *active_invocation->capture_attachment;
+        CaptureServiceReceipt finalized =
+            capture->Detach(attachment);
+        active_invocation->capture_attachment.reset();
+        DrainActiveCaptureProgress(
+            active_invocation->invocation_id,
+            active_invocation->attempt_id);
+        if (!finalized.ok)
+        {
+            requires_taint = finalized.requires_session_taint;
+            return {
+                requires_taint
+                    ? WorkerRejectionCode::SessionTainted
+                    : WorkerRejectionCode::BackendFailure,
+                finalized.error.message.empty()
+                    ? "Workset capture finalization failed"
+                    : finalized.error.message};
+        }
+        if (!finalized.capture_complete ||
+            finalized.capture_drop_count != 0 ||
+            finalized.progress_drop_count != 0)
+        {
+            std::string diagnostic =
+                finalized.incomplete_reason.empty()
+                ? "Workset capture completed with incomplete diagnostic evidence"
+                : finalized.incomplete_reason;
+            diagnostic += ";capture_drops=" +
+                std::to_string(finalized.capture_drop_count) +
+                ";progress_drops=" +
+                std::to_string(finalized.progress_drop_count);
+            terminal.diagnostics.push_back(std::move(diagnostic));
+            if (terminal.cleanup == CleanupStatus::Clean)
+                terminal.cleanup = CleanupStatus::CleanWithDiagnostics;
+            if (terminal.session_disposition == SessionDisposition::Clean)
+            {
+                terminal.session_disposition =
+                    SessionDisposition::CleanWithDiagnostics;
+            }
+        }
+        if (!active_invocation->capture_path)
+            return {};
+        try
+        {
+            if (!std::filesystem::is_regular_file(
+                    *active_invocation->capture_path))
+            {
+                return {
+                    WorkerRejectionCode::BackendFailure,
+                    "Workset capture finalization did not publish its artifact"};
+            }
+            const std::string digest = hash::sha256_of_file(
+                active_invocation->capture_path->string());
+            const auto content_hash =
+                program::ContentHash256::FromHex(digest);
+            constexpr std::string_view schema_contract =
+                "savor.capture.profile/1 artifact bytes";
+            const auto schema_hash =
+                program::ContentHash256::FromHex(
+                    hash::sha256(
+                        schema_contract.data(),
+                        schema_contract.size()));
+            if (!content_hash || !schema_hash)
+            {
+                return {
+                    WorkerRejectionCode::InternalFailure,
+                    "Workset capture artifact identity could not be constructed"};
+            }
+            terminal.workset_artifacts.push_back(
+                program::ArtifactReferenceValue{
+                    "capture:workset-" +
+                        std::to_string(
+                            active_workset->definition.workset_id.value()) +
+                        ":item-" +
+                        std::to_string(
+                            active_invocation->workset_item_id->value()),
+                    program::SchemaIdentity{
+                        .canonical_id =
+                            "savor.capture.profile.artifact",
+                        .version = 1,
+                        .schema_hash = *schema_hash,
+                    },
+                    *content_hash,
+                    active_invocation->capture_path->string(),
+                    finalized.capture_complete &&
+                        finalized.artifacts_finalized});
+        }
+        catch (const std::exception& exception)
+        {
+            return {
+                WorkerRejectionCode::BackendFailure,
+                std::string(
+                    "Workset capture artifact could not be finalized: ") +
+                    exception.what()};
+        }
+        return {};
     }
 
     void StartNextWorksetItem()
@@ -1844,7 +2355,7 @@ struct WorkerRuntime::Impl
                 session_action_host
                 ? session_action_host->snapshot()
                 : program::SessionProgramActionHostSnapshot{};
-            const ExecutionSnapshot execution =
+            const std::optional<ExecutionSnapshot> execution =
                 session->execution_snapshot();
             SessionResourceLedger* resources = session->resources();
             program::SessionResourceBindingTable* bindings =
@@ -1857,9 +2368,10 @@ struct WorkerRuntime::Impl
                   action.mapped_resource_count != 0 ||
                   action.execution_pending ||
                   action.queued_completion_count != 0)) ||
-                execution.activity != ExecutionActivity::IdlePaused ||
-                execution.active_operation.has_value() ||
-                execution.interruption_depth != 0 ||
+                !execution ||
+                execution->activity != ExecutionActivity::IdlePaused ||
+                execution->active_operation.has_value() ||
+                execution->interruption_depth != 0 ||
                 !resources ||
                 resources->snapshot().state !=
                     ResourceLedgerState::Accepting ||
@@ -1892,6 +2404,34 @@ struct WorkerRuntime::Impl
                 EnterTainted(diagnostic);
                 return;
             }
+            const SessionOperationReceipt resetting =
+                session->BeginWorksetItemReset(
+                    active_workset->definition.workset_id);
+            if (!resetting.ok)
+            {
+                FailRemainingWorksetItems(
+                    resetting.disposition == SessionDisposition::Tainted ||
+                            resetting.backend.integrity ==
+                                BackendIntegrity::Unknown
+                        ? WorkerRejectionCode::SessionTainted
+                        : WorkerRejectionCode::BackendFailure,
+                    resetting.backend.message.empty()
+                        ? "Workset item reset could not remove prior execution evidence"
+                        : resetting.backend.message);
+                FinishCurrentWorkset(WorkerWorksetState::Failed);
+                if (resetting.disposition == SessionDisposition::Tainted ||
+                    resetting.backend.integrity ==
+                        BackendIntegrity::Unknown)
+                {
+                    EnterTainted(resetting.backend.message);
+                }
+                return;
+            }
+            active_workset->state = WorkerWorksetState::ResettingItem;
+            RefreshSnapshot();
+            PublishWorksetState(
+                active_workset->definition.workset_id,
+                active_workset->state);
             ProgramBaselineComponentResult restored =
                 workset_state->RestoreForNextItem(
                     active_workset->baseline);
@@ -1913,6 +2453,11 @@ struct WorkerRuntime::Impl
                 }
                 return;
             }
+            active_workset->state = WorkerWorksetState::Running;
+            RefreshSnapshot();
+            PublishWorksetState(
+                active_workset->definition.workset_id,
+                active_workset->state);
         }
 
         const std::uint32_t ordinal =
@@ -1928,6 +2473,15 @@ struct WorkerRuntime::Impl
             return;
         }
         const SessionSnapshot current = session->snapshot();
+        active_invocation.emplace(
+            item.execution.execution_id,
+            item.execution.attempt_id,
+            current.workset_epoch,
+            prepared.maximum_artifacts);
+        active_invocation->workset_id =
+            active_workset->definition.workset_id;
+        active_invocation->workset_item_id = item.item_id;
+        active_invocation->workset_item_ordinal = ordinal;
         const WorkerOutboundSequence start_sequence =
             NextOutboundSequence();
         if (!start_sequence)
@@ -1947,15 +2501,28 @@ struct WorkerRuntime::Impl
                 "WorkerWorkset item-start event could not be published before execution");
             return;
         }
-        active_invocation.emplace(
-            item.execution.execution_id,
-            item.execution.attempt_id,
-            current.workset_epoch,
-            prepared.maximum_artifacts);
-        active_invocation->workset_id =
-            active_workset->definition.workset_id;
-        active_invocation->workset_item_id = item.item_id;
-        active_invocation->workset_item_ordinal = ordinal;
+        const RuntimeError capture_error =
+            AttachActiveWorksetCapture(current);
+        if (capture_error)
+        {
+            ProgramInvocationTerminalEvent terminal;
+            terminal.invocation_id = item.execution.execution_id;
+            terminal.attempt_id = item.execution.attempt_id;
+            terminal.status =
+                InvocationTerminalStatus::InfrastructureFailure;
+            terminal.cleanup =
+                capture_error.code == WorkerRejectionCode::SessionTainted
+                    ? CleanupStatus::Failed
+                    : CleanupStatus::Clean;
+            terminal.session_disposition =
+                capture_error.code == WorkerRejectionCode::SessionTainted
+                    ? SessionDisposition::Tainted
+                    : session->snapshot().disposition;
+            terminal.workset_epoch = current.workset_epoch;
+            terminal.error = capture_error;
+            HandleInvocationTerminal(std::move(terminal));
+            return;
+        }
 
         ProgramRuntimeSubmission submission;
         bool start_threw = false;
@@ -2015,8 +2582,6 @@ struct WorkerRuntime::Impl
             {
                 failure += "; prepared template cleanup was not proven";
             }
-            active_invocation.reset();
-            session->MarkTainted(failure);
             ProgramInvocationTerminalEvent terminal;
             terminal.invocation_id =
                 item.execution.execution_id;
@@ -2034,34 +2599,10 @@ struct WorkerRuntime::Impl
                     ? WorkerRejectionCode::InternalFailure
                     : submission.error.code,
                 failure};
-            RetainWorksetTerminal(
-                *active_workset,
-                ordinal,
-                std::move(terminal),
-                false);
-            ++active_workset->next_item;
-            FailRemainingWorksetItems(
-                WorkerRejectionCode::SessionTainted,
-                failure);
-            WorksetPackage failed =
-                std::move(*active_workset);
-            active_workset.reset();
-            const ProgramBaselineComponentResult
-                baseline_release = workset_state->Release();
-            if (!baseline_release.ok &&
-                !baseline_release.error.message.empty())
-            {
-                failure += "; " +
-                    baseline_release.error.message;
-            }
-            MoveToDraining(
-                failed,
-                WorkerWorksetState::Failed);
-            EnterTainted(failure, false);
+            HandleInvocationTerminal(std::move(terminal));
             return;
         }
         RefreshSnapshot();
-        ChangeState(WorkerState::Running);
         QueueProgramPump();
     }
 
@@ -2769,9 +3310,19 @@ struct WorkerRuntime::Impl
         const auto encoded_size =
             [](const ProgramInvocationTerminalEvent& value)
             {
-                return sizeof(WorkerWorksetItemTerminalEvent) +
+                std::size_t bytes =
+                    sizeof(WorkerWorksetItemTerminalEvent) +
                     value.output_payload.size() +
                     value.error.message.size();
+                for (const auto& artifact : value.workset_artifacts)
+                {
+                    bytes += artifact.artifact_id.size() +
+                        artifact.schema.canonical_id.size() +
+                        artifact.storage_reference.size() + 128;
+                }
+                for (const std::string& diagnostic : value.diagnostics)
+                    bytes += diagnostic.size();
+                return bytes;
             };
         std::size_t encoded_bytes = encoded_size(terminal);
         if (encoded_bytes > declared_bytes)
@@ -3049,6 +3600,9 @@ struct WorkerRuntime::Impl
         const WorksetPackage& package,
         WorkerWorksetState terminal_state)
     {
+        PublishWorksetState(
+            package.definition.workset_id,
+            WorkerWorksetState::Draining);
         DrainingWorkset draining;
         draining.item_count =
             static_cast<std::uint32_t>(
@@ -3233,17 +3787,25 @@ struct WorkerRuntime::Impl
                 "Execution control does not identify the exact active workset item");
             return;
         }
-        if (!session_visual_intent)
+        if (worker_mode != WorkerMode::VisualDebug)
         {
             Reject(
                 queued,
                 WorkerRejectionCode::Unsupported,
-                "Execution control requires a session opened with visual intent");
+                "Execution control is reserved for VisualDebug workers");
             return;
         }
-        if (!HasCapability(
-                capabilities_value,
-                WorkerCapability::InteractiveVisualDebug))
+        const auto execution_capabilities =
+            session->execution_capabilities();
+        if (!HasExecutionCapability(
+                execution_capabilities,
+                BackendExecutionCapability::Pause) ||
+            !HasExecutionCapability(
+                execution_capabilities,
+                BackendExecutionCapability::Resume) ||
+            !HasExecutionCapability(
+                execution_capabilities,
+                BackendExecutionCapability::FrameStep))
         {
             Reject(
                 queued,
@@ -3371,19 +3933,19 @@ struct WorkerRuntime::Impl
         pending_shutdown_commands.push_back(queued);
         ChangeState(WorkerState::Stopping);
 
-        if (session &&
-            session->execution_snapshot().activity !=
-                ExecutionActivity::IdlePaused &&
-            session->execution_snapshot().activity !=
-                ExecutionActivity::Closed)
+        std::optional<ExecutionSnapshot> execution = session
+            ? session->execution_snapshot()
+            : std::nullopt;
+        if (execution && execution->activity !=
+                ExecutionActivity::IdlePaused)
         {
             (void)session->CancelExecution(CancellationReason::Shutdown);
             PumpExecutionEvents();
-            if (session &&
-                session->execution_snapshot().activity !=
-                    ExecutionActivity::IdlePaused &&
-                session->execution_snapshot().activity !=
-                    ExecutionActivity::Closed)
+            execution = session
+                ? session->execution_snapshot()
+                : std::nullopt;
+            if (execution && execution->activity !=
+                    ExecutionActivity::IdlePaused)
             {
                 return;
             }
@@ -3431,63 +3993,6 @@ struct WorkerRuntime::Impl
         }
 
         FinishShutdown(false);
-    }
-
-    bool RequireReadyProgramRuntime(
-        const std::shared_ptr<QueuedCommand>& queued)
-    {
-        const WorkerState state = Snapshot().state;
-        if (active_invocation)
-        {
-            Reject(
-                queued,
-                WorkerRejectionCode::InvocationAlreadyActive,
-                "Only one invocation may be active");
-            return false;
-        }
-        if (state != WorkerState::Ready)
-        {
-            const SessionSnapshot session_snapshot = session
-                ? session->snapshot()
-                : SessionSnapshot{};
-            Reject(
-                queued,
-                state == WorkerState::Tainted
-                    ? WorkerRejectionCode::SessionTainted
-                    : WorkerRejectionCode::InvalidState,
-                "Program module preparation requires a ready worker; observed_state=" +
-                    std::to_string(static_cast<std::uint8_t>(state)) +
-                    ", session_open=" +
-                    (session_snapshot.open ? "true" : "false") +
-                    ", workset_epoch=" +
-                    std::to_string(
-                        session_snapshot.workset_epoch.value()) +
-                    (session && !session->taint_diagnostic().empty()
-                        ? ", taint_diagnostic=" +
-                            session->taint_diagnostic()
-                        : std::string{}));
-            return false;
-        }
-        if (!SessionIsCleanIdle())
-        {
-            Reject(
-                queued,
-                WorkerRejectionCode::InvalidState,
-                "Program command requires a clean idle session");
-            return false;
-        }
-        if (!program_runtime ||
-            !HasCapability(
-                capabilities_value,
-                WorkerCapability::WorksetDispatch))
-        {
-            Reject(
-                queued,
-                WorkerRejectionCode::ProgramRuntimeUnavailable,
-                "Canonical ProgramRuntime workset dispatch is not available");
-            return false;
-        }
-        return true;
     }
 
     ProgramRuntimeSubmission RequestProgramCancellation(
@@ -3560,6 +4065,24 @@ struct WorkerRuntime::Impl
         }
         outputs.clear();
         return proven;
+    }
+
+    void QueueWorksetBegin()
+    {
+        bool queued = false;
+        {
+            std::lock_guard lock(mailbox->mutex);
+            if (!mailbox->workset_begin_queued)
+            {
+                MailboxItem item;
+                item.kind = MailboxItemKind::BeginWorksetExecution;
+                mailbox->items.push_back(std::move(item));
+                mailbox->workset_begin_queued = true;
+                queued = true;
+            }
+        }
+        if (queued)
+            SignalMailbox(*mailbox);
     }
 
     [[nodiscard]] bool AbandonActiveOutputTransaction() noexcept
@@ -4559,56 +5082,106 @@ struct WorkerRuntime::Impl
     {
         std::visit(
             Overloaded{
-                [this](ModulePreparationEvent& module) {
-                    if (module.prepared)
-                        BuildRuntimeManifest();
-                    const auto pending =
-                        pending_module_commands.find(
-                            module.command_sequence.value());
-                    // Publish the refreshed module/catalog observation before
-                    // resolving the command. Wire clients can therefore treat
-                    // a successful PrepareModule completion as a barrier for
-                    // the corresponding RuntimeManifest update.
-                    Publish(module);
-                    if (pending !=
-                        pending_module_commands.end())
-                    {
-                        if (module.prepared)
-                        {
-                            Complete(
-                                pending->second,
-                                WorkerCommandOutcome::Completed);
-                        }
-                        else
-                        {
-                            Reject(
-                                pending->second,
-                                module.error.code ==
-                                        WorkerRejectionCode::None
-                                    ? WorkerRejectionCode::
-                                          InvalidArgument
-                                    : module.error.code,
-                                module.error.message.empty()
-                                    ? "Program module preparation failed"
-                                    : module.error.message);
-                        }
-                        pending_module_commands.erase(pending);
-                    }
-                },
-                [this](ProgramInvocationProgressEvent& progress) {
+                [this](ProgramInvocationObservationEvent& observation) {
                     if (!active_invocation ||
-                        progress.invocation_id !=
+                        !active_workset ||
+                        observation.invocation_id !=
                             active_invocation->invocation_id ||
-                        progress.attempt_id != active_invocation->attempt_id)
+                        observation.attempt_id != active_invocation->attempt_id)
                     {
                         Publish(WorkerRuntimeDiagnosticEvent{
                             WorkerRejectionCode::InvocationMismatch,
-                            "Ignored progress for a non-active invocation "
+                            "Ignored observation for a non-active invocation "
                             "attempt",
-                            progress.invocation_id});
+                            observation.invocation_id});
                         return;
                     }
-                    Publish(progress);
+                    const auto point = std::ranges::find_if(
+                        active_workset->definition.progress_plan.points,
+                        [](const progress::ProgressPointBindingV1& candidate) {
+                            return candidate.provider ==
+                                    progress::ProgressProviderKind::PhaseLibrary &&
+                                candidate.library_id ==
+                                    "soa.progress.predicate.evaluations/1" &&
+                                candidate.point_id ==
+                                    "predicate.evaluated";
+                        });
+                    if (point == active_workset->definition
+                            .progress_plan.points.end())
+                    {
+                        return;
+                    }
+                    const auto root = std::ranges::find(
+                        observation.emission.value.values,
+                        observation.emission.value.root,
+                        &program::ProgramValue::id);
+                    const auto* evaluation = root ==
+                            observation.emission.value.values.end()
+                        ? nullptr
+                        : std::get_if<program::EnumValue>(
+                              &root->payload);
+                    if (!observation.emission.complete ||
+                        !observation.emission.schema.canonical_id.ends_with(
+                            ".Evaluation") ||
+                        evaluation == nullptr ||
+                        evaluation->schema != observation.emission.schema ||
+                        (evaluation->value != 0 && evaluation->value != 1))
+                    {
+                        Publish(WorkerRuntimeDiagnosticEvent{
+                            WorkerRejectionCode::InvalidArgument,
+                            "Phase-library progress emission is not a registered predicate evaluation",
+                            observation.invocation_id});
+                        return;
+                    }
+                    const program::EncodeResult encoded =
+                        program::EncodeProgramEmissionV1(
+                            observation.emission);
+                    if (!encoded)
+                    {
+                        Publish(WorkerRuntimeDiagnosticEvent{
+                            WorkerRejectionCode::InternalFailure,
+                            encoded.status.message.empty()
+                                ? "Program observation could not be encoded"
+                                : encoded.status.message,
+                            observation.invocation_id});
+                        return;
+                    }
+                    std::string display = "Predicate " +
+                        observation.emission.schema.canonical_id +
+                        (evaluation->value == 0
+                            ? ": Passed"
+                            : ": Failed");
+                    const WorksetItemTemplate& item =
+                        active_workset->definition.items[
+                            active_invocation->workset_item_ordinal];
+                    Publish(progress::CanonicalProgressEventV1{
+                        .workset_id = active_workset->definition.workset_id,
+                        .item_id = item.item_id,
+                        .durable_job_id = item.correlation.durable_job_id,
+                        .invocation_id = observation.invocation_id,
+                        .attempt_id = observation.attempt_id,
+                        .ordinal = active_invocation
+                            ->next_progress_ordinal++,
+                        .library_id = point->library_id,
+                        .library_revision = point->library_revision,
+                        .progress_point_id = point->point_id,
+                        .schema = point->schema,
+                        .typed_payload = encoded.bytes,
+                        .display_text = std::move(display),
+                    });
+                },
+                [this](ProgramInvocationCompletionAvailableEvent& completion) {
+                    if (!active_invocation ||
+                        completion.invocation_id !=
+                            active_invocation->invocation_id ||
+                        completion.attempt_id !=
+                            active_invocation->attempt_id)
+                    {
+                        Publish(WorkerRuntimeDiagnosticEvent{
+                            WorkerRejectionCode::InvocationMismatch,
+                            "Ignored completion notification for a non-active invocation attempt",
+                            completion.invocation_id});
+                    }
                 }},
             event);
         TakeFinishedExecution();
@@ -4668,7 +5241,7 @@ struct WorkerRuntime::Impl
             const StopRouteTerminal terminal = receipt.terminal;
             const std::string diagnostic = receipt.error.message;
             session->HandleStopPointReceipt(std::move(receipt));
-            if (terminal == StopRouteTerminal::Failed ||
+            if (terminal == StopRouteTerminal::RoutingFailure ||
                 terminal == StopRouteTerminal::Overflow)
             {
                 // Preserve the engine's typed terminal before shutdown tears
@@ -4739,6 +5312,12 @@ struct WorkerRuntime::Impl
                 try
                 {
                     program_action_host->HandleExecutionEvent(event);
+                    for (const auto& observation :
+                         program_action_host
+                             ->DrainForegroundSemanticStops())
+                    {
+                        PublishRuntimeSampleProgress(observation);
+                    }
                 }
                 catch (const std::exception& ex)
                 {
@@ -4838,13 +5417,14 @@ struct WorkerRuntime::Impl
             }
         }
         PumpProgramActionHost();
+        const std::optional<ExecutionSnapshot> execution = session
+            ? session->execution_snapshot()
+            : std::nullopt;
         if (!finishing_shutdown &&
             !pending_shutdown_commands.empty() &&
             !active_invocation && session &&
-            (session->execution_snapshot().activity ==
-                    ExecutionActivity::IdlePaused ||
-                session->execution_snapshot().activity ==
-                    ExecutionActivity::Closed))
+            (!execution || execution->activity ==
+                ExecutionActivity::IdlePaused))
         {
             FinishShutdown(false);
         }
@@ -4878,6 +5458,29 @@ struct WorkerRuntime::Impl
         {
             terminal.status = InvocationTerminalStatus::Cancelled;
             terminal.output_payload.clear();
+        }
+
+        bool capture_requires_taint = false;
+        const RuntimeError capture_finalization =
+            FinalizeActiveWorksetCapture(
+                terminal,
+                capture_requires_taint);
+        if (capture_finalization)
+        {
+            if (terminal.error &&
+                !terminal.error.message.empty())
+            {
+                terminal.diagnostics.push_back(
+                    "Program terminal before capture failure: " +
+                    terminal.error.message);
+            }
+            terminal.status = capture_requires_taint
+                ? InvocationTerminalStatus::CleanupFailure
+                : InvocationTerminalStatus::InfrastructureFailure;
+            terminal.cleanup = capture_requires_taint
+                ? CleanupStatus::Failed
+                : CleanupStatus::CleanWithDiagnostics;
+            terminal.error = capture_finalization;
         }
 
         std::string taint_reason;
@@ -5445,15 +6048,6 @@ struct WorkerRuntime::Impl
                     : "WorkerRuntime stopped before execution control completed");
         }
         pending_execution_commands.clear();
-        for (auto& [_, pending] : pending_module_commands)
-        {
-            Reject(
-                pending,
-                WorkerRejectionCode::RuntimeStopping,
-                "WorkerRuntime stopped before module preparation completed");
-        }
-        pending_module_commands.clear();
-
         DrainQueuedCommands(forced);
     }
 
@@ -5533,7 +6127,7 @@ struct WorkerRuntime::Impl
             {
                 current_snapshot.session = session->snapshot();
                 current_snapshot.execution =
-                    session->execution_snapshot();
+                    ProjectExecutionSnapshot();
             }
             current_snapshot.active_invocation = active_invocation
                 ? std::optional<InvocationId>(active_invocation->invocation_id)
@@ -5590,7 +6184,7 @@ struct WorkerRuntime::Impl
         if (session)
         {
             current_snapshot.session = session->snapshot();
-            current_snapshot.execution = session->execution_snapshot();
+            current_snapshot.execution = ProjectExecutionSnapshot();
         }
         current_snapshot.active_invocation = active_invocation
             ? std::optional<InvocationId>(active_invocation->invocation_id)
@@ -5902,51 +6496,6 @@ struct WorkerRuntime::Impl
             StartNextWorksetItem();
     }
 
-    void BuildRuntimeManifest()
-    {
-        WorkerRuntimeManifest manifest;
-        manifest.catalog_status = RuntimeCatalogStatus::Partial;
-        manifest.limits = workset_limits;
-        if (program_runtime)
-        {
-            const ProgramRuntimeCatalogSnapshot catalog =
-                program_runtime->catalog();
-            manifest.catalog_status = catalog.complete_exact
-                ? RuntimeCatalogStatus::CompleteExact
-                : RuntimeCatalogStatus::Partial;
-            manifest.catalog_generation = catalog.generation;
-            manifest.runtime_profile_sha256 =
-                catalog.runtime_profile_sha256;
-            manifest.dependency_manifest_sha256 =
-                catalog.dependency_manifest_sha256;
-            for (const ProgramRuntimeCatalogModule& module :
-                 catalog.modules)
-            {
-                manifest.modules.push_back(
-                    RuntimeModuleManifestEntry{
-                        module.identity,
-                        module.entrypoints,
-                        module.dependency_lock_sha256,
-                        module.development_only});
-            }
-        }
-        manifest.catalog_sha256 =
-            ComputeRuntimeCatalogHash(
-                manifest.modules,
-                manifest.catalog_status);
-        if (HasCapability(
-                capabilities_value,
-                WorkerCapability::WorksetDispatch) &&
-            !ValidateWorkerRuntimeManifest(manifest).ok)
-        {
-            capabilities_value = RemoveCapability(
-                capabilities_value,
-                WorkerCapability::WorksetDispatch);
-        }
-        std::lock_guard lock(manifest_mutex);
-        runtime_manifest_value = std::move(manifest);
-    }
-
     std::shared_ptr<Mailbox> mailbox;
     std::shared_ptr<ProgramEventIngress> program_event_ingress;
     std::shared_ptr<ProgramActionIngress> program_action_ingress;
@@ -5964,10 +6513,10 @@ struct WorkerRuntime::Impl
     std::unique_ptr<SavestateArtifactFinalizer>
         artifact_finalizer;
     std::unique_ptr<WorksetStateCoordinator> workset_state;
-    WorkerCapabilityMask capabilities_value = 0;
     bool program_runtime_shutdown = false;
     bool program_action_host_shutdown = false;
-    bool session_visual_intent = false;
+    WorkerMode worker_mode = WorkerMode::Headless;
+    WorkerRuntimeContractV1 runtime_contract_value;
 
     mutable std::mutex snapshot_mutex;
     WorkerSnapshot current_snapshot;
@@ -5988,14 +6537,8 @@ struct WorkerRuntime::Impl
     bool terminal_publication_deferred = false;
     bool handling_execution_finished = false;
     bool taint_transition_active = false;
-    mutable std::mutex manifest_mutex;
-    WorkerRuntimeManifest runtime_manifest_value;
     std::unordered_map<std::uint64_t, PendingExecutionCommand>
         pending_execution_commands;
-    std::unordered_map<
-        std::uint64_t,
-        std::shared_ptr<QueuedCommand>>
-        pending_module_commands;
     std::vector<std::shared_ptr<QueuedCommand>> pending_shutdown_commands;
     bool finishing_shutdown = false;
     std::thread actor;
@@ -6034,14 +6577,9 @@ WorkerSnapshot WorkerRuntime::snapshot() const
     return impl_->Snapshot();
 }
 
-WorkerCapabilityMask WorkerRuntime::capabilities() const noexcept
+WorkerRuntimeContractV1 WorkerRuntime::runtime_contract() const
 {
-    return impl_->capabilities_value;
-}
-
-WorkerRuntimeManifest WorkerRuntime::runtime_manifest() const
-{
-    return impl_->RuntimeManifest();
+    return impl_->RuntimeContract();
 }
 
 bool WorkerRuntime::EnqueueHostEvent(

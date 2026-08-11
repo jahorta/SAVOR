@@ -22,8 +22,8 @@ namespace bp {
         if (consumer == BreakpointConsumer::PhaseControl) {
             return true;
         }
-        return consumer == BreakpointConsumer::InputMacroControl
-            && record.owner == BreakpointOwner::InputMacro;
+        return consumer == BreakpointConsumer::InteractionControl
+            && record.owner == BreakpointOwner::Interaction;
     }
 
     constexpr bool HasNoInternalPlayerVisiblePcAlias()

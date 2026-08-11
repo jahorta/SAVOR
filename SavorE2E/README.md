@@ -1,13 +1,20 @@
 # SavorE2E
 
-Real-worker end-to-end harness for SavorDb workflow scenarios.
+Real-worker end-to-end scenario runner for SavorDb workflows.
 
 ## Purpose
 
 `SavorE2E` is distinct from `SavorDbSchemaExport`:
 
-- **SavorDbSchemaExport** focuses on fast deterministic contract/phase-gate checks.
-- **SavorE2E** focuses on slower runtime integration checks using real worker process orchestration.
+- **SavorDbSchemaExport** focuses on fast deterministic contract and phase-gate checks.
+- **SavorE2E** runs investigation scenarios through real worker process
+  orchestration, checks infrastructure and durable contracts, and records the
+  resulting game trajectory for human review.
+
+SavorE2E never decides whether an observed game trajectory was desirable. A
+coherent negative domain result, a different dynamic population, or an
+output-guarded downstream skip does not fail a scenario. Automated failure is
+reserved for execution/infrastructure failure or malformed durable evidence.
 
 ## Usage
 
@@ -19,75 +26,82 @@ SavorE2E \
   --dolphin-base-dir <path> \
   --poll-ms 100
 ```
-`--scenario` is optional, defaults to `seedprobe`.
-You can pass it multiple times or use `--scenario all` to run `seedprobe`.
-All three TAS Movie scenarios are intentionally excluded from `all` and must
-be requested alone.
-Optional:
+
+`--scenario` is optional and defaults to `seedprobe`. All three TAS Movie
+scenarios are intentionally excluded from `all` and must be requested alone.
+
+Optional workspace arguments include:
 
 - `--migration-root <path-to-SavorDb/migration>`
-- `--workspace-root <path>` (when omitted, uses `${TMP}/savor-e2e-default`)
+- `--workspace-root <path>`
 - `--worker-dir-root <path>`
 
-`SavorWorker.exe` is resolved from the same output directory as `SavorE2E`.
-Worker-backed scenarios do not have an elapsed run deadline. They stop when
-the workflow reaches a durable terminal state or the harness is explicitly
-canceled. The split runtime also stops on irrecoverable worker-fleet
-startup exhaustion. Worker startup, protocol commands, and control-plane
-liveness probes remain bounded host operations.
+SeedProbe and Battle may use an existing approved checkpoint with
+`--workspace-root ... --source-savestate-id ...`. This preserves and appends to
+the existing workspace. Fresh-source scenarios reset only their designated
+scenario workspace.
 
-## Current scenario
+`SavorWorker.exe` is resolved next to `SavorE2E`. Worker-backed scenarios have
+no elapsed run deadline. They stop when the workflow reaches a durable terminal
+state or the harness is explicitly canceled. Worker startup, protocol commands,
+control-plane liveness probes, and irrecoverable startup exhaustion remain
+bounded host operations.
+
+## Assessment output
+
+Every completed scenario emits a final assessment with three independent
+fields:
+
+- `execution=SUCCEEDED|FAILED` describes whether the scenario ran coherently;
+- `invariants=PASS|FAIL` describes infrastructure and durable-contract checks;
+- `trajectory=HUMAN_REVIEW_REQUIRED` marks all observed game results as a
+  human decision.
+
+The same trajectory records are written to stdout and the scenario's durable
+log. They include workflow and step states, guard-skip reasons, job and job-set
+results, artifacts, canonical progress, and phase-specific observations. No
+expected turn count, candidate count, outcome, or workload shape affects the
+exit code.
+
+## Current scenarios
 
 - `tasmovie`
-  - requires the handcrafted root movie through `--dtm-file`,
-  - deletes the scenario's existing databases, object/archive stores, and TAS
-    Movie runtime outputs before DB startup while retaining prior log files,
-  - creates one `tas_movie_establish_root_cursor` workflow unit containing one
-    single-attempt `tasmovie.establish_root_cursor` step,
-  - takes no RTC or savestate argument and does not chain another phase,
-  - requires a durable `RootCursorEstablished` Analysis attempt at
-    `0x80101E48`, then materializes and verifies its one-entry `TMI1` artifact,
-  - reports a durable typed `Invalid` as a failed E2E smoke result without
-    changing the successfully completed business job.
+  - authors and runs one singleton root-cursor establishment workflow;
+  - validates the durable shape and provenance of either
+    `RootCursorEstablished` or `Invalid`;
+  - verifies the one-entry `TMI1` artifact when establishment succeeds;
+  - reports the observed terminal PC, input count, attempt, job, artifact, and
+    progress evidence without judging the result.
 - `tasmovie_with_validation`
-  - performs the same fresh-database root-cursor establishment first,
-  - requires one exact `--tasmovie-rtc` in `0..4294967295`, expressed as
-    GameCube seconds since 2000-01-01,
-  - waits for the first singleton workflow and dispatch to become quiescent,
-    then creates a separate singleton `tas_movie_validate_root` workflow,
-  - retains one live split coordinator and worker process while giving the two
-    artifact-atomic worksets distinct nonzero workset epochs,
-  - independently verifies the RTC-patched DTM hash and durable typed `Valid`
-    root/checkpoint/sidecar publication or `Invalid` quarantine result.
+  - performs root-cursor establishment and, only when established, creates a
+    separate exact-RTC root-validation workflow;
+  - validates the RTC-patched DTM hash and the durable shape of either `Valid`
+    root/checkpoint/sidecar publication or `Invalid` quarantine;
+  - reports validation as not activated when establishment is `Invalid`.
 - `tasmovie_seedprobe`
-  - starts from a fresh database and accepts one handcrafted `--dtm-file`, one
-    exact `--tasmovie-rtc`, 1–30 workers, and the normal SeedProbe sample and
-    combo-attempt options; it rejects an external savestate,
   - authors one four-node graph whose guarded typed edges connect root-cursor
-    establishment to root validation, checkpoint sterilization, and then
-    `battle_seed_probe`,
-  - preserves the canonical movie-paired `.sav`/`.dtm` checkpoint and routes
-    the derived movie-inactive `.sav` with no sidecar into SeedProbe,
-  - holds execution until the requested worker fleet is ready, while every
-    unit still executes as an independent artifact-atomic workset,
-  - requires `Valid` root/checkpoint/sidecar publication and proves that the
-    SeedProbe run consumed that exact checkpoint and published accepted input
-    evidence,
-  - reports a typed TAS Movie `Invalid` as scenario failure after guarded
-    downstream units are skipped, while preserving the successful business job
-    and quarantine/alert evidence.
+    establishment, root validation, checkpoint sterilization, and SeedProbe;
+  - verifies every realized phase and its exact provenance;
+  - treats `Invalid` as a coherent domain result and requires downstream units
+    to be guard-skipped when a required success output is absent;
+  - reports which phases ran without requiring any particular realized path.
 - `seedprobe`
-  - starts DB contexts through `DBService`,
-  - seeds a starting savestate in StateDB,
-  - seeds seedprobe spec rows in AuthoringDB,
-  - saves an authored workflow graph revision with one `seedprobe.run`
-    step and creates its `workflow_graph` execution instance,
-  - runs the production split `WorkflowCoordinatorService`,
-    `JobExecutionCoordinator`, `WorkerCoordinator`, and
-    `ProgramResultProcessor` path with the requested worker count,
-  - verifies coordinator telemetry and durable job-set progress before
-    reporting success.
+  - supports imported savestates and approved prepared checkpoints;
+  - validates the authored graph, entry provenance, typed results,
+    accepted-frame/confirmation linkage, hashes, and durable run/job hierarchy;
+  - reports discovered deltas, accepted representatives, stage participation,
+    and workload counts without requiring a particular search trajectory.
+- `battle`
+  - supports fresh approved TAS Movie validation/sterilization or an existing
+    prepared sterilized checkpoint;
+  - validates the static SeedProbe/Battle Context join, exact Battle Context
+    PCs and artifacts, BattleSet and realized wave lineage, predicate
+    accounting, and outcome-dependent artifact contracts;
+  - reports every observed BattleSet, wave, turn, candidate outcome, RNG/timing
+    value, predicate count, artifact, and progress event;
+  - does not require a particular turn, continuation, selection, Victory,
+    Defeat, or final BattleSet status.
 
-Legacy battle and navigation scenario sources remain available as historical
-reference, but they are not part of the E2E executable contract or build. The
-active workflow scenarios use the shared split coordinator composition only.
+All active workflow scenarios use the shared split coordinator composition.
+Trajectory acceptance remains a human review activity; short synthetic tests
+cover only the invariant/reporting boundary.

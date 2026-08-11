@@ -1,5 +1,11 @@
 # Program Modules, IR, and Types
 
+> Supersession note (2026-08-09): capture is an immutable workset binding and
+> semantic stop sets use the shared `SPS1` codec. See
+> [`17-semantic-routing-workset-capture-canonical-progress.md`](17-semantic-routing-workset-capture-canonical-progress.md).
+> Older `runtime.capture.attach` or phase-owned capture wording below is
+> historical.
+
 ## Scope
 
 This document describes the target meanings of `ProgramModule`, entrypoint, function,

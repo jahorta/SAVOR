@@ -4,17 +4,11 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 namespace savor::runtime::program::composition {
-
-enum class SemanticPointKind : std::uint8_t
-{
-    ProgramCounter,
-    Memory,
-    Synthetic,
-};
 
 struct SemanticPointReference
 {
@@ -58,9 +52,7 @@ struct SemanticAwaitDefinition
     CurrentPointPolicy current_point = CurrentPointPolicy::AcceptCurrent;
     SemanticMoviePolicy movie_policy = SemanticMoviePolicy::FailIfEnded;
     bool suppress_immediate_reentry = true;
-    ExactDependencyIdentity subscribe_group_action;
     ExactDependencyIdentity continue_until_action;
-    TypeRef subscription_handle_type;
     TypeRef receipt_type;
 
     auto operator<=>(const SemanticAwaitDefinition&) const = default;
@@ -156,6 +148,38 @@ enum class ObservationAdvanceKind : std::uint8_t
     None = 0,
     StepFrame = 2,
 };
+
+// Canonical, policy-free semantic point set used by every Full Phase module.
+// Routing ownership is selected by the consuming operation rather than being
+// encoded into the point set.
+[[nodiscard]] std::vector<Byte> EncodeSemanticPointSetV1(
+    std::span<const SemanticPointReference> alternatives,
+    std::span<const HitTimeSampleRequirement> hit_time_samples = {});
+
+struct ResolvedSemanticPointSetV1
+{
+    std::vector<std::uint32_t> program_counters;
+    std::vector<std::uint32_t> hit_time_sample_descriptor_ids;
+
+    auto operator<=>(const ResolvedSemanticPointSetV1&) const = default;
+};
+
+struct SemanticPointSetDecodeResultV1
+{
+    std::optional<ResolvedSemanticPointSetV1> value;
+    std::string diagnostic;
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return value.has_value();
+    }
+};
+
+// Canonical SPS1 parser/linker used both by admission verification and by the
+// session action host. It resolves only the homogeneous static capability
+// catalog; no workset-provided implementation participates.
+[[nodiscard]] SemanticPointSetDecodeResultV1 DecodeSemanticPointSetV1(
+    std::span<const Byte> bytes);
 
 struct ObservationUse
 {

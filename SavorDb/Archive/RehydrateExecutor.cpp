@@ -364,11 +364,12 @@ void ValidateExecutionPackageContract(
         return;
     }
 
-    const std::array<std::string_view, 6> required_streams = {
+    const std::array<std::string_view, 7> required_streams = {
         "job_sets",
         "worksets",
         "workset_dispatch_attempts",
         "jobs",
+        "job_progress",
         "job_events",
         "job_cancellation_requests",
     };
@@ -380,11 +381,12 @@ void ValidateExecutionPackageContract(
         return;
     }
 
-    const std::array<std::string_view, 6> required_tables = {
+    const std::array<std::string_view, 7> required_tables = {
         "exec_job_set",
         "exec_workset",
         "exec_workset_dispatch_attempt",
         "exec_job",
+        "exec_job_progress",
         "exec_job_event",
         "exec_job_cancellation_request",
     };
@@ -1367,7 +1369,7 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
         std::string db_error;
         std::unordered_map<std::string, int> restored_execution_counts;
         std::vector<std::string> order = {
-            "job_sets", "worksets", "workset_dispatch_attempts", "jobs", "job_events",
+            "job_sets", "worksets", "workset_dispatch_attempts", "jobs", "job_progress", "job_events",
             "job_cancellation_requests", "workflow_instances", "workflow_unit_activations",
             "workflow_unit_activation_edges", "workflow_steps", "workflow_edges",
             "workflow_step_outputs", "workflow_instance_input_bindings",
@@ -1468,18 +1470,48 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                         break;
                     }
 
+                    bool ok_capture_payload = false;
+                    bool ok_capture_hash = false;
+                    bool ok_progress_payload = false;
+                    bool ok_progress_hash = false;
+                    const auto capture_hex = JsonExtractText(
+                        execution_db_, line, "$.capture_binding_payload_hex", &ok_capture_payload);
+                    (void)JsonExtractText(
+                        execution_db_, line, "$.capture_binding_sha256", &ok_capture_hash);
+                    const auto progress_hex = JsonExtractText(
+                        execution_db_, line, "$.progress_plan_payload_hex", &ok_progress_payload);
+                    (void)JsonExtractText(
+                        execution_db_, line, "$.progress_plan_sha256", &ok_progress_hash);
+                    const bool has_observation = ok_capture_payload || ok_capture_hash
+                        || ok_progress_payload || ok_progress_hash;
+                    const auto capture_payload = ok_capture_payload
+                        ? DecodeHex(capture_hex)
+                        : std::optional<std::string>{};
+                    const auto progress_payload = ok_progress_payload
+                        ? DecodeHex(progress_hex)
+                        : std::optional<std::string>{};
+                    if (has_observation &&
+                        (!ok_capture_payload || !ok_capture_hash ||
+                         !ok_progress_payload || !ok_progress_hash ||
+                         !capture_payload || !progress_payload)) {
+                        db_error = "archived workset observation binding is incomplete";
+                        break;
+                    }
+
                     Statement st;
                     if (!Prepare(execution_db_,
-                            "INSERT INTO exec_workset(workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,program_kind,program_version,compatibility_key,"
+                            "INSERT INTO exec_workset(workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,program_kind,program_version,contract_key,"
                             "module_canonical_id,module_version,module_sha256,entrypoint,verified_dependency_sha256,runtime_profile_sha256,"
-                            "required_capability_mask,execution_affinity_key,estimated_payload_bytes,priority,item_count,published_at_utc) "
+                            "program_package_sha256,execution_affinity_key,estimated_payload_bytes,priority,item_count,published_at_utc,"
+                            "capture_binding_payload,capture_binding_sha256,progress_plan_payload,progress_plan_sha256) "
                             "VALUES(?1,?2,?3,?4,json_extract(?5,'$.workset_key'),json_extract(?5,'$.program_kind'),json_extract(?5,'$.program_version'),"
-                            "json_extract(?5,'$.compatibility_key'),json_extract(?5,'$.module_canonical_id'),json_extract(?5,'$.module_version'),"
+                            "json_extract(?5,'$.contract_key'),json_extract(?5,'$.module_canonical_id'),json_extract(?5,'$.module_version'),"
                             "json_extract(?5,'$.module_sha256'),json_extract(?5,'$.entrypoint'),json_extract(?5,'$.verified_dependency_sha256'),"
-                            "json_extract(?5,'$.runtime_profile_sha256'),json_extract(?5,'$.required_capability_mask'),"
+                            "json_extract(?5,'$.runtime_profile_sha256'),json_extract(?5,'$.program_package_sha256'),"
                             "json_extract(?5,'$.execution_affinity_key'),"
                             "json_extract(?5,'$.estimated_payload_bytes'),json_extract(?5,'$.priority'),json_extract(?5,'$.item_count'),"
-                            "json_extract(?5,'$.published_at_utc'));",
+                            "json_extract(?5,'$.published_at_utc'),?6,json_extract(?5,'$.capture_binding_sha256'),"
+                            "?7,json_extract(?5,'$.progress_plan_sha256'));",
                             &st,
                             &db_error)) break;
                     sqlite3_bind_int64(st.st, 1, new_id);
@@ -1487,6 +1519,23 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     sqlite3_bind_int64(st.st, 3, new_step);
                     sqlite3_bind_int64(st.st, 4, new_root_set);
                     sqlite3_bind_text(st.st, 5, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (has_observation) {
+                        if (capture_payload->empty()) {
+                            sqlite3_bind_zeroblob(st.st, 6, 0);
+                        } else {
+                            sqlite3_bind_blob(st.st, 6, capture_payload->data(),
+                                static_cast<int>(capture_payload->size()), SQLITE_TRANSIENT);
+                        }
+                        if (progress_payload->empty()) {
+                            sqlite3_bind_zeroblob(st.st, 7, 0);
+                        } else {
+                            sqlite3_bind_blob(st.st, 7, progress_payload->data(),
+                                static_cast<int>(progress_payload->size()), SQLITE_TRANSIENT);
+                        }
+                    } else {
+                        sqlite3_bind_null(st.st, 6);
+                        sqlite3_bind_null(st.st, 7);
+                    }
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
                     ++restored_execution_counts[kind];
                 } else if (kind == "workset_dispatch_attempts") {
@@ -1664,6 +1713,66 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     }
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
                     restored_jobs.push_back(new_id);
+                    ++restored_execution_counts[kind];
+                } else if (kind == "job_progress") {
+                    bool ok_job = false;
+                    bool ok_payload = false;
+                    bool ok_dispatch = false;
+                    bool ok_workset = false;
+                    const auto old_job = JsonExtractInt(
+                        execution_db_, line, "$.job_id", &ok_job);
+                    const auto old_dispatch = JsonExtractInt(
+                        execution_db_, line, "$.dispatch_attempt_id", &ok_dispatch);
+                    const auto old_workset = JsonExtractInt(
+                        execution_db_, line, "$.workset_id", &ok_workset);
+                    const auto payload_hex = JsonExtractText(
+                        execution_db_, line, "$.typed_payload_hex", &ok_payload);
+                    const auto payload = ok_payload
+                        ? DecodeHex(payload_hex)
+                        : std::optional<std::string>{};
+                    if (!ok_job || !ok_dispatch || !ok_workset ||
+                        !ok_payload || !payload.has_value()) {
+                        db_error = "canonical progress payload is invalid";
+                        break;
+                    }
+                    const auto new_job = map_id("job", old_job);
+                    const auto new_dispatch = map_id(
+                        "workset_dispatch_attempt", old_dispatch);
+                    const auto new_workset = map_id("workset", old_workset);
+                    if (new_job == 0 || new_dispatch == 0 ||
+                        new_workset == 0) break;
+                    Statement st;
+                    if (!Prepare(execution_db_,
+                            "INSERT INTO exec_job_progress("
+                            "job_id,attempt_id,ordinal,dispatch_attempt_id,dispatch_item_ordinal,workset_id,item_id,invocation_id,"
+                            "library_id,library_revision,progress_point_id,has_routed_provenance,routed_sequence,sample_snapshot_id,"
+                            "trigger_epoch,schema_id,schema_revision,schema_sha256,typed_payload,display_text,recorded_at_utc) "
+                            "VALUES(?1,json_extract(?2,'$.attempt_id'),json_extract(?2,'$.ordinal'),"
+                            "?4,json_extract(?2,'$.dispatch_item_ordinal'),"
+                            "?5,json_extract(?2,'$.item_id'),json_extract(?2,'$.invocation_id'),"
+                            "json_extract(?2,'$.library_id'),json_extract(?2,'$.library_revision'),"
+                            "json_extract(?2,'$.progress_point_id'),json_extract(?2,'$.has_routed_provenance'),"
+                            "json_extract(?2,'$.routed_sequence'),json_extract(?2,'$.sample_snapshot_id'),"
+                            "json_extract(?2,'$.trigger_epoch'),json_extract(?2,'$.schema_id'),"
+                            "json_extract(?2,'$.schema_revision'),json_extract(?2,'$.schema_sha256'),?3,"
+                            "json_extract(?2,'$.display_text'),json_extract(?2,'$.recorded_at_utc'));",
+                            &st,
+                            &db_error)) break;
+                    sqlite3_bind_int64(st.st, 1, new_job);
+                    sqlite3_bind_text(st.st, 2, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (payload->empty()) {
+                        sqlite3_bind_zeroblob(st.st, 3, 0);
+                    } else {
+                        sqlite3_bind_blob(
+                            st.st,
+                            3,
+                            payload->data(),
+                            static_cast<int>(payload->size()),
+                            SQLITE_TRANSIENT);
+                    }
+                    sqlite3_bind_int64(st.st, 4, new_dispatch);
+                    sqlite3_bind_int64(st.st, 5, new_workset);
+                    if (!StepDone(execution_db_, st.st, &db_error)) break;
                     ++restored_execution_counts[kind];
                 } else if (kind == "job_events") {
                     bool ok_event = false;
@@ -2023,11 +2132,12 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
         }
 
         if (!result.error.has_value() && db_error.empty()) {
-            const std::array<std::string_view, 6> required_counts = {
+            const std::array<std::string_view, 7> required_counts = {
                 "job_sets",
                 "worksets",
                 "workset_dispatch_attempts",
                 "jobs",
+                "job_progress",
                 "job_events",
                 "job_cancellation_requests",
             };

@@ -62,8 +62,6 @@ private slots:
     void openSeedProbeSpecLibrary();
     void openTasSpecLibrary();
     void openBattleRunSpecLibrary();
-    void openPredicateSpecLibrary();
-    void openPredicateSetSpecLibrary();
     void openBattlePlanSpecLibrary();
     void openExplorerSettingsSpecLibrary();
 

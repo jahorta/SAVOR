@@ -4,9 +4,10 @@
 #include <optional>
 #include <string>
 
-#include "AdapterChainOrchestrator.h"
+#include "../ProgramDB/ProgramKindRegistry.h"
 #include "WorkflowGraphRoutingService.h"
 #include "WorkflowOrchestration.h"
+#include "WorkflowStepCompletionGate.h"
 
 namespace savor::db {
 struct IExecutionDb;
@@ -29,14 +30,16 @@ struct WorkflowTerminalAdvancementResult {
 class WorkflowTerminalAdvancementService {
 public:
     WorkflowTerminalAdvancementService(
-        const AdapterChainOrchestrator* orchestrator,
+        const programdb::ProgramKindRegistry* program_kind_registry,
+        StepCompletionGateService* completion_gate,
         savor::db::IExecutionDb* execution_db,
         IWorkflowOrchestrationQueryService* query_service,
         IWorkflowOrchestrationCommandService* command_service,
         const WorkflowGraphRoutingService* graph_routing_service = nullptr,
         int successor_step_priority_boost = 10);
     WorkflowTerminalAdvancementService(
-        const AdapterChainOrchestrator* orchestrator,
+        const programdb::ProgramKindRegistry* program_kind_registry,
+        StepCompletionGateService* completion_gate,
         IWorkflowOrchestrationQueryService* query_service,
         IWorkflowOrchestrationCommandService* command_service,
         const WorkflowGraphRoutingService* graph_routing_service = nullptr,
@@ -46,16 +49,17 @@ public:
         std::int64_t job_id,
         WorkflowTerminalAdvancementResult* result_out,
         std::string* error_out,
-        std::optional<programdb::ResultMapPayload> result_payload = std::nullopt) const;
+        std::optional<programdb::ProgramJobContinuationOutput> output = std::nullopt) const;
 
     bool AdvanceSnapshot(
         const WorkflowStepTerminalSnapshot& snapshot,
         WorkflowTerminalAdvancementResult* result_out,
         std::string* error_out,
-        std::optional<programdb::ResultMapPayload> result_payload = std::nullopt) const;
+        std::optional<programdb::ProgramJobContinuationOutput> output = std::nullopt) const;
 
 private:
-    const AdapterChainOrchestrator* orchestrator_ = nullptr;
+    const programdb::ProgramKindRegistry* program_kind_registry_ = nullptr;
+    StepCompletionGateService* completion_gate_ = nullptr;
     savor::db::IExecutionDb* execution_db_ = nullptr;
     IWorkflowOrchestrationQueryService* query_service_ = nullptr;
     IWorkflowOrchestrationCommandService* command_service_ = nullptr;

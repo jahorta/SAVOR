@@ -4,7 +4,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <map>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -13,14 +12,14 @@
 #include "Common/DbService.h"
 #include "Common/Performance/DbPerfReport.h"
 #include "DbSetup.h"
+#include "BattlePhasesRealWorkerScenario.h"
 #include "SeedProbeRealWorkerScenario.h"
+#include "ScenarioEntry.h"
 #include "TasMovieRealWorkerScenario.h"
-#include "Worker/WorkerCapabilityPreflight.h"
 
 namespace {
 
 using Clock = std::chrono::steady_clock;
-constexpr std::uint32_t kWorkerPreflightTimeoutMs = 60'000;
 
 std::string JoinScenarios(const std::vector<std::string>& scenarios) {
     std::ostringstream out;
@@ -41,8 +40,6 @@ std::string E2EPerfConfiguration(const savor::e2e::CliOptions& options) {
         << (options.wait_for_workers_ready ? "true" : "false")
         << " repeat=" << options.repeat
         << " samples_per_axis=" << options.seedprobe_samples_per_axis.value_or(0)
-        << " fake_attack_min=" << options.battle_fake_attack_low.value_or(0)
-        << " fake_attack_max=" << options.battle_fake_attack_high.value_or(0)
         << " rtc_min=" << rtc_range.low
         << " rtc_max=" << rtc_range.high;
     return out.str();
@@ -63,49 +60,23 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    const std::map<std::string, bool (*)(const CliOptions&, const char*, DBService*, std::string*)> scenarios{
-        { "seedprobe", &RunSeedProbeWorkflowGraphRealWorkerSmoke },
-        { "tasmovie", &RunTasMovieRealWorkerSmoke },
-        { "tasmovie_with_validation",
-            &RunTasMovieWithValidationRealWorkerSmoke },
-        { "tasmovie_seedprobe", &RunTasMovieSeedProbeRealWorkerSmoke },
-    };
-
-    if (options.scenarios.size() == 1
-        && (options.scenarios.front() == "tasmovie"
-            || options.scenarios.front() == "tasmovie_with_validation"
-            || options.scenarios.front() == "tasmovie_seedprobe")) {
+    const bool reset_workspace = std::ranges::any_of(
+        options.scenarios, [&](const std::string& scenario_name) {
+            const auto* descriptor = FindE2eScenarioDescriptor(scenario_name);
+            return descriptor != nullptr && EntrySourceRequiresFreshWorkspace(
+                SelectE2eScenarioEntrySource(*descriptor, options));
+        });
+    if (reset_workspace) {
         std::filesystem::path reset_root;
         std::string reset_error;
-        if (!ResetTasMovieScenarioWorkspace(options, &reset_root, &reset_error)) {
-            std::cerr << "[FAIL] resetting TAS Movie scenario database - "
+        if (!ResetScenarioWorkspace(options, &reset_root, &reset_error)) {
+            std::cerr << "[FAIL] resetting E2E scenario workspace - "
                       << reset_error << "\n";
             return 1;
         }
-        std::cout << "[tasmovie-db-reset] workspace=" << reset_root.string() << "\n";
+        std::cout << "[e2e-db-reset] workspace=" << reset_root.string() << "\n";
     }
 
-    const auto worker_preflight = savor::RunWorkerCapabilityPreflight(
-        savor::WorkerCapabilityPreflightRequest{
-            .worker_exe_path = ResolveWorkerExePath(argv[0]).string(),
-            .log_directory = options.worker_dir_root
-                ? (*options.worker_dir_root / "capability-preflight").string()
-                : std::string{},
-            .worker_id = 0,
-            .timeout_ms = kWorkerPreflightTimeoutMs,
-            .required_capabilities = savor::runtime::CapabilityMask(
-                savor::runtime::WorkerCapability::WorksetDispatch),
-            // Program modules are prepared by the scenario's
-            // WorkerCoordinator before that worker becomes ready. The
-            // executable-level preflight can therefore require the protocol
-            // surface, but cannot require modules that have not been
-            // prepared yet.
-            .require_complete_exact_catalog = false,
-        });
-    if (!worker_preflight) {
-        std::cerr << "[FAIL] " << worker_preflight.message << "\n";
-        return 1;
-    }
     std::cout
         << "[worker-startup-policy] wait_for_workers_ready="
         << (options.wait_for_workers_ready ? 1 : 0) << "\n";
@@ -154,15 +125,15 @@ int main(int argc, char** argv) {
     int exit_code = 0;
     for (int repeat_index = 0; repeat_index < options.repeat && exit_code == 0; ++repeat_index) {
         for (const auto& scenario_name : options.scenarios) {
-            const auto it = scenarios.find(scenario_name);
-            if (it == scenarios.end()) {
+            const auto* descriptor = FindE2eScenarioDescriptor(scenario_name);
+            if (descriptor == nullptr) {
                 scenario_error = "unknown --scenario: " + scenario_name;
                 std::cerr << scenario_error << "\n";
                 exit_code = 2;
                 break;
             }
 
-            const bool requires_workflow_boundary = scenario_name != "battle_macro_probe";
+            const bool requires_workflow_boundary = true;
             if (requires_workflow_boundary) {
                 std::string boundary_diagnostics;
                 if (!CheckWorkflowQuiescence(service.ExecutionDb(), &boundary_diagnostics)) {
@@ -180,17 +151,65 @@ int main(int argc, char** argv) {
             }
 
             options.scenario = scenario_name;
+            ResolvedE2eScenarioEntry entry{};
+            scenario_error.clear();
+            if (!ResolveE2eScenarioEntry(
+                    *descriptor, options, &service, &entry,
+                    &scenario_error)) {
+                failed += 1;
+                std::cerr << "[FAIL] resolving entry for '" << scenario_name
+                          << "' - " << scenario_error << "\n";
+                exit_code = 1;
+                break;
+            }
             submitted += 1;
             std::cout << "Running scenario '" << scenario_name << "' repeat=" << (repeat_index + 1)
                       << "/" << options.repeat
-                      << " poll=" << options.poll_ms << "ms\n";
+                      << " poll=" << options.poll_ms << "ms"
+                      << " entry_source=" << ToString(entry.source);
+            if (entry.savestate_id) {
+                std::cout << " entry_savestate=" << *entry.savestate_id;
+            }
+            std::cout << "\n";
 
             scenario_error.clear();
-            const bool scenario_passed =
-                it->second(options, argv[0], &service, &scenario_error);
+            bool scenario_passed = false;
+            switch (descriptor->kind) {
+            case E2eScenarioKind::SeedProbe:
+                scenario_passed = RunSeedProbeWorkflowGraphRealWorkerSmoke(
+                    options, entry, argv[0], &service, &scenario_error);
+                break;
+            case E2eScenarioKind::Battle:
+                scenario_passed = RunBattleWorkflowGraphRealWorkerScenario(
+                    options, entry, argv[0], &service, &scenario_error);
+                break;
+            case E2eScenarioKind::TasMovie:
+                scenario_passed = RunTasMovieRealWorkerSmoke(
+                    options, entry, argv[0], &service, &scenario_error);
+                break;
+            case E2eScenarioKind::TasMovieWithValidation:
+                scenario_passed = RunTasMovieWithValidationRealWorkerSmoke(
+                    options, entry, argv[0], &service, &scenario_error);
+                break;
+            case E2eScenarioKind::TasMovieSeedProbe:
+                scenario_passed = RunTasMovieSeedProbeRealWorkerSmoke(
+                    options, entry, argv[0], &service, &scenario_error);
+                break;
+            }
+            if (scenario_passed && !RequalifyPreparedScenarioEntry(
+                    entry, &service, &scenario_error)) {
+                scenario_passed = false;
+            }
             if (!scenario_passed) {
                 std::cerr << "[FAIL] " << scenario_name << " - " << scenario_error << "\n";
             }
+            std::cout << "[scenario-result] scenario=" << scenario_name
+                      << " execution="
+                      << (scenario_passed ? "SUCCEEDED" : "FAILED")
+                      << " invariants="
+                      << (scenario_passed ? "PASS" : "FAIL")
+                      << " trajectory=HUMAN_REVIEW_REQUIRED"
+                      << '\n';
 
             bool post_boundary_passed = true;
             std::string post_boundary_diagnostics;

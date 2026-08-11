@@ -131,6 +131,31 @@ struct UiJobSummary {
     int result_processing_failures = 0;
     std::string result_processing_error_code;
     std::string result_processing_error_text;
+    std::optional<std::uint64_t> last_progress_attempt_id;
+    std::optional<std::uint64_t> last_progress_ordinal;
+    std::string last_progress_text;
+    std::optional<std::int64_t> last_progress_at_utc;
+};
+
+struct UiCanonicalJobProgress {
+    std::int64_t job_id = 0;
+    std::uint64_t attempt_id = 0;
+    std::uint64_t ordinal = 0;
+    std::uint64_t workset_id = 0;
+    std::uint64_t item_id = 0;
+    std::uint64_t invocation_id = 0;
+    std::string library_id;
+    std::uint32_t library_revision = 0;
+    std::string progress_point_id;
+    std::optional<std::uint64_t> routed_sequence;
+    std::optional<std::uint64_t> sample_snapshot_id;
+    std::optional<std::uint64_t> trigger_epoch;
+    std::string schema_id;
+    std::uint32_t schema_revision = 0;
+    std::string schema_sha256;
+    std::vector<std::uint8_t> typed_payload;
+    std::string display_text;
+    std::int64_t recorded_at_utc = 0;
 };
 
 struct UiJobStateCounts {
@@ -502,6 +527,10 @@ struct IUiReadDb {
 
     virtual std::vector<UiJobArtifact> ListJobArtifacts(
         std::int64_t job_id) const = 0;
+
+    virtual std::vector<UiCanonicalJobProgress> ListJobProgress(
+        std::int64_t job_id,
+        int limit = 128) const = 0;
 
     virtual UiReadPage<UiJobSetSummary> ListJobSets(
         const UiReadJobSetListQuery& query) const = 0;

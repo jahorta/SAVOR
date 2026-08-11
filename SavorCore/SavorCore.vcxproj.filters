@@ -31,12 +31,6 @@
     <Filter Include="Runner\VM\Handlers">
       <UniqueIdentifier>{67f28612-9bb0-4f10-a7ce-68df43967218}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Runner\InputMacro">
-      <UniqueIdentifier>{d553c798-a9f8-4633-b1c0-b9beaf13f253}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Runner\InputMacro\Providers">
-      <UniqueIdentifier>{5461c675-31c9-43ee-91cc-96902953033f}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Phases">
       <UniqueIdentifier>{eb879b3c-e922-4ee8-a291-4569a8483ab3}</UniqueIdentifier>
     </Filter>
@@ -148,6 +142,9 @@
     <Filter Include="Phases\BattleContext">
       <UniqueIdentifier>{8b0fb7f2-30e4-415d-aa1e-d7151ae137a9}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Phases\BattleSingleTurn">
+      <UniqueIdentifier>{34d2136a-f80d-42d2-93a0-1e9a7a856c47}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Phases\NavigationContext">
       <UniqueIdentifier>{f1c645aa-8d54-4fc9-b968-3e30378554ee}</UniqueIdentifier>
     </Filter>
@@ -195,9 +192,7 @@
     <ClInclude Include="Core\Shims\StateBufferShim.h">
       <Filter>Core</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
+    
     <ClInclude Include="Runner\Parallel\WorkerBootPlan.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
@@ -222,69 +217,31 @@
     <ClInclude Include="Tas\DtmFile.h">
       <Filter>Tas</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Script\PhaseScriptVM.h">
-      <Filter>Runner\VM</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\InputMacro\IInputMacroHost.h">
-      <Filter>Runner\InputMacro</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\InputMacro\IInputMacroPlanDriver.h">
-      <Filter>Runner\InputMacro</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\InputMacro\InputMacroPlan.h">
-      <Filter>Runner\InputMacro</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\InputMacro\InputMacroRuntime.h">
-      <Filter>Runner\InputMacro</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.h">
-      <Filter>Runner\InputMacro\Providers</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\InputMacro\Providers\BattleCompletionInputMacroProvider.h">
-      <Filter>Runner\InputMacro\Providers</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\InputMacro\Providers\BattleEndResultsInputMacroProvider.h">
-      <Filter>Runner\InputMacro\Providers</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\InputMacro\Providers\BattleResultsScreenInputMacroProvider.h">
-      <Filter>Runner\InputMacro\Providers</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionManifest.h">
-      <Filter>Phases\BattleCompletion</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionPayload.h">
-      <Filter>Phases\BattleCompletion</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionScript.h">
-      <Filter>Phases\BattleCompletion</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleEndResults\BattleEndResultsPayload.h">
-      <Filter>Phases\BattleEndResults</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleEndResults\BattleEndResultsReport.h">
-      <Filter>Phases\BattleEndResults</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleEndResults\BattleEndResultsScript.h">
-      <Filter>Phases\BattleEndResults</Filter>
-    </ClInclude>
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     <ClInclude Include="Runner\Script\ContextKeys\BattleEndResultsKeys.reg.h">
       <Filter>Runner\VM\ContextKeys</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Script\ContextKeys\BattleCompletionKeys.reg.h">
       <Filter>Runner\VM\ContextKeys</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Script\PhaseScriptOpcodeTable.inc">
-      <Filter>Runner\VM</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Script\PhaseScriptOpcodes.h">
-      <Filter>Runner\VM</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Script\PhaseScriptProgram.h">
-      <Filter>Runner\VM</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Script\PSContextCodec.h">
-      <Filter>Runner\VM</Filter>
-    </ClInclude>
+    
+    
+    
+    
     <ClInclude Include="Utils\Time.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -294,42 +251,17 @@
     <ClInclude Include="Runner\Breakpoints\BP.def.h">
       <Filter>Runner\Breakpoints</Filter>
     </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerPayload.h">
-      <Filter>Phases\BattleRunner</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerScript.h">
-      <Filter>Phases\BattleRunner</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.h">
-      <Filter>Phases\BattleRunner</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerScript.h">
-      <Filter>Phases\BattleRunner</Filter>
-    </ClInclude>
     <ClInclude Include="Phases\Programs\SeedProbe\SeedProbeModule.h">
       <Filter>Phases\SeedProbe</Filter>
     </ClInclude>
     <ClInclude Include="Phases\Programs\TasMovieValidation\TasMovieValidationModule.h">
       <Filter>Phases\TasMovie</Filter>
     </ClInclude>
-    <ClInclude Include="Phases\Programs\TasFrameDetector\TasFrameDetectorScript.h">
-      <Filter>Phases\TasFrameDetector</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\TasFrameDetector\TasFrameDetectorPayload.h">
-      <Filter>Phases\TasFrameDetector</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleContext\BattleContextScript.h">
-      <Filter>Phases\BattleContext</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\NavigationContext\NavigationContextScript.h">
-      <Filter>Phases\NavigationContext</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\NavigationContext\NavigationContextPayload.h">
-      <Filter>Phases\NavigationContext</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\NavigationContext\NavigationContextResult.h">
-      <Filter>Phases\NavigationContext</Filter>
-    </ClInclude>
+    
+    
+    
+    
+    
     <ClInclude Include="Core\Memory\Soa\Navigation\NavigationContext.h">
       <Filter>Core\Memory\Soa\Navigation</Filter>
     </ClInclude>
@@ -341,9 +273,6 @@
     </ClInclude>
     <ClInclude Include="Core\Memory\Endian.h">
       <Filter>Core\Memory</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Breakpoints\Predicate.h">
-      <Filter>Runner\Breakpoints</Filter>
     </ClInclude>
     <ClInclude Include="Phases\Programs\BattleRunner\BattleOutcome.h">
       <Filter>Phases\BattleRunner</Filter>
@@ -375,15 +304,11 @@
     <ClInclude Include="Runner\IPC\DurableWorkerTerminalEnvelope.h">
       <Filter>Runner</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\IPC\Wire.h">
-      <Filter>Runner</Filter>
-    </ClInclude>
+    
     <ClInclude Include="Runner\IPC\WrmsProtocol.h">
       <Filter>Runner</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Parallel\PRTypes.h">
-      <Filter>Runner</Filter>
-    </ClInclude>
+    
     <ClInclude Include="Runner\Runtime\DolphinWrapperBackend.h">
       <Filter>Runner\Runtime</Filter>
     </ClInclude>
@@ -402,7 +327,7 @@
     <ClInclude Include="Runner\Runtime\Execution\IExecutionBackendPort.h">
       <Filter>Runner\Runtime\Execution</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Runtime\Execution\IInputAdvancePort.h">
+    <ClInclude Include="Runner\Runtime\Execution\IInputExecutionBindingPort.h">
       <Filter>Runner\Runtime\Execution</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Runtime\IDolphinBackend.h">
@@ -447,6 +372,12 @@
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\PredicateComposition.h">
       <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\InputDeliveryComposition.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Predicates\PredicateBundle.h">
+      <Filter>Runner\Runtime</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\SemanticObservationComposition.h">
       <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
     </ClInclude>
@@ -488,6 +419,9 @@
     </ClInclude>
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Verify\ProgramVerifier.h">
       <Filter>Runner\Runtime\ProgramRuntime\Verify</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Progress\ProgressTypes.h">
+      <Filter>Runner\Runtime</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Runtime\FullPhase\FullPhaseProgram.h">
       <Filter>Runner\Runtime</Filter>
@@ -591,22 +525,22 @@
     <ClInclude Include="Runner\Runtime\Worksets\WorksetWireCodec.h">
       <Filter>Runner\Runtime\Worksets</Filter>
     </ClInclude>
-    <ClInclude Include="Core\Input\InputPlanFmt.h">
+    <ClInclude Include="Core\Input\GCInputFrame.h">
       <Filter>Core\Input</Filter>
     </ClInclude>
-    <ClInclude Include="Core\Input\InputPlan.h">
+    <ClInclude Include="Core\Input\GCInputFrameFmt.h">
       <Filter>Core\Input</Filter>
     </ClInclude>
     <ClInclude Include="Core\Input\GCPadOverride.h">
       <Filter>Core\Input</Filter>
     </ClInclude>
-    <ClInclude Include="Core\Input\SoaBattle\ActionLibrary.h">
-      <Filter>Core\Input\SoaBattle</Filter>
-    </ClInclude>
     <ClInclude Include="Core\Input\SoaBattle\ActionTypes.h">
       <Filter>Core\Input\SoaBattle</Filter>
     </ClInclude>
-    <ClInclude Include="Core\Input\SoaBattle\PlanWriter.h">
+    <ClInclude Include="Core\Input\SoaBattle\BattleCommandPreparation.h">
+      <Filter>Core\Input\SoaBattle</Filter>
+    </ClInclude>
+    <ClInclude Include="Core\Input\SoaBattle\BattlePlanValidation.h">
       <Filter>Core\Input\SoaBattle</Filter>
     </ClInclude>
     <ClInclude Include="Core\Input\SoaBattle\ActionPlanSerializer.h">
@@ -666,11 +600,13 @@
     <ClInclude Include="Core\Memory\Soa\SoaAddrCatalog.h">
       <Filter>Core\Memory\Soa</Filter>
     </ClInclude>
-    <ClInclude Include="Phases\Programs\ProgramRegistry.h">
-      <Filter>Phases</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleContext\BattleContextPayload.h">
+    
+    
+    <ClInclude Include="Phases\Programs\BattleContext\BattleContextModule.h">
       <Filter>Phases\BattleContext</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleSingleTurn\BattleSingleTurnModule.h">
+      <Filter>Phases\BattleSingleTurn</Filter>
     </ClInclude>
     <ClInclude Include="Utils\Hash.h">
       <Filter>Utils</Filter>
@@ -690,23 +626,13 @@
     <ClInclude Include="Utils\ModulePath.h">
       <Filter>Utils</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Script\ScriptProgress.h">
-      <Filter>Runner\VM</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\IPC\WorkerWireWriter.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
+    
+    
     <ClInclude Include="Runner\Symbols\RuntimeSymbolRegistry.h">
       <Filter>Runner\VM</Filter>
     </ClInclude>
     <ClInclude Include="Utils\String.h">
       <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="Core\Input\AppliedTurnTapeBlob.h">
-      <Filter>Core\Input</Filter>
-    </ClInclude>
-    <ClInclude Include="Core\Input\BattleInputTraceBlob.h">
-      <Filter>Core\Input</Filter>
     </ClInclude>
     <ClInclude Include="Tas\DtmAnnotationFile.h">
       <Filter>Header Files</Filter>
@@ -752,72 +678,32 @@
     <ClCompile Include="Tas\DtmFile.cpp">
       <Filter>Tas</Filter>
     </ClCompile>
-    <ClCompile Include="Runner\Script\PhaseScriptVM.cpp">
-      <Filter>Runner\VM</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\InputMacro\InputMacroRuntime.cpp">
-      <Filter>Runner\InputMacro</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.cpp">
-      <Filter>Runner\InputMacro\Providers</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\InputMacro\Providers\BattleCompletionInputMacroProvider.cpp">
-      <Filter>Runner\InputMacro\Providers</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\InputMacro\Providers\BattleEndResultsInputMacroProvider.cpp">
-      <Filter>Runner\InputMacro\Providers</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\InputMacro\Providers\BattleResultsScreenInputMacroProvider.cpp">
-      <Filter>Runner\InputMacro\Providers</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Programs\BattleCompletion\BattleCompletionManifest.cpp">
-      <Filter>Phases\BattleCompletion</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Programs\BattleCompletion\BattleCompletionPayload.cpp">
-      <Filter>Phases\BattleCompletion</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Programs\BattleEndResults\BattleEndResultsPayload.cpp">
-      <Filter>Phases\BattleEndResults</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Programs\BattleEndResults\BattleEndResultsReport.cpp">
-      <Filter>Phases\BattleEndResults</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Programs\NavigationContext\NavigationContextPayload.cpp">
-      <Filter>Phases\NavigationContext</Filter>
-    </ClCompile>
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     <ClCompile Include="Core\Memory\Soa\Navigation\NavigationContextCodec.cpp">
       <Filter>Core\Memory\Soa\Navigation</Filter>
     </ClCompile>
-    <ClCompile Include="Runner\Script\PhaseScriptOpFormat.cpp">
-      <Filter>Runner\VM</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Script\PhaseScriptVMControl.cpp">
-      <Filter>Runner\VM\Handlers</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Script\PhaseScriptVMInput.cpp">
-      <Filter>Runner\VM\Handlers</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Script\PhaseScriptVMMacro.cpp">
-      <Filter>Runner\VM\Handlers</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Script\PhaseScriptVMNavigation.cpp">
-      <Filter>Runner\VM\Handlers</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Script\PhaseScriptVMMemory.cpp">
-      <Filter>Runner\VM\Handlers</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Script\PhaseScriptVMPredicates.cpp">
-      <Filter>Runner\VM\Handlers</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Script\ScriptProgress.cpp">
-      <Filter>Runner\VM</Filter>
-    </ClCompile>
+    
+    
+    
+    
+    
+    
+    
+    
     <ClCompile Include="Runner\IPC\DurableWorkerTerminalEnvelope.cpp">
       <Filter>Runner</Filter>
     </ClCompile>
-    <ClCompile Include="Runner\IPC\WorkerWireWriter.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
+    
     <ClCompile Include="Runner\IPC\WrmsProtocol.cpp">
       <Filter>Runner</Filter>
     </ClCompile>
@@ -860,6 +746,12 @@
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\PredicateComposition.cpp">
       <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
     </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\InputDeliveryComposition.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Predicates\PredicateBundle.cpp">
+      <Filter>Runner\Runtime</Filter>
+    </ClCompile>
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\SemanticObservationComposition.cpp">
       <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
     </ClCompile>
@@ -889,6 +781,9 @@
     </ClCompile>
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Verify\ProgramVerifier.cpp">
       <Filter>Runner\Runtime\ProgramRuntime\Verify</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Progress\ProgressTypes.cpp">
+      <Filter>Runner\Runtime</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Runtime\Execution\ExecutionEngine.cpp">
       <Filter>Runner\Runtime\Execution</Filter>
@@ -962,17 +857,9 @@
     <ClCompile Include="Runner\Runtime\Worksets\WorksetWireCodec.cpp">
       <Filter>Runner\Runtime\Worksets</Filter>
     </ClCompile>
-    <ClCompile Include="Runner\Script\PSContextCodec.cpp">
-      <Filter>Runner\VM</Filter>
-    </ClCompile>
+    
     <ClCompile Include="Runner\Breakpoints\BpRegistry.cpp">
       <Filter>Runner\Breakpoints</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp">
-      <Filter>Phases\BattleRunner</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.cpp">
-      <Filter>Phases\BattleRunner</Filter>
     </ClCompile>
     <ClCompile Include="Phases\Programs\SeedProbe\SeedProbeModule.cpp">
       <Filter>Phases\SeedProbe</Filter>
@@ -980,28 +867,20 @@
     <ClCompile Include="Phases\Programs\TasMovieValidation\TasMovieValidationModule.cpp">
       <Filter>Phases\TasMovie</Filter>
     </ClCompile>
-    <ClCompile Include="Phases\Programs\TasFrameDetector\TasFrameDetectorPayload.cpp">
-      <Filter>Phases\TasFrameDetector</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Breakpoints\Predicate.cpp">
-      <Filter>Runner\Breakpoints</Filter>
-    </ClCompile>
+    
     <ClCompile Include="Runner\Script\CtxRegistry.cpp">
       <Filter>Runner\VM</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Symbols\RuntimeSymbolRegistry.cpp">
       <Filter>Runner\VM</Filter>
     </ClCompile>
-    <ClCompile Include="Core\Input\InputPlanFmt.cpp">
+    <ClCompile Include="Core\Input\GCInputFrameFmt.cpp">
       <Filter>Core\Input</Filter>
     </ClCompile>
     <ClCompile Include="Core\Input\GCPadOverride.cpp">
       <Filter>Core\Input</Filter>
     </ClCompile>
-    <ClCompile Include="Core\Input\SoaBattle\ActionLibrary.cpp">
-      <Filter>Core\Input\SoaBattle</Filter>
-    </ClCompile>
-    <ClCompile Include="Core\Input\SoaBattle\PlanWriter.cpp">
+    <ClCompile Include="Core\Input\SoaBattle\BattlePlanValidation.cpp">
       <Filter>Core\Input\SoaBattle</Filter>
     </ClCompile>
     <ClCompile Include="Core\Input\SoaBattle\ActionPlanSerializer.cpp">
@@ -1025,204 +904,78 @@
     <ClCompile Include="Core\Memory\Soa\SoaAddrCatalog.cpp">
       <Filter>Core\Memory\Soa</Filter>
     </ClCompile>
-    <ClCompile Include="Phases\Programs\ProgramRegistry.cpp">
-      <Filter>Phases</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp">
+    
+    
+    <ClCompile Include="Phases\Programs\BattleContext\BattleContextModule.cpp">
       <Filter>Phases\BattleContext</Filter>
     </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\WiiUtils.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\AchievementManager.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\ActionReplay.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\ARDecrypt.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\BootManager.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\CheatGeneration.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\CheatSearch.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\ConfigManager.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Core.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\CoreTiming.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\CPUThreadConfigCallback.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\DolphinAnalytics.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\DSPEmulator.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\FreeLookConfig.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\FreeLookManager.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\GeckoCode.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\GeckoCodeConfig.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\HotkeyManager.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\LibusbUtils.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\MemoryWatcher.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\MemTools.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Movie.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\NetPlayClient.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\NetPlayCommon.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\NetPlayServer.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\NetworkCaptureLogger.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PatchEngine.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\State.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\SysConf.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\System.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\TimePlayed.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\TitleDatabase.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\WC24PatchEngine.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\WiiRoot.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Boot\Boot_WiiWAD.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Boot\DolReader.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Boot\ElfReader.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Boot\Boot.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Boot\Boot_BS2Emu.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\AchievementSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\DefaultLocale.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\FreeLookSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\GraphicsSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\MainSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\NetplaySettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\SessionSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\SYSCONFSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\UISettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\WiimoteSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_Integer.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_LoadStore.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_LoadStoreFloating.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_LoadStorePaired.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_Paired.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_SystemRegisters.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit64_Tables.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\JitAsm.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_Branch.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_FloatingPoint.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\RegCache\JitRegCache.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\RegCache\FPURegCache.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\RegCache\GPRRegCache.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\HW\SystemTimers.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
+    <ClCompile Include="Phases\Programs\BattleSingleTurn\BattleSingleTurnModule.cpp">
+      <Filter>Phases\BattleSingleTurn</Filter>
+    </ClCompile>
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     <ClCompile Include="Tas\DtmAnnotationFile.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

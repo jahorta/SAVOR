@@ -58,6 +58,13 @@ struct HostStagedArtifactEvidence
     std::string movie_sha256;
 };
 
+struct HostStagedCaptureProfile
+{
+    std::string profile_json;
+    savor::probe::Profile profile;
+    std::optional<std::filesystem::path> output_directory;
+};
+
 // Immutable host-only package. It has no SessionId/WorksetEpoch binding and
 // carries no resource lease or authority to prepare/advance Dolphin.
 struct HostStagedWorksetPackage
@@ -65,6 +72,7 @@ struct HostStagedWorksetPackage
     WorkerWorksetDefinition definition;
     ProgramBaselineKey baseline_key;
     std::optional<HostStagedArtifactEvidence> artifact;
+    std::optional<HostStagedCaptureProfile> capture;
 };
 
 struct WorksetStagingSubmission

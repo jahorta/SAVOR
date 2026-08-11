@@ -1,7 +1,3 @@
-#include "BattleJobBatchRunOptions.h"
-#include "BattleJobBatchWorkerRun.h"
-#include "BattleJobRunOptions.h"
-#include "BattleJobWorkerRun.h"
 #include "BattlePredictionBatchCli.h"
 #include "BattlePredictorCli.h"
 #include "CheckpointTrace.h"
@@ -56,8 +52,6 @@ void print_usage(std::ostream& out) {
         << "  SavorPredict write-first-battle-pre-handler-frame-pathing-profile --output PATH\n"
         << "  SavorPredict write-first-battle-float-motion-profile --output PATH\n"
         << "  SavorPredict write-first-battle-move-increment-read-watch-profile --output PATH\n"
-        << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--probe-mode capture|progress-only|control-only] [--probe-cpu-core default|jit|interpreter] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--disc-dump-root PATH] [--std-disc-dump-root PATH (deprecated)] [--spice-file-parsing-exe PATH (deprecated, ignored)]\n"
-        << "  SavorPredict run-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--exec-job-seed EXEC_ID:SEED[:FAKE_ATTACKS]] [--exec-job-seed-list PATH] [--exec-job-fake-attacks EXEC_ID:FAKE_ATTACKS] [--exec-job-fake-attacks-list PATH] --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--probe-mode capture|progress-only|control-only] [--probe-cpu-core default|jit|interpreter] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--max-workers N] [--wait-for-workers-ready] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--disc-dump-root PATH] [--std-disc-dump-root PATH (deprecated)] [--spice-file-parsing-exe PATH (deprecated, ignored)]\n"
         << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | (--turn-job-id N | --exec-job-id N) [--start-seed N | --start-seed-list PATH]) [--db-root PATH] [--scenario first-battle-soldiers] [--encounter-event-id N] [--scripted-battle-script NAME --scripted-battle-section NAME --scripted-battle-payload-offset N] [--profile first-battle-soldiers] [--action-view-std-json-dir PATH] [--disc-dump-root PATH] [--std-disc-dump-root PATH (deprecated)] [--spice-file-parsing-exe PATH (deprecated, ignored)] [--format text|json] [--allow-seed-candidate-fallback] [--allow-profile-overrides] [--emit-causal-diagnostics]\n"
         << "    Custom --start-seed values begin at the battle coordinator; stored job seeds retain their captured-turn boundary.\n"
         << "  SavorPredict predict-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--db-root PATH] [--run-root PATH] [--run-name NAME] [--scenario first-battle-soldiers] [--profile first-battle-soldiers] [--action-view-std-json-dir PATH] [--disc-dump-root PATH] [--std-disc-dump-root PATH (deprecated)] [--spice-file-parsing-exe PATH (deprecated, ignored)] [--emit-causal-diagnostics] [--allow-seed-candidate-fallback] [--allow-profile-overrides] [--require-complete] [--preflight-only]\n"
@@ -1160,52 +1154,6 @@ int run_write_first_battle_move_increment_read_watch_profile(int argc, char** ar
         std::cerr);
 }
 
-int run_battle_job_command(int argc, char** argv) {
-    std::vector<std::string> args;
-    args.reserve(static_cast<std::size_t>(std::max(0, argc - 2)));
-    for (int i = 2; i < argc; ++i) {
-        args.emplace_back(argv[i]);
-    }
-    const auto parsed = savor::predict::parse_battle_job_run_tokens(args, argv[0]);
-    for (const auto& warning : parsed.warnings) {
-        std::cerr << "Warning: " << warning << "\n";
-    }
-    if (parsed.help_requested) {
-        print_usage(std::cout);
-        return parsed.errors.empty() ? 0 : 2;
-    }
-    if (!parsed.errors.empty()) {
-        for (const auto& error : parsed.errors) {
-            std::cerr << error << "\n";
-        }
-        return 2;
-    }
-    return savor::predict::run_battle_job(parsed.options, std::cout, std::cerr);
-}
-
-int run_battle_jobs_command(int argc, char** argv) {
-    std::vector<std::string> args;
-    args.reserve(static_cast<std::size_t>(std::max(0, argc - 2)));
-    for (int i = 2; i < argc; ++i) {
-        args.emplace_back(argv[i]);
-    }
-    const auto parsed = savor::predict::parse_battle_job_batch_run_tokens(args, argv[0]);
-    for (const auto& warning : parsed.warnings) {
-        std::cerr << "Warning: " << warning << "\n";
-    }
-    if (parsed.help_requested) {
-        print_usage(std::cout);
-        return parsed.errors.empty() ? 0 : 2;
-    }
-    if (!parsed.errors.empty()) {
-        for (const auto& error : parsed.errors) {
-            std::cerr << error << "\n";
-        }
-        return 2;
-    }
-    return savor::predict::run_battle_jobs(parsed.options, std::cout, std::cerr);
-}
-
 int run_predict_battle_command(int argc, char** argv) {
     std::vector<std::string> args;
     args.reserve(static_cast<std::size_t>(std::max(0, argc - 2)));
@@ -1519,12 +1467,6 @@ int main(int argc, char** argv) {
     }
     if (command == "write-first-battle-move-increment-read-watch-profile") {
         return run_write_first_battle_move_increment_read_watch_profile(argc, argv);
-    }
-    if (command == "run-battle-job") {
-        return run_battle_job_command(argc, argv);
-    }
-    if (command == "run-battle-jobs") {
-        return run_battle_jobs_command(argc, argv);
     }
     if (command == "predict-battle") {
         return run_predict_battle_command(argc, argv);

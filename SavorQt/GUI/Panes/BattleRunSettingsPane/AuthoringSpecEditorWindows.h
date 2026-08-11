@@ -85,28 +85,6 @@ private:
     QPushButton* saveButton_ = nullptr;
 };
 
-class PredicateSetEditorWindow final : public QWidget
-{
-public:
-    explicit PredicateSetEditorWindow(QWidget* parent = nullptr, bool embeddedInContainer = false);
-    void loadSnapshot(const savor::db::PredicateSetSnapshot& snapshot, bool duplicate);
-    void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
-    void setSavedCallback(std::function<void()> callback);
-
-private:
-    void createWidgets();
-    void refreshPredicates();
-    void saveSpec();
-    void postStatusMessage(const QString& text, StatusToast::Severity severity);
-
-    std::function<void(const QString&, StatusToast::Severity)> statusCallback_;
-    std::function<void()> savedCallback_;
-    QLineEdit* nameEdit_ = nullptr;
-    QListWidget* predicateList_ = nullptr;
-    QPushButton* refreshButton_ = nullptr;
-    QPushButton* saveButton_ = nullptr;
-};
-
 class ExplorerSettingsEditorWindow final : public QWidget
 {
 public:
@@ -128,7 +106,6 @@ private:
     QLineEdit* nameEdit_ = nullptr;
     QPlainTextEdit* descriptionEdit_ = nullptr;
     QComboBox* battlePlanCombo_ = nullptr;
-    QComboBox* predicateSetCombo_ = nullptr;
     QPushButton* refreshButton_ = nullptr;
     QPushButton* saveButton_ = nullptr;
 };

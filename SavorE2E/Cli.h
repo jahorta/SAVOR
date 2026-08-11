@@ -3,7 +3,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace savor::e2e {
@@ -82,27 +84,50 @@ struct CliOptions {
     std::optional<std::int64_t> tasmovie_rtc_max;
     std::optional<int> seedprobe_samples_per_axis;
     std::optional<int> seedprobe_combo_attempts_per_target;
-    std::optional<int> battle_fake_attack_low;
-    std::optional<int> battle_fake_attack_high;
-    std::string battle_macro_mode = "attack";
-    std::optional<int> battle_macro_target_slot;
-    bool battle_macro_args_supplied = false;
-    std::optional<std::string> battle_macro_plan_spec;
-    std::optional<int> battle_macro_fake_attacks;
-    bool battle_fake_attack_sweep = false;
-    int battle_fake_sweep_trials = 10;
-    int battle_fake_sweep_min_target_neutral = 0;
-    int battle_fake_sweep_max_target_neutral = 10;
-    int battle_fake_sweep_min_input_neutral = 0;
-    int battle_fake_sweep_max_input_neutral = 20;
-    std::optional<std::filesystem::path> battle_fake_sweep_output;
-    bool battle_macro_debug = false;
 };
 
 struct TasMovieRtcRange {
     std::int64_t low = 0;
     std::int64_t high = 0;
 };
+
+enum class E2eScenarioKind {
+    SeedProbe,
+    Battle,
+    TasMovie,
+    TasMovieWithValidation,
+    TasMovieSeedProbe,
+};
+
+enum class E2eScenarioEntrySource : std::uint32_t {
+    ImportedSavestateFile = 1u << 0,
+    FreshTasMovieValidation = 1u << 1,
+    PreparedSterilizedCheckpoint = 1u << 2,
+};
+
+struct E2eScenarioDescriptor {
+    std::string_view name;
+    E2eScenarioKind kind = E2eScenarioKind::SeedProbe;
+    std::uint32_t supported_entry_sources = 0;
+    E2eScenarioEntrySource default_entry_source =
+        E2eScenarioEntrySource::ImportedSavestateFile;
+    bool include_in_all = false;
+    bool must_run_alone = false;
+    bool requires_repeat_one = false;
+    bool requires_one_worker = false;
+};
+
+constexpr std::uint32_t EntrySourceBit(E2eScenarioEntrySource source) {
+    return static_cast<std::uint32_t>(source);
+}
+
+std::span<const E2eScenarioDescriptor> E2eScenarioCatalog();
+const E2eScenarioDescriptor* FindE2eScenarioDescriptor(std::string_view name);
+E2eScenarioEntrySource SelectE2eScenarioEntrySource(
+    const E2eScenarioDescriptor& descriptor,
+    const CliOptions& options);
+std::string_view ToString(E2eScenarioEntrySource source);
+bool EntrySourceRequiresFreshWorkspace(E2eScenarioEntrySource source);
 
 void PrintUsage();
 bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* error_out);

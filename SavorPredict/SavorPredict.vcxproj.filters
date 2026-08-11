@@ -116,30 +116,6 @@
     <ClCompile Include="BattleCollisionBoxModel.cpp" />
     <ClCompile Include="BattleTargetReactionStateModel.cpp" />
     <ClCompile Include="DirectInstructionTransitionSelectorModel.cpp" />
-    <ClCompile Include="BattleJobBatchRunManifest.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="BattleJobBatchRunOptions.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="BattleJobBatchWorkerRun.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="BattleJobClone.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="BattleJobRunManifest.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="BattleJobRunOptions.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="BattleJobSandbox.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="BattleJobWorkerRun.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="CaptureArtifact.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -359,33 +335,6 @@
     <ClInclude Include="BattleCollisionBoxModel.h" />
     <ClInclude Include="BattleTargetReactionStateModel.h" />
     <ClInclude Include="DirectInstructionTransitionSelectorModel.h" />
-    <ClInclude Include="BattleJobBatchRunManifest.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="BattleJobBatchRunOptions.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="BattleJobBatchWorkerRun.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="BattleJobClone.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="BattleJobRunManifest.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="BattleJobRunOptions.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="ProbeCpuCoreEnvironment.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="BattleJobSandbox.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="BattleJobWorkerRun.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="CaptureArtifact.h">
       <Filter>Header Files</Filter>
     </ClInclude>

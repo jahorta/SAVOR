@@ -38,26 +38,23 @@
 #include "Execution/Workflow/WorkflowIntegrityChecks.h"
 #include "Execution/Workflow/WorkflowProjector.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
-#include "Execution/Workflow/AdapterChainOrchestrator.h"
 #include "Execution/Workflow/WorkflowCoordinatorService.h"
 #include "Execution/Workflow/WorkflowGraphRoutingService.h"
+#include "Execution/Workflow/WorkflowStepCompletionGate.h"
 #include "Execution/Workflow/WorkflowTerminalAdvancementService.h"
-#include "Execution/Workflow/WorkflowTerminalOutboxSubscriber.h"
-#include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnAdapters.h"
-#include "Execution/ProgramDB/BattleContext/BattleContextProbePhaseRegistration.h"
+#include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnProgram.h"
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeExecutionAdapters.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeJobSpec.h"
 #include "UIRead/Projectors/ProjectorContract.h"
 #include "Execution/WorkflowCoordinatorBridge.h"
-#include "Execution/DBWorkflowWorkerCoordinator.h"
 #include "Execution/WorkflowSchedulerAdapter.h"
 #include "Execution/StepInputAggregationService.h"
-#include "Execution/JobMaterializationService.h"
 #include "Utils/Hash.h"
 #include "Core/Memory/Soa/Battle/BattleContextCodec.h"
 #include "Runner/Breakpoints/BpRegistry.h"
-#include "Runner/IPC/Wire.h"
+#include "Runner/Runtime/ProgramKind.h"
+#include "Runner/Runtime/Worksets/WorksetWireCodec.h"
 
 #include "common/RecordingExecutionDb.h"
 #include "common/AlwaysAdvanceTransitionHandler.h"
@@ -91,6 +88,7 @@ workflow::WorkflowCreateUnitActivationSpec TestUnitActivation(
 }
 
 struct ConfirmedSeedProbeFixture {
+    std::int64_t probe_run_id = 0;
     std::int64_t probe_result_id = 0;
     std::int64_t input_frame_id = 0;
 };
@@ -239,6 +237,7 @@ std::optional<ConfirmedSeedProbeFixture> CreateConfirmedSeedProbeFixture(
     }
 
     return ConfirmedSeedProbeFixture{
+        .probe_run_id = probe_run_id,
         .probe_result_id = representative_result_id,
         .input_frame_id = input_frame_id,
     };
@@ -349,6 +348,52 @@ TEST_F(SqliteDbFixture, EmbeddedMigrationsApplyOncePerContextAndTrackVersion) {
     }
 }
 
+TEST_F(SqliteDbFixture, BattlePlanRelationalTurnMigrationPreservesAuthoredRows) {
+    using namespace savor::db::migrations;
+
+    sqlite3* raw_legacy_db = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &raw_legacy_db), SQLITE_OK);
+    const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> legacy_db(
+        raw_legacy_db, &sqlite3_close);
+
+    const auto migrations = LoadContextMigrations(
+        MigrationContext::Authoring,
+        {.source_kind = MigrationSourceKind::Embedded});
+    const auto base = std::ranges::find(
+        migrations, "202604051000_authoring_stage2_schema.sql",
+        &MigrationEntry::name);
+    const auto relational = std::ranges::find(
+        migrations, "202608111000_authoring_battle_plan_relational_turns.sql",
+        &MigrationEntry::name);
+    ASSERT_NE(base, migrations.end());
+    ASSERT_NE(relational, migrations.end());
+    ASSERT_TRUE(ExecSql(legacy_db.get(), base->sql.c_str()));
+    ASSERT_TRUE(ExecSql(legacy_db.get(),
+        "INSERT INTO au_battle_plan(plan_id,name,fingerprint,num_turns,created_at_utc) "
+        "VALUES(101,'migration-plan','migration-plan-fingerprint',2,1);"));
+    ASSERT_TRUE(ExecSql(legacy_db.get(),
+        "INSERT INTO au_battle_plan_action_preset("
+        "action_preset_id,name,macro,target_kind,target_single_slot,flags,created_at_utc) "
+        "VALUES(201,'migration-attack',1,1,4,0,1);"));
+    ASSERT_TRUE(ExecSql(legacy_db.get(),
+        "INSERT INTO au_battle_plan_turn(plan_turn_id,plan_id,turn_index) "
+        "VALUES(301,101,1),(302,101,2);"));
+    ASSERT_TRUE(ExecSql(legacy_db.get(),
+        "INSERT INTO au_battle_plan_action("
+        "plan_action_id,plan_turn_id,actor_slot,action_preset_id,ordinal) "
+        "VALUES(401,301,0,201,0),(402,302,0,201,0);"));
+
+    ASSERT_TRUE(ExecSql(legacy_db.get(), relational->sql.c_str()));
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM pragma_table_info('au_battle_plan') WHERE name='num_turns';"), 0);
+    EXPECT_EQ(ReadInt64(legacy_db.get(), "SELECT COUNT(1) FROM au_battle_plan WHERE plan_id=101;"), 1);
+    EXPECT_EQ(ReadInt64(legacy_db.get(), "SELECT COUNT(1) FROM au_battle_plan_turn WHERE plan_id=101;"), 2);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_battle_plan_action WHERE plan_turn_id IN (301,302);"), 2);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_battle_plan_action_preset WHERE action_preset_id=201;"), 1);
+}
+
 TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomicallyWithoutSideEffects) {
     using namespace savor::db::execution::programdb;
 
@@ -438,20 +483,24 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
         std::int32_t program_kind;
         const char* program_name;
     };
-    constexpr std::array<ExpectedDescriptor, 2> canonical_descriptors{{
+    constexpr std::array<ExpectedDescriptor, 4> canonical_descriptors{{
         {static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
         {static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
+        {static_cast<std::int32_t>(savor::PK_BattleContext), "Battle Context"},
+        {static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner), "Battle Single Turn"},
     }};
     struct ExpectedStepDescriptor {
         const char* step_kind;
         std::int32_t program_kind;
         const char* program_name;
     };
-    constexpr std::array<ExpectedStepDescriptor, 4> step_descriptors{{
+    constexpr std::array<ExpectedStepDescriptor, 6> step_descriptors{{
         {"tasmovie.establish_root_cursor", static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
         {"tasmovie.validate_root", static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
         {"tasmovie.validate_tree", static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
         {"seedprobe.run", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
+        {"battle.context", static_cast<std::int32_t>(savor::PK_BattleContext), "Battle Context"},
+        {"battle.single_turn", static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner), "Battle Single Turn"},
     }};
 
     const auto expect_complete_descriptor =
@@ -530,184 +579,391 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
     EXPECT_FALSE(error.empty());
 }
 
-#if 0 // Removed legacy TAS Movie variant/adapter coverage.
-TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedStateWritesAndTasVariantEnsure) {
-    auto* state_db = db_service_->StateDb();
-    ASSERT_NE(state_db, nullptr);
-
-    using savor::db::types::UtcTimePoint;
-    const auto t1 = UtcTimePoint(std::chrono::milliseconds(1000));
-    const auto t2 = UtcTimePoint(std::chrono::milliseconds(2000));
-
-    std::int64_t base_artifact_id = 0;
-    std::string error;
-    ASSERT_TRUE(state_db->StoreArtifact(
-        {
-            .sha256 = "state-event-id-base",
-            .size_bytes = 12,
-            .compression_kind = 0,
-            .filename = "base.dtm",
-            .file_ext = ".dtm",
-            .artifact_kind = "DTM",
-            .created_at_utc = t1,
-            .correlation_id = "repeat-state",
-            .causation_id = "test",
-        },
-        &base_artifact_id,
-        &error)) << error;
-
-    std::int64_t repeated_artifact_id = 0;
-    ASSERT_TRUE(state_db->StoreArtifact(
-        {
-            .sha256 = "state-event-id-base",
-            .size_bytes = 13,
-            .compression_kind = 0,
-            .filename = "base-updated.dtm",
-            .file_ext = ".dtm",
-            .artifact_kind = "DTM",
-            .created_at_utc = t2,
-            .correlation_id = "repeat-state",
-            .causation_id = "test",
-        },
-        &repeated_artifact_id,
-        &error)) << error;
-    EXPECT_EQ(base_artifact_id, repeated_artifact_id);
-    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(1) FROM state_outbox_message WHERE event_type='State.ArtifactStored.v1';"));
-    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(DISTINCT event_id) FROM state_outbox_message WHERE event_type='State.ArtifactStored.v1';"));
-
-    std::int64_t variant_id = 0;
-    ASSERT_TRUE(state_db->CreateTasVariant(
-        {
-            .name = "repeatable-tas-variant",
-            .base_dtm_artifact_id = base_artifact_id,
-            .mutation_mode = "RTC_OVERRIDE",
-            .rtc_value = 7,
-            .created_at_utc = t1,
-            .correlation_id = "repeat-state",
-            .causation_id = "test",
-        },
-        &variant_id,
-        &error)) << error;
-
-    std::int64_t duplicate_variant_id = 0;
-    ASSERT_TRUE(state_db->CreateTasVariant(
-        {
-            .name = "repeatable-tas-variant",
-            .base_dtm_artifact_id = base_artifact_id,
-            .mutation_mode = "RTC_OVERRIDE",
-            .rtc_value = 7,
-            .created_at_utc = t2,
-            .correlation_id = "repeat-state",
-            .causation_id = "test",
-        },
-        &duplicate_variant_id,
-        &error)) << error;
-    EXPECT_EQ(variant_id, duplicate_variant_id);
-    EXPECT_EQ(1, ReadInt64(db_, "SELECT COUNT(1) FROM state_tas_movie_variant WHERE name='repeatable-tas-variant';"));
-    EXPECT_EQ(1, ReadInt64(db_, "SELECT COUNT(1) FROM state_outbox_message WHERE event_type='State.TasVariantCreated.v1';"));
-
-    std::int64_t other_artifact_id = 0;
-    ASSERT_TRUE(state_db->StoreArtifact(
-        {
-            .sha256 = "state-event-id-other",
-            .size_bytes = 14,
-            .compression_kind = 0,
-            .filename = "other.dtm",
-            .file_ext = ".dtm",
-            .artifact_kind = "DTM",
-            .created_at_utc = t2,
-            .correlation_id = "repeat-state",
-            .causation_id = "test",
-        },
-        &other_artifact_id,
-        &error)) << error;
-
-    EXPECT_FALSE(state_db->CreateTasVariant(
-        {
-            .name = "repeatable-tas-variant",
-            .base_dtm_artifact_id = other_artifact_id,
-            .mutation_mode = "RTC_OVERRIDE",
-            .rtc_value = 7,
-            .created_at_utc = t2,
-            .correlation_id = "repeat-state",
-            .causation_id = "test",
-        },
-        nullptr,
-        &error));
-    EXPECT_NE(std::string::npos, error.find("different defining fields"));
-}
-
-TEST_F(SqliteDbFixture, TasMovieRepeatedSchedulesUseDbJobSetScopedFingerprints) {
+TEST_F(SqliteDbFixture, BattlePredicateBindingAndSingleTurnResultRoundTripExactly) {
     using namespace savor::db;
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::tasmovie;
+    using savor::runtime::program::BuiltinType;
 
-    auto* state_db = db_service_->StateDb();
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* execution_db = db_service_->ExecutionDb();
-    ASSERT_NE(state_db, nullptr);
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(execution_db, nullptr);
-
+    auto* analysis = db_service_->AnalysisDb();
+    ASSERT_NE(analysis, nullptr);
+    const auto now = types::UtcNow();
     std::string error;
-    std::int64_t base_artifact_id = 0;
-    ASSERT_TRUE(state_db->StoreArtifact(
-        {
-            .sha256 = "tasmovie-repeated-job-fingerprint-base",
-            .size_bytes = 12,
-            .compression_kind = 0,
-            .filename = "base.dtm",
-            .file_ext = ".dtm",
-            .artifact_kind = "DTM",
-            .created_at_utc = types::UtcNow(),
-            .correlation_id = "test.tasmovie.repeat",
-            .causation_id = "test",
-        },
-        &base_artifact_id,
-        &error))
-        << error;
+    std::int64_t battle_set_id = 0;
+    ASSERT_TRUE(analysis->CreateBattleSet({
+        .name = "battle-v2-persistence-fixture",
+        .entry_savestate_id = 101,
+        .battle_run_spec_id = 201,
+        .explorer_settings_id = 301,
+        .status = BattleSetStatus::Active,
+        .created_at_utc = now,
+        .correlation_id = "battle-v2",
+        .causation_id = "test",
+    }, &battle_set_id, &error)) << error;
+    std::int64_t candidate_id = 0;
+    ASSERT_TRUE(analysis->AddBattleSeedCandidate({
+        .battle_set_id = battle_set_id,
+        .seed_value = 0x12345678,
+        .source_kind = BattleSeedCandidateSourceKind::Manual,
+        .candidate_status = BattleSeedCandidateStatus::Ready,
+        .created_at_utc = now,
+        .correlation_id = "battle-v2",
+        .causation_id = "test",
+    }, &candidate_id, &error)) << error;
+    std::int64_t wave_id = 0;
+    ASSERT_TRUE(analysis->CreateBattleTurnWave({
+        .battle_set_id = battle_set_id,
+        .turn_index = 2,
+        .seed_candidate_id = candidate_id,
+        .status = BattleTurnWaveStatus::Ready,
+        .created_at_utc = now,
+        .correlation_id = "battle-v2",
+        .causation_id = "test",
+    }, &wave_id, &error)) << error;
 
-    ProgramKindRegistry registry;
-    TasMoviePhaseRegistrationConfig config{};
-    config.blueprint.base_dtm_artifact_id = base_artifact_id;
-    config.blueprint.rtc_low = 0;
-    config.blueprint.rtc_high = 0;
-    config.working_dir_root = temp_root_ / "tasmovie-repeat";
-    RegisterTasMoviePhaseDescriptor(&registry, execution_db, state_db, analysis_db, std::move(config));
+    const std::string bundle_sha(64, 'a');
+    const std::string binding_sha(64, 'b');
+    const std::string active_sha(64, 'c');
+    const std::string phase_sha(64, 'd');
+    const std::string hook_sha(64, 'e');
+    std::int64_t binding_id = 0;
+    ASSERT_TRUE(analysis->BindBattlePredicateBundle({
+        .wave_id = wave_id,
+        .predicate_bundle_revision_id = 44,
+        .bundle_content_sha256 = bundle_sha,
+        .binding_content_sha256 = binding_sha,
+        .structural_active_check_sha256 = active_sha,
+        .parameter_values = {{
+            .ordinal = 0,
+            .value_kind = "INTEGER",
+            .builtin_type = static_cast<int>(BuiltinType::U32),
+            .integer_value = 17,
+        }},
+        .active_check_ordinals = {1, 3},
+        .phase_program_kind = static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner),
+        .phase_program_version = 1,
+        .phase_canonical_id = "savor.full_phase.battle_single_turn",
+        .phase_revision = 1,
+        .phase_sha256 = phase_sha,
+        .hook_contract_canonical_id = "soa.battle.hooks.public",
+        .hook_contract_revision = 1,
+        .hook_contract_sha256 = hook_sha,
+        .created_at_utc = now,
+    }, &binding_id, &error)) << error;
+    const auto binding = analysis->GetBattlePredicateBundleBindingForWave(wave_id);
+    ASSERT_TRUE(binding.has_value());
+    EXPECT_EQ(binding->predicate_bundle_binding_id, binding_id);
+    EXPECT_EQ(binding->binding_content_sha256, binding_sha);
+    ASSERT_EQ(binding->parameter_values.size(), 1u);
+    EXPECT_EQ(binding->parameter_values.front().integer_value, 17);
+    EXPECT_EQ(binding->active_check_ordinals, (std::vector<std::uint32_t>{1, 3}));
 
-    const auto* descriptor = registry.FindForStepKind("tas_movie");
-    ASSERT_NE(descriptor, nullptr);
-    ASSERT_NE(descriptor->job_persistence, nullptr);
-
-    const auto first = descriptor->job_persistence->EncodeForQueueing(
-        WorkflowStepScheduleContext{ .domain_ref_id = base_artifact_id, .step_priority = 42 });
-    const auto second = descriptor->job_persistence->EncodeForQueueing(
-        WorkflowStepScheduleContext{ .domain_ref_id = base_artifact_id, .step_priority = 42 });
-    ASSERT_GT(first.root_job_set_id, 0);
-    ASSERT_GT(second.root_job_set_id, 0);
-    ASSERT_NE(first.root_job_set_id, second.root_job_set_id);
-
-    EXPECT_EQ(1, ReadInt64(db_, "SELECT COUNT(1) FROM state_tas_movie_variant WHERE name='tasmovie-base-1-rtc-0';"));
-    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(1) FROM exec_job WHERE program_kind=2;"));
-    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(DISTINCT fingerprint) FROM exec_job WHERE program_kind=2;"));
-    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(1) FROM exec_job WHERE program_kind=2 AND priority=42;"));
-
-    sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        "SELECT COUNT(1) FROM exec_job WHERE fingerprint LIKE ?1 OR fingerprint LIKE ?2;",
-        -1,
-        &st,
-        nullptr));
-    const auto first_like = "%;job_set_id=" + std::to_string(first.root_job_set_id) + ";%";
-    const auto second_like = "%;job_set_id=" + std::to_string(second.root_job_set_id) + ";%";
-    sqlite3_bind_text(st, 1, first_like.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 2, second_like.c_str(), -1, SQLITE_TRANSIENT);
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(2, sqlite3_column_int64(st, 0));
-    sqlite3_finalize(st);
+    std::int64_t turn_job_id = 0;
+    constexpr std::int64_t exec_job_id = 70001;
+    ASSERT_TRUE(analysis->RecordBattleTurnJob({
+        .wave_id = wave_id,
+        .exec_job_id = exec_job_id,
+        .plan_id = 501,
+        .fake_attacks_this_turn = 2,
+        .fake_attacks_used_before = 3,
+        .job_state = BattleTurnJobState::Succeeded,
+        .has_results = true,
+        .recorded_at_utc = now,
+        .correlation_id = "battle-v2",
+        .causation_id = "test",
+    }, &turn_job_id, &error)) << error;
+    const std::vector<std::uint8_t> evidence{1, 2, 3, 4};
+    std::int64_t result_id = 0;
+    ASSERT_TRUE(analysis->RecordBattleSingleTurnResult({
+        .turn_job_id = turn_job_id,
+        .exec_job_id = exec_job_id,
+        .worker_terminal_sha256 = std::string(64, 'f'),
+        .terminal_kind = "SUCCEEDED",
+        .domain_outcome = "PredicateRejected",
+        .ending_rng = 1234,
+        .vi_start = 100,
+        .vi_end = 120,
+        .pred_passed = 5,
+        .pred_total = 6,
+        .cumulative_fake_attacks = 5,
+        .predicate_bundle_revision_id = 44,
+        .predicate_bundle_sha256 = bundle_sha,
+        .predicate_binding_sha256 = binding_sha,
+        .predicate_evidence_blob = evidence,
+        .recorded_at_utc = now,
+    }, &result_id, &error)) << error;
+    const auto result = analysis->GetBattleSingleTurnResultForExecJob(exec_job_id);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->battle_single_turn_result_id, result_id);
+    EXPECT_EQ(result->domain_outcome, "PredicateRejected");
+    EXPECT_EQ(result->pred_passed, 5u);
+    EXPECT_EQ(result->pred_total, 6u);
+    EXPECT_EQ(result->predicate_evidence_blob, evidence);
 }
-#endif
+
+TEST_F(SqliteDbFixture, PredicateV2PublishesImmutableRelationalRevisionsAndClonesDrafts) {
+    using namespace savor::db;
+    using namespace savor::runtime::predicates;
+    using namespace savor::runtime::program;
+    using namespace savor::runtime::program::composition;
+
+    auto* authoring = db_service_->AuthoringDb();
+    ASSERT_NE(authoring, nullptr);
+    const auto now = types::UtcNow();
+    std::string error;
+
+    PredicateDefinition definition{
+        .canonical_id = "test.predicate.always_true",
+        .revision = 1,
+        .source_name = "sqlite-fixture",
+        .expression = {{
+            .kind = PredicateExpressionKind::Literal,
+            .literal = LiteralValue{
+                .type = TypeRef::Builtin(BuiltinType::Bool),
+                .payload = true,
+            },
+            .result_type = TypeRef::Builtin(BuiltinType::Bool),
+            .source_label = "true",
+        }},
+        .root_expression = 0,
+    };
+    std::int64_t definition_revision_id = 0;
+    ASSERT_TRUE(authoring->SavePredicateDefinitionDraftV2({
+        .stable_key = definition.canonical_id,
+        .name = "Always true",
+        .definition = definition,
+        .created_at_utc = now,
+    }, &definition_revision_id, &error)) << error;
+    ASSERT_TRUE(authoring->PublishPredicateDefinitionRevisionV2(
+        definition_revision_id, now, &error)) << error;
+    const auto published_definition =
+        authoring->GetPredicateDefinitionRevisionV2(definition_revision_id);
+    ASSERT_TRUE(published_definition.has_value());
+    EXPECT_EQ(published_definition->revision_state, "PUBLISHED");
+    EXPECT_EQ(published_definition->definition.expression, definition.expression);
+    EXPECT_EQ(published_definition->content_sha256.size(), 64u);
+
+    const auto hooks = BattlePredicateHookContractV1();
+    const auto start_turn = std::ranges::find_if(hooks.points, [](const auto& point) {
+        return point.canonical_id.ends_with(".StartTurn");
+    });
+    ASSERT_NE(start_turn, hooks.points.end());
+    ResolvedPredicateBundleV1 bundle{
+        .canonical_id = "test.predicate_bundle.start_turn",
+        .revision = 1,
+        .definitions = {{definition_revision_id, definition}},
+        .checks = {{
+            .ordinal = 0,
+            .predicate_definition_revision_id = definition_revision_id,
+            .use = {
+                .canonical_id = "always-true-at-start-turn",
+                .semantic_point_id = start_turn->canonical_id,
+                .reaction = PredicateReaction::RecordAndContinue,
+                .participates_in_aggregation = true,
+            },
+            .occurrence = PredicateOccurrencePolicyV1::First,
+        }},
+    };
+    std::int64_t bundle_revision_id = 0;
+    ASSERT_TRUE(authoring->SavePredicateBundleDraftV2({
+        .stable_key = bundle.canonical_id,
+        .name = "Start-turn checks",
+        .bundle = bundle,
+        .created_at_utc = now,
+    }, &bundle_revision_id, &error)) << error;
+    ASSERT_TRUE(authoring->PublishPredicateBundleRevisionV2(
+        bundle_revision_id, now, &error)) << error;
+    const auto published_bundle =
+        authoring->GetPredicateBundleRevisionV2(bundle_revision_id);
+    ASSERT_TRUE(published_bundle.has_value());
+    EXPECT_EQ(published_bundle->revision_state, "PUBLISHED");
+    ASSERT_EQ(published_bundle->bundle.checks.size(), 1u);
+    EXPECT_EQ(published_bundle->bundle.checks.front().use.semantic_point_id,
+              start_turn->canonical_id);
+    EXPECT_EQ(published_bundle->bundle.content_sha256.size(), 64u);
+
+    EXPECT_EQ(SQLITE_CONSTRAINT, sqlite3_exec(
+        db_,
+        ("UPDATE au_predicate_check_use_v2 SET emit_evidence=1 "
+         "WHERE predicate_bundle_revision_id=" +
+         std::to_string(bundle_revision_id)).c_str(),
+        nullptr, nullptr, nullptr));
+
+    std::int64_t cloned_revision_id = 0;
+    ASSERT_TRUE(authoring->SavePredicateBundleDraftV2({
+        .stable_key = bundle.canonical_id,
+        .name = "Start-turn checks",
+        .bundle = bundle,
+        .created_at_utc = now,
+    }, &cloned_revision_id, &error)) << error;
+    EXPECT_NE(cloned_revision_id, bundle_revision_id);
+    const auto clone = authoring->GetPredicateBundleRevisionV2(cloned_revision_id);
+    ASSERT_TRUE(clone.has_value());
+    EXPECT_EQ(clone->revision_state, "DRAFT");
+    EXPECT_EQ(clone->bundle.revision, published_bundle->bundle.revision + 1);
+}
+
+TEST_F(SqliteDbFixture, PredicateV2RejectsUnavailableBattleHookAtPublication) {
+    using namespace savor::db;
+    using namespace savor::runtime::predicates;
+    using namespace savor::runtime::program;
+    using namespace savor::runtime::program::composition;
+
+    auto* authoring = db_service_->AuthoringDb();
+    ASSERT_NE(authoring, nullptr);
+    const auto now = types::UtcNow();
+    std::string error;
+    PredicateDefinition definition{
+        .canonical_id = "test.predicate.unavailable_hook",
+        .revision = 1,
+        .source_name = "sqlite-fixture",
+        .expression = {{
+            .kind = PredicateExpressionKind::Literal,
+            .literal = LiteralValue{
+                .type = TypeRef::Builtin(BuiltinType::Bool),
+                .payload = true,
+            },
+            .result_type = TypeRef::Builtin(BuiltinType::Bool),
+            .source_label = "true",
+        }},
+        .root_expression = 0,
+    };
+    std::int64_t definition_revision_id = 0;
+    ASSERT_TRUE(authoring->SavePredicateDefinitionDraftV2({
+        .stable_key = definition.canonical_id,
+        .name = "Unavailable hook predicate",
+        .definition = definition,
+        .created_at_utc = now,
+    }, &definition_revision_id, &error)) << error;
+    ASSERT_TRUE(authoring->PublishPredicateDefinitionRevisionV2(
+        definition_revision_id, now, &error)) << error;
+
+    ResolvedPredicateBundleV1 bundle{
+        .canonical_id = "test.predicate_bundle.unavailable_hook",
+        .revision = 1,
+        .definitions = {{definition_revision_id, definition}},
+        .checks = {{
+            .ordinal = 0,
+            .predicate_definition_revision_id = definition_revision_id,
+            .use = {
+                .canonical_id = "not-yet-supported",
+                .semantic_point_id = "soa.battle.point.StartAction",
+            },
+            .occurrence = PredicateOccurrencePolicyV1::First,
+        }},
+    };
+    std::int64_t bundle_revision_id = 0;
+    ASSERT_TRUE(authoring->SavePredicateBundleDraftV2({
+        .stable_key = bundle.canonical_id,
+        .name = "Unavailable hook bundle",
+        .bundle = bundle,
+        .created_at_utc = now,
+    }, &bundle_revision_id, &error)) << error;
+    EXPECT_FALSE(authoring->PublishPredicateBundleRevisionV2(
+        bundle_revision_id, now, &error));
+    EXPECT_NE(error.find("predicate.hook_unavailable"), std::string::npos)
+        << error;
+    const auto rejected = authoring->GetPredicateBundleRevisionV2(bundle_revision_id);
+    ASSERT_TRUE(rejected.has_value());
+    EXPECT_EQ(rejected->revision_state, "DRAFT");
+}
+
+TEST_F(SqliteDbFixture, BattleStartAtomicallyJoinsContextAndConfirmedSeedProbeFrames) {
+    using namespace savor::db;
+
+    auto* analysis = db_service_->AnalysisDb();
+    ASSERT_NE(analysis, nullptr);
+    const auto now = types::UtcNow();
+    constexpr std::int64_t entry_savestate_id = 81001;
+    constexpr std::int64_t workflow_instance_id = 81002;
+    constexpr std::int64_t workflow_step_id = 81003;
+    std::string error;
+    const auto confirmed = CreateConfirmedSeedProbeFixture(
+        analysis, "battle-start-join", entry_savestate_id, 81004,
+        81005, 0x12345678u, now, &error);
+    ASSERT_TRUE(confirmed.has_value()) << error;
+    ASSERT_TRUE(analysis->ReplaceSeedProbeAcceptedInputFrames({
+        .probe_run_id = confirmed->probe_run_id,
+        .input_frame_ids = {confirmed->input_frame_id},
+        .replaced_at_utc = now,
+        .correlation_id = "battle-start-join",
+        .causation_id = "test",
+    }, &error)) << error;
+    bool changed = false;
+    ASSERT_TRUE(analysis->UpdateSeedProbeRunStatus({
+        .probe_run_id = confirmed->probe_run_id,
+        .expected_status = SeedProbeRunStatus::Survey,
+        .new_status = SeedProbeRunStatus::Confirm,
+        .changed_at_utc = now,
+        .correlation_id = "battle-start-join",
+        .causation_id = "test",
+    }, &changed, &error)) << error;
+    ASSERT_TRUE(changed);
+    changed = false;
+    ASSERT_TRUE(analysis->UpdateSeedProbeRunStatus({
+        .probe_run_id = confirmed->probe_run_id,
+        .expected_status = SeedProbeRunStatus::Confirm,
+        .new_status = SeedProbeRunStatus::Completed,
+        .completed_at_utc = now,
+        .changed_at_utc = now,
+        .correlation_id = "battle-start-join",
+        .causation_id = "test",
+    }, &changed, &error)) << error;
+    ASSERT_TRUE(changed);
+
+    std::int64_t context_probe_id = 0;
+    ASSERT_TRUE(analysis->CreateBattleContextProbe({
+        .source_savestate_id = entry_savestate_id,
+        .materialization_key = "battle-start-context",
+        .workflow_instance_id = workflow_instance_id,
+        .workflow_step_id = 81006,
+        .probe_status = BattleContextProbeStatus::Queued,
+        .created_at_utc = now,
+        .correlation_id = "battle-start-join",
+        .causation_id = "test",
+    }, &context_probe_id, &error)) << error;
+    ASSERT_TRUE(analysis->SetBattleContextProbeExecJobId(
+        context_probe_id, 81007, &error)) << error;
+    ASSERT_TRUE(analysis->CompleteBattleContextProbe({
+        .exec_job_id = 81007,
+        .probe_status = BattleContextProbeStatus::Succeeded,
+        .context_version = 1,
+        .recorded_at_utc = now,
+    }, &error)) << error;
+
+    EnsureBattleStartCommand command{
+        .workflow_instance_id = workflow_instance_id,
+        .workflow_step_id = workflow_step_id,
+        .probe_run_id = confirmed->probe_run_id,
+        .context_probe_id = context_probe_id,
+        .battle_set_name = "battle.start.step.81003",
+        .entry_savestate_id = entry_savestate_id,
+        .battle_run_spec_id = 81008,
+        .explorer_settings_id = 81009,
+        .launch_fake_attack_min = 0,
+        .launch_fake_attack_max = 2,
+        .created_at_utc = now,
+        .correlation_id = "battle-start-join",
+        .causation_id = "test",
+    };
+    EnsureBattleStartReceipt created{};
+    ASSERT_TRUE(analysis->EnsureBattleStart(command, &created, &error)) << error;
+    EXPECT_TRUE(created.created);
+    ASSERT_GT(created.battle_set_id, 0);
+    ASSERT_EQ(created.first_wave_ids.size(), 1u);
+    const auto wave = analysis->GetBattleTurnWave(created.first_wave_ids.front());
+    ASSERT_TRUE(wave.has_value());
+    EXPECT_EQ(wave->turn_index, 1);
+    EXPECT_EQ(wave->context_probe_id, context_probe_id);
+
+    EnsureBattleStartReceipt replayed{};
+    ASSERT_TRUE(analysis->EnsureBattleStart(command, &replayed, &error)) << error;
+    EXPECT_FALSE(replayed.created);
+    EXPECT_EQ(replayed.battle_start_id, created.battle_start_id);
+    EXPECT_EQ(replayed.battle_set_id, created.battle_set_id);
+    EXPECT_EQ(replayed.first_wave_ids, created.first_wave_ids);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(*) FROM ab_battle_set WHERE name='battle.start.step.81003';"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(*) FROM ab_seed_candidate WHERE battle_set_id=(SELECT battle_set_id FROM ab_battle_start WHERE workflow_step_id=81003);"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(*) FROM ab_turn_wave WHERE battle_set_id=(SELECT battle_set_id FROM ab_battle_start WHERE workflow_step_id=81003);"), 1);
+}
 
 TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedAuthoringAndAnalysisWrites) {
     auto* authoring_db = db_service_->AuthoringDb();
@@ -1151,764 +1407,6 @@ TEST_F(SqliteDbFixture, Stage5WorkflowAppendDynamicStepsCreatesReadyIdempotentCh
     ASSERT_TRUE(after_retry.has_value());
     EXPECT_EQ(after_retry->steps.size(), with_dynamic->steps.size());
     EXPECT_EQ(after_retry->edges.size(), with_dynamic->edges.size());
-}
-
-TEST_F(SqliteDbFixture, BattleContextProbeEnqueueUsesWorkflowStepPriority) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::battlecontext;
-
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* execution_db = db_service_->ExecutionDb();
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(execution_db, nullptr);
-
-    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000100));
-    std::string err;
-
-    std::int64_t battle_set_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleSet(
-        {
-            .name = "context-probe-priority-set",
-            .entry_savestate_id = 101,
-            .battle_run_spec_id = 202,
-            .explorer_settings_id = 303,
-            .status = BattleSetStatus::Active,
-            .created_at_utc = now,
-            .correlation_id = "context-probe-priority",
-            .causation_id = "test",
-        },
-        &battle_set_id,
-        &err)) << err;
-
-    std::int64_t seed_candidate_id = 0;
-    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
-        {
-            .battle_set_id = battle_set_id,
-            .seed_value = 12345,
-            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
-            .candidate_status = BattleSeedCandidateStatus::Ready,
-            .created_at_utc = now,
-            .correlation_id = "context-probe-priority",
-            .causation_id = "test",
-        },
-        &seed_candidate_id,
-        &err)) << err;
-
-    std::int64_t wave_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
-        {
-            .battle_set_id = battle_set_id,
-            .turn_index = 1,
-            .seed_candidate_id = seed_candidate_id,
-            .status = BattleTurnWaveStatus::Ready,
-            .created_at_utc = now,
-            .correlation_id = "context-probe-priority",
-            .causation_id = "test",
-        },
-        &wave_id,
-        &err)) << err;
-
-    const auto descriptor = BuildBattleContextProbeDescriptor(execution_db, analysis_db, {});
-    ASSERT_NE(descriptor.job_persistence, nullptr);
-    const auto scheduled = descriptor.job_persistence->EncodeForQueueing(
-        WorkflowStepScheduleContext{ .domain_ref_id = wave_id, .step_priority = 42 });
-    ASSERT_GT(scheduled.root_job_set_id, 0);
-    EXPECT_EQ(
-        ReadInt64(db_, ("SELECT priority FROM exec_job WHERE job_set_id=" + std::to_string(scheduled.root_job_set_id) + ";").c_str()),
-        42);
-}
-
-TEST_F(SqliteDbFixture, BattleContextProbeTransitionSpawnsDirectWaveFromSuccessfulOutputProbe) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::battlecontext;
-
-    auto* analysis_db = db_service_->AnalysisDb();
-    ASSERT_NE(analysis_db, nullptr);
-
-    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000150));
-    std::string err;
-
-    std::int64_t battle_set_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleSet(
-        {
-            .name = "direct-context-transition-set",
-            .entry_savestate_id = 101,
-            .battle_run_spec_id = 202,
-            .explorer_settings_id = 303,
-            .status = BattleSetStatus::Active,
-            .created_at_utc = now,
-            .correlation_id = "direct-context-transition",
-            .causation_id = "test",
-        },
-        &battle_set_id,
-        &err)) << err;
-
-    std::int64_t seed_candidate_id = 0;
-    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
-        {
-            .battle_set_id = battle_set_id,
-            .seed_value = 12345,
-            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
-            .candidate_status = BattleSeedCandidateStatus::Ready,
-            .created_at_utc = now,
-            .correlation_id = "direct-context-transition",
-            .causation_id = "test",
-        },
-        &seed_candidate_id,
-        &err)) << err;
-
-    std::int64_t wave_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
-        {
-            .battle_set_id = battle_set_id,
-            .turn_index = 1,
-            .seed_candidate_id = seed_candidate_id,
-            .status = BattleTurnWaveStatus::Ready,
-            .created_at_utc = now,
-            .correlation_id = "direct-context-transition",
-            .causation_id = "test",
-        },
-        &wave_id,
-        &err)) << err;
-
-    std::int64_t context_probe_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleContextProbe(
-        {
-            .wave_id = wave_id,
-            .source_savestate_id = 101,
-            .probe_status = BattleContextProbeStatus::Queued,
-            .created_at_utc = now,
-            .correlation_id = "direct-context-transition",
-            .causation_id = "test",
-        },
-        &context_probe_id,
-        &err)) << err;
-    ASSERT_TRUE(analysis_db->SetBattleContextProbeExecJobId(context_probe_id, 9301, &err)) << err;
-    ASSERT_TRUE(analysis_db->CompleteBattleContextProbe(
-        {
-            .exec_job_id = 9301,
-            .probe_status = BattleContextProbeStatus::Succeeded,
-            .context_blob = std::string("context"),
-            .context_version = 1,
-            .recorded_at_utc = now,
-        },
-        &err)) << err;
-
-    ASSERT_TRUE(analysis_db->ListBattleTurnWavesForContextProbe(context_probe_id).empty());
-    const auto stored_wave = analysis_db->GetBattleTurnWave(wave_id);
-    ASSERT_TRUE(stored_wave.has_value());
-    EXPECT_FALSE(stored_wave->context_probe_id.has_value());
-
-    const auto descriptor = BuildBattleContextProbeDescriptor(nullptr, analysis_db, {});
-    ASSERT_NE(descriptor.workflow_transition, nullptr);
-    const auto decision = descriptor.workflow_transition->EvaluateTransition(
-        WorkflowTransitionContext{
-            .workflow_kind = "workflow_graph",
-            .step_key = "battle_context_1",
-            .input_ref_kind = std::string("analysis_battle.turn_wave"),
-            .input_ref_id = wave_id,
-            .output_ref_kind = std::string("analysisbattle.context_probe"),
-            .output_ref_id = context_probe_id,
-        });
-
-    ASSERT_TRUE(decision.should_advance);
-    EXPECT_FALSE(decision.blocked_reason.has_value());
-    ASSERT_EQ(decision.spawn_steps.size(), 1);
-    EXPECT_EQ(decision.spawn_steps[0].step_key, "BattleTurn/t1/w" + std::to_string(wave_id));
-    EXPECT_EQ(decision.spawn_steps[0].step_kind, "battle.single_turn");
-    EXPECT_EQ(decision.spawn_steps[0].input_ref_kind.value_or(""), "analysis_battle.turn_wave");
-    EXPECT_EQ(decision.spawn_steps[0].input_ref_id.value_or(0), wave_id);
-
-    const auto mismatch = descriptor.workflow_transition->EvaluateTransition(
-        WorkflowTransitionContext{
-            .workflow_kind = "workflow_graph",
-            .step_key = "battle_context_1",
-            .input_ref_kind = std::string("analysis_battle.turn_wave"),
-            .input_ref_id = wave_id + 1,
-            .output_ref_kind = std::string("analysisbattle.context_probe"),
-            .output_ref_id = context_probe_id,
-        });
-    EXPECT_FALSE(mismatch.should_advance);
-    EXPECT_EQ(mismatch.blocked_reason.value_or(""), "context_probe_wave_mismatch");
-    EXPECT_TRUE(mismatch.spawn_steps.empty());
-}
-
-TEST_F(SqliteDbFixture, BattleContextProbeTransitionPreservesBootstrapWaveFanout) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::battlecontext;
-
-    auto* analysis_db = db_service_->AnalysisDb();
-    ASSERT_NE(analysis_db, nullptr);
-
-    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000160));
-    std::string err;
-
-    std::int64_t context_probe_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleContextProbe(
-        {
-            .wave_id = 0,
-            .source_savestate_id = 101,
-            .probe_status = BattleContextProbeStatus::Queued,
-            .created_at_utc = now,
-            .correlation_id = "bootstrap-context-transition",
-            .causation_id = "test",
-        },
-        &context_probe_id,
-        &err)) << err;
-    ASSERT_TRUE(analysis_db->SetBattleContextProbeExecJobId(context_probe_id, 9302, &err)) << err;
-    ASSERT_TRUE(analysis_db->CompleteBattleContextProbe(
-        {
-            .exec_job_id = 9302,
-            .probe_status = BattleContextProbeStatus::Succeeded,
-            .context_blob = std::string("context"),
-            .context_version = 1,
-            .recorded_at_utc = now,
-        },
-        &err)) << err;
-
-    std::int64_t battle_set_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleSet(
-        {
-            .name = "bootstrap-context-transition-set",
-            .entry_savestate_id = 101,
-            .battle_run_spec_id = 202,
-            .explorer_settings_id = 303,
-            .status = BattleSetStatus::Active,
-            .created_at_utc = now,
-            .correlation_id = "bootstrap-context-transition",
-            .causation_id = "test",
-        },
-        &battle_set_id,
-        &err)) << err;
-
-    std::int64_t seed_candidate_id = 0;
-    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
-        {
-            .battle_set_id = battle_set_id,
-            .seed_value = 12345,
-            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
-            .candidate_status = BattleSeedCandidateStatus::Ready,
-            .created_at_utc = now,
-            .correlation_id = "bootstrap-context-transition",
-            .causation_id = "test",
-        },
-        &seed_candidate_id,
-        &err)) << err;
-
-    std::int64_t first_wave_id = 0;
-    std::int64_t second_wave_id = 0;
-    for (auto* wave_id : { &first_wave_id, &second_wave_id }) {
-        ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
-            {
-                .battle_set_id = battle_set_id,
-                .turn_index = 1,
-                .context_probe_id = context_probe_id,
-                .seed_candidate_id = seed_candidate_id,
-                .status = BattleTurnWaveStatus::Ready,
-                .created_at_utc = now,
-                .correlation_id = "bootstrap-context-transition",
-                .causation_id = "test",
-            },
-            wave_id,
-            &err)) << err;
-    }
-
-    const auto descriptor = BuildBattleContextProbeDescriptor(nullptr, analysis_db, {});
-    ASSERT_NE(descriptor.workflow_transition, nullptr);
-    const auto decision = descriptor.workflow_transition->EvaluateTransition(
-        WorkflowTransitionContext{
-            .workflow_kind = "workflow_graph",
-            .step_key = "battle_context_1",
-            .output_ref_kind = std::string("analysisbattle.context_probe"),
-            .output_ref_id = context_probe_id,
-        });
-
-    ASSERT_TRUE(decision.should_advance);
-    EXPECT_FALSE(decision.blocked_reason.has_value());
-    ASSERT_EQ(decision.spawn_steps.size(), 2);
-    EXPECT_EQ(decision.spawn_steps[0].input_ref_id.value_or(0), first_wave_id);
-    EXPECT_EQ(decision.spawn_steps[1].input_ref_id.value_or(0), second_wave_id);
-    EXPECT_EQ(decision.spawn_steps[0].step_kind, "battle.single_turn");
-    EXPECT_EQ(decision.spawn_steps[1].step_kind, "battle.single_turn");
-}
-
-TEST_F(SqliteDbFixture, BattleContextProbeTransitionBlocksWithoutAnyWaveRelationship) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::battlecontext;
-
-    auto* analysis_db = db_service_->AnalysisDb();
-    ASSERT_NE(analysis_db, nullptr);
-
-    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000170));
-    std::string err;
-
-    std::int64_t context_probe_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleContextProbe(
-        {
-            .wave_id = 0,
-            .source_savestate_id = 101,
-            .probe_status = BattleContextProbeStatus::Queued,
-            .created_at_utc = now,
-            .correlation_id = "missing-context-transition",
-            .causation_id = "test",
-        },
-        &context_probe_id,
-        &err)) << err;
-    ASSERT_TRUE(analysis_db->SetBattleContextProbeExecJobId(context_probe_id, 9303, &err)) << err;
-    ASSERT_TRUE(analysis_db->CompleteBattleContextProbe(
-        {
-            .exec_job_id = 9303,
-            .probe_status = BattleContextProbeStatus::Succeeded,
-            .context_blob = std::string("context"),
-            .context_version = 1,
-            .recorded_at_utc = now,
-        },
-        &err)) << err;
-
-    const auto descriptor = BuildBattleContextProbeDescriptor(nullptr, analysis_db, {});
-    ASSERT_NE(descriptor.workflow_transition, nullptr);
-    const auto decision = descriptor.workflow_transition->EvaluateTransition(
-        WorkflowTransitionContext{
-            .workflow_kind = "workflow_graph",
-            .step_key = "battle_context_1",
-            .output_ref_kind = std::string("analysisbattle.context_probe"),
-            .output_ref_id = context_probe_id,
-        });
-
-    EXPECT_FALSE(decision.should_advance);
-    EXPECT_EQ(decision.blocked_reason.value_or(""), "context_probe_waves_missing");
-    EXPECT_TRUE(decision.spawn_steps.empty());
-}
-
-TEST_F(SqliteDbFixture, BattleSingleTurnEnqueueUsesWorkflowStepPriority) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::battle;
-
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* authoring_db = db_service_->AuthoringDb();
-    auto* execution_db = db_service_->ExecutionDb();
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(authoring_db, nullptr);
-    ASSERT_NE(execution_db, nullptr);
-
-    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000200));
-    std::string err;
-
-    std::int64_t battle_run_spec_id = 0;
-    ASSERT_TRUE(authoring_db->SaveBattleRunSpec(
-        {
-            .name = "single-turn-priority-run",
-            .priority = 7,
-            .use_single_turn_runner = true,
-            .created_at_utc = now,
-            .correlation_id = "single-turn-priority",
-            .causation_id = "test",
-        },
-        &battle_run_spec_id,
-        &err)) << err;
-    const auto battle_run_zero_sql =
-        "SELECT COUNT(1) FROM au_battle_run_spec WHERE battle_run_spec_id="
-        + std::to_string(battle_run_spec_id) + " AND run_ms=0 AND vi_stall_ms=0;";
-    EXPECT_EQ(ReadInt64(db_, battle_run_zero_sql.c_str()), 1);
-    const auto battle_run_legacy_update =
-        "UPDATE au_battle_run_spec SET run_ms=35000,vi_stall_ms=1200"
-        " WHERE battle_run_spec_id=" + std::to_string(battle_run_spec_id) + ";";
-    ASSERT_TRUE(ExecSql(db_, battle_run_legacy_update.c_str()));
-
-    std::int64_t plan_id = 0;
-    ASSERT_TRUE(authoring_db->SavePlan(
-        {
-            .name = "single-turn-priority-plan",
-            .fingerprint = "single-turn-priority-plan",
-            .num_turns = 1,
-            .created_at_utc = now,
-            .correlation_id = "single-turn-priority",
-            .causation_id = "test",
-        },
-        &plan_id,
-        &err)) << err;
-
-    std::int64_t action_preset_id = 0;
-    ASSERT_TRUE(authoring_db->SaveBattlePlanActionPreset(
-        {
-            .name = "attack-enemy",
-            .macro = BattlePlanActionMacro::Attack,
-            .target_kind = BattlePlanTargetKind::SingleEnemy,
-            .target_single_slot = 4,
-            .created_at_utc = now,
-            .correlation_id = "single-turn-priority",
-            .causation_id = "test",
-        },
-        &action_preset_id,
-        &err)) << err;
-
-    std::int64_t plan_turn_id = 0;
-    ASSERT_TRUE(authoring_db->SaveBattlePlanTurn(
-        {
-            .plan_id = plan_id,
-            .turn_index = 1,
-            .actions = {
-                {
-                    .actor_slot = 0,
-                    .action_preset_id = action_preset_id,
-                    .ordinal = 0,
-                },
-            },
-            .replace_existing_actions = true,
-            .created_at_utc = now,
-            .correlation_id = "single-turn-priority",
-            .causation_id = "test",
-        },
-        &plan_turn_id,
-        &err)) << err;
-
-    const auto internal_bp = bp::battle::BattleMacroInputReadyGate;
-    const std::string legacy_predicate_sql =
-        "INSERT INTO au_predicate_spec("
-        "name,breakpoint_name,breakpoint_id,lhs_value,rhs_value,baseline_bps,cmp_op,width,flag_mask,"
-        "value_mask,lhs_address_program_id,rhs_address_program_id,abort_on_fail,created_at_utc) VALUES("
-        "'single-turn-priority-legacy','legacy unavailable'," + std::to_string(internal_bp)
-        + ",4096,0,'','GT',2,2,NULL,NULL,NULL,0,1781000000200);"
-        "INSERT INTO au_predicate_spec_required_breakpoint(predicate_spec_id,breakpoint_id,ordinal) "
-        "VALUES(last_insert_rowid()," + std::to_string(internal_bp) + ",0);";
-    ASSERT_TRUE(ExecSql(db_, legacy_predicate_sql.c_str()));
-    const auto legacy_predicate_id = ReadInt64(
-        db_,
-        "SELECT predicate_spec_id FROM au_predicate_spec WHERE name='single-turn-priority-legacy';");
-    const auto legacy_predicate = authoring_db->GetPredicateSpec(legacy_predicate_id);
-    ASSERT_TRUE(legacy_predicate.has_value());
-    EXPECT_EQ(legacy_predicate->required_breakpoint_ids, std::vector<BPKey>({ internal_bp }));
-
-    std::int64_t predicate_set_id = 0;
-    ASSERT_TRUE(authoring_db->SavePredicateSet(
-        {
-            .name = "single-turn-priority-legacy-set",
-            .predicate_spec_ids = { legacy_predicate_id },
-            .created_at_utc = now,
-        },
-        &predicate_set_id,
-        &err)) << err;
-
-    std::int64_t explorer_settings_id = 0;
-    ASSERT_TRUE(authoring_db->SaveExplorerSettings(
-        {
-            .name = "single-turn-priority-settings",
-            .default_plan_id = plan_id,
-            .default_predicate_set_id = predicate_set_id,
-            .created_at_utc = now,
-            .correlation_id = "single-turn-priority",
-            .causation_id = "test",
-        },
-        &explorer_settings_id,
-        &err)) << err;
-
-    std::int64_t battle_set_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleSet(
-        {
-            .name = "single-turn-priority-set",
-            .entry_savestate_id = 101,
-            .battle_run_spec_id = battle_run_spec_id,
-            .explorer_settings_id = explorer_settings_id,
-            .status = BattleSetStatus::Active,
-            .created_at_utc = now,
-            .correlation_id = "single-turn-priority",
-            .causation_id = "test",
-        },
-        &battle_set_id,
-        &err)) << err;
-
-    std::int64_t seed_candidate_id = 0;
-    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
-        {
-            .battle_set_id = battle_set_id,
-            .seed_value = 12345,
-            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
-            .candidate_status = BattleSeedCandidateStatus::Ready,
-            .created_at_utc = now,
-            .correlation_id = "single-turn-priority",
-            .causation_id = "test",
-        },
-        &seed_candidate_id,
-        &err)) << err;
-
-    std::int64_t wave_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
-        {
-            .battle_set_id = battle_set_id,
-            .turn_index = 1,
-            .seed_candidate_id = seed_candidate_id,
-            .status = BattleTurnWaveStatus::Ready,
-            .created_at_utc = now,
-            .correlation_id = "single-turn-priority",
-            .causation_id = "test",
-        },
-        &wave_id,
-        &err)) << err;
-
-    std::int64_t context_probe_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleContextProbe(
-        {
-            .wave_id = wave_id,
-            .source_savestate_id = 101,
-            .probe_status = BattleContextProbeStatus::Queued,
-            .created_at_utc = now,
-            .correlation_id = "single-turn-priority",
-            .causation_id = "test",
-        },
-        &context_probe_id,
-        &err)) << err;
-    ASSERT_TRUE(analysis_db->SetBattleContextProbeExecJobId(context_probe_id, 9201, &err)) << err;
-
-    soa::battle::ctx::BattleContext battle_context{};
-    for (std::uint32_t slot = 0; slot < 4; ++slot) {
-        battle_context.slots_[slot].is_player = 1;
-        battle_context.slots_[slot].present = 1;
-        battle_context.slots_[slot].is_alive = 1;
-    }
-    battle_context.slots_[4].is_player = 0;
-    battle_context.slots_[4].present = 1;
-    battle_context.slots_[4].is_alive = 1;
-    std::string context_blob;
-    ASSERT_TRUE(soa::battle::ctx::codec::encode(battle_context, context_blob));
-    ASSERT_TRUE(analysis_db->CompleteBattleContextProbe(
-        {
-            .exec_job_id = 9201,
-            .probe_status = BattleContextProbeStatus::Succeeded,
-            .context_blob = context_blob,
-            .context_version = soa::battle::ctx::codec::ver,
-            .recorded_at_utc = now,
-        },
-        &err)) << err;
-
-    const auto descriptor = BuildBattleSingleTurnDescriptor(
-        execution_db,
-        nullptr,
-        analysis_db,
-        BattleSingleTurnPhaseRegistrationConfig{
-            .authoring_db = authoring_db,
-            .working_dir_root = temp_root_,
-        });
-    ASSERT_NE(descriptor.job_persistence, nullptr);
-    const auto scheduled = descriptor.job_persistence->EncodeForQueueing(
-        WorkflowStepScheduleContext{ .domain_ref_id = wave_id, .step_priority = 42 });
-    ASSERT_GT(scheduled.root_job_set_id, 0);
-    EXPECT_EQ(
-        ReadInt64(db_, ("SELECT priority FROM exec_job WHERE job_set_id=" + std::to_string(scheduled.root_job_set_id) + ";").c_str()),
-        42);
-    ASSERT_NE(descriptor.runtime_init, nullptr);
-    const auto exec_job_id = ReadInt64(
-        db_,
-        ("SELECT job_id FROM exec_job WHERE job_set_id=" + std::to_string(scheduled.root_job_set_id) + ";").c_str());
-    const auto init = descriptor.runtime_init->BuildRuntimeInit(exec_job_id);
-    EXPECT_FALSE(descriptor.runtime_init->MaterializePsJob(exec_job_id, init).has_value());
-}
-
-TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromReturnedContext) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::battle;
-
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* authoring_db = db_service_->AuthoringDb();
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(authoring_db, nullptr);
-
-    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000000));
-    std::string err;
-
-    std::int64_t battle_run_spec_id = 0;
-    ASSERT_TRUE(authoring_db->SaveBattleRunSpec(
-        {
-            .name = "direct-context-chain",
-            .priority = 7,
-            .progress_enable = true,
-            .use_single_turn_runner = true,
-            .auto_wave_trigger_enable = true,
-            .created_at_utc = now,
-            .correlation_id = "direct-context",
-            .causation_id = "test",
-        },
-        &battle_run_spec_id,
-        &err)) << err;
-
-    std::int64_t plan_id = 0;
-    ASSERT_TRUE(authoring_db->SavePlan(
-        {
-            .name = "two-turn-plan",
-            .fingerprint = "two-turn-plan-fp",
-            .num_turns = 2,
-            .created_at_utc = now,
-            .correlation_id = "direct-context",
-            .causation_id = "test",
-        },
-        &plan_id,
-        &err)) << err;
-
-    std::int64_t action_preset_id = 0;
-    ASSERT_TRUE(authoring_db->SaveBattlePlanActionPreset(
-        {
-            .name = "attack-first-target",
-            .macro = BattlePlanActionMacro::Attack,
-            .target_kind = BattlePlanTargetKind::SingleEnemy,
-            .target_single_slot = 0,
-            .created_at_utc = now,
-            .correlation_id = "direct-context",
-            .causation_id = "test",
-        },
-        &action_preset_id,
-        &err)) << err;
-
-    for (int turn_index = 1; turn_index <= 2; ++turn_index) {
-        std::int64_t plan_turn_id = 0;
-        ASSERT_TRUE(authoring_db->SaveBattlePlanTurn(
-            {
-                .plan_id = plan_id,
-                .turn_index = turn_index,
-                .actions = {
-                    {
-                        .actor_slot = 0,
-                        .action_preset_id = action_preset_id,
-                        .ordinal = 0,
-                    },
-                },
-                .replace_existing_actions = true,
-                .created_at_utc = now,
-                .correlation_id = "direct-context",
-                .causation_id = "test",
-            },
-            &plan_turn_id,
-            &err)) << err;
-    }
-
-    std::int64_t explorer_settings_id = 0;
-    ASSERT_TRUE(authoring_db->SaveExplorerSettings(
-        {
-            .name = "direct-context-settings",
-            .description = "Use returned battle context for follow-up turns",
-            .default_plan_id = plan_id,
-            .created_at_utc = now,
-            .correlation_id = "direct-context",
-            .causation_id = "test",
-        },
-        &explorer_settings_id,
-        &err)) << err;
-
-    std::int64_t battle_set_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleSet(
-        {
-            .name = "direct-context-set",
-            .entry_savestate_id = 101,
-            .battle_run_spec_id = battle_run_spec_id,
-            .explorer_settings_id = explorer_settings_id,
-            .status = BattleSetStatus::Active,
-            .created_at_utc = now,
-            .correlation_id = "direct-context",
-            .causation_id = "test",
-        },
-        &battle_set_id,
-        &err)) << err;
-
-    std::int64_t seed_candidate_id = 0;
-    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
-        {
-            .battle_set_id = battle_set_id,
-            .seed_value = 12345,
-            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
-            .candidate_status = BattleSeedCandidateStatus::Ready,
-            .created_at_utc = now,
-            .correlation_id = "direct-context",
-            .causation_id = "test",
-        },
-        &seed_candidate_id,
-        &err)) << err;
-
-    std::int64_t wave_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
-        {
-            .battle_set_id = battle_set_id,
-            .turn_index = 1,
-            .seed_candidate_id = seed_candidate_id,
-            .status = BattleTurnWaveStatus::Ready,
-            .created_at_utc = now,
-            .correlation_id = "direct-context",
-            .causation_id = "test",
-        },
-        &wave_id,
-        &err)) << err;
-
-    std::int64_t turn_job_id = 0;
-    ASSERT_TRUE(analysis_db->RecordBattleTurnJob(
-        {
-            .wave_id = wave_id,
-            .exec_job_id = 7001,
-            .plan_id = plan_id,
-            .fake_attacks_this_turn = 0,
-            .fake_attacks_used_before = 0,
-            .job_state = BattleTurnJobState::Succeeded,
-            .started_at_utc = now,
-            .ended_at_utc = now,
-            .has_results = true,
-            .rng_seed = 424242,
-            .battle_outcome = savor::battle::Outcome::ReachedNextTurn,
-            .pred_passed = 1,
-            .pred_total = 1,
-            .pred_abort_run = 0,
-            .output_savestate_id = 202,
-            .result_context_blob_base64 = std::string("AQID"),
-            .result_context_version = 1,
-            .recorded_at_utc = now,
-            .correlation_id = "direct-context",
-            .causation_id = "test",
-        },
-        &turn_job_id,
-        &err)) << err;
-
-    const auto descriptor = BuildBattleSingleTurnDescriptor(
-        nullptr,
-        nullptr,
-        analysis_db,
-        BattleSingleTurnPhaseRegistrationConfig{
-            .authoring_db = authoring_db,
-            .working_dir_root = temp_root_,
-        });
-    ASSERT_NE(descriptor.workflow_transition, nullptr);
-
-    const auto decision = descriptor.workflow_transition->EvaluateTransition(
-        WorkflowTransitionContext{
-            .workflow_instance_id = 9001,
-            .workflow_step_id = 9002,
-            .job_set_id = 9003,
-            .workflow_kind = "workflow_graph",
-            .step_key = "BattleTurn/t1/w" + std::to_string(wave_id),
-            .input_ref_kind = std::string("analysis_battle.turn_wave"),
-            .input_ref_id = wave_id,
-        });
-
-    ASSERT_TRUE(decision.should_advance);
-    EXPECT_FALSE(decision.blocked_reason.has_value());
-    ASSERT_EQ(decision.spawn_steps.size(), 1);
-    EXPECT_EQ(decision.spawn_steps[0].step_kind, "battle.single_turn");
-    EXPECT_EQ(decision.spawn_steps[0].input_ref_kind.value_or(""), "analysis_battle.turn_wave");
-    EXPECT_EQ(decision.spawn_steps[0].priority, 0);
-    EXPECT_NE(decision.spawn_steps[0].step_key.find("BattleTurn/t2/w"), std::string::npos);
-    EXPECT_EQ(decision.spawn_steps[0].step_key.find("BattleContext/"), std::string::npos);
-
-    const auto waves = analysis_db->ListBattleTurnWaves(battle_set_id);
-    ASSERT_EQ(waves.size(), 2);
-    const auto child_it = std::find_if(waves.begin(), waves.end(), [&](const auto& wave) {
-        return wave.wave_id == decision.spawn_steps[0].input_ref_id.value_or(0);
-    });
-    ASSERT_NE(child_it, waves.end());
-    EXPECT_EQ(child_it->turn_index, 2);
-    EXPECT_EQ(child_it->status, BattleTurnWaveStatus::Ready);
-    EXPECT_FALSE(child_it->context_probe_id.has_value());
-    EXPECT_EQ(child_it->parent_wave_id.value_or(0), wave_id);
-    EXPECT_EQ(child_it->parent_turn_job_id.value_or(0), turn_job_id);
 }
 
 TEST_F(SqliteDbFixture, Stage3cReadinessGuardRequiresStage3bWorkflowSchemaVersion) {
@@ -2369,66 +1867,6 @@ VALUES(8501, 8201, 8401, 8402, unixepoch());
     EXPECT_EQ(report.completed_step_missing_completion_ts_count, 0);
 }
 
-TEST_F(SqliteDbFixture, Stage3cTerminalSubscriberProcessesTerminalJobEventsAsynchronously) {
-    using namespace savor::db::execution::workflow;
-
-    const savor::db::migrations::MigrationSourceOptions embedded_options{ .source_kind = savor::db::migrations::MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(savor::db::migrations::ApplyContextMigrations(db_, savor::db::migrations::MigrationContext::Execution, embedded_options, &err)) << err;
-
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
-VALUES(1, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, expected_total)
-VALUES(10, 1, 'workflow', unixepoch()*1000, 1);
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
-VALUES(100, 1, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 10, 0, 0, 1, unixepoch()*1000);
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
-VALUES(101, 1, 'next', 'seedprobe.next', 'WAITING', 0, 0, 1, unixepoch()*1000);
-INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
-VALUES(1000, 10, 1, 1, 'seedprobe_spec', 44, 'fp-1', 0, 'SUCCEEDED', 0, 1, unixepoch()*1000);
-)SQL"));
-
-    savor::db::execution::jobs::SqliteJobEventCommandService job_events(db_);
-    std::string job_error;
-    ASSERT_TRUE(job_events.AppendLifecycleEvent(
-        {
-            .kind = savor::db::execution::jobs::JobLifecycleEventKind::JobCompleted,
-            .job_id = 1000,
-            .terminal_state = std::string("SUCCEEDED"),
-        },
-        &job_error)) << job_error;
-
-    savor::db::execution::programdb::ProgramKindRegistry registry;
-    savor::db::execution::programdb::ProgramKindDescriptor descriptor{};
-    descriptor.program_kind = 1;
-    descriptor.program_name = "seedprobe.neutral";
-    descriptor.workflow_transition = std::make_shared<AlwaysAdvanceTransitionHandler>();
-    ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.neutral", descriptor));
-    StepCompletionGateService gate;
-    AdapterChainOrchestrator orchestrator(&registry, &gate);
-
-    SqliteWorkflowOrchestrationCommandService command_service(db_);
-    WorkflowTerminalOutboxSubscriber subscriber(db_, &orchestrator, &command_service);
-    WorkflowTerminalOutboxSubscriberResult result{};
-    std::string sub_error;
-    ASSERT_TRUE(subscriber.ConsumeFromCursor(0, 32, &result, &sub_error)) << sub_error;
-    EXPECT_GE(result.handled_count, 1);
-
-    sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT state, blocked_reason FROM exec_workflow_step WHERE workflow_step_id=100;", -1, &st, nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "COMPLETED");
-    EXPECT_EQ(sqlite3_column_type(st, 1), SQLITE_NULL);
-    sqlite3_finalize(st);
-
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT state, ready_at_utc FROM exec_workflow_step WHERE workflow_step_id=101;", -1, &st, nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "READY");
-    EXPECT_NE(sqlite3_column_type(st, 1), SQLITE_NULL);
-    sqlite3_finalize(st);
-}
-
 TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceMarksNextStepReadyFromTerminalJob) {
     using namespace savor::db::execution::workflow;
 
@@ -2439,8 +1877,10 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceMarksNextStepReadyFromT
     ASSERT_TRUE(ExecSql(db_, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
 VALUES(2, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, expected_total)
-VALUES(20, 1, 'workflow', unixepoch()*1000, 1);
+INSERT INTO exec_job_set(
+    job_set_id, program_kind, purpose, created_at_utc, expected_total,
+    materialization_state)
+VALUES(20, 1, 'workflow', unixepoch()*1000, 1, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
 VALUES(200, 2, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 20, 0, 0, 1, unixepoch()*1000);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
@@ -2456,10 +1896,13 @@ VALUES(2000, 20, 1, 1, 'seedprobe_spec', 44, 'fp-2', 0, 'SUCCEEDED', 0, 1, unixe
     descriptor.workflow_transition = std::make_shared<AlwaysAdvanceTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.neutral", descriptor));
     StepCompletionGateService gate;
-    AdapterChainOrchestrator orchestrator(&registry, &gate);
     SqliteWorkflowOrchestrationQueryService query_service(db_);
     SqliteWorkflowOrchestrationCommandService command_service(db_);
-    WorkflowTerminalAdvancementService advancement(&orchestrator, &query_service, &command_service);
+    WorkflowTerminalAdvancementService advancement(
+        &registry,
+        &gate,
+        &query_service,
+        &command_service);
 
     const auto terminal_ready = query_service.ListTerminalReadyStepSnapshots(10);
     ASSERT_EQ(terminal_ready.size(), 1u);
@@ -2646,9 +2089,12 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
     descriptor.workflow_transition = std::make_shared<SpawnStepTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("mock.spawn", descriptor));
     StepCompletionGateService gate;
-    AdapterChainOrchestrator orchestrator(&registry, &gate);
     RecordingWorkflowCommandService command_service;
-    WorkflowTerminalAdvancementService advancement(&orchestrator, nullptr, &command_service);
+    WorkflowTerminalAdvancementService advancement(
+        &registry,
+        &gate,
+        nullptr,
+        &command_service);
 
     WorkflowStepTerminalSnapshot snapshot{};
     snapshot.workflow_instance_id = 77;
@@ -2702,8 +2148,10 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceUsesRecordedStepOutputF
     ASSERT_TRUE(ExecSql(db_, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
 VALUES(22, 'MOCK_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, expected_total)
-VALUES(220, 1, 'workflow', unixepoch()*1000, 1);
+INSERT INTO exec_job_set(
+    job_set_id, program_kind, purpose, created_at_utc, expected_total,
+    materialization_state)
+VALUES(220, 1, 'workflow', unixepoch()*1000, 1, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
 VALUES(2200, 22, 'source', 'mock.source', 'MATERIALIZED', 220, 0, 0, 1, unixepoch()*1000);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
@@ -2731,8 +2179,11 @@ VALUES(22000, 220, 1, 1, 'mock_spec', 44, 'fp-22', 0, 'SUCCEEDED', 0, 1, unixepo
     descriptor.workflow_transition = std::make_shared<OutputAdvanceTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("mock.source", descriptor));
     StepCompletionGateService gate;
-    AdapterChainOrchestrator orchestrator(&registry, &gate);
-    WorkflowTerminalAdvancementService advancement(&orchestrator, &query_service, &command_service);
+    WorkflowTerminalAdvancementService advancement(
+        &registry,
+        &gate,
+        &query_service,
+        &command_service);
 
     WorkflowTerminalAdvancementResult result{};
     ASSERT_TRUE(advancement.AdvanceForTerminalJob(22000, &result, &err)) << err;
@@ -2850,8 +2301,10 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceCompletesWorkflowWhenFi
     ASSERT_TRUE(ExecSql(db_, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
 VALUES(3, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, expected_total)
-VALUES(30, 1, 'workflow', unixepoch()*1000, 1);
+INSERT INTO exec_job_set(
+    job_set_id, program_kind, purpose, created_at_utc, expected_total,
+    materialization_state)
+VALUES(30, 1, 'workflow', unixepoch()*1000, 1, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
 VALUES(300, 3, 'Unique', 'seedprobe.unique', 'MATERIALIZED', 30, 0, 0, 1, unixepoch()*1000);
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
@@ -2865,10 +2318,13 @@ VALUES(3000, 30, 1, 1, 'seedprobe_spec', 44, 'fp-3', 0, 'SUCCEEDED', 0, 1, unixe
     descriptor.workflow_transition = std::make_shared<FinalStepTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.unique", descriptor));
     StepCompletionGateService gate;
-    AdapterChainOrchestrator orchestrator(&registry, &gate);
     SqliteWorkflowOrchestrationQueryService query_service(db_);
     SqliteWorkflowOrchestrationCommandService command_service(db_);
-    WorkflowTerminalAdvancementService advancement(&orchestrator, &query_service, &command_service);
+    WorkflowTerminalAdvancementService advancement(
+        &registry,
+        &gate,
+        &query_service,
+        &command_service);
 
     WorkflowTerminalAdvancementResult result{};
     ASSERT_TRUE(advancement.AdvanceForTerminalJob(3000, &result, &err)) << err;
@@ -2905,8 +2361,10 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceFailsWorkflowWhenTermin
     ASSERT_TRUE(ExecSql(db_, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
 VALUES(4, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, expected_total)
-VALUES(40, 1, 'workflow', unixepoch()*1000, 1);
+INSERT INTO exec_job_set(
+    job_set_id, program_kind, purpose, created_at_utc, expected_total,
+    materialization_state)
+VALUES(40, 1, 'workflow', unixepoch()*1000, 1, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
 VALUES(400, 4, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 40, 0, 0, 1, unixepoch()*1000);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
@@ -2922,10 +2380,13 @@ VALUES(4000, 40, 1, 1, 'seedprobe_spec', 44, 'fp-4', 0, 'FAILED', 0, 1, unixepoc
     descriptor.workflow_transition = std::make_shared<AlwaysAdvanceTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.neutral", descriptor));
     StepCompletionGateService gate;
-    AdapterChainOrchestrator orchestrator(&registry, &gate);
     SqliteWorkflowOrchestrationQueryService query_service(db_);
     SqliteWorkflowOrchestrationCommandService command_service(db_);
-    WorkflowTerminalAdvancementService advancement(&orchestrator, &query_service, &command_service);
+    WorkflowTerminalAdvancementService advancement(
+        &registry,
+        &gate,
+        &query_service,
+        &command_service);
 
     WorkflowTerminalAdvancementResult result{};
     ASSERT_TRUE(advancement.AdvanceForTerminalJob(4000, &result, &err)) << err;
@@ -3300,7 +2761,7 @@ VALUES
     EXPECT_GE(read_int("SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_instance_id=15001 AND event_kind='Execution.WorkflowInstanceCompleted.v1';"), 1);
 }
 
-TEST_F(SqliteDbFixture, Stage3dExecutionJobCommandServiceEmitsEventsOneThroughNine) {
+TEST_F(SqliteDbFixture, Stage3dExecutionJobCommandServiceEmitsLifecycleEvents) {
     using namespace savor::db::execution::jobs;
     using namespace savor::db::execution::workflow;
     using namespace savor::db::migrations;
@@ -3325,7 +2786,6 @@ VALUES(601, 501, 1, 1, 'seed_probe', 10, 'fp-stage3d-601', 5, 'QUEUED', 0, 3, un
     ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobClaimed, .job_id = 601, .claimed_by_token = std::string("worker-1"), .lease_expires_at_utc = 2000000 }, &err)) << err;
     ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobStarted, .job_id = 601, .requested_by = std::string("worker-1") }, &err)) << err;
     ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobLeaseRenewed, .job_id = 601, .lease_expires_at_utc = 3000000 }, &err)) << err;
-    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobProgressed, .job_id = 601, .message = std::string("50%") }, &err)) << err;
     ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobCompleted, .job_id = 601, .terminal_state = std::string("SUCCEEDED") }, &err)) << err;
     ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobEventArchived, .job_id = 601, .message = std::string("archived") }, &err)) << err;
     ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobRestored, .job_id = 601, .message = std::string("restored") }, &err)) << err;
@@ -3333,22 +2793,17 @@ VALUES(601, 501, 1, 1, 'seed_probe', 10, 'fp-stage3d-601', 5, 'QUEUED', 0, 3, un
     sqlite3_stmt* st = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_outbox_message WHERE event_type LIKE 'Execution.Job%.v1';", -1, &st, nullptr));
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int(st, 0), 9);
+    EXPECT_EQ(sqlite3_column_int(st, 0), 8);
     sqlite3_finalize(st);
 
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_outbox_message WHERE payload_ref_kind='job' AND payload_ref_id=601;", -1, &st, nullptr));
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int(st, 0), 8);
+    EXPECT_EQ(sqlite3_column_int(st, 0), 7);
     sqlite3_finalize(st);
 
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_job_event WHERE job_id=601;", -1, &st, nullptr));
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int(st, 0), 8);
-    sqlite3_finalize(st);
-
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT message FROM exec_job_event WHERE job_id=601 AND event_kind='Execution.JobProgressed.v1';", -1, &st, nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "50%");
+    EXPECT_EQ(sqlite3_column_int(st, 0), 7);
     sqlite3_finalize(st);
 
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
@@ -3361,48 +2816,6 @@ VALUES(601, 501, 1, 1, 'seed_probe', 10, 'fp-stage3d-601', 5, 'QUEUED', 0, 3, un
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "SUCCEEDED");
     EXPECT_EQ(sqlite3_column_type(st, 1), SQLITE_NULL);
     EXPECT_EQ(sqlite3_column_type(st, 2), SQLITE_NULL);
-    sqlite3_finalize(st);
-}
-
-TEST_F(SqliteDbFixture, Stage3dExecutionJobProgressEventsAreRepeatableAndDoNotDemoteTerminalJobs) {
-    using namespace savor::db::execution::jobs;
-    using namespace savor::db::execution::workflow;
-    using namespace savor::db::migrations;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
-
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
-VALUES(701, 1, 'progress-repeat', unixepoch()*1000);
-INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
-VALUES(801, 701, 1, 1, 'seed_probe', 10, 'fp-stage3d-801', 5, 'QUEUED', 0, 3, unixepoch()*1000);
-)SQL"));
-
-    savor::db::execution::workflow::SqliteExecutionDb execution_db(db_);
-    auto* job_commands = execution_db.JobCommandService();
-    ASSERT_NE(job_commands, nullptr);
-
-    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobProgressed, .job_id = 801, .message = std::string("first progress") }, &err)) << err;
-    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobProgressed, .job_id = 801, .message = std::string("second progress") }, &err)) << err;
-    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobCompleted, .job_id = 801, .terminal_state = std::string("SUCCEEDED") }, &err)) << err;
-    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobProgressed, .job_id = 801, .message = std::string("late progress") }, &err)) << err;
-
-    sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_job_event WHERE job_id=801 AND event_kind='Execution.JobProgressed.v1';", -1, &st, nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int(st, 0), 3);
-    sqlite3_finalize(st);
-
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_outbox_message WHERE event_type='Execution.JobProgressed.v1' AND payload_ref_kind='job' AND payload_ref_id=801;", -1, &st, nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int(st, 0), 3);
-    sqlite3_finalize(st);
-
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT state FROM exec_job WHERE job_id=801;", -1, &st, nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "SUCCEEDED");
     sqlite3_finalize(st);
 }
 
@@ -3480,9 +2893,9 @@ TEST_F(SqliteDbFixture, Stage5ExecutionJobActionsUpdateExecutionAndEmitProjector
     ASSERT_TRUE(execution_db->CancelQueuedOrClaimedJob(cancel_job_id, &err)) << err;
     ASSERT_TRUE(execution_db->RequeueJob(requeue_job_id, &err)) << err;
 
-    const auto restarted = execution_db->GetJob(restart_job_id);
-    const auto canceled = execution_db->GetJob(cancel_job_id);
-    const auto requeued = execution_db->GetJob(requeue_job_id);
+    const auto restarted = execution_db->GetExecutionJob(restart_job_id);
+    const auto canceled = execution_db->GetExecutionJob(cancel_job_id);
+    const auto requeued = execution_db->GetExecutionJob(requeue_job_id);
     ASSERT_TRUE(restarted.has_value());
     ASSERT_TRUE(canceled.has_value());
     ASSERT_TRUE(requeued.has_value());
@@ -3642,7 +3055,7 @@ VALUES(1830, 1829, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 1831, 8, 0, 2
         << err;
     EXPECT_GT(job_id, 0);
 
-    const auto record = execution_db.GetJob(job_id);
+    const auto record = execution_db.GetExecutionJob(job_id);
     ASSERT_TRUE(record.has_value());
     EXPECT_EQ(record->program_kind, 7);
     EXPECT_EQ(record->state, "QUEUED");
@@ -3689,7 +3102,7 @@ VALUES(1850, 1849, 'Neutral', 'seedprobe.neutral', 'READY', 8, 0, 2, unixepoch()
         &err))
         << err;
 
-    auto record = execution_db.GetJob(job_id);
+    auto record = execution_db.GetExecutionJob(job_id);
     ASSERT_TRUE(record.has_value());
     EXPECT_EQ(record->state, "PENDING_MATERIALIZATION");
 
@@ -3707,7 +3120,7 @@ VALUES(1850, 1849, 'Neutral', 'seedprobe.neutral', 'READY', 8, 0, 2, unixepoch()
         &err))
         << err;
 
-    record = execution_db.GetJob(job_id);
+    record = execution_db.GetExecutionJob(job_id);
     ASSERT_TRUE(record.has_value());
     EXPECT_EQ(record->state, "QUEUED");
 
@@ -3770,7 +3183,7 @@ VALUES(1870, 1869, 'Unique', 'seedprobe.unique', 'READY', 9, 0, 2, unixepoch()*1
         &err))
         << err;
 
-    const auto record = execution_db.GetJob(child_job_id);
+    const auto record = execution_db.GetExecutionJob(child_job_id);
     ASSERT_TRUE(record.has_value());
     EXPECT_EQ(record->state, "QUEUED");
 
@@ -4093,7 +3506,7 @@ VALUES
         claimed[0].claimed_by_token,
         "WORKSET_INVOCATION_RECOVERY",
         &err)) << err;
-    const auto recovered_job = execution_db.GetJob(19104);
+    const auto recovered_job = execution_db.GetExecutionJob(19104);
     ASSERT_TRUE(recovered_job.has_value());
     EXPECT_EQ(recovered_job->state, "QUEUED");
     EXPECT_EQ(ReadInt64(
@@ -5100,13 +4513,33 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
         {
             .name = "single-turn-plan",
             .fingerprint = "plan-fp-1",
-            .num_turns = 2,
             .created_at_utc = now,
             .correlation_id = "au-corr",
             .causation_id = "au-cause-2",
         },
         &plan_id,
         &err)) << err;
+
+    sqlite3_stmt* battle_plan_turn_count_column = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1) FROM pragma_table_info('au_battle_plan') WHERE name='num_turns';",
+        -1,
+        &battle_plan_turn_count_column,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(battle_plan_turn_count_column));
+    EXPECT_EQ(sqlite3_column_int(battle_plan_turn_count_column, 0), 0);
+    sqlite3_finalize(battle_plan_turn_count_column);
+
+    EXPECT_FALSE(authoring_db.SaveBattlePlanTurn(
+        {
+            .plan_id = plan_id,
+            .turn_index = 0,
+            .created_at_utc = now,
+            .correlation_id = "au-corr",
+            .causation_id = "invalid-turn-zero",
+        }, nullptr, &err));
+    err.clear();
 
     std::int64_t attack_preset_id = 0;
     ASSERT_TRUE(authoring_db.SaveBattlePlanActionPreset(
@@ -5190,81 +4623,12 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
         &err)) << err;
     ASSERT_GT(plan_turn_id, 0);
 
-    std::int64_t lhs_address_program_id = 0;
-    ASSERT_TRUE(authoring_db.EnsureAddressProgram(
-        {
-            .program_version = 1,
-            .prog_bytes = { 0x00 },
-            .derived_buffer_version = 1,
-            .derived_buffer_schema_hash = std::string("derived-hash"),
-            .soa_structs_hash = std::string("soa-hash"),
-            .description = "fixture lhs address program",
-        },
-        &lhs_address_program_id,
-        &err)) << err;
-    ASSERT_GT(lhs_address_program_id, 0);
-
-    std::int64_t duplicate_address_program_id = 0;
-    ASSERT_TRUE(authoring_db.EnsureAddressProgram(
-        {
-            .program_version = 1,
-            .prog_bytes = { 0x00 },
-            .derived_buffer_version = 1,
-            .derived_buffer_schema_hash = std::string("derived-hash"),
-            .soa_structs_hash = std::string("soa-hash"),
-            .description = "duplicate description is not identity",
-        },
-        &duplicate_address_program_id,
-        &err)) << err;
-    EXPECT_EQ(duplicate_address_program_id, lhs_address_program_id);
-
-    const auto address_program = authoring_db.GetAddressProgram(lhs_address_program_id);
-    ASSERT_TRUE(address_program.has_value());
-    EXPECT_EQ(address_program->program_version, 1);
-    EXPECT_EQ(address_program->prog_bytes, std::vector<std::uint8_t>({ 0x00 }));
-    EXPECT_EQ(address_program->derived_buffer_version.value_or(0), 1);
-    EXPECT_EQ(address_program->derived_buffer_schema_hash.value_or(""), "derived-hash");
-    EXPECT_EQ(address_program->soa_structs_hash.value_or(""), "soa-hash");
-
-    std::int64_t predicate_spec_id = 0;
-    ASSERT_TRUE(authoring_db.SavePredicateSpec(
-        {
-            .name = "battle-hp-check",
-            .breakpoint_id = bp::battle::EndTurn,
-            .required_breakpoint_ids = { bp::battle::EndTurn },
-            .lhs_value = 0x1000,
-            .rhs_value = 0,
-            .cmp_op = savor::db::PredicateComparisonOp::GT,
-            .width = 2,
-            .flag_mask = static_cast<std::int64_t>(
-                static_cast<std::uint32_t>(savor::pred::PredFlag::Active)
-                | static_cast<std::uint32_t>(savor::pred::PredFlag::LhsIsProg)),
-            .lhs_address_program_id = lhs_address_program_id,
-            .abort_on_fail = true,
-            .created_at_utc = now,
-            .correlation_id = "au-corr",
-            .causation_id = "au-cause-4",
-        },
-        &predicate_spec_id,
-        &err)) << err;
-
-    std::int64_t predicate_set_id = 0;
-    ASSERT_TRUE(authoring_db.SavePredicateSet(
-        {
-            .name = "battle-predicate-set",
-            .predicate_spec_ids = { predicate_spec_id },
-            .created_at_utc = now,
-        },
-        &predicate_set_id,
-        &err)) << err;
-
     std::int64_t explorer_settings_id = 0;
     ASSERT_TRUE(authoring_db.SaveExplorerSettings(
         {
             .name = "battle-explorer",
             .description = "fixture settings",
             .default_plan_id = plan_id,
-            .default_predicate_set_id = predicate_set_id,
             .created_at_utc = now,
             .correlation_id = "au-corr",
             .causation_id = "au-cause-5",
@@ -5292,22 +4656,9 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     EXPECT_EQ(plan->turns[0].actions[1].action_preset.target_same_as_actor_slot.value_or(-1), 0);
     EXPECT_EQ(plan->turns[0].actions[1].action_preset.item_id.value_or(-1), 99);
 
-    const auto predicate_set = authoring_db.GetPredicateSet(predicate_set_id);
-    ASSERT_TRUE(predicate_set.has_value());
-    EXPECT_EQ(predicate_set->name, "battle-predicate-set");
-    ASSERT_EQ(predicate_set->predicates.size(), 1);
-    EXPECT_EQ(predicate_set->predicates[0].name, "battle-hp-check");
-    EXPECT_EQ(predicate_set->predicates[0].breakpoint_id, bp::battle::EndTurn);
-    EXPECT_EQ(predicate_set->predicates[0].required_breakpoint_ids, std::vector<BPKey>({ bp::battle::EndTurn }));
-    EXPECT_EQ(predicate_set->predicates[0].width, 2);
-    EXPECT_EQ(predicate_set->predicates[0].lhs_address_program_id.value_or(0), lhs_address_program_id);
-    EXPECT_FALSE(predicate_set->predicates[0].rhs_address_program_id.has_value());
-    EXPECT_TRUE(predicate_set->predicates[0].abort_on_fail);
-
     const auto explorer_settings = authoring_db.GetExplorerSettings(explorer_settings_id);
     ASSERT_TRUE(explorer_settings.has_value());
     EXPECT_EQ(explorer_settings->default_plan_id.value_or(0), plan_id);
-    EXPECT_EQ(explorer_settings->default_predicate_set_id.value_or(0), predicate_set_id);
 
     std::int64_t battle_set_id = 0;
     ASSERT_TRUE(analysis_db.CreateBattleSet(
@@ -5553,7 +4904,7 @@ INSERT INTO exec_job(
     program_ref_id,fingerprint,priority,state,attempts,max_attempts,
     queued_at_utc,input_ini)
 VALUES(
-    77611,77610,1,2,'sp_probe_run',
+    77611,77610,1,3,'sp_probe_run',
     77605,'neutral-stage-filter-search',0,'SUCCEEDED',1,1,1000,
     '[SeedProbe.Request]
 desired_delta=1
@@ -5586,7 +4937,7 @@ INSERT INTO exec_job(
     program_ref_id,fingerprint,priority,state,attempts,max_attempts,
     queued_at_utc,input_ini)
 VALUES(
-    77612,77610,1,2,'sp_probe_run',
+    77612,77610,1,3,'sp_probe_run',
     77605,'neutral-stage-filter-survey',0,'SUCCEEDED',1,1,1000,
     '[SeedProbe.Request]
 input_frame_id=77606
@@ -6075,168 +5426,6 @@ VALUES(
     EXPECT_EQ(search_values[0].trigger_y, 1);
 }
 
-TEST_F(SqliteDbFixture, Stage5BattleChainGraphAcceptsInputSetsAndRejectsProbeRunFrameSetRefs) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::battlecontext;
-    using namespace savor::db::execution::workflow;
-    using namespace savor::runner::parallel::savordb;
-
-    auto* authoring_db = db_service_->AuthoringDb();
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* execution_db = db_service_->ExecutionDb();
-    ASSERT_NE(authoring_db, nullptr);
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(execution_db, nullptr);
-
-    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000903));
-    std::string err;
-
-    std::int64_t battle_run_spec_id = 0;
-    ASSERT_TRUE(authoring_db->SaveBattleRunSpec(
-        {
-            .name = "input-set-battle-run",
-            .priority = 1,
-            .use_single_turn_runner = true,
-            .created_at_utc = now,
-            .correlation_id = "au-battle-input-set",
-        },
-        &battle_run_spec_id,
-        &err)) << err;
-
-    std::int64_t explorer_settings_id = 0;
-    ASSERT_TRUE(authoring_db->SaveExplorerSettings(
-        {
-            .name = "input-set-battle-settings",
-            .created_at_utc = now,
-            .correlation_id = "au-battle-input-set",
-        },
-        &explorer_settings_id,
-        &err)) << err;
-
-    std::int64_t battle_chain_spec_id = 0;
-    ASSERT_TRUE(authoring_db->SaveBattleChainSpec(
-        {
-            .name = "input-set-battle-chain",
-            .battle_run_spec_id = battle_run_spec_id,
-            .explorer_settings_id = explorer_settings_id,
-            .created_at_utc = now,
-            .correlation_id = "au-battle-input-set",
-        },
-        &battle_chain_spec_id,
-        &err)) << err;
-
-    std::int64_t authored_input_set_id = 0;
-    ASSERT_TRUE(authoring_db->EnsureAuthoringInputSet(
-        {
-            .name = "neutral-for-battle",
-            .frames = {
-                { .main_x = 128, .main_y = 128, .cstick_x = 128, .cstick_y = 128, .trigger_x = 0, .trigger_y = 0 },
-            },
-            .created_at_utc = now,
-        },
-        &authored_input_set_id,
-        &err)) << err;
-
-    SaveWorkflowGraphResult saved{};
-    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
-        {
-            .name = "battle-input-set-contract",
-            .description = "Battle Chain input set ref-kind contract",
-            .graph_version = 1,
-            .graph_hash = "graph-hash-battle-input-set-contract",
-            .nodes = {
-                {
-                    .node_key = "battle_1",
-                    .unit_kind = "battle_chain",
-                    .display_name = "Battle Chain",
-                    .authored_ref_kind = std::string("authoring.battle_chain_spec"),
-                    .authored_ref_id = battle_chain_spec_id,
-                    .inputs = {
-                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
-                        { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
-                    },
-                },
-            },
-            .created_at_utc = now,
-            .correlation_id = "au-battle-input-set",
-        },
-        &saved,
-        &err)) << err;
-
-    auto create_instance = [&](std::string ref_kind, std::int64_t ref_id) {
-        std::int64_t workflow_instance_id = 0;
-        WorkflowCreateInstanceCommand command{};
-        command.workflow_kind = "workflow_graph";
-        command.root_scope_kind = "manual";
-        command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
-        command.created_by = "sqlite-fixture";
-        command.created_at_utc = now.time_since_epoch().count();
-        command.unit_activations.push_back(TestUnitActivation("battle_1", "battle_chain", "Battle Chain", {}, 5, 1));
-        command.input_bindings.push_back({
-            .node_key = "battle_1",
-            .input_key = "entry_savestate",
-            .data_kind = "state.savestate_id",
-            .ref_kind = "state.savestate",
-            .ref_id = 88001,
-            .source_kind = "external",
-        });
-        command.input_bindings.push_back({
-            .node_key = "battle_1",
-            .input_key = "initial_input_frames",
-            .data_kind = "analysis.input_frame_set_id",
-            .ref_kind = std::move(ref_kind),
-            .ref_id = ref_id,
-            .source_kind = "external",
-        });
-        EXPECT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(command, &workflow_instance_id, &err)) << err;
-        return workflow_instance_id;
-    };
-
-    ProgramKindRegistry registry;
-    BattleContextProbePhaseRegistrationConfig config{};
-    config.authoring_db = authoring_db;
-    RegisterBattleContextProbePhaseDescriptor(&registry, execution_db, analysis_db, config);
-
-    DBWorkflowWorkerCoordinator coordinator(
-        execution_db,
-        DBWorkflowWorkerCoordinatorConfig{},
-        CoordinatorIntegrationConfig{ .workflow_enabled = true },
-        &registry);
-
-    const auto valid_instance_id = create_instance("au.input_set", authored_input_set_id);
-    const auto valid_graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(valid_instance_id);
-    ASSERT_TRUE(valid_graph.has_value());
-    ASSERT_EQ(valid_graph->steps.size(), 1u);
-    const auto valid_scheduled = coordinator.MaterializeWorkflowStep(
-        WorkflowReadyStep{
-            .workflow_instance_id = valid_instance_id,
-            .workflow_step_id = valid_graph->steps.front().workflow_step_id,
-            .step_key = "battle_1",
-            .step_kind = "battle_chain",
-            .priority = 42,
-        });
-    ASSERT_TRUE(valid_scheduled.has_value());
-    EXPECT_GT(valid_scheduled->job_set_id, 0);
-    EXPECT_EQ(
-        ReadInt64(db_, ("SELECT priority FROM exec_job WHERE job_set_id=" + std::to_string(valid_scheduled->job_set_id) + ";").c_str()),
-        42);
-
-    const auto invalid_instance_id = create_instance("sp_probe_run", 99001);
-    const auto invalid_graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(invalid_instance_id);
-    ASSERT_TRUE(invalid_graph.has_value());
-    ASSERT_EQ(invalid_graph->steps.size(), 1u);
-    const auto invalid_scheduled = coordinator.MaterializeWorkflowStep(
-        WorkflowReadyStep{
-            .workflow_instance_id = invalid_instance_id,
-            .workflow_step_id = invalid_graph->steps.front().workflow_step_id,
-            .step_key = "battle_1",
-            .step_kind = "battle_chain",
-            .priority = 5,
-        });
-    EXPECT_FALSE(invalid_scheduled.has_value());
-}
-
 TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithoutExternalInputs) {
     using namespace savor::db;
     std::string err;
@@ -6286,7 +5475,7 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
                         { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
                     },
                     .possible_outputs = {
-                        { .output_key = "terminal_savestate", .data_kind = "state.savestate_id", .display_name = "Terminal savestate" },
+                        { .output_key = "battle_set", .data_kind = "analysis_battle.battle_set", .display_name = "Battle set" },
                     },
                 },
             },
@@ -6393,7 +5582,7 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
                         { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
                     },
                     .possible_outputs = {
-                        { .output_key = "terminal_savestate", .data_kind = "state.savestate_id", .display_name = "Terminal savestate" },
+                        { .output_key = "battle_set", .data_kind = "analysis_battle.battle_set", .display_name = "Battle set" },
                     },
                 },
             },
@@ -6477,7 +5666,7 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
                         { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
                     },
                     .possible_outputs = {
-                        { .output_key = "terminal_savestate", .data_kind = "state.savestate_id", .display_name = "Terminal savestate" },
+                        { .output_key = "battle_set", .data_kind = "analysis_battle.battle_set", .display_name = "Battle set" },
                     },
                 },
             },
@@ -6640,7 +5829,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
                         { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
                     },
                     .possible_outputs = {
-                        { .output_key = "terminal_savestate", .data_kind = "state.savestate_id", .display_name = "Terminal savestate" },
+                        { .output_key = "battle_set", .data_kind = "analysis_battle.battle_set", .display_name = "Battle set" },
                     },
                 },
             },
@@ -7420,418 +6609,6 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentSkipsImpossibleDescendant
 }
 
 
-#if 0 // Removed legacy TAS Movie graph materialization coverage.
-TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSpecScopedDedupe) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::tasmovie;
-    using namespace savor::db::execution::workflow;
-    using namespace savor::runner::parallel::savordb;
-
-    auto* authoring_db = db_service_->AuthoringDb();
-    auto* state_db = db_service_->StateDb();
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* execution_db = db_service_->ExecutionDb();
-    ASSERT_NE(authoring_db, nullptr);
-    ASSERT_NE(state_db, nullptr);
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(execution_db, nullptr);
-
-    const auto source_path = temp_root_ / "graph-dedupe-base.dtm";
-    {
-        std::ofstream out(source_path, std::ios::binary);
-        out << "dtm-bytes";
-    }
-
-    std::string err;
-    std::int64_t base_artifact_id = 0;
-    ASSERT_TRUE(state_db->StoreArtifact(
-        {
-            .sha256 = "stage5-tasmovie-graph-dedupe-base-dtm",
-            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(source_path)),
-            .compression_kind = 0,
-            .filename = source_path.string(),
-            .file_ext = ".dtm",
-            .artifact_kind = "DTM",
-            .created_at_utc = types::UtcNow(),
-            .correlation_id = "test.tasmovie.graph-dedupe",
-            .causation_id = "test",
-        },
-        &base_artifact_id,
-        &err))
-        << err;
-
-    auto save_tas_spec = [&](std::string_view suffix) {
-        const auto base_name = std::string("graph tas spec ") + std::string(suffix);
-        std::int64_t tas_spec_id = 0;
-        EXPECT_TRUE(authoring_db->SaveTasSpec(
-            {
-                .base_name = base_name,
-                .priority = 1,
-                .progress_enable = true,
-                .base_dtm_artifact_id = base_artifact_id,
-                .created_at_utc = types::UtcNow(),
-                .correlation_id = "test.tasmovie.graph-dedupe",
-                .causation_id = "test",
-            },
-            &tas_spec_id,
-            nullptr,
-            &err))
-            << err;
-        if (tas_spec_id > 0) {
-            const auto tas_zero_sql =
-                "SELECT COUNT(1) FROM au_tas_spec s"
-                " JOIN au_tas_spec_base b ON b.tas_spec_base_id=s.tas_spec_base_id"
-                " WHERE s.tas_spec_id=" + std::to_string(tas_spec_id)
-                + " AND b.run_ms=0 AND b.vi_stall_ms=0;";
-            EXPECT_EQ(ReadInt64(db_, tas_zero_sql.c_str()), 1);
-            return tas_spec_id;
-        }
-        for (const auto& spec : authoring_db->ListTasSpecs(10)) {
-            if (spec.base_name == base_name) {
-                return spec.tas_spec_id;
-            }
-        }
-        return std::int64_t{0};
-    };
-
-    const auto first_tas_spec_id = save_tas_spec("first");
-    const auto second_tas_spec_id = save_tas_spec("second");
-    ASSERT_GT(first_tas_spec_id, 0);
-    ASSERT_GT(second_tas_spec_id, 0);
-    ASSERT_NE(first_tas_spec_id, second_tas_spec_id);
-    const auto tas_legacy_update =
-        "UPDATE au_tas_spec_base SET run_ms=60000,vi_stall_ms=2500"
-        " WHERE tas_spec_base_id=(SELECT tas_spec_base_id FROM au_tas_spec"
-        " WHERE tas_spec_id=" + std::to_string(first_tas_spec_id) + ");";
-    ASSERT_TRUE(ExecSql(db_, tas_legacy_update.c_str()));
-    ASSERT_TRUE(authoring_db->GetTasSpec(first_tas_spec_id).has_value());
-
-    ProgramKindRegistry registry;
-    TasMoviePhaseRegistrationConfig config{};
-    config.authoring_db = authoring_db;
-    config.working_dir_root = temp_root_ / "tasmovie";
-    RegisterTasMoviePhaseDescriptor(&registry, execution_db, state_db, analysis_db, config);
-
-    DBWorkflowWorkerCoordinator coordinator(
-        execution_db,
-        DBWorkflowWorkerCoordinatorConfig{},
-        CoordinatorIntegrationConfig{ .workflow_enabled = true },
-        &registry);
-
-    auto materialize_for_spec = [&](std::int64_t tas_spec_id, std::string_view suffix) {
-        SaveWorkflowGraphResult saved{};
-        if (!authoring_db->SaveWorkflowGraph(
-            {
-                .name = std::string("graph-materialize-tasmovie-") + std::string(suffix),
-                .description = "TasMovie launch graph",
-                .graph_version = 1,
-                .graph_hash = std::string("graph-materialize-tasmovie-hash-") + std::string(suffix),
-                .nodes = {
-                    {
-                        .node_key = "tas_movie_standalone",
-                        .unit_kind = "tas_movie",
-                        .display_name = "Tas Movie",
-                        .authored_ref_kind = std::string("tas_spec"),
-                        .authored_ref_id = tas_spec_id,
-                        .inputs = {
-                            { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
-                        },
-                    },
-                },
-                .created_at_utc = types::UtcNow(),
-                .correlation_id = "test.tasmovie.graph-dedupe",
-            },
-            &saved,
-            &err)) {
-            ADD_FAILURE() << err;
-            return std::int64_t{0};
-        }
-        const auto authoring_graph = authoring_db->GetWorkflowGraphRevision(saved.workflow_graph_revision_id);
-        if (!authoring_graph.has_value()
-            || authoring_graph->nodes.empty()
-            || authoring_graph->nodes.front().authored_ref_kind.value_or("") != "tas_spec"
-            || authoring_graph->nodes.front().authored_ref_id.value_or(0) != tas_spec_id) {
-            ADD_FAILURE() << "saved workflow graph did not preserve tas_spec authored ref";
-            return std::int64_t{0};
-        }
-
-        std::int64_t workflow_instance_id = 0;
-        WorkflowCreateInstanceCommand command{};
-        command.workflow_kind = "workflow_graph";
-        command.root_scope_kind = "manual";
-        command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
-        command.created_by = "sqlite-fixture";
-        command.created_at_utc = types::UtcNow().time_since_epoch().count();
-        command.unit_activations.push_back(TestUnitActivation("tas_movie_standalone", "tas_movie", "TAS Movie", {}, 10, 1));
-        command.input_bindings.push_back({
-            .node_key = "tas_movie_standalone",
-            .input_key = "dtm_artifact",
-            .data_kind = "state_artifact.dtm_artifact_id",
-            .ref_kind = "state_artifact",
-            .ref_id = base_artifact_id,
-            .source_kind = "external",
-        });
-        command.arguments.push_back({
-            .node_key = "tas_movie_standalone",
-            .argument_key = "rtc",
-            .value_type = "integer",
-            .integer_value = 0,
-            .source_kind = "launcher",
-        });
-        command.arguments.push_back({
-            .node_key = "tas_movie_standalone",
-            .argument_key = "headroom",
-            .value_type = "integer",
-            .integer_value = 50,
-            .source_kind = "launcher",
-        });
-        if (!execution_db->WorkflowCommandService()->CreateWorkflowInstance(command, &workflow_instance_id, &err)) {
-            ADD_FAILURE() << err;
-            return std::int64_t{0};
-        }
-
-        const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
-        if (!graph.has_value()) {
-            ADD_FAILURE() << "workflow graph not found";
-            return std::int64_t{0};
-        }
-        if (graph->steps.size() != 1u) {
-            ADD_FAILURE() << "expected exactly one workflow step";
-            return std::int64_t{0};
-        }
-        if (graph->instance.workflow_graph_revision_id.value_or(0) != saved.workflow_graph_revision_id) {
-            ADD_FAILURE() << "workflow instance revision mismatch";
-            return std::int64_t{0};
-        }
-
-        const auto scheduled = coordinator.MaterializeWorkflowStep(
-            WorkflowReadyStep{
-                .workflow_instance_id = workflow_instance_id,
-                .workflow_step_id = graph->steps.front().workflow_step_id,
-                .step_key = "tas_movie_standalone",
-                .step_kind = "tas_movie",
-                .priority = 10,
-            });
-        if (!scheduled.has_value()) {
-            ADD_FAILURE() << "TasMovie step did not materialize";
-            return std::int64_t{0};
-        }
-        if (scheduled->job_set_id <= 0) {
-            ADD_FAILURE() << "TasMovie step materialized without a job set";
-            return std::int64_t{0};
-        }
-        const auto expected_trace = "tas_spec_id=" + std::to_string(tas_spec_id);
-        const auto has_expected_trace = std::any_of(
-            scheduled->event_lines.begin(),
-            scheduled->event_lines.end(),
-            [&](const std::string& line) {
-                return line.find(expected_trace) != std::string::npos;
-            });
-        if (!has_expected_trace) {
-            std::ostringstream trace;
-            for (const auto& line : scheduled->event_lines) {
-                trace << "\n" << line;
-            }
-            ADD_FAILURE() << "TasMovie materialization trace missing " << expected_trace
-                << " for tas_spec_id=" << tas_spec_id
-                << trace.str();
-            return std::int64_t{0};
-        }
-        return scheduled->job_set_id;
-    };
-
-    const auto first_job_set_id = materialize_for_spec(first_tas_spec_id, "first");
-    const auto second_job_set_id = materialize_for_spec(second_tas_spec_id, "second");
-    ASSERT_GT(first_job_set_id, 0);
-    ASSERT_GT(second_job_set_id, 0);
-    ASSERT_NE(first_job_set_id, second_job_set_id);
-
-    sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        "SELECT COUNT(1) FROM state_tas_movie_variant "
-        "WHERE base_dtm_artifact_id=?1 AND rtc_value=0;",
-        -1,
-        &st,
-        nullptr));
-    sqlite3_bind_int64(st, 1, base_artifact_id);
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int64(st, 0), 2);
-    sqlite3_finalize(st);
-
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        "SELECT COUNT(1) FROM exec_job "
-        "WHERE program_kind=?1 AND job_set_id IN (?2,?3);",
-        -1,
-        &st,
-        nullptr));
-    sqlite3_bind_int(st, 1, static_cast<int>(savor::PK_TasMovie));
-    sqlite3_bind_int64(st, 2, first_job_set_id);
-    sqlite3_bind_int64(st, 3, second_job_set_id);
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int64(st, 0), 2);
-    sqlite3_finalize(st);
-
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        "SELECT COUNT(1) FROM exec_job "
-        "WHERE fingerprint LIKE ?1 OR fingerprint LIKE ?2;",
-        -1,
-        &st,
-        nullptr));
-    const auto first_like = "%;tas_spec_id=" + std::to_string(first_tas_spec_id) + ";%";
-    const auto second_like = "%;tas_spec_id=" + std::to_string(second_tas_spec_id) + ";%";
-    sqlite3_bind_text(st, 1, first_like.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 2, second_like.c_str(), -1, SQLITE_TRANSIENT);
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int64(st, 0), 2);
-    sqlite3_finalize(st);
-
-    EXPECT_EQ(
-        ReadInt64(
-            db_,
-            "SELECT COUNT(1) FROM exec_job"
-            " WHERE program_kind=2"
-            " AND (fingerprint LIKE '%;run_ms=%' OR fingerprint LIKE '%;vi=%');"),
-        0);
-}
-
-TEST_F(SqliteDbFixture, Stage5CoordinatorBlocksTasMovieGraphNodeWithoutRtcArgument) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::tasmovie;
-    using namespace savor::db::execution::workflow;
-    using namespace savor::runner::parallel::savordb;
-
-    auto* authoring_db = db_service_->AuthoringDb();
-    auto* state_db = db_service_->StateDb();
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* execution_db = db_service_->ExecutionDb();
-    ASSERT_NE(authoring_db, nullptr);
-    ASSERT_NE(state_db, nullptr);
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(execution_db, nullptr);
-
-    const auto source_path = temp_root_ / "graph-missing-rtc-base.dtm";
-    {
-        std::ofstream out(source_path, std::ios::binary);
-        out << "dtm-bytes";
-    }
-
-    std::string err;
-    std::int64_t base_artifact_id = 0;
-    ASSERT_TRUE(state_db->StoreArtifact(
-        {
-            .sha256 = "stage5-tasmovie-graph-missing-rtc-base-dtm",
-            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(source_path)),
-            .compression_kind = 0,
-            .filename = source_path.string(),
-            .file_ext = ".dtm",
-            .artifact_kind = "DTM",
-            .created_at_utc = types::UtcNow(),
-            .correlation_id = "test.tasmovie.missing-rtc",
-            .causation_id = "test",
-        },
-        &base_artifact_id,
-        &err))
-        << err;
-
-    SaveWorkflowGraphResult saved{};
-    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
-        {
-            .name = "graph-materialize-tasmovie-missing-rtc",
-            .description = "TasMovie launch graph missing required rtc argument",
-            .graph_version = 1,
-            .graph_hash = "graph-materialize-tasmovie-missing-rtc-hash",
-            .nodes = {
-                {
-                    .node_key = "tas_movie_standalone",
-                    .unit_kind = "tas_movie",
-                    .display_name = "Tas Movie",
-                    .inputs = {
-                        { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
-                    },
-                },
-            },
-            .created_at_utc = types::UtcNow(),
-            .correlation_id = "test.tasmovie.missing-rtc",
-        },
-        &saved,
-        &err))
-        << err;
-
-    std::int64_t workflow_instance_id = 0;
-    WorkflowCreateInstanceCommand command{};
-    command.workflow_kind = "workflow_graph";
-    command.root_scope_kind = "manual";
-    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
-    command.created_by = "sqlite-fixture";
-    command.created_at_utc = types::UtcNow().time_since_epoch().count();
-    command.unit_activations.push_back(TestUnitActivation("tas_movie_standalone", "tas_movie", "TAS Movie", {}, 10, 1));
-    command.input_bindings.push_back({
-        .node_key = "tas_movie_standalone",
-        .input_key = "dtm_artifact",
-        .data_kind = "state_artifact.dtm_artifact_id",
-        .ref_kind = "state_artifact",
-        .ref_id = base_artifact_id,
-        .source_kind = "external",
-    });
-    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(command, &workflow_instance_id, &err))
-        << err;
-
-    const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
-    ASSERT_TRUE(graph.has_value());
-    ASSERT_EQ(graph->steps.size(), 1u);
-
-    ProgramKindRegistry registry;
-    TasMoviePhaseRegistrationConfig config{};
-    config.authoring_db = authoring_db;
-    config.working_dir_root = temp_root_ / "tasmovie-missing-rtc";
-    RegisterTasMoviePhaseDescriptor(&registry, execution_db, state_db, analysis_db, config);
-
-    DBWorkflowWorkerCoordinator coordinator(
-        execution_db,
-        DBWorkflowWorkerCoordinatorConfig{},
-        CoordinatorIntegrationConfig{ .workflow_enabled = true },
-        &registry);
-
-    const auto scheduled = coordinator.MaterializeWorkflowStep(
-        WorkflowReadyStep{
-            .workflow_instance_id = workflow_instance_id,
-            .workflow_step_id = graph->steps.front().workflow_step_id,
-            .step_key = "tas_movie_standalone",
-            .step_kind = "tas_movie",
-            .priority = 10,
-        });
-    EXPECT_FALSE(scheduled.has_value());
-
-    sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        "SELECT COUNT(1) FROM exec_job WHERE program_kind=?1;",
-        -1,
-        &st,
-        nullptr));
-    sqlite3_bind_int(st, 1, static_cast<int>(savor::PK_TasMovie));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int64(st, 0), 0);
-    sqlite3_finalize(st);
-
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        "SELECT COUNT(1) FROM state_tas_movie_variant WHERE base_dtm_artifact_id=?1;",
-        -1,
-        &st,
-        nullptr));
-    sqlite3_bind_int64(st, 1, base_artifact_id);
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int64(st, 0), 0);
-    sqlite3_finalize(st);
-}
-#endif
-
 TEST_F(SqliteDbFixture, Stage3dAnalysisSeedProbeSetCreateEmitsEventTwentyThree) {
     using namespace savor::db;
     using namespace savor::db::analysis;
@@ -8436,14 +7213,47 @@ TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRestoresExecutionExtrasAnd
         + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(601,60,'ENTRY','full',1,1000);";
     ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
     ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note)
-VALUES(7100,7,'rehydrate full','test',1000,0,1,'analysis_battle.turn_job',8300,'full');
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,
+    expected_total,domain_ref_kind,domain_ref_id,meta_note,
+    materialization_key,materialization_state,population_sealed_at_utc,
+    workset_publication_completed_at_utc)
+VALUES(
+    7100,7,'rehydrate full','test',1000,0,
+    1,'analysis_battle.turn_job',8300,'full',
+    'fixture.archive.battle-turn','WORKSET_PUBLICATION_COMPLETE',1000,1000);
 INSERT INTO exec_job(job_id,job_set_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,queued_at_utc,ended_at_utc)
 VALUES(7101,7100,7,1,'analysis_battle.turn_job',8300,'rehydrate-full-job',0,'SUCCEEDED',1,1,1000,2000);
 INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,completed_at_utc)
 VALUES(7001,'BATTLE_RUN','COMPLETED','job_set',7100,'test',1000,2000);
 INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,workflow_unit_activation_id,step_key,graph_node_key,step_kind,state,priority,attempts,max_attempts,job_set_id,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
 VALUES(7201,7001,NULL,'battle','battle','battle.single_turn','COMPLETED',0,1,1,7100,'state.savestate_id',601,'state.savestate_id',601,1000,2000);
+INSERT INTO exec_workset(
+    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_key,program_kind,program_version,
+    contract_key,module_canonical_id,module_version,module_sha256,
+    entrypoint,verified_dependency_sha256,runtime_profile_sha256,
+    program_package_sha256,execution_affinity_key,
+    estimated_payload_bytes,priority,item_count,published_at_utc,
+    capture_binding_payload,capture_binding_sha256,
+    progress_plan_payload,progress_plan_sha256)
+VALUES(
+    7110,7100,7201,7100,
+    'fixture.archive.battle-turn.workset',7,1,
+    'fixture-contract','soa.battle.single_turn',1,
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'execute',
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    NULL,128,0,1,1000,
+    X'010203',
+    '5555555555555555555555555555555555555555555555555555555555555555',
+    X'040506',
+    '6666666666666666666666666666666666666666666666666666666666666666');
+UPDATE exec_job
+SET workset_id=7110,workset_item_ordinal=0
+WHERE job_id=7101;
 INSERT INTO exec_workflow_step_output(workflow_step_output_id,workflow_instance_id,workflow_step_id,graph_node_key,output_key,data_kind,ref_kind,ref_id,created_at_utc)
 VALUES(7202,7001,7201,'battle','output_savestate','state.savestate_id','state.savestate_id',601,2000);
 INSERT INTO exec_workflow_instance_input_binding(workflow_instance_input_binding_id,workflow_instance_id,workflow_graph_revision_id,node_key,input_key,data_kind,ref_kind,ref_id,source_kind,created_at_utc)
@@ -8549,6 +7359,20 @@ VALUES(8500,8300,'UNREVIEWED',NULL,'restore me',2000);
     EXPECT_EQ(ReadInt64(db_, ("SELECT exec_job_id FROM ab_turn_job WHERE turn_job_id=" + std::to_string(new_turn_job_id) + ";").c_str()), new_job_id);
     EXPECT_EQ(ReadInt64(db_, ("SELECT context_probe_id FROM ab_turn_wave WHERE wave_id=" + std::to_string(new_wave_id) + ";").c_str()), new_context_id);
     EXPECT_EQ(ReadText(db_, ("SELECT note FROM ab_manual_followup WHERE turn_job_id=" + std::to_string(new_turn_job_id) + ";").c_str()), "restore me");
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            ("SELECT lower(hex(w.capture_binding_payload)) "
+             "FROM exec_workset w JOIN exec_job j ON j.workset_id=w.workset_id "
+             "WHERE j.job_id=" + std::to_string(new_job_id) + ";").c_str()),
+        "010203");
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            ("SELECT lower(hex(w.progress_plan_payload)) "
+             "FROM exec_workset w JOIN exec_job j ON j.workset_id=w.workset_id "
+             "WHERE j.job_id=" + std::to_string(new_job_id) + ";").c_str()),
+        "040506");
 
     const auto collision_preview = commands.RehydratePreview({
         .archive_package_id = package.archive_package_id,
@@ -8636,9 +7460,9 @@ VALUES(9103,9102,'probe','probe','seed_probe_chain','COMPLETED',0,1,1,9100,'sp_p
 INSERT INTO exec_workset(
     workset_id,job_set_id,workflow_step_id,root_job_set_id,
     workset_key,program_kind,program_version,
-    compatibility_key,module_canonical_id,module_version,module_sha256,
+    contract_key,module_canonical_id,module_version,module_sha256,
     entrypoint,verified_dependency_sha256,runtime_profile_sha256,
-    required_capability_mask,execution_affinity_key,
+    program_package_sha256,execution_affinity_key,
     estimated_payload_bytes,priority,item_count,published_at_utc)
 VALUES(
     9110,9100,9103,9100,'fixture.archive.seedprobe.workset',1,2,
@@ -8647,7 +7471,8 @@ VALUES(
     'probe',
     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-    128,NULL,128,0,3,1000);
+    'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    NULL,128,0,3,1000);
 INSERT INTO exec_workset_dispatch_attempt(
     dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
     lease_expires_at_utc,claimed_at_utc,dispatched_at_utc,closed_at_utc,
@@ -8696,8 +7521,19 @@ input_frame_id=9005
 sample_ordinal=0
 stage=CONFIRM
 version=1
-',9110,2,9120,1,1,
+     ',9110,2,9120,1,1,
      NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL);
+INSERT INTO exec_job_progress(
+    job_id,attempt_id,ordinal,dispatch_attempt_id,dispatch_item_ordinal,
+    workset_id,item_id,invocation_id,library_id,library_revision,
+    progress_point_id,has_routed_provenance,routed_sequence,
+    sample_snapshot_id,trigger_epoch,schema_id,schema_revision,
+    schema_sha256,typed_payload,display_text,recorded_at_utc)
+VALUES(
+    9102,1,1,9120,0,9110,1,7001,'soa.progress.runtime.vi/1',1,
+    'vi.current',1,21,22,23,'soa.progress.schema.vi/1',1,
+    'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    X'5649503109','VI 9',1500);
 INSERT INTO exec_job_cancellation_request(
     cancellation_request_id,job_id,request_key,reason_code,reason_text,
     requested_by,caused_by_job_id,requested_at_utc,state,delivery_attempts,
@@ -8806,6 +7642,30 @@ VALUES(9102,'SEED_PROBE','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
     EXPECT_EQ(ReadInt64(db_, ("SELECT dispatch_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), new_dispatch_attempt_id);
     EXPECT_EQ(ReadInt64(db_, ("SELECT dispatch_item_ordinal FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), 1);
     EXPECT_EQ(ReadInt64(db_, ("SELECT reserved_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), 1);
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            ("SELECT COUNT(1) FROM exec_job_progress WHERE job_id=" +
+                std::to_string(new_observed_job_id) + ";").c_str()),
+        1);
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            ("SELECT dispatch_attempt_id FROM exec_job_progress WHERE job_id=" +
+                std::to_string(new_observed_job_id) + ";").c_str()),
+        new_dispatch_attempt_id);
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            ("SELECT workset_id FROM exec_job_progress WHERE job_id=" +
+                std::to_string(new_observed_job_id) + ";").c_str()),
+        new_workset_id);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            ("SELECT display_text FROM exec_job_progress WHERE job_id=" +
+                std::to_string(new_observed_job_id) + ";").c_str()),
+        "VI 9");
     const auto observed_spec =
         execution::programdb::seedprobe::DecodeSeedProbeJobSpec(
             ReadText(
@@ -8918,9 +7778,9 @@ VALUES(
     'WORKSET_PUBLICATION_COMPLETE',1100,1100);
 INSERT INTO exec_workset(
     workset_id,job_set_id,workset_key,program_kind,program_version,
-    compatibility_key,module_canonical_id,module_version,module_sha256,
+    contract_key,module_canonical_id,module_version,module_sha256,
     entrypoint,verified_dependency_sha256,runtime_profile_sha256,
-    required_capability_mask,execution_affinity_key,
+    program_package_sha256,execution_affinity_key,
     estimated_payload_bytes,priority,item_count,published_at_utc)
 VALUES(
     9110,9100,'fixture.archive.field-return.workset',1,1,
@@ -8929,7 +7789,8 @@ VALUES(
     'soa.seed_probe/probe',
     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-    0,NULL,128,0,2,1100);
+    'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    NULL,128,0,2,1100);
 INSERT INTO exec_job(
     job_id,job_set_id,program_kind,program_version,program_ref_kind,
     program_ref_id,fingerprint,priority,state,attempts,max_attempts,
@@ -10338,255 +9199,6 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleResultAndStatusEventsRefre
         3);
 }
 
-TEST_F(SqliteDbFixture, AuthoringPredicateSpecPersistsMultipleRequiredBreakpoints) {
-    using namespace savor::db;
-    using namespace savor::db::migrations;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Authoring, embedded_options, &err)) << err;
-
-    SqliteAuthoringDb authoring_db(db_);
-    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
-
-    std::int64_t predicate_spec_id = 0;
-    ASSERT_TRUE(authoring_db.SavePredicateSpec(
-        {
-            .name = "multi-trigger-predicate",
-            .required_breakpoint_ids = { bp::battle::TurnIsReady, bp::battle::EndTurn },
-            .lhs_value = 0x1000,
-            .rhs_value = 0,
-            .cmp_op = PredicateComparisonOp::GT,
-            .width = 2,
-            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
-            .created_at_utc = now,
-            .correlation_id = "multi-bp-save",
-        },
-        &predicate_spec_id,
-        &err)) << err;
-
-    const auto saved = authoring_db.GetPredicateSpec(predicate_spec_id);
-    ASSERT_TRUE(saved.has_value());
-    EXPECT_EQ(saved->breakpoint_id, bp::battle::TurnIsReady);
-    EXPECT_EQ(saved->required_breakpoint_ids, std::vector<BPKey>({ bp::battle::TurnIsReady, bp::battle::EndTurn }));
-
-    const auto listed = authoring_db.ListPredicateSpecs(10);
-    ASSERT_FALSE(listed.empty());
-    EXPECT_EQ(listed.front().predicate_spec_id, predicate_spec_id);
-    EXPECT_EQ(listed.front().breakpoint_id, bp::battle::TurnIsReady);
-    EXPECT_EQ(listed.front().required_breakpoint_ids, std::vector<BPKey>({ bp::battle::TurnIsReady, bp::battle::EndTurn }));
-
-    ASSERT_TRUE(authoring_db.UpdatePredicateSpec(
-        predicate_spec_id,
-        {
-            .name = "multi-trigger-predicate-updated",
-            .required_breakpoint_ids = { bp::battle::StartAction, bp::battle::EndAction, bp::battle::EndTurn },
-            .lhs_value = 0x1000,
-            .rhs_value = 0,
-            .cmp_op = PredicateComparisonOp::GT,
-            .width = 2,
-            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
-            .created_at_utc = now,
-            .correlation_id = "multi-bp-update",
-        },
-        &err)) << err;
-
-    const auto updated = authoring_db.GetPredicateSpec(predicate_spec_id);
-    ASSERT_TRUE(updated.has_value());
-    EXPECT_EQ(updated->breakpoint_id, bp::battle::StartAction);
-    EXPECT_EQ(updated->required_breakpoint_ids, std::vector<BPKey>({ bp::battle::StartAction, bp::battle::EndAction, bp::battle::EndTurn }));
-
-    std::int64_t legacy_scalar_predicate_id = 0;
-    ASSERT_TRUE(authoring_db.SavePredicateSpec(
-        {
-            .name = "legacy-scalar-predicate",
-            .breakpoint_id = bp::battle::EndTurn,
-            .lhs_value = 0x1000,
-            .rhs_value = 0,
-            .cmp_op = PredicateComparisonOp::GT,
-            .width = 2,
-            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
-            .created_at_utc = now,
-            .correlation_id = "legacy-scalar-save",
-        },
-        &legacy_scalar_predicate_id,
-        &err)) << err;
-    const auto legacy_scalar = authoring_db.GetPredicateSpec(legacy_scalar_predicate_id);
-    ASSERT_TRUE(legacy_scalar.has_value());
-    EXPECT_EQ(legacy_scalar->breakpoint_id, bp::battle::EndTurn);
-    EXPECT_EQ(legacy_scalar->required_breakpoint_ids, std::vector<BPKey>({ bp::battle::EndTurn }));
-
-    std::int64_t invalid_id = 0;
-    EXPECT_FALSE(authoring_db.SavePredicateSpec(
-        {
-            .name = "missing-trigger",
-            .lhs_value = 0x1000,
-            .rhs_value = 0,
-            .cmp_op = PredicateComparisonOp::GT,
-            .width = 2,
-            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
-            .created_at_utc = now,
-        },
-        &invalid_id,
-        &err));
-    EXPECT_FALSE(authoring_db.SavePredicateSpec(
-        {
-            .name = "invalid-trigger",
-            .required_breakpoint_ids = { static_cast<BPKey>(0) },
-            .lhs_value = 0x1000,
-            .rhs_value = 0,
-            .cmp_op = PredicateComparisonOp::GT,
-            .width = 2,
-            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
-            .created_at_utc = now,
-        },
-        &invalid_id,
-        &err));
-
-    err.clear();
-    EXPECT_FALSE(authoring_db.SavePredicateSpec(
-        {
-            .name = "internal-trigger",
-            .required_breakpoint_ids = { bp::battle::BattleMacroInputReadyGate },
-            .lhs_value = 0x1000,
-            .rhs_value = 0,
-            .cmp_op = PredicateComparisonOp::GT,
-            .width = 2,
-            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
-            .created_at_utc = now,
-        },
-        &invalid_id,
-        &err));
-    EXPECT_EQ(err.find("BattleMacro"), std::string::npos);
-
-    err.clear();
-    EXPECT_FALSE(authoring_db.SavePredicateSpec(
-        {
-            .name = "internal-scalar-trigger",
-            .breakpoint_id = bp::battle::BattleMacroInputReadyGate,
-            .lhs_value = 0x1000,
-            .rhs_value = 0,
-            .cmp_op = PredicateComparisonOp::GT,
-            .width = 2,
-            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
-            .created_at_utc = now,
-        },
-        &invalid_id,
-        &err));
-    EXPECT_EQ(err.find("BattleMacro"), std::string::npos);
-
-    err.clear();
-    EXPECT_FALSE(authoring_db.SavePredicateSpec(
-        {
-            .name = "internal-baseline",
-            .required_breakpoint_ids = { bp::battle::TurnIsReady },
-            .lhs_value = 0x1000,
-            .rhs_value = 0,
-            .baseline_breakpoint_ids = { bp::battle::BattleMacroEnemyTargetFinalized },
-            .cmp_op = PredicateComparisonOp::GT,
-            .width = 2,
-            .flag_mask = static_cast<std::int64_t>(
-                static_cast<std::uint32_t>(savor::pred::PredFlag::Active)
-                | static_cast<std::uint32_t>(savor::pred::PredFlag::RhsIsDelta)),
-            .created_at_utc = now,
-        },
-        &invalid_id,
-        &err));
-    EXPECT_EQ(err.find("BattleMacro"), std::string::npos);
-
-    err.clear();
-    EXPECT_FALSE(authoring_db.UpdatePredicateSpec(
-        predicate_spec_id,
-        {
-            .name = "internal-update",
-            .required_breakpoint_ids = { bp::battle::BattleMacroInputReadyGate },
-            .lhs_value = 0x1000,
-            .rhs_value = 0,
-            .cmp_op = PredicateComparisonOp::GT,
-            .width = 2,
-            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
-            .created_at_utc = now,
-        },
-        &err));
-    const auto unchanged = authoring_db.GetPredicateSpec(predicate_spec_id);
-    ASSERT_TRUE(unchanged.has_value());
-    EXPECT_EQ(unchanged->name, "multi-trigger-predicate-updated");
-}
-
-TEST_F(SqliteDbFixture, LegacyInternalPredicateBreakpointIsPreservedButFailsClosed) {
-    using namespace savor::db;
-    using namespace savor::db::migrations;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Authoring, embedded_options, &err)) << err;
-
-    const auto internal_bp = bp::battle::BattleMacroInputReadyGate;
-    const std::string sql =
-        "INSERT INTO au_predicate_spec("
-        "name,breakpoint_name,breakpoint_id,lhs_value,rhs_value,baseline_bps,cmp_op,width,flag_mask,"
-        "value_mask,lhs_address_program_id,rhs_address_program_id,abort_on_fail,created_at_utc) VALUES("
-        "'legacy-internal','legacy unavailable'," + std::to_string(internal_bp)
-        + ",4096,0,'','GT',2,2,NULL,NULL,NULL,0,1712304000000);"
-        "INSERT INTO au_predicate_spec_required_breakpoint(predicate_spec_id,breakpoint_id,ordinal) "
-        "VALUES(last_insert_rowid()," + std::to_string(internal_bp) + ",0);";
-    ASSERT_TRUE(ExecSql(db_, sql.c_str()));
-
-    const auto predicate_spec_id = ReadInt64(
-        db_,
-        "SELECT predicate_spec_id FROM au_predicate_spec WHERE name='legacy-internal';");
-    SqliteAuthoringDb authoring_db(db_);
-    const auto snapshot = authoring_db.GetPredicateSpec(predicate_spec_id);
-    ASSERT_TRUE(snapshot.has_value());
-    EXPECT_EQ(snapshot->breakpoint_id, internal_bp);
-    EXPECT_EQ(snapshot->required_breakpoint_ids, std::vector<BPKey>({ internal_bp }));
-
-    savor::pred::Spec spec{};
-    spec.id = 1;
-    spec.required_bp = snapshot->breakpoint_id;
-    spec.required_bps.assign(
-        snapshot->required_breakpoint_ids.begin(),
-        snapshot->required_breakpoint_ids.end());
-    spec.width = static_cast<std::uint8_t>(snapshot->width);
-    spec.cmp = snapshot->cmp_op;
-    spec.flags = static_cast<std::uint32_t>(snapshot->flag_mask.value_or(0));
-    spec.lhs_addr = static_cast<std::uint32_t>(snapshot->lhs_value);
-    spec.rhs_value = static_cast<std::uint64_t>(snapshot->rhs_value);
-
-    std::vector<savor::pred::PredicateRecord> records;
-    std::vector<std::uint8_t> blob;
-    EXPECT_FALSE(savor::pred::BuildTable({ spec }, records, blob));
-    EXPECT_TRUE(records.empty());
-    EXPECT_TRUE(blob.empty());
-}
-
-TEST_F(SqliteDbFixture, PredicateTableExpandsRequiredBreakpointList) {
-    using namespace savor;
-
-    pred::Spec spec{};
-    spec.id = 7;
-    spec.required_bp = bp::battle::TurnIsReady;
-    spec.required_bps = {
-        static_cast<std::uint16_t>(bp::battle::TurnIsReady),
-        static_cast<std::uint16_t>(bp::battle::EndTurn),
-    };
-    spec.width = 2;
-    spec.cmp = pred::CmpOp::GT;
-    spec.flags = static_cast<std::uint32_t>(pred::PredFlag::Active);
-    spec.lhs_addr = 0x1000;
-    spec.rhs_value = 0;
-    spec.name = "multi-trigger";
-
-    std::vector<pred::PredicateRecord> records;
-    std::vector<std::uint8_t> blob;
-    ASSERT_TRUE(pred::BuildTable({ spec }, records, blob));
-    ASSERT_EQ(records.size(), 2);
-    EXPECT_EQ(records[0].id, 7);
-    EXPECT_EQ(records[1].id, 7);
-    EXPECT_EQ(records[0].required_bp, bp::battle::TurnIsReady);
-    EXPECT_EQ(records[1].required_bp, bp::battle::EndTurn);
-}
-
 TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleSecondTurnSingleTurnJobsRefreshFromResultEvents) {
     using namespace savor::db;
 
@@ -11230,10 +9842,20 @@ TEST_F(SqliteDbFixture, UiReadProjectionCoalescesProgressFloodToOneDirtyJob) {
     ASSERT_TRUE(ExecSql(exec_handle,
         "INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
         "VALUES(17401,1,NULL,42,1,'test',1,'progress-flood-job',1,'RUNNING',1,1,'worker-1',NULL,1000,1100,NULL,NULL,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job_progress("
+        "job_id,attempt_id,ordinal,dispatch_attempt_id,dispatch_item_ordinal,"
+        "workset_id,item_id,invocation_id,library_id,library_revision,"
+        "progress_point_id,has_routed_provenance,routed_sequence,"
+        "sample_snapshot_id,trigger_epoch,schema_id,schema_revision,"
+        "schema_sha256,typed_payload,display_text,recorded_at_utc) "
+        "VALUES(17401,1,1,99,0,99,1,7,'soa.progress.runtime.vi/1',1,"
+        "'vi.current',1,3,4,5,'soa.progress.schema.vi/1',1,"
+        "printf('%064d',0),X'5649503109','VI 9',1200);"));
     for (int i = 1; i <= 1000; ++i) {
         ASSERT_TRUE(ExecSql(exec_handle,
             ("INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc,attempt_count,last_error) "
-             "VALUES(" + std::to_string(i) + ",'progress-" + std::to_string(i) + "','Execution.JobProgressed.v1',1,'Execution','job','17401','test','test'," + std::to_string(1000 + i) + ",'job',17401,NULL,0,NULL);")
+             "VALUES(" + std::to_string(i) + ",'progress-" + std::to_string(i) + "','Execution.JobProgressed.v2',2,'Execution','job','17401','test','test'," + std::to_string(1000 + i) + ",'job',17401,NULL,0,NULL);")
                 .c_str()));
     }
     sqlite3_close(exec_handle);
@@ -11261,6 +9883,9 @@ TEST_F(SqliteDbFixture, UiReadProjectionCoalescesProgressFloodToOneDirtyJob) {
     ASSERT_NE(verify_handle, nullptr);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_job_summary;"), 1);
     EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=17401;"), "RUNNING");
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_job_progress WHERE job_id=17401;"), 1);
+    EXPECT_EQ(ReadText(verify_handle, "SELECT display_text FROM ui_job_progress WHERE job_id=17401;"), "VI 9");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT last_progress_text FROM ui_job_summary WHERE job_id=17401;"), "VI 9");
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution';"), 0);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT last_outbox_id FROM ui_projection_subscription WHERE stream_id='execution';"), 1000);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT lag_count FROM ui_projection_subscription WHERE stream_id='execution';"), 0);
@@ -11816,15 +10441,15 @@ VALUES(
 INSERT INTO exec_workset(
     workset_id,job_set_id,workflow_step_id,root_job_set_id,
     workset_key,program_kind,program_version,
-    compatibility_key,module_canonical_id,module_version,module_sha256,
+    contract_key,module_canonical_id,module_version,module_sha256,
     entrypoint,verified_dependency_sha256,runtime_profile_sha256,
-    required_capability_mask,estimated_payload_bytes,priority,item_count,
+    program_package_sha256,estimated_payload_bytes,priority,item_count,
     published_at_utc)
 VALUES(
     35020,35010,35012,35010,'start-authority-workset',42,1,
     'start-authority-compatibility','test.module',1,printf('%064d',0),
     'test-entrypoint',printf('%064d',0),printf('%064d',0),
-    0,1,0,1,1000);
+    printf('%064d',0),1,0,1,1000);
 
 INSERT INTO exec_workset_dispatch_attempt(
     dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
@@ -11911,6 +10536,131 @@ VALUES(
         1);
 }
 
+TEST_F(SqliteDbFixture, CanonicalJobProgressIsStructuredOrderedAndIdempotent) {
+    using namespace savor::db;
+    using savor::db::execution::workflow::SqliteExecutionDb;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_by,created_at_utc)
+VALUES(35510,42,'canonical-progress','test',1000);
+
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id,workflow_kind,state,root_scope_kind,
+    created_by,created_at_utc)
+VALUES(35511,'CANONICAL_PROGRESS','RUNNING','manual','test',1000);
+
+INSERT INTO exec_workflow_step(
+    workflow_step_id,workflow_instance_id,step_key,step_kind,state,
+    job_set_id,priority,attempts,max_attempts,created_at_utc)
+VALUES(
+    35512,35511,'Progress','progress.test','MATERIALIZED',
+    35510,0,0,1,1000);
+
+INSERT INTO exec_workset(
+    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_key,program_kind,program_version,
+    contract_key,module_canonical_id,module_version,module_sha256,
+    entrypoint,verified_dependency_sha256,runtime_profile_sha256,
+    program_package_sha256,estimated_payload_bytes,priority,item_count,
+    published_at_utc)
+VALUES(
+    35520,35510,35512,35510,'canonical-progress-workset',42,1,
+    'canonical-progress-contract','test.module',1,printf('%064d',0),
+    'test-entrypoint',printf('%064d',0),printf('%064d',0),
+    printf('%064d',0),1,0,1,1000);
+
+INSERT INTO exec_workset_dispatch_attempt(
+    dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
+    lease_expires_at_utc,claimed_at_utc,dispatched_at_utc)
+VALUES(
+    35530,35520,1,'ACTIVE','canonical-progress-token',
+    999999,1000,1000);
+
+INSERT INTO exec_job(
+    job_id,job_set_id,program_kind,program_version,program_ref_kind,
+    program_ref_id,fingerprint,priority,state,attempts,max_attempts,
+    claimed_by_token,queued_at_utc,workset_id,workset_item_ordinal,
+    dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id)
+VALUES(
+    35540,35510,42,1,'test',1,'canonical-progress-job',0,
+    'RUNNING',1,2,'canonical-progress-token',1000,35520,0,35530,0,1);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    const RecordCanonicalJobProgressCommand valid{
+        .dispatch_attempt_id = 35530,
+        .claim_token = "canonical-progress-token",
+        .job_id = 35540,
+        .dispatch_item_ordinal = 0,
+        .reserved_attempt_id = 1,
+        .workset_id = 35530,
+        .item_id = 1,
+        .invocation_id = 77,
+        .ordinal = 1,
+        .library_id = "soa.progress.runtime.vi/1",
+        .library_revision = 1,
+        .progress_point_id = "vi.current",
+        .has_routed_provenance = true,
+        .routed_sequence = 11,
+        .sample_snapshot_id = 12,
+        .trigger_epoch = 13,
+        .schema_id = "soa.progress.schema.vi/1",
+        .schema_revision = 1,
+        .schema_sha256 = std::string(64, 'a'),
+        .typed_payload = {'V', 'I', 'P', '1', 9},
+        .display_text = "VI 9",
+        .requested_by = "test",
+    };
+    const auto persist = [&](const RecordCanonicalJobProgressCommand& command) {
+        PersistWorkerExecutionEventsBatchReceipt batch;
+        std::string error;
+        EXPECT_TRUE(execution_db.PersistWorkerExecutionEventsBatch(
+            {.events = {command}},
+            &batch,
+            &error)) << error;
+        EXPECT_EQ(batch.events.size(), 1u);
+        return std::get<CanonicalJobProgressReceipt>(batch.events.front());
+    };
+
+    EXPECT_EQ(
+        persist(valid).disposition,
+        ExecutionDbOperationDisposition::Applied);
+    EXPECT_EQ(
+        persist(valid).disposition,
+        ExecutionDbOperationDisposition::AlreadyApplied);
+    EXPECT_EQ(
+        ReadInt64(db_, "SELECT COUNT(1) FROM exec_job_progress WHERE job_id=35540;"),
+        1);
+    EXPECT_EQ(
+        ReadText(db_, "SELECT display_text FROM exec_job_progress WHERE job_id=35540;"),
+        "VI 9");
+    EXPECT_EQ(
+        ReadText(db_, "SELECT event_type FROM exec_outbox_message WHERE aggregate_id='35540' ORDER BY outbox_id DESC LIMIT 1;"),
+        "Execution.JobProgressed.v2");
+
+    auto conflict = valid;
+    conflict.display_text = "VI 10";
+    EXPECT_EQ(
+        persist(conflict).disposition,
+        ExecutionDbOperationDisposition::AttemptMismatch);
+
+    ASSERT_TRUE(ExecSql(
+        db_,
+        "UPDATE exec_job SET state='SUCCEEDED' WHERE job_id=35540;"));
+    EXPECT_EQ(
+        persist(valid).disposition,
+        ExecutionDbOperationDisposition::AlreadyApplied);
+    auto after_terminal = valid;
+    after_terminal.ordinal = 2;
+    EXPECT_EQ(
+        persist(after_terminal).disposition,
+        ExecutionDbOperationDisposition::WrongState);
+    EXPECT_EQ(
+        ReadText(db_, "SELECT state FROM exec_job WHERE job_id=35540;"),
+        "SUCCEEDED");
+}
+
 TEST_F(
     SqliteDbFixture,
     BatchedWorkerPersistenceAndResultClaimsPreserveOrderAndThirtyTwoItemBoundary) {
@@ -11978,6 +10728,16 @@ TEST_F(
     const auto availability_before =
         execution_db.GetExecutionWorkAvailability(&error);
     ASSERT_TRUE(availability_before.has_value()) << error;
+    savor::db::ExecutionWorksetObservationBindingV1 observation;
+    std::optional<savor::runtime::WorksetCaptureBindingV1> capture;
+    savor::runtime::progress::ProgressPlanV1 progress;
+    ASSERT_TRUE(savor::runtime::EncodeWorksetCaptureBindingV1(
+        capture, observation.capture_binding_payload));
+    ASSERT_TRUE(savor::runtime::EncodeProgressPlanV1(
+        progress, observation.progress_plan_payload));
+    observation.capture_binding_sha256 =
+        savor::runtime::EmptyWorksetCaptureBindingHashV1();
+    observation.progress_plan_sha256 = progress.content_sha256;
     PublishWorksetCommand workset{
         .job_set_id = job_set.job_set_id,
         .workflow_step_id = 36001,
@@ -11985,17 +10745,18 @@ TEST_F(
         .workset_key = "batch-persistence-workset",
         .program_kind = 42,
         .program_version = 1,
-        .compatibility = {
-            .compatibility_key = "batch-persistence-compatibility",
+        .contract = {
+            .contract_key = "batch-persistence-compatibility",
             .module_canonical_id = "batch.persistence.module",
             .module_version = 1,
             .module_sha256 = std::string(64, '1'),
             .entrypoint = "execute",
             .verified_dependency_sha256 = std::string(64, '2'),
             .runtime_profile_sha256 = std::string(64, '3'),
-            .required_capability_mask = 0,
+            .program_package_sha256 = std::string(64, '4'),
             .estimated_payload_bytes = 33,
         },
+        .observation = observation,
         .priority = 0,
         .ordered_job_ids = job_ids,
         .requested_by = "test",
@@ -12035,6 +10796,23 @@ TEST_F(
         ExecutionDbOperationDisposition::AlreadyApplied);
     EXPECT_FALSE(replay.ready_workset_availability_changed);
 
+    auto conflicting_workset = workset;
+    conflicting_workset.observation.progress_plan_sha256 =
+        std::string(64, 'f');
+    PublishWorksetWaveReceipt conflict{};
+    ASSERT_TRUE(execution_db.PublishWorksetWave(
+        {
+            .job_set_id = job_set.job_set_id,
+            .expected_job_count = 33,
+            .worksets = {conflicting_workset},
+            .requested_by = "test",
+        },
+        &conflict,
+        &error)) << error;
+    EXPECT_EQ(
+        conflict.disposition,
+        ExecutionDbOperationDisposition::Conflict);
+
     const auto claimed_worksets = execution_db.ClaimPublishedWorksetBatch(
         {
             .batch_nonce = "batch-persistence-claim",
@@ -12044,6 +10822,18 @@ TEST_F(
     ASSERT_TRUE(error.empty()) << error;
     ASSERT_EQ(claimed_worksets.size(), 1u);
     ASSERT_EQ(claimed_worksets.front().items.size(), 33u);
+    EXPECT_EQ(
+        claimed_worksets.front().observation.capture_binding_payload,
+        observation.capture_binding_payload);
+    EXPECT_EQ(
+        claimed_worksets.front().observation.capture_binding_sha256,
+        observation.capture_binding_sha256);
+    EXPECT_EQ(
+        claimed_worksets.front().observation.progress_plan_payload,
+        observation.progress_plan_payload);
+    EXPECT_EQ(
+        claimed_worksets.front().observation.progress_plan_sha256,
+        observation.progress_plan_sha256);
     WorksetDispatchMutationReceipt dispatched{};
     ASSERT_TRUE(execution_db.MarkWorksetActive(
         {
@@ -12365,9 +11155,9 @@ TEST_F(
         "37002,37001,'Drain','draining.test','COMPLETED',37000,0,1,1,1);"
         "INSERT INTO exec_workset("
         "workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,"
-        "program_kind,program_version,compatibility_key,module_canonical_id,"
+        "program_kind,program_version,contract_key,module_canonical_id,"
         "module_version,module_sha256,entrypoint,verified_dependency_sha256,"
-        "runtime_profile_sha256,required_capability_mask,"
+        "runtime_profile_sha256,program_package_sha256,"
         "estimated_payload_bytes,priority,item_count,published_at_utc) VALUES("
         "37003,37000,37002,37000,'delayed-draining-workset',42,1,"
         "'delayed-draining-compatibility','delayed.draining.module',1,"
@@ -12375,7 +11165,7 @@ TEST_F(
         "'execute',"
         "'2222222222222222222222222222222222222222222222222222222222222222',"
         "'3333333333333333333333333333333333333333333333333333333333333333',"
-        "0,1,0,1,1);"
+        "printf('%064d',0),1,0,1,1);"
         "INSERT INTO exec_workset_dispatch_attempt("
         "dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,"
         "lease_expires_at_utc,claimed_at_utc,dispatched_at_utc) VALUES("
@@ -12593,17 +11383,17 @@ VALUES(36302,36301,'probe','probe','test','MATERIALIZED',
         const auto workset_sql =
             "INSERT INTO exec_workset("
             "workset_id,job_set_id,workflow_step_id,root_job_set_id,"
-            "workset_key,program_kind,program_version,compatibility_key,"
+            "workset_key,program_kind,program_version,contract_key,"
             "module_canonical_id,module_version,module_sha256,entrypoint,"
             "verified_dependency_sha256,runtime_profile_sha256,"
-            "required_capability_mask,estimated_payload_bytes,priority,"
+            "program_package_sha256,estimated_payload_bytes,priority,"
             "item_count,published_at_utc) VALUES("
             + std::to_string(workset_id)
             + ",36300,36302,36300,'cancel-workset-"
             + std::to_string(workset_index)
             + "',42,1,'generic','test.module',1,printf('%064d',0),"
               "'test-entrypoint',printf('%064d',0),printf('%064d',0),"
-              "0,1,0,16,1);"
+              "printf('%064d',0),1,0,16,1);"
               "INSERT INTO exec_workset_dispatch_attempt("
               "dispatch_attempt_id,workset_id,dispatch_sequence,state,"
               "claim_token,claimed_at_utc) VALUES("
@@ -12732,15 +11522,15 @@ VALUES(
 INSERT INTO exec_workset(
     workset_id,job_set_id,workflow_step_id,root_job_set_id,
     workset_key,program_kind,program_version,
-    compatibility_key,module_canonical_id,module_version,module_sha256,
+    contract_key,module_canonical_id,module_version,module_sha256,
     entrypoint,verified_dependency_sha256,runtime_profile_sha256,
-    required_capability_mask,estimated_payload_bytes,priority,item_count,
+    program_package_sha256,estimated_payload_bytes,priority,item_count,
     published_at_utc)
 VALUES(
     35120,35110,35112,35110,'expired-recovery-workset',42,1,
     'expired-recovery-compatibility','test.module',1,printf('%064d',0),
     'test-entrypoint',printf('%064d',0),printf('%064d',0),
-    0,1,0,1,1000);
+    printf('%064d',0),1,0,1,1000);
 
 INSERT INTO exec_workset_dispatch_attempt(
     dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
@@ -12898,30 +11688,30 @@ VALUES
      0,1,1,35310,1000);
 INSERT INTO exec_workset(
     workset_id,job_set_id,workflow_step_id,root_job_set_id,
-    workset_key,program_kind,program_version,compatibility_key,
+    workset_key,program_kind,program_version,contract_key,
     module_canonical_id,module_version,module_sha256,entrypoint,
     verified_dependency_sha256,runtime_profile_sha256,
-    required_capability_mask,execution_affinity_key,
+    program_package_sha256,execution_affinity_key,
     estimated_payload_bytes,priority,item_count,published_at_utc)
 VALUES
     (35220,35210,35212,35210,'cold',42,1,'compat',
      'test.module',1,printf('%064d',0),'test-entrypoint',
-     printf('%064d',0),printf('%064d',0),0,'cold',1,10,1,1000),
+     printf('%064d',0),printf('%064d',0),printf('%064d',0),'cold',1,10,1,1000),
     (35221,35210,35212,35210,'warm',42,1,'compat',
      'test.module',1,printf('%064d',0),'test-entrypoint',
-     printf('%064d',0),printf('%064d',0),0,'warm',1,10,1,1001),
+     printf('%064d',0),printf('%064d',0),printf('%064d',0),'warm',1,10,1,1001),
     (35222,35210,35212,35210,'incompatible',42,1,'compat',
      'other.module',1,printf('%064d',0),'test-entrypoint',
-     printf('%064d',0),printf('%064d',0),0,'warm',1,10,1,900),
+     printf('%064d',0),printf('%064d',0),printf('%064d',0),'warm',1,10,1,900),
     (35223,35210,35212,35210,'lower',42,1,'compat',
      'test.module',1,printf('%064d',0),'test-entrypoint',
-     printf('%064d',0),printf('%064d',0),0,'warm',1,5,1,800),
+     printf('%064d',0),printf('%064d',0),printf('%064d',0),'warm',1,5,1,800),
     (35320,35310,35312,35310,'rollback-a',42,1,'compat',
      'test.module',1,printf('%064d',0),'test-entrypoint',
-     printf('%064d',0),printf('%064d',0),0,'warm',1,20,1,1000),
+     printf('%064d',0),printf('%064d',0),printf('%064d',0),'warm',1,20,1,1000),
     (35321,35310,35312,35310,'rollback-b',42,1,'compat',
      'test.module',1,printf('%064d',0),'test-entrypoint',
-     printf('%064d',0),printf('%064d',0),0,'warm',1,20,1,1001);
+     printf('%064d',0),printf('%064d',0),printf('%064d',0),'warm',1,20,1,1001);
 INSERT INTO exec_job(
     job_id,job_set_id,program_kind,program_version,program_ref_kind,
     program_ref_id,fingerprint,priority,state,attempts,max_attempts,

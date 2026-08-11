@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Cli.h"
@@ -34,7 +37,7 @@ savor::e2e::FleetStartupSnapshot PartialFleet() {
         .desired = 2,
         .ready = 1,
         .starting = 1,
-        .slots = {
+        .worker_slots = {
             {
                 .worker_id = 0,
                 .attempt_count = 1,
@@ -55,8 +58,8 @@ savor::e2e::FleetStartupSnapshot ReadyFleet() {
     auto snapshot = PartialFleet();
     snapshot.ready = 2;
     snapshot.starting = 0;
-    snapshot.slots[1].ready = true;
-    snapshot.slots[1].starting = false;
+    snapshot.worker_slots[1].ready = true;
+    snapshot.worker_slots[1].starting = false;
     return snapshot;
 }
 
@@ -187,7 +190,7 @@ TEST(TasMovieEstablishmentCli, TasMovieScenariosRemainExcludedFromAll) {
         options.scenarios.end());
 
     for (const auto* removed : {
-             "seedprobe_battle", "battle", "battle_macro_probe",
+             "seedprobe_battle", "battle_macro_probe",
              "navigation_context"}) {
         error.clear();
         EXPECT_FALSE(ParseSeedProbeArgs(
@@ -196,6 +199,114 @@ TEST(TasMovieEstablishmentCli, TasMovieScenariosRemainExcludedFromAll) {
             &error));
         EXPECT_NE(error.find("unknown --scenario"), std::string::npos);
     }
+}
+
+TEST(BattleCli, RequiresApprovedDtmExactRtcAndRejectsExternalSavestate) {
+    savor::e2e::CliOptions options;
+    std::string error;
+    ASSERT_TRUE(ParseSeedProbeArgs(
+        {
+            "SavorE2E", "--scenario", "battle",
+            "--tasmovie-rtc", "0", "--iso", ".",
+            "--dolphin-base-dir", ".", "--dtm-file", ".",
+        },
+        &options,
+        &error)) << error;
+    ASSERT_EQ(options.scenarios.size(), 1u);
+    EXPECT_EQ(options.scenarios.front(), "battle");
+    EXPECT_TRUE(options.savestate_file.empty());
+    EXPECT_EQ(options.dtm_file, std::filesystem::path("."));
+    ASSERT_TRUE(options.tasmovie_rtc.has_value());
+    EXPECT_EQ(*options.tasmovie_rtc, 0);
+
+    const auto reject = [](std::initializer_list<const char*> extra) {
+        std::vector<std::string> storage{
+            "SavorE2E", "--scenario", "battle", "--iso", ".",
+            "--dolphin-base-dir", ".", "--dtm-file", ".",
+        };
+        storage.insert(storage.end(), extra.begin(), extra.end());
+        std::vector<char*> argv;
+        for (auto& value : storage) argv.push_back(value.data());
+        savor::e2e::CliOptions parsed;
+        std::string parse_error;
+        return !savor::e2e::ParseArgs(
+            static_cast<int>(argv.size()), argv.data(), &parsed,
+            &parse_error);
+    };
+
+    EXPECT_TRUE(reject({}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "0", "--savestate-file", "."}));
+    EXPECT_TRUE(reject({
+        "--tasmovie-rtc-min", "0", "--tasmovie-rtc-max", "1"}));
+    EXPECT_TRUE(reject({"--tasmovie-rtc", "0", "--repeat", "2"}));
+    EXPECT_TRUE(reject({
+        "--tasmovie-rtc", "0", "--scenario", "seedprobe",
+        "--savestate-file", "."}));
+}
+
+TEST(E2ePreparedCheckpointCli, CatalogEnablesSeedProbeAndBattleOnly) {
+    const auto* seedprobe =
+        savor::e2e::FindE2eScenarioDescriptor("seedprobe");
+    const auto* battle = savor::e2e::FindE2eScenarioDescriptor("battle");
+    const auto* tasmovie = savor::e2e::FindE2eScenarioDescriptor("tasmovie");
+    ASSERT_NE(seedprobe, nullptr);
+    ASSERT_NE(battle, nullptr);
+    ASSERT_NE(tasmovie, nullptr);
+    const auto prepared = savor::e2e::EntrySourceBit(
+        savor::e2e::E2eScenarioEntrySource::PreparedSterilizedCheckpoint);
+    EXPECT_NE(seedprobe->supported_entry_sources & prepared, 0u);
+    EXPECT_NE(battle->supported_entry_sources & prepared, 0u);
+    EXPECT_EQ(tasmovie->supported_entry_sources & prepared, 0u);
+}
+
+TEST(E2ePreparedCheckpointCli, AcceptsSeedProbeAndBattleAndRejectsMixedInputs) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("savor-e2e-prepared-cli-"
+            + std::to_string(std::chrono::steady_clock::now()
+                .time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(root));
+    for (const auto* name : {
+             "execution.db", "state.db", "analysis.db", "authoring.db",
+             "ui_read.db", "archive.db"}) {
+        std::ofstream(root / name, std::ios::binary).put('\0');
+    }
+
+    const auto parse = [&](std::string scenario,
+                           std::initializer_list<std::string> extra,
+                           savor::e2e::CliOptions* options,
+                           std::string* error) {
+        std::vector<std::string> storage{
+            "SavorE2E", "--scenario", std::move(scenario),
+            "--iso", ".", "--dolphin-base-dir", ".",
+            "--workspace-root", root.string(),
+            "--source-savestate-id", "7",
+        };
+        storage.insert(storage.end(), extra.begin(), extra.end());
+        std::vector<char*> argv;
+        for (auto& value : storage) argv.push_back(value.data());
+        return savor::e2e::ParseArgs(
+            static_cast<int>(argv.size()), argv.data(), options, error);
+    };
+
+    savor::e2e::CliOptions options;
+    std::string error;
+    EXPECT_TRUE(parse("seedprobe", {}, &options, &error)) << error;
+    error.clear();
+    EXPECT_TRUE(parse("battle", {}, &options, &error)) << error;
+    error.clear();
+    EXPECT_FALSE(parse("tasmovie", {}, &options, &error));
+    EXPECT_NE(error.find("does not support entry source"), std::string::npos);
+    error.clear();
+    EXPECT_FALSE(parse(
+        "battle", {"--dtm-file", "."}, &options, &error));
+    EXPECT_NE(error.find("rejects"), std::string::npos);
+    error.clear();
+    EXPECT_FALSE(parse(
+        "seedprobe", {"--savestate-file", "."}, &options, &error));
+    EXPECT_NE(error.find("rejects"), std::string::npos);
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(root, cleanup_error);
 }
 
 TEST(TasMovieSeedProbeCli, AcceptsRtcEndpointsWorkersAndSeedProbeOptions) {
@@ -346,9 +457,9 @@ TEST(SeedProbeWorkerStartupBarrier, FailsImmediatelyOnExhaustedRequiredSlot) {
     auto impossible = PartialFleet();
     impossible.starting = 0;
     impossible.exhausted = 1;
-    impossible.slots[1].starting = false;
-    impossible.slots[1].exhausted = true;
-    impossible.slots[1].terminal_diagnostic =
+    impossible.worker_slots[1].starting = false;
+    impossible.worker_slots[1].exhausted = true;
+    impossible.worker_slots[1].terminal_diagnostic =
         "worker 1 capability preflight failed";
 
     bool claims_paused = false;

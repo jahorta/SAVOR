@@ -3,19 +3,17 @@
 #include <string_view>
 #include <optional>
 
-#include "InputPlan.h"   // GCInputFrame
+#include "GCInputFrame.h"
 #include "../../Utils/Log.h"
 
 namespace savor {
 
     // Provides a Dolphin controller override for one GC port.
-    // You call install() once after Pad::Initialize(), and then setFrame(...) each frame.
-    // Thread-safe: setFrame can be called from your runner while Dolphin polls on its thread.
+    // One publication remains held until a later publication replaces it.
     class GCPadOverride {
     public:
         struct PollStats {
-            uint64_t sequence = 0;
-            uint32_t plan_index = 0;
+            uint64_t publication_epoch = 0;
             uint32_t callback_count = 0;
             GCInputFrame frame{};
         };
@@ -27,11 +25,8 @@ namespace savor {
         // Safe to call multiple times; it is a no-op after the first successful install.
         void install();
 
-        // Update the currently "held" controller state.
-        void setFrame(const GCInputFrame& f);
-
-        // Publish a logical input tape frame and reset its poll acknowledgement stats.
-        void publishPlaybackFrame(uint64_t sequence, uint32_t plan_index, const GCInputFrame& f);
+        // Publish one held controller state and reset its poll acknowledgement.
+        void publishFrame(uint64_t publication_epoch, const GCInputFrame& f);
         PollStats getPollStats() const;
 
         // Convenience: centered sticks, no buttons.
@@ -45,9 +40,8 @@ namespace savor {
         int m_port{ 0 };
         bool m_installed{ false };
 
-        GCInputFrame m_cur{};     // guarded by m_mtx
-        uint64_t m_sequence{ 0 };
-        uint32_t m_plan_index{ 0 };
+        GCInputFrame m_cur{}; // guarded by m_mtx
+        uint64_t m_publication_epoch{ 0 };
         uint32_t m_callback_count{ 0 };
         mutable std::mutex m_mtx;
     };

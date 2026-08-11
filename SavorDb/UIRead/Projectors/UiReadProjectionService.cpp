@@ -104,6 +104,16 @@ void BindColumn(sqlite3_stmt* dst, int dst_col, sqlite3_stmt* src, int src_col) 
         sqlite3_bind_text(dst, dst_col, text == nullptr ? "" : reinterpret_cast<const char*>(text), -1, SQLITE_TRANSIENT);
         break;
     }
+    case SQLITE_BLOB: {
+        const auto* bytes = sqlite3_column_blob(src, src_col);
+        const auto size = sqlite3_column_bytes(src, src_col);
+        if (size == 0) {
+            sqlite3_bind_zeroblob(dst, dst_col, 0);
+        } else {
+            sqlite3_bind_blob(dst, dst_col, bytes, size, SQLITE_TRANSIENT);
+        }
+        break;
+    }
     case SQLITE_NULL:
         sqlite3_bind_null(dst, dst_col);
         break;
@@ -264,7 +274,7 @@ bool IsExecutionJobEvent(const std::string& event_type) {
         || event_type == "Execution.JobClaimed.v1"
         || event_type == "Execution.JobStarted.v1"
         || event_type == "Execution.JobLeaseRenewed.v1"
-        || event_type == "Execution.JobProgressed.v1"
+        || event_type == "Execution.JobProgressed.v2"
         || event_type == "Execution.JobPendingWorkset.v1"
         || event_type == "Execution.JobCompleted.v1"
         || event_type == "Execution.JobExecutionFinished.v1"
@@ -389,6 +399,78 @@ bool ProjectJobRows(
     if (StopRequested(stop_requested, error_out)) {
         return false;
     }
+
+    Statement delete_progress;
+    if (!Prepare(
+            ui,
+            "DELETE FROM ui_job_progress WHERE job_id=?1;",
+            &delete_progress,
+            error_out)) {
+        return false;
+    }
+    sqlite3_bind_int64(delete_progress.st, 1, job_id);
+    if (!StepDone(ui, delete_progress.st, error_out)) return false;
+
+    Statement source_progress;
+    constexpr const char* kProgressSelect =
+        "SELECT job_id,attempt_id,ordinal,workset_id,item_id,invocation_id,"
+        "library_id,library_revision,progress_point_id,routed_sequence,"
+        "sample_snapshot_id,trigger_epoch,schema_id,schema_revision,"
+        "schema_sha256,typed_payload,display_text,recorded_at_utc "
+        "FROM exec_job_progress WHERE job_id=?1 "
+        "ORDER BY attempt_id ASC,ordinal ASC;";
+    if (!Prepare(source, kProgressSelect, &source_progress, error_out)) {
+        return false;
+    }
+    sqlite3_bind_int64(source_progress.st, 1, job_id);
+    Statement insert_progress;
+    constexpr const char* kProgressInsert =
+        "INSERT INTO ui_job_progress("
+        "job_id,attempt_id,ordinal,workset_id,item_id,invocation_id,library_id,"
+        "library_revision,progress_point_id,routed_sequence,sample_snapshot_id,"
+        "trigger_epoch,schema_id,schema_revision,schema_sha256,typed_payload,"
+        "display_text,recorded_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18);";
+    if (!Prepare(ui, kProgressInsert, &insert_progress, error_out)) {
+        return false;
+    }
+    int progress_rc = SQLITE_OK;
+    while ((progress_rc = sqlite3_step(source_progress.st)) == SQLITE_ROW) {
+        if (StopRequested(stop_requested, error_out)) return false;
+        sqlite3_reset(insert_progress.st);
+        sqlite3_clear_bindings(insert_progress.st);
+        for (int column = 0; column < 18; ++column) {
+            BindColumn(
+                insert_progress.st,
+                column + 1,
+                source_progress.st,
+                column);
+        }
+        if (!StepDone(ui, insert_progress.st, error_out)) return false;
+    }
+    if (progress_rc != SQLITE_DONE) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(source);
+        return false;
+    }
+
+    Statement latest_progress;
+    constexpr const char* kLatestProgress =
+        "UPDATE ui_job_summary SET "
+        "last_progress_attempt_id=(SELECT attempt_id FROM ui_job_progress "
+        " WHERE job_id=?1 ORDER BY attempt_id DESC,ordinal DESC LIMIT 1),"
+        "last_progress_ordinal=(SELECT ordinal FROM ui_job_progress "
+        " WHERE job_id=?1 ORDER BY attempt_id DESC,ordinal DESC LIMIT 1),"
+        "last_progress_text=(SELECT display_text FROM ui_job_progress "
+        " WHERE job_id=?1 ORDER BY attempt_id DESC,ordinal DESC LIMIT 1),"
+        "last_progress_at_utc=(SELECT recorded_at_utc FROM ui_job_progress "
+        " WHERE job_id=?1 ORDER BY attempt_id DESC,ordinal DESC LIMIT 1) "
+        "WHERE job_id=?1;";
+    if (!Prepare(ui, kLatestProgress, &latest_progress, error_out)) {
+        return false;
+    }
+    sqlite3_bind_int64(latest_progress.st, 1, job_id);
+    if (!StepDone(ui, latest_progress.st, error_out)) return false;
+    if (StopRequested(stop_requested, error_out)) return false;
 
     Statement del;
     if (!Prepare(ui, "DELETE FROM ui_job_artifact WHERE job_id=?1;", &del, error_out)) {

@@ -15,10 +15,6 @@ AuthoringLibraryKey SpecLibraryDialog::toAuthoringLibraryKey(SpecKind kind)
         return AuthoringLibraryKey::Tas;
     case SpecKind::BattleRun:
         return AuthoringLibraryKey::BattleRun;
-    case SpecKind::Predicate:
-        return AuthoringLibraryKey::Predicate;
-    case SpecKind::PredicateSet:
-        return AuthoringLibraryKey::PredicateSet;
     case SpecKind::BattlePlan:
         return AuthoringLibraryKey::BattlePlan;
     case SpecKind::ExplorerSettings:

@@ -117,15 +117,13 @@ StopSubscriptionDefinition PcSubscription(
     std::uint64_t id,
     std::uint32_t pc,
     IStopPointConsumer& consumer,
-    StopDeliveryMode delivery = StopDeliveryMode::Observe,
-    StopRoutingPolicy policy = StopRoutingPolicy::Pass,
+    StopSubscriptionRoute route = PassiveStopObservation{},
     std::int32_t priority = 0)
 {
     return {
         .id = StopSubscriptionId(id),
         .point = PcStopPointSpec{pc},
-        .delivery = delivery,
-        .policy = policy,
+        .route = std::move(route),
         .priority = priority,
         .consumer = &consumer,
     };
@@ -395,26 +393,24 @@ TEST_F(StopPointRouterFixture, RecoverableReleaseFailureKeepsLeaseAndPlan)
     EXPECT_TRUE(router.DesiredPhysicalPlan().pcs.empty());
 }
 
-TEST_F(StopPointRouterFixture, RoutesInFixedStagePriorityAndRegistrationOrder)
+TEST_F(StopPointRouterFixture, RoutesByPriorityThenRegistrationOrder)
 {
     RecordingStopConsumer consumer;
-    auto guard = router.RegisterGroup(Group(
+    auto high_priority_observer = router.RegisterGroup(Group(
         1,
         {PcSubscription(
             1,
             0x80001000u,
             consumer,
-            StopDeliveryMode::Guard,
-            StopRoutingPolicy::Pass,
+            PassiveStopObservation{},
             50)}));
-    auto earlier_progress = router.RegisterGroup(Group(
+    auto earlier_observer = router.RegisterGroup(Group(
         2,
         {PcSubscription(
             2,
             0x80001000u,
             consumer,
-            StopDeliveryMode::Progress,
-            StopRoutingPolicy::Pass,
+            PassiveStopObservation{},
             5)}));
     auto later_observe = router.RegisterGroup(Group(
         3,
@@ -422,8 +418,7 @@ TEST_F(StopPointRouterFixture, RoutesInFixedStagePriorityAndRegistrationOrder)
             3,
             0x80001000u,
             consumer,
-            StopDeliveryMode::Observe,
-            StopRoutingPolicy::Pass,
+            PassiveStopObservation{},
             5)}));
     auto wake = router.RegisterGroup(Group(
         4,
@@ -431,10 +426,9 @@ TEST_F(StopPointRouterFixture, RoutesInFixedStagePriorityAndRegistrationOrder)
             4,
             0x80001000u,
             consumer,
-            StopDeliveryMode::Wake,
-            StopRoutingPolicy::Consume)}));
-    ASSERT_TRUE(guard.receipt.ok);
-    ASSERT_TRUE(earlier_progress.receipt.ok);
+            ForegroundStopWait{})}));
+    ASSERT_TRUE(high_priority_observer.receipt.ok);
+    ASSERT_TRUE(earlier_observer.receipt.ok);
     ASSERT_TRUE(later_observe.receipt.ok);
     ASSERT_TRUE(wake.receipt.ok);
 
@@ -443,17 +437,17 @@ TEST_F(StopPointRouterFixture, RoutesInFixedStagePriorityAndRegistrationOrder)
     EXPECT_TRUE(decision.request_break);
     const auto receipts = router.DrainIngress();
     ASSERT_EQ(receipts.size(), 1u);
-    EXPECT_EQ(receipts[0].terminal, StopRouteTerminal::WokeForeground);
+    EXPECT_EQ(receipts[0].terminal, StopRouteTerminal::ForegroundMatched);
     ASSERT_EQ(receipts[0].deliveries.size(), 4u);
     EXPECT_EQ(
         receipts[0].deliveries[0].subscription_id,
-        StopSubscriptionId(2));
+        StopSubscriptionId(1));
     EXPECT_EQ(
         receipts[0].deliveries[1].subscription_id,
-        StopSubscriptionId(3));
+        StopSubscriptionId(2));
     EXPECT_EQ(
         receipts[0].deliveries[2].subscription_id,
-        StopSubscriptionId(1));
+        StopSubscriptionId(3));
     EXPECT_EQ(
         receipts[0].deliveries[3].subscription_id,
         StopSubscriptionId(4));
@@ -516,7 +510,7 @@ TEST_F(StopPointRouterFixture, NativeHitDuringReleaseCannotUsePartialSnapshot)
     EXPECT_TRUE(consumer.deliveries.empty());
 }
 
-TEST_F(StopPointRouterFixture, EnforcesOneForegroundWakeGroup)
+TEST_F(StopPointRouterFixture, EnforcesOneForegroundWaitGroup)
 {
     RecordingStopConsumer consumer;
     auto first = router.RegisterGroup(Group(
@@ -525,7 +519,7 @@ TEST_F(StopPointRouterFixture, EnforcesOneForegroundWakeGroup)
             1,
             0x80001000u,
             consumer,
-            StopDeliveryMode::Wake)}));
+            ForegroundStopWait{})}));
     ASSERT_TRUE(first.receipt.ok);
 
     auto second = router.RegisterGroup(Group(
@@ -534,110 +528,11 @@ TEST_F(StopPointRouterFixture, EnforcesOneForegroundWakeGroup)
             2,
             0x80002000u,
             consumer,
-            StopDeliveryMode::Wake)}));
+            ForegroundStopWait{})}));
     EXPECT_FALSE(second.receipt.ok);
     EXPECT_EQ(
         second.receipt.error.code,
-        StopPointErrorCode::ForegroundWakeAlreadyRegistered);
-}
-
-TEST_F(StopPointRouterFixture, RejectsInvalidGuardAndEpochAgnosticPolicies)
-{
-    RecordingStopConsumer consumer;
-    auto guard_consume = router.RegisterGroup(Group(
-        1,
-        {PcSubscription(
-            1,
-            0x80001000u,
-            consumer,
-            StopDeliveryMode::Guard,
-            StopRoutingPolicy::Consume)}));
-    EXPECT_FALSE(guard_consume.receipt.ok);
-    EXPECT_EQ(
-        guard_consume.receipt.error.code,
-        StopPointErrorCode::InvalidPolicy);
-
-    auto guard_handler_definition = PcSubscription(
-        2,
-        0x80001000u,
-        consumer,
-        StopDeliveryMode::Guard,
-        StopRoutingPolicy::RequestInterruptionHandler);
-    guard_handler_definition.interruption_handler_key =
-        "guard-handler";
-    auto guard_handler = router.RegisterGroup(
-        Group(2, {std::move(guard_handler_definition)}));
-    EXPECT_FALSE(guard_handler.receipt.ok);
-    EXPECT_EQ(
-        guard_handler.receipt.error.code,
-        StopPointErrorCode::InvalidPolicy);
-
-    auto pc_agnostic = router.RegisterGroup(Group(
-        3,
-        {PcSubscription(3, 0x80001000u, consumer)}));
-    EXPECT_FALSE(pc_agnostic.receipt.ok);
-    EXPECT_EQ(
-        pc_agnostic.receipt.error.code,
-        StopPointErrorCode::InvalidPolicy);
-
-    StopSubscriptionDefinition synthetic{
-        .id = StopSubscriptionId(4),
-        .point = SyntheticStopPointSpec{44},
-        .consumer = &consumer,
-    };
-    auto synthetic_agnostic = router.RegisterGroup(Group(
-        4,
-        {std::move(synthetic)}));
-    EXPECT_TRUE(synthetic_agnostic.receipt.ok)
-        << synthetic_agnostic.receipt.error.message;
-}
-
-TEST_F(StopPointRouterFixture, ConsumeSuppressesWakeWithoutRequestingCoreBreak)
-{
-    RecordingStopConsumer consumer;
-    auto consume = router.RegisterGroup(Group(
-        1,
-        {PcSubscription(
-            1,
-            0x80001000u,
-            consumer,
-            StopDeliveryMode::Intercept,
-            StopRoutingPolicy::Consume)}));
-    auto wake = router.RegisterGroup(Group(
-        2,
-        {PcSubscription(
-            2,
-            0x80001000u,
-            consumer,
-            StopDeliveryMode::Wake)}));
-    ASSERT_TRUE(consume.receipt.ok);
-    ASSERT_TRUE(wake.receipt.ok);
-
-    const auto decision =
-        backend.InjectJitPcStop(0x80001000u);
-    EXPECT_FALSE(decision.request_break);
-    const auto receipts = router.DrainIngress();
-    ASSERT_EQ(receipts.size(), 1u);
-    EXPECT_EQ(receipts[0].terminal, StopRouteTerminal::Consumed);
-    EXPECT_FALSE(receipts[0].core_must_remain_stopped);
-    ASSERT_EQ(receipts[0].deliveries.size(), 1u);
-    EXPECT_EQ(
-        receipts[0].deliveries[0].subscription_id,
-        StopSubscriptionId(1));
-
-    RecordingStopConsumer current_consumer;
-    auto current = router.RegisterGroup(
-        Group(
-            3,
-            {PcSubscription(
-                3,
-                0x80001000u,
-                current_consumer)}),
-        {.current_point = StopCurrentPointPolicy::Require});
-    EXPECT_FALSE(current.receipt.ok);
-    EXPECT_EQ(
-        current.receipt.error.code,
-        StopPointErrorCode::CurrentPointUnavailable);
+        StopPointErrorCode::ForegroundWaitAlreadyRegistered);
 }
 
 TEST_F(
@@ -649,9 +544,8 @@ TEST_F(
         1,
         0x80001000u,
         consumer,
-        StopDeliveryMode::Intercept,
-        StopRoutingPolicy::RequestInterruptionHandler);
-    handler_request.interruption_handler_key = "dismiss-text-box";
+        TrustedStopInterruptionRequest{
+            .handler_key = "dismiss-text-box"});
     auto registration =
         router.RegisterGroup(Group(1, {std::move(handler_request)}));
     ASSERT_TRUE(registration.receipt.ok);
@@ -662,7 +556,7 @@ TEST_F(
     ASSERT_EQ(receipts.size(), 1u);
     EXPECT_EQ(
         receipts[0].terminal,
-        StopRouteTerminal::InterruptionHandlerRequested);
+        StopRouteTerminal::InterruptionRequested);
     EXPECT_TRUE(receipts[0].core_must_remain_stopped);
     ASSERT_TRUE(receipts[0].interruption_handler_request.has_value());
     EXPECT_EQ(
@@ -831,12 +725,14 @@ TEST(StopPointRouter, InvokesTrustedCpuObserverOnceAfterFinalWakeSelection)
 
     RecordingStopConsumer consumer;
     auto passive = PcSubscription(1, 0x80001000u, consumer);
-    passive.cpu_observer_descriptor_id = 77;
+    passive.route = PassiveStopObservation{
+        .cpu_observer_descriptor_id = 77,
+        .lossless = false};
     auto wake = PcSubscription(
         2,
         0x80001000u,
         consumer,
-        StopDeliveryMode::Wake);
+        ForegroundStopWait{});
     auto registration = router.RegisterGroup(
         Group(1, {std::move(passive), std::move(wake)}));
     ASSERT_TRUE(registration.receipt.ok);
@@ -846,7 +742,7 @@ TEST(StopPointRouter, InvokesTrustedCpuObserverOnceAfterFinalWakeSelection)
     ASSERT_EQ(observer.descriptors.size(), 1u);
     EXPECT_EQ(observer.descriptors[0], 77u);
     ASSERT_EQ(observer.events.size(), 1u);
-    EXPECT_TRUE(observer.events[0].active_foreground_wake);
+    EXPECT_TRUE(observer.events[0].active_foreground_wait);
     const auto receipts = router.DrainIngress();
     ASSERT_EQ(receipts.size(), 1u);
     ASSERT_TRUE(receipts[0].event.has_value());
@@ -908,7 +804,9 @@ TEST(StopPointRouter, CpuObserverFailureFailsClosedBeforeActorDelivery)
 
     RecordingStopConsumer consumer;
     auto definition = PcSubscription(1, 0x80001000u, consumer);
-    definition.cpu_observer_descriptor_id = 88;
+    definition.route = PassiveStopObservation{
+        .cpu_observer_descriptor_id = 88,
+        .lossless = false};
     auto registration =
         router.RegisterGroup(Group(1, {std::move(definition)}));
     ASSERT_TRUE(registration.receipt.ok);
@@ -917,7 +815,7 @@ TEST(StopPointRouter, CpuObserverFailureFailsClosedBeforeActorDelivery)
         backend.InjectJitPcStop(0x80001000u).request_break);
     const auto receipts = router.DrainIngress();
     ASSERT_EQ(receipts.size(), 1u);
-    EXPECT_EQ(receipts[0].terminal, StopRouteTerminal::Failed);
+    EXPECT_EQ(receipts[0].terminal, StopRouteTerminal::RoutingFailure);
     EXPECT_TRUE(receipts[0].core_must_remain_stopped);
     EXPECT_TRUE(router.StopIngressDrainAndCleanup().ok);
 }
@@ -998,7 +896,7 @@ TEST_F(StopPointRouterFixture, AuthoritativeOverflowUsesEmergencySlotAndFailsClo
             1,
             0x80001000u,
             consumer,
-            StopDeliveryMode::Wake)}));
+            ForegroundStopWait{})}));
     ASSERT_TRUE(registration.receipt.ok);
 
     savor::probe::NativeStopDecision overflow;
@@ -1070,7 +968,7 @@ TEST_F(StopPointRouterFixture, OneShotHitRemovesItsPhysicalStopBeforeResume)
         1,
         0x80001000u,
         consumer,
-        StopDeliveryMode::Wake);
+        ForegroundStopWait{});
     one_shot.lifetime = StopSubscriptionLifetime::OneShot;
     auto registration =
         router.RegisterGroup(Group(1, {std::move(one_shot)}));
@@ -1146,16 +1044,22 @@ TEST_F(StopPointRouterFixture, AcceptsRetainedCurrentPointAndSuppressesOneReentr
             1,
             0x80001000u,
             first_consumer,
-            StopDeliveryMode::Wake)}));
+            ForegroundStopWait{})}));
     ASSERT_TRUE(first.receipt.ok);
     (void)backend.InjectJitPcStop(0x80001000u);
     const auto first_receipts = router.DrainIngress();
     ASSERT_EQ(first_receipts.size(), 1u);
+    ASSERT_TRUE(first.handle.Release().ok);
 
     RecordingStopConsumer second_consumer;
-    auto definition =
-        Group(2, {PcSubscription(2, 0x80001000u, second_consumer)});
-    definition.subscriptions[0].suppress_immediate_reentry = true;
+    auto definition = Group(
+        2,
+        {PcSubscription(
+            2,
+            0x80001000u,
+            second_consumer,
+            ForegroundStopWait{
+                .suppress_immediate_reentry = true})});
     auto second = router.RegisterGroup(
         std::move(definition),
         {.current_point = StopCurrentPointPolicy::AcceptIfAvailable});
@@ -1191,7 +1095,7 @@ TEST(StopPointRouter, RejectsCurrentPointWhenNewSampleWasNotCapturedAtHitTime)
             1,
             0x80001000u,
             consumer,
-            StopDeliveryMode::Wake)}));
+            ForegroundStopWait{})}));
     ASSERT_TRUE(wake.receipt.ok);
     (void)backend.InjectJitPcStop(0x80001000u);
     ASSERT_EQ(router.DrainIngress().size(), 1u);
@@ -1217,7 +1121,7 @@ TEST_F(StopPointRouterFixture, ExplicitCurrentPointAcceptanceEndsOnDeparture)
             1,
             0x80001000u,
             wake_consumer,
-            StopDeliveryMode::Wake)}));
+            ForegroundStopWait{})}));
     ASSERT_TRUE(wake.receipt.ok);
     (void)backend.InjectJitPcStop(0x80001000u);
     ASSERT_EQ(router.DrainIngress().size(), 1u);

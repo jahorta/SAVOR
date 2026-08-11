@@ -25,8 +25,6 @@ enum class AuthoringLibraryKey {
     ExplorerSettings,
     BattleChain,
     BattlePlan,
-    Predicate,
-    PredicateSet,
 };
 
 struct SpecLibraryRow {

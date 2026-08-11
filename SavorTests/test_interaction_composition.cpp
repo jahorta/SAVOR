@@ -25,18 +25,8 @@ InteractionActionSet Actions()
     return {
         .acquire_input_lease = CanonicalActionIdentity(
             CanonicalAction::InputAcquireLease),
-        .publish_held = CanonicalActionIdentity(
-            CanonicalAction::InputPublishHeld),
-        .publish_pulse = CanonicalActionIdentity(
-            CanonicalAction::InputPublishPulse),
-        .publish_sequence = CanonicalActionIdentity(
-            CanonicalAction::InputPublishSequence),
-        .neutralize = CanonicalActionIdentity(
-            CanonicalAction::InputNeutralize),
-        .await_guest_poll = CanonicalActionIdentity(
-            CanonicalAction::InputAwaitGuestPoll),
-        .subscribe_group = CanonicalActionIdentity(
-            CanonicalAction::StopPointsSubscribeGroup),
+        .apply_input_state = CanonicalActionIdentity(
+            CanonicalAction::InputApplyState),
         .continue_until = CanonicalActionIdentity(
             CanonicalAction::ExecutionContinueUntil),
         .step_frames = CanonicalActionIdentity(
@@ -71,19 +61,11 @@ InteractionDefinition Definition()
         .output_type = u64,
         .lease_type = CanonicalActionOutputType(
             CanonicalAction::InputAcquireLease),
-        .subscription_type = CanonicalActionOutputType(
-            CanonicalAction::StopPointsSubscribeGroup),
         .point_receipt_type = CanonicalActionOutputType(
             CanonicalAction::ExecutionContinueUntil),
-        .input_publication_receipt_type =
+        .input_execution_binding_type =
             CanonicalActionOutputType(
-                CanonicalAction::InputPublishHeld),
-        .input_neutral_witness_type =
-            CanonicalActionOutputType(
-                CanonicalAction::InputNeutralize),
-        .input_poll_receipt_type =
-            CanonicalActionOutputType(
-                CanonicalAction::InputAwaitGuestPoll),
+                CanonicalAction::InputApplyState),
         .segment_result_type = u64,
         .adaptive_transition_type = u64,
         .adaptive_segment_id_type = u64,
@@ -98,13 +80,9 @@ InteractionDefinition Definition()
                 },
                 .requested_input_parameter = 0,
                 .input_kind = InteractionInputKind::Held,
-                .acknowledgement =
-                    InputAcknowledgementPolicy::RequestAndRelease,
                 .held_through_successor = Point(
                     "soa.battle.point.BattleMacroInputReadyGate",
                     0x8007cec4u),
-                .release_witness_point =
-                    "soa.battle.point.BattleMacroInputReadyGate",
                 .completion_mapper =
                     Reducer("test.interaction.map.select"),
                 .static_next_segment = "confirm",
@@ -117,11 +95,7 @@ InteractionDefinition Definition()
                         0x8007cec4u),
                 },
                 .requested_input_parameter = 1,
-                .input_kind = InteractionInputKind::Pulse,
-                .acknowledgement =
-                    InputAcknowledgementPolicy::RequestAndRelease,
-                .release_witness_point =
-                    "soa.battle.point.BattleMacroDirectCommandQueued",
+                .input_kind = InteractionInputKind::Held,
                 .memory_change_observation = CanonicalActionIdentity(
                     CanonicalAction::GuestReadU32),
                 .memory_change_address = 0x803469a8u,
@@ -156,9 +130,8 @@ TEST(InteractionComposition, LowersTemporalContractToOrdinaryIr)
     ProgramModule module;
     const auto result = LowerInteraction(Definition(), module);
     ASSERT_TRUE(result) << result.diagnostics.front().message;
-    ASSERT_EQ(module.functions.size(), 1u);
+    ASSERT_EQ(module.functions.size(), 2u);
     const auto instructions = Instructions(module);
-
     EXPECT_EQ(
         std::ranges::count(
             instructions,
@@ -176,14 +149,14 @@ TEST(InteractionComposition, LowersTemporalContractToOrdinaryIr)
             {
                 return instruction->opcode;
             }),
-        1);
+        0);
 
-    const auto publish = std::ranges::find_if(
+    const auto apply = std::ranges::find_if(
         instructions,
         [](const Instruction* instruction)
         {
             return instruction->selector.contains(
-                "select/publish-before-departure");
+                "select/apply-state-before-departure");
         });
     const auto wait = std::ranges::find_if(
         instructions,
@@ -199,39 +172,28 @@ TEST(InteractionComposition, LowersTemporalContractToOrdinaryIr)
             return instruction->selector.contains(
                 "select/held-through-semantic-successor");
         });
-    const auto request_poll = std::ranges::find_if(
-        instructions,
-        [](const Instruction* instruction)
-        {
-            return instruction->selector.contains(
-                "select/request-receipt-before-neutral");
-        });
     const auto neutral = std::ranges::find_if(
         instructions,
         [](const Instruction* instruction)
         {
             return instruction->selector.contains(
-                "select/publish-neutral");
+                "select/release-to-neutral");
         });
     const auto release = std::ranges::find_if(
         instructions,
         [](const Instruction* instruction)
         {
             return instruction->selector.contains(
-                "select/release-witness");
+                "select/release/observed");
         });
-    ASSERT_NE(publish, instructions.end());
+    ASSERT_NE(apply, instructions.end());
     ASSERT_NE(wait, instructions.end());
     ASSERT_NE(successor, instructions.end());
-    ASSERT_NE(request_poll, instructions.end());
     ASSERT_NE(neutral, instructions.end());
     ASSERT_NE(release, instructions.end());
-    EXPECT_LT(publish - instructions.begin(), wait - instructions.begin());
+    EXPECT_LT(apply - instructions.begin(), wait - instructions.begin());
     EXPECT_LT(wait - instructions.begin(), successor - instructions.begin());
-    EXPECT_LT(
-        successor - instructions.begin(),
-        request_poll - instructions.begin());
-    EXPECT_LT(request_poll - instructions.begin(), neutral - instructions.begin());
+    EXPECT_LT(successor - instructions.begin(), neutral - instructions.begin());
     EXPECT_LT(neutral - instructions.begin(), release - instructions.begin());
     for (const auto* instruction : instructions)
     {
@@ -256,11 +218,22 @@ TEST(InteractionComposition, LowersTemporalContractToOrdinaryIr)
                     &instruction->literal->payload);
             return bytes && bytes->size() >= 4 &&
                 (*bytes)[0] == 'S' &&
-                (*bytes)[1] == 'G' &&
-                (*bytes)[2] == 'C' &&
+                (*bytes)[1] == 'P' &&
+                (*bytes)[2] == 'S' &&
                 (*bytes)[3] == '1';
         });
-    EXPECT_NE(stop_config, instructions.end());
+    ASSERT_NE(stop_config, instructions.end());
+    const auto* stop_group_bytes = std::get_if<std::vector<Byte>>(
+        &(*stop_config)->literal->payload);
+    ASSERT_NE(stop_group_bytes, nullptr);
+    const auto decoded_points =
+        DecodeSemanticPointSetV1(*stop_group_bytes);
+    ASSERT_TRUE(decoded_points) << decoded_points.diagnostic;
+    EXPECT_EQ(
+        decoded_points.value->program_counters,
+        (std::vector<std::uint32_t>{0x80071740u}));
+    EXPECT_TRUE(
+        decoded_points.value->hit_time_sample_descriptor_ids.empty());
     const auto continue_config = std::ranges::find_if(
         instructions,
         [](const Instruction* instruction)
@@ -285,58 +258,105 @@ TEST(InteractionComposition, LowersTemporalContractToOrdinaryIr)
     EXPECT_NE(continue_config, instructions.end());
 }
 
-TEST(InteractionComposition, MemoryPollingPreservesBaselineThenNeutralFrame)
+TEST(InteractionComposition, MemoryPollingIsAdaptiveBoundedAndHeld)
 {
     ProgramModule module;
     ASSERT_TRUE(LowerInteraction(Definition(), module));
-    const auto instructions = Instructions(module);
+    const auto main_function = std::ranges::find_if(
+        module.functions,
+        [](const ProgramFunction& function) {
+            return function.name.starts_with("interact.");
+        });
+    const auto poll_function = std::ranges::find_if(
+        module.functions,
+        [](const ProgramFunction& function) {
+            return function.name.starts_with(
+                "interaction.memory-change.");
+        });
+    ASSERT_NE(main_function, module.functions.end());
+    ASSERT_NE(poll_function, module.functions.end());
+    const auto function_instructions = [](const ProgramFunction& function) {
+        std::vector<const Instruction*> output;
+        for (const auto& block : function.blocks)
+            for (const auto& instruction : block.instructions)
+                output.push_back(&instruction);
+        return output;
+    };
+    const auto instructions = function_instructions(*main_function);
+    const auto poll_instructions = function_instructions(*poll_function);
     const auto baseline = std::ranges::find_if(
         instructions,
         [](const Instruction* instruction)
         {
             return instruction->selector.contains(
-                "memory-baseline-before-advance");
-        });
-    const auto frame = std::ranges::find_if(
-        instructions,
-        [](const Instruction* instruction)
-        {
-            return instruction->selector.contains(
-                "one-neutral-frame-between-polls");
+                "memory-baseline-before-input");
         });
     const auto neutral = std::ranges::find_if(
         instructions,
         [](const Instruction* instruction)
         {
             return instruction->selector.contains(
-                "confirm/publish-neutral");
+                "confirm/release-to-neutral");
         });
-    const auto after = std::ranges::find_if(
+    const auto synchronization = std::ranges::find_if(
         instructions,
         [](const Instruction* instruction)
         {
             return instruction->selector.contains(
-                "memory-observation-after-neutral-frame");
+                "bounded-memory-change-while-state-held");
+        });
+    const auto frame = std::ranges::find_if(
+        poll_instructions,
+        [](const Instruction* instruction) {
+            return instruction->selector.contains(
+                "advance-one-held-frame");
+        });
+    const auto after = std::ranges::find_if(
+        poll_instructions,
+        [](const Instruction* instruction) {
+            return instruction->selector.contains(
+                "observe-after-frame");
         });
     ASSERT_NE(baseline, instructions.end());
     ASSERT_NE(neutral, instructions.end());
-    ASSERT_NE(frame, instructions.end());
-    ASSERT_NE(after, instructions.end());
-    EXPECT_LT(baseline - instructions.begin(), neutral - instructions.begin());
-    EXPECT_LT(neutral - instructions.begin(), frame - instructions.begin());
-    EXPECT_LT(frame - instructions.begin(), after - instructions.begin());
+    ASSERT_NE(synchronization, instructions.end());
+    ASSERT_NE(frame, poll_instructions.end());
+    ASSERT_NE(after, poll_instructions.end());
+    EXPECT_LT(baseline - instructions.begin(), synchronization - instructions.begin());
+    EXPECT_LT(synchronization - instructions.begin(), neutral - instructions.begin());
+    EXPECT_LT(
+        frame - poll_instructions.begin(),
+        after - poll_instructions.begin());
+    EXPECT_TRUE(std::ranges::any_of(
+        poll_function->blocks,
+        [&](const BasicBlock& block) {
+            return std::ranges::any_of(
+                block.terminator.edges,
+                [&](const BlockEdge& edge) {
+                    return edge.target == poll_function->blocks[1].id;
+                });
+        }));
+    EXPECT_TRUE(std::ranges::any_of(
+        poll_function->blocks,
+        [](const BasicBlock& block) {
+            return block.terminator.kind ==
+                    TerminatorKind::StructuredFail &&
+                block.terminator.failure &&
+                block.terminator.failure->code ==
+                    "interaction_memory_change_timeout";
+        }));
     const auto advance_kind =
         [&](std::string_view label)
             -> std::optional<Byte>
     {
         const auto found = std::ranges::find_if(
-            instructions,
+            poll_instructions,
             [&](const Instruction* instruction)
             {
                 return instruction->literal &&
                     instruction->selector.contains(label);
             });
-        if (found == instructions.end())
+        if (found == poll_instructions.end())
             return std::nullopt;
         const auto* bytes =
             std::get_if<std::vector<Byte>>(
@@ -346,11 +366,11 @@ TEST(InteractionComposition, MemoryPollingPreservesBaselineThenNeutralFrame)
             : std::nullopt;
     };
     const auto frame_kind =
-        advance_kind("neutral-frame/static-config");
+        advance_kind("memory-change/frame/static-config");
     ASSERT_TRUE(frame_kind);
     EXPECT_EQ(*frame_kind, 2u);
     EXPECT_FALSE(std::ranges::any_of(
-        instructions,
+        poll_instructions,
         [](const Instruction* instruction)
         {
             if (!instruction->literal)
@@ -375,10 +395,24 @@ TEST(InteractionComposition, AdaptiveReducerCanSelectOnlyKnownSegmentsOrComplete
     definition.advance_reducer = Reducer("test.interaction.advance");
     definition.adaptive_state_field = "next_state";
     definition.adaptive_segment_field = "next_segment";
+    definition.adaptive_selection = InteractionAdaptiveSelectionMap{
+        .segments = {
+            {41, "select"},
+            {7, "confirm"},
+        },
+        .complete = 99,
+    };
+    std::ranges::reverse(definition.segments);
 
     ProgramModule module;
     ASSERT_TRUE(LowerInteraction(definition, module));
-    const auto& function = module.functions.front();
+    const auto found_function = std::ranges::find_if(
+        module.functions,
+        [](const ProgramFunction& function) {
+            return function.name.starts_with("interact.");
+        });
+    ASSERT_NE(found_function, module.functions.end());
+    const auto& function = *found_function;
     for (const auto& segment : definition.segments)
     {
         const auto block = std::ranges::find_if(
@@ -398,6 +432,21 @@ TEST(InteractionComposition, AdaptiveReducerCanSelectOnlyKnownSegmentsOrComplete
         EXPECT_EQ(
             block->terminator.enum_cases.size(),
             definition.segments.size() + 1);
+        const auto mapped_case = [&](const std::int64_t value) {
+            return std::ranges::find(
+                block->terminator.enum_cases,
+                value,
+                &EnumSwitchCase::enum_value);
+        };
+        const auto select_case = mapped_case(41);
+        const auto confirm_case = mapped_case(7);
+        const auto complete_case = mapped_case(99);
+        ASSERT_NE(select_case, block->terminator.enum_cases.end());
+        ASSERT_NE(confirm_case, block->terminator.enum_cases.end());
+        ASSERT_NE(complete_case, block->terminator.enum_cases.end());
+        EXPECT_NE(select_case->edge.target, confirm_case->edge.target);
+        EXPECT_NE(select_case->edge.target, complete_case->edge.target);
+        EXPECT_NE(confirm_case->edge.target, complete_case->edge.target);
         std::vector<std::string> projections;
         for (const Instruction& instruction :
              block->instructions)
@@ -418,10 +467,80 @@ TEST(InteractionComposition, AdaptiveReducerCanSelectOnlyKnownSegmentsOrComplete
     }
 }
 
-TEST(InteractionComposition, InvalidReleaseWitnessIsRejectedAtomically)
+TEST(InteractionComposition, AdaptiveSelectionMapMustCoverSegmentsExactly)
 {
     auto definition = Definition();
-    definition.segments.front().release_witness_point.reset();
+    for (auto& segment : definition.segments)
+        segment.static_next_segment.reset();
+    definition.advance_reducer = Reducer("test.interaction.advance");
+    definition.adaptive_selection = InteractionAdaptiveSelectionMap{
+        .segments = {{4, "select"}},
+        .complete = 9,
+    };
+
+    ProgramModule module;
+    const auto result = LowerInteraction(definition, module);
+    ASSERT_FALSE(result);
+    ASSERT_FALSE(result.diagnostics.empty());
+    EXPECT_EQ(
+        result.diagnostics.front().code,
+        "interaction.invalid_adaptive_selection");
+}
+
+TEST(InteractionComposition, AdaptiveSelectionMapRejectsDuplicateTargets)
+{
+    auto definition = Definition();
+    for (auto& segment : definition.segments)
+        segment.static_next_segment.reset();
+    definition.advance_reducer = Reducer("test.interaction.advance");
+    definition.adaptive_selection = InteractionAdaptiveSelectionMap{
+        .segments = {
+            {4, "select"},
+            {8, "select"},
+        },
+        .complete = 9,
+    };
+
+    ProgramModule module;
+    const auto result = LowerInteraction(definition, module);
+    ASSERT_FALSE(result);
+    ASSERT_FALSE(result.diagnostics.empty());
+    EXPECT_EQ(
+        result.diagnostics.front().code,
+        "interaction.invalid_adaptive_selection");
+}
+
+TEST(InteractionComposition, AdaptiveSelectionMapSeparatesCompletion)
+{
+    auto definition = Definition();
+    for (auto& segment : definition.segments)
+        segment.static_next_segment.reset();
+    definition.advance_reducer = Reducer("test.interaction.advance");
+    definition.adaptive_selection = InteractionAdaptiveSelectionMap{
+        .segments = {
+            {4, "select"},
+            {8, "confirm"},
+        },
+        .complete = 8,
+    };
+
+    ProgramModule module;
+    const auto result = LowerInteraction(definition, module);
+    ASSERT_FALSE(result);
+    ASSERT_FALSE(result.diagnostics.empty());
+    EXPECT_EQ(
+        result.diagnostics.front().code,
+        "interaction.invalid_adaptive_selection");
+}
+
+TEST(InteractionComposition, PostReleaseGateRequiresHeldInput)
+{
+    auto definition = Definition();
+    definition.segments.front().input_kind = InteractionInputKind::Neutral;
+    definition.segments.front().held_through_successor.reset();
+    definition.segments.front().post_release_gate = Point(
+        "soa.battle.point.BattleMacroInputReadyGate",
+        0x8007cec4u);
     ProgramModule module;
     module.ir_version = 99;
     const auto before = module;
@@ -431,7 +550,7 @@ TEST(InteractionComposition, InvalidReleaseWitnessIsRejectedAtomically)
     ASSERT_FALSE(result.diagnostics.empty());
     EXPECT_EQ(
         result.diagnostics.front().code,
-        "interaction.missing_release_witness");
+        "interaction.invalid_post_release_gate");
 }
 
 TEST(InteractionComposition, HeldThroughBehaviorRequiresSemanticSuccessor)

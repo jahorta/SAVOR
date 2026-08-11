@@ -92,6 +92,11 @@ constexpr bool IsKnownRejectionCode(std::uint16_t value) noexcept
         RejectionCode::WorksetItemAlreadyTerminal);
 }
 
+constexpr bool IsKnownWorkerMode(std::uint8_t value) noexcept
+{
+    return value <= static_cast<std::uint8_t>(WorkerModeCode::VisualDebug);
+}
+
 void AppendU16(std::vector<std::uint8_t>& output, std::uint16_t value)
 {
     output.push_back(static_cast<std::uint8_t>(value));
@@ -373,9 +378,7 @@ bool IsKnownMessageKind(MessageKind kind) noexcept
 {
     switch (kind) {
     case MessageKind::ProcessHello:
-    case MessageKind::RuntimeManifest:
     case MessageKind::OpenSession:
-    case MessageKind::PrepareModule:
     case MessageKind::CancelInvocation:
     case MessageKind::CaptureScreenshot:
     case MessageKind::Shutdown:
@@ -409,7 +412,6 @@ MessageDirection DirectionOf(MessageKind kind) noexcept
 {
     switch (kind) {
     case MessageKind::OpenSession:
-    case MessageKind::PrepareModule:
     case MessageKind::CancelInvocation:
     case MessageKind::CaptureScreenshot:
     case MessageKind::Shutdown:
@@ -527,8 +529,7 @@ PayloadCodecResult EncodePayload(
     return EncodePayloadImpl(value, output, [](PayloadWriter& writer, const auto& payload) {
         writer.u64(payload.worker_id);
         writer.u32(payload.process_id);
-        writer.u64(payload.capability_mask);
-        writer.string(payload.build_identity);
+        writer.blob(payload.encoded_runtime_contract);
     });
 }
 
@@ -539,26 +540,7 @@ PayloadCodecResult DecodePayload(
     return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
         reader.u64(payload.worker_id);
         reader.u32(payload.process_id);
-        reader.u64(payload.capability_mask);
-        reader.string(payload.build_identity);
-    });
-}
-
-PayloadCodecResult EncodePayload(
-    const RuntimeManifestPayload& value,
-    std::vector<std::uint8_t>& output)
-{
-    return EncodePayloadImpl(value, output, [](PayloadWriter& writer, const auto& payload) {
-        writer.blob(payload.encoded_manifest);
-    });
-}
-
-PayloadCodecResult DecodePayload(
-    std::span<const std::uint8_t> input,
-    RuntimeManifestPayload& output)
-{
-    return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
-        reader.blob(payload.encoded_manifest);
+        reader.blob(payload.encoded_runtime_contract);
     });
 }
 
@@ -570,7 +552,9 @@ PayloadCodecResult EncodePayload(
         writer.string(payload.runtime_root);
         writer.string(payload.user_directory);
         writer.string(payload.iso_path);
-        writer.boolean(payload.visual_requested);
+        if (!IsKnownWorkerMode(static_cast<std::uint8_t>(payload.worker_mode)))
+            writer.fail(PayloadError::InvalidEnumValue);
+        writer.u8(static_cast<std::uint8_t>(payload.worker_mode));
         writer.u64(payload.render_window_handle);
         writer.string(payload.runtime_artifact_root);
     });
@@ -584,37 +568,14 @@ PayloadCodecResult DecodePayload(
         reader.string(payload.runtime_root);
         reader.string(payload.user_directory);
         reader.string(payload.iso_path);
-        reader.boolean(payload.visual_requested);
+        std::uint8_t worker_mode = 0;
+        if (reader.u8(worker_mode)) {
+            payload.worker_mode = static_cast<WorkerModeCode>(worker_mode);
+            if (!IsKnownWorkerMode(worker_mode))
+                reader.fail(PayloadError::InvalidEnumValue);
+        }
         reader.u64(payload.render_window_handle);
         reader.string(payload.runtime_artifact_root);
-    });
-}
-
-PayloadCodecResult EncodePayload(
-    const PrepareModulePayload& value,
-    std::vector<std::uint8_t>& output)
-{
-    return EncodePayloadImpl(value, output, [](PayloadWriter& writer, const auto& payload) {
-        writer.string(payload.canonical_id);
-        writer.u32(payload.revision);
-        writer.string(payload.canonical_hash);
-        writer.u32(payload.format_version);
-        writer.boolean(payload.development_only);
-        writer.blob(payload.encoded_module);
-    });
-}
-
-PayloadCodecResult DecodePayload(
-    std::span<const std::uint8_t> input,
-    PrepareModulePayload& output)
-{
-    return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
-        reader.string(payload.canonical_id);
-        reader.u32(payload.revision);
-        reader.string(payload.canonical_hash);
-        reader.u32(payload.format_version);
-        reader.boolean(payload.development_only);
-        reader.blob(payload.encoded_module);
     });
 }
 
@@ -675,7 +636,7 @@ PayloadCodecResult EncodePayload(
         writer.u32(payload.sidecar_version);
         writer.u32(payload.applied_item_count);
         writer.string(payload.applied_sidecar_sha256);
-        writer.boolean(payload.already_accepted);
+        writer.boolean(payload.already_admitted);
     });
 }
 
@@ -689,7 +650,7 @@ PayloadCodecResult DecodePayload(
         reader.u32(payload.sidecar_version);
         reader.u32(payload.applied_item_count);
         reader.string(payload.applied_sidecar_sha256);
-        reader.boolean(payload.already_accepted);
+        reader.boolean(payload.already_admitted);
         if (payload.format_version != 1 || payload.workset_id == 0
             || payload.sidecar_version != 1
             || payload.applied_sidecar_sha256.size() != 64) {
@@ -898,7 +859,9 @@ PayloadCodecResult EncodePayload(
         writer.boolean(payload.success);
         writer.u64(payload.session_id);
         writer.u64(payload.workset_epoch);
-        writer.u64(payload.capability_mask);
+        if (!IsKnownWorkerMode(static_cast<std::uint8_t>(payload.worker_mode)))
+            writer.fail(PayloadError::InvalidEnumValue);
+        writer.u8(static_cast<std::uint8_t>(payload.worker_mode));
         if (!IsKnownWorkerState(
                 static_cast<std::uint8_t>(payload.worker_state))) {
             writer.fail(PayloadError::InvalidEnumValue);
@@ -925,12 +888,17 @@ PayloadCodecResult DecodePayload(
 {
     return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
         std::uint8_t worker_state = 0;
+        std::uint8_t worker_mode = 0;
         std::uint8_t session_disposition = 0;
         std::uint16_t rejection_code = 0;
         reader.boolean(payload.success);
         reader.u64(payload.session_id);
         reader.u64(payload.workset_epoch);
-        reader.u64(payload.capability_mask);
+        if (reader.u8(worker_mode)) {
+            payload.worker_mode = static_cast<WorkerModeCode>(worker_mode);
+            if (!IsKnownWorkerMode(worker_mode))
+                reader.fail(PayloadError::InvalidEnumValue);
+        }
         if (reader.u8(worker_state)) {
             payload.worker_state = static_cast<WorkerStateCode>(worker_state);
             if (!IsKnownWorkerState(worker_state))
@@ -1063,7 +1031,9 @@ PayloadCodecResult EncodePayload(
         writer.u8(static_cast<std::uint8_t>(payload.event_type));
         writer.u64(payload.session_id);
         writer.u64(payload.workset_epoch);
-        writer.u64(payload.capability_mask);
+        if (!IsKnownWorkerMode(static_cast<std::uint8_t>(payload.worker_mode)))
+            writer.fail(PayloadError::InvalidEnumValue);
+        writer.u8(static_cast<std::uint8_t>(payload.worker_mode));
         if (!IsKnownWorkerState(
                 static_cast<std::uint8_t>(payload.worker_state))) {
             writer.fail(PayloadError::InvalidEnumValue);
@@ -1090,6 +1060,7 @@ PayloadCodecResult DecodePayload(
 {
     return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
         std::uint8_t event_type = 0;
+        std::uint8_t worker_mode = 0;
         std::uint8_t worker_state = 0;
         std::uint8_t session_disposition = 0;
         std::uint16_t rejection_code = 0;
@@ -1100,7 +1071,11 @@ PayloadCodecResult DecodePayload(
         }
         reader.u64(payload.session_id);
         reader.u64(payload.workset_epoch);
-        reader.u64(payload.capability_mask);
+        if (reader.u8(worker_mode)) {
+            payload.worker_mode = static_cast<WorkerModeCode>(worker_mode);
+            if (!IsKnownWorkerMode(worker_mode))
+                reader.fail(PayloadError::InvalidEnumValue);
+        }
         if (reader.u8(worker_state)) {
             payload.worker_state = static_cast<WorkerStateCode>(worker_state);
             if (!IsKnownWorkerState(worker_state))
@@ -1134,7 +1109,19 @@ PayloadCodecResult EncodePayload(
         writer.u64(payload.item_id);
         writer.u32(payload.item_ordinal);
         writer.u64(payload.ordinal);
-        writer.blob(payload.progress);
+        writer.string(payload.durable_job_id);
+        writer.string(payload.library_id);
+        writer.u32(payload.library_revision);
+        writer.string(payload.progress_point_id);
+        writer.boolean(payload.has_routed_provenance);
+        writer.u64(payload.routed_sequence);
+        writer.u64(payload.sample_snapshot_id);
+        writer.u64(payload.trigger_epoch);
+        writer.string(payload.schema_id);
+        writer.u32(payload.schema_revision);
+        writer.string(payload.schema_sha256);
+        writer.blob(payload.typed_payload);
+        writer.string(payload.display_text);
     });
 }
 
@@ -1149,7 +1136,19 @@ PayloadCodecResult DecodePayload(
         reader.u64(payload.item_id);
         reader.u32(payload.item_ordinal);
         reader.u64(payload.ordinal);
-        reader.blob(payload.progress);
+        reader.string(payload.durable_job_id);
+        reader.string(payload.library_id);
+        reader.u32(payload.library_revision);
+        reader.string(payload.progress_point_id);
+        reader.boolean(payload.has_routed_provenance);
+        reader.u64(payload.routed_sequence);
+        reader.u64(payload.sample_snapshot_id);
+        reader.u64(payload.trigger_epoch);
+        reader.string(payload.schema_id);
+        reader.u32(payload.schema_revision);
+        reader.string(payload.schema_sha256);
+        reader.blob(payload.typed_payload);
+        reader.string(payload.display_text);
     });
 }
 
@@ -1315,6 +1314,21 @@ PayloadCodecResult EncodePayload(
         writer.string(payload.error_code);
         writer.string(payload.message);
         writer.blob(payload.result);
+        writer.u32(static_cast<std::uint32_t>(
+            payload.workset_artifacts.size()));
+        for (const auto& artifact : payload.workset_artifacts) {
+            writer.string(artifact.artifact_id);
+            writer.string(artifact.schema_id);
+            writer.u32(artifact.schema_version);
+            writer.string(artifact.schema_sha256);
+            writer.string(artifact.content_sha256);
+            writer.string(artifact.storage_reference);
+            writer.boolean(artifact.complete);
+        }
+        writer.u32(static_cast<std::uint32_t>(
+            payload.diagnostics.size()));
+        for (const std::string& diagnostic : payload.diagnostics)
+            writer.string(diagnostic);
     });
 }
 
@@ -1355,6 +1369,33 @@ PayloadCodecResult DecodePayload(
         reader.string(payload.error_code);
         reader.string(payload.message);
         reader.blob(payload.result);
+        std::uint32_t artifact_count = 0;
+        if (reader.u32(artifact_count)) {
+            if (artifact_count > 256) {
+                reader.fail(PayloadError::FieldTooLarge);
+            } else {
+                payload.workset_artifacts.resize(artifact_count);
+                for (auto& artifact : payload.workset_artifacts) {
+                    reader.string(artifact.artifact_id);
+                    reader.string(artifact.schema_id);
+                    reader.u32(artifact.schema_version);
+                    reader.string(artifact.schema_sha256);
+                    reader.string(artifact.content_sha256);
+                    reader.string(artifact.storage_reference);
+                    reader.boolean(artifact.complete);
+                }
+            }
+        }
+        std::uint32_t diagnostic_count = 0;
+        if (reader.u32(diagnostic_count)) {
+            if (diagnostic_count > 256) {
+                reader.fail(PayloadError::FieldTooLarge);
+            } else {
+                payload.diagnostics.resize(diagnostic_count);
+                for (std::string& diagnostic : payload.diagnostics)
+                    reader.string(diagnostic);
+            }
+        }
     });
 }
 
@@ -1522,6 +1563,7 @@ PayloadCodecResult EncodePayload(
         writer.u64(payload.session_id);
         writer.u64(payload.workset_epoch);
         writer.u64(payload.operation_id);
+        writer.boolean(payload.has_execution_state);
         if (!IsKnownExecutionActivity(
                 static_cast<std::uint8_t>(payload.activity))) {
             writer.fail(PayloadError::InvalidEnumValue);
@@ -1569,6 +1611,7 @@ PayloadCodecResult DecodePayload(
         reader.u64(payload.session_id);
         reader.u64(payload.workset_epoch);
         reader.u64(payload.operation_id);
+        reader.boolean(payload.has_execution_state);
         if (reader.u8(activity)) {
             payload.activity = static_cast<ExecutionActivityCode>(activity);
             if (!IsKnownExecutionActivity(activity))

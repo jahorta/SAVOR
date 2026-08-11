@@ -1027,10 +1027,10 @@ bool QueuedExecutionDb::RequeueInterruptedExecutionJobs(
     return requeued;
 }
 
-std::optional<ExecutionJobRecord> QueuedExecutionDb::GetJob(std::int64_t job_id) const {
+std::optional<ExecutionJobRecord> QueuedExecutionDb::GetExecutionJob(std::int64_t job_id) const {
     return ExecuteRead<std::optional<ExecutionJobRecord>>(
         [this, job_id]() {
-            return inner_ != nullptr ? inner_->GetJob(job_id) : std::nullopt;
+            return inner_ != nullptr ? inner_->GetExecutionJob(job_id) : std::nullopt;
         },
         std::nullopt);
 }

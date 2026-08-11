@@ -93,8 +93,6 @@ bool UpdateJobLifecycleColumns(sqlite3* db, const JobLifecycleEventCommand& comm
         break;
     case JobLifecycleEventKind::JobLeaseRenewed:
         break;
-    case JobLifecycleEventKind::JobProgressed:
-        break;
     case JobLifecycleEventKind::JobCompleted:
         if (!command.terminal_state.has_value() || command.terminal_state->empty()) {
             if (error_out) *error_out = "terminal_state must be set for JobCompleted";
@@ -163,7 +161,6 @@ const char* ToEventType(JobLifecycleEventKind kind) {
     case JobLifecycleEventKind::JobClaimed: return "Execution.JobClaimed.v1";
     case JobLifecycleEventKind::JobStarted: return "Execution.JobStarted.v1";
     case JobLifecycleEventKind::JobLeaseRenewed: return "Execution.JobLeaseRenewed.v1";
-    case JobLifecycleEventKind::JobProgressed: return "Execution.JobProgressed.v1";
     case JobLifecycleEventKind::JobCompleted: return "Execution.JobCompleted.v1";
     case JobLifecycleEventKind::JobEventArchived: return "Execution.JobEventArchived.v1";
     case JobLifecycleEventKind::JobRestored: return "Execution.JobRestored.v1";

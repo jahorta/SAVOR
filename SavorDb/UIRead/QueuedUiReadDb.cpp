@@ -123,6 +123,18 @@ std::vector<UiJobArtifact> QueuedUiReadDb::ListJobArtifacts(
         {});
 }
 
+std::vector<UiCanonicalJobProgress> QueuedUiReadDb::ListJobProgress(
+    std::int64_t job_id,
+    int limit) const {
+    return ExecuteRead<std::vector<UiCanonicalJobProgress>>(
+        [this, job_id, limit]() {
+            return inner_ != nullptr
+                ? inner_->ListJobProgress(job_id, limit)
+                : std::vector<UiCanonicalJobProgress>{};
+        },
+        {});
+}
+
 UiReadPage<UiJobSetSummary> QueuedUiReadDb::ListJobSets(
     const UiReadJobSetListQuery& query) const {
     return ExecuteRead<UiReadPage<UiJobSetSummary>>(

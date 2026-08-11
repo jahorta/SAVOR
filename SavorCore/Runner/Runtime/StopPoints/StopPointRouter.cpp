@@ -55,15 +55,11 @@ struct DispatchEntry
     StopSubscriptionGroupId group_id;
     StopSubscriptionId subscription_id;
     StopPointSpec point;
-    StopDeliveryMode delivery = StopDeliveryMode::Observe;
-    StopRoutingPolicy policy = StopRoutingPolicy::Pass;
+    StopSubscriptionRoute route = PassiveStopObservation{};
     StopSubscriptionLifetime lifetime = StopSubscriptionLifetime::Scoped;
     std::int32_t priority = 0;
     std::uint32_t qualification_id = 0;
     std::vector<std::uint32_t> sample_descriptor_ids;
-    std::uint32_t cpu_observer_descriptor_id = 0;
-    std::string interruption_handler_key;
-    bool lossless = false;
     IStopPointConsumer* consumer = nullptr;
     std::uint64_t registration_sequence = 0;
     std::size_t subscription_ordinal = 0;
@@ -178,21 +174,77 @@ private:
     std::atomic<bool> occupied_{false};
 };
 
-[[nodiscard]] int DeliveryStage(StopDeliveryMode delivery) noexcept
+[[nodiscard]] bool IsPassive(
+    const StopSubscriptionRoute& route) noexcept
 {
-    switch (delivery)
+    return std::holds_alternative<PassiveStopObservation>(route);
+}
+
+[[nodiscard]] bool IsForeground(
+    const StopSubscriptionRoute& route) noexcept
+{
+    return std::holds_alternative<ForegroundStopWait>(route);
+}
+
+[[nodiscard]] bool IsInterruption(
+    const StopSubscriptionRoute& route) noexcept
+{
+    return std::holds_alternative<TrustedStopInterruptionRequest>(route);
+}
+
+[[nodiscard]] bool IsLossless(
+    const StopSubscriptionRoute& route) noexcept
+{
+    if (const auto* passive =
+            std::get_if<PassiveStopObservation>(&route))
     {
-    case StopDeliveryMode::Observe:
-    case StopDeliveryMode::Progress:
-        return 0;
-    case StopDeliveryMode::Guard:
-        return 1;
-    case StopDeliveryMode::Intercept:
-        return 2;
-    case StopDeliveryMode::Wake:
-        return 3;
+        return passive->lossless;
     }
-    return 4;
+    return true;
+}
+
+[[nodiscard]] bool SuppressesImmediateReentry(
+    const StopSubscriptionRoute& route) noexcept
+{
+    if (const auto* foreground =
+            std::get_if<ForegroundStopWait>(&route))
+    {
+        return foreground->suppress_immediate_reentry;
+    }
+    if (const auto* interruption =
+            std::get_if<TrustedStopInterruptionRequest>(&route))
+    {
+        return interruption->suppress_immediate_reentry;
+    }
+    return false;
+}
+
+[[nodiscard]] std::uint32_t CpuObserverDescriptor(
+    const StopSubscriptionRoute& route) noexcept
+{
+    if (const auto* passive =
+            std::get_if<PassiveStopObservation>(&route))
+    {
+        return passive->cpu_observer_descriptor_id;
+    }
+    return 0;
+}
+
+[[nodiscard]] std::string_view InterruptionHandlerKey(
+    const StopSubscriptionRoute& route) noexcept
+{
+    if (const auto* interruption =
+            std::get_if<TrustedStopInterruptionRequest>(&route))
+    {
+        return interruption->handler_key;
+    }
+    return {};
+}
+
+[[nodiscard]] int RouteStage(
+    const StopSubscriptionRoute& route) noexcept
+{
+    return IsPassive(route) ? 0 : 1;
 }
 
 [[nodiscard]] bool AccessMatches(
@@ -413,18 +465,18 @@ struct StopPointRouter::Impl
 
 namespace {
 
-[[nodiscard]] bool GroupHasWake(const GroupRecord& group)
+[[nodiscard]] bool GroupHasForegroundWait(const GroupRecord& group)
 {
     return std::ranges::any_of(group.subscriptions, [](const SubscriptionRecord& subscription) {
-        return subscription.definition.delivery == StopDeliveryMode::Wake;
+        return IsForeground(subscription.definition.route);
     });
 }
 
-[[nodiscard]] bool DefinitionHasWake(
+[[nodiscard]] bool DefinitionHasForegroundWait(
     const StopSubscriptionGroupDefinition& definition)
 {
     return std::ranges::any_of(definition.subscriptions, [](const auto& subscription) {
-        return subscription.delivery == StopDeliveryMode::Wake;
+        return IsForeground(subscription.route);
     });
 }
 
@@ -466,20 +518,14 @@ namespace {
                 StopPointErrorCode::InvalidArgument,
                 "Qualified or sampled subscriptions require a CPU evaluator");
         }
-        if (subscription.cpu_observer_descriptor_id != 0 &&
+        const std::uint32_t cpu_observer_descriptor_id =
+            CpuObserverDescriptor(subscription.route);
+        if (cpu_observer_descriptor_id != 0 &&
             observer == nullptr)
         {
             return Error(
                 StopPointErrorCode::InvalidArgument,
                 "CPU observer descriptors require a trusted observer port");
-        }
-        if (subscription.cpu_observer_descriptor_id != 0 &&
-            (subscription.delivery != StopDeliveryMode::Observe &&
-                subscription.delivery != StopDeliveryMode::Progress))
-        {
-            return Error(
-                StopPointErrorCode::InvalidPolicy,
-                "Trusted CPU observers are restricted to passive subscriptions");
         }
         if (subscription.sample_descriptor_ids.size() > kMaxRoutedHitSamples)
         {
@@ -499,47 +545,14 @@ namespace {
                 StopPointErrorCode::InvalidArgument,
                 "A subscription group exceeds the unique hit-time sample capacity");
         }
-        if (subscription.policy ==
-                StopRoutingPolicy::RequestInterruptionHandler &&
-            subscription.interruption_handler_key.empty())
+        if (const auto* interruption =
+                std::get_if<TrustedStopInterruptionRequest>(
+                    &subscription.route);
+            interruption && interruption->handler_key.empty())
         {
             return Error(
                 StopPointErrorCode::InvalidPolicy,
-                "RequestInterruptionHandler routing requires a non-empty "
-                "interruption handler key");
-        }
-        if (subscription.policy !=
-                StopRoutingPolicy::RequestInterruptionHandler &&
-            !subscription.interruption_handler_key.empty())
-        {
-            return Error(
-                StopPointErrorCode::InvalidPolicy,
-                "An interruption handler key is valid only with "
-                "RequestInterruptionHandler routing");
-        }
-        if ((subscription.delivery == StopDeliveryMode::Observe ||
-                subscription.delivery == StopDeliveryMode::Progress) &&
-            subscription.policy != StopRoutingPolicy::Pass)
-        {
-            return Error(
-                StopPointErrorCode::InvalidPolicy,
-                "Passive subscriptions must use Pass routing");
-        }
-        if (subscription.delivery == StopDeliveryMode::Wake &&
-            subscription.policy != StopRoutingPolicy::Pass &&
-            subscription.policy != StopRoutingPolicy::Consume)
-        {
-            return Error(
-                StopPointErrorCode::InvalidPolicy,
-                "Wake subscriptions support only Pass or Consume routing");
-        }
-        if (subscription.delivery == StopDeliveryMode::Guard &&
-            subscription.policy != StopRoutingPolicy::Pass &&
-            subscription.policy != StopRoutingPolicy::Fail)
-        {
-            return Error(
-                StopPointErrorCode::InvalidPolicy,
-                "Guard subscriptions support only Pass or Fail routing");
+                "Trusted interruption requests require a non-empty handler key");
         }
         const StopPointError point_error = std::visit(
             [](const auto& point) -> StopPointError {
@@ -598,9 +611,7 @@ namespace {
         subscription.ordinal = i;
         if (subscription.definition.lifetime == StopSubscriptionLifetime::OneShot)
             subscription.one_shot = std::make_shared<OneShotGate>();
-        if (subscription.definition.suppress_immediate_reentry ||
-            subscription.definition.policy ==
-                StopRoutingPolicy::RequestInterruptionHandler)
+        if (SuppressesImmediateReentry(subscription.definition.route))
         {
             subscription.suppression = std::make_shared<SuppressionGate>();
             if (current_point &&
@@ -710,15 +721,11 @@ namespace {
                 group.id,
                 definition.id,
                 definition.point,
-                definition.delivery,
-                definition.policy,
+                definition.route,
                 definition.lifetime,
                 definition.priority,
                 definition.qualification_id,
                 definition.sample_descriptor_ids,
-                definition.cpu_observer_descriptor_id,
-                definition.interruption_handler_key,
-                definition.lossless,
                 definition.consumer,
                 group.registration_sequence,
                 subscription.ordinal,
@@ -730,8 +737,8 @@ namespace {
     }
 
     std::stable_sort(snapshot->entries.begin(), snapshot->entries.end(), [](const auto& lhs, const auto& rhs) {
-        const int lhs_stage = DeliveryStage(lhs.delivery);
-        const int rhs_stage = DeliveryStage(rhs.delivery);
+        const int lhs_stage = RouteStage(lhs.route);
+        const int rhs_stage = RouteStage(rhs.route);
         if (lhs_stage != rhs_stage)
             return lhs_stage < rhs_stage;
         if (lhs.priority != rhs.priority)
@@ -758,8 +765,10 @@ namespace {
             samples.insert(
                 entry.sample_descriptor_ids.begin(),
                 entry.sample_descriptor_ids.end());
-            if (entry.cpu_observer_descriptor_id != 0)
-                observers.insert(entry.cpu_observer_descriptor_id);
+            const std::uint32_t observer =
+                CpuObserverDescriptor(entry.route);
+            if (observer != 0)
+                observers.insert(observer);
         }
         if (matches > kMaxStopDeliveriesPerHit)
         {
@@ -1164,23 +1173,65 @@ namespace {
 
 namespace {
 
+[[nodiscard]] bool ControlPointsOverlap(
+    const StopPointSpec& lhs,
+    const StopPointSpec& rhs) noexcept
+{
+    if (const auto* lhs_pc = std::get_if<PcStopPointSpec>(&lhs))
+    {
+        const auto* rhs_pc = std::get_if<PcStopPointSpec>(&rhs);
+        return rhs_pc != nullptr && lhs_pc->pc == rhs_pc->pc;
+    }
+    if (const auto* lhs_memory =
+            std::get_if<MemoryStopPointSpec>(&lhs))
+    {
+        const auto* rhs_memory =
+            std::get_if<MemoryStopPointSpec>(&rhs);
+        if (rhs_memory == nullptr ||
+            !RangesOverlap(
+                lhs_memory->address,
+                lhs_memory->size,
+                rhs_memory->address,
+                rhs_memory->size))
+        {
+            return false;
+        }
+        return lhs_memory->access == StopMemoryAccess::Access ||
+            rhs_memory->access == StopMemoryAccess::Access ||
+            lhs_memory->access == rhs_memory->access;
+    }
+    const auto* lhs_synthetic =
+        std::get_if<SyntheticStopPointSpec>(&lhs);
+    const auto* rhs_synthetic =
+        std::get_if<SyntheticStopPointSpec>(&rhs);
+    return lhs_synthetic != nullptr && rhs_synthetic != nullptr &&
+        lhs_synthetic->identity == rhs_synthetic->identity;
+}
+
 [[nodiscard]] StopPointError ValidateCandidate(
     const std::map<std::uint64_t, GroupRecord>& groups)
 {
-    std::optional<std::uint64_t> wake_group;
+    std::optional<std::uint64_t> foreground_group;
+    struct ControlOwner
+    {
+        std::uint64_t group_id = 0;
+        bool foreground = false;
+        StopPointSpec point;
+    };
+    std::vector<ControlOwner> control_owners;
     std::set<std::uint64_t> subscription_ids;
     std::size_t entry_count = 0;
     for (const auto& [group_id, group] : groups)
     {
-        if (GroupHasWake(group))
+        if (GroupHasForegroundWait(group))
         {
-            if (wake_group && *wake_group != group_id)
+            if (foreground_group && *foreground_group != group_id)
             {
                 return Error(
-                    StopPointErrorCode::ForegroundWakeAlreadyRegistered,
-                    "Only one foreground Wake group may be active");
+                    StopPointErrorCode::ForegroundWaitAlreadyRegistered,
+                    "Only one foreground-wait group may be active");
             }
-            wake_group = group_id;
+            foreground_group = group_id;
         }
         for (const SubscriptionRecord& subscription : group.subscriptions)
         {
@@ -1189,6 +1240,33 @@ namespace {
                 return Error(
                     StopPointErrorCode::InvalidArgument,
                     "Subscription IDs must be unique across active groups");
+            }
+            const bool foreground =
+                IsForeground(subscription.definition.route);
+            const bool interruption =
+                IsInterruption(subscription.definition.route);
+            if (foreground || interruption)
+            {
+                for (const ControlOwner& existing : control_owners)
+                {
+                    if (!ControlPointsOverlap(
+                            existing.point,
+                            subscription.definition.point))
+                    {
+                        continue;
+                    }
+                    if (existing.foreground != foreground ||
+                        !foreground)
+                    {
+                        return Error(
+                            StopPointErrorCode::ControlOwnershipConflict,
+                            "A stop point cannot be owned by both foreground waiting and trusted interruption, or by multiple interruption requests");
+                    }
+                }
+                control_owners.push_back({
+                    group_id,
+                    foreground,
+                    subscription.definition.point});
             }
             ++entry_count;
         }
@@ -1785,7 +1863,6 @@ StopGroupRegistrationResult StopPointRouter::RegisterGroup(
                     entry.source_id,
                     entry.group_id,
                     entry.subscription_id,
-                    entry.delivery,
                 };
                 current.deliveries.push_back(delivery);
                 try
@@ -1794,7 +1871,7 @@ StopGroupRegistrationResult StopPointRouter::RegisterGroup(
                 }
                 catch (...)
                 {
-                    current.terminal = StopRouteTerminal::Failed;
+                    current.terminal = StopRouteTerminal::RoutingFailure;
                     current.error = Error(
                         StopPointErrorCode::InvalidPolicy,
                         "A stop consumer threw while accepting the current point");
@@ -1802,36 +1879,24 @@ StopGroupRegistrationResult StopPointRouter::RegisterGroup(
                     break;
                 }
 
-                if (entry.delivery == StopDeliveryMode::Wake)
+                if (IsForeground(entry.route))
                 {
-                    current.terminal = StopRouteTerminal::WokeForeground;
+                    current.terminal = StopRouteTerminal::ForegroundMatched;
                     break;
                 }
-                if (entry.policy == StopRoutingPolicy::Consume)
-                {
-                    current.terminal = StopRouteTerminal::Consumed;
-                    break;
-                }
-                if (entry.policy ==
-                    StopRoutingPolicy::RequestInterruptionHandler)
+                if (const auto* interruption =
+                        std::get_if<TrustedStopInterruptionRequest>(
+                            &entry.route))
                 {
                     current.terminal =
-                        StopRouteTerminal::InterruptionHandlerRequested;
+                        StopRouteTerminal::InterruptionRequested;
                     current.interruption_handler_request =
                         StopInterruptionHandlerRequest{
                             entry.source_id,
                             entry.group_id,
                             entry.subscription_id,
-                            entry.interruption_handler_key,
+                            interruption->handler_key,
                         };
-                    break;
-                }
-                if (entry.policy == StopRoutingPolicy::Fail)
-                {
-                    current.terminal = StopRouteTerminal::Failed;
-                    current.error = Error(
-                        StopPointErrorCode::InvalidPolicy,
-                        "Current point matched a failing guard or interceptor");
                     current.core_must_remain_stopped = true;
                     break;
                 }
@@ -1858,13 +1923,13 @@ StopGroupRegistrationResult StopPointRouter::RegisterGroup(
             const auto failure = std::ranges::find_if(
                 reconciled,
                 [](const StopRouteReceipt& receipt) {
-                    return receipt.terminal == StopRouteTerminal::Failed ||
+                    return receipt.terminal == StopRouteTerminal::RoutingFailure ||
                         receipt.terminal == StopRouteTerminal::Overflow;
                 });
             if (failure != reconciled.end())
             {
                 result.current_point->terminal =
-                    StopRouteTerminal::Failed;
+                    StopRouteTerminal::RoutingFailure;
                 result.current_point->error = failure->error;
                 result.current_point->core_must_remain_stopped = true;
             }
@@ -1879,12 +1944,14 @@ StopRouteReceipt StopPointRouter::AcceptCurrentPoint(
     if (StopPointError error =
             CheckControlThread(*this, owner_thread_, initialized_, stopping_))
     {
-        return FailureRoute(StopRouteTerminal::Failed, std::move(error));
+        return FailureRoute(
+            StopRouteTerminal::RoutingFailure,
+            std::move(error));
     }
     if (!lease.active)
     {
         return FailureRoute(
-            StopRouteTerminal::Failed,
+            StopRouteTerminal::RoutingFailure,
             Error(
                 StopPointErrorCode::GroupNotFound,
                 "Cannot accept the current point for an inactive lease"));
@@ -1895,7 +1962,7 @@ StopRouteReceipt StopPointRouter::AcceptCurrentPoint(
         group->second.registration_sequence != lease.registration_sequence)
     {
         return FailureRoute(
-            StopRouteTerminal::Failed,
+            StopRouteTerminal::RoutingFailure,
             Error(
                 StopPointErrorCode::SourceMismatch,
                 "Current-point request does not own the active group"));
@@ -1953,7 +2020,6 @@ StopRouteReceipt StopPointRouter::AcceptCurrentPoint(
                 entry.source_id,
                 entry.group_id,
                 entry.subscription_id,
-                entry.delivery,
             };
             current.deliveries.push_back(delivery);
             try
@@ -1962,7 +2028,7 @@ StopRouteReceipt StopPointRouter::AcceptCurrentPoint(
             }
             catch (...)
             {
-                current.terminal = StopRouteTerminal::Failed;
+                current.terminal = StopRouteTerminal::RoutingFailure;
                 current.error = Error(
                     StopPointErrorCode::InvalidPolicy,
                     "A stop consumer threw while accepting the current point");
@@ -1970,37 +2036,24 @@ StopRouteReceipt StopPointRouter::AcceptCurrentPoint(
                 break;
             }
 
-            if (entry.delivery == StopDeliveryMode::Wake)
+            if (IsForeground(entry.route))
             {
-                current.terminal = StopRouteTerminal::WokeForeground;
+                current.terminal = StopRouteTerminal::ForegroundMatched;
                 break;
             }
-            if (entry.policy == StopRoutingPolicy::Consume)
-            {
-                current.terminal = StopRouteTerminal::Consumed;
-                break;
-            }
-            if (entry.policy ==
-                StopRoutingPolicy::RequestInterruptionHandler)
+            if (const auto* interruption =
+                    std::get_if<TrustedStopInterruptionRequest>(
+                        &entry.route))
             {
                 current.terminal =
-                    StopRouteTerminal::InterruptionHandlerRequested;
+                    StopRouteTerminal::InterruptionRequested;
                 current.interruption_handler_request =
                     StopInterruptionHandlerRequest{
                         entry.source_id,
                         entry.group_id,
                         entry.subscription_id,
-                        entry.interruption_handler_key,
+                        interruption->handler_key,
                     };
-                current.core_must_remain_stopped = true;
-                break;
-            }
-            if (entry.policy == StopRoutingPolicy::Fail)
-            {
-                current.terminal = StopRouteTerminal::Failed;
-                current.error = Error(
-                    StopPointErrorCode::InvalidPolicy,
-                    "Current point matched a failing guard or interceptor");
                 current.core_must_remain_stopped = true;
                 break;
             }
@@ -2024,10 +2077,10 @@ StopRouteReceipt StopPointRouter::AcceptCurrentPoint(
     {
         for (const StopRouteReceipt& reconciled : DrainIngress())
         {
-            if (reconciled.terminal == StopRouteTerminal::Failed ||
+            if (reconciled.terminal == StopRouteTerminal::RoutingFailure ||
                 reconciled.terminal == StopRouteTerminal::Overflow)
             {
-                current.terminal = StopRouteTerminal::Failed;
+                current.terminal = StopRouteTerminal::RoutingFailure;
                 current.error = reconciled.error;
                 current.core_must_remain_stopped = true;
                 break;
@@ -2058,7 +2111,7 @@ StopPointError StopPointRouter::ArmInterruptionSuppression(
         return error;
     }
     if (receipt.terminal !=
-            StopRouteTerminal::InterruptionHandlerRequested ||
+            StopRouteTerminal::InterruptionRequested ||
         !receipt.interruption_handler_request ||
         receipt.interruption_handler_request->source_id != request.source_id ||
         receipt.interruption_handler_request->group_id != request.group_id ||
@@ -2095,11 +2148,13 @@ StopPointError StopPointRouter::ArmInterruptionSuppression(
         [&](const SubscriptionRecord& candidate) {
             return candidate.definition.id == request.subscription_id;
         });
-    if (subscription == group->second.subscriptions.end() ||
-        subscription->definition.policy !=
-            StopRoutingPolicy::RequestInterruptionHandler ||
-        subscription->definition.interruption_handler_key !=
-            request.interruption_handler_key ||
+    const auto* interruption =
+        subscription == group->second.subscriptions.end()
+        ? nullptr
+        : std::get_if<TrustedStopInterruptionRequest>(
+              &subscription->definition.route);
+    if (interruption == nullptr ||
+        interruption->handler_key != request.interruption_handler_key ||
         !subscription->suppression)
     {
         return Error(
@@ -2382,7 +2437,9 @@ namespace {
             packet.event.authoritative = true;
             return packet;
         }
-        if (entry.cpu_observer_descriptor_id != 0)
+        const std::uint32_t observer_descriptor =
+            CpuObserverDescriptor(entry.route);
+        if (observer_descriptor != 0)
         {
             bool observer_present = false;
             for (std::size_t observer_index = 0;
@@ -2390,7 +2447,7 @@ namespace {
                 ++observer_index)
             {
                 if (packet.observer_descriptor_ids[observer_index] ==
-                    entry.cpu_observer_descriptor_id)
+                    observer_descriptor)
                 {
                     observer_present = true;
                     break;
@@ -2408,7 +2465,7 @@ namespace {
                 }
                 packet.observer_descriptor_ids[
                     packet.observer_descriptor_count++] =
-                    entry.cpu_observer_descriptor_id;
+                    observer_descriptor;
             }
         }
         candidates[candidate_count++] = static_cast<std::uint16_t>(i);
@@ -2473,8 +2530,7 @@ namespace {
             packet.event.requires_physical_reconcile_before_resume = true;
         }
 
-        if ((entry.delivery == StopDeliveryMode::Observe ||
-                entry.delivery == StopDeliveryMode::Progress) &&
+        if (IsPassive(entry.route) &&
             entry.drop_counter != nullptr)
         {
             bool already_present = false;
@@ -2499,42 +2555,26 @@ namespace {
 
         packet.entry_indices[packet.entry_count++] = entry_index;
         packet.event.authoritative =
-            packet.event.authoritative || entry.lossless;
+            packet.event.authoritative || IsLossless(entry.route);
 
-        if (entry.delivery == StopDeliveryMode::Wake)
+        if (IsForeground(entry.route))
         {
-            packet.event.active_foreground_wake = true;
+            packet.event.active_foreground_wait = true;
             packet.event.authoritative = true;
-            packet.terminal = StopRouteTerminal::WokeForeground;
+            packet.terminal = StopRouteTerminal::ForegroundMatched;
             packet.terminal_entry = entry_index;
             packet.request_break = true;
             break;
         }
-        switch (entry.policy)
+        if (IsInterruption(entry.route))
         {
-        case StopRoutingPolicy::Pass:
-            break;
-        case StopRoutingPolicy::Consume:
-            packet.event.authoritative = true;
-            packet.terminal = StopRouteTerminal::Consumed;
-            packet.terminal_entry = entry_index;
-            break;
-        case StopRoutingPolicy::RequestInterruptionHandler:
             packet.event.authoritative = true;
             packet.terminal =
-                StopRouteTerminal::InterruptionHandlerRequested;
-            packet.terminal_entry = entry_index;
-            packet.request_break = true;
-            break;
-        case StopRoutingPolicy::Fail:
-            packet.event.authoritative = true;
-            packet.terminal = StopRouteTerminal::Failed;
+                StopRouteTerminal::InterruptionRequested;
             packet.terminal_entry = entry_index;
             packet.request_break = true;
             break;
         }
-        if (packet.terminal != StopRouteTerminal::None)
-            break;
     }
     for (std::size_t observer_index = 0;
         observer_index < packet.observer_descriptor_count;
@@ -2548,7 +2588,7 @@ namespace {
         if (observed == StopCpuObservationResult::Failed)
         {
             packet.event.authoritative = true;
-            packet.terminal = StopRouteTerminal::Failed;
+            packet.terminal = StopRouteTerminal::RoutingFailure;
             packet.terminal_entry = -1;
             packet.request_break = true;
             break;
@@ -2849,14 +2889,13 @@ namespace {
     receipt.core_must_remain_stopped =
         packet.event.requires_physical_reconcile_before_resume ||
         (packet.request_break &&
-            packet.terminal != StopRouteTerminal::WokeForeground &&
-            packet.terminal != StopRouteTerminal::Consumed);
+            packet.terminal != StopRouteTerminal::ForegroundMatched);
     for (std::size_t i = 0; i < packet.entry_count; ++i)
     {
         const std::size_t entry_index = packet.entry_indices[i];
         if (entry_index >= packet.snapshot->entries.size())
         {
-            receipt.terminal = StopRouteTerminal::Failed;
+            receipt.terminal = StopRouteTerminal::RoutingFailure;
             receipt.error = Error(
                 StopPointErrorCode::StaleDispatchGeneration,
                 "Native stop delivery referenced an invalid dispatch entry");
@@ -2870,7 +2909,6 @@ namespace {
             entry.source_id,
             entry.group_id,
             entry.subscription_id,
-            entry.delivery,
         };
         receipt.deliveries.push_back(delivery);
         try
@@ -2879,7 +2917,7 @@ namespace {
         }
         catch (...)
         {
-            receipt.terminal = StopRouteTerminal::Failed;
+            receipt.terminal = StopRouteTerminal::RoutingFailure;
             receipt.error = Error(
                 StopPointErrorCode::InvalidPolicy,
                 "A stop consumer threw during routed delivery");
@@ -2889,26 +2927,31 @@ namespace {
     }
 
     if (receipt.terminal ==
-            StopRouteTerminal::InterruptionHandlerRequested &&
+            StopRouteTerminal::InterruptionRequested &&
         packet.terminal_entry >= 0 &&
         static_cast<std::size_t>(packet.terminal_entry) <
             packet.snapshot->entries.size())
     {
         const DispatchEntry& entry =
             packet.snapshot->entries[packet.terminal_entry];
-        receipt.interruption_handler_request =
+        const auto* interruption =
+            std::get_if<TrustedStopInterruptionRequest>(&entry.route);
+        if (interruption != nullptr)
+        {
+            receipt.interruption_handler_request =
             StopInterruptionHandlerRequest{
                 entry.source_id,
                 entry.group_id,
                 entry.subscription_id,
-                entry.interruption_handler_key,
+                interruption->handler_key,
             };
+        }
     }
-    if (receipt.terminal == StopRouteTerminal::Failed && !receipt.error)
+    if (receipt.terminal == StopRouteTerminal::RoutingFailure && !receipt.error)
     {
         receipt.error = Error(
             StopPointErrorCode::InvalidPolicy,
-            "A routed guard or interceptor failed");
+            "A routed observer failed");
         receipt.core_must_remain_stopped = true;
     }
     if (receipt.terminal == StopRouteTerminal::None &&
@@ -2919,10 +2962,10 @@ namespace {
 
     if (packet.event.requires_physical_reconcile_before_resume ||
         (packet.request_break &&
-            (receipt.terminal == StopRouteTerminal::WokeForeground ||
-            receipt.terminal == StopRouteTerminal::Failed ||
+            (receipt.terminal == StopRouteTerminal::ForegroundMatched ||
+            receipt.terminal == StopRouteTerminal::RoutingFailure ||
             receipt.terminal ==
-                StopRouteTerminal::InterruptionHandlerRequested ||
+                StopRouteTerminal::InterruptionRequested ||
             receipt.terminal == StopRouteTerminal::Overflow)))
     {
         impl.current_point = packet.event;
@@ -2992,7 +3035,7 @@ std::vector<StopRouteReceipt> StopPointRouter::DrainIngress()
     if (!initialized_ || owner_thread_ != std::this_thread::get_id())
     {
         receipts.push_back(FailureRoute(
-            StopRouteTerminal::Failed,
+            StopRouteTerminal::RoutingFailure,
             Error(
                 !initialized_
                     ? StopPointErrorCode::InvalidArgument
@@ -3056,7 +3099,7 @@ std::vector<StopRouteReceipt> StopPointRouter::DrainIngress()
             if (!applied.ok)
             {
                 StopRouteReceipt failure = FailureRoute(
-                    StopRouteTerminal::Failed,
+                    StopRouteTerminal::RoutingFailure,
                     std::move(applied.error));
                 AppendHistory(*impl_, failure);
                 receipts.push_back(std::move(failure));
@@ -3131,12 +3174,14 @@ StopRouteReceipt StopPointRouter::InjectSyntheticStop(
     if (StopPointError error =
             CheckControlThread(*this, owner_thread_, initialized_, stopping_))
     {
-        return FailureRoute(StopRouteTerminal::Failed, std::move(error));
+        return FailureRoute(
+            StopRouteTerminal::RoutingFailure,
+            std::move(error));
     }
     if (point.identity == 0)
     {
         return FailureRoute(
-            StopRouteTerminal::Failed,
+            StopRouteTerminal::RoutingFailure,
             Error(
                 StopPointErrorCode::InvalidArgument,
                 "Synthetic stop identity must be nonzero"));

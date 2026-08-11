@@ -171,16 +171,14 @@
     <ClInclude Include="Core\Config\SimConfig.h" />
     <ClInclude Include="Core\DolphinWrapper.h" />
     <ClInclude Include="Core\PowerPcMemoryAccessDecoder.h" />
-    <ClInclude Include="Core\Input\AppliedTurnTapeBlob.h" />
-    <ClInclude Include="Core\Input\BattleInputTraceBlob.h" />
+    <ClInclude Include="Core\Input\GCInputFrame.h" />
+    <ClInclude Include="Core\Input\GCInputFrameFmt.h" />
     <ClInclude Include="Core\Input\GCPadOverride.h" />
-    <ClInclude Include="Core\Input\InputPlan.h" />
-    <ClInclude Include="Core\Input\InputPlanFmt.h" />
-    <ClInclude Include="Core\Input\SoaBattle\ActionLibrary.h" />
     <ClInclude Include="Core\Input\SoaBattle\ActionPlanSerializer.h" />
     <ClInclude Include="Core\Input\SoaBattle\ActionTypes.h" />
+    <ClInclude Include="Core\Input\SoaBattle\BattleCommandPreparation.h" />
     <ClInclude Include="Core\Input\SoaBattle\BattleCommandCodec.h" />
-    <ClInclude Include="Core\Input\SoaBattle\PlanWriter.h" />
+    <ClInclude Include="Core\Input\SoaBattle\BattlePlanValidation.h" />
     <ClInclude Include="Core\Memory\DerivedBase.h" />
     <ClInclude Include="Core\Memory\Endian.h" />
     <ClInclude Include="Core\Memory\IKeyReader.h" />
@@ -203,55 +201,51 @@
     <ClInclude Include="Core\Memory\Soa\SoaStructs.reflect.h" />
     <ClInclude Include="Core\Shims\StateBufferShim.h" />
     <ClInclude Include="framework.h" />
-    <ClInclude Include="Phases\Programs\BattleContext\BattleContextPayload.h" />
-    <ClInclude Include="Phases\Programs\BattleContext\BattleContextScript.h" />
-    <ClInclude Include="Phases\Programs\NavigationContext\NavigationContextScript.h" />
-    <ClInclude Include="Phases\Programs\NavigationContext\NavigationContextPayload.h" />
-    <ClInclude Include="Phases\Programs\NavigationContext\NavigationContextResult.h" />
-    <ClInclude Include="Phases\Programs\BattleMacroProbe\BattleMacroProbePayload.h" />
-    <ClInclude Include="Phases\Programs\BattleMacroProbe\BattleMacroProbeScript.h" />
-    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionManifest.h" />
-    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionPayload.h" />
-    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionScript.h" />
-    <ClInclude Include="Phases\Programs\BattleEndResults\BattleEndResultsPayload.h" />
-    <ClInclude Include="Phases\Programs\BattleEndResults\BattleEndResultsReport.h" />
-    <ClInclude Include="Phases\Programs\BattleEndResults\BattleEndResultsScript.h" />
+    
+    <ClInclude Include="Phases\Programs\BattleContext\BattleContextModule.h" />
+    <ClInclude Include="Phases\Programs\BattleSingleTurn\BattleSingleTurnModule.h" />
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     <ClInclude Include="Phases\Programs\BattleRunner\BattleOutcome.h" />
-    <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerPayload.h" />
-    <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerScript.h" />
-    <ClInclude Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.h" />
-    <ClInclude Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerScript.h" />
-    <ClInclude Include="Phases\Programs\TasFrameDetector\TasFrameDetectorPayload.h" />
-    <ClInclude Include="Phases\Programs\TasFrameDetector\TasFrameDetectorScript.h" />
-    <ClInclude Include="Phases\Programs\ProgramRegistry.h" />
+    
+    
+    
     <ClInclude Include="Phases\Programs\SeedProbe\SeedProbeModule.h" />
     <ClInclude Include="Phases\Programs\TasMovieValidation\TasMovieValidationModule.h" />
     <ClInclude Include="Phases\RNGSeedDeltaMap.h" />
     <ClInclude Include="Runner\Breakpoints\BP.def.h" />
     <ClInclude Include="Runner\Breakpoints\BpRegistry.h" />
-    <ClInclude Include="Runner\Breakpoints\Predicate.h" />
     <ClInclude Include="Runner\IPC\DurableWorkerTerminalEnvelope.h" />
-    <ClInclude Include="Runner\IPC\Wire.h" />
+    
     <ClInclude Include="Runner\IPC\WrmsProtocol.h" />
-    <ClInclude Include="Runner\IPC\WorkerWireWriter.h" />
-    <ClInclude Include="Runner\InputMacro\IInputMacroHost.h" />
-    <ClInclude Include="Runner\InputMacro\IInputMacroPlanDriver.h" />
-    <ClInclude Include="Runner\InputMacro\InputMacroPlan.h" />
-    <ClInclude Include="Runner\InputMacro\InputMacroRuntime.h" />
-    <ClInclude Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.h" />
-    <ClInclude Include="Runner\InputMacro\Providers\BattleCompletionInputMacroProvider.h" />
-    <ClInclude Include="Runner\InputMacro\Providers\BattleEndResultsInputMacroProvider.h" />
-    <ClInclude Include="Runner\InputMacro\Providers\BattleResultsScreenInputMacroProvider.h" />
-    <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h" />
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     <ClInclude Include="Runner\Parallel\WorkerBootPlan.h" />
-    <ClInclude Include="Runner\Parallel\PRTypes.h" />
+    
     <ClInclude Include="Runner\Runtime\DolphinWrapperBackend.h" />
     <ClInclude Include="Runner\Runtime\EmulationSession.h" />
     <ClInclude Include="Runner\Runtime\Execution\ExecutionEngine.h" />
     <ClInclude Include="Runner\Runtime\Execution\ExecutionTypes.h" />
     <ClInclude Include="Runner\Runtime\Execution\HostActivityTracker.h" />
     <ClInclude Include="Runner\Runtime\Execution\IExecutionBackendPort.h" />
-    <ClInclude Include="Runner\Runtime\Execution\IInputAdvancePort.h" />
+    <ClInclude Include="Runner\Runtime\Execution\IInputExecutionBindingPort.h" />
     <ClInclude Include="Runner\Runtime\IDolphinBackend.h" />
     <ClInclude Include="Runner\Runtime\IProgramRuntimePort.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\ProgramRuntime.h" />
@@ -265,7 +259,9 @@
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Codec\ProgramCodecV1.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\CompositionSupport.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\InteractionComposition.h" />
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\InputDeliveryComposition.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\PredicateComposition.h" />
+    <ClInclude Include="Runner\Runtime\Predicates\PredicateBundle.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\SemanticObservationComposition.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Execution\ProgramExecutor.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Model\ProgramIdentifiers.h" />
@@ -280,7 +276,9 @@
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Registry\TypeSchemaRegistry.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Store\ProgramDefinitionStore.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Verify\ProgramVerifier.h" />
+    <ClInclude Include="Runner\Runtime\Progress\ProgressTypes.h" />
     <ClInclude Include="Runner\Runtime\FullPhase\FullPhaseProgram.h" />
+    <ClInclude Include="Runner\Runtime\ProgramKind.h" />
     <ClInclude Include="Runner\Runtime\RuntimeTypes.h" />
     <ClInclude Include="Runner\Runtime\Services\Artifacts\RuntimeArtifactSink.h" />
     <ClInclude Include="Runner\Runtime\Services\Capture\CaptureService.h" />
@@ -324,13 +322,13 @@
     <ClInclude Include="Runner\Script\ContextKeys\TasMovieKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\TasFrameDetectorKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\VMCoreKeys.reg.h" />
-    <ClInclude Include="Runner\Script\PhaseScriptOpcodeTable.inc" />
-    <ClInclude Include="Runner\Script\PhaseScriptOpcodes.h" />
-    <ClInclude Include="Runner\Script\PhaseScriptProgram.h" />
-    <ClInclude Include="Runner\Script\PhaseScriptVM.h" />
+    
+    
+    
+    
     <ClInclude Include="Runner\Script\PSContext.h" />
-    <ClInclude Include="Runner\Script\PSContextCodec.h" />
-    <ClInclude Include="Runner\Script\ScriptProgress.h" />
+    
+    
     <ClInclude Include="Runner\Symbols\RuntimeSymbolRegistry.h" />
     <ClInclude Include="Tas\DtmAnnotationFile.h" />
     <ClInclude Include="Tas\DtmFile.h" />
@@ -357,11 +355,10 @@
     <ClCompile Include="Core\HostStubs.cpp" />
     <ClCompile Include="Core\PowerPcMemoryAccessDecoder.cpp" />
     <ClCompile Include="Core\Input\GCPadOverride.cpp" />
-    <ClCompile Include="Core\Input\InputPlanFmt.cpp" />
-    <ClCompile Include="Core\Input\SoaBattle\ActionLibrary.cpp" />
+    <ClCompile Include="Core\Input\GCInputFrameFmt.cpp" />
     <ClCompile Include="Core\Input\SoaBattle\ActionPlanSerializer.cpp" />
     <ClCompile Include="Core\Input\SoaBattle\BattleCommandCodec.cpp" />
-    <ClCompile Include="Core\Input\SoaBattle\PlanWriter.cpp" />
+    <ClCompile Include="Core\Input\SoaBattle\BattlePlanValidation.cpp" />
     <ClCompile Include="Core\Memory\Soa\Battle\BattleContextCodec.cpp" />
     <ClCompile Include="Core\Memory\Soa\Navigation\NavigationContextCodec.cpp" />
     <ClCompile Include="Core\Memory\Soa\SoaAddrCatalog.cpp" />
@@ -369,26 +366,25 @@
     <ClCompile Include="Core\Memory\Soa\SoaAddrProgramBuilder.cpp" />
     <ClCompile Include="Core\Memory\Soa\SoaAddrRegistry.cpp" />
     <ClCompile Include="Core\Shims\StateBufferShim.cpp" />
-    <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp" />
-    <ClCompile Include="Phases\Programs\BattleMacroProbe\BattleMacroProbePayload.cpp" />
-    <ClCompile Include="Phases\Programs\BattleCompletion\BattleCompletionManifest.cpp" />
-    <ClCompile Include="Phases\Programs\BattleCompletion\BattleCompletionPayload.cpp" />
-    <ClCompile Include="Phases\Programs\BattleEndResults\BattleEndResultsPayload.cpp" />
-    <ClCompile Include="Phases\Programs\BattleEndResults\BattleEndResultsReport.cpp" />
-    <ClCompile Include="Phases\Programs\NavigationContext\NavigationContextPayload.cpp" />
-    <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp" />
-    <ClCompile Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.cpp" />
-    <ClCompile Include="Phases\Programs\TasFrameDetector\TasFrameDetectorPayload.cpp" />
-    <ClCompile Include="Phases\Programs\ProgramRegistry.cpp" />
+    
+    <ClCompile Include="Phases\Programs\BattleContext\BattleContextModule.cpp" />
+    <ClCompile Include="Phases\Programs\BattleSingleTurn\BattleSingleTurnModule.cpp" />
+    
+    
+    
+    
+    
+    
+    
+    
     <ClCompile Include="Phases\Programs\SeedProbe\SeedProbeModule.cpp" />
     <ClCompile Include="Phases\Programs\TasMovieValidation\TasMovieValidationModule.cpp" />
     <ClCompile Include="Phases\RNGSeedDeltaMap.cpp" />
     <ClCompile Include="Runner\Breakpoints\BpRegistry.cpp" />
-    <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
     <ClCompile Include="Runner\Script\CtxRegistry.cpp" />
     <ClCompile Include="Runner\IPC\DurableWorkerTerminalEnvelope.cpp" />
     <ClCompile Include="Runner\IPC\WrmsProtocol.cpp" />
-    <ClCompile Include="Runner\IPC\WorkerWireWriter.cpp" />
+    
     <ClCompile Include="Runner\Runtime\ProgramRuntime\ProgramRuntime.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Actions\BoundedStopPointCpuEvaluator.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Actions\CanonicalActionPayload.cpp" />
@@ -399,7 +395,9 @@
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Codec\ProgramCodecV1.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\CompositionSupport.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\InteractionComposition.cpp" />
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\InputDeliveryComposition.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\PredicateComposition.cpp" />
+    <ClCompile Include="Runner\Runtime\Predicates\PredicateBundle.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\SemanticObservationComposition.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Execution\ProgramExecutor.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Model\ProgramIdentifiers.cpp" />
@@ -410,6 +408,7 @@
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Registry\TypeSchemaRegistry.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Store\ProgramDefinitionStore.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Verify\ProgramVerifier.cpp" />
+    <ClCompile Include="Runner\Runtime\Progress\ProgressTypes.cpp" />
     <ClCompile Include="Runner\Runtime\FullPhase\FullPhaseProgram.cpp" />
     <ClCompile Include="Runner\Runtime\DolphinWrapperBackend.cpp" />
     <ClCompile Include="Runner\Runtime\EmulationSession.cpp" />
@@ -436,21 +435,21 @@
     <ClCompile Include="Runner\Runtime\Worksets\WorksetTypes.cpp" />
     <ClCompile Include="Runner\Runtime\Worksets\WorksetStager.cpp" />
     <ClCompile Include="Runner\Runtime\Worksets\WorksetWireCodec.cpp" />
-    <ClCompile Include="Runner\InputMacro\InputMacroRuntime.cpp" />
-    <ClCompile Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.cpp" />
-    <ClCompile Include="Runner\InputMacro\Providers\BattleCompletionInputMacroProvider.cpp" />
-    <ClCompile Include="Runner\InputMacro\Providers\BattleEndResultsInputMacroProvider.cpp" />
-    <ClCompile Include="Runner\InputMacro\Providers\BattleResultsScreenInputMacroProvider.cpp" />
-    <ClCompile Include="Runner\Script\PhaseScriptOpFormat.cpp" />
-    <ClCompile Include="Runner\Script\PhaseScriptVM.cpp" />
-    <ClCompile Include="Runner\Script\PhaseScriptVMControl.cpp" />
-    <ClCompile Include="Runner\Script\PhaseScriptVMInput.cpp" />
-    <ClCompile Include="Runner\Script\PhaseScriptVMMacro.cpp" />
-    <ClCompile Include="Runner\Script\PhaseScriptVMNavigation.cpp" />
-    <ClCompile Include="Runner\Script\PhaseScriptVMMemory.cpp" />
-    <ClCompile Include="Runner\Script\PhaseScriptVMPredicates.cpp" />
-    <ClCompile Include="Runner\Script\PSContextCodec.cpp" />
-    <ClCompile Include="Runner\Script\ScriptProgress.cpp" />
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     <ClCompile Include="Runner\Symbols\RuntimeSymbolRegistry.cpp" />
     <ClCompile Include="Tas\DtmAnnotationFile.cpp" />
     <ClCompile Include="Tas\DtmFile.cpp" />
@@ -459,262 +458,70 @@
     <ClCompile Include="Utils\MultiProgress.cpp" />
     <ClCompile Include="Utils\ProgressBar.cpp" />
     <ClCompile Include="Utils\SafeEnv.cpp" />
-    <ClCompile Include="_Dolphin_src\Core\AchievementManager.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\ActionReplay.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\ARDecrypt.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\BootManager.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Boot\Boot.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Boot\Boot_BS2Emu.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Boot\Boot_WiiWAD.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Boot\DolReader.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Boot\ElfReader.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\CheatGeneration.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\CheatSearch.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\ConfigManager.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\AchievementSettings.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\DefaultLocale.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\FreeLookSettings.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\GraphicsSettings.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\MainSettings.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\NetplaySettings.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\SessionSettings.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\SYSCONFSettings.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\UISettings.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Config\WiimoteSettings.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Core.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\CoreTiming.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\CPUThreadConfigCallback.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\DolphinAnalytics.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\DSPEmulator.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\FreeLookConfig.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\FreeLookManager.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\GeckoCode.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\GeckoCodeConfig.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\HotkeyManager.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\HW\SystemTimers.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\LibusbUtils.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\MemoryWatcher.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\MemTools.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\Movie.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\NetPlayClient.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\NetPlayCommon.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\NetPlayServer.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\NetworkCaptureLogger.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PatchEngine.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit64_Tables.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\JitAsm.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_Branch.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_FloatingPoint.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_Integer.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_LoadStore.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_LoadStoreFloating.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_LoadStorePaired.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_Paired.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_SystemRegisters.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\RegCache\FPURegCache.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\RegCache\GPRRegCache.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\RegCache\JitRegCache.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\State.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\SysConf.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\System.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\TimePlayed.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\TitleDatabase.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\WC24PatchEngine.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\WiiRoot.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="_Dolphin_src\Core\WiiUtils.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
   </ItemGroup>
   <ItemGroup>
     <None Include="Interesting SOA Addresses.md">

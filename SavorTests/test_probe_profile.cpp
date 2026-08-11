@@ -689,7 +689,7 @@ TEST(SavorProbeWindow, AppliesMarkerControlAndFrameClosuresAfterTheirBoundaryEve
     EXPECT_FALSE(state.is_open());
 }
 
-TEST(SavorProbeDispatch, RequiresAnActiveForegroundWakeAndIsolatesCaptureOverflow)
+TEST(SavorProbeDispatch, RequiresAnActiveForegroundWaitAndIsolatesCaptureOverflow)
 {
     const auto subscriptions = Subscription::Capture
         | Subscription::Progress | Subscription::Control;

@@ -28,7 +28,7 @@ std::string FormatFleetStartupSnapshot(
         << " starting=" << snapshot.starting
         << " retry_pending=" << snapshot.retry_pending
         << " exhausted=" << snapshot.exhausted;
-    for (const auto& slot : snapshot.slots) {
+    for (const auto& slot : snapshot.worker_slots) {
         out << " slot=" << slot.worker_id
             << ":attempts=" << slot.attempt_count
             << "/" << slot.maximum_attempts

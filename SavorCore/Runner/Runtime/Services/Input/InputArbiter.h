@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../Execution/IInputAdvancePort.h"
+#include "../../Execution/IInputExecutionBindingPort.h"
 #include "../../RuntimeTypes.h"
 #include "IInputBackendPort.h"
 
@@ -16,16 +16,14 @@ namespace savor::runtime {
 
 struct InputOwnerIdTag;
 struct InputPollReceiptIdTag;
-struct InputNeutralWitnessIdTag;
 
 using InputOwnerId = StrongId<InputOwnerIdTag>;
 using InputPollReceiptId = StrongId<InputPollReceiptIdTag>;
-using InputNeutralWitnessId = StrongId<InputNeutralWitnessIdTag>;
 
 enum class InputBorrowPolicy : std::uint8_t
 {
-    PreserveHeldUntilBorrowerPublishes,
-    RequireNeutralWitness,
+    PreserveHeldUntilBorrowerApplies,
+    RequireStableNeutral,
 };
 
 enum class InputLeaseStatus : std::uint8_t
@@ -33,9 +31,24 @@ enum class InputLeaseStatus : std::uint8_t
     Rejected,
     Active,
     Suspended,
-    AwaitingNeutralAcknowledgement,
     Released,
     Invalidated,
+};
+
+enum class InputState : std::uint8_t
+{
+    Neutral,
+    Held,
+    DeliveryPending,
+    NeutralTransitionPending,
+};
+
+enum class InputBindingKind : std::uint8_t
+{
+    StableNeutral,
+    Held,
+    Delivery,
+    NeutralTransition,
 };
 
 enum class InputArbiterErrorCode : std::uint8_t
@@ -55,10 +68,9 @@ struct InputLeaseRequest
     std::int32_t priority = 0;
     bool suspendable = true;
     bool interruption_borrowable = false;
-    bool require_neutral_acknowledgement = true;
     bool movie_exclusive = false;
     InputBorrowPolicy borrow_policy =
-        InputBorrowPolicy::PreserveHeldUntilBorrowerPublishes;
+        InputBorrowPolicy::PreserveHeldUntilBorrowerApplies;
 };
 
 struct InputLeaseReceipt
@@ -71,42 +83,38 @@ struct InputLeaseReceipt
     InputArbiterErrorCode error = InputArbiterErrorCode::None;
 };
 
-struct InputPublicationReceipt
+struct InputExecutionBindingReceipt
 {
     bool ok = false;
+    InputExecutionBindingId binding;
+    InputLeaseId lease;
+    WorksetEpoch epoch;
+    std::uint64_t state_generation = 0;
+    savor::GCInputFrame frame{};
+    InputBindingKind kind = InputBindingKind::StableNeutral;
+    bool requires_observation = false;
+    std::string message;
+    InputArbiterErrorCode error = InputArbiterErrorCode::None;
+    InputPublicationToken publication;
+};
+
+struct InputDeliveryReceipt
+{
+    bool ok = false;
+    InputDeliveryId delivery;
+    InputExecutionBindingId binding;
     InputLeaseId lease;
     InputPublicationToken publication;
+    InputPollReceiptId poll;
     WorksetEpoch epoch;
+    std::uint64_t state_generation = 0;
+    std::uint32_t callback_count = 0;
     savor::GCInputFrame frame{};
     std::string message;
     InputArbiterErrorCode error = InputArbiterErrorCode::None;
 };
 
-struct InputAcknowledgementReceipt
-{
-    bool ok = false;
-    bool acknowledged = false;
-    InputPollReceiptId receipt;
-    InputPublicationToken publication;
-    WorksetEpoch epoch;
-    std::uint32_t callback_count = 0;
-    std::string message;
-    InputArbiterErrorCode error = InputArbiterErrorCode::None;
-};
-
-struct InputNeutralWitnessReceipt
-{
-    bool ok = false;
-    InputNeutralWitnessId witness;
-    InputLeaseId lease;
-    InputPublicationToken publication;
-    InputPollReceiptId acknowledgement;
-    WorksetEpoch epoch;
-    std::string message;
-    InputArbiterErrorCode error = InputArbiterErrorCode::None;
-};
-
-struct InputReleaseReceipt
+struct InputLeaseCloseReceipt
 {
     bool ok = false;
     InputLeaseStatus status = InputLeaseStatus::Rejected;
@@ -125,10 +133,10 @@ struct InputArbiterOperationReceipt
     std::string_view message;
 };
 
-struct InputAdvanceBindingReceipt
+struct InputExecutionRelationshipReceipt
 {
     bool ok = false;
-    InputAdvanceBindingId binding;
+    InputExecutionRelationshipId relationship;
     WorksetEpoch epoch;
     std::string message;
     InputArbiterErrorCode error = InputArbiterErrorCode::None;
@@ -151,13 +159,14 @@ struct InputArbiterSnapshot
     std::optional<InputLeaseId> active_lease;
     std::size_t suspended_count = 0;
     std::size_t lease_count = 0;
-    std::size_t publication_count = 0;
     std::size_t binding_count = 0;
+    std::size_t relationship_count = 0;
+    InputState active_state = InputState::Neutral;
     bool movie_exclusive = false;
     bool stopped = false;
 };
 
-class InputArbiter final : public IInputAdvancePort
+class InputArbiter final : public IInputExecutionBindingPort
 {
 public:
     explicit InputArbiter(IInputBackendPort& backend);
@@ -168,63 +177,46 @@ public:
     [[nodiscard]] InputLeaseReceipt Borrow(
         InputLeaseId parent,
         const InputLeaseRequest& request,
-        WorksetEpoch epoch,
-        std::optional<InputNeutralWitnessId> neutral_witness =
-            std::nullopt);
-    [[nodiscard]] InputPublicationReceipt Publish(
+        WorksetEpoch epoch);
+
+    [[nodiscard]] InputExecutionBindingReceipt ApplyState(
         InputLeaseId lease,
         const savor::GCInputFrame& frame,
         WorksetEpoch epoch);
-    [[nodiscard]] InputAcknowledgementReceipt Observe(
+    [[nodiscard]] InputExecutionBindingReceipt BeginDelivery(
         InputLeaseId lease,
-        InputPublicationToken publication,
+        const savor::GCInputFrame& frame,
         WorksetEpoch epoch);
-    [[nodiscard]] InputNeutralWitnessReceipt ProveNeutralWitness(
+    [[nodiscard]] InputDeliveryReceipt CompleteDelivery(
         InputLeaseId lease,
-        InputPublicationToken publication,
-        WorksetEpoch epoch);
-    [[nodiscard]] InputReleaseReceipt BeginRelease(
-        InputLeaseId lease,
-        WorksetEpoch epoch);
-    [[nodiscard]] InputReleaseReceipt CompleteRelease(
-        InputLeaseId lease,
-        InputPublicationToken neutral_publication,
+        InputExecutionBindingId binding,
         WorksetEpoch epoch);
 
-    [[nodiscard]] InputAdvanceBindingReceipt CreateAdvanceBinding(
+    [[nodiscard]] InputArbiterOperationReceipt ValidateBinding(
+        const InputExecutionBindingEvidence& binding) const noexcept;
+    [[nodiscard]] InputExecutionRelationshipReceipt
+    CreateExecutionRelationship(
+        const InputExecutionBindingEvidence& binding);
+    InputArbiterOperationReceipt RemoveExecutionRelationship(
+        InputExecutionRelationshipId relationship) noexcept;
+
+    [[nodiscard]] InputLeaseCloseReceipt CloseLease(
         InputLeaseId lease,
-        std::vector<savor::GCInputFrame> frames,
-        WorksetEpoch epoch,
-        std::uint32_t retry_limit = 1);
-    [[nodiscard]] InputArbiterOperationReceipt ValidatePublication(
-        const InputPublicationEvidence& publication) const noexcept;
-    [[nodiscard]] InputAdvanceBindingReceipt
-    CreatePublicationRelationship(
-        const InputPublicationEvidence& publication);
-    InputArbiterOperationReceipt RemoveAdvanceBinding(
-        InputAdvanceBindingId binding) noexcept;
+        WorksetEpoch epoch);
 
     InputArbiterOperationReceipt InitializeWorksetEpoch(
         WorksetEpoch epoch) noexcept;
     [[nodiscard]] InputArbiterShutdownReceipt Shutdown() noexcept;
     [[nodiscard]] InputArbiterSnapshot snapshot() const noexcept;
 
-    [[nodiscard]] InputAdvanceReceipt Validate(
-        InputAdvanceBindingId binding,
+    [[nodiscard]] InputExecutionRelationshipOperationReceipt Validate(
+        InputExecutionRelationshipId relationship,
         WorksetEpoch epoch) override;
-    [[nodiscard]] InputAdvanceReceipt PrepareNext(
-        InputAdvanceBindingId binding,
-        WorksetEpoch epoch,
-        std::uint32_t advance_ordinal) override;
-    [[nodiscard]] InputAdvanceReceipt ObserveAcknowledgement(
-        InputAdvanceBindingId binding,
-        InputPublicationToken publication,
-        WorksetEpoch epoch) override;
-    [[nodiscard]] InputAdvanceReceipt Complete(
-        InputAdvanceBindingId binding,
+    [[nodiscard]] InputExecutionRelationshipOperationReceipt Complete(
+        InputExecutionRelationshipId relationship,
         WorksetEpoch epoch) noexcept override;
-    [[nodiscard]] InputAdvanceReceipt Cancel(
-        InputAdvanceBindingId binding,
+    [[nodiscard]] InputExecutionRelationshipOperationReceipt Cancel(
+        InputExecutionRelationshipId relationship,
         WorksetEpoch epoch) noexcept override;
 
 private:
@@ -234,59 +226,74 @@ private:
         InputLeaseId id;
         WorksetEpoch epoch;
         InputLeaseStatus status = InputLeaseStatus::Active;
-        std::optional<InputPublicationToken> latest_publication;
-        std::optional<InputPublicationToken> pending_neutral;
-    };
-
-    struct PublicationState
-    {
-        InputLeaseId lease;
-        WorksetEpoch epoch;
-        std::uint64_t backend_sequence = 0;
-        savor::GCInputFrame frame{};
+        InputState input_state = InputState::Neutral;
+        std::uint64_t state_generation = 1;
+        std::optional<InputExecutionBindingId> current_binding;
+        bool backend_neutral = true;
+        bool mutated_backend = false;
     };
 
     struct BindingState
     {
+        InputExecutionBindingId id;
         InputLeaseId lease;
         WorksetEpoch epoch;
-        std::vector<savor::GCInputFrame> frames;
-        std::uint32_t retry_limit = 1;
-        std::uint32_t retry_count = 0;
-        std::optional<std::uint32_t> prepared_ordinal;
-        std::optional<InputPublicationToken> prepared_publication;
-        std::optional<InputPublicationEvidence>
-            publication_relationship;
+        std::uint64_t state_generation = 0;
+        savor::GCInputFrame frame{};
+        InputBindingKind kind = InputBindingKind::StableNeutral;
+        std::optional<InputPublicationToken> publication;
+        std::uint64_t backend_publication_epoch = 0;
+        bool requires_observation = false;
+        bool observed = false;
+        InputPollReceiptId poll;
+        std::uint32_t callback_count = 0;
+        std::optional<InputDeliveryId> delivery;
     };
 
-    struct NeutralWitnessState
+    struct RelationshipState
     {
+        InputExecutionRelationshipId id;
+        InputExecutionBindingId binding;
         InputLeaseId lease;
-        InputPublicationToken publication;
-        InputPollReceiptId acknowledgement;
         WorksetEpoch epoch;
+        std::uint64_t state_generation = 0;
+    };
+
+    struct PublishedState
+    {
+        bool ok = false;
+        InputPublicationToken publication;
+        std::uint64_t backend_publication_epoch = 0;
+        std::string message;
+        InputArbiterErrorCode error = InputArbiterErrorCode::None;
     };
 
     [[nodiscard]] LeaseState* FindLease(InputLeaseId lease) noexcept;
     [[nodiscard]] const LeaseState* FindLease(InputLeaseId lease) const noexcept;
+    [[nodiscard]] BindingState* FindBinding(InputExecutionBindingId binding) noexcept;
+    [[nodiscard]] const BindingState* FindBinding(InputExecutionBindingId binding) const noexcept;
     [[nodiscard]] bool IsCurrent(WorksetEpoch epoch) const noexcept;
-    [[nodiscard]] InputPublicationReceipt PublishInternal(
+    [[nodiscard]] bool IsNeutral(const savor::GCInputFrame& frame) const noexcept;
+    [[nodiscard]] PublishedState PublishBackend(
         LeaseState& lease,
         const savor::GCInputFrame& frame);
-    [[nodiscard]] InputReleaseReceipt FinishRelease(LeaseState& lease);
-    [[nodiscard]] InputAdvanceReceipt ValidateBinding(
-        InputAdvanceBindingId binding,
+    [[nodiscard]] InputExecutionBindingReceipt BindCurrentState(
+        LeaseState& lease,
+        const savor::GCInputFrame& frame,
+        InputBindingKind kind,
+        std::optional<PublishedState> publication,
+        std::optional<InputDeliveryId> delivery = std::nullopt);
+    [[nodiscard]] InputLeaseCloseReceipt FinishClose(LeaseState& lease);
+    [[nodiscard]] InputExecutionRelationshipOperationReceipt
+    ValidateRelationship(
+        InputExecutionRelationshipId relationship,
         WorksetEpoch epoch) const;
-    [[nodiscard]] bool MatchesPublication(
-        const InputPublicationEvidence& publication) const noexcept;
-    [[nodiscard]] InputAdvanceReceipt BindingFailure(std::string message) const;
+    [[nodiscard]] InputExecutionRelationshipOperationReceipt
+    RelationshipFailure(std::string message) const;
     [[nodiscard]] bool OnOwnerThread() const noexcept;
     [[nodiscard]] bool IsStopped() const noexcept;
-    void ErasePublicationsForLease(InputLeaseId lease) noexcept;
-    void EraseWitnessesForPublication(
-        InputPublicationToken publication) noexcept;
-    void EraseWitnessesForLease(InputLeaseId lease) noexcept;
     void EraseBindingsForLease(InputLeaseId lease) noexcept;
+    void EraseRelationshipsForLease(InputLeaseId lease) noexcept;
     void EraseLeaseState(InputLeaseId lease) noexcept;
     void ClearRetainedState() noexcept;
 
@@ -294,17 +301,16 @@ private:
     std::thread::id owner_thread_;
     WorksetEpoch epoch_;
     std::uint64_t next_lease_ = 1;
+    std::uint64_t next_binding_ = 1;
     std::uint64_t next_publication_ = 1;
     std::uint64_t next_poll_receipt_ = 1;
-    std::uint64_t next_neutral_witness_ = 1;
-    std::uint64_t next_binding_ = 1;
+    std::uint64_t next_delivery_ = 1;
+    std::uint64_t next_relationship_ = 1;
     std::optional<InputLeaseId> active_;
     std::vector<InputLeaseId> suspended_;
     std::unordered_map<std::uint64_t, LeaseState> leases_;
-    std::unordered_map<std::uint64_t, PublicationState> publications_;
-    std::unordered_map<std::uint64_t, NeutralWitnessState>
-        neutral_witnesses_;
     std::unordered_map<std::uint64_t, BindingState> bindings_;
+    std::unordered_map<std::uint64_t, RelationshipState> relationships_;
     bool stopped_ = false;
     std::optional<InputArbiterShutdownReceipt> shutdown_receipt_;
 };

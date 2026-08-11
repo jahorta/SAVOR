@@ -182,11 +182,6 @@
     <ClCompile Include="..\SavorPredict\CombatantVisualDispatcherModel.cpp" />
     <ClCompile Include="..\SavorPredict\CombatantAuxiliaryPublicationModel.cpp" />
     <ClCompile Include="..\SavorPredict\DirectInstructionTransitionSelectorModel.cpp" />
-    <ClCompile Include="..\SavorPredict\BattleJobBatchRunManifest.cpp" />
-    <ClCompile Include="..\SavorPredict\BattleJobRunManifest.cpp" />
-    <ClCompile Include="..\SavorPredict\BattleJobBatchRunOptions.cpp" />
-    <ClCompile Include="..\SavorPredict\BattleJobClone.cpp" />
-    <ClCompile Include="..\SavorPredict\BattleJobRunOptions.cpp" />
     <ClCompile Include="..\SavorPredict\CheckpointTrace.cpp" />
     <ClCompile Include="..\SavorPredict\CritGateCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\CounterCheckpointModel.cpp" />
@@ -221,15 +216,16 @@
     <ClCompile Include="..\SavorPredict\ViewPlacementCacheModel.cpp" />
     <ClCompile Include="..\SavorPredict\ViewPlacementGeometryModel.cpp" />
     <ClCompile Include="..\SavorE2E\Cli.cpp" />
+    <ClCompile Include="..\SavorE2E\ScenarioAssessment.cpp" />
     <ClCompile Include="..\SavorE2E\WorkerStartupBarrier.cpp" />
+    <ClCompile Include="test_e2e_scenario_assessment.cpp" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googlemock\src\gmock-all.cc" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
     <ClCompile Include="test.cpp" />
     <ClCompile Include="test_boot_dolphinwrapper.cpp" />
-    <ClCompile Include="test_battle_macro_probe.cpp" />
-    <ClCompile Include="test_battle_end_results_db.cpp" />
-    <ClCompile Include="test_battle_end_results.cpp" />
+    
+    
     <ClCompile Include="test_battle_coordinator_initialization.cpp" />
     <ClCompile Include="test_battle_frame_thread_list.cpp" />
     <ClCompile Include="test_battle_movement_path.cpp" />
@@ -247,10 +243,8 @@
     <ClCompile Include="test_probe_profile.cpp" />
     <ClCompile Include="test_probe_router_adapter.cpp" />
     <ClCompile Include="test_capture_service.cpp" />
-    <ClCompile Include="test_probe_progress_and_wire.cpp" />
     <ClCompile Include="test_probe_watchpoint_registry.cpp" />
     <ClCompile Include="test_native_stop_hooks.cpp" />
-    <ClCompile Include="test_pad_poll_isolated_user.cpp" />
     <ClCompile Include="test_queued_instruction_param.cpp" />
     <ClCompile Include="test_savordb_utils_minimal_copy.cpp" />
     <ClCompile Include="test_simconfig.cpp" />
@@ -258,14 +252,11 @@
     <ClCompile Include="test_savordb_fixture_sqlite.cpp" />
     <ClCompile Include="test_savordb_phase3_nonfixture.cpp" />
     <ClCompile Include="test_runtime_symbols.cpp" />
-    <ClCompile Include="test_phase_script_opcodes.cpp" />
-    <ClCompile Include="test_navigation_context_framework.cpp" />
-    <ClCompile Include="test_navigation_context_codec.cpp" />
-    <ClCompile Include="test_navigation_context_db.cpp" />
-    <ClCompile Include="test_input_macro_runtime.cpp" />
-    <ClCompile Include="test_battle_command_input_macro_provider.cpp" />
+    
+    
+    
+    
     <ClCompile Include="test_savor_predict_prediction_batch.cpp" />
-    <ClCompile Include="test_savor_predict_battle_job_runner.cpp" />
     <ClCompile Include="test_savordb_debug_tool.cpp" />
     <ClCompile Include="test_savor_predict.cpp" />
     <ClCompile Include="test_spice_battle_content_adapter.cpp" />
@@ -273,7 +264,6 @@
     <ClCompile Include="test_view_placement_geometry.cpp" />
     <ClCompile Include="test_tsqueue.cpp" />
     <ClCompile Include="test_TASPad.cpp" />
-    <ClCompile Include="test_worker_runtime_materialization.cpp" />
     <ClCompile Include="test_worker_protocol_v1.cpp" />
     <ClCompile Include="test_process_worker_v1.cpp" />
     <ClCompile Include="test_program_codec_v1.cpp" />
@@ -283,7 +273,9 @@
     <ClCompile Include="test_interaction_composition.cpp" />
     <ClCompile Include="test_program_model.cpp" />
     <ClCompile Include="test_predicate_composition.cpp" />
+    <ClCompile Include="test_battle_backend_contracts.cpp" />
     <ClCompile Include="test_program_registries.cpp" />
+    <ClCompile Include="test_progress_types.cpp" />
     <ClCompile Include="test_program_runtime.cpp" />
     <ClCompile Include="test_program_runtime_action_support.cpp" />
     <ClCompile Include="test_program_verifier.cpp" />
@@ -295,7 +287,6 @@
     <ClCompile Include="test_job_execution_coordinator.cpp" />
     <ClCompile Include="test_worker_startup_barrier.cpp" />
     <ClCompile Include="test_worker_result_blob_store.cpp" />
-    <ClCompile Include="test_worker_capability_gate.cpp" />
     <ClCompile Include="test_execution_engine.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />
     <ClCompile Include="test_workset_completion.cpp" />
@@ -306,7 +297,6 @@
     <ClCompile Include="test_savestate_service.cpp" />
     <ClCompile Include="test_emulation_session_stop_points.cpp" />
     <ClCompile Include="test_dolphin_stop_point_integration.cpp" />
-    <ClCompile Include="test_legacy_stop_point_translation.cpp" />
     <ClCompile Include="test_stop_point_test_support.cpp" />
     <ClCompile Include="test_stop_point_router.cpp" />
   </ItemGroup>

@@ -341,17 +341,27 @@ struct SealJobPopulationReceipt {
     std::string materialization_state;
 };
 
-struct ExecutionWorksetCompatibility {
-    std::string compatibility_key;
+struct ExecutionWorksetContract {
+    std::string contract_key;
     std::string module_canonical_id;
     std::int32_t module_version = 0;
     std::string module_sha256;
     std::string entrypoint;
     std::string verified_dependency_sha256;
     std::string runtime_profile_sha256;
-    std::uint64_t required_capability_mask = 0;
+    std::string program_package_sha256;
     std::optional<std::string> execution_affinity_key;
     std::uint64_t estimated_payload_bytes = 0;
+};
+
+// Exact immutable observation products selected before workset publication.
+// ExecutionDb stores these bytes opaquely; coordination decodes and verifies
+// them before invoking any program-kind reconstruction adapter.
+struct ExecutionWorksetObservationBindingV1 {
+    std::vector<std::uint8_t> capture_binding_payload;
+    std::string capture_binding_sha256;
+    std::vector<std::uint8_t> progress_plan_payload;
+    std::string progress_plan_sha256;
 };
 
 struct PublishWorksetCommand {
@@ -364,7 +374,8 @@ struct PublishWorksetCommand {
     std::string workset_key;
     std::int32_t program_kind = 0;
     std::int32_t program_version = 1;
-    ExecutionWorksetCompatibility compatibility;
+    ExecutionWorksetContract contract;
+    ExecutionWorksetObservationBindingV1 observation;
     int priority = 0;
     std::vector<std::int64_t> ordered_job_ids;
     std::string requested_by;
@@ -455,7 +466,8 @@ struct ClaimedPublishedWorkset {
     std::string workset_key;
     std::int32_t program_kind = 0;
     std::int32_t program_version = 0;
-    ExecutionWorksetCompatibility compatibility;
+    ExecutionWorksetContract contract;
+    ExecutionWorksetObservationBindingV1 observation;
     int priority = 0;
     std::string claim_token;
     std::vector<ClaimedPublishedWorksetItem> items;
@@ -532,6 +544,39 @@ struct WorksetJobStartReceipt {
     std::optional<std::uint64_t> durable_attempt_id;
 };
 
+struct RecordCanonicalJobProgressCommand {
+    std::int64_t dispatch_attempt_id = 0;
+    std::string claim_token;
+    std::int64_t job_id = 0;
+    std::uint32_t dispatch_item_ordinal = 0;
+    std::uint64_t reserved_attempt_id = 0;
+    std::uint64_t workset_id = 0;
+    std::uint64_t item_id = 0;
+    std::uint64_t invocation_id = 0;
+    std::uint64_t ordinal = 0;
+    std::string library_id;
+    std::uint32_t library_revision = 0;
+    std::string progress_point_id;
+    bool has_routed_provenance = false;
+    std::uint64_t routed_sequence = 0;
+    std::uint64_t sample_snapshot_id = 0;
+    std::uint64_t trigger_epoch = 0;
+    std::string schema_id;
+    std::uint32_t schema_revision = 0;
+    std::string schema_sha256;
+    std::vector<std::uint8_t> typed_payload;
+    std::string display_text;
+    std::string requested_by;
+};
+
+struct CanonicalJobProgressReceipt {
+    ExecutionDbOperationDisposition disposition =
+        ExecutionDbOperationDisposition::BackendError;
+    std::int64_t job_id = 0;
+    std::uint64_t attempt_id = 0;
+    std::uint64_t ordinal = 0;
+};
+
 struct ExecutionTempBlobSpec {
     std::string relative_path;
     std::string sha256;
@@ -566,9 +611,11 @@ struct StageWorkerTerminalReceipt {
 
 using WorkerExecutionEventMutation = std::variant<
     MarkWorksetJobStartedCommand,
+    RecordCanonicalJobProgressCommand,
     StageWorkerTerminalCommand>;
 using WorkerExecutionEventMutationReceipt = std::variant<
     WorksetJobStartReceipt,
+    CanonicalJobProgressReceipt,
     StageWorkerTerminalReceipt>;
 
 struct PersistWorkerExecutionEventsBatchCommand {
@@ -600,7 +647,7 @@ struct ClaimedExecutionFinishedJob {
     std::uint64_t reserved_attempt_id = 0;
     std::uint32_t runtime_item_ordinal = 0;
     std::string workset_key;
-    ExecutionWorksetCompatibility compatibility;
+    ExecutionWorksetContract contract;
     std::string worker_terminal_status;
     std::string worker_terminal_fingerprint;
     std::string worker_terminal_id;
@@ -1256,7 +1303,7 @@ struct IExecutionDb {
         }
         return true;
     }
-    virtual std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const = 0;
+    virtual std::optional<ExecutionJobRecord> GetExecutionJob(std::int64_t job_id) const = 0;
     virtual std::vector<ExecutionJobEventRecord> ListJobEvents(std::int64_t job_id, int limit = 128) const {
         (void)job_id;
         (void)limit;
@@ -1274,7 +1321,7 @@ struct IExecutionDb {
         return {};
     }
     virtual std::optional<std::string> GetJobInputIni(std::int64_t job_id, std::string* error_out = nullptr) const {
-        const auto job = GetJob(job_id);
+        const auto job = GetExecutionJob(job_id);
         if (!job.has_value()) {
             if (error_out) {
                 *error_out = "job not found";

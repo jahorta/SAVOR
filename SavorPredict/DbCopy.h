@@ -19,4 +19,6 @@ bool compute_file_sha256_streaming(
     std::string* sha256,
     std::ostream& err);
 
+bool is_mutable_debug_db_root(const std::filesystem::path& path);
+
 } // namespace savor::predict

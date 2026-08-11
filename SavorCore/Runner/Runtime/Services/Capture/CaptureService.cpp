@@ -145,14 +145,6 @@ CaptureServiceReceipt CaptureService::Attach(
             "Capture profile JSON is required");
     }
 
-    savor::probe::ProfileParseResult parsed =
-        savor::probe::parse_profile_json(request.profile_json);
-    if (!parsed.profile)
-    {
-        return Failure(
-            CaptureServiceErrorCode::ProfileParseFailed,
-            savor::probe::format_profile_errors(parsed));
-    }
     request.options.metadata.profile_json = request.profile_json;
 
     std::string error;
@@ -167,7 +159,7 @@ CaptureServiceReceipt CaptureService::Attach(
                 : std::move(error));
     }
     if (!candidate->Start(
-            std::move(*parsed.profile),
+            std::move(request.profile),
             std::move(request.options),
             &error))
     {
@@ -384,78 +376,7 @@ CaptureServiceReceipt CaptureService::ReconcileBeforeResume()
     return ApplyDefinition(std::move(request->replacement));
 }
 
-CaptureServiceReceipt CaptureService::SetProfileGroupEnabled(
-    CaptureAttachmentId attachment,
-    std::string_view group,
-    bool enabled)
-{
-    if (CaptureServiceError error = CheckActor())
-        return Failure(error.code, std::move(error.message));
-    if (!adapter_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::NotAttached,
-            "No capture profile is attached");
-    }
-    if (attachment != attachment_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StaleAttachment,
-            "Capture group update named a different attachment");
-    }
-    if (!adapter_->SetProfileGroupEnabled(group, enabled))
-    {
-        return Failure(
-            CaptureServiceErrorCode::InvalidArgument,
-            "Capture profile group was not found");
-    }
-    return ReconcileBeforeResume();
-}
-
-CaptureServiceReceipt CaptureService::ReplaceProfile(
-    CaptureAttachmentId attachment,
-    std::string profile_json)
-{
-    if (CaptureServiceError error = CheckActor())
-        return Failure(error.code, std::move(error.message));
-    if (!adapter_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::NotAttached,
-            "No capture profile is attached");
-    }
-    if (attachment != attachment_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StaleAttachment,
-            "Capture profile replacement named a different attachment");
-    }
-
-    savor::probe::ProfileParseResult parsed =
-        savor::probe::parse_profile_json(profile_json);
-    if (!parsed.profile)
-    {
-        return Failure(
-            CaptureServiceErrorCode::ProfileParseFailed,
-            savor::probe::format_profile_errors(parsed));
-    }
-    std::string error;
-    if (!adapter_->ReplaceProfile(
-            std::move(*parsed.profile),
-            std::move(profile_json),
-            &error))
-    {
-        return Failure(
-            CaptureServiceErrorCode::AdapterStartFailed,
-            error.empty()
-                ? "Capture profile replacement failed"
-                : std::move(error));
-    }
-    return ReconcileBeforeResume();
-}
-
 CaptureServiceReceipt CaptureService::Mark(
-    CaptureAttachmentId attachment,
     std::string_view id,
     std::uint64_t value)
 {
@@ -466,12 +387,6 @@ CaptureServiceReceipt CaptureService::Mark(
         return Failure(
             CaptureServiceErrorCode::NotAttached,
             "No capture profile is attached");
-    }
-    if (!attachment || attachment != attachment_)
-    {
-        return Failure(
-            CaptureServiceErrorCode::StaleAttachment,
-            "Capture marker named a different attachment");
     }
     if (id.empty())
     {

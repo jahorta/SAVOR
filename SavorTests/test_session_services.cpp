@@ -39,9 +39,9 @@ public:
         if (port != 0)
             return {BackendResult::Failure(BackendErrorCode::Unavailable, "port"), 0};
         current_frame = frame;
-        current_sequence = ++next_sequence;
+        current_publication_epoch = ++next_publication_epoch;
         callback_count = 0;
-        return {BackendResult::Success(), current_sequence};
+        return {BackendResult::Success(), current_publication_epoch};
     }
 
     BackendInputPoll QueryPoll(std::uint8_t port) const override
@@ -51,7 +51,7 @@ public:
             return {BackendResult::Failure(BackendErrorCode::Unavailable, "port")};
         return {
             BackendResult::Success(),
-            current_sequence,
+            current_publication_epoch,
             callback_count,
             current_frame};
     }
@@ -61,8 +61,8 @@ public:
         callback_count += count;
     }
 
-    std::uint64_t next_sequence = 0;
-    std::uint64_t current_sequence = 0;
+    std::uint64_t next_publication_epoch = 0;
+    std::uint64_t current_publication_epoch = 0;
     std::uint32_t callback_count = 0;
     GCInputFrame current_frame{};
     mutable std::size_t availability_queries = 0;
@@ -174,337 +174,266 @@ public:
     std::vector<std::chrono::milliseconds> timeouts;
 };
 
-TEST(InputArbiter, PublishesFreshTokensAndRequiresObservedNeutralRelease)
+[[nodiscard]] InputExecutionBindingEvidence Evidence(
+    const InputExecutionBindingReceipt& binding)
+{
+    return {
+        binding.lease,
+        binding.binding,
+        binding.publication,
+        binding.epoch,
+        binding.state_generation,
+        binding.frame};
+}
+
+[[nodiscard]] InputExecutionRelationshipReceipt Relate(
+    InputArbiter& arbiter,
+    const InputExecutionBindingReceipt& binding)
+{
+    return arbiter.CreateExecutionRelationship(Evidence(binding));
+}
+
+TEST(InputArbiter, AcquisitionAndStableNeutralDoNotPublish)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
     ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
 
-    InputLeaseReceipt lease = arbiter.Acquire(
-        {
-            .owner = InputOwnerId(1),
-            .priority = 10,
-            .suspendable = true,
-            .interruption_borrowable = true,
-            .require_neutral_acknowledgement = true},
-        kEpoch);
+    const InputLeaseReceipt lease =
+        arbiter.Acquire({.owner = InputOwnerId(1)}, kEpoch);
     ASSERT_TRUE(lease.ok);
+    EXPECT_EQ(backend.publish_calls, 0u);
+    EXPECT_EQ(arbiter.snapshot().active_state, InputState::Neutral);
 
-    GCInputFrame frame;
-    frame.A();
-    InputPublicationReceipt published =
-        arbiter.Publish(lease.lease, frame, kEpoch);
-    ASSERT_TRUE(published.ok);
-    EXPECT_FALSE(arbiter.Observe(
-        lease.lease,
-        published.publication,
-        kEpoch).acknowledged);
-    backend.Poll();
-    EXPECT_TRUE(arbiter.Observe(
-        lease.lease,
-        published.publication,
-        kEpoch).acknowledged);
+    const InputExecutionBindingReceipt neutral =
+        arbiter.ApplyState(lease.lease, {}, kEpoch);
+    ASSERT_TRUE(neutral.ok) << neutral.message;
+    EXPECT_EQ(neutral.kind, InputBindingKind::StableNeutral);
+    EXPECT_FALSE(neutral.requires_observation);
+    EXPECT_FALSE(neutral.publication);
+    EXPECT_EQ(backend.publish_calls, 0u);
 
-    InputReleaseReceipt release =
-        arbiter.BeginRelease(lease.lease, kEpoch);
-    ASSERT_EQ(
-        release.status,
-        InputLeaseStatus::AwaitingNeutralAcknowledgement);
-    EXPECT_NE(release.neutral_publication, published.publication);
-    InputReleaseReceipt pending = arbiter.CompleteRelease(
-        lease.lease,
-        release.neutral_publication,
-        kEpoch);
-    EXPECT_TRUE(pending.ok);
-    EXPECT_EQ(
-        pending.status,
-        InputLeaseStatus::AwaitingNeutralAcknowledgement);
-    backend.Poll();
-    InputReleaseReceipt complete = arbiter.CompleteRelease(
-        lease.lease,
-        release.neutral_publication,
-        kEpoch);
-    EXPECT_TRUE(complete.ok);
-    EXPECT_EQ(complete.status, InputLeaseStatus::Released);
+    const InputExecutionRelationshipReceipt relationship =
+        Relate(arbiter, neutral);
+    ASSERT_TRUE(relationship.ok) << relationship.message;
+    EXPECT_TRUE(arbiter.Validate(relationship.relationship, kEpoch).ok);
+    EXPECT_TRUE(arbiter.Complete(relationship.relationship, kEpoch).ok);
+    EXPECT_EQ(backend.poll_queries, 0u);
+
+    const InputLeaseCloseReceipt closed =
+        arbiter.CloseLease(lease.lease, kEpoch);
+    ASSERT_TRUE(closed.ok) << closed.message;
+    EXPECT_FALSE(closed.neutral_publication);
+    EXPECT_EQ(backend.publish_calls, 0u);
 }
 
-TEST(InputArbiter, EnforcesBorrowPolicyWithinOneWorksetEpoch)
+TEST(InputArbiter, HeldAndNeutralTransitionsRequireExactGuestObservation)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
     ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
-    InputLeaseReceipt parent = arbiter.Acquire(
-        {
-            .owner = InputOwnerId(1),
-            .priority = 10,
-            .suspendable = true,
-            .interruption_borrowable = true,
-            .borrow_policy = InputBorrowPolicy::RequireNeutralWitness},
-        kEpoch);
-    ASSERT_TRUE(parent.ok);
-
-    InputLeaseRequest borrower{
-        .owner = InputOwnerId(2),
-        .priority = 20};
-    EXPECT_EQ(
-        arbiter.Borrow(
-            parent.lease,
-            borrower,
-            kEpoch,
-            std::nullopt).status,
-        InputLeaseStatus::AwaitingNeutralAcknowledgement);
-    InputPublicationReceipt neutral =
-        arbiter.Publish(parent.lease, {}, kEpoch);
-    ASSERT_TRUE(neutral.ok);
-    EXPECT_FALSE(
-        arbiter.ProveNeutralWitness(
-            parent.lease,
-            neutral.publication,
-            kEpoch).ok);
-    backend.Poll();
-    InputNeutralWitnessReceipt witness =
-        arbiter.ProveNeutralWitness(
-            parent.lease,
-            neutral.publication,
-            kEpoch);
-    ASSERT_TRUE(witness.ok) << witness.message;
-    InputLeaseReceipt borrowed =
-        arbiter.Borrow(
-            parent.lease,
-            borrower,
-            kEpoch,
-            witness.witness);
-    ASSERT_TRUE(borrowed.ok);
-    const InputReleaseReceipt releasing_child =
-        arbiter.BeginRelease(borrowed.lease, kEpoch);
-    ASSERT_EQ(
-        releasing_child.status,
-        InputLeaseStatus::AwaitingNeutralAcknowledgement);
-    backend.Poll();
-    ASSERT_EQ(
-        arbiter.CompleteRelease(
-            borrowed.lease,
-            releasing_child.neutral_publication,
-            kEpoch).status,
-        InputLeaseStatus::Released);
-    EXPECT_FALSE(
-        arbiter.Borrow(
-            parent.lease,
-            borrower,
-            kEpoch,
-            witness.witness).ok);
-    EXPECT_EQ(arbiter.snapshot().suspended_count, 0u);
-
-}
-
-TEST(InputArbiter, NeutralWitnessesRejectFabricationWrongLeaseAndNonNeutralInput)
-{
-    FakeInputBackend backend;
-    InputArbiter arbiter(backend);
-    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
-    InputLeaseReceipt parent = arbiter.Acquire(
-        {
-            .owner = InputOwnerId(1),
-            .priority = 10,
-            .suspendable = true,
-            .interruption_borrowable = true,
-            .borrow_policy =
-                InputBorrowPolicy::RequireNeutralWitness},
-        kEpoch);
-    ASSERT_TRUE(parent.ok);
+    const InputLeaseReceipt lease =
+        arbiter.Acquire({.owner = InputOwnerId(1)}, kEpoch);
+    ASSERT_TRUE(lease.ok);
 
     GCInputFrame pressed;
     pressed.A();
-    InputPublicationReceipt non_neutral =
-        arbiter.Publish(parent.lease, pressed, kEpoch);
-    ASSERT_TRUE(non_neutral.ok);
-    backend.Poll();
-    EXPECT_FALSE(
-        arbiter.ProveNeutralWitness(
-            parent.lease,
-            non_neutral.publication,
-            kEpoch).ok);
+    const InputExecutionBindingReceipt held =
+        arbiter.ApplyState(lease.lease, pressed, kEpoch);
+    ASSERT_TRUE(held.ok) << held.message;
+    EXPECT_EQ(held.kind, InputBindingKind::Held);
+    EXPECT_TRUE(held.requires_observation);
+    EXPECT_EQ(backend.publish_calls, 1u);
 
-    InputPublicationReceipt neutral =
-        arbiter.Publish(parent.lease, {}, kEpoch);
-    ASSERT_TRUE(neutral.ok);
+    InputExecutionRelationshipReceipt held_relationship =
+        Relate(arbiter, held);
+    ASSERT_TRUE(held_relationship.ok);
+    EXPECT_FALSE(
+        arbiter.Complete(held_relationship.relationship, kEpoch).ok);
     backend.Poll();
-    InputNeutralWitnessReceipt witness =
-        arbiter.ProveNeutralWitness(
-            parent.lease,
-            neutral.publication,
-            kEpoch);
-    ASSERT_TRUE(witness.ok);
-    const InputLeaseRequest borrower{
-        .owner = InputOwnerId(3),
-        .priority = 30};
-    EXPECT_FALSE(
-        arbiter.Borrow(
-            parent.lease,
-            borrower,
-            kEpoch,
-            InputNeutralWitnessId(9999)).ok);
+    held_relationship = Relate(arbiter, held);
+    ASSERT_TRUE(held_relationship.ok);
+    EXPECT_TRUE(arbiter.Complete(held_relationship.relationship, kEpoch).ok);
 
-    InputLeaseReceipt other_parent = arbiter.Acquire(
-        {
-            .owner = InputOwnerId(2),
-            .priority = 20,
-            .suspendable = true,
-            .interruption_borrowable = true,
-            .borrow_policy =
-                InputBorrowPolicy::RequireNeutralWitness},
-        kEpoch);
-    ASSERT_TRUE(other_parent.ok);
+    const InputExecutionBindingReceipt released =
+        arbiter.ApplyState(lease.lease, {}, kEpoch);
+    ASSERT_TRUE(released.ok) << released.message;
+    EXPECT_EQ(released.kind, InputBindingKind::NeutralTransition);
+    EXPECT_EQ(backend.publish_calls, 2u);
+    EXPECT_EQ(arbiter.snapshot().active_state,
+              InputState::NeutralTransitionPending);
+    EXPECT_FALSE(arbiter.ApplyState(lease.lease, pressed, kEpoch).ok);
+
+    InputExecutionRelationshipReceipt release_relationship =
+        Relate(arbiter, released);
+    ASSERT_TRUE(release_relationship.ok);
     EXPECT_FALSE(
-        arbiter.Borrow(
-            other_parent.lease,
-            borrower,
-            kEpoch,
-            witness.witness).ok);
+        arbiter.Complete(release_relationship.relationship, kEpoch).ok);
+    backend.Poll();
+    release_relationship = Relate(arbiter, released);
+    ASSERT_TRUE(release_relationship.ok);
+    EXPECT_TRUE(
+        arbiter.Complete(release_relationship.relationship, kEpoch).ok);
+    EXPECT_EQ(arbiter.snapshot().active_state, InputState::Neutral);
+
+    const std::size_t publications = backend.publish_calls;
+    EXPECT_TRUE(arbiter.CloseLease(lease.lease, kEpoch).ok);
+    EXPECT_EQ(backend.publish_calls, publications);
 }
 
-TEST(InputArbiter, ImplementsExecutionEngineAdvancePortWithBoundedRetries)
+TEST(InputArbiter, BindingsRejectStaleSupersededWrongLeaseAndWrongEpochEvidence)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
     ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
-    InputLeaseReceipt lease = arbiter.Acquire(
-        {.owner = InputOwnerId(3), .priority = 10},
-        kEpoch);
+    const InputLeaseReceipt lease =
+        arbiter.Acquire({.owner = InputOwnerId(1)}, kEpoch);
     ASSERT_TRUE(lease.ok);
 
-    GCInputFrame frame;
-    frame.B();
-    InputAdvanceBindingReceipt binding_receipt =
-        arbiter.CreateAdvanceBinding(lease.lease, {frame}, kEpoch, 1);
-    ASSERT_TRUE(binding_receipt.ok) << binding_receipt.message;
-    InputAdvanceBindingId binding = binding_receipt.binding;
-    ASSERT_TRUE(binding);
-    InputAdvanceReceipt prepared =
-        arbiter.PrepareNext(binding, kEpoch, 0);
-    ASSERT_TRUE(prepared.ok);
-    EXPECT_EQ(
-        arbiter.ObserveAcknowledgement(
-            binding,
-            prepared.publication,
-            kEpoch).decision,
-        InputAdvanceDecision::Retry);
-    backend.Poll();
-    EXPECT_EQ(
-        arbiter.ObserveAcknowledgement(
-            binding,
-            prepared.publication,
-            kEpoch).decision,
-        InputAdvanceDecision::Complete);
+    GCInputFrame pressed;
+    pressed.A();
+    const InputExecutionBindingReceipt first =
+        arbiter.ApplyState(lease.lease, pressed, kEpoch);
+    ASSERT_TRUE(first.ok);
+    EXPECT_TRUE(arbiter.ValidateBinding(Evidence(first)).ok);
+
+    InputExecutionBindingEvidence wrong_lease = Evidence(first);
+    wrong_lease.lease = InputLeaseId(first.lease.value() + 1);
+    EXPECT_FALSE(arbiter.ValidateBinding(wrong_lease).ok);
+    InputExecutionBindingEvidence wrong_epoch = Evidence(first);
+    wrong_epoch.epoch = WorksetEpoch(kEpoch.value() + 1);
+    EXPECT_FALSE(arbiter.ValidateBinding(wrong_epoch).ok);
+    InputExecutionBindingEvidence wrong_frame = Evidence(first);
+    wrong_frame.frame = {};
+    EXPECT_FALSE(arbiter.ValidateBinding(wrong_frame).ok);
+    InputExecutionBindingEvidence wrong_publication = Evidence(first);
+    wrong_publication.publication =
+        InputPublicationToken(first.publication.value() + 1);
+    EXPECT_FALSE(arbiter.ValidateBinding(wrong_publication).ok);
+
+    GCInputFrame replacement;
+    replacement.B();
+    const InputExecutionBindingReceipt second =
+        arbiter.ApplyState(lease.lease, replacement, kEpoch);
+    ASSERT_TRUE(second.ok);
+    EXPECT_FALSE(arbiter.ValidateBinding(Evidence(first)).ok);
+    EXPECT_TRUE(arbiter.ValidateBinding(Evidence(second)).ok);
 }
 
-TEST(InputArbiter, CompletedPublishReleaseCyclesDoNotRetainTombstones)
+TEST(InputArbiter, OneShotDeliveryProducesOneReceiptAndRestoresNeutral)
 {
-    FakeInputBackend backend;
-    InputArbiter arbiter(backend);
-    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
-
-    for (std::uint64_t cycle = 1; cycle <= 512; ++cycle)
     {
-        InputLeaseReceipt lease = arbiter.Acquire(
-            {
-                .owner = InputOwnerId(cycle),
-                .priority = 10,
-                .require_neutral_acknowledgement = false},
-            kEpoch);
-        ASSERT_TRUE(lease.ok) << lease.message;
+        FakeInputBackend backend;
+        InputArbiter arbiter(backend);
+        ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
+        const InputLeaseReceipt lease =
+            arbiter.Acquire({.owner = InputOwnerId(1)}, kEpoch);
+        ASSERT_TRUE(lease.ok);
 
-        GCInputFrame frame;
-        frame.A();
-        for (std::size_t publication = 0; publication < 8; ++publication)
-        {
-            ASSERT_TRUE(arbiter.Publish(lease.lease, frame, kEpoch).ok);
-            const InputArbiterSnapshot live = arbiter.snapshot();
-            EXPECT_EQ(live.lease_count, 1u);
-            EXPECT_EQ(live.publication_count, 1u);
-        }
+        const InputExecutionBindingReceipt delivery =
+            arbiter.BeginDelivery(lease.lease, {}, kEpoch);
+        ASSERT_TRUE(delivery.ok) << delivery.message;
+        EXPECT_EQ(backend.publish_calls, 1u);
+        InputExecutionRelationshipReceipt relationship =
+            Relate(arbiter, delivery);
+        ASSERT_TRUE(relationship.ok);
+        backend.Poll();
+        ASSERT_TRUE(arbiter.Complete(relationship.relationship, kEpoch).ok);
+        const InputDeliveryReceipt receipt = arbiter.CompleteDelivery(
+            lease.lease, delivery.binding, kEpoch);
+        ASSERT_TRUE(receipt.ok) << receipt.message;
+        EXPECT_EQ(receipt.binding, delivery.binding);
+        EXPECT_EQ(receipt.frame, GCInputFrame{});
+        EXPECT_TRUE(receipt.poll);
+        EXPECT_EQ(backend.publish_calls, 1u);
+        EXPECT_EQ(arbiter.snapshot().active_state, InputState::Neutral);
+    }
 
-        InputAdvanceBindingReceipt binding =
-            arbiter.CreateAdvanceBinding(lease.lease, {frame}, kEpoch, 1);
-        ASSERT_TRUE(binding.ok) << binding.message;
-        EXPECT_EQ(arbiter.snapshot().binding_count, 1u);
-
-        InputReleaseReceipt released =
-            arbiter.BeginRelease(lease.lease, kEpoch);
-        ASSERT_TRUE(released.ok) << released.message;
-        EXPECT_EQ(released.status, InputLeaseStatus::Released);
-        const InputArbiterSnapshot empty = arbiter.snapshot();
-        EXPECT_FALSE(empty.active_lease.has_value());
-        EXPECT_EQ(empty.suspended_count, 0u);
-        EXPECT_EQ(empty.lease_count, 0u);
-        EXPECT_EQ(empty.publication_count, 0u);
-        EXPECT_EQ(empty.binding_count, 0u);
+    {
+        FakeInputBackend backend;
+        InputArbiter arbiter(backend);
+        ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
+        const InputLeaseReceipt lease =
+            arbiter.Acquire({.owner = InputOwnerId(2)}, kEpoch);
+        ASSERT_TRUE(lease.ok);
+        GCInputFrame pressed;
+        pressed.A();
+        const InputExecutionBindingReceipt delivery =
+            arbiter.BeginDelivery(lease.lease, pressed, kEpoch);
+        ASSERT_TRUE(delivery.ok);
+        InputExecutionRelationshipReceipt relationship =
+            Relate(arbiter, delivery);
+        ASSERT_TRUE(relationship.ok);
+        backend.Poll();
+        ASSERT_TRUE(arbiter.Complete(relationship.relationship, kEpoch).ok);
+        const InputDeliveryReceipt receipt = arbiter.CompleteDelivery(
+            lease.lease, delivery.binding, kEpoch);
+        ASSERT_TRUE(receipt.ok) << receipt.message;
+        EXPECT_EQ(receipt.frame, pressed);
+        EXPECT_EQ(backend.publish_calls, 2u);
+        EXPECT_EQ(backend.current_frame, GCInputFrame{});
+        EXPECT_EQ(arbiter.snapshot().active_state, InputState::Neutral);
+        const std::size_t publications = backend.publish_calls;
+        EXPECT_TRUE(arbiter.CloseLease(lease.lease, kEpoch).ok);
+        EXPECT_EQ(backend.publish_calls, publications);
     }
 }
 
-TEST(
-    InputArbiter,
-    PublicationRelationshipsRequireExactLeaseTokenEpochAndFrame)
+TEST(InputArbiter, DeliveryCannotCompleteBeforeItsExecutionBindingIsObserved)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
     ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
-    InputLeaseReceipt lease = arbiter.Acquire(
-        {
-            .owner = InputOwnerId(1),
-            .priority = 10,
-            .suspendable = true},
-        kEpoch);
+    const InputLeaseReceipt lease =
+        arbiter.Acquire({.owner = InputOwnerId(1)}, kEpoch);
     ASSERT_TRUE(lease.ok);
-    GCInputFrame frame;
-    frame.A();
-    const InputPublicationReceipt published =
-        arbiter.Publish(lease.lease, frame, kEpoch);
-    ASSERT_TRUE(published.ok);
-    const InputPublicationEvidence exact{
-        published.lease,
-        published.publication,
-        published.epoch,
-        published.frame};
+    const InputExecutionBindingReceipt delivery =
+        arbiter.BeginDelivery(lease.lease, {}, kEpoch);
+    ASSERT_TRUE(delivery.ok);
 
-    EXPECT_TRUE(arbiter.ValidatePublication(exact).ok);
-    InputPublicationEvidence wrong_frame = exact;
-    wrong_frame.frame = {};
-    EXPECT_FALSE(
-        arbiter.ValidatePublication(wrong_frame).ok);
-    InputPublicationEvidence wrong_token = exact;
-    wrong_token.publication =
-        InputPublicationToken(
-            exact.publication.value() + 1);
-    EXPECT_FALSE(
-        arbiter.ValidatePublication(wrong_token).ok);
-    InputPublicationEvidence wrong_lease = exact;
-    wrong_lease.lease =
-        InputLeaseId(exact.lease.value() + 1);
-    EXPECT_FALSE(
-        arbiter.ValidatePublication(wrong_lease).ok);
-    InputPublicationEvidence wrong_epoch = exact;
-    wrong_epoch.epoch =
-        WorksetEpoch(exact.epoch.value() + 1);
-    EXPECT_FALSE(
-        arbiter.ValidatePublication(wrong_epoch).ok);
+    EXPECT_FALSE(arbiter.CompleteDelivery(
+        lease.lease, delivery.binding, kEpoch).ok);
+    InputExecutionRelationshipReceipt relationship =
+        Relate(arbiter, delivery);
+    ASSERT_TRUE(relationship.ok);
+    EXPECT_FALSE(arbiter.Complete(relationship.relationship, kEpoch).ok);
+    EXPECT_FALSE(arbiter.CompleteDelivery(
+        lease.lease, delivery.binding, kEpoch).ok);
+}
 
-    const InputAdvanceBindingReceipt relationship =
-        arbiter.CreatePublicationRelationship(exact);
-    ASSERT_TRUE(relationship.ok)
-        << relationship.message;
-    EXPECT_TRUE(
-        arbiter.Validate(
-            relationship.binding,
-            kEpoch).ok);
-    EXPECT_TRUE(
-        arbiter.Complete(
-            relationship.binding,
-            kEpoch).ok);
-    EXPECT_TRUE(arbiter.Observe(
-        exact.lease,
-        exact.publication,
-        exact.epoch).ok);
+TEST(InputArbiter, BorrowingUsesInternalStateWithoutNeutralWitnesses)
+{
+    FakeInputBackend backend;
+    InputArbiter arbiter(backend);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
+    const InputLeaseReceipt parent = arbiter.Acquire(
+        {.owner = InputOwnerId(1),
+         .priority = 10,
+         .interruption_borrowable = true,
+         .borrow_policy = InputBorrowPolicy::RequireStableNeutral},
+        kEpoch);
+    ASSERT_TRUE(parent.ok);
+
+    const InputLeaseReceipt child = arbiter.Borrow(
+        parent.lease,
+        {.owner = InputOwnerId(2), .priority = 20},
+        kEpoch);
+    ASSERT_TRUE(child.ok) << child.message;
+    EXPECT_EQ(arbiter.snapshot().suspended_count, 1u);
+    const InputLeaseCloseReceipt closed =
+        arbiter.CloseLease(child.lease, kEpoch);
+    ASSERT_TRUE(closed.ok) << closed.message;
+    ASSERT_TRUE(closed.resumed_lease.has_value());
+    EXPECT_EQ(*closed.resumed_lease, parent.lease);
+    EXPECT_EQ(backend.publish_calls, 0u);
+
+    GCInputFrame pressed;
+    pressed.A();
+    ASSERT_TRUE(arbiter.ApplyState(parent.lease, pressed, kEpoch).ok);
+    EXPECT_FALSE(arbiter.Borrow(
+        parent.lease,
+        {.owner = InputOwnerId(3), .priority = 30},
+        kEpoch).ok);
 }
 
 TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
@@ -512,22 +441,15 @@ TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
     ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
-    InputLeaseReceipt lease = arbiter.Acquire(
-        {
-            .owner = InputOwnerId(1),
-            .priority = 10,
-            .suspendable = true,
-            .interruption_borrowable = true,
-            .require_neutral_acknowledgement = false},
-        kEpoch);
+    const InputLeaseReceipt lease =
+        arbiter.Acquire({.owner = InputOwnerId(1)}, kEpoch);
     ASSERT_TRUE(lease.ok);
-    InputPublicationReceipt publication =
-        arbiter.Publish(lease.lease, {}, kEpoch);
-    ASSERT_TRUE(publication.ok);
-    const GCInputFrame neutral{};
-    InputAdvanceBindingReceipt binding =
-        arbiter.CreateAdvanceBinding(lease.lease, {neutral}, kEpoch);
+    const InputExecutionBindingReceipt binding =
+        arbiter.ApplyState(lease.lease, {}, kEpoch);
     ASSERT_TRUE(binding.ok);
+    const InputExecutionRelationshipReceipt relationship =
+        Relate(arbiter, binding);
+    ASSERT_TRUE(relationship.ok);
 
     const InputArbiterSnapshot before = arbiter.snapshot();
     const std::size_t availability_before = backend.availability_queries;
@@ -536,100 +458,55 @@ TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
 
     InputLeaseReceipt acquired;
     InputLeaseReceipt borrowed;
-    InputPublicationReceipt published;
-    InputAcknowledgementReceipt observed;
-    InputNeutralWitnessReceipt neutral_witness;
-    InputReleaseReceipt began_release;
-    InputReleaseReceipt completed_release;
-    InputAdvanceBindingReceipt created_binding;
-    InputAdvanceBindingReceipt created_relationship;
-    InputArbiterOperationReceipt validated_publication;
-    InputArbiterOperationReceipt removed_binding;
+    InputExecutionBindingReceipt applied;
+    InputExecutionBindingReceipt delivery;
+    InputDeliveryReceipt completed_delivery;
+    InputArbiterOperationReceipt validated_binding;
+    InputExecutionRelationshipReceipt created_relationship;
+    InputArbiterOperationReceipt removed_relationship;
+    InputLeaseCloseReceipt closed;
     InputArbiterOperationReceipt committed_epoch;
-    InputAdvanceReceipt validated;
-    InputAdvanceReceipt prepared;
-    InputAdvanceReceipt acknowledged;
-    InputAdvanceReceipt completed;
-    InputAdvanceReceipt cancelled;
+    InputExecutionRelationshipOperationReceipt validated;
+    InputExecutionRelationshipOperationReceipt completed;
+    InputExecutionRelationshipOperationReceipt cancelled;
     InputArbiterShutdownReceipt shutdown;
 
     std::thread off_actor([&] {
         acquired = arbiter.Acquire(
-            {.owner = InputOwnerId(2), .priority = 20},
-            kEpoch);
+            {.owner = InputOwnerId(2), .priority = 20}, kEpoch);
         borrowed = arbiter.Borrow(
             lease.lease,
             {.owner = InputOwnerId(3), .priority = 30},
-            kEpoch,
-            InputNeutralWitnessId(1));
-        published = arbiter.Publish(lease.lease, {}, kEpoch);
-        observed = arbiter.Observe(
-            lease.lease,
-            publication.publication,
             kEpoch);
-        neutral_witness = arbiter.ProveNeutralWitness(
-            lease.lease,
-            publication.publication,
-            kEpoch);
-        began_release = arbiter.BeginRelease(lease.lease, kEpoch);
-        completed_release = arbiter.CompleteRelease(
-            lease.lease,
-            publication.publication,
-            kEpoch);
-        created_binding =
-            arbiter.CreateAdvanceBinding(
-                lease.lease,
-                std::vector<GCInputFrame>{neutral},
-                kEpoch);
-        validated_publication =
-            arbiter.ValidatePublication({
-                publication.lease,
-                publication.publication,
-                publication.epoch,
-                publication.frame});
+        applied = arbiter.ApplyState(lease.lease, {}, kEpoch);
+        delivery = arbiter.BeginDelivery(lease.lease, {}, kEpoch);
+        completed_delivery = arbiter.CompleteDelivery(
+            lease.lease, binding.binding, kEpoch);
+        validated_binding = arbiter.ValidateBinding(Evidence(binding));
         created_relationship =
-            arbiter.CreatePublicationRelationship({
-                publication.lease,
-                publication.publication,
-                publication.epoch,
-                publication.frame});
-        removed_binding =
-            arbiter.RemoveAdvanceBinding(binding.binding);
+            arbiter.CreateExecutionRelationship(Evidence(binding));
+        removed_relationship = arbiter.RemoveExecutionRelationship(
+            relationship.relationship);
+        closed = arbiter.CloseLease(lease.lease, kEpoch);
         committed_epoch = arbiter.InitializeWorksetEpoch(WorksetEpoch(12));
-        validated = arbiter.Validate(binding.binding, kEpoch);
-        prepared = arbiter.PrepareNext(binding.binding, kEpoch, 0);
-        acknowledged = arbiter.ObserveAcknowledgement(
-            binding.binding,
-            publication.publication,
-            kEpoch);
-        completed =
-            arbiter.Complete(binding.binding, kEpoch);
-        cancelled = arbiter.Cancel(binding.binding, kEpoch);
+        validated = arbiter.Validate(relationship.relationship, kEpoch);
+        completed = arbiter.Complete(relationship.relationship, kEpoch);
+        cancelled = arbiter.Cancel(relationship.relationship, kEpoch);
         shutdown = arbiter.Shutdown();
     });
     off_actor.join();
 
     EXPECT_EQ(acquired.error, InputArbiterErrorCode::WrongThread);
     EXPECT_EQ(borrowed.error, InputArbiterErrorCode::WrongThread);
-    EXPECT_EQ(published.error, InputArbiterErrorCode::WrongThread);
-    EXPECT_EQ(observed.error, InputArbiterErrorCode::WrongThread);
-    EXPECT_EQ(
-        neutral_witness.error,
-        InputArbiterErrorCode::WrongThread);
-    EXPECT_EQ(began_release.error, InputArbiterErrorCode::WrongThread);
-    EXPECT_EQ(completed_release.error, InputArbiterErrorCode::WrongThread);
-    EXPECT_EQ(created_binding.error, InputArbiterErrorCode::WrongThread);
-    EXPECT_EQ(
-        validated_publication.error,
-        InputArbiterErrorCode::WrongThread);
-    EXPECT_EQ(
-        created_relationship.error,
-        InputArbiterErrorCode::WrongThread);
-    EXPECT_EQ(removed_binding.error, InputArbiterErrorCode::WrongThread);
+    EXPECT_EQ(applied.error, InputArbiterErrorCode::WrongThread);
+    EXPECT_EQ(delivery.error, InputArbiterErrorCode::WrongThread);
+    EXPECT_EQ(completed_delivery.error, InputArbiterErrorCode::WrongThread);
+    EXPECT_EQ(validated_binding.error, InputArbiterErrorCode::WrongThread);
+    EXPECT_EQ(created_relationship.error, InputArbiterErrorCode::WrongThread);
+    EXPECT_EQ(removed_relationship.error, InputArbiterErrorCode::WrongThread);
+    EXPECT_EQ(closed.error, InputArbiterErrorCode::WrongThread);
     EXPECT_EQ(committed_epoch.error, InputArbiterErrorCode::WrongThread);
     EXPECT_FALSE(validated.ok);
-    EXPECT_FALSE(prepared.ok);
-    EXPECT_FALSE(acknowledged.ok);
     EXPECT_FALSE(completed.ok);
     EXPECT_FALSE(cancelled.ok);
     EXPECT_EQ(shutdown.error, InputArbiterErrorCode::WrongThread);
@@ -639,98 +516,56 @@ TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
     EXPECT_EQ(after.active_lease, before.active_lease);
     EXPECT_EQ(after.suspended_count, before.suspended_count);
     EXPECT_EQ(after.lease_count, before.lease_count);
-    EXPECT_EQ(after.publication_count, before.publication_count);
     EXPECT_EQ(after.binding_count, before.binding_count);
+    EXPECT_EQ(after.relationship_count, before.relationship_count);
     EXPECT_FALSE(after.stopped);
     EXPECT_EQ(backend.availability_queries, availability_before);
     EXPECT_EQ(backend.publish_calls, publishes_before);
     EXPECT_EQ(backend.poll_queries, polls_before);
 }
 
-TEST(InputArbiter, ShutdownIsIdempotentAndClearsRetainedState)
+TEST(InputArbiter, ShutdownRestoresNonNeutralOnceAndIsIdempotent)
 {
     FakeInputBackend backend;
     InputArbiter arbiter(backend);
     ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
-    InputLeaseReceipt lease = arbiter.Acquire(
-        {
-            .owner = InputOwnerId(1),
-            .require_neutral_acknowledgement = false},
-        kEpoch);
+    const InputLeaseReceipt lease =
+        arbiter.Acquire({.owner = InputOwnerId(1)}, kEpoch);
     ASSERT_TRUE(lease.ok);
-    ASSERT_TRUE(arbiter.Publish(lease.lease, {}, kEpoch).ok);
-    const GCInputFrame neutral{};
-    ASSERT_TRUE(
-        arbiter.CreateAdvanceBinding(lease.lease, {neutral}, kEpoch).ok);
-
+    GCInputFrame pressed;
+    pressed.A();
+    ASSERT_TRUE(arbiter.ApplyState(lease.lease, pressed, kEpoch).ok);
     const std::size_t before = backend.publish_calls;
+
     const InputArbiterShutdownReceipt first = arbiter.Shutdown();
     ASSERT_TRUE(first.ok) << first.message;
     EXPECT_TRUE(first.cleanup_complete);
     EXPECT_FALSE(first.taint_required);
     EXPECT_TRUE(first.neutral_publication);
     EXPECT_EQ(backend.publish_calls, before + 1);
-    const InputArbiterSnapshot stopped = arbiter.snapshot();
-    EXPECT_TRUE(stopped.stopped);
-    EXPECT_EQ(stopped.lease_count, 0u);
-    EXPECT_EQ(stopped.publication_count, 0u);
-    EXPECT_EQ(stopped.binding_count, 0u);
+    EXPECT_EQ(backend.current_frame, GCInputFrame{});
+    EXPECT_TRUE(arbiter.snapshot().stopped);
+    EXPECT_EQ(arbiter.snapshot().lease_count, 0u);
 
     const InputArbiterShutdownReceipt second = arbiter.Shutdown();
     EXPECT_EQ(second.ok, first.ok);
-    EXPECT_EQ(second.cleanup_complete, first.cleanup_complete);
     EXPECT_EQ(second.neutral_publication, first.neutral_publication);
     EXPECT_EQ(backend.publish_calls, before + 1);
-    EXPECT_EQ(
-        arbiter.Acquire({.owner = InputOwnerId(2)}, kEpoch).error,
-        InputArbiterErrorCode::Stopped);
 }
 
-TEST(InputArbiter, ShutdownReportsWhetherNeutralAcknowledgementWasProven)
+TEST(InputArbiter, ShutdownOfNeutralLeaseIsHostOnly)
 {
-    {
-        FakeInputBackend backend;
-        InputArbiter arbiter(backend);
+    FakeInputBackend backend;
+    InputArbiter arbiter(backend);
     ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
-        InputLeaseReceipt lease = arbiter.Acquire(
-            {.owner = InputOwnerId(1)},
-            kEpoch);
-        ASSERT_TRUE(lease.ok);
-
-        const InputArbiterShutdownReceipt incomplete = arbiter.Shutdown();
-        EXPECT_FALSE(incomplete.ok);
-        EXPECT_FALSE(incomplete.cleanup_complete);
-        EXPECT_TRUE(incomplete.taint_required);
-        EXPECT_EQ(arbiter.snapshot().lease_count, 0u);
-    }
-
-    {
-        FakeInputBackend backend;
-        InputArbiter arbiter(backend);
-    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
-        InputLeaseReceipt lease = arbiter.Acquire(
-            {.owner = InputOwnerId(2)},
-            kEpoch);
-        ASSERT_TRUE(lease.ok);
-        const InputReleaseReceipt pending =
-            arbiter.BeginRelease(lease.lease, kEpoch);
-        ASSERT_TRUE(pending.ok);
-        ASSERT_EQ(
-            pending.status,
-            InputLeaseStatus::AwaitingNeutralAcknowledgement);
-        backend.Poll();
-        const std::size_t publishes_before = backend.publish_calls;
-
-        const InputArbiterShutdownReceipt complete = arbiter.Shutdown();
-        EXPECT_TRUE(complete.ok) << complete.message;
-        EXPECT_TRUE(complete.cleanup_complete);
-        EXPECT_FALSE(complete.taint_required);
-        EXPECT_EQ(
-            complete.neutral_publication,
-            pending.neutral_publication);
-        EXPECT_EQ(backend.publish_calls, publishes_before);
-        EXPECT_EQ(arbiter.snapshot().lease_count, 0u);
-    }
+    ASSERT_TRUE(arbiter.Acquire(
+        {.owner = InputOwnerId(1)}, kEpoch).ok);
+    const InputArbiterShutdownReceipt receipt = arbiter.Shutdown();
+    ASSERT_TRUE(receipt.ok) << receipt.message;
+    EXPECT_TRUE(receipt.cleanup_complete);
+    EXPECT_FALSE(receipt.neutral_publication);
+    EXPECT_EQ(backend.publish_calls, 0u);
+    EXPECT_EQ(backend.poll_queries, 0u);
 }
 
 TEST(GuestMutationService, AppliesNestedCheckedWritesAndRestoresInReverse)

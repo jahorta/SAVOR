@@ -1,6 +1,5 @@
 #include "BattlePredictionBatchRun.h"
 
-#include "BattleJobRunOptions.h"
 #include "BattlePredictionScenario.h"
 #include "DbCopy.h"
 #include "Utils/Hash.h"

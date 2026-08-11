@@ -12,30 +12,20 @@
     <ClInclude Include="Execution\ArchiveWorkflowCommands.h">
       <Filter>Execution</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\DBWorkflowCoordinatorFactory.h">
-      <Filter>Execution</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\DBWorkflowWorkerCoordinator.h">
-      <Filter>Execution</Filter>
-    </ClInclude>
     <ClInclude Include="Execution\FleetStartupSnapshot.h">
       <Filter>Execution</Filter>
     </ClInclude>
     <ClInclude Include="Execution\JobExecutionCoordinator.h">
       <Filter>Execution</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\JobMaterializationService.h">
-      <Filter>Execution</Filter>
-    </ClInclude>
+    
     <ClInclude Include="Execution\StepInputAggregationService.h">
       <Filter>Execution</Filter>
     </ClInclude>
     <ClInclude Include="Execution\WorkflowCoordinatorBridge.h">
       <Filter>Execution</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\WorkflowDispatchCoordinator.h">
-      <Filter>Execution</Filter>
-    </ClInclude>
+    
     <ClInclude Include="Execution\WorkflowIntegrationMode.h">
       <Filter>Execution</Filter>
     </ClInclude>
@@ -46,9 +36,6 @@
       <Filter>Execution</Filter>
     </ClInclude>
     <ClInclude Include="Worker\ProcessWorker.h">
-      <Filter>Worker</Filter>
-    </ClInclude>
-    <ClInclude Include="Worker\WorkerCapabilityPreflight.h">
       <Filter>Worker</Filter>
     </ClInclude>
     <ClInclude Include="Worker\TSQueue.h">
@@ -65,27 +52,17 @@
     <ClCompile Include="Execution\ArchiveWorkflowCommands.cpp">
       <Filter>Execution</Filter>
     </ClCompile>
-    <ClCompile Include="Execution\DBWorkflowCoordinatorFactory.cpp">
-      <Filter>Execution</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\DBWorkflowWorkerCoordinator.cpp">
-      <Filter>Execution</Filter>
-    </ClCompile>
     <ClCompile Include="Execution\JobExecutionCoordinator.cpp">
       <Filter>Execution</Filter>
     </ClCompile>
-    <ClCompile Include="Execution\JobMaterializationService.cpp">
-      <Filter>Execution</Filter>
-    </ClCompile>
+    
     <ClCompile Include="Execution\StepInputAggregationService.cpp">
       <Filter>Execution</Filter>
     </ClCompile>
     <ClCompile Include="Execution\WorkflowCoordinatorBridge.cpp">
       <Filter>Execution</Filter>
     </ClCompile>
-    <ClCompile Include="Execution\WorkflowDispatchCoordinator.cpp">
-      <Filter>Execution</Filter>
-    </ClCompile>
+    
     <ClCompile Include="Execution\WorkflowSchedulerAdapter.cpp">
       <Filter>Execution</Filter>
     </ClCompile>
@@ -93,9 +70,6 @@
       <Filter>Execution</Filter>
     </ClCompile>
     <ClCompile Include="Worker\ProcessWorker.cpp">
-      <Filter>Worker</Filter>
-    </ClCompile>
-    <ClCompile Include="Worker\WorkerCapabilityPreflight.cpp">
       <Filter>Worker</Filter>
     </ClCompile>
     <ClCompile Include="Worker\WorkerStatusRegistry.cpp">

@@ -218,6 +218,167 @@ bool ReadFullPhaseProgram(
     return true;
 }
 
+void WriteBudgets(
+    Writer& writer,
+    const program::ProgramBudgets& budgets)
+{
+    writer.U64(budgets.maximum_instructions);
+    writer.U64(budgets.maximum_calls);
+    writer.U64(budgets.maximum_call_depth);
+    writer.U64(budgets.maximum_action_requests);
+    writer.U64(budgets.maximum_emissions);
+    writer.U64(budgets.maximum_artifacts);
+    writer.U64(budgets.maximum_values);
+    writer.U64(budgets.maximum_value_bytes);
+    writer.U64(budgets.maximum_trace_events);
+}
+
+bool ReadBudgets(
+    Reader& reader,
+    program::ProgramBudgets& budgets)
+{
+    return reader.U64(budgets.maximum_instructions) &&
+        reader.U64(budgets.maximum_calls) &&
+        reader.U64(budgets.maximum_call_depth) &&
+        reader.U64(budgets.maximum_action_requests) &&
+        reader.U64(budgets.maximum_emissions) &&
+        reader.U64(budgets.maximum_artifacts) &&
+        reader.U64(budgets.maximum_values) &&
+        reader.U64(budgets.maximum_value_bytes) &&
+        reader.U64(budgets.maximum_trace_events);
+}
+
+void WriteRuntimeContract(
+    Writer& writer,
+    const fullphase::FullPhaseRuntimeContract& contract)
+{
+    WriteModule(writer, contract.module);
+    writer.String(contract.entrypoint);
+    writer.String(contract.dependency_lock_sha256);
+    writer.String(contract.verified_dependency_sha256);
+    writer.String(contract.runtime_profile_sha256);
+    writer.U8(static_cast<std::uint8_t>(contract.state_policy));
+    writer.U8(static_cast<std::uint8_t>(contract.execution.intent));
+    writer.U8(contract.execution.allow_movie_playback ? 1 : 0);
+    writer.U8(contract.execution.allow_movie_recording ? 1 : 0);
+    writer.U8(contract.execution.allow_input ? 1 : 0);
+    writer.U8(contract.execution.allow_capture ? 1 : 0);
+    writer.U8(contract.execution.record_trace ? 1 : 0);
+    WriteBudgets(writer, contract.limits);
+    writer.String(contract.baseline_lineage);
+    writer.String(contract.movie_policy_sha256);
+    writer.String(contract.service_policy_sha256);
+}
+
+bool ReadBool(Reader& reader, bool& output)
+{
+    std::uint8_t value = 0;
+    if (!reader.U8(value) || value > 1)
+        return false;
+    output = value != 0;
+    return true;
+}
+
+bool ReadRuntimeContract(
+    Reader& reader,
+    fullphase::FullPhaseRuntimeContract& contract)
+{
+    std::uint8_t state_policy = 0;
+    std::uint8_t intent = 0;
+    if (!ReadModule(reader, contract.module) ||
+        !reader.String(contract.entrypoint) ||
+        !reader.String(contract.dependency_lock_sha256) ||
+        !reader.String(contract.verified_dependency_sha256) ||
+        !reader.String(contract.runtime_profile_sha256) ||
+        !reader.U8(state_policy) ||
+        state_policy > static_cast<std::uint8_t>(
+            program::InvocationStatePolicy::EstablishBaseline) ||
+        !reader.U8(intent) ||
+        intent > static_cast<std::uint8_t>(
+            program::ExecutionIntent::Replay) ||
+        !ReadBool(reader, contract.execution.allow_movie_playback) ||
+        !ReadBool(reader, contract.execution.allow_movie_recording) ||
+        !ReadBool(reader, contract.execution.allow_input) ||
+        !ReadBool(reader, contract.execution.allow_capture) ||
+        !ReadBool(reader, contract.execution.record_trace) ||
+        !ReadBudgets(reader, contract.limits) ||
+        !reader.String(contract.baseline_lineage) ||
+        !reader.String(contract.movie_policy_sha256) ||
+        !reader.String(contract.service_policy_sha256))
+    {
+        return false;
+    }
+    contract.state_policy =
+        static_cast<program::InvocationStatePolicy>(state_policy);
+    contract.execution.intent =
+        static_cast<program::ExecutionIntent>(intent);
+    return true;
+}
+
+void WriteProgramPackage(
+    Writer& writer,
+    const fullphase::FullPhaseProgramPackage& package)
+{
+    WriteFullPhaseProgram(writer, package.identity);
+    WriteRuntimeContract(writer, package.runtime_contract);
+    writer.Count(package.module_closure.size());
+    for (const EncodedModuleEnvelope& module : package.module_closure)
+    {
+        WriteModule(writer, module.identity);
+        writer.U32(module.format_version);
+        writer.U8(module.development_only ? 1 : 0);
+        writer.Blob(module.payload);
+    }
+    writer.String(package.canonical_sha256);
+}
+
+bool ReadProgramPackage(
+    Reader& reader,
+    fullphase::FullPhaseProgramPackage& package)
+{
+    std::uint32_t module_count = 0;
+    if (!ReadFullPhaseProgram(reader, package.identity) ||
+        !ReadRuntimeContract(reader, package.runtime_contract) ||
+        !reader.Count(module_count, 64))
+    {
+        return false;
+    }
+    package.module_closure.reserve(module_count);
+    for (std::uint32_t index = 0; index < module_count; ++index)
+    {
+        EncodedModuleEnvelope module;
+        if (!ReadModule(reader, module.identity) ||
+            !reader.U32(module.format_version) ||
+            !ReadBool(reader, module.development_only) ||
+            !reader.Blob(module.payload))
+        {
+            return false;
+        }
+        package.module_closure.push_back(std::move(module));
+    }
+    return reader.String(package.canonical_sha256);
+}
+
+void WriteCommonInput(
+    Writer& writer,
+    const fullphase::FullPhaseCommonInput& input)
+{
+    writer.String(input.schema_id);
+    writer.U32(input.schema_version);
+    writer.Blob(input.payload);
+    writer.String(input.content_sha256);
+}
+
+bool ReadCommonInput(
+    Reader& reader,
+    fullphase::FullPhaseCommonInput& input)
+{
+    return reader.String(input.schema_id) &&
+        reader.U32(input.schema_version) &&
+        reader.Blob(input.payload) &&
+        reader.String(input.content_sha256);
+}
+
 void WriteCompatibility(
     Writer& writer,
     const ArtifactCompatibilityToken& value)
@@ -333,10 +494,193 @@ bool ReadBaseline(
     return true;
 }
 
+void WriteProgressSchema(
+    Writer& writer,
+    const progress::ProgressSchemaIdentity& identity)
+{
+    writer.String(identity.canonical_id);
+    writer.U32(identity.revision);
+    writer.String(identity.sha256);
+}
+
+bool ReadProgressSchema(
+    Reader& reader,
+    progress::ProgressSchemaIdentity& identity)
+{
+    return reader.String(identity.canonical_id) &&
+        reader.U32(identity.revision) &&
+        reader.String(identity.sha256);
+}
+
+void WriteProgressFormatter(
+    Writer& writer,
+    const progress::ProgressFormatterIdentity& identity)
+{
+    writer.String(identity.canonical_id);
+    writer.U32(identity.revision);
+    writer.String(identity.sha256);
+}
+
+bool ReadProgressFormatter(
+    Reader& reader,
+    progress::ProgressFormatterIdentity& identity)
+{
+    return reader.String(identity.canonical_id) &&
+        reader.U32(identity.revision) &&
+        reader.String(identity.sha256);
+}
+
+void WriteProgressPlan(
+    Writer& writer,
+    const progress::ProgressPlanV1& plan)
+{
+    writer.U32(plan.version);
+    writer.Count(plan.points.size());
+    for (const progress::ProgressPointBindingV1& point : plan.points)
+    {
+        writer.String(point.library_id);
+        writer.U32(point.library_revision);
+        writer.String(point.library_sha256);
+        writer.String(point.point_id);
+        writer.U8(static_cast<std::uint8_t>(point.provider));
+        writer.U8(point.breakpoint_pc.has_value() ? 1 : 0);
+        if (point.breakpoint_pc)
+            writer.U32(*point.breakpoint_pc);
+        WriteProgressSchema(writer, point.schema);
+        WriteProgressFormatter(writer, point.formatter);
+        writer.Count(point.runtime_sample_trigger_pcs.size());
+        for (const std::uint32_t pc :
+             point.runtime_sample_trigger_pcs)
+        {
+            writer.U32(pc);
+        }
+        writer.Blob(point.configuration);
+    }
+    writer.String(plan.content_sha256);
+}
+
+bool ReadProgressPlan(
+    Reader& reader,
+    progress::ProgressPlanV1& plan)
+{
+    std::uint32_t point_count = 0;
+    if (!reader.U32(plan.version) ||
+        !reader.Count(point_count, 256))
+    {
+        return false;
+    }
+    plan.points.clear();
+    plan.points.reserve(point_count);
+    for (std::uint32_t index = 0; index < point_count; ++index)
+    {
+        progress::ProgressPointBindingV1 point;
+        std::uint8_t provider = 0;
+        std::uint8_t has_pc = 0;
+        std::uint32_t pc = 0;
+        std::uint32_t trigger_count = 0;
+        if (!reader.String(point.library_id) ||
+            !reader.U32(point.library_revision) ||
+            !reader.String(point.library_sha256) ||
+            !reader.String(point.point_id) ||
+            !reader.U8(provider) ||
+            provider < static_cast<std::uint8_t>(
+                progress::ProgressProviderKind::BreakpointCapture) ||
+            provider > static_cast<std::uint8_t>(
+                progress::ProgressProviderKind::PhaseLibrary) ||
+            !reader.U8(has_pc) || has_pc > 1 ||
+            (has_pc && !reader.U32(pc)) ||
+            !ReadProgressSchema(reader, point.schema) ||
+            !ReadProgressFormatter(reader, point.formatter) ||
+            !reader.Count(trigger_count, 128))
+        {
+            return false;
+        }
+        point.runtime_sample_trigger_pcs.reserve(trigger_count);
+        for (std::uint32_t trigger = 0;
+             trigger < trigger_count;
+             ++trigger)
+        {
+            std::uint32_t trigger_pc = 0;
+            if (!reader.U32(trigger_pc))
+                return false;
+            point.runtime_sample_trigger_pcs.push_back(trigger_pc);
+        }
+        if (
+            !reader.Blob(point.configuration))
+        {
+            return false;
+        }
+        point.provider =
+            static_cast<progress::ProgressProviderKind>(provider);
+        if (has_pc)
+            point.breakpoint_pc = pc;
+        plan.points.push_back(std::move(point));
+    }
+    return reader.String(plan.content_sha256);
+}
+
+void WriteCaptureBinding(
+    Writer& writer,
+    const std::optional<WorksetCaptureBindingV1>& capture)
+{
+    writer.U8(capture.has_value() ? 1 : 0);
+    if (!capture)
+        return;
+    writer.U32(capture->version);
+    writer.U8(static_cast<std::uint8_t>(capture->storage));
+    writer.String(capture->profile_json);
+    writer.String(capture->profile_sidecar_path.generic_string());
+    writer.String(capture->profile_sha256);
+    writer.String(capture->expected_module_sha256);
+    writer.String(capture->resolved_observation_sha256);
+    writer.String(capture->output_directory.generic_string());
+    writer.String(capture->content_sha256);
+}
+
+bool ReadCaptureBinding(
+    Reader& reader,
+    std::optional<WorksetCaptureBindingV1>& capture)
+{
+    std::uint8_t present = 0;
+    if (!reader.U8(present) || present > 1)
+        return false;
+    if (!present)
+    {
+        capture.reset();
+        return true;
+    }
+    WorksetCaptureBindingV1 value;
+    std::uint8_t storage = 0;
+    std::string sidecar;
+    std::string output_directory;
+    if (!reader.U32(value.version) ||
+        !reader.U8(storage) ||
+        storage < static_cast<std::uint8_t>(
+            CaptureProfileStorageV1::Inline) ||
+        storage > static_cast<std::uint8_t>(
+            CaptureProfileStorageV1::ContentAddressedSidecar) ||
+        !reader.String(value.profile_json) ||
+        !reader.String(sidecar) ||
+        !reader.String(value.profile_sha256) ||
+        !reader.String(value.expected_module_sha256) ||
+        !reader.String(value.resolved_observation_sha256) ||
+        !reader.String(output_directory) ||
+        !reader.String(value.content_sha256))
+    {
+        return false;
+    }
+    value.storage = static_cast<CaptureProfileStorageV1>(storage);
+    value.profile_sidecar_path = std::move(sidecar);
+    value.output_directory = std::move(output_directory);
+    capture = std::move(value);
+    return true;
+}
+
 void WriteLimits(Writer& writer, const WorkerWorksetLimits& limits)
 {
     writer.U32(limits.maximum_items_per_workset);
     writer.U64(limits.maximum_encoded_workset_bytes);
+    writer.U64(limits.maximum_capture_profile_bytes);
     writer.U32(limits.maximum_item_credits);
     writer.U32(limits.maximum_active_and_staged_items);
     writer.U32(limits.finalizer_threads);
@@ -350,10 +694,12 @@ void WriteLimits(Writer& writer, const WorkerWorksetLimits& limits)
 bool ReadLimits(Reader& reader, WorkerWorksetLimits& limits)
 {
     std::uint64_t encoded_bytes = 0;
+    std::uint64_t capture_profile_bytes = 0;
     std::uint64_t finalizer_bytes = 0;
     std::uint64_t terminal_bytes = 0;
     if (!reader.U32(limits.maximum_items_per_workset) ||
         !reader.U64(encoded_bytes) ||
+        !reader.U64(capture_profile_bytes) ||
         !reader.U32(limits.maximum_item_credits) ||
         !reader.U32(limits.maximum_active_and_staged_items) ||
         !reader.U32(limits.finalizer_threads) ||
@@ -367,6 +713,8 @@ bool ReadLimits(Reader& reader, WorkerWorksetLimits& limits)
     }
     limits.maximum_encoded_workset_bytes =
         static_cast<std::size_t>(encoded_bytes);
+    limits.maximum_capture_profile_bytes =
+        static_cast<std::size_t>(capture_profile_bytes);
     limits.maximum_pending_finalizer_bytes =
         static_cast<std::size_t>(finalizer_bytes);
     limits.maximum_retained_terminal_bytes =
@@ -376,17 +724,19 @@ bool ReadLimits(Reader& reader, WorkerWorksetLimits& limits)
 
 } // namespace
 
-WorksetWireCodecResult EncodeWorkerWorksetV2(
+WorksetWireCodecResult EncodeWorkerWorksetV4(
     const WorkerWorksetDefinition& definition,
     std::vector<std::uint8_t>& output)
 {
     Writer writer;
-    writer.U32(kWorksetWireVersionV2);
+    writer.U32(kWorksetWireVersionV4);
     writer.U64(definition.workset_id.value());
     writer.U64(definition.phase_invocation.invocation_id.workflow_step_id);
     writer.U64(definition.phase_invocation.invocation_id.root_job_set_id);
-    WriteFullPhaseProgram(
-        writer, definition.phase_invocation.program);
+    WriteProgramPackage(
+        writer, definition.phase_invocation.program_package);
+    WriteCommonInput(
+        writer, definition.phase_invocation.common_input);
     const WorkerWorksetExecutionKey& key = definition.execution_key;
     WriteModule(writer, key.module);
     writer.String(key.entrypoint);
@@ -395,8 +745,14 @@ WorksetWireCodecResult EncodeWorkerWorksetV2(
     writer.String(key.baseline.sha256);
     writer.String(key.movie_policy_sha256);
     writer.String(key.service_policy_sha256);
+    writer.String(key.program_package_sha256);
+    writer.String(key.common_input_sha256);
+    writer.String(key.capture_binding_sha256);
+    writer.String(key.progress_plan_sha256);
     writer.String(key.canonical_sha256);
     WriteBaseline(writer, definition.baseline);
+    WriteCaptureBinding(writer, definition.capture);
+    WriteProgressPlan(writer, definition.progress_plan);
     writer.Count(definition.items.size());
     for (const WorksetItemTemplate& item : definition.items)
     {
@@ -413,7 +769,7 @@ WorksetWireCodecResult EncodeWorkerWorksetV2(
     return writer.Finish(output, kMaximumWorksetWireBytes);
 }
 
-WorksetWireCodecResult DecodeWorkerWorksetV2(
+WorksetWireCodecResult DecodeWorkerWorksetV4(
     std::span<const std::uint8_t> input,
     WorkerWorksetDefinition& output)
 {
@@ -426,12 +782,14 @@ WorksetWireCodecResult DecodeWorkerWorksetV2(
     std::uint64_t workflow_step_id = 0;
     std::uint64_t root_job_set_id = 0;
     WorkerWorksetExecutionKey& key = candidate.execution_key;
-    if (!reader.U32(version) || version != kWorksetWireVersionV2 ||
+    if (!reader.U32(version) || version != kWorksetWireVersionV4 ||
         !reader.U64(workset_id) ||
         !reader.U64(workflow_step_id) ||
         !reader.U64(root_job_set_id) ||
-        !ReadFullPhaseProgram(
-            reader, candidate.phase_invocation.program) ||
+        !ReadProgramPackage(
+            reader, candidate.phase_invocation.program_package) ||
+        !ReadCommonInput(
+            reader, candidate.phase_invocation.common_input) ||
         !ReadModule(reader, key.module) ||
         !reader.String(key.entrypoint) ||
         !reader.String(key.verified_dependency_sha256) ||
@@ -439,8 +797,14 @@ WorksetWireCodecResult DecodeWorkerWorksetV2(
         !reader.String(key.baseline.sha256) ||
         !reader.String(key.movie_policy_sha256) ||
         !reader.String(key.service_policy_sha256) ||
+        !reader.String(key.program_package_sha256) ||
+        !reader.String(key.common_input_sha256) ||
+        !reader.String(key.capture_binding_sha256) ||
+        !reader.String(key.progress_plan_sha256) ||
         !reader.String(key.canonical_sha256) ||
-        !ReadBaseline(reader, candidate.baseline))
+        !ReadBaseline(reader, candidate.baseline) ||
+        !ReadCaptureBinding(reader, candidate.capture) ||
+        !ReadProgressPlan(reader, candidate.progress_plan))
     {
         return {false, "WorkerWorkset header is invalid"};
     }
@@ -491,122 +855,178 @@ WorksetWireCodecResult DecodeWorkerWorksetV2(
     return {true, {}};
 }
 
-WorksetWireCodecResult EncodeWorkerRuntimeManifestV1(
-    const WorkerRuntimeManifest& manifest,
+WorksetWireCodecResult EncodeWorksetCaptureBindingV1(
+    const std::optional<WorksetCaptureBindingV1>& binding,
+    std::vector<std::uint8_t>& output)
+{
+    if (binding &&
+        (!static_cast<bool>(*binding) ||
+         ComputeWorksetCaptureBindingHashV1(*binding) !=
+             binding->content_sha256))
+    {
+        return {false, "Workset capture binding is not canonical"};
+    }
+    Writer writer;
+    writer.U32(kWorksetCaptureBindingWireVersionV1);
+    WriteCaptureBinding(writer, binding);
+    return writer.Finish(output, kMaximumWorksetWireBytes);
+}
+
+WorksetWireCodecResult DecodeWorksetCaptureBindingV1(
+    std::span<const std::uint8_t> input,
+    std::optional<WorksetCaptureBindingV1>& output)
+{
+    if (input.size() > kMaximumWorksetWireBytes)
+        return {false, "Encoded workset capture binding exceeds its bound"};
+    Reader reader(input);
+    std::uint32_t version = 0;
+    std::optional<WorksetCaptureBindingV1> candidate;
+    if (!reader.U32(version) ||
+        version != kWorksetCaptureBindingWireVersionV1 ||
+        !ReadCaptureBinding(reader, candidate))
+    {
+        return {false, "Workset capture binding payload is invalid"};
+    }
+    WorksetWireCodecResult finished = reader.Finish();
+    if (!finished)
+        return finished;
+    if (candidate &&
+        (!static_cast<bool>(*candidate) ||
+         ComputeWorksetCaptureBindingHashV1(*candidate) !=
+             candidate->content_sha256))
+    {
+        return {false, "Workset capture binding is not canonical"};
+    }
+    output = std::move(candidate);
+    return {true, {}};
+}
+
+WorksetWireCodecResult EncodeProgressPlanV1(
+    const progress::ProgressPlanV1& plan,
+    std::vector<std::uint8_t>& output)
+{
+    const progress::ProgressValidationResult validated =
+        progress::ValidateProgressPlanV1(plan);
+    if (!validated)
+    {
+        return {
+            false,
+            validated.message.empty()
+                ? "Progress plan is not canonical"
+                : validated.message};
+    }
+    Writer writer;
+    writer.U32(kProgressPlanWireVersionV1);
+    WriteProgressPlan(writer, plan);
+    return writer.Finish(output, kMaximumWorksetWireBytes);
+}
+
+WorksetWireCodecResult DecodeProgressPlanV1(
+    std::span<const std::uint8_t> input,
+    progress::ProgressPlanV1& output)
+{
+    if (input.size() > kMaximumWorksetWireBytes)
+        return {false, "Encoded progress plan exceeds its bound"};
+    Reader reader(input);
+    std::uint32_t version = 0;
+    progress::ProgressPlanV1 candidate;
+    if (!reader.U32(version) ||
+        version != kProgressPlanWireVersionV1 ||
+        !ReadProgressPlan(reader, candidate))
+    {
+        return {false, "Progress plan payload is invalid"};
+    }
+    WorksetWireCodecResult finished = reader.Finish();
+    if (!finished)
+        return finished;
+    const progress::ProgressValidationResult validated =
+        progress::ValidateProgressPlanV1(candidate);
+    if (!validated)
+    {
+        return {
+            false,
+            validated.message.empty()
+                ? "Progress plan is not canonical"
+                : validated.message};
+    }
+    output = std::move(candidate);
+    return {true, {}};
+}
+
+WorksetWireCodecResult EncodeWorkerRuntimeContractV1(
+    const WorkerRuntimeContractV1& contract,
     std::vector<std::uint8_t>& output)
 {
     const WorksetValidationResult validated =
-        ValidateWorkerRuntimeManifest(manifest);
+        ValidateWorkerRuntimeContractV1(contract);
     if (!validated.ok)
     {
         return {
             false,
             validated.error.message.empty()
-                ? "Worker runtime manifest is not canonical"
+                ? "Worker runtime contract is not canonical"
                 : validated.error.message};
     }
     Writer writer;
-    writer.U32(kRuntimeManifestWireVersionV1);
-    writer.U32(manifest.wrms_protocol_version);
-    writer.U32(manifest.program_module_format_version);
-    writer.U32(manifest.program_invocation_format_version);
-    writer.U32(manifest.program_result_format_version);
-    writer.String(manifest.runtime_profile_sha256);
-    writer.String(manifest.dependency_manifest_sha256);
-    writer.U8(static_cast<std::uint8_t>(manifest.catalog_status));
-    writer.U64(manifest.catalog_generation);
-    writer.String(manifest.catalog_sha256);
-    writer.Count(manifest.modules.size());
-    for (const RuntimeModuleManifestEntry& entry : manifest.modules)
-    {
-        WriteModule(writer, entry.module);
-        writer.Count(entry.entrypoints.size());
-        for (const std::string& entrypoint : entry.entrypoints)
-            writer.String(entrypoint);
-        writer.String(entry.dependency_manifest_sha256);
-        writer.U8(entry.development_only ? 1 : 0);
-    }
-    WriteLimits(writer, manifest.limits);
+    writer.U32(kWorkerRuntimeContractWireVersionV1);
+    writer.U32(contract.contract_version);
+    writer.U32(contract.wrms_protocol_version);
+    writer.U32(contract.workset_wire_version);
+    writer.U32(contract.program_module_format_version);
+    writer.U32(contract.program_invocation_format_version);
+    writer.U32(contract.program_result_format_version);
+    writer.String(contract.supported_game_id);
+    writer.String(contract.executable_identity);
+    writer.String(contract.address_map_revision);
+    writer.String(contract.emulator_bridge_revision);
+    writer.String(contract.build_identity);
+    writer.String(contract.static_runtime_abi_sha256);
+    WriteLimits(writer, contract.limits);
+    writer.String(contract.canonical_sha256);
     return writer.Finish(output, 1024 * 1024);
 }
 
-WorksetWireCodecResult DecodeWorkerRuntimeManifestV1(
+WorksetWireCodecResult DecodeWorkerRuntimeContractV1(
     std::span<const std::uint8_t> input,
-    WorkerRuntimeManifest& output)
+    WorkerRuntimeContractV1& output)
 {
     Reader reader(input);
-    WorkerRuntimeManifest candidate;
+    WorkerRuntimeContractV1 candidate;
     std::uint32_t version = 0;
     std::uint32_t wrms = 0;
-    std::uint8_t status = 0;
     if (!reader.U32(version) ||
-        version != kRuntimeManifestWireVersionV1 ||
+        version != kWorkerRuntimeContractWireVersionV1 ||
+        !reader.U32(candidate.contract_version) ||
         !reader.U32(wrms) ||
         wrms > std::numeric_limits<std::uint16_t>::max() ||
+        !reader.U32(candidate.workset_wire_version) ||
         !reader.U32(candidate.program_module_format_version) ||
         !reader.U32(candidate.program_invocation_format_version) ||
         !reader.U32(candidate.program_result_format_version) ||
-        !reader.String(candidate.runtime_profile_sha256) ||
-        !reader.String(candidate.dependency_manifest_sha256) ||
-        !reader.U8(status) ||
-        status >
-            static_cast<std::uint8_t>(
-                RuntimeCatalogStatus::CompleteExact) ||
-        !reader.U64(candidate.catalog_generation) ||
-        !reader.String(candidate.catalog_sha256))
+        !reader.String(candidate.supported_game_id) ||
+        !reader.String(candidate.executable_identity) ||
+        !reader.String(candidate.address_map_revision) ||
+        !reader.String(candidate.emulator_bridge_revision) ||
+        !reader.String(candidate.build_identity) ||
+        !reader.String(candidate.static_runtime_abi_sha256) ||
+        !ReadLimits(reader, candidate.limits) ||
+        !reader.String(candidate.canonical_sha256))
     {
-        return {false, "Worker runtime manifest is invalid"};
+        return {false, "Worker runtime contract is invalid"};
     }
     candidate.wrms_protocol_version =
         static_cast<std::uint16_t>(wrms);
-    candidate.catalog_status =
-        static_cast<RuntimeCatalogStatus>(status);
-    std::uint32_t module_count = 0;
-    if (!reader.Count(module_count, 256))
-        return reader.Finish();
-    candidate.modules.reserve(module_count);
-    for (std::uint32_t index = 0; index < module_count; ++index)
-    {
-        RuntimeModuleManifestEntry entry;
-        std::uint32_t entrypoint_count = 0;
-        std::uint8_t development_only = 0;
-        if (!ReadModule(reader, entry.module) ||
-            !reader.Count(entrypoint_count, 256))
-        {
-            return {false, "Runtime manifest module is invalid"};
-        }
-        entry.entrypoints.reserve(entrypoint_count);
-        for (std::uint32_t entrypoint = 0;
-             entrypoint < entrypoint_count;
-             ++entrypoint)
-        {
-            std::string name;
-            if (!reader.String(name))
-                return {false, "Runtime manifest entrypoint is invalid"};
-            entry.entrypoints.push_back(std::move(name));
-        }
-        if (!reader.String(entry.dependency_manifest_sha256) ||
-            !reader.U8(development_only) ||
-            development_only > 1)
-        {
-            return {false, "Runtime manifest module flags are invalid"};
-        }
-        entry.development_only = development_only != 0;
-        candidate.modules.push_back(std::move(entry));
-    }
-    if (!ReadLimits(reader, candidate.limits))
-        return {false, "Runtime manifest limits are invalid"};
     WorksetWireCodecResult finished = reader.Finish();
     if (!finished)
         return finished;
     const WorksetValidationResult validated =
-        ValidateWorkerRuntimeManifest(candidate);
+        ValidateWorkerRuntimeContractV1(candidate);
     if (!validated.ok)
     {
         return {
             false,
             validated.error.message.empty()
-                ? "Worker runtime manifest is not canonical"
+                ? "Worker runtime contract is not canonical"
                 : validated.error.message};
     }
     output = std::move(candidate);

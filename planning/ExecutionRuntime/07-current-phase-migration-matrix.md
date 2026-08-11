@@ -1,5 +1,11 @@
 # 07 - Current Phase Migration Matrix
 
+> Supersession note (2026-08-09): capture attachment/finalization actions,
+> phase-local stop-group encoders, and free-form progress in this historical
+> migration matrix are replaced by the immutable workset observation contract
+> in
+> [`17-semantic-routing-workset-capture-canonical-progress.md`](17-semantic-routing-workset-capture-canonical-progress.md).
+
 ## Scope
 
 This matrix is implementation guidance for moving the current fixed phase-program corpus to the target
@@ -486,7 +492,7 @@ capture, and backend failures remain infrastructure failures.
 
 - one exact `ReadOnlyMovie` workset baseline staged without consuming infrastructure guest state;
 - `MoviePrepareReadOnlyPlayback` staging the DTM and stopping the guest core before any checkpoint group;
-- passive scoped `Observe/Pass` stop subscriptions armed at the uninitialized-core boundary;
+- passive observation registrations armed for the item before playback begins;
 - `MovieStartPlayback` as the sole baseline-establishing action, consuming the preparation and booting
   under the unchanged `WorksetEpoch`;
 - one unsuspendable movie-exclusive `InputArbiter` reservation held through playback;

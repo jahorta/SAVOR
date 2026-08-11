@@ -2,7 +2,7 @@
 #include <unordered_map>
 #include <variant>
 #include "CtxRegistry.h"
-#include "../../Core/Input/InputPlan.h"
+#include "../../Core/Input/GCInputFrame.h"
 #include "../../Core/Input/SoaBattle/ActionTypes.h"
 
 namespace savor {

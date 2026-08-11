@@ -188,7 +188,6 @@ ContentHash256 ComputeCapabilityPackManifestContractHash(
             AppendNumber(entry, point.memory_read);
             AppendNumber(entry, point.memory_write);
             AppendString(entry, point.synthetic_identity);
-            AppendString(entry, point.legacy_key);
         });
     AppendNormalized(
         contract,
@@ -219,6 +218,9 @@ ContentHash256 ComputeCapabilityPackManifestContractHash(
         [](std::string& entry, const CpuEvaluatorDescriptor& evaluator)
         {
             AppendString(entry, evaluator.canonical_id);
+            AppendNumber(entry, evaluator.routed_sample_descriptor_id);
+            AppendString(entry, evaluator.address_dependency);
+            AppendType(entry, evaluator.result_type);
             AppendNumber(entry, evaluator.operations.size());
             for (CpuEvaluatorOperation operation :
                  evaluator.operations)
@@ -423,7 +425,7 @@ RegistryResult CapabilityPackRegistry::ValidateManifestShape(
     {
         switch (point.kind)
         {
-        case SemanticPointPhysicalKind::ProgramCounter:
+        case SemanticPointKind::ProgramCounter:
             if (point.pc == 0)
             {
                 return Failure(
@@ -431,7 +433,7 @@ RegistryResult CapabilityPackRegistry::ValidateManifestShape(
                     "Program-counter semantic points cannot use address zero");
             }
             break;
-        case SemanticPointPhysicalKind::Memory:
+        case SemanticPointKind::Memory:
             if (point.memory_address == 0 ||
                 point.memory_size == 0 ||
                 (!point.memory_read && !point.memory_write))
@@ -441,7 +443,7 @@ RegistryResult CapabilityPackRegistry::ValidateManifestShape(
                     "Memory semantic points require a range and access");
             }
             break;
-        case SemanticPointPhysicalKind::Synthetic:
+        case SemanticPointKind::Synthetic:
             if (point.synthetic_identity.empty())
             {
                 return Failure(
@@ -493,10 +495,18 @@ RegistryResult CapabilityPackRegistry::ValidateManifestShape(
         }
     }
 
+    std::set<std::uint32_t> routed_sample_ids;
     for (const CpuEvaluatorDescriptor& evaluator :
          manifest.cpu_evaluators)
     {
-        if (evaluator.operations.empty() ||
+        if (evaluator.routed_sample_descriptor_id == 0 ||
+            !routed_sample_ids.emplace(
+                evaluator.routed_sample_descriptor_id).second ||
+            (evaluator.result_type.is_named() && schemas_ &&
+                !schemas_->Resolve(*evaluator.result_type.named)) ||
+            (!evaluator.result_type.is_named() &&
+                evaluator.result_type.builtin == BuiltinType::Unit) ||
+            evaluator.operations.empty() ||
             evaluator.maximum_reads == 0 ||
             evaluator.maximum_output_bytes == 0 ||
             evaluator.operations.size() >
@@ -505,6 +515,13 @@ RegistryResult CapabilityPackRegistry::ValidateManifestShape(
             return Failure(
                 RegistryErrorCode::InvalidArgument,
                 "CPU evaluator must be bounded and nonempty");
+        }
+        if (!evaluator.address_dependency.empty() &&
+            !symbol_names.contains(evaluator.address_dependency))
+        {
+            return Failure(
+                RegistryErrorCode::DependencyMissing,
+                "CPU evaluator references an unknown address symbol");
         }
     }
 

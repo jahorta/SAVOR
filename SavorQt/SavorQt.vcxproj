@@ -136,7 +136,6 @@
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp" />
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunsPane\BattleRunsWidget.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp" />
@@ -189,7 +188,6 @@
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h" />
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.h" />
     <ClInclude Include="GUI\Panes\BattleRunsPane\BattleRunsWidget.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.h" />

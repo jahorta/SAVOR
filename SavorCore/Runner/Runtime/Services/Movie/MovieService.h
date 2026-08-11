@@ -9,7 +9,8 @@
 namespace savor::runtime {
 
 // Workset-local movie authority.  The service never owns or advances an
-// epoch: it observes the epoch allocated by EmulationSession::BeginWorkset.
+// epoch: it observes the epoch allocated by the workset initialization
+// transaction.
 class MovieService final
 {
 public:
@@ -26,6 +27,11 @@ public:
 
     [[nodiscard]] MovieOperationReceipt PrepareReadOnlyPlayback(
         const MoviePlaybackRequest& request);
+    // Returns the exact paused workset-owned preparation created during
+    // atomic workset initialization. It does not mutate the guest or acquire
+    // another reservation.
+    [[nodiscard]] std::optional<MovieOperationReceipt>
+    PreparedReadOnlyPlaybackReceipt() const;
     [[nodiscard]] MovieOperationReceipt StartPreparedReadOnlyPlayback(
         MoviePreparationId preparation);
     [[nodiscard]] MovieOperationReceipt AbandonPreparedReadOnlyPlayback(
@@ -92,7 +98,7 @@ private:
     MoviePreparationId preparation_;
     std::uint64_t next_preparation_ = 1;
     std::optional<std::filesystem::path> prepared_starting_savestate_;
-    bool prepared_core_start_attempted_ = false;
+    bool prepared_core_started_ = false;
     std::optional<MovieCheckpointMetadata> active_movie_;
     std::optional<MovieCheckpointMetadata> original_movie_;
     MovieActivity original_activity_ = MovieActivity::Inactive;

@@ -185,7 +185,6 @@ ProgramInvocation Invocation(
         .execution = {
             .intent = ExecutionIntent::Live,
             .record_trace = true,
-            .record_progress = true,
         },
         .input = std::move(input),
         .limits = limits,

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Phases/Programs/SeedProbe/SeedProbeModule.h"
+#include "Phases/Programs/TasMovieValidation/TasMovieValidationModule.h"
 #include "Runner/Runtime/Worksets/SavestateArtifactFinalizer.h"
 #include "Runner/Runtime/Worksets/ProgramBaseline.h"
 #include "Runner/Runtime/Worksets/WorkerCompletionLedger.h"
@@ -115,7 +116,10 @@ WorkerWorksetDefinition CodecWorksetDefinition()
     const auto phase = seedprobe::SeedProbeFullPhaseDefinitionV2();
     definition.phase_invocation = {
         .invocation_id = {7, 9},
-        .program = phase->identity(),
+        .program_package =
+            fullphase::BuildFullPhaseProgramPackage(*phase),
+        .common_input = fullphase::MakeFullPhaseCommonInput(
+            "soa.seed_probe.CommonInput", 1),
     };
     definition.baseline.artifact = ProgramBaselineArtifact{
         .kind = ProgramBaselineArtifactKind::Savestate,
@@ -151,6 +155,14 @@ WorkerWorksetDefinition CodecWorksetDefinition()
         phase->runtime_contract().movie_policy_sha256;
     definition.execution_key.service_policy_sha256 =
         phase->runtime_contract().service_policy_sha256;
+    definition.execution_key.program_package_sha256 =
+        definition.phase_invocation.program_package.canonical_sha256;
+    definition.execution_key.common_input_sha256 =
+        definition.phase_invocation.common_input.content_sha256;
+    definition.execution_key.capture_binding_sha256 =
+        EmptyWorksetCaptureBindingHashV1();
+    definition.execution_key.progress_plan_sha256 =
+        definition.progress_plan.content_sha256;
     definition.execution_key.canonical_sha256 =
         ComputeWorkerWorksetExecutionKeyHash(
             definition.execution_key);
@@ -177,23 +189,9 @@ WorkerWorksetDefinition CodecWorksetDefinition()
     return definition;
 }
 
-WorkerRuntimeManifest CodecRuntimeManifest(
-    const WorkerWorksetDefinition& definition)
+WorkerRuntimeContractV1 CodecRuntimeContract()
 {
-    WorkerRuntimeManifest manifest;
-    manifest.runtime_profile_sha256 = std::string(64, '1');
-    manifest.dependency_manifest_sha256 =
-        std::string(64, '2');
-    manifest.catalog_status = RuntimeCatalogStatus::Partial;
-    manifest.modules.push_back({
-        definition.execution_key.module,
-        {"run"},
-        manifest.dependency_manifest_sha256,
-        true});
-    manifest.catalog_sha256 = ComputeRuntimeCatalogHash(
-        manifest.modules,
-        manifest.catalog_status);
-    return manifest;
+    return BuildProductionWorkerRuntimeContractV1();
 }
 
 TEST(WorkerCompletionLedger, PreservesTerminalOrderAcrossOutOfOrderFinalization)
@@ -256,27 +254,67 @@ TEST(WorkerCompletionLedger, PreservesTerminalOrderAcrossOutOfOrderFinalization)
     EXPECT_EQ(ledger.snapshot().retained_terminals, 0u);
 }
 
-TEST(WorksetWireCodec, RoundTripsCompositeBaselineAndManifest)
+TEST(WorksetWireCodec, RoundTripsCompositeBaselineAndRuntimeContract)
 {
     WorkerWorksetDefinition definition =
         CodecWorksetDefinition();
 
     std::vector<std::uint8_t> encoded;
-    ASSERT_TRUE(EncodeWorkerWorksetV2(definition, encoded));
+    ASSERT_TRUE(EncodeWorkerWorksetV4(definition, encoded));
     WorkerWorksetDefinition decoded;
-    ASSERT_TRUE(DecodeWorkerWorksetV2(encoded, decoded));
+    ASSERT_TRUE(DecodeWorkerWorksetV4(encoded, decoded));
     definition.encoded_size_bytes = encoded.size();
     EXPECT_EQ(decoded, definition);
 
-    WorkerRuntimeManifest manifest =
-        CodecRuntimeManifest(definition);
-    ASSERT_TRUE(EncodeWorkerRuntimeManifestV1(manifest, encoded));
-    WorkerRuntimeManifest decoded_manifest;
+    const WorkerRuntimeContractV1 contract = CodecRuntimeContract();
+    ASSERT_TRUE(EncodeWorkerRuntimeContractV1(contract, encoded));
+    WorkerRuntimeContractV1 decoded_contract;
     ASSERT_TRUE(
-        DecodeWorkerRuntimeManifestV1(
+        DecodeWorkerRuntimeContractV1(
             encoded,
-            decoded_manifest));
-    EXPECT_EQ(decoded_manifest, manifest);
+            decoded_contract));
+    EXPECT_EQ(decoded_contract, contract);
+}
+
+TEST(WorksetWireCodec, RoundTripsStandaloneObservationBindings)
+{
+    std::vector<std::uint8_t> encoded;
+    std::optional<WorksetCaptureBindingV1> capture;
+    ASSERT_TRUE(EncodeWorksetCaptureBindingV1(capture, encoded));
+    std::optional<WorksetCaptureBindingV1> decoded_capture{
+        WorksetCaptureBindingV1{}};
+    ASSERT_TRUE(DecodeWorksetCaptureBindingV1(
+        encoded,
+        decoded_capture));
+    EXPECT_FALSE(decoded_capture.has_value());
+
+    constexpr std::array<std::string_view, 1> libraries{
+        "soa.progress.battle.events/1",
+    };
+    const auto progress_plan =
+        progress::ResolveProgressPlanV1(libraries);
+    ASSERT_TRUE(EncodeProgressPlanV1(progress_plan, encoded));
+    progress::ProgressPlanV1 decoded_progress;
+    ASSERT_TRUE(DecodeProgressPlanV1(encoded, decoded_progress));
+    EXPECT_EQ(decoded_progress, progress_plan);
+}
+
+TEST(WorksetWireCodec, RejectsWorksetV3WithoutPublishingOutput)
+{
+    std::vector<std::uint8_t> encoded;
+    ASSERT_TRUE(EncodeWorkerWorksetV4(
+        CodecWorksetDefinition(), encoded));
+    ASSERT_GE(encoded.size(), 4u);
+    encoded[0] = 3;
+    encoded[1] = 0;
+    encoded[2] = 0;
+    encoded[3] = 0;
+
+    WorkerWorksetDefinition output;
+    output.workset_id = WorkerWorksetId(999);
+    const WorkerWorksetDefinition unchanged = output;
+    EXPECT_FALSE(DecodeWorkerWorksetV4(encoded, output));
+    EXPECT_EQ(output, unchanged);
 }
 
 TEST(
@@ -286,7 +324,7 @@ TEST(
     const WorkerWorksetDefinition definition =
         CodecWorksetDefinition();
     std::vector<std::uint8_t> legacy;
-    ASSERT_TRUE(EncodeWorkerWorksetV2(definition, legacy));
+    ASSERT_TRUE(EncodeWorkerWorksetV4(definition, legacy));
 
     // The former v1 item layout placed declared_active_budget (u64 ms)
     // immediately after the encoded invocation template payload.
@@ -318,41 +356,7 @@ TEST(
     output.workset_id = WorkerWorksetId(999);
     const WorkerWorksetDefinition unchanged = output;
     const WorksetWireCodecResult rejected =
-        DecodeWorkerWorksetV2(legacy, output);
-    EXPECT_FALSE(rejected);
-    EXPECT_EQ(output, unchanged);
-}
-
-TEST(
-    WorksetWireCodec,
-    RejectsLegacyAggregateBudgetManifestBeforePublishingOutput)
-{
-    const WorkerWorksetDefinition definition =
-        CodecWorksetDefinition();
-    const WorkerRuntimeManifest manifest =
-        CodecRuntimeManifest(definition);
-    std::vector<std::uint8_t> legacy;
-    ASSERT_TRUE(
-        EncodeWorkerRuntimeManifestV1(manifest, legacy));
-
-    // The limits record is the final fixed-width 64 bytes in the current
-    // manifest. Former v1 inserted maximum_aggregate_active_budget (u64 ms)
-    // after its first u32/u64 pair.
-    constexpr std::size_t kCurrentLimitsSize = 64;
-    constexpr std::size_t kLegacyBudgetOffsetInLimits =
-        sizeof(std::uint32_t) + sizeof(std::uint64_t);
-    ASSERT_GE(legacy.size(), kCurrentLimitsSize);
-    InsertU64LittleEndian(
-        legacy,
-        legacy.size() - kCurrentLimitsSize +
-            kLegacyBudgetOffsetInLimits,
-        4ull * 60ull * 60ull * 1000ull);
-
-    WorkerRuntimeManifest output;
-    output.runtime_profile_sha256 = "unchanged";
-    const WorkerRuntimeManifest unchanged = output;
-    const WorksetWireCodecResult rejected =
-        DecodeWorkerRuntimeManifestV1(legacy, output);
+        DecodeWorkerWorksetV4(legacy, output);
     EXPECT_FALSE(rejected);
     EXPECT_EQ(output, unchanged);
 }
@@ -414,7 +418,10 @@ TEST(WorksetValidation, CapsEachTerminalBelowTheWrmsPayloadCeiling)
     const auto phase = seedprobe::SeedProbeFullPhaseDefinitionV2();
     definition.phase_invocation = {
         .invocation_id = {2, 1},
-        .program = phase->identity(),
+        .program_package =
+            fullphase::BuildFullPhaseProgramPackage(*phase),
+        .common_input = fullphase::MakeFullPhaseCommonInput(
+            "soa.seed_probe.CommonInput", 1),
     };
     definition.baseline.artifact = ProgramBaselineArtifact{
         .kind = ProgramBaselineArtifactKind::Savestate,
@@ -443,6 +450,14 @@ TEST(WorksetValidation, CapsEachTerminalBelowTheWrmsPayloadCeiling)
         phase->runtime_contract().movie_policy_sha256;
     definition.execution_key.service_policy_sha256 =
         phase->runtime_contract().service_policy_sha256;
+    definition.execution_key.program_package_sha256 =
+        definition.phase_invocation.program_package.canonical_sha256;
+    definition.execution_key.common_input_sha256 =
+        definition.phase_invocation.common_input.content_sha256;
+    definition.execution_key.capture_binding_sha256 =
+        EmptyWorksetCaptureBindingHashV1();
+    definition.execution_key.progress_plan_sha256 =
+        definition.progress_plan.content_sha256;
     definition.execution_key.canonical_sha256 =
         ComputeWorkerWorksetExecutionKeyHash(
             definition.execution_key);
@@ -467,39 +482,105 @@ TEST(WorksetValidation, CapsEachTerminalBelowTheWrmsPayloadCeiling)
         WorkerRejectionCode::CapacityExceeded);
 }
 
-TEST(WorkerRuntimeManifest, HashesCanonicalShapeAndRejectsInvalidLimits)
+TEST(WorkerRuntimeContract, HashesCanonicalShapeAndRejectsInvalidLimits)
 {
-    WorkerRuntimeManifest manifest;
-    manifest.runtime_profile_sha256 = std::string(64, '1');
-    manifest.dependency_manifest_sha256 = std::string(64, '2');
-    manifest.modules = {{
-        {"test.module/1", 1, std::string(64, '3')},
-        {"z", "a"},
-        manifest.dependency_manifest_sha256,
-        true}};
-    manifest.catalog_sha256 = ComputeRuntimeCatalogHash(
-        manifest.modules,
-        manifest.catalog_status);
-    EXPECT_TRUE(ValidateWorkerRuntimeManifest(manifest).ok);
+    WorkerRuntimeContractV1 contract =
+        BuildProductionWorkerRuntimeContractV1();
+    EXPECT_TRUE(ValidateWorkerRuntimeContractV1(contract).ok);
 
-    WorkerRuntimeManifest reordered = manifest;
-    std::reverse(
-        reordered.modules.front().entrypoints.begin(),
-        reordered.modules.front().entrypoints.end());
-    EXPECT_EQ(
-        ComputeRuntimeCatalogHash(
-            reordered.modules,
-            reordered.catalog_status),
-        manifest.catalog_sha256);
+    WorkerRuntimeContractV1 changed = contract;
+    changed.build_identity += ".different";
+    EXPECT_FALSE(ValidateWorkerRuntimeContractV1(changed).ok);
+    changed.canonical_sha256 =
+        ComputeWorkerRuntimeContractHashV1(changed);
+    EXPECT_TRUE(ValidateWorkerRuntimeContractV1(changed).ok);
 
-    reordered.modules.front().entrypoints.push_back("a");
-    reordered.catalog_sha256 = ComputeRuntimeCatalogHash(
-        reordered.modules,
-        reordered.catalog_status);
-    EXPECT_FALSE(ValidateWorkerRuntimeManifest(reordered).ok);
+    contract.limits.maximum_item_credits = 0;
+    contract.canonical_sha256 =
+        ComputeWorkerRuntimeContractHashV1(contract);
+    EXPECT_FALSE(ValidateWorkerRuntimeContractV1(contract).ok);
+}
 
-    manifest.limits.maximum_item_credits = 0;
-    EXPECT_FALSE(ValidateWorkerRuntimeManifest(manifest).ok);
+TEST(FullPhaseWorksetPolicy, EveryTasMovieKindRequiresExactlyOneItem)
+{
+    const auto validation =
+        tasmovie::TasMovieValidationFullPhaseDefinitionV1();
+    const auto sterilization = tasmovie::
+        TasMovieCheckpointSterilizationFullPhaseDefinitionV1();
+
+    const std::array<const fullphase::IFullPhaseProgramDefinition*, 2>
+        phases{validation.get(), sterilization.get()};
+    for (const fullphase::IFullPhaseProgramDefinition* phase : phases)
+    {
+        const fullphase::FullPhaseWorksetPolicy policy =
+            phase->workset_policy();
+        EXPECT_TRUE(policy.accepts(1));
+        EXPECT_FALSE(policy.accepts(0));
+        EXPECT_FALSE(policy.accepts(2));
+    }
+}
+
+TEST(FullPhaseWorksetPolicy, RejectsMultiItemTasMovieWorksetsDuringAdmission)
+{
+    WorkerWorksetLimits limits;
+    const auto validation =
+        tasmovie::TasMovieValidationFullPhaseDefinitionV1();
+    const auto sterilization = tasmovie::
+        TasMovieCheckpointSterilizationFullPhaseDefinitionV1();
+
+    const std::array<const fullphase::IFullPhaseProgramDefinition*, 2>
+        phases{validation.get(), sterilization.get()};
+    for (const fullphase::IFullPhaseProgramDefinition* phase : phases)
+    {
+        WorkerWorksetDefinition definition = CodecWorksetDefinition();
+        definition.phase_invocation.program_package =
+            fullphase::BuildFullPhaseProgramPackage(*phase);
+        definition.phase_invocation.common_input =
+            fullphase::MakeFullPhaseCommonInput(
+                "test.tas_movie.CommonInput",
+                1);
+        definition.baseline.lineage =
+            phase->runtime_contract().baseline_lineage;
+        definition.execution_key.module =
+            phase->runtime_contract().module;
+        definition.execution_key.entrypoint =
+            phase->runtime_contract().entrypoint;
+        definition.execution_key.verified_dependency_sha256 =
+            phase->runtime_contract().verified_dependency_sha256;
+        definition.execution_key.runtime_profile_sha256 =
+            phase->runtime_contract().runtime_profile_sha256;
+        definition.execution_key.baseline =
+            ComputeProgramBaselineKey(definition.baseline);
+        definition.execution_key.movie_policy_sha256 =
+            phase->runtime_contract().movie_policy_sha256;
+        definition.execution_key.service_policy_sha256 =
+            phase->runtime_contract().service_policy_sha256;
+        definition.execution_key.program_package_sha256 =
+            definition.phase_invocation.program_package.canonical_sha256;
+        definition.execution_key.common_input_sha256 =
+            definition.phase_invocation.common_input.content_sha256;
+        definition.execution_key.capture_binding_sha256 =
+            EmptyWorksetCaptureBindingHashV1();
+        definition.execution_key.progress_plan_sha256 =
+            definition.progress_plan.content_sha256;
+        definition.execution_key.canonical_sha256 =
+            ComputeWorkerWorksetExecutionKeyHash(definition.execution_key);
+
+        WorksetItemTemplate second = definition.items.front();
+        second.item_id = WorkerWorksetItemId(2);
+        second.ordinal = 1;
+        second.execution.execution_id = ProgramExecutionId(3);
+        second.execution.attempt_id = AttemptId(4);
+        definition.items.push_back(std::move(second));
+
+        const WorksetValidationResult result =
+            ValidateWorkerWorksetDefinition(definition, limits);
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(result.error.code, WorkerRejectionCode::InvalidArgument);
+        EXPECT_EQ(
+            result.error.message,
+            "WorkerWorkset item count violates its Full Phase program-kind policy");
+    }
 }
 
 TEST(
@@ -571,14 +652,17 @@ TEST(
     ASSERT_TRUE(coordinator.Stage(first).ok);
     PreparedProgramBaselineReceipt receipt;
     ASSERT_TRUE(
-        coordinator.Prepare(
+        coordinator.Initialize(
             WorkerWorksetId(1),
             first,
             true,
             receipt)
             .ok);
     EXPECT_TRUE(receipt.state_established);
+    ASSERT_TRUE(session.BeginWorksetItemReset(WorkerWorksetId(1)).ok);
+    EXPECT_FALSE(session.execution_snapshot());
     ASSERT_TRUE(coordinator.RestoreForNextItem(receipt).ok);
+    ASSERT_TRUE(session.execution_snapshot());
     EXPECT_TRUE(receipt.state_established);
     {
         std::lock_guard lock(backend->mutex);
@@ -588,7 +672,7 @@ TEST(
     ASSERT_TRUE(coordinator.Release().ok);
 
     ASSERT_TRUE(
-        coordinator.Prepare(
+        coordinator.Initialize(
             WorkerWorksetId(2),
             first,
             true,
@@ -648,13 +732,14 @@ TEST(
         std::make_shared<ProgramBaselineComponentRegistry>());
     ASSERT_TRUE(coordinator.Stage(baseline).ok);
     PreparedProgramBaselineReceipt receipt;
-    ASSERT_TRUE(coordinator.Prepare(
+    ASSERT_TRUE(coordinator.Initialize(
         WorkerWorksetId(10), baseline, true, receipt).ok);
     const WorksetEpoch preserved_epoch = receipt.workset_epoch;
     backend->SetRestoreBufferResult(BackendResult::Failure(
         BackendErrorCode::OperationFailed,
         "preserved restore failure",
         BackendIntegrity::Preserved));
+    ASSERT_TRUE(session.BeginWorksetItemReset(WorkerWorksetId(10)).ok);
     const ProgramBaselineComponentResult preserved =
         coordinator.RestoreForNextItem(receipt);
     EXPECT_FALSE(preserved.ok);
@@ -663,18 +748,82 @@ TEST(
     backend->SetRestoreBufferResult(BackendResult::Success());
     ASSERT_TRUE(coordinator.Release().ok);
 
-    ASSERT_TRUE(coordinator.Prepare(
+    ASSERT_TRUE(coordinator.Initialize(
         WorkerWorksetId(11), baseline, true, receipt).ok);
     const WorksetEpoch unknown_epoch = receipt.workset_epoch;
     backend->SetRestoreBufferResult(BackendResult::Failure(
         BackendErrorCode::OperationFailed,
         "unknown restore failure",
         BackendIntegrity::Unknown));
+    ASSERT_TRUE(session.BeginWorksetItemReset(WorkerWorksetId(11)).ok);
     const ProgramBaselineComponentResult unknown =
         coordinator.RestoreForNextItem(receipt);
     EXPECT_FALSE(unknown.ok);
     EXPECT_EQ(session.snapshot().workset_epoch, unknown_epoch);
     EXPECT_EQ(session.snapshot().disposition, SessionDisposition::Tainted);
+
+    EXPECT_TRUE(coordinator.Release().ok);
+    EXPECT_TRUE(coordinator.Shutdown().ok);
+    EXPECT_TRUE(session.Shutdown().ok);
+}
+
+TEST(
+    WorksetStateCoordinator,
+    CommitUsesPostRestorePausedPcRatherThanPreInitializationState)
+{
+    TemporaryDirectory temp;
+    const std::filesystem::path state_path = temp.path() / "baseline.sav";
+    {
+        std::ofstream output(
+            state_path,
+            std::ios::binary | std::ios::trunc);
+        output << "baseline-at-prebattle";
+    }
+    ProgramBaselineDefinition baseline;
+    baseline.artifact = ProgramBaselineArtifact{
+        .kind = ProgramBaselineArtifactKind::Savestate,
+        .state_path = state_path,
+        .state_sha256 = hash::sha256_of_file(state_path.string()),
+        .compatibility = {
+            .game_id = "TEST00",
+            .iso_sha256 = std::string(64, '0'),
+            .emulator_build = "scripted-dolphin-backend",
+            .runtime_revision = "slice4"},
+        .lineage = {
+            .edge = "tasmovie.validation/sterilized-checkpoint",
+            .producer = "test"},
+    };
+    baseline.lineage = "post-restore-authority";
+
+    auto backend = std::make_shared<ScriptedDolphinBackendControl>();
+    backend->open_core_state = BackendCoreState::Running;
+    backend->pc = 0x8000A1DCu;
+    backend->restore_file_pc = 0x80101E48u;
+    backend->restore_file_core_state = BackendCoreState::Paused;
+    EmulationSession session(
+        SessionId(92),
+        std::make_unique<ScriptedDolphinBackend>(backend));
+    SessionOpenOptions options;
+    options.backend.iso_path = "fake.iso";
+    ASSERT_TRUE(session.Open(options).ok);
+    EXPECT_FALSE(session.execution_snapshot());
+
+    WorksetStateCoordinator coordinator(
+        session,
+        WorkerWorksetLimits{},
+        std::make_shared<ProgramBaselineComponentRegistry>());
+    ASSERT_TRUE(coordinator.Stage(baseline).ok);
+    PreparedProgramBaselineReceipt receipt;
+    const ProgramBaselineComponentResult initialized = coordinator.Initialize(
+        WorkerWorksetId(12), baseline, false, receipt);
+    ASSERT_TRUE(initialized.ok) << initialized.error.message;
+
+    const std::optional<ExecutionSnapshot> execution =
+        session.execution_snapshot();
+    ASSERT_TRUE(execution);
+    EXPECT_EQ(execution->evidence.pc, 0x80101E48u);
+    EXPECT_EQ(execution->activity, ExecutionActivity::IdlePaused);
+    EXPECT_EQ(backend->restore_file_count, 1);
 
     EXPECT_TRUE(coordinator.Release().ok);
     EXPECT_TRUE(coordinator.Shutdown().ok);

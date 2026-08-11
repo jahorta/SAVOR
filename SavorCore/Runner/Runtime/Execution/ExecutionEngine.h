@@ -3,7 +3,7 @@
 #include "ExecutionTypes.h"
 #include "HostActivityTracker.h"
 #include "IExecutionBackendPort.h"
-#include "IInputAdvancePort.h"
+#include "IInputExecutionBindingPort.h"
 #include "../StopPoints/StopPointRouter.h"
 
 #include <chrono>
@@ -22,7 +22,7 @@ struct ExecutionEngineConfig
         std::chrono::seconds(5)};
     std::function<std::chrono::steady_clock::time_point()> now;
     std::vector<InterruptionHandlerDescriptor> interruption_handlers;
-    IInputAdvancePort* input_advance = nullptr;
+    IInputExecutionBindingPort* input_relationships = nullptr;
     HostActivityTracker* host_activity = nullptr;
     std::chrono::milliseconds suspect_core_stall_after{
         std::chrono::seconds(10)};

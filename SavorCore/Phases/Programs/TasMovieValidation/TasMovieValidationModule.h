@@ -137,6 +137,12 @@ class ITasMovieValidationFullPhaseDefinitionV1
     : public fullphase::IFullPhaseProgramDefinition
 {
 public:
+    [[nodiscard]] fullphase::FullPhaseWorksetPolicy workset_policy()
+        const noexcept final
+    {
+        return {.minimum_item_count = 1, .maximum_item_count = 1};
+    }
+
     [[nodiscard]] virtual bool DecodeProgramResult(
         std::span<const program::Byte> encoded_result,
         TasMovieValidationResultV1& result,
@@ -247,6 +253,12 @@ class ITasMovieCheckpointSterilizationFullPhaseDefinitionV1
     : public fullphase::IFullPhaseProgramDefinition
 {
 public:
+    [[nodiscard]] fullphase::FullPhaseWorksetPolicy workset_policy()
+        const noexcept final
+    {
+        return {.minimum_item_count = 1, .maximum_item_count = 1};
+    }
+
     [[nodiscard]] virtual bool DecodeProgramResult(
         std::span<const program::Byte> encoded_result,
         TasMovieCheckpointSterilizationResultV1& result,

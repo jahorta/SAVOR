@@ -62,11 +62,11 @@ The only policies are:
 - `EstablishBaseline`: the invocation must establish its staged read-only movie before guest-dependent
   work.
 
-For `EstablishBaseline`, pure IR and scope management may precede preparation. The movie preparation must
-stop the core before passive scoped `Observe/Pass` subscriptions are installed. Guest reads, execution
-advancement, input, capture, screenshots, mutations, and successful return remain forbidden until
-`MovieStartPlayback` consumes that exact preparation. Verifier control-flow analysis and runtime
-enforcement both fail closed.
+For `EstablishBaseline`, workset initialization prepares the exact movie session and commits an
+authoritative paused execution snapshot. Item startup installs its passive observation registrations
+before `MovieStartPlayback` consumes that prepared session. Guest reads, execution advancement, input,
+capture, screenshots, mutations, and successful return remain forbidden until playback starts. Verifier
+control-flow analysis and runtime enforcement both fail closed.
 
 Invocation templates are bound to the active workset epoch immediately before item execution. Workset
 definitions and coordinator requests never contain a session ID or epoch. External runtime controls use

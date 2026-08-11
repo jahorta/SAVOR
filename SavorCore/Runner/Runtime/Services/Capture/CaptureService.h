@@ -28,7 +28,6 @@ enum class CaptureServiceErrorCode : std::uint16_t
     NotAttached,
     StaleAttachment,
     StaleEpoch,
-    ProfileParseFailed,
     BackendUnavailable,
     AdapterStartFailed,
     RouterRegistrationFailed,
@@ -59,6 +58,7 @@ enum class CaptureAttachmentStatus : std::uint8_t
 struct CaptureAttachmentRequest
 {
     std::string profile_json;
+    savor::probe::Profile profile;
     savor::probe::SessionOptions options;
     WorksetEpoch expected_epoch;
 };
@@ -113,15 +113,7 @@ public:
     [[nodiscard]] CaptureServiceReceipt Detach(
         CaptureAttachmentId attachment);
     [[nodiscard]] CaptureServiceReceipt ReconcileBeforeResume();
-    [[nodiscard]] CaptureServiceReceipt SetProfileGroupEnabled(
-        CaptureAttachmentId attachment,
-        std::string_view group,
-        bool enabled);
-    [[nodiscard]] CaptureServiceReceipt ReplaceProfile(
-        CaptureAttachmentId attachment,
-        std::string profile_json);
     [[nodiscard]] CaptureServiceReceipt Mark(
-        CaptureAttachmentId attachment,
         std::string_view id,
         std::uint64_t value = 0);
 

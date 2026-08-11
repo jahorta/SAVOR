@@ -81,6 +81,21 @@ public:
         return ServiceResult<std::vector<savor::db::UiJobArtifact>>::Ok(db->ListJobArtifacts(job_id));
     }
 
+    static ServiceResult<std::vector<savor::db::UiCanonicalJobProgress>>
+    FetchJobProgress(std::int64_t job_id, int limit = 128) {
+        auto* db = UiReadDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<savor::db::UiCanonicalJobProgress>>(
+                "SavorDb UIRead is unavailable");
+        }
+        if (job_id <= 0) {
+            return Invalid<std::vector<savor::db::UiCanonicalJobProgress>>(
+                "job_id is required");
+        }
+        return ServiceResult<std::vector<savor::db::UiCanonicalJobProgress>>::Ok(
+            db->ListJobProgress(job_id, (std::max)(1, limit)));
+    }
+
     static ServiceResult<std::string> FetchJobInputIni(std::int64_t job_id) {
         auto* db = ExecutionDb();
         if (db == nullptr) {

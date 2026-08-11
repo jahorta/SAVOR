@@ -58,9 +58,9 @@ WorkflowUnitDefinition SeedProbeUnit(
         },
         .possible_outputs = {
             Port(
-                "accepted_input_frames",
-                "analysis.input_frame_set_id",
-                "Accepted input frames"),
+                "seed_probe_run",
+                "analysis.seed_probe_run",
+                "Confirmed SeedProbe run"),
         },
         .internal_step_kinds = { "seedprobe.run" },
         .step_templates = SingleStep("seedprobe.run"),
@@ -222,9 +222,9 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             },
             .possible_outputs = {
                 Port(
-                    "accepted_input_frames",
-                    "analysis.input_frame_set_id",
-                    "Accepted input frames"),
+                    "seed_probe_run",
+                    "analysis.seed_probe_run",
+                    "Confirmed SeedProbe run"),
             },
             .internal_step_kinds = { "seedprobe.run" },
             .step_templates = SingleStep("seedprobe.run"),
@@ -260,20 +260,20 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
 
     (void)registry.RegisterUnit(
         WorkflowUnitDefinition{
-            .unit_kind = "battle.context_probe",
-            .display_name = "Battle Context Probe",
-            .description = "Builds the initial battle context from a turn wave.",
+            .unit_kind = "battle.context",
+            .display_name = "Battle Context",
+            .description = "Captures planning context from the exact prebattle entry state.",
             .unit_variant = "battle",
-            .breakpoint_profile_key = "battle.context_probe",
+            .breakpoint_profile_key = "battle.context",
             .default_activation_params_json = "{}",
             .required_inputs = {
-                Port("turn_wave", "analysis_battle.turn_wave_id", "Turn wave"),
+                Port("entry_savestate", "state.movie_inactive_savestate_id", "Entry savestate"),
             },
             .possible_outputs = {
-                Port("battle_context", "analysisbattle.context_probe", "Battle context"),
+                Port("battle_context", "analysis_battle.battle_context_id", "Battle context"),
             },
-            .internal_step_kinds = { "battle.context_probe" },
-            .step_templates = SingleStep("battle.context_probe"),
+            .internal_step_kinds = { "battle.context" },
+            .step_templates = SingleStep("battle.context"),
         },
         &ignored);
 
@@ -281,7 +281,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
         WorkflowUnitDefinition{
             .unit_kind = "battle_chain",
             .display_name = "Battle Chain",
-            .description = "Builds battle context, then runs one or more battle turns from candidate input frames.",
+            .description = "Joins parallel Battle Context and confirmed SeedProbe outputs, then runs one or more battle-turn waves.",
             .unit_variant = "battle",
             .breakpoint_profile_key = "battle.default",
             .default_activation_params_json = "{}",
@@ -289,15 +289,15 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 { .ref_kind = "authoring.battle_chain_spec", .display_name = "Battle chain spec" },
             },
             .required_inputs = {
-                Port("entry_savestate", "state.movie_inactive_savestate_id", "Entry savestate"),
-                Port("initial_input_frames", "analysis.input_frame_set_id", "Initial input frames"),
+                Port("seed_probe_run", "analysis.seed_probe_run", "Confirmed SeedProbe run"),
+                Port("battle_context", "analysis_battle.battle_context_id", "Battle context"),
             },
             .possible_outputs = {
-                Port("terminal_savestate", "state.movie_inactive_savestate_id", "Terminal savestate"),
+                Port("battle_set", "analysis_battle.battle_set", "Battle set"),
                 Port("battle_manual_followup", "analysis.battle_manual_followup_id", "Battle manual follow-up"),
             },
-            .internal_step_kinds = { "battle.context_probe", "battle.single_turn" },
-            .step_templates = SingleStep("battle_chain"),
+            .internal_step_kinds = { "battle.start", "battle.single_turn" },
+            .step_templates = SingleStep("battle.start"),
         },
         &ignored);
 

@@ -49,14 +49,8 @@ SemanticObservationComposition Definition()
                     Reducer("test.project.rng-seed"),
             }},
             .current_point = CurrentPointPolicy::FutureOnly,
-            .subscribe_group_action = CanonicalActionIdentity(
-                CanonicalAction::StopPointsSubscribeGroup),
             .continue_until_action = CanonicalActionIdentity(
                 CanonicalAction::ExecutionContinueUntil),
-            .subscription_handle_type =
-                CanonicalActionOutputType(
-                    CanonicalAction::
-                        StopPointsSubscribeGroup),
             .receipt_type = CanonicalActionOutputType(
                 CanonicalAction::
                     ExecutionContinueUntil),
@@ -280,6 +274,24 @@ TEST(SemanticObservationComposition, LowersToOrdinaryScopedActionsAndValues)
     ASSERT_EQ(module.functions.size(), 1u);
 
     const auto instructions = Instructions(module);
+    const auto stop_group_config = std::ranges::find_if(
+        instructions,
+        [](const Instruction* instruction) {
+            return instruction->selector.contains(
+                "semantic-points/static-config");
+        });
+    ASSERT_NE(stop_group_config, instructions.end());
+    ASSERT_TRUE((*stop_group_config)->literal.has_value());
+    const auto* stop_group_bytes = std::get_if<std::vector<Byte>>(
+        &(*stop_group_config)->literal->payload);
+    ASSERT_NE(stop_group_bytes, nullptr);
+    const auto decoded_points =
+        DecodeSemanticPointSetV1(*stop_group_bytes);
+    ASSERT_TRUE(decoded_points) << decoded_points.diagnostic;
+    EXPECT_EQ(decoded_points.value->program_counters.size(), 1u);
+    EXPECT_EQ(
+        decoded_points.value->hit_time_sample_descriptor_ids.size(),
+        1u);
     ASSERT_FALSE(instructions.empty());
     EXPECT_EQ(instructions.front()->opcode, InstructionOpcode::EnterScope);
     EXPECT_EQ(instructions.back()->opcode, InstructionOpcode::ExitScope);
@@ -291,7 +303,7 @@ TEST(SemanticObservationComposition, LowersToOrdinaryScopedActionsAndValues)
             {
                 return instruction->opcode;
             }),
-        4);
+        3);
     EXPECT_NE(std::ranges::find_if(
         instructions,
         [](const Instruction* instruction)
@@ -382,7 +394,7 @@ TEST(SemanticObservationComposition, PreservesDeclaredObservationOrder)
         {
             if (!instruction->literal ||
                 !instruction->selector.contains(
-                    "subscribe/static-config"))
+                    "semantic-points/static-config"))
             {
                 return false;
             }
@@ -391,8 +403,8 @@ TEST(SemanticObservationComposition, PreservesDeclaredObservationOrder)
                     &instruction->literal->payload);
             return bytes && bytes->size() >= 4 &&
                 (*bytes)[0] == 'S' &&
-                (*bytes)[1] == 'G' &&
-                (*bytes)[2] == 'C' &&
+                (*bytes)[1] == 'P' &&
+                (*bytes)[2] == 'S' &&
                 (*bytes)[3] == '1';
         });
     EXPECT_NE(stop_config, instructions.end());
@@ -402,7 +414,7 @@ TEST(SemanticObservationComposition, PreservesDeclaredObservationOrder)
         [](const Instruction* instruction)
         {
             return instruction->opcode;
-        }), 5);
+        }), 4);
 }
 
 TEST(SemanticObservationComposition, InvalidDefinitionIsAtomic)
@@ -432,6 +444,56 @@ TEST(SemanticObservationComposition, RequiresExplicitPostFrameAction)
         "semantic.invalid_explicit_advance");
 }
 
+TEST(SemanticObservationComposition, Sps1CodecIsDeterministicAndLinksStaticSamplers)
+{
+    const auto definition = Definition();
+    const auto first = EncodeSemanticPointSetV1(
+        definition.await.alternatives,
+        definition.await.hit_time_samples);
+    const auto second = EncodeSemanticPointSetV1(
+        definition.await.alternatives,
+        definition.await.hit_time_samples);
+    EXPECT_EQ(first, second);
+    ASSERT_GE(first.size(), 4u);
+    EXPECT_EQ(
+        std::string(first.begin(), first.begin() + 4),
+        "SPS1");
+
+    const auto decoded = DecodeSemanticPointSetV1(first);
+    ASSERT_TRUE(decoded) << decoded.diagnostic;
+    EXPECT_EQ(
+        decoded.value->program_counters,
+        (std::vector<std::uint32_t>{0x80101e48u}));
+    ASSERT_EQ(
+        decoded.value->hit_time_sample_descriptor_ids.size(),
+        1u);
+    EXPECT_NE(
+        decoded.value->hit_time_sample_descriptor_ids.front(),
+        0u);
+
+    auto incompatible = definition.await.hit_time_samples;
+    incompatible.front().result_type =
+        TypeRef::Builtin(BuiltinType::U16);
+    const auto rejected = DecodeSemanticPointSetV1(
+        EncodeSemanticPointSetV1(
+            definition.await.alternatives,
+            incompatible));
+    EXPECT_FALSE(rejected);
+    EXPECT_NE(
+        rejected.diagnostic.find("incompatible"),
+        std::string::npos);
+
+    auto non_pc = definition.await.alternatives;
+    non_pc.front().kind = SemanticPointKind::Memory;
+    EXPECT_FALSE(DecodeSemanticPointSetV1(
+        EncodeSemanticPointSetV1(non_pc)));
+
+    auto unknown = definition.await.alternatives;
+    unknown.front().kind = static_cast<SemanticPointKind>(0xff);
+    EXPECT_FALSE(DecodeSemanticPointSetV1(
+        EncodeSemanticPointSetV1(unknown)));
+}
+
 TEST(SemanticObservationComposition, CompletedLoweringPassesProgramVerifier)
 {
     auto definition = Definition();
@@ -456,6 +518,51 @@ TEST(SemanticObservationComposition, CompletedLoweringPassesProgramVerifier)
         << (verified.diagnostics.empty()
                 ? ""
                 : verified.diagnostics.front().message);
+}
+
+TEST(SemanticObservationComposition, ProgramVerifierRejectsMalformedSps1Constant)
+{
+    auto definition = Definition();
+    definition.await.hit_time_samples.clear();
+    definition.observations.erase(definition.observations.begin());
+    definition.ordered_uses = {{
+        .canonical_id = "paused",
+        .definition_id = "paused_rng",
+        .mode = ObservationAcquisitionMode::PausedAtPoint,
+        .requirement = ObservationRequirement::Required,
+    }};
+    ProgramModule module;
+    const auto lowered = LowerSemanticObservation(definition, module);
+    ASSERT_TRUE(lowered) << lowered.diagnostics.front().message;
+    bool mutated = false;
+    for (auto& function : module.functions)
+    {
+        for (auto& block : function.blocks)
+        {
+            for (auto& instruction : block.instructions)
+            {
+                if (!instruction.literal || instruction.literal->type !=
+                        CanonicalRuntimeType(
+                            CanonicalRuntimeSchema::SemanticPointSet))
+                    continue;
+                auto* bytes = std::get_if<std::vector<Byte>>(
+                    &instruction.literal->payload);
+                ASSERT_NE(bytes, nullptr);
+                bytes->push_back(0xff);
+                mutated = true;
+            }
+        }
+    }
+    ASSERT_TRUE(mutated);
+    const auto verified = CompleteAndVerify(module, *lowered.function);
+    EXPECT_FALSE(verified.success);
+    EXPECT_TRUE(std::ranges::any_of(
+        verified.diagnostics,
+        [](const VerificationDiagnostic& diagnostic) {
+            return diagnostic.code ==
+                    VerificationErrorCode::InvalidInstruction &&
+                diagnostic.message.find("SPS1") != std::string::npos;
+        }));
 }
 
 TEST(SemanticObservationComposition, PackQueryBuildsExactProjectedRequest)
@@ -494,14 +601,6 @@ TEST(SemanticObservationComposition, PackQueryBuildsExactProjectedRequest)
         .paused_action_pack = BattlePackIdentity(),
         .paused_request_type = request,
         .paused_request_fields = {
-            {
-                .field_name = "stop_sequence",
-                .field_type =
-                    TypeRef::Builtin(BuiltinType::U64),
-                .source = ObservationDefinition::
-                    RequestValueSource::StopReceiptField,
-                .source_field = "stop_sequence",
-            },
             {
                 .field_name = "workset_epoch",
                 .field_type =
@@ -543,9 +642,9 @@ TEST(SemanticObservationComposition, PackQueryBuildsExactProjectedRequest)
                     InstructionOpcode::RecordConstruct &&
                 instruction->result &&
                 instruction->result->type == request;
-        });
+    });
     ASSERT_NE(request_record, instructions.end());
-    EXPECT_EQ((*request_record)->operands.size(), 3u);
+    EXPECT_EQ((*request_record)->operands.size(), 2u);
 
     const auto verified =
         CompleteAndVerify(module, *lowered.function);

@@ -3,7 +3,7 @@
 #include "ActionViewStdJsonCache.h"
 #include "BattlePredictionDbInput.h"
 #include "BattlePredictionScenario.h"
-#include "BattleJobRunOptions.h"
+#include "DbCopy.h"
 #include "CliResourceInputCompatibility.h"
 
 #include <Core/Input/SoaBattle/BattleCommandCodec.h>

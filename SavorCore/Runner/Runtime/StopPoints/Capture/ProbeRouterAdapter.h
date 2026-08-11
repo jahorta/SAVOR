@@ -51,8 +51,9 @@ struct ProbeRouterReconcileRequest
 // Passive compatibility bridge for savor.capture.profile/1. It owns one
 // instantiable ProbeRuntime, translates its current logical requirements into
 // one source-scoped router group, and reports group replacement work to the
-// session actor. It never registers a Wake/Guard/Intercept subscription and
-// never mutates physical stop points itself.
+// session actor. It registers passive observations only: it never owns a
+// foreground wait or trusted interruption request and never mutates physical
+// stop points itself.
 class ProbeRouterAdapter final
     : public IStopPointConsumer,
       public IStopPointCpuObserver
@@ -88,13 +89,6 @@ public:
         return last_error_;
     }
 
-    [[nodiscard]] bool SetProfileGroupEnabled(
-        std::string_view group,
-        bool enabled);
-    [[nodiscard]] bool ReplaceProfile(
-        savor::probe::Profile profile,
-        std::string profile_json,
-        std::string* error_out = nullptr);
     [[nodiscard]] bool EmitMarker(
         std::string_view id,
         std::uint64_t value = 0);

@@ -30,13 +30,12 @@ namespace savor::runner::parallel::savordb {
 // or result-projection dependency. It owns only the physical worker fleet and
 // the WRMS protocol sessions hosted by that fleet.
 
-struct WorkerCoordinatorCapabilityPreflightResult {
+struct WorkerCoordinatorRuntimePreflightResult {
     // A custom preflight owns launch, WRMS negotiation, and OpenSession. A
     // true result therefore means the supplied ProcessWorker is ready for
     // workset commands, not merely that its executable was inspected.
     bool process_ready = false;
-    savor::runtime::WorkerCapabilityMask capabilities = 0;
-    std::optional<savor::runtime::WorkerRuntimeManifest> runtime_manifest;
+    std::optional<savor::runtime::WorkerRuntimeContractV1> runtime_contract;
     bool retryable = true;
     std::string error;
 };
@@ -47,8 +46,8 @@ struct WorkerCoordinatorConfig {
         const WorkerCoordinatorConfig&,
         std::filesystem::path*,
         std::string*)>;
-    using WorkerCapabilityPreflight =
-        std::function<WorkerCoordinatorCapabilityPreflightResult(
+    using WorkerRuntimePreflight =
+        std::function<WorkerCoordinatorRuntimePreflightResult(
             std::size_t,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&)>;
@@ -59,7 +58,6 @@ struct WorkerCoordinatorConfig {
     std::uint32_t worker_start_retry_backoff_ms = 5000;
     std::uint32_t max_worker_start_attempts = 3;
     std::uint32_t max_concurrent_worker_starts = 2;
-    std::uint32_t module_prepare_timeout_ms = 10000;
     std::uint32_t liveness_probe_interval_ms = 5000;
     std::uint32_t liveness_probe_timeout_ms = 2000;
     std::uint32_t liveness_probe_failure_threshold = 2;
@@ -69,20 +67,15 @@ struct WorkerCoordinatorConfig {
     std::string dolphin_base_dir;
     std::string worker_dir_root;
     std::string worker_binary_runtime_root;
-    bool visual_workers = false;
-    // Retained as host UI intent. Canonical workset execution owns guest
-    // execution state; WorkerCoordinator does not issue legacy resume or step
-    // commands during session startup.
-    bool auto_resume_visual_workers = false;
+    savor::runtime::WorkerMode worker_mode =
+        savor::runtime::WorkerMode::Headless;
     std::string runtime_artifact_root;
 
-    // Top-level composition selects enabled production program kinds. The
-    // immutable definitions and modules are resolved only from SavorCore.
-    std::vector<std::int32_t> enabled_program_kinds;
-    savor::runtime::WorkerWorksetLimits required_workset_limits{};
+    savor::runtime::WorkerRuntimeContractV1 expected_runtime_contract =
+        savor::runtime::BuildProductionWorkerRuntimeContractV1();
 
     RuntimeSlotPreparer runtime_slot_preparer;
-    WorkerCapabilityPreflight worker_capability_preflight;
+    WorkerRuntimePreflight worker_runtime_preflight;
 
 };
 
@@ -110,22 +103,19 @@ struct WorkerCoordinatorStartResult {
     }
 };
 
-struct WorkerWorksetCompatibility {
-    savor::runtime::ProgramModuleIdentity module;
-    std::string entrypoint;
-    std::string verified_dependency_sha256;
-    std::string runtime_profile_sha256;
+struct WorkerWorksetDispatchInfo {
     std::string execution_key_sha256;
+    std::string program_package_sha256;
     std::string baseline_sha256;
     std::uint32_t item_count = 0;
     std::size_t encoded_size_bytes = 0;
 };
 
-struct ReadyWorkerCompatibilitySnapshot {
+struct ReadyWorkerDispatchSnapshot {
     std::size_t worker_id = 0;
     std::uint64_t process_generation = 0;
-    savor::runtime::WorkerCapabilityMask capabilities = 0;
-    savor::runtime::WorkerRuntimeManifest runtime_manifest;
+    savor::runtime::WorkerMode mode = savor::runtime::WorkerMode::Headless;
+    std::string runtime_contract_sha256;
     // Immediate physical-admission credits only. The execution coordinator
     // must not use this value as the capacity of its future-work buffer.
     std::uint32_t available_item_credits = 0;
@@ -133,7 +123,7 @@ struct ReadyWorkerCompatibilitySnapshot {
     std::optional<std::uint64_t> resident_workset_id;
 
     std::optional<std::string> warm_execution_key_sha256;
-    std::optional<std::string> warm_program_module_id;
+    std::optional<std::string> warm_program_package_sha256;
 };
 
 struct WorkerCoordinatorEventContext {
@@ -177,7 +167,6 @@ enum class WorkerSubmitDisposition : std::uint8_t {
     AmbiguousAfterWrite,
     TargetTemporarilyUnavailable,
     StaleGeneration,
-    IncompatibleWorkset,
     DuplicateWorkset,
     InvalidWorkset,
     CoordinatorNotAccepting,
@@ -260,7 +249,6 @@ struct WorkerCoordinatorTelemetry {
     std::uint64_t submit_rejected = 0;
     std::uint64_t submit_temporary_unavailable = 0;
     std::uint64_t submit_stale_generation = 0;
-    std::uint64_t submit_incompatible = 0;
     std::uint64_t submit_deterministic_rejection = 0;
     std::uint64_t submit_transport_canceled_before_write = 0;
     std::uint64_t item_cancellation_attempts = 0;
@@ -289,18 +277,17 @@ public:
     void SetDesiredWorkerCount(std::size_t desired_workers);
     [[nodiscard]] std::size_t DesiredWorkerCount() const noexcept;
     [[nodiscard]] bool IsStarted() const noexcept;
+    [[nodiscard]] const savor::runtime::WorkerRuntimeContractV1&
+        RuntimeContract() const noexcept;
 
     void SetCallbacks(WorkerCoordinatorCallbacks callbacks);
 
-    [[nodiscard]] std::vector<ReadyWorkerCompatibilitySnapshot>
+    [[nodiscard]] std::vector<ReadyWorkerDispatchSnapshot>
         SnapshotReadyWorkers() const;
     [[nodiscard]] std::vector<WorkerSnapshot> SnapshotWorkers() const;
     [[nodiscard]] FleetStartupSnapshot SnapshotFleetStartup() const;
     [[nodiscard]] WorkerCoordinatorTelemetry SnapshotTelemetry() const;
     [[nodiscard]] WorkerCoordinatorStartResult SnapshotStartResult() const;
-    [[nodiscard]] std::vector<std::int32_t> EnabledProgramKinds() const;
-    [[nodiscard]] savor::runtime::WorkerWorksetLimits
-        RequiredWorksetLimits() const noexcept;
     [[nodiscard]] bool ConfirmWorksetResidence(
         WorkerExecutionTarget target,
         savor::runtime::WorkerWorksetId expected_workset_id,
@@ -330,12 +317,8 @@ public:
         std::uint64_t render_widget_handle,
         std::string host_events_pipe_name = {});
 
-    [[nodiscard]] static WorkerWorksetCompatibility CompatibilityOf(
+    [[nodiscard]] static WorkerWorksetDispatchInfo DispatchInfoOf(
         const savor::runtime::WorkerWorksetDefinition& workset);
-    [[nodiscard]] static bool IsCompatible(
-        const ReadyWorkerCompatibilitySnapshot& worker,
-        const WorkerWorksetCompatibility& requirement,
-        std::string* diagnostic_out = nullptr);
 
 private:
     struct WorkerSlot;
@@ -358,9 +341,9 @@ private:
         std::chrono::steady_clock::time_point
             next_liveness_probe{};
         std::uint32_t consecutive_liveness_failures = 0;
-        savor::runtime::WorkerCapabilityMask capabilities = 0;
-        std::optional<savor::runtime::WorkerRuntimeManifest>
-            runtime_manifest;
+        savor::runtime::WorkerMode mode =
+            savor::runtime::WorkerMode::Headless;
+        std::string runtime_contract_sha256;
         std::uint32_t available_item_credits = 0;
         bool submission_in_progress = false;
         bool quarantine_requested = false;
@@ -368,7 +351,7 @@ private:
         std::optional<std::uint64_t> active_workset_id;
         std::optional<std::uint64_t> submitting_workset_id;
         std::optional<std::string> warm_execution_key_sha256;
-        std::optional<std::string> warm_program_module_id;
+        std::optional<std::string> warm_program_package_sha256;
         std::uint64_t accepted_worksets = 0;
         std::uint64_t completed_worksets = 0;
         std::uint64_t visual_render_widget_handle = 0;
@@ -393,7 +376,7 @@ private:
     std::vector<WorkerSlotPtr> CopyWorkerSlots() const;
     void ConfigureWorkerCallbacks(const WorkerSlotPtr& slot);
 
-    WorkerCoordinatorCapabilityPreflightResult PreflightWorkerSlot(
+    WorkerCoordinatorRuntimePreflightResult PreflightWorkerSlot(
         const WorkerSlotPtr& slot);
     bool PrepareRuntimeSlot(
         std::size_t worker_id,
@@ -414,7 +397,7 @@ private:
     void DetectLostWorkers();
     void ProbeWorkerLiveness();
 
-    [[nodiscard]] ReadyWorkerCompatibilitySnapshot SnapshotReadyWorker(
+    [[nodiscard]] ReadyWorkerDispatchSnapshot SnapshotReadyWorker(
         const WorkerSlot& slot) const;
     [[nodiscard]] WorkerCoordinatorEventContext EventContext(
         const WorkerSlot& slot) const;
@@ -501,7 +484,6 @@ private:
     std::atomic<std::uint64_t> submit_rejected_{0};
     std::atomic<std::uint64_t> submit_temporary_unavailable_{0};
     std::atomic<std::uint64_t> submit_stale_generation_{0};
-    std::atomic<std::uint64_t> submit_incompatible_{0};
     std::atomic<std::uint64_t> submit_deterministic_rejection_{0};
     std::atomic<std::uint64_t>
         submit_transport_canceled_before_write_{0};

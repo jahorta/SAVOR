@@ -41,6 +41,13 @@ void ScriptedDolphinBackendControl::SetCoreStartResult(
     core_start_result = std::move(result);
 }
 
+void ScriptedDolphinBackendControl::SetMovieActivationResult(
+    runtime::MovieBackendResult result)
+{
+    std::lock_guard lock(mutex);
+    movie_activation_result = std::move(result);
+}
+
 void ScriptedDolphinBackendControl::SetCloseResult(
     runtime::BackendResult result)
 {
@@ -239,10 +246,10 @@ ScriptedDolphinBackend::StopCoreForPreparedReadOnlyMovie()
 }
 
 runtime::MovieBackendResult
-ScriptedDolphinBackend::StartPreparedReadOnlyMovie()
+ScriptedDolphinBackend::StartPreparedReadOnlyMovieCorePaused()
 {
     std::lock_guard lock(control_->mutex);
-    control_->RecordLocked("movie.start-prepared-playback");
+    control_->RecordLocked("movie.start-prepared-core-paused");
     ++control_->core_start_count;
     runtime::MovieBackendResult result = control_->core_start_result;
     if (result.ok)
@@ -251,11 +258,21 @@ ScriptedDolphinBackend::StartPreparedReadOnlyMovie()
         control_->movie_snapshot.activity =
             runtime::MovieActivity::ReadOnlyPlayback;
         control_->movie_snapshot.read_only = true;
+        control_->movie_state = runtime::BackendMovieState::Playing;
     }
     else if (result.integrity == runtime::GuestIntegrity::Unknown)
         control_->core_state = runtime::BackendCoreState::Unknown;
     control_->changed.notify_all();
     return result;
+}
+
+runtime::MovieBackendResult
+ScriptedDolphinBackend::ActivatePreparedReadOnlyMoviePlayback()
+{
+    std::lock_guard lock(control_->mutex);
+    control_->RecordLocked("movie.activate-prepared-playback");
+    ++control_->movie_activation_count;
+    return control_->movie_activation_result;
 }
 
 runtime::MovieBackendResult
@@ -352,7 +369,14 @@ runtime::BackendResult ScriptedDolphinBackend::RestoreStateFile(
     control_->RecordLocked("restore_file");
     ++control_->restore_file_count;
     runtime::BackendResult result = control_->restore_file_result;
-    if (!result.ok && result.integrity == runtime::BackendIntegrity::Unknown)
+    if (result.ok)
+    {
+        if (control_->restore_file_pc)
+            control_->pc = *control_->restore_file_pc;
+        if (control_->restore_file_core_state)
+            control_->core_state = *control_->restore_file_core_state;
+    }
+    else if (result.integrity == runtime::BackendIntegrity::Unknown)
         control_->core_state = runtime::BackendCoreState::Unknown;
     control_->changed.notify_all();
     return result;
@@ -415,7 +439,14 @@ runtime::BackendResult ScriptedDolphinBackend::RestoreStateBuffer(
     control_->RecordLocked("restore_buffer");
     ++control_->restore_buffer_count;
     runtime::BackendResult result = control_->restore_buffer_result;
-    if (!result.ok && result.integrity == runtime::BackendIntegrity::Unknown)
+    if (result.ok)
+    {
+        if (control_->restore_buffer_pc)
+            control_->pc = *control_->restore_buffer_pc;
+        if (control_->restore_buffer_core_state)
+            control_->core_state = *control_->restore_buffer_core_state;
+    }
+    else if (result.integrity == runtime::BackendIntegrity::Unknown)
         control_->core_state = runtime::BackendCoreState::Unknown;
     control_->changed.notify_all();
     return result;
@@ -501,9 +532,9 @@ runtime::BackendInputPublication ScriptedDolphinBackend::Publish(
     }
     control_->input_frame = frame;
     control_->input_callback_count = 0;
-    ++control_->input_sequence;
+    ++control_->input_publication_epoch;
     control_->RecordLocked("input.publish");
-    return {runtime::BackendResult::Success(), control_->input_sequence};
+    return {runtime::BackendResult::Success(), control_->input_publication_epoch};
 }
 
 runtime::BackendInputPoll ScriptedDolphinBackend::QueryPoll(
@@ -519,7 +550,7 @@ runtime::BackendInputPoll ScriptedDolphinBackend::QueryPoll(
     }
     return {
         runtime::BackendResult::Success(),
-        control_->input_sequence,
+        control_->input_publication_epoch,
         control_->input_callback_count,
         control_->input_frame};
 }
@@ -609,7 +640,10 @@ ScriptedDolphinBackend::StopMovie() noexcept
     std::lock_guard lock(control_->mutex);
     control_->RecordLocked("movie.stop");
     if (control_->movie_result.ok)
+    {
         control_->movie_snapshot = {};
+        control_->movie_state = runtime::BackendMovieState::Inactive;
+    }
     return control_->movie_result;
 }
 

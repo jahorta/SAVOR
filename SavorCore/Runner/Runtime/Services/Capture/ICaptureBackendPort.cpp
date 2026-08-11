@@ -45,24 +45,6 @@ ProbeCaptureProfileAdapter::TakeReconcileRequest()
     return adapter_.TakeReconcileRequest();
 }
 
-bool ProbeCaptureProfileAdapter::SetProfileGroupEnabled(
-    std::string_view group,
-    bool enabled)
-{
-    return adapter_.SetProfileGroupEnabled(group, enabled);
-}
-
-bool ProbeCaptureProfileAdapter::ReplaceProfile(
-    savor::probe::Profile profile,
-    std::string profile_json,
-    std::string* error_out)
-{
-    return adapter_.ReplaceProfile(
-        std::move(profile),
-        std::move(profile_json),
-        error_out);
-}
-
 bool ProbeCaptureProfileAdapter::EmitMarker(
     std::string_view id,
     std::uint64_t value)

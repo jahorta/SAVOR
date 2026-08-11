@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runner/Runtime/ProgramRuntime/Model/ProgramModel.h"
+#include "../Model/ProgramModel.h"
 
 #include <cstdint>
 #include <optional>

@@ -182,13 +182,14 @@
     <ClInclude Include="Common\Events\EventPayloadResolvers.h" />
     <ClInclude Include="Common\Events\OutboxEventIds.h" />
     <ClInclude Include="Common\Events\OutboxRelay.h" />
-    <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.h" />
-    <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h" />
-    <ClInclude Include="Execution\ProgramDB\NavigationContext\NavigationContextAdapters.h" />
-    <ClInclude Include="Execution\ProgramDB\NavigationContext\NavigationContextPhaseRegistration.h" />
-    <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.h" />
-    <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.h" />
+    
+    <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProgram.h" />
+    
+    
+    
+    <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnProgram.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
+    <ClInclude Include="Execution\ProgramDB\WorksetObservationBinding.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramResultProcessor.h" />
     <ClInclude Include="Execution\ProgramDB\ProductionProgramKindRegistry.h" />
@@ -198,6 +199,7 @@
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeProgram.h" />
       <ClInclude Include="Execution\ProgramDB\TasMovieValidation\TasMovieValidationProgram.h" />
       <ClInclude Include="Execution\ProgramDB\TasMovieValidation\TasMovieCheckpointSterilizationProgram.h" />
+      <ClInclude Include="Execution\ProgramDB\TasMovieValidation\PreparedSterilizedCheckpointEvidence.h" />
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h" />
     <ClInclude Include="Common\Migrations\MigrationContext.h" />
     <ClInclude Include="Common\Migrations\MigrationRunner.h" />
@@ -209,7 +211,7 @@
     <ClInclude Include="Execution\Jobs\JobEventOrchestration.h" />
     <ClInclude Include="Execution\QueuedExecutionDb.h" />
     <ClInclude Include="Execution\Workflow\SqliteExecutionDb.h" />
-    <ClInclude Include="Execution\Workflow\AdapterChainOrchestrator.h" />
+    
     <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h" />
     <ClInclude Include="Execution\Workflow\WorkflowComposition.h" />
     <ClInclude Include="Execution\Workflow\WorkflowIntegrityChecks.h" />
@@ -217,7 +219,8 @@
     <ClInclude Include="Execution\Workflow\WorkflowCoordinatorService.h" />
     <ClInclude Include="Execution\Workflow\WorkflowGraphRoutingService.h" />
     <ClInclude Include="Execution\Workflow\WorkflowTerminalAdvancementService.h" />
-    <ClInclude Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowStepCompletionGate.h" />
+    
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h" />
     <ClInclude Include="SavorDb.h" />
     <ClInclude Include="State\IStateDb.h" />
@@ -247,23 +250,26 @@
     <ClCompile Include="Authoring\QueuedAuthoringDb.cpp" />
     <ClCompile Include="Authoring\RuntimeSymbolAuthoringService.cpp" />
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp" />
+    <ClCompile Include="Authoring\RelationalPredicateAuthoring.cpp" />
     <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp" />
     <ClCompile Include="Execution\QueuedExecutionDb.cpp" />
-    <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.cpp" />
-    <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.cpp" />
-    <ClCompile Include="Execution\ProgramDB\NavigationContext\NavigationContextAdapters.cpp" />
-    <ClCompile Include="Execution\ProgramDB\NavigationContext\NavigationContextPhaseRegistration.cpp" />
-    <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.cpp" />
-    <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.cpp" />
+    
+    <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProgram.cpp" />
+    
+    
+    
+    <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnProgram.cpp" />
     <ClCompile Include="Execution\ProgramDB\ProgramResultProcessor.cpp" />
     <ClCompile Include="Execution\ProgramDB\ProductionProgramKindRegistry.cpp" />
+    <ClCompile Include="Execution\ProgramDB\WorksetObservationBinding.cpp" />
     <ClCompile Include="Execution\ProgramDB\WorkerResultBlobCleanupService.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeExecutionAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeProgram.cpp" />
       <ClCompile Include="Execution\ProgramDB\TasMovieValidation\TasMovieValidationProgram.cpp" />
       <ClCompile Include="Execution\ProgramDB\TasMovieValidation\TasMovieCheckpointSterilizationProgram.cpp" />
+      <ClCompile Include="Execution\ProgramDB\TasMovieValidation\PreparedSterilizedCheckpointEvidence.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteExecutionDb.cpp" />
-    <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp" />
+    
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowComposition.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowIntegrityChecks.cpp" />
@@ -271,7 +277,8 @@
     <ClCompile Include="Execution\Workflow\WorkflowCoordinatorService.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowGraphRoutingService.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowTerminalAdvancementService.cpp" />
-    <ClCompile Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowStepCompletionGate.cpp" />
+    
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp" />
     <ClCompile Include="Execution\WorkerResultBlobStore.cpp" />
     <ClCompile Include="SavorDb.cpp" />
@@ -290,6 +297,10 @@
     <None Include="migration\AnalysisBattle\202606171200_analysisbattle_battle_advancement_terminology.sql" />
     <None Include="migration\AnalysisBattle\202606171500_analysisbattle_turn_job_replication_facts.sql" />
     <None Include="migration\AnalysisBattle\202607211200_analysisbattle_battle_end_workflow.sql" />
+    <None Include="migration\AnalysisBattle\202608081000_analysisbattle_battle_context_artifact.sql" />
+    <None Include="migration\AnalysisBattle\202608081100_analysisbattle_predicate_bundle_binding.sql" />
+    <None Include="migration\AnalysisBattle\202608081200_analysisbattle_single_turn_results.sql" />
+    <None Include="migration\AnalysisBattle\202608081300_analysisbattle_battle_start.sql" />
     <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql" />
     <None Include="migration\AnalysisSeedProbe\202607211100_analysisseedprobe_field_return_flavor.sql" />
     <None Include="migration\AnalysisTasMovie\202608041100_analysis_tas_movie_validation.sql" />
@@ -310,6 +321,8 @@
     <None Include="migration\Authoring\202604101400_authoring_battle_chain_spec.sql" />
     <None Include="migration\Authoring\202606101300_authoring_runtime_symbol_packs.sql" />
     <None Include="migration\Authoring\202606171300_authoring_predicate_required_breakpoints.sql" />
+    <None Include="migration\Authoring\202608081000_authoring_predicate_bundles.sql" />
+    <None Include="migration\Authoring\202608111000_authoring_battle_plan_relational_turns.sql" />
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql" />
     <None Include="migration\Execution\202604051200_execution_stage3b_workflow.sql" />
     <None Include="migration\Execution\202604061000_execution_phase0_workflow_input_contracts.sql" />
@@ -322,9 +335,12 @@
     <None Include="migration\Execution\202606181200_execution_active_workflow_materialization_index.sql" />
     <None Include="migration\Execution\202607291000_execution_workset_coordination.sql" />
     <None Include="migration\Execution\202608011000_execution_work_availability.sql" />
+    <None Include="migration\Execution\202608091000_execution_structured_job_progress.sql" />
     <None Include="migration\State\202604051000_state_stage2_schema.sql" />
     <None Include="migration\State\202607231800_state_derivation_source_context_index.sql" />
     <None Include="migration\State\202608041000_state_tas_movie_roots_and_trees.sql" />
+    <None Include="migration\State\202608071200_state_savestate_playback_state.sql" />
+    <None Include="migration\State\202608081000_state_battle_context_artifact.sql" />
     <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql" />
     <None Include="migration\UIRead\202604051200_uiread_stage3b_workflow.sql" />
     <None Include="migration\UIRead\202604051300_uiread_stage3c_projection_checkpoint_compat.sql" />
@@ -345,6 +361,7 @@
     <None Include="migration\UIRead\202606201000_uiread_archive_workflow_scope.sql" />
     <None Include="migration\UIRead\202606201100_uiread_archive_name_notes.sql" />
     <None Include="migration\UIRead\202607291100_uiread_result_processing_visibility.sql" />
+    <None Include="migration\UIRead\202608091000_uiread_structured_job_progress.sql" />
     <None Include="update_generated_migrations_command.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

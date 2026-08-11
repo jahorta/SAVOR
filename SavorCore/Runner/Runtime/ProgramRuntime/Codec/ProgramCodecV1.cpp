@@ -19,6 +19,7 @@ namespace {
 constexpr std::array<Byte, 4> kModuleMagic{'S', 'P', 'R', 'M'};
 constexpr std::array<Byte, 4> kDependencyLockMagic{'S', 'P', 'R', 'D'};
 constexpr std::array<Byte, 4> kInvocationMagic{'S', 'P', 'R', 'I'};
+constexpr std::array<Byte, 4> kEmissionMagic{'S', 'P', 'R', 'E'};
 constexpr std::array<Byte, 4> kResultMagic{'S', 'P', 'R', 'R'};
 
 [[nodiscard]] bool IsValidUtf8(std::string_view text) noexcept
@@ -1896,7 +1897,6 @@ void WriteExecutionPolicy(
     writer.Bool(execution.allow_input);
     writer.Bool(execution.allow_capture);
     writer.Bool(execution.record_trace);
-    writer.Bool(execution.record_progress);
 }
 
 bool ReadExecutionPolicy(
@@ -1908,8 +1908,7 @@ bool ReadExecutionPolicy(
         reader.Bool(execution.allow_movie_recording) &&
         reader.Bool(execution.allow_input) &&
         reader.Bool(execution.allow_capture) &&
-        reader.Bool(execution.record_trace) &&
-        reader.Bool(execution.record_progress);
+        reader.Bool(execution.record_trace);
 }
 
 void WriteProvenanceEntry(Writer& writer, const ProvenanceEntry& entry)
@@ -2625,6 +2624,28 @@ DecodeResult<ProgramInvocation> DecodeProgramInvocationV1(
         limits,
         ReadInvocationBody,
         EncodeProgramInvocationV1);
+}
+
+EncodeResult EncodeProgramEmissionV1(
+    const ProgramEmission& emission,
+    const CodecLimits& limits)
+{
+    return EncodeEnvelope(
+        kEmissionMagic,
+        limits,
+        [&](Writer& writer) { WriteEmission(writer, emission); });
+}
+
+DecodeResult<ProgramEmission> DecodeProgramEmissionV1(
+    std::span<const Byte> bytes,
+    const CodecLimits& limits)
+{
+    return DecodeCanonical<ProgramEmission>(
+        bytes,
+        kEmissionMagic,
+        limits,
+        ReadEmission,
+        EncodeProgramEmissionV1);
 }
 
 EncodeResult EncodeProgramResultV1(

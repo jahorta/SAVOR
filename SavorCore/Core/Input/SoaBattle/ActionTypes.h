@@ -1,7 +1,9 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <utility>
 #include "../../Memory/Soa/SoaConstants.h"
 
@@ -15,9 +17,54 @@ namespace soa::battle::actions {
         UseItem = 4
     };
 
+    struct BattleActionDefinition {
+        BattleAction action;
+        std::string_view name;
+    };
+
+    inline constexpr std::array<BattleActionDefinition, 5>
+        BattleActionDefinitions{{
+            {BattleAction::Attack, "Attack"},
+            {BattleAction::Defend, "Defend"},
+            {BattleAction::Focus, "Focus"},
+            {BattleAction::FakeAttack, "FakeAttack"},
+            {BattleAction::UseItem, "UseItem"},
+        }};
+
+    [[nodiscard]] constexpr const BattleActionDefinition*
+    find_battle_action_definition(std::int64_t value) noexcept {
+        for (const auto& definition : BattleActionDefinitions) {
+            if (static_cast<std::int64_t>(definition.action) == value)
+                return &definition;
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] consteval bool battle_action_definitions_are_complete() {
+        if (BattleActionDefinitions.size() != 5) return false;
+        for (std::size_t index = 0;
+             index < BattleActionDefinitions.size(); ++index) {
+            const auto& definition = BattleActionDefinitions[index];
+            if (definition.name.empty()) return false;
+            for (std::size_t other = 0; other < index; ++other) {
+                if (BattleActionDefinitions[other].action == definition.action ||
+                    BattleActionDefinitions[other].name == definition.name) {
+                    return false;
+                }
+            }
+        }
+        return find_battle_action_definition(0) != nullptr &&
+            find_battle_action_definition(1) != nullptr &&
+            find_battle_action_definition(2) != nullptr &&
+            find_battle_action_definition(3) != nullptr &&
+            find_battle_action_definition(4) != nullptr;
+    }
+
+    static_assert(battle_action_definitions_are_complete());
+
     static constexpr size_t ACTION_PARAM_WIRE_SIZE = 3;
     struct ActionParameters {
-        uint8_t target_slot = 0;   // single-target, use -1 for first available enemy
+        uint8_t target_slot = 0xFF; // single-target; 0xFF selects first available enemy
         uint16_t item_id = 0xFFFF; // valid when macro==UseItem
 
         /* Wire spec (uint8_t) (3 bytes)
@@ -33,7 +80,9 @@ namespace soa::battle::actions {
             if (end - cur < static_cast<std::ptrdiff_t>(ACTION_PARAM_WIRE_SIZE)) return false;
 
             ap.target_slot = *cur; cur += 1;
-            ap.item_id = static_cast<uint16_t>(*cur); cur += 2;
+            ap.item_id = static_cast<uint16_t>(cur[0])
+                | static_cast<uint16_t>(cur[1] << 8);
+            cur += 2;
             return true;
         }
     };
@@ -60,7 +109,9 @@ namespace soa::battle::actions {
             if (end - cur < static_cast<std::ptrdiff_t>(BATTLE_COMMAND_WIRE_SIZE)) return false;
 
             ap.actor_slot = *cur; cur += 1;
-            ap.macro = static_cast<BattleAction>(*cur); cur += 1;
+            const auto* action = find_battle_action_definition(*cur);
+            if (action == nullptr) return false;
+            ap.macro = action->action; cur += 1;
             ActionParameters::from_wire(cur, end, ap.params);
             return true;
         }

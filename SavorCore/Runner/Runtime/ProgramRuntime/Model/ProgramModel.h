@@ -73,7 +73,6 @@ struct InvocationExecutionPolicy
     bool allow_input = false;
     bool allow_capture = false;
     bool record_trace = false;
-    bool record_progress = true;
 
     auto operator<=>(const InvocationExecutionPolicy&) const = default;
 };

@@ -18,6 +18,7 @@
 #include "Services/Telemetry/TelemetryBus.h"
 #include "StopPoints/StopPointRouter.h"
 #include "ProgramRuntime/Actions/SessionResourceBindingTable.h"
+#include "ProgramRuntime/Actions/BoundedStopPointCpuEvaluator.h"
 
 #include <chrono>
 #include <atomic>
@@ -33,7 +34,11 @@ namespace savor::runtime {
 enum class SessionOperation : std::uint8_t
 {
     Open,
-    BeginWorkset,
+    OpenWorksetInitialization,
+    CommitWorksetInitialization,
+    AbortWorksetInitialization,
+    BeginWorksetItemReset,
+    CommitWorksetItemReset,
     EndWorkset,
     RestoreSavestate,
     Screenshot,
@@ -46,6 +51,7 @@ enum class SessionOperation : std::uint8_t
 
 struct SessionOpenOptions
 {
+    WorkerMode worker_mode = WorkerMode::Headless;
     BackendOpenOptions backend;
     std::filesystem::path runtime_artifact_root;
 };
@@ -87,7 +93,16 @@ public:
         StopPointIngressNotifier notifier) noexcept;
 
     SessionOperationReceipt Open(const SessionOpenOptions& options);
-    SessionOperationReceipt BeginWorkset(WorkerWorksetId workset_id);
+    SessionOperationReceipt OpenWorksetInitialization(
+        WorkerWorksetId workset_id);
+    SessionOperationReceipt CommitWorksetInitialization(
+        WorkerWorksetId workset_id);
+    SessionOperationReceipt AbortWorksetInitialization(
+        WorkerWorksetId workset_id);
+    SessionOperationReceipt BeginWorksetItemReset(
+        WorkerWorksetId workset_id);
+    SessionOperationReceipt CommitWorksetItemReset(
+        WorkerWorksetId workset_id);
     SessionOperationReceipt EndWorkset(WorkerWorksetId workset_id);
 
     [[nodiscard]] ImmutableSavestateArtifactCaptureReceipt
@@ -119,7 +134,7 @@ public:
     void HandleStopPointReceipt(StopRouteReceipt receipt);
     void PumpExecution();
     [[nodiscard]] std::vector<ExecutionEvent> DrainExecutionEvents();
-    [[nodiscard]] ExecutionSnapshot execution_snapshot() const;
+    [[nodiscard]] std::optional<ExecutionSnapshot> execution_snapshot() const;
     [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
     next_execution_wake() const;
     [[nodiscard]] BackendExecutionCapabilityMask
@@ -172,6 +187,12 @@ public:
         return movie_service_.get();
     }
 
+    // Starts the exact workset-initialized movie preparation across an
+    // execution-evidence replacement boundary. A pre-restart engine is never
+    // retained across the guest-core replacement.
+    [[nodiscard]] MovieOperationReceipt StartPreparedReadOnlyPlayback(
+        MoviePreparationId preparation);
+
     [[nodiscard]] CaptureService* capture_service() noexcept
     {
         return capture_service_.get();
@@ -190,11 +211,18 @@ public:
     [[nodiscard]] program::SessionResourceBindingTable*
     resource_bindings() noexcept
     {
-        return resource_bindings_.get();
+        return resource_relationships_.get();
     }
 
 private:
     friend class WorksetStateCoordinator;
+
+    enum class GuestStateTransaction : std::uint8_t
+    {
+        None,
+        Initializing,
+        ResettingItem,
+    };
 
     [[nodiscard]] bool BindOrCheckOwner() noexcept;
     [[nodiscard]] bool CanOperate() const noexcept;
@@ -232,6 +260,7 @@ private:
     [[nodiscard]] BackendResult InitializeServices(WorksetEpoch first_epoch);
     [[nodiscard]] BackendResult InitializeServiceComposition();
     [[nodiscard]] BackendResult InitializeExecution(WorksetEpoch first_epoch);
+    [[nodiscard]] BackendResult RemoveExecutionEngine() noexcept;
     [[nodiscard]] BackendResult CleanupServices() noexcept;
     [[nodiscard]] BackendResult CleanupStopPoints();
     [[nodiscard]] BackendResult TaintAndRetireSessionAfterStopPointFailure(
@@ -245,6 +274,8 @@ private:
     SessionId session_id_;
     std::unique_ptr<IDolphinBackend> backend_;
     std::unique_ptr<PhysicalStopPointManager> physical_stop_manager_;
+    std::unique_ptr<program::BoundedStopPointCpuEvaluator>
+        stop_cpu_evaluator_;
     std::unique_ptr<StopPointRouter> stop_router_;
     std::unique_ptr<TelemetryBus> telemetry_bus_;
     std::unique_ptr<InputArbiter> input_arbiter_;
@@ -260,7 +291,7 @@ private:
     std::unique_ptr<CaptureService> capture_service_;
     std::unique_ptr<SessionResourceLedger> resource_ledger_;
     std::unique_ptr<program::SessionResourceBindingTable>
-        resource_bindings_;
+        resource_relationships_;
     HostActivityTracker host_activity_;
     ExecutionEngineConfig execution_engine_config_;
     std::unique_ptr<ExecutionEngine> execution_engine_;
@@ -270,6 +301,8 @@ private:
     WorksetEpoch workset_epoch_;
     WorksetEpoch::value_type next_workset_epoch_ = 1;
     WorkerWorksetId active_workset_id_;
+    GuestStateTransaction guest_state_transaction_ =
+        GuestStateTransaction::None;
     BackendCoreState core_state_ = BackendCoreState::Closed;
     std::thread::id owner_thread_;
     bool owner_bound_ = false;

@@ -327,15 +327,13 @@ ProbeRouterAdapter::BuildCurrentGroupDefinition()
             StopSubscriptionDefinition{
                 .id = StopSubscriptionId(next_id++),
                 .point = std::move(point),
-                .delivery = progress_only
-                    ? StopDeliveryMode::Progress
-                    : StopDeliveryMode::Observe,
-                .policy = StopRoutingPolicy::Pass,
+                .route = PassiveStopObservation{
+                    .cpu_observer_descriptor_id =
+                        config_.cpu_observer_descriptor_id,
+                    .lossless = !progress_only,
+                },
                 .lifetime = StopSubscriptionLifetime::Scoped,
                 .priority = config_.priority,
-                .cpu_observer_descriptor_id =
-                    config_.cpu_observer_descriptor_id,
-                .lossless = !progress_only,
                 .consumer = this,
             });
     };
@@ -364,42 +362,6 @@ std::optional<ProbeRouterReconcileRequest>
 ProbeRouterAdapter::TakeReconcileRequest()
 {
     return std::exchange(pending_reconcile_, std::nullopt);
-}
-
-bool ProbeRouterAdapter::SetProfileGroupEnabled(
-    std::string_view group,
-    bool enabled)
-{
-    if (!runtime_->set_group_enabled(group, enabled))
-        return false;
-    (void)runtime_->consume_physical_reconcile_request();
-    QueueReconcile({});
-    return pending_reconcile_.has_value();
-}
-
-bool ProbeRouterAdapter::ReplaceProfile(
-    savor::probe::Profile profile,
-    std::string profile_json,
-    std::string* error_out)
-{
-    if (!runtime_->replace_profile(
-            std::move(profile),
-            std::move(profile_json),
-            &last_error_))
-    {
-        if (error_out)
-            *error_out = last_error_;
-        return false;
-    }
-    (void)runtime_->consume_physical_reconcile_request();
-    QueueReconcile({});
-    if (!pending_reconcile_)
-    {
-        if (error_out)
-            *error_out = last_error_;
-        return false;
-    }
-    return true;
 }
 
 bool ProbeRouterAdapter::EmitMarker(
@@ -432,7 +394,7 @@ StopCpuObservationResult ProbeRouterAdapter::ObserveRoutedHit(
     context.guest_workset_epoch =
         event.identity.workset_epoch.value();
     context.active_foreground_wake =
-        event.active_foreground_wake;
+        event.active_foreground_wait;
     context.sample_count = static_cast<std::uint8_t>(
         std::min<std::size_t>(
             event.sample_count,
@@ -502,14 +464,6 @@ void ProbeRouterAdapter::OnStopPoint(
             "capture router delivery belongs to a different source group";
         return;
     }
-    if (delivery.delivery != StopDeliveryMode::Observe &&
-        delivery.delivery != StopDeliveryMode::Progress)
-    {
-        last_error_ =
-            "capture router received a non-passive delivery";
-        return;
-    }
-
     switch (cpu_observer_failure_.exchange(
         CpuObserverFailure::None,
         std::memory_order_acq_rel))

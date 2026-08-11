@@ -150,48 +150,6 @@ QString battlePlanLabel(const savor::db::BattlePlanSnapshot& row)
         .arg(QString::fromStdString(row.name));
 }
 
-QString predicateSetLabel(const savor::db::PredicateSetSnapshot& row)
-{
-    return QStringLiteral("#%1 %2 (%3 predicates)")
-        .arg(static_cast<qint64>(row.predicate_set_id))
-        .arg(QString::fromStdString(row.name))
-        .arg(static_cast<int>(row.predicates.size()));
-}
-
-bool predicateSetNameIsUnique(const QString& name)
-{
-    const auto result = savorqt::db::SavorDbAuthoringService::ListPredicateSets();
-    if (!result.ok) {
-        return true;
-    }
-
-    const auto target = name.trimmed().toStdString();
-    for (const auto& set : result.value) {
-        if (set.name == target) {
-            return false;
-        }
-    }
-    return true;
-}
-
-QString resolvePredicateSetCopyName(const QString& sourceName, bool duplicate)
-{
-    const QString trimmed = sourceName.trimmed();
-    if (trimmed.isEmpty()) {
-        return trimmed;
-    }
-    if (!duplicate && predicateSetNameIsUnique(trimmed)) {
-        return trimmed;
-    }
-
-    QString candidate = trimmed + QStringLiteral(" copy");
-    int suffix = 2;
-    while (!predicateSetNameIsUnique(candidate)) {
-        candidate = QStringLiteral("%1 copy %2").arg(trimmed).arg(suffix++);
-    }
-    return candidate;
-}
-
 QString explorerSettingsLabel(const savor::db::ExplorerSettingsSnapshot& row)
 {
     return QStringLiteral("#%1 %2")
@@ -501,112 +459,6 @@ void BattleRunSpecEditorWindow::postStatusMessage(const QString& text, StatusToa
     if (statusCallback_ && !text.isEmpty()) statusCallback_(text, severity);
 }
 
-PredicateSetEditorWindow::PredicateSetEditorWindow(QWidget* parent, bool embeddedInContainer)
-    : QWidget(parent)
-{
-    setAttribute(Qt::WA_DeleteOnClose);
-    setWindowFlag(Qt::Window, !embeddedInContainer);
-    setWindowTitle(QStringLiteral("Predicate Set Editor"));
-    resize(520, 520);
-    createWidgets();
-    refreshPredicates();
-}
-
-void PredicateSetEditorWindow::setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback)
-{
-    statusCallback_ = std::move(callback);
-}
-
-void PredicateSetEditorWindow::setSavedCallback(std::function<void()> callback)
-{
-    savedCallback_ = std::move(callback);
-}
-
-void PredicateSetEditorWindow::createWidgets()
-{
-    auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(12, 12, 12, 12);
-    auto* label = new QLabel(QStringLiteral("Select predicates to include in the set."), this);
-    label->setObjectName("sectionDescription");
-    root->addWidget(label);
-    auto* form = new QFormLayout();
-    nameEdit_ = new QLineEdit(this);
-    nameEdit_->setPlaceholderText(QStringLiteral("Predicate set name"));
-    form->addRow(QStringLiteral("Name"), nameEdit_);
-    root->addLayout(form);
-    predicateList_ = new QListWidget(this);
-    predicateList_->setSelectionMode(QListWidget::MultiSelection);
-    root->addWidget(predicateList_, 1);
-    auto* buttons = new QHBoxLayout();
-    refreshButton_ = new QPushButton(QStringLiteral("Refresh"), this);
-    refreshButton_->setObjectName("jobsSecondaryButton");
-    saveButton_ = new QPushButton(QStringLiteral("Save Predicate Set"), this);
-    saveButton_->setObjectName("jobsPrimaryButton");
-    buttons->addWidget(refreshButton_);
-    buttons->addStretch();
-    buttons->addWidget(saveButton_);
-    root->addLayout(buttons);
-    connect(refreshButton_, &QPushButton::clicked, this, &PredicateSetEditorWindow::refreshPredicates);
-    connect(saveButton_, &QPushButton::clicked, this, &PredicateSetEditorWindow::saveSpec);
-}
-
-void PredicateSetEditorWindow::refreshPredicates()
-{
-    const auto result = savorqt::db::SavorDbAuthoringService::ListPredicateSpecs();
-    if (!result.ok) {
-        postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
-        return;
-    }
-    predicateList_->clear();
-    for (const auto& predicate : result.value) {
-        auto* item = new QListWidgetItem(
-            QStringLiteral("#%1 %2")
-                .arg(static_cast<qint64>(predicate.predicate_spec_id))
-                .arg(QString::fromStdString(predicate.name)),
-            predicateList_);
-        item->setData(Qt::UserRole, static_cast<qint64>(predicate.predicate_spec_id));
-    }
-}
-
-void PredicateSetEditorWindow::loadSnapshot(const savor::db::PredicateSetSnapshot& snapshot, bool duplicate)
-{
-    setWindowTitle(duplicate ? QStringLiteral("Predicate Set Editor - Edit Copy") : QStringLiteral("Predicate Set Editor"));
-    nameEdit_->setText(resolvePredicateSetCopyName(QString::fromStdString(snapshot.name), duplicate));
-    refreshPredicates();
-    for (const auto& predicate : snapshot.predicates) {
-        for (int i = 0; i < predicateList_->count(); ++i) {
-            const auto item = predicateList_->item(i);
-            if (item != nullptr && item->data(Qt::UserRole).toLongLong() == static_cast<qint64>(predicate.predicate_spec_id)) {
-                item->setSelected(true);
-            }
-        }
-    }
-}
-
-void PredicateSetEditorWindow::saveSpec()
-{
-    savorqt::db::PredicateSetDraft draft{};
-    draft.name = nameEdit_->text().trimmed().toStdString();
-    for (const auto& item : predicateList_->selectedItems()) {
-        const auto id = item->data(Qt::UserRole).toLongLong();
-        if (id > 0) {
-            draft.predicate_spec_ids.push_back(id);
-        }
-    }
-    const auto result = savorqt::db::SavorDbAuthoringService::SavePredicateSet(draft);
-    if (!result.ok) {
-        postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
-        return;
-    }
-    notifySaved(savedCallback_);
-    postStatusMessage(QStringLiteral("Saved predicate set %1.").arg(QString::fromStdString(draft.name)), StatusToast::Severity::Info);
-}
-
-void PredicateSetEditorWindow::postStatusMessage(const QString& text, StatusToast::Severity severity)
-{
-    if (statusCallback_ && !text.isEmpty()) statusCallback_(text, severity);
-}
-
 ExplorerSettingsEditorWindow::ExplorerSettingsEditorWindow(QWidget* parent, bool embeddedInContainer)
     : QWidget(parent)
 {
@@ -644,10 +496,8 @@ void ExplorerSettingsEditorWindow::createWidgets()
     descriptionEdit_ = new QPlainTextEdit(panel);
     descriptionEdit_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     battlePlanCombo_ = new QComboBox(panel);
-    predicateSetCombo_ = new QComboBox(panel);
     form->addRow(QStringLiteral("Name"), nameEdit_);
     linkForm->addRow(QStringLiteral("Default battle plan"), battlePlanCombo_);
-    linkForm->addRow(QStringLiteral("Default predicate set"), predicateSetCombo_);
     panelLayout->addLayout(form);
     auto* descriptionLabel = new QLabel(QStringLiteral("Description"), panel);
     panelLayout->addWidget(descriptionLabel);
@@ -675,23 +525,15 @@ void ExplorerSettingsEditorWindow::loadSnapshot(const savor::db::ExplorerSetting
     nameEdit_->setText(resolveExplorerSettingsCopyName(QString::fromStdString(snapshot.name), duplicateLoad_, duplicateSourceId_));
     descriptionEdit_->setPlainText(QString::fromStdString(snapshot.description));
     setComboSelection(battlePlanCombo_, snapshot.default_plan_id);
-    setComboSelection(predicateSetCombo_, snapshot.default_predicate_set_id);
 }
 
 void ExplorerSettingsEditorWindow::refreshChoices()
 {
     addNoneOption(battlePlanCombo_);
-    addNoneOption(predicateSetCombo_);
     const auto plans = savorqt::db::SavorDbAuthoringService::ListBattlePlans();
     if (plans.ok) {
         for (const auto& plan : plans.value) {
             battlePlanCombo_->addItem(battlePlanLabel(plan), static_cast<qint64>(plan.plan_id));
-        }
-    }
-    const auto predicateSets = savorqt::db::SavorDbAuthoringService::ListPredicateSets();
-    if (predicateSets.ok) {
-        for (const auto& set : predicateSets.value) {
-            predicateSetCombo_->addItem(predicateSetLabel(set), static_cast<qint64>(set.predicate_set_id));
         }
     }
 }
@@ -711,7 +553,6 @@ void ExplorerSettingsEditorWindow::saveSpec()
     draft.name = resolvedName.toStdString();
     draft.description = descriptionEdit_->toPlainText().trimmed().toStdString();
     draft.default_plan_id = optionalComboId(battlePlanCombo_);
-    draft.default_predicate_set_id = optionalComboId(predicateSetCombo_);
     const auto result = savorqt::db::SavorDbAuthoringService::SaveExplorerSettings(draft);
     if (!result.ok) {
         postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);

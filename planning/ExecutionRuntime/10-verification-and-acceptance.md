@@ -8,6 +8,32 @@ changed. Final functional acceptance is the full Release solution build plus pro
 SavorE2E after `ProgramRuntime`, current-program migration, and handler adapters restore the complete
 production path, not completion of every possible test category listed here.
 
+## SavorE2E assessment boundary
+
+`SavorE2E` is a production-worker scenario runner, not a game-trajectory
+validation suite. Its automated assessment is limited to execution coherence,
+infrastructure health, static authored graph contracts, realized-node lineage,
+and durable provenance/result/artifact invariants.
+
+Every observed trajectory is retained and reported through stdout and the
+durable scenario log for human interpretation. Dynamic node populations,
+workset counts, discovered candidates, turn counts, activation of guarded
+downstream phases, and coherent domain outcomes never become automated
+acceptance thresholds. In particular, TAS Movie `Invalid`, Battle Victory,
+Defeat, predicate rejection, plan completion, awaiting selection, and absent
+guarded downstream work may all be successful executions when their durable
+shapes are legal.
+
+The harness returns failure for invalid or changed entry evidence,
+worker/coordinator/runtime-contract/reconciliation/shutdown failure,
+failed/canceled workflow execution, or malformed graph, provenance, predicate,
+result, or artifact evidence. Short synthetic tests verify this boundary; game
+trajectory expectations are deliberately not moved into `SavorTests`.
+
+This section supersedes older language in this document that describes
+SavorE2E as an assertion harness for a particular realized game path, exact
+workload shape, or expected phase outcome.
+
 Current tests describe current behavior. Some encode current ownership or API shape and
 will be replaced rather than carried forward as target architecture requirements.
 
@@ -379,10 +405,11 @@ The completed Slice 2 boundary is guarded by focused tests for:
 
 - exactly one session-owned router/manager pair over the backend's optional physical-stop facet;
 - physical union and reference counting across multiple logical consumers;
-- observe, progress, guard, intercept, and wake ordering at one point, including source-scoped removal
-  without disturbing another source;
-- stable `Pass`/`Consume`/`Fail` behavior and `RequestInterruptionHandler` as a typed handler request whose
-  execution is deliberately deferred to Slice 3;
+- shared routed-event identity and deterministic delivery to passive observers plus the one matching
+  foreground wait or separately reserved trusted interruption request;
+- passive observations that never wake execution, operation-owned foreground waits, and
+  `RequestInterruptionHandler` as a typed handler request whose execution is deliberately deferred to
+  Slice 3;
 - subscription lifetime, epoch policy, restore preparation/commit/rollback, JIT revalidation, and stale
   event rejection;
 - bounded native ingress, overflow safe-stop behavior, exact sink binding and quiescent unbinding;

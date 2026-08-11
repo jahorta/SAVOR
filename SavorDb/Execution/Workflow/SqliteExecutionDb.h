@@ -80,6 +80,10 @@ public:
         const PersistWorkerExecutionEventsBatchCommand& command,
         PersistWorkerExecutionEventsBatchReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
+    bool RecordCanonicalJobProgress(
+        const RecordCanonicalJobProgressCommand& command,
+        CanonicalJobProgressReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr);
     std::vector<ClaimedExecutionFinishedJob>
     ClaimExecutionFinishedJobsBatch(
         const ClaimExecutionFinishedJobsBatchCommand& command,
@@ -181,7 +185,7 @@ public:
     bool RequeueInterruptedExecutionJobs(
         int* rows_requeued_out = nullptr,
         std::string* error_out = nullptr) override;
-    std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const override;
+    std::optional<ExecutionJobRecord> GetExecutionJob(std::int64_t job_id) const override;
     std::vector<ExecutionJobEventRecord> ListJobEvents(std::int64_t job_id, int limit = 128) const override;
     bool RecordJobOutput(const RecordExecutionJobOutputCommand& command, std::string* error_out = nullptr) override;
     std::vector<ExecutionJobOutputRecord> ListJobOutputsForWorkflowStep(std::int64_t workflow_step_id) const override;

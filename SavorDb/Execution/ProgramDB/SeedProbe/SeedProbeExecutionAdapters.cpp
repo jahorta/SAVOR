@@ -24,7 +24,7 @@
 #include "../../../../SavorCore/Phases/Programs/SeedProbe/SeedProbeModule.h"
 #include "../../../../SavorCore/Phases/RNGSeedDeltaMap.h"
 #include "../../../../SavorCore/Runner/IPC/DurableWorkerTerminalEnvelope.h"
-#include "../../../../SavorCore/Runner/IPC/Wire.h"
+#include "../../../../SavorCore/Runner/Runtime/ProgramKind.h"
 #include "../../../../SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
 #include "../../../../SavorCore/Runner/Runtime/Worksets/WorksetWireCodec.h"
 #include "../../../../SavorCore/Utils/Hash.h"
@@ -414,9 +414,16 @@ public:
                 .root_job_set_id = static_cast<std::uint64_t>(
                     context.root_job_set_id),
             },
-            .program = phase_->identity(),
+            .program_package =
+                savor::runtime::fullphase::
+                    BuildFullPhaseProgramPackage(*phase_),
+            .common_input =
+                savor::runtime::fullphase::MakeFullPhaseCommonInput(
+                    "soa.seed_probe.CommonInput", 1),
         };
         workset.baseline = std::move(baseline);
+        workset.capture = context.capture;
+        workset.progress_plan = context.progress_plan;
         workset.execution_key = {
             .module = runtime.module,
             .entrypoint = runtime.entrypoint,
@@ -431,6 +438,17 @@ public:
                 runtime.movie_policy_sha256,
             .service_policy_sha256 =
                 runtime.service_policy_sha256,
+            .program_package_sha256 =
+                workset.phase_invocation.program_package
+                    .canonical_sha256,
+            .common_input_sha256 =
+                workset.phase_invocation.common_input
+                    .content_sha256,
+            .capture_binding_sha256 = workset.capture
+                ? workset.capture->content_sha256
+                : savor::runtime::EmptyWorksetCaptureBindingHashV1(),
+            .progress_plan_sha256 =
+                workset.progress_plan.content_sha256,
         };
         workset.execution_key.canonical_sha256 =
             savor::runtime::
@@ -513,7 +531,7 @@ public:
                             std::to_string(item.job_id),
                         .claim_token = item.claim_token,
                         .parent_correlation =
-                            context.compatibility_key,
+                            context.contract_key,
                     },
                 });
             result.ordered_job_ids.push_back(item.job_id);
@@ -521,7 +539,7 @@ public:
 
         std::vector<std::uint8_t> encoded_workset;
         const auto wire =
-            savor::runtime::EncodeWorkerWorksetV2(
+        savor::runtime::EncodeWorkerWorksetV4(
                 workset,
                 encoded_workset);
         if (!wire) {
@@ -690,7 +708,7 @@ public:
                     : "SeedProbe ProgramResult identity changed");
         }
 
-        savor::runtime::seedprobe::SeedProbeResultV2 observation{};
+        savor::runtime::seedprobe::SeedProbeResultV3 observation{};
         std::string observation_error;
         const savor::runtime::seedprobe::SeedProbeRequestV2
             request{
@@ -702,7 +720,7 @@ public:
                 observation,
                 &observation_error)
             || !savor::runtime::seedprobe::
-                ValidateSeedProbeResultV2(
+                ValidateSeedProbeResultV3(
                     request,
                     observation,
                     savor::runtime::WorksetEpoch{
@@ -1041,7 +1059,7 @@ private:
         }
 
         const auto winner_job =
-            execution_db_->GetJob(context.job_id);
+            execution_db_->GetExecutionJob(context.job_id);
         const auto source_group =
             SeedProbeCancellationGroupKey(
                 run.probe_run_id,
@@ -1189,7 +1207,7 @@ FindSurveyNeutralSeedProbeResultId(
             continue;
         }
         const auto source_job =
-            execution_db->GetJob(row.source_job_id);
+            execution_db->GetExecutionJob(row.source_job_id);
         if (!source_job.has_value()
             || source_job->program_kind
                 != static_cast<std::int32_t>(

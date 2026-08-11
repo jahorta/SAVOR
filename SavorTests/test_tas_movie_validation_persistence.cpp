@@ -3,6 +3,7 @@
 #include "Archive/RehydrateExecutor.h"
 #include "Authoring/IAuthoringDb.h"
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
+#include "Execution/ProgramDB/TasMovieValidation/PreparedSterilizedCheckpointEvidence.h"
 #include "Execution/ProgramDB/TasMovieValidation/TasMovieValidationProgram.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Phases/Programs/TasMovieValidation/TasMovieValidationModule.h"
@@ -12,7 +13,7 @@
 #include "UIRead/Projectors/UiReadProjectionService.h"
 #include "Utils/Hash.h"
 #include "common/SqliteDbFixture.h"
-#include "Runner/IPC/Wire.h"
+#include "Runner/Runtime/ProgramKind.h"
 
 #include <gtest/gtest.h>
 
@@ -165,6 +166,39 @@ std::int64_t StoreArtifact(
         &id,
         &error);
     EXPECT_TRUE(stored) << error;
+    return id;
+}
+
+std::int64_t StorePhysicalArtifact(
+    IStateDb* state,
+    const std::filesystem::path& path,
+    std::string_view bytes,
+    std::string extension,
+    std::string kind,
+    std::int64_t ordinal)
+{
+    {
+        std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+        stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        if (!stream) throw std::runtime_error("failed writing physical artifact");
+    }
+    std::int64_t id = 0;
+    std::string error;
+    const auto sha = hash::sha256_of_file(path.string());
+    if (!state->StoreArtifact({
+            .sha256 = sha,
+            .size_bytes = static_cast<std::int64_t>(bytes.size()),
+            .compression_kind = 0,
+            .filename = path.string(),
+            .file_ext = std::move(extension),
+            .artifact_kind = std::move(kind),
+            .created_at_utc = types::UtcTimePoint(
+                std::chrono::milliseconds(ordinal)),
+            .correlation_id = "prepared-evidence-test",
+            .causation_id = "test",
+        }, &id, &error)) {
+        throw std::runtime_error(error);
+    }
     return id;
 }
 
@@ -463,6 +497,170 @@ TEST_F(SqliteDbFixture, TasMovieCheckpointSterilizationIsTypedCanonicalAndRecove
     EXPECT_EQ(repeated_attempt, attempt_id);
     ASSERT_EQ(analysis->FindTasMovieCheckpointSterilizationAttempt(
         300, Sha('d'))->produced_savestate_id, first.savestate_id);
+    const auto attempts =
+        analysis->ListTasMovieCheckpointSterilizationAttemptsForRequest(
+            request_id);
+    ASSERT_EQ(attempts.size(), 1u);
+    EXPECT_EQ(attempts.front().sterilization_attempt_id, attempt_id);
+}
+
+TEST_F(SqliteDbFixture, PreparedSterilizedCheckpointRequiresCompletePhysicalEvidenceChain)
+{
+    auto* state = db_service_->StateDb();
+    auto* analysis = db_service_->AnalysisDb();
+    ASSERT_NE(state, nullptr);
+    ASSERT_NE(analysis, nullptr);
+    const auto root_dir = std::filesystem::temp_directory_path()
+        / ("savor-prepared-evidence-"
+            + std::to_string(std::chrono::steady_clock::now()
+                .time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(root_dir));
+    const auto dtm_path = root_dir / "validated.dtm";
+    const auto itinerary_path = root_dir / "validated.tmi";
+    const auto paired_path = root_dir / "paired.sav";
+    const auto sterile_path = root_dir / "sterilized.sav";
+    const auto dtm_id = StorePhysicalArtifact(
+        state, dtm_path, "validated-dtm-bytes", ".dtm", "DTM", 201);
+    const auto itinerary_id = StorePhysicalArtifact(
+        state, itinerary_path, "validated-itinerary-bytes", ".tmi",
+        "TAS_MOVIE_ITINERARY", 202);
+    const auto paired_artifact_id = StorePhysicalArtifact(
+        state, paired_path, "paired-state-bytes", ".sav", "SAV", 203);
+    const auto sterile_artifact_id = StorePhysicalArtifact(
+        state, sterile_path, "sterilized-state-bytes", ".sav", "SAV", 204);
+    const auto dtm = state->GetArtifact(dtm_id);
+    const auto itinerary = state->GetArtifact(itinerary_id);
+    const auto paired_artifact = state->GetArtifact(paired_artifact_id);
+    const auto sterile_artifact = state->GetArtifact(sterile_artifact_id);
+    ASSERT_TRUE(dtm && itinerary && paired_artifact && sterile_artifact);
+
+    auto validation_request = RootValidationRequest(201, 202, dtm->sha256);
+    validation_request.source_ref_id = 200;
+    validation_request.source_dtm_artifact_id = dtm_id;
+    validation_request.source_dtm_sha256 = dtm->sha256;
+    validation_request.itinerary_artifact_id = itinerary_id;
+    validation_request.itinerary_sha256 = itinerary->sha256;
+    std::int64_t validation_request_id = 0;
+    std::string error;
+    ASSERT_TRUE(analysis->CreateTasMovieValidationRequest(
+        validation_request, &validation_request_id, &error)) << error;
+
+    std::int64_t paired_state_id = 0;
+    ASSERT_TRUE(state->CreateSavestate({
+        .artifact_id = paired_artifact_id,
+        .playback_state = SavestatePlaybackState::MoviePaired,
+        .dtm_artifact_id = dtm_id,
+        .savestate_type = "TAS_MOVIE_ROOT_CHECKPOINT",
+        .note = "prepared source",
+        .is_complete = true,
+        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(205)),
+        .correlation_id = "prepared-evidence-test",
+        .causation_id = "test",
+    }, &paired_state_id, &error)) << error;
+    std::int64_t tas_root_id = 0;
+    ASSERT_TRUE(state->CreateTasMovieRoot({
+        .source_dtm_artifact_id = dtm_id,
+        .dtm_artifact_id = dtm_id,
+        .rtc_value = 7,
+        .itinerary_artifact_id = itinerary_id,
+        .required_final_breakpoint_pc = kRootPc,
+        .checkpoint_savestate_id = paired_state_id,
+        .source_context_kind = "tmv_validation_request",
+        .source_context_id = validation_request_id,
+        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(206)),
+        .correlation_id = "prepared-evidence-test",
+        .causation_id = "test",
+    }, &tas_root_id, &error)) << error;
+    std::int64_t validation_attempt_id = 0;
+    ASSERT_TRUE(analysis->RecordTasMovieValidationAttempt({
+        .validation_request_id = validation_request_id,
+        .source_job_id = 203,
+        .worker_terminal_sha256 = Sha('7'),
+        .outcome = TasMovieValidationOutcome::Valid,
+        .failure_reason = TasMovieValidationFailureReason::None,
+        .actual_pc = kRootPc,
+        .actual_input_count = 1,
+        .produced_tas_movie_root_id = tas_root_id,
+        .worker_id = "prepared-worker",
+        .worker_process_generation = 1,
+        .workset_epoch = 1,
+        .recorded_at_utc = types::UtcTimePoint(std::chrono::milliseconds(207)),
+    }, &validation_attempt_id, &error)) << error;
+
+    const auto phase = savor::runtime::tasmovie::
+        TasMovieCheckpointSterilizationFullPhaseDefinitionV1();
+    std::int64_t sterilization_request_id = 0;
+    ASSERT_TRUE(analysis->CreateTasMovieCheckpointSterilizationRequest({
+        .materialization_key = "prepared-sterilization-request",
+        .workflow_instance_id = 204,
+        .workflow_step_id = 205,
+        .source_savestate_id = paired_state_id,
+        .source_savestate_artifact_id = paired_artifact_id,
+        .source_savestate_sha256 = paired_artifact->sha256,
+        .source_dtm_artifact_id = dtm_id,
+        .source_dtm_sha256 = dtm->sha256,
+        .full_phase_program_kind = phase->identity().program_kind,
+        .full_phase_program_version = phase->identity().program_version,
+        .full_phase_canonical_id = "historical.full.phase",
+        .full_phase_contract_revision = 1,
+        .full_phase_sha256 = Sha('8'),
+        .module_canonical_id = "historical.module",
+        .module_revision = 1,
+        .module_sha256 = Sha('9'),
+        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(208)),
+    }, &sterilization_request_id, &error)) << error;
+    CreateOrGetSterilizedCheckpointReceipt receipt{};
+    ASSERT_TRUE(state->CreateOrGetSterilizedCheckpoint({
+        .from_savestate_id = paired_state_id,
+        .artifact = {
+            .sha256 = sterile_artifact->sha256,
+            .size_bytes = sterile_artifact->size_bytes,
+            .compression_kind = 0,
+            .filename = sterile_artifact->filename,
+            .file_ext = ".sav",
+            .artifact_kind = "SAV",
+            .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(209)),
+            .correlation_id = "prepared-evidence-test",
+            .causation_id = "test",
+        },
+        .source_context_kind = "tmv_checkpoint_sterilization_request",
+        .source_context_id = sterilization_request_id,
+        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(209)),
+        .correlation_id = "prepared-evidence-test",
+        .causation_id = "test",
+    }, &receipt, &error)) << error;
+    std::int64_t sterilization_attempt_id = 0;
+    ASSERT_TRUE(analysis->RecordTasMovieCheckpointSterilizationAttempt({
+        .sterilization_request_id = sterilization_request_id,
+        .source_job_id = 206,
+        .worker_terminal_sha256 = Sha('a'),
+        .candidate_savestate_sha256 = sterile_artifact->sha256,
+        .produced_savestate_id = receipt.savestate_id,
+        .worker_id = "prepared-worker",
+        .worker_process_generation = 1,
+        .workset_epoch = 2,
+        .recorded_at_utc = types::UtcTimePoint(std::chrono::milliseconds(210)),
+    }, &sterilization_attempt_id, &error)) << error;
+
+    savor::db::execution::programdb::tasmovieevidence::
+        PreparedSterilizedCheckpointEvidence evidence{};
+    ASSERT_TRUE(savor::db::execution::programdb::tasmovieevidence::
+        ResolvePreparedSterilizedCheckpointEvidence(
+            state, analysis, receipt.savestate_id, &evidence, &error)) << error;
+    EXPECT_EQ(evidence.validation_attempt.validation_attempt_id,
+              validation_attempt_id);
+    EXPECT_EQ(evidence.sterilization_attempt.sterilization_attempt_id,
+              sterilization_attempt_id);
+
+    std::ofstream(sterile_path, std::ios::binary | std::ios::app).put('x');
+    error.clear();
+    EXPECT_FALSE(savor::db::execution::programdb::tasmovieevidence::
+        ResolvePreparedSterilizedCheckpointEvidence(
+            state, analysis, receipt.savestate_id, &evidence, &error));
+    EXPECT_NE(error.find("size drifted"), std::string::npos);
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(root_dir, cleanup_error);
 }
 
 TEST_F(SqliteDbFixture, TasMoviePersistenceAnalysisLedgerQuarantinesAndRestoresExactBytes)
@@ -767,7 +965,7 @@ TEST_F(
     const auto job_rows =
         execution->ListJobsInJobSet(scheduled.root_job_set_id);
     ASSERT_EQ(job_rows.size(), 1u);
-    const auto job = execution->GetJob(job_rows.front().job_id);
+    const auto job = execution->GetExecutionJob(job_rows.front().job_id);
     ASSERT_TRUE(job.has_value());
     EXPECT_EQ(job->max_attempts, 1);
 
@@ -781,7 +979,7 @@ TEST_F(
                 .workflow_step_id = workflow_step_id,
                 .root_job_set_id = scheduled.root_job_set_id,
                 .dispatch_token = "tas-movie-descriptor-test-dispatch",
-                .compatibility_key = "tas-movie-validation-test",
+                .contract_key = "tas-movie-validation-test",
                 .state_compatibility = {
                     .game_id = "GEAE8P",
                     .iso_sha256 = Sha('a'),
@@ -1070,7 +1268,7 @@ TEST_F(
     const auto root_jobs =
         execution->ListJobsInJobSet(root_scheduled.root_job_set_id);
     ASSERT_EQ(root_jobs.size(), 1u);
-    const auto root_job = execution->GetJob(root_jobs.front().job_id);
+    const auto root_job = execution->GetExecutionJob(root_jobs.front().job_id);
     ASSERT_TRUE(root_job.has_value());
     constexpr std::uint64_t root_attempt_id = 1;
     constexpr std::int64_t root_dispatch_id = 8001;
@@ -1080,7 +1278,7 @@ TEST_F(
                 .workflow_step_id = root_step_id,
                 .root_job_set_id = root_scheduled.root_job_set_id,
                 .dispatch_token = "tas-movie-root-validation-dispatch",
-                .compatibility_key = "tas-movie-root-validation",
+                .contract_key = "tas-movie-root-validation",
                 .state_compatibility = {
                     .game_id = "GEAE8P",
                     .iso_sha256 = Sha('b'),

@@ -17,10 +17,15 @@ namespace savor::db::execution::workflow {
 
 std::optional<std::string> OptionalText(sqlite3_stmt* st, int index);
 std::string Text(sqlite3_stmt* st, int index);
+std::vector<std::uint8_t> Blob(sqlite3_stmt* st, int index);
 void BindOptionalText(
     sqlite3_stmt* st,
     int index,
     const std::optional<std::string>& value);
+void BindBlob(
+    sqlite3_stmt* st,
+    int index,
+    const std::vector<std::uint8_t>& value);
 bool IsSha256(std::string_view value);
 bool IsSafeRelativeBlobPath(std::string_view value);
 bool InsertAggregateOutboxEvent(
@@ -168,6 +173,7 @@ bool InsertJobActionEventAndOutbox(
     const char* event_type,
     const char* message,
     std::string* error_out,
+    int event_version = 1,
     std::int64_t* job_event_id_out = nullptr) {
     const auto now = CurrentUtcMs(db);
     Statement job_event;
@@ -207,7 +213,7 @@ bool InsertJobActionEventAndOutbox(
             db,
             "INSERT INTO exec_outbox_message("
             "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
-            "VALUES(?1,?2,1,'Execution','job',?3,?4,?5,?6,'job',?7);",
+            "VALUES(?1,?2,?8,'Execution','job',?3,?4,?5,?6,'job',?7);",
             -1,
             &outbox.st,
             nullptr)
@@ -222,6 +228,7 @@ bool InsertJobActionEventAndOutbox(
     sqlite3_bind_text(outbox.st, 5, causation_id.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(outbox.st, 6, now);
     sqlite3_bind_int64(outbox.st, 7, job_id);
+    sqlite3_bind_int(outbox.st, 8, event_version);
     if (sqlite3_step(outbox.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db);
         return false;
@@ -870,7 +877,7 @@ bool SqliteExecutionDb::CreateWorkflowInstance(
     return command_service_->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
-std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id) const {
+std::optional<ExecutionJobRecord> SqliteExecutionDb::GetExecutionJob(std::int64_t job_id) const {
     if (db_ == nullptr || job_id <= 0) {
         return std::nullopt;
     }
@@ -1152,7 +1159,7 @@ std::vector<ExecutionJobOutputRecord> SqliteExecutionDb::ListJobOutputsForWorkfl
 }
 
 std::optional<std::string> SqliteExecutionDb::GetJobInputIni(std::int64_t job_id, std::string* error_out) const {
-    const auto job = GetJob(job_id);
+    const auto job = GetExecutionJob(job_id);
     if (!job.has_value()) {
         if (error_out) *error_out = "job not found";
         return std::nullopt;
@@ -2253,7 +2260,8 @@ bool SqliteExecutionDb::PublishWorksetWave(
     if (receipt_out != nullptr) *receipt_out = receipt;
     if (db_ == nullptr || command.job_set_id <= 0
         || command.expected_job_count < 0
-        || command.worksets.empty() || command.requested_by.empty()) {
+        || (command.worksets.empty() && command.expected_job_count != 0)
+        || command.requested_by.empty()) {
         receipt.disposition = ExecutionDbOperationDisposition::InvalidRequest;
         if (receipt_out != nullptr) *receipt_out = receipt;
         if (error_out != nullptr) *error_out = "invalid publish-workset-wave command";
@@ -2361,7 +2369,8 @@ bool SqliteExecutionDb::PublishWorkset(
     std::string* error_out) {
     PublishWorksetReceipt receipt{};
     if (receipt_out != nullptr) *receipt_out = receipt;
-    const auto& compatibility = command.compatibility;
+    const auto& contract = command.contract;
+    const auto& observation = command.observation;
     if (db_ == nullptr
         || command.job_set_id <= 0
         || command.workset_key.empty()
@@ -2374,17 +2383,23 @@ bool SqliteExecutionDb::PublishWorkset(
             > static_cast<std::size_t>(
                 std::numeric_limits<int>::max())
         || command.requested_by.empty()
-        || compatibility.compatibility_key.empty()
-        || compatibility.module_canonical_id.empty()
-        || compatibility.module_version <= 0
-        || !IsSha256(compatibility.module_sha256)
-        || compatibility.entrypoint.empty()
-        || !IsSha256(compatibility.verified_dependency_sha256)
-        || !IsSha256(compatibility.runtime_profile_sha256)
-        || compatibility.required_capability_mask
-            > static_cast<std::uint64_t>(
-                std::numeric_limits<std::int64_t>::max())
-        || compatibility.estimated_payload_bytes
+        || contract.contract_key.empty()
+        || contract.module_canonical_id.empty()
+        || contract.module_version <= 0
+        || !IsSha256(contract.module_sha256)
+        || contract.entrypoint.empty()
+        || !IsSha256(contract.verified_dependency_sha256)
+        || !IsSha256(contract.runtime_profile_sha256)
+        || !IsSha256(contract.program_package_sha256)
+        || observation.capture_binding_payload.empty()
+        || !IsSha256(observation.capture_binding_sha256)
+        || observation.progress_plan_payload.empty()
+        || !IsSha256(observation.progress_plan_sha256)
+        || observation.capture_binding_payload.size()
+            > 32u * 1024u * 1024u
+        || observation.progress_plan_payload.size()
+            > 32u * 1024u * 1024u
+        || contract.estimated_payload_bytes
             > static_cast<std::uint64_t>(
                 std::numeric_limits<std::int64_t>::max())) {
         receipt.disposition =
@@ -2548,9 +2563,11 @@ bool SqliteExecutionDb::PublishWorkset(
     if (sqlite3_prepare_v2(
             db_,
             "SELECT workset_id,item_count,program_kind,program_version,"
-            "compatibility_key,module_canonical_id,module_version,"
+            "contract_key,module_canonical_id,module_version,"
             "module_sha256,entrypoint,verified_dependency_sha256,"
-            "runtime_profile_sha256,required_capability_mask,"
+            "runtime_profile_sha256,program_package_sha256,"
+            "capture_binding_payload,capture_binding_sha256,"
+            "progress_plan_payload,progress_plan_sha256,"
             "execution_affinity_key,"
             "estimated_payload_bytes,priority,workflow_step_id,"
             "root_job_set_id "
@@ -2582,30 +2599,37 @@ bool SqliteExecutionDb::PublishWorkset(
             && sqlite3_column_int(existing.st, 3)
                 == command.program_version
             && Text(existing.st, 4)
-                == compatibility.compatibility_key
+                == contract.contract_key
             && Text(existing.st, 5)
-                == compatibility.module_canonical_id
+                == contract.module_canonical_id
             && sqlite3_column_int(existing.st, 6)
-                == compatibility.module_version
-            && Text(existing.st, 7) == compatibility.module_sha256
-            && Text(existing.st, 8) == compatibility.entrypoint
+                == contract.module_version
+            && Text(existing.st, 7) == contract.module_sha256
+            && Text(existing.st, 8) == contract.entrypoint
             && Text(existing.st, 9)
-                == compatibility.verified_dependency_sha256
+                == contract.verified_dependency_sha256
             && Text(existing.st, 10)
-                == compatibility.runtime_profile_sha256
+                == contract.runtime_profile_sha256
+            && Text(existing.st, 11)
+                == contract.program_package_sha256
+            && Blob(existing.st, 12)
+                == observation.capture_binding_payload
+            && Text(existing.st, 13)
+                == observation.capture_binding_sha256
+            && Blob(existing.st, 14)
+                == observation.progress_plan_payload
+            && Text(existing.st, 15)
+                == observation.progress_plan_sha256
+            && OptionalText(existing.st, 16)
+                == contract.execution_affinity_key
             && static_cast<std::uint64_t>(
-                sqlite3_column_int64(existing.st, 11))
-                == compatibility.required_capability_mask
-            && OptionalText(existing.st, 12)
-                == compatibility.execution_affinity_key
-            && static_cast<std::uint64_t>(
-                sqlite3_column_int64(existing.st, 13))
-                == compatibility.estimated_payload_bytes
-            && sqlite3_column_int(existing.st, 14)
+                sqlite3_column_int64(existing.st, 17))
+                == contract.estimated_payload_bytes
+            && sqlite3_column_int(existing.st, 18)
                 == command.priority
-            && sqlite3_column_int64(existing.st, 15)
+            && sqlite3_column_int64(existing.st, 19)
                 == workflow_step_id
-            && sqlite3_column_int64(existing.st, 16)
+            && sqlite3_column_int64(existing.st, 20)
                 == root_job_set_id;
         bool membership_matches = metadata_matches;
         if (membership_matches) {
@@ -2705,13 +2729,15 @@ bool SqliteExecutionDb::PublishWorkset(
             "INSERT INTO exec_workset("
             "job_set_id,workflow_step_id,root_job_set_id,workset_key,"
             "program_kind,program_version,"
-            "compatibility_key,module_canonical_id,module_version,"
+            "contract_key,module_canonical_id,module_version,"
             "module_sha256,entrypoint,verified_dependency_sha256,"
-            "runtime_profile_sha256,required_capability_mask,"
+            "runtime_profile_sha256,program_package_sha256,"
+            "capture_binding_payload,capture_binding_sha256,"
+            "progress_plan_payload,progress_plan_sha256,"
             "execution_affinity_key,"
             "estimated_payload_bytes,priority,item_count,published_at_utc) "
             "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,"
-            "?13,?14,?15,?16,?17,?18,?19);",
+            "?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23);",
             -1,
             &insert_workset.st,
             nullptr)
@@ -2733,63 +2759,84 @@ bool SqliteExecutionDb::PublishWorkset(
     sqlite3_bind_text(
         insert_workset.st,
         7,
-        compatibility.compatibility_key.c_str(),
+        contract.contract_key.c_str(),
         -1,
         SQLITE_TRANSIENT);
     sqlite3_bind_text(
         insert_workset.st,
         8,
-        compatibility.module_canonical_id.c_str(),
+        contract.module_canonical_id.c_str(),
         -1,
         SQLITE_TRANSIENT);
     sqlite3_bind_int(
         insert_workset.st,
         9,
-        compatibility.module_version);
+        contract.module_version);
     sqlite3_bind_text(
         insert_workset.st,
         10,
-        compatibility.module_sha256.c_str(),
+        contract.module_sha256.c_str(),
         -1,
         SQLITE_TRANSIENT);
     sqlite3_bind_text(
         insert_workset.st,
         11,
-        compatibility.entrypoint.c_str(),
+        contract.entrypoint.c_str(),
         -1,
         SQLITE_TRANSIENT);
     sqlite3_bind_text(
         insert_workset.st,
         12,
-        compatibility.verified_dependency_sha256.c_str(),
+        contract.verified_dependency_sha256.c_str(),
         -1,
         SQLITE_TRANSIENT);
     sqlite3_bind_text(
         insert_workset.st,
         13,
-        compatibility.runtime_profile_sha256.c_str(),
+        contract.runtime_profile_sha256.c_str(),
         -1,
         SQLITE_TRANSIENT);
-    sqlite3_bind_int64(
+    sqlite3_bind_text(
         insert_workset.st,
         14,
-        static_cast<std::int64_t>(
-            compatibility.required_capability_mask));
-    BindOptionalText(
+        contract.program_package_sha256.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    BindBlob(
         insert_workset.st,
         15,
-        compatibility.execution_affinity_key);
-    sqlite3_bind_int64(
+        observation.capture_binding_payload);
+    sqlite3_bind_text(
         insert_workset.st,
         16,
-        static_cast<std::int64_t>(
-            compatibility.estimated_payload_bytes));
-    sqlite3_bind_int(insert_workset.st, 17, command.priority);
-    sqlite3_bind_int(
+        observation.capture_binding_sha256.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    BindBlob(
+        insert_workset.st,
+        17,
+        observation.progress_plan_payload);
+    sqlite3_bind_text(
         insert_workset.st,
         18,
+        observation.progress_plan_sha256.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    BindOptionalText(
+        insert_workset.st,
+        19,
+        contract.execution_affinity_key);
+    sqlite3_bind_int64(
+        insert_workset.st,
+        20,
+        static_cast<std::int64_t>(
+            contract.estimated_payload_bytes));
+    sqlite3_bind_int(insert_workset.st, 21, command.priority);
+    sqlite3_bind_int(
+        insert_workset.st,
+        22,
         static_cast<int>(command.ordered_job_ids.size()));
-    sqlite3_bind_int64(insert_workset.st, 19, now);
+    sqlite3_bind_int64(insert_workset.st, 23, now);
     if (sqlite3_step(insert_workset.st) != SQLITE_DONE) {
         fail(sqlite3_errmsg(db_));
         return false;
@@ -3052,10 +3099,12 @@ SqliteExecutionDb::ClaimPublishedWorksetBatch(
             "SELECT "
             "w.workset_id,w.job_set_id,w.workflow_step_id,"
             "w.root_job_set_id,w.workset_key,w.program_kind,"
-            "w.program_version,w.compatibility_key,"
+            "w.program_version,w.contract_key,"
             "w.module_canonical_id,w.module_version,w.module_sha256,"
             "w.entrypoint,w.verified_dependency_sha256,"
-            "w.runtime_profile_sha256,w.required_capability_mask,"
+            "w.runtime_profile_sha256,w.program_package_sha256,"
+            "w.capture_binding_payload,w.capture_binding_sha256,"
+            "w.progress_plan_payload,w.progress_plan_sha256,"
             "w.execution_affinity_key,"
             "w.estimated_payload_bytes,w.priority,w.published_at_utc,"
             "(SELECT COUNT(1) FROM exec_job j "
@@ -3093,7 +3142,7 @@ SqliteExecutionDb::ClaimPublishedWorksetBatch(
             fail(sqlite3_errmsg(db_));
             return claimed_worksets;
         }
-        const auto priority = sqlite3_column_int(candidates.st, 17);
+        const auto priority = sqlite3_column_int(candidates.st, 21);
         if (!absolute_priority.has_value()) {
             absolute_priority = priority;
         } else if (priority != *absolute_priority) {
@@ -3109,29 +3158,35 @@ SqliteExecutionDb::ClaimPublishedWorksetBatch(
         row.workset_key = Text(candidates.st, 4);
         row.program_kind = sqlite3_column_int(candidates.st, 5);
         row.program_version = sqlite3_column_int(candidates.st, 6);
-        row.compatibility.compatibility_key = Text(candidates.st, 7);
-        row.compatibility.module_canonical_id = Text(candidates.st, 8);
-        row.compatibility.module_version =
+        row.contract.contract_key = Text(candidates.st, 7);
+        row.contract.module_canonical_id = Text(candidates.st, 8);
+        row.contract.module_version =
             sqlite3_column_int(candidates.st, 9);
-        row.compatibility.module_sha256 = Text(candidates.st, 10);
-        row.compatibility.entrypoint = Text(candidates.st, 11);
-        row.compatibility.verified_dependency_sha256 =
+        row.contract.module_sha256 = Text(candidates.st, 10);
+        row.contract.entrypoint = Text(candidates.st, 11);
+        row.contract.verified_dependency_sha256 =
             Text(candidates.st, 12);
-        row.compatibility.runtime_profile_sha256 =
+        row.contract.runtime_profile_sha256 =
             Text(candidates.st, 13);
-        row.compatibility.required_capability_mask =
+        row.contract.program_package_sha256 = Text(candidates.st, 14);
+        row.observation.capture_binding_payload =
+            Blob(candidates.st, 15);
+        row.observation.capture_binding_sha256 =
+            Text(candidates.st, 16);
+        row.observation.progress_plan_payload =
+            Blob(candidates.st, 17);
+        row.observation.progress_plan_sha256 =
+            Text(candidates.st, 18);
+        row.contract.execution_affinity_key =
+            OptionalText(candidates.st, 19);
+        row.contract.estimated_payload_bytes =
             static_cast<std::uint64_t>(
-                sqlite3_column_int64(candidates.st, 14));
-        row.compatibility.execution_affinity_key =
-            OptionalText(candidates.st, 15);
-        row.compatibility.estimated_payload_bytes =
-            static_cast<std::uint64_t>(
-                sqlite3_column_int64(candidates.st, 16));
+                sqlite3_column_int64(candidates.st, 20));
         row.priority = priority;
         candidate.published_at_utc =
-            sqlite3_column_int64(candidates.st, 18);
+            sqlite3_column_int64(candidates.st, 22);
         candidate.runnable_count =
-            sqlite3_column_int(candidates.st, 19);
+            sqlite3_column_int(candidates.st, 23);
         selected.push_back(std::move(candidate));
     }
     std::stable_sort(
@@ -4072,6 +4127,12 @@ bool SqliteExecutionDb::PersistWorkerExecutionEventsBatch(
             WorksetJobStartReceipt item_receipt{};
             ok = MarkWorksetJobStarted(started[0], &item_receipt, error_out);
             receipt.events.emplace_back(std::move(item_receipt));
+        } else if (const auto* progress =
+                std::get_if<RecordCanonicalJobProgressCommand>(&event)) {
+            CanonicalJobProgressReceipt item_receipt{};
+            ok = RecordCanonicalJobProgress(
+                progress[0], &item_receipt, error_out);
+            receipt.events.emplace_back(std::move(item_receipt));
         } else {
             StageWorkerTerminalReceipt item_receipt{};
             ok = StageWorkerTerminal(
@@ -4084,6 +4145,252 @@ bool SqliteExecutionDb::PersistWorkerExecutionEventsBatch(
     }
     if (!batch.CommitAll(error_out)) return false;
     if (receipt_out != nullptr) *receipt_out = std::move(receipt);
+    return true;
+}
+
+bool SqliteExecutionDb::RecordCanonicalJobProgress(
+    const RecordCanonicalJobProgressCommand& command,
+    CanonicalJobProgressReceipt* receipt_out,
+    std::string* error_out) {
+    CanonicalJobProgressReceipt receipt{
+        .job_id = command.job_id,
+        .attempt_id = command.reserved_attempt_id,
+        .ordinal = command.ordinal,
+    };
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    const auto fits_i64 = [](std::uint64_t value) {
+        return value <= static_cast<std::uint64_t>(
+            std::numeric_limits<std::int64_t>::max());
+    };
+    if (db_ == nullptr
+        || command.dispatch_attempt_id <= 0
+        || command.claim_token.empty()
+        || command.job_id <= 0
+        || command.reserved_attempt_id == 0
+        || command.workset_id == 0
+        || command.item_id == 0
+        || command.invocation_id == 0
+        || command.ordinal == 0
+        || !fits_i64(command.reserved_attempt_id)
+        || !fits_i64(command.workset_id)
+        || !fits_i64(command.item_id)
+        || !fits_i64(command.invocation_id)
+        || !fits_i64(command.ordinal)
+        || command.library_id.empty()
+        || command.library_revision == 0
+        || command.progress_point_id.empty()
+        || command.schema_id.empty()
+        || command.schema_revision == 0
+        || !IsSha256(command.schema_sha256)
+        || command.display_text.empty()
+        || command.requested_by.empty()
+        || command.workset_id
+            != static_cast<std::uint64_t>(command.dispatch_attempt_id)) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) return false;
+
+    Statement existing;
+    constexpr const char* kExisting =
+        "SELECT dispatch_attempt_id,dispatch_item_ordinal,workset_id,item_id,"
+        "invocation_id,library_id,library_revision,progress_point_id,"
+        "has_routed_provenance,routed_sequence,sample_snapshot_id,trigger_epoch,"
+        "schema_id,schema_revision,schema_sha256,typed_payload,display_text "
+        "FROM exec_job_progress WHERE job_id=?1 AND attempt_id=?2 AND ordinal=?3;";
+    if (sqlite3_prepare_v2(db_, kExisting, -1, &existing.st, nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(existing.st, 1, command.job_id);
+    sqlite3_bind_int64(existing.st, 2,
+        static_cast<std::int64_t>(command.reserved_attempt_id));
+    sqlite3_bind_int64(existing.st, 3,
+        static_cast<std::int64_t>(command.ordinal));
+    const auto existing_rc = sqlite3_step(existing.st);
+    if (existing_rc == SQLITE_ROW) {
+        const auto blob_size = sqlite3_column_bytes(existing.st, 15);
+        const auto* blob = static_cast<const std::uint8_t*>(
+            sqlite3_column_blob(existing.st, 15));
+        const bool blob_matches = blob_size
+                == static_cast<int>(command.typed_payload.size())
+            && (blob_size == 0
+                || std::equal(
+                    command.typed_payload.begin(),
+                    command.typed_payload.end(),
+                    blob));
+        const auto optional_u64_matches = [&existing](
+            int column, bool present, std::uint64_t expected) {
+            return present
+                ? sqlite3_column_type(existing.st, column) != SQLITE_NULL
+                    && static_cast<std::uint64_t>(
+                        sqlite3_column_int64(existing.st, column)) == expected
+                : sqlite3_column_type(existing.st, column) == SQLITE_NULL;
+        };
+        const bool exact =
+            sqlite3_column_int64(existing.st, 0)
+                == command.dispatch_attempt_id
+            && static_cast<std::uint32_t>(sqlite3_column_int(existing.st, 1))
+                == command.dispatch_item_ordinal
+            && static_cast<std::uint64_t>(sqlite3_column_int64(existing.st, 2))
+                == command.workset_id
+            && static_cast<std::uint64_t>(sqlite3_column_int64(existing.st, 3))
+                == command.item_id
+            && static_cast<std::uint64_t>(sqlite3_column_int64(existing.st, 4))
+                == command.invocation_id
+            && Text(existing.st, 5) == command.library_id
+            && static_cast<std::uint32_t>(sqlite3_column_int(existing.st, 6))
+                == command.library_revision
+            && Text(existing.st, 7) == command.progress_point_id
+            && (sqlite3_column_int(existing.st, 8) != 0)
+                == command.has_routed_provenance
+            && optional_u64_matches(9, command.has_routed_provenance,
+                command.routed_sequence)
+            && optional_u64_matches(10, command.has_routed_provenance,
+                command.sample_snapshot_id)
+            && optional_u64_matches(11, command.has_routed_provenance,
+                command.trigger_epoch)
+            && Text(existing.st, 12) == command.schema_id
+            && static_cast<std::uint32_t>(sqlite3_column_int(existing.st, 13))
+                == command.schema_revision
+            && Text(existing.st, 14) == command.schema_sha256
+            && blob_matches
+            && Text(existing.st, 16) == command.display_text;
+        if (!exact) {
+            Rollback(db_);
+            receipt.disposition =
+                ExecutionDbOperationDisposition::AttemptMismatch;
+            if (receipt_out != nullptr) *receipt_out = receipt;
+            return true;
+        }
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        receipt.disposition =
+            ExecutionDbOperationDisposition::AlreadyApplied;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (existing_rc != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    Statement authority;
+    constexpr const char* kAuthority =
+        "SELECT j.state,j.attempts,j.dispatch_attempt_id,j.claimed_by_token,"
+        "j.dispatch_item_ordinal,j.reserved_attempt_id,j.job_set_id,d.state,d.claim_token "
+        "FROM exec_job j LEFT JOIN exec_workset_dispatch_attempt d "
+        "ON d.dispatch_attempt_id=j.dispatch_attempt_id WHERE j.job_id=?1;";
+    if (sqlite3_prepare_v2(db_, kAuthority, -1, &authority.st, nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(authority.st, 1, command.job_id);
+    if (sqlite3_step(authority.st) != SQLITE_ROW) {
+        Rollback(db_);
+        receipt.disposition = ExecutionDbOperationDisposition::Missing;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    const bool exact_authority = Text(authority.st, 0) == "RUNNING"
+        && static_cast<std::uint64_t>(sqlite3_column_int64(authority.st, 1))
+            == command.reserved_attempt_id
+        && sqlite3_column_int64(authority.st, 2)
+            == command.dispatch_attempt_id
+        && Text(authority.st, 3) == command.claim_token
+        && static_cast<std::uint32_t>(sqlite3_column_int(authority.st, 4))
+            == command.dispatch_item_ordinal
+        && static_cast<std::uint64_t>(sqlite3_column_int64(authority.st, 5))
+            == command.reserved_attempt_id
+        && (Text(authority.st, 7) == "ACTIVE"
+            || Text(authority.st, 7) == "DRAINING")
+        && Text(authority.st, 8) == command.claim_token;
+    if (!exact_authority) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::WrongState;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    const auto job_set_id = sqlite3_column_int64(authority.st, 6);
+
+    Statement insert;
+    constexpr const char* kInsert =
+        "INSERT INTO exec_job_progress("
+        "job_id,attempt_id,ordinal,dispatch_attempt_id,dispatch_item_ordinal,"
+        "workset_id,item_id,invocation_id,library_id,library_revision,"
+        "progress_point_id,has_routed_provenance,routed_sequence,"
+        "sample_snapshot_id,trigger_epoch,schema_id,schema_revision,"
+        "schema_sha256,typed_payload,display_text,recorded_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,"
+        "?16,?17,?18,?19,?20,?21);";
+    if (sqlite3_prepare_v2(db_, kInsert, -1, &insert.st, nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(insert.st, 1, command.job_id);
+    sqlite3_bind_int64(insert.st, 2,
+        static_cast<std::int64_t>(command.reserved_attempt_id));
+    sqlite3_bind_int64(insert.st, 3,
+        static_cast<std::int64_t>(command.ordinal));
+    sqlite3_bind_int64(insert.st, 4, command.dispatch_attempt_id);
+    sqlite3_bind_int64(insert.st, 5, command.dispatch_item_ordinal);
+    sqlite3_bind_int64(insert.st, 6,
+        static_cast<std::int64_t>(command.workset_id));
+    sqlite3_bind_int64(insert.st, 7,
+        static_cast<std::int64_t>(command.item_id));
+    sqlite3_bind_int64(insert.st, 8,
+        static_cast<std::int64_t>(command.invocation_id));
+    sqlite3_bind_text(insert.st, 9, command.library_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert.st, 10, command.library_revision);
+    sqlite3_bind_text(insert.st, 11, command.progress_point_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert.st, 12, command.has_routed_provenance ? 1 : 0);
+    const auto bind_optional_u64 = [&insert](int column, bool present, std::uint64_t value) {
+        if (present) sqlite3_bind_int64(insert.st, column, static_cast<std::int64_t>(value));
+        else sqlite3_bind_null(insert.st, column);
+    };
+    bind_optional_u64(13, command.has_routed_provenance, command.routed_sequence);
+    bind_optional_u64(14, command.has_routed_provenance, command.sample_snapshot_id);
+    bind_optional_u64(15, command.has_routed_provenance, command.trigger_epoch);
+    sqlite3_bind_text(insert.st, 16, command.schema_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert.st, 17, command.schema_revision);
+    sqlite3_bind_text(insert.st, 18, command.schema_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.typed_payload.empty()) {
+        sqlite3_bind_zeroblob(insert.st, 19, 0);
+    } else {
+        sqlite3_bind_blob(insert.st, 19,
+            command.typed_payload.data(),
+            static_cast<int>(command.typed_payload.size()), SQLITE_TRANSIENT);
+    }
+    sqlite3_bind_text(insert.st, 20, command.display_text.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert.st, 21, CurrentUtcMs(db_));
+    if (sqlite3_step(insert.st) != SQLITE_DONE
+        || !InsertJobActionEventAndOutbox(
+            db_, command.job_id, job_set_id,
+            "Execution.JobProgressed.v2",
+            command.display_text.c_str(), error_out, 2)) {
+        Rollback(db_);
+        if (error_out != nullptr && error_out->empty())
+            *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    if (receipt_out != nullptr) *receipt_out = receipt;
     return true;
 }
 
@@ -4867,10 +5174,10 @@ SqliteExecutionDb::ClaimNextExecutionFinishedJob(
             db_,
             "SELECT w.workset_id,j.dispatch_attempt_id,"
             "j.reserved_attempt_id,w.workset_key,"
-            "w.compatibility_key,w.module_canonical_id,"
+            "w.contract_key,w.module_canonical_id,"
             "w.module_version,w.module_sha256,w.entrypoint,"
             "w.verified_dependency_sha256,w.runtime_profile_sha256,"
-            "w.required_capability_mask,w.execution_affinity_key,"
+            "w.program_package_sha256,w.execution_affinity_key,"
             "w.estimated_payload_bytes,"
             "j.worker_terminal_status,j.worker_terminal_fingerprint,"
             "j.worker_terminal_id,j.worker_terminal_error_code,"
@@ -4898,7 +5205,7 @@ SqliteExecutionDb::ClaimNextExecutionFinishedJob(
     }
 
     ClaimedExecutionFinishedJob claimed{};
-    const auto job = GetJob(job_id);
+    const auto job = GetExecutionJob(job_id);
     if (!job.has_value()) {
         fail("claimed execution-finished job is missing");
         return std::nullopt;
@@ -4909,21 +5216,19 @@ SqliteExecutionDb::ClaimNextExecutionFinishedJob(
     claimed.reserved_attempt_id = static_cast<std::uint64_t>(
         sqlite3_column_int64(details.st, 2));
     claimed.workset_key = Text(details.st, 3);
-    claimed.compatibility.compatibility_key = Text(details.st, 4);
-    claimed.compatibility.module_canonical_id = Text(details.st, 5);
-    claimed.compatibility.module_version =
+    claimed.contract.contract_key = Text(details.st, 4);
+    claimed.contract.module_canonical_id = Text(details.st, 5);
+    claimed.contract.module_version =
         sqlite3_column_int(details.st, 6);
-    claimed.compatibility.module_sha256 = Text(details.st, 7);
-    claimed.compatibility.entrypoint = Text(details.st, 8);
-    claimed.compatibility.verified_dependency_sha256 =
+    claimed.contract.module_sha256 = Text(details.st, 7);
+    claimed.contract.entrypoint = Text(details.st, 8);
+    claimed.contract.verified_dependency_sha256 =
         Text(details.st, 9);
-    claimed.compatibility.runtime_profile_sha256 = Text(details.st, 10);
-    claimed.compatibility.required_capability_mask =
-        static_cast<std::uint64_t>(
-            sqlite3_column_int64(details.st, 11));
-    claimed.compatibility.execution_affinity_key =
+    claimed.contract.runtime_profile_sha256 = Text(details.st, 10);
+    claimed.contract.program_package_sha256 = Text(details.st, 11);
+    claimed.contract.execution_affinity_key =
         OptionalText(details.st, 12);
-    claimed.compatibility.estimated_payload_bytes =
+    claimed.contract.estimated_payload_bytes =
         static_cast<std::uint64_t>(
             sqlite3_column_int64(details.st, 13));
     claimed.worker_terminal_status = Text(details.st, 14);
@@ -5002,7 +5307,7 @@ SqliteExecutionDb::ListInterruptedResultProcessingJobs(
     }
     result.reserve(job_ids.size());
     for (const auto job_id : job_ids) {
-        const auto job = GetJob(job_id);
+        const auto job = GetExecutionJob(job_id);
         if (!job.has_value()) {
             if (error_out != nullptr) {
                 *error_out = "interrupted result job disappeared";
@@ -5014,10 +5319,10 @@ SqliteExecutionDb::ListInterruptedResultProcessingJobs(
                 db_,
                 "SELECT w.workset_id,j.dispatch_attempt_id,"
                 "j.reserved_attempt_id,w.workset_key,"
-                "w.compatibility_key,w.module_canonical_id,"
+                "w.contract_key,w.module_canonical_id,"
                 "w.module_version,w.module_sha256,w.entrypoint,"
                 "w.verified_dependency_sha256,w.runtime_profile_sha256,"
-                "w.required_capability_mask,w.execution_affinity_key,"
+                "w.program_package_sha256,w.execution_affinity_key,"
                 "w.estimated_payload_bytes,"
                 "j.worker_terminal_status,j.worker_terminal_fingerprint,"
                 "j.worker_terminal_id,j.worker_terminal_error_code,"
@@ -5078,17 +5383,16 @@ SqliteExecutionDb::ListInterruptedResultProcessingJobs(
         claimed.reserved_attempt_id = static_cast<std::uint64_t>(
             sqlite3_column_int64(details.st, 2));
         claimed.workset_key = Text(details.st, 3);
-        claimed.compatibility.compatibility_key = Text(details.st, 4);
-        claimed.compatibility.module_canonical_id = Text(details.st, 5);
-        claimed.compatibility.module_version = sqlite3_column_int(details.st, 6);
-        claimed.compatibility.module_sha256 = Text(details.st, 7);
-        claimed.compatibility.entrypoint = Text(details.st, 8);
-        claimed.compatibility.verified_dependency_sha256 = Text(details.st, 9);
-        claimed.compatibility.runtime_profile_sha256 = Text(details.st, 10);
-        claimed.compatibility.required_capability_mask =
-            static_cast<std::uint64_t>(sqlite3_column_int64(details.st, 11));
-        claimed.compatibility.execution_affinity_key = OptionalText(details.st, 12);
-        claimed.compatibility.estimated_payload_bytes =
+        claimed.contract.contract_key = Text(details.st, 4);
+        claimed.contract.module_canonical_id = Text(details.st, 5);
+        claimed.contract.module_version = sqlite3_column_int(details.st, 6);
+        claimed.contract.module_sha256 = Text(details.st, 7);
+        claimed.contract.entrypoint = Text(details.st, 8);
+        claimed.contract.verified_dependency_sha256 = Text(details.st, 9);
+        claimed.contract.runtime_profile_sha256 = Text(details.st, 10);
+        claimed.contract.program_package_sha256 = Text(details.st, 11);
+        claimed.contract.execution_affinity_key = OptionalText(details.st, 12);
+        claimed.contract.estimated_payload_bytes =
             static_cast<std::uint64_t>(sqlite3_column_int64(details.st, 13));
         claimed.worker_terminal_status = Text(details.st, 14);
         claimed.worker_terminal_fingerprint = Text(details.st, 15);
@@ -5793,6 +6097,7 @@ bool SqliteExecutionDb::CommitResultFinalization(
                 final ? "program-result-completed"
                       : "execution-retry-attempts-exhausted",
                 error_out,
+                1,
                 &commit_sequence)) {
             fail(error_out != nullptr
                 ? *error_out
@@ -7206,6 +7511,19 @@ std::string Text(sqlite3_stmt* st, int index) {
     return text != nullptr ? reinterpret_cast<const char*>(text) : "";
 }
 
+std::vector<std::uint8_t> Blob(sqlite3_stmt* st, int index) {
+    if (sqlite3_column_type(st, index) == SQLITE_NULL) {
+        return {};
+    }
+    const auto* bytes = static_cast<const std::uint8_t*>(
+        sqlite3_column_blob(st, index));
+    const int size = sqlite3_column_bytes(st, index);
+    if (size <= 0 || bytes == nullptr) {
+        return {};
+    }
+    return {bytes, bytes + size};
+}
+
 void BindOptionalText(
     sqlite3_stmt* st,
     int index,
@@ -7219,6 +7537,22 @@ void BindOptionalText(
             SQLITE_TRANSIENT);
     } else {
         sqlite3_bind_null(st, index);
+    }
+}
+
+void BindBlob(
+    sqlite3_stmt* st,
+    int index,
+    const std::vector<std::uint8_t>& value) {
+    if (value.empty()) {
+        sqlite3_bind_zeroblob(st, index, 0);
+    } else {
+        sqlite3_bind_blob(
+            st,
+            index,
+            value.data(),
+            static_cast<int>(value.size()),
+            SQLITE_TRANSIENT);
     }
 }
 
@@ -8726,7 +9060,9 @@ bool SqliteExecutionDb::PurgeWorkflowHandlerDedupeOlderThan(
 
 std::optional<events::ExecutionWorkflowJobPayloadView> SqliteExecutionDb::ResolveExecutionWorkflowJobPayload(
     const events::EventEnvelope& envelope) const {
-    if (!events::ValidateExecutionWorkflowJobPayloadV1(envelope)) {
+    if (envelope.event_type == "Execution.JobProgressed.v2"
+        ? !events::ValidateExecutionCanonicalJobProgressPayloadV2(envelope)
+        : !events::ValidateExecutionWorkflowJobPayloadV1(envelope)) {
         return std::nullopt;
     }
     return ResolveExecutionWorkflowJobPayload(

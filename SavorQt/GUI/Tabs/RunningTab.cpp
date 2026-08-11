@@ -315,6 +315,9 @@ QString jobProblemText(const savor::db::UiJobSummary& job)
     if (!job.error_code.empty()) {
         return compactText(qs(job.error_code));
     }
+    if (!job.last_progress_text.empty()) {
+        return compactText(qs(job.last_progress_text), 120);
+    }
     return QStringLiteral("--");
 }
 
@@ -578,7 +581,8 @@ QueueRowData prepareQueueRow(const savor::db::UiJobSummary& job)
         QStringLiteral("%1  attempt %2/%3").arg(qs(job.state)).arg(job.attempts).arg(job.max_attempts),
         QStringLiteral("Queued %1").arg(formatTime(job.queued_at_utc)),
         jobProblemText(job),
-        job.state == "FAILED" || !job.error_text.empty() || !job.error_code.empty(),
+        job.state == "FAILED" || !job.error_text.empty()
+            || !job.error_code.empty() || !job.last_progress_text.empty(),
     };
 }
 

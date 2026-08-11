@@ -244,123 +244,6 @@ constexpr ProgramScopeId kInvocationScope{
     return WorkerRejectionCode::InternalFailure;
 }
 
-[[nodiscard]] std::string RuntimeProfileHash(
-    const RuntimeProfile& profile)
-{
-    std::string canonical = profile.profile_id;
-    const auto append = [&canonical](std::string_view value)
-    {
-        canonical.push_back('\0');
-        canonical.append(value);
-    };
-    append(profile.game_id);
-    append(profile.disc_identity);
-    append(profile.executable_identity);
-    append(profile.backend);
-    return hash::sha256(canonical.data(), canonical.size());
-}
-
-[[nodiscard]] bool CompleteHash(std::string_view value)
-{
-    return value.size() == 64 &&
-        std::all_of(
-            value.begin(),
-            value.end(),
-            [](char character)
-            {
-                return (character >= '0' && character <= '9') ||
-                    (character >= 'a' && character <= 'f');
-            });
-}
-
-[[nodiscard]] bool CanonicalizeExpectedCatalog(
-    std::vector<ProgramRuntimeCatalogModule>& catalog)
-{
-    if (catalog.size() != 9)
-        return false;
-    for (ProgramRuntimeCatalogModule& module : catalog)
-    {
-        if (module.development_only ||
-            module.identity.canonical_id.empty() ||
-            module.identity.revision == 0 ||
-            !CompleteHash(module.identity.canonical_hash) ||
-            module.entrypoints.empty())
-        {
-            return false;
-        }
-        std::sort(
-            module.entrypoints.begin(),
-            module.entrypoints.end());
-        if (module.entrypoints.front().empty() ||
-            std::adjacent_find(
-                module.entrypoints.begin(),
-                module.entrypoints.end()) !=
-                    module.entrypoints.end())
-        {
-            return false;
-        }
-    }
-    std::sort(
-        catalog.begin(),
-        catalog.end(),
-        [](const auto& lhs, const auto& rhs)
-        {
-            if (lhs.identity.canonical_id !=
-                rhs.identity.canonical_id)
-            {
-                return lhs.identity.canonical_id <
-                    rhs.identity.canonical_id;
-            }
-            if (lhs.identity.revision != rhs.identity.revision)
-            {
-                return lhs.identity.revision <
-                    rhs.identity.revision;
-            }
-            return lhs.identity.canonical_hash <
-                rhs.identity.canonical_hash;
-        });
-    return std::adjacent_find(
-               catalog.begin(),
-               catalog.end(),
-               [](const auto& lhs, const auto& rhs)
-               {
-                   return lhs.identity.canonical_id ==
-                       rhs.identity.canonical_id;
-               }) == catalog.end();
-}
-
-[[nodiscard]] std::vector<ProgramRuntimeCatalogModule>
-CanonicalCatalog(
-    std::vector<ProgramRuntimeCatalogModule> catalog)
-{
-    for (ProgramRuntimeCatalogModule& module : catalog)
-    {
-        std::sort(
-            module.entrypoints.begin(),
-            module.entrypoints.end());
-    }
-    std::sort(
-        catalog.begin(),
-        catalog.end(),
-        [](const auto& lhs, const auto& rhs)
-        {
-            if (lhs.identity.canonical_id !=
-                rhs.identity.canonical_id)
-            {
-                return lhs.identity.canonical_id <
-                    rhs.identity.canonical_id;
-            }
-            if (lhs.identity.revision != rhs.identity.revision)
-            {
-                return lhs.identity.revision <
-                    rhs.identity.revision;
-            }
-            return lhs.identity.canonical_hash <
-                rhs.identity.canonical_hash;
-        });
-    return catalog;
-}
-
 } // namespace
 
 std::string ComputeProgramInvocationCompatibilityHashV1(
@@ -402,7 +285,6 @@ struct ProgramRuntime::Impl
         ActiveStage stage = ActiveStage::PreparingState;
         ProgramActionRequestId state_request;
         std::unique_ptr<ProgramExecutor> executor;
-        std::uint64_t progress_sequence = 1;
         CancellationReason pending_cancellation =
             CancellationReason::None;
         ProgramCleanupStatus preparation_cleanup =
@@ -431,16 +313,6 @@ struct ProgramRuntime::Impl
         {
             initialization_diagnostic =
                 "ProgramRuntime runtime-profile constraints are invalid";
-            return;
-        }
-        if (this->config.expected_exact_catalog &&
-            !CanonicalizeExpectedCatalog(
-                *this->config.expected_exact_catalog))
-        {
-            initialization_diagnostic =
-                "ProgramRuntime exact production catalog must contain "
-                "unique non-development modules with complete "
-                "identities and entrypoints";
             return;
         }
         const RegistryResult registered =
@@ -547,13 +419,8 @@ struct ProgramRuntime::Impl
     std::shared_ptr<IProgramActionRequestSink> action_sink;
     std::optional<ActiveInvocation> active;
     std::map<std::uint64_t, PreparedTemplate> prepared_templates;
-    std::map<
-        std::pair<std::string, std::uint32_t>,
-        ProgramRuntimeCatalogModule>
-        prepared_modules;
     std::uint64_t next_action_id = 1;
     std::uint64_t next_template_id = 1;
-    std::uint64_t catalog_generation = 1;
     bool initialized = false;
     bool shutdown = false;
     std::string initialization_diagnostic;
@@ -577,17 +444,11 @@ const std::string& ProgramRuntime::initialization_diagnostic()
     return impl_->initialization_diagnostic;
 }
 
-WorkerCapabilityMask ProgramRuntime::capabilities() const noexcept
+ProgramRuntimeSubmission ProgramRuntime::AdmitModuleClosure(
+    ModuleClosureAdmissionRequest request,
+    ModuleClosureAdmissionReceipt& receipt)
 {
-    if (!impl_->initialized || impl_->shutdown)
-        return 0;
-    return CapabilityMask(WorkerCapability::WorksetDispatch);
-}
-
-ProgramRuntimeSubmission ProgramRuntime::PrepareModule(
-    ModulePreparationRequest request,
-    std::shared_ptr<IProgramRuntimeEventSink> events)
-{
+    receipt = {};
     if (impl_->shutdown || !impl_->initialized)
     {
         return ProgramRuntimeSubmission::Rejected(
@@ -596,96 +457,131 @@ ProgramRuntimeSubmission ProgramRuntime::PrepareModule(
                 ? "Canonical ProgramRuntime is unavailable"
                 : impl_->initialization_diagnostic);
     }
-    if (!events || request.module.format_version !=
-            kProgramCodecVersionV1)
+    if (request.root.canonical_id.empty() ||
+        request.root.revision == 0 ||
+        request.expected_dependency_lock_sha256.size() != 64 ||
+        request.modules.empty() || request.modules.size() > 64)
     {
         return ProgramRuntimeSubmission::Rejected(
             WorkerRejectionCode::InvalidArgument,
-            "PrepareModule requires SPRM version 1 and an event sink");
-    }
-    const auto expected =
-        ModuleIdentityFromEnvelope(request.module.identity);
-    if (!expected)
-    {
-        return ProgramRuntimeSubmission::Rejected(
-            WorkerRejectionCode::InvalidArgument,
-            "PrepareModule envelope identity is invalid");
+            "Workset module closure admission request is incomplete");
     }
 
     ProgramDefinitionStore candidate = impl_->definitions;
-    ModuleStoreResult stored = candidate.RegisterEncoded(
-        request.module.payload,
-        expected);
-    ModulePreparationEvent event;
-    event.command_sequence = request.command_sequence;
-    event.module = request.module.identity;
-    event.prepared = stored.success;
-    if (!stored.success)
+    std::map<std::pair<std::string, std::uint32_t>,
+             ProgramModuleIdentity> supplied;
+    for (const EncodedModuleEnvelope& envelope : request.modules)
     {
-        event.error = {
-            WorkerRejectionCode::InvalidArgument,
-            stored.error.message};
+        if (envelope.format_version != kProgramCodecVersionV1 ||
+            envelope.payload.empty())
+        {
+            return ProgramRuntimeSubmission::Rejected(
+                WorkerRejectionCode::InvalidArgument,
+                "Workset module closure contains an invalid envelope");
+        }
+        const auto expected =
+            ModuleIdentityFromEnvelope(envelope.identity);
+        if (!expected)
+        {
+            return ProgramRuntimeSubmission::Rejected(
+                WorkerRejectionCode::InvalidArgument,
+                "Workset module closure contains an invalid identity");
+        }
+        const auto key = std::pair{
+            envelope.identity.canonical_id,
+            envelope.identity.revision};
+        if (!supplied.emplace(key, envelope.identity).second)
+        {
+            return ProgramRuntimeSubmission::Rejected(
+                WorkerRejectionCode::InvalidArgument,
+                "Workset module closure contains duplicate module identities");
+        }
+        const ModuleStoreResult stored = candidate.RegisterEncoded(
+            envelope.payload,
+            expected);
+        if (!stored.success)
+        {
+            return ProgramRuntimeSubmission::Rejected(
+                WorkerRejectionCode::InvalidArgument,
+                stored.error.message.empty()
+                    ? "Workset module closure could not be decoded"
+                    : stored.error.message);
+        }
     }
-    else
+
+    const auto root = ModuleIdentityFromEnvelope(request.root);
+    RegistryError closure_error;
+    const auto closure = root
+        ? candidate.ResolveClosure(*root, &closure_error)
+        : std::nullopt;
+    if (!closure || closure->dependency_order.size() != supplied.size())
     {
-        ProgramVerifier candidate_verifier(
-            candidate,
-            impl_->types,
-            impl_->actions,
-            impl_->packs);
-        ProgramVerificationResult verified =
-            candidate_verifier.Verify(
-                *expected,
-                impl_->config.compatibility);
-        event.prepared = verified.success;
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            closure_error.message.empty()
+                ? "Workset module package is not an exact closed dependency set"
+                : closure_error.message);
+    }
+    for (const auto& module : closure->dependency_order)
+    {
+        const auto found = supplied.find({
+            module->identity.canonical_id,
+            module->identity.revision});
+        if (found == supplied.end() ||
+            found->second.canonical_hash !=
+                module->identity.module_hash.ToHex())
+        {
+            return ProgramRuntimeSubmission::Rejected(
+                WorkerRejectionCode::InvalidArgument,
+                "Workset module package dependency closure is not exact");
+        }
+    }
+
+    ProgramVerifier verifier(
+        candidate,
+        impl_->types,
+        impl_->actions,
+        impl_->packs);
+    std::string root_dependency_hash;
+    for (const auto& module : closure->dependency_order)
+    {
+        ProgramVerificationResult verified = verifier.Verify(
+            module->identity,
+            impl_->config.compatibility);
         if (!verified.success)
         {
-            event.error = {
+            return ProgramRuntimeSubmission::Rejected(
                 WorkerRejectionCode::InvalidArgument,
                 verified.diagnostics.empty()
-                    ? "Program module verification failed"
-                    : verified.diagnostics.front().message};
+                    ? "Workset module verification failed"
+                    : verified.diagnostics.front().message);
         }
-        else
+        const ContentHash256 dependency_hash =
+            ComputeProgramDependencyLockHashV1(
+                verified.verified->dependency_lock);
+        if (dependency_hash.empty())
         {
-            // Module publication is atomic with verification. A rejected
-            // candidate must not reserve its canonical id/revision or poison
-            // the verified cache for a corrected preparation attempt.
-            std::vector<std::string> entrypoints;
-            entrypoints.reserve(
-                verified.verified->module->entrypoints.size());
-            for (const ProgramEntrypoint& entrypoint :
-                 verified.verified->module->entrypoints)
-            {
-                entrypoints.push_back(entrypoint.name);
-            }
-            std::sort(entrypoints.begin(), entrypoints.end());
-            const ContentHash256 dependency_lock_hash =
-                ComputeProgramDependencyLockHashV1(
-                    verified.verified->dependency_lock);
-            if (dependency_lock_hash.empty())
-            {
-                event.prepared = false;
-                event.error = {
-                    WorkerRejectionCode::InternalFailure,
-                    "Program dependency-lock hash could not be computed"};
-                events->Publish(std::move(event));
-                return ProgramRuntimeSubmission::Accepted();
-            }
-            impl_->definitions = std::move(candidate);
-            impl_->prepared_modules.insert_or_assign(
-                std::pair{
-                    request.module.identity.canonical_id,
-                    request.module.identity.revision},
-                ProgramRuntimeCatalogModule{
-                    request.module.identity,
-                    std::move(entrypoints),
-                    dependency_lock_hash.ToHex(),
-                    request.module.development_only});
-            ++impl_->catalog_generation;
+            return ProgramRuntimeSubmission::Rejected(
+                WorkerRejectionCode::InternalFailure,
+                "Workset module dependency-lock hash could not be computed");
         }
+        if (module->identity == *root)
+            root_dependency_hash = dependency_hash.ToHex();
     }
-    events->Publish(std::move(event));
+    if (root_dependency_hash !=
+        request.expected_dependency_lock_sha256)
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            "Workset root dependency-lock hash does not match its package");
+    }
+
+    impl_->definitions = std::move(candidate);
+    receipt = {
+        .root = std::move(request.root),
+        .dependency_lock_sha256 = std::move(root_dependency_hash),
+        .admitted_module_count = request.modules.size(),
+    };
     return ProgramRuntimeSubmission::Accepted();
 }
 
@@ -1062,42 +958,6 @@ ProgramRuntimeSubmission ProgramRuntime::StartPreparedInvocation(
     return started;
 }
 
-ProgramRuntimeCatalogSnapshot ProgramRuntime::catalog() const
-{
-    ProgramRuntimeCatalogSnapshot snapshot;
-    snapshot.generation = impl_->catalog_generation;
-    snapshot.runtime_profile_sha256 =
-        RuntimeProfileHash(impl_->config.runtime_profile);
-    snapshot.dependency_manifest_sha256 = hash::sha256(
-        "savor.program_runtime.dependencies/v1",
-        sizeof("savor.program_runtime.dependencies/v1") - 1);
-    for (const auto& [_, module] : impl_->prepared_modules)
-    {
-        snapshot.modules.push_back(module);
-    }
-    snapshot.complete_exact =
-        impl_->config.expected_exact_catalog.has_value() &&
-        CanonicalCatalog(snapshot.modules) ==
-            *impl_->config.expected_exact_catalog;
-    std::vector<RuntimeModuleManifestEntry> canonical_modules;
-    canonical_modules.reserve(snapshot.modules.size());
-    for (const ProgramRuntimeCatalogModule& module :
-         snapshot.modules)
-    {
-        canonical_modules.push_back({
-            module.identity,
-            module.entrypoints,
-            module.dependency_lock_sha256,
-            module.development_only});
-    }
-    snapshot.catalog_sha256 = ComputeRuntimeCatalogHash(
-        canonical_modules,
-        snapshot.complete_exact
-            ? RuntimeCatalogStatus::CompleteExact
-            : RuntimeCatalogStatus::Partial);
-    return snapshot;
-}
-
 ProgramRuntimeSubmission ProgramRuntime::RequestCancellation(
     InvocationId invocation_id)
 {
@@ -1331,6 +1191,18 @@ bool ProgramRuntime::Pump()
 
     ProgramExecutorPumpResult pumped =
         impl_->active->executor->Pump(kProgramExecutorQuantum);
+    if (pumped.emission)
+    {
+        if (impl_->active->events)
+        {
+            impl_->active->events->Publish(
+                ProgramInvocationObservationEvent{
+                    impl_->active->invocation.invocation_id,
+                    impl_->active->invocation.attempt_id,
+                    std::move(*pumped.emission)});
+        }
+        return pumped.runnable;
+    }
     if (pumped.host_request)
     {
         const ProgramActionRequestId request_id =
@@ -1381,17 +1253,6 @@ bool ProgramRuntime::Pump()
         }
         impl_->action_sink->Publish(std::move(request));
 
-        if (impl_->active->events &&
-            impl_->active->invocation.execution.record_progress)
-        {
-            impl_->active->events->Publish(
-                ProgramInvocationProgressEvent{
-                    impl_->active->invocation.invocation_id,
-                    impl_->active->invocation.attempt_id,
-                    impl_->active->progress_sequence++,
-                    "canonical action requested",
-                    true});
-        }
         return false;
     }
     if (pumped.terminal)

@@ -21,8 +21,6 @@ using Clock = std::chrono::steady_clock;
                 return ExecutionOperationKind::ContinueUntil;
             if constexpr (std::is_same_v<Request, StepFramesRequest>)
                 return ExecutionOperationKind::StepFrames;
-            if constexpr (std::is_same_v<Request, InputSynchronizedAdvanceRequest>)
-                return ExecutionOperationKind::InputSynchronizedAdvance;
             if constexpr (std::is_same_v<Request, SafePauseRequest>)
                 return ExecutionOperationKind::SafePause;
             return ExecutionOperationKind::InteractiveResume;
@@ -98,7 +96,7 @@ using Clock = std::chrono::steady_clock;
         request);
 }
 
-[[nodiscard]] std::optional<InputAdvanceBindingId> InputRelationshipOf(
+[[nodiscard]] std::optional<InputExecutionRelationshipId> InputRelationshipOf(
     const ExecutionRequest& request)
 {
     return std::visit(
@@ -106,13 +104,6 @@ using Clock = std::chrono::steady_clock;
             using Request = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<Request, InteractiveResumeRequest>)
                 return value.input_relationship;
-            else if constexpr (
-                std::is_same_v<Request, InputSynchronizedAdvanceRequest>)
-                return value.policy.input_relationship
-                    ? value.policy.input_relationship
-                    : value.binding
-                        ? std::optional(value.binding)
-                        : std::nullopt;
             else
                 return value.policy.input_relationship;
         },
@@ -205,10 +196,6 @@ struct ExecutionEngine::Impl
         bool awaiting_advance = false;
         bool throttle_changed = false;
         bool original_throttle_disabled = false;
-        bool input_validated = false;
-        std::optional<InputPublicationToken> input_publication;
-        std::optional<InputPublicationEvidence>
-            last_input_publication;
         std::optional<StopSubscriptionGroupHandle> wake_group;
         std::optional<ExecutionTerminalStatus> pending_terminal;
         std::optional<ExecutionError> pending_error;
@@ -218,7 +205,6 @@ struct ExecutionEngine::Impl
         std::optional<Clock::time_point> pause_control_deadline;
         std::optional<Clock::time_point>
             unconfirmed_pause_deadline;
-        bool borrowed_wake_group = false;
         bool wake_group_parked = false;
     };
 
@@ -377,9 +363,6 @@ struct ExecutionEngine::Impl
                 break;
             case ExecutionOperationKind::StepFrames:
                 snapshot.activity = ExecutionActivity::SteppingFrame;
-                break;
-            case ExecutionOperationKind::InputSynchronizedAdvance:
-                snapshot.activity = ExecutionActivity::AdvancingInput;
                 break;
             case ExecutionOperationKind::SafePause:
                 snapshot.activity = ExecutionActivity::Pausing;
@@ -734,31 +717,17 @@ struct ExecutionEngine::Impl
         {
             return {};
         }
-        StopSubscriptionGroupDefinition parked =
-            std::get<ContinueUntilRequest>(operation.request).wake_group;
-        parked.id = operation.wake_group->lease().group_id;
-        parked.source.id = operation.wake_group->lease().source_id;
-        for (StopSubscriptionDefinition& subscription :
-            parked.subscriptions)
-        {
-            subscription.delivery = StopDeliveryMode::Observe;
-            subscription.policy = StopRoutingPolicy::Pass;
-            subscription.consumer = owner;
-            subscription.lifetime =
-                StopSubscriptionLifetime::Scoped;
-            subscription.lossless = false;
-            subscription.suppress_immediate_reentry = false;
-        }
-        const StopGroupReceipt replaced =
-            operation.wake_group->Replace(std::move(parked));
-        if (!replaced.ok)
+        const StopReleaseReceipt released =
+            operation.wake_group->Release();
+        operation.wake_group.reset();
+        if (!released.ok)
         {
             return Error(
                 ExecutionErrorCode::StopPointFailure,
-                replaced.error.message.empty()
-                    ? "failed parking suspended foreground Wake group"
-                    : replaced.error.message,
-                replaced.error.code ==
+                released.error.message.empty()
+                    ? "failed releasing suspended foreground wait"
+                    : released.error.message,
+                released.error.code ==
                         StopPointErrorCode::PhysicalIntegrityUnknown
                     ? BackendIntegrity::Unknown
                     : BackendIntegrity::Preserved);
@@ -778,35 +747,6 @@ struct ExecutionEngine::Impl
         return {};
     }
 
-    [[nodiscard]] ExecutionError RestoreBorrowedWake(
-        ActiveOperation& operation)
-    {
-        if (!operation.borrowed_wake_group)
-            return {};
-        if (!operation.wake_group || !operation.handler_owner ||
-            handlers.empty() ||
-            handlers.back().id != *operation.handler_owner ||
-            handlers.back().parent.kind !=
-                ExecutionOperationKind::ContinueUntil)
-        {
-            return Error(
-                ExecutionErrorCode::StopPointFailure,
-                "borrowed foreground Wake ownership could not be restored",
-                BackendIntegrity::Unknown);
-        }
-
-        ActiveOperation& parent = handlers.back().parent;
-        parent.wake_group.emplace(std::move(*operation.wake_group));
-        operation.wake_group.reset();
-        parent.wake_group_parked = false;
-        if (ExecutionError restored = PrepareWakeGroup(parent, true))
-            return restored;
-        if (ExecutionError parked = ParkWakeGroup(parent))
-            return parked;
-        operation.borrowed_wake_group = false;
-        return {};
-    }
-
     void EmitTerminal(
         ActiveOperation operation,
         ExecutionTerminalStatus status,
@@ -820,11 +760,6 @@ struct ExecutionEngine::Impl
         if (!observed.result.ok && !error)
             error = BackendError("execution terminal snapshot failed", observed.result);
 
-        if (ExecutionError restored = RestoreBorrowedWake(operation))
-        {
-            status = ExecutionTerminalStatus::CleanupFailure;
-            error = std::move(restored);
-        }
         BackendResult throttle = RestoreThrottle(operation);
         if (!throttle.ok)
         {
@@ -850,7 +785,7 @@ struct ExecutionEngine::Impl
         }
         if (const auto input_relationship =
                 InputRelationshipOf(operation.request);
-            input_relationship && config.input_advance)
+            input_relationship && config.input_relationships)
         {
             const bool borrowed_from_parent =
                 operation.handler_owner && !handlers.empty() &&
@@ -862,17 +797,13 @@ struct ExecutionEngine::Impl
                     ExecutionTerminalStatus::RequestedCompletion ||
                 status == ExecutionTerminalStatus::StepsCompleted ||
                 status == ExecutionTerminalStatus::Paused;
-            const InputAdvanceReceipt retired = borrowed_from_parent
-                ? InputAdvanceReceipt{
-                      true,
-                      InputAdvanceDecision::Complete,
-                      {},
-                      {}}
+            const InputExecutionRelationshipOperationReceipt retired = borrowed_from_parent
+                ? InputExecutionRelationshipOperationReceipt{true, {}}
                 : completed
-                ? config.input_advance->Complete(
+                ? config.input_relationships->Complete(
                       *input_relationship,
                       epoch)
-                : config.input_advance->Cancel(
+                : config.input_relationships->Cancel(
                       *input_relationship,
                       epoch);
             if (!retired.ok)
@@ -881,7 +812,7 @@ struct ExecutionEngine::Impl
                 error = Error(
                     ExecutionErrorCode::InputUnavailable,
                     retired.message.empty()
-                        ? "input-advance cleanup failed"
+                        ? "input relationship cleanup failed"
                         : retired.message);
             }
         }
@@ -893,8 +824,6 @@ struct ExecutionEngine::Impl
         terminal.completed_count = operation.completed_count;
         terminal.evidence = ConvertEvidence(observed);
         terminal.stop = std::move(stop);
-        terminal.input_publication =
-            operation.last_input_publication;
         terminal.error = std::move(error);
         terminal.integrity = terminal.error
             ? terminal.error.integrity
@@ -1059,7 +988,7 @@ struct ExecutionEngine::Impl
         }
         if (const auto relationship = InputRelationshipOf(request))
         {
-            if (!config.input_advance)
+            if (!config.input_relationships)
             {
                 return Error(
                     ExecutionErrorCode::Unsupported,
@@ -1067,8 +996,8 @@ struct ExecutionEngine::Impl
             }
             try
             {
-                const InputAdvanceReceipt validation =
-                    config.input_advance->Validate(*relationship, epoch);
+                const InputExecutionRelationshipOperationReceipt validation =
+                    config.input_relationships->Validate(*relationship, epoch);
                 if (!validation.ok)
                 {
                     return Error(
@@ -1122,12 +1051,13 @@ struct ExecutionEngine::Impl
                     value.wake_group.subscriptions.begin(),
                     value.wake_group.subscriptions.end(),
                     [](const StopSubscriptionDefinition& subscription) {
-                        return subscription.delivery != StopDeliveryMode::Wake;
+                        return !std::holds_alternative<ForegroundStopWait>(
+                            subscription.route);
                     }))
             {
                 return Error(
                     ExecutionErrorCode::InvalidArgument,
-                    "ContinueUntil group may contain only Wake alternatives");
+                    "ContinueUntil group may contain only foreground-wait alternatives");
             }
             if (value.expected_movie_input_count &&
                 !HasExecutionCapability(
@@ -1152,35 +1082,6 @@ struct ExecutionEngine::Impl
                     "Guest-frame stepping is unavailable");
             }
             break;
-        case ExecutionOperationKind::InputSynchronizedAdvance:
-        {
-            const auto& value =
-                std::get<InputSynchronizedAdvanceRequest>(request);
-            if (!value.binding || value.maximum_advances == 0)
-                return Error(ExecutionErrorCode::InvalidArgument, "Input advancement requires a binding and positive bound");
-            if (value.policy.input_relationship &&
-                *value.policy.input_relationship != value.binding)
-            {
-                return Error(
-                    ExecutionErrorCode::InvalidArgument,
-                    "input relationship does not match the advancement binding");
-            }
-            if (!HasExecutionCapability(
-                    backend.Capabilities(),
-                    BackendExecutionCapability::FrameStep))
-            {
-                return Error(
-                    ExecutionErrorCode::Unsupported,
-                    "Guest-frame stepping is unavailable");
-            }
-            if (!config.input_advance)
-            {
-                return Error(
-                    ExecutionErrorCode::Unsupported,
-                    "InputSynchronizedAdvance requires InputArbiter");
-            }
-            break;
-        }
         case ExecutionOperationKind::SafePause:
             if (std::get<SafePauseRequest>(request)
                     .confirmation_timeout <=
@@ -1235,8 +1136,17 @@ struct ExecutionEngine::Impl
             request.wake_group.subscriptions)
         {
             subscription.consumer = owner;
-            subscription.suppress_immediate_reentry =
-                request.policy.current_point == ExecutionCurrentPointPolicy::Ignore ||
+            auto* foreground =
+                std::get_if<ForegroundStopWait>(&subscription.route);
+            if (foreground == nullptr)
+            {
+                return Error(
+                    ExecutionErrorCode::InvalidArgument,
+                    "ContinueUntil received a non-foreground route");
+            }
+            foreground->suppress_immediate_reentry =
+                request.policy.current_point ==
+                    ExecutionCurrentPointPolicy::Ignore ||
                 restoring;
         }
         if (operation.wake_group)
@@ -1295,7 +1205,7 @@ struct ExecutionEngine::Impl
         if (registration.current_point)
         {
             if (registration.current_point->terminal ==
-                StopRouteTerminal::WokeForeground)
+                StopRouteTerminal::ForegroundMatched)
             {
                 operation.pending_terminal =
                     ExecutionTerminalStatus::RequestedCompletion;
@@ -1358,7 +1268,6 @@ struct ExecutionEngine::Impl
         switch (operation.kind)
         {
         case ExecutionOperationKind::StepFrames:
-        case ExecutionOperationKind::InputSynchronizedAdvance:
             if (!HasExecutionCapability(
                     backend.Capabilities(),
                     BackendExecutionCapability::FrameStep))
@@ -1384,88 +1293,9 @@ struct ExecutionEngine::Impl
         return {};
     }
 
-    [[nodiscard]] ExecutionError PrepareInput(ActiveOperation& operation)
-    {
-        if (!config.input_advance)
-        {
-            return Error(
-                ExecutionErrorCode::Unsupported,
-                "InputSynchronizedAdvance requires InputArbiter");
-        }
-        auto& request =
-            std::get<InputSynchronizedAdvanceRequest>(operation.request);
-        try
-        {
-            if (!operation.input_validated)
-            {
-                InputAdvanceReceipt validation =
-                    config.input_advance->Validate(request.binding, epoch);
-                if (!validation.ok)
-                {
-                    return Error(
-                        ExecutionErrorCode::InputUnavailable,
-                        validation.message.empty()
-                            ? "input-advance binding validation failed"
-                            : validation.message);
-                }
-                operation.input_validated = true;
-            }
-            InputAdvanceReceipt prepared = config.input_advance->PrepareNext(
-                request.binding,
-                epoch,
-                operation.completed_count);
-            if (!prepared.ok || !prepared.publication)
-            {
-                return Error(
-                    ExecutionErrorCode::InputUnavailable,
-                    prepared.message.empty()
-                            ? "input publication could not be prepared"
-                            : prepared.message);
-            }
-            if (!prepared.publication_evidence ||
-                prepared.publication_evidence->publication !=
-                    prepared.publication ||
-                !prepared.publication_evidence->lease ||
-                prepared.publication_evidence->epoch != epoch)
-            {
-                return Error(
-                    ExecutionErrorCode::InputUnavailable,
-                    "input publication preparation omitted exact lease, frame, token, or epoch evidence");
-            }
-            if (operation.last_input_publication &&
-                operation.last_input_publication->publication ==
-                    prepared.publication)
-            {
-                return Error(
-                    ExecutionErrorCode::InputUnavailable,
-                    "input retry reused a prior publication token");
-            }
-            operation.last_input_publication =
-                *prepared.publication_evidence;
-            operation.input_publication = prepared.publication;
-        }
-        catch (const std::exception& ex)
-        {
-            return Error(
-                ExecutionErrorCode::InputUnavailable,
-                std::string("input-advance preparation threw: ") + ex.what(),
-                BackendIntegrity::Unknown);
-        }
-        catch (...)
-        {
-            return Error(
-                ExecutionErrorCode::InputUnavailable,
-                "input-advance preparation threw",
-                BackendIntegrity::Unknown);
-        }
-        return BeginAdvance(operation);
-    }
-
     [[nodiscard]] ExecutionError StartOperation(ActiveOperation& operation)
     {
-        if ((operation.kind == ExecutionOperationKind::StepFrames ||
-                operation.kind ==
-                    ExecutionOperationKind::InputSynchronizedAdvance) &&
+        if (operation.kind == ExecutionOperationKind::StepFrames &&
             !HasExecutionCapability(
                 backend.Capabilities(),
                 BackendExecutionCapability::FrameStep))
@@ -1473,14 +1303,6 @@ struct ExecutionEngine::Impl
             return Error(
                 ExecutionErrorCode::Unsupported,
                 "Guest-frame stepping is unavailable");
-        }
-        if (operation.kind ==
-                ExecutionOperationKind::InputSynchronizedAdvance &&
-            !config.input_advance)
-        {
-            return Error(
-                ExecutionErrorCode::Unsupported,
-                "InputSynchronizedAdvance requires InputArbiter");
         }
         BackendExecutionSnapshot observed = Query();
         if (!observed.result.ok)
@@ -1533,8 +1355,6 @@ struct ExecutionEngine::Impl
         }
         case ExecutionOperationKind::StepFrames:
             return BeginAdvance(operation);
-        case ExecutionOperationKind::InputSynchronizedAdvance:
-            return PrepareInput(operation);
         case ExecutionOperationKind::SafePause:
             if (observed.core_state == BackendCoreState::Paused &&
                 observed.pause_confirmed)
@@ -1582,9 +1402,6 @@ struct ExecutionEngine::Impl
         {
         case ExecutionOperationKind::StepFrames:
             return std::get<StepFramesRequest>(operation.request).count;
-        case ExecutionOperationKind::InputSynchronizedAdvance:
-            return std::get<InputSynchronizedAdvanceRequest>(
-                operation.request).maximum_advances;
         default:
             return 0;
         }
@@ -1597,84 +1414,6 @@ struct ExecutionEngine::Impl
         ActiveOperation& operation = *active;
         operation.awaiting_advance = false;
         ++operation.completed_count;
-
-        if (operation.kind == ExecutionOperationKind::InputSynchronizedAdvance)
-        {
-            auto& request =
-                std::get<InputSynchronizedAdvanceRequest>(operation.request);
-            InputAdvanceReceipt acknowledgement;
-            try
-            {
-                acknowledgement =
-                    config.input_advance->ObserveAcknowledgement(
-                        request.binding,
-                        *operation.input_publication,
-                        epoch);
-            }
-            catch (const std::exception& ex)
-            {
-                BeginFinish(
-                    ExecutionTerminalStatus::BackendFailure,
-                    Error(
-                        ExecutionErrorCode::InputUnavailable,
-                        std::string("input acknowledgement threw: ") +
-                            ex.what(),
-                        BackendIntegrity::Unknown));
-                return;
-            }
-            catch (...)
-            {
-                BeginFinish(
-                    ExecutionTerminalStatus::BackendFailure,
-                    Error(
-                        ExecutionErrorCode::InputUnavailable,
-                        "input acknowledgement threw",
-                        BackendIntegrity::Unknown));
-                return;
-            }
-            operation.input_publication.reset();
-            if (!acknowledgement.ok ||
-                acknowledgement.decision == InputAdvanceDecision::Failed)
-            {
-                BeginFinish(
-                    ExecutionTerminalStatus::BackendFailure,
-                    Error(
-                        ExecutionErrorCode::InputUnavailable,
-                        acknowledgement.message.empty()
-                            ? "input acknowledgement failed"
-                            : acknowledgement.message));
-                return;
-            }
-            PublishProgress(operation, observed);
-            if (acknowledgement.decision == InputAdvanceDecision::Cancelled)
-            {
-                BeginFinish(ExecutionTerminalStatus::Cancelled);
-                return;
-            }
-            if (acknowledgement.decision == InputAdvanceDecision::Complete)
-            {
-                BeginFinish(ExecutionTerminalStatus::StepsCompleted);
-                return;
-            }
-            if (operation.completed_count >= TargetCount(operation))
-            {
-                BeginFinish(
-                    ExecutionTerminalStatus::BackendFailure,
-                    Error(
-                        ExecutionErrorCode::InputUnavailable,
-                        "input advancement exhausted its declared bound"));
-                return;
-            }
-            if (ExecutionError next = PrepareInput(operation))
-            {
-                BeginFinish(
-                    next.code == ExecutionErrorCode::Unsupported
-                        ? ExecutionTerminalStatus::Unsupported
-                        : ExecutionTerminalStatus::BackendFailure,
-                    std::move(next));
-            }
-            return;
-        }
 
         PublishProgress(operation, observed);
         if (operation.completed_count >= TargetCount(operation))
@@ -1834,8 +1573,6 @@ ExecutionSubmissionReceipt ExecutionEngine::Submit(ExecutionRequest request)
     operation.id = operation_id;
     operation.kind = kind;
     operation.request = std::move(request);
-    operation.input_validated =
-        kind == ExecutionOperationKind::InputSynchronizedAdvance;
     operation.started = impl_->now();
     operation.health_baseline = operation.started;
     const BackendExecutionSnapshot observed = impl_->Query();
@@ -1961,8 +1698,6 @@ ExecutionSubmissionReceipt ExecutionEngine::SubmitInterruptionChild(
     child.id = operation_id;
     child.kind = kind;
     child.request = std::move(request);
-    child.input_validated =
-        kind == ExecutionOperationKind::InputSynchronizedAdvance;
     child.handler_owner = frame_id;
     child.started = impl_->now();
     child.health_baseline = child.started;
@@ -1981,15 +1716,6 @@ ExecutionSubmissionReceipt ExecutionEngine::SubmitInterruptionChild(
             ExecutionErrorCode::InvalidState,
             "interruption child requires an authoritatively paused core");
         return receipt;
-    }
-    if (kind == ExecutionOperationKind::ContinueUntil &&
-        frame.parent.wake_group)
-    {
-        child.wake_group.emplace(
-            std::move(*frame.parent.wake_group));
-        frame.parent.wake_group.reset();
-        frame.parent.wake_group_parked = false;
-        child.borrowed_wake_group = true;
     }
     child.health_last_vi = observed.vi_count;
     child.health_host_generation =
@@ -2052,15 +1778,6 @@ ExecutionControlReceipt ExecutionEngine::Cancel(CancellationReason reason)
             std::move(impl_->handlers.back());
         impl_->handlers.pop_back();
         impl_->active.emplace(std::move(anchor.parent));
-    }
-    if (impl_->active && impl_->active->borrowed_wake_group &&
-        impl_->active->wake_group && !impl_->handlers.empty() &&
-        impl_->active->handler_owner == impl_->handlers.back().id)
-    {
-        impl_->handlers.back().parent.wake_group.emplace(
-            std::move(*impl_->active->wake_group));
-        impl_->active->wake_group.reset();
-        impl_->active->borrowed_wake_group = false;
     }
     while (!impl_->handlers.empty())
     {
@@ -2157,8 +1874,8 @@ ExecutionControlReceipt ExecutionEngine::CompleteInterruptionHandler(
         {
             try
             {
-                const InputAdvanceReceipt validation =
-                    impl_->config.input_advance->Validate(
+                const InputExecutionRelationshipOperationReceipt validation =
+                    impl_->config.input_relationships->Validate(
                         *relationship,
                         impl_->epoch);
                 if (!validation.ok)
@@ -2196,7 +1913,6 @@ ExecutionControlReceipt ExecutionEngine::CompleteInterruptionHandler(
             resumed = impl_->ResumeBackend();
             break;
         case ExecutionOperationKind::StepFrames:
-        case ExecutionOperationKind::InputSynchronizedAdvance:
             impl_->active->awaiting_advance = false;
             impl_->active->observed_running = false;
             resumed = impl_->BeginAdvance(*impl_->active);
@@ -2249,7 +1965,7 @@ void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
     {
         const ExecutionTerminalStatus pending =
             *impl_->active->pending_terminal;
-        if (receipt.terminal == StopRouteTerminal::WokeForeground &&
+        if (receipt.terminal == StopRouteTerminal::ForegroundMatched &&
             (pending == ExecutionTerminalStatus::CursorOverrun ||
              pending == ExecutionTerminalStatus::MovieEnded))
         {
@@ -2284,15 +2000,9 @@ void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
     case StopRouteTerminal::None:
     case StopRouteTerminal::Stale:
         return;
-    case StopRouteTerminal::WokeForeground:
+    case StopRouteTerminal::ForegroundMatched:
         impl_->BeginFinish(
             ExecutionTerminalStatus::RequestedCompletion,
-            {},
-            std::move(receipt));
-        return;
-    case StopRouteTerminal::Consumed:
-        impl_->BeginFinish(
-            ExecutionTerminalStatus::ConsumedStop,
             {},
             std::move(receipt));
         return;
@@ -2310,13 +2020,13 @@ void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
                 std::move(receipt));
         }
         return;
-    case StopRouteTerminal::Failed:
+    case StopRouteTerminal::RoutingFailure:
         impl_->BeginFinish(
-            ExecutionTerminalStatus::GuardFailed,
+            ExecutionTerminalStatus::BackendFailure,
             Error(
                 ExecutionErrorCode::StopPointFailure,
                 receipt.error.message.empty()
-                    ? "stop-point guard or interceptor failed"
+                    ? "stop-point routing failed"
                     : receipt.error.message),
             std::move(receipt));
         return;
@@ -2331,7 +2041,7 @@ void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
                 BackendIntegrity::Unknown),
             std::move(receipt));
         return;
-    case StopRouteTerminal::InterruptionHandlerRequested:
+    case StopRouteTerminal::InterruptionRequested:
         break;
     }
 
@@ -2776,7 +2486,6 @@ void ExecutionEngine::Pump()
             impl_->BeginFinish(ExecutionTerminalStatus::Paused);
         break;
     case ExecutionOperationKind::StepFrames:
-    case ExecutionOperationKind::InputSynchronizedAdvance:
         if (impl_->AdvanceCompleted(operation, observed))
             impl_->CompleteAdvance(observed);
         break;

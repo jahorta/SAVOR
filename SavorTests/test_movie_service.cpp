@@ -70,7 +70,7 @@ public:
         calls.push_back("stop-core");
         return stop_core_result;
     }
-    MovieBackendResult StartPreparedReadOnlyMovie() override
+    MovieBackendResult StartPreparedReadOnlyMovieCorePaused() override
     {
         calls.push_back("start-core");
         if (start_core_result.ok)
@@ -79,6 +79,11 @@ public:
             snapshot.read_only = true;
         }
         return start_core_result;
+    }
+    MovieBackendResult ActivatePreparedReadOnlyMoviePlayback() override
+    {
+        calls.push_back("activate-playback");
+        return activation_result;
     }
     MovieBackendResult DiscardPreparedReadOnlyMovie() noexcept override
     {
@@ -157,6 +162,7 @@ public:
     MovieBackendResult prepare_result = MovieBackendResult::Success();
     MovieBackendResult stop_core_result = MovieBackendResult::Success();
     MovieBackendResult start_core_result = MovieBackendResult::Success();
+    MovieBackendResult activation_result = MovieBackendResult::Success();
     MovieBackendResult restore_prepare_result = MovieBackendResult::Success();
     MovieBackendResult restore_commit_result = MovieBackendResult::Success();
     MovieBackendResult restore_rollback_result = MovieBackendResult::Success();
@@ -183,7 +189,7 @@ public:
     MovieReservationId held;
 };
 
-TEST(MovieService, PlaybackStopsThenStartsCoreAndPreservesWorksetEpoch)
+TEST(MovieService, InitializationStartsPausedCoreBeforePlaybackActivation)
 {
     TemporaryDirectory temp;
     const auto dtm = temp.path() / "root.dtm";
@@ -224,7 +230,8 @@ TEST(MovieService, PlaybackStopsThenStartsCoreAndPreservesWorksetEpoch)
     EXPECT_EQ(after_start, 1);
     EXPECT_EQ(backend.calls,
               (std::vector<std::string>{
-                  "prepare", "stop-core", "start-core"}));
+                  "prepare", "stop-core", "start-core",
+                  "activate-playback"}));
     EXPECT_TRUE(result.reservation);
 }
 
@@ -246,20 +253,45 @@ TEST(MovieService, UnknownCoreStartFailureTaintsMovieServiceWithoutEpochChange)
 
     const MovieOperationReceipt prepared =
         service.PrepareReadOnlyPlayback({.dtm_path = dtm});
+    EXPECT_FALSE(prepared.result.ok);
+    EXPECT_EQ(prepared.workset_epoch, epoch);
+    EXPECT_TRUE(service.is_tainted());
+    EXPECT_FALSE(reservations.held);
+    EXPECT_FALSE(prepared.preparation);
+}
+
+TEST(MovieService, PlaybackActivationFailureLeavesPreparedCoreRecoverable)
+{
+    TemporaryDirectory temp;
+    const auto dtm = temp.path() / "root.dtm";
+    Write(dtm, Dtm());
+    WorksetEpoch epoch(10);
+    Backend backend;
+    backend.activation_result = MovieBackendResult::Failure(
+        "not paused", GuestIntegrity::Preserved);
+    Reservations reservations;
+    MovieService service(
+        backend, reservations, [&] { return epoch; },
+        [] { return MovieServiceResult::Success(); },
+        [] { return MovieServiceResult::Success(); },
+        [] { return MovieServiceResult::Success(); });
+
+    const MovieOperationReceipt prepared =
+        service.PrepareReadOnlyPlayback({.dtm_path = dtm});
     ASSERT_TRUE(prepared.result.ok) << prepared.result.message;
-    const MovieOperationReceipt result =
+    const MovieOperationReceipt activated =
         service.StartPreparedReadOnlyPlayback(prepared.preparation);
 
-    EXPECT_FALSE(result.result.ok);
-    EXPECT_EQ(result.workset_epoch, epoch);
-    EXPECT_TRUE(service.is_tainted());
+    EXPECT_FALSE(activated.result.ok);
+    EXPECT_EQ(activated.result.integrity, GuestIntegrity::Preserved);
+    EXPECT_FALSE(service.is_tainted());
     EXPECT_TRUE(reservations.held);
-    EXPECT_FALSE(service.AbandonPreparedReadOnlyPlayback(
+    EXPECT_TRUE(service.AbandonPreparedReadOnlyPlayback(
         prepared.preparation).result.ok);
     EXPECT_FALSE(reservations.held);
 }
 
-TEST(MovieService, AbandoningStoppedPreparedCoreReleasesResourcesAndTaints)
+TEST(MovieService, AbandoningPreparedPausedCoreReleasesResourcesCleanly)
 {
     TemporaryDirectory temp;
     const auto dtm = temp.path() / "root.dtm";
@@ -280,14 +312,13 @@ TEST(MovieService, AbandoningStoppedPreparedCoreReleasesResourcesAndTaints)
     const MovieOperationReceipt abandoned =
         service.AbandonPreparedReadOnlyPlayback(prepared.preparation);
 
-    EXPECT_FALSE(abandoned.result.ok);
-    EXPECT_EQ(abandoned.result.integrity, GuestIntegrity::Unknown);
+    EXPECT_TRUE(abandoned.result.ok) << abandoned.result.message;
     EXPECT_EQ(abandoned.workset_epoch, epoch);
-    EXPECT_TRUE(service.is_tainted());
+    EXPECT_FALSE(service.is_tainted());
     EXPECT_FALSE(reservations.held);
     EXPECT_EQ(backend.calls,
               (std::vector<std::string>{
-                  "prepare", "stop-core", "discard-prepared"}));
+                  "prepare", "stop-core", "start-core", "stop"}));
 }
 
 TEST(MovieService, SavestateRestoreHandshakeUsesExactActiveWorkset)

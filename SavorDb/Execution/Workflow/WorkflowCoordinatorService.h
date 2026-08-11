@@ -19,8 +19,8 @@
 
 #include "../IExecutionDb.h"
 #include "../ProgramDB/ProgramKindRegistry.h"
-#include "AdapterChainOrchestrator.h"
 #include "WorkflowOrchestration.h"
+#include "WorkflowStepCompletionGate.h"
 
 namespace savor::db {
 struct IAuthoringDb;
@@ -59,10 +59,6 @@ struct WorkflowCoordinatorConfig {
     std::size_t terminal_scan_limit = 64;
     std::size_t max_active_materialized_workflows = 30;
     int successor_step_priority_boost = 10;
-    // Retained for the legacy combined coordinator while it remains
-    // buildable. WorkflowCoordinatorService never gates durable workflow
-    // decisions on worker capacity.
-    std::function<std::size_t()> available_item_credits;
     std::shared_ptr<CoordinatorItemCreditSource> item_credit_source;
     // In-process hint only. The execution DB remains authoritative and the
     // claim scheduler retains its external-writer fallback poll.
@@ -161,8 +157,6 @@ private:
     EventLineCallback event_line_callback_;
     std::unique_ptr<StepCompletionGateService> owned_step_completion_gate_;
     StepCompletionGateService* step_completion_gate_ = nullptr;
-    AdapterChainOrchestrator adapter_chain_orchestrator_;
-
     std::atomic<bool> stop_{ false };
     std::atomic<bool> running_{ false };
     std::thread worker_thread_;

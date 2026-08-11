@@ -1,7 +1,7 @@
 // tests/TASPadTests.cpp
 #include "gtest/gtest.h"
 #include "Core/Input/GCPadOverride.h"
-#include "Core/Input/InputPlan.h"
+#include "Core/Input/GCInputFrame.h"
 
 using savor::GCPadOverride;
 using savor::GCInputFrame;
@@ -16,11 +16,4 @@ TEST(GCPadOverride, NeutralCentered)
     EXPECT_EQ(f.c_y, 128);
     EXPECT_EQ(f.trig_l, 0);
     EXPECT_EQ(f.trig_r, 0);
-}
-
-TEST(GCPadOverride, UpdateFrameNoCrash)
-{
-    GCPadOverride pad(0);
-    pad.setFrame(GCPadOverride::NeutralFrame());
-    SUCCEED(); // Behavior is exercised when Dolphin polls via the override.
 }

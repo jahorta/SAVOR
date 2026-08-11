@@ -1,12 +1,41 @@
 #include "BoundedStopPointCpuEvaluator.h"
 
+#include "../Capabilities/SourceCapabilityPacks.h"
+
 #include <algorithm>
+#include <optional>
 
 #include "Core/HW/Memmap.h"
 #include "Core/System.h"
 
 namespace savor::runtime::program {
 namespace {
+
+std::optional<CpuSampleWidth> WidthFor(
+    const CpuEvaluatorDescriptor& descriptor) noexcept
+{
+    if (descriptor.operations.size() != 1 ||
+        descriptor.address_dependency.empty() ||
+        descriptor.maximum_reads != 1)
+    {
+        return std::nullopt;
+    }
+    switch (descriptor.operations.front())
+    {
+    case CpuEvaluatorOperation::ReadU8:
+        return CpuSampleWidth::U8;
+    case CpuEvaluatorOperation::ReadU16:
+        return CpuSampleWidth::U16;
+    case CpuEvaluatorOperation::ReadU32:
+        return CpuSampleWidth::U32;
+    case CpuEvaluatorOperation::ReadU64:
+        return CpuSampleWidth::U64;
+    case CpuEvaluatorOperation::CompareEqual:
+    case CpuEvaluatorOperation::CompareMaskedEqual:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
 
 [[nodiscard]] bool ValidWidth(CpuSampleWidth width) noexcept
 {
@@ -192,6 +221,44 @@ const CpuSampleDescriptor* BoundedStopPointCpuEvaluator::FindSample(
             return candidate.id == descriptor_id;
         });
     return found == samples_.end() ? nullptr : &*found;
+}
+
+std::unique_ptr<BoundedStopPointCpuEvaluator>
+BuildCanonicalStopPointCpuEvaluator()
+{
+    const capabilities::SourceCapabilityPackCatalog catalog =
+        capabilities::BuildSourceCapabilityPackCatalog();
+    std::vector<CpuSampleDescriptor> samples;
+    for (const CapabilityPackManifest& manifest : catalog.manifests)
+    {
+        for (const CpuEvaluatorDescriptor& evaluator :
+             manifest.cpu_evaluators)
+        {
+            const std::optional<CpuSampleWidth> width =
+                WidthFor(evaluator);
+            const auto address = std::ranges::find(
+                manifest.address_symbols,
+                evaluator.address_dependency,
+                &AddressSymbolDescriptor::canonical_id);
+            if (!width || address == manifest.address_symbols.end() ||
+                evaluator.routed_sample_descriptor_id == 0 ||
+                evaluator.maximum_output_bytes !=
+                    static_cast<std::uint32_t>(*width))
+            {
+                return nullptr;
+            }
+            samples.push_back({
+                evaluator.routed_sample_descriptor_id,
+                CpuSampleSource::GuestMemoryAbsolute,
+                *width,
+                address->address,
+            });
+        }
+    }
+    auto result = std::make_unique<BoundedStopPointCpuEvaluator>(
+        std::move(samples),
+        std::vector<CpuQualificationDescriptor>{});
+    return result->valid() ? std::move(result) : nullptr;
 }
 
 } // namespace savor::runtime::program

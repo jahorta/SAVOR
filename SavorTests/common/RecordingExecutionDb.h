@@ -68,7 +68,7 @@ public:
         }
         return true;
     }
-    std::optional<savor::db::ExecutionJobRecord> GetJob(std::int64_t job_id) const override {
+    std::optional<savor::db::ExecutionJobRecord> GetExecutionJob(std::int64_t job_id) const override {
         const auto it = jobs_.find(job_id);
         if (it == jobs_.end()) {
             return std::nullopt;

@@ -11,8 +11,6 @@ public:
         SeedProbe,
         Tas,
         BattleRun,
-        Predicate,
-        PredicateSet,
         BattlePlan,
         ExplorerSettings,
     };

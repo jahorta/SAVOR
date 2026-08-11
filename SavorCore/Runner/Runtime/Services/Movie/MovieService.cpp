@@ -187,6 +187,14 @@ MovieOperationReceipt MovieService::PrepareReadOnlyPlayback(
         compensate_staging(receipt.result);
         return receipt;
     }
+    if (next_preparation_ == 0)
+    {
+        receipt.result = MovieServiceResult::Failure(
+            MovieServiceErrorCode::IntegrityFailure,
+            "Movie preparation identity space is exhausted");
+        compensate_staging(receipt.result);
+        return receipt;
+    }
     if (MovieServiceResult ready = validate_before_core_stop_(); !ready.ok)
     {
         receipt.result = std::move(ready);
@@ -224,25 +232,71 @@ MovieOperationReceipt MovieService::PrepareReadOnlyPlayback(
         tainted_ = true;
         settled.integrity = GuestIntegrity::Unknown;
         receipt.result = std::move(settled);
-        compensate_staging(receipt.result);
+        (void)backend_.StopMovie();
+        (void)ReleaseReservation();
         return receipt;
     }
-    if (next_preparation_ == 0)
+
+    const MovieBackendResult started =
+        backend_.StartPreparedReadOnlyMovieCorePaused();
+    if (!started.ok)
     {
         tainted_ = true;
         receipt.result = MovieServiceResult::Failure(
             MovieServiceErrorCode::IntegrityFailure,
-            "Movie preparation identity space is exhausted",
+            started.message.empty()
+                ? "Movie backend failed to start the prepared movie core paused"
+                : started.message,
             GuestIntegrity::Unknown);
-        compensate_staging(receipt.result);
+        (void)backend_.StopMovie();
+        (void)ReleaseReservation();
         return receipt;
     }
+    prepared_core_started_ = true;
+    if (!validate_after_core_start_)
+    {
+        tainted_ = true;
+        receipt.result = MovieServiceResult::Failure(
+            MovieServiceErrorCode::IntegrityFailure,
+            "Prepared movie core has no post-boot stop-point validation authority",
+            GuestIntegrity::Unknown);
+        (void)backend_.StopMovie();
+        (void)ReleaseReservation();
+        prepared_core_started_ = false;
+        return receipt;
+    }
+    MovieServiceResult validated = validate_after_core_start_();
+    if (!validated.ok)
+    {
+        tainted_ = true;
+        validated.integrity = GuestIntegrity::Unknown;
+        receipt.result = std::move(validated);
+        (void)backend_.StopMovie();
+        (void)ReleaseReservation();
+        prepared_core_started_ = false;
+        return receipt;
+    }
+    const std::optional<MovieCheckpointMetadata> expected_movie{movie};
+    if (MovieServiceResult observed = ValidateSnapshotFor(expected_movie);
+        !observed.ok)
+    {
+        tainted_ = true;
+        observed.integrity = GuestIntegrity::Unknown;
+        receipt.result = std::move(observed);
+        (void)backend_.StopMovie();
+        (void)ReleaseReservation();
+        prepared_core_started_ = false;
+        return receipt;
+    }
+    const MovieSnapshot observed = backend_.Snapshot();
+    movie.current_frame = observed.current_frame;
+    movie.current_input_count = observed.current_input_count;
+    movie.cursor_known = true;
 
     preparation_ = MoviePreparationId(next_preparation_++);
     activity_ = MovieActivity::PreparedReadOnlyPlayback;
     active_movie_ = movie;
     prepared_starting_savestate_ = prepared.startup_savestate;
-    prepared_core_start_attempted_ = false;
     receipt.result = MovieServiceResult::Success();
     receipt.activity = activity_;
     receipt.workset_epoch = ActiveEpoch();
@@ -251,6 +305,28 @@ MovieOperationReceipt MovieService::PrepareReadOnlyPlayback(
     receipt.dtm_sha256 = movie.dtm_sha256;
     receipt.artifact_path = request.dtm_path;
     receipt.starting_savestate = prepared.startup_savestate;
+    return receipt;
+}
+
+std::optional<MovieOperationReceipt>
+MovieService::PreparedReadOnlyPlaybackReceipt() const
+{
+    if (!OnOwnerThread() || !ActiveEpoch() ||
+        activity_ != MovieActivity::PreparedReadOnlyPlayback ||
+        !preparation_ || !active_movie_)
+    {
+        return std::nullopt;
+    }
+    MovieOperationReceipt receipt = BaseReceipt(
+        MovieOperation::PreparePlayback);
+    receipt.result = MovieServiceResult::Success();
+    receipt.activity = activity_;
+    receipt.workset_epoch = ActiveEpoch();
+    receipt.reservation = reservation_;
+    receipt.preparation = preparation_;
+    receipt.dtm_sha256 = active_movie_->dtm_sha256;
+    receipt.artifact_path = active_movie_->dtm_path;
+    receipt.starting_savestate = prepared_starting_savestate_;
     return receipt;
 }
 
@@ -273,32 +349,15 @@ MovieOperationReceipt MovieService::StartPreparedReadOnlyPlayback(
         return receipt;
     }
 
-    prepared_core_start_attempted_ = true;
-    const MovieBackendResult started = backend_.StartPreparedReadOnlyMovie();
-    if (!started.ok)
+    const MovieBackendResult activated =
+        backend_.ActivatePreparedReadOnlyMoviePlayback();
+    if (!activated.ok)
     {
-        tainted_ = true;
         receipt.result = FromBackendResult(
-            started,
-            "Movie backend failed to start the prepared movie");
-        receipt.result.integrity = GuestIntegrity::Unknown;
-        return receipt;
-    }
-    if (!validate_after_core_start_)
-    {
-        tainted_ = true;
-        receipt.result = MovieServiceResult::Failure(
-            MovieServiceErrorCode::IntegrityFailure,
-            "Movie start has no post-boot stop-point validation authority",
-            GuestIntegrity::Unknown);
-        return receipt;
-    }
-    MovieServiceResult validated = validate_after_core_start_();
-    if (!validated.ok)
-    {
-        tainted_ = true;
-        validated.integrity = GuestIntegrity::Unknown;
-        receipt.result = std::move(validated);
+            activated,
+            "Movie backend failed to activate the prepared playback");
+        if (receipt.result.integrity == GuestIntegrity::Unknown)
+            tainted_ = true;
         return receipt;
     }
     if (MovieServiceResult observed = ValidateSnapshotFor(active_movie_);
@@ -316,7 +375,7 @@ MovieOperationReceipt MovieService::StartPreparedReadOnlyPlayback(
     active_movie_->cursor_known = true;
     activity_ = MovieActivity::ReadOnlyPlayback;
     preparation_ = {};
-    prepared_core_start_attempted_ = false;
+    prepared_core_started_ = false;
     receipt.result = MovieServiceResult::Success();
     receipt.activity = activity_;
     receipt.workset_epoch = ActiveEpoch();
@@ -346,7 +405,7 @@ MovieOperationReceipt MovieService::AbandonPreparedReadOnlyPlayback(
         return receipt;
     }
 
-    const MovieBackendResult discarded = prepared_core_start_attempted_
+    const MovieBackendResult discarded = prepared_core_started_
         ? backend_.StopMovie()
         : backend_.DiscardPreparedReadOnlyMovie();
     const MovieServiceResult released = ReleaseReservation();
@@ -354,18 +413,24 @@ MovieOperationReceipt MovieService::AbandonPreparedReadOnlyPlayback(
     preparation_ = {};
     active_movie_.reset();
     prepared_starting_savestate_.reset();
-    prepared_core_start_attempted_ = false;
-    tainted_ = true;
-    std::string message =
-        "Prepared movie playback was abandoned after the guest core stopped";
-    if (!discarded.ok && !discarded.message.empty())
-        message += "; " + discarded.message;
-    if (!released.ok && !released.message.empty())
-        message += "; " + released.message;
-    receipt.result = MovieServiceResult::Failure(
-        MovieServiceErrorCode::IntegrityFailure,
-        std::move(message),
-        GuestIntegrity::Unknown);
+    prepared_core_started_ = false;
+    if (discarded.ok && released.ok)
+    {
+        receipt.result = MovieServiceResult::Success();
+    }
+    else
+    {
+        tainted_ = true;
+        std::string message = "Prepared movie cleanup failed";
+        if (!discarded.ok && !discarded.message.empty())
+            message += "; " + discarded.message;
+        if (!released.ok && !released.message.empty())
+            message += "; " + released.message;
+        receipt.result = MovieServiceResult::Failure(
+            MovieServiceErrorCode::IntegrityFailure,
+            std::move(message),
+            GuestIntegrity::Unknown);
+    }
     receipt.activity = activity_;
     receipt.reservation = reservation_;
     return receipt;

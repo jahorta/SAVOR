@@ -19,6 +19,7 @@
 
 #include "SeedProbeExecutionAdapters.h"
 #include "SeedProbeJobSpec.h"
+#include "../WorksetObservationBinding.h"
 #include "../../IExecutionDb.h"
 #include "../../../Analysis/IAnalysisDb.h"
 #include "../../../Authoring/IAuthoringDb.h"
@@ -26,7 +27,7 @@
 #include "../../../State/IStateDb.h"
 #include "../../../../SavorCore/Phases/Programs/SeedProbe/SeedProbeModule.h"
 #include "../../../../SavorCore/Phases/RNGSeedDeltaMap.h"
-#include "../../../../SavorCore/Runner/IPC/Wire.h"
+#include "../../../../SavorCore/Runner/Runtime/ProgramKind.h"
 #include "../../../../SavorCore/Runner/Runtime/RuntimeTypes.h"
 #include "../../../../SavorCore/Utils/Hash.h"
 
@@ -43,6 +44,19 @@ constexpr std::string_view kRecoverySearchPurpose =
     "SEEDPROBE_SEARCH_RECOVERY";
 constexpr std::string_view kConfirmPurpose = "SEEDPROBE_CONFIRM";
 constexpr std::string_view kCreatedBy = "seedprobe_program_kind";
+
+const WorksetObservationDefaultsV1& ObservationDefaults()
+{
+    static const WorksetObservationDefaultsV1 defaults{};
+    return defaults;
+}
+
+std::filesystem::path WorkingRoot(const std::filesystem::path& configured)
+{
+    return configured.empty()
+        ? std::filesystem::temp_directory_path() / "savor-seedprobe"
+        : configured;
+}
 
 struct SurveyObservation {
     SeedProbeJobSpec job;
@@ -223,7 +237,7 @@ std::optional<SeedProbeJobSpec> JobSpecFor(
     IExecutionDb* execution_db,
     std::int64_t job_id) {
     const auto job = execution_db != nullptr
-        ? execution_db->GetJob(job_id)
+        ? execution_db->GetExecutionJob(job_id)
         : std::nullopt;
     if (!job.has_value()) {
         return std::nullopt;
@@ -430,6 +444,7 @@ public:
         }
 
         const auto published = PublishJobSet(
+            context,
             root_key,
             std::nullopt,
             context.step.workflow_step_id,
@@ -570,6 +585,7 @@ private:
     }
 
     std::optional<PublishedJobSet> PublishJobSet(
+        const ProgramJobMaterializationContext& materialization,
         std::string materialization_key,
         std::optional<std::int64_t> parent_job_set_id,
         std::int64_t workflow_step_id,
@@ -581,6 +597,16 @@ private:
         int priority,
         const std::vector<SeedProbeJobSpec>& specs,
         std::string* error_out) const {
+        ResolvedWorksetObservationBindingV1 observation;
+        if (!ResolveWorksetObservationBindingV1(
+                materialization,
+                ObservationDefaults(),
+                WorkingRoot(config_.working_dir_root) / "captures",
+                &observation,
+                error_out))
+        {
+            return std::nullopt;
+        }
         EnsureMaterializingJobSetReceipt ensured{};
         if (!execution_db_->EnsureMaterializingJobSet(
                 {
@@ -705,7 +731,7 @@ private:
         std::vector<PublishWorksetCommand> worksets;
         worksets.reserve(workset_count);
         const auto& runtime_contract = phase_->runtime_contract();
-        const auto compatibility_key =
+        const auto contract_key =
             "seedprobe:v2:savestate:"
             + std::to_string(savestate_id)
             + ":phase:"
@@ -742,10 +768,9 @@ private:
                                 savor::PK_SeedProbe),
                         .program_version =
                             kProgramVersion,
-                        .compatibility =
+                        .contract =
                             {
-                                .compatibility_key =
-                                    compatibility_key,
+                                .contract_key = contract_key,
                                 .module_canonical_id =
                                     runtime_contract.module
                                         .canonical_id,
@@ -764,13 +789,23 @@ private:
                                 .runtime_profile_sha256 =
                                     runtime_contract
                                         .runtime_profile_sha256,
-                                .required_capability_mask =
-                                    runtime_contract
-                                        .required_capabilities,
+                                .program_package_sha256 = savor::runtime::
+                                    fullphase::BuildFullPhaseProgramPackage(
+                                        *phase_).canonical_sha256,
                                 .estimated_payload_bytes =
                                     static_cast<std::uint64_t>(
                                         (end - begin) * 256 * 1024),
                             },
+                        .observation = {
+                            .capture_binding_payload =
+                                observation.encoded_capture_binding,
+                            .capture_binding_sha256 =
+                                observation.capture_binding_sha256,
+                            .progress_plan_payload =
+                                observation.encoded_progress_plan,
+                            .progress_plan_sha256 =
+                                observation.progress_plan_sha256,
+                        },
                         .priority = priority,
                         .ordered_job_ids =
                             std::move(job_ids),
@@ -997,6 +1032,7 @@ private:
     }
 
     bool PublishConfirmation(
+        const ProgramJobMaterializationContext& materialization,
         const SeedProbeRunSnapshot& run,
         std::int64_t workflow_step_id,
         std::int64_t root_job_set_id,
@@ -1018,6 +1054,7 @@ private:
             + ".confirm."
             + hash::sha256(joined.data(), joined.size());
         return PublishJobSet(
+                   materialization,
                    key,
                    root_job_set_id,
                    workflow_step_id,
@@ -1221,6 +1258,7 @@ private:
                 + std::to_string(run.probe_run_id)
                 + ".search.initial";
             if (!PublishJobSet(
+                    context.materialization,
                     key,
                     context.root_job_set_id,
                     context.materialization.step.workflow_step_id,
@@ -1255,6 +1293,7 @@ private:
             BuildConfirmSpecs(run.probe_run_id);
         if (confirm_specs.empty()
             || !PublishConfirmation(
+                context.materialization,
                 run,
                 context.materialization.step.workflow_step_id,
                 context.root_job_set_id,
@@ -1313,6 +1352,7 @@ private:
                 error_out);
         }
         if (!PublishConfirmation(
+                context.materialization,
                 run,
                 context.materialization.step.workflow_step_id,
                 context.root_job_set_id,
@@ -1436,7 +1476,7 @@ private:
                 continue;
             }
             const auto source_job =
-                execution_db_->GetJob(result.source_job_id);
+                execution_db_->GetExecutionJob(result.source_job_id);
             const auto spec = source_job.has_value()
                 ? DecodeSeedProbeJobSpec(
                       source_job->input_ini)
@@ -1634,6 +1674,7 @@ private:
             BuildConfirmSpecs(run.probe_run_id);
         if (!confirm_specs.empty()) {
             if (!PublishConfirmation(
+                    context.materialization,
                     run,
                     context.materialization.step.workflow_step_id,
                     context.root_job_set_id,
@@ -1809,6 +1850,7 @@ private:
                     joined.data(),
                     joined.size());
             if (!PublishJobSet(
+                    context.materialization,
                     key,
                     context.root_job_set_id,
                     context.materialization.step.workflow_step_id,
@@ -2046,6 +2088,10 @@ ProgramKindDescriptor BuildSeedProbeProgramDescriptor(
     descriptor.full_phase_identity =
         savor::runtime::seedprobe::
             SeedProbeFullPhaseDefinitionV2()->identity();
+    descriptor.default_progress_library_ids =
+        ObservationDefaults().progress_library_ids;
+    descriptor.default_progress_runtime_trigger_pcs =
+        ObservationDefaults().runtime_sample_trigger_pcs;
     descriptor.job_materializer = std::move(materializer);
     descriptor.workset_reconstruction =
         std::move(execution.reconstruction);

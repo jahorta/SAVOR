@@ -3,7 +3,7 @@
 #include <QtCore/QTimer>
 #include <QtCore/QSettings>
 
-#include "Core/Input/InputPlanFmt.h"
+#include "Core/Input/GCInputFrameFmt.h"
 #include "SavorDbRuntime.h"
 
 #include <algorithm>

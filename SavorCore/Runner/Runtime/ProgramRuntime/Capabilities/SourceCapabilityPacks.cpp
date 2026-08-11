@@ -1,5 +1,7 @@
 #include "SourceCapabilityPacks.h"
 
+#include "Core/Input/SoaBattle/ActionTypes.h"
+#include "Core/Memory/Soa/SoaConstants.h"
 #include "Runner/Breakpoints/BpRegistry.h"
 #include "Runner/Runtime/ProgramRuntime/Composition/CompositionSupport.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
@@ -22,7 +24,37 @@ using composition::ExactSchema;
 
 constexpr std::string_view kFieldPackId = "soa.field";
 constexpr std::string_view kBattlePackId = "soa.battle";
+constexpr std::string_view kBattleCommandPackId = "soa.battle.command";
 constexpr std::string_view kNavigationPackId = "soa.navigation";
+constexpr std::uint32_t kFieldRngSeedSampleDescriptorId = 0x53460001u;
+constexpr std::uint32_t kBattleCurrentTurnSampleDescriptorId = 0x53420001u;
+
+CpuEvaluatorDescriptor FieldRngSeedEvaluator()
+{
+    return {
+        .canonical_id = "soa.field.sample.RngSeed",
+        .routed_sample_descriptor_id = kFieldRngSeedSampleDescriptorId,
+        .address_dependency = "soa.field.address.RNG_SEED",
+        .result_type = TypeRef::Builtin(BuiltinType::U32),
+        .operations = {CpuEvaluatorOperation::ReadU32},
+        .maximum_reads = 1,
+        .maximum_output_bytes = 4,
+    };
+}
+
+CpuEvaluatorDescriptor BattleCurrentTurnEvaluator()
+{
+    return {
+        .canonical_id = "soa.battle.sample.CurrentTurn",
+        .routed_sample_descriptor_id = kBattleCurrentTurnSampleDescriptorId,
+        .address_dependency = "soa.battle.address.CurrentTurn",
+        .result_type = TypeRef::Builtin(BuiltinType::U8),
+        .operations = {CpuEvaluatorOperation::ReadU8},
+        .maximum_reads = 1,
+        .maximum_output_bytes = 1,
+    };
+}
+
 
 SchemaIdentity Schema(
     std::string canonical_id,
@@ -70,6 +102,69 @@ TypeSchemaDefinition EnumSchema(
         .kind = TypeSchemaKind::ClosedEnum,
         .enum_members = std::move(members),
     };
+}
+
+std::vector<EnumMemberDefinition> TurnTypeEnumMembers()
+{
+    std::vector<EnumMemberDefinition> members;
+    members.reserve(soa::battle::TurnTypeDefinitions.size());
+    for (const auto& definition : soa::battle::TurnTypeDefinitions)
+    {
+        members.push_back({
+            std::string(definition.name),
+            static_cast<std::int64_t>(definition.type)});
+    }
+    return members;
+}
+
+std::string TurnTypeEnumContract()
+{
+    std::string contract = "enum soa.battle.TurnType/1{";
+    for (std::size_t index = 0;
+         index < soa::battle::TurnTypeDefinitions.size(); ++index)
+    {
+        if (index != 0) contract += ',';
+        const auto& definition = soa::battle::TurnTypeDefinitions[index];
+        contract += std::format(
+            "{}={}",
+            definition.name,
+            static_cast<std::int64_t>(definition.type));
+    }
+    contract += '}';
+    return contract;
+}
+
+std::vector<EnumMemberDefinition> BattleActionEnumMembers()
+{
+    std::vector<EnumMemberDefinition> members;
+    members.reserve(
+        soa::battle::actions::BattleActionDefinitions.size());
+    for (const auto& definition :
+         soa::battle::actions::BattleActionDefinitions)
+    {
+        members.push_back({
+            std::string(definition.name),
+            static_cast<std::int64_t>(definition.action)});
+    }
+    return members;
+}
+
+std::string BattleActionEnumContract()
+{
+    std::string contract = "enum soa.battle.BattleAction/1{";
+    for (std::size_t index = 0;
+         index < soa::battle::actions::BattleActionDefinitions.size(); ++index)
+    {
+        if (index != 0) contract += ',';
+        const auto& definition =
+            soa::battle::actions::BattleActionDefinitions[index];
+        contract += std::format(
+            "{}={}",
+            definition.name,
+            static_cast<std::int64_t>(definition.action));
+    }
+    contract += '}';
+    return contract;
 }
 
 TypeSchemaDefinition RecordSchema(
@@ -127,12 +222,8 @@ std::vector<TypeSchemaDefinition> BuildSchemas()
 
     schemas.push_back(EnumSchema(
         "soa.battle.TurnType",
-        {
-            {"BackAttack", 0},
-            {"Normal", 1},
-            {"Advantage", 2},
-        },
-        "enum{BackAttack=0,Normal=1,Advantage=2}"));
+        TurnTypeEnumMembers(),
+        TurnTypeEnumContract()));
     const auto turn_type = schemas.back().identity;
 
     schemas.push_back(RecordSchema(
@@ -172,22 +263,15 @@ std::vector<TypeSchemaDefinition> BuildSchemas()
     schemas.push_back(RecordSchema(
         "soa.battle.CaptureContextRequest",
         {
-            {"stop_sequence", TypeRef::Builtin(BuiltinType::U64)},
             {"workset_epoch", TypeRef::Builtin(BuiltinType::U64)},
             {"expected_pc", TypeRef::Builtin(BuiltinType::U32)},
         },
-        "record CaptureContextRequest/1(stop_sequence,workset_epoch,expected_pc)"));
+        "record CaptureContextRequest/1(workset_epoch,expected_pc)"));
 
     schemas.push_back(EnumSchema(
         "soa.battle.BattleAction",
-        {
-            {"Attack", 0},
-            {"Defend", 1},
-            {"Focus", 2},
-            {"FakeAttack", 3},
-            {"UseItem", 4},
-        },
-        "enum BattleAction/1"));
+        BattleActionEnumMembers(),
+        BattleActionEnumContract()));
     const auto battle_action = schemas.back().identity;
     schemas.push_back(RecordSchema(
         "soa.battle.BattleCommand",
@@ -214,42 +298,63 @@ std::vector<TypeSchemaDefinition> BuildSchemas()
         "record BattleTurnExecutionSpec/1"));
     const auto turn_spec = schemas.back().identity;
 
+    std::vector<EnumMemberDefinition> command_segment_members;
+    command_segment_members.reserve(kBattleCommandSegments.size());
+    std::string command_segment_contract = "enum BattleCommandSegment/1{";
+    for (const auto& segment : kBattleCommandSegments)
+    {
+        if (command_segment_contract.back() != '{')
+            command_segment_contract.push_back(',');
+        command_segment_contract.append(segment.name);
+        command_segment_contract.push_back('=');
+        command_segment_contract.append(std::to_string(
+            BattleCommandSegmentValue(segment.segment)));
+        command_segment_members.push_back({
+            std::string(segment.name),
+            BattleCommandSegmentValue(segment.segment),
+        });
+    }
+    command_segment_contract.push_back('}');
+    schemas.push_back(EnumSchema(
+        "soa.battle.command.Segment",
+        std::move(command_segment_members),
+        command_segment_contract));
+    const auto command_segment = schemas.back().identity;
     schemas.push_back(RecordSchema(
-        "runtime.input.GCInputFrame",
+        "soa.battle.command.State",
         {
-            {"buttons", TypeRef::Builtin(BuiltinType::U16)},
-            {"main_x", TypeRef::Builtin(BuiltinType::U8)},
-            {"main_y", TypeRef::Builtin(BuiltinType::U8)},
-            {"c_x", TypeRef::Builtin(BuiltinType::U8)},
-            {"c_y", TypeRef::Builtin(BuiltinType::U8)},
-            {"trigger_l", TypeRef::Builtin(BuiltinType::U8)},
-            {"trigger_r", TypeRef::Builtin(BuiltinType::U8)},
+            {"context", Named(battle_context)},
+            {"plan", Named(turn_spec)},
+            {"segment", Named(command_segment)},
+            {"fake_remaining", TypeRef::Builtin(BuiltinType::U32)},
+            {"command_index", TypeRef::Builtin(BuiltinType::U32)},
+            {"moves_remaining", TypeRef::Builtin(BuiltinType::U32)},
         },
-        "record GCInputFrame/1"));
-    const auto input_frame = schemas.back().identity;
-    schemas.push_back(ListSchema(
-        "runtime.input.GCInputSequence",
-        Named(input_frame),
-        65536,
-        "list<GCInputFrame>(max=65536)"));
-    const auto input_sequence = schemas.back().identity;
+        "record BattleCommandInteractionState/1(context,plan,segment,fake_remaining,command_index,moves_remaining)"));
+    const auto command_state = schemas.back().identity;
     schemas.push_back(RecordSchema(
-        "soa.battle.TurnInputMaterialization",
+        "soa.battle.command.Preparation",
         {
             {"success", TypeRef::Builtin(BuiltinType::Bool)},
-            {"sequence", Named(input_sequence)},
+            {"state", Named(command_state)},
             {"diagnostic", Named(diagnostic)},
         },
-        "record TurnInputMaterialization/1"));
+        "record BattleCommandInteractionPreparation/1(success,state,diagnostic)"));
+    schemas.push_back(RecordSchema(
+        "soa.battle.command.Transition",
+        {
+            {"state", Named(command_state)},
+            {"segment", Named(command_segment)},
+        },
+        "record BattleCommandInteractionTransition/1(state,segment)"));
 
     schemas.push_back(RecordSchema(
         "soa.navigation.CaptureContextRequest",
         {
-            {"stop_sequence", TypeRef::Builtin(BuiltinType::U64)},
             {"workset_epoch", TypeRef::Builtin(BuiltinType::U64)},
             {"expected_pc", TypeRef::Builtin(BuiltinType::U32)},
         },
-        "record NavigationCaptureContextRequest/1"));
+        "record NavigationCaptureContextRequest/1(workset_epoch,expected_pc)"));
 
     schemas.push_back(RecordSchema(
         "soa.navigation.NavigationContext",
@@ -310,16 +415,15 @@ std::vector<SemanticPointDescriptor> BuildFieldPoints()
         const bool prebattle =
             bp::domain_of(point.key) == bp::BPDomain::PreBattle;
         const bool field_return =
-            point.key == bp::battle::BattleEndFieldReturnReseedComplete;
+            point.key == bp::battle::FieldReturnRandSeedCommitted;
         if ((!prebattle && !field_return) || point.pc == 0)
             continue;
         points.push_back({
             .canonical_id = prebattle
                 ? std::format("soa.field.point.prebattle.{}", point.name)
                 : "soa.field.point.field_return.RandSeedCommitted",
-            .kind = SemanticPointPhysicalKind::ProgramCounter,
+            .kind = SemanticPointKind::ProgramCounter,
             .pc = point.pc,
-            .legacy_key = point.stable_id ? point.stable_id : "",
         });
     }
     return points;
@@ -328,18 +432,19 @@ std::vector<SemanticPointDescriptor> BuildFieldPoints()
 std::vector<SemanticPointDescriptor> BuildBattlePoints()
 {
     std::vector<SemanticPointDescriptor> points;
-    for (const auto& point : bp::BpRegistry::AllRuntime())
+    for (const auto& point :
+         bp::BpRegistry::ForConsumer(BreakpointConsumer::Predicate))
     {
         if (bp::domain_of(point.key) != bp::BPDomain::Battle ||
-            point.pc == 0)
+            point.pc == 0 ||
+            point.key == bp::battle::StartAction)
         {
             continue;
         }
         points.push_back({
             .canonical_id = LogicalPointId(kBattlePackId, point),
-            .kind = SemanticPointPhysicalKind::ProgramCounter,
+            .kind = SemanticPointKind::ProgramCounter,
             .pc = point.pc,
-            .legacy_key = point.stable_id ? point.stable_id : "",
         });
     }
     return points;
@@ -357,9 +462,8 @@ std::vector<SemanticPointDescriptor> BuildNavigationPoints()
         }
         points.push_back({
             .canonical_id = LogicalPointId(kNavigationPackId, point),
-            .kind = SemanticPointPhysicalKind::ProgramCounter,
+            .kind = SemanticPointKind::ProgramCounter,
             .pc = point.pc,
-            .legacy_key = point.stable_id ? point.stable_id : "",
         });
     }
     return points;
@@ -518,6 +622,8 @@ ExactDependencyIdentity QueryActionIdentity(
 
 } // namespace
 
+std::vector<SemanticPointDescriptor> BuildBattleCommandPoints();
+
 RuntimeCompatibility SupportedSoaUsaCompatibility()
 {
     return CanonicalRuntimeCompatibility();
@@ -532,12 +638,7 @@ CapabilityPackIdentity FieldPackIdentity()
         .dependencies = {CanonicalRuntimePackIdentity()},
         .semantic_points = BuildFieldPoints(),
         .address_symbols = BuildFieldAddresses(),
-        .cpu_evaluators = {{
-            .canonical_id = "soa.field.sample.RngSeed",
-            .operations = {CpuEvaluatorOperation::ReadU32},
-            .maximum_reads = 1,
-            .maximum_output_bytes = 4,
-        }},
+        .cpu_evaluators = {FieldRngSeedEvaluator()},
     };
     manifest.identity.manifest_hash =
         ComputeCapabilityPackManifestContractHash(manifest);
@@ -553,7 +654,8 @@ CapabilityPackIdentity BattlePackIdentity()
         schemas,
         [](const TypeSchemaDefinition& schema)
         {
-            return !schema.identity.canonical_id.starts_with("soa.battle.") &&
+            return (!schema.identity.canonical_id.starts_with("soa.battle.") ||
+                    schema.identity.canonical_id.starts_with("soa.battle.command.")) &&
                 !schema.identity.canonical_id.starts_with("runtime.input.") &&
                 schema.identity.canonical_id != "runtime.DiagnosticText";
         });
@@ -582,19 +684,12 @@ CapabilityPackIdentity BattlePackIdentity()
             .address_dependencies = AddressIds(addresses),
             .maximum_guest_reads = 64,
         }},
-        .cpu_evaluators = {{
-            .canonical_id = "soa.battle.sample.CurrentTurn",
-            .operations = {CpuEvaluatorOperation::ReadU8},
-            .maximum_reads = 1,
-            .maximum_output_bytes = 1,
-        }},
+        .cpu_evaluators = {BattleCurrentTurnEvaluator()},
         .actions = {QueryActionIdentity(
             "soa.battle.capture_context",
             std::string(kBattlePackId),
             Named(battle_request.identity),
             Named(battle_context.identity))},
-        .reducers = {CanonicalReducerIdentity(
-            CanonicalReducer::BattleMaterializeTurnInput)},
     };
     manifest.identity.manifest_hash =
         ComputeCapabilityPackManifestContractHash(manifest);
@@ -650,6 +745,74 @@ CapabilityPackIdentity NavigationPackIdentity()
     return manifest.identity;
 }
 
+std::vector<SemanticPointDescriptor> BuildBattleCommandPoints()
+{
+    std::vector<SemanticPointDescriptor> points;
+    for (const auto& point :
+         bp::BpRegistry::ForConsumer(BreakpointConsumer::InteractionControl))
+    {
+        if (bp::domain_of(point.key) != bp::BPDomain::Battle ||
+            point.pc == 0 ||
+            point.visibility != BreakpointVisibility::Internal ||
+            point.owner != BreakpointOwner::Interaction)
+        {
+            continue;
+        }
+        points.push_back({
+            .canonical_id = LogicalPointId(kBattleCommandPackId, point),
+            .kind = SemanticPointKind::ProgramCounter,
+            .pc = point.pc,
+        });
+    }
+    return points;
+}
+
+SchemaIdentity BattleContextSchemaIdentity()
+{
+    const auto schemas = BuildSchemas();
+    return RequireSchema(
+        schemas,
+        "soa.battle.BattleContext").identity;
+}
+
+SchemaIdentity BattleCaptureContextRequestSchemaIdentity()
+{
+    const auto schemas = BuildSchemas();
+    return RequireSchema(
+        schemas,
+        "soa.battle.CaptureContextRequest").identity;
+}
+
+SchemaIdentity BattleTurnExecutionSpecSchemaIdentity()
+{
+    const auto schemas = BuildSchemas();
+    return RequireSchema(schemas, "soa.battle.BattleTurnExecutionSpec").identity;
+}
+
+SchemaIdentity BattleCommandStateSchemaIdentity()
+{
+    const auto schemas = BuildSchemas();
+    return RequireSchema(schemas, "soa.battle.command.State").identity;
+}
+
+SchemaIdentity BattleCommandPreparationSchemaIdentity()
+{
+    const auto schemas = BuildSchemas();
+    return RequireSchema(schemas, "soa.battle.command.Preparation").identity;
+}
+
+SchemaIdentity BattleCommandTransitionSchemaIdentity()
+{
+    const auto schemas = BuildSchemas();
+    return RequireSchema(schemas, "soa.battle.command.Transition").identity;
+}
+
+SchemaIdentity BattleCommandSegmentSchemaIdentity()
+{
+    const auto schemas = BuildSchemas();
+    return RequireSchema(schemas, "soa.battle.command.Segment").identity;
+}
+
 ExactDependencyIdentity BattleCaptureContextActionIdentity()
 {
     const auto schemas = BuildSchemas();
@@ -678,36 +841,214 @@ ExactDependencyIdentity NavigationCaptureContextActionIdentity()
             "soa.navigation.NavigationContext").identity));
 }
 
-ExactDependencyIdentity BattleMaterializeTurnInputReducerIdentity()
+namespace {
+
+struct BattleCommandReducerEntry
+{
+    CanonicalReducer reducer;
+    ReducerDescriptor descriptor;
+};
+
+struct BattleCommandCapabilityCatalog
+{
+    std::vector<BattleCommandReducerEntry> reducers;
+    CapabilityPackManifest manifest;
+};
+
+BattleCommandCapabilityCatalog BuildBattleCommandCapabilityCatalog()
 {
     const auto schemas = BuildSchemas();
-    ReducerDescriptor descriptor{
-        .identity = {
-            .canonical_id =
-                "soa.battle.materialize_turn_input",
-            .version = 1,
+    const TypeRef battle_context = Named(RequireSchema(
+        schemas, "soa.battle.BattleContext").identity);
+    const TypeRef turn_spec = Named(RequireSchema(
+        schemas, "soa.battle.BattleTurnExecutionSpec").identity);
+    const TypeRef command_state = Named(RequireSchema(
+        schemas, "soa.battle.command.State").identity);
+    const TypeRef command_preparation = Named(RequireSchema(
+        schemas, "soa.battle.command.Preparation").identity);
+    const TypeRef command_transition = Named(RequireSchema(
+        schemas, "soa.battle.command.Transition").identity);
+    const TypeRef input_frame = CanonicalRuntimeType(
+        CanonicalRuntimeSchema::InputFramePayload);
+    const TypeRef continue_result = CanonicalActionOutputType(
+        CanonicalAction::ExecutionContinueUntil);
+    const CapabilityPackIdentity unsigned_pack = UnsignedPackIdentity(
+        std::string(kBattleCommandPackId));
+
+    BattleCommandCapabilityCatalog catalog;
+    catalog.reducers = {
+        {
+            .reducer = CanonicalReducer::BattlePrepareCommandInteraction,
+            .descriptor = {
+                .identity = {
+                    .canonical_id =
+                        "soa.battle.command_interaction.prepare",
+                    .version = 1,
+                },
+                .providing_pack = unsigned_pack,
+                .input_types = {battle_context, turn_spec},
+                .output_type = command_preparation,
+                .maximum_steps = 100000,
+                .maximum_value_bytes = 4 * 1024 * 1024,
+            },
         },
-        .providing_pack = UnsignedPackIdentity(
-            std::string(kBattlePackId)),
-        .input_types = {
-            Named(RequireSchema(
-                schemas,
-                "soa.battle.BattleContext").identity),
-            Named(RequireSchema(
-                schemas,
-                "soa.battle.BattleTurnExecutionSpec").identity),
+        {
+            .reducer = CanonicalReducer::BattleCommandInteractionInitialize,
+            .descriptor = {
+                .identity = {
+                    .canonical_id =
+                        "soa.battle.command_interaction.initialize",
+                    .version = 1,
+                },
+                .providing_pack = unsigned_pack,
+                .input_types = {
+                    command_state,
+                    input_frame,
+                    input_frame,
+                    input_frame,
+                    input_frame,
+                },
+                .output_type = command_state,
+                .maximum_steps = 1,
+                .maximum_value_bytes = 4 * 1024 * 1024,
+            },
         },
-        .output_type = Named(RequireSchema(
-            schemas,
-            "soa.battle.TurnInputMaterialization").identity),
-        .permitted_actions = {},
-        .permitted_subprograms = {},
-        .maximum_steps = 100000,
-        .maximum_value_bytes = 4 * 1024 * 1024,
+        {
+            .reducer = CanonicalReducer::BattleCommandInteractionAdvance,
+            .descriptor = {
+                .identity = {
+                    .canonical_id =
+                        "soa.battle.command_interaction.advance",
+                    .version = 1,
+                },
+                .providing_pack = unsigned_pack,
+                .input_types = {command_state, continue_result},
+                .output_type = command_transition,
+                .maximum_steps = 1000,
+                .maximum_value_bytes = 4 * 1024 * 1024,
+            },
+        },
+        {
+            .reducer = CanonicalReducer::BattleCommandInteractionCompleteSegment,
+            .descriptor = {
+                .identity = {
+                    .canonical_id =
+                        "soa.battle.command_interaction.complete_segment",
+                    .version = 1,
+                },
+                .providing_pack = unsigned_pack,
+                .input_types = {command_state, continue_result},
+                .output_type = continue_result,
+                .maximum_steps = 1,
+                .maximum_value_bytes = 64 * 1024,
+            },
+        },
+        {
+            .reducer = CanonicalReducer::BattleCommandInteractionFinalize,
+            .descriptor = {
+                .identity = {
+                    .canonical_id =
+                        "soa.battle.command_interaction.finalize",
+                    .version = 1,
+                },
+                .providing_pack = unsigned_pack,
+                .input_types = {command_state, continue_result},
+                .output_type = continue_result,
+                .maximum_steps = 1,
+                .maximum_value_bytes = 16,
+            },
+        },
     };
-    descriptor.identity.signature_hash =
-        ComputeReducerDescriptorContractHash(descriptor);
-    return descriptor.identity;
+
+    constexpr auto expected_reducer_count = static_cast<std::size_t>(
+        CanonicalReducer::BattleCommandInteractionFinalize) + 1u;
+    std::array<bool, expected_reducer_count> seen_reducers{};
+    if (catalog.reducers.size() != expected_reducer_count)
+        throw std::logic_error("Battle command reducer catalog is incomplete");
+    for (const BattleCommandReducerEntry& entry : catalog.reducers)
+    {
+        const auto key = static_cast<std::size_t>(entry.reducer);
+        if (key >= expected_reducer_count || seen_reducers[key] ||
+            entry.descriptor.identity.canonical_id.empty())
+        {
+            throw std::logic_error(
+                "Battle command reducer catalog has duplicate or invalid keys");
+        }
+        seen_reducers[key] = true;
+    }
+    std::ranges::sort(
+        catalog.reducers,
+        {},
+        [](const BattleCommandReducerEntry& entry)
+        {
+            return std::pair{
+                entry.descriptor.identity.canonical_id,
+                entry.descriptor.identity.version};
+        });
+
+    for (BattleCommandReducerEntry& entry : catalog.reducers)
+    {
+        entry.descriptor.identity.signature_hash =
+            ComputeReducerDescriptorContractHash(entry.descriptor);
+    }
+
+    std::vector<SchemaIdentity> schema_identities;
+    for (const TypeSchemaDefinition& schema : schemas)
+    {
+        if (schema.identity.canonical_id.starts_with(
+                "soa.battle.command."))
+        {
+            schema_identities.push_back(schema.identity);
+        }
+    }
+
+    catalog.manifest = {
+        .identity = unsigned_pack,
+        .compatibility = SupportedSoaUsaCompatibility(),
+        .dependencies = {
+            CanonicalRuntimePackIdentity(),
+            BattlePackIdentity(),
+        },
+        .schemas = std::move(schema_identities),
+        .semantic_points = BuildBattleCommandPoints(),
+    };
+    catalog.manifest.reducers.reserve(catalog.reducers.size());
+    for (const BattleCommandReducerEntry& entry : catalog.reducers)
+        catalog.manifest.reducers.push_back(entry.descriptor.identity);
+    catalog.manifest.identity.manifest_hash =
+        ComputeCapabilityPackManifestContractHash(catalog.manifest);
+
+    for (BattleCommandReducerEntry& entry : catalog.reducers)
+        entry.descriptor.providing_pack = catalog.manifest.identity;
+    return catalog;
+}
+
+const BattleCommandCapabilityCatalog& CanonicalBattleCommandCapabilityCatalog()
+{
+    static const BattleCommandCapabilityCatalog catalog =
+        BuildBattleCommandCapabilityCatalog();
+    return catalog;
+}
+
+} // namespace
+
+const ReducerDescriptor& CanonicalBattleCommandReducerDescriptor(
+    CanonicalReducer reducer)
+{
+    const auto& entries =
+        CanonicalBattleCommandCapabilityCatalog().reducers;
+    const auto found = std::ranges::find(
+        entries,
+        reducer,
+        &BattleCommandReducerEntry::reducer);
+    if (found == entries.end())
+        throw std::out_of_range("Unknown canonical reducer");
+    return found->descriptor;
+}
+
+CapabilityPackIdentity BattleCommandPackIdentity()
+{
+    return CanonicalBattleCommandCapabilityCatalog().manifest.identity;
 }
 
 SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
@@ -734,12 +1075,6 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
     const auto& battle_context = RequireSchema(
         catalog.schemas,
         "soa.battle.BattleContext");
-    const auto& turn_spec = RequireSchema(
-        catalog.schemas,
-        "soa.battle.BattleTurnExecutionSpec");
-    const auto& materialization = RequireSchema(
-        catalog.schemas,
-        "soa.battle.TurnInputMaterialization");
     const auto& navigation_request = RequireSchema(
         catalog.schemas,
         "soa.navigation.CaptureContextRequest");
@@ -758,7 +1093,8 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         {
             continue;
         }
-        if (schema.identity.canonical_id.starts_with("soa.battle.") ||
+        if ((schema.identity.canonical_id.starts_with("soa.battle.") &&
+             !schema.identity.canonical_id.starts_with("soa.battle.command.")) ||
             schema.identity.canonical_id.starts_with("runtime.input.") ||
             schema.identity.canonical_id == "runtime.DiagnosticText")
         {
@@ -779,20 +1115,14 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         NavigationPackIdentity(),
         Named(navigation_request.identity),
         Named(navigation_context.identity)));
-    catalog.reducers = {{
-        .identity = CanonicalReducerIdentity(
-            CanonicalReducer::BattleMaterializeTurnInput),
-        .providing_pack = BattlePackIdentity(),
-        .input_types = {
-            Named(battle_context.identity),
-            Named(turn_spec.identity),
-        },
-        .output_type = Named(materialization.identity),
-        .permitted_actions = {},
-        .permitted_subprograms = {},
-        .maximum_steps = 100000,
-        .maximum_value_bytes = 4 * 1024 * 1024,
-    }};
+    const auto& battle_command_catalog =
+        CanonicalBattleCommandCapabilityCatalog();
+    catalog.reducers.reserve(battle_command_catalog.reducers.size());
+    for (const BattleCommandReducerEntry& entry :
+         battle_command_catalog.reducers)
+    {
+        catalog.reducers.push_back(entry.descriptor);
+    }
 
     auto field_addresses = BuildFieldAddresses();
     auto battle_addresses = BuildBattleAddresses();
@@ -805,12 +1135,7 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         .schemas = {},
         .semantic_points = BuildFieldPoints(),
         .address_symbols = field_addresses,
-        .cpu_evaluators = {{
-            .canonical_id = "soa.field.sample.RngSeed",
-            .operations = {CpuEvaluatorOperation::ReadU32},
-            .maximum_reads = 1,
-            .maximum_output_bytes = 4,
-        }},
+        .cpu_evaluators = {FieldRngSeedEvaluator()},
     };
 
     CapabilityPackManifest battle{
@@ -826,16 +1151,12 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
             .address_dependencies = AddressIds(battle_addresses),
             .maximum_guest_reads = 64,
         }},
-        .cpu_evaluators = {{
-            .canonical_id = "soa.battle.sample.CurrentTurn",
-            .operations = {CpuEvaluatorOperation::ReadU8},
-            .maximum_reads = 1,
-            .maximum_output_bytes = 1,
-        }},
+        .cpu_evaluators = {BattleCurrentTurnEvaluator()},
         .actions = {BattleCaptureContextActionIdentity()},
-        .reducers = {CanonicalReducerIdentity(
-            CanonicalReducer::BattleMaterializeTurnInput)},
     };
+
+    CapabilityPackManifest battle_command =
+        battle_command_catalog.manifest;
 
     CapabilityPackManifest navigation{
         .identity = NavigationPackIdentity(),
@@ -858,20 +1179,20 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         .compatibility = SupportedSoaUsaCompatibility(),
         .schemas = std::move(runtime_schema_identities),
     };
-    runtime.actions.reserve(
-        static_cast<std::size_t>(CanonicalAction::TelemetryEmit) + 1u);
-    for (std::size_t index = 0;
-         index <= static_cast<std::size_t>(CanonicalAction::TelemetryEmit);
-         ++index)
+    runtime.actions.reserve(CanonicalActionDefinitions().size());
+    for (const CanonicalActionDefinition& definition :
+         CanonicalActionDefinitions())
     {
-        runtime.actions.push_back(CanonicalActionIdentity(
-            static_cast<CanonicalAction>(index)));
+        runtime.actions.push_back(
+            CanonicalActionIdentity(definition.action));
     }
+    std::ranges::sort(runtime.actions);
 
     catalog.manifests = {
         std::move(runtime),
         std::move(field),
         std::move(battle),
+        std::move(battle_command),
         std::move(navigation),
     };
     return catalog;
@@ -897,12 +1218,25 @@ RegistryResult RegisterSourceCapabilityPacks(
 
 namespace savor::runtime::program {
 
+std::string_view CanonicalReducerName(
+    CanonicalReducer reducer) noexcept
+{
+    try
+    {
+        return capabilities::CanonicalBattleCommandReducerDescriptor(
+            reducer).identity.canonical_id;
+    }
+    catch (const std::out_of_range&)
+    {
+        return {};
+    }
+}
+
 ExactDependencyIdentity CanonicalReducerIdentity(
     CanonicalReducer reducer)
 {
-    if (reducer != CanonicalReducer::BattleMaterializeTurnInput)
-        throw std::out_of_range("Unknown canonical reducer");
-    return capabilities::BattleMaterializeTurnInputReducerIdentity();
+    return capabilities::CanonicalBattleCommandReducerDescriptor(
+        reducer).identity;
 }
 
 } // namespace savor::runtime::program

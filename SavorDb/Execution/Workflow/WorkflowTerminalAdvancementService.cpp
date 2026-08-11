@@ -5,13 +5,15 @@
 namespace savor::db::execution::workflow {
 
 WorkflowTerminalAdvancementService::WorkflowTerminalAdvancementService(
-    const AdapterChainOrchestrator* orchestrator,
+    const programdb::ProgramKindRegistry* program_kind_registry,
+    StepCompletionGateService* completion_gate,
     savor::db::IExecutionDb* execution_db,
     IWorkflowOrchestrationQueryService* query_service,
     IWorkflowOrchestrationCommandService* command_service,
     const WorkflowGraphRoutingService* graph_routing_service,
     int successor_step_priority_boost)
-    : orchestrator_(orchestrator)
+    : program_kind_registry_(program_kind_registry)
+    , completion_gate_(completion_gate)
     , execution_db_(execution_db)
     , query_service_(query_service)
     , command_service_(command_service)
@@ -20,13 +22,15 @@ WorkflowTerminalAdvancementService::WorkflowTerminalAdvancementService(
 }
 
 WorkflowTerminalAdvancementService::WorkflowTerminalAdvancementService(
-    const AdapterChainOrchestrator* orchestrator,
+    const programdb::ProgramKindRegistry* program_kind_registry,
+    StepCompletionGateService* completion_gate,
     IWorkflowOrchestrationQueryService* query_service,
     IWorkflowOrchestrationCommandService* command_service,
     const WorkflowGraphRoutingService* graph_routing_service,
     int successor_step_priority_boost)
     : WorkflowTerminalAdvancementService(
-        orchestrator,
+        program_kind_registry,
+        completion_gate,
         nullptr,
         query_service,
         command_service,
@@ -38,7 +42,7 @@ bool WorkflowTerminalAdvancementService::AdvanceForTerminalJob(
     std::int64_t job_id,
     WorkflowTerminalAdvancementResult* result_out,
     std::string* error_out,
-    std::optional<programdb::ResultMapPayload> result_payload) const {
+    std::optional<programdb::ProgramJobContinuationOutput> output) const {
     if (query_service_ == nullptr) {
         if (error_out) *error_out = "workflow query service is not configured";
         return false;
@@ -52,18 +56,19 @@ bool WorkflowTerminalAdvancementService::AdvanceForTerminalJob(
         return true;
     }
 
-    return AdvanceSnapshot(*snapshot, result_out, error_out, std::move(result_payload));
+    return AdvanceSnapshot(*snapshot, result_out, error_out, std::move(output));
 }
 
 bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
     const WorkflowStepTerminalSnapshot& snapshot,
     WorkflowTerminalAdvancementResult* result_out,
     std::string* error_out,
-    std::optional<programdb::ResultMapPayload> result_payload) const {
+    std::optional<programdb::ProgramJobContinuationOutput> output) const {
     WorkflowTerminalAdvancementResult result{};
     result.snapshot_found = true;
 
-    if (orchestrator_ == nullptr || command_service_ == nullptr) {
+    if (program_kind_registry_ == nullptr || completion_gate_ == nullptr
+        || command_service_ == nullptr) {
         if (error_out) *error_out = "terminal advancement dependencies are not configured";
         return false;
     }
@@ -74,17 +79,15 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         .expected_total = snapshot.expected_total,
         .discovered_total = snapshot.discovered_total,
         .terminal_total = snapshot.terminal_total,
-		.failed_total = snapshot.failed_total,
+        .failed_total = snapshot.failed_total,
     };
-    std::optional<std::string> output_ref_kind = result_payload.has_value() && !result_payload->output_ref_kind.empty()
-        ? std::optional<std::string>(result_payload->output_ref_kind)
-        : result_payload.has_value() && !result_payload->result_kind.empty()
-            ? std::optional<std::string>(result_payload->result_kind)
+    std::optional<std::string> output_ref_kind =
+        output.has_value() && !output->ref_kind.empty()
+            ? std::optional<std::string>(output->ref_kind)
             : snapshot.output_ref_kind;
-    std::optional<std::int64_t> output_ref_id = result_payload.has_value() && result_payload->output_ref_id > 0
-        ? std::optional<std::int64_t>(result_payload->output_ref_id)
-        : result_payload.has_value() && result_payload->result_ref_id > 0
-            ? std::optional<std::int64_t>(result_payload->result_ref_id)
+    std::optional<std::int64_t> output_ref_id =
+        output.has_value() && output->ref_id > 0
+            ? std::optional<std::int64_t>(output->ref_id)
             : snapshot.output_ref_id;
     if ((!output_ref_id.has_value() || *output_ref_id <= 0) && execution_db_ != nullptr) {
         const auto job_outputs = execution_db_->ListJobOutputsForWorkflowStep(snapshot.workflow_step_id);
@@ -111,17 +114,40 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         .output_ref_id = output_ref_id,
     };
 
-    const auto terminal = orchestrator_->OnStepTerminal(snapshot.step_kind, context, completion, nullptr);
-    result.gate_can_transition = terminal.gate.can_transition;
-    result.blocked_reason = terminal.gate.blocked_reason;
+    const auto* descriptor =
+        program_kind_registry_->FindForStepKind(snapshot.step_kind);
+    auto gate = completion_gate_->Evaluate(completion);
+    if (snapshot.failed_total > 0
+        && snapshot.discovered_total > 0
+        && snapshot.terminal_total >= snapshot.discovered_total) {
+        gate.can_transition = true;
+        const int succeeded_total =
+            snapshot.terminal_total - snapshot.failed_total;
+        gate.terminal_fail = succeeded_total <= 0
+            || descriptor == nullptr
+            || !descriptor->allow_mixed_success_failed_transition;
+        gate.blocked_reason.reset();
+    }
+
+    std::optional<programdb::WorkflowTransitionDecision> transition;
+    if (gate.can_transition && !gate.terminal_fail && descriptor != nullptr
+        && descriptor->workflow_transition != nullptr) {
+        transition = descriptor->workflow_transition->EvaluateTransition(context);
+        if (transition->terminal_failure) {
+            gate.terminal_fail = true;
+            gate.blocked_reason = transition->blocked_reason;
+        }
+    }
+    result.gate_can_transition = gate.can_transition;
+    result.blocked_reason = gate.blocked_reason;
 
     std::string command_error;
-    if (!terminal.gate.can_transition) {
-        if (terminal.gate.blocked_reason.has_value()) {
+    if (!gate.can_transition) {
+        if (gate.blocked_reason.has_value()) {
             if (!command_service_->MarkStepBlocked(
                 {
                     .workflow_step_id = snapshot.workflow_step_id,
-                    .blocked_reason = terminal.gate.blocked_reason,
+                    .blocked_reason = gate.blocked_reason,
                     .requested_by = "workflow_terminal_advancement",
                 },
                 &command_error)) {
@@ -146,7 +172,7 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         return false;
     }
 
-    const auto terminal_state = terminal.gate.terminal_fail ? "FAILED" : "COMPLETED";
+    const auto terminal_state = gate.terminal_fail ? "FAILED" : "COMPLETED";
     if (!command_service_->MarkStepTerminal(
         {
             .workflow_step_id = snapshot.workflow_step_id,
@@ -175,8 +201,8 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         return false;
     }
 
-    if (terminal.gate.terminal_fail) {
-        const auto failure_message = terminal.gate.blocked_reason.value_or(
+    if (gate.terminal_fail) {
+        const auto failure_message = gate.blocked_reason.value_or(
             "workflow step completed with failed jobs");
         if (!command_service_->AppendLifecycleEvent(
             {
@@ -195,8 +221,8 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         if (!command_service_->TerminalFailWorkflowInstance(
             {
                 .workflow_instance_id = snapshot.workflow_instance_id,
-                .failure_code = terminal.transition.has_value()
-                        && terminal.transition->terminal_failure
+                .failure_code = transition.has_value()
+                        && transition->terminal_failure
                     ? "TRANSITION_REJECTED"
                     : "STEP_FAILED",
                 .failure_message = failure_message,
@@ -241,23 +267,23 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
     }
     result.transition_evaluated = true;
 
-    const bool advanced = terminal.transition.has_value() && terminal.transition->should_advance;
+    const bool advanced = transition.has_value() && transition->should_advance;
     const auto event_kind = advanced
         ? "Execution.WorkflowTransitionAdvanced.v1"
         : "Execution.WorkflowTransitionBlocked.v1";
     const auto event_message = advanced
         ? std::optional<std::string>("transition_advanced")
-        : terminal.transition.has_value() ? terminal.transition->blocked_reason : std::optional<std::string>("transition_blocked");
+        : transition.has_value() ? transition->blocked_reason : std::optional<std::string>("transition_blocked");
 
     if (advanced) {
         const int successor_priority = snapshot.priority + successor_step_priority_boost_;
-        if (!terminal.transition->spawn_steps.empty()) {
+        if (!transition->spawn_steps.empty()) {
             WorkflowAppendDynamicStepsCommand append{};
             append.workflow_instance_id = snapshot.workflow_instance_id;
             append.parent_workflow_step_id = snapshot.workflow_step_id;
             append.requested_by = "workflow_terminal_advancement";
-            append.steps.reserve(terminal.transition->spawn_steps.size());
-            for (const auto& step : terminal.transition->spawn_steps) {
+            append.steps.reserve(transition->spawn_steps.size());
+            for (const auto& step : transition->spawn_steps) {
                 append.steps.push_back(WorkflowAppendDynamicStepSpec{
                     .step_key = step.step_key,
                     .step_kind = step.step_kind,
@@ -275,12 +301,12 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
             }
             result.spawned_step_count = static_cast<int>(append.steps.size());
             result.advanced_next_step = result.spawned_step_count > 0;
-        } else if (terminal.transition->next_step_key.has_value()
+        } else if (transition->next_step_key.has_value()
             && snapshot.workflow_kind != "workflow_graph") {
             if (!command_service_->MarkStepReady(
                 {
                     .workflow_instance_id = snapshot.workflow_instance_id,
-                    .step_key = *terminal.transition->next_step_key,
+                    .step_key = *transition->next_step_key,
                     .requested_by = "workflow_terminal_advancement",
                     .ready_priority = successor_priority,
                 },

@@ -2,6 +2,8 @@
 
 #include "Runner/Runtime/ProgramRuntime/Registry/CapabilityPackRegistry.h"
 
+#include <array>
+#include <cstdint>
 #include <string_view>
 #include <vector>
 
@@ -12,6 +14,82 @@ inline constexpr std::string_view kSupportedExecutableIdentity =
     "soal-usa.GEAE8E";
 inline constexpr std::string_view kSupportedAddressMapRevision =
     "savor.builtin-soal-usa-addresses/1";
+
+enum class BattleCommandSegment : std::int64_t
+{
+    AwaitInputReady = 0,
+    FakeAccept = 1,
+    FakeBack = 2,
+    AttackAccept = 3,
+    AttackTargetReady = 4,
+    AttackTargetReadyConfirm = 5,
+    AttackTargetDown = 6,
+    AttackTargetReadyBetween = 7,
+    AttackTargetAccept = 8,
+    MainMenuMoveUp = 9,
+    MainMenuMoveDown = 10,
+    MainMenuTransition = 11,
+    DirectCommandAccept = 12,
+    AwaitNextInputReady = 13,
+    AwaitTurnReady = 14,
+    Complete = 15,
+};
+
+struct BattleCommandSegmentDefinition
+{
+    BattleCommandSegment segment;
+    std::string_view name;
+};
+
+inline constexpr std::array<BattleCommandSegmentDefinition, 16>
+    kBattleCommandSegments{{
+        {BattleCommandSegment::AwaitInputReady, "AwaitInputReady"},
+        {BattleCommandSegment::FakeAccept, "FakeAccept"},
+        {BattleCommandSegment::FakeBack, "FakeBack"},
+        {BattleCommandSegment::AttackAccept, "AttackAccept"},
+        {BattleCommandSegment::AttackTargetReady, "AttackTargetReady"},
+        {BattleCommandSegment::AttackTargetReadyConfirm, "AttackTargetReadyConfirm"},
+        {BattleCommandSegment::AttackTargetDown, "AttackTargetDown"},
+        {BattleCommandSegment::AttackTargetReadyBetween, "AttackTargetReadyBetween"},
+        {BattleCommandSegment::AttackTargetAccept, "AttackTargetAccept"},
+        {BattleCommandSegment::MainMenuMoveUp, "MainMenuMoveUp"},
+        {BattleCommandSegment::MainMenuMoveDown, "MainMenuMoveDown"},
+        {BattleCommandSegment::MainMenuTransition, "MainMenuTransition"},
+        {BattleCommandSegment::DirectCommandAccept, "DirectCommandAccept"},
+        {BattleCommandSegment::AwaitNextInputReady, "AwaitNextInputReady"},
+        {BattleCommandSegment::AwaitTurnReady, "AwaitTurnReady"},
+        {BattleCommandSegment::Complete, "Complete"},
+    }};
+
+[[nodiscard]] constexpr std::int64_t BattleCommandSegmentValue(
+    BattleCommandSegment segment) noexcept
+{
+    return static_cast<std::int64_t>(segment);
+}
+
+[[nodiscard]] consteval bool BattleCommandSegmentDefinitionsAreComplete()
+{
+    constexpr auto count = static_cast<std::size_t>(
+        BattleCommandSegmentValue(BattleCommandSegment::Complete) + 1);
+    if (kBattleCommandSegments.size() != count)
+        return false;
+    std::array<bool, count> seen{};
+    for (const auto& definition : kBattleCommandSegments)
+    {
+        const auto value = BattleCommandSegmentValue(definition.segment);
+        if (value < 0 || static_cast<std::size_t>(value) >= count ||
+            definition.name.empty() || seen[static_cast<std::size_t>(value)])
+        {
+            return false;
+        }
+        seen[static_cast<std::size_t>(value)] = true;
+    }
+    for (const bool present : seen)
+        if (!present) return false;
+    return true;
+}
+
+static_assert(BattleCommandSegmentDefinitionsAreComplete());
 
 struct SourceCapabilityPackCatalog
 {
@@ -25,7 +103,16 @@ struct SourceCapabilityPackCatalog
 
 [[nodiscard]] CapabilityPackIdentity FieldPackIdentity();
 [[nodiscard]] CapabilityPackIdentity BattlePackIdentity();
+[[nodiscard]] CapabilityPackIdentity BattleCommandPackIdentity();
 [[nodiscard]] CapabilityPackIdentity NavigationPackIdentity();
+
+[[nodiscard]] SchemaIdentity BattleContextSchemaIdentity();
+[[nodiscard]] SchemaIdentity BattleCaptureContextRequestSchemaIdentity();
+[[nodiscard]] SchemaIdentity BattleTurnExecutionSpecSchemaIdentity();
+[[nodiscard]] SchemaIdentity BattleCommandStateSchemaIdentity();
+[[nodiscard]] SchemaIdentity BattleCommandPreparationSchemaIdentity();
+[[nodiscard]] SchemaIdentity BattleCommandTransitionSchemaIdentity();
+[[nodiscard]] SchemaIdentity BattleCommandSegmentSchemaIdentity();
 
 [[nodiscard]] ExactDependencyIdentity BattleCaptureContextActionIdentity();
 [[nodiscard]] ExactDependencyIdentity NavigationCaptureContextActionIdentity();

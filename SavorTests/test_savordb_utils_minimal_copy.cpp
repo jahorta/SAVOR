@@ -8,7 +8,7 @@
 #include "Common/DbService.h"
 #include "Common/Types/UtcTimestamp.h"
 #include "Execution/IExecutionDb.h"
-#include "Runner/IPC/Wire.h"
+#include "Runner/Runtime/ProgramKind.h"
 #include "Utils/IniDoc.h"
 
 #include <sqlite3.h>
@@ -236,7 +236,6 @@ protected:
             {
                 .name = "dbutils-plan-" + std::to_string(key),
                 .fingerprint = "dbutils-plan-" + std::to_string(key),
-                .num_turns = 1,
                 .created_at_utc = now,
                 .correlation_id = "dbutils-test",
                 .causation_id = "seed",

@@ -170,8 +170,6 @@ void MainWindow::createMenus()
     specsMenu->addSeparator();
     connect(specsMenu->addAction(QStringLiteral("Battle Explorer Settings")), &QAction::triggered, this, &MainWindow::openExplorerSettingsSpecLibrary);
     connect(specsMenu->addAction(QStringLiteral("Battle Plans")), &QAction::triggered, this, &MainWindow::openBattlePlanSpecLibrary);
-    connect(specsMenu->addAction(QStringLiteral("Predicates")), &QAction::triggered, this, &MainWindow::openPredicateSpecLibrary);
-    connect(specsMenu->addAction(QStringLiteral("Predicate Sets")), &QAction::triggered, this, &MainWindow::openPredicateSetSpecLibrary);
 
     auto* analysisMenu = menuBar()->addMenu(QStringLiteral("Analysis"));
     connect(analysisMenu->addAction(QStringLiteral("Seed Probe Results")), &QAction::triggered, this, [this]() {
@@ -218,8 +216,6 @@ void MainWindow::openAuthoringLibrary(AuthoringLibraryKey key)
 void MainWindow::openSeedProbeSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::SeedProbe); }
 void MainWindow::openTasSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::Tas); }
 void MainWindow::openBattleRunSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::BattleRun); }
-void MainWindow::openPredicateSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::Predicate); }
-void MainWindow::openPredicateSetSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::PredicateSet); }
 void MainWindow::openBattlePlanSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::BattlePlan); }
 void MainWindow::openExplorerSettingsSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::ExplorerSettings); }
 

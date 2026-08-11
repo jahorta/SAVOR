@@ -1,8 +1,35 @@
 # Execution Runtime Refactor Guidance
 
+The current semantic-routing, immutable workset-capture, and canonical-progress
+contract is defined in
+[`17-semantic-routing-workset-capture-canonical-progress.md`](17-semantic-routing-workset-capture-canonical-progress.md).
+
+SavorE2E validates production execution and durable invariants while reporting,
+but never judging, the realized game trajectory. Coherent domain outcomes and
+guard-skipped downstream phases are successful executions; humans decide
+whether the reported trajectory was appropriate. The normative assessment
+boundary is recorded in
+[`10-verification-and-acceptance.md`](10-verification-and-acceptance.md).
+It supersedes all `SGC1`, phase-local stop encoder, generic routing-policy,
+phase-owned capture attachment/finalization, live capture replacement, and
+free-form program-progress decisions elsewhere in this package.
+
+The current worker-fleet contract is defined in
+[`14-homogeneous-worker-architecture.md`](14-homogeneous-worker-architecture.md).
+It supersedes all earlier exact installed-catalog, `Partial`/`CompleteExact`,
+capability-gate, module-preload, heterogeneous-pool, WRMS-v1, and workset-v3
+decisions in this package.
+
 The current artifact-atomic execution contract is defined in
 [`13-artifact-atomic-worksets.md`](13-artifact-atomic-worksets.md). It supersedes older locality,
 continuation, cache, direct-dispatch, and phase-boot proposals in the earlier design record.
+
+The current workset state-machine and guest-initialization contract is defined
+in [`15-atomic-workset-lifecycle.md`](15-atomic-workset-lifecycle.md). The
+current controller-input contract is defined in
+[`16-adaptive-synchronized-input.md`](16-adaptive-synchronized-input.md).
+Together they supersede earlier `BeginWorkset`, synthetic-snapshot,
+multi-item-movie, input-plan, pulse, sequence, and input-advance proposals.
 
 The read-only comparison checkout for legacy lifecycle evidence is
 `C:\Users\jahor\.codex\worktrees\e4f9\SAVOR`; never modify it or use it for build output.
@@ -16,8 +43,9 @@ conflicts with these plans, adapt the plan and implementation together rather th
 wording or inventing a compatibility layer for it.
 
 Dependency slices 1 through 5 now exist as hard-cutover implementation checkpoints. The production
-worker composition advertises the exact SeedProbe and TAS Movie validation Full Phase modules and accepts
-program execution only through artifact-atomic `WorkerWorkset` dispatch. The remaining Dependency Slice 6
+worker composition exposes one homogeneous static Full Phase ABI and accepts each exact program package
+only through artifact-atomic `WorkerWorkset` dispatch. Workers do not advertise installed program kinds.
+The remaining Dependency Slice 6
 roadmap continues the direct native-builder migrations originally divided across nine current phases:
 
 - 6A SeedProbe;
@@ -207,8 +235,8 @@ The names have precise meanings:
 - **Interaction composition** is a reusable builder/frontend facility for static or adaptive input
   sequences. Typed interaction reducers select only verifier-known segments, which lower into ordinary
   subprogram control flow, input scopes, semantic awaits, observations, checks, and emissions.
-- **Interruption handler** is a verifier-known bounded handler requested by an `Intercept` subscription
-  using `RequestInterruptionHandler`. The router emits a typed request but never executes it;
+- **Interruption handler** is a verifier-known bounded handler requested by an explicit trusted
+  interruption registration. The router emits a typed request but never executes it;
   `ExecutionEngine` suspends the foreground operation while the handler runs. This supports session-local
   events such as known short cutscenes and text boxes, not durable workflow transitions.
 - **Capture profile** means the existing opaque `savor.capture.profile/1` configuration interpreted by
@@ -289,9 +317,11 @@ The names have precise meanings:
     caller-supplied frame/input cursor: Dolphin restores that cursor from the savestate and
     `MovieService` records the authoritative observed position. Exact cursor equality is required only
     for an internally captured checkpoint that already carries a known cursor.
-22. `InputArbiter` alone publishes pad state. Its leases, publications, poll acknowledgements, neutral
-    release, interruption borrowing, typed arbiter-issued one-use neutral borrow witnesses, and
-    movie-exclusive reservations are epoch-bound resources.
+22. `InputArbiter` alone publishes pad state. One epoch-bound lease distinguishes ownership from its
+    `Neutral`, `Held`, `DeliveryPending`, or `NeutralTransitionPending` state. Guest synchronization is
+    carried by ephemeral execution bindings; neutral close and stable-neutral apply are host-only, and
+    interruption borrowing exposes no phase-managed neutral witness. Movie-exclusive reservations use
+    the same state-oriented ownership contract.
 23. Guest data mutations are reversible by default and may survive only through an explicit commit.
     Executable patches are always reversible and require symmetric JIT/cache invalidation and readback.
 24. One session may have at most one opaque capture attachment. It is rebound across a successful state
@@ -328,6 +358,11 @@ The names have precise meanings:
     only for the active multi-item workset; two finalizer threads may own at most eight pending captures/256 MiB; the terminal ledger retains at
     most 32 terminals/128 MiB. At most two workers start concurrently, and the coordinator buffers at
     most one additional workset per negotiated Ready worker.
+34. A Full Phase kind may narrow the global workset item-count bounds through
+    its static handler policy. That policy is part of the homogeneous runtime
+    ABI and is enforced during host-only admission. Both TAS Movie validation
+    and TAS Movie checkpoint sterilization require exactly one item per
+    workset, regardless of baseline artifact kind.
 
 ## Interfaces and ownership affected
 
@@ -361,6 +396,11 @@ result-projection and per-item transaction semantics, and artifact contracts rem
 10. [Verification and Acceptance](10-verification-and-acceptance.md)
 11. [Decisions, Risks, and Deferred Work](11-decisions-risks-and-deferred-work.md)
 12. [Source Orientation](12-source-evidence-map.md)
+13. [Artifact-Atomic Worksets](13-artifact-atomic-worksets.md)
+14. [Homogeneous Worker Architecture](14-homogeneous-worker-architecture.md)
+15. [Atomic Workset Lifecycle](15-atomic-workset-lifecycle.md)
+16. [Adaptive Synchronized Input](16-adaptive-synchronized-input.md)
+17. [Semantic Routing, Workset Capture, and Canonical Progress](17-semantic-routing-workset-capture-canonical-progress.md)
 
 ## Working conventions
 

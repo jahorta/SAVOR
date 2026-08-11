@@ -36,11 +36,6 @@ struct ProgramRuntimeConfig
     // identity or phase policy.
     std::chrono::milliseconds bounded_host_operation_timeout{
         std::chrono::seconds(30)};
-    // When present, CompleteExact is reported only after the loaded catalog
-    // exactly matches this configured production module set. Development
-    // modules and extra modules can never satisfy this contract.
-    std::optional<std::vector<ProgramRuntimeCatalogModule>>
-        expected_exact_catalog;
 };
 
 // Computes the execution-key portion shared by independently bound workset
@@ -67,12 +62,9 @@ public:
     [[nodiscard]] const std::string& initialization_diagnostic()
         const noexcept;
 
-    [[nodiscard]] WorkerCapabilityMask capabilities()
-        const noexcept override;
-
-    ProgramRuntimeSubmission PrepareModule(
-        ModulePreparationRequest request,
-        std::shared_ptr<IProgramRuntimeEventSink> events) override;
+    ProgramRuntimeSubmission AdmitModuleClosure(
+        ModuleClosureAdmissionRequest request,
+        ModuleClosureAdmissionReceipt& receipt) override;
 
     ProgramRuntimeSubmission PrepareInvocationTemplate(
         InvocationTemplatePreparationRequest request,
@@ -85,9 +77,6 @@ public:
         PreparedInvocationStartRequest request,
         CancellationToken cancellation,
         std::shared_ptr<IProgramRuntimeEventSink> events) override;
-
-    [[nodiscard]] ProgramRuntimeCatalogSnapshot catalog()
-        const override;
 
     ProgramRuntimeSubmission RequestCancellation(
         InvocationId invocation_id) override;

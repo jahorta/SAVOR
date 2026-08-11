@@ -1,5 +1,4 @@
 #include "DolphinWrapper.h"
-#include "Input/InputPlanFmt.h"
 
 #include "UICommon/UICommon.h"      // SetUserDirectory, CreateDirectories
 #include "Common/FileUtil.h"
@@ -8,7 +7,6 @@
 #include "../Utils/SafeEnv.h"
 #include "../Utils/Log.h"
 #include "../Utils/Time.h"
-#include "../Runner/IPC/Wire.h"
 #include "Memory/Soa/SoaAddrRegistry.h"
 #include "Memory/MemView.h"
 
@@ -202,25 +200,6 @@ namespace savor {
 
     DolphinWrapper::~DolphinWrapper() {
         shutdownAll();
-    }
-
-    DolphinWrapper::ProgressSink DolphinWrapper::getProgressSink() const
-    {
-        std::scoped_lock lock(m_progress_sink_mutex);
-        return m_progress_sink;
-    }
-
-    void DolphinWrapper::setProgressSink(ProgressSink sink)
-    {
-        std::scoped_lock lock(m_progress_sink_mutex);
-        m_progress_sink = std::move(sink);
-    }
-
-    void DolphinWrapper::emitProgress(const std::string& text, bool record_progress) const
-    {
-        const auto sink = getProgressSink();
-        if (sink)
-            sink(text.c_str(), record_progress);
     }
 
     bool DolphinWrapper::startProbeJob(
@@ -951,38 +930,13 @@ namespace savor {
         }
     }
 
-    void DolphinWrapper::applyNextInputFrame() {
-        if (!m_system_pad_is_inited) return;
-
-        if (m_cursor < m_plan.size()) {
-            const auto& f = m_plan[m_cursor];
-            SCLOGD("[INP] next #%zu btn=%04X main=(%u,%u) c=(%u,%u) trig=(%u,%u)",
-                m_cursor, f.buttons, f.main_x, f.main_y, f.c_x, f.c_y, f.trig_l, f.trig_r);
-            m_pad.setFrame(m_plan[m_cursor++]);
-        }
-        else {
-            SCLOGD("[INP] next <neutral>");
-            m_pad.setFrame(GCPadOverride::NeutralFrame());
-        }
-    }
-
-    void DolphinWrapper::setInput(const GCInputFrame& f)
-    {
-        if (!m_system_pad_is_inited) return;
-
-        m_pad.setFrame(f);
-
-        SCLOGD("[INP] set btn=%04X main=(%u,%u) c=(%u,%u) trig=(%u,%u)",
-            f.buttons, f.main_x, f.main_y, f.c_x, f.c_y, f.trig_l, f.trig_r);
-    }
-
     uint64_t DolphinWrapper::publishInputEpoch(const GCInputFrame& f)
     {
         if (!m_system_pad_is_inited) return 0;
 
-        uint64_t epoch = ++m_input_playback_sequence;
-        if (epoch == 0) epoch = ++m_input_playback_sequence;
-        m_pad.publishPlaybackFrame(epoch, 0, f);
+        uint64_t epoch = ++m_input_publication_epoch;
+        if (epoch == 0) epoch = ++m_input_publication_epoch;
+        m_pad.publishFrame(epoch, f);
         SCLOGD("[INP] publish epoch=%llu btn=%04X main=(%u,%u) c=(%u,%u) trig=(%u,%u)",
             static_cast<unsigned long long>(epoch),
             f.buttons, f.main_x, f.main_y, f.c_x, f.c_y, f.trig_l, f.trig_r);
@@ -993,148 +947,10 @@ namespace savor {
     {
         const auto stats = m_pad.getPollStats();
         return InputPollReceipt{
-            .epoch = stats.sequence,
+            .epoch = stats.publication_epoch,
             .callback_count = stats.callback_count,
             .frame = stats.frame,
         };
-    }
-
-    DolphinWrapper::InputTapePlaybackResult DolphinWrapper::playInputTapeBlocking(
-        const InputPlan& plan,
-        const InputTapePlaybackOptions& options)
-    {
-        (void)plan;
-        (void)options;
-        SCLOGE(
-            "[input-tape] hard cutover: direct tape execution is disconnected; "
-            "use InputArbiter and ExecutionEngine");
-        return {};
-#if 0
-        InputTapePlaybackResult result{};
-        if (!m_system_pad_is_inited) {
-            result.failed_index = 0;
-            SCLOGDX(SC_TAGS("input"), "[input-tape] label=%s not_started reason=pad_not_initialized", options.label);
-            return result;
-        }
-
-        const GCInputFrame neutral = GCPadOverride::NeutralFrame();
-        auto is_neutral = [&neutral](const GCInputFrame& f) {
-            return f == neutral;
-            };
-
-        InputPlan playback_plan;
-        playback_plan.reserve(options.safe_mode ? plan.size() * 2u : plan.size());
-        if (options.safe_mode) {
-            bool previous_was_active = false;
-            for (const auto& frame : plan) {
-                const bool active = !is_neutral(frame);
-                playback_plan.push_back(frame);
-                if (active) {
-                    playback_plan.push_back(frame);
-                }
-                else if (previous_was_active) {
-                    playback_plan.push_back(frame);
-                }
-                previous_was_active = active;
-            }
-        }
-        else {
-            playback_plan = plan;
-        }
-
-        SCLOGDX(SC_TAGS("input"),
-            "[input-tape] label=%s begin source_frames=%zu playback_frames=%zu safe_mode=%u max_unacked_replays=%u",
-            options.label,
-            plan.size(),
-            playback_plan.size(),
-            options.safe_mode ? 1u : 0u,
-            options.max_unacked_replays);
-
-        result.attempted_frames.reserve(playback_plan.size());
-        result.vi_durations.reserve(playback_plan.size());
-
-        for (uint32_t idx = 0; idx < playback_plan.size(); ++idx) {
-            const GCInputFrame& frame = playback_plan[idx];
-            bool acknowledged = false;
-            for (uint32_t replay = 0; replay <= options.max_unacked_replays; ++replay) {
-                const uint64_t sequence = ++m_input_playback_sequence;
-                const uint32_t vi_before = static_cast<uint32_t>(getViFieldCountApprox() & 0xFFFFFFFFull);
-                const uint32_t pc_before = getPC();
-                m_pad.publishPlaybackFrame(sequence, idx, frame);
-
-                SCLOGDX(SC_TAGS("input"),
-                    "[input-tape] label=%s publish seq=%llu idx=%u replay=%u vi_before=%u pc_before=%08X frame=%s",
-                    options.label,
-                    static_cast<unsigned long long>(sequence),
-                    idx,
-                    replay,
-                    vi_before,
-                    pc_before,
-                    DescribeFrameCompact(frame).c_str());
-
-                const bool step_ok = stepOneFrameBlocking();
-                const auto stats = m_pad.getPollStats();
-                const uint32_t vi_after = static_cast<uint32_t>(getViFieldCountApprox() & 0xFFFFFFFFull);
-                const uint32_t pc_after = getPC();
-                const uint32_t vi_delta = (vi_after >= vi_before) ? (vi_after - vi_before) : 0u;
-                result.attempted_frames.push_back(frame);
-                result.vi_durations.push_back(vi_delta);
-
-                SCLOGDX(SC_TAGS("input"),
-                    "[input-tape] label=%s ack seq=%llu idx=%u replay=%u step_ok=%u callbacks=%u vi_after=%u vi_delta=%u pc_after=%08X",
-                    options.label,
-                    static_cast<unsigned long long>(sequence),
-                    idx,
-                    replay,
-                    step_ok ? 1u : 0u,
-                    stats.callback_count,
-                    vi_after,
-                    vi_delta,
-                    pc_after);
-
-                if (!step_ok) {
-                    result.failed_index = idx;
-                    SCLOGDX(SC_TAGS("input"),
-                        "[input-tape] label=%s failed seq=%llu idx=%u reason=step_failed",
-                        options.label,
-                        static_cast<unsigned long long>(sequence),
-                        idx);
-                    return result;
-                }
-
-                if (stats.sequence == sequence && stats.callback_count > 0) {
-                    acknowledged = true;
-                    break;
-                }
-
-                ++result.unacked_count;
-                SCLOGDX(SC_TAGS("input"),
-                    "[input-tape] label=%s unacked seq=%llu idx=%u replay=%u callbacks=%u",
-                    options.label,
-                    static_cast<unsigned long long>(sequence),
-                    idx,
-                    replay,
-                    stats.callback_count);
-            }
-
-            if (!acknowledged) {
-                result.failed_index = idx;
-                SCLOGDX(SC_TAGS("input"),
-                    "[input-tape] label=%s failed idx=%u reason=unacked_after_replays",
-                    options.label,
-                    idx);
-                return result;
-            }
-        }
-
-        result.ok = true;
-        SCLOGDX(SC_TAGS("input"),
-            "[input-tape] label=%s complete attempted_frames=%zu unacked_replays=%u",
-            options.label,
-            result.attempted_frames.size(),
-            result.unacked_count);
-        return result;
-#endif
     }
 
     // -- Frame Advancing --------------------------------
@@ -1153,32 +969,6 @@ namespace savor {
             std::chrono::milliseconds(timeout_ms > 0 ? timeout_ms : 20));
         power_pc.SetMode(old_mode);
         return completed;
-    }
-
-    bool DolphinWrapper::stepOneFrameBlocking(int timeout_ms)
-    {
-        (void)timeout_ms;
-        SCLOGE(
-            "[DW/run] hard cutover: direct frame stepping is disconnected; "
-            "use ExecutionEngine");
-        return false;
-    }
-
-    bool DolphinWrapper::pauseEmulationBlocking(uint32_t timeout_ms)
-    {
-        (void)timeout_ms;
-        SCLOGE(
-            "[DW/run] hard cutover: direct pause is disconnected; "
-            "use ExecutionEngine");
-        return false;
-    }
-
-    bool DolphinWrapper::resumeEmulation()
-    {
-        SCLOGE(
-            "[DW/run] hard cutover: direct resume is disconnected; "
-            "use ExecutionEngine");
-        return false;
     }
 
     bool DolphinWrapper::isEmulationPaused() const
@@ -1626,73 +1416,6 @@ namespace savor {
         case 8: { uint64_t v = 0; if (!readByKey(k, v)) return false; out = v; return true; }
         default: return false;
         }
-    }
-
-    bool DolphinWrapper::armPcBreakpoints(const std::vector<uint32_t>& pcs)
-    {
-        (void)pcs;
-        SCLOGE("[core] hard cutover: armPcBreakpoints is disconnected; use StopPointRouter");
-        return false;
-    }
-
-    bool DolphinWrapper::disarmPcBreakpoints(const std::vector<uint32_t>& pcs)
-    {
-        (void)pcs;
-        SCLOGE("[core] hard cutover: disarmPcBreakpoints is disconnected; use StopPointRouter");
-        return false;
-    }
-
-    void DolphinWrapper::clearAllPcBreakpoints()
-    {
-        SCLOGE("[core] hard cutover: clearAllPcBreakpoints is disconnected; use StopPointRouter");
-    }
-
-    bool DolphinWrapper::setEnableBreakpoint(uint32_t pc, bool enabled)
-    {
-        (void)pc;
-        (void)enabled;
-        SCLOGE("[core] hard cutover: setEnableBreakpoint is disconnected; use StopPointRouter");
-        return false;
-    }
-
-    bool DolphinWrapper::setEnableAllBreakpoints(bool enabled)
-    {
-        (void)enabled;
-        SCLOGE("[core] hard cutover: setEnableAllBreakpoints is disconnected; use StopPointRouter");
-        return false;
-    }
-
-    bool DolphinWrapper::setEnabledPcBreakpointsOnly(const std::vector<uint32_t>& enabled_pcs)
-    {
-        (void)enabled_pcs;
-        SCLOGE("[core] hard cutover: setEnabledPcBreakpointsOnly is disconnected; use StopPointRouter");
-        return false;
-    }
-
-    bool DolphinWrapper::armMemoryWatchpoints(const std::vector<MemoryWatchpointSpec>& specs)
-    {
-        (void)specs;
-        SCLOGE("[core] hard cutover: armMemoryWatchpoints is disconnected; use StopPointRouter");
-        return false;
-    }
-
-    void DolphinWrapper::clearMemoryWatchpoints()
-    {
-        SCLOGE("[core] hard cutover: clearMemoryWatchpoints is disconnected; use StopPointRouter");
-    }
-
-    void DolphinWrapper::disableThrottle()
-    {
-        SCLOGE(
-            "[DW/run] hard cutover: direct throttle control is disconnected; "
-            "use ExecutionEngine");
-    }
-
-    void DolphinWrapper::enableThrottle()
-    {
-        SCLOGE(
-            "[DW/run] hard cutover: direct throttle control is disconnected; "
-            "use ExecutionEngine");
     }
 
     bool DolphinWrapper::isMoviePlaying() const

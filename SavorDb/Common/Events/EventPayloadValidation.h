@@ -88,7 +88,6 @@ inline bool ValidateExecutionWorkflowJobPayloadV1(const EventEnvelope& envelope,
         || envelope.event_type == "Execution.JobClaimRequeued.v1"
         || envelope.event_type == "Execution.JobStarted.v1"
         || envelope.event_type == "Execution.JobLeaseRenewed.v1"
-        || envelope.event_type == "Execution.JobProgressed.v1"
         || envelope.event_type == "Execution.JobExecutionFinished.v1"
         || envelope.event_type
             == "Execution.JobResultProcessingStarted.v1"
@@ -164,6 +163,32 @@ inline bool ValidateExecutionWorkflowJobPayloadV1(const EventEnvelope& envelope,
     }
     if (error_out) *error_out = "unsupported Execution event_type";
     return false;
+}
+
+inline bool ValidateExecutionCanonicalJobProgressPayloadV2(
+    const EventEnvelope& envelope,
+    std::string* error_out = nullptr) {
+    if (envelope.event_version != 2
+        || envelope.event_type != "Execution.JobProgressed.v2") {
+        if (error_out != nullptr) {
+            *error_out = "expected Execution.JobProgressed.v2";
+        }
+        return false;
+    }
+    if (!ValidateEventTypeFormat(
+            envelope.event_type, envelope.event_version, error_out)) {
+        return false;
+    }
+    if (envelope.context_name != "Execution"
+        || envelope.payload_ref_kind != "job"
+        || envelope.payload_ref_id <= 0) {
+        if (error_out != nullptr) {
+            *error_out =
+                "canonical job progress must reference an Execution job";
+        }
+        return false;
+    }
+    return true;
 }
 
 inline bool ValidateAnalysisSeedProbePayloadV1(const EventEnvelope& envelope, std::string* error_out = nullptr) {

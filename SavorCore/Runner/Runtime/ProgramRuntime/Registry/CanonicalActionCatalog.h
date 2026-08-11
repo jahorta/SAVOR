@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -14,14 +15,10 @@ enum class CanonicalAction : std::uint8_t
     SavestateSaveImmutableArtifact,
     ExecutionContinueUntil,
     ExecutionStepFrames,
-    StopPointsSubscribeGroup,
-    StopPointsReplaceGroup,
     InputAcquireLease,
-    InputPublishHeld,
-    InputPublishPulse,
-    InputNeutralize,
-    InputPublishSequence,
-    InputAwaitGuestPoll,
+    InputApplyState,
+    InputBeginDelivery,
+    InputCompleteDelivery,
     MoviePrepareReadOnlyPlayback,
     MovieStartPlayback,
     MovieStopPlayback,
@@ -34,16 +31,26 @@ enum class CanonicalAction : std::uint8_t
     GuestRunCoherentQuery,
     GuestWriteData,
     GuestPatchExecutable,
-    CaptureAttach,
     CaptureMark,
-    CaptureFinalize,
     ScreenshotCapture,
     TelemetryEmit,
+    ExecutionRequirePausedPc,
+};
+
+struct CanonicalActionDefinition
+{
+    CanonicalAction action;
+    std::string_view name;
+    std::string_view signature;
 };
 
 enum class CanonicalReducer : std::uint8_t
 {
-    BattleMaterializeTurnInput,
+    BattlePrepareCommandInteraction,
+    BattleCommandInteractionInitialize,
+    BattleCommandInteractionAdvance,
+    BattleCommandInteractionCompleteSegment,
+    BattleCommandInteractionFinalize,
 };
 
 // Exact auxiliary schemas used by canonical action request records. These are
@@ -53,18 +60,13 @@ enum class CanonicalReducer : std::uint8_t
 enum class CanonicalRuntimeSchema : std::uint8_t
 {
     InputFramePayload,
-    InputSequencePayload,
-    StopGroupStaticConfig,
+    SemanticPointSet,
     ContinueUntilStaticConfig,
     ExecutionAdvanceStaticConfig,
     InputLeaseStaticConfig,
-    InputPublicationStaticConfig,
-    InputNeutralStaticConfig,
-    InputPollStaticConfig,
     ObservationStaticConfig,
     StopEvidencePayload,
-    OptionalInputPublicationReceipt,
-    OptionalInputNeutralWitness,
+    OptionalInputExecutionBinding,
     OptionalMoviePlaybackSession,
     OptionalMovieInputCount,
     ContinueUntilCompletionReason,
@@ -82,6 +84,8 @@ enum class ContinueUntilCompletionReasonV1 : std::int64_t
 
 [[nodiscard]] std::string_view CanonicalActionName(
     CanonicalAction action) noexcept;
+[[nodiscard]] std::span<const CanonicalActionDefinition>
+CanonicalActionDefinitions() noexcept;
 [[nodiscard]] ExactDependencyIdentity CanonicalActionIdentity(
     CanonicalAction action);
 [[nodiscard]] std::optional<CanonicalAction> FindCanonicalAction(

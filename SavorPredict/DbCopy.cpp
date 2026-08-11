@@ -528,6 +528,18 @@ bool compute_file_sha256_streaming(
     return hash_file_sha256_impl(path, sha256, err);
 }
 
+bool is_mutable_debug_db_root(const std::filesystem::path& path) {
+    auto normalized = normalized_path_string(path);
+    std::transform(
+        normalized.begin(),
+        normalized.end(),
+        normalized.begin(),
+        [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+    return normalized == "d:/soasimdbdebug";
+}
+
 int run_prepare_db(const PrepareDbOptions& options, std::ostream& out, std::ostream& err) {
     const int copy_rc = savor::dbutils::CopyDbRootFull(
         {

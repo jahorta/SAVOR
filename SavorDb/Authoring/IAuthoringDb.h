@@ -10,8 +10,7 @@
 #include "../Common/Types/UtcTimestamp.h"
 #include "../Common/Retention/OutboxRetention.h"
 #include "../../SavorCore/Core/Input/SoaBattle/ActionTypes.h"
-#include "../../SavorCore/Runner/Breakpoints/BpRegistry.h"
-#include "../../SavorCore/Runner/Breakpoints/Predicate.h"
+#include "../../SavorCore/Runner/Runtime/Predicates/PredicateBundle.h"
 
 namespace savor::db {
 
@@ -26,55 +25,6 @@ enum class BattlePlanTargetKind : int {
 };
 
 using BattlePlanActionMacro = soa::battle::actions::BattleAction;
-
-enum class PredicateOperandKind {
-    Unknown = 0,
-    Absolute,
-    Delta,
-    Literal,
-    Memory,
-};
-
-using PredicateComparisonOp = savor::pred::CmpOp;
-
-inline std::string_view ToDbString(PredicateOperandKind value) {
-    switch (value) {
-    case PredicateOperandKind::Absolute: return "ABS";
-    case PredicateOperandKind::Delta: return "DELTA";
-    case PredicateOperandKind::Literal: return "literal";
-    case PredicateOperandKind::Memory: return "mem";
-    default: return "";
-    }
-}
-
-inline PredicateOperandKind ParsePredicateOperandKind(std::string_view value) {
-    if (value == "ABS" || value == "abs") return PredicateOperandKind::Absolute;
-    if (value == "DELTA" || value == "delta") return PredicateOperandKind::Delta;
-    if (value == "literal" || value == "LITERAL") return PredicateOperandKind::Literal;
-    if (value == "mem" || value == "MEM" || value == "memory" || value == "MEMORY") return PredicateOperandKind::Memory;
-    return PredicateOperandKind::Unknown;
-}
-
-inline std::string_view ToDbString(PredicateComparisonOp value) {
-    switch (value) {
-    case PredicateComparisonOp::EQ: return "EQ";
-    case PredicateComparisonOp::NE: return "NE";
-    case PredicateComparisonOp::LT: return "LT";
-    case PredicateComparisonOp::LE: return "LE";
-    case PredicateComparisonOp::GT: return "GT";
-    case PredicateComparisonOp::GE: return "GE";
-    default: return "";
-    }
-}
-
-inline PredicateComparisonOp ParsePredicateComparisonOp(std::string_view value) {
-    if (value == "NE" || value == "!=") return PredicateComparisonOp::NE;
-    if (value == "LT" || value == "<") return PredicateComparisonOp::LT;
-    if (value == "LE" || value == "<=") return PredicateComparisonOp::LE;
-    if (value == "GT" || value == ">") return PredicateComparisonOp::GT;
-    if (value == "GE" || value == ">=") return PredicateComparisonOp::GE;
-    return PredicateComparisonOp::EQ;
-}
 
 struct AuthoringPayloadRecord {
     std::int64_t battle_chain_spec_id = 0;
@@ -175,7 +125,6 @@ struct SaveBattleRunSpecCommand {
 struct SavePlanCommand {
     std::string name;
     std::string fingerprint;
-    int num_turns = 0;
     types::UtcTimePoint created_at_utc{};
     std::string correlation_id;
     std::string causation_id;
@@ -213,36 +162,9 @@ struct SaveBattlePlanActionCommand {
 struct SaveBattlePlanTurnCommand {
     std::int64_t plan_id = 0;
     int turn_index = 0;
+    std::optional<std::int64_t> default_predicate_bundle_revision_id;
     std::vector<SaveBattlePlanActionCommand> actions;
     bool replace_existing_actions = true;
-    types::UtcTimePoint created_at_utc{};
-    std::string correlation_id;
-    std::string causation_id;
-};
-
-struct EnsureAddressProgramCommand {
-    int program_version = 0;
-    std::vector<std::uint8_t> prog_bytes;
-    std::optional<int> derived_buffer_version;
-    std::optional<std::string> derived_buffer_schema_hash;
-    std::optional<std::string> soa_structs_hash;
-    std::string description;
-};
-
-struct SavePredicateSpecCommand {
-    std::string name;
-    BPKey breakpoint_id = 0;
-    std::vector<BPKey> required_breakpoint_ids;
-    std::int64_t lhs_value = 0;
-    std::int64_t rhs_value = 0;
-    std::vector<BPKey> baseline_breakpoint_ids;
-    PredicateComparisonOp cmp_op = PredicateComparisonOp::EQ;
-    int width = 0;
-    std::optional<std::int64_t> flag_mask;
-    std::optional<std::int64_t> value_mask;
-    std::optional<std::int64_t> lhs_address_program_id;
-    std::optional<std::int64_t> rhs_address_program_id;
-    bool abort_on_fail = false;
     types::UtcTimePoint created_at_utc{};
     std::string correlation_id;
     std::string causation_id;
@@ -252,16 +174,9 @@ struct SaveExplorerSettingsCommand {
     std::string name;
     std::string description;
     std::optional<std::int64_t> default_plan_id;
-    std::optional<std::int64_t> default_predicate_set_id;
     types::UtcTimePoint created_at_utc{};
     std::string correlation_id;
     std::string causation_id;
-};
-
-struct SavePredicateSetCommand {
-    std::string name;
-    std::vector<std::int64_t> predicate_spec_ids;
-    types::UtcTimePoint created_at_utc{};
 };
 
 struct SaveBattleChainSpecCommand {
@@ -270,13 +185,6 @@ struct SaveBattleChainSpecCommand {
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
     types::UtcTimePoint created_at_utc{};
-    std::string correlation_id;
-    std::string causation_id;
-};
-
-struct DeletePredicateSpecCommand {
-    std::int64_t predicate_spec_id = 0;
-    types::UtcTimePoint deleted_at_utc{};
     std::string correlation_id;
     std::string causation_id;
 };
@@ -379,6 +287,7 @@ struct BattlePlanTurnSnapshot {
     std::int64_t plan_turn_id = 0;
     std::int64_t plan_id = 0;
     int turn_index = 0;
+    std::optional<std::int64_t> default_predicate_bundle_revision_id;
     std::vector<BattlePlanActionSnapshot> actions;
 };
 
@@ -386,50 +295,7 @@ struct BattlePlanSnapshot {
     std::int64_t plan_id = 0;
     std::string name;
     std::string fingerprint;
-    int num_turns = 0;
     std::vector<BattlePlanTurnSnapshot> turns;
-};
-
-struct AddressProgramSnapshot {
-    std::int64_t address_program_id = 0;
-    int program_version = 0;
-    std::vector<std::uint8_t> prog_bytes;
-    std::optional<int> derived_buffer_version;
-    std::optional<std::string> derived_buffer_schema_hash;
-    std::optional<std::string> soa_structs_hash;
-    std::string description;
-};
-
-struct PredicateSpecSnapshot {
-    std::int64_t predicate_spec_id = 0;
-    std::string name;
-    BPKey breakpoint_id = 0;
-    std::vector<BPKey> required_breakpoint_ids;
-    std::int64_t lhs_value = 0;
-    std::int64_t rhs_value = 0;
-    std::vector<BPKey> baseline_breakpoint_ids;
-    PredicateComparisonOp cmp_op = PredicateComparisonOp::EQ;
-    int width = 0;
-    std::optional<std::int64_t> flag_mask;
-    std::optional<std::int64_t> value_mask;
-    std::optional<std::int64_t> lhs_address_program_id;
-    std::optional<std::int64_t> rhs_address_program_id;
-    bool abort_on_fail = false;
-};
-
-struct PredicateSpecUsageSnapshot {
-    std::int64_t predicate_spec_id = 0;
-    int predicate_set_count = 0;
-
-    [[nodiscard]] bool used() const {
-        return predicate_set_count > 0;
-    }
-};
-
-struct PredicateSetSnapshot {
-    std::int64_t predicate_set_id = 0;
-    std::string name;
-    std::vector<PredicateSpecSnapshot> predicates;
 };
 
 struct ExplorerSettingsSnapshot {
@@ -437,7 +303,6 @@ struct ExplorerSettingsSnapshot {
     std::string name;
     std::string description;
     std::optional<std::int64_t> default_plan_id;
-    std::optional<std::int64_t> default_predicate_set_id;
 };
 
 struct WorkflowGraphNodeInputSnapshot {
@@ -488,8 +353,81 @@ struct WorkflowGraphSnapshot {
     std::vector<WorkflowGraphEdgeSnapshot> edges;
 };
 
+// Clean predicate-v2 authoring surface. These records intentionally expose
+// the same DB-independent resolved model that coordination places in a
+// workset. Draft writes are relational; published snapshots are immutable.
+struct SavePredicateDefinitionDraftV2Command {
+    std::string stable_key;
+    std::string name;
+    std::string description;
+    savor::runtime::program::composition::PredicateDefinition definition;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct PredicateDefinitionRevisionV2Snapshot {
+    std::int64_t predicate_definition_id = 0;
+    std::int64_t predicate_definition_revision_id = 0;
+    std::string stable_key;
+    std::string name;
+    std::string description;
+    std::string revision_state;
+    std::string content_sha256;
+    savor::runtime::program::composition::PredicateDefinition definition;
+};
+
+struct SavePredicateBundleDraftV2Command {
+    std::string stable_key;
+    std::string name;
+    std::string description;
+    savor::runtime::predicates::ResolvedPredicateBundleV1 bundle;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct PredicateBundleRevisionV2Snapshot {
+    std::int64_t predicate_bundle_id = 0;
+    std::string stable_key;
+    std::string name;
+    std::string description;
+    std::string revision_state;
+    savor::runtime::predicates::ResolvedPredicateBundleV1 bundle;
+};
+
 struct IAuthoringDb {
     virtual ~IAuthoringDb() = default;
+
+    virtual bool SavePredicateDefinitionDraftV2(
+        const SavePredicateDefinitionDraftV2Command&,
+        std::int64_t* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate-v2 authoring is unavailable";
+        return false;
+    }
+    virtual bool PublishPredicateDefinitionRevisionV2(
+        std::int64_t,
+        types::UtcTimePoint,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate-v2 authoring is unavailable";
+        return false;
+    }
+    virtual std::optional<PredicateDefinitionRevisionV2Snapshot>
+    GetPredicateDefinitionRevisionV2(std::int64_t) const { return std::nullopt; }
+
+    virtual bool SavePredicateBundleDraftV2(
+        const SavePredicateBundleDraftV2Command&,
+        std::int64_t* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate-v2 authoring is unavailable";
+        return false;
+    }
+    virtual bool PublishPredicateBundleRevisionV2(
+        std::int64_t,
+        types::UtcTimePoint,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate-v2 authoring is unavailable";
+        return false;
+    }
+    virtual std::optional<PredicateBundleRevisionV2Snapshot>
+    GetPredicateBundleRevisionV2(std::int64_t) const { return std::nullopt; }
 
     virtual bool SaveSeedProbeSpec(
         const SaveSeedProbeSpecCommand& command,
@@ -562,48 +500,6 @@ struct IAuthoringDb {
         std::int64_t plan_id) const = 0;
 
     virtual std::vector<BattlePlanSnapshot> ListBattlePlans(
-        int max_count) const = 0;
-
-    virtual bool EnsureAddressProgram(
-        const EnsureAddressProgramCommand& command,
-        std::int64_t* address_program_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-
-    virtual std::optional<AddressProgramSnapshot> GetAddressProgram(
-        std::int64_t address_program_id) const = 0;
-
-    virtual bool SavePredicateSpec(
-        const SavePredicateSpecCommand& command,
-        std::int64_t* predicate_spec_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-
-    virtual bool UpdatePredicateSpec(
-        std::int64_t predicate_spec_id,
-        const SavePredicateSpecCommand& command,
-        std::string* error_out = nullptr) = 0;
-
-    virtual bool DeletePredicateSpec(
-        const DeletePredicateSpecCommand& command,
-        std::string* error_out = nullptr) = 0;
-
-    virtual std::optional<PredicateSpecSnapshot> GetPredicateSpec(
-        std::int64_t predicate_spec_id) const = 0;
-
-    virtual PredicateSpecUsageSnapshot GetPredicateSpecUsage(
-        std::int64_t predicate_spec_id) const = 0;
-
-    virtual std::vector<PredicateSpecSnapshot> ListPredicateSpecs(
-        int max_count) const = 0;
-
-    virtual bool SavePredicateSet(
-        const SavePredicateSetCommand& command,
-        std::int64_t* predicate_set_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-
-    virtual std::optional<PredicateSetSnapshot> GetPredicateSet(
-        std::int64_t predicate_set_id) const = 0;
-
-    virtual std::vector<PredicateSetSnapshot> ListPredicateSets(
         int max_count) const = 0;
 
     virtual bool SaveExplorerSettings(

@@ -54,30 +54,7 @@ const char* WorkflowStepStateName(
 
 savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
     const auto root = options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default");
-    const bool preserve_prepared_workspace = std::ranges::any_of(
-        options.scenarios,
-        [](const std::string& scenario) {
-            return scenario == "tasmovie"
-                || scenario == "tasmovie_with_validation"
-                || scenario == "tasmovie_seedprobe";
-        });
-
     std::error_code ec;
-    if (!preserve_prepared_workspace && std::filesystem::exists(root)) {
-        for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
-            if (ec) {
-                break;
-            }
-            if (entry.path().filename() == "log") {
-                continue;
-            }
-            std::filesystem::remove_all(entry.path(), ec);
-            if (ec) {
-                break;
-            }
-        }
-    }
-
     std::filesystem::create_directories(root, ec);
     std::filesystem::create_directories(root / "log", ec);
     std::filesystem::create_directories(root / "object_store", ec);
@@ -95,7 +72,7 @@ savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
     };
 }
 
-bool ResetTasMovieScenarioWorkspace(
+bool ResetScenarioWorkspace(
     const CliOptions& options,
     std::filesystem::path* workspace_root_out,
     std::string* error_out) {
@@ -105,7 +82,7 @@ bool ResetTasMovieScenarioWorkspace(
     const auto root = std::filesystem::absolute(requested_root, ec).lexically_normal();
     if (ec || root.empty() || root == root.root_path()) {
         if (error_out) {
-            *error_out = "refusing to reset an empty or filesystem-root TAS Movie workspace";
+            *error_out = "refusing to reset an empty or filesystem-root E2E workspace";
         }
         return false;
     }
@@ -120,7 +97,7 @@ bool ResetTasMovieScenarioWorkspace(
             std::filesystem::remove(target, ec);
             if (ec) {
                 if (error_out) {
-                    *error_out = "failed clearing TAS Movie database file '"
+                    *error_out = "failed clearing E2E database file '"
                         + target.string() + "': " + ec.message();
                 }
                 return false;
@@ -137,7 +114,7 @@ bool ResetTasMovieScenarioWorkspace(
         std::filesystem::remove_all(target, ec);
         if (ec) {
             if (error_out) {
-                *error_out = "failed clearing TAS Movie workspace directory '"
+                *error_out = "failed clearing E2E workspace directory '"
                     + target.string() + "': " + ec.message();
             }
             return false;
@@ -147,7 +124,7 @@ bool ResetTasMovieScenarioWorkspace(
     std::filesystem::create_directories(root, ec);
     if (ec) {
         if (error_out) {
-            *error_out = "failed creating TAS Movie workspace '"
+            *error_out = "failed creating E2E workspace '"
                 + root.string() + "': " + ec.message();
         }
         return false;
@@ -155,7 +132,7 @@ bool ResetTasMovieScenarioWorkspace(
     std::filesystem::create_directories(root / "log", ec);
     if (ec) {
         if (error_out) {
-            *error_out = "failed creating TAS Movie log directory: " + ec.message();
+            *error_out = "failed creating E2E log directory: " + ec.message();
         }
         return false;
     }
@@ -397,6 +374,7 @@ bool SeedStateDtmArtifact(
 bool SeedAuthoringSpec(
     savor::db::IAuthoringDb* authoring_db,
     const CliOptions& options,
+    const std::string_view run_identity,
     std::int64_t* seed_probe_spec_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || seed_probe_spec_id_out == nullptr) {
@@ -406,7 +384,7 @@ bool SeedAuthoringSpec(
 
     return authoring_db->SaveSeedProbeSpec(
         {
-            .name = "SavorE2E seedprobe",
+            .name = "SavorE2E seedprobe " + std::string(run_identity),
             .priority = 1,
             .min_value = 47,
             .max_value = 207,
@@ -429,6 +407,7 @@ bool SeedWorkflowGraphExecution(
     std::int64_t savestate_id,
     std::int64_t seed_probe_spec_id,
     const CliOptions& options,
+    const std::string_view run_identity,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || execution_db == nullptr) {
@@ -443,10 +422,12 @@ bool SeedWorkflowGraphExecution(
     savor::db::SaveWorkflowGraphResult saved{};
     if (!authoring_db->SaveWorkflowGraph(
             {
-                .name = "SavorE2E workflow graph seedprobe",
+                .name = "SavorE2E workflow graph seedprobe "
+                    + std::string(run_identity),
                 .description = "Single-step SeedProbe run scenario",
                 .graph_version = 1,
-                .graph_hash = "savor-e2e.workflow_graph.seedprobe.v2",
+                .graph_hash = "savor-e2e.workflow_graph.seedprobe.v3."
+                    + std::string(run_identity),
                 .nodes = {
                     {
                         .node_key = "probe_1",

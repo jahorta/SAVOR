@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 #include "Authoring/IAuthoringDb.h"
 #include "Analysis/IAnalysisDb.h"
@@ -16,7 +17,7 @@ namespace savor::e2e {
 
 savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options);
 
-bool ResetTasMovieScenarioWorkspace(
+bool ResetScenarioWorkspace(
     const CliOptions& options,
     std::filesystem::path* workspace_root_out,
     std::string* error_out);
@@ -40,6 +41,7 @@ bool SeedStateDtmArtifact(
 bool SeedAuthoringSpec(
     savor::db::IAuthoringDb* authoring_db,
     const CliOptions& options,
+    std::string_view run_identity,
     std::int64_t* seed_probe_spec_id_out,
     std::string* error_out);
 
@@ -49,6 +51,7 @@ bool SeedWorkflowGraphExecution(
     std::int64_t savestate_id,
     std::int64_t seed_probe_spec_id,
     const CliOptions& options,
+    std::string_view run_identity,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out);
 

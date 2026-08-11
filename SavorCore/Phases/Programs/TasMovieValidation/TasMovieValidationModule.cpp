@@ -1,10 +1,11 @@
 #include "TasMovieValidationModule.h"
 
-#include "../../../Runner/IPC/Wire.h"
+#include "../../../Runner/Runtime/ProgramKind.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Actions/CanonicalActionPayload.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Composition/CompositionSupport.h"
+#include "../../../Runner/Runtime/ProgramRuntime/Composition/SemanticObservationComposition.h"
 #include "../../../Runner/Runtime/ProgramRuntime/ProgramRuntime.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Registry/ActionRegistry.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Registry/CapabilityPackRegistry.h"
@@ -1399,36 +1400,6 @@ private:
     std::vector<Byte> bytes_;
 };
 
-struct SemanticPoint final
-{
-    std::string_view id;
-    std::uint32_t pc = 0;
-};
-
-std::vector<Byte> StopGroupConfig(
-    std::span<const SemanticPoint> points)
-{
-    const CapabilityPackIdentity field =
-        capabilities::FieldPackIdentity();
-    StaticConfigWriter writer({'S', 'G', 'C', '1'});
-    writer.U32(static_cast<std::uint32_t>(points.size()));
-    for (SemanticPoint point : points)
-    {
-        writer.String(field.canonical_id);
-        writer.U32(field.version);
-        writer.Hash(field.manifest_hash);
-        writer.String(point.id);
-        writer.U8(0); // Program-counter semantic point.
-        writer.U32(point.pc);
-    }
-    writer.U32(0); // No hit-time samples.
-    writer.U8(static_cast<std::uint8_t>(StopDeliveryMode::Observe));
-    writer.U8(static_cast<std::uint8_t>(StopRoutingPolicy::Pass));
-    writer.U8(static_cast<std::uint8_t>(
-        StopSubscriptionLifetime::Scoped));
-    return std::move(writer).Finish();
-}
-
 std::vector<Byte> ContinueConfig()
 {
     StaticConfigWriter writer({'C', 'U', 'C', '1'});
@@ -2005,7 +1976,6 @@ ProgramModule ConstructTasMovieValidationModuleV1()
     AddLocalTypes(builder);
     for (CanonicalAction action : {
              CanonicalAction::MoviePrepareReadOnlyPlayback,
-             CanonicalAction::StopPointsSubscribeGroup,
              CanonicalAction::MovieStartPlayback,
              CanonicalAction::ExecutionContinueUntil,
              CanonicalAction::SavestateSaveImmutableArtifact,
@@ -2031,7 +2001,7 @@ ProgramModule ConstructTasMovieValidationModuleV1()
     BasicBlock& validate_config = builder.AddBlock(function);
     const ValueDefinition setup_config_argument = builder.NewArgument(
         CanonicalRuntimeType(
-            CanonicalRuntimeSchema::StopGroupStaticConfig));
+            CanonicalRuntimeSchema::SemanticPointSet));
     BasicBlock& setup = builder.AddBlock(
         function,
         std::array{setup_config_argument});
@@ -2214,18 +2184,20 @@ ProgramModule ConstructTasMovieValidationModuleV1()
         },
         "operation/select-stop-catalog");
 
-    constexpr std::array<SemanticPoint, 1> root_points{{
+    const std::array<composition::SemanticPointReference, 1> root_points{{
         {
-            .id = BeforeRandSeedSetPointId,
-            .pc = BeforeRandSeedSetPc,
+            .capability_pack = capabilities::FieldPackIdentity(),
+            .canonical_id = std::string(BeforeRandSeedSetPointId),
+            .kind = program::SemanticPointKind::ProgramCounter,
+            .physical_pc = BeforeRandSeedSetPc,
         },
     }};
     const ProgramValueId root_stop_config = ConstantBytes(
         builder,
         function,
         establish_config,
-        CanonicalRuntimeSchema::StopGroupStaticConfig,
-        StopGroupConfig(root_points),
+        CanonicalRuntimeSchema::SemanticPointSet,
+        composition::EncodeSemanticPointSetV1(root_points),
         "root/stop-catalog",
         scope);
     builder.SetTerminator(
@@ -2237,18 +2209,20 @@ ProgramModule ConstructTasMovieValidationModuleV1()
         },
         "root/shared-setup");
 
-    constexpr std::array<SemanticPoint, 1> global_points{{
+    const std::array<composition::SemanticPointReference, 1> global_points{{
         {
-            .id = BeforeRandSeedSetPointId,
-            .pc = BeforeRandSeedSetPc,
+            .capability_pack = capabilities::FieldPackIdentity(),
+            .canonical_id = std::string(BeforeRandSeedSetPointId),
+            .kind = program::SemanticPointKind::ProgramCounter,
+            .physical_pc = BeforeRandSeedSetPc,
         },
     }};
     const ProgramValueId global_stop_config = ConstantBytes(
         builder,
         function,
         validate_config,
-        CanonicalRuntimeSchema::StopGroupStaticConfig,
-        StopGroupConfig(global_points),
+        CanonicalRuntimeSchema::SemanticPointSet,
+        composition::EncodeSemanticPointSetV1(global_points),
         "validation/stop-catalog",
         scope);
     builder.SetTerminator(
@@ -2293,29 +2267,7 @@ ProgramModule ConstructTasMovieValidationModuleV1()
             std::nullopt,
             scope),
         "prepared movie playback handle");
-    const ProgramValueId subscribe_request = Construct(
-        builder,
-        function,
-        setup,
-        CanonicalActionInputType(
-            CanonicalAction::StopPointsSubscribeGroup),
-        std::array{setup_config_argument.id},
-        "stop-group/subscribe/request",
-        scope);
-    const ProgramValueId subscription = Required(
-        builder.AddInstruction(
-            function,
-            setup,
-            InstructionOpcode::AwaitAction,
-            CanonicalActionOutputType(
-                CanonicalAction::StopPointsSubscribeGroup),
-            std::array{subscribe_request},
-            ActionTarget(CanonicalActionIdentity(
-                CanonicalAction::StopPointsSubscribeGroup)),
-            "stop-group/subscribe-before-playback",
-            std::nullopt,
-            scope),
-        "stop group subscription");
+    const ProgramValueId semantic_points = setup_config_argument.id;
     const ProgramValueId playback_handle = Required(
         builder.AddInstruction(
             function,
@@ -2335,7 +2287,7 @@ ProgramModule ConstructTasMovieValidationModuleV1()
         function,
         setup,
         CanonicalRuntimeType(
-            CanonicalRuntimeSchema::OptionalInputPublicationReceipt),
+            CanonicalRuntimeSchema::OptionalInputExecutionBinding),
         std::nullopt,
         "continue/no-input-publication",
         scope);
@@ -2390,7 +2342,7 @@ ProgramModule ConstructTasMovieValidationModuleV1()
         builder,
         function,
         establish,
-        subscription,
+        semantic_points,
         no_publication,
         playback,
         no_expected_count,
@@ -2684,7 +2636,7 @@ ProgramModule ConstructTasMovieValidationModuleV1()
         builder,
         function,
         validate_loop,
-        subscription,
+        semantic_points,
         no_publication,
         playback,
         expected_movie_count,
@@ -3145,7 +3097,7 @@ ProgramModule ConstructTasMovieValidationModuleV1()
         builder,
         function,
         tail,
-        subscription,
+        semantic_points,
         no_publication,
         playback,
         tail_no_expected,
@@ -3631,7 +3583,6 @@ public:
             .allow_input = false,
             .allow_capture = false,
             .record_trace = false,
-            .record_progress = true,
         };
         const auto compatibility =
             ComputeTasMovieValidationInvocationCompatibilityV1(
@@ -3661,8 +3612,6 @@ public:
             .state_policy = InvocationStatePolicy::EstablishBaseline,
             .execution = execution,
             .limits = module.budgets,
-            .required_capabilities =
-                CapabilityMask(WorkerCapability::WorksetDispatch),
             .baseline_lineage = std::string(ArtifactLineage),
             .movie_policy_sha256 = []
             {
@@ -4238,7 +4187,6 @@ public:
             .allow_input = false,
             .allow_capture = false,
             .record_trace = false,
-            .record_progress = true,
         };
         const auto compatibility = ComputeSterilizationCompatibilityV1(
             module.identity, *dependencies, profile, execution,
@@ -4262,8 +4210,6 @@ public:
             .state_policy = InvocationStatePolicy::RestoreBaseline,
             .execution = execution,
             .limits = module.budgets,
-            .required_capabilities =
-                CapabilityMask(WorkerCapability::WorksetDispatch),
             .baseline_lineage = std::string(SterilizationArtifactLineage),
             .movie_policy_sha256 = [] {
                 constexpr std::string_view value =

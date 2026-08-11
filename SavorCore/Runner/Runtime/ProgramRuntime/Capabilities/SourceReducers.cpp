@@ -1,11 +1,12 @@
 #include "SourceReducers.h"
 
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
-#include "Core/Input/SoaBattle/ActionLibrary.h"
+#include "Core/Input/SoaBattle/BattlePlanValidation.h"
 
 #include <algorithm>
 #include <cstring>
 #include <map>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -60,6 +61,29 @@ public:
         return Add(
             TypeRef::Named(schema),
             ListValue{.elements = std::move(elements)});
+    }
+
+    ProgramValueId Import(const ProgramValueGraph& graph)
+    {
+        std::map<ProgramValueId, ProgramValueId> remap;
+        for (const auto& value : graph.values)
+            remap.emplace(value.id, ProgramValueId(next_++));
+        for (const auto& value : graph.values)
+        {
+            ProgramValue imported = value;
+            imported.id = remap.at(value.id);
+            if (auto* optional = std::get_if<OptionalValue>(&imported.payload);
+                optional && optional->value)
+            {
+                optional->value = remap.at(*optional->value);
+            }
+            if (auto* record = std::get_if<RecordValue>(&imported.payload))
+                for (auto& field : record->fields) field = remap.at(field);
+            if (auto* list = std::get_if<ListValue>(&imported.payload))
+                for (auto& element : list->elements) element = remap.at(element);
+            values_.push_back(std::move(imported));
+        }
+        return remap.at(graph.root);
     }
 
     ProgramValueGraph Finish(ProgramValueId root) &&
@@ -214,17 +238,19 @@ bool DecodeBattleContext(
 
     const auto* turn_type = reader.PayloadOf<EnumValue>(
         context->fields[2]);
+    const auto* turn_type_definition = turn_type == nullptr
+        ? nullptr
+        : soa::battle::find_turn_type_definition(turn_type->value);
     if (!DecodeBytes(reader, context->fields[1], decoded.state) ||
         turn_type == nullptr ||
         turn_type->schema != SchemaIdentityFor("soa.battle.TurnType") ||
-        turn_type->value < 0 || turn_type->value > 2 ||
+        turn_type_definition == nullptr ||
         !Scalar(reader, context->fields[3], decoded.turn_count) ||
         !Scalar(reader, context->fields[4], decoded.battle_phase))
     {
         return false;
     }
-    decoded.turn_type =
-        static_cast<soa::battle::TurnType>(turn_type->value);
+    decoded.turn_type = turn_type_definition->type;
     output = std::move(decoded);
     return true;
 }
@@ -259,10 +285,14 @@ bool DecodeTurnSpec(
         soa::battle::actions::BattleCommand command{};
         const auto* action = reader.PayloadOf<EnumValue>(
             record->fields[1]);
+        const auto* action_definition = action == nullptr
+            ? nullptr
+            : soa::battle::actions::find_battle_action_definition(
+                  action->value);
         if (!Scalar(reader, record->fields[0], command.actor_slot) ||
             action == nullptr ||
             action->schema != SchemaIdentityFor("soa.battle.BattleAction") ||
-            action->value < 0 || action->value > 4 ||
+            action_definition == nullptr ||
             !Scalar(
                 reader,
                 record->fields[2],
@@ -274,64 +304,100 @@ bool DecodeTurnSpec(
         {
             return false;
         }
-        command.macro =
-            static_cast<soa::battle::actions::BattleAction>(
-                action->value);
+        command.macro = action_definition->action;
         output.commands.push_back(command);
     }
     return true;
 }
 
-ProgramValueGraph EncodeMaterialization(
-    bool success,
-    const savor::ControllerInputSequence& sequence,
-    std::string diagnostic)
+struct BattleCommandState
 {
-    GraphBuilder builder;
-    const auto success_id = builder.Add(
-        TypeRef::Builtin(BuiltinType::Bool),
-        success);
-    std::vector<ProgramValueId> frame_ids;
-    frame_ids.reserve(sequence.size());
-    for (const auto& frame : sequence)
+    soa::battle::ctx::BattleContext context;
+    soa::battle::actions::BattleTurnExecutionSpec plan;
+    BattleCommandSegment segment = BattleCommandSegment::AwaitInputReady;
+    std::uint32_t fake_remaining = 0;
+    std::uint32_t command_index = 0;
+    std::uint32_t moves_remaining = 0;
+};
+
+ProgramValueGraph EncodeBattleCommandState(const BattleCommandState& state);
+
+bool DecodeBattleCommandState(
+    const ProgramValueGraph& graph,
+    BattleCommandState& output)
+{
+    GraphReader reader(graph);
+    if (!reader.valid()) return false;
+    const auto* record = reader.RootRecord(
+        SchemaIdentityFor("soa.battle.command.State"), 6);
+    if (!record) return false;
+    const auto* segment = reader.PayloadOf<EnumValue>(record->fields[2]);
+    if (!segment ||
+        segment->schema != SchemaIdentityFor("soa.battle.command.Segment") ||
+        segment->value < 0 ||
+        segment->value > BattleCommandSegmentValue(
+            BattleCommandSegment::Complete))
     {
-        std::vector<ProgramValueId> fields;
-        fields.reserve(7);
-        fields.push_back(builder.Add(
-            TypeRef::Builtin(BuiltinType::U16),
-            frame.buttons));
-        fields.push_back(builder.Add(
-            TypeRef::Builtin(BuiltinType::U8),
-            frame.main_x));
-        fields.push_back(builder.Add(
-            TypeRef::Builtin(BuiltinType::U8),
-            frame.main_y));
-        fields.push_back(builder.Add(
-            TypeRef::Builtin(BuiltinType::U8),
-            frame.c_x));
-        fields.push_back(builder.Add(
-            TypeRef::Builtin(BuiltinType::U8),
-            frame.c_y));
-        fields.push_back(builder.Add(
-            TypeRef::Builtin(BuiltinType::U8),
-            frame.trig_l));
-        fields.push_back(builder.Add(
-            TypeRef::Builtin(BuiltinType::U8),
-            frame.trig_r));
-        frame_ids.push_back(builder.AddRecord(
-            SchemaIdentityFor("runtime.input.GCInputFrame"),
-            std::move(fields)));
+        return false;
     }
-    const auto sequence_id = builder.AddList(
-        SchemaIdentityFor("runtime.input.GCInputSequence"),
-        std::move(frame_ids));
-    const auto diagnostic_id = builder.Add(
-        TypeRef::Named(SchemaIdentityFor("runtime.DiagnosticText")),
-        std::move(diagnostic));
-    const auto root = builder.AddRecord(
-        SchemaIdentityFor("soa.battle.TurnInputMaterialization"),
-        {success_id, sequence_id, diagnostic_id});
-    return std::move(builder).Finish(root);
+    ProgramValueGraph context_graph = graph;
+    context_graph.root = record->fields[0];
+    ProgramValueGraph plan_graph = graph;
+    plan_graph.root = record->fields[1];
+    BattleCommandState decoded;
+    if (!DecodeBattleContext(context_graph, decoded.context) ||
+        !DecodeTurnSpec(plan_graph, decoded.plan) ||
+        !Scalar(reader, record->fields[3], decoded.fake_remaining) ||
+        !Scalar(reader, record->fields[4], decoded.command_index) ||
+        !Scalar(reader, record->fields[5], decoded.moves_remaining))
+    {
+        return false;
+    }
+    decoded.segment = static_cast<BattleCommandSegment>(segment->value);
+    output = std::move(decoded);
+    return true;
+}
+
+std::uint32_t SelectableEnemyIndex(
+    const soa::battle::ctx::BattleContext& context,
+    std::uint8_t requested_slot)
+{
+    std::uint32_t index = 0;
+    for (std::uint32_t slot = 4; slot < soa::battle::ctx::SLOT_COUNT; ++slot)
+    {
+        const auto& candidate = context.slots_[slot];
+        if (!candidate.present || candidate.is_player || !candidate.is_alive)
+            continue;
+        if (requested_slot == 0xffu || requested_slot == slot)
+            return index;
+        ++index;
+    }
+    return std::numeric_limits<std::uint32_t>::max();
+}
+
+void SelectCommandSegment(BattleCommandState& state)
+{
+    const auto& command = state.plan.commands.at(state.command_index);
+    using soa::battle::actions::BattleAction;
+    switch (command.macro)
+    {
+    case BattleAction::Attack:
+        state.moves_remaining = SelectableEnemyIndex(
+            state.context, command.params.target_slot);
+        state.segment = BattleCommandSegment::AttackAccept;
+        break;
+    case BattleAction::Defend:
+        state.moves_remaining = 1;
+        state.segment = BattleCommandSegment::MainMenuMoveUp;
+        break;
+    case BattleAction::Focus:
+        state.moves_remaining = 3;
+        state.segment = BattleCommandSegment::MainMenuMoveDown;
+        break;
+    default:
+        state.segment = BattleCommandSegment::Complete;
+        break;
+    }
 }
 
 } // namespace
@@ -404,6 +470,13 @@ ProgramValueGraph EncodeBattleContextValue(
         SchemaIdentityFor("soa.battle.BattleContext"),
         {slots, state, turn_type, turn_count, battle_phase});
     return std::move(builder).Finish(root);
+}
+
+bool DecodeBattleContextValue(
+    const ProgramValueGraph& graph,
+    soa::battle::ctx::BattleContext& context)
+{
+    return DecodeBattleContext(graph, context);
 }
 
 ProgramValueGraph EncodeNavigationContextValue(
@@ -524,52 +597,136 @@ ProgramValueGraph EncodeBattleTurnExecutionSpecValue(
     return std::move(builder).Finish(root);
 }
 
-bool DecodeTurnInputMaterializationValue(
-    const ProgramValueGraph& graph,
-    bool& success,
-    savor::ControllerInputSequence& sequence,
-    std::string* domain_diagnostic)
-{
-    GraphReader reader(graph);
-    if (!reader.valid()) return false;
-    const auto* result = reader.RootRecord(
-        SchemaIdentityFor("soa.battle.TurnInputMaterialization"),
-        3);
-    if (result == nullptr ||
-        !Scalar(reader, result->fields[0], success))
-    {
-        return false;
-    }
-    const auto* frames = reader.PayloadOf<ListValue>(result->fields[1]);
-    const auto* diagnostic =
-        reader.PayloadOf<std::string>(result->fields[2]);
-    if (frames == nullptr || diagnostic == nullptr)
-        return false;
+namespace {
 
-    sequence.clear();
-    sequence.reserve(frames->elements.size());
-    for (const auto id : frames->elements)
-    {
-        const auto* frame = reader.PayloadOf<RecordValue>(id);
-        if (frame == nullptr || frame->fields.size() != 7)
-            return false;
-        savor::GCInputFrame value{};
-        if (!Scalar(reader, frame->fields[0], value.buttons) ||
-            !Scalar(reader, frame->fields[1], value.main_x) ||
-            !Scalar(reader, frame->fields[2], value.main_y) ||
-            !Scalar(reader, frame->fields[3], value.c_x) ||
-            !Scalar(reader, frame->fields[4], value.c_y) ||
-            !Scalar(reader, frame->fields[5], value.trig_l) ||
-            !Scalar(reader, frame->fields[6], value.trig_r))
-        {
-            return false;
-        }
-        sequence.push_back(value);
-    }
-    if (domain_diagnostic != nullptr)
-        *domain_diagnostic = *diagnostic;
-    return true;
+ProgramValueGraph EncodeBattleCommandState(const BattleCommandState& state)
+{
+    GraphBuilder builder;
+    const auto context = builder.Import(EncodeBattleContextValue(state.context));
+    const auto plan = builder.Import(EncodeBattleTurnExecutionSpecValue(state.plan));
+    const auto segment = builder.Add(
+        TypeRef::Named(SchemaIdentityFor("soa.battle.command.Segment")),
+        EnumValue{
+            .schema = SchemaIdentityFor("soa.battle.command.Segment"),
+            .value = static_cast<std::int64_t>(state.segment),
+        });
+    const auto fake_remaining = builder.Add(
+        TypeRef::Builtin(BuiltinType::U32), state.fake_remaining);
+    const auto command_index = builder.Add(
+        TypeRef::Builtin(BuiltinType::U32), state.command_index);
+    const auto moves_remaining = builder.Add(
+        TypeRef::Builtin(BuiltinType::U32), state.moves_remaining);
+    const auto root = builder.AddRecord(
+        SchemaIdentityFor("soa.battle.command.State"),
+        {context, plan, segment, fake_remaining, command_index, moves_remaining});
+    return std::move(builder).Finish(root);
 }
+
+ProgramValueGraph EncodePreparation(
+    bool success,
+    const BattleCommandState& state,
+    std::string diagnostic)
+{
+    GraphBuilder builder;
+    const auto ok = builder.Add(TypeRef::Builtin(BuiltinType::Bool), success);
+    const auto encoded_state = builder.Import(EncodeBattleCommandState(state));
+    const auto message = builder.Add(
+        TypeRef::Named(SchemaIdentityFor("runtime.DiagnosticText")),
+        std::move(diagnostic));
+    const auto root = builder.AddRecord(
+        SchemaIdentityFor("soa.battle.command.Preparation"),
+        {ok, encoded_state, message});
+    return std::move(builder).Finish(root);
+}
+
+ProgramValueGraph EncodeTransition(const BattleCommandState& state)
+{
+    GraphBuilder builder;
+    const auto encoded_state = builder.Import(EncodeBattleCommandState(state));
+    const auto segment = builder.Add(
+        TypeRef::Named(SchemaIdentityFor("soa.battle.command.Segment")),
+        EnumValue{
+            .schema = SchemaIdentityFor("soa.battle.command.Segment"),
+            .value = static_cast<std::int64_t>(state.segment),
+        });
+    const auto root = builder.AddRecord(
+        SchemaIdentityFor("soa.battle.command.Transition"),
+        {encoded_state, segment});
+    return std::move(builder).Finish(root);
+}
+
+void AdvanceBattleCommandState(BattleCommandState& state)
+{
+    switch (state.segment)
+    {
+    case BattleCommandSegment::AwaitInputReady:
+        if (state.fake_remaining != 0)
+            state.segment = BattleCommandSegment::FakeAccept;
+        else
+            SelectCommandSegment(state);
+        break;
+    case BattleCommandSegment::FakeAccept:
+        state.segment = BattleCommandSegment::FakeBack;
+        break;
+    case BattleCommandSegment::FakeBack:
+        if (state.fake_remaining != 0) --state.fake_remaining;
+        if (state.fake_remaining != 0)
+            state.segment = BattleCommandSegment::FakeAccept;
+        else
+            SelectCommandSegment(state);
+        break;
+    case BattleCommandSegment::AttackAccept:
+        state.segment = BattleCommandSegment::AttackTargetReady;
+        break;
+    case BattleCommandSegment::AttackTargetReady:
+        state.segment = BattleCommandSegment::AttackTargetReadyConfirm;
+        break;
+    case BattleCommandSegment::AttackTargetReadyConfirm:
+        state.segment = state.moves_remaining == 0
+            ? BattleCommandSegment::AttackTargetAccept
+            : BattleCommandSegment::AttackTargetDown;
+        break;
+    case BattleCommandSegment::AttackTargetDown:
+        if (state.moves_remaining != 0) --state.moves_remaining;
+        state.segment = state.moves_remaining == 0
+            ? BattleCommandSegment::AttackTargetAccept
+            : BattleCommandSegment::AttackTargetReadyBetween;
+        break;
+    case BattleCommandSegment::AttackTargetReadyBetween:
+        state.segment = BattleCommandSegment::AttackTargetDown;
+        break;
+    case BattleCommandSegment::MainMenuMoveUp:
+    case BattleCommandSegment::MainMenuMoveDown:
+        if (state.moves_remaining != 0) --state.moves_remaining;
+        state.segment = BattleCommandSegment::MainMenuTransition;
+        break;
+    case BattleCommandSegment::MainMenuTransition:
+        if (state.moves_remaining == 0)
+            state.segment = BattleCommandSegment::DirectCommandAccept;
+        else if (state.plan.commands[state.command_index].macro ==
+                 soa::battle::actions::BattleAction::Defend)
+            state.segment = BattleCommandSegment::MainMenuMoveUp;
+        else
+            state.segment = BattleCommandSegment::MainMenuMoveDown;
+        break;
+    case BattleCommandSegment::AttackTargetAccept:
+    case BattleCommandSegment::DirectCommandAccept:
+        ++state.command_index;
+        state.segment = state.command_index < state.plan.commands.size()
+            ? BattleCommandSegment::AwaitNextInputReady
+            : BattleCommandSegment::AwaitTurnReady;
+        break;
+    case BattleCommandSegment::AwaitNextInputReady:
+        SelectCommandSegment(state);
+        break;
+    case BattleCommandSegment::AwaitTurnReady:
+    case BattleCommandSegment::Complete:
+        state.segment = BattleCommandSegment::Complete;
+        break;
+    }
+}
+
+} // namespace
 
 std::optional<ProgramValueGraph> InvokeSourceReducer(
     const ExactDependencyIdentity& identity,
@@ -577,45 +734,57 @@ std::optional<ProgramValueGraph> InvokeSourceReducer(
     std::string* diagnostic)
 {
     if (diagnostic != nullptr) diagnostic->clear();
-    if (identity != CanonicalReducerIdentity(
-        CanonicalReducer::BattleMaterializeTurnInput))
+    if (identity == CanonicalReducerIdentity(
+            CanonicalReducer::BattlePrepareCommandInteraction))
     {
-        if (diagnostic != nullptr)
-            *diagnostic = "unknown source reducer identity";
-        return std::nullopt;
+        if (inputs.size() != 2) return std::nullopt;
+        BattleCommandState state;
+        if (!DecodeBattleContext(inputs[0], state.context) ||
+            !DecodeTurnSpec(inputs[1], state.plan))
+        {
+            if (diagnostic) *diagnostic = "battle command preparation received malformed typed input";
+            return std::nullopt;
+        }
+        state.fake_remaining = state.plan.fake_attack_count;
+        const auto validation = soa::battle::actions::ValidateBattleTurnPlan(
+            state.context, state.plan);
+        return EncodePreparation(
+            static_cast<bool>(validation),
+            state,
+            validation ? std::string{} : validation.diagnostic);
     }
-    if (inputs.size() != 2)
+    if (identity == CanonicalReducerIdentity(
+            CanonicalReducer::BattleCommandInteractionInitialize))
     {
-        if (diagnostic != nullptr)
-            *diagnostic = "materialize_turn_input requires two typed inputs";
-        return std::nullopt;
+        if (inputs.size() != 5) return std::nullopt;
+        BattleCommandState state;
+        return DecodeBattleCommandState(inputs[0], state)
+            ? std::optional(inputs[0])
+            : std::nullopt;
     }
-
-    soa::battle::ctx::BattleContext context{};
-    soa::battle::actions::BattleTurnExecutionSpec specification{};
-    if (!DecodeBattleContext(inputs[0], context) ||
-        !DecodeTurnSpec(inputs[1], specification))
+    if (identity == CanonicalReducerIdentity(
+            CanonicalReducer::BattleCommandInteractionAdvance))
     {
-        if (diagnostic != nullptr)
-            *diagnostic = "materialize_turn_input received malformed typed input";
-        return std::nullopt;
+        if (inputs.size() != 2) return std::nullopt;
+        BattleCommandState state;
+        if (!DecodeBattleCommandState(inputs[0], state)) return std::nullopt;
+        AdvanceBattleCommandState(state);
+        return EncodeTransition(state);
     }
-
-    savor::ControllerInputSequence sequence;
-    soa::battle::actions::MaterializeErr error =
-        soa::battle::actions::MaterializeErr::OK;
-    const bool success =
-        soa::battle::actions::MaterializeBattleTurnInputs(
-            context,
-            specification,
-            sequence,
-            error);
-    return EncodeMaterialization(
-        success,
-        sequence,
-        success
-            ? std::string{}
-            : soa::battle::actions::get_materialize_err_string(error));
+    if (identity == CanonicalReducerIdentity(
+            CanonicalReducer::BattleCommandInteractionCompleteSegment))
+    {
+        return inputs.size() == 2 ? std::optional(inputs[1]) : std::nullopt;
+    }
+    if (identity == CanonicalReducerIdentity(
+            CanonicalReducer::BattleCommandInteractionFinalize))
+    {
+        if (inputs.size() != 2) return std::nullopt;
+        return inputs[1];
+    }
+    if (diagnostic != nullptr)
+        *diagnostic = "unknown source reducer identity";
+    return std::nullopt;
 }
 
 } // namespace savor::runtime::program::capabilities

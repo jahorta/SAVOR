@@ -26,6 +26,9 @@
     <ClCompile Include="TasMovieRealWorkerScenario.cpp">
       <Filter>Scenarios</Filter>
     </ClCompile>
+    <ClCompile Include="BattlePhasesRealWorkerScenario.cpp">
+      <Filter>Scenarios</Filter>
+    </ClCompile>
     <ClCompile Include="DbSetup.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
@@ -42,6 +45,12 @@
       <Filter>Helpers</Filter>
     </ClCompile>
     <ClCompile Include="WorkerStartupBarrier.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="ScenarioEntry.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="ScenarioAssessment.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
   </ItemGroup>
@@ -61,6 +70,9 @@
     <ClInclude Include="TasMovieRealWorkerScenario.h">
       <Filter>Scenarios</Filter>
     </ClInclude>
+    <ClInclude Include="BattlePhasesRealWorkerScenario.h">
+      <Filter>Scenarios</Filter>
+    </ClInclude>
     <ClInclude Include="MultiLineProgressRenderer.h">
       <Filter>Helpers</Filter>
     </ClInclude>
@@ -68,6 +80,12 @@
       <Filter>Helpers</Filter>
     </ClInclude>
     <ClInclude Include="WorkerStartupBarrier.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="ScenarioEntry.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="ScenarioAssessment.h">
       <Filter>Helpers</Filter>
     </ClInclude>
   </ItemGroup>

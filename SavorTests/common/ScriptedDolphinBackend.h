@@ -43,10 +43,16 @@ struct ScriptedDolphinBackendControl
     runtime::BackendResult step_frame_result = runtime::BackendResult::Success();
     runtime::BackendResult restore_file_result = runtime::BackendResult::Success();
     runtime::BackendResult restore_buffer_result = runtime::BackendResult::Success();
+    std::optional<std::uint32_t> restore_file_pc;
+    std::optional<runtime::BackendCoreState> restore_file_core_state;
+    std::optional<std::uint32_t> restore_buffer_pc;
+    std::optional<runtime::BackendCoreState> restore_buffer_core_state;
     runtime::BackendResult save_file_result = runtime::BackendResult::Success();
     runtime::BackendResult save_buffer_result = runtime::BackendResult::Success();
     runtime::BackendResult screenshot_result = runtime::BackendResult::Success();
     runtime::MovieBackendResult movie_result =
+        runtime::MovieBackendResult::Success();
+    runtime::MovieBackendResult movie_activation_result =
         runtime::MovieBackendResult::Success();
     runtime::BackendCoreState core_state = runtime::BackendCoreState::Closed;
     runtime::BackendCoreState open_core_state = runtime::BackendCoreState::Paused;
@@ -55,7 +61,7 @@ struct ScriptedDolphinBackendControl
     runtime::BackendMovieState movie_state = runtime::BackendMovieState::Inactive;
     std::uint64_t movie_input_count = 0;
     bool throttle_disabled = false;
-    std::uint64_t input_sequence = 0;
+    std::uint64_t input_publication_epoch = 0;
     std::uint32_t input_callback_count = 0;
     savor::GCInputFrame input_frame{};
     std::map<std::uint32_t, std::uint8_t> guest_memory;
@@ -70,6 +76,7 @@ struct ScriptedDolphinBackendControl
     int open_count = 0;
     int core_stop_count = 0;
     int core_start_count = 0;
+    int movie_activation_count = 0;
     int close_count = 0;
     int screenshot_count = 0;
     int restore_file_count = 0;
@@ -84,6 +91,7 @@ struct ScriptedDolphinBackendControl
         runtime::BackendCoreState state = runtime::BackendCoreState::Paused);
     void SetCoreStopResult(runtime::MovieBackendResult result);
     void SetCoreStartResult(runtime::MovieBackendResult result);
+    void SetMovieActivationResult(runtime::MovieBackendResult result);
     void SetCloseResult(runtime::BackendResult result);
     void SetPauseResult(runtime::BackendResult result);
     void SetResumeResult(runtime::BackendResult result);
@@ -195,7 +203,8 @@ private:
     PrepareReadOnlyPlaybackForRestart(
         const std::filesystem::path& dtm_path) override;
     runtime::MovieBackendResult StopCoreForPreparedReadOnlyMovie() override;
-    runtime::MovieBackendResult StartPreparedReadOnlyMovie() override;
+    runtime::MovieBackendResult StartPreparedReadOnlyMovieCorePaused() override;
+    runtime::MovieBackendResult ActivatePreparedReadOnlyMoviePlayback() override;
     runtime::MovieBackendResult DiscardPreparedReadOnlyMovie() noexcept override;
     runtime::MovieBackendResult StopMovie() noexcept override;
     runtime::MovieBackendResult BeginRecording() override;

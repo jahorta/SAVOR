@@ -1,0 +1,547 @@
+#include "gtest/gtest.h"
+
+#include "../SavorCore/Core/Input/SoaBattle/BattlePlanValidation.h"
+#include "../SavorCore/Phases/Programs/BattleSingleTurn/BattleSingleTurnModule.h"
+#include "../SavorCore/Runner/Runtime/Predicates/PredicateBundle.h"
+#include "../SavorCore/Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
+#include "../SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
+#include "../SavorCore/Runner/Runtime/ProgramRuntime/Store/ProgramDefinitionStore.h"
+#include "../SavorCore/Runner/Runtime/ProgramRuntime/Verify/ProgramVerifier.h"
+#include "../SavorDb/Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnProgram.h"
+#include "../SavorDb/Authoring/IAuthoringDb.h"
+
+namespace {
+
+using namespace soa::battle::actions;
+using namespace savor::runtime;
+using namespace savor::runtime::predicates;
+
+soa::battle::ctx::BattleContext Context()
+{
+    soa::battle::ctx::BattleContext context{};
+    context.slots_[0].present = 1;
+    context.slots_[0].is_player = 1;
+    context.slots_[0].is_alive = 1;
+    context.slots_[4].present = 1;
+    context.slots_[4].is_player = 0;
+    context.slots_[4].is_alive = 1;
+    return context;
+}
+
+BattleTurnExecutionSpec AttackPlan(std::uint8_t target = 4)
+{
+    return {.commands = {{.actor_slot = 0,
+        .macro = BattleAction::Attack,
+        .params = {.target_slot = target}}}};
+}
+
+TEST(BattlePlanValidation, ValidatesLiveActorsAndTargets)
+{
+    auto context = Context();
+    EXPECT_TRUE(ValidateBattleTurnPlan(context, AttackPlan()));
+    context.slots_[4].is_alive = 0;
+    EXPECT_EQ(ValidateBattleTurnPlan(context, AttackPlan()).error,
+              BattlePlanValidationError::TargetNotAlive);
+    auto invalid_actor = AttackPlan();
+    invalid_actor.commands.front().actor_slot = 3;
+    EXPECT_EQ(ValidateBattleTurnPlan(context, invalid_actor).error,
+              BattlePlanValidationError::InvalidActor);
+}
+
+TEST(BattlePlanValidation, UseItemDistinguishesInventoryFromUnsupportedInteraction)
+{
+    auto context = Context();
+    BattleTurnExecutionSpec plan{.commands = {{.actor_slot = 0,
+        .macro = BattleAction::UseItem,
+        .params = {.target_slot = 0, .item_id = 42}}}};
+    EXPECT_EQ(ValidateBattleTurnPlan(context, plan).error,
+              BattlePlanValidationError::ItemUnavailable);
+    context.state.useable_items[0] = {.item_id = 42, .count = 1};
+    EXPECT_EQ(ValidateBattleTurnPlan(context, plan).error,
+              BattlePlanValidationError::UnsupportedCommand);
+}
+
+TEST(BattleEnumDefinitions, DomainMapsDriveRegisteredIrSchemas)
+{
+    EXPECT_EQ(
+        soa::battle::find_turn_type_definition(0)->type,
+        soa::battle::BackAttack);
+    EXPECT_EQ(
+        find_battle_action_definition(4)->action,
+        BattleAction::UseItem);
+    EXPECT_EQ(soa::battle::find_turn_type_definition(99), nullptr);
+    EXPECT_EQ(find_battle_action_definition(99), nullptr);
+
+    const auto catalog =
+        program::capabilities::BuildSourceCapabilityPackCatalog();
+    const auto turn_type = std::ranges::find(
+        catalog.schemas,
+        std::string_view("soa.battle.TurnType"),
+        [](const program::TypeSchemaDefinition& schema)
+        {
+            return std::string_view(schema.identity.canonical_id);
+        });
+    const auto battle_action = std::ranges::find(
+        catalog.schemas,
+        std::string_view("soa.battle.BattleAction"),
+        [](const program::TypeSchemaDefinition& schema)
+        {
+            return std::string_view(schema.identity.canonical_id);
+        });
+    ASSERT_NE(turn_type, catalog.schemas.end());
+    ASSERT_NE(battle_action, catalog.schemas.end());
+    ASSERT_EQ(
+        turn_type->enum_members.size(),
+        soa::battle::TurnTypeDefinitions.size());
+    ASSERT_EQ(
+        battle_action->enum_members.size(),
+        BattleActionDefinitions.size());
+    for (const auto& definition : soa::battle::TurnTypeDefinitions)
+    {
+        EXPECT_NE(
+            std::ranges::find(
+                turn_type->enum_members,
+                program::EnumMemberDefinition{
+                    std::string(definition.name),
+                    static_cast<std::int64_t>(definition.type)}),
+            turn_type->enum_members.end());
+    }
+    for (const auto& definition : BattleActionDefinitions)
+    {
+        EXPECT_NE(
+            std::ranges::find(
+                battle_action->enum_members,
+                program::EnumMemberDefinition{
+                    std::string(definition.name),
+                    static_cast<std::int64_t>(definition.action)}),
+            battle_action->enum_members.end());
+    }
+}
+
+TEST(BattleEnumDefinitions, SingleTurnOutcomeMapDrivesModuleSchema)
+{
+    EXPECT_EQ(
+        battlesingleturn::FindBattleSingleTurnOutcomeDefinitionV1(3)->outcome,
+        battlesingleturn::BattleSingleTurnOutcomeV1::PredicateRejected);
+    EXPECT_EQ(
+        battlesingleturn::FindBattleSingleTurnOutcomeDefinitionV1(99),
+        nullptr);
+
+    std::string diagnostic;
+    const auto phase =
+        battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
+            false,
+            {BattlePredicateHookContractV1(),
+             EmptyPredicateBundleV1(),
+             EmptyPredicateBundleBindingV1()},
+            &diagnostic);
+    ASSERT_TRUE(phase) << diagnostic;
+    const auto decoded = program::DecodeProgramModuleV1(
+        phase->module_envelope().payload);
+    ASSERT_TRUE(decoded) << decoded.status.message;
+    const auto outcome = std::ranges::find(
+        decoded.value->local_types,
+        std::string_view("soa.battle.single_turn.Outcome"),
+        [](const program::TypeSchemaDefinition& schema)
+        {
+            return std::string_view(schema.identity.canonical_id);
+        });
+    ASSERT_NE(outcome, decoded.value->local_types.end());
+    ASSERT_EQ(
+        outcome->enum_members.size(),
+        battlesingleturn::BattleSingleTurnOutcomeDefinitionsV1.size());
+    for (const auto& definition :
+         battlesingleturn::BattleSingleTurnOutcomeDefinitionsV1)
+    {
+        EXPECT_NE(
+            std::ranges::find(
+                outcome->enum_members,
+                program::EnumMemberDefinition{
+                    std::string(definition.name),
+                    static_cast<std::int64_t>(definition.outcome)}),
+            outcome->enum_members.end());
+    }
+}
+
+TEST(PredicateBundle, CanonicalEmptyPackageRoundTrips)
+{
+    PredicateBundleExecutionPackageV1 package{
+        BattlePredicateHookContractV1(),
+        EmptyPredicateBundleV1(),
+        EmptyPredicateBundleBindingV1()};
+    ASSERT_TRUE(ValidatePredicateBundlePackageV1(package));
+    std::vector<std::uint8_t> encoded;
+    ASSERT_TRUE(EncodePredicateBundleExecutionPackageV1(package, encoded));
+    PredicateBundleExecutionPackageV1 decoded;
+    ASSERT_TRUE(DecodePredicateBundleExecutionPackageV1(encoded, decoded));
+    EXPECT_EQ(decoded.hook_contract, package.hook_contract);
+    EXPECT_EQ(decoded.bundle.content_sha256, package.bundle.content_sha256);
+    EXPECT_EQ(decoded.binding.content_sha256, package.binding.content_sha256);
+}
+
+TEST(PredicateBundle, BattleHookContractExcludesStartActionAndRetainsStartTurn)
+{
+    const auto contract = BattlePredicateHookContractV1();
+    EXPECT_EQ(std::ranges::count_if(contract.points, [](const auto& point) {
+        return point.canonical_id.find("StartAction") != std::string::npos;
+    }), 0);
+    EXPECT_EQ(std::ranges::count_if(contract.points, [](const auto& point) {
+        return point.canonical_id.find("StartTurn") != std::string::npos
+            && point.pc == 0x800715DCu;
+    }), 1);
+}
+
+TEST(PredicateBundle, RejectsHashDriftBeforeExecution)
+{
+    PredicateBundleExecutionPackageV1 package{
+        BattlePredicateHookContractV1(),
+        EmptyPredicateBundleV1(),
+        EmptyPredicateBundleBindingV1()};
+    package.binding.content_sha256.assign(64, '0');
+    const auto validation = ValidatePredicateBundlePackageV1(package);
+    EXPECT_FALSE(validation);
+    EXPECT_EQ(validation.code, "predicate.binding_hash_mismatch");
+}
+
+PredicateBundleExecutionPackageV1 ActiveLiteralPackage(
+    program::composition::PredicateReaction reaction)
+{
+    auto hook_contract = BattlePredicateHookContractV1();
+    const auto hook = std::ranges::find_if(hook_contract.points, [](const auto& point) {
+        return point.canonical_id.ends_with(".StartTurn");
+    });
+    EXPECT_NE(hook, hook_contract.points.end());
+    program::composition::PredicateDefinition definition{
+        .canonical_id = "test.battle.literal_true",
+        .revision = 1,
+        .source_name = "test.battle",
+        .expression = {{
+            .kind = program::composition::PredicateExpressionKind::Literal,
+            .literal = program::LiteralValue{
+                .type = program::TypeRef::Builtin(program::BuiltinType::Bool),
+                .payload = true},
+            .result_type = program::TypeRef::Builtin(program::BuiltinType::Bool),
+            .source_label = "true",
+        }},
+        .root_expression = 0,
+    };
+    ResolvedPredicateBundleV1 bundle{
+        .bundle_revision_id = 42,
+        .canonical_id = "test.battle.bundle",
+        .revision = 1,
+        .definitions = {{.revision_id = 84, .definition = definition}},
+        .checks = {{
+            .ordinal = 0,
+            .predicate_definition_revision_id = 84,
+            .use = {
+                .canonical_id = "literal-at-start-turn",
+                .semantic_point_id = hook->canonical_id,
+                .reaction = reaction,
+            },
+            .occurrence = PredicateOccurrencePolicyV1::First,
+        }},
+    };
+    bundle.content_sha256 = ComputeResolvedPredicateBundleHashV1(bundle);
+    PredicateBundleBindingV1 binding{
+        .bundle_revision_id = bundle.bundle_revision_id,
+        .bundle_content_sha256 = bundle.content_sha256,
+        .active_check_ordinals = {0},
+        .structural_active_check_sha256 =
+            ComputePredicateActiveCheckSetHashV1(std::array<std::uint32_t, 1>{0}),
+    };
+    binding.content_sha256 = ComputePredicateBundleBindingHashV1(binding);
+    return {std::move(hook_contract), std::move(bundle), std::move(binding)};
+}
+
+TEST(BattleSingleTurnModule, PreparesAndCachesActivePredicateVariant)
+{
+    auto package = ActiveLiteralPackage(
+        program::composition::PredicateReaction::AbortOnFail);
+    ASSERT_TRUE(ValidatePredicateBundlePackageV1(package));
+    std::string diagnostic;
+    const auto first = battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
+        false, package, &diagnostic);
+    ASSERT_TRUE(first) << diagnostic;
+    const auto second = battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
+        false, package, &diagnostic);
+    ASSERT_TRUE(second) << diagnostic;
+    EXPECT_EQ(first.get(), second.get());
+    EXPECT_EQ(first->predicate_package().bundle.content_sha256,
+              package.bundle.content_sha256);
+    EXPECT_EQ(first->predicate_package().binding.content_sha256,
+              package.binding.content_sha256);
+
+    const auto first_turn =
+        battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
+            true, package, &diagnostic);
+    ASSERT_TRUE(first_turn) << diagnostic;
+    EXPECT_NE(first_turn->identity().canonical_sha256,
+              first->identity().canonical_sha256);
+}
+
+TEST(BattleSingleTurnModule, AdmissionRequiresExactStaticReducerIdentity)
+{
+    std::string diagnostic;
+    const auto phase =
+        battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
+            false,
+            {BattlePredicateHookContractV1(),
+             EmptyPredicateBundleV1(),
+             EmptyPredicateBundleBindingV1()},
+            &diagnostic);
+    ASSERT_TRUE(phase) << diagnostic;
+    const auto decoded = program::DecodeProgramModuleV1(
+        phase->module_envelope().payload);
+    ASSERT_TRUE(decoded) << decoded.status.message;
+
+    const auto verify = [](program::ProgramModule module)
+    {
+        program::ProgramDefinitionStore modules;
+        program::TypeSchemaRegistry schemas;
+        program::ActionRegistry actions(&schemas);
+        program::CapabilityPackRegistry packs(&schemas, &actions);
+        const auto registered =
+            program::capabilities::RegisterSourceCapabilityPacks(
+                schemas, actions, packs);
+        EXPECT_TRUE(registered.success)
+            << registered.error.message;
+        const auto stored = modules.RegisterCompiled(std::move(module));
+        EXPECT_TRUE(stored.success) << stored.error.message;
+        if (!registered.success || !stored.success)
+            return program::ProgramVerificationResult{};
+        program::ProgramVerifier verifier(
+            modules, schemas, actions, packs);
+        return verifier.Verify(
+            stored.module->identity,
+            program::capabilities::SupportedSoaUsaCompatibility());
+    };
+
+    const auto accepted = verify(*decoded.value);
+    ASSERT_TRUE(accepted.success);
+
+    program::ProgramModule mutated = *decoded.value;
+    ASSERT_FALSE(mutated.reducer_imports.empty());
+    mutated.reducer_imports.front().signature_hash.bytes.front() ^= 0xff;
+    mutated.identity.module_hash =
+        program::ComputeProgramModuleHashV1(mutated);
+    const auto rejected = verify(std::move(mutated));
+    EXPECT_FALSE(rejected.success);
+    EXPECT_TRUE(std::ranges::any_of(
+        rejected.diagnostics,
+        [](const program::VerificationDiagnostic& item)
+        {
+            return item.code ==
+                program::VerificationErrorCode::DependencyMissing;
+        }));
+}
+
+TEST(BattleSingleTurnModule, FakeAttackUsesLegacySevenFrameTargetDwell)
+{
+    EXPECT_EQ(battlesingleturn::FakeAttackTargetNeutralFrames, 7u);
+    EXPECT_EQ(battlesingleturn::MaximumFakeAttackMemoryPolls, 120u);
+
+    std::string diagnostic;
+    const auto phase =
+        battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
+            false,
+            {BattlePredicateHookContractV1(),
+             EmptyPredicateBundleV1(),
+             EmptyPredicateBundleBindingV1()},
+            &diagnostic);
+    ASSERT_TRUE(phase) << diagnostic;
+    const auto decoded = program::DecodeProgramModuleV1(
+        phase->module_envelope().payload);
+    ASSERT_TRUE(decoded) << decoded.status.message;
+    std::vector<const program::Instruction*> instructions;
+    for (const auto& function : decoded.value->functions)
+        for (const auto& block : function.blocks)
+            for (const auto& instruction : block.instructions)
+                instructions.push_back(&instruction);
+    const auto position = [&](std::string_view selector)
+    {
+        const auto found = std::ranges::find_if(
+            instructions,
+            [&](const program::Instruction* instruction)
+            {
+                return instruction->selector.contains(selector);
+            });
+        return found == instructions.end()
+            ? instructions.size()
+            : static_cast<std::size_t>(found - instructions.begin());
+    };
+    const std::size_t target_ready = position(
+        "fake-accept/held-through-semantic-successor");
+    const std::size_t rng_change = position(
+        "fake-accept/bounded-memory-change-while-state-held");
+    const std::size_t release = position(
+        "fake-accept/release-to-neutral");
+    const std::size_t seven_frames = position(
+        "fake-accept/post-gate-neutral/exact-frames");
+    const std::size_t back = position(
+        "fake-back/apply-state-before-departure");
+    ASSERT_LT(target_ready, instructions.size());
+    ASSERT_LT(rng_change, instructions.size());
+    ASSERT_LT(release, instructions.size());
+    ASSERT_LT(seven_frames, instructions.size());
+    ASSERT_LT(back, instructions.size());
+    EXPECT_LT(target_ready, rng_change);
+    EXPECT_LT(rng_change, release);
+    EXPECT_LT(release, seven_frames);
+    EXPECT_LT(seven_frames, back);
+
+    const auto count = std::ranges::find_if(
+        instructions,
+        [](const program::Instruction* instruction)
+        {
+            return instruction->selector.contains(
+                "fake-accept/post-gate-neutral/count");
+        });
+    ASSERT_NE(count, instructions.end());
+    ASSERT_TRUE((*count)->literal);
+    const auto* value = std::get_if<std::uint64_t>(
+        &(*count)->literal->payload);
+    ASSERT_NE(value, nullptr);
+    EXPECT_EQ(*value, 7u);
+}
+
+TEST(BattleSingleTurnModule, SharedAttackAcceptEnumRoutesToHeldAInputSegment)
+{
+    std::string diagnostic;
+    const auto phase =
+        battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
+            false,
+            {BattlePredicateHookContractV1(),
+             EmptyPredicateBundleV1(),
+             EmptyPredicateBundleBindingV1()},
+            &diagnostic);
+    ASSERT_TRUE(phase) << diagnostic;
+    const auto decoded = program::DecodeProgramModuleV1(
+        phase->module_envelope().payload);
+    ASSERT_TRUE(decoded) << decoded.status.message;
+
+    const auto interaction = std::ranges::find_if(
+        decoded.value->functions,
+        [](const program::ProgramFunction& function) {
+            return function.name == "interact.soa.battle.command_entry";
+        });
+    ASSERT_NE(interaction, decoded.value->functions.end());
+    const auto attack_accept = std::ranges::find_if(
+        interaction->blocks,
+        [](const program::BasicBlock& block) {
+            return std::ranges::any_of(
+                block.instructions,
+                [](const program::Instruction& instruction) {
+                    return instruction.selector.contains(
+                        "segment/attack-accept/scope");
+                });
+        });
+    ASSERT_NE(attack_accept, interaction->blocks.end());
+    ASSERT_TRUE(std::ranges::any_of(
+        attack_accept->instructions,
+        [](const program::Instruction& instruction) {
+            return instruction.selector.contains(
+                "segment/attack-accept/apply-state-before-departure");
+        }));
+
+    const auto adaptive_block = std::ranges::find_if(
+        interaction->blocks,
+        [](const program::BasicBlock& block) {
+            return block.terminator.kind == program::TerminatorKind::EnumSwitch;
+        });
+    ASSERT_NE(adaptive_block, interaction->blocks.end());
+    const auto attack_case = std::ranges::find(
+        adaptive_block->terminator.enum_cases,
+        program::capabilities::BattleCommandSegmentValue(
+            program::capabilities::BattleCommandSegment::AttackAccept),
+        &program::EnumSwitchCase::enum_value);
+    ASSERT_NE(attack_case, adaptive_block->terminator.enum_cases.end());
+    EXPECT_EQ(attack_case->edge.target, attack_accept->id);
+}
+
+TEST(BattleWaveRanking, UsesFakeFramesPassedThenStableJobIdentity)
+{
+    using savor::db::execution::programdb::battle::BattleWaveCandidateRank;
+    using savor::db::execution::programdb::battle::
+        BattleWaveCandidateRanksBefore;
+    const BattleWaveCandidateRank base{
+        .cumulative_fake_attacks = 2,
+        .delta_vi = 40,
+        .pred_passed = 5,
+        .stable_job_id = 10,
+    };
+    auto candidate = base;
+    candidate.cumulative_fake_attacks = 1;
+    EXPECT_TRUE(BattleWaveCandidateRanksBefore(candidate, base));
+    candidate = base;
+    candidate.delta_vi = 39;
+    EXPECT_TRUE(BattleWaveCandidateRanksBefore(candidate, base));
+    candidate = base;
+    candidate.pred_passed = 6;
+    EXPECT_TRUE(BattleWaveCandidateRanksBefore(candidate, base));
+    candidate = base;
+    candidate.stable_job_id = 9;
+    EXPECT_TRUE(BattleWaveCandidateRanksBefore(candidate, base));
+    EXPECT_FALSE(BattleWaveCandidateRanksBefore(base, base));
+}
+
+TEST(BattlePlanStructure, RequiresPositiveOneBasedContiguousTurnRows)
+{
+    using savor::db::BattlePlanSnapshot;
+    using savor::db::BattlePlanTurnSnapshot;
+    using savor::db::execution::programdb::battle::
+        ValidateBattlePlanTurnSequence;
+
+    std::string error;
+    BattlePlanSnapshot plan{};
+    EXPECT_FALSE(ValidateBattlePlanTurnSequence(plan, &error));
+
+    plan.turns = {
+        BattlePlanTurnSnapshot{.turn_index = 2},
+        BattlePlanTurnSnapshot{.turn_index = 1},
+    };
+    EXPECT_TRUE(ValidateBattlePlanTurnSequence(plan, &error)) << error;
+
+    plan.turns = {
+        BattlePlanTurnSnapshot{.turn_index = 1},
+        BattlePlanTurnSnapshot{.turn_index = 3},
+    };
+    EXPECT_FALSE(ValidateBattlePlanTurnSequence(plan, &error));
+
+    plan.turns = {
+        BattlePlanTurnSnapshot{.turn_index = 1},
+        BattlePlanTurnSnapshot{.turn_index = 1},
+    };
+    EXPECT_FALSE(ValidateBattlePlanTurnSequence(plan, &error));
+
+    plan.turns = {BattlePlanTurnSnapshot{.turn_index = 0}};
+    EXPECT_FALSE(ValidateBattlePlanTurnSequence(plan, &error));
+    plan.turns = {BattlePlanTurnSnapshot{.turn_index = -1}};
+    EXPECT_FALSE(ValidateBattlePlanTurnSequence(plan, &error));
+}
+
+TEST(BattleTargetAvailability, UsesOptionalLiveEnemyEvidence)
+{
+    using savor::db::execution::programdb::battle::BattleTargetAvailability;
+    using savor::db::execution::programdb::battle::ClassifyBattleTurnTargets;
+
+    const auto commands = AttackPlan().commands;
+    EXPECT_EQ(ClassifyBattleTurnTargets(nullptr, commands),
+              BattleTargetAvailability::Unknown);
+
+    auto context = Context();
+    EXPECT_EQ(ClassifyBattleTurnTargets(&context, commands),
+              BattleTargetAvailability::Available);
+    context.slots_[4].is_alive = 0;
+    EXPECT_EQ(ClassifyBattleTurnTargets(&context, commands),
+              BattleTargetAvailability::Unavailable);
+    context = Context();
+    context.slots_[4].present = 0;
+    EXPECT_EQ(ClassifyBattleTurnTargets(&context, commands),
+              BattleTargetAvailability::Unavailable);
+    context = Context();
+    context.slots_[4].is_player = 1;
+    EXPECT_EQ(ClassifyBattleTurnTargets(&context, commands),
+              BattleTargetAvailability::Unavailable);
+}
+
+} // namespace

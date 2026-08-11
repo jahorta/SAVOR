@@ -1,5 +1,5 @@
 #include "../SavorCore/Phases/Programs/TasMovieValidation/TasMovieValidationModule.h"
-#include "../SavorCore/Runner/IPC/Wire.h"
+#include "../SavorCore/Runner/Runtime/ProgramKind.h"
 #include "../SavorCore/Runner/Runtime/FullPhase/FullPhaseProgram.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
@@ -312,7 +312,6 @@ ScriptedModuleResult RunScriptedModule(
                 throw std::logic_error("scripted action has no identity");
             constexpr std::array supported_actions{
                 CanonicalAction::MoviePrepareReadOnlyPlayback,
-                CanonicalAction::StopPointsSubscribeGroup,
                 CanonicalAction::MovieStartPlayback,
                 CanonicalAction::ExecutionContinueUntil,
                 CanonicalAction::SavestateSaveImmutableArtifact,
@@ -330,17 +329,13 @@ ScriptedModuleResult RunScriptedModule(
             actions.push_back(*canonical);
             if (*canonical ==
                     CanonicalAction::MoviePrepareReadOnlyPlayback ||
-                *canonical == CanonicalAction::StopPointsSubscribeGroup ||
                 *canonical == CanonicalAction::MovieStartPlayback)
             {
                 const ProgramResourceHandleId handle(
                     *canonical ==
                             CanonicalAction::MoviePrepareReadOnlyPlayback
                         ? 100
-                        : (*canonical ==
-                                   CanonicalAction::StopPointsSubscribeGroup
-                               ? 101
-                               : 102));
+                        : 102);
                 completion.output = ResourceGraph(
                     *canonical,
                     handle,
@@ -351,10 +346,7 @@ ScriptedModuleResult RunScriptedModule(
                     .kind = *canonical ==
                             CanonicalAction::MoviePrepareReadOnlyPlayback
                         ? ResourceKind::PreparedMoviePlayback
-                        : (*canonical ==
-                                   CanonicalAction::StopPointsSubscribeGroup
-                               ? ResourceKind::StopPointGroup
-                               : ResourceKind::MovieSession),
+                        : ResourceKind::MovieSession,
                     .acquisition_epoch = completion.workset_epoch,
                 });
             }
@@ -675,7 +667,6 @@ TEST(TasMovieValidationModule, ProductionDefinitionVerifiesAndIsExactTasMovieKin
     EXPECT_FALSE(phase->runtime_contract().execution.allow_movie_recording);
     EXPECT_FALSE(phase->runtime_contract().execution.allow_input);
     EXPECT_FALSE(phase->runtime_contract().execution.record_trace);
-    EXPECT_TRUE(phase->runtime_contract().execution.record_progress);
 
     const auto catalog = TasMovieBoundaryCatalogV1();
     ASSERT_EQ(catalog.size(), 1u);
@@ -692,10 +683,9 @@ TEST(TasMovieValidationModule, ProductionDefinitionVerifiesAndIsExactTasMovieKin
     EXPECT_EQ(module.budgets.maximum_value_bytes,
               256u * 1024u * 1024u);
     EXPECT_EQ(module.budgets.maximum_trace_events, 262'144u);
-    EXPECT_EQ(module.action_imports.size(), 5u);
+    EXPECT_EQ(module.action_imports.size(), 4u);
     for (const CanonicalAction expected : {
              CanonicalAction::MoviePrepareReadOnlyPlayback,
-             CanonicalAction::StopPointsSubscribeGroup,
              CanonicalAction::MovieStartPlayback,
              CanonicalAction::ExecutionContinueUntil,
              CanonicalAction::SavestateSaveImmutableArtifact,
@@ -710,14 +700,10 @@ TEST(TasMovieValidationModule, ProductionDefinitionVerifiesAndIsExactTasMovieKin
     const Instruction* prepare = FindInstruction(
         module,
         "movie/prepare-and-stop-core");
-    const Instruction* subscribe = FindInstruction(
-        module,
-        "stop-group/subscribe-before-playback");
     const Instruction* playback = FindInstruction(
         module,
         "movie/start-exact-read-only-playback");
     ASSERT_NE(prepare, nullptr);
-    ASSERT_NE(subscribe, nullptr);
     ASSERT_NE(playback, nullptr);
     bool ordered = false;
     for (const ProgramFunction& function : module.functions)
@@ -728,20 +714,14 @@ TEST(TasMovieValidationModule, ProductionDefinitionVerifiesAndIsExactTasMovieKin
                 block.instructions,
                 prepare->id,
                 &Instruction::id);
-            const auto subscribe_at = std::ranges::find(
-                block.instructions,
-                subscribe->id,
-                &Instruction::id);
             const auto playback_at = std::ranges::find(
                 block.instructions,
                 playback->id,
                 &Instruction::id);
             if (prepare_at != block.instructions.end() &&
-                subscribe_at != block.instructions.end() &&
                 playback_at != block.instructions.end())
             {
-                ordered = prepare_at < subscribe_at &&
-                    subscribe_at < playback_at;
+                ordered = prepare_at < playback_at;
             }
         }
     }
@@ -759,12 +739,9 @@ TEST(TasMovieValidationModule, ProductionDefinitionVerifiesAndIsExactTasMovieKin
             &config->literal->payload);
         ASSERT_NE(bytes, nullptr);
         ASSERT_GE(bytes->size(), 8u);
-        EXPECT_EQ((*bytes)[bytes->size() - 3],
-                  static_cast<Byte>(StopDeliveryMode::Observe));
-        EXPECT_EQ((*bytes)[bytes->size() - 2],
-                  static_cast<Byte>(StopRoutingPolicy::Pass));
-        EXPECT_EQ((*bytes)[bytes->size() - 1],
-                  static_cast<Byte>(StopSubscriptionLifetime::Scoped));
+        EXPECT_EQ(
+            std::string(bytes->begin(), bytes->begin() + 4),
+            "SPS1");
         const std::string encoded(bytes->begin(), bytes->end());
         EXPECT_NE(encoded.find(BeforeRandSeedSetPointId),
                   std::string::npos);
@@ -866,13 +843,12 @@ TEST(TasMovieValidationModule, EstablishmentReturnsReachedRootCheckpoint)
         (TasMovieCheckpointV1{
             BeforeRandSeedSetPc,
             DtmInputCount{2}}));
-    ASSERT_GE(run.actions.size(), 4u);
+    ASSERT_GE(run.actions.size(), 3u);
     EXPECT_EQ(
         run.actions[0],
         CanonicalAction::MoviePrepareReadOnlyPlayback);
-    EXPECT_EQ(run.actions[1], CanonicalAction::StopPointsSubscribeGroup);
-    EXPECT_EQ(run.actions[2], CanonicalAction::MovieStartPlayback);
-    EXPECT_EQ(run.actions[3], CanonicalAction::ExecutionContinueUntil);
+    EXPECT_EQ(run.actions[1], CanonicalAction::MovieStartPlayback);
+    EXPECT_EQ(run.actions[2], CanonicalAction::ExecutionContinueUntil);
     EXPECT_EQ(
         std::ranges::count(
             run.actions,

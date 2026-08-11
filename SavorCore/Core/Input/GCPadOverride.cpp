@@ -34,27 +34,19 @@ namespace savor {
         return f;
     }
 
-    void GCPadOverride::setFrame(const GCInputFrame& f) {
+    void GCPadOverride::publishFrame(
+        uint64_t publication_epoch,
+        const GCInputFrame& f) {
         std::lock_guard<std::mutex> lk(m_mtx);
         m_cur = f;
-        m_sequence = 0;
-        m_plan_index = 0;
-        m_callback_count = 0;
-    }
-
-    void GCPadOverride::publishPlaybackFrame(uint64_t sequence, uint32_t plan_index, const GCInputFrame& f) {
-        std::lock_guard<std::mutex> lk(m_mtx);
-        m_cur = f;
-        m_sequence = sequence;
-        m_plan_index = plan_index;
+        m_publication_epoch = publication_epoch;
         m_callback_count = 0;
     }
 
     GCPadOverride::PollStats GCPadOverride::getPollStats() const {
         std::lock_guard<std::mutex> lk(m_mtx);
         return PollStats{
-            .sequence = m_sequence,
-            .plan_index = m_plan_index,
+            .publication_epoch = m_publication_epoch,
             .callback_count = m_callback_count,
             .frame = m_cur,
         };
@@ -83,7 +75,7 @@ namespace savor {
                 {
                     std::lock_guard<std::mutex> lk(m_mtx);
                     f = m_cur;
-                    if (m_sequence != 0) {
+                    if (m_publication_epoch != 0) {
                         ++m_callback_count;
                     }
                 }
@@ -131,7 +123,12 @@ namespace savor {
             };
 
         ctrl->SetInputOverrideFunction(std::move(fn));
-        setFrame(NeutralFrame());
+        {
+            std::lock_guard<std::mutex> lock(m_mtx);
+            m_cur = NeutralFrame();
+            m_publication_epoch = 0;
+            m_callback_count = 0;
+        }
         m_installed = true;
         SCLOGI("[TAS] Installed input override on GC port %d", m_port);
     }

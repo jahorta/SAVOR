@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <cstdint>
 #include <string_view>
 #include <optional>
 #include <cstddef>
@@ -1263,6 +1264,46 @@ namespace soa {
 			Normal = 1,
 			Advantage = 2
 		};
+
+		struct TurnTypeDefinition {
+			TurnType type;
+			std::string_view name;
+		};
+
+		inline constexpr std::array<TurnTypeDefinition, 3>
+			TurnTypeDefinitions{{
+				{BackAttack, "BackAttack"},
+				{Normal, "Normal"},
+				{Advantage, "Advantage"},
+			}};
+
+		[[nodiscard]] constexpr const TurnTypeDefinition*
+		find_turn_type_definition(std::int64_t value) noexcept {
+			for (const auto& definition : TurnTypeDefinitions) {
+				if (static_cast<std::int64_t>(definition.type) == value)
+					return &definition;
+			}
+			return nullptr;
+		}
+
+		[[nodiscard]] consteval bool turn_type_definitions_are_complete() {
+			if (TurnTypeDefinitions.size() != 3) return false;
+			for (std::size_t index = 0; index < TurnTypeDefinitions.size(); ++index) {
+				const auto& definition = TurnTypeDefinitions[index];
+				if (definition.name.empty()) return false;
+				for (std::size_t other = 0; other < index; ++other) {
+					if (TurnTypeDefinitions[other].type == definition.type ||
+						TurnTypeDefinitions[other].name == definition.name) {
+						return false;
+					}
+				}
+			}
+			return find_turn_type_definition(0) != nullptr &&
+				find_turn_type_definition(1) != nullptr &&
+				find_turn_type_definition(2) != nullptr;
+		}
+
+		static_assert(turn_type_definitions_are_complete());
 
 		constexpr std::string get_turn_type_string(TurnType type) {
 			switch (type) {

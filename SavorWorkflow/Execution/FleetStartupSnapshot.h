@@ -26,7 +26,7 @@ struct FleetStartupSnapshot {
     std::size_t starting = 0;
     std::size_t retry_pending = 0;
     std::size_t exhausted = 0;
-    std::vector<FleetStartupSlotSnapshot> slots;
+    std::vector<FleetStartupSlotSnapshot> worker_slots;
 
     [[nodiscard]] bool full_pool_ready() const noexcept {
         return ready == desired;

@@ -1,6 +1,8 @@
 #include "TasMovieValidationProgram.h"
+#include "../WorksetObservationBinding.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -21,7 +23,7 @@
 #include "../../../State/IStateDb.h"
 #include "../../../../SavorCore/Phases/Programs/TasMovieValidation/TasMovieValidationModule.h"
 #include "../../../../SavorCore/Runner/IPC/DurableWorkerTerminalEnvelope.h"
-#include "../../../../SavorCore/Runner/IPC/Wire.h"
+#include "../../../../SavorCore/Runner/Runtime/ProgramKind.h"
 #include "../../../../SavorCore/Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "../../../../SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
 #include "../../../../SavorCore/Runner/Runtime/Worksets/WorksetWireCodec.h"
@@ -36,6 +38,20 @@ constexpr std::string_view kCreatedBy = "tas_movie_validation_program_kind";
 constexpr std::string_view kPurpose = "TAS_MOVIE_COMPLETE_VALIDATION";
 constexpr std::uint32_t kRequiredTerminalPc = 0x80101E48u;
 constexpr std::size_t kDeclaredTerminalBytes = 256ull * 1024ull;
+
+const WorksetObservationDefaultsV1& ObservationDefaults()
+{
+    static const WorksetObservationDefaultsV1 defaults{
+        .progress_library_ids = {
+            "soa.progress.runtime.vi/1",
+            "soa.progress.soa.script_location/1",
+        },
+        .runtime_sample_trigger_pcs = {
+            savor::runtime::tasmovie::BeforeRandSeedSetPc,
+        },
+    };
+    return defaults;
+}
 
 std::int64_t NowMs() { return types::UtcNow().time_since_epoch().count(); }
 
@@ -275,6 +291,16 @@ public:
             return false;
         }
         *result_out = {};
+        ResolvedWorksetObservationBindingV1 observation;
+        if (!ResolveWorksetObservationBindingV1(
+                context,
+                ObservationDefaults(),
+                WorkingRoot(config_.working_dir_root) / "captures",
+                &observation,
+                error_out))
+        {
+            return false;
+        }
         const auto& graph = *context.graph;
         CreateTasMovieValidationRequestCommand command{};
         command.materialization_key = "tasmovie.validation.step." + std::to_string(context.step.workflow_step_id);
@@ -393,15 +419,26 @@ public:
             .job_set_id = ensured.job_set_id, .workflow_step_id = context.step.workflow_step_id,
             .root_job_set_id = ensured.job_set_id, .workset_key = command.materialization_key + ".workset.0",
             .program_kind = static_cast<std::int32_t>(savor::PK_TasMovie), .program_version = 1,
-            .compatibility = {
-                .compatibility_key = "tasmovie-validation:v1:request:" + std::to_string(request_id) + ":phase:" + request->full_phase_sha256,
+            .contract = {
+                .contract_key = "tasmovie-validation:v1:request:" + std::to_string(request_id) + ":phase:" + request->full_phase_sha256,
                 .module_canonical_id = runtime.module.canonical_id,
                 .module_version = static_cast<std::int32_t>(runtime.module.revision),
                 .module_sha256 = runtime.module.canonical_hash, .entrypoint = runtime.entrypoint,
                 .verified_dependency_sha256 = runtime.verified_dependency_sha256,
                 .runtime_profile_sha256 = runtime.runtime_profile_sha256,
-                .required_capability_mask = runtime.required_capabilities,
+                .program_package_sha256 = savor::runtime::fullphase::
+                    BuildFullPhaseProgramPackage(*phase_).canonical_sha256,
                 .estimated_payload_bytes = 256ull * 1024ull,
+            },
+            .observation = {
+                .capture_binding_payload =
+                    observation.encoded_capture_binding,
+                .capture_binding_sha256 =
+                    observation.capture_binding_sha256,
+                .progress_plan_payload =
+                    observation.encoded_progress_plan,
+                .progress_plan_sha256 =
+                    observation.progress_plan_sha256,
             },
             .priority = context.step.step_priority, .ordered_job_ids = {jobs.front().job_id},
             .requested_by = std::string(kCreatedBy),
@@ -420,7 +457,7 @@ public:
         if (!result_out || context.root_job_set_id <= 0) return Fail("TAS Movie validation continuation is invalid", error_out);
         const auto jobs = execution_db_->ListJobsInJobSet(context.root_job_set_id);
         if (jobs.size() != 1) return Fail("TAS Movie validation workflow lost singleton shape", error_out);
-        const auto job = execution_db_->GetJob(jobs.front().job_id);
+        const auto job = execution_db_->GetExecutionJob(jobs.front().job_id);
         if (!job || !job->worker_terminal_fingerprint) return Fail("TAS Movie validation terminal identity is unavailable", error_out);
         const auto attempt = analysis_db_->FindTasMovieValidationAttempt(job->job_id, *job->worker_terminal_fingerprint);
         if (!attempt) return Fail("TAS Movie validation attempt was not durably persisted", error_out);
@@ -495,7 +532,10 @@ public:
         savor::runtime::WorkerWorksetDefinition workset{};
         workset.workset_id = savor::runtime::WorkerWorksetId(static_cast<std::uint64_t>(context.dispatch_attempt_id));
         workset.phase_invocation = {.invocation_id = {.workflow_step_id = static_cast<std::uint64_t>(context.workflow_step_id),
-            .root_job_set_id = static_cast<std::uint64_t>(context.root_job_set_id)}, .program = phase_->identity()};
+            .root_job_set_id = static_cast<std::uint64_t>(context.root_job_set_id)},
+            .program_package = savor::runtime::fullphase::BuildFullPhaseProgramPackage(*phase_),
+            .common_input = savor::runtime::fullphase::MakeFullPhaseCommonInput(
+                "soa.tas_movie_validation.CommonInput", 1)};
         const std::filesystem::path startup_path(dtm_path->string() + ".sav");
         const bool has_startup = dtm.info().starts_from_savestate;
         if (has_startup && !std::filesystem::is_regular_file(startup_path))
@@ -515,22 +555,30 @@ public:
                 },
             },
             .lineage = phase_->runtime_contract().baseline_lineage};
+        workset.capture = context.capture;
+        workset.progress_plan = context.progress_plan;
         const auto& runtime = phase_->runtime_contract();
         workset.execution_key = {.module = runtime.module, .entrypoint = runtime.entrypoint,
             .verified_dependency_sha256 = runtime.verified_dependency_sha256,
             .runtime_profile_sha256 = runtime.runtime_profile_sha256,
             .baseline = savor::runtime::ComputeProgramBaselineKey(workset.baseline),
             .movie_policy_sha256 = runtime.movie_policy_sha256,
-            .service_policy_sha256 = runtime.service_policy_sha256};
+            .service_policy_sha256 = runtime.service_policy_sha256,
+            .program_package_sha256 = workset.phase_invocation.program_package.canonical_sha256,
+            .common_input_sha256 = workset.phase_invocation.common_input.content_sha256,
+            .capture_binding_sha256 = workset.capture
+                ? workset.capture->content_sha256
+                : savor::runtime::EmptyWorksetCaptureBindingHashV1(),
+            .progress_plan_sha256 = workset.progress_plan.content_sha256};
         workset.execution_key.canonical_sha256 = savor::runtime::ComputeWorkerWorksetExecutionKeyHash(workset.execution_key);
         workset.items.push_back({.item_id = savor::runtime::WorkerWorksetItemId(static_cast<std::uint64_t>(item.job_id)),
             .ordinal = 0, .execution = {.execution_id = savor::runtime::ProgramExecutionId(static_cast<std::uint64_t>(item.job_id)),
                 .attempt_id = savor::runtime::AttemptId(item.reserved_attempt_id), .input_payload = input},
             .declared_terminal_bytes = kDeclaredTerminalBytes,
             .correlation = {.durable_job_id = std::to_string(item.job_id), .claim_token = item.claim_token,
-                .parent_correlation = context.compatibility_key}});
+                .parent_correlation = context.contract_key}});
         std::vector<std::uint8_t> encoded;
-        const auto status = savor::runtime::EncodeWorkerWorksetV2(workset, encoded);
+        const auto status = savor::runtime::EncodeWorkerWorksetV4(workset, encoded);
         if (!status) return fail("TAS Movie validation workset encoding failed: " + status.message);
         workset.encoded_size_bytes = encoded.size();
         return WorksetReconstructionResult{.workset = std::move(workset), .ordered_job_ids = {item.job_id}};
@@ -1021,6 +1069,10 @@ ProgramKindDescriptor BuildTasMovieValidationProgramDescriptor(
     descriptor.program_kind = static_cast<std::int32_t>(savor::PK_TasMovie);
     descriptor.program_name = "TAS Movie Complete Validation";
     descriptor.full_phase_identity = savor::runtime::tasmovie::TasMovieValidationFullPhaseDefinitionV1()->identity();
+    descriptor.default_progress_library_ids =
+        ObservationDefaults().progress_library_ids;
+    descriptor.default_progress_runtime_trigger_pcs =
+        ObservationDefaults().runtime_sample_trigger_pcs;
     descriptor.job_materializer = std::make_shared<Materializer>(execution_db, state_db, analysis_db, config);
     descriptor.workset_reconstruction = std::make_shared<Reconstruction>(state_db, analysis_db, config.working_dir_root);
     descriptor.result_handler = std::make_shared<ResultHandler>(state_db, analysis_db, config.working_dir_root);

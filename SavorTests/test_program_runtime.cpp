@@ -92,7 +92,7 @@ ProgramValueGraph BytesGraph(
 ProgramValueGraph StepFramesGraph(std::uint64_t count)
 {
     const ProgramValueId count_id(1);
-    const ProgramValueId neutral_witness_id(2);
+    const ProgramValueId input_binding_id(2);
     const ProgramValueId static_config_id(3);
     const ProgramValueId root_id(4);
     return {
@@ -104,10 +104,10 @@ ProgramValueGraph StepFramesGraph(std::uint64_t count)
                 count,
             },
             ProgramValue{
-                neutral_witness_id,
+                input_binding_id,
                 CanonicalRuntimeType(
                     CanonicalRuntimeSchema::
-                        OptionalInputNeutralWitness),
+                        OptionalInputExecutionBinding),
                 OptionalValue{},
             },
             ProgramValue{
@@ -123,7 +123,7 @@ ProgramValueGraph StepFramesGraph(std::uint64_t count)
                     CanonicalAction::ExecutionStepFrames),
                 RecordValue{{
                     count_id,
-                    neutral_witness_id,
+                    input_binding_id,
                     static_config_id,
                 }},
             },
@@ -437,7 +437,6 @@ ProgramInvocation Invocation(
         .execution = {
             .intent = ExecutionIntent::Live,
             .record_trace = true,
-            .record_progress = false,
         },
         .input = U32Graph(123),
         .limits = Budgets(),
@@ -483,21 +482,56 @@ public:
     std::vector<ProgramActionRequest> requests;
 };
 
-ModulePreparationRequest PreparationRequest(
-    const ProgramModule& module,
-    WorkerCommandSequence sequence = WorkerCommandSequence(1))
+EncodedModuleEnvelope ModuleEnvelope(const ProgramModule& module)
 {
     const EncodeResult encoded = EncodeProgramModuleV1(module);
     EXPECT_TRUE(encoded)
         << encoded.status.message;
     return {
-        .command_sequence = sequence,
-        .module = {
-            .identity = EnvelopeIdentity(module.identity),
-            .format_version = kProgramCodecVersionV1,
-            .payload = encoded.bytes,
-        },
+        .identity = EnvelopeIdentity(module.identity),
+        .format_version = kProgramCodecVersionV1,
+        .payload = encoded.bytes,
     };
+}
+
+ProgramRuntimeSubmission AdmitModule(
+    ProgramRuntime& runtime,
+    const ProgramModule& module)
+{
+    EncodedModuleEnvelope envelope = ModuleEnvelope(module);
+    ProgramDefinitionStore definitions;
+    const auto stored = definitions.RegisterEncoded(
+        envelope.payload,
+        module.identity);
+    if (!stored.success)
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            stored.error.message);
+    }
+    ProgramVerifier verifier(
+        definitions,
+        runtime.types(),
+        runtime.actions(),
+        runtime.capability_packs());
+    const auto verified = verifier.Verify(
+        module.identity,
+        TestRuntimeConfig().compatibility);
+    const std::string dependency_lock_sha256 =
+        verified.success
+        ? ComputeProgramDependencyLockHashV1(
+              verified.verified->dependency_lock).ToHex()
+        : std::string(64, '0');
+    ModuleClosureAdmissionReceipt receipt;
+    auto submission = runtime.AdmitModuleClosure(
+        {
+            .root = envelope.identity,
+            .expected_dependency_lock_sha256 =
+                dependency_lock_sha256,
+            .modules = {std::move(envelope)},
+        },
+        receipt);
+    return submission;
 }
 
 EncodedInvocationEnvelope InvocationRequest(
@@ -587,138 +621,6 @@ ProgramActionResolution Completion(
     };
 }
 
-TEST(ProgramRuntime, PreparesSprmBeforeAcceptingSpri)
-{
-    ProgramRuntime runtime(TestRuntimeConfig());
-    ASSERT_TRUE(runtime.initialized())
-        << runtime.initialization_diagnostic();
-    EXPECT_TRUE(HasCapability(
-        runtime.capabilities(),
-        WorkerCapability::WorksetDispatch));
-
-    auto events = std::make_shared<RecordingEventSink>();
-    const ProgramModule module =
-        Module("test.runtime.prepare-start");
-    const ProgramRuntimeSubmission prepared =
-        runtime.PrepareModule(
-            PreparationRequest(module),
-            events);
-    ASSERT_TRUE(prepared.accepted)
-        << prepared.error.message;
-    const ModulePreparationEvent* preparation =
-        events->Last<ModulePreparationEvent>();
-    ASSERT_NE(preparation, nullptr);
-    EXPECT_TRUE(preparation->prepared)
-        << preparation->error.message;
-    EXPECT_EQ(
-        preparation->module,
-        EnvelopeIdentity(module.identity));
-    EXPECT_EQ(runtime.definitions().size(), 1u);
-    const ProgramRuntimeCatalogSnapshot prepared_catalog =
-        runtime.catalog();
-    ASSERT_EQ(prepared_catalog.modules.size(), 1u);
-    EXPECT_EQ(
-        prepared_catalog.modules.front().dependency_lock_sha256,
-        ComputeProgramDependencyLockHashV1(
-            ProgramDependencyLock{
-                .ir_version = kCanonicalIrVersionV1})
-            .ToHex());
-    EXPECT_NE(
-        prepared_catalog.modules.front().dependency_lock_sha256,
-        prepared_catalog.dependency_manifest_sha256);
-
-    const ProgramInvocation invocation = Invocation(module);
-    CancellationSource cancellation(invocation.invocation_id);
-    const ProgramRuntimeSubmission no_sink =
-        StartInvocation(runtime,
-            InvocationRequest(invocation),
-            cancellation.token(),
-            events);
-    EXPECT_FALSE(no_sink.accepted);
-    EXPECT_EQ(
-        no_sink.error.code,
-        WorkerRejectionCode::ProgramRuntimeUnavailable);
-}
-
-TEST(
-    ProgramRuntime,
-    CompleteExactRequiresEveryConfiguredModuleAndNoExtras)
-{
-    std::vector<ProgramModule> modules;
-    std::vector<ProgramRuntimeCatalogModule> expected;
-    for (std::uint32_t index = 0; index < 9; ++index)
-    {
-        modules.push_back(Module(
-            "test.runtime.catalog." +
-            std::to_string(index)));
-        expected.push_back(ProgramRuntimeCatalogModule{
-            EnvelopeIdentity(modules.back().identity),
-            {"run"},
-            ComputeProgramDependencyLockHashV1(
-                ProgramDependencyLock{
-                    .ir_version = kCanonicalIrVersionV1})
-                .ToHex(),
-            false});
-    }
-    ProgramRuntimeConfig config = TestRuntimeConfig();
-    config.expected_exact_catalog = expected;
-    ProgramRuntimeConfig invalid_config = config;
-    invalid_config.expected_exact_catalog->pop_back();
-    ProgramRuntime invalid_runtime(std::move(invalid_config));
-    EXPECT_FALSE(invalid_runtime.initialized());
-
-    ProgramRuntime runtime(config);
-    ASSERT_TRUE(runtime.initialized())
-        << runtime.initialization_diagnostic();
-    EXPECT_FALSE(runtime.catalog().complete_exact);
-
-    auto events = std::make_shared<RecordingEventSink>();
-    for (std::size_t index = 0; index < modules.size(); ++index)
-    {
-        const ProgramRuntimeSubmission prepared =
-            runtime.PrepareModule(
-                PreparationRequest(
-                    modules[index],
-                    WorkerCommandSequence(index + 1)),
-                events);
-        ASSERT_TRUE(prepared.accepted)
-            << prepared.error.message;
-        EXPECT_EQ(
-            runtime.catalog().complete_exact,
-            index + 1 == modules.size());
-    }
-
-    const ProgramModule extra =
-        Module("test.runtime.catalog.extra");
-    ASSERT_TRUE(
-        runtime.PrepareModule(
-            PreparationRequest(
-                extra,
-                WorkerCommandSequence(10)),
-            events)
-            .accepted);
-    EXPECT_FALSE(runtime.catalog().complete_exact);
-
-    ProgramRuntime development_runtime(config);
-    ASSERT_TRUE(development_runtime.initialized())
-        << development_runtime.initialization_diagnostic();
-    for (std::size_t index = 0; index < modules.size(); ++index)
-    {
-        ModulePreparationRequest request =
-            PreparationRequest(
-                modules[index],
-                WorkerCommandSequence(index + 1));
-        request.module.development_only =
-            index + 1 == modules.size();
-        ASSERT_TRUE(
-            development_runtime.PrepareModule(
-                std::move(request),
-                events)
-                .accepted);
-    }
-    EXPECT_FALSE(development_runtime.catalog().complete_exact);
-}
-
 TEST(
     ProgramRuntime,
     VerifiesUnboundWorksetTemplateBeforeExactBaselineBinding)
@@ -730,9 +632,7 @@ TEST(
     const ProgramModule module =
         Module("test.runtime.workset-template");
     ASSERT_TRUE(
-        runtime.PrepareModule(
-            PreparationRequest(module),
-            events)
+        AdmitModule(runtime, module)
             .accepted);
 
     ProgramInvocation invocation = Invocation(module);
@@ -821,9 +721,6 @@ TEST(ProgramRuntime, RequiresAnExactConfiguredRuntimeProfile)
     invalid.runtime_profile.backend.clear();
     ProgramRuntime unavailable(std::move(invalid));
     EXPECT_FALSE(unavailable.initialized());
-    EXPECT_FALSE(HasCapability(
-        unavailable.capabilities(),
-        WorkerCapability::WorksetDispatch));
 
     ProgramRuntime runtime(TestRuntimeConfig());
     ASSERT_TRUE(runtime.initialized())
@@ -833,9 +730,7 @@ TEST(ProgramRuntime, RequiresAnExactConfiguredRuntimeProfile)
     runtime.BindActionSink(actions);
     const ProgramModule module =
         Module("test.runtime.profile");
-    ASSERT_TRUE(runtime.PrepareModule(
-        PreparationRequest(module), events).accepted);
-    ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared);
+    ASSERT_TRUE(AdmitModule(runtime, module).accepted);
 
     const auto rejected = [&](ProgramInvocation invocation) {
         CancellationSource cancellation(invocation.invocation_id);
@@ -867,6 +762,27 @@ TEST(ProgramRuntime, RequiresAnExactConfiguredRuntimeProfile)
     EXPECT_TRUE(actions->requests.empty());
 }
 
+TEST(ProgramRuntime, RejectsEphemeralInputBindingAsEntrypointResult)
+{
+    ProgramRuntime runtime(TestRuntimeConfig());
+    ASSERT_TRUE(runtime.initialized())
+        << runtime.initialization_diagnostic();
+    ProgramModule module = Module("test.runtime.ephemeral-input-result");
+    const TypeRef binding = CanonicalActionOutputType(
+        CanonicalAction::InputApplyState);
+    ASSERT_TRUE(binding.is_named());
+    module.type_imports.push_back(*binding.named);
+    module.entrypoints.front().input_type = binding;
+    module.entrypoints.front().output_type = binding;
+    module.functions.front().arguments.front().type = binding;
+    module.functions.front().output_type = binding;
+    module.identity.module_hash = ComputeProgramModuleHashV1(module);
+
+    const ProgramRuntimeSubmission rejected =
+        AdmitModule(runtime, module);
+    EXPECT_FALSE(rejected.accepted);
+}
+
 TEST(ProgramRuntime, EnforcesInvocationStatePolicyShapes)
 {
     ProgramRuntime runtime(TestRuntimeConfig());
@@ -877,9 +793,7 @@ TEST(ProgramRuntime, EnforcesInvocationStatePolicyShapes)
     runtime.BindActionSink(actions);
     const ProgramModule module =
         StatePolicyModule("test.runtime.state-shapes");
-    ASSERT_TRUE(runtime.PrepareModule(
-        PreparationRequest(module), events).accepted);
-    ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared);
+    ASSERT_TRUE(AdmitModule(runtime, module).accepted);
 
     std::uint64_t next_id = 80;
     ProgramInvocation valid =
@@ -904,10 +818,7 @@ TEST(ProgramRuntime, EnforcesInvocationStatePolicyShapes)
     auto baseline_actions =
         std::make_shared<RecordingActionSink>();
     baseline_runtime.BindActionSink(baseline_actions);
-    ASSERT_TRUE(baseline_runtime.PrepareModule(
-        PreparationRequest(module), baseline_events).accepted);
-    ASSERT_TRUE(
-        baseline_events->Last<ModulePreparationEvent>()->prepared);
+    ASSERT_TRUE(AdmitModule(baseline_runtime, module).accepted);
     ProgramInvocation baseline =
         Invocation(module, InvocationId(next_id++));
     baseline.state.policy =
@@ -939,14 +850,8 @@ TEST(ProgramRuntime, RunsOnlyThroughTheActorActionSinkAndPublishesSprr)
     const ProgramModule module =
         Module("test.runtime.action-sink-only");
     ASSERT_TRUE(
-        runtime.PrepareModule(
-            PreparationRequest(module),
-            events)
+        AdmitModule(runtime, module)
             .accepted);
-    ASSERT_NE(events->Last<ModulePreparationEvent>(), nullptr);
-    ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared)
-        << events->Last<ModulePreparationEvent>()
-               ->error.message;
 
     ProgramInvocation invocation = Invocation(module);
     CancellationSource cancellation(invocation.invocation_id);
@@ -1092,12 +997,7 @@ TEST(ProgramRuntime, ProjectsOnlyVerifiedBoundedHostOperationDeadlines)
 
     const ProgramModule module =
         TimingActionModule("test.runtime.action-timing");
-    ASSERT_TRUE(runtime.PrepareModule(
-        PreparationRequest(module), events).accepted);
-    const ModulePreparationEvent* prepared =
-        events->Last<ModulePreparationEvent>();
-    ASSERT_NE(prepared, nullptr);
-    ASSERT_TRUE(prepared->prepared) << prepared->error.message;
+    ASSERT_TRUE(AdmitModule(runtime, module).accepted);
 
     const CanonicalAction action = CanonicalAction::TelemetryEmit;
     const ExactDependencyIdentity identity =
@@ -1168,9 +1068,7 @@ TEST(ProgramRuntime, CancellationDrivenActionsCarryNoElapsedDeadline)
         TimingActionModule(
             "test.runtime.cancellation-driven-action",
             action);
-    ASSERT_TRUE(runtime.PrepareModule(
-        PreparationRequest(module), events).accepted);
-    ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared);
+    ASSERT_TRUE(AdmitModule(runtime, module).accepted);
 
     ProgramInvocation invocation = Invocation(module);
     const ExactDependencyIdentity identity =
@@ -1221,9 +1119,7 @@ TEST(ProgramRuntime, RetainsFinishedExecutionUntilExactActorTake)
 
     const ProgramModule module =
         Module("test.runtime.execution-take");
-    ASSERT_TRUE(runtime.PrepareModule(
-        PreparationRequest(module), events).accepted);
-    ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared);
+    ASSERT_TRUE(AdmitModule(runtime, module).accepted);
 
     const ProgramInvocation invocation = Invocation(module);
     CancellationSource cancellation(invocation.invocation_id);
@@ -1284,11 +1180,8 @@ TEST(ProgramRuntime, RemembersCancellationDuringBaselinePreparation)
     const ProgramModule module =
         Module("test.runtime.cancel-during-state");
     ASSERT_TRUE(
-        runtime.PrepareModule(
-            PreparationRequest(module),
-            events)
+        AdmitModule(runtime, module)
             .accepted);
-    ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared);
     const ProgramInvocation invocation = Invocation(module);
     CancellationSource cancellation(invocation.invocation_id);
     ASSERT_TRUE(
@@ -1356,11 +1249,8 @@ TEST(ProgramRuntime, RejectsMalformedSpriWithoutPublishingAnAction)
     const ProgramModule module =
         Module("test.runtime.malformed-spri");
     ASSERT_TRUE(
-        runtime.PrepareModule(
-            PreparationRequest(module),
-            events)
+        AdmitModule(runtime, module)
             .accepted);
-    ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared);
 
     const ProgramInvocation invocation = Invocation(module);
     EncodedInvocationEnvelope malformed =
@@ -1380,27 +1270,33 @@ TEST(ProgramRuntime, RejectsMalformedSpriWithoutPublishingAnAction)
     EXPECT_TRUE(actions->requests.empty());
 }
 
-TEST(ProgramRuntime, ReportsMalformedSprmThroughPreparationEvent)
+TEST(ProgramRuntime, RejectsMalformedWorksetModuleDuringAdmission)
 {
     ProgramRuntime runtime(TestRuntimeConfig());
     ASSERT_TRUE(runtime.initialized())
         << runtime.initialization_diagnostic();
-    auto events = std::make_shared<RecordingEventSink>();
     const ProgramModule module =
         Module("test.runtime.malformed-sprm");
-    ModulePreparationRequest request =
-        PreparationRequest(module);
-    ASSERT_FALSE(request.module.payload.empty());
-    request.module.payload[0] = Byte('X');
-
-    const ProgramRuntimeSubmission accepted =
-        runtime.PrepareModule(std::move(request), events);
-    ASSERT_TRUE(accepted.accepted);
-    const ModulePreparationEvent* event =
-        events->Last<ModulePreparationEvent>();
-    ASSERT_NE(event, nullptr);
-    EXPECT_FALSE(event->prepared);
-    EXPECT_EQ(event->error.code, WorkerRejectionCode::InvalidArgument);
+    EncodedModuleEnvelope envelope = ModuleEnvelope(module);
+    ASSERT_FALSE(envelope.payload.empty());
+    envelope.payload[0] = Byte('X');
+    ModuleClosureAdmissionReceipt receipt;
+    const ProgramRuntimeSubmission rejected =
+        runtime.AdmitModuleClosure(
+            {
+                .root = envelope.identity,
+                .expected_dependency_lock_sha256 =
+                    ComputeProgramDependencyLockHashV1(
+                        ProgramDependencyLock{
+                            .ir_version = kCanonicalIrVersionV1})
+                        .ToHex(),
+                .modules = {std::move(envelope)},
+            },
+            receipt);
+    EXPECT_FALSE(rejected.accepted);
+    EXPECT_EQ(
+        rejected.error.code,
+        WorkerRejectionCode::InvalidArgument);
     EXPECT_EQ(runtime.definitions().size(), 0u);
 }
 
@@ -1416,15 +1312,9 @@ TEST(ProgramRuntime, RejectedPreparationDoesNotBlockCorrectedRetry)
     invalid.budgets.maximum_instructions = 0;
     invalid.identity.module_hash =
         ComputeProgramModuleHashV1(invalid);
-    ASSERT_TRUE(
-        runtime.PrepareModule(
-            PreparationRequest(invalid, WorkerCommandSequence(10)),
-            events)
-            .accepted);
-    const ModulePreparationEvent* rejected =
-        events->Last<ModulePreparationEvent>();
-    ASSERT_NE(rejected, nullptr);
-    EXPECT_FALSE(rejected->prepared);
+    const ProgramRuntimeSubmission rejected =
+        AdmitModule(runtime, invalid);
+    EXPECT_FALSE(rejected.accepted);
     EXPECT_EQ(runtime.definitions().size(), 0u);
     EXPECT_EQ(runtime.definitions().verified_cache_size(), 0u);
 
@@ -1434,17 +1324,8 @@ TEST(ProgramRuntime, RejectedPreparationDoesNotBlockCorrectedRetry)
         invalid.identity.module_hash,
         corrected.identity.module_hash);
     ASSERT_TRUE(
-        runtime.PrepareModule(
-            PreparationRequest(
-                corrected,
-                WorkerCommandSequence(11)),
-            events)
+        AdmitModule(runtime, corrected)
             .accepted);
-    const ModulePreparationEvent* prepared =
-        events->Last<ModulePreparationEvent>();
-    ASSERT_NE(prepared, nullptr);
-    EXPECT_TRUE(prepared->prepared)
-        << prepared->error.message;
     EXPECT_EQ(runtime.definitions().size(), 1u);
     EXPECT_EQ(runtime.definitions().verified_cache_size(), 1u);
     EXPECT_NE(
@@ -1464,11 +1345,8 @@ TEST(ProgramRuntime, RejectsMismatchedAndTerminatesStaleCompletion)
     const ProgramModule module =
         Module("test.runtime.stale-state");
     ASSERT_TRUE(
-        runtime.PrepareModule(
-            PreparationRequest(module),
-            events)
+        AdmitModule(runtime, module)
             .accepted);
-    ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared);
     const ProgramInvocation invocation = Invocation(module);
     CancellationSource cancellation(invocation.invocation_id);
     ASSERT_TRUE(
@@ -1554,11 +1432,8 @@ TEST(ProgramRuntime, RejectsMalformedCompletionAfterBaselinePreparation)
     const ProgramModule module =
         Module("test.runtime.malformed-completion");
     ASSERT_TRUE(
-        runtime.PrepareModule(
-            PreparationRequest(module),
-            events)
+        AdmitModule(runtime, module)
             .accepted);
-    ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared);
     const ProgramInvocation invocation = Invocation(module);
     CancellationSource cancellation(invocation.invocation_id);
     ASSERT_TRUE(

@@ -11,6 +11,13 @@
 
 namespace savor::runtime::program {
 
+enum class SemanticPointKind : std::uint8_t
+{
+    ProgramCounter = 0,
+    Memory = 1,
+    Synthetic = 2,
+};
+
 enum class BuiltinType : std::uint8_t
 {
     Unit,

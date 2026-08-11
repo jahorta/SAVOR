@@ -4,6 +4,7 @@
 #include "../../../Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Composition/CompositionSupport.h"
+#include "../../../Runner/Runtime/ProgramRuntime/Composition/InputDeliveryComposition.h"
 #include "../../../Runner/Runtime/ProgramRuntime/ProgramRuntime.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Registry/ActionRegistry.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Registry/CapabilityPackRegistry.h"
@@ -11,7 +12,7 @@
 #include "../../../Runner/Runtime/ProgramRuntime/Registry/TypeSchemaRegistry.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Store/ProgramDefinitionStore.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Verify/ProgramVerifier.h"
-#include "../../../Runner/IPC/Wire.h"
+#include "../../../Runner/Runtime/ProgramKind.h"
 #include "../../../Utils/Hash.h"
 
 #include <algorithm>
@@ -43,12 +44,11 @@ constexpr std::string_view kRequestSchemaContract =
     "record SeedProbeRequest/2{"
     "frame:runtime.input.InputFramePayload/1}";
 constexpr std::string_view kResultSchemaContract =
-    "record SeedProbeResult/2{"
+    "record SeedProbeResult/3{"
     "raw_seed:u32,"
     "endpoint:soa.seed_probe.Endpoint/2,"
     "semantic_stop:runtime.execution.ContinueUntilResult/1,"
-    "publication:runtime.input.InputPublicationReceipt/1,"
-    "guest_poll:runtime.input.InputPollReceipt/1}";
+    "delivery:runtime.input.InputDeliveryReceipt/1}";
 
 void SetDiagnostic(std::string* diagnostic, std::string message)
 {
@@ -74,7 +74,7 @@ TypeRef RequestType()
 
 TypeRef ResultType()
 {
-    return TypeRef::Named(SeedProbeResultSchemaIdentityV2());
+    return TypeRef::Named(SeedProbeResultSchemaIdentityV3());
 }
 
 TypeRef FramePayloadType()
@@ -224,77 +224,58 @@ bool ReadReceiptPayload(
         output);
 }
 
-bool DecodePublication(
+bool DecodeDelivery(
     const GraphReader& graph,
     ProgramValueId id,
-    InputPublicationReceiptV2& output)
+    InputDeliveryReceiptV3& output)
 {
     CanonicalActionPayload payload;
     if (!ReadReceiptPayload(
             graph,
             id,
-            CanonicalAction::InputPublishHeld,
+            CanonicalAction::InputCompleteDelivery,
             payload))
     {
         return false;
     }
+    const auto delivery = payload.Unsigned(
+        CanonicalActionPayloadField::DeliveryId);
+    const auto binding = payload.Unsigned(
+        CanonicalActionPayloadField::Binding);
     const auto lease = payload.Unsigned(
         CanonicalActionPayloadField::Handle);
     const auto publication = payload.Unsigned(
         CanonicalActionPayloadField::Publication);
     const auto epoch = payload.Unsigned(
         CanonicalActionPayloadField::ResultEpoch);
+    const auto poll = payload.Unsigned(
+        CanonicalActionPayloadField::ResultSequence);
+    const auto generation = payload.Unsigned(
+        CanonicalActionPayloadField::StateGeneration);
+    const auto callback_count = payload.Unsigned(
+        CanonicalActionPayloadField::CompletedCount);
     const auto frame = payload.Bytes(
         CanonicalActionPayloadField::ResultFrame);
     savor::GCInputFrame decoded{};
-    if (!lease || !publication || !epoch || !frame ||
-        *lease == 0 || *publication == 0 || *epoch == 0 ||
+    if (!delivery || !binding || !lease || !publication || !poll ||
+        !epoch || !generation || !callback_count || !frame ||
+        *delivery == 0 || *binding == 0 || *lease == 0 ||
+        *publication == 0 || *poll == 0 || *epoch == 0 ||
+        *generation == 0 || *callback_count == 0 ||
         !DecodeFrame(*frame, decoded))
     {
         return false;
     }
     output = {
+        .delivery_id = *delivery,
+        .binding_id = *binding,
         .lease_id = *lease,
         .publication_id = *publication,
+        .poll_receipt_id = *poll,
         .workset_epoch = WorksetEpoch(*epoch),
+        .state_generation = *generation,
+        .callback_count = static_cast<std::uint32_t>(*callback_count),
         .frame = decoded,
-    };
-    return true;
-}
-
-bool DecodePoll(
-    const GraphReader& graph,
-    ProgramValueId id,
-    InputPollReceiptV2& output)
-{
-    CanonicalActionPayload payload;
-    if (!ReadReceiptPayload(
-            graph,
-            id,
-            CanonicalAction::InputAwaitGuestPoll,
-            payload))
-    {
-        return false;
-    }
-    const auto acknowledged = payload.Boolean(
-        CanonicalActionPayloadField::ResultAcknowledged);
-    const auto receipt = payload.Unsigned(
-        CanonicalActionPayloadField::ResultSequence);
-    const auto publication = payload.Unsigned(
-        CanonicalActionPayloadField::Publication);
-    const auto epoch = payload.Unsigned(
-        CanonicalActionPayloadField::ResultEpoch);
-    if (!acknowledged || !*acknowledged ||
-        !receipt || !publication || !epoch ||
-        *receipt == 0 || *publication == 0 || *epoch == 0)
-    {
-        return false;
-    }
-    output = {
-        .acknowledged = true,
-        .poll_receipt_id = *receipt,
-        .publication_id = *publication,
-        .workset_epoch = WorksetEpoch(*epoch),
     };
     return true;
 }
@@ -505,78 +486,6 @@ std::string RuntimeProfileHash(const RuntimeProfile& profile)
     return hash::sha256(canonical.data(), canonical.size());
 }
 
-std::vector<Byte> StopGroupConfig(
-    std::span<const SemanticPoint> points)
-{
-    const CapabilityPackIdentity field =
-        program::capabilities::FieldPackIdentity();
-    StaticConfigWriter writer({'S', 'G', 'C', '1'});
-    writer.U32(static_cast<std::uint32_t>(points.size()));
-    for (const SemanticPoint point : points)
-    {
-        writer.String(field.canonical_id);
-        writer.U32(field.version);
-        writer.Hash(field.manifest_hash);
-        writer.String(point.id);
-        writer.U8(0); // Program-counter semantic point.
-        writer.U32(point.pc);
-    }
-    writer.U32(0); // No hit-time samples; RNG is read while paused.
-    writer.U8(0); // Observe.
-    writer.U8(0); // Pass.
-    writer.U8(0); // Scoped.
-    return std::move(writer).Finish();
-}
-
-std::vector<Byte> ContinueConfig()
-{
-    StaticConfigWriter writer({'C', 'U', 'C', '1'});
-    writer.U8(1); // FutureOnly.
-    writer.Bool(true); // Suppress retained-source immediate re-entry.
-    writer.Bool(true); // Movie end is a failure.
-    writer.U8(0); // Preserve throttle.
-    writer.U8(0); // Reject unknown interruption.
-    return std::move(writer).Finish();
-}
-
-std::vector<Byte> LeaseConfig()
-{
-    StaticConfigWriter writer({'I', 'L', 'C', '1'});
-    writer.U32(0); // Controller port.
-    writer.U32(0); // Priority.
-    writer.Bool(true); // Suspendable.
-    writer.Bool(true); // Interruption-borrowable.
-    writer.Bool(false); // No guest-observed neutral release requirement.
-    writer.Bool(false); // Not movie-exclusive.
-    return std::move(writer).Finish();
-}
-
-std::vector<Byte> PublicationConfig()
-{
-    StaticConfigWriter writer({'I', 'P', 'C', '1'});
-    writer.U8(0); // Held input.
-    writer.U8(1); // Request acknowledgement only.
-    return std::move(writer).Finish();
-}
-
-std::vector<Byte> NeutralConfig()
-{
-    StaticConfigWriter writer({'I', 'N', 'C', '1'});
-    writer.Bool(false); // Cleanup need not advance the guest.
-    writer.Bool(true); // Cleanup-safe neutral publication.
-    return std::move(writer).Finish();
-}
-
-std::vector<Byte> PollConfig(std::string_view point)
-{
-    StaticConfigWriter writer({'I', 'G', 'P', '1'});
-    writer.Bool(false); // Request witness, not release witness.
-    writer.String(point);
-    writer.U32(1); // One exact already-produced publication.
-    writer.Bool(true); // Required canonical retry policy.
-    return std::move(writer).Finish();
-}
-
 std::vector<Byte> ObservationConfig()
 {
     StaticConfigWriter writer({'O', 'S', 'C', '1'});
@@ -783,8 +692,7 @@ void LowerObservation(
     ProgramFunction& function,
     BasicBlock& block,
     ProgramBlockId complete_block,
-    ProgramValueId lease,
-    ProgramValueId publication,
+    ProgramValueId delivery,
     ProgramValueId stop,
     ProgramScopeId scope,
     SemanticPoint point,
@@ -794,58 +702,6 @@ void LowerObservation(
         point.pc == PreBattleAfterRandSeedSetPc
         ? "prebattle"
         : "field-return";
-
-    const ProgramValueId poll_publication = OptionalValue(
-        builder,
-        function,
-        block,
-        CanonicalRuntimeSchema::OptionalInputPublicationReceipt,
-        publication,
-        prefix + "/poll/publication",
-        scope);
-    const ProgramValueId no_neutral = OptionalValue(
-        builder,
-        function,
-        block,
-        CanonicalRuntimeSchema::OptionalInputNeutralWitness,
-        std::nullopt,
-        prefix + "/poll/no-neutral",
-        scope);
-    const ProgramValueId poll_config = ConstantBytes(
-        builder,
-        function,
-        block,
-        CanonicalRuntimeSchema::InputPollStaticConfig,
-        PollConfig(point.id),
-        prefix + "/poll/static-config",
-        scope);
-    const ProgramValueId poll_request = ConstructRequest(
-        builder,
-        function,
-        block,
-        CanonicalAction::InputAwaitGuestPoll,
-        std::array{
-            lease,
-            poll_publication,
-            no_neutral,
-            poll_config,
-        },
-        prefix + "/poll/request",
-        scope);
-    const ProgramValueId poll = Required(
-        builder.AddInstruction(
-            function,
-            block,
-            InstructionOpcode::AwaitAction,
-            CanonicalActionOutputType(
-                CanonicalAction::InputAwaitGuestPoll),
-            std::array{poll_request},
-            ActionTarget(CanonicalActionIdentity(
-                CanonicalAction::InputAwaitGuestPoll)),
-            prefix + "/verify-held-publication-polled",
-            std::nullopt,
-            {}),
-        "guest input poll");
 
     const ProgramValueId optional_stop = OptionalValue(
         builder,
@@ -914,8 +770,7 @@ void LowerObservation(
                 raw_seed,
                 endpoint_value,
                 stop,
-                publication,
-                poll,
+                delivery,
             },
             {},
             prefix + "/result",
@@ -954,11 +809,11 @@ SchemaIdentity SeedProbeRequestSchemaIdentityV2()
         kRequestSchemaContract);
 }
 
-SchemaIdentity SeedProbeResultSchemaIdentityV2()
+SchemaIdentity SeedProbeResultSchemaIdentityV3()
 {
     return composition::ExactSchema(
         "soa.seed_probe.Result",
-        2,
+        3,
         kResultSchemaContract);
 }
 
@@ -1083,9 +938,9 @@ bool DecodeSeedProbeExecutionInputV2(
     return true;
 }
 
-bool DecodeSeedProbeResultV2(
+bool DecodeSeedProbeResultV3(
     const ProgramValueGraph& graph,
-    SeedProbeResultV2& result,
+    SeedProbeResultV3& result,
     std::string* diagnostic)
 {
     SetDiagnostic(diagnostic, {});
@@ -1096,15 +951,15 @@ bool DecodeSeedProbeResultV2(
         : std::get_if<RecordValue>(&root->payload);
     if (!reader.valid() || root == nullptr ||
         root->type != ResultType() ||
-        record == nullptr || record->fields.size() != 5)
+        record == nullptr || record->fields.size() != 4)
     {
         SetDiagnostic(
             diagnostic,
-            "SeedProbe output root is not the exact Result/2 record");
+            "SeedProbe output root is not the exact Result/3 record");
         return false;
     }
 
-    SeedProbeResultV2 decoded{};
+    SeedProbeResultV3 decoded{};
     const ProgramValue* endpoint_value =
         reader.Find(record->fields[1]);
     const auto* endpoint_enum = endpoint_value == nullptr
@@ -1123,14 +978,10 @@ bool DecodeSeedProbeResultV2(
             reader,
             record->fields[2],
             decoded.semantic_stop) ||
-        !DecodePublication(
+        !DecodeDelivery(
             reader,
             record->fields[3],
-            decoded.publication) ||
-        !DecodePoll(
-            reader,
-            record->fields[4],
-            decoded.guest_poll))
+            decoded.delivery))
     {
         SetDiagnostic(
             diagnostic,
@@ -1155,16 +1006,12 @@ bool DecodeSeedProbeResultV2(
             "SeedProbe semantic stop projection disagrees with physical stop evidence");
         return false;
     }
-    if (decoded.publication.publication_id !=
-            decoded.guest_poll.publication_id ||
-        decoded.semantic_stop.workset_epoch !=
-            decoded.publication.workset_epoch ||
-        decoded.semantic_stop.workset_epoch !=
-            decoded.guest_poll.workset_epoch)
+    if (decoded.semantic_stop.workset_epoch !=
+        decoded.delivery.workset_epoch)
     {
         SetDiagnostic(
             diagnostic,
-            "SeedProbe stop, publication, and guest-poll receipts are not correlated");
+            "SeedProbe stop and delivery receipt are not correlated");
         return false;
     }
 
@@ -1178,7 +1025,7 @@ bool DecodeSeedProbeProgramResultAgainstDefinition(
     std::span<const Byte> encoded_result,
     const ModuleIdentity& expected_module,
     const ProgramDependencyLock& expected_dependencies,
-    SeedProbeResultV2& seed_probe_result,
+    SeedProbeResultV3& seed_probe_result,
     std::string* diagnostic)
 {
     SetDiagnostic(diagnostic, {});
@@ -1235,7 +1082,7 @@ bool DecodeSeedProbeProgramResultAgainstDefinition(
             "SeedProbe ProgramResult domain outcome is not true");
         return false;
     }
-    return DecodeSeedProbeResultV2(
+    return DecodeSeedProbeResultV3(
         *result.output,
         seed_probe_result,
         diagnostic);
@@ -1243,9 +1090,9 @@ bool DecodeSeedProbeProgramResultAgainstDefinition(
 
 } // namespace
 
-bool ValidateSeedProbeResultV2(
+bool ValidateSeedProbeResultV3(
     const SeedProbeRequestV2& request,
-    const SeedProbeResultV2& result,
+    const SeedProbeResultV3& result,
     WorksetEpoch terminal_workset_epoch,
     std::string* diagnostic)
 {
@@ -1259,19 +1106,17 @@ bool ValidateSeedProbeResultV2(
             "SeedProbe observation endpoint does not match its semantic stop");
         return false;
     }
-    if (result.publication.frame != request.frame)
+    if (result.delivery.frame != request.frame)
     {
         SetDiagnostic(
             diagnostic,
-            "SeedProbe publication receipt contains a different input frame");
+            "SeedProbe delivery receipt contains a different input frame");
         return false;
     }
     if (!terminal_workset_epoch ||
         result.semantic_stop.workset_epoch !=
             terminal_workset_epoch ||
-        result.publication.workset_epoch !=
-            terminal_workset_epoch ||
-        result.guest_poll.workset_epoch !=
+        result.delivery.workset_epoch !=
             terminal_workset_epoch)
     {
         SetDiagnostic(
@@ -1279,15 +1124,16 @@ bool ValidateSeedProbeResultV2(
             "SeedProbe receipt epochs do not match the terminal workset epoch");
         return false;
     }
-    if (!result.guest_poll.acknowledged ||
-        result.publication.publication_id == 0 ||
-        result.publication.publication_id !=
-            result.guest_poll.publication_id ||
+    if (result.delivery.delivery_id == 0 ||
+        result.delivery.binding_id == 0 ||
+        result.delivery.publication_id == 0 ||
+        result.delivery.poll_receipt_id == 0 ||
+        result.delivery.callback_count == 0 ||
         !StopEvidenceMatches(result.semantic_stop))
     {
         SetDiagnostic(
             diagnostic,
-            "SeedProbe publication was not factually observed at the semantic stop");
+            "SeedProbe delivery was not factually observed at the semantic stop");
         return false;
     }
     return true;
@@ -1314,10 +1160,8 @@ ProgramModule ConstructSeedProbeModuleV2()
     const TypeRef result_type = ResultType();
     const TypeRef stop_type = CanonicalActionOutputType(
         CanonicalAction::ExecutionContinueUntil);
-    const TypeRef publication_type = CanonicalActionOutputType(
-        CanonicalAction::InputPublishHeld);
-    const TypeRef poll_type = CanonicalActionOutputType(
-        CanonicalAction::InputAwaitGuestPoll);
+    const TypeRef delivery_type = CanonicalActionOutputType(
+        CanonicalAction::InputCompleteDelivery);
 
     builder.AddLocalType({
         .identity = SeedProbeEndpointSchemaIdentityV2(),
@@ -1343,26 +1187,23 @@ ProgramModule ConstructSeedProbeModuleV2()
         },
     });
     builder.AddLocalType({
-        .identity = SeedProbeResultSchemaIdentityV2(),
+        .identity = SeedProbeResultSchemaIdentityV3(),
         .kind = TypeSchemaKind::Record,
         .record_fields = {
             {"raw_seed", TypeRef::Builtin(BuiltinType::U32)},
             {"endpoint", endpoint_type},
             {"semantic_stop", stop_type},
-            {"publication", publication_type},
-            {"guest_poll", poll_type},
+            {"delivery", delivery_type},
         },
     });
 
     builder.AddTypeImport(frame_type);
     for (const CanonicalAction action : {
              CanonicalAction::InputAcquireLease,
-             CanonicalAction::StopPointsSubscribeGroup,
-             CanonicalAction::InputPublishHeld,
+             CanonicalAction::InputBeginDelivery,
              CanonicalAction::ExecutionContinueUntil,
-             CanonicalAction::InputAwaitGuestPoll,
+             CanonicalAction::InputCompleteDelivery,
              CanonicalAction::GuestReadU32,
-             CanonicalAction::InputNeutralize,
          })
     {
         AddCanonicalAction(builder, action);
@@ -1394,212 +1235,35 @@ ProgramModule ConstructSeedProbeModuleV2()
             std::nullopt,
             {}),
         "request frame projection");
-    const ProgramScopeId scope = builder.NewScope();
-    (void)builder.AddInstruction(
-        function,
-        entry,
-        InstructionOpcode::EnterScope,
-        std::nullopt,
-        {},
-        {},
-        "scope/input-and-stop-resources",
-        std::nullopt,
-        scope);
-
-    const ProgramValueId lease_config = ConstantBytes(
-        builder,
-        function,
-        entry,
-        CanonicalRuntimeSchema::InputLeaseStaticConfig,
-        LeaseConfig(),
-        "input/acquire/static-config",
-        scope);
-    const ProgramValueId lease_request = ConstructRequest(
-        builder,
-        function,
-        entry,
-        CanonicalAction::InputAcquireLease,
-        std::array{lease_config},
-        "input/acquire/request",
-        scope);
-    const ProgramValueId lease = Required(
-        builder.AddInstruction(
-            function,
-            entry,
-            InstructionOpcode::AwaitAction,
-            CanonicalActionOutputType(
-                CanonicalAction::InputAcquireLease),
-            std::array{lease_request},
-            ActionTarget(CanonicalActionIdentity(
-                CanonicalAction::InputAcquireLease)),
-            "input/acquire",
-            std::nullopt,
-            scope),
-        "input lease");
-
-    const ProgramValueId neutral_config = ConstantBytes(
-        builder,
-        function,
-        entry,
-        CanonicalRuntimeSchema::InputNeutralStaticConfig,
-        NeutralConfig(),
-        "unwind/neutralize/static-config",
-        scope);
-    const ProgramValueId neutral_request = ConstructRequest(
-        builder,
-        function,
-        entry,
-        CanonicalAction::InputNeutralize,
-        std::array{lease, neutral_config},
-        "unwind/neutralize/request",
-        scope);
-    (void)builder.AddInstruction(
-        function,
-        entry,
-        InstructionOpcode::DeferCompensation,
-        std::nullopt,
-        std::array{neutral_request},
+    const CapabilityPackIdentity field =
+        program::capabilities::FieldPackIdentity();
+    const std::array<composition::SemanticPointReference, 2> supported_points{{
         {
-            .kind = InstructionTargetKind::DeferredAction,
-            .dependency = CanonicalActionIdentity(
-                CanonicalAction::InputNeutralize),
-        },
-        "unwind/neutralize",
-        std::nullopt,
-        scope);
-
-    constexpr std::array<SemanticPoint, 2> supported_points{{
-        {
-            .id = kPreBattlePointId,
-            .pc = PreBattleAfterRandSeedSetPc,
+            .capability_pack = field,
+            .canonical_id = std::string(kPreBattlePointId),
+            .kind = program::SemanticPointKind::ProgramCounter,
+            .physical_pc = PreBattleAfterRandSeedSetPc,
         },
         {
-            .id = kFieldReturnPointId,
-            .pc = FieldReturnRandSeedCommittedPc,
+            .capability_pack = field,
+            .canonical_id = std::string(kFieldReturnPointId),
+            .kind = program::SemanticPointKind::ProgramCounter,
+            .physical_pc = FieldReturnRandSeedCommittedPc,
         },
     }};
-    const ProgramValueId stop_config = ConstantBytes(
+    const auto delivered = composition::LowerSynchronizedFrameDelivery(
         builder,
         function,
         entry,
-        CanonicalRuntimeSchema::StopGroupStaticConfig,
-        StopGroupConfig(supported_points),
-        "endpoints/subscribe/static-config",
-        scope);
-    const ProgramValueId subscribe_request = ConstructRequest(
-        builder,
-        function,
-        entry,
-        CanonicalAction::StopPointsSubscribeGroup,
-        std::array{stop_config},
-        "endpoints/subscribe/request",
-        scope);
-    const ProgramValueId subscription = Required(
-        builder.AddInstruction(
-            function,
-            entry,
-            InstructionOpcode::AwaitAction,
-            CanonicalActionOutputType(
-                CanonicalAction::StopPointsSubscribeGroup),
-            std::array{subscribe_request},
-            ActionTarget(CanonicalActionIdentity(
-                CanonicalAction::StopPointsSubscribeGroup)),
-            "endpoints/subscribe/all-supported",
-            std::nullopt,
-            scope),
-        "supported endpoint subscription");
-
-    const ProgramValueId publication_config = ConstantBytes(
-        builder,
-        function,
-        entry,
-        CanonicalRuntimeSchema::InputPublicationStaticConfig,
-        PublicationConfig(),
-        "input/publish/static-config",
-        scope);
-    const ProgramValueId publication_request = ConstructRequest(
-        builder,
-        function,
-        entry,
-        CanonicalAction::InputPublishHeld,
-        std::array{lease, frame, publication_config},
-        "input/publish/request",
-        scope);
-    const ProgramValueId publication = Required(
-        builder.AddInstruction(
-            function,
-            entry,
-            InstructionOpcode::AwaitAction,
-            CanonicalActionOutputType(
-                CanonicalAction::InputPublishHeld),
-            std::array{publication_request},
-            ActionTarget(CanonicalActionIdentity(
-                CanonicalAction::InputPublishHeld)),
-            "input/publish-held-frame",
-            std::nullopt,
-            {}),
-        "held input publication");
-
-    const ProgramValueId continue_publication = OptionalValue(
-        builder,
-        function,
-        entry,
-        CanonicalRuntimeSchema::OptionalInputPublicationReceipt,
-        publication,
-        "endpoints/continue/publication",
-        scope);
-    const ProgramValueId no_movie = OptionalValue(
-        builder,
-        function,
-        entry,
-        CanonicalRuntimeSchema::OptionalMoviePlaybackSession,
-        std::nullopt,
-        "endpoints/continue/no-movie",
-        scope);
-    const ProgramValueId no_expected_count = OptionalValue(
-        builder,
-        function,
-        entry,
-        CanonicalRuntimeSchema::OptionalMovieInputCount,
-        std::nullopt,
-        "endpoints/continue/no-expected-count",
-        scope);
-    const ProgramValueId continue_config = ConstantBytes(
-        builder,
-        function,
-        entry,
-        CanonicalRuntimeSchema::ContinueUntilStaticConfig,
-        ContinueConfig(),
-        "endpoints/continue/static-config",
-        scope);
-    const ProgramValueId continue_request = ConstructRequest(
-        builder,
-        function,
-        entry,
-        CanonicalAction::ExecutionContinueUntil,
-        std::array{
-            subscription,
-            continue_publication,
-            no_movie,
-            no_expected_count,
-            continue_config,
-        },
-        "endpoints/continue/request",
-        scope);
-    const ProgramValueId stop = Required(
-        builder.AddInstruction(
-            function,
-            entry,
-            InstructionOpcode::AwaitAction,
-            CanonicalActionOutputType(
-                CanonicalAction::ExecutionContinueUntil),
-            std::array{continue_request},
-            ActionTarget(CanonicalActionIdentity(
-                CanonicalAction::ExecutionContinueUntil)),
-            "endpoints/first-supported-stop",
-            std::nullopt,
-            {}),
-        "first supported semantic stop");
+        frame,
+        supported_points,
+        "delivery");
+    if (!delivered)
+        throw std::logic_error(
+            "SeedProbe synchronized frame delivery could not be lowered");
+    const ProgramValueId stop = delivered->stop;
+    const ProgramValueId delivery = delivered->receipt;
+    const ProgramScopeId scope{};
     const ProgramValueId stopped_pc = Required(
         builder.AddInstruction(
             function,
@@ -1658,8 +1322,7 @@ ProgramModule ConstructSeedProbeModuleV2()
         function,
         prebattle,
         complete.id,
-        lease,
-        publication,
+        delivery,
         stop,
         scope,
         {
@@ -1672,8 +1335,7 @@ ProgramModule ConstructSeedProbeModuleV2()
         function,
         field_return,
         complete.id,
-        lease,
-        publication,
+        delivery,
         stop,
         scope,
         {
@@ -1697,16 +1359,6 @@ ProgramModule ConstructSeedProbeModuleV2()
             },
             scope),
         "domain outcome");
-    (void)builder.AddInstruction(
-        function,
-        complete,
-        InstructionOpcode::ExitScope,
-        std::nullopt,
-        {},
-        {},
-        "scope/neutralize-and-release",
-        std::nullopt,
-        scope);
     builder.SetTerminator(
         function,
         complete,
@@ -1961,7 +1613,6 @@ public:
             .allow_input = true,
             .allow_capture = false,
             .record_trace = false,
-            .record_progress = true,
         };
         const auto compatibility =
             ComputeSeedProbeInvocationCompatibilityV2(
@@ -1993,8 +1644,6 @@ public:
             .state_policy = InvocationStatePolicy::RestoreBaseline,
             .execution = execution,
             .limits = module.budgets,
-            .required_capabilities =
-                CapabilityMask(WorkerCapability::WorksetDispatch),
             .baseline_lineage = std::string(BaselineLineage),
             .movie_policy_sha256 = []
             {
@@ -2091,7 +1740,7 @@ public:
 
     bool DecodeProgramResult(
         std::span<const Byte> encoded_result,
-        SeedProbeResultV2& result,
+        SeedProbeResultV3& result,
         std::string* diagnostic) const override
     {
         return DecodeSeedProbeProgramResultAgainstDefinition(

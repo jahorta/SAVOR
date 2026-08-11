@@ -320,25 +320,6 @@ bool SavorDbRuntime::programResultProcessorRunning() const {
         && program_result_processor_->IsRunning();
 }
 
-void SavorDbRuntime::setProgramResultMaxProcessingAttempts(
-    int attempts) {
-    if (program_result_processor_ != nullptr) {
-        program_result_processor_->SetMaxTotalProcessingAttempts(attempts);
-    }
-}
-
-int SavorDbRuntime::programResultMaxProcessingAttempts() const {
-    return program_result_processor_ != nullptr
-        ? program_result_processor_->MaxTotalProcessingAttempts()
-        : 1;
-}
-
-void SavorDbRuntime::wakeProgramResultProcessor() {
-    if (program_result_processor_ != nullptr) {
-        program_result_processor_->Wake();
-    }
-}
-
 bool SavorDbRuntime::publishTerminalCommit(
     const savor::db::execution::workflow::
         TerminalWorkflowStepNotification& notification) {

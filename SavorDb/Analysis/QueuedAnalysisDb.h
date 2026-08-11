@@ -69,6 +69,9 @@ public:
     FindTasMovieCheckpointSterilizationAttempt(
         std::int64_t source_job_id,
         std::string_view worker_terminal_sha256) const override;
+    std::vector<TasMovieCheckpointSterilizationAttemptRecord>
+    ListTasMovieCheckpointSterilizationAttemptsForRequest(
+        std::int64_t request_id) const override;
 
     std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const override;
     std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const override;
@@ -128,6 +131,16 @@ public:
         const CreateBattleTurnWaveCommand& command,
         std::int64_t* wave_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    bool EnsureBattleStart(
+        const EnsureBattleStartCommand& command,
+        EnsureBattleStartReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool BindBattlePredicateBundle(
+        const BindBattlePredicateBundleCommand& command,
+        std::int64_t* binding_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<BattlePredicateBundleBindingSnapshot>
+    GetBattlePredicateBundleBindingForWave(std::int64_t wave_id) const override;
     bool CreateBattleContextProbe(
         const CreateBattleContextProbeCommand& command,
         std::int64_t* context_probe_id_out = nullptr,
@@ -150,6 +163,12 @@ public:
     bool UpdateBattleTurnJobResult(
         const RecordBattleTurnJobCommand& command,
         std::string* error_out = nullptr) override;
+    bool RecordBattleSingleTurnResult(
+        const RecordBattleSingleTurnResultCommand& command,
+        std::int64_t* result_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<BattleSingleTurnResultSnapshot>
+    GetBattleSingleTurnResultForExecJob(std::int64_t exec_job_id) const override;
     bool CreateBattleAdvancementPool(
         const CreateBattleAdvancementPoolCommand& command,
         std::int64_t* battle_advancement_pool_id_out = nullptr,

@@ -14,15 +14,6 @@
 
 namespace savorqt::db {
 
-struct AddressProgramDraft {
-    int program_version = 1;
-    std::vector<std::uint8_t> prog_bytes;
-    std::optional<int> derived_buffer_version;
-    std::optional<std::string> derived_buffer_schema_hash;
-    std::optional<std::string> soa_structs_hash;
-    std::string description;
-};
-
 struct SeedProbeSpecDraft {
     std::string name;
     int priority = 0;
@@ -39,22 +30,6 @@ struct TasSpecDraft {
     int priority = 0;
     bool progress_enable = true;
     std::int64_t base_dtm_artifact_id = 0;
-};
-
-struct PredicateSpecDraft {
-    std::string name;
-    int breakpoint_id = 0;
-    std::vector<BPKey> required_breakpoint_ids;
-    std::int64_t lhs_value = 0;
-    std::int64_t rhs_value = 0;
-    std::vector<BPKey> baseline_breakpoint_ids;
-    savor::db::PredicateComparisonOp cmp_op = savor::db::PredicateComparisonOp::EQ;
-    int width = 4;
-    std::optional<std::int64_t> flag_mask;
-    std::optional<std::int64_t> value_mask;
-    std::optional<std::int64_t> lhs_address_program_id;
-    std::optional<std::int64_t> rhs_address_program_id;
-    bool abort_on_fail = false;
 };
 
 struct BattlePlanActionDraft {
@@ -91,7 +66,6 @@ struct BattlePlanTurnDraft {
 struct BattlePlanDraft {
     std::string name;
     std::string fingerprint;
-    int num_turns = 0;
     std::vector<BattlePlanTurnDraft> turns;
 };
 
@@ -103,16 +77,10 @@ struct BattleRunSpecDraft {
     bool auto_wave_trigger_enable = false;
 };
 
-struct PredicateSetDraft {
-    std::string name;
-    std::vector<std::int64_t> predicate_spec_ids;
-};
-
 struct ExplorerSettingsDraft {
     std::string name;
     std::string description;
     std::optional<std::int64_t> default_plan_id;
-    std::optional<std::int64_t> default_predicate_set_id;
 };
 
 struct BattleChainSpecDraft {
@@ -136,40 +104,6 @@ struct WorkflowGraphDraft {
 
 class SavorDbAuthoringService {
 public:
-    static ServiceResult<std::int64_t> EnsureAddressProgram(const AddressProgramDraft& draft) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
-        }
-
-        savor::db::EnsureAddressProgramCommand command{};
-        command.program_version = draft.program_version;
-        command.prog_bytes = draft.prog_bytes;
-        command.derived_buffer_version = draft.derived_buffer_version;
-        command.derived_buffer_schema_hash = draft.derived_buffer_schema_hash;
-        command.soa_structs_hash = draft.soa_structs_hash;
-        command.description = draft.description;
-
-        std::int64_t id = 0;
-        std::string error;
-        if (!db->EnsureAddressProgram(command, &id, &error)) {
-            return Failed<std::int64_t>(error);
-        }
-        return ServiceResult<std::int64_t>::Ok(id);
-    }
-
-    static ServiceResult<savor::db::AddressProgramSnapshot> GetAddressProgram(std::int64_t address_program_id) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<savor::db::AddressProgramSnapshot>(kSavorDbRuntimeUnavailableMessage);
-        }
-        const auto snapshot = db->GetAddressProgram(address_program_id);
-        if (!snapshot.has_value()) {
-            return NotFound<savor::db::AddressProgramSnapshot>("address program not found");
-        }
-        return ServiceResult<savor::db::AddressProgramSnapshot>::Ok(*snapshot);
-    }
-
     static ServiceResult<std::int64_t> SaveSeedProbeSpec(const SeedProbeSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
@@ -266,97 +200,6 @@ public:
         return ServiceResult<std::vector<savor::db::TasSpecSnapshot>>::Ok(db->ListTasSpecs(max_count));
     }
 
-    static ServiceResult<std::int64_t> SavePredicateSpec(const PredicateSpecDraft& draft) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
-        }
-        if (draft.name.empty()) {
-            return Invalid<std::int64_t>("predicate name is required");
-        }
-
-        auto command = BuildPredicateSpecCommand(draft, "Authoring.PredicateSpecSaved");
-
-        std::int64_t id = 0;
-        std::string error;
-        if (!db->SavePredicateSpec(command, &id, &error)) {
-            return Failed<std::int64_t>(error);
-        }
-        return ServiceResult<std::int64_t>::Ok(id);
-    }
-
-    static ServiceResult<std::int64_t> UpdatePredicateSpec(std::int64_t predicate_spec_id, const PredicateSpecDraft& draft) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
-        }
-        if (predicate_spec_id <= 0) {
-            return Invalid<std::int64_t>("predicate spec id is required");
-        }
-        if (draft.name.empty()) {
-            return Invalid<std::int64_t>("predicate name is required");
-        }
-
-        auto command = BuildPredicateSpecCommand(draft, "Authoring.PredicateSpecUpdated");
-        std::string error;
-        if (!db->UpdatePredicateSpec(predicate_spec_id, command, &error)) {
-            return Failed<std::int64_t>(error);
-        }
-        return ServiceResult<std::int64_t>::Ok(predicate_spec_id);
-    }
-
-    static ServiceResult<void> DeletePredicateSpec(std::int64_t predicate_spec_id) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage });
-        }
-        if (predicate_spec_id <= 0) {
-            return ServiceResult<void>::Err({ ServiceErrorKind::InvalidInput, "predicate spec id is required" });
-        }
-
-        savor::db::DeletePredicateSpecCommand command{};
-        command.predicate_spec_id = predicate_spec_id;
-        command.deleted_at_utc = savor::db::types::UtcNow();
-        command.correlation_id = NextEventId("Authoring.PredicateSpecDeleted");
-
-        std::string error;
-        if (!db->DeletePredicateSpec(command, &error)) {
-            return ServiceResult<void>::Err({ ServiceErrorKind::Failed, std::move(error) });
-        }
-        return ServiceResult<void>::Ok();
-    }
-
-    static ServiceResult<savor::db::PredicateSpecSnapshot> GetPredicateSpec(std::int64_t predicate_spec_id) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<savor::db::PredicateSpecSnapshot>(kSavorDbRuntimeUnavailableMessage);
-        }
-        const auto snapshot = db->GetPredicateSpec(predicate_spec_id);
-        if (!snapshot.has_value()) {
-            return NotFound<savor::db::PredicateSpecSnapshot>("predicate spec not found");
-        }
-        return ServiceResult<savor::db::PredicateSpecSnapshot>::Ok(*snapshot);
-    }
-
-    static ServiceResult<savor::db::PredicateSpecUsageSnapshot> GetPredicateSpecUsage(std::int64_t predicate_spec_id) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<savor::db::PredicateSpecUsageSnapshot>(kSavorDbRuntimeUnavailableMessage);
-        }
-        if (predicate_spec_id <= 0) {
-            return Invalid<savor::db::PredicateSpecUsageSnapshot>("predicate spec id is required");
-        }
-        return ServiceResult<savor::db::PredicateSpecUsageSnapshot>::Ok(db->GetPredicateSpecUsage(predicate_spec_id));
-    }
-
-    static ServiceResult<std::vector<savor::db::PredicateSpecSnapshot>> ListPredicateSpecs(int max_count = 100) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::PredicateSpecSnapshot>>(kSavorDbRuntimeUnavailableMessage);
-        }
-        return ServiceResult<std::vector<savor::db::PredicateSpecSnapshot>>::Ok(db->ListPredicateSpecs(max_count));
-    }
-
     static ServiceResult<std::int64_t> SaveBattleRunSpec(const BattleRunSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
@@ -417,7 +260,6 @@ public:
         savor::db::SavePlanCommand plan{};
         plan.name = draft.name;
         plan.fingerprint = draft.fingerprint;
-        plan.num_turns = draft.num_turns;
         plan.created_at_utc = now;
         plan.correlation_id = NextEventId("Authoring.BattlePlanSaved");
 
@@ -574,51 +416,6 @@ public:
         return ServiceResult<std::vector<savor::db::BattlePlanSnapshot>>::Ok(db->ListBattlePlans(max_count));
     }
 
-    static ServiceResult<std::int64_t> SavePredicateSet(const PredicateSetDraft& draft) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
-        }
-        if (draft.name.empty()) {
-            return Invalid<std::int64_t>("predicate set name is required");
-        }
-        if (draft.predicate_spec_ids.empty()) {
-            return Invalid<std::int64_t>("predicate set requires at least one predicate");
-        }
-
-        savor::db::SavePredicateSetCommand command{};
-        command.name = draft.name;
-        command.predicate_spec_ids = draft.predicate_spec_ids;
-        command.created_at_utc = savor::db::types::UtcNow();
-
-        std::int64_t id = 0;
-        std::string error;
-        if (!db->SavePredicateSet(command, &id, &error)) {
-            return Failed<std::int64_t>(error);
-        }
-        return ServiceResult<std::int64_t>::Ok(id);
-    }
-
-    static ServiceResult<savor::db::PredicateSetSnapshot> GetPredicateSet(std::int64_t predicate_set_id) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<savor::db::PredicateSetSnapshot>(kSavorDbRuntimeUnavailableMessage);
-        }
-        const auto snapshot = db->GetPredicateSet(predicate_set_id);
-        if (!snapshot.has_value()) {
-            return NotFound<savor::db::PredicateSetSnapshot>("predicate set not found");
-        }
-        return ServiceResult<savor::db::PredicateSetSnapshot>::Ok(*snapshot);
-    }
-
-    static ServiceResult<std::vector<savor::db::PredicateSetSnapshot>> ListPredicateSets(int max_count = 100) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::PredicateSetSnapshot>>(kSavorDbRuntimeUnavailableMessage);
-        }
-        return ServiceResult<std::vector<savor::db::PredicateSetSnapshot>>::Ok(db->ListPredicateSets(max_count));
-    }
-
     static ServiceResult<std::int64_t> SaveExplorerSettings(const ExplorerSettingsDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
@@ -633,7 +430,6 @@ public:
         command.name = draft.name;
         command.description = draft.description;
         command.default_plan_id = draft.default_plan_id;
-        command.default_predicate_set_id = draft.default_predicate_set_id;
         command.created_at_utc = now;
         command.correlation_id = NextEventId("Authoring.ExplorerSettingsSaved");
 
@@ -797,31 +593,6 @@ public:
     }
 
 private:
-    static savor::db::SavePredicateSpecCommand BuildPredicateSpecCommand(const PredicateSpecDraft& draft, const char* event_prefix) {
-        savor::db::SavePredicateSpecCommand command{};
-        command.name = draft.name;
-        command.required_breakpoint_ids = draft.required_breakpoint_ids;
-        if (command.required_breakpoint_ids.empty() && draft.breakpoint_id != 0) {
-            command.required_breakpoint_ids.push_back(static_cast<BPKey>(draft.breakpoint_id));
-        }
-        command.breakpoint_id = command.required_breakpoint_ids.empty()
-            ? static_cast<BPKey>(0)
-            : command.required_breakpoint_ids.front();
-        command.lhs_value = draft.lhs_value;
-        command.rhs_value = draft.rhs_value;
-        command.baseline_breakpoint_ids = draft.baseline_breakpoint_ids;
-        command.cmp_op = draft.cmp_op;
-        command.width = draft.width;
-        command.flag_mask = draft.flag_mask;
-        command.value_mask = draft.value_mask;
-        command.lhs_address_program_id = draft.lhs_address_program_id;
-        command.rhs_address_program_id = draft.rhs_address_program_id;
-        command.abort_on_fail = draft.abort_on_fail;
-        command.created_at_utc = savor::db::types::UtcNow();
-        command.correlation_id = NextEventId(event_prefix);
-        return command;
-    }
-
     static savor::db::IAuthoringDb* AuthoringDb() {
         return savorqt::SavorDbRuntime::instance().authoringDb();
     }

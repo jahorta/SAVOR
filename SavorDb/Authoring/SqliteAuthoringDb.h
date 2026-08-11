@@ -8,6 +8,26 @@ namespace savor::db {
 
 class SqliteAuthoringDb final : public IAuthoringDb {
 public:
+    bool SavePredicateDefinitionDraftV2(
+        const SavePredicateDefinitionDraftV2Command& command,
+        std::int64_t* revision_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool PublishPredicateDefinitionRevisionV2(
+        std::int64_t revision_id,
+        types::UtcTimePoint published_at_utc,
+        std::string* error_out = nullptr) override;
+    std::optional<PredicateDefinitionRevisionV2Snapshot>
+    GetPredicateDefinitionRevisionV2(std::int64_t revision_id) const override;
+    bool SavePredicateBundleDraftV2(
+        const SavePredicateBundleDraftV2Command& command,
+        std::int64_t* revision_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool PublishPredicateBundleRevisionV2(
+        std::int64_t revision_id,
+        types::UtcTimePoint published_at_utc,
+        std::string* error_out = nullptr) override;
+    std::optional<PredicateBundleRevisionV2Snapshot>
+    GetPredicateBundleRevisionV2(std::int64_t revision_id) const override;
     explicit SqliteAuthoringDb(sqlite3* db);
 
     bool SaveSeedProbeSpec(
@@ -76,44 +96,6 @@ public:
         std::int64_t plan_id) const override;
 
     std::vector<BattlePlanSnapshot> ListBattlePlans(
-        int max_count) const override;
-
-    bool EnsureAddressProgram(
-        const EnsureAddressProgramCommand& command,
-        std::int64_t* address_program_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-
-    std::optional<AddressProgramSnapshot> GetAddressProgram(
-        std::int64_t address_program_id) const override;
-
-    bool SavePredicateSpec(
-        const SavePredicateSpecCommand& command,
-        std::int64_t* predicate_spec_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-    bool UpdatePredicateSpec(
-        std::int64_t predicate_spec_id,
-        const SavePredicateSpecCommand& command,
-        std::string* error_out = nullptr) override;
-    bool DeletePredicateSpec(
-        const DeletePredicateSpecCommand& command,
-        std::string* error_out = nullptr) override;
-
-    std::optional<PredicateSpecSnapshot> GetPredicateSpec(
-        std::int64_t predicate_spec_id) const override;
-    PredicateSpecUsageSnapshot GetPredicateSpecUsage(
-        std::int64_t predicate_spec_id) const override;
-
-    std::vector<PredicateSpecSnapshot> ListPredicateSpecs(
-        int max_count) const override;
-
-    bool SavePredicateSet(
-        const SavePredicateSetCommand& command,
-        std::int64_t* predicate_set_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-
-    std::optional<PredicateSetSnapshot> GetPredicateSet(
-        std::int64_t predicate_set_id) const override;
-    std::vector<PredicateSetSnapshot> ListPredicateSets(
         int max_count) const override;
 
     bool SaveExplorerSettings(

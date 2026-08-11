@@ -62,7 +62,6 @@ CREATE TABLE au_battle_plan (
     plan_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     fingerprint TEXT NOT NULL,
-    num_turns INTEGER NOT NULL,
     created_at_utc INTEGER NOT NULL,
     CONSTRAINT uq_au_battle_plan_name UNIQUE (name),
     CONSTRAINT uq_au_battle_plan_fingerprint UNIQUE (fingerprint)

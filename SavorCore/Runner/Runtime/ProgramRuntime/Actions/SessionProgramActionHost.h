@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <vector>
 
 namespace savor::runtime {
 
@@ -62,6 +63,8 @@ public:
     void Pump() override;
     [[nodiscard]] std::vector<ActorActionResult>
         DrainResults() override;
+    [[nodiscard]] std::vector<ForegroundSemanticStopObservationV1>
+        DrainForegroundSemanticStops() override;
     void Shutdown() noexcept override;
 
     [[nodiscard]] SessionProgramActionHostSnapshot snapshot() const noexcept;

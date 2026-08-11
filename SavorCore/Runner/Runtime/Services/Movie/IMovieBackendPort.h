@@ -52,11 +52,15 @@ public:
     virtual ~IMovieBackendPort() = default;
 
     // Stages the exact DTM/startup-state pair for the next same-wrapper guest
-    // core restart.
+    // core restart. Core startup and playback activation are deliberately
+    // separate: startup must establish an authoritative paused baseline during
+    // workset initialization, while activation occurs only after the job has
+    // installed its subscriptions.
     virtual MoviePlaybackPrepareResult PrepareReadOnlyPlaybackForRestart(
         const std::filesystem::path& dtm_path) = 0;
     virtual MovieBackendResult StopCoreForPreparedReadOnlyMovie() = 0;
-    virtual MovieBackendResult StartPreparedReadOnlyMovie() = 0;
+    virtual MovieBackendResult StartPreparedReadOnlyMovieCorePaused() = 0;
+    virtual MovieBackendResult ActivatePreparedReadOnlyMoviePlayback() = 0;
     virtual MovieBackendResult DiscardPreparedReadOnlyMovie() noexcept = 0;
     virtual MovieBackendResult StopMovie() noexcept = 0;
 

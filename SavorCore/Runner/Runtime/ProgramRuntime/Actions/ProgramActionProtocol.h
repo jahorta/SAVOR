@@ -131,6 +131,14 @@ struct ProgramActionDispatchResult
     std::string diagnostic;
 };
 
+struct ForegroundSemanticStopObservationV1
+{
+    InvocationId invocation_id;
+    AttemptId attempt_id;
+    RoutedStopEvent routed_event;
+    ExecutionEnvironmentEvidence execution_evidence;
+};
+
 class IProgramActionHost
 {
 public:
@@ -148,6 +156,8 @@ public:
     virtual void Pump() = 0;
     [[nodiscard]] virtual std::vector<ActorActionResult>
         DrainResults() = 0;
+    [[nodiscard]] virtual std::vector<ForegroundSemanticStopObservationV1>
+        DrainForegroundSemanticStops() = 0;
     virtual void Shutdown() noexcept = 0;
 
 protected:

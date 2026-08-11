@@ -41,9 +41,6 @@ public:
         programResultProcessorTelemetry() const;
     bool workflowCoordinatorRunning() const;
     bool programResultProcessorRunning() const;
-    void setProgramResultMaxProcessingAttempts(int attempts);
-    int programResultMaxProcessingAttempts() const;
-    void wakeProgramResultProcessor();
     bool publishTerminalCommit(
         const savor::db::execution::workflow::
             TerminalWorkflowStepNotification& notification);

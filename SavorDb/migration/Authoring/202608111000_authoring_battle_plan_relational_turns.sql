@@ -1,0 +1,5 @@
+BEGIN IMMEDIATE;
+
+ALTER TABLE au_battle_plan DROP COLUMN num_turns;
+
+COMMIT;

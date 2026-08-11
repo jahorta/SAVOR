@@ -3,7 +3,7 @@
 #include "Phases/Programs/SeedProbe/SeedProbeModule.h"
 #include "Phases/RNGSeedDeltaMap.h"
 #include "Runner/IPC/DurableWorkerTerminalEnvelope.h"
-#include "Runner/IPC/Wire.h"
+#include "Runner/Runtime/ProgramKind.h"
 #include "Runner/IPC/WrmsProtocol.h"
 #include "Runner/Runtime/ProgramRuntime/Actions/CanonicalActionPayload.h"
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
@@ -209,41 +209,39 @@ ProgramValueGraph ResultGraph(
     std::uint32_t pc,
     std::uint64_t epoch = 42,
     std::uint64_t publication = 17,
-    std::uint64_t polled_publication = 17,
+    std::uint64_t delivery_id = 18,
     std::uint32_t raw_seed = 0x89ABCDEFu)
 {
-    CanonicalActionPayload publication_payload;
-    if (!publication_payload.AddUnsigned(
+    CanonicalActionPayload delivery_payload;
+    if (!delivery_payload.AddUnsigned(
+            CanonicalActionPayloadField::DeliveryId,
+            delivery_id) ||
+        !delivery_payload.AddUnsigned(
+            CanonicalActionPayloadField::Binding,
+            13) ||
+        !delivery_payload.AddUnsigned(
             CanonicalActionPayloadField::Handle,
             7) ||
-        !publication_payload.AddUnsigned(
+        !delivery_payload.AddUnsigned(
             CanonicalActionPayloadField::Publication,
             publication) ||
-        !publication_payload.AddBytes(
-            CanonicalActionPayloadField::ResultFrame,
-            FrameBytes(frame)) ||
-        !publication_payload.AddUnsigned(
-            CanonicalActionPayloadField::ResultEpoch,
-            epoch))
-    {
-        throw std::logic_error("test publication payload failed");
-    }
-
-    CanonicalActionPayload poll_payload;
-    if (!poll_payload.AddBoolean(
-            CanonicalActionPayloadField::ResultAcknowledged,
-            true) ||
-        !poll_payload.AddUnsigned(
+        !delivery_payload.AddUnsigned(
             CanonicalActionPayloadField::ResultSequence,
             19) ||
-        !poll_payload.AddUnsigned(
-            CanonicalActionPayloadField::Publication,
-            polled_publication) ||
-        !poll_payload.AddUnsigned(
+        !delivery_payload.AddUnsigned(
             CanonicalActionPayloadField::ResultEpoch,
-            epoch))
+            epoch) ||
+        !delivery_payload.AddUnsigned(
+            CanonicalActionPayloadField::StateGeneration,
+            3) ||
+        !delivery_payload.AddUnsigned(
+            CanonicalActionPayloadField::CompletedCount,
+            1) ||
+        !delivery_payload.AddBytes(
+            CanonicalActionPayloadField::ResultFrame,
+            FrameBytes(frame)))
     {
-        throw std::logic_error("test poll payload failed");
+        throw std::logic_error("test delivery payload failed");
     }
 
     ProgramValue seed{
@@ -300,13 +298,9 @@ ProgramValueGraph ResultGraph(
             evidence.id,
         }},
     };
-    ProgramValue published = ReceiptValue(
-        CanonicalAction::InputPublishHeld,
-        std::move(publication_payload),
-        ProgramValueId(8));
-    ProgramValue poll = ReceiptValue(
-        CanonicalAction::InputAwaitGuestPoll,
-        std::move(poll_payload),
+    ProgramValue delivery = ReceiptValue(
+        CanonicalAction::InputCompleteDelivery,
+        std::move(delivery_payload),
         ProgramValueId(9));
     ProgramValue optional_stop{
         ProgramValueId(10),
@@ -345,13 +339,12 @@ ProgramValueGraph ResultGraph(
     };
     ProgramValue root{
         ProgramValueId(12),
-        TypeRef::Named(SeedProbeResultSchemaIdentityV2()),
+        TypeRef::Named(SeedProbeResultSchemaIdentityV3()),
         RecordValue{{
             seed.id,
             endpoint_value.id,
             stop.id,
-            published.id,
-            poll.id,
+            delivery.id,
         }},
     };
     return {
@@ -368,8 +361,7 @@ ProgramValueGraph ResultGraph(
             std::move(reason),
             std::move(movie_input_count),
             std::move(stop),
-            std::move(published),
-            std::move(poll),
+            std::move(delivery),
             std::move(endpoint_value),
             std::move(root),
         },
@@ -621,7 +613,7 @@ ProgramJobMaterializationContext TestMaterializationContext(
                         WorkflowGraphInputBinding{
                             .node_key = "seedprobe.run",
                             .input_key = "entry_savestate",
-                            .data_kind = "state.savestate_id",
+                            .data_kind = "state.movie_inactive_savestate_id",
                             .ref_kind = "state.savestate",
                             .ref_id = 1,
                             .source_kind = "test",
@@ -1182,7 +1174,7 @@ std::optional<SeedProbeRequestV2> ReconstructSeedProbeRequest(
                 .root_job_set_id = root_job_set_id,
                 .dispatch_token =
                     "seedprobe-descriptor-test-claim",
-                .compatibility_key =
+                .contract_key =
                     "seedprobe-descriptor-test",
                 .state_compatibility =
                     {
@@ -1406,8 +1398,9 @@ TEST(SeedProbeModule, ProductionEnvelopeIsCanonicalAndVerifierAccepted)
         phase->runtime_contract().baseline_lineage,
         BaselineLineage);
     EXPECT_EQ(
-        phase->runtime_contract().required_capabilities,
-        CapabilityMask(WorkerCapability::WorksetDispatch));
+        fullphase::BuildFullPhaseProgramPackage(*phase)
+            .canonical_sha256.size(),
+        64u);
     const auto& envelope = phase->module_envelope();
     EXPECT_EQ(
         envelope.identity.canonical_id,
@@ -1550,17 +1543,21 @@ TEST(SeedProbeModule, OrdersFactualActionsAndContainsNoLegacyEffects)
 {
     const ProgramModule module = ProductionSeedProbeModule();
     const auto all_instructions = Instructions(module, "");
-    const std::size_t subscribe = SelectorPosition(
-        all_instructions, "endpoints/subscribe/all-supported");
-    const std::size_t publish = SelectorPosition(
-        all_instructions, "input/publish-held-frame");
+    const std::size_t semantic_points = SelectorPosition(
+        all_instructions, "delivery/semantic-points");
+    const std::size_t begin_delivery = SelectorPosition(
+        all_instructions, "delivery/binding");
     const std::size_t stop = SelectorPosition(
-        all_instructions, "endpoints/first-supported-stop");
-    ASSERT_NE(subscribe, std::numeric_limits<std::size_t>::max());
-    ASSERT_NE(publish, std::numeric_limits<std::size_t>::max());
+        all_instructions, "delivery/stop");
+    const std::size_t complete_delivery = SelectorPosition(
+        all_instructions, "delivery/receipt");
+    ASSERT_NE(semantic_points, std::numeric_limits<std::size_t>::max());
+    ASSERT_NE(begin_delivery, std::numeric_limits<std::size_t>::max());
     ASSERT_NE(stop, std::numeric_limits<std::size_t>::max());
-    EXPECT_LT(subscribe, publish);
-    EXPECT_LT(publish, stop);
+    ASSERT_NE(complete_delivery, std::numeric_limits<std::size_t>::max());
+    EXPECT_LT(semantic_points, begin_delivery);
+    EXPECT_LT(begin_delivery, stop);
+    EXPECT_LT(stop, complete_delivery);
 
     for (const std::string_view branch : {
              std::string_view("prebattle/"),
@@ -1569,15 +1566,9 @@ TEST(SeedProbeModule, OrdersFactualActionsAndContainsNoLegacyEffects)
     {
         const auto instructions =
             Instructions(module, branch);
-        const std::size_t poll =
-            SelectorPosition(
-                instructions,
-                "/verify-held-publication-polled");
         const std::size_t read =
             SelectorPosition(instructions, "/rng/read-paused-u32");
-        ASSERT_NE(poll, std::numeric_limits<std::size_t>::max());
         ASSERT_NE(read, std::numeric_limits<std::size_t>::max());
-        EXPECT_LT(poll, read);
     }
 
     for (const CanonicalAction forbidden : {
@@ -1593,7 +1584,7 @@ TEST(SeedProbeModule, OrdersFactualActionsAndContainsNoLegacyEffects)
                 CanonicalActionIdentity(forbidden)),
             module.action_imports.end());
     }
-    std::size_t deferred_neutralizations = 0;
+    std::size_t deferred_input_compensations = 0;
     std::size_t scope_exits = 0;
     for (const auto& function : module.functions)
     {
@@ -1602,13 +1593,9 @@ TEST(SeedProbeModule, OrdersFactualActionsAndContainsNoLegacyEffects)
             for (const auto& instruction : block.instructions)
             {
                 if (instruction.opcode ==
-                        InstructionOpcode::DeferCompensation &&
-                    instruction.target.dependency &&
-                    *instruction.target.dependency ==
-                        CanonicalActionIdentity(
-                            CanonicalAction::InputNeutralize))
+                        InstructionOpcode::DeferCompensation)
                 {
-                    ++deferred_neutralizations;
+                    ++deferred_input_compensations;
                 }
                 if (instruction.opcode ==
                     InstructionOpcode::ExitScope)
@@ -1624,16 +1611,16 @@ TEST(SeedProbeModule, OrdersFactualActionsAndContainsNoLegacyEffects)
             }
         }
     }
-    EXPECT_EQ(deferred_neutralizations, 1u);
+    EXPECT_EQ(deferred_input_compensations, 0u);
     EXPECT_EQ(scope_exits, 1u);
 }
 
-TEST(SeedProbeModule, StopGroupStaticConfigEncodesBothEndpointsBeforePolicies)
+TEST(SeedProbeModule, SemanticPointSetEncodesBothEndpointsWithoutRoutingPolicy)
 {
     const ProgramModule module = ProductionSeedProbeModule();
     const auto configs = Instructions(
         module,
-        "endpoints/subscribe/static-config");
+        "delivery/semantic-points");
     ASSERT_EQ(configs.size(), 1u);
     ASSERT_TRUE(configs.front()->literal);
     const auto* bytes = std::get_if<std::vector<Byte>>(
@@ -1641,7 +1628,7 @@ TEST(SeedProbeModule, StopGroupStaticConfigEncodesBothEndpointsBeforePolicies)
     ASSERT_NE(bytes, nullptr);
 
     StaticConfigTestReader reader(*bytes);
-    ASSERT_TRUE(reader.Magic("SGC1"));
+    ASSERT_TRUE(reader.Magic("SPS1"));
     std::uint32_t alternative_count = 0;
     ASSERT_TRUE(reader.U32(alternative_count));
     ASSERT_EQ(alternative_count, 2u);
@@ -1683,17 +1670,8 @@ TEST(SeedProbeModule, StopGroupStaticConfigEncodesBothEndpointsBeforePolicies)
     }
 
     std::uint32_t sample_count = 1;
-    std::uint8_t delivery = 1;
-    std::uint8_t routing = 1;
-    std::uint8_t lifetime = 1;
     ASSERT_TRUE(reader.U32(sample_count));
-    ASSERT_TRUE(reader.U8(delivery));
-    ASSERT_TRUE(reader.U8(routing));
-    ASSERT_TRUE(reader.U8(lifetime));
     EXPECT_EQ(sample_count, 0u);
-    EXPECT_EQ(delivery, 0u);
-    EXPECT_EQ(routing, 0u);
-    EXPECT_EQ(lifetime, 0u);
     EXPECT_TRUE(reader.done());
 }
 
@@ -1706,9 +1684,9 @@ TEST(SeedProbeModule, DecodesAndValidatesCorrelatedFactualReceipts)
         frame,
         PreBattleAfterRandSeedSetPc);
 
-    SeedProbeResultV2 result;
+    SeedProbeResultV3 result;
     std::string diagnostic;
-    ASSERT_TRUE(DecodeSeedProbeResultV2(
+    ASSERT_TRUE(DecodeSeedProbeResultV3(
         graph,
         result,
         &diagnostic)) << diagnostic;
@@ -1719,17 +1697,18 @@ TEST(SeedProbeModule, DecodesAndValidatesCorrelatedFactualReceipts)
     EXPECT_EQ(
         result.semantic_stop.pc,
         PreBattleAfterRandSeedSetPc);
-    EXPECT_EQ(result.publication.frame, frame);
-    EXPECT_TRUE(result.guest_poll.acknowledged);
+    EXPECT_EQ(result.delivery.frame, frame);
+    EXPECT_NE(result.delivery.delivery_id, 0u);
+    EXPECT_NE(result.delivery.poll_receipt_id, 0u);
 
     const SeedProbeRequestV2 request{.frame = frame};
-    EXPECT_TRUE(ValidateSeedProbeResultV2(
+    EXPECT_TRUE(ValidateSeedProbeResultV3(
         request,
         result,
         WorksetEpoch(42),
         &diagnostic)) << diagnostic;
 
-    SeedProbeResultV2 decoded_result;
+    SeedProbeResultV3 decoded_result;
     const auto encoded_result = ProgramResultBytes(graph);
     const auto phase = SeedProbeFullPhaseDefinitionV2();
     ASSERT_TRUE(phase->DecodeProgramResult(
@@ -1742,15 +1721,15 @@ TEST(SeedProbeModule, DecodesAndValidatesCorrelatedFactualReceipts)
         frame,
         FieldReturnRandSeedCommittedPc,
         43);
-    SeedProbeResultV2 field_return_result;
-    ASSERT_TRUE(DecodeSeedProbeResultV2(
+    SeedProbeResultV3 field_return_result;
+    ASSERT_TRUE(DecodeSeedProbeResultV3(
         field_return_graph,
         field_return_result,
         &diagnostic)) << diagnostic;
     EXPECT_EQ(
         field_return_result.endpoint,
         SeedProbeEndpointV2::RandSeedCommitted);
-    EXPECT_TRUE(ValidateSeedProbeResultV2(
+    EXPECT_TRUE(ValidateSeedProbeResultV3(
         request,
         field_return_result,
         WorksetEpoch(43),
@@ -1770,7 +1749,7 @@ TEST(SeedProbeModule, RejectsProgramResultsOutsideRetainedPhaseInvariants)
         mutate(*decoded.value);
         const auto encoded = EncodeProgramResultV1(*decoded.value);
         ASSERT_TRUE(encoded) << encoded.status.message;
-        SeedProbeResultV2 observation{};
+        SeedProbeResultV3 observation{};
         std::string diagnostic;
         EXPECT_FALSE(phase->DecodeProgramResult(
             encoded.bytes,
@@ -1793,14 +1772,14 @@ TEST(SeedProbeModule, RejectsProgramResultsOutsideRetainedPhaseInvariants)
     });
 }
 
-TEST(SeedProbeModule, RejectsFramePcPublicationAndEpochMismatches)
+TEST(SeedProbeModule, RejectsFramePcDeliveryAndEpochMismatches)
 {
     savor::GCInputFrame frame{};
     frame.c_x = 101;
     frame.c_y = 155;
-    SeedProbeResultV2 result;
+    SeedProbeResultV3 result;
     std::string diagnostic;
-    ASSERT_TRUE(DecodeSeedProbeResultV2(
+    ASSERT_TRUE(DecodeSeedProbeResultV3(
         ResultGraph(
             frame,
             PreBattleAfterRandSeedSetPc),
@@ -1809,25 +1788,25 @@ TEST(SeedProbeModule, RejectsFramePcPublicationAndEpochMismatches)
 
     SeedProbeRequestV2 request{.frame = frame};
     request.frame.trig_l = 1;
-    EXPECT_FALSE(ValidateSeedProbeResultV2(
+    EXPECT_FALSE(ValidateSeedProbeResultV3(
         request,
         result,
         WorksetEpoch(42),
         &diagnostic));
 
     request.frame = frame;
-    EXPECT_FALSE(ValidateSeedProbeResultV2(
+    EXPECT_FALSE(ValidateSeedProbeResultV3(
         request,
         result,
         WorksetEpoch(43),
         &diagnostic));
 
-    EXPECT_FALSE(DecodeSeedProbeResultV2(
+    EXPECT_FALSE(DecodeSeedProbeResultV3(
         ResultGraph(
             frame,
             PreBattleAfterRandSeedSetPc,
             42,
-            17,
+            0,
             18),
         result,
         &diagnostic));
@@ -1909,7 +1888,7 @@ TEST_F(
     for (const auto& job : survey_jobs)
     {
         const auto durable_job =
-            execution_db->GetJob(job.job_id);
+            execution_db->GetExecutionJob(job.job_id);
         ASSERT_TRUE(durable_job.has_value());
         const auto job_spec =
             DecodeSeedProbeJobSpec(
@@ -2081,7 +2060,7 @@ TEST_F(
     for (const auto& confirm_job_row : confirm_jobs)
     {
         const auto confirm_job =
-            execution_db->GetJob(
+            execution_db->GetExecutionJob(
                 confirm_job_row.job_id);
         ASSERT_TRUE(confirm_job.has_value());
         const auto confirm_spec =
@@ -2354,7 +2333,7 @@ TEST_F(
         "EXECUTION_FINISHED"));
 
     const auto winner_job =
-        execution_db->GetJob(search->job_ids[0]);
+        execution_db->GetExecutionJob(search->job_ids[0]);
     ASSERT_TRUE(winner_job.has_value());
     const auto descriptor = BuildSeedProbeProgramDescriptor(
         execution_db,
@@ -2367,7 +2346,7 @@ TEST_F(
         });
     for (const auto job_id : search->job_ids)
     {
-        const auto job = execution_db->GetJob(job_id);
+        const auto job = execution_db->GetExecutionJob(job_id);
         ASSERT_TRUE(job.has_value());
         const auto request = ReconstructSeedProbeRequest(
             descriptor,
@@ -2398,11 +2377,11 @@ TEST_F(
         winner_decision.cancellations.front().reason_code,
         "SEEDPROBE_DELTA_SATISFIED");
     EXPECT_EQ(
-        execution_db->GetJob(search->job_ids[2])->state,
+        execution_db->GetExecutionJob(search->job_ids[2])->state,
         "EXECUTION_FINISHED");
 
     const auto late_job =
-        execution_db->GetJob(search->job_ids[2]);
+        execution_db->GetExecutionJob(search->job_ids[2]);
     ASSERT_TRUE(late_job.has_value());
     const auto late_decision =
         descriptor.result_handler->Process(
@@ -2423,7 +2402,7 @@ TEST_F(
         late_result->evidence_state,
         SeedProbeEvidenceState::Observed);
     EXPECT_EQ(
-        execution_db->GetJob(late_job->job_id)->state,
+        execution_db->GetExecutionJob(late_job->job_id)->state,
         "EXECUTION_FINISHED");
 }
 
@@ -2647,7 +2626,7 @@ TEST_F(
             confirm_child->job_set_id);
     ASSERT_EQ(confirm_jobs.size(), 1u);
     const auto confirm_job =
-        execution_db->GetJob(
+        execution_db->GetExecutionJob(
             confirm_jobs.front().job_id);
     ASSERT_TRUE(confirm_job.has_value());
     const auto confirm_spec =
@@ -2922,7 +2901,7 @@ TEST_F(
         execution_db->ListJobsInJobSet(
             confirm_child->job_set_id);
     ASSERT_EQ(confirm_jobs.size(), 1u);
-    const auto confirm_job = execution_db->GetJob(
+    const auto confirm_job = execution_db->GetExecutionJob(
         confirm_jobs.front().job_id);
     ASSERT_TRUE(confirm_job.has_value());
     const auto confirm_spec =
@@ -3276,7 +3255,7 @@ TEST_F(
         search->job_ids.front(),
         "EXECUTION_FINISHED"));
     const auto search_job =
-        execution_db->GetJob(search->job_ids.front());
+        execution_db->GetExecutionJob(search->job_ids.front());
     ASSERT_TRUE(search_job.has_value());
 
     const auto descriptor = BuildSeedProbeProgramDescriptor(
@@ -3341,7 +3320,7 @@ TEST_F(
             confirm_child->job_set_id);
     ASSERT_EQ(confirm_jobs.size(), 1u);
     const auto confirm_job =
-        execution_db->GetJob(confirm_jobs.front().job_id);
+        execution_db->GetExecutionJob(confirm_jobs.front().job_id);
     ASSERT_TRUE(confirm_job.has_value());
     const auto confirm_decision =
         descriptor.result_handler->Process(
@@ -3466,11 +3445,11 @@ TEST_F(
             .working_dir_root = temp_root_,
             .maximum_items_per_workset = 16,
         });
-    const auto first_job = execution_db->GetJob(
+    const auto first_job = execution_db->GetExecutionJob(
         observations->job_ids[0]);
-    const auto conflicting_job = execution_db->GetJob(
+    const auto conflicting_job = execution_db->GetExecutionJob(
         observations->job_ids[1]);
-    const auto late_job = execution_db->GetJob(
+    const auto late_job = execution_db->GetExecutionJob(
         observations->job_ids[3]);
     ASSERT_TRUE(first_job.has_value());
     ASSERT_TRUE(conflicting_job.has_value());

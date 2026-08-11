@@ -24,11 +24,6 @@ struct OpenSessionCommand
     SessionOpenOptions options;
 };
 
-struct PrepareModuleCommand
-{
-    EncodedModuleEnvelope module;
-};
-
 struct CancelInvocationCommand
 {
     InvocationId invocation_id;
@@ -87,7 +82,6 @@ struct ShutdownCommand
 
 using WorkerCommand = std::variant<
     OpenSessionCommand,
-    PrepareModuleCommand,
     SubmitWorksetCommand,
     CancelInvocationCommand,
     CancelWorksetItemCommand,
@@ -100,9 +94,10 @@ using WorkerCommand = std::variant<
 struct WorkerSnapshot
 {
     WorkerState state = WorkerState::Starting;
-    WorkerCapabilityMask capabilities = 0;
+    WorkerMode mode = WorkerMode::Headless;
+    std::string runtime_contract_sha256;
     SessionSnapshot session;
-    ExecutionSnapshot execution;
+    std::optional<ExecutionSnapshot> execution;
     std::optional<InvocationId> active_invocation;
     std::optional<WorkerWorksetId> active_workset;
     std::optional<WorkerWorksetId> staged_workset;
@@ -215,8 +210,7 @@ struct WorkerExecutionEvent
 using WorkerEvent = std::variant<
     WorkerStateChangedEvent,
     WorkerCommandCompletedEvent,
-    ModulePreparationEvent,
-    ProgramInvocationProgressEvent,
+    progress::CanonicalProgressEventV1,
     WorkerWorksetStateEvent,
     WorkerWorksetItemStartedEvent,
     WorkerWorksetItemTerminalEvent,
@@ -258,8 +252,7 @@ public:
         WorkerCommand command);
 
     [[nodiscard]] WorkerSnapshot snapshot() const;
-    [[nodiscard]] WorkerCapabilityMask capabilities() const noexcept;
-    [[nodiscard]] WorkerRuntimeManifest runtime_manifest() const;
+    [[nodiscard]] WorkerRuntimeContractV1 runtime_contract() const;
     [[nodiscard]] bool EnqueueHostEvent(
         std::string name,
         std::vector<std::uint8_t> encoded_payload);

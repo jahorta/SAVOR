@@ -1,5 +1,5 @@
 #include "gtest/gtest.h"
-#include "Core/Input/InputPlan.h"           // GCInputFrame (with fluent methods)
+#include "Core/Input/GCInputFrame.h"
 #include "Core/InputCommon/GCPadStatus.h"   // PAD_BUTTON_* / PAD_TRIGGER_*
 
 static bool bit_set(uint16_t v, uint16_t mask) { return (v & mask) == mask; }

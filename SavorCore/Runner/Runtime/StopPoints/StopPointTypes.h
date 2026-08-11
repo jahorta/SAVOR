@@ -65,28 +65,50 @@ using StopPointSpec = std::variant<
     MemoryStopPointSpec,
     SyntheticStopPointSpec>;
 
-enum class StopDeliveryMode : std::uint8_t
-{
-    Observe,
-    Progress,
-    Guard,
-    Intercept,
-    Wake,
-};
-
-enum class StopRoutingPolicy : std::uint8_t
-{
-    Pass,
-    Consume,
-    RequestInterruptionHandler,
-    Fail,
-};
-
 enum class StopSubscriptionLifetime : std::uint8_t
 {
     Scoped,
     OneShot,
 };
+
+// Stop routing authority is expressed structurally. Passive observers may
+// share any point, foreground waits own execution completion for an active
+// operation, and trusted interruption requests own a separately reserved
+// trigger point. There is deliberately no configurable pass/consume/fail
+// policy layered over these roles.
+struct PassiveStopObservation
+{
+    std::uint32_t cpu_observer_descriptor_id = 0;
+    bool lossless = false;
+
+    friend bool operator==(
+        const PassiveStopObservation&,
+        const PassiveStopObservation&) = default;
+};
+
+struct ForegroundStopWait
+{
+    bool suppress_immediate_reentry = false;
+
+    friend bool operator==(
+        const ForegroundStopWait&,
+        const ForegroundStopWait&) = default;
+};
+
+struct TrustedStopInterruptionRequest
+{
+    std::string handler_key;
+    bool suppress_immediate_reentry = true;
+
+    friend bool operator==(
+        const TrustedStopInterruptionRequest&,
+        const TrustedStopInterruptionRequest&) = default;
+};
+
+using StopSubscriptionRoute = std::variant<
+    PassiveStopObservation,
+    ForegroundStopWait,
+    TrustedStopInterruptionRequest>;
 
 struct StopSourceIdentity
 {
@@ -143,7 +165,7 @@ struct RoutedStopEvent
     RoutedStopEvidence evidence;
     std::array<RoutedHitSample, kMaxRoutedHitSamples> samples{};
     std::uint8_t sample_count = 0;
-    bool active_foreground_wake = false;
+    bool active_foreground_wait = false;
     bool authoritative = false;
     bool requires_physical_reconcile_before_resume = false;
 };
@@ -154,16 +176,11 @@ struct StopSubscriptionDefinition
 {
     StopSubscriptionId id;
     StopPointSpec point;
-    StopDeliveryMode delivery = StopDeliveryMode::Observe;
-    StopRoutingPolicy policy = StopRoutingPolicy::Pass;
+    StopSubscriptionRoute route = PassiveStopObservation{};
     StopSubscriptionLifetime lifetime = StopSubscriptionLifetime::Scoped;
     std::int32_t priority = 0;
     std::uint32_t qualification_id = 0;
     std::vector<std::uint32_t> sample_descriptor_ids;
-    std::uint32_t cpu_observer_descriptor_id = 0;
-    std::string interruption_handler_key;
-    bool lossless = false;
-    bool suppress_immediate_reentry = false;
     IStopPointConsumer* consumer = nullptr;
 };
 
@@ -183,7 +200,8 @@ enum class StopPointErrorCode : std::uint16_t
     WrongThread,
     GroupNotFound,
     SourceMismatch,
-    ForegroundWakeAlreadyRegistered,
+    ForegroundWaitAlreadyRegistered,
+    ControlOwnershipConflict,
     CurrentPointUnavailable,
     StaleEpoch,
     StaleDispatchGeneration,
@@ -243,10 +261,9 @@ struct StopInterruptionHandlerRequest
 enum class StopRouteTerminal : std::uint8_t
 {
     None,
-    WokeForeground,
-    Consumed,
-    InterruptionHandlerRequested,
-    Failed,
+    ForegroundMatched,
+    InterruptionRequested,
+    RoutingFailure,
     Unclaimed,
     Stale,
     Overflow,
@@ -258,7 +275,6 @@ struct StopDelivery
     StopSourceId source_id;
     StopSubscriptionGroupId group_id;
     StopSubscriptionId subscription_id;
-    StopDeliveryMode delivery = StopDeliveryMode::Observe;
 };
 
 class IStopPointConsumer

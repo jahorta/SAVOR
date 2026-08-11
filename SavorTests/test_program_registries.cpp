@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -213,9 +214,9 @@ TEST(ActionRegistry, CanonicalCatalogIdentitiesAreStableAndDistinct)
         CanonicalActionIdentity(CanonicalAction::ExecutionStepFrames));
     EXPECT_EQ(
         CanonicalReducerIdentity(
-            CanonicalReducer::BattleMaterializeTurnInput)
+            CanonicalReducer::BattlePrepareCommandInteraction)
             .canonical_id,
-        "soa.battle.materialize_turn_input");
+        "soa.battle.command_interaction.prepare");
 }
 
 TEST(ActionRegistry, DescriptorIdentityCoversEveryMaterialPolicyClass)
@@ -404,9 +405,7 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
     ActionRegistry registry(&schemas);
     const std::vector<ActionDescriptor> descriptors =
         BuildCanonicalRuntimeActionDescriptors();
-    ASSERT_EQ(
-        descriptors.size(),
-        static_cast<std::size_t>(CanonicalAction::TelemetryEmit) + 1u);
+    ASSERT_EQ(descriptors.size(), CanonicalActionDefinitions().size());
     EXPECT_TRUE(std::ranges::none_of(
         descriptors,
         [](const ActionDescriptor& descriptor)
@@ -414,47 +413,60 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
             return descriptor.identity.canonical_id ==
                 "runtime.execution.step_instructions";
         }));
-    for (std::size_t index = 0; index < descriptors.size(); ++index)
+    for (const CanonicalActionDefinition& definition :
+         CanonicalActionDefinitions())
     {
+        const auto descriptor = std::ranges::find(
+            descriptors,
+            definition.name,
+            [](const ActionDescriptor& value)
+            {
+                return std::string_view(value.identity.canonical_id);
+            });
+        ASSERT_NE(descriptor, descriptors.end());
         EXPECT_EQ(
-            descriptors[index].identity,
-            CanonicalActionIdentity(
-                static_cast<CanonicalAction>(index)));
+            descriptor->identity,
+            CanonicalActionIdentity(definition.action));
+        EXPECT_EQ(CanonicalActionName(definition.action), definition.name);
+        const auto round_trip = FindCanonicalAction(descriptor->identity);
+        ASSERT_TRUE(round_trip);
+        EXPECT_EQ(*round_trip, definition.action);
         EXPECT_EQ(
-            descriptors[index].providing_pack,
+            descriptor->providing_pack,
             CanonicalRuntimePackIdentity());
-        if (descriptors[index].timing ==
+        if (descriptor->timing ==
             ActionTimingClass::BoundedHostOperation)
         {
             EXPECT_NE(
-                descriptors[index].default_host_timeout_milliseconds,
+                descriptor->default_host_timeout_milliseconds,
                 0u);
             EXPECT_NE(
                 std::ranges::find(
-                    descriptors[index].diagnostic_categories,
+                    descriptor->diagnostic_categories,
                     "timeout"),
-                descriptors[index].diagnostic_categories.end());
+                descriptor->diagnostic_categories.end());
         }
         else
         {
             EXPECT_EQ(
-                descriptors[index].default_host_timeout_milliseconds,
+                descriptor->default_host_timeout_milliseconds,
                 0u);
             EXPECT_EQ(
                 std::ranges::find(
-                    descriptors[index].diagnostic_categories,
+                    descriptor->diagnostic_categories,
                     "timeout"),
-                descriptors[index].diagnostic_categories.end());
+                descriptor->diagnostic_categories.end());
         }
         EXPECT_EQ(
-            descriptors[index].input_type,
-            CanonicalActionInputType(
-                static_cast<CanonicalAction>(index)));
+            descriptor->input_type,
+            CanonicalActionInputType(definition.action));
         EXPECT_EQ(
-            descriptors[index].output_type,
-            CanonicalActionOutputType(
-                static_cast<CanonicalAction>(index)));
+            descriptor->output_type,
+            CanonicalActionOutputType(definition.action));
     }
+    const auto unknown = static_cast<CanonicalAction>(0xff);
+    EXPECT_TRUE(CanonicalActionName(unknown).empty());
+    EXPECT_THROW(CanonicalActionIdentity(unknown), std::out_of_range);
     ASSERT_TRUE(
         registry.RegisterCatalog(descriptors, {}).success);
     EXPECT_EQ(registry.action_count(), descriptors.size());
@@ -472,10 +484,9 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
         ActionCleanupGuarantee::VerifiedCompensation);
     EXPECT_TRUE(patch->taints_on_unproven_cleanup);
 
-    const ActionDescriptor* stop_group = registry.ResolveAction(
-        CanonicalActionIdentity(
-            CanonicalAction::StopPointsSubscribeGroup));
-    ASSERT_NE(stop_group, nullptr);
+    EXPECT_FALSE(FindCanonicalAction({
+        .canonical_id = "runtime.stop_points.subscribe_group",
+        .version = 1}));
     EXPECT_FALSE(FindCanonicalAction({
         .canonical_id = "runtime.state.capture",
         .version = 1}));
@@ -503,23 +514,6 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
                 CanonicalAction::SavestateSaveImmutableArtifact)),
         nullptr);
 
-    const auto finalize_output =
-        CanonicalActionOutputSchemaIdentity(
-            CanonicalAction::CaptureFinalize);
-    ASSERT_TRUE(finalize_output);
-    const TypeSchemaDefinition* artifact_list =
-        schemas.Resolve(*finalize_output);
-    ASSERT_NE(artifact_list, nullptr);
-    ASSERT_TRUE(artifact_list->element_type);
-    EXPECT_EQ(
-        artifact_list->kind,
-        TypeSchemaKind::BoundedList);
-    EXPECT_EQ(
-        artifact_list->element_type,
-        TypeRef::Named(
-            *CanonicalActionArtifactReferenceSchemaIdentity(
-                CanonicalAction::CaptureFinalize)));
-
     const ActionDescriptor* read_u32 =
         registry.ResolveAction(CanonicalActionIdentity(
             CanonicalAction::GuestReadU32));
@@ -536,12 +530,6 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
             CanonicalAction::MovieStopPlayback),
         CanonicalActionOutputType(
             CanonicalAction::MovieStartPlayback));
-    EXPECT_EQ(
-        CanonicalActionInputType(
-            CanonicalAction::CaptureFinalize),
-        CanonicalActionOutputType(
-            CanonicalAction::CaptureAttach));
-
     const auto require_record =
         [&](CanonicalAction action,
             std::vector<std::string> fields)
@@ -562,21 +550,36 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
     };
     require_record(
         CanonicalAction::ExecutionContinueUntil,
-        {"wake_group", "input_publication", "playback_session",
+        {"semantic_points", "input_binding", "playback_session",
          "expected_movie_input_count", "static_config"});
     require_record(
-        CanonicalAction::InputAwaitGuestPoll,
-        {"lease", "input_publication",
-         "neutral_witness", "static_config"});
+        CanonicalAction::InputApplyState,
+        {"lease", "input"});
+    require_record(
+        CanonicalAction::InputBeginDelivery,
+        {"lease", "input"});
+    require_record(
+        CanonicalAction::InputCompleteDelivery,
+        {"lease", "binding"});
     require_record(
         CanonicalAction::GuestReadU32,
         {"stop_receipt", "address", "static_config"});
 
-    EXPECT_EQ(
-        CanonicalActionOutputType(
-            CanonicalAction::InputPublishHeld),
-        CanonicalActionOutputType(
-            CanonicalAction::InputPublishPulse));
+    EXPECT_FALSE(FindCanonicalAction({
+        .canonical_id = "runtime.input.publish_pulse",
+        .version = 1}));
+    EXPECT_FALSE(FindCanonicalAction({
+        .canonical_id = "runtime.input.publish_sequence",
+        .version = 1}));
+    EXPECT_FALSE(FindCanonicalAction({
+        .canonical_id = "runtime.input.publish_held",
+        .version = 1}));
+    EXPECT_FALSE(FindCanonicalAction({
+        .canonical_id = "runtime.input.neutralize",
+        .version = 1}));
+    EXPECT_FALSE(FindCanonicalAction({
+        .canonical_id = "runtime.input.await_guest_poll",
+        .version = 1}));
     const auto continue_result =
         CanonicalActionOutputSchemaIdentity(
             CanonicalAction::ExecutionContinueUntil);
@@ -613,18 +616,16 @@ TEST(CapabilityPackRegistry, ManifestHashCoversCompleteNormalizedContract)
         .semantic_points = {
             {
                 .canonical_id = "test.point.pc",
-                .kind = SemanticPointPhysicalKind::ProgramCounter,
+                .kind = SemanticPointKind::ProgramCounter,
                 .pc = 0x80001000,
-                .legacy_key = "legacy.pc",
             },
             {
                 .canonical_id = "test.point.memory",
-                .kind = SemanticPointPhysicalKind::Memory,
+                .kind = SemanticPointKind::Memory,
                 .memory_address = 0x80300000,
                 .memory_size = 4,
                 .memory_read = true,
                 .memory_write = true,
-                .legacy_key = "legacy.memory",
             },
         },
         .address_symbols = {{
@@ -640,6 +641,9 @@ TEST(CapabilityPackRegistry, ManifestHashCoversCompleteNormalizedContract)
         }},
         .cpu_evaluators = {{
             .canonical_id = "test.evaluator",
+            .routed_sample_descriptor_id = 17,
+            .address_dependency = "test.address",
+            .result_type = TypeRef::Builtin(BuiltinType::U32),
             .operations = {
                 CpuEvaluatorOperation::ReadU32,
                 CpuEvaluatorOperation::CompareEqual,
@@ -765,7 +769,7 @@ TEST(CapabilityPackRegistry, RejectsZeroPcWithoutPublishing)
     manifest.semantic_points.push_back(
         SemanticPointDescriptor{
             .canonical_id = "test.zero.point",
-            .kind = SemanticPointPhysicalKind::ProgramCounter,
+            .kind = SemanticPointKind::ProgramCounter,
             .pc = 0,
         });
     const RegistryResult result =
@@ -782,7 +786,7 @@ TEST(CapabilityPackRegistry, ResolvesExactDependencyClosureOnly)
     base.semantic_points.push_back(
         SemanticPointDescriptor{
             .canonical_id = "test.base.frame",
-            .kind = SemanticPointPhysicalKind::ProgramCounter,
+            .kind = SemanticPointKind::ProgramCounter,
             .pc = 0x801dc288,
         });
     auto dependent = Manifest(Pack("test.dependent", 2));

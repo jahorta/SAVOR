@@ -155,31 +155,6 @@ std::optional<ProgramValueId> AddRequest(
         scope);
 }
 
-std::vector<Byte> StopGroupConfig(
-    std::span<const SemanticPointReference> points)
-{
-    StaticConfigWriter writer({'S', 'G', 'C', '1'});
-    writer.U32(static_cast<std::uint32_t>(
-        points.size()));
-    for (const auto& point : points)
-    {
-        writer.String(point.capability_pack.canonical_id);
-        writer.U32(point.capability_pack.version);
-        writer.Hash(point.capability_pack.manifest_hash);
-        writer.String(point.canonical_id);
-        writer.U8(static_cast<std::uint8_t>(point.kind));
-        writer.U32(point.physical_pc);
-    }
-    writer.U32(0);
-    // Passive Observe/Pass, EndOnEpochChange, scoped. ContinueUntil clones
-    // this definition into ExecutionEngine's sole foreground Wake group.
-    writer.U8(0);
-    writer.U8(0);
-    writer.U8(1);
-    writer.U8(0);
-    return std::move(writer).Finish();
-}
-
 std::vector<Byte> ContinueConfig(
     const InteractionSegmentDefinition& segment)
 {
@@ -203,48 +178,14 @@ std::vector<Byte> AdvanceConfig(
     return std::move(writer).Finish();
 }
 
-std::vector<Byte> LeaseConfig(
-    bool require_neutral_acknowledgement)
+std::vector<Byte> LeaseConfig()
 {
-    StaticConfigWriter writer({'I', 'L', 'C', '1'});
+    StaticConfigWriter writer({'I', 'L', 'C', '2'});
     writer.U32(0); // port
     writer.U32(0); // priority
     writer.Bool(true); // suspendable
     writer.Bool(true); // interruption-borrowable
-    writer.Bool(require_neutral_acknowledgement);
     writer.Bool(false); // movie-exclusive
-    return std::move(writer).Finish();
-}
-
-std::vector<Byte> PublicationConfig(
-    InteractionInputKind kind,
-    InputAcknowledgementPolicy acknowledgement)
-{
-    StaticConfigWriter writer({'I', 'P', 'C', '1'});
-    writer.U8(static_cast<std::uint8_t>(kind));
-    writer.U8(static_cast<std::uint8_t>(acknowledgement));
-    return std::move(writer).Finish();
-}
-
-std::vector<Byte> NeutralConfig(
-    bool require_acknowledgement)
-{
-    StaticConfigWriter writer({'I', 'N', 'C', '1'});
-    writer.Bool(require_acknowledgement);
-    writer.Bool(true); // cleanup-safe neutral publication
-    return std::move(writer).Finish();
-}
-
-std::vector<Byte> PollConfig(
-    bool release,
-    std::string_view witness,
-    std::uint32_t retry_limit)
-{
-    StaticConfigWriter writer({'I', 'G', 'P', '1'});
-    writer.Bool(release);
-    writer.String(witness);
-    writer.U32(retry_limit);
-    writer.Bool(true);
     return std::move(writer).Finish();
 }
 
@@ -264,7 +205,7 @@ std::optional<ProgramValueId> AddMemoryReadRequest(
     ProgramFunction& function,
     BasicBlock& block,
     CanonicalAction action,
-    ProgramValueId stop,
+    std::optional<ProgramValueId> stop,
     std::uint64_t address,
     std::string selector,
     ProgramScopeId scope)
@@ -371,12 +312,7 @@ std::optional<CompositionResult> Validate(
     const auto& actions = definition.actions;
     const std::array required_actions{
         actions.acquire_input_lease.canonical_id,
-        actions.publish_held.canonical_id,
-        actions.publish_pulse.canonical_id,
-        actions.publish_sequence.canonical_id,
-        actions.neutralize.canonical_id,
-        actions.await_guest_poll.canonical_id,
-        actions.subscribe_group.canonical_id,
+        actions.apply_input_state.canonical_id,
         actions.continue_until.canonical_id,
         actions.step_frames.canonical_id,
     };
@@ -391,18 +327,8 @@ std::optional<CompositionResult> Validate(
     const InteractionActionSet canonical_actions{
         .acquire_input_lease = CanonicalActionIdentity(
             CanonicalAction::InputAcquireLease),
-        .publish_held = CanonicalActionIdentity(
-            CanonicalAction::InputPublishHeld),
-        .publish_pulse = CanonicalActionIdentity(
-            CanonicalAction::InputPublishPulse),
-        .publish_sequence = CanonicalActionIdentity(
-            CanonicalAction::InputPublishSequence),
-        .neutralize = CanonicalActionIdentity(
-            CanonicalAction::InputNeutralize),
-        .await_guest_poll = CanonicalActionIdentity(
-            CanonicalAction::InputAwaitGuestPoll),
-        .subscribe_group = CanonicalActionIdentity(
-            CanonicalAction::StopPointsSubscribeGroup),
+        .apply_input_state = CanonicalActionIdentity(
+            CanonicalAction::InputApplyState),
         .continue_until = CanonicalActionIdentity(
             CanonicalAction::ExecutionContinueUntil),
         .step_frames = CanonicalActionIdentity(
@@ -411,19 +337,11 @@ std::optional<CompositionResult> Validate(
     if (actions != canonical_actions ||
         definition.lease_type != CanonicalActionOutputType(
             CanonicalAction::InputAcquireLease) ||
-        definition.subscription_type != CanonicalActionOutputType(
-            CanonicalAction::StopPointsSubscribeGroup) ||
         definition.point_receipt_type != CanonicalActionOutputType(
             CanonicalAction::ExecutionContinueUntil) ||
-        definition.input_publication_receipt_type !=
+        definition.input_execution_binding_type !=
             CanonicalActionOutputType(
-                CanonicalAction::InputPublishHeld) ||
-        definition.input_neutral_witness_type !=
-            CanonicalActionOutputType(
-                CanonicalAction::InputNeutralize) ||
-        definition.input_poll_receipt_type !=
-            CanonicalActionOutputType(
-                CanonicalAction::InputAwaitGuestPoll))
+                CanonicalAction::InputApplyState))
     {
         return detail::Fail(
             "interaction.noncanonical_runtime_contract",
@@ -469,35 +387,18 @@ std::optional<CompositionResult> Validate(
         const TypeRef requested_type =
             definition.parameters[
                 segment.requested_input_parameter].type;
-        const TypeRef expected_input =
-            segment.input_kind ==
-                    InteractionInputKind::Sequence
-            ? CanonicalRuntimeType(
-                  CanonicalRuntimeSchema::
-                      InputSequencePayload)
-            : CanonicalRuntimeType(
-                  CanonicalRuntimeSchema::
-                      InputFramePayload);
+        const TypeRef expected_input = CanonicalRuntimeType(
+            CanonicalRuntimeSchema::InputFramePayload);
         if (segment.input_kind !=
                 InteractionInputKind::Neutral &&
             requested_type != expected_input)
         {
             return detail::Fail(
                 "interaction.input_type_mismatch",
-                "held and pulse inputs require InputFramePayload; sequences require InputSequencePayload");
-        }
-        if (segment.acknowledgement ==
-                InputAcknowledgementPolicy::RequestAndRelease &&
-            !segment.release_witness_point)
-        {
-            return detail::Fail(
-                "interaction.missing_release_witness",
-                "release acknowledgement requires a separately named witness");
+                "held inputs require InputFramePayload");
         }
         if (segment.input_kind == InteractionInputKind::Neutral &&
-            (segment.acknowledgement !=
-                 InputAcknowledgementPolicy::NotRequired ||
-             segment.held_through_successor))
+            segment.held_through_successor)
         {
             return detail::Fail(
                 "interaction.invalid_neutral_segment",
@@ -512,6 +413,17 @@ std::optional<CompositionResult> Validate(
             return detail::Fail(
                 "interaction.invalid_held_successor",
                 "held-through behavior requires an exact nonzero semantic successor");
+        }
+        if (segment.post_release_gate &&
+            (segment.input_kind != InteractionInputKind::Held ||
+             segment.post_release_gate->canonical_id.empty() ||
+             (segment.post_release_gate->kind ==
+                  SemanticPointKind::ProgramCounter &&
+              segment.post_release_gate->physical_pc == 0)))
+        {
+            return detail::Fail(
+                "interaction.invalid_post_release_gate",
+                "post-release gates require a held input with exact release acknowledgement");
         }
         if (segment.memory_change_observation &&
             (segment.maximum_memory_polls == 0 ||
@@ -561,6 +473,29 @@ std::optional<CompositionResult> Validate(
                 "interaction.invalid_adaptive_projection",
                 "adaptive transitions require distinct state and segment record fields");
         }
+        if (!definition.adaptive_selection ||
+            definition.adaptive_selection->segments.size() !=
+                definition.segments.size() ||
+            definition.adaptive_selection->segments.contains(
+                definition.adaptive_selection->complete))
+        {
+            return detail::Fail(
+                "interaction.invalid_adaptive_selection",
+                "adaptive interactions require one explicit enum mapping per segment and a distinct completion value");
+        }
+        std::set<std::string> mapped_segments;
+        for (const auto& [selection, segment_id] :
+             definition.adaptive_selection->segments)
+        {
+            (void)selection;
+            if (!segment_ids.contains(segment_id) ||
+                !mapped_segments.insert(segment_id).second)
+            {
+                return detail::Fail(
+                    "interaction.invalid_adaptive_selection",
+                    "adaptive enum mappings must name every declared segment exactly once");
+            }
+        }
         for (const auto& segment : definition.segments)
         {
             if (segment.static_next_segment)
@@ -570,6 +505,12 @@ std::optional<CompositionResult> Validate(
                     "adaptive interactions cannot also declare static transitions");
             }
         }
+    }
+    else if (definition.adaptive_selection)
+    {
+        return detail::Fail(
+            "interaction.unused_adaptive_selection",
+            "static interactions cannot declare an adaptive enum mapping");
     }
     return std::nullopt;
 }
@@ -597,51 +538,253 @@ std::optional<ProgramValueId> ConstantU64(
         scope);
 }
 
-const ExactDependencyIdentity& PublicationAction(
-    const InteractionActionSet& actions,
-    InteractionInputKind kind)
-{
-    switch (kind)
-    {
-    case InteractionInputKind::Held:
-        return actions.publish_held;
-    case InteractionInputKind::Pulse:
-        return actions.publish_pulse;
-    case InteractionInputKind::Sequence:
-        return actions.publish_sequence;
-    case InteractionInputKind::Neutral:
-        return actions.neutralize;
-    }
-    return actions.publish_held;
-}
-
 void AddActionImports(
     ModuleFragmentBuilder& builder,
     const InteractionActionSet& actions)
 {
     builder.AddActionImport(actions.acquire_input_lease);
-    builder.AddActionImport(actions.publish_held);
-    builder.AddActionImport(actions.publish_pulse);
-    builder.AddActionImport(actions.publish_sequence);
-    builder.AddActionImport(actions.neutralize);
-    builder.AddActionImport(actions.await_guest_poll);
-    builder.AddActionImport(actions.subscribe_group);
+    builder.AddActionImport(actions.apply_input_state);
     builder.AddActionImport(actions.continue_until);
     builder.AddActionImport(actions.step_frames);
     for (const auto action : {
              CanonicalAction::InputAcquireLease,
-             CanonicalAction::InputPublishHeld,
-             CanonicalAction::InputPublishPulse,
-             CanonicalAction::InputPublishSequence,
-             CanonicalAction::InputNeutralize,
-             CanonicalAction::InputAwaitGuestPoll,
-             CanonicalAction::StopPointsSubscribeGroup,
+             CanonicalAction::InputApplyState,
              CanonicalAction::ExecutionContinueUntil,
              CanonicalAction::ExecutionStepFrames,
          })
     {
         AddCanonicalActionSchemaImports(builder, action);
     }
+}
+
+std::optional<ProgramValueId> NeutralInputFrame(
+    ModuleFragmentBuilder& builder,
+    ProgramFunction& function,
+    BasicBlock& block,
+    std::string selector,
+    ProgramScopeId scope)
+{
+    const TypeRef type = CanonicalRuntimeType(
+        CanonicalRuntimeSchema::InputFramePayload);
+    return builder.AddInstruction(
+        function,
+        block,
+        InstructionOpcode::Constant,
+        type,
+        {},
+        {},
+        std::move(selector),
+        LiteralValue{
+            .type = type,
+            .payload = std::vector<Byte>{0, 0, 128, 128, 128, 128, 0, 0}},
+        scope);
+}
+
+std::optional<ProgramFunctionId> AddMemoryChangePollFunction(
+    ModuleFragmentBuilder& builder,
+    const InteractionDefinition& definition,
+    const InteractionSegmentDefinition& segment)
+{
+    if (!segment.memory_change_observation)
+        return std::nullopt;
+
+    const auto baseline =
+        builder.NewArgument(segment.memory_change_value_type);
+    const auto binding =
+        builder.NewArgument(definition.input_execution_binding_type);
+    const std::array arguments{baseline, binding};
+    auto& function = builder.AddFunction(
+        "interaction.memory-change." + segment.canonical_id,
+        arguments,
+        TypeRef::Builtin(BuiltinType::Unit));
+    function.blocks.reserve(5);
+    auto& entry = builder.AddBlock(function);
+    const auto poll_count =
+        builder.NewArgument(TypeRef::Builtin(BuiltinType::U64));
+    auto& poll = builder.AddBlock(function, std::array{poll_count});
+    const auto retry_count =
+        builder.NewArgument(TypeRef::Builtin(BuiltinType::U64));
+    auto& retry = builder.AddBlock(function, std::array{retry_count});
+    auto& changed = builder.AddBlock(function);
+    auto& exhausted = builder.AddBlock(function);
+
+    const auto zero = ConstantU64(
+        builder,
+        function,
+        entry,
+        0,
+        "memory-change/initial-poll-count",
+        {});
+    if (!zero)
+        return std::nullopt;
+    builder.SetTerminator(
+        function,
+        entry,
+        Terminator{
+            .kind = TerminatorKind::Branch,
+            .edges = {{
+                .target = poll.id,
+                .arguments = {*zero},
+            }},
+        },
+        "memory-change/start");
+
+    const auto one = ConstantU64(
+        builder,
+        function,
+        poll,
+        1,
+        "memory-change/one-held-frame",
+        {});
+    const auto input_binding = AddOptional(
+        builder,
+        function,
+        poll,
+        CanonicalRuntimeSchema::OptionalInputExecutionBinding,
+        binding.id,
+        "memory-change/input-binding",
+        {});
+    const auto frame_config = AddStaticConfig(
+        builder,
+        function,
+        poll,
+        CanonicalRuntimeSchema::ExecutionAdvanceStaticConfig,
+        AdvanceConfig(segment),
+        "memory-change/frame/static-config",
+        {});
+    const auto frame_request = one && input_binding && frame_config
+        ? AddRequest(
+              builder,
+              function,
+              poll,
+              CanonicalAction::ExecutionStepFrames,
+              std::array{*one, *input_binding, *frame_config},
+              "memory-change/frame/request",
+              {})
+        : std::nullopt;
+    if (!frame_request)
+        return std::nullopt;
+    (void)builder.AddInstruction(
+        function,
+        poll,
+        InstructionOpcode::AwaitAction,
+        CanonicalActionOutputType(CanonicalAction::ExecutionStepFrames),
+        std::array{*frame_request},
+        ActionTarget(definition.actions.step_frames),
+        "memory-change/advance-one-held-frame");
+
+    const auto memory_action =
+        *FindCanonicalAction(*segment.memory_change_observation);
+    const auto memory_request = AddMemoryReadRequest(
+        builder,
+        function,
+        poll,
+        memory_action,
+        std::nullopt,
+        segment.memory_change_address,
+        "memory-change/read-after-frame",
+        {});
+    if (!memory_request)
+        return std::nullopt;
+    const auto observed = builder.AddInstruction(
+        function,
+        poll,
+        InstructionOpcode::AwaitAction,
+        segment.memory_change_value_type,
+        std::array{*memory_request},
+        ActionTarget(*segment.memory_change_observation),
+        "memory-change/observe-after-frame");
+    const auto did_change = observed
+        ? builder.AddInstruction(
+              function,
+              poll,
+              InstructionOpcode::NotEqual,
+              TypeRef::Builtin(BuiltinType::Bool),
+              std::array{baseline.id, *observed},
+              {},
+              "memory-change/compare")
+        : std::nullopt;
+    const auto next_count = builder.AddInstruction(
+        function,
+        poll,
+        InstructionOpcode::AddChecked,
+        TypeRef::Builtin(BuiltinType::U64),
+        std::array{poll_count.id, *one},
+        {},
+        "memory-change/increment-poll-count");
+    if (!did_change || !next_count)
+        return std::nullopt;
+    builder.SetTerminator(
+        function,
+        poll,
+        Terminator{
+            .kind = TerminatorKind::ConditionalBranch,
+            .condition_or_selector = did_change,
+            .edges = {
+                {.target = changed.id},
+                {
+                    .target = retry.id,
+                    .arguments = {*next_count},
+                },
+            },
+        },
+        "memory-change/changed-or-retry");
+
+    const auto limit = ConstantU64(
+        builder,
+        function,
+        retry,
+        segment.maximum_memory_polls,
+        "memory-change/poll-limit",
+        {});
+    const auto may_retry = limit
+        ? builder.AddInstruction(
+              function,
+              retry,
+              InstructionOpcode::Less,
+              TypeRef::Builtin(BuiltinType::Bool),
+              std::array{retry_count.id, *limit},
+              {},
+              "memory-change/bound-check")
+        : std::nullopt;
+    if (!may_retry)
+        return std::nullopt;
+    builder.SetTerminator(
+        function,
+        retry,
+        Terminator{
+            .kind = TerminatorKind::ConditionalBranch,
+            .condition_or_selector = may_retry,
+            .edges = {
+                {
+                    .target = poll.id,
+                    .arguments = {retry_count.id},
+                },
+                {.target = exhausted.id},
+            },
+        },
+        "memory-change/retry-within-bound");
+
+    builder.SetTerminator(
+        function,
+        changed,
+        Terminator{.kind = TerminatorKind::Return},
+        "memory-change/complete");
+    builder.SetTerminator(
+        function,
+        exhausted,
+        Terminator{
+            .kind = TerminatorKind::StructuredFail,
+            .failure = StructuredFailure{
+                "interaction_memory_change_timeout",
+                std::format(
+                    "Interaction segment '{}' did not observe memory change within {} held frames",
+                    segment.canonical_id,
+                    segment.maximum_memory_polls),
+            },
+        },
+        "memory-change/exhausted");
+    return function.id;
 }
 
 } // namespace
@@ -670,11 +813,8 @@ CompositionResult LowerInteraction(
              definition.state_type,
              definition.output_type,
              definition.lease_type,
-             definition.subscription_type,
              definition.point_receipt_type,
-             definition.input_publication_receipt_type,
-             definition.input_neutral_witness_type,
-             definition.input_poll_receipt_type,
+             definition.input_execution_binding_type,
              definition.segment_result_type,
              definition.adaptive_transition_type,
              definition.adaptive_segment_id_type,
@@ -690,11 +830,32 @@ CompositionResult LowerInteraction(
     {
         for (const auto& point : segment.gate_alternatives)
             builder.AddCapabilityImport(point.capability_pack);
+        if (segment.post_release_gate)
+            builder.AddCapabilityImport(
+                segment.post_release_gate->capability_pack);
         builder.AddReducerImport(segment.completion_mapper);
         for (const auto& check : segment.attached_checks)
             builder.AddReducerImport(check);
         if (segment.memory_change_observation)
             builder.AddActionImport(*segment.memory_change_observation);
+    }
+
+    std::map<std::string, ProgramFunctionId> memory_poll_functions;
+    for (const auto& segment : definition.segments)
+    {
+        if (!segment.memory_change_observation)
+            continue;
+        const auto function = AddMemoryChangePollFunction(
+            builder,
+            definition,
+            segment);
+        if (!function)
+        {
+            return detail::Fail(
+                "interaction.lowering_failed",
+                "bounded memory-change synchronization could not be lowered");
+        }
+        memory_poll_functions.emplace(segment.canonical_id, *function);
     }
 
     std::vector<ValueDefinition> arguments;
@@ -720,21 +881,12 @@ CompositionResult LowerInteraction(
         std::nullopt,
         outer_scope);
 
-    const bool requires_neutral_acknowledgement =
-        std::ranges::any_of(
-            definition.segments,
-            [](const InteractionSegmentDefinition& segment)
-            {
-                return segment.acknowledgement ==
-                    InputAcknowledgementPolicy::
-                        RequestAndRelease;
-            });
     const auto lease_config = AddStaticConfig(
         builder,
         function,
         entry,
         CanonicalRuntimeSchema::InputLeaseStaticConfig,
-        LeaseConfig(requires_neutral_acknowledgement),
+        LeaseConfig(),
         "input/acquire-lease/static-config",
         outer_scope);
     const auto lease_request = lease_config
@@ -765,45 +917,6 @@ CompositionResult LowerInteraction(
         return detail::Fail(
             "interaction.lowering_failed",
             "input lease action did not produce a resource");
-
-    const auto unwind_neutral_config = AddStaticConfig(
-        builder,
-        function,
-        entry,
-        CanonicalRuntimeSchema::InputNeutralStaticConfig,
-        NeutralConfig(requires_neutral_acknowledgement),
-        "unwind/neutralize-input/static-config",
-        outer_scope);
-    const auto unwind_neutral_request =
-        unwind_neutral_config
-        ? AddRequest(
-              builder,
-              function,
-              entry,
-              CanonicalAction::InputNeutralize,
-              std::array{
-                  *lease,
-                  *unwind_neutral_config},
-              "unwind/neutralize-input/request",
-              outer_scope)
-        : std::nullopt;
-    if (!unwind_neutral_request)
-        return detail::Fail(
-            "interaction.lowering_failed",
-            "neutral compensation request could not be constructed");
-    (void)builder.AddInstruction(
-        function,
-        entry,
-        InstructionOpcode::DeferCompensation,
-        std::nullopt,
-        std::array{*unwind_neutral_request},
-        {
-            .kind = InstructionTargetKind::DeferredAction,
-            .dependency = definition.actions.neutralize,
-        },
-        "unwind/neutralize-input",
-        std::nullopt,
-        outer_scope);
 
     std::vector<ProgramValueId> argument_ids;
     argument_ids.reserve(arguments.size());
@@ -876,115 +989,90 @@ CompositionResult LowerInteraction(
             builder,
             function,
             block,
-            CanonicalRuntimeSchema::StopGroupStaticConfig,
-            StopGroupConfig(segment.gate_alternatives),
+            CanonicalRuntimeSchema::SemanticPointSet,
+            EncodeSemanticPointSetV1(segment.gate_alternatives),
             "segment/" + segment.canonical_id +
                 "/gate/static-config",
             segment_scope);
-        const auto gate_request = gate_config
-            ? AddRequest(
+        if (!gate_config)
+            return detail::Fail(
+                "interaction.lowering_failed",
+                "segment semantic point set could not be constructed");
+        std::optional<ProgramValueId> memory_baseline;
+        if (segment.memory_change_observation)
+        {
+            const auto memory_action = *FindCanonicalAction(
+                *segment.memory_change_observation);
+            AddCanonicalActionSchemaImports(builder, memory_action);
+            const auto memory_request = AddMemoryReadRequest(
+                builder,
+                function,
+                block,
+                memory_action,
+                std::nullopt,
+                segment.memory_change_address,
+                "segment/" + segment.canonical_id +
+                    "/memory-baseline-before-input",
+                segment_scope);
+            memory_baseline = builder.AddInstruction(
+                function,
+                block,
+                InstructionOpcode::AwaitAction,
+                segment.memory_change_value_type,
+                std::array{*memory_request},
+                ActionTarget(*segment.memory_change_observation),
+                "segment/" + segment.canonical_id +
+                    "/memory-baseline-before-input",
+                std::nullopt,
+                {});
+        }
+        const auto requested_input =
+            segment.input_kind == InteractionInputKind::Held
+            ? std::optional<ProgramValueId>(
+                  arguments[segment.requested_input_parameter].id)
+            : NeutralInputFrame(
                   builder,
                   function,
                   block,
-                  CanonicalAction::
-                      StopPointsSubscribeGroup,
-                  std::array{*gate_config},
-                  "segment/" + segment.canonical_id +
-                      "/gate/request",
-                  segment_scope)
-            : std::nullopt;
-        if (!gate_request)
+                  "segment/" + segment.canonical_id + "/neutral-state",
+                  segment_scope);
+        if (!requested_input)
             return detail::Fail(
                 "interaction.lowering_failed",
-                "segment gate request could not be constructed");
-        const auto subscription = builder.AddInstruction(
-            function,
-            block,
-            InstructionOpcode::AwaitAction,
-            definition.subscription_type,
-            std::array{*gate_request},
-            ActionTarget(definition.actions.subscribe_group),
-            "segment/" + segment.canonical_id + "/" + GateLabel(segment),
-            std::nullopt,
-            segment_scope);
-        const auto& publish_action = PublicationAction(
-            definition.actions,
-            segment.input_kind);
-        const auto requested_input =
-            arguments[segment.requested_input_parameter].id;
-        const CanonicalAction publish_kind =
-            segment.input_kind ==
-                    InteractionInputKind::Held
-            ? CanonicalAction::InputPublishHeld
-            : segment.input_kind ==
-                    InteractionInputKind::Pulse
-            ? CanonicalAction::InputPublishPulse
-            : segment.input_kind ==
-                    InteractionInputKind::Sequence
-            ? CanonicalAction::InputPublishSequence
-            : CanonicalAction::InputNeutralize;
-        const auto publish_config = AddStaticConfig(
+                "segment input state could not be constructed");
+        const auto apply_request = AddRequest(
             builder,
             function,
             block,
-            publish_kind ==
-                    CanonicalAction::InputNeutralize
-                ? CanonicalRuntimeSchema::
-                      InputNeutralStaticConfig
-                : CanonicalRuntimeSchema::
-                      InputPublicationStaticConfig,
-            publish_kind ==
-                    CanonicalAction::InputNeutralize
-                ? NeutralConfig(
-                      segment.acknowledgement ==
-                      InputAcknowledgementPolicy::
-                          RequestAndRelease)
-                : PublicationConfig(
-                      segment.input_kind,
-                      segment.acknowledgement),
-            "segment/" + segment.canonical_id +
-                "/publish/static-config",
+            CanonicalAction::InputApplyState,
+            std::array{*lease, *requested_input},
+            "segment/" + segment.canonical_id + "/apply-state/request",
             segment_scope);
-        std::vector<ProgramValueId> publish_fields{*lease};
-        if (publish_kind != CanonicalAction::InputNeutralize)
-            publish_fields.push_back(requested_input);
-        publish_fields.push_back(*publish_config);
-        const auto publish_request = AddRequest(
+        const auto binding = apply_request
+            ? builder.AddInstruction(
+                  function,
+                  block,
+                  InstructionOpcode::AwaitAction,
+                  definition.input_execution_binding_type,
+                  std::array{*apply_request},
+                  ActionTarget(definition.actions.apply_input_state),
+                  "segment/" + segment.canonical_id +
+                      "/apply-state-before-departure",
+                  std::nullopt,
+                  {})
+            : std::nullopt;
+        if (!binding)
+            return detail::Fail(
+                "interaction.lowering_failed",
+                "segment input state action could not be lowered");
+        const auto wait_binding = AddOptional(
             builder,
             function,
             block,
-            publish_kind,
-            publish_fields,
+            CanonicalRuntimeSchema::OptionalInputExecutionBinding,
+            binding,
             "segment/" + segment.canonical_id +
-                "/publish/request",
-            segment_scope);
-        const auto publication = builder.AddInstruction(
-            function,
-            block,
-            InstructionOpcode::AwaitAction,
-            publish_kind ==
-                    CanonicalAction::InputNeutralize
-                ? definition.input_neutral_witness_type
-                : definition.input_publication_receipt_type,
-            std::array{*publish_request},
-            ActionTarget(publish_action),
-            "segment/" + segment.canonical_id +
-                "/publish-before-departure",
-            std::nullopt,
-            {});
-
-        const auto wait_publication = AddOptional(
-            builder,
-            function,
-            block,
-            CanonicalRuntimeSchema::
-                OptionalInputPublicationReceipt,
-            publish_kind ==
-                    CanonicalAction::InputNeutralize
-                ? std::nullopt
-                : publication,
-            "segment/" + segment.canonical_id +
-                "/continue/input-publication",
+                "/continue/input-binding",
             segment_scope);
         const auto wait_config = AddStaticConfig(
             builder,
@@ -1020,8 +1108,8 @@ CompositionResult LowerInteraction(
             block,
             CanonicalAction::ExecutionContinueUntil,
             std::array{
-                *subscription,
-                *wait_publication,
+                *gate_config,
+                *wait_binding,
                 *no_movie,
                 *no_expected_count,
                 *wait_config},
@@ -1054,51 +1142,27 @@ CompositionResult LowerInteraction(
                 builder,
                 function,
                 block,
-                CanonicalRuntimeSchema::StopGroupStaticConfig,
-                StopGroupConfig(successor_points),
+                CanonicalRuntimeSchema::SemanticPointSet,
+                EncodeSemanticPointSetV1(successor_points),
                 "segment/" + segment.canonical_id +
                     "/held-successor/static-config",
                 segment_scope);
-            const auto successor_request = successor_config
-                ? AddRequest(
-                      builder,
-                      function,
-                      block,
-                      CanonicalAction::StopPointsSubscribeGroup,
-                      std::array{*successor_config},
-                      "segment/" + segment.canonical_id +
-                          "/held-successor/request",
-                      segment_scope)
-                : std::nullopt;
-            if (!successor_request)
+            if (!successor_config)
             {
                 return detail::Fail(
                     "interaction.lowering_failed",
-                    "held-through semantic successor request could not be constructed");
+                    "held-through semantic successor point set could not be constructed");
             }
-            const auto successor_subscription =
-                builder.AddInstruction(
-                    function,
-                    block,
-                    InstructionOpcode::AwaitAction,
-                    definition.subscription_type,
-                    std::array{*successor_request},
-                    ActionTarget(
-                        definition.actions.subscribe_group),
-                    "segment/" + segment.canonical_id +
-                        "/held-successor/" +
-                        segment.held_through_successor
-                            ->canonical_id,
-                    std::nullopt,
-                    segment_scope);
             const auto successor_wait_request = AddRequest(
                 builder,
                 function,
                 block,
                 CanonicalAction::ExecutionContinueUntil,
                 std::array{
-                    *successor_subscription,
-                    *wait_publication,
+                    *successor_config,
+                    *wait_binding,
+                    *no_movie,
+                    *no_expected_count,
                     *wait_config},
                 "segment/" + segment.canonical_id +
                     "/held-successor/continue/request",
@@ -1123,70 +1187,6 @@ CompositionResult LowerInteraction(
                     "interaction.lowering_failed",
                     "held-through semantic successor wait could not be lowered");
             }
-        }
-
-        std::optional<ProgramValueId> request_poll;
-        if (segment.acknowledgement !=
-            InputAcknowledgementPolicy::NotRequired)
-        {
-            const auto request_publication = AddOptional(
-                builder,
-                function,
-                block,
-                CanonicalRuntimeSchema::
-                    OptionalInputPublicationReceipt,
-                publication,
-                "segment/" + segment.canonical_id +
-                    "/request-poll/publication",
-                segment_scope);
-            const auto no_neutral = AddOptional(
-                builder,
-                function,
-                block,
-                CanonicalRuntimeSchema::
-                    OptionalInputNeutralWitness,
-                std::nullopt,
-                "segment/" + segment.canonical_id +
-                    "/request-poll/no-neutral",
-                segment_scope);
-            const auto request_poll_config = AddStaticConfig(
-                builder,
-                function,
-                block,
-                CanonicalRuntimeSchema::
-                    InputPollStaticConfig,
-                PollConfig(
-                    false,
-                    segment.canonical_id +
-                        ".request",
-                    1),
-                "segment/" + segment.canonical_id +
-                    "/request-poll/static-config",
-                segment_scope);
-            const auto request_poll_request = AddRequest(
-                builder,
-                function,
-                block,
-                CanonicalAction::InputAwaitGuestPoll,
-                std::array{
-                    *lease,
-                    *request_publication,
-                    *no_neutral,
-                    *request_poll_config},
-                "segment/" + segment.canonical_id +
-                    "/request-poll/request",
-                segment_scope);
-            request_poll = builder.AddInstruction(
-                function,
-                block,
-                InstructionOpcode::AwaitAction,
-                definition.input_poll_receipt_type,
-                std::array{*request_poll_request},
-                ActionTarget(definition.actions.await_guest_poll),
-                "segment/" + segment.canonical_id +
-                    "/request-receipt-before-neutral",
-                std::nullopt,
-                {});
         }
 
         for (const auto observation : segment.attached_observations)
@@ -1220,239 +1220,223 @@ CompositionResult LowerInteraction(
                 segment_scope);
         }
 
-        std::optional<ProgramValueId> memory_baseline;
         if (segment.memory_change_observation)
         {
-            const auto memory_action =
-                *FindCanonicalAction(
-                    *segment.memory_change_observation);
-            AddCanonicalActionSchemaImports(
+            (void)builder.AddInstruction(
+                function,
+                block,
+                InstructionOpcode::CallLocal,
+                std::nullopt,
+                std::array{*memory_baseline, *binding},
+                {
+                    .kind = InstructionTargetKind::LocalFunction,
+                    .local_function =
+                        memory_poll_functions.at(segment.canonical_id),
+                },
+                "segment/" + segment.canonical_id +
+                    "/bounded-memory-change-while-state-held",
+                std::nullopt,
+                segment_scope);
+        }
+
+        std::optional<ProgramValueId> neutral_binding = binding;
+        if (segment.input_kind == InteractionInputKind::Held)
+        {
+            const auto neutral_frame = NeutralInputFrame(
                 builder,
-                memory_action);
-            const auto memory_request =
-                AddMemoryReadRequest(
-                    builder,
-                    function,
-                    block,
-                    memory_action,
-                    *stop,
-                    segment.memory_change_address,
-                    "segment/" +
-                        segment.canonical_id +
-                        "/memory-baseline",
-                    segment_scope);
-            memory_baseline = builder.AddInstruction(
+                function,
+                block,
+                "segment/" + segment.canonical_id + "/release/frame",
+                segment_scope);
+            const auto neutral_request = neutral_frame
+                ? AddRequest(
+                      builder,
+                      function,
+                      block,
+                      CanonicalAction::InputApplyState,
+                      std::array{*lease, *neutral_frame},
+                      "segment/" + segment.canonical_id +
+                          "/release/request",
+                      segment_scope)
+                : std::nullopt;
+            neutral_binding = neutral_request
+                ? builder.AddInstruction(
+                      function,
+                      block,
+                      InstructionOpcode::AwaitAction,
+                      definition.input_execution_binding_type,
+                      std::array{*neutral_request},
+                      ActionTarget(definition.actions.apply_input_state),
+                      "segment/" + segment.canonical_id +
+                          "/release-to-neutral",
+                      std::nullopt,
+                      {})
+                : std::nullopt;
+            if (!neutral_binding)
+                return detail::Fail(
+                    "interaction.lowering_failed",
+                    "held segment neutral release could not be lowered");
+        }
+
+        if (segment.post_release_gate)
+        {
+            const std::array post_points{*segment.post_release_gate};
+            const auto post_config = AddStaticConfig(
+                builder,
+                function,
+                block,
+                CanonicalRuntimeSchema::SemanticPointSet,
+                EncodeSemanticPointSetV1(post_points),
+                "segment/" + segment.canonical_id +
+                    "/post-release-gate/static-config",
+                segment_scope);
+            const auto release_binding = AddOptional(
+                builder,
+                function,
+                block,
+                CanonicalRuntimeSchema::OptionalInputExecutionBinding,
+                neutral_binding,
+                "segment/" + segment.canonical_id +
+                    "/post-release-gate/input-binding",
+                segment_scope);
+            const auto post_wait_request = AddRequest(
+                builder,
+                function,
+                block,
+                CanonicalAction::ExecutionContinueUntil,
+                std::array{
+                    *post_config,
+                    *release_binding,
+                    *no_movie,
+                    *no_expected_count,
+                    *wait_config},
+                "segment/" + segment.canonical_id +
+                    "/post-release-gate/continue-request",
+                segment_scope);
+            stop = builder.AddInstruction(
                 function,
                 block,
                 InstructionOpcode::AwaitAction,
-                segment.memory_change_value_type,
-                std::array{*memory_request},
-                ActionTarget(*segment.memory_change_observation),
+                definition.point_receipt_type,
+                std::array{*post_wait_request},
+                ActionTarget(definition.actions.continue_until),
                 "segment/" + segment.canonical_id +
-                    "/memory-baseline-before-advance",
+                    "/post-release-gate/" +
+                    segment.post_release_gate->canonical_id,
                 std::nullopt,
                 {});
         }
 
-        const auto neutral_config = AddStaticConfig(
-            builder,
-            function,
-            block,
-            CanonicalRuntimeSchema::InputNeutralStaticConfig,
-            NeutralConfig(
-                segment.acknowledgement ==
-                InputAcknowledgementPolicy::
-                    RequestAndRelease),
-            "segment/" + segment.canonical_id +
-                "/neutral/static-config",
-            segment_scope);
-        const auto neutral_request = AddRequest(
-            builder,
-            function,
-            block,
-            CanonicalAction::InputNeutralize,
-            std::array{*lease, *neutral_config},
-            "segment/" + segment.canonical_id +
-                "/neutral/request",
-            segment_scope);
-        const auto neutral = builder.AddInstruction(
-            function,
-            block,
-            InstructionOpcode::AwaitAction,
-            definition.input_neutral_witness_type,
-            std::array{*neutral_request},
-            ActionTarget(definition.actions.neutralize),
-            "segment/" + segment.canonical_id + "/publish-neutral",
-            std::nullopt,
-            {});
+        if (segment.post_gate_neutral_frames != 0)
+        {
+            const auto count = ConstantU64(
+                builder,
+                function,
+                block,
+                segment.post_gate_neutral_frames,
+                "segment/" + segment.canonical_id +
+                    "/post-gate-neutral/count",
+                segment_scope);
+            const auto input_binding = AddOptional(
+                builder,
+                function,
+                block,
+                CanonicalRuntimeSchema::OptionalInputExecutionBinding,
+                neutral_binding,
+                "segment/" + segment.canonical_id +
+                    "/post-gate-neutral/input-binding",
+                segment_scope);
+            const auto frame_config = AddStaticConfig(
+                builder,
+                function,
+                block,
+                CanonicalRuntimeSchema::ExecutionAdvanceStaticConfig,
+                AdvanceConfig(segment),
+                "segment/" + segment.canonical_id +
+                    "/post-gate-neutral/static-config",
+                segment_scope);
+            const auto request = AddRequest(
+                builder,
+                function,
+                block,
+                CanonicalAction::ExecutionStepFrames,
+                std::array{*count, *input_binding, *frame_config},
+                "segment/" + segment.canonical_id +
+                    "/post-gate-neutral/request",
+                segment_scope);
+            (void)builder.AddInstruction(
+                function,
+                block,
+                InstructionOpcode::AwaitAction,
+                CanonicalActionOutputType(CanonicalAction::ExecutionStepFrames),
+                std::array{*request},
+                ActionTarget(definition.actions.step_frames),
+                "segment/" + segment.canonical_id +
+                    "/post-gate-neutral/exact-frames",
+                std::nullopt,
+                {});
+        }
 
-        if (segment.memory_change_observation)
+        if (segment.input_kind == InteractionInputKind::Held &&
+            !segment.post_release_gate &&
+            segment.post_gate_neutral_frames == 0)
         {
             const auto one = ConstantU64(
                 builder,
                 function,
                 block,
                 1,
-                "segment/" + segment.canonical_id +
-                    "/one-neutral-frame-between-polls",
+                "segment/" + segment.canonical_id + "/release/one-frame",
                 segment_scope);
-            const auto no_publication = AddOptional(
+            const auto input_binding = AddOptional(
                 builder,
                 function,
                 block,
-                CanonicalRuntimeSchema::
-                    OptionalInputNeutralWitness,
-                neutral,
+                CanonicalRuntimeSchema::OptionalInputExecutionBinding,
+                neutral_binding,
                 "segment/" + segment.canonical_id +
-                    "/neutral-frame/witness",
+                    "/release/input-binding",
                 segment_scope);
             const auto frame_config = AddStaticConfig(
                 builder,
                 function,
                 block,
-                CanonicalRuntimeSchema::
-                    ExecutionAdvanceStaticConfig,
+                CanonicalRuntimeSchema::ExecutionAdvanceStaticConfig,
                 AdvanceConfig(segment),
                 "segment/" + segment.canonical_id +
-                    "/neutral-frame/static-config",
+                    "/release/static-config",
                 segment_scope);
-            const auto frame_request = AddRequest(
-                builder,
-                function,
-                block,
-                CanonicalAction::ExecutionStepFrames,
-                std::array{
-                    *one,
-                    *no_publication,
-                    *frame_config},
-                "segment/" + segment.canonical_id +
-                    "/neutral-frame/request",
-                segment_scope);
-            (void)builder.AddInstruction(
-                function,
-                block,
-                InstructionOpcode::AwaitAction,
-                CanonicalActionOutputType(
-                    CanonicalAction::
-                        ExecutionStepFrames),
-                std::array{*frame_request},
-                ActionTarget(definition.actions.step_frames),
-                std::format(
-                    "segment/{}/neutral-frame/poll-bound={}",
-                    segment.canonical_id,
-                    segment.maximum_memory_polls),
-                std::nullopt,
-                {});
-            const auto memory_action =
-                *FindCanonicalAction(
-                    *segment.memory_change_observation);
-            const auto after_request =
-                AddMemoryReadRequest(
-                    builder,
+            const auto release_request = one && input_binding && frame_config
+                ? AddRequest(
+                      builder,
+                      function,
+                      block,
+                      CanonicalAction::ExecutionStepFrames,
+                      std::array{*one, *input_binding, *frame_config},
+                      "segment/" + segment.canonical_id +
+                          "/release/request",
+                      segment_scope)
+                : std::nullopt;
+            if (!release_request || !builder.AddInstruction(
                     function,
                     block,
-                    memory_action,
-                    *stop,
-                    segment.memory_change_address,
-                    "segment/" +
-                        segment.canonical_id +
-                        "/memory-after-neutral",
-                    segment_scope);
-            const auto after = builder.AddInstruction(
-                function,
-                block,
-                InstructionOpcode::AwaitAction,
-                segment.memory_change_value_type,
-                std::array{*after_request},
-                ActionTarget(*segment.memory_change_observation),
-                "segment/" + segment.canonical_id +
-                    "/memory-observation-after-neutral-frame",
-                std::nullopt,
-                {});
-            (void)builder.AddInstruction(
-                function,
-                block,
-                InstructionOpcode::NotEqual,
-                TypeRef::Builtin(BuiltinType::Bool),
-                std::array{*memory_baseline, *after},
-                {},
-                "segment/" + segment.canonical_id +
-                    "/memory-change-check",
-                std::nullopt,
-                segment_scope);
+                    InstructionOpcode::AwaitAction,
+                    CanonicalActionOutputType(
+                        CanonicalAction::ExecutionStepFrames),
+                    std::array{*release_request},
+                    ActionTarget(definition.actions.step_frames),
+                    "segment/" + segment.canonical_id +
+                        "/release/observed",
+                    std::nullopt,
+                    {}))
+            {
+                return detail::Fail(
+                    "interaction.lowering_failed",
+                    "held segment release observation could not be lowered");
+            }
         }
 
-        std::optional<ProgramValueId> release_poll;
-        if (segment.acknowledgement ==
-            InputAcknowledgementPolicy::RequestAndRelease)
-        {
-            const auto no_publication = AddOptional(
-                builder,
-                function,
-                block,
-                CanonicalRuntimeSchema::
-                    OptionalInputPublicationReceipt,
-                std::nullopt,
-                "segment/" + segment.canonical_id +
-                    "/release-poll/no-publication",
-                segment_scope);
-            const auto neutral_witness = AddOptional(
-                builder,
-                function,
-                block,
-                CanonicalRuntimeSchema::
-                    OptionalInputNeutralWitness,
-                neutral,
-                "segment/" + segment.canonical_id +
-                    "/release-poll/neutral-witness",
-                segment_scope);
-            const auto release_poll_config = AddStaticConfig(
-                builder,
-                function,
-                block,
-                CanonicalRuntimeSchema::
-                    InputPollStaticConfig,
-                PollConfig(
-                    true,
-                    *segment.release_witness_point,
-                    1),
-                "segment/" + segment.canonical_id +
-                    "/release-poll/static-config",
-                segment_scope);
-            const auto release_poll_request = AddRequest(
-                builder,
-                function,
-                block,
-                CanonicalAction::InputAwaitGuestPoll,
-                std::array{
-                    *lease,
-                    *no_publication,
-                    *neutral_witness,
-                    *release_poll_config},
-                "segment/" + segment.canonical_id +
-                    "/release-poll/request",
-                segment_scope);
-            release_poll = builder.AddInstruction(
-                function,
-                block,
-                InstructionOpcode::AwaitAction,
-                definition.input_poll_receipt_type,
-                std::array{*release_poll_request},
-                ActionTarget(definition.actions.await_guest_poll),
-                "segment/" + segment.canonical_id +
-                    "/release-witness/" + *segment.release_witness_point,
-                std::nullopt,
-                {});
-        }
-
-        std::vector<ProgramValueId> completion_operands{
-            current_state,
-            *stop,
-            *publication,
-            *neutral,
-        };
-        if (request_poll) completion_operands.push_back(*request_poll);
-        if (release_poll) completion_operands.push_back(*release_poll);
+        const std::array completion_operands{current_state, *stop};
         const auto segment_result = builder.AddInstruction(
             function,
             block,
@@ -1511,22 +1495,19 @@ CompositionResult LowerInteraction(
                 .kind = TerminatorKind::EnumSwitch,
                 .condition_or_selector = selection,
             };
-            for (std::size_t index = 0;
-                 index < definition.segments.size();
-                 ++index)
+            for (const auto& [selection_value, segment_id] :
+                 definition.adaptive_selection->segments)
             {
                 terminal.enum_cases.push_back({
-                    .enum_value = static_cast<std::int64_t>(index),
+                    .enum_value = selection_value,
                     .edge = {
-                        .target = segment_blocks.at(
-                            definition.segments[index].canonical_id),
+                        .target = segment_blocks.at(segment_id),
                         .arguments = {*next_state},
                     },
                 });
             }
             terminal.enum_cases.push_back({
-                .enum_value =
-                    static_cast<std::int64_t>(definition.segments.size()),
+                .enum_value = definition.adaptive_selection->complete,
                 .edge = {
                     .target = complete.id,
                     .arguments = {*next_state, *segment_result},

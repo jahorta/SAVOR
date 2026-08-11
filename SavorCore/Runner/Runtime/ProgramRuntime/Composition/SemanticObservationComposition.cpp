@@ -1,6 +1,8 @@
 #include "SemanticObservationComposition.h"
 
+#include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
+#include "Runner/Runtime/StopPoints/StopPointTypes.h"
 
 #include <algorithm>
 #include <array>
@@ -99,6 +101,139 @@ private:
     std::vector<Byte> bytes_;
 };
 
+class SemanticPointSetReader final
+{
+public:
+    explicit SemanticPointSetReader(std::span<const Byte> bytes)
+        : bytes_(bytes)
+    {
+        constexpr std::array<char, 4> magic{'S', 'P', 'S', '1'};
+        if (bytes_.size() < magic.size())
+            return;
+        for (std::size_t index = 0; index < magic.size(); ++index)
+        {
+            if (bytes_[index] != static_cast<Byte>(magic[index]))
+                return;
+        }
+        offset_ = magic.size();
+        valid_ = true;
+    }
+
+    bool U8(std::uint8_t& value)
+    {
+        if (!Take(1)) return false;
+        value = bytes_[offset_++];
+        return true;
+    }
+    bool Bool(bool& value)
+    {
+        std::uint8_t encoded = 0;
+        if (!U8(encoded) || encoded > 1) return false;
+        value = encoded != 0;
+        return true;
+    }
+    bool U32(std::uint32_t& value)
+    {
+        if (!Take(4)) return false;
+        value = 0;
+        for (unsigned shift = 0; shift != 32; shift += 8)
+            value |= static_cast<std::uint32_t>(bytes_[offset_++]) << shift;
+        return true;
+    }
+    bool String(std::string& value, std::size_t maximum = 4096)
+    {
+        std::uint32_t size = 0;
+        if (!U32(size) || size > maximum || !Take(size)) return false;
+        value.assign(
+            reinterpret_cast<const char*>(bytes_.data() + offset_),
+            size);
+        offset_ += size;
+        return !value.empty() && std::ranges::none_of(
+            value,
+            [](unsigned char character) { return character == 0; });
+    }
+    bool Hash(ContentHash256& value)
+    {
+        if (!Take(value.bytes.size())) return false;
+        std::ranges::copy(
+            bytes_.subspan(offset_, value.bytes.size()),
+            value.bytes.begin());
+        offset_ += value.bytes.size();
+        return !value.empty();
+    }
+    bool Type(TypeRef& value)
+    {
+        bool named = false;
+        if (!Bool(named)) return false;
+        if (!named)
+        {
+            std::uint8_t builtin = 0;
+            if (!U8(builtin) || builtin >
+                    static_cast<std::uint8_t>(BuiltinType::F64))
+                return false;
+            value = TypeRef::Builtin(static_cast<BuiltinType>(builtin));
+            return true;
+        }
+        SchemaIdentity identity;
+        if (!String(identity.canonical_id) ||
+            !U32(identity.version) || identity.version == 0 ||
+            !Hash(identity.schema_hash))
+            return false;
+        value = TypeRef::Named(std::move(identity));
+        return true;
+    }
+    [[nodiscard]] bool done() const noexcept
+    {
+        return valid_ && offset_ == bytes_.size();
+    }
+
+private:
+    [[nodiscard]] bool Take(std::size_t count) const noexcept
+    {
+        return valid_ && count <= bytes_.size() - offset_;
+    }
+    std::span<const Byte> bytes_;
+    std::size_t offset_ = 0;
+    bool valid_ = false;
+};
+
+const SemanticPointDescriptor* FindRegisteredPoint(
+    const CapabilityPackIdentity& pack,
+    std::string_view canonical_id)
+{
+    static const capabilities::SourceCapabilityPackCatalog catalog =
+        capabilities::BuildSourceCapabilityPackCatalog();
+    const auto manifest = std::ranges::find(
+        catalog.manifests,
+        pack,
+        &CapabilityPackManifest::identity);
+    if (manifest == catalog.manifests.end()) return nullptr;
+    const auto point = std::ranges::find(
+        manifest->semantic_points,
+        canonical_id,
+        &SemanticPointDescriptor::canonical_id);
+    return point == manifest->semantic_points.end() ? nullptr : &*point;
+}
+
+const CpuEvaluatorDescriptor* FindRegisteredEvaluator(
+    std::string_view canonical_id)
+{
+    static const capabilities::SourceCapabilityPackCatalog catalog =
+        capabilities::BuildSourceCapabilityPackCatalog();
+    const CpuEvaluatorDescriptor* result = nullptr;
+    for (const CapabilityPackManifest& manifest : catalog.manifests)
+    {
+        const auto found = std::ranges::find(
+            manifest.cpu_evaluators,
+            canonical_id,
+            &CpuEvaluatorDescriptor::canonical_id);
+        if (found == manifest.cpu_evaluators.end()) continue;
+        if (result != nullptr) return nullptr;
+        result = &*found;
+    }
+    return result;
+}
+
 void AddCanonicalActionSchemaImports(
     ModuleFragmentBuilder& builder,
     CanonicalAction action)
@@ -180,13 +315,14 @@ std::optional<ProgramValueId> AddRequest(
         scope);
 }
 
-std::vector<Byte> StopGroupConfig(
-    const SemanticAwaitDefinition& definition)
+std::vector<Byte> EncodeSemanticPointSetBytes(
+    std::span<const SemanticPointReference> alternatives,
+    std::span<const HitTimeSampleRequirement> hit_time_samples)
 {
-    StaticConfigWriter writer({'S', 'G', 'C', '1'});
+    StaticConfigWriter writer({'S', 'P', 'S', '1'});
     writer.U32(static_cast<std::uint32_t>(
-        definition.alternatives.size()));
-    for (const auto& point : definition.alternatives)
+        alternatives.size()));
+    for (const auto& point : alternatives)
     {
         writer.String(point.capability_pack.canonical_id);
         writer.U32(point.capability_pack.version);
@@ -196,21 +332,14 @@ std::vector<Byte> StopGroupConfig(
         writer.U32(point.physical_pc);
     }
     writer.U32(static_cast<std::uint32_t>(
-        definition.hit_time_samples.size()));
-    for (const auto& sample : definition.hit_time_samples)
+        hit_time_samples.size()));
+    for (const auto& sample : hit_time_samples)
     {
         writer.String(sample.canonical_id);
         writer.Type(sample.result_type);
         writer.U32(sample.maximum_bytes);
         writer.Bool(sample.required);
     }
-    // Observe, Pass, EndOnEpochChange, scoped. ExecutionEngine promotes the
-    // retained logical definition to its one temporary foreground Wake group
-    // for ContinueUntil; composition never registers a competing Wake owner.
-    writer.U8(0);
-    writer.U8(0);
-    writer.U8(1);
-    writer.U8(0);
     return std::move(writer).Finish();
 }
 
@@ -369,29 +498,22 @@ std::optional<CompositionResult> Validate(
         return detail::Fail(
             "semantic.missing_point",
             "semantic await requires at least one point alternative");
-    if (definition.await.subscribe_group_action.canonical_id.empty() ||
-        definition.await.continue_until_action.canonical_id.empty())
+    if (definition.await.continue_until_action.canonical_id.empty())
     {
         return detail::Fail(
             "semantic.missing_runtime_action",
-            "semantic await requires exact subscribe and continue actions");
+            "semantic await requires the exact continue action");
     }
-    if (definition.await.subscribe_group_action !=
-            CanonicalActionIdentity(
-                CanonicalAction::StopPointsSubscribeGroup) ||
-        definition.await.continue_until_action !=
+    if (definition.await.continue_until_action !=
             CanonicalActionIdentity(
                 CanonicalAction::ExecutionContinueUntil) ||
-        definition.await.subscription_handle_type !=
-            CanonicalActionOutputType(
-                CanonicalAction::StopPointsSubscribeGroup) ||
         definition.await.receipt_type !=
             CanonicalActionOutputType(
                 CanonicalAction::ExecutionContinueUntil))
     {
         return detail::Fail(
             "semantic.noncanonical_runtime_contract",
-            "semantic await requires the exact canonical stop-group and continue-until contracts");
+            "semantic await requires the exact canonical continue-until contract");
     }
 
     std::set<std::string> point_ids;
@@ -704,6 +826,95 @@ std::optional<ProgramValueId> LowerAddress(
 
 } // namespace
 
+std::vector<Byte> EncodeSemanticPointSetV1(
+    std::span<const SemanticPointReference> alternatives,
+    std::span<const HitTimeSampleRequirement> hit_time_samples)
+{
+    return EncodeSemanticPointSetBytes(alternatives, hit_time_samples);
+}
+
+SemanticPointSetDecodeResultV1 DecodeSemanticPointSetV1(
+    std::span<const Byte> bytes)
+{
+    constexpr std::uint32_t maximum_alternatives = 128;
+    SemanticPointSetReader reader(bytes);
+    std::uint32_t alternative_count = 0;
+    if (!reader.U32(alternative_count) || alternative_count == 0 ||
+        alternative_count > maximum_alternatives)
+    {
+        return {{}, "SPS1 has an invalid alternative count"};
+    }
+
+    ResolvedSemanticPointSetV1 resolved;
+    resolved.program_counters.reserve(alternative_count);
+    std::set<std::pair<std::string, std::string>> point_ids;
+    for (std::uint32_t index = 0; index < alternative_count; ++index)
+    {
+        CapabilityPackIdentity pack;
+        std::string point_id;
+        std::uint8_t kind = 0;
+        std::uint32_t pc = 0;
+        if (!reader.String(pack.canonical_id) ||
+            !reader.U32(pack.version) || pack.version == 0 ||
+            !reader.Hash(pack.manifest_hash) ||
+            !reader.String(point_id) || !reader.U8(kind) ||
+            !reader.U32(pc))
+        {
+            return {{}, "SPS1 contains a malformed semantic point"};
+        }
+        const SemanticPointDescriptor* point =
+            FindRegisteredPoint(pack, point_id);
+        if (point == nullptr ||
+            kind != static_cast<std::uint8_t>(
+                SemanticPointKind::ProgramCounter) ||
+            point->kind != SemanticPointKind::ProgramCounter ||
+            point->pc == 0 || point->pc != pc ||
+            !point_ids.emplace(pack.canonical_id, point_id).second)
+        {
+            return {{}, "SPS1 semantic point is not an exact unique registered PC point"};
+        }
+        resolved.program_counters.push_back(pc);
+    }
+
+    std::uint32_t sample_count = 0;
+    if (!reader.U32(sample_count) ||
+        sample_count > kMaxRoutedHitSamples)
+    {
+        return {{}, "SPS1 has an invalid hit-time sample count"};
+    }
+    resolved.hit_time_sample_descriptor_ids.reserve(sample_count);
+    std::set<std::string> sampler_ids;
+    for (std::uint32_t index = 0; index < sample_count; ++index)
+    {
+        std::string evaluator_id;
+        TypeRef result_type;
+        std::uint32_t maximum_bytes = 0;
+        bool required = false;
+        if (!reader.String(evaluator_id) || !reader.Type(result_type) ||
+            !reader.U32(maximum_bytes) || !reader.Bool(required))
+        {
+            return {{}, "SPS1 contains a malformed hit-time sampler"};
+        }
+        const CpuEvaluatorDescriptor* evaluator =
+            FindRegisteredEvaluator(evaluator_id);
+        if (evaluator == nullptr ||
+            evaluator->routed_sample_descriptor_id == 0 ||
+            evaluator->result_type != result_type ||
+            maximum_bytes == 0 ||
+            maximum_bytes > evaluator->maximum_output_bytes ||
+            !sampler_ids.emplace(evaluator_id).second)
+        {
+            return {{}, "SPS1 contains an unregistered or incompatible hit-time sampler"};
+        }
+        resolved.hit_time_sample_descriptor_ids.push_back(
+            evaluator->routed_sample_descriptor_id);
+        (void)required;
+    }
+    if (!reader.done())
+        return {{}, "SPS1 is truncated or has trailing data"};
+    return {std::move(resolved), {}};
+}
+
 CompositionResult LowerSemanticObservation(
     const SemanticObservationComposition& definition,
     ProgramModule& module)
@@ -728,17 +939,11 @@ CompositionResult LowerSemanticObservation(
     // actions. Entrypoints must declare their providing pack explicitly even
     // when a game-specific point pack also depends on it.
     builder.AddCapabilityImport(CanonicalRuntimePackIdentity());
-    builder.AddActionImport(definition.await.subscribe_group_action);
     builder.AddActionImport(definition.await.continue_until_action);
-    AddCanonicalActionSchemaImports(
-        builder,
-        CanonicalAction::StopPointsSubscribeGroup);
     AddCanonicalActionSchemaImports(
         builder,
         CanonicalAction::ExecutionContinueUntil);
     builder.AddTypeImport(definition.output_type);
-    builder.AddTypeImport(
-        definition.await.subscription_handle_type);
     builder.AddTypeImport(definition.await.receipt_type);
     for (const auto& address : definition.address_expressions)
         builder.AddTypeImport(address.result_type);
@@ -772,47 +977,20 @@ CompositionResult LowerSemanticObservation(
         builder,
         function,
         block,
-        CanonicalRuntimeSchema::StopGroupStaticConfig,
-        StopGroupConfig(definition.await),
-        "subscribe/static-config",
+        CanonicalRuntimeSchema::SemanticPointSet,
+        EncodeSemanticPointSetBytes(
+            definition.await.alternatives,
+            definition.await.hit_time_samples),
+        "semantic-points/static-config",
         scope);
-    const auto subscribe_request = group_config
-        ? AddRequest(
-              builder,
-              function,
-              block,
-              CanonicalAction::StopPointsSubscribeGroup,
-              std::array{*group_config},
-              "subscribe/request",
-              scope)
-        : std::nullopt;
-    if (!subscribe_request)
-        return detail::Fail(
-            "semantic.lowering_failed",
-            "subscription request could not be constructed");
-    const auto subscription = builder.AddInstruction(
-        function,
-        block,
-        InstructionOpcode::AwaitAction,
-        definition.await.subscription_handle_type,
-        std::array{*subscribe_request},
-        ActionTarget(definition.await.subscribe_group_action),
-        "subscribe/" + PointLabel(definition.await),
-        std::nullopt,
-        scope);
-    if (!subscription)
-        return detail::Fail(
-            "semantic.lowering_failed",
-            "subscription action did not produce a typed resource");
-
-    const auto no_publication = AddOptional(
+    const auto no_binding = AddOptional(
         builder,
         function,
         block,
         CanonicalRuntimeSchema::
-            OptionalInputPublicationReceipt,
+            OptionalInputExecutionBinding,
         std::nullopt,
-        "continue-until/no-input-publication",
+        "continue-until/no-input-binding",
         scope);
     const auto no_movie = AddOptional(
         builder,
@@ -839,7 +1017,7 @@ CompositionResult LowerSemanticObservation(
         "continue-until/static-config",
         scope);
     const auto continue_request =
-        no_publication && no_movie && no_expected_count &&
+        group_config && no_binding && no_movie && no_expected_count &&
             continue_config
         ? AddRequest(
               builder,
@@ -847,8 +1025,8 @@ CompositionResult LowerSemanticObservation(
               block,
               CanonicalAction::ExecutionContinueUntil,
               std::array{
-                  *subscription,
-                  *no_publication,
+                  *group_config,
+            *no_binding,
                   *no_movie,
                   *no_expected_count,
                   *continue_config},
@@ -962,7 +1140,7 @@ CompositionResult LowerSemanticObservation(
                 function,
                 block,
                 CanonicalRuntimeSchema::
-                    OptionalInputNeutralWitness,
+                    OptionalInputExecutionBinding,
                 std::nullopt,
                 "explicit-observation-advance/no-input-relationship",
                 scope);

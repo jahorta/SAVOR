@@ -5,8 +5,6 @@
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceReducers.h"
 #include "Runner/Runtime/ProgramRuntime/Composition/CompositionSupport.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
-#include "Core/Input/SoaBattle/ActionLibrary.h"
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -39,19 +37,22 @@ TEST(CapabilityPackSources, CatalogIsStableSourceBackedAndJitGuardIsAbsent)
     EXPECT_EQ(
         supported.executable_identity,
         "soal-usa.GEAE8E");
-    ASSERT_EQ(catalog.manifests.size(), 4u);
+    ASSERT_EQ(catalog.manifests.size(), 5u);
     const auto& field = Manifest(catalog, "soa.field");
     const auto& battle = Manifest(catalog, "soa.battle");
+    const auto& battle_command = Manifest(
+        catalog, "soa.battle.command");
     const auto& navigation = Manifest(catalog, "soa.navigation");
 
     EXPECT_EQ(field.semantic_points.size(), 3u);
-    EXPECT_EQ(battle.semantic_points.size(), 64u);
-    EXPECT_EQ(navigation.semantic_points.size(), 1u);
+    EXPECT_EQ(battle.semantic_points.size(), 10u);
+    EXPECT_TRUE(navigation.semantic_points.empty());
     EXPECT_EQ(field.address_symbols.size(), 7u);
     EXPECT_EQ(battle.address_symbols.size(), 9u);
     EXPECT_EQ(navigation.address_symbols.size(), 5u);
 
-    for (const auto* manifest : {&field, &battle, &navigation})
+    for (const auto* manifest : {
+             &field, &battle, &battle_command, &navigation})
     {
         EXPECT_EQ(manifest->compatibility, supported);
         EXPECT_TRUE(std::ranges::none_of(
@@ -59,7 +60,7 @@ TEST(CapabilityPackSources, CatalogIsStableSourceBackedAndJitGuardIsAbsent)
             [](const SemanticPointDescriptor& point)
             {
                 return point.kind ==
-                        SemanticPointPhysicalKind::ProgramCounter &&
+                        SemanticPointKind::ProgramCounter &&
                     point.pc == 0;
             }));
         EXPECT_TRUE(std::ranges::none_of(
@@ -82,10 +83,6 @@ TEST(CapabilityPackSources, CatalogIsStableSourceBackedAndJitGuardIsAbsent)
         battle.semantic_points,
         0x80071740u,
         &SemanticPointDescriptor::pc), battle.semantic_points.end());
-    EXPECT_NE(std::ranges::find(
-        navigation.semantic_points,
-        0x80111770u,
-        &SemanticPointDescriptor::pc), navigation.semantic_points.end());
 }
 
 TEST(CapabilityPackSources, RegistersExactSchemasQueriesActionsAndReducer)
@@ -99,7 +96,7 @@ TEST(CapabilityPackSources, RegistersExactSchemasQueriesActionsAndReducer)
         actions,
         packs);
     ASSERT_TRUE(registered.success) << registered.error.message;
-    EXPECT_EQ(packs.size(), 4u);
+    EXPECT_EQ(packs.size(), 5u);
 
     const auto* battle = packs.Resolve(BattlePackIdentity());
     const auto* navigation = packs.Resolve(NavigationPackIdentity());
@@ -124,13 +121,13 @@ TEST(CapabilityPackSources, RegistersExactSchemasQueriesActionsAndReducer)
         NavigationCaptureContextActionIdentity());
     const auto* reducer = actions.ResolveReducer(
         CanonicalReducerIdentity(
-            CanonicalReducer::BattleMaterializeTurnInput));
+            CanonicalReducer::BattlePrepareCommandInteraction));
     ASSERT_NE(battle_action, nullptr);
     ASSERT_NE(navigation_action, nullptr);
     ASSERT_NE(reducer, nullptr);
     EXPECT_EQ(battle_action->providing_pack, BattlePackIdentity());
     EXPECT_EQ(navigation_action->providing_pack, NavigationPackIdentity());
-    EXPECT_EQ(reducer->providing_pack, BattlePackIdentity());
+    EXPECT_EQ(reducer->providing_pack, BattleCommandPackIdentity());
     EXPECT_TRUE(reducer->permitted_actions.empty());
 }
 
@@ -233,74 +230,6 @@ TEST(CapabilityPackSources, DoesNotRegisterPlaceholderFamilies)
         }));
 }
 
-TEST(CapabilityPackSources, BattleMaterializerReducerIsPureAndDeterministic)
-{
-    soa::battle::ctx::BattleContext context{};
-    for (std::size_t slot = 0; slot < 4; ++slot)
-    {
-        context.slots_[slot].present = 1;
-        context.slots_[slot].is_player = 1;
-        context.slots_[slot].is_alive = 1;
-    }
-    context.slots_[4].present = 1;
-    context.slots_[4].is_alive = 1;
-
-    soa::battle::actions::BattleTurnExecutionSpec specification{};
-    specification.commands.push_back({
-        .actor_slot = 0,
-        .macro = soa::battle::actions::BattleAction::Defend,
-    });
-
-    const std::array inputs{
-        EncodeBattleContextValue(context),
-        EncodeBattleTurnExecutionSpecValue(specification),
-    };
-    std::string diagnostic;
-    const auto first = InvokeSourceReducer(
-        CanonicalReducerIdentity(
-            CanonicalReducer::BattleMaterializeTurnInput),
-        inputs,
-        &diagnostic);
-    ASSERT_TRUE(first.has_value()) << diagnostic;
-    const auto second = InvokeSourceReducer(
-        CanonicalReducerIdentity(
-            CanonicalReducer::BattleMaterializeTurnInput),
-        inputs,
-        &diagnostic);
-    ASSERT_TRUE(second.has_value()) << diagnostic;
-    EXPECT_EQ(*first, *second);
-
-    bool success = false;
-    savor::ControllerInputSequence actual;
-    std::string domain_diagnostic;
-    ASSERT_TRUE(DecodeTurnInputMaterializationValue(
-        *first,
-        success,
-        actual,
-        &domain_diagnostic));
-    EXPECT_TRUE(success);
-    EXPECT_TRUE(domain_diagnostic.empty());
-
-    savor::ControllerInputSequence expected;
-    soa::battle::actions::MaterializeErr error{};
-    ASSERT_TRUE(soa::battle::actions::MaterializeBattleTurnInputs(
-        context,
-        specification,
-        expected,
-        error));
-    ASSERT_EQ(actual.size(), expected.size());
-    for (std::size_t index = 0; index < actual.size(); ++index)
-    {
-        EXPECT_EQ(actual[index].buttons, expected[index].buttons);
-        EXPECT_EQ(actual[index].main_x, expected[index].main_x);
-        EXPECT_EQ(actual[index].main_y, expected[index].main_y);
-        EXPECT_EQ(actual[index].c_x, expected[index].c_x);
-        EXPECT_EQ(actual[index].c_y, expected[index].c_y);
-        EXPECT_EQ(actual[index].trig_l, expected[index].trig_l);
-        EXPECT_EQ(actual[index].trig_r, expected[index].trig_r);
-    }
-}
-
 TEST(CapabilityPackSources, ReducerRejectsUnknownIdentityAndMalformedGraphs)
 {
     const ProgramValueGraph malformed{
@@ -320,12 +249,66 @@ TEST(CapabilityPackSources, ReducerRejectsUnknownIdentityAndMalformedGraphs)
 
     EXPECT_FALSE(InvokeSourceReducer(
         CanonicalReducerIdentity(
-            CanonicalReducer::BattleMaterializeTurnInput),
+            CanonicalReducer::BattleCommandInteractionAdvance),
         inputs,
         &diagnostic));
-    EXPECT_EQ(
-        diagnostic,
-        "materialize_turn_input received malformed typed input");
+    EXPECT_TRUE(diagnostic.empty());
+}
+
+TEST(CapabilityPackSources, BattleCommandReducersHaveOneCanonicalContract)
+{
+    const auto catalog = BuildSourceCapabilityPackCatalog();
+    const auto& manifest = Manifest(catalog, "soa.battle.command");
+    struct ExpectedReducer
+    {
+        CanonicalReducer reducer;
+        std::uint64_t steps;
+        std::uint64_t bytes;
+    };
+    constexpr std::array expected{
+        ExpectedReducer{
+            CanonicalReducer::BattlePrepareCommandInteraction,
+            100000,
+            4 * 1024 * 1024},
+        ExpectedReducer{
+            CanonicalReducer::BattleCommandInteractionInitialize,
+            1,
+            4 * 1024 * 1024},
+        ExpectedReducer{
+            CanonicalReducer::BattleCommandInteractionAdvance,
+            1000,
+            4 * 1024 * 1024},
+        ExpectedReducer{
+            CanonicalReducer::BattleCommandInteractionCompleteSegment,
+            1,
+            64 * 1024},
+        ExpectedReducer{
+            CanonicalReducer::BattleCommandInteractionFinalize,
+            1,
+            16},
+    };
+
+    ASSERT_EQ(catalog.reducers.size(), expected.size());
+    ASSERT_EQ(manifest.reducers.size(), expected.size());
+    for (const ExpectedReducer& item : expected)
+    {
+        const ExactDependencyIdentity identity =
+            CanonicalReducerIdentity(item.reducer);
+        const auto descriptor = std::ranges::find(
+            catalog.reducers,
+            identity,
+            &ReducerDescriptor::identity);
+        ASSERT_NE(descriptor, catalog.reducers.end());
+        EXPECT_EQ(CanonicalReducerName(item.reducer), identity.canonical_id);
+        EXPECT_EQ(descriptor->providing_pack, manifest.identity);
+        EXPECT_NE(
+            std::ranges::find(manifest.reducers, identity),
+            manifest.reducers.end());
+        EXPECT_EQ(descriptor->maximum_steps, item.steps);
+        EXPECT_EQ(descriptor->maximum_value_bytes, item.bytes);
+    }
+    EXPECT_TRUE(
+        CanonicalReducerName(static_cast<CanonicalReducer>(0xff)).empty());
 }
 
 } // namespace

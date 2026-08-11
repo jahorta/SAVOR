@@ -9,7 +9,6 @@
 
 #include "../Breakpoints/BpRegistry.h"
 #include "../Script/CtxRegistry.h"
-#include "../Script/PhaseScriptProgram.h"
 #include "../../Core/Memory/Soa/SoaAddrRegistry.h"
 
 namespace savor::symbols {
@@ -59,38 +58,6 @@ struct BreakpointSymbol {
     BreakpointOwner owner = BreakpointOwner::Shared;
 };
 
-struct SymbolicOp {
-    enum class Kind {
-        Label,
-        Goto,
-        GotoIf,
-        GotoIfKeys,
-        ReturnResult,
-        EmitResult,
-        SetU32,
-        AddU32,
-        ReadU8,
-        ReadU16,
-        ReadU32,
-        ReadF32,
-        ReadF64,
-        RunUntilBp,
-    };
-
-    Kind kind = Kind::RunUntilBp;
-    std::string label;
-    std::string left_key_id;
-    std::string right_key_id;
-    std::string address_id;
-    PSCmp cmp = PSCmp::EQ;
-    uint32_t imm = 0;
-};
-
-struct SymbolicPhaseScript {
-    std::vector<std::string> canonical_breakpoint_ids;
-    std::vector<SymbolicOp> ops;
-};
-
 class RuntimeSymbolRegistry {
 public:
     static constexpr uint16_t CustomContextKeyMin = 0x8000;
@@ -119,8 +86,6 @@ public:
     const std::vector<BreakpointSymbol>& Breakpoints() const { return breakpoints_; }
 
     BreakpointMap BuildBreakpointMap() const;
-    bool LowerSymbolicPhaseScript(const SymbolicPhaseScript& symbolic, PhaseScript& out, std::string* error_out = nullptr) const;
-
 private:
     bool ReserveStableId(std::string_view id, std::string* error_out);
     savor::context::key::KeyId NextCustomContextKey() const;

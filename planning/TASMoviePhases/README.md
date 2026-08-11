@@ -1,5 +1,15 @@
 # TAS Movie Phase Family
 
+The semantic-routing, immutable workset-capture, and canonical-progress
+contract is defined in
+[`../ExecutionRuntime/17-semantic-routing-workset-capture-canonical-progress.md`](../ExecutionRuntime/17-semantic-routing-workset-capture-canonical-progress.md).
+TAS Movie modules use shared `SPS1` semantic point sets and direct
+`ExecutionEngine` foreground waits. `tasmovie.validation` automatically
+requests the registered VI and script-location progress libraries unless
+planning explicitly disables them. Progress is passive evidence and cannot
+control playback. Every TAS Movie phase workset remains exactly one item;
+parallel validation uses multiple singleton worksets.
+
 ## Status and authority
 
 Living design document. Initial version: 2026-08-02.

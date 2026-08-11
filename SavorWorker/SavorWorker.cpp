@@ -103,6 +103,8 @@ savor::wrms::WorkerStateCode MapWorkerState(
         return WireState::AwaitingSession;
     case RuntimeState::Ready:
         return WireState::Ready;
+    case RuntimeState::InitializingWorkset:
+        return WireState::InitializingWorkset;
     case RuntimeState::Running:
         return WireState::Running;
     case RuntimeState::Cancelling:
@@ -177,8 +179,8 @@ savor::wrms::RejectionCode MapRejectionCode(
         return WireCode::WorksetNotFound;
     case RuntimeCode::WorksetItemNotFound:
         return WireCode::WorksetItemNotFound;
-    case RuntimeCode::WorksetCatalogMismatch:
-        return WireCode::WorksetCatalogMismatch;
+    case RuntimeCode::ProgramPackageRejected:
+        return WireCode::ProgramPackageRejected;
     case RuntimeCode::CapacityExceeded:
         return WireCode::CapacityExceeded;
     case RuntimeCode::TerminalNotFound:
@@ -206,8 +208,6 @@ MessageKind MapCommandKind(savor::runtime::WorkerCommandKind kind) {
     switch (kind) {
     case savor::runtime::WorkerCommandKind::OpenSession:
         return MessageKind::OpenSession;
-    case savor::runtime::WorkerCommandKind::PrepareModule:
-        return MessageKind::PrepareModule;
     case savor::runtime::WorkerCommandKind::CancelInvocation:
         return MessageKind::CancelInvocation;
     case savor::runtime::WorkerCommandKind::SubmitWorkset:
@@ -257,7 +257,6 @@ savor::wrms::ExecutionActivityCode MapExecutionActivity(
         return Wire::Failed;
     case Runtime::Continuing:
     case Runtime::SteppingFrame:
-    case Runtime::AdvancingInput:
     case Runtime::Pausing:
     case Runtime::InteractiveRunning:
         return Wire::InteractiveRunning;
@@ -277,7 +276,6 @@ std::optional<savor::wrms::ExecutionControlKind> MapExecutionOperation(
     case Runtime::StepFrames:
         return Wire::StepFrame;
     case Runtime::ContinueUntil:
-    case Runtime::InputSynchronizedAdvance:
         return std::nullopt;
     }
     return std::nullopt;
@@ -333,12 +331,8 @@ savor::wrms::ExecutionTerminalStatusCode MapExecutionTerminalStatus(
         return Wire::CoreStalled;
     case Runtime::MovieEnded:
         return Wire::MovieEnded;
-    case Runtime::ConsumedStop:
-        return Wire::ConsumedStop;
     case Runtime::UnexpectedStop:
         return Wire::UnexpectedStop;
-    case Runtime::GuardFailed:
-        return Wire::GuardFailed;
     case Runtime::InterruptionUnavailable:
         return Wire::InterruptionUnavailable;
     case Runtime::InterruptionAborted:
@@ -377,15 +371,43 @@ savor::wrms::InvocationTerminalStatus MapTerminalStatus(
     }
 }
 
+savor::wrms::WorkerModeCode MapWorkerMode(
+    savor::runtime::WorkerMode mode) {
+    switch (mode) {
+    case savor::runtime::WorkerMode::Headless:
+        return savor::wrms::WorkerModeCode::Headless;
+    case savor::runtime::WorkerMode::Visual:
+        return savor::wrms::WorkerModeCode::Visual;
+    case savor::runtime::WorkerMode::VisualDebug:
+        return savor::wrms::WorkerModeCode::VisualDebug;
+    }
+    return savor::wrms::WorkerModeCode::Headless;
+}
+
+savor::runtime::WorkerMode MapWorkerMode(
+    savor::wrms::WorkerModeCode mode) {
+    switch (mode) {
+    case savor::wrms::WorkerModeCode::Headless:
+        return savor::runtime::WorkerMode::Headless;
+    case savor::wrms::WorkerModeCode::Visual:
+        return savor::runtime::WorkerMode::Visual;
+    case savor::wrms::WorkerModeCode::VisualDebug:
+        return savor::runtime::WorkerMode::VisualDebug;
+    }
+    return savor::runtime::WorkerMode::Headless;
+}
+
 savor::wrms::WorksetStateCode MapWorksetState(
     savor::runtime::WorkerWorksetState state) {
     using Runtime = savor::runtime::WorkerWorksetState;
     using Wire = savor::wrms::WorksetStateCode;
     switch (state) {
     case Runtime::Validating: return Wire::Validating;
-    case Runtime::Staged: return Wire::Staged;
-    case Runtime::PreparingBaseline: return Wire::PreparingBaseline;
+    case Runtime::Admitted: return Wire::Admitted;
+    case Runtime::Initializing: return Wire::Initializing;
+    case Runtime::Ready: return Wire::Ready;
     case Runtime::Running: return Wire::Running;
+    case Runtime::ResettingItem: return Wire::ResettingItem;
     case Runtime::Draining: return Wire::Draining;
     case Runtime::Completed: return Wire::Completed;
     case Runtime::Cancelled: return Wire::Cancelled;
@@ -660,26 +682,6 @@ private:
     std::unordered_map<std::uint64_t, WorksetCorrelation> workset_items_;
 };
 
-bool PublishRuntimeManifest(
-    OutboundPublisher& publisher,
-    savor::runtime::WorkerRuntime& runtime) {
-    std::vector<std::uint8_t> encoded_manifest;
-    const auto encoded =
-        savor::runtime::EncodeWorkerRuntimeManifestV1(
-            runtime.runtime_manifest(),
-            encoded_manifest);
-    if (!encoded) {
-        publisher.Fail();
-        return false;
-    }
-    return publisher.Publish(
-            MessageKind::RuntimeManifest,
-            0,
-            savor::wrms::RuntimeManifestPayload{
-                .encoded_manifest = std::move(encoded_manifest),
-            });
-}
-
 void PublishCommandCompletion(
     OutboundPublisher& publisher,
     RequestMetadata& metadata,
@@ -695,7 +697,7 @@ void PublishCommandCompletion(
             .success = succeeded,
             .session_id = session.session_id.value(),
             .workset_epoch = session.workset_epoch.value(),
-            .capability_mask = snapshot.capabilities,
+            .worker_mode = MapWorkerMode(snapshot.mode),
             .worker_state = MapWorkerState(snapshot.state),
             .session_disposition =
                 MapSessionDisposition(session.disposition),
@@ -734,8 +736,8 @@ void PublishCommandCompletion(
             savor::runtime::WorkerExecutionControlKind::Pause);
         const auto operation_id = result.execution_operation_id
             ? result.execution_operation_id->value()
-            : execution.active_operation
-                ? execution.active_operation->value()
+            : execution && execution->active_operation
+                ? execution->active_operation->value()
                 : 0;
         publisher.Publish(
             MessageKind::ExecutionResult,
@@ -747,7 +749,10 @@ void PublishCommandCompletion(
                 .session_id = session.session_id.value(),
                 .workset_epoch = session.workset_epoch.value(),
                 .operation_id = operation_id,
-                .activity = MapExecutionActivity(execution.activity),
+                .has_execution_state = execution.has_value(),
+                .activity = execution
+                    ? MapExecutionActivity(execution->activity)
+                    : savor::wrms::ExecutionActivityCode::IdlePaused,
                 .has_terminal_status =
                     result.execution_terminal.has_value(),
                 .terminal_status = result.execution_terminal
@@ -760,7 +765,9 @@ void PublishCommandCompletion(
                     : 0,
                 .program_counter = result.execution_terminal
                     ? result.execution_terminal->evidence.pc
-                    : execution.evidence.pc,
+                    : execution
+                        ? execution->evidence.pc
+                        : 0,
                 .rejection_code = MapRejectionCode(result.error.code),
                 .error_code = ErrorCodeString(result.error.code),
                 .message = result.error.message,
@@ -801,9 +808,9 @@ void PublishCommandCompletion(
                 .applied_item_count = submission.applied_item_count,
                 .applied_sidecar_sha256 =
                     submission.applied_sidecar_sha256,
-                .already_accepted = submission.disposition
+                .already_admitted = submission.disposition
                     == savor::runtime::WorksetSubmissionDispositionV1::
-                        AlreadyAccepted,
+                        AlreadyAdmitted,
             };
             if (!savor::wrms::EncodePayload(typed, payload.result)) {
                 payload.status = savor::wrms::CommandStatus::Rejected;
@@ -826,7 +833,6 @@ void PublishCommandCompletion(
 void PublishWorkerEvent(
     OutboundPublisher& publisher,
     RequestMetadata& metadata,
-    savor::runtime::WorkerRuntime* runtime,
     const WorkerEvent& event) {
     std::visit(
         Overloaded{
@@ -840,7 +846,7 @@ void PublishWorkerEvent(
                             savor::wrms::SessionEventType::StateChanged,
                         .session_id = session.session_id.value(),
                         .workset_epoch = session.workset_epoch.value(),
-                        .capability_mask = state.current.capabilities,
+                        .worker_mode = MapWorkerMode(state.current.mode),
                         .worker_state = MapWorkerState(state.current.state),
                         .session_disposition =
                             MapSessionDisposition(session.disposition),
@@ -852,34 +858,9 @@ void PublishWorkerEvent(
                     metadata,
                     completed.result);
             },
-            [&](const savor::runtime::ModulePreparationEvent& prepared) {
-                if (prepared.error) {
-                    publisher.Publish(
-                        MessageKind::RuntimeDiagnostic,
-                        0,
-                        savor::wrms::RuntimeDiagnosticPayload{
-                            .rejection_code =
-                                MapRejectionCode(prepared.error.code),
-                            .command_sequence =
-                                prepared.command_sequence.value(),
-                            .message = prepared.error.message,
-                        });
-                }
-                if (prepared.prepared && !prepared.error) {
-                    if (!runtime ||
-                        !PublishRuntimeManifest(publisher, *runtime))
-                    {
-                        publisher.Fail();
-                        return;
-                    }
-                }
-            },
-            [&](const savor::runtime::ProgramInvocationProgressEvent& progress) {
+            [&](const savor::runtime::progress::CanonicalProgressEventV1& progress) {
                 const auto correlation =
                     metadata.FindWorksetItem(progress.invocation_id);
-                std::vector<std::uint8_t> encoded(
-                    progress.text.begin(),
-                    progress.text.end());
                 publisher.Publish(
                     MessageKind::InvocationProgress,
                     0,
@@ -889,8 +870,27 @@ void PublishWorkerEvent(
                         .workset_id = correlation.workset_id,
                         .item_id = correlation.item_id,
                         .item_ordinal = correlation.item_ordinal,
-                        .ordinal = progress.progress_sequence,
-                        .progress = std::move(encoded),
+                        .ordinal = progress.ordinal,
+                        .durable_job_id = progress.durable_job_id,
+                        .library_id = progress.library_id,
+                        .library_revision = progress.library_revision,
+                        .progress_point_id = progress.progress_point_id,
+                        .has_routed_provenance =
+                            progress.routed_sequence.has_value(),
+                        .routed_sequence = progress.routed_sequence
+                            ? progress.routed_sequence->value()
+                            : 0,
+                        .sample_snapshot_id = progress.sample_snapshot_id
+                            ? progress.sample_snapshot_id->value()
+                            : 0,
+                        .trigger_epoch = progress.trigger_epoch
+                            ? progress.trigger_epoch->value()
+                            : 0,
+                        .schema_id = progress.schema.canonical_id,
+                        .schema_revision = progress.schema.revision,
+                        .schema_sha256 = progress.schema.sha256,
+                        .typed_payload = progress.typed_payload,
+                        .display_text = progress.display_text,
                     });
             },
             [&](const savor::runtime::WorkerWorksetStateEvent& state) {
@@ -962,6 +962,31 @@ void PublishWorkerEvent(
                             ErrorCodeString(terminal.error.code),
                         .message = terminal.error.message,
                         .result = terminal.output_payload,
+                        .workset_artifacts = [&] {
+                            std::vector<savor::wrms::WorksetArtifactPayload>
+                                artifacts;
+                            artifacts.reserve(
+                                terminal.workset_artifacts.size());
+                            for (const auto& artifact :
+                                 terminal.workset_artifacts) {
+                                artifacts.push_back({
+                                    .artifact_id = artifact.artifact_id,
+                                    .schema_id =
+                                        artifact.schema.canonical_id,
+                                    .schema_version =
+                                        artifact.schema.version,
+                                    .schema_sha256 =
+                                        artifact.schema.schema_hash.ToHex(),
+                                    .content_sha256 =
+                                        artifact.content_hash.ToHex(),
+                                    .storage_reference =
+                                        artifact.storage_reference,
+                                    .complete = artifact.complete,
+                                });
+                            }
+                            return artifacts;
+                        }(),
+                        .diagnostics = terminal.diagnostics,
                     });
                 metadata.ForgetWorksetItem(
                     correlation.invocation_id);
@@ -1189,36 +1214,15 @@ bool SubmitFrame(
         options.backend.dolphin_base_directory = payload.runtime_root;
         options.backend.iso_path = payload.iso_path;
         options.backend.force_resync_from_base = true;
-        options.backend.visual = payload.visual_requested;
+        options.worker_mode = MapWorkerMode(payload.worker_mode);
+        options.backend.visual =
+            options.worker_mode != savor::runtime::WorkerMode::Headless;
         options.backend.render_window_handle =
             static_cast<std::uintptr_t>(payload.render_window_handle);
         options.runtime_artifact_root = payload.runtime_artifact_root;
         (void)runtime.Submit(
             WireRequestId{frame.header.request_id},
             OpenSessionCommand{std::move(options)});
-        return true;
-    }
-    case MessageKind::PrepareModule: {
-        savor::wrms::PrepareModulePayload payload;
-        if (!savor::wrms::DecodePayload(frame.payload, payload)) {
-            PublishMalformedCommand(
-                publisher,
-                frame.header.kind,
-                frame.header.request_id,
-                "invalid PrepareModule payload");
-            return true;
-        }
-        EncodedModuleEnvelope module;
-        module.identity.canonical_id = std::move(payload.canonical_id);
-        module.identity.revision = payload.revision;
-        module.identity.canonical_hash =
-            std::move(payload.canonical_hash);
-        module.format_version = payload.format_version;
-        module.development_only = payload.development_only;
-        module.payload = std::move(payload.encoded_module);
-        (void)runtime.Submit(
-            WireRequestId{frame.header.request_id},
-            PrepareModuleCommand{std::move(module)});
         return true;
     }
     case MessageKind::SubmitWorkset: {
@@ -1234,7 +1238,7 @@ bool SubmitFrame(
         WorkerWorksetDefinition definition;
         const std::size_t actual_encoded_size =
             payload.encoded_workset.size();
-        const auto decoded = DecodeWorkerWorksetV2(
+        const auto decoded = DecodeWorkerWorksetV4(
             payload.encoded_workset,
             definition);
         if (!decoded) {
@@ -1526,23 +1530,18 @@ int main(int argc, char** argv) {
     OutboundPublisher publisher(output);
     RequestMetadata request_metadata;
     std::unique_ptr<savor::runtime::WorkerRuntime> runtime;
-    std::atomic<savor::runtime::WorkerRuntime*> runtime_for_events{
-        nullptr};
     runtime = savor::runtime::MakeProductionWorkerRuntime(
         savor::runtime::SessionId{},
         [&](const WorkerEvent& event) {
             PublishWorkerEvent(
                 publisher,
                 request_metadata,
-                runtime_for_events.load(std::memory_order_acquire),
                 event);
             if (!publisher.healthy()) {
                 throw std::runtime_error(
                     "WRMS outbound publisher rejected the worker event");
             }
         });
-    runtime_for_events.store(runtime.get(), std::memory_order_release);
-
     savor::hoststubs::SetHostEventSink(
         [&](const savor::hoststubs::HostEvent& event) {
             std::vector<std::uint8_t> encoded(
@@ -1553,19 +1552,24 @@ int main(int argc, char** argv) {
                 std::move(encoded));
         });
 
+    std::vector<std::uint8_t> encoded_runtime_contract;
+    const auto encoded_contract =
+        savor::runtime::EncodeWorkerRuntimeContractV1(
+            runtime->runtime_contract(),
+            encoded_runtime_contract);
+    if (!encoded_contract) {
+        publisher.StopAndDrain();
+        return static_cast<int>(WorkerExitCode::PublisherFailure);
+    }
     publisher.Publish(
         MessageKind::ProcessHello,
         0,
         savor::wrms::ProcessHelloPayload{
             .worker_id = worker_id,
             .process_id = GetCurrentProcessId(),
-            .capability_mask = runtime->capabilities(),
-            .build_identity = "SavorWorker WRMS/1 hard-cutover",
+            .encoded_runtime_contract =
+                std::move(encoded_runtime_contract),
         });
-    if (!PublishRuntimeManifest(publisher, *runtime)) {
-        publisher.StopAndDrain();
-        return static_cast<int>(WorkerExitCode::PublisherFailure);
-    }
 
     std::vector<std::uint8_t> buffered;
     buffered.reserve(64 * 1024);

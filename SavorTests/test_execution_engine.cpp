@@ -26,6 +26,7 @@ using namespace savor::test_support;
 
 constexpr WorksetEpoch kEpoch{7};
 constexpr std::uint32_t kWakePc = 0x801DC288u;
+constexpr std::uint32_t kInterruptionPc = 0x801DC28Cu;
 
 std::uint64_t AtomicHostTicks(void* context) noexcept
 {
@@ -118,9 +119,8 @@ StopSubscriptionGroupDefinition WakeGroup(std::uint32_t pc = kWakePc)
             {
                 .id = StopSubscriptionId(100),
                 .point = PcStopPointSpec{pc},
-                .delivery = StopDeliveryMode::Wake,
-                .policy = StopRoutingPolicy::Pass,
-                .suppress_immediate_reentry = true,
+                .route = ForegroundStopWait{
+                    .suppress_immediate_reentry = true},
             },
         },
     };
@@ -256,127 +256,6 @@ std::optional<ExecutionTerminalResult> DrainTerminal(
     return std::nullopt;
 }
 
-class FakeInputAdvancePort final : public IInputAdvancePort
-{
-public:
-    explicit FakeInputAdvancePort(
-        std::shared_ptr<FakeExecutionBackendControl> backend)
-        : backend_(std::move(backend))
-    {
-    }
-
-    InputAdvanceReceipt Validate(
-        InputAdvanceBindingId binding,
-        WorksetEpoch epoch) override
-    {
-        calls.push_back("validate");
-        frame_steps_seen.push_back(FrameStepCount());
-        last_binding = binding;
-        last_epoch = epoch;
-        return {
-            .ok = true,
-            .decision = InputAdvanceDecision::Continue,
-        };
-    }
-
-    InputAdvanceReceipt PrepareNext(
-        InputAdvanceBindingId binding,
-        WorksetEpoch epoch,
-        std::uint32_t advance_ordinal) override
-    {
-        calls.push_back("prepare");
-        frame_steps_seen.push_back(FrameStepCount());
-        last_binding = binding;
-        last_epoch = epoch;
-        last_ordinal = advance_ordinal;
-        const InputPublicationToken publication(1000 + advance_ordinal);
-        last_publication = publication;
-        prepared_publications.push_back(publication);
-        return {
-            .ok = true,
-            .decision = InputAdvanceDecision::Continue,
-            .publication = publication,
-            .publication_evidence = InputPublicationEvidence{
-                InputLeaseId(77),
-                publication,
-                epoch,
-                savor::GCInputFrame{
-                    .buttons = static_cast<std::uint16_t>(
-                        advance_ordinal + 1)}},
-        };
-    }
-
-    InputAdvanceReceipt ObserveAcknowledgement(
-        InputAdvanceBindingId binding,
-        InputPublicationToken publication,
-        WorksetEpoch epoch) override
-    {
-        calls.push_back("observe");
-        frame_steps_seen.push_back(FrameStepCount());
-        last_binding = binding;
-        last_epoch = epoch;
-        observed_publication = publication;
-        const InputAdvanceDecision decision =
-            acknowledgement_index < acknowledgement_decisions.size()
-            ? acknowledgement_decisions[acknowledgement_index++]
-            : InputAdvanceDecision::Complete;
-        return {
-            .ok = true,
-            .decision = decision,
-            .publication = publication,
-        };
-    }
-
-    InputAdvanceReceipt Complete(
-        InputAdvanceBindingId binding,
-        WorksetEpoch epoch) noexcept override
-    {
-        calls.push_back("complete");
-        frame_steps_seen.push_back(FrameStepCount());
-        last_binding = binding;
-        last_epoch = epoch;
-        return {
-            .ok = true,
-            .decision = InputAdvanceDecision::Complete,
-        };
-    }
-
-    InputAdvanceReceipt Cancel(
-        InputAdvanceBindingId binding,
-        WorksetEpoch epoch) noexcept override
-    {
-        calls.push_back("cancel");
-        frame_steps_seen.push_back(FrameStepCount());
-        last_binding = binding;
-        last_epoch = epoch;
-        return {
-            .ok = true,
-            .decision = InputAdvanceDecision::Cancelled,
-        };
-    }
-
-    std::vector<std::string> calls;
-    std::vector<std::size_t> frame_steps_seen;
-    InputAdvanceBindingId last_binding;
-    InputPublicationToken last_publication;
-    InputPublicationToken observed_publication;
-    std::vector<InputPublicationToken> prepared_publications;
-    WorksetEpoch last_epoch;
-    std::uint32_t last_ordinal = 0;
-    std::vector<InputAdvanceDecision> acknowledgement_decisions{
-        InputAdvanceDecision::Complete,
-    };
-    std::size_t acknowledgement_index = 0;
-
-private:
-    std::size_t FrameStepCount() const
-    {
-        return CountCall(backend_->Calls(), "frame_step");
-    }
-
-    std::shared_ptr<FakeExecutionBackendControl> backend_;
-};
-
 class ExecutionEngineFixture : public testing::Test
 {
 protected:
@@ -417,7 +296,7 @@ protected:
     }
 
     void CreateEngine(
-        IInputAdvancePort* input = nullptr,
+        IInputExecutionBindingPort* input = nullptr,
         std::vector<InterruptionHandlerDescriptor> handlers = {},
         std::chrono::milliseconds maintenance_interval = 10ms,
         std::chrono::milliseconds pause_confirmation_timeout = 5s)
@@ -427,7 +306,7 @@ protected:
         config.pause_confirmation_timeout =
             pause_confirmation_timeout;
         config.now = [this] { return now; };
-        config.input_advance = input;
+        config.input_relationships = input;
         config.host_activity = &host_activity;
         config.interruption_handlers = std::move(handlers);
         engine = std::make_unique<ExecutionEngine>(
@@ -450,13 +329,10 @@ protected:
             },
             .subscriptions = {{
                 .id = StopSubscriptionId(500),
-                .point = PcStopPointSpec{kWakePc},
-                .delivery = StopDeliveryMode::Intercept,
-                .policy =
-                    StopRoutingPolicy::RequestInterruptionHandler,
+                .point = PcStopPointSpec{kInterruptionPc},
+                .route = TrustedStopInterruptionRequest{
+                    .handler_key = std::move(key)},
                 .priority = 100,
-                .interruption_handler_key = std::move(key),
-                .lossless = true,
                 .consumer = &interruption_consumer,
             }},
         };
@@ -485,7 +361,7 @@ protected:
         }
 
         const auto decision =
-            physical_backend.InjectJitPcStop(kWakePc);
+            physical_backend.InjectJitPcStop(kInterruptionPc);
         if (!decision.request_break)
         {
             ADD_FAILURE()
@@ -499,7 +375,7 @@ protected:
             receipts.end(),
             [](const StopRouteReceipt& receipt) {
                 return receipt.terminal ==
-                    StopRouteTerminal::InterruptionHandlerRequested;
+                    StopRouteTerminal::InterruptionRequested;
             });
         if (routed == receipts.end())
         {
@@ -1100,10 +976,10 @@ TEST_F(
             .subscriptions = {{
                 .id = StopSubscriptionId(901),
                 .point = PcStopPointSpec{kCapturePc},
-                .delivery = StopDeliveryMode::Observe,
-                .policy = StopRoutingPolicy::Pass,
-                .cpu_observer_descriptor_id =
-                    kCaptureDescriptor,
+                .route = PassiveStopObservation{
+                    .cpu_observer_descriptor_id =
+                        kCaptureDescriptor,
+                    .lossless = true},
                 .consumer = &capture_consumer,
             }},
         });
@@ -2113,7 +1989,9 @@ TEST_F(
             *suspended.active_interruption_frame,
             ContinueUntilRequest{
                 .policy = std::move(child_policy),
-                .wake_group = WakeGroup(kWakePc + 4),
+                // Interruption points are reserved and cannot also be owned
+                // by a foreground wait. Use a distinct child endpoint.
+                .wake_group = WakeGroup(kWakePc + 8),
             });
     ASSERT_TRUE(child.accepted) << child.error.message;
 
@@ -2124,7 +2002,7 @@ TEST_F(
     EXPECT_FALSE(TakeTerminal(*engine).has_value());
 
     const auto child_hit =
-        physical_backend.InjectJitPcStop(kWakePc + 4);
+        physical_backend.InjectJitPcStop(kWakePc + 8);
     ASSERT_TRUE(child_hit.request_break);
     execution_control->SetCoreState(BackendCoreState::Paused);
     auto child_receipts = router.DrainIngress();
@@ -2174,7 +2052,7 @@ TEST_F(
 
 TEST_F(
     ExecutionEngineFixture,
-    ParkedParentWakeIsPassiveDuringFrameChildAndRestoredOnResume)
+    ParkedParentForegroundWaitIsUnregisteredDuringFrameChildAndRestoredOnResume)
 {
     InterruptionHandlerDescriptor handler = Handler();
     handler.allowed_child_operations.push_back(
@@ -2208,13 +2086,7 @@ TEST_F(
         physical_backend.InjectJitPcStop(kWakePc);
     EXPECT_FALSE(parked_hit.request_break);
     auto parked_receipts = router.DrainIngress();
-    ASSERT_EQ(parked_receipts.size(), 1u);
-    EXPECT_EQ(parked_receipts.front().terminal, StopRouteTerminal::None);
-    ASSERT_EQ(parked_receipts.front().deliveries.size(), 1u);
-    EXPECT_EQ(
-        parked_receipts.front().deliveries.front().delivery,
-        StopDeliveryMode::Observe);
-    engine->HandleStopPointReceipt(std::move(parked_receipts.front()));
+    EXPECT_TRUE(parked_receipts.empty());
 
     const auto child_terminal = DrainTerminal(*engine);
     ASSERT_TRUE(child_terminal.has_value());
@@ -2237,7 +2109,7 @@ TEST_F(
     ASSERT_EQ(restored_receipts.size(), 1u);
     EXPECT_EQ(
         restored_receipts.front().terminal,
-        StopRouteTerminal::WokeForeground);
+        StopRouteTerminal::ForegroundMatched);
     engine->HandleStopPointReceipt(std::move(restored_receipts.front()));
 
     const auto parent_terminal = DrainTerminal(*engine);
@@ -2691,148 +2563,6 @@ TEST_F(ExecutionEngineFixture, InterruptionNestingIsHardCappedAtEightFrames)
         ASSERT_TRUE(DrainTerminal(*engine).has_value());
         EXPECT_EQ(engine->snapshot().interruption_depth, remaining - 1);
     }
-}
-
-TEST_F(
-    ExecutionEngineFixture,
-    InputAdvancePreparesBeforeFrameAndObservesAcknowledgementAfterward)
-{
-    FakeInputAdvancePort input(execution_control);
-    CreateEngine(&input);
-
-    const InputAdvanceBindingId binding(44);
-    const ExecutionSubmissionReceipt submission =
-        engine->Submit(InputSynchronizedAdvanceRequest{
-            .policy = Policy(),
-            .binding = binding,
-            .maximum_advances = 1,
-        });
-    ASSERT_TRUE(submission.accepted) << submission.error.message;
-
-    const auto terminal = DrainTerminal(*engine);
-    ASSERT_TRUE(terminal.has_value());
-    EXPECT_EQ(
-        terminal->status,
-        ExecutionTerminalStatus::StepsCompleted);
-    EXPECT_EQ(terminal->completed_count, 1u);
-    EXPECT_EQ(
-        input.calls,
-        (std::vector<std::string>{
-            "validate",
-            "prepare",
-            "observe",
-            "complete"}));
-    ASSERT_EQ(input.frame_steps_seen.size(), 4u);
-    EXPECT_EQ(input.frame_steps_seen[0], 0u);
-    EXPECT_EQ(input.frame_steps_seen[1], 0u);
-    EXPECT_EQ(input.frame_steps_seen[2], 1u);
-    EXPECT_EQ(input.frame_steps_seen[3], 1u);
-    EXPECT_EQ(input.last_binding, binding);
-    EXPECT_EQ(input.last_epoch, kEpoch);
-    EXPECT_EQ(input.last_ordinal, 0u);
-    EXPECT_EQ(input.observed_publication, input.last_publication);
-    ASSERT_TRUE(terminal->input_publication);
-    EXPECT_EQ(
-        terminal->input_publication->lease,
-        InputLeaseId(77));
-    EXPECT_EQ(
-        terminal->input_publication->publication,
-        input.last_publication);
-    EXPECT_EQ(terminal->input_publication->epoch, kEpoch);
-    EXPECT_EQ(
-        terminal->input_publication->frame.buttons,
-        1u);
-    EXPECT_EQ(CountCall(input.calls, "validate"), 1u);
-    const auto validation =
-        std::ranges::find(input.calls, "validate");
-    const auto preparation =
-        std::ranges::find(input.calls, "prepare");
-    ASSERT_NE(validation, input.calls.end());
-    ASSERT_NE(preparation, input.calls.end());
-    EXPECT_LT(validation, preparation);
-}
-
-TEST_F(ExecutionEngineFixture, InputAdvanceRetryUsesAFreshPublication)
-{
-    FakeInputAdvancePort input(execution_control);
-    input.acknowledgement_decisions = {
-        InputAdvanceDecision::Retry,
-        InputAdvanceDecision::Complete,
-    };
-    CreateEngine(&input);
-
-    const ExecutionSubmissionReceipt submission =
-        engine->Submit(InputSynchronizedAdvanceRequest{
-            .policy = Policy(),
-            .binding = InputAdvanceBindingId(45),
-            .maximum_advances = 2,
-        });
-    ASSERT_TRUE(submission.accepted) << submission.error.message;
-
-    const auto terminal = DrainTerminal(*engine);
-    ASSERT_TRUE(terminal.has_value());
-    EXPECT_EQ(
-        terminal->status,
-        ExecutionTerminalStatus::StepsCompleted);
-    EXPECT_EQ(terminal->completed_count, 2u);
-    EXPECT_EQ(CountCall(input.calls, "validate"), 1u);
-    EXPECT_EQ(CountCall(input.calls, "prepare"), 2u);
-    EXPECT_EQ(CountCall(input.calls, "observe"), 2u);
-    EXPECT_EQ(CountCall(input.calls, "complete"), 1u);
-    EXPECT_EQ(CountCall(input.calls, "cancel"), 0u);
-    ASSERT_EQ(input.prepared_publications.size(), 2u);
-    EXPECT_NE(
-        input.prepared_publications[0],
-        input.prepared_publications[1]);
-    ASSERT_TRUE(terminal->input_publication);
-    EXPECT_EQ(
-        terminal->input_publication->publication,
-        input.prepared_publications.back());
-    EXPECT_EQ(
-        terminal->input_publication->frame.buttons,
-        2u);
-    EXPECT_EQ(CountCall(execution_control->Calls(), "frame_step"), 2u);
-}
-
-TEST_F(ExecutionEngineFixture, InputAdvanceCancellationUnwindsBeforeAcknowledgement)
-{
-    FakeInputAdvancePort input(execution_control);
-    CreateEngine(&input);
-
-    const ExecutionSubmissionReceipt submission =
-        engine->Submit(InputSynchronizedAdvanceRequest{
-            .policy = Policy(),
-            .binding = InputAdvanceBindingId(46),
-            .maximum_advances = 2,
-        });
-    ASSERT_TRUE(submission.accepted) << submission.error.message;
-
-    const ExecutionControlReceipt cancelled =
-        engine->Cancel(CancellationReason::ExternalRequest);
-    ASSERT_TRUE(cancelled.accepted) << cancelled.error.message;
-    const auto terminal = DrainTerminal(*engine);
-    ASSERT_TRUE(terminal.has_value());
-    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::Cancelled);
-    EXPECT_EQ(
-        input.calls,
-        (std::vector<std::string>{"validate", "prepare", "cancel"}));
-    EXPECT_EQ(CountCall(execution_control->Calls(), "frame_step"), 1u);
-}
-
-TEST_F(ExecutionEngineFixture, InputAdvanceWithoutAPortIsUnsupported)
-{
-    CreateEngine();
-
-    const ExecutionSubmissionReceipt submission =
-        engine->Submit(InputSynchronizedAdvanceRequest{
-            .policy = Policy(),
-            .binding = InputAdvanceBindingId(47),
-            .maximum_advances = 1,
-        });
-    EXPECT_FALSE(submission.accepted);
-    EXPECT_EQ(submission.error.code, ExecutionErrorCode::Unsupported);
-    EXPECT_FALSE(DrainTerminal(*engine).has_value());
-    EXPECT_EQ(CountCall(execution_control->Calls(), "frame_step"), 0u);
 }
 
 } // namespace

@@ -377,7 +377,13 @@ std::vector<ExportSpec> BuildExportSpecs(const CreateArchivePackageRequest& requ
     specs.push_back(ExportSpec{
         "worksets",
         scoped_job_sets
-            + "SELECT * FROM exec_workset WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY workset_id ASC;"
+            + "SELECT workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,program_kind,program_version,"
+              "contract_key,module_canonical_id,module_version,module_sha256,entrypoint,verified_dependency_sha256,"
+              "runtime_profile_sha256,program_package_sha256,execution_affinity_key,estimated_payload_bytes,priority,"
+              "item_count,published_at_utc,capture_binding_sha256,"
+              "CASE WHEN capture_binding_payload IS NULL THEN NULL ELSE hex(capture_binding_payload) END AS capture_binding_payload_hex,"
+              "progress_plan_sha256,CASE WHEN progress_plan_payload IS NULL THEN NULL ELSE hex(progress_plan_payload) END AS progress_plan_payload_hex "
+              "FROM exec_workset WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY workset_id ASC;"
     });
 
     specs.push_back(ExportSpec{
@@ -795,7 +801,14 @@ std::vector<ExportSpec> BuildWorkflowExecutionSpecs(
         specs.push_back({"workflow_events", "SELECT * FROM exec_workflow_event WHERE workflow_instance_id IN (" + ids + ") ORDER BY workflow_event_id ASC;"});
     }
     specs.push_back({"job_sets", scoped + "SELECT * FROM exec_job_set WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY job_set_id ASC;"});
-    specs.push_back({"worksets", scoped + "SELECT * FROM exec_workset WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY workset_id ASC;"});
+    specs.push_back({"worksets", scoped
+        + "SELECT workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,program_kind,program_version,"
+          "contract_key,module_canonical_id,module_version,module_sha256,entrypoint,verified_dependency_sha256,"
+          "runtime_profile_sha256,program_package_sha256,execution_affinity_key,estimated_payload_bytes,priority,"
+          "item_count,published_at_utc,capture_binding_sha256,"
+          "CASE WHEN capture_binding_payload IS NULL THEN NULL ELSE hex(capture_binding_payload) END AS capture_binding_payload_hex,"
+          "progress_plan_sha256,CASE WHEN progress_plan_payload IS NULL THEN NULL ELSE hex(progress_plan_payload) END AS progress_plan_payload_hex "
+          "FROM exec_workset WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY workset_id ASC;"});
     specs.push_back({"workset_dispatch_attempts", scoped + "SELECT a.* FROM exec_workset_dispatch_attempt a JOIN exec_workset w ON w.workset_id=a.workset_id WHERE w.job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY a.dispatch_attempt_id ASC;"});
     specs.push_back({
         "jobs",
@@ -816,6 +829,14 @@ std::vector<ExportSpec> BuildWorkflowExecutionSpecs(
               "cancellation_resolution_code "
               "FROM exec_job WHERE job_id IN (SELECT job_id FROM scoped_jobs) ORDER BY job_id ASC;"
     });
+    specs.push_back({
+        "job_progress",
+        scoped
+            + "SELECT job_id,attempt_id,ordinal,dispatch_attempt_id,dispatch_item_ordinal,workset_id,item_id,invocation_id,"
+              "library_id,library_revision,progress_point_id,has_routed_provenance,routed_sequence,sample_snapshot_id,"
+              "trigger_epoch,schema_id,schema_revision,schema_sha256,hex(typed_payload) AS typed_payload_hex,"
+              "display_text,recorded_at_utc FROM exec_job_progress "
+              "WHERE job_id IN (SELECT job_id FROM scoped_jobs) ORDER BY job_id ASC,attempt_id ASC,ordinal ASC;"});
     specs.push_back({"job_events", scoped + "SELECT * FROM exec_job_event WHERE job_id IN (SELECT job_id FROM scoped_jobs) ORDER BY job_event_id ASC;"});
     specs.push_back({"job_cancellation_requests", scoped + "SELECT * FROM exec_job_cancellation_request WHERE job_id IN (SELECT job_id FROM scoped_jobs) ORDER BY cancellation_request_id ASC;"});
     if (policy.include_trigger && IsTablePresent(execution_db, "exec_trigger", nullptr)) {
@@ -3619,6 +3640,7 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
     }
     exec_del("DELETE FROM exec_workflow_step WHERE workflow_instance_id IN (" + workflow_id_list + ");");
     exec_del("DELETE FROM exec_workflow_instance WHERE workflow_instance_id IN (" + workflow_id_list + ");");
+    exec_del("DELETE FROM exec_job_progress WHERE job_id IN (" + job_id_list_for_delete + ");");
     exec_del("DELETE FROM exec_job_event WHERE job_id IN (" + job_id_list_for_delete + ");");
     exec_del("DELETE FROM exec_job_cancellation_request WHERE job_id IN (" + job_id_list_for_delete + ");");
     if (IsTablePresent(execution_db_, "exec_trigger", nullptr)) {
@@ -3640,6 +3662,7 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
         const auto remaining = QuerySingleInt64(
             execution_db_,
             "SELECT "
+            "(SELECT COUNT(1) FROM exec_job_progress WHERE job_id IN (" + job_id_list_for_delete + ")) + "
             "(SELECT COUNT(1) FROM exec_job_cancellation_request WHERE job_id IN (" + job_id_list_for_delete + ")) + "
             "(SELECT COUNT(1) FROM exec_job_event WHERE job_id IN (" + job_id_list_for_delete + ")) + "
             "(SELECT COUNT(1) FROM exec_job WHERE job_id IN (" + job_id_list_for_delete + ")) + "
@@ -4183,6 +4206,16 @@ bool SqliteArchivePackageService::ApplySourcePurgePolicyForRoot(
             ") "
             "DELETE FROM exec_workflow_instance "
             "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM scoped_instances);");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            "), scoped_jobs(job_id) AS ("
+            "  SELECT job_id FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ") "
+            "DELETE FROM exec_job_progress WHERE job_id IN (SELECT job_id FROM scoped_jobs);");
         ok = ok && run_delete(
             "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
             "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "

@@ -203,6 +203,18 @@ QueuedAnalysisDb::FindTasMovieCheckpointSterilizationAttempt(
         }, std::nullopt);
 }
 
+std::vector<TasMovieCheckpointSterilizationAttemptRecord>
+QueuedAnalysisDb::ListTasMovieCheckpointSterilizationAttemptsForRequest(
+    const std::int64_t request_id) const {
+    return ExecuteRead<std::vector<TasMovieCheckpointSterilizationAttemptRecord>>(
+        [this, request_id]() {
+            return inner_ != nullptr
+                ? inner_->ListTasMovieCheckpointSterilizationAttemptsForRequest(
+                      request_id)
+                : std::vector<TasMovieCheckpointSterilizationAttemptRecord>{};
+        }, {});
+}
+
 std::optional<std::int64_t> QueuedAnalysisDb::LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const {
     return ExecuteRead<std::optional<std::int64_t>>(
         [this, probe_run_id]() {
@@ -426,6 +438,47 @@ bool QueuedAnalysisDb::CreateBattleTurnWave(
         error_out);
 }
 
+bool QueuedAnalysisDb::EnsureBattleStart(
+    const EnsureBattleStartCommand& command,
+    EnsureBattleStartReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->EnsureBattleStart(command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedAnalysisDb::BindBattlePredicateBundle(
+    const BindBattlePredicateBundleCommand& command,
+    std::int64_t* binding_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, binding_id_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->BindBattlePredicateBundle(
+                    command, binding_id_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+std::optional<BattlePredicateBundleBindingSnapshot>
+QueuedAnalysisDb::GetBattlePredicateBundleBindingForWave(
+    std::int64_t wave_id) const {
+    return ExecuteRead<std::optional<BattlePredicateBundleBindingSnapshot>>(
+        [this, wave_id]() {
+            return inner_ != nullptr
+                ? inner_->GetBattlePredicateBundleBindingForWave(wave_id)
+                : std::nullopt;
+        },
+        std::nullopt);
+}
+
 bool QueuedAnalysisDb::CreateBattleContextProbe(
     const CreateBattleContextProbeCommand& command,
     std::int64_t* context_probe_id_out,
@@ -494,6 +547,33 @@ bool QueuedAnalysisDb::UpdateBattleTurnJobResult(
         },
         false,
         error_out);
+}
+
+bool QueuedAnalysisDb::RecordBattleSingleTurnResult(
+    const RecordBattleSingleTurnResultCommand& command,
+    std::int64_t* result_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, result_id_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->RecordBattleSingleTurnResult(
+                    command, result_id_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+std::optional<BattleSingleTurnResultSnapshot>
+QueuedAnalysisDb::GetBattleSingleTurnResultForExecJob(
+    std::int64_t exec_job_id) const {
+    return ExecuteRead<std::optional<BattleSingleTurnResultSnapshot>>(
+        [this, exec_job_id]() {
+            return inner_ != nullptr
+                ? inner_->GetBattleSingleTurnResultForExecJob(exec_job_id)
+                : std::nullopt;
+        },
+        std::nullopt);
 }
 
 bool QueuedAnalysisDb::CreateBattleAdvancementPool(

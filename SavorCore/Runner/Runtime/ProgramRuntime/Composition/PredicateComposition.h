@@ -10,20 +10,10 @@
 
 namespace savor::runtime::program::composition {
 
-enum class PredicateWitnessRequirement : std::uint8_t
-{
-    Required,
-    OptionalNotApplicable,
-    OptionalUnavailable,
-};
-
 struct PredicateWitness
 {
     std::string name;
-    TypeRef parameter_type;
     TypeRef value_type;
-    PredicateWitnessRequirement requirement =
-        PredicateWitnessRequirement::Required;
 
     auto operator<=>(const PredicateWitness&) const = default;
 };
@@ -41,6 +31,11 @@ enum class PredicateExpressionKind : std::uint8_t
     BooleanAnd,
     BooleanOr,
     BooleanNot,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
     ImportedReducer,
 };
 
@@ -57,28 +52,8 @@ struct PredicateExpressionNode
     auto operator<=>(const PredicateExpressionNode&) const = default;
 };
 
-enum class PredicateUsePolicy : std::uint8_t
-{
-    Branch,
-    ReturnDomainRejection,
-    StructuredFail,
-    EmitRecord,
-    Accumulate,
-};
-
-struct PredicateCheck
-{
-    std::string canonical_id;
-    std::string semantic_point_id;
-    PredicateUsePolicy use_policy = PredicateUsePolicy::Branch;
-    bool emit_condition_observation = false;
-    std::string domain_rejection_code;
-    std::optional<LiteralValue> domain_rejection;
-    std::string structured_failure_code;
-
-    auto operator<=>(const PredicateCheck&) const = default;
-};
-
+// A definition is deliberately pure. It knows nothing about hooks, evidence
+// retention, aggregation, or Battle outcomes.
 struct PredicateDefinition
 {
     std::string canonical_id;
@@ -87,13 +62,28 @@ struct PredicateDefinition
     std::vector<PredicateWitness> witnesses;
     std::vector<PredicateExpressionNode> expression;
     std::size_t root_expression = 0;
-    PredicateCheck check;
-    std::optional<TypeRef> domain_outcome_type;
-    std::optional<LiteralValue> domain_success;
+};
+
+enum class PredicateReaction : std::uint8_t
+{
+    RecordAndContinue = 0,
+    AbortOnFail,
+};
+
+struct PredicateCheckUse
+{
+    std::string canonical_id;
+    std::string semantic_point_id;
+    PredicateReaction reaction = PredicateReaction::RecordAndContinue;
+    bool emit_evidence = false;
+    bool participates_in_aggregation = true;
+
+    auto operator<=>(const PredicateCheckUse&) const = default;
 };
 
 [[nodiscard]] CompositionResult LowerPredicate(
     const PredicateDefinition& definition,
+    const PredicateCheckUse& check,
     ProgramModule& module);
 
 } // namespace savor::runtime::program::composition

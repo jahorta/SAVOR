@@ -41,13 +41,6 @@ public:
     BuildCurrentGroupDefinition() = 0;
     [[nodiscard]] virtual std::optional<ProbeRouterReconcileRequest>
     TakeReconcileRequest() = 0;
-    [[nodiscard]] virtual bool SetProfileGroupEnabled(
-        std::string_view group,
-        bool enabled) = 0;
-    [[nodiscard]] virtual bool ReplaceProfile(
-        savor::probe::Profile profile,
-        std::string profile_json,
-        std::string* error_out) = 0;
     [[nodiscard]] virtual bool EmitMarker(
         std::string_view id,
         std::uint64_t value) = 0;
@@ -100,13 +93,6 @@ public:
     BuildCurrentGroupDefinition() override;
     [[nodiscard]] std::optional<ProbeRouterReconcileRequest>
     TakeReconcileRequest() override;
-    [[nodiscard]] bool SetProfileGroupEnabled(
-        std::string_view group,
-        bool enabled) override;
-    [[nodiscard]] bool ReplaceProfile(
-        savor::probe::Profile profile,
-        std::string profile_json,
-        std::string* error_out) override;
     [[nodiscard]] bool EmitMarker(
         std::string_view id,
         std::uint64_t value) override;

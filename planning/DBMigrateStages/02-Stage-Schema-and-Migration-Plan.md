@@ -534,8 +534,10 @@ Target cleanup: fake-attack min/max bounds are launch-time exploration arguments
 - `plan_id` (PK)
 - `name` (text UNIQUE NOT NULL)
 - `fingerprint` (text UNIQUE NOT NULL)
-- `num_turns` (int)
 - `created_at_utc` (int)
+
+Current authority: positive, one-based, contiguous `au_battle_plan_turn` rows
+define both plan length and content; no redundant turn count is stored.
 
 #### 6) `au_battle_plan_turn`
 - `plan_turn_id` (PK)

@@ -537,6 +537,7 @@ struct DolphinWrapperBackend::Impl
     std::optional<std::filesystem::path> prepared_movie_path;
     std::optional<std::filesystem::path> prepared_movie_savestate;
     std::optional<std::string> prepared_movie_sha256;
+    bool prepared_movie_core_started = false;
     std::optional<std::string> active_movie_sha256;
     std::optional<SavestateMovieRestoreContext> prepared_movie_replacement;
     std::optional<std::string> prepared_movie_replacement_sha256;
@@ -840,7 +841,8 @@ MovieBackendResult DolphinWrapperBackend::StopCoreForPreparedReadOnlyMovie()
     return MovieBackendResult::Success();
 }
 
-MovieBackendResult DolphinWrapperBackend::StartPreparedReadOnlyMovie()
+MovieBackendResult
+DolphinWrapperBackend::StartPreparedReadOnlyMovieCorePaused()
 {
     if (!impl_->open || !impl_->wrapper || !impl_->has_open_options)
     {
@@ -851,6 +853,11 @@ MovieBackendResult DolphinWrapperBackend::StartPreparedReadOnlyMovie()
     {
         return MovieBackendResult::Failure(
             "Dolphin movie start requires one prepared read-only movie");
+    }
+    if (impl_->prepared_movie_core_started)
+    {
+        return MovieBackendResult::Failure(
+            "Dolphin prepared movie core has already been started");
     }
 
     std::optional<std::string> discovered_startup;
@@ -905,15 +912,57 @@ MovieBackendResult DolphinWrapperBackend::StartPreparedReadOnlyMovie()
             GuestIntegrity::Unknown);
     }
     impl_->active_movie_sha256 = impl_->prepared_movie_sha256;
+    impl_->prepared_movie_core_started = true;
+    return MovieBackendResult::Success();
+}
+
+MovieBackendResult
+DolphinWrapperBackend::ActivatePreparedReadOnlyMoviePlayback()
+{
+    if (!impl_->open || !impl_->wrapper || !impl_->has_open_options ||
+        !impl_->prepared_movie_path || !impl_->prepared_movie_sha256 ||
+        !impl_->prepared_movie_core_started)
+    {
+        return MovieBackendResult::Failure(
+            "Dolphin playback activation requires one prepared paused movie core");
+    }
+    const BackendExecutionSnapshot execution = QueryExecutionSnapshot();
+    if (!execution.result.ok ||
+        execution.core_state != BackendCoreState::Paused ||
+        !execution.pause_confirmed)
+    {
+        return MovieBackendResult::Failure(
+            execution.result.message.empty()
+                ? "Dolphin prepared movie core is not authoritatively paused"
+                : execution.result.message,
+            execution.result.integrity == BackendIntegrity::Unknown
+                ? GuestIntegrity::Unknown
+                : GuestIntegrity::Preserved);
+    }
+    const MovieSnapshot movie = Snapshot();
+    if (movie.activity != MovieActivity::ReadOnlyPlayback ||
+        !movie.read_only)
+    {
+        return MovieBackendResult::Failure(
+            "Dolphin prepared movie is not active in read-only mode",
+            GuestIntegrity::Unknown);
+    }
     impl_->prepared_movie_path.reset();
     impl_->prepared_movie_savestate.reset();
     impl_->prepared_movie_sha256.reset();
+    impl_->prepared_movie_core_started = false;
     return MovieBackendResult::Success();
 }
 
 MovieBackendResult
 DolphinWrapperBackend::DiscardPreparedReadOnlyMovie() noexcept
 {
+    if (impl_->prepared_movie_core_started)
+    {
+        return MovieBackendResult::Failure(
+            "A started prepared movie core must be stopped, not discarded",
+            GuestIntegrity::Unknown);
+    }
     impl_->prepared_movie_path.reset();
     impl_->prepared_movie_savestate.reset();
     impl_->prepared_movie_sha256.reset();
@@ -940,6 +989,7 @@ BackendResult DolphinWrapperBackend::Close()
         impl_->prepared_movie_path.reset();
         impl_->prepared_movie_savestate.reset();
         impl_->prepared_movie_sha256.reset();
+        impl_->prepared_movie_core_started = false;
         impl_->prepared_movie_replacement.reset();
         impl_->prepared_movie_replacement_sha256.reset();
         impl_->prepared_movie_started_for_replacement = false;
@@ -981,6 +1031,7 @@ BackendResult DolphinWrapperBackend::Close()
         impl_->prepared_movie_path.reset();
         impl_->prepared_movie_savestate.reset();
         impl_->prepared_movie_sha256.reset();
+        impl_->prepared_movie_core_started = false;
         impl_->prepared_movie_replacement.reset();
         impl_->prepared_movie_replacement_sha256.reset();
         impl_->prepared_movie_started_for_replacement = false;
@@ -1448,6 +1499,7 @@ DolphinWrapperBackend::PrepareReadOnlyPlaybackForRestart(
     impl_->prepared_movie_path = dtm_path;
     impl_->prepared_movie_savestate = state;
     impl_->prepared_movie_sha256 = dtm.compute_sha256();
+    impl_->prepared_movie_core_started = false;
     return {MovieBackendResult::Success(), std::move(state)};
 }
 
@@ -1458,6 +1510,7 @@ MovieBackendResult DolphinWrapperBackend::StopMovie() noexcept
         impl_->prepared_movie_path.reset();
         impl_->prepared_movie_savestate.reset();
         impl_->prepared_movie_sha256.reset();
+        impl_->prepared_movie_core_started = false;
         impl_->active_movie_sha256.reset();
         if (!impl_->wrapper)
             return MovieBackendResult::Success();
@@ -1863,9 +1916,9 @@ BackendInputPublication DolphinWrapperBackend::Publish(
                 "standard controller port is unavailable"),
             0};
     }
-    const std::uint64_t sequence =
+    const std::uint64_t publication_epoch =
         impl_->wrapper->publishInputEpoch(frame);
-    if (sequence == 0)
+    if (publication_epoch == 0)
     {
         return {
             BackendResult::Failure(
@@ -1873,7 +1926,7 @@ BackendInputPublication DolphinWrapperBackend::Publish(
                 "Dolphin did not accept the input publication"),
             0};
     }
-    return {BackendResult::Success(), sequence};
+    return {BackendResult::Success(), publication_epoch};
 }
 
 BackendInputPoll DolphinWrapperBackend::QueryPoll(

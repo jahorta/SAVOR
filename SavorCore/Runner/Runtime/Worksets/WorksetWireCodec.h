@@ -8,8 +8,10 @@
 
 namespace savor::runtime {
 
-inline constexpr std::uint32_t kWorksetWireVersionV2 = 2;
-inline constexpr std::uint32_t kRuntimeManifestWireVersionV1 = 1;
+inline constexpr std::uint32_t kWorksetWireVersionV4 = 4;
+inline constexpr std::uint32_t kWorkerRuntimeContractWireVersionV1 = 1;
+inline constexpr std::uint32_t kWorksetCaptureBindingWireVersionV1 = 1;
+inline constexpr std::uint32_t kProgressPlanWireVersionV1 = 1;
 inline constexpr std::size_t kMaximumWorksetWireBytes =
     32ull * 1024ull * 1024ull;
 
@@ -21,20 +23,36 @@ struct WorksetWireCodecResult
     [[nodiscard]] explicit operator bool() const noexcept { return ok; }
 };
 
-[[nodiscard]] WorksetWireCodecResult EncodeWorkerWorksetV2(
+[[nodiscard]] WorksetWireCodecResult EncodeWorkerWorksetV4(
     const WorkerWorksetDefinition& definition,
     std::vector<std::uint8_t>& output);
 
-[[nodiscard]] WorksetWireCodecResult DecodeWorkerWorksetV2(
+[[nodiscard]] WorksetWireCodecResult DecodeWorkerWorksetV4(
     std::span<const std::uint8_t> input,
     WorkerWorksetDefinition& output);
 
-[[nodiscard]] WorksetWireCodecResult EncodeWorkerRuntimeManifestV1(
-    const WorkerRuntimeManifest& manifest,
+[[nodiscard]] WorksetWireCodecResult EncodeWorksetCaptureBindingV1(
+    const std::optional<WorksetCaptureBindingV1>& binding,
     std::vector<std::uint8_t>& output);
 
-[[nodiscard]] WorksetWireCodecResult DecodeWorkerRuntimeManifestV1(
+[[nodiscard]] WorksetWireCodecResult DecodeWorksetCaptureBindingV1(
     std::span<const std::uint8_t> input,
-    WorkerRuntimeManifest& output);
+    std::optional<WorksetCaptureBindingV1>& output);
+
+[[nodiscard]] WorksetWireCodecResult EncodeProgressPlanV1(
+    const progress::ProgressPlanV1& plan,
+    std::vector<std::uint8_t>& output);
+
+[[nodiscard]] WorksetWireCodecResult DecodeProgressPlanV1(
+    std::span<const std::uint8_t> input,
+    progress::ProgressPlanV1& output);
+
+[[nodiscard]] WorksetWireCodecResult EncodeWorkerRuntimeContractV1(
+    const WorkerRuntimeContractV1& contract,
+    std::vector<std::uint8_t>& output);
+
+[[nodiscard]] WorksetWireCodecResult DecodeWorkerRuntimeContractV1(
+    std::span<const std::uint8_t> input,
+    WorkerRuntimeContractV1& output);
 
 } // namespace savor::runtime

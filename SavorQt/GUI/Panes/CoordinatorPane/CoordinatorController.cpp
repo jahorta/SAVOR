@@ -228,11 +228,7 @@ void CoordinatorController::startCoordinator()
                 programRegistry,
                 workerCoordinator.get(),
                 resultBlobStore,
-                std::move(executionConfig),
-                []() {
-                    savorqt::SavorDbRuntime::instance()
-                        .wakeProgramResultProcessor();
-                });
+                std::move(executionConfig));
         jobExecutionCoordinator->SetPaused(startPaused_);
         std::string execution_start_error;
         if (!jobExecutionCoordinator->Start(
@@ -533,14 +529,9 @@ CoordinatorController::buildWorkerConfig() const
     cfg.iso_path = isoPath_.trimmed().toStdString();
     cfg.dolphin_base_dir = dolphinBaseDir_.trimmed().toStdString();
     cfg.worker_dir_root = workerRootPath().toStdString();
-    cfg.visual_workers = visualWorkerPoolEnabled_;
-    cfg.auto_resume_visual_workers = visualWorkerPoolEnabled_;
-    if (const auto phase = savor::runtime::seedprobe::
-            SeedProbeFullPhaseDefinitionV2();
-        phase && phase->identity()) {
-        cfg.enabled_program_kinds.push_back(
-            phase->identity().program_kind);
-    }
+    cfg.worker_mode = visualWorkerPoolEnabled_
+        ? savor::runtime::WorkerMode::Visual
+        : savor::runtime::WorkerMode::Headless;
     return cfg;
 }
 

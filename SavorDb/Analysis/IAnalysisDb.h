@@ -76,6 +76,8 @@ enum class BattleTurnWaveStatus {
     Completed,
     NoSurvivors,
     Selected,
+    AwaitingSelection,
+    PlanComplete,
 };
 
 enum class BattleContextProbeStatus {
@@ -272,6 +274,8 @@ inline std::string_view ToDbString(BattleTurnWaveStatus value) {
     case BattleTurnWaveStatus::Completed: return "COMPLETED";
     case BattleTurnWaveStatus::NoSurvivors: return "NO_SURVIVORS";
     case BattleTurnWaveStatus::Selected: return "SELECTED";
+    case BattleTurnWaveStatus::AwaitingSelection: return "AWAITING_SELECTION";
+    case BattleTurnWaveStatus::PlanComplete: return "PLAN_COMPLETE";
     default: return "";
     }
 }
@@ -283,6 +287,8 @@ inline BattleTurnWaveStatus ParseBattleTurnWaveStatus(std::string_view value) {
     if (value == "COMPLETED") return BattleTurnWaveStatus::Completed;
     if (value == "NO_SURVIVORS") return BattleTurnWaveStatus::NoSurvivors;
     if (value == "SELECTED") return BattleTurnWaveStatus::Selected;
+    if (value == "AWAITING_SELECTION") return BattleTurnWaveStatus::AwaitingSelection;
+    if (value == "PLAN_COMPLETE") return BattleTurnWaveStatus::PlanComplete;
     return BattleTurnWaveStatus::Unknown;
 }
 
@@ -674,6 +680,19 @@ struct BattleTurnWaveSnapshot {
 struct CreateBattleContextProbeCommand {
     std::int64_t wave_id = 0;
     std::int64_t source_savestate_id = 0;
+    std::string materialization_key;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t source_savestate_artifact_id = 0;
+    std::string source_savestate_sha256;
+    std::int64_t full_phase_program_kind = 0;
+    std::int64_t full_phase_program_version = 0;
+    std::string full_phase_canonical_id;
+    std::int64_t full_phase_contract_revision = 0;
+    std::string full_phase_sha256;
+    std::string module_canonical_id;
+    std::int64_t module_revision = 0;
+    std::string module_sha256;
     BattleContextProbeStatus probe_status = BattleContextProbeStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
     std::string correlation_id;
@@ -685,6 +704,14 @@ struct CompleteBattleContextProbeCommand {
     BattleContextProbeStatus probe_status = BattleContextProbeStatus::Unknown;
     std::optional<std::string> context_blob;
     std::optional<int> context_version;
+    std::optional<std::int64_t> context_artifact_id;
+    std::optional<std::string> worker_terminal_sha256;
+    std::optional<std::uint32_t> entry_pc;
+    std::optional<std::uint64_t> entry_vi_count;
+    std::optional<std::uint64_t> entry_epoch;
+    std::optional<std::uint32_t> capture_pc;
+    std::optional<std::uint64_t> capture_vi_count;
+    std::optional<std::uint64_t> capture_epoch;
     types::UtcTimePoint recorded_at_utc{};
 };
 
@@ -696,6 +723,27 @@ struct BattleContextProbeSnapshot {
     BattleContextProbeStatus probe_status = BattleContextProbeStatus::Unknown;
     std::optional<std::string> context_blob;
     std::optional<int> context_version;
+    std::optional<std::int64_t> context_artifact_id;
+    std::optional<std::string> worker_terminal_sha256;
+    std::optional<std::uint32_t> entry_pc;
+    std::optional<std::uint64_t> entry_vi_count;
+    std::optional<std::uint64_t> entry_epoch;
+    std::optional<std::uint32_t> capture_pc;
+    std::optional<std::uint64_t> capture_vi_count;
+    std::optional<std::uint64_t> capture_epoch;
+    std::optional<std::string> materialization_key;
+    std::optional<std::int64_t> workflow_instance_id;
+    std::optional<std::int64_t> workflow_step_id;
+    std::optional<std::int64_t> source_savestate_artifact_id;
+    std::optional<std::string> source_savestate_sha256;
+    std::optional<std::int64_t> full_phase_program_kind;
+    std::optional<std::int64_t> full_phase_program_version;
+    std::optional<std::string> full_phase_canonical_id;
+    std::optional<std::int64_t> full_phase_contract_revision;
+    std::optional<std::string> full_phase_sha256;
+    std::optional<std::string> module_canonical_id;
+    std::optional<std::int64_t> module_revision;
+    std::optional<std::string> module_sha256;
     std::optional<types::UtcTimePoint> recorded_at_utc;
     types::UtcTimePoint created_at_utc{};
 };
@@ -885,6 +933,115 @@ struct BattleResultsRecord {
     std::optional<types::UtcTimePoint> completed_at_utc;
 };
 
+// Coordination-owned, idempotent join of one completed SeedProbe run and one
+// successful Battle Context capture.  It creates the BattleSet and exactly one
+// first-turn wave for every accepted confirmed SeedProbe representative in a
+// single AnalysisBattle transaction.
+struct EnsureBattleStartCommand {
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t probe_run_id = 0;
+    std::int64_t context_probe_id = 0;
+    std::string battle_set_name;
+    std::int64_t entry_savestate_id = 0;
+    std::int64_t battle_run_spec_id = 0;
+    std::int64_t explorer_settings_id = 0;
+    int launch_fake_attack_min = 0;
+    int launch_fake_attack_max = 0;
+    types::UtcTimePoint created_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct EnsureBattleStartReceipt {
+    bool created = false;
+    std::int64_t battle_start_id = 0;
+    std::int64_t battle_set_id = 0;
+    std::vector<std::int64_t> first_wave_ids;
+};
+
+struct RecordBattleSingleTurnResultCommand {
+    std::int64_t turn_job_id = 0;
+    std::int64_t exec_job_id = 0;
+    std::string worker_terminal_sha256;
+    std::string terminal_kind;
+    std::optional<std::string> domain_outcome;
+    std::optional<std::string> error_code;
+    std::optional<std::string> error_text;
+    std::optional<std::int64_t> ending_rng;
+    std::optional<std::uint64_t> vi_start;
+    std::optional<std::uint64_t> vi_end;
+    std::optional<std::uint32_t> pred_passed;
+    std::optional<std::uint32_t> pred_total;
+    std::optional<std::uint32_t> cumulative_fake_attacks;
+    std::optional<std::int64_t> successor_savestate_id;
+    std::optional<std::int64_t> battle_context_artifact_id;
+    std::optional<std::int64_t> predicate_bundle_revision_id;
+    std::optional<std::string> predicate_bundle_sha256;
+    std::optional<std::string> predicate_binding_sha256;
+    std::vector<std::uint8_t> predicate_evidence_blob;
+    std::optional<std::int64_t> applied_input_artifact_id;
+    std::optional<std::int64_t> input_trace_artifact_id;
+    types::UtcTimePoint recorded_at_utc{};
+};
+
+struct BattleSingleTurnResultSnapshot : RecordBattleSingleTurnResultCommand {
+    std::int64_t battle_single_turn_result_id = 0;
+};
+
+struct BattlePredicateParameterValue {
+    std::uint32_t ordinal = 0;
+    std::string value_kind;
+    std::optional<int> builtin_type;
+    std::optional<std::string> schema_canonical_id;
+    std::optional<std::uint32_t> schema_revision;
+    std::optional<std::string> schema_sha256;
+    std::optional<std::int64_t> integer_value;
+    std::optional<double> real_value;
+    std::optional<std::string> text_value;
+    std::vector<std::uint8_t> blob_value;
+    bool operator==(const BattlePredicateParameterValue&) const = default;
+};
+
+struct BindBattlePredicateBundleCommand {
+    std::optional<std::int64_t> wave_id;
+    std::int64_t predicate_bundle_revision_id = 0;
+    std::string bundle_content_sha256;
+    std::string binding_content_sha256;
+    std::string structural_active_check_sha256;
+    std::vector<BattlePredicateParameterValue> parameter_values;
+    std::vector<std::uint32_t> active_check_ordinals;
+    std::int32_t phase_program_kind = 0;
+    std::int32_t phase_program_version = 0;
+    std::string phase_canonical_id;
+    std::uint32_t phase_revision = 0;
+    std::string phase_sha256;
+    std::string hook_contract_canonical_id;
+    std::uint32_t hook_contract_revision = 0;
+    std::string hook_contract_sha256;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct BattlePredicateBundleBindingSnapshot {
+    std::int64_t predicate_bundle_binding_id = 0;
+    std::optional<std::int64_t> wave_id;
+    std::int64_t predicate_bundle_revision_id = 0;
+    std::string bundle_content_sha256;
+    std::string binding_content_sha256;
+    std::string structural_active_check_sha256;
+    std::vector<BattlePredicateParameterValue> parameter_values;
+    std::vector<std::uint32_t> active_check_ordinals;
+    std::int32_t phase_program_kind = 0;
+    std::int32_t phase_program_version = 0;
+    std::string phase_canonical_id;
+    std::uint32_t phase_revision = 0;
+    std::string phase_sha256;
+    std::string hook_contract_canonical_id;
+    std::uint32_t hook_contract_revision = 0;
+    std::string hook_contract_sha256;
+    types::UtcTimePoint created_at_utc{};
+};
+
 enum class TasMovieValidationOperation {
     Unknown = 0,
     EstablishRootCursor,
@@ -1067,6 +1224,9 @@ struct IAnalysisDb {
     FindTasMovieCheckpointSterilizationAttempt(
         std::int64_t source_job_id,
         std::string_view worker_terminal_sha256) const = 0;
+    virtual std::vector<TasMovieCheckpointSterilizationAttemptRecord>
+    ListTasMovieCheckpointSterilizationAttemptsForRequest(
+        std::int64_t request_id) const = 0;
 
     virtual std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const = 0;
     virtual std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const = 0;
@@ -1137,6 +1297,16 @@ struct IAnalysisDb {
         const CreateBattleTurnWaveCommand& command,
         std::int64_t* wave_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
+    virtual bool EnsureBattleStart(
+        const EnsureBattleStartCommand& command,
+        EnsureBattleStartReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual bool BindBattlePredicateBundle(
+        const BindBattlePredicateBundleCommand& command,
+        std::int64_t* binding_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<BattlePredicateBundleBindingSnapshot>
+    GetBattlePredicateBundleBindingForWave(std::int64_t wave_id) const = 0;
 
     virtual bool CreateBattleContextProbe(
         const CreateBattleContextProbeCommand& command,
@@ -1165,6 +1335,12 @@ struct IAnalysisDb {
     virtual bool UpdateBattleTurnJobResult(
         const RecordBattleTurnJobCommand& command,
         std::string* error_out = nullptr) = 0;
+    virtual bool RecordBattleSingleTurnResult(
+        const RecordBattleSingleTurnResultCommand& command,
+        std::int64_t* result_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<BattleSingleTurnResultSnapshot>
+    GetBattleSingleTurnResultForExecJob(std::int64_t exec_job_id) const = 0;
 
     virtual bool CreateBattleAdvancementPool(
         const CreateBattleAdvancementPoolCommand& command,

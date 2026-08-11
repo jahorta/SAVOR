@@ -3,6 +3,7 @@
 #include "../../StopPoints/StopPointRouter.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace savor::runtime::program {
@@ -78,5 +79,11 @@ private:
     std::vector<CpuQualificationDescriptor> qualifications_;
     bool valid_ = false;
 };
+
+// Constructs the one immutable CPU sampler surface shared by every
+// production worker. The implementation is derived from the canonical source
+// capability-pack descriptors, so worksets only ever carry exact references.
+[[nodiscard]] std::unique_ptr<BoundedStopPointCpuEvaluator>
+BuildCanonicalStopPointCpuEvaluator();
 
 } // namespace savor::runtime::program

@@ -14,7 +14,7 @@
 
 #include "Common/Migrations/MigrationRunner.h"
 #include "Core/Input/SoaBattle/BattleCommandCodec.h"
-#include "Runner/IPC/Wire.h"
+#include "Runner/Runtime/ProgramKind.h"
 #include "Utils/Hash.h"
 #include "Utils/IniDoc.h"
 

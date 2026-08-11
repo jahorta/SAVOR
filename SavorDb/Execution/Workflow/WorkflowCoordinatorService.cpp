@@ -116,15 +116,13 @@ WorkflowCoordinatorService::WorkflowCoordinatorService(
     , authoring_db_(authoring_db)
     , program_kind_registry_(program_kind_registry)
     , config_(config)
-    , event_line_callback_(std::move(event_line_callback))
-    , adapter_chain_orchestrator_(program_kind_registry, nullptr) {
+    , event_line_callback_(std::move(event_line_callback)) {
     if (step_completion_gate != nullptr) {
         step_completion_gate_ = step_completion_gate;
     } else {
         owned_step_completion_gate_ = std::make_unique<StepCompletionGateService>();
         step_completion_gate_ = owned_step_completion_gate_.get();
     }
-    adapter_chain_orchestrator_ = AdapterChainOrchestrator(program_kind_registry_, step_completion_gate_);
 }
 
 WorkflowCoordinatorService::~WorkflowCoordinatorService() {
@@ -599,7 +597,7 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
         return true;
     }
 
-    std::optional<programdb::ResultMapPayload> result_payload;
+    std::optional<programdb::ProgramJobContinuationOutput> transition_output;
     if (continuation.output.has_value()) {
         const auto& output = *continuation.output;
         if (output.output_key.empty()
@@ -631,14 +629,7 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
                     : error);
             return false;
         }
-        result_payload = programdb::ResultMapPayload{
-            .result_kind = output.ref_kind,
-            .result_ref_id = output.ref_id,
-            .output_key = output.output_key,
-            .output_data_kind = output.data_kind,
-            .output_ref_kind = output.ref_kind,
-            .output_ref_id = output.ref_id,
-        };
+        transition_output = output;
     }
 
     WorkflowGraphRoutingService graph_routing(
@@ -648,7 +639,8 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
         commands,
         config_.successor_step_priority_boost);
     WorkflowTerminalAdvancementService terminal_advancement(
-        &adapter_chain_orchestrator_,
+        program_kind_registry_,
+        step_completion_gate_,
         execution_db_,
         queries,
         commands,
@@ -659,7 +651,7 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
             snapshot,
             &advancement,
             &error,
-            std::move(result_payload))) {
+            std::move(transition_output))) {
         WorkflowReadyStepRecord step{};
         step.workflow_instance_id = snapshot.workflow_instance_id;
         step.workflow_step_id = snapshot.workflow_step_id;

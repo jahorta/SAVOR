@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../../Core/Input/InputPlan.h"
+#include "../../../Core/Input/GCInputFrame.h"
 #include "../../RNGSeedDeltaMap.h"
 #include "../../../Runner/Runtime/FullPhase/FullPhaseProgram.h"
 #include "../../../Runner/Runtime/IProgramRuntimePort.h"
@@ -17,11 +17,11 @@
 namespace savor::runtime::seedprobe {
 
 inline constexpr std::string_view ModuleCanonicalId = "soa.seed_probe";
-inline constexpr std::uint32_t ModuleRevision = 2;
-inline constexpr std::int32_t ProgramVersion = 2;
+inline constexpr std::uint32_t ModuleRevision = 3;
+inline constexpr std::int32_t ProgramVersion = 3;
 inline constexpr std::string_view Entrypoint = "probe";
 inline constexpr std::string_view BaselineLineage =
-    "soa.seed_probe/restore-baseline/v2";
+    "soa.seed_probe/restore-baseline/v3";
 
 inline constexpr std::uint32_t PreBattleAfterRandSeedSetPc =
     0x8000A1DCu;
@@ -53,36 +53,30 @@ struct SemanticStopReceiptV2
     bool operator==(const SemanticStopReceiptV2&) const = default;
 };
 
-struct InputPublicationReceiptV2
+struct InputDeliveryReceiptV3
 {
+    std::uint64_t delivery_id = 0;
+    std::uint64_t binding_id = 0;
     std::uint64_t lease_id = 0;
     std::uint64_t publication_id = 0;
+    std::uint64_t poll_receipt_id = 0;
     WorksetEpoch workset_epoch;
+    std::uint64_t state_generation = 0;
+    std::uint32_t callback_count = 0;
     savor::GCInputFrame frame{};
 
-    bool operator==(const InputPublicationReceiptV2&) const = default;
+    bool operator==(const InputDeliveryReceiptV3&) const = default;
 };
 
-struct InputPollReceiptV2
-{
-    bool acknowledged = false;
-    std::uint64_t poll_receipt_id = 0;
-    std::uint64_t publication_id = 0;
-    WorksetEpoch workset_epoch;
-
-    bool operator==(const InputPollReceiptV2&) const = default;
-};
-
-struct SeedProbeResultV2
+struct SeedProbeResultV3
 {
     std::uint32_t raw_seed = 0;
     SeedProbeEndpointV2 endpoint =
         SeedProbeEndpointV2::AfterRandSeedSet;
     SemanticStopReceiptV2 semantic_stop;
-    InputPublicationReceiptV2 publication;
-    InputPollReceiptV2 guest_poll;
+    InputDeliveryReceiptV3 delivery;
 
-    bool operator==(const SeedProbeResultV2&) const = default;
+    bool operator==(const SeedProbeResultV3&) const = default;
 };
 
 struct SeedProbeSurveyPlanSettingsV2
@@ -106,7 +100,7 @@ class ISeedProbeFullPhaseDefinitionV2
 public:
     [[nodiscard]] virtual bool DecodeProgramResult(
         std::span<const program::Byte> encoded_result,
-        SeedProbeResultV2& result,
+        SeedProbeResultV3& result,
         std::string* diagnostic = nullptr) const = 0;
     [[nodiscard]] virtual std::vector<GCInputFrame> PlanSurvey(
         const SeedProbeSurveyPlanSettingsV2& settings) const = 0;
@@ -121,7 +115,7 @@ SeedProbeEndpointSchemaIdentityV2();
 [[nodiscard]] program::SchemaIdentity
 SeedProbeRequestSchemaIdentityV2();
 [[nodiscard]] program::SchemaIdentity
-SeedProbeResultSchemaIdentityV2();
+SeedProbeResultSchemaIdentityV3();
 
 [[nodiscard]] std::uint32_t SeedProbeEndpointPc(
     SeedProbeEndpointV2 endpoint) noexcept;
@@ -147,13 +141,13 @@ SeedProbeEndpointFromPc(std::uint32_t pc) noexcept;
     SeedProbeRequestV2& request,
     std::string* diagnostic = nullptr);
 
-[[nodiscard]] bool DecodeSeedProbeResultV2(
+[[nodiscard]] bool DecodeSeedProbeResultV3(
     const program::ProgramValueGraph& graph,
-    SeedProbeResultV2& result,
+    SeedProbeResultV3& result,
     std::string* diagnostic = nullptr);
-[[nodiscard]] bool ValidateSeedProbeResultV2(
+[[nodiscard]] bool ValidateSeedProbeResultV3(
     const SeedProbeRequestV2& request,
-    const SeedProbeResultV2& result,
+    const SeedProbeResultV3& result,
     WorksetEpoch terminal_workset_epoch,
     std::string* diagnostic = nullptr);
 

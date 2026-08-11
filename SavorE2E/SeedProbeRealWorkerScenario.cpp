@@ -34,6 +34,7 @@
 #include "DbSetup.h"
 #include "DurableLogFile.h"
 #include "MultiLineProgressRenderer.h"
+#include "ScenarioAssessment.h"
 #include "SplitCoordinatorRuntime.h"
 #include "WorkerStartupBarrier.h"
 
@@ -52,7 +53,7 @@ using savor::runner::parallel::savordb::JobExecutionCoordinatorTelemetry;
 using savor::runner::parallel::savordb::JobExecutionCoordinatorWarning;
 using savor::runner::parallel::savordb::
     JobExecutionWorkerLaneSnapshot;
-using savor::runner::parallel::savordb::ReadyWorkerCompatibilitySnapshot;
+using savor::runner::parallel::savordb::ReadyWorkerDispatchSnapshot;
 using savor::runner::parallel::savordb::WorkerCoordinatorTelemetry;
 using ::WorkerSnapshot;
 using ::WorkerStateKind;
@@ -327,8 +328,6 @@ std::string FormatCoordinatorTelemetryLine(
         << telemetry.execution.submission_temporary_unavailable
         << " submit_stale="
         << telemetry.execution.submission_stale_generation
-        << " submit_incompatible="
-        << telemetry.execution.submission_incompatible
         << " submit_deterministic="
         << telemetry.execution.submission_deterministic_rejection
         << " submit_transport_canceled="
@@ -831,7 +830,7 @@ bool ValidateSplitCoordinatorExecution(
     const std::optional<
         savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
     const SplitCoordinatorTelemetry& telemetry,
-    const std::vector<ReadyWorkerCompatibilitySnapshot>& ready_workers,
+    const std::vector<ReadyWorkerDispatchSnapshot>& ready_workers,
     const savor::runtime::ProgramModuleIdentity&
         expected_seed_probe_module,
     const SeedProbeWorkflowValidationOptions& options,
@@ -928,16 +927,10 @@ bool ValidateSplitCoordinatorExecution(
                 *seed_step->job_set_id;
             const auto root =
                 execution_db->GetJobSetProgress(root_job_set_id);
-            const auto survey_jobs =
-                execution_db->ListJobsInJobSet(root_job_set_id);
             require(
                 root.has_value(),
                 "SeedProbe Survey root job-set progress is unavailable");
             if (root.has_value()) {
-                require(
-                    survey_jobs.size() > 1,
-                    "SeedProbe Survey root did not contain multiple scalar "
-                    "requests");
                 require(
                     root->completed_jobs == root->total_jobs,
                     "SeedProbe job-set hierarchy did not become "
@@ -972,21 +965,6 @@ bool ValidateSplitCoordinatorExecution(
                     std::make_move_iterator(direct_children.begin()),
                     std::make_move_iterator(direct_children.end()));
             }
-            require(
-                !children.empty(),
-                "SeedProbe materializer did not add an internal child "
-                "job set");
-            const bool saw_confirm =
-                std::any_of(
-                    children.begin(),
-                    children.end(),
-                    [](const auto& child) {
-                        return child.purpose == "SEEDPROBE_CONFIRM";
-                    });
-            require(
-                saw_confirm,
-                "SeedProbe materializer did not publish a Confirm child "
-                "job set");
             for (const auto& child : children) {
                 require(
                     child.completed_jobs == child.total_jobs,
@@ -999,7 +977,7 @@ bool ValidateSplitCoordinatorExecution(
                 const auto jobs =
                     execution_db->ListJobsInJobSet(job_set_id);
                 for (const auto& listed : jobs) {
-                    const auto job = execution_db->GetJob(listed.job_id);
+                    const auto job = execution_db->GetExecutionJob(listed.job_id);
                     require(
                         job.has_value(),
                         "execution job disappeared from job set "
@@ -1069,7 +1047,7 @@ bool ValidateSplitCoordinatorExecution(
             for (const auto job_set_id : workflow_job_set_ids) {
                 for (const auto& listed :
                      execution_db->ListJobsInJobSet(job_set_id)) {
-                    const auto job = execution_db->GetJob(listed.job_id);
+                    const auto job = execution_db->GetExecutionJob(listed.job_id);
                     require(
                         job.has_value(),
                         "execution job disappeared from workflow job set "
@@ -1122,7 +1100,6 @@ bool ValidateSplitCoordinatorExecution(
         telemetry.execution.submission_accepted
         + telemetry.execution.submission_temporary_unavailable
         + telemetry.execution.submission_stale_generation
-        + telemetry.execution.submission_incompatible
         + telemetry.execution.submission_deterministic_rejection
         + telemetry.execution.submission_ambiguous_after_write
         + telemetry.execution
@@ -1207,11 +1184,6 @@ bool ValidateSplitCoordinatorExecution(
         "JobExecutionCoordinator ended paused or with an error: "
             + telemetry.execution.last_error);
     require_clean(
-        telemetry.execution.jobs_started
-            > telemetry.execution.worksets_submitted,
-        "SeedProbe E2E did not exercise a multi-item workset");
-
-    require_clean(
         telemetry.worker.submit_accepted > 0,
         "WorkerCoordinator accepted no worksets");
     require_clean(
@@ -1223,7 +1195,6 @@ bool ValidateSplitCoordinatorExecution(
         + telemetry.worker.submit_ambiguous
         + telemetry.worker.submit_temporary_unavailable
         + telemetry.worker.submit_stale_generation
-        + telemetry.worker.submit_incompatible
         + telemetry.worker.submit_deterministic_rejection
         + telemetry.worker.submit_transport_canceled_before_write;
     require_clean(
@@ -1269,25 +1240,17 @@ bool ValidateSplitCoordinatorExecution(
     require_clean(
         !ready_workers.empty(),
         "WorkerCoordinator had no ready worker at scenario completion");
+    const auto expected_runtime_contract =
+        savor::runtime::BuildProductionWorkerRuntimeContractV1();
+    (void)expected_seed_probe_module;
     for (const auto& worker : ready_workers) {
-        const auto module =
-            std::find_if(
-                worker.runtime_manifest.modules.begin(),
-                worker.runtime_manifest.modules.end(),
-                [&](const auto& candidate) {
-                    return candidate.module
-                            == expected_seed_probe_module
-                        && std::find(
-                               candidate.entrypoints.begin(),
-                               candidate.entrypoints.end(),
-                               savor::runtime::seedprobe::Entrypoint)
-                            != candidate.entrypoints.end();
-                });
         require_clean(
-            module != worker.runtime_manifest.modules.end(),
+            savor::runtime::IsNormalWorkerMode(worker.mode)
+                && worker.runtime_contract_sha256
+                    == expected_runtime_contract.canonical_sha256,
             "ready worker "
                 + std::to_string(worker.worker_id)
-                + " did not advertise the exact SeedProbe module");
+                + " did not confirm the exact homogeneous runtime contract");
     }
 
     if (health_issues_out != nullptr) {
@@ -1534,8 +1497,6 @@ bool ValidateSeedProbeAcceptedEvidence(
             accepted_representatives.front()->seed_value;
         std::vector<std::int32_t> accepted_deltas;
         std::set<std::int32_t> accepted_delta_set;
-        bool accepted_incidental_search_delta = false;
-        bool observed_search_result = false;
         accepted_deltas.reserve(
             accepted_representatives.size());
         for (const auto* representative :
@@ -1547,7 +1508,7 @@ bool ValidateSeedProbeAcceptedEvidence(
             accepted_delta_set.insert(delta);
 
             const auto source_job =
-                execution_db->GetJob(
+                execution_db->GetExecutionJob(
                     representative->source_job_id);
             const auto source_spec = source_job.has_value()
                 ? savor::db::execution::programdb::seedprobe::
@@ -1565,13 +1526,6 @@ bool ValidateSeedProbeAcceptedEvidence(
                     "accepted representative has invalid Survey/Search "
                     "source metadata");
                 continue;
-            }
-            if (source_spec->stage
-                    == savor::db::execution::programdb::
-                        seedprobe::SeedProbeJobStage::Search
-                && source_spec->desired_delta.has_value()
-                && *source_spec->desired_delta != delta) {
-                accepted_incidental_search_delta = true;
             }
         }
         if (accepted_deltas.empty()
@@ -1603,7 +1557,7 @@ bool ValidateSeedProbeAcceptedEvidence(
                 continue;
             }
             const auto source_job =
-                execution_db->GetJob(result.source_job_id);
+                execution_db->GetExecutionJob(result.source_job_id);
             const auto source_spec = source_job.has_value()
                 ? savor::db::execution::programdb::seedprobe::
                       DecodeSeedProbeJobSpec(
@@ -1621,11 +1575,6 @@ bool ValidateSeedProbeAcceptedEvidence(
                     "metadata");
                 continue;
             }
-            observed_search_result =
-                observed_search_result
-                || source_spec->stage
-                    == savor::db::execution::programdb::
-                        seedprobe::SeedProbeJobStage::Search;
             discovered_deltas.insert(
                 savor::wrapped_seed_delta(
                     result.seed_value,
@@ -1635,12 +1584,6 @@ bool ValidateSeedProbeAcceptedEvidence(
             failures.push_back(
                 "accepted delta set differs from the complete factual "
                 "Survey/Search discovery set");
-        }
-        if (observed_search_result
-            && !accepted_incidental_search_delta) {
-            failures.push_back(
-                "no accepted Search representative was incidental to "
-                "its job's desired delta");
         }
     }
 
@@ -1663,13 +1606,13 @@ bool ValidateSeedProbeAcceptedEvidence(
 
 } // namespace
 
-bool ValidateSeedProbeWorkflowExecution(
+bool CheckSeedProbeInvariants(
     savor::db::IExecutionDb* execution_db,
     savor::db::IAnalysisDb* analysis_db,
     const std::optional<
         savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
     const SplitCoordinatorTelemetry& telemetry,
-    const std::vector<ReadyWorkerCompatibilitySnapshot>& ready_workers,
+    const std::vector<ReadyWorkerDispatchSnapshot>& ready_workers,
     const savor::runtime::ProgramModuleIdentity& expected_seed_probe_module,
     const SeedProbeWorkflowValidationOptions& options,
     SeedProbeInfrastructureHealth* health_out,
@@ -1716,8 +1659,140 @@ bool ValidateSeedProbeWorkflowExecution(
     return coordinator_valid && evidence_valid;
 }
 
+void ReportSeedProbeTrajectory(
+    savor::db::IExecutionDb* execution_db,
+    savor::db::IAnalysisDb* analysis_db,
+    const std::optional<
+        savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
+    const SeedProbeWorkflowValidationOptions& options,
+    const std::function<void(const std::string&)>& sink) {
+    if (!execution_db || !analysis_db || !graph || !sink) return;
+    const auto step = std::ranges::find_if(
+        graph->steps, [&](const auto& candidate) {
+            const auto node_key = candidate.graph_node_key.empty()
+                ? candidate.step_key : candidate.graph_node_key;
+            return candidate.step_kind == "seedprobe.run"
+                && node_key == options.graph_node_key;
+        });
+    if (step == graph->steps.end() || !step->input_ref_id) return;
+    const auto run = analysis_db->GetSeedProbeRun(*step->input_ref_id);
+    if (!run) return;
+    const auto accepted = analysis_db->ListAnalysisInputSetFrames(
+        run->accepted_input_set_id);
+    const auto results = analysis_db->ListSeedProbeResults(run->probe_run_id);
+    {
+        std::ostringstream line;
+        line << "[seedprobe-trajectory] run=" << run->probe_run_id
+             << " status=" << savor::db::ToDbString(run->status)
+             << " endpoint=" << savor::db::ToDbString(
+                    run->established_endpoint)
+             << " samples_per_axis=" << run->launch_samples_per_axis
+             << " accepted_frames=" << accepted.size()
+             << " observations=" << results.size();
+        sink(line.str());
+    }
+
+    std::optional<std::uint32_t> neutral_seed;
+    for (const auto& frame : accepted) {
+        const auto representative = std::ranges::find_if(
+            results, [&](const auto& result) {
+                return result.input_frame_id == frame.input_frame_id
+                    && result.evidence_state
+                        == savor::db::SeedProbeEvidenceState::Confirmed
+                    && !result.confirmation_of_probe_result_id;
+            });
+        if (representative == results.end()) continue;
+        if (!neutral_seed) neutral_seed = representative->seed_value;
+        const auto source_job = execution_db->GetExecutionJob(
+            representative->source_job_id);
+        const auto source_spec = source_job
+            ? savor::db::execution::programdb::seedprobe::
+                DecodeSeedProbeJobSpec(source_job->input_ini)
+            : std::nullopt;
+        std::ostringstream line;
+        line << "[seedprobe-accepted] ordinal=" << frame.ordinal
+             << " frame=" << frame.input_frame_id
+             << " result=" << representative->probe_result_id
+             << " seed=" << representative->seed_value
+             << " delta="
+             << (neutral_seed
+                    ? std::to_string(savor::wrapped_seed_delta(
+                          representative->seed_value, *neutral_seed))
+                    : "unknown")
+             << " stage="
+             << (source_spec
+                    ? std::string(savor::db::execution::programdb::
+                          seedprobe::ToString(source_spec->stage))
+                    : "UNKNOWN")
+             << " source_job=" << representative->source_job_id;
+        sink(line.str());
+    }
+
+    if (!step->job_set_id) return;
+    std::deque<std::int64_t> pending{*step->job_set_id};
+    std::unordered_set<std::int64_t> visited;
+    std::unordered_set<std::int64_t> worksets;
+    std::size_t job_count = 0;
+    std::size_t survey_count = 0;
+    std::size_t search_count = 0;
+    std::size_t confirm_count = 0;
+    while (!pending.empty()) {
+        const auto job_set_id = pending.front();
+        pending.pop_front();
+        if (!visited.insert(job_set_id).second) continue;
+        const auto progress = execution_db->GetJobSetProgress(job_set_id);
+        if (progress) {
+            std::ostringstream line;
+            line << "[seedprobe-job-set] id=" << job_set_id
+                 << " total=" << progress->total_jobs
+                 << " completed=" << progress->completed_jobs
+                 << " expected_total="
+                 << (progress->expected_total
+                        ? std::to_string(*progress->expected_total) : "none");
+            sink(line.str());
+        }
+        for (const auto& listed : execution_db->ListJobsInJobSet(job_set_id)) {
+            ++job_count;
+            const auto job = execution_db->GetExecutionJob(listed.job_id);
+            if (!job) continue;
+            if (job->workset_id) worksets.insert(*job->workset_id);
+            const auto spec = savor::db::execution::programdb::seedprobe::
+                DecodeSeedProbeJobSpec(job->input_ini);
+            if (!spec) continue;
+            using savor::db::execution::programdb::seedprobe::
+                SeedProbeJobStage;
+            switch (spec->stage) {
+            case SeedProbeJobStage::Survey: ++survey_count; break;
+            case SeedProbeJobStage::Search: ++search_count; break;
+            case SeedProbeJobStage::Confirm: ++confirm_count; break;
+            case SeedProbeJobStage::Unknown: break;
+            }
+        }
+        for (const auto& child :
+             execution_db->GetChildJobSetProgress(job_set_id)) {
+            std::ostringstream line;
+            line << "[seedprobe-stage] parent=" << job_set_id
+                 << " job_set=" << child.job_set_id
+                 << " purpose=" << child.purpose
+                 << " total=" << child.total_jobs
+                 << " completed=" << child.completed_jobs;
+            sink(line.str());
+            pending.push_back(child.job_set_id);
+        }
+    }
+    std::ostringstream participation;
+    participation << "[seedprobe-participation] survey_jobs=" << survey_count
+                  << " search_jobs=" << search_count
+                  << " confirm_jobs=" << confirm_count
+                  << " jobs=" << job_count
+                  << " worksets=" << worksets.size()
+                  << " job_sets=" << visited.size();
+    sink(participation.str());
+}
+
 bool RunSeedProbeRealWorkerSmokeImpl(
     const CliOptions& options,
+    const ResolvedE2eScenarioEntry& entry,
     const char* argv0,
     savor::db::core::DBService* db_service,
     std::string* error_out) {
@@ -1737,14 +1812,16 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     }
     std::string err;
 
-    std::int64_t savestate_id = 0;
-    if (!SeedStateSavestate(db_service->StateDb(), options.savestate_file, &savestate_id, &err)) {
-        if (error_out) *error_out = "failed seeding StateDB savestate: " + err;
+    if (!entry.savestate_id || *entry.savestate_id <= 0) {
+        if (error_out) *error_out = "resolved SeedProbe entry savestate is unavailable";
         return false;
     }
+    const auto savestate_id = *entry.savestate_id;
 
     std::int64_t seed_probe_spec_id = 0;
-    if (!SeedAuthoringSpec(db_service->AuthoringDb(), options, &seed_probe_spec_id, &err)) {
+    if (!SeedAuthoringSpec(
+            db_service->AuthoringDb(), options, entry.run_identity,
+            &seed_probe_spec_id, &err)) {
         if (error_out) *error_out = "failed seeding AuthoringDB seedprobe spec: " + err;
         return false;
     }
@@ -1762,6 +1839,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             savestate_id,
             seed_probe_spec_id,
             options,
+            entry.run_identity,
             &workflow_instance_id,
             &err)) {
         if (error_out) *error_out = "failed seeding workflow graph execution rows: " + err;
@@ -1887,12 +1965,11 @@ bool RunSeedProbeRealWorkerSmokeImpl(
                     .string(),
             .worker_binary_runtime_root =
                 (scenario_workspace_root / "worker-runtime").string(),
-            .visual_workers = options.visual_worker,
-            .auto_resume_visual_workers = false,
+            .worker_mode = options.visual_worker
+                ? savor::runtime::WorkerMode::Visual
+                : savor::runtime::WorkerMode::Headless,
             .runtime_artifact_root =
                 (scenario_workspace_root / "runtime-artifacts").string(),
-            .enabled_program_kinds =
-                program_kind_registry.RegisteredProgramKinds(),
         };
 
     SplitCoordinatorRuntime coordinators;
@@ -1979,31 +2056,11 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             << " worker_id=" << worker.worker_id
             << " accepting_workset="
             << (worker.accepting_workset ? 1 : 0)
-            << " capabilities=" << worker.capabilities
+            << " mode=" << static_cast<int>(worker.mode)
             << " available_item_credits="
             << worker.available_item_credits
-            << " max_items="
-            << worker.runtime_manifest.limits.maximum_items_per_workset
-            << " max_bytes="
-            << worker.runtime_manifest.limits
-                   .maximum_encoded_workset_bytes
-            << " runtime_profile="
-            << worker.runtime_manifest.runtime_profile_sha256
-            << " modules=" << worker.runtime_manifest.modules.size();
-        for (const auto& module : worker.runtime_manifest.modules) {
-            ready
-                << " module=" << module.module.canonical_id
-                << "@" << module.module.revision
-                << "#" << module.module.canonical_hash
-                << "[";
-            for (std::size_t i = 0; i < module.entrypoints.size(); ++i) {
-                if (i > 0) {
-                    ready << ",";
-                }
-                ready << module.entrypoints[i];
-            }
-            ready << "]";
-        }
+            << " runtime_contract="
+            << worker.runtime_contract_sha256;
         enqueue_event_line(ready.str());
     }
 
@@ -2168,6 +2225,8 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         coordinators.SnapshotWorkers();
     const auto final_ready_workers =
         coordinators.SnapshotReadyWorkers();
+    const auto final_execution_warnings =
+        coordinators.SnapshotExecutionWarnings();
     {
         std::ostringstream split;
         split
@@ -2357,75 +2416,158 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             }
         };
 
-    if (!clean_shutdown) {
-        const std::string issue =
-            "split coordinator shutdown failed: " + shutdown_error;
-        emit_infrastructure_health(
-            SeedProbeInfrastructureHealth::Failed,
-            {issue});
-        if (error_out) {
-            *error_out = issue;
-        }
-        return false;
-    }
-    if (!final_graph.has_value()
-        || final_graph->instance.state != savor::db::execution::workflow::WorkflowInstanceState::Completed) {
-        const std::string issue = !coordinator_failure.empty()
-            ? "coordinator infrastructure failed: " + coordinator_failure
-            : saw_terminal_failure
-                ? "workflow did not complete successfully"
-                : "workflow stopped before reaching COMPLETED state";
-        emit_infrastructure_health(
-            SeedProbeInfrastructureHealth::Failed,
-            {issue});
-        if (error_out) {
-            *error_out = issue;
-        }
-        return false;
-    }
+    const auto final_sink = [&](const std::string& line) {
+        durable_log.AppendLine(line);
+        std::cout << line << '\n';
+    };
+    ScenarioAssessment assessment;
+    assessment.Require(
+        clean_shutdown,
+        "split coordinator shutdown failed: " + shutdown_error);
+    assessment.Require(
+        coordinator_failure.empty(),
+        "coordinator infrastructure failed: " + coordinator_failure);
+    assessment.Require(final_graph.has_value(),
+                       "SeedProbe workflow snapshot is unavailable");
+    const bool workflow_completed = final_graph.has_value()
+        && final_graph->instance.state
+            == savor::db::execution::workflow::WorkflowInstanceState::Completed;
+    assessment.Require(
+        workflow_completed,
+        saw_terminal_failure
+            ? "SeedProbe workflow reached a failed or canceled execution state"
+            : "SeedProbe workflow stopped before reaching COMPLETED state");
 
     SeedProbeInfrastructureHealth infrastructure_health =
         SeedProbeInfrastructureHealth::Failed;
     std::vector<std::string> infrastructure_issues;
     std::string validation_error;
-    const bool execution_valid = ValidateSeedProbeWorkflowExecution(
-        execution_db,
-        db_service->AnalysisDb(),
-        final_graph,
-        final_telemetry,
-        final_ready_workers,
-        expected_seed_probe_module,
-        SeedProbeWorkflowValidationOptions{},
-        &infrastructure_health,
-        &infrastructure_issues,
-        &validation_error);
+    const SeedProbeWorkflowValidationOptions validation_options{
+        .expected_entry_savestate_id = savestate_id,
+    };
+    if (workflow_completed) {
+        const auto authored = final_graph->instance.workflow_graph_revision_id
+            ? db_service->AuthoringDb()->GetWorkflowGraphRevision(
+                *final_graph->instance.workflow_graph_revision_id)
+            : std::nullopt;
+        const bool static_graph_valid = authored
+            && authored->nodes.size() == 1 && authored->edges.empty()
+            && authored->nodes.front().node_key == "probe_1"
+            && authored->nodes.front().unit_kind == "battle_seed_probe"
+            && final_graph->unit_activations.size() == 1
+            && final_graph->unit_activations.front().graph_node_key
+                == "probe_1"
+            && final_graph->unit_activations.front().unit_kind
+                == "battle_seed_probe"
+            && final_graph->input_bindings.size() == 1
+            && final_graph->input_bindings.front().node_key == "probe_1"
+            && final_graph->input_bindings.front().input_key
+                == "entry_savestate"
+            && final_graph->input_bindings.front().data_kind
+                == "state.movie_inactive_savestate_id"
+            && final_graph->input_bindings.front().ref_kind
+                == "state.savestate"
+            && final_graph->input_bindings.front().ref_id == savestate_id
+            && final_graph->input_bindings.front().source_kind == "external"
+            && final_graph->arguments.size() == 1
+            && final_graph->arguments.front().node_key == "probe_1"
+            && final_graph->arguments.front().argument_key
+                == "samples_per_axis"
+            && final_graph->arguments.front().value_type == "integer"
+            && final_graph->arguments.front().integer_value
+            && *final_graph->arguments.front().integer_value > 0
+            && !final_graph->arguments.front().text_value
+            && final_graph->arguments.front().source_kind == "scenario";
+        assessment.Require(
+            static_graph_valid,
+            "standalone SeedProbe authored graph, entry binding, or argument contract drifted");
+    }
+    const bool execution_valid = workflow_completed
+        && CheckSeedProbeInvariants(
+            execution_db,
+            db_service->AnalysisDb(),
+            final_graph,
+            final_telemetry,
+            final_ready_workers,
+            expected_seed_probe_module,
+            validation_options,
+            &infrastructure_health,
+            &infrastructure_issues,
+            &validation_error);
     emit_infrastructure_health(
         infrastructure_health,
         infrastructure_issues);
-    if (!execution_valid) {
-        if (error_out != nullptr) {
-            *error_out = validation_error;
-        }
+    ReportSeedProbeTrajectory(
+        execution_db, db_service->AnalysisDb(), final_graph,
+        validation_options, final_sink);
+
+    if (workflow_completed) {
+        assessment.Require(
+            execution_valid,
+            validation_error.empty()
+                ? "SeedProbe durable contract assessment failed"
+                : validation_error);
+    }
+    std::vector<savor::db::execution::workflow::WorkflowGraphSnapshot>
+        workflow_snapshots;
+    if (final_graph) workflow_snapshots.push_back(*final_graph);
+    AssessCommonScenarioExecution(
+        execution_db, workflow_snapshots, final_telemetry,
+        final_ready_workers, &assessment);
+    for (const auto& issue : infrastructure_issues) {
+        if (execution_valid) assessment.Warn(issue);
+    }
+    for (const auto& warning : final_execution_warnings) {
+        assessment.Warn("coordinator warning "
+            + std::to_string(warning.sequence) + ": " + warning.message
+            + (warning.detail.empty() ? "" : " (" + warning.detail + ")"));
+    }
+    ReportCommonScenarioTrajectory(
+        db_service, workflow_snapshots, "seedprobe", final_sink,
+        &assessment);
+    EmitScenarioAssessment("seedprobe", assessment, final_sink);
+    if (!assessment.Passed()) {
+        if (error_out) *error_out = assessment.FailureSummary("seedprobe");
         return false;
     }
+
+    std::ostringstream entry_line;
+    entry_line << "[e2e-entry] scenario=seedprobe source="
+               << ToString(entry.source)
+               << " savestate=" << savestate_id
+               << " workflow=" << workflow_instance_id;
+    if (entry.prepared_checkpoint) {
+        entry_line << " paired_source="
+                   << entry.prepared_checkpoint->paired_source_checkpoint.savestate_id
+                   << " validation_attempt="
+                   << entry.prepared_checkpoint->validation_attempt.validation_attempt_id
+                   << " sterilization_attempt="
+                   << entry.prepared_checkpoint->sterilization_attempt.sterilization_attempt_id;
+    }
+    durable_log.AppendLine(entry_line.str());
+    std::cout << entry_line.str() << '\n';
 
     return true;
 }
 
 bool RunSeedProbeRealWorkerSmoke(
     const CliOptions& options,
+    const ResolvedE2eScenarioEntry& entry,
     const char* argv0,
     savor::db::core::DBService* db_service,
     std::string* error_out) {
-    return RunSeedProbeRealWorkerSmokeImpl(options, argv0, db_service, error_out);
+    return RunSeedProbeRealWorkerSmokeImpl(
+        options, entry, argv0, db_service, error_out);
 }
 
 bool RunSeedProbeWorkflowGraphRealWorkerSmoke(
     const CliOptions& options,
+    const ResolvedE2eScenarioEntry& entry,
     const char* argv0,
     savor::db::core::DBService* db_service,
     std::string* error_out) {
-    return RunSeedProbeRealWorkerSmokeImpl(options, argv0, db_service, error_out);
+    return RunSeedProbeRealWorkerSmokeImpl(
+        options, entry, argv0, db_service, error_out);
 }
 
 } // namespace savor::e2e

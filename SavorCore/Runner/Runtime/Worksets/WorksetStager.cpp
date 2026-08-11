@@ -3,10 +3,14 @@
 #include "Phases/Programs/TasMovieValidation/TasMovieValidationModule.h"
 #include "Tas/DtmFile.h"
 #include "Utils/Hash.h"
+#include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
+#include "../../../../SavorProbe/ProbeRuntime.h"
 
 #include <algorithm>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <utility>
 
 namespace savor::runtime {
@@ -18,6 +22,109 @@ namespace {
     return WorksetStagerResult::Failure(
         WorksetStagerErrorCode::InvalidArgument,
         std::move(message));
+}
+
+[[nodiscard]] std::optional<std::string> ReadBoundedTextFile(
+    const std::filesystem::path& path,
+    std::size_t maximum_bytes,
+    std::string& error)
+{
+    std::error_code filesystem_error;
+    const std::uintmax_t size =
+        std::filesystem::file_size(path, filesystem_error);
+    if (filesystem_error || size > maximum_bytes)
+    {
+        error = filesystem_error
+            ? "Capture profile sidecar could not be inspected"
+            : "Capture profile sidecar exceeds the runtime limit";
+        return std::nullopt;
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+    {
+        error = "Capture profile sidecar could not be opened";
+        return std::nullopt;
+    }
+    std::string text(static_cast<std::size_t>(size), '\0');
+    input.read(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!input || input.gcount() !=
+            static_cast<std::streamsize>(text.size()))
+    {
+        error = "Capture profile sidecar could not be read completely";
+        return std::nullopt;
+    }
+    return text;
+}
+
+[[nodiscard]] bool AddRequestedBreakpointProgress(
+    savor::probe::Profile& profile,
+    const progress::ProgressPlanV1& plan,
+    std::string& error)
+{
+    for (const progress::ProgressPointBindingV1& point : plan.points)
+    {
+        if (point.provider !=
+                progress::ProgressProviderKind::BreakpointCapture ||
+            !point.breakpoint_pc)
+        {
+            continue;
+        }
+        const bool already_present = std::ranges::any_of(
+            profile.probes,
+            [&](const savor::probe::ProbeDefinition& probe) {
+                return probe.kind == savor::probe::ProbeKind::Pc &&
+                    probe.address == *point.breakpoint_pc &&
+                    savor::probe::has_subscription(
+                        probe.subscriptions,
+                        savor::probe::Subscription::Progress) &&
+                    probe.progress_formatter ==
+                        point.formatter.canonical_id;
+            });
+        if (already_present)
+            continue;
+        auto probe = progress::BuildBreakpointProgressProbeV1(point);
+        if (!probe)
+        {
+            error = "Requested breakpoint progress provider is unavailable";
+            return false;
+        }
+        profile.probes.push_back(std::move(*probe));
+    }
+    return true;
+}
+
+struct CurrentModuleIdentity
+{
+    std::string sha256;
+    std::string error;
+};
+
+[[nodiscard]] const CurrentModuleIdentity& CurrentCaptureModule()
+{
+    static const CurrentModuleIdentity identity = [] {
+        CurrentModuleIdentity value;
+        value.sha256 = savor::probe::current_module_sha256(
+            &value.error);
+        return value;
+    }();
+    return identity;
+}
+
+[[nodiscard]] bool IsRegisteredSemanticPc(std::uint32_t pc)
+{
+    static const auto catalog =
+        program::capabilities::BuildSourceCapabilityPackCatalog();
+    return std::ranges::any_of(
+        catalog.manifests,
+        [pc](const program::CapabilityPackManifest& manifest) {
+            return std::ranges::any_of(
+                manifest.semantic_points,
+                [pc](const program::SemanticPointDescriptor& point) {
+                    return point.kind ==
+                            program::SemanticPointKind::ProgramCounter &&
+                        point.pc == pc;
+                });
+        });
 }
 
 } // namespace
@@ -183,6 +290,19 @@ WorksetStagingCompletion WorksetStager::Process(
     completion.workset_id = job.definition.workset_id;
     try
     {
+        for (const auto& point : job.definition.progress_plan.points)
+        {
+            for (const std::uint32_t pc :
+                 point.runtime_sample_trigger_pcs)
+            {
+                if (!IsRegisteredSemanticPc(pc))
+                {
+                    completion.result = Invalid(
+                        "Progress plan references an unregistered semantic trigger PC");
+                    return completion;
+                }
+            }
+        }
         ProgramBaselineComponentResult components =
             components_->Stage(job.definition.baseline);
         if (!components.ok)
@@ -195,7 +315,158 @@ WorksetStagingCompletion WorksetStager::Process(
             return completion;
         }
 
-        if (job.definition.phase_invocation.program.canonical_id ==
+        std::optional<HostStagedCaptureProfile> staged_capture;
+        std::optional<savor::probe::Profile> observation_profile;
+        std::optional<std::filesystem::path> capture_output_directory;
+        std::string bound_profile_json;
+        if (job.definition.capture)
+        {
+            const WorksetCaptureBindingV1& binding =
+                *job.definition.capture;
+            if (binding.storage == CaptureProfileStorageV1::Inline)
+            {
+                bound_profile_json = binding.profile_json;
+            }
+            else
+            {
+                std::string read_error;
+                const auto loaded = ReadBoundedTextFile(
+                    binding.profile_sidecar_path,
+                    limits_.maximum_capture_profile_bytes,
+                    read_error);
+                if (!loaded)
+                {
+                    completion.result = WorksetStagerResult::Failure(
+                        WorksetStagerErrorCode::ArtifactFailure,
+                        std::move(read_error));
+                    return completion;
+                }
+                bound_profile_json = *loaded;
+            }
+            if (bound_profile_json.size() >
+                    limits_.maximum_capture_profile_bytes ||
+                hash::sha256(
+                    bound_profile_json.data(), bound_profile_json.size()) !=
+                    binding.profile_sha256)
+            {
+                completion.result = Invalid(
+                    "Capture profile content does not match its immutable binding");
+                return completion;
+            }
+            savor::probe::ProfileParseResult parsed =
+                savor::probe::parse_profile_json(bound_profile_json);
+            if (!parsed.profile)
+            {
+                completion.result = Invalid(
+                    savor::probe::format_profile_errors(parsed));
+                return completion;
+            }
+            if (parsed.profile->expected_module_sha256 !=
+                    binding.expected_module_sha256)
+            {
+                completion.result = Invalid(
+                    "Capture profile module identity disagrees with its workset binding");
+                return completion;
+            }
+            const CurrentModuleIdentity& module =
+                CurrentCaptureModule();
+            if (module.sha256.size() != 64 ||
+                binding.expected_module_sha256 != module.sha256)
+            {
+                completion.result = Invalid(
+                    module.error.empty()
+                        ? "Capture profile targets a different worker module"
+                        : module.error);
+                return completion;
+            }
+            const progress::ProgressValidationResult formatter_validation =
+                progress::ValidateCaptureProgressFormatters(
+                    *parsed.profile,
+                    &job.definition.progress_plan);
+            if (!formatter_validation)
+            {
+                completion.result = Invalid(
+                    formatter_validation.message.empty()
+                        ? "Capture profile progress formatter is invalid"
+                        : formatter_validation.message);
+                return completion;
+            }
+            if (progress::ComputeResolvedObservationHashV1(
+                    *parsed.profile,
+                    job.definition.progress_plan) !=
+                binding.resolved_observation_sha256)
+            {
+                completion.result = Invalid(
+                    "Capture profile resolved observation hash does not match");
+                return completion;
+            }
+            observation_profile = std::move(*parsed.profile);
+            capture_output_directory = binding.output_directory;
+        }
+        const bool needs_breakpoint_progress = std::ranges::any_of(
+            job.definition.progress_plan.points,
+            [](const progress::ProgressPointBindingV1& point) {
+                return point.provider ==
+                    progress::ProgressProviderKind::BreakpointCapture;
+            });
+        if (needs_breakpoint_progress && !observation_profile)
+        {
+            const CurrentModuleIdentity& module =
+                CurrentCaptureModule();
+            if (module.sha256.size() != 64)
+            {
+                completion.result = WorksetStagerResult::Failure(
+                    WorksetStagerErrorCode::ComponentFailure,
+                    module.error.empty()
+                        ? "Worker module hash is unavailable for canonical progress"
+                        : module.error);
+                return completion;
+            }
+            observation_profile.emplace();
+            observation_profile->name = "canonical-workset-progress";
+            observation_profile->expected_module_sha256 = module.sha256;
+        }
+        if (observation_profile)
+        {
+            std::string progress_probe_error;
+            if (!AddRequestedBreakpointProgress(
+                    *observation_profile,
+                    job.definition.progress_plan,
+                    progress_probe_error))
+            {
+                completion.result = Invalid(progress_probe_error);
+                return completion;
+            }
+            std::string effective_json =
+                savor::probe::serialize_profile_json(
+                    *observation_profile);
+            savor::probe::ProfileParseResult effective =
+                savor::probe::parse_profile_json(effective_json);
+            if (!effective.profile)
+            {
+                completion.result = Invalid(
+                    savor::probe::format_profile_errors(effective));
+                return completion;
+            }
+            const progress::ProgressValidationResult effective_validation =
+                progress::ValidateCaptureProgressFormatters(
+                    *effective.profile,
+                    &job.definition.progress_plan);
+            if (!effective_validation)
+            {
+                completion.result = Invalid(
+                    effective_validation.message);
+                return completion;
+            }
+            staged_capture.emplace(HostStagedCaptureProfile{
+                .profile_json = std::move(effective_json),
+                .profile = std::move(*effective.profile),
+                .output_directory =
+                    std::move(capture_output_directory),
+            });
+        }
+
+        if (job.definition.phase_invocation.program_package.identity.canonical_id ==
             "savor.full_phase.tas_movie_validation")
         {
             const ProgramBaselineArtifact& baseline =
@@ -229,7 +500,7 @@ WorksetStagingCompletion WorksetStager::Process(
                 }
             }
         }
-        if (job.definition.phase_invocation.program.canonical_id ==
+        if (job.definition.phase_invocation.program_package.identity.canonical_id ==
             "savor.full_phase.tas_movie_checkpoint_sterilize")
         {
             const ProgramBaselineArtifact& baseline =
@@ -365,7 +636,8 @@ WorksetStagingCompletion WorksetStager::Process(
         completion.package.emplace(HostStagedWorksetPackage{
             std::move(job.definition),
             baseline,
-            std::move(evidence)});
+            std::move(evidence),
+            std::move(staged_capture)});
         return completion;
     }
     catch (const std::exception& exception)

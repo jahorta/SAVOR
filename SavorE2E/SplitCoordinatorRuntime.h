@@ -79,7 +79,7 @@ public:
     [[nodiscard]] SplitCoordinatorTelemetry SnapshotTelemetry() const;
     [[nodiscard]] std::vector<WorkerSnapshot> SnapshotWorkers() const;
     [[nodiscard]] std::vector<
-        savor::runner::parallel::savordb::ReadyWorkerCompatibilitySnapshot>
+        savor::runner::parallel::savordb::ReadyWorkerDispatchSnapshot>
         SnapshotReadyWorkers() const;
     [[nodiscard]] std::vector<
         savor::runner::parallel::savordb::JobExecutionCoordinatorWarning>

@@ -2025,7 +2025,7 @@ struct ProgramExecutor::Impl
                 *operand(0),
                 true});
             ++frames.back().instruction_index;
-            return {true, {}, {}};
+            return {true, {}, {}, result.emissions.back()};
         }
         case InstructionOpcode::PublishArtifact:
         {
@@ -2494,13 +2494,13 @@ ProgramExecutorPumpResult ProgramExecutor::Pump(
                 impl_->ExecuteInstruction(
                     frame.block
                         ->instructions[frame.instruction_index]);
-            if (step.host_request || step.terminal)
+            if (step.host_request || step.terminal || step.emission)
                 return step;
             continue;
         }
         ProgramExecutorPumpResult step =
             impl_->ExecuteTerminator(frame.block->terminator);
-        if (step.host_request || step.terminal)
+        if (step.host_request || step.terminal || step.emission)
             return step;
     }
     return {

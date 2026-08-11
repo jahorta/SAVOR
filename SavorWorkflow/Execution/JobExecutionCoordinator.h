@@ -116,7 +116,6 @@ struct JobExecutionCoordinatorTelemetry {
     std::uint64_t submission_accepted = 0;
     std::uint64_t submission_temporary_unavailable = 0;
     std::uint64_t submission_stale_generation = 0;
-    std::uint64_t submission_incompatible = 0;
     std::uint64_t submission_deterministic_rejection = 0;
     std::uint64_t submission_ambiguous_after_write = 0;
     std::uint64_t submission_transport_canceled_before_write = 0;

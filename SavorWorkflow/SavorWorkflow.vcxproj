@@ -128,36 +128,30 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Execution\ArchiveWorkflowCommands.h" />
-    <ClInclude Include="Execution\DBWorkflowCoordinatorFactory.h" />
-    <ClInclude Include="Execution\DBWorkflowWorkerCoordinator.h" />
     <ClInclude Include="Execution\FleetStartupSnapshot.h" />
     <ClInclude Include="Execution\JobExecutionCoordinator.h" />
-    <ClInclude Include="Execution\JobMaterializationService.h" />
+    
     <ClInclude Include="Execution\StepInputAggregationService.h" />
     <ClInclude Include="Execution\WorkflowCoordinatorBridge.h" />
-    <ClInclude Include="Execution\WorkflowDispatchCoordinator.h" />
+    
     <ClInclude Include="Execution\WorkflowIntegrationMode.h" />
     <ClInclude Include="Execution\WorkflowSchedulerAdapter.h" />
     <ClInclude Include="Execution\WorkerCoordinator.h" />
     <ClInclude Include="Worker\ProcessWorker.h" />
     <ClInclude Include="Worker\TSQueue.h" />
-    <ClInclude Include="Worker\WorkerCapabilityPreflight.h" />
     <ClInclude Include="Worker\WorkerStatusRegistry.h" />
     <ClInclude Include="Worker\WorkerTelemetry.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Execution\ArchiveWorkflowCommands.cpp" />
-    <ClCompile Include="Execution\DBWorkflowCoordinatorFactory.cpp" />
-    <ClCompile Include="Execution\DBWorkflowWorkerCoordinator.cpp" />
     <ClCompile Include="Execution\JobExecutionCoordinator.cpp" />
-    <ClCompile Include="Execution\JobMaterializationService.cpp" />
+    
     <ClCompile Include="Execution\StepInputAggregationService.cpp" />
     <ClCompile Include="Execution\WorkflowCoordinatorBridge.cpp" />
-    <ClCompile Include="Execution\WorkflowDispatchCoordinator.cpp" />
+    
     <ClCompile Include="Execution\WorkflowSchedulerAdapter.cpp" />
     <ClCompile Include="Execution\WorkerCoordinator.cpp" />
     <ClCompile Include="Worker\ProcessWorker.cpp" />
-    <ClCompile Include="Worker\WorkerCapabilityPreflight.cpp" />
     <ClCompile Include="Worker\WorkerStatusRegistry.cpp" />
   </ItemGroup>
   <ItemGroup>

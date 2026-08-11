@@ -481,7 +481,7 @@ RunResult RunExecutionQueue(const Options& options, std::ofstream& snapshots) {
                     }
                     job_id = job_ids[index];
                 }
-                if (!execution->GetJob(job_id).has_value()) {
+                if (!execution->GetExecutionJob(job_id).has_value()) {
                     counters.failed.fetch_add(1);
                 }
             }

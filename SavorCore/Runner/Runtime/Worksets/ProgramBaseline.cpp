@@ -35,6 +35,31 @@ ProgramBaselineComponentResult FromSavestateFailure(
         result.message.empty() ? std::move(fallback) : result.message);
 }
 
+ProgramBaselineComponentResult FromSessionFailure(
+    const SessionOperationReceipt& receipt,
+    std::string fallback)
+{
+    return ProgramBaselineComponentResult::Failure(
+        receipt.disposition == SessionDisposition::Tainted ||
+                receipt.backend.integrity == BackendIntegrity::Unknown
+            ? WorkerRejectionCode::SessionTainted
+            : WorkerRejectionCode::BackendFailure,
+        receipt.backend.message.empty()
+            ? std::move(fallback)
+            : receipt.backend.message);
+}
+
+ProgramBaselineComponentResult FromMovieFailure(
+    const MovieServiceResult& result,
+    std::string fallback)
+{
+    return ProgramBaselineComponentResult::Failure(
+        result.integrity == GuestIntegrity::Unknown
+            ? WorkerRejectionCode::SessionTainted
+            : WorkerRejectionCode::BackendFailure,
+        result.message.empty() ? std::move(fallback) : result.message);
+}
+
 } // namespace
 
 ProgramBaselineComponentResult ProgramBaselineComponentRegistry::Register(
@@ -391,7 +416,7 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Stage(
     return ProgramBaselineComponentResult::Success();
 }
 
-ProgramBaselineComponentResult WorksetStateCoordinator::Prepare(
+ProgramBaselineComponentResult WorksetStateCoordinator::Initialize(
     WorkerWorksetId workset_id,
     const ProgramBaselineDefinition& definition,
     bool multi_item,
@@ -409,22 +434,19 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Prepare(
             WorkerRejectionCode::SessionUnavailable,
             "Program baseline requires an idle infrastructure session");
     }
-    const SessionOperationReceipt begun = session_.BeginWorkset(workset_id);
-    if (!begun.ok)
+    const SessionOperationReceipt opened =
+        session_.OpenWorksetInitialization(workset_id);
+    if (!opened.ok)
     {
-        return ProgramBaselineComponentResult::Failure(
-            begun.disposition == SessionDisposition::Tainted
-                ? WorkerRejectionCode::SessionTainted
-                : WorkerRejectionCode::SessionUnavailable,
-            begun.backend.message.empty()
-                ? "Workset runtime activation failed"
-                : begun.backend.message);
+        return FromSessionFailure(
+            opened,
+            "Workset initialization could not open");
     }
     active_workset_id_ = workset_id;
     ProgramBaselineComponentResult scope = OpenScope(workset_id);
     if (!scope.ok)
     {
-        (void)session_.EndWorkset(workset_id);
+        (void)session_.AbortWorksetInitialization(workset_id);
         active_workset_id_ = {};
         return scope;
     }
@@ -459,14 +481,6 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Prepare(
             "Movie-established baselines cannot activate guest-dependent components before playback");
     }
 
-    const SessionSnapshot current = session_.snapshot();
-    active_receipt_ = {
-        active_key_,
-        current.session_id,
-        current.workset_epoch,
-        definition.lineage,
-        established};
-
     if (multi_item_ && established)
     {
         active_handle_ = session_.CaptureWorksetBaselineHandle();
@@ -480,6 +494,25 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Prepare(
                 "Workset-owned baseline capture failed");
         }
     }
+
+    const SessionOperationReceipt committed =
+        session_.CommitWorksetInitialization(workset_id);
+    if (!committed.ok)
+    {
+        ProgramBaselineComponentResult failure = FromSessionFailure(
+            committed,
+            "Workset initialization could not establish authoritative execution evidence");
+        (void)Release();
+        return failure;
+    }
+    initialization_committed_ = true;
+    const SessionSnapshot current = session_.snapshot();
+    active_receipt_ = {
+        active_key_,
+        current.session_id,
+        current.workset_epoch,
+        definition.lineage,
+        established};
 
     receipt_out = active_receipt_;
     return ProgramBaselineComponentResult::Success();
@@ -495,9 +528,27 @@ WorksetStateCoordinator::RestoreForNextItem(
             WorkerRejectionCode::InvalidState,
             "No multi-item workset baseline is active");
     }
+    if (session_.execution_snapshot())
+    {
+        return ProgramBaselineComponentResult::Failure(
+            WorkerRejectionCode::InvalidState,
+            "Workset item reset still has authoritative execution evidence");
+    }
     if (active_definition_.artifact.kind ==
         ProgramBaselineArtifactKind::ReadOnlyMovie)
     {
+        ProgramBaselineComponentResult prepared =
+            PrepareSource(active_definition_);
+        if (!prepared.ok)
+            return prepared;
+        const SessionOperationReceipt committed =
+            session_.CommitWorksetItemReset(active_workset_id_);
+        if (!committed.ok)
+        {
+            return FromSessionFailure(
+                committed,
+                "Movie workset item reset could not establish authoritative execution evidence");
+        }
         const SessionSnapshot current = session_.snapshot();
         active_receipt_ = {
             active_key_, current.session_id, current.workset_epoch,
@@ -523,6 +574,14 @@ WorksetStateCoordinator::RestoreForNextItem(
         components_->Activate(active_definition_, session_, true);
     if (!reset.ok)
         return reset;
+    const SessionOperationReceipt committed =
+        session_.CommitWorksetItemReset(active_workset_id_);
+    if (!committed.ok)
+    {
+        return FromSessionFailure(
+            committed,
+            "Savestate workset item reset could not establish authoritative execution evidence");
+    }
     active_receipt_ = {
         active_key_,
         session_.snapshot().session_id,
@@ -566,8 +625,9 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Release()
         ProgramBaselineComponentResult::Success();
     if (active_workset_id_)
     {
-        const SessionOperationReceipt ended =
-            session_.EndWorkset(active_workset_id_);
+        const SessionOperationReceipt ended = initialization_committed_
+            ? session_.EndWorkset(active_workset_id_)
+            : session_.AbortWorksetInitialization(active_workset_id_);
         if (!ended.ok)
         {
             end_result = ProgramBaselineComponentResult::Failure(
@@ -584,6 +644,7 @@ ProgramBaselineComponentResult WorksetStateCoordinator::Release()
     active_key_ = {};
     active_receipt_ = {};
     multi_item_ = false;
+    initialization_committed_ = false;
     if (!handle_result.ok)
         return handle_result;
     if (!staged_result.ok)
@@ -620,6 +681,41 @@ ProgramBaselineComponentResult WorksetStateCoordinator::PrepareSource(
     if (definition.artifact.kind ==
         ProgramBaselineArtifactKind::ReadOnlyMovie)
     {
+        MovieService* movies = session_.movie_service();
+        if (!movies || !definition.artifact.movie_path)
+        {
+            return ProgramBaselineComponentResult::Failure(
+                movies
+                    ? WorkerRejectionCode::InvalidArgument
+                    : WorkerRejectionCode::Unsupported,
+                movies
+                    ? "Read-only-movie baseline has no exact DTM artifact"
+                    : "MovieService is unavailable during workset initialization");
+        }
+        const MovieOperationReceipt prepared =
+            movies->PrepareReadOnlyPlayback({
+                .dtm_path = *definition.artifact.movie_path});
+        if (!prepared.result.ok || !prepared.preparation)
+        {
+            return FromMovieFailure(
+                prepared.result,
+                "Read-only-movie baseline preparation failed");
+        }
+        if (prepared.dtm_sha256 != definition.artifact.movie_sha256)
+        {
+            const MovieOperationReceipt abandoned =
+                movies->AbandonPreparedReadOnlyPlayback(
+                    prepared.preparation);
+            if (!abandoned.result.ok)
+            {
+                return FromMovieFailure(
+                    abandoned.result,
+                    "Prepared movie hash mismatch could not be rolled back");
+            }
+            return ProgramBaselineComponentResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Prepared read-only movie does not match the baseline hash");
+        }
         return ProgramBaselineComponentResult::Success();
     }
     const ProgramBaselineArtifact& artifact = definition.artifact;

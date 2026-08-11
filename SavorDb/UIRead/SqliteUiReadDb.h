@@ -21,6 +21,9 @@ public:
         std::int64_t job_id) const override;
     std::vector<UiJobArtifact> ListJobArtifacts(
         std::int64_t job_id) const override;
+    std::vector<UiCanonicalJobProgress> ListJobProgress(
+        std::int64_t job_id,
+        int limit = 128) const override;
     UiReadPage<UiJobSetSummary> ListJobSets(
         const UiReadJobSetListQuery& query) const override;
     std::optional<UiJobSetDetail> GetJobSetDetail(

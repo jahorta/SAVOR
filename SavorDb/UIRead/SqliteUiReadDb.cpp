@@ -152,16 +152,28 @@ UiJobSummary ReadJobSummaryRow(sqlite3_stmt* st) {
     row.result_processing_failures = sqlite3_column_int(st, 14);
     row.result_processing_error_code = ColumnText(st, 15);
     row.result_processing_error_text = ColumnText(st, 16);
+    if (sqlite3_column_type(st, 17) != SQLITE_NULL) {
+        row.last_progress_attempt_id = static_cast<std::uint64_t>(
+            sqlite3_column_int64(st, 17));
+    }
+    if (sqlite3_column_type(st, 18) != SQLITE_NULL) {
+        row.last_progress_ordinal = static_cast<std::uint64_t>(
+            sqlite3_column_int64(st, 18));
+    }
+    row.last_progress_text = ColumnText(st, 19);
+    if (sqlite3_column_type(st, 20) != SQLITE_NULL) {
+        row.last_progress_at_utc = sqlite3_column_int64(st, 20);
+    }
     return row;
 }
 
 UiJobDetail ReadJobDetailRow(sqlite3_stmt* st) {
     UiJobDetail row{};
     row.summary = ReadJobSummaryRow(st);
-    row.fingerprint = ColumnText(st, 17);
-    row.claimed_by_token = ColumnTextOptional(st, 18);
-    if (sqlite3_column_type(st, 19) != SQLITE_NULL) {
-        row.lease_expires_at_utc = sqlite3_column_int64(st, 19);
+    row.fingerprint = ColumnText(st, 21);
+    row.claimed_by_token = ColumnTextOptional(st, 22);
+    if (sqlite3_column_type(st, 23) != SQLITE_NULL) {
+        row.lease_expires_at_utc = sqlite3_column_int64(st, 23);
     }
     return row;
 }
@@ -505,7 +517,8 @@ UiReadPage<UiJobSummary> SqliteUiReadDb::ListJobs(
         "COALESCE(d.attempts,0),COALESCE(d.max_attempts,0),COALESCE(d.error_text,''),"
         "COALESCE(d.result_processing_state,''),COALESCE(d.result_processing_attempts,0),"
         "COALESCE(d.result_processing_failures,0),COALESCE(d.result_processing_error_code,''),"
-        "COALESCE(d.result_processing_error_text,'') "
+        "COALESCE(d.result_processing_error_text,''),s.last_progress_attempt_id,"
+        "s.last_progress_ordinal,COALESCE(s.last_progress_text,''),s.last_progress_at_utc "
         "FROM ui_job_summary s LEFT JOIN ui_job_detail d ON d.job_id=s.job_id "
         "WHERE (?1=0 OR s.program_kind=?2) "
         "AND (?3=0 OR s.job_set_id=?4) "
@@ -596,7 +609,8 @@ std::optional<UiJobSummary> SqliteUiReadDb::GetJobSummary(std::int64_t job_id) c
         "COALESCE(d.attempts,0),COALESCE(d.max_attempts,0),COALESCE(d.error_text,''),"
         "COALESCE(d.result_processing_state,''),COALESCE(d.result_processing_attempts,0),"
         "COALESCE(d.result_processing_failures,0),COALESCE(d.result_processing_error_code,''),"
-        "COALESCE(d.result_processing_error_text,'') "
+        "COALESCE(d.result_processing_error_text,''),s.last_progress_attempt_id,"
+        "s.last_progress_ordinal,COALESCE(s.last_progress_text,''),s.last_progress_at_utc "
         "FROM ui_job_summary s LEFT JOIN ui_job_detail d ON d.job_id=s.job_id "
         "WHERE s.job_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
@@ -623,7 +637,8 @@ std::optional<UiJobDetail> SqliteUiReadDb::GetJobDetail(std::int64_t job_id) con
         "COALESCE(d.attempts,0),COALESCE(d.max_attempts,0),COALESCE(d.error_text,''),"
         "COALESCE(d.result_processing_state,''),COALESCE(d.result_processing_attempts,0),"
         "COALESCE(d.result_processing_failures,0),COALESCE(d.result_processing_error_code,''),"
-        "COALESCE(d.result_processing_error_text,''),"
+        "COALESCE(d.result_processing_error_text,''),s.last_progress_attempt_id,"
+        "s.last_progress_ordinal,COALESCE(s.last_progress_text,''),s.last_progress_at_utc,"
         "COALESCE(d.fingerprint,''),d.claimed_by_token,d.lease_expires_at_utc "
         "FROM ui_job_summary s LEFT JOIN ui_job_detail d ON d.job_id=s.job_id "
         "WHERE s.job_id=?1;";
@@ -666,6 +681,56 @@ std::vector<UiJobArtifact> SqliteUiReadDb::ListJobArtifacts(std::int64_t job_id)
         const auto* kind_text = sqlite3_column_text(st, 4);
         row.artifact_kind = kind_text == nullptr ? std::string{} : reinterpret_cast<const char*>(kind_text);
         row.created_at_utc = sqlite3_column_int64(st, 5);
+        rows.push_back(std::move(row));
+    }
+    sqlite3_finalize(st);
+    return rows;
+}
+
+std::vector<UiCanonicalJobProgress> SqliteUiReadDb::ListJobProgress(
+    std::int64_t job_id,
+    int limit) const {
+    std::vector<UiCanonicalJobProgress> rows;
+    if (db_ == nullptr || job_id <= 0 || limit <= 0) return rows;
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT job_id,attempt_id,ordinal,workset_id,item_id,invocation_id,"
+        "library_id,library_revision,progress_point_id,routed_sequence,"
+        "sample_snapshot_id,trigger_epoch,schema_id,schema_revision,"
+        "schema_sha256,typed_payload,display_text,recorded_at_utc "
+        "FROM ui_job_progress WHERE job_id=?1 "
+        "ORDER BY attempt_id DESC,ordinal DESC LIMIT ?2;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return rows;
+    }
+    sqlite3_bind_int64(st, 1, job_id);
+    sqlite3_bind_int(st, 2, limit);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        UiCanonicalJobProgress row{};
+        row.job_id = sqlite3_column_int64(st, 0);
+        row.attempt_id = static_cast<std::uint64_t>(sqlite3_column_int64(st, 1));
+        row.ordinal = static_cast<std::uint64_t>(sqlite3_column_int64(st, 2));
+        row.workset_id = static_cast<std::uint64_t>(sqlite3_column_int64(st, 3));
+        row.item_id = static_cast<std::uint64_t>(sqlite3_column_int64(st, 4));
+        row.invocation_id = static_cast<std::uint64_t>(sqlite3_column_int64(st, 5));
+        row.library_id = ColumnText(st, 6);
+        row.library_revision = static_cast<std::uint32_t>(sqlite3_column_int(st, 7));
+        row.progress_point_id = ColumnText(st, 8);
+        if (sqlite3_column_type(st, 9) != SQLITE_NULL)
+            row.routed_sequence = static_cast<std::uint64_t>(sqlite3_column_int64(st, 9));
+        if (sqlite3_column_type(st, 10) != SQLITE_NULL)
+            row.sample_snapshot_id = static_cast<std::uint64_t>(sqlite3_column_int64(st, 10));
+        if (sqlite3_column_type(st, 11) != SQLITE_NULL)
+            row.trigger_epoch = static_cast<std::uint64_t>(sqlite3_column_int64(st, 11));
+        row.schema_id = ColumnText(st, 12);
+        row.schema_revision = static_cast<std::uint32_t>(sqlite3_column_int(st, 13));
+        row.schema_sha256 = ColumnText(st, 14);
+        const auto blob_size = sqlite3_column_bytes(st, 15);
+        const auto* blob = static_cast<const std::uint8_t*>(sqlite3_column_blob(st, 15));
+        if (blob != nullptr && blob_size > 0)
+            row.typed_payload.assign(blob, blob + blob_size);
+        row.display_text = ColumnText(st, 16);
+        row.recorded_at_utc = sqlite3_column_int64(st, 17);
         rows.push_back(std::move(row));
     }
     sqlite3_finalize(st);

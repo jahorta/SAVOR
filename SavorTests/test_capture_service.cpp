@@ -85,13 +85,12 @@ StopSubscriptionGroupDefinition DefinitionAt(
             StopSubscriptionDefinition{
                 .id = config.first_subscription_id,
                 .point = PcStopPointSpec{pc},
-                .delivery = StopDeliveryMode::Observe,
-                .policy = StopRoutingPolicy::Pass,
+                .route = PassiveStopObservation{
+                    .cpu_observer_descriptor_id =
+                        config.cpu_observer_descriptor_id,
+                    .lossless = true},
                 .lifetime = StopSubscriptionLifetime::Scoped,
                 .priority = config.priority,
-                .cpu_observer_descriptor_id =
-                    config.cpu_observer_descriptor_id,
-                .lossless = true,
             },
         },
     };
@@ -143,40 +142,6 @@ public:
     TakeReconcileRequest() override
     {
         return std::exchange(state_->pending, std::nullopt);
-    }
-
-    bool SetProfileGroupEnabled(
-        std::string_view group,
-        bool enabled) override
-    {
-        if (group != "known")
-            return false;
-        state_->pending = ProbeRouterReconcileRequest{
-            .request_sequence = 1,
-            .action = enabled
-                ? ProbeRouterReconcileAction::ReplaceGroup
-                : ProbeRouterReconcileAction::ReleaseGroup,
-            .replacement = enabled
-                ? state_->definition
-                : StopSubscriptionGroupDefinition{
-                    .id = state_->config.group_id,
-                    .source = state_->config.source,
-                },
-        };
-        return true;
-    }
-
-    bool ReplaceProfile(
-        savor::probe::Profile,
-        std::string,
-        std::string*) override
-    {
-        state_->pending = ProbeRouterReconcileRequest{
-            .request_sequence = 2,
-            .action = ProbeRouterReconcileAction::ReplaceGroup,
-            .replacement = state_->definition,
-        };
-        return true;
     }
 
     bool EmitMarker(
@@ -295,22 +260,6 @@ struct ServiceFixture
     StopPointRouter router;
 };
 
-TEST(CaptureService, RejectsInvalidProfileBeforeCreatingAdapter)
-{
-    ServiceFixture fixture;
-    const auto attached = fixture.service.Attach({
-        .profile_json = "{not-json",
-        .expected_epoch = WorksetEpoch(1),
-    });
-    EXPECT_FALSE(attached.ok);
-    EXPECT_EQ(
-        attached.error.code,
-        CaptureServiceErrorCode::ProfileParseFailed);
-    EXPECT_EQ(fixture.capture_state->create_count, 0u);
-    EXPECT_TRUE(
-        fixture.router.DesiredPhysicalPlan().pcs.empty());
-}
-
 TEST(CaptureService, FailedAttachCleanupFailureTaintsAndBlocksReuse)
 {
     ServiceFixture fixture;
@@ -380,7 +329,6 @@ TEST(CaptureService, EmitsMarkerThroughAttachedPassiveProfile)
     ASSERT_TRUE(attached.ok) << attached.error.message;
 
     const auto marked = fixture.service.Mark(
-        attached.attachment,
         "program.phase",
         17);
     ASSERT_TRUE(marked.ok) << marked.error.message;
@@ -391,14 +339,6 @@ TEST(CaptureService, EmitsMarkerThroughAttachedPassiveProfile)
 
     EXPECT_EQ(
         fixture.service.Mark(
-            CaptureAttachmentId(999),
-            "stale",
-            0)
-            .error.code,
-        CaptureServiceErrorCode::StaleAttachment);
-    EXPECT_EQ(
-        fixture.service.Mark(
-            attached.attachment,
             {},
             0)
             .error.code,
@@ -430,8 +370,7 @@ TEST(
             StopSubscriptionDefinition{
                 .id = StopSubscriptionId(1801),
                 .point = PcStopPointSpec{kInitialPc},
-                .delivery = StopDeliveryMode::Wake,
-                .policy = StopRoutingPolicy::Consume,
+                .route = ForegroundStopWait{},
                 .lifetime = StopSubscriptionLifetime::Scoped,
                 .consumer = &wake_consumer,
             },
@@ -449,7 +388,7 @@ TEST(
     ASSERT_EQ(fixture.capture_state->delivered.size(), 1u);
     EXPECT_TRUE(
         fixture.capture_state->observed[0]
-            .active_foreground_wake);
+            .active_foreground_wait);
     EXPECT_EQ(
         fixture.capture_state->observed[0].identity,
         fixture.capture_state->delivered[0]
@@ -458,11 +397,8 @@ TEST(
         fixture.capture_state->observed[0].identity,
         receipts[0].identity);
     EXPECT_EQ(
-        fixture.capture_state->delivered[0].delivery,
-        StopDeliveryMode::Observe);
-    EXPECT_EQ(
         fixture.capture_state->delivered[0].event
-            .active_foreground_wake,
+            .active_foreground_wait,
         true);
 
     EXPECT_TRUE(wake.handle.Release().ok);
@@ -536,44 +472,6 @@ TEST(CaptureService, DetachReleasesGroupAndFinalizesArtifacts)
     EXPECT_FALSE(fixture.service.snapshot().attached);
     EXPECT_TRUE(
         fixture.router.DesiredPhysicalPlan().pcs.empty());
-}
-
-TEST(
-    CaptureService,
-    PassiveGroupMayReleaseAndReattachWithoutReplacingAttachment)
-{
-    ServiceFixture fixture;
-    const auto attached = fixture.Attach();
-    ASSERT_TRUE(attached.ok) << attached.error.message;
-
-    const auto disabled =
-        fixture.service.SetProfileGroupEnabled(
-            attached.attachment,
-            "known",
-            false);
-    ASSERT_TRUE(disabled.ok) << disabled.error.message;
-    EXPECT_FALSE(
-        fixture.service.snapshot().router_group_active);
-    EXPECT_TRUE(
-        fixture.router.DesiredPhysicalPlan().pcs.empty());
-
-    const auto enabled =
-        fixture.service.SetProfileGroupEnabled(
-            attached.attachment,
-            "known",
-            true);
-    ASSERT_TRUE(enabled.ok) << enabled.error.message;
-    EXPECT_TRUE(
-        fixture.service.snapshot().router_group_active);
-    EXPECT_EQ(
-        fixture.service.snapshot().attachment,
-        attached.attachment);
-    ASSERT_EQ(
-        fixture.router.DesiredPhysicalPlan().pcs.size(),
-        1u);
-    EXPECT_EQ(
-        fixture.router.DesiredPhysicalPlan().pcs[0].pc,
-        kInitialPc);
 }
 
 TEST(CaptureService, FinalizationFailureRequiresTaintAndBlocksNewAttachment)

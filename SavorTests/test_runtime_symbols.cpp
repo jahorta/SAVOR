@@ -12,32 +12,11 @@
 #include "Core/Memory/Soa/SoaAddrRegistry.h"
 #include "Runner/Breakpoints/BpRegistry.h"
 #include "Runner/Script/CtxRegistry.h"
-#include "Runner/Script/PSContextCodec.h"
 #include "Runner/Symbols/RuntimeSymbolRegistry.h"
 
 #include "common/SqliteDbFixture.h"
 
 namespace {
-
-bool SameBattlePath(
-    const soa::battle::actions::BattlePath& lhs,
-    const soa::battle::actions::BattlePath& rhs)
-{
-    if (lhs.size() != rhs.size()) return false;
-    for (size_t i = 0; i < lhs.size(); ++i) {
-        if (lhs[i].fake_attack_count != rhs[i].fake_attack_count) return false;
-        if (lhs[i].commands.size() != rhs[i].commands.size()) return false;
-        for (size_t j = 0; j < lhs[i].commands.size(); ++j) {
-            const auto& a = lhs[i].commands[j];
-            const auto& b = rhs[i].commands[j];
-            if (a.actor_slot != b.actor_slot) return false;
-            if (a.macro != b.macro) return false;
-            if (a.params.target_slot != b.params.target_slot) return false;
-            if (a.params.item_id != b.params.item_id) return false;
-        }
-    }
-    return true;
-}
 
 std::string ValidSymbolPackJson(std::string_view extra_name = "Runtime Symbols")
 {
@@ -77,29 +56,24 @@ TEST(RuntimeRegistryNaming, BuiltinLookupParity)
     EXPECT_EQ(bp::BpRegistry::FindRuntime(bp->pc), bp);
 }
 
-TEST(BreakpointRegistry, InternalInputMacroBreakpointsAreConsumerScoped)
+TEST(BreakpointRegistry, InternalInteractionBreakpointsAreConsumerScoped)
 {
     const auto all = bp::BpRegistry::AllRuntime();
     const auto predicate_bps = bp::BpRegistry::ForConsumer(BreakpointConsumer::Predicate);
-    const auto macro_bps = bp::BpRegistry::ForConsumer(BreakpointConsumer::InputMacroControl);
+    const auto interaction_bps =
+        bp::BpRegistry::ForConsumer(BreakpointConsumer::InteractionControl);
     std::size_t internal_count = 0;
-    std::size_t input_macro_count = 0;
+    std::size_t interaction_count = 0;
     std::size_t seed_probe_count = 0;
-    std::size_t navigation_count = 0;
-    std::size_t battle_end_count = 0;
 
     for (const auto& record : all) {
         const bool internal = record.visibility == BreakpointVisibility::Internal;
         if (internal) {
             ++internal_count;
             switch (record.owner) {
-            case BreakpointOwner::InputMacro: ++input_macro_count; break;
+            case BreakpointOwner::Interaction: ++interaction_count; break;
             case BreakpointOwner::SeedProbe: ++seed_probe_count; break;
-            case BreakpointOwner::NavigationContext: ++navigation_count; break;
             case BreakpointOwner::Shared: FAIL() << "internal breakpoint must have a private owner"; break;
-            }
-            if (std::string_view(record.name).rfind("BattleEnd", 0) == 0) {
-                ++battle_end_count;
             }
             EXPECT_EQ(record.visibility, BreakpointVisibility::Internal);
             EXPECT_FALSE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::Predicate));
@@ -107,47 +81,31 @@ TEST(BreakpointRegistry, InternalInputMacroBreakpointsAreConsumerScoped)
             EXPECT_FALSE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::UserScript));
             EXPECT_TRUE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::PhaseControl));
             EXPECT_EQ(
-                bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::InputMacroControl),
-                record.owner == BreakpointOwner::InputMacro);
+                bp::BpRegistry::IsAllowed(
+                    record.key,
+                    BreakpointConsumer::InteractionControl),
+                record.owner == BreakpointOwner::Interaction);
             EXPECT_FALSE(bp::BpRegistry::IsAllowedPc(record.pc, BreakpointConsumer::Predicate));
             EXPECT_EQ(
-                bp::BpRegistry::IsAllowedPc(record.pc, BreakpointConsumer::InputMacroControl),
-                record.owner == BreakpointOwner::InputMacro);
+                bp::BpRegistry::IsAllowedPc(
+                    record.pc,
+                    BreakpointConsumer::InteractionControl),
+                record.owner == BreakpointOwner::Interaction);
         } else {
             EXPECT_EQ(record.visibility, BreakpointVisibility::PlayerVisible);
             EXPECT_EQ(record.owner, BreakpointOwner::Shared);
         }
     }
 
-    EXPECT_EQ(internal_count, 54u);
-    EXPECT_EQ(input_macro_count, 52u);
+    EXPECT_EQ(internal_count, 23u);
+    EXPECT_EQ(interaction_count, 22u);
     EXPECT_EQ(seed_probe_count, 1u);
-    EXPECT_EQ(navigation_count, 1u);
-    EXPECT_EQ(battle_end_count, 31u);
     EXPECT_EQ(std::count_if(predicate_bps.begin(), predicate_bps.end(), [](const BPAddr& record) {
         return record.visibility == BreakpointVisibility::Internal;
     }), 0);
-    EXPECT_EQ(std::count_if(macro_bps.begin(), macro_bps.end(), [](const BPAddr& record) {
+    EXPECT_EQ(std::count_if(interaction_bps.begin(), interaction_bps.end(), [](const BPAddr& record) {
         return record.visibility == BreakpointVisibility::Internal;
-    }), 52);
-}
-
-TEST(BreakpointRegistry, NavigationContextCaptureBreakpointIsInternalAndPhaseControlOnly)
-{
-    EXPECT_EQ(bp::navigation::NavigationContextInitialPlayerInputReady,
-        static_cast<BPKey>(1001));
-    const auto* record = bp::BpRegistry::FindRuntime(
-        bp::navigation::NavigationContextInitialPlayerInputReady);
-    ASSERT_NE(record, nullptr);
-    EXPECT_EQ(record->pc, 0x80111770u);
-    EXPECT_STREQ(record->name, "NavigationContextInitialPlayerInputReady");
-    EXPECT_EQ(record->visibility, BreakpointVisibility::Internal);
-    EXPECT_EQ(record->owner, BreakpointOwner::NavigationContext);
-    EXPECT_TRUE(bp::BpRegistry::IsAllowed(record->key, BreakpointConsumer::PhaseControl));
-    EXPECT_FALSE(bp::BpRegistry::IsAllowed(record->key, BreakpointConsumer::Predicate));
-    EXPECT_FALSE(bp::BpRegistry::IsAllowed(record->key, BreakpointConsumer::CaptureProfile));
-    EXPECT_FALSE(bp::BpRegistry::IsAllowed(record->key, BreakpointConsumer::UserScript));
-    EXPECT_FALSE(bp::BpRegistry::IsAllowed(record->key, BreakpointConsumer::InputMacroControl));
+    }), 22);
 }
 
 TEST(BreakpointRegistry, InternalAndPlayerVisibleBreakpointsDoNotSharePcs)
@@ -159,56 +117,6 @@ TEST(BreakpointRegistry, InternalAndPlayerVisibleBreakpointsDoNotSharePcs)
             if (public_bp.visibility != BreakpointVisibility::PlayerVisible) continue;
             EXPECT_NE(internal_bp.pc, public_bp.pc);
         }
-    }
-}
-
-TEST(BreakpointRegistry, BattleEndInputMacroBreakpointIdsAndPcsAreStable)
-{
-    constexpr std::array<std::pair<BPKey, std::uint32_t>, 31> expected{{
-        {bp::battle::BattleEndVictoryCountdownComplete, 0x8006f554u},
-        {bp::battle::BattleEndVictorySlotsComplete, 0x8006f590u},
-        {bp::battle::BattleEndResultDispatch, 0x800e4660u},
-        {bp::battle::BattleEndResultIntroReady, 0x800e46bcu},
-        {bp::battle::BattleEndResultIntroAccepted, 0x800e46ccu},
-        {bp::battle::BattleEndResultGoldReady, 0x800e4898u},
-        {bp::battle::BattleEndResultGoldAccepted, 0x800e48a8u},
-        {bp::battle::BattleEndResultNormalExpReady, 0x800e4d40u},
-        {bp::battle::BattleEndResultNormalExpAccepted, 0x800e4d50u},
-        {bp::battle::BattleEndResultStatWaveReady, 0x800e4f2cu},
-        {bp::battle::BattleEndResultStatWaveAccepted, 0x800e4f3cu},
-        {bp::battle::BattleEndResultMagicEntryReady, 0x800e52d8u},
-        {bp::battle::BattleEndResultMagicEntryAccepted, 0x800e52e8u},
-        {bp::battle::BattleEndResultMagicExpReady, 0x800e5460u},
-        {bp::battle::BattleEndResultMagicExpAccepted, 0x800e5470u},
-        {bp::battle::BattleEndResultLearnedWaveReady, 0x800e5c3cu},
-        {bp::battle::BattleEndResultLearnedWaveAccepted, 0x800e5c4cu},
-        {bp::battle::BattleEndResultItemPopupReady, 0x800e5f80u},
-        {bp::battle::BattleEndResultItemPopupAccepted, 0x800e5f90u},
-        {bp::battle::BattleEndResultConfirmReady, 0x800e6128u},
-        {bp::battle::BattleEndResultConfirmAccepted, 0x800e6138u},
-        {bp::battle::BattleEndResultFadeReady, 0x800e6470u},
-        {bp::battle::BattleEndResultFadeAccepted, 0x800e6480u},
-        {bp::battle::BattleEndResultLifecycleExit, 0x800e64a0u},
-        {bp::battle::BattleEndResultCleanupComplete, 0x800e3694u},
-        {bp::battle::BattleEndRewardCommitComplete, 0x8006fd58u},
-        {bp::battle::BattleEndController0NeutralCopied, 0x801c7948u},
-        {bp::battle::BattleEndRewardEntry, 0x8006f598u},
-        {bp::battle::BattleEndResultGoldArmed, 0x800e488cu},
-        {bp::battle::BattleEndFieldReturnReseedComplete, 0x801012b4u},
-        {bp::battle::BattleEndResultDescriptorReady, 0x800e35f0u},
-    }};
-
-    for (std::size_t index = 0; index < expected.size(); ++index) {
-        const auto [key, pc] = expected[index];
-        EXPECT_EQ(key, static_cast<BPKey>(242u + index));
-        const auto* record = bp::BpRegistry::FindRuntime(key);
-        ASSERT_NE(record, nullptr);
-        EXPECT_EQ(record->pc, pc);
-        EXPECT_EQ(record->visibility, BreakpointVisibility::Internal);
-        EXPECT_EQ(record->owner,
-            key == bp::battle::BattleEndFieldReturnReseedComplete
-                ? BreakpointOwner::SeedProbe
-                : BreakpointOwner::InputMacro);
     }
 }
 
@@ -258,12 +166,6 @@ TEST(RuntimeSymbolRegistry, RejectsInternalBreakpointIdsAndCustomPcAliases)
     auto registry = savor::symbols::RuntimeSymbolRegistry::BuiltIns();
     std::string error;
 
-    savor::symbols::SymbolicPhaseScript symbolic;
-    symbolic.canonical_breakpoint_ids.push_back("builtin.bp.battle.BattleMacroInputReadyGate");
-    savor::PhaseScript lowered;
-    EXPECT_FALSE(registry.LowerSymbolicPhaseScript(symbolic, lowered, &error));
-    EXPECT_TRUE(lowered.canonical_bp_keys.empty());
-
     const auto* internal_bp = bp::BpRegistry::FindRuntime(bp::battle::BattleMacroInputReadyGate);
     ASSERT_NE(internal_bp, nullptr);
 
@@ -281,89 +183,6 @@ TEST(RuntimeSymbolRegistry, RejectsInternalBreakpointIdsAndCustomPcAliases)
     error.clear();
     EXPECT_FALSE(registry.AddBreakpointSymbol(std::move(breakpoint), &error));
     EXPECT_EQ(error, "breakpoint address is unavailable");
-}
-
-TEST(RuntimeSymbolRegistry, LowersSymbolicScripts)
-{
-    auto registry = savor::symbols::RuntimeSymbolRegistry::BuiltIns();
-    std::string error;
-
-    ASSERT_TRUE(registry.AddContextSymbol({ "user.ctx.test.read", "Read Result", savor::symbols::ContextValueType::U32 }, &error)) << error;
-    savor::symbols::AddressSymbol address;
-    address.stable_id = "user.addr.test.read_source";
-    address.name = "Read Source";
-    address.region = addr::Region::MEM1;
-    address.base = 0x803469A8u;
-    ASSERT_TRUE(registry.AddAddressSymbol(std::move(address), &error)) << error;
-    ASSERT_TRUE(registry.AddBreakpointSymbol({ "user.bp.test.read", "Read Breakpoint", "user.addr.test.read_source" }, &error)) << error;
-
-    savor::symbols::SymbolicPhaseScript symbolic;
-    symbolic.canonical_breakpoint_ids.push_back("user.bp.test.read");
-    symbolic.ops.push_back({ .kind = savor::symbols::SymbolicOp::Kind::RunUntilBp });
-    symbolic.ops.push_back({
-        .kind = savor::symbols::SymbolicOp::Kind::ReadU32,
-        .left_key_id = "user.ctx.test.read",
-        .address_id = "user.addr.test.read_source",
-    });
-    symbolic.ops.push_back({
-        .kind = savor::symbols::SymbolicOp::Kind::EmitResult,
-        .left_key_id = "user.ctx.test.read",
-    });
-
-    savor::PhaseScript lowered;
-    ASSERT_TRUE(registry.LowerSymbolicPhaseScript(symbolic, lowered, &error)) << error;
-    ASSERT_EQ(lowered.canonical_bp_keys.size(), 1u);
-    ASSERT_EQ(lowered.ops.size(), 3u);
-    EXPECT_EQ(lowered.ops[0].code, savor::PSOpCode::RUN_UNTIL_BP);
-    EXPECT_EQ(lowered.ops[1].code, savor::PSOpCode::READ_U32);
-    EXPECT_EQ(lowered.ops[1].rd.addr, 0x803469A8u);
-    EXPECT_EQ(lowered.ops[2].code, savor::PSOpCode::EMIT_RESULT);
-}
-
-TEST(PSContextCodec, RoundTripsCustomKeysAndRichValues)
-{
-    savor::PSContext ctx;
-    const savor::context::key::KeyId scalar_key = 0x8000;
-    const savor::context::key::KeyId string_key = 0x8001;
-    const savor::context::key::KeyId frame_key = 0x8002;
-    const savor::context::key::KeyId path_key = 0x8003;
-
-    auto frame = savor::GCInputFrame::new_stk_main(120, 136);
-    frame.A().R();
-
-    soa::battle::actions::BattlePath path;
-    soa::battle::actions::TurnPlan turn;
-    turn.fake_attack_count = 2;
-    turn.commands.push_back({
-        .actor_slot = 1,
-        .macro = soa::battle::actions::BattleAction::UseItem,
-        .params = { .target_slot = 3, .item_id = 42 },
-    });
-    path.push_back(turn);
-
-    ctx.emplace(scalar_key, uint32_t{ 12345 });
-    ctx.emplace(string_key, std::string{ "custom" });
-    ctx.emplace(frame_key, frame);
-    ctx.emplace(path_key, path);
-
-    std::vector<uint8_t> bytes;
-    ASSERT_TRUE(savor::psctx::encode_numeric(ctx, bytes));
-
-    savor::PSContext decoded;
-    ASSERT_TRUE(savor::psctx::decode_numeric(bytes.data(), bytes.size(), decoded));
-
-    uint32_t scalar = 0;
-    std::string text;
-    savor::GCInputFrame decoded_frame;
-    soa::battle::actions::BattlePath decoded_path;
-    ASSERT_TRUE(decoded.get(scalar_key, scalar));
-    ASSERT_TRUE(decoded.get(string_key, text));
-    ASSERT_TRUE(decoded.get(frame_key, decoded_frame));
-    ASSERT_TRUE(decoded.get(path_key, decoded_path));
-    EXPECT_EQ(scalar, 12345u);
-    EXPECT_EQ(text, "custom");
-    EXPECT_EQ(decoded_frame, frame);
-    EXPECT_TRUE(SameBattlePath(decoded_path, path));
 }
 
 TEST(BattleCommandCodec, RoundTripsCommandSetAndExecutionScript)

@@ -3,6 +3,7 @@
 #include "CanonicalActionPayload.h"
 #include "../Capabilities/SourceCapabilityPacks.h"
 #include "../Capabilities/SourceReducers.h"
+#include "../Composition/SemanticObservationComposition.h"
 #include "../Model/ProgramValueArena.h"
 #include "../Registry/CanonicalActionCatalog.h"
 #include "../../EmulationSession.h"
@@ -43,10 +44,8 @@ constexpr ResourceServiceId kStopPointService{3};
 constexpr ResourceServiceId kInputService{4};
 constexpr ResourceServiceId kMovieService{5};
 constexpr ResourceServiceId kMutationService{6};
-constexpr ResourceServiceId kCaptureService{7};
 
 constexpr std::uint32_t kMaximumStopAlternatives = 128;
-constexpr std::uint32_t kMaximumInputFrames = 65536;
 
 [[nodiscard]] bool CompleteSha256(std::string_view value) noexcept
 {
@@ -67,21 +66,6 @@ struct EnumFieldBound
 };
 
 constexpr std::array kEnumFieldBounds{
-    EnumFieldBound{
-        Field::Delivery,
-        static_cast<std::uint64_t>(
-            StopDeliveryMode::Wake) +
-            1},
-    EnumFieldBound{
-        Field::RoutingPolicy,
-        static_cast<std::uint64_t>(
-            StopRoutingPolicy::Fail) +
-            1},
-    EnumFieldBound{
-        Field::Lifetime,
-        static_cast<std::uint64_t>(
-            StopSubscriptionLifetime::OneShot) +
-            1},
     EnumFieldBound{
         Field::MovieEndedPolicy,
         static_cast<std::uint64_t>(
@@ -125,7 +109,6 @@ std::optional<Field> InvalidEnumField(
 
 struct ContextRequestEvidence
 {
-    std::uint64_t stop_sequence = 0;
     WorksetEpoch epoch;
     std::uint32_t expected_pc = 0;
 };
@@ -173,22 +156,17 @@ bool DecodeContextRequest(
         : nullptr;
     if (!root || !root->type.named ||
         root->type.named->canonical_id != expected_schema ||
-        !record || record->fields.size() != 3)
+        !record || record->fields.size() != 2)
     {
         return false;
     }
 
     std::uint64_t epoch = 0;
-    return ScalarValue(
-               graph,
-               record->fields[0],
-               output.stop_sequence) &&
-        ScalarValue(graph, record->fields[1], epoch) &&
+    return ScalarValue(graph, record->fields[0], epoch) &&
         ScalarValue(
             graph,
-            record->fields[2],
+            record->fields[1],
             output.expected_pc) &&
-        output.stop_sequence != 0 &&
         epoch != 0 &&
         (output.epoch = WorksetEpoch(epoch), true);
 }
@@ -371,8 +349,15 @@ bool ReadBattleContext(
         diagnostic = "battle phase fields are unavailable";
         return false;
     }
-    candidate.turn_type =
-        static_cast<soa::battle::TurnType>(turn_type);
+    const auto* turn_type_definition =
+        soa::battle::find_turn_type_definition(
+            static_cast<std::int64_t>(turn_type));
+    if (turn_type_definition == nullptr)
+    {
+        diagnostic = "battle turn type is invalid";
+        return false;
+    }
+    candidate.turn_type = turn_type_definition->type;
     candidate.battle_phase =
         static_cast<std::uint32_t>(battle_phase);
     candidate.turn_count =
@@ -529,14 +514,11 @@ bool ReadNavigationContext(
 std::optional<CanonicalAction> ResolveCanonicalAction(
     const ExactDependencyIdentity& identity)
 {
-    for (std::size_t index = 0;
-         index <= static_cast<std::size_t>(
-             CanonicalAction::TelemetryEmit);
-         ++index)
+    for (const CanonicalActionDefinition& definition :
+         CanonicalActionDefinitions())
     {
-        const auto action = static_cast<CanonicalAction>(index);
-        if (CanonicalActionIdentity(action) == identity)
-            return action;
+        if (CanonicalActionIdentity(definition.action) == identity)
+            return definition.action;
     }
     return std::nullopt;
 }
@@ -614,67 +596,55 @@ bool DecodeInputFrame(
     return true;
 }
 
-bool DecodeInputFrames(
-    std::span<const Byte> bytes,
-    std::vector<savor::GCInputFrame>& frames)
-{
-    if (bytes.empty() || bytes.size() % 8 != 0 ||
-        bytes.size() / 8 > kMaximumInputFrames)
-    {
-        return false;
-    }
-    frames.clear();
-    frames.reserve(bytes.size() / 8);
-    for (std::size_t offset = 0; offset < bytes.size(); offset += 8)
-    {
-        savor::GCInputFrame frame{};
-        if (!DecodeInputFrame(bytes.subspan(offset, 8), frame))
-            return false;
-        frames.push_back(frame);
-    }
-    return true;
-}
-
-bool AddInputPublicationResult(
+bool AddInputExecutionBindingResult(
     CanonicalActionPayload& payload,
-    const InputPublicationEvidence& publication)
+    const InputExecutionBindingReceipt& binding)
 {
-    return publication.lease &&
-        publication.publication &&
-        publication.epoch &&
+    return binding.lease && binding.binding && binding.epoch &&
         payload.AddUnsigned(
             Field::Handle,
-            publication.lease.value()) &&
+            binding.lease.value()) &&
+        payload.AddUnsigned(
+            Field::Binding,
+            binding.binding.value()) &&
         payload.AddUnsigned(
             Field::Publication,
-            publication.publication.value()) &&
+            binding.publication.value()) &&
         payload.AddUnsigned(
             Field::ResultEpoch,
-            publication.epoch.value()) &&
+            binding.epoch.value()) &&
+        payload.AddUnsigned(
+            Field::StateGeneration,
+            binding.state_generation) &&
         payload.AddBytes(
             Field::ResultFrame,
-            EncodeInputFrame(publication.frame));
+            EncodeInputFrame(binding.frame));
 }
 
-std::optional<InputPublicationEvidence>
-InputPublicationEvidenceFromPayload(
+std::optional<InputExecutionBindingEvidence>
+InputExecutionBindingEvidenceFromPayload(
     const CanonicalActionPayload& payload)
 {
     const auto lease = payload.Unsigned(Field::ParentHandle);
+    const auto binding = payload.Unsigned(Field::Binding);
     const auto publication =
         payload.Unsigned(Field::Publication);
     const auto epoch = payload.Unsigned(Field::ResultEpoch);
+    const auto generation = payload.Unsigned(Field::StateGeneration);
     const auto encoded = payload.Bytes(Field::ResultFrame);
     savor::GCInputFrame frame{};
-    if (!lease || !publication || !epoch || !encoded ||
+    if (!lease || !binding || !publication || !epoch ||
+        !generation || !encoded ||
         !DecodeInputFrame(*encoded, frame))
     {
         return std::nullopt;
     }
-    return InputPublicationEvidence{
+    return InputExecutionBindingEvidence{
         InputLeaseId(*lease),
+        InputExecutionBindingId(*binding),
         InputPublicationToken(*publication),
         WorksetEpoch(*epoch),
+        *generation,
         frame};
 }
 
@@ -684,18 +654,16 @@ bool UsesTypedRequestRecord(CanonicalAction action) noexcept
     {
     case CanonicalAction::ExecutionContinueUntil:
     case CanonicalAction::ExecutionStepFrames:
-    case CanonicalAction::StopPointsSubscribeGroup:
     case CanonicalAction::InputAcquireLease:
-    case CanonicalAction::InputPublishHeld:
-    case CanonicalAction::InputPublishPulse:
-    case CanonicalAction::InputNeutralize:
-    case CanonicalAction::InputPublishSequence:
-    case CanonicalAction::InputAwaitGuestPoll:
+    case CanonicalAction::InputApplyState:
+    case CanonicalAction::InputBeginDelivery:
+    case CanonicalAction::InputCompleteDelivery:
     case CanonicalAction::GuestReadU8:
     case CanonicalAction::GuestReadU16:
     case CanonicalAction::GuestReadU32:
     case CanonicalAction::GuestReadU64:
     case CanonicalAction::GuestRunCoherentQuery:
+    case CanonicalAction::ExecutionRequirePausedPc:
         return true;
     default:
         return false;
@@ -1073,172 +1041,38 @@ bool DecodeStopReceipt(
     return true;
 }
 
-const SemanticPointDescriptor* FindSourcePoint(
-    const CapabilityPackIdentity& pack,
-    std::string_view canonical_id)
-{
-    static const capabilities::SourceCapabilityPackCatalog catalog =
-        capabilities::BuildSourceCapabilityPackCatalog();
-    const auto manifest = std::ranges::find(
-        catalog.manifests,
-        pack,
-        &CapabilityPackManifest::identity);
-    if (manifest == catalog.manifests.end())
-        return nullptr;
-    const auto point = std::ranges::find(
-        manifest->semantic_points,
-        canonical_id,
-        &SemanticPointDescriptor::canonical_id);
-    return point == manifest->semantic_points.end()
-        ? nullptr
-        : &*point;
-}
-
-bool SourceEvaluatorExists(
-    std::string_view canonical_id,
-    std::uint32_t maximum_bytes)
-{
-    static const capabilities::SourceCapabilityPackCatalog catalog =
-        capabilities::BuildSourceCapabilityPackCatalog();
-    for (const CapabilityPackManifest& manifest :
-         catalog.manifests)
-    {
-        const auto found = std::ranges::find(
-            manifest.cpu_evaluators,
-            canonical_id,
-            &CpuEvaluatorDescriptor::canonical_id);
-        if (found != manifest.cpu_evaluators.end())
-        {
-            return maximum_bytes != 0 &&
-                maximum_bytes <= found->maximum_output_bytes;
-        }
-    }
-    return false;
-}
-
 bool DecodeStopGroupConfig(
     std::span<const Byte> bytes,
     CanonicalActionPayload& payload,
     std::string& diagnostic)
 {
-    StaticConfigReader reader(bytes, {'S', 'G', 'C', '1'});
-    std::uint32_t alternative_count = 0;
-    if (!reader.U32(alternative_count) ||
-        alternative_count == 0 ||
-        alternative_count > kMaximumStopAlternatives)
+    auto decoded = composition::DecodeSemanticPointSetV1(bytes);
+    if (!decoded)
     {
-        diagnostic = "SGC1 has an invalid alternative count";
+        diagnostic = std::move(decoded.diagnostic);
         return false;
     }
-
     std::vector<Byte> pcs;
-    pcs.reserve(
-        static_cast<std::size_t>(alternative_count) * 4);
-    for (std::uint32_t index = 0;
-         index < alternative_count;
-         ++index)
+    pcs.reserve(decoded.value->program_counters.size() * 4);
+    for (const std::uint32_t pc : decoded.value->program_counters)
+        for (unsigned shift = 0; shift != 32; shift += 8)
+            pcs.push_back(static_cast<Byte>((pc >> shift) & 0xffu));
+    std::vector<Byte> sample_descriptor_ids;
+    sample_descriptor_ids.reserve(
+        decoded.value->hit_time_sample_descriptor_ids.size() * 4);
+    for (const std::uint32_t descriptor_id :
+         decoded.value->hit_time_sample_descriptor_ids)
     {
-        CapabilityPackIdentity pack;
-        std::string point_id;
-        std::uint8_t kind = 0;
-        std::uint32_t pc = 0;
-        if (!reader.String(pack.canonical_id) ||
-            !reader.U32(pack.version) ||
-            pack.version == 0 ||
-            !reader.Hash(pack.manifest_hash) ||
-            !reader.String(point_id) ||
-            !reader.U8(kind) ||
-            !reader.U32(pc))
-        {
-            diagnostic = "SGC1 contains a malformed semantic point";
-            return false;
-        }
-        const SemanticPointDescriptor* point =
-            FindSourcePoint(pack, point_id);
-        if (!point ||
-            kind != static_cast<std::uint8_t>(
-                        SemanticPointPhysicalKind::
-                            ProgramCounter) ||
-            point->kind !=
-                SemanticPointPhysicalKind::ProgramCounter ||
-            point->pc == 0 || point->pc != pc)
-        {
-            diagnostic =
-                "SGC1 semantic point is not an exact registered PC point";
-            return false;
-        }
         for (unsigned shift = 0; shift != 32; shift += 8)
         {
-            pcs.push_back(
-                static_cast<Byte>((pc >> shift) & 0xffu));
+            sample_descriptor_ids.push_back(
+                static_cast<Byte>((descriptor_id >> shift) & 0xffu));
         }
-    }
-
-    std::uint32_t sample_count = 0;
-    if (!reader.U32(sample_count) ||
-        sample_count > kMaxRoutedHitSamples)
-    {
-        diagnostic = "SGC1 has an invalid hit-time sample count";
-        return false;
-    }
-    for (std::uint32_t index = 0; index < sample_count; ++index)
-    {
-        std::string evaluator;
-        TypeRef type;
-        std::uint32_t maximum_bytes = 0;
-        bool required = false;
-        if (!reader.String(evaluator) ||
-            !reader.Type(type) ||
-            !reader.U32(maximum_bytes) ||
-            !reader.Bool(required) ||
-            !SourceEvaluatorExists(evaluator, maximum_bytes))
-        {
-            diagnostic =
-                "SGC1 contains an unregistered or malformed hit-time sampler";
-            return false;
-        }
-        (void)type;
-        (void)required;
-    }
-
-    std::uint8_t delivery = 0;
-    std::uint8_t routing = 0;
-    std::uint8_t lifetime = 0;
-    if (!reader.U8(delivery) ||
-        !reader.U8(routing) ||
-        !reader.U8(lifetime) ||
-        !reader.done())
-    {
-        diagnostic = "SGC1 is truncated or has trailing data";
-        return false;
-    }
-    if (delivery !=
-            static_cast<std::uint8_t>(
-                StopDeliveryMode::Observe) ||
-        routing !=
-            static_cast<std::uint8_t>(
-                StopRoutingPolicy::Pass) ||
-        lifetime !=
-            static_cast<std::uint8_t>(
-                StopSubscriptionLifetime::Scoped))
-    {
-        diagnostic =
-            "SGC1 must describe a passive scoped Observe/Pass group";
-        return false;
-    }
-    if (sample_count != 0)
-    {
-        // Source manifests identify bounded evaluator contracts, but the
-        // session does not yet own the numeric descriptor/evaluator binding
-        // required by the native router. Refuse to silently omit samples.
-        diagnostic =
-            "SGC1 hit-time samples require a registered session CPU evaluator binding";
-        return false;
     }
     return payload.AddBytes(Field::PcAlternatives, std::move(pcs)) &&
-        payload.AddUnsigned(Field::Delivery, delivery) &&
-        payload.AddUnsigned(Field::RoutingPolicy, routing) &&
-        payload.AddUnsigned(Field::Lifetime, lifetime);
+        payload.AddBytes(
+            Field::HitTimeSampleDescriptorIds,
+            std::move(sample_descriptor_ids));
 }
 
 bool DecodeContinueConfig(
@@ -1333,24 +1167,22 @@ bool DecodeLeaseConfig(
     CanonicalActionPayload& payload,
     std::string& diagnostic)
 {
-    StaticConfigReader reader(bytes, {'I', 'L', 'C', '1'});
+    StaticConfigReader reader(bytes, {'I', 'L', 'C', '2'});
     std::uint32_t port = 0;
     std::uint32_t priority = 0;
     bool suspendable = false;
     bool borrowable = false;
-    bool neutral_ack = false;
     bool movie_exclusive = false;
     if (!reader.U32(port) || !reader.U32(priority) ||
         !reader.Bool(suspendable) ||
         !reader.Bool(borrowable) ||
-        !reader.Bool(neutral_ack) ||
         !reader.Bool(movie_exclusive) || !reader.done() ||
         port > std::numeric_limits<std::uint8_t>::max() ||
         priority >
             static_cast<std::uint32_t>(
                 std::numeric_limits<std::int32_t>::max()))
     {
-        diagnostic = "ILC1 contains an invalid input lease policy";
+        diagnostic = "ILC2 contains an invalid input lease policy";
         return false;
     }
     return payload.AddUnsigned(Field::Port, port) &&
@@ -1362,93 +1194,8 @@ bool DecodeLeaseConfig(
             Field::InterruptionBorrowable,
             borrowable) &&
         payload.AddBoolean(
-            Field::RequireNeutralAcknowledgement,
-            neutral_ack) &&
-        payload.AddBoolean(
             Field::MovieExclusive,
             movie_exclusive);
-}
-
-bool DecodePublicationConfig(
-    CanonicalAction action,
-    std::span<const Byte> bytes,
-    CanonicalActionPayload& payload,
-    std::string& diagnostic)
-{
-    StaticConfigReader reader(bytes, {'I', 'P', 'C', '1'});
-    std::uint8_t kind = 0;
-    std::uint8_t acknowledgement = 0;
-    std::uint8_t expected = 0;
-    switch (action)
-    {
-    case CanonicalAction::InputPublishHeld:
-        expected = 0;
-        break;
-    case CanonicalAction::InputPublishPulse:
-        expected = 1;
-        break;
-    case CanonicalAction::InputPublishSequence:
-        expected = 3;
-        break;
-    default:
-        diagnostic = "IPC1 was supplied to a non-publication action";
-        return false;
-    }
-    if (!reader.U8(kind) || !reader.U8(acknowledgement) ||
-        !reader.done() || kind != expected ||
-        acknowledgement > 2)
-    {
-        diagnostic = "IPC1 contains an invalid publication policy";
-        return false;
-    }
-    return payload.AddUnsigned(
-        Field::Flags,
-        acknowledgement);
-}
-
-bool DecodeNeutralConfig(
-    std::span<const Byte> bytes,
-    CanonicalActionPayload& payload,
-    std::string& diagnostic)
-{
-    StaticConfigReader reader(bytes, {'I', 'N', 'C', '1'});
-    bool acknowledgement = false;
-    bool cleanup_safe = false;
-    if (!reader.Bool(acknowledgement) ||
-        !reader.Bool(cleanup_safe) || !reader.done() ||
-        !cleanup_safe)
-    {
-        diagnostic = "INC1 contains an invalid neutral policy";
-        return false;
-    }
-    return payload.AddBoolean(
-        Field::RequireNeutralAcknowledgement,
-        acknowledgement);
-}
-
-bool DecodePollConfig(
-    std::span<const Byte> bytes,
-    bool& release,
-    CanonicalActionPayload& payload,
-    std::string& diagnostic)
-{
-    StaticConfigReader reader(bytes, {'I', 'G', 'P', '1'});
-    std::string witness;
-    std::uint32_t retry_limit = 0;
-    bool neutral_between_retries = false;
-    if (!reader.Bool(release) ||
-        !reader.String(witness) ||
-        !reader.U32(retry_limit) ||
-        !reader.Bool(neutral_between_retries) ||
-        !reader.done() || retry_limit == 0 ||
-        retry_limit > 65536 || !neutral_between_retries)
-    {
-        diagnostic = "IGP1 contains an invalid bounded poll policy";
-        return false;
-    }
-    return payload.AddUtf8(Field::Label, std::move(witness)) &&
-        payload.AddUnsigned(Field::RetryLimit, retry_limit) &&
-        payload.AddBoolean(Field::Flags, release);
 }
 
 bool DecodeObservationConfig(
@@ -1545,18 +1292,14 @@ bool DecodeTypedCanonicalRequest(
         return value &&
             AddResourceHandle(*value, producer, payload);
     };
-    const auto optional_receipt =
-        [&](std::size_t index,
-            CanonicalRuntimeSchema optional_schema,
-            CanonicalAction producer,
-            bool require_publication,
-            bool& present) {
+    const auto optional_binding =
+        [&](std::size_t index, bool& present) {
             const ProgramValue* element = nullptr;
             if (index >= record->fields.size() ||
                 !OptionalElement(
                     graph,
                     record->fields[index],
-                    optional_schema,
+                    CanonicalRuntimeSchema::OptionalInputExecutionBinding,
                     element))
             {
                 return false;
@@ -1567,46 +1310,28 @@ bool DecodeTypedCanonicalRequest(
             CanonicalActionPayload receipt;
             if (!DecodeReceiptPayload(
                     *element,
-                    producer,
+                    CanonicalAction::InputApplyState,
                     receipt))
             {
                 return false;
             }
-            const auto publication =
-                receipt.Unsigned(Field::Publication);
-            if (optional_schema ==
-                CanonicalRuntimeSchema::
-                    OptionalInputPublicationReceipt)
-            {
-                const auto lease =
-                    receipt.Unsigned(Field::Handle);
-                const auto epoch =
-                    receipt.Unsigned(Field::ResultEpoch);
-                const auto frame =
-                    receipt.Bytes(Field::ResultFrame);
-                if (!lease || !publication ||
-                    !epoch || !frame)
-                    return false;
-                return payload.AddUnsigned(
-                           Field::ParentHandle,
-                           *lease) &&
-                    payload.AddUnsigned(
-                        Field::Publication,
-                        *publication) &&
-                    payload.AddUnsigned(
-                        Field::ResultEpoch,
-                        *epoch) &&
-                    payload.AddBytes(
-                        Field::ResultFrame,
-                        std::vector<Byte>(
-                            frame->begin(),
-                            frame->end()));
-            }
-            if (!publication)
-                return !require_publication;
-            return payload.AddUnsigned(
-                Field::Publication,
-                *publication);
+            const auto lease = receipt.Unsigned(Field::Handle);
+            const auto binding = receipt.Unsigned(Field::Binding);
+            const auto publication = receipt.Unsigned(Field::Publication);
+            const auto epoch = receipt.Unsigned(Field::ResultEpoch);
+            const auto generation = receipt.Unsigned(Field::StateGeneration);
+            const auto frame = receipt.Bytes(Field::ResultFrame);
+            if (!lease || !binding || !publication || !epoch ||
+                !generation || !frame)
+                return false;
+            return payload.AddUnsigned(Field::ParentHandle, *lease) &&
+                payload.AddUnsigned(Field::Binding, *binding) &&
+                payload.AddUnsigned(Field::Publication, *publication) &&
+                payload.AddUnsigned(Field::ResultEpoch, *epoch) &&
+                payload.AddUnsigned(Field::StateGeneration, *generation) &&
+                payload.AddBytes(
+                    Field::ResultFrame,
+                    std::vector<Byte>(frame->begin(), frame->end()));
         };
     const auto optional_handle =
         [&](std::size_t index,
@@ -1656,37 +1381,25 @@ bool DecodeTypedCanonicalRequest(
 
     switch (action)
     {
-    case CanonicalAction::StopPointsSubscribeGroup:
-    {
-        const auto* config = bytes(
-            0,
-            CanonicalRuntimeSchema::StopGroupStaticConfig);
-        return record->fields.size() == 1 && config &&
-            DecodeStopGroupConfig(
-                *config,
-                payload,
-                diagnostic);
-    }
     case CanonicalAction::ExecutionContinueUntil:
     {
-        bool publication = false;
+        bool binding = false;
         bool playback = false;
         bool expected_count = false;
+        const auto* points = bytes(
+            0,
+            CanonicalRuntimeSchema::SemanticPointSet);
         const auto* config = bytes(
             4,
             CanonicalRuntimeSchema::
                 ContinueUntilStaticConfig);
         if (record->fields.size() != 5 ||
-            !handle(
-                0,
-                CanonicalAction::StopPointsSubscribeGroup) ||
-            !optional_receipt(
-                1,
-                CanonicalRuntimeSchema::
-                    OptionalInputPublicationReceipt,
-                CanonicalAction::InputPublishHeld,
-                false,
-                publication) ||
+            !points ||
+            !DecodeStopGroupConfig(
+                *points,
+                payload,
+                diagnostic) ||
+            !optional_binding(1, binding) ||
             !optional_handle(
                 2,
                 CanonicalRuntimeSchema::
@@ -1723,13 +1436,13 @@ bool DecodeTypedCanonicalRequest(
             }
             return false;
         }
-        (void)publication;
+        (void)binding;
         return true;
     }
     case CanonicalAction::ExecutionStepFrames:
     {
         std::uint64_t count = 0;
-        bool receipt = false;
+        bool binding = false;
         const auto* config = bytes(
             2,
             CanonicalRuntimeSchema::
@@ -1737,13 +1450,7 @@ bool DecodeTypedCanonicalRequest(
         if (record->fields.size() != 3 ||
             !u64(0, count) || count == 0 ||
             !payload.AddUnsigned(Field::Count, count) ||
-            !optional_receipt(
-                1,
-                CanonicalRuntimeSchema::
-                    OptionalInputNeutralWitness,
-                CanonicalAction::InputNeutralize,
-                false,
-                receipt) ||
+            !optional_binding(1, binding) ||
             !config ||
             !DecodeAdvanceConfig(
                 *config,
@@ -1754,7 +1461,20 @@ bool DecodeTypedCanonicalRequest(
                 diagnostic = "Execution advance request is malformed";
             return false;
         }
-        (void)receipt;
+        (void)binding;
+        return true;
+    }
+    case CanonicalAction::ExecutionRequirePausedPc:
+    {
+        std::uint64_t expected_pc = 0;
+        if (record->fields.size() != 1 ||
+            !u64(0, expected_pc) || expected_pc == 0 ||
+            expected_pc > std::numeric_limits<std::uint32_t>::max() ||
+            !payload.AddUnsigned(Field::ExpectedPc, expected_pc))
+        {
+            diagnostic = "RequirePausedPcRequest has an invalid expected PC";
+            return false;
+        }
         return true;
     }
     case CanonicalAction::InputAcquireLease:
@@ -1765,99 +1485,45 @@ bool DecodeTypedCanonicalRequest(
         return record->fields.size() == 1 && config &&
             DecodeLeaseConfig(*config, payload, diagnostic);
     }
-    case CanonicalAction::InputPublishHeld:
-    case CanonicalAction::InputPublishPulse:
+    case CanonicalAction::InputApplyState:
+    case CanonicalAction::InputBeginDelivery:
     {
         const auto* input = bytes(
             1,
             CanonicalRuntimeSchema::InputFramePayload);
-        const auto* config = bytes(
-            2,
-            CanonicalRuntimeSchema::
-                InputPublicationStaticConfig);
-        return record->fields.size() == 3 &&
-            handle(0, CanonicalAction::InputAcquireLease) &&
-            input && payload.AddBytes(Field::InputFrame, *input) &&
-            config &&
-            DecodePublicationConfig(
-                action,
-                *config,
-                payload,
-                diagnostic);
-    }
-    case CanonicalAction::InputPublishSequence:
-    {
-        const auto* inputs = bytes(
-            1,
-            CanonicalRuntimeSchema::InputSequencePayload);
-        const auto* config = bytes(
-            2,
-            CanonicalRuntimeSchema::
-                InputPublicationStaticConfig);
-        return record->fields.size() == 3 &&
-            handle(0, CanonicalAction::InputAcquireLease) &&
-            inputs &&
-            payload.AddBytes(Field::InputFrames, *inputs) &&
-            config &&
-            DecodePublicationConfig(
-                action,
-                *config,
-                payload,
-                diagnostic);
-    }
-    case CanonicalAction::InputNeutralize:
-    {
-        const auto* config = bytes(
-            1,
-            CanonicalRuntimeSchema::InputNeutralStaticConfig);
         return record->fields.size() == 2 &&
             handle(0, CanonicalAction::InputAcquireLease) &&
-            config &&
-            DecodeNeutralConfig(
-                *config,
-                payload,
-                diagnostic);
+            input && payload.AddBytes(Field::InputFrame, *input);
     }
-    case CanonicalAction::InputAwaitGuestPoll:
+    case CanonicalAction::InputCompleteDelivery:
     {
-        bool publication = false;
-        bool witness = false;
-        bool release = false;
-        const auto* config = bytes(
-            3,
-            CanonicalRuntimeSchema::InputPollStaticConfig);
-        if (record->fields.size() != 4 ||
-            !handle(0, CanonicalAction::InputAcquireLease) ||
-            !optional_receipt(
-                1,
-                CanonicalRuntimeSchema::
-                    OptionalInputPublicationReceipt,
-                CanonicalAction::InputPublishHeld,
-                true,
-                publication) ||
-            !optional_receipt(
-                2,
-                CanonicalRuntimeSchema::
-                    OptionalInputNeutralWitness,
-                CanonicalAction::InputNeutralize,
-                true,
-                witness) ||
-            !config ||
-            !DecodePollConfig(
-                *config,
-                release,
-                payload,
-                diagnostic) ||
-            (release ? !witness : !publication))
-        {
-            if (diagnostic.empty())
-            {
-                diagnostic =
-                    "InputPollRequest lacks its exact request or release witness";
-            }
-            return false;
-        }
-        return true;
+        const ProgramValue* binding = record->fields.size() == 2
+            ? FindValue(graph, record->fields[1])
+            : nullptr;
+        CanonicalActionPayload receipt;
+        return record->fields.size() == 2 &&
+            handle(0, CanonicalAction::InputAcquireLease) &&
+            binding &&
+            DecodeReceiptPayload(
+                *binding,
+                CanonicalAction::InputBeginDelivery,
+                receipt) &&
+            [&] {
+                const auto id = receipt.Unsigned(Field::Binding);
+                const auto lease = receipt.Unsigned(Field::Handle);
+                const auto publication = receipt.Unsigned(Field::Publication);
+                const auto epoch = receipt.Unsigned(Field::ResultEpoch);
+                const auto generation = receipt.Unsigned(Field::StateGeneration);
+                const auto frame = receipt.Bytes(Field::ResultFrame);
+                return id && lease && publication && epoch && generation && frame &&
+                    payload.AddUnsigned(Field::Binding, *id) &&
+                    payload.AddUnsigned(Field::ParentHandle, *lease) &&
+                    payload.AddUnsigned(Field::Publication, *publication) &&
+                    payload.AddUnsigned(Field::ResultEpoch, *epoch) &&
+                    payload.AddUnsigned(Field::StateGeneration, *generation) &&
+                    payload.AddBytes(Field::ResultFrame,
+                        std::vector<Byte>(frame->begin(), frame->end()));
+            }();
     }
     case CanonicalAction::GuestReadU8:
     case CanonicalAction::GuestReadU16:
@@ -1954,6 +1620,31 @@ bool DecodePcAlternatives(
     return true;
 }
 
+bool DecodeSampleDescriptorIds(
+    std::span<const Byte> bytes,
+    std::vector<std::uint32_t>& ids)
+{
+    if (bytes.size() % 4 != 0 ||
+        bytes.size() / 4 > kMaxRoutedHitSamples)
+    {
+        return false;
+    }
+    ids.clear();
+    ids.reserve(bytes.size() / 4);
+    for (std::size_t offset = 0; offset < bytes.size(); offset += 4)
+    {
+        const std::uint32_t id =
+            static_cast<std::uint32_t>(bytes[offset]) |
+            (static_cast<std::uint32_t>(bytes[offset + 1]) << 8u) |
+            (static_cast<std::uint32_t>(bytes[offset + 2]) << 16u) |
+            (static_cast<std::uint32_t>(bytes[offset + 3]) << 24u);
+        if (id == 0 || std::ranges::find(ids, id) != ids.end())
+            return false;
+        ids.push_back(id);
+    }
+    return true;
+}
+
 class ProgramStopConsumer final : public IStopPointConsumer
 {
 public:
@@ -1974,16 +1665,23 @@ std::uint64_t ProgramStopIdentitySeed(
 StopSubscriptionGroupDefinition BuildPcGroup(
     const CanonicalActionPayload& payload,
     InvocationId invocation,
-    ProgramActionRequestId request,
-    StopDeliveryMode fallback_delivery)
+    ProgramActionRequestId request)
 {
     std::vector<std::uint32_t> pcs;
+    std::vector<std::uint32_t> sample_descriptor_ids;
     if (const auto encoded = payload.Bytes(Field::PcAlternatives))
         (void)DecodePcAlternatives(*encoded, pcs);
     else if (const auto address = payload.Unsigned(Field::Address);
              address && *address <=
                  std::numeric_limits<std::uint32_t>::max())
         pcs.push_back(static_cast<std::uint32_t>(*address));
+    if (const auto encoded = payload.Bytes(
+            Field::HitTimeSampleDescriptorIds))
+    {
+        (void)DecodeSampleDescriptorIds(
+            *encoded,
+            sample_descriptor_ids);
+    }
 
     const std::uint64_t seed =
         ProgramStopIdentitySeed(invocation, request);
@@ -1996,25 +1694,6 @@ StopSubscriptionGroupDefinition BuildPcGroup(
         "program.action." + std::to_string(invocation.value()) +
             "." + std::to_string(request.value()),
         "canonical program action"};
-    const StopDeliveryMode delivery =
-        static_cast<StopDeliveryMode>(UnsignedOr(
-            payload,
-            Field::Delivery,
-            static_cast<std::uint64_t>(fallback_delivery)));
-    const StopRoutingPolicy routing =
-        static_cast<StopRoutingPolicy>(UnsignedOr(
-            payload,
-            Field::RoutingPolicy,
-            static_cast<std::uint64_t>(
-                StopRoutingPolicy::Pass)));
-    const StopSubscriptionLifetime lifetime =
-        static_cast<StopSubscriptionLifetime>(UnsignedOr(
-            payload,
-            Field::Lifetime,
-            static_cast<std::uint64_t>(
-                StopSubscriptionLifetime::Scoped)));
-    const auto priority = static_cast<std::int32_t>(
-        payload.Signed(Field::Priority).value_or(0));
     const std::uint64_t subscription_seed =
         UnsignedOr(payload, Field::SubscriptionId, seed | 0x80u);
     for (std::size_t index = 0; index < pcs.size(); ++index)
@@ -2023,17 +1702,11 @@ StopSubscriptionGroupDefinition BuildPcGroup(
             .id = StopSubscriptionId(
                 subscription_seed + index),
             .point = PcStopPointSpec{pcs[index]},
-            .delivery = delivery,
-            .policy = routing,
-            .lifetime = lifetime,
-            .priority = priority,
-            .lossless = BooleanOr(
-                payload,
-                Field::Lossless,
-                delivery != StopDeliveryMode::Observe &&
-                    delivery != StopDeliveryMode::Progress),
-            .suppress_immediate_reentry =
-                delivery == StopDeliveryMode::Wake,
+            .route = ForegroundStopWait{
+                .suppress_immediate_reentry = true,
+            },
+            .lifetime = StopSubscriptionLifetime::Scoped,
+            .sample_descriptor_ids = sample_descriptor_ids,
         });
     }
     return definition;
@@ -2267,6 +1940,35 @@ ProgramValueGraph ContinueUntilResultGraph(
     return {root, std::move(values)};
 }
 
+ProgramValueGraph PausedPcReceiptGraph(
+    std::uint32_t pc,
+    std::uint64_t vi_count,
+    WorksetEpoch epoch)
+{
+    std::vector<ProgramValue> values;
+    values.push_back({
+        ProgramValueId(1),
+        TypeRef::Builtin(BuiltinType::U32),
+        pc});
+    values.push_back({
+        ProgramValueId(2),
+        TypeRef::Builtin(BuiltinType::U64),
+        vi_count});
+    values.push_back({
+        ProgramValueId(3),
+        TypeRef::Builtin(BuiltinType::U64),
+        epoch.value()});
+    values.push_back({
+        ProgramValueId(4),
+        CanonicalActionOutputType(
+            CanonicalAction::ExecutionRequirePausedPc),
+        RecordValue{{
+            ProgramValueId(1),
+            ProgramValueId(2),
+            ProgramValueId(3)}}});
+    return {ProgramValueId(4), std::move(values)};
+}
+
 template <typename T>
 ProgramValueGraph ScalarResultGraph(
     CanonicalAction action,
@@ -2300,40 +2002,6 @@ ProgramValueGraph ArtifactResultGraph(
         std::move(storage_reference),
         true};
     return {value.id, {std::move(value)}};
-}
-
-ProgramValueGraph ArtifactListResultGraph(
-    CanonicalAction action,
-    std::string artifact_id,
-    std::string storage_reference,
-    std::string sha256,
-    bool complete)
-{
-    const auto output_schema =
-        CanonicalActionOutputSchemaIdentity(action);
-    const auto reference_schema =
-        CanonicalActionArtifactReferenceSchemaIdentity(action);
-    const auto payload_schema =
-        CanonicalActionArtifactPayloadSchemaIdentity(action);
-    const auto hash = ContentHash256::FromHex(sha256);
-    if (!output_schema || !reference_schema || !payload_schema || !hash)
-        return {};
-
-    ProgramValue artifact;
-    artifact.id = ProgramValueId(1);
-    artifact.type = TypeRef::Named(*reference_schema);
-    artifact.payload = ArtifactReferenceValue{
-        std::move(artifact_id),
-        *payload_schema,
-        *hash,
-        std::move(storage_reference),
-        complete};
-
-    ProgramValue list;
-    list.id = ProgramValueId(2);
-    list.type = TypeRef::Named(*output_schema);
-    list.payload = ListValue{{artifact.id}};
-    return {list.id, {std::move(artifact), std::move(list)}};
 }
 
 } // namespace
@@ -2391,7 +2059,6 @@ struct SessionProgramActionHost::Impl
     enum class PendingKind : std::uint8_t
     {
         Action,
-        InputAdvance,
         Cleanup,
     };
 
@@ -2400,7 +2067,7 @@ struct SessionProgramActionHost::Impl
         PendingKind kind = PendingKind::Action;
         ProgramActionRequest request;
         ExecutionOperationId operation;
-        std::optional<InputAdvanceBindingId> input_binding;
+        std::optional<InputExecutionRelationshipId> input_binding;
         std::optional<ResourceCleanupContinuationId>
             cleanup_continuation;
         std::optional<CancellationSource> cleanup_cancellation;
@@ -2788,7 +2455,7 @@ struct SessionProgramActionHost::Impl
         ProgramActionRequest request,
         ExecutionRequest execution,
         PendingKind kind = PendingKind::Action,
-        std::optional<InputAdvanceBindingId> binding = {})
+        std::optional<InputExecutionRelationshipId> binding = {})
     {
         if (!HasCompletionCapacity())
         {
@@ -2814,7 +2481,7 @@ struct SessionProgramActionHost::Impl
             {
                 InputArbiter* input = session.input_arbiter();
                 const InputArbiterOperationReceipt removed = input
-                    ? input->RemoveAdvanceBinding(*binding)
+                    ? input->RemoveExecutionRelationship(*binding)
                     : InputArbiterOperationReceipt{
                           false,
                           InputArbiterErrorCode::Stopped,
@@ -2822,7 +2489,7 @@ struct SessionProgramActionHost::Impl
                 if (!removed.ok)
                 {
                     session.MarkTainted(
-                        "Rejected program execution left its input advance binding live");
+                        "Rejected program execution left its input execution relationship live");
                     return Reject(
                         request,
                         ProgramActionResolutionStatus::CleanupFailed,
@@ -3070,6 +2737,8 @@ struct SessionProgramActionHost::Impl
     std::unordered_map<std::string, SavedArtifact> saved_artifacts;
     std::optional<PendingExecution> pending;
     std::vector<ActorActionResult> completions;
+    std::vector<ForegroundSemanticStopObservationV1>
+        foreground_semantic_stops;
     std::uint64_t next_resource_handle = 1;
     bool stopped = false;
 };
@@ -3570,16 +3239,13 @@ SessionProgramActionHost::Impl::Invoke(
             *canonical == CanonicalAction::MoviePrepareReadOnlyPlayback &&
             active->baseline_stage ==
                 BaselineStage::AwaitingMoviePreparation;
-        const bool passive_subscription =
-            *canonical == CanonicalAction::StopPointsSubscribeGroup &&
-            active->baseline_stage == BaselineStage::MoviePrepared;
-        if (!prepare && !passive_subscription)
+        if (!prepare)
         {
             return Reject(
                 request,
                 ProgramActionResolutionStatus::Rejected,
                 "baseline_not_established",
-                "Movie preparation must precede passive stop subscriptions and MovieStartPlayback");
+                "Movie preparation must precede MovieStartPlayback");
         }
     }
     return InvokeCanonical(
@@ -3608,13 +3274,14 @@ SessionProgramActionHost::Impl::InvokeSourceQuery(
             request,
             ProgramActionResolutionStatus::Rejected,
             "invalid_context_request",
-            "Coherent context request has malformed or stale routed evidence");
+            "Coherent context request has malformed or stale paused-state evidence");
     }
-    const ExecutionSnapshot execution =
+    const std::optional<ExecutionSnapshot> execution =
         session.execution_snapshot();
-    if (execution.activity != ExecutionActivity::IdlePaused ||
-        !execution.evidence.pause_confirmed ||
-        execution.evidence.pc != evidence.expected_pc)
+    if (!execution ||
+        execution->activity != ExecutionActivity::IdlePaused ||
+        !execution->evidence.pause_confirmed ||
+        execution->evidence.pc != evidence.expected_pc)
     {
         return Reject(
             request,
@@ -3905,32 +3572,14 @@ SessionProgramActionHost::Impl::InvokeCanonical(
     }
     case CanonicalAction::ExecutionContinueUntil:
     {
-        ResourceMapping* mapping = require_handle();
-        if (!mapping ||
-            mapping->kind != ResourceKind::StopPointGroup ||
-            !mapping->stop_group ||
-            !mapping->stop_group_definition)
-        {
-            return Reject(
-                request,
-                ProgramActionResolutionStatus::Rejected,
-                "stop_group_unavailable",
-                "ContinueUntil requires its exact passive stop-group handle");
-        }
-        StopSubscriptionGroupDefinition wake =
-            *mapping->stop_group_definition;
+        StopSubscriptionGroupDefinition wake = BuildPcGroup(
+            payload,
+            request.invocation_id,
+            request.request_id);
         const std::uint64_t seed =
             ProgramStopIdentitySeed(
                 request.invocation_id,
                 request.request_id);
-        wake.id = StopSubscriptionGroupId(seed | 1u);
-        wake.source = {
-            StopSourceId(seed | 2u),
-            "program.execution." +
-                std::to_string(request.invocation_id.value()) +
-                "." +
-                std::to_string(request.request_id.value()),
-            "temporary canonical ContinueUntil wake"};
         const bool suppress =
             UnsignedOr(payload, Field::Flags, 0) != 0;
         for (std::size_t index = 0;
@@ -3939,25 +3588,21 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         {
             StopSubscriptionDefinition& subscription =
                 wake.subscriptions[index];
-            if (subscription.delivery !=
-                    StopDeliveryMode::Observe ||
-                subscription.policy != StopRoutingPolicy::Pass)
+            subscription.id =
+                StopSubscriptionId(
+                    (seed | 0x80u) + index);
+            auto* foreground =
+                std::get_if<ForegroundStopWait>(
+                    &subscription.route);
+            if (foreground == nullptr)
             {
                 return Reject(
                     request,
                     ProgramActionResolutionStatus::Rejected,
-                    "stop_group_not_passive",
-                    "ContinueUntil can promote only a passive Observe/Pass stop group");
+                    "invalid_stop_route",
+                    "ContinueUntil requires foreground-wait alternatives");
             }
-            subscription.id =
-                StopSubscriptionId(
-                    (seed | 0x80u) + index);
-            subscription.delivery = StopDeliveryMode::Wake;
-            subscription.policy = StopRoutingPolicy::Pass;
-            subscription.lifetime =
-                StopSubscriptionLifetime::Scoped;
-            subscription.lossless = true;
-            subscription.suppress_immediate_reentry = suppress;
+            foreground->suppress_immediate_reentry = suppress;
             subscription.consumer = &stop_consumer;
         }
         if (wake.subscriptions.empty())
@@ -3966,16 +3611,16 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 request,
                 ProgramActionResolutionStatus::Rejected,
                 "invalid_stop_alternatives",
-                "ContinueUntil passive group has no bounded alternatives");
+                "ContinueUntil semantic point set has no bounded alternatives");
         }
-        std::optional<InputAdvanceBindingId>
+        std::optional<InputExecutionRelationshipId>
             input_relationship;
-        if (payload.Contains(Field::Publication))
+        if (payload.Contains(Field::Binding))
         {
             InputArbiter* input = session.input_arbiter();
-            const auto publication =
-                InputPublicationEvidenceFromPayload(payload);
-            if (!input || !publication)
+            const auto binding =
+                InputExecutionBindingEvidenceFromPayload(payload);
+            if (!input || !binding)
             {
                 return Reject(
                     request,
@@ -3983,20 +3628,19 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                         ? ProgramActionResolutionStatus::Rejected
                         : ProgramActionResolutionStatus::Unsupported,
                     "input_relationship_invalid",
-                    "ContinueUntil requires a complete typed input publication receipt");
+                    "ContinueUntil requires a complete typed input execution binding");
             }
-            const InputAdvanceBindingReceipt relationship =
-                input->CreatePublicationRelationship(
-                    *publication);
+            const InputExecutionRelationshipReceipt relationship =
+                input->CreateExecutionRelationship(*binding);
             if (!relationship.ok)
             {
                 return Reject(
                     request,
                     ProgramActionResolutionStatus::Rejected,
-                    "input_relationship_invalid",
+                    "input_binding_invalid",
                     relationship.message);
             }
-            input_relationship = relationship.binding;
+            input_relationship = relationship.relationship;
         }
         std::optional<std::uint64_t> expected_movie_input_count;
         if (const auto expected = payload.Unsigned(
@@ -4063,143 +3707,101 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 "invalid_step_count",
                 "Frame step count is outside its bounded range");
         }
+        std::optional<InputExecutionRelationshipId> input_relationship;
+        if (payload.Contains(Field::Binding))
+        {
+            InputArbiter* input = session.input_arbiter();
+            const auto binding =
+                InputExecutionBindingEvidenceFromPayload(payload);
+            if (!input || !binding)
+            {
+                return Reject(
+                    request,
+                    input ? ProgramActionResolutionStatus::Rejected
+                          : ProgramActionResolutionStatus::Unsupported,
+                    "input_binding_invalid",
+                    "StepFrames requires a complete typed input execution binding");
+            }
+            const InputExecutionRelationshipReceipt relationship =
+                input->CreateExecutionRelationship(*binding);
+            if (!relationship.ok)
+            {
+                return Reject(
+                    request,
+                    ProgramActionResolutionStatus::Rejected,
+                    "input_binding_invalid",
+                    relationship.message);
+            }
+            input_relationship = relationship.relationship;
+        }
+        ExecutionRequestPolicy policy = ExecutionPolicy(request, payload);
+        policy.input_relationship = input_relationship;
         return SubmitExecutionAction(
             std::move(request),
             StepFramesRequest{
-                ExecutionPolicy(request, payload),
-                static_cast<std::uint32_t>(count)});
+                std::move(policy),
+                static_cast<std::uint32_t>(count)},
+            PendingKind::Action,
+            input_relationship);
     }
-    case CanonicalAction::StopPointsSubscribeGroup:
+    case CanonicalAction::ExecutionRequirePausedPc:
     {
-        StopPointRouter* router = session.stop_points();
-        if (!router)
-        {
-            return Reject(
-                request,
-                ProgramActionResolutionStatus::Unsupported,
-                "stop_router_unavailable",
-                "StopPointRouter is unavailable");
-        }
-        StopSubscriptionGroupDefinition definition = BuildPcGroup(
-            payload,
-            request.invocation_id,
-            request.request_id,
-            StopDeliveryMode::Observe);
-        if (definition.subscriptions.empty())
+        const auto expected = payload.Unsigned(Field::ExpectedPc);
+        if (!expected ||
+            *expected > std::numeric_limits<std::uint32_t>::max())
         {
             return Reject(
                 request,
                 ProgramActionResolutionStatus::Rejected,
-                "invalid_stop_group",
-                "Stop group requires bounded PC alternatives");
+                "invalid_expected_pc",
+                "Exact paused-PC qualification requires one nonzero PC");
         }
-        for (StopSubscriptionDefinition& subscription :
-             definition.subscriptions)
-        {
-            subscription.consumer = &stop_consumer;
-        }
-        StopGroupRegistrationOptions options;
-        options.current_point =
-            static_cast<StopCurrentPointPolicy>(UnsignedOr(
-                payload,
-                Field::CurrentPointPolicy,
-                static_cast<std::uint64_t>(
-                    StopCurrentPointPolicy::Ignore)));
-        const StopSubscriptionGroupDefinition retained_definition =
-            definition;
-        StopGroupRegistrationResult registered =
-            router->RegisterGroup(std::move(definition), options);
-        if (!registered.receipt.ok)
-        {
-            return service_failure(
-                "stop_group_registration_failed",
-                registered.receipt.error.message);
-        }
-        auto group =
-            std::make_shared<StopSubscriptionGroupHandle>(
-                std::move(registered.handle));
-        std::string diagnostic;
-        auto resource = RegisterResource(
-            request.scope,
-            ResourceKind::StopPointGroup,
-            kStopPointService,
-            registered.receipt.lease.acquisition_epoch,
-            [group](const ResourceReleaseRequest&) {
-                const StopReleaseReceipt released =
-                    group->Release();
-                return ResourceReleaseResult{
-                    released.ok
-                        ? ResourceReleaseStatus::Released
-                        : ResourceReleaseStatus::Failed,
-                    released.error.message};
-            },
-            registered.receipt.lease.group_id.value(),
-            group,
-            "program stop-point group",
-            diagnostic);
-        if (!resource)
-            return ResourceFailure(std::move(request), diagnostic);
-        if (ResourceMapping* mapping =
-                Resource(resource->handle))
-        {
-            mapping->stop_group_definition =
-                retained_definition;
-        }
-        return complete_resource(std::move(request), *resource);
-    }
-    case CanonicalAction::StopPointsReplaceGroup:
-    {
-        ResourceMapping* mapping = require_handle();
-        if (!mapping ||
-            mapping->kind != ResourceKind::StopPointGroup ||
-            !mapping->stop_group)
+        const std::optional<ExecutionSnapshot> execution =
+            session.execution_snapshot();
+        if (!execution)
         {
             return Reject(
                 request,
                 ProgramActionResolutionStatus::Rejected,
-                "stop_group_unavailable",
-                "Stop group replacement requires its typed handle");
+                "execution_unavailable",
+                "Exact paused-PC qualification requires committed workset execution evidence");
         }
-        StopSubscriptionGroupDefinition definition = BuildPcGroup(
-            payload,
-            request.invocation_id,
-            request.request_id,
-            StopDeliveryMode::Observe);
-        definition.id =
-            mapping->stop_group->lease().group_id;
-        definition.source.id =
-            mapping->stop_group->lease().source_id;
-        if (definition.subscriptions.empty())
+        if (execution->workset_epoch != request.expected_epoch)
         {
             return Reject(
                 request,
-                ProgramActionResolutionStatus::Rejected,
-                "invalid_stop_group",
-                "Replacement stop group requires bounded PC alternatives");
+                ProgramActionResolutionStatus::StaleEpoch,
+                "stale_epoch",
+                "Exact paused-PC qualification observed another workset epoch");
         }
-        for (StopSubscriptionDefinition& subscription :
-             definition.subscriptions)
+        if (execution->activity != ExecutionActivity::IdlePaused ||
+            !execution->evidence.pause_confirmed)
         {
-            subscription.consumer = &stop_consumer;
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Failed,
+                "execution_not_paused",
+                "Exact paused-PC qualification requires a confirmed paused session");
         }
-        const StopSubscriptionGroupDefinition retained_definition =
-            definition;
-        const StopGroupReceipt replaced =
-            mapping->stop_group->Replace(std::move(definition));
-        if (!replaced.ok)
+        if (execution->evidence.pc !=
+            static_cast<std::uint32_t>(*expected))
         {
-            return service_failure(
-                "stop_group_replacement_failed",
-                replaced.error.message);
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Failed,
+                "paused_pc_mismatch",
+                "Expected paused PC " +
+                    std::to_string(*expected) +
+                    " but observed " +
+                    std::to_string(execution->evidence.pc));
         }
-        mapping->stop_group_definition = retained_definition;
         ProgramActionResolution completion = Completion(
             request,
             ProgramActionResolutionStatus::Completed);
-        completion.output = ResourceHandleGraph(
-            action,
-            mapping->handle,
-            mapping->epoch);
+        completion.output = PausedPcReceiptGraph(
+            execution->evidence.pc,
+            execution->evidence.vi_count,
+            execution->workset_epoch);
         return Immediate(std::move(completion));
     }
     case CanonicalAction::InputAcquireLease:
@@ -4226,11 +3828,6 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             payload,
             Field::InterruptionBorrowable,
             false);
-        acquire.require_neutral_acknowledgement =
-            BooleanOr(
-                payload,
-                Field::RequireNeutralAcknowledgement,
-                true);
         acquire.movie_exclusive =
             BooleanOr(payload, Field::MovieExclusive, false);
         const InputLeaseReceipt leased =
@@ -4241,60 +3838,22 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 "input_lease_failed",
                 leased.message);
         }
-        auto neutral = std::make_shared<
-            std::optional<InputPublicationToken>>();
         std::string diagnostic;
         auto resource = RegisterResource(
             request.scope,
             ResourceKind::InputLease,
             kInputService,
             leased.epoch,
-            [input, lease = leased.lease, neutral](
-                const ResourceReleaseRequest& release) mutable {
-                if (!*neutral)
-                {
-                    const InputReleaseReceipt begun =
-                        input->BeginRelease(
-                            lease,
-                            release.current_epoch);
-                    if (!begun.ok)
-                    {
-                        return ResourceReleaseResult{
-                            ResourceReleaseStatus::Failed,
-                            begun.message};
-                    }
-                    if (begun.status ==
-                        InputLeaseStatus::Released)
-                    {
-                        return ResourceReleaseResult{
-                            ResourceReleaseStatus::Released,
-                            {}};
-                    }
-                    *neutral = begun.neutral_publication;
-                    return ResourceReleaseResult{
-                        ResourceReleaseStatus::
-                            CleanupExecutionRequired,
-                        begun.message};
-                }
-                const InputReleaseReceipt completed =
-                    input->CompleteRelease(
-                        lease,
-                        **neutral,
-                        release.current_epoch);
-                if (completed.ok &&
-                    completed.status ==
-                        InputLeaseStatus::Released)
-                {
-                    return ResourceReleaseResult{
-                        ResourceReleaseStatus::Released,
-                        {}};
-                }
+            [input, lease = leased.lease](
+                const ResourceReleaseRequest& release) {
+                const InputLeaseCloseReceipt closed =
+                    input->CloseLease(lease, release.current_epoch);
                 return ResourceReleaseResult{
-                    completed.ok
-                        ? ResourceReleaseStatus::
-                              CleanupExecutionRequired
+                    closed.ok &&
+                            closed.status == InputLeaseStatus::Released
+                        ? ResourceReleaseStatus::Released
                         : ResourceReleaseStatus::Failed,
-                    completed.message};
+                    closed.message};
             },
             leased.lease.value(),
             {},
@@ -4304,9 +3863,9 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             return ResourceFailure(std::move(request), diagnostic);
         return complete_resource(std::move(request), *resource);
     }
-    case CanonicalAction::InputPublishHeld:
-    case CanonicalAction::InputNeutralize:
-    case CanonicalAction::InputAwaitGuestPoll:
+    case CanonicalAction::InputApplyState:
+    case CanonicalAction::InputBeginDelivery:
+    case CanonicalAction::InputCompleteDelivery:
     {
         InputArbiter* input = session.input_arbiter();
         ResourceMapping* mapping = require_handle();
@@ -4322,218 +3881,81 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 "Input action requires a current typed input lease");
         }
         const InputLeaseId lease(mapping->concrete_id);
-        if (action ==
-            CanonicalAction::InputAwaitGuestPoll)
+        if (action == CanonicalAction::InputCompleteDelivery)
         {
-            const auto publication =
-                payload.Unsigned(Field::Publication);
-            if (!publication)
+            const auto binding = payload.Unsigned(Field::Binding);
+            const auto bound_lease = payload.Unsigned(Field::ParentHandle);
+            if (!binding || !bound_lease || *bound_lease != lease.value())
             {
                 return Reject(
                     request,
                     ProgramActionResolutionStatus::Rejected,
-                    "publication_required",
-                    "Input poll requires a publication token");
+                    "delivery_binding_mismatch",
+                    "Input delivery completion requires the exact lease binding");
             }
-            if (payload.Contains(Field::ParentHandle))
-            {
-                const auto exact =
-                    InputPublicationEvidenceFromPayload(payload);
-                if (!exact || exact->lease != lease ||
-                    exact->epoch != request.expected_epoch)
-                {
-                    return Reject(
-                        request,
-                        ProgramActionResolutionStatus::Rejected,
-                        "input_publication_mismatch",
-                        "Input poll receipt does not match its exact lease and epoch");
-                }
-                const InputArbiterOperationReceipt validated =
-                    input->ValidatePublication(*exact);
-                if (!validated.ok)
-                {
-                    return Reject(
-                        request,
-                        ProgramActionResolutionStatus::Rejected,
-                        "input_publication_mismatch",
-                        std::string(validated.message));
-                }
-            }
-            const InputAcknowledgementReceipt observed =
-                input->Observe(
+            const InputDeliveryReceipt completed =
+                input->CompleteDelivery(
                     lease,
-                    InputPublicationToken(*publication),
+                    InputExecutionBindingId(*binding),
                     request.expected_epoch);
-            if (!observed.ok)
+            if (!completed.ok)
             {
                 return service_failure(
-                    "input_poll_failed",
-                    observed.message);
+                    "input_delivery_incomplete",
+                    completed.message);
             }
             CanonicalActionPayload result;
-            (void)result.AddBoolean(
-                Field::ResultAcknowledged,
-                observed.acknowledged);
-            (void)result.AddUnsigned(
-                Field::ResultSequence,
-                observed.receipt.value());
-            (void)result.AddUnsigned(
-                Field::Publication,
-                observed.publication.value());
-            (void)result.AddUnsigned(
-                Field::ResultEpoch,
-                observed.epoch.value());
+            if (!result.AddUnsigned(Field::DeliveryId, completed.delivery.value()) ||
+                !result.AddUnsigned(Field::Binding, completed.binding.value()) ||
+                !result.AddUnsigned(Field::Handle, completed.lease.value()) ||
+                !result.AddUnsigned(Field::Publication, completed.publication.value()) ||
+                !result.AddUnsigned(Field::ResultSequence, completed.poll.value()) ||
+                !result.AddUnsigned(Field::ResultEpoch, completed.epoch.value()) ||
+                !result.AddUnsigned(Field::StateGeneration, completed.state_generation) ||
+                !result.AddUnsigned(Field::CompletedCount, completed.callback_count) ||
+                !result.AddBytes(Field::ResultFrame, EncodeInputFrame(completed.frame)))
+            {
+                return service_failure(
+                    "result_encoding_failed",
+                    "Input delivery receipt could not be encoded");
+            }
             return CompleteWithPayload(
                 std::move(request),
                 std::move(result));
         }
 
         savor::GCInputFrame frame{};
-        if (action ==
-            CanonicalAction::InputPublishHeld)
+        const auto encoded = payload.Bytes(Field::InputFrame);
+        if (!encoded || !DecodeInputFrame(*encoded, frame))
         {
-            const auto encoded =
-                payload.Bytes(Field::InputFrame);
-            if (!encoded ||
-                !DecodeInputFrame(*encoded, frame))
-            {
-                return Reject(
-                    request,
-                    ProgramActionResolutionStatus::Rejected,
-                    "invalid_input_frame",
-                    "Held input requires one canonical GC frame");
-            }
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "invalid_input_frame",
+                "Input state action requires one canonical GC frame");
         }
-        const InputPublicationReceipt published =
-            input->Publish(
-                lease,
-                frame,
-                request.expected_epoch);
-        if (!published.ok)
+        const InputExecutionBindingReceipt applied =
+            action == CanonicalAction::InputApplyState
+            ? input->ApplyState(lease, frame, request.expected_epoch)
+            : input->BeginDelivery(lease, frame, request.expected_epoch);
+        if (!applied.ok)
         {
             return service_failure(
-                "input_publish_failed",
-                published.message);
+                action == CanonicalAction::InputApplyState
+                    ? "input_state_failed"
+                    : "input_delivery_failed",
+                applied.message);
         }
         CanonicalActionPayload result;
-        if (action == CanonicalAction::InputPublishHeld)
+        if (!AddInputExecutionBindingResult(result, applied))
         {
-            (void)result.AddUnsigned(
-                Field::Handle,
-                published.lease.value());
-        }
-        (void)result.AddUnsigned(
-            Field::Publication,
-            published.publication.value());
-        (void)result.AddBytes(
-            Field::ResultFrame,
-            EncodeInputFrame(published.frame));
-        (void)result.AddUnsigned(
-            Field::ResultEpoch,
-            published.epoch.value());
-        if (action == CanonicalAction::InputNeutralize &&
-            BooleanOr(
-                payload,
-                Field::RequireNeutralAcknowledgement,
-                false))
-        {
-            const InputNeutralWitnessReceipt witness =
-                input->ProveNeutralWitness(
-                    lease,
-                    published.publication,
-                    request.expected_epoch);
-            if (!witness.ok)
-            {
-                return service_failure(
-                    "neutral_witness_failed",
-                    witness.message);
-            }
-            (void)result.AddUnsigned(
-                Field::ResultSequence,
-                witness.witness.value());
-            (void)result.AddBoolean(
-                Field::ResultAcknowledged,
-                static_cast<bool>(
-                    witness.acknowledgement));
+            return service_failure(
+                "result_encoding_failed",
+                "Input execution binding could not be encoded");
         }
         return CompleteWithPayload(
             std::move(request),
             std::move(result));
-    }
-    case CanonicalAction::InputPublishPulse:
-    case CanonicalAction::InputPublishSequence:
-    {
-        InputArbiter* input = session.input_arbiter();
-        ResourceMapping* mapping = require_handle();
-        if (!input || !mapping ||
-            mapping->kind != ResourceKind::InputLease)
-        {
-            return Reject(
-                request,
-                input
-                    ? ProgramActionResolutionStatus::Rejected
-                    : ProgramActionResolutionStatus::Unsupported,
-                "input_lease_unavailable",
-                "Input sequence requires a current typed input lease");
-        }
-        std::vector<savor::GCInputFrame> frames;
-        if (action == CanonicalAction::InputPublishPulse)
-        {
-            savor::GCInputFrame held{};
-            const auto encoded =
-                payload.Bytes(Field::InputFrame);
-            if (!encoded ||
-                !DecodeInputFrame(*encoded, held))
-            {
-                return Reject(
-                    request,
-                    ProgramActionResolutionStatus::Rejected,
-                    "invalid_input_frame",
-                    "Input pulse requires one canonical GC frame");
-            }
-            frames = {held, savor::GCInputFrame{}};
-        }
-        else
-        {
-            const auto encoded =
-                payload.Bytes(Field::InputFrames);
-            if (!encoded ||
-                !DecodeInputFrames(*encoded, frames))
-            {
-                return Reject(
-                    request,
-                    ProgramActionResolutionStatus::Rejected,
-                    "invalid_input_sequence",
-                    "Input sequence is empty, malformed, or over its bound");
-            }
-        }
-        const auto binding = input->CreateAdvanceBinding(
-            InputLeaseId(mapping->concrete_id),
-            frames,
-            request.expected_epoch,
-            static_cast<std::uint32_t>(UnsignedOr(
-                payload,
-                Field::RetryLimit,
-                1)));
-        if (!binding.ok)
-        {
-            return service_failure(
-                "input_binding_failed",
-                binding.message);
-        }
-        ExecutionRequestPolicy policy =
-            ExecutionPolicy(request, payload);
-        policy.input_relationship = binding.binding;
-        const std::uint32_t maximum =
-            static_cast<std::uint32_t>(frames.size());
-        return SubmitExecutionAction(
-            std::move(request),
-            InputSynchronizedAdvanceRequest{
-                std::move(policy),
-                binding.binding,
-                maximum},
-            PendingKind::InputAdvance,
-            binding.binding);
     }
     case CanonicalAction::MoviePrepareReadOnlyPlayback:
     {
@@ -4551,23 +3973,26 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                     ? "Movie preparation requires a caller-declared DTM path"
                     : "MovieService is unavailable");
         }
-        const MovieOperationReceipt prepared =
-            movies->PrepareReadOnlyPlayback({
-                .dtm_path = std::filesystem::path(*path)});
-        if (!prepared.result.ok || !prepared.preparation)
+        const std::optional<MovieOperationReceipt> adopted =
+            movies->PreparedReadOnlyPlaybackReceipt();
+        if (!adopted || !adopted->result.ok ||
+            !adopted->preparation)
         {
-            if (prepared.result.integrity == GuestIntegrity::Unknown)
-            {
-                session.MarkTainted(
-                    prepared.result.message.empty()
-                        ? "Movie preparation left guest integrity unknown"
-                        : prepared.result.message);
-            }
-            return service_failure(
-                "movie_prepare_failed",
-                prepared.result.message.empty()
-                    ? "MovieService returned an invalid preparation"
-                    : prepared.result.message);
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "movie_not_initialized",
+                "Movie preparation requires the exact paused preparation committed by workset initialization");
+        }
+        const MovieOperationReceipt& prepared = *adopted;
+        if (prepared.artifact_path.lexically_normal() !=
+            std::filesystem::path(*path).lexically_normal())
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "movie_artifact_mismatch",
+                "Movie preparation request does not identify the workset baseline DTM");
         }
 
         auto consumed = std::make_shared<bool>(false);
@@ -4647,9 +4072,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                     "movie_preparation_unavailable",
                     "Movie playback requires its exact prepared-movie handle");
             }
-            started =
-                movies->StartPreparedReadOnlyPlayback(
-                    MoviePreparationId(preparation->concrete_id));
+            started = session.StartPreparedReadOnlyPlayback(
+                MoviePreparationId(preparation->concrete_id));
             if (started.result.ok)
             {
                 *preparation->finalized = true;
@@ -5019,84 +4443,11 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             return ResourceFailure(std::move(request), diagnostic);
         return complete_resource(std::move(request), *resource);
     }
-    case CanonicalAction::CaptureAttach:
-    {
-        CaptureService* capture = session.capture_service();
-        const auto profile = payload.Utf8(Field::ProfileJson);
-        const auto path = payload.Utf8(Field::Path);
-        if (!capture || !profile || !path || path->empty())
-        {
-            return Reject(
-                request,
-                capture
-                    ? ProgramActionResolutionStatus::Rejected
-                    : ProgramActionResolutionStatus::Unsupported,
-                "capture_unavailable",
-                "Capture attachment requires CaptureService, an opaque profile, and a caller-declared path");
-        }
-        CaptureAttachmentRequest attach;
-        attach.profile_json = std::string(*profile);
-        attach.options.capture_path =
-            std::filesystem::path(*path);
-        attach.expected_epoch = request.expected_epoch;
-        const CaptureServiceReceipt attached =
-            capture->Attach(std::move(attach));
-        if (!attached.ok)
-        {
-            return service_failure(
-                "capture_attach_failed",
-                attached.error.message);
-        }
-        auto finalized = std::make_shared<bool>(false);
-        std::string diagnostic;
-        auto resource = RegisterResource(
-            request.scope,
-            ResourceKind::CaptureAttachment,
-            kCaptureService,
-            attached.epoch,
-            [capture,
-             attachment = attached.attachment,
-             finalized](
-                const ResourceReleaseRequest&) {
-                if (*finalized)
-                {
-                    return ResourceReleaseResult{
-                        ResourceReleaseStatus::Released,
-                        {}};
-                }
-                const CaptureServiceReceipt detached =
-                    capture->Detach(attachment);
-                if (detached.ok)
-                    *finalized = true;
-                return ResourceReleaseResult{
-                    detached.ok
-                        ? ResourceReleaseStatus::Released
-                        : ResourceReleaseStatus::Failed,
-                    detached.error.message};
-            },
-            attached.attachment.value(),
-            {},
-            "program capture attachment",
-            diagnostic);
-        if (!resource)
-            return ResourceFailure(std::move(request), diagnostic);
-        ResourceMapping* mapping = Resource(resource->handle);
-        if (mapping)
-        {
-            mapping->artifact_path =
-                std::filesystem::path(*path);
-            mapping->finalized = std::move(finalized);
-        }
-        return complete_resource(std::move(request), *resource);
-    }
     case CanonicalAction::CaptureMark:
     {
         CaptureService* capture = session.capture_service();
-        ResourceMapping* mapping = require_handle();
         const auto marker = payload.Utf8(Field::MarkerId);
-        if (!capture || !mapping ||
-            mapping->kind != ResourceKind::CaptureAttachment ||
-            !marker)
+        if (!capture || !marker)
         {
             return Reject(
                 request,
@@ -5104,10 +4455,9 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                     ? ProgramActionResolutionStatus::Rejected
                     : ProgramActionResolutionStatus::Unsupported,
                 "capture_attachment_unavailable",
-                "Capture marker requires a current attachment and marker ID");
+                "Capture marker requires the workset capture binding and marker ID");
         }
         const CaptureServiceReceipt marked = capture->Mark(
-            CaptureAttachmentId(mapping->concrete_id),
             *marker,
             UnsignedOr(payload, Field::MarkerValue, 0));
         if (!marked.ok)
@@ -5123,111 +4473,6 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         return CompleteWithPayload(
             std::move(request),
             std::move(result));
-    }
-    case CanonicalAction::CaptureFinalize:
-    {
-        CaptureService* capture = session.capture_service();
-        ResourceMapping* mapping = require_handle();
-        if (!capture || !mapping ||
-            mapping->kind != ResourceKind::CaptureAttachment)
-        {
-            return Reject(
-                request,
-                ProgramActionResolutionStatus::Rejected,
-                "capture_attachment_unavailable",
-                "Capture finalization requires its typed attachment handle");
-        }
-        const ProgramResourceHandleId handle =
-            mapping->handle;
-        const std::filesystem::path artifact_path =
-            mapping->artifact_path;
-        CaptureServiceReceipt finalized =
-            capture->Detach(
-                CaptureAttachmentId(mapping->concrete_id));
-        if (!finalized.ok)
-        {
-            if (finalized.requires_session_taint)
-            {
-                session.MarkTainted(
-                    finalized.error.message.empty()
-                        ? "Capture finalization left session integrity unproven"
-                        : finalized.error.message);
-            }
-            return service_failure(
-                "capture_finalize_failed",
-                finalized.error.message);
-        }
-        if (mapping->finalized)
-            *mapping->finalized = true;
-
-        std::string digest;
-        try
-        {
-            if (artifact_path.empty() ||
-                !std::filesystem::is_regular_file(
-                    artifact_path))
-            {
-                return service_failure(
-                    "capture_artifact_missing",
-                    "Capture finalization did not publish its declared artifact");
-            }
-            digest = hash::sha256_of_file(
-                artifact_path.string());
-        }
-        catch (const std::exception& ex)
-        {
-            return service_failure(
-                "capture_artifact_hash_failed",
-                ex.what());
-        }
-
-        SessionResourceLedger* ledger =
-            session.resources();
-        SessionResourceBindingTable* bindings =
-            session.resource_bindings();
-        if (!ledger || !bindings)
-        {
-            return service_failure(
-                "resource_ledger_unavailable",
-                "Capture resource ledger is unavailable after finalization");
-        }
-        ResourceUnwindResult released =
-            ledger->Release(mapping->receipt, *bindings);
-        if (!released.completed())
-        {
-            session.MarkTainted(
-                "Finalized capture resource could not be retired");
-            return service_failure(
-                "capture_resource_release_failed",
-                released.error.message.empty()
-                    ? "Finalized capture resource could not be retired"
-                    : released.error.message);
-        }
-        std::vector<CleanupReceipt> cleanup_receipts =
-            MakeCleanupReceipts(released.steps);
-        resources.erase(handle.value());
-
-        ProgramActionResolution completion = Completion(
-            request,
-            ProgramActionResolutionStatus::Completed);
-        completion.output = ArtifactListResultGraph(
-            action,
-            "capture:" +
-                std::to_string(
-                    request.request_id.value()),
-            artifact_path.string(),
-            std::move(digest),
-            finalized.capture_complete &&
-                finalized.artifacts_finalized);
-        completion.cleanup_receipts =
-            std::move(cleanup_receipts);
-        if (completion.output.values.empty())
-        {
-            return service_failure(
-                "result_encoding_failed",
-                "Capture artifact references could not be encoded");
-        }
-        return Immediate(std::move(completion));
     }
     case CanonicalAction::ScreenshotCapture:
     {
@@ -5325,8 +4570,6 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                     TelemetrySeverity::Info)));
         event.epoch = request.expected_epoch;
         event.payload = std::string(*text);
-        event.record_progress =
-            BooleanOr(payload, Field::RecordProgress, false);
         event.loss_policy =
             BooleanOr(payload, Field::Required, false)
             ? TelemetryLossPolicy::Required
@@ -5454,41 +4697,6 @@ SessionProgramActionHost::Impl::ExecutionCompletion(
         return completion;
     }
 
-    if (*action == CanonicalAction::InputPublishPulse ||
-        *action == CanonicalAction::InputPublishSequence)
-    {
-        CanonicalActionPayload publication;
-        if (!terminal.input_publication ||
-            !AddInputPublicationResult(
-                publication,
-                *terminal.input_publication))
-        {
-            completion.status =
-                ProgramActionResolutionStatus::Failed;
-            completion.code = "result_encoding_failed";
-            completion.message =
-                "Input publication completed without exact lease, frame, token, and epoch evidence";
-            return completion;
-        }
-        CanonicalActionPayloadResult encoded =
-            EncodeCanonicalActionPayload(
-                publication,
-                *schema);
-        if (!encoded.ok)
-        {
-            completion.status =
-                ProgramActionResolutionStatus::Failed;
-            completion.code = "result_encoding_failed";
-            completion.message =
-                std::move(encoded.diagnostic);
-            return completion;
-        }
-        completion.output = std::move(encoded.graph);
-        completion.code.clear();
-        completion.message.clear();
-        return completion;
-    }
-
     CanonicalActionPayload payload;
     (void)payload.AddUnsigned(
         Field::ResultStatus,
@@ -5537,34 +4745,22 @@ void SessionProgramActionHost::Impl::CompletePendingExecution(
 
     PendingExecution completed = std::move(*pending);
     pending.reset();
+    if (ExecutionSucceeded(terminal) && completed.request.action &&
+        ResolveCanonicalAction(*completed.request.action) ==
+            CanonicalAction::ExecutionContinueUntil &&
+        terminal.stop && terminal.stop->event &&
+        terminal.stop->terminal == StopRouteTerminal::ForegroundMatched)
+    {
+        foreground_semantic_stops.push_back({
+            completed.request.invocation_id,
+            completed.request.attempt_id,
+            *terminal.stop->event,
+            terminal.evidence,
+        });
+    }
     ProgramActionResolution completion =
         ExecutionCompletion(completed, terminal);
 
-    if (completed.input_binding)
-    {
-        InputArbiter* input = session.input_arbiter();
-        const InputArbiterOperationReceipt removed = input
-            ? input->RemoveAdvanceBinding(
-                  *completed.input_binding)
-            : InputArbiterOperationReceipt{
-                  false,
-                  InputArbiterErrorCode::Stopped,
-                  "InputArbiter is unavailable"};
-        if (!removed.ok)
-        {
-            session.MarkTainted(
-                "Program input advance binding could not be retired");
-            completion.status =
-                ProgramActionResolutionStatus::CleanupFailed;
-            completion.cleanup =
-                ProgramCleanupStatus::Tainted;
-            completion.code =
-                "input_binding_cleanup_failed";
-            completion.message =
-                std::string(removed.message);
-            completion.output = {};
-        }
-    }
     if (terminal.integrity == BackendIntegrity::Unknown ||
         terminal.status ==
             ExecutionTerminalStatus::CleanupFailure)
@@ -5813,6 +5009,16 @@ SessionProgramActionHost::DrainResults()
         return {};
     std::vector<ActorActionResult> result;
     result.swap(impl_->completions);
+    return result;
+}
+
+std::vector<ForegroundSemanticStopObservationV1>
+SessionProgramActionHost::DrainForegroundSemanticStops()
+{
+    if (!impl_ || !impl_->BindOrCheckOwner())
+        return {};
+    std::vector<ForegroundSemanticStopObservationV1> result;
+    result.swap(impl_->foreground_semantic_stops);
     return result;
 }
 

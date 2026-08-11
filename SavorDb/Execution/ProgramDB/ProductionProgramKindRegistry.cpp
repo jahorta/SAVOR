@@ -4,7 +4,7 @@
 #include <string>
 #include <utility>
 
-#include "../../../SavorCore/Runner/IPC/Wire.h"
+#include "../../../SavorCore/Runner/Runtime/ProgramKind.h"
 
 namespace savor::db::execution::programdb {
 namespace {
@@ -31,8 +31,6 @@ ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(
         runtime_working_dir_root / "battle-context";
     config.battle_single_turn.working_dir_root =
         runtime_working_dir_root / "battle-single-turn";
-    config.navigation_context.working_dir_root =
-        runtime_working_dir_root / "navigation-context";
     return config;
 }
 
@@ -67,6 +65,45 @@ bool BuildProductionProgramKindRegistry(
 
     try {
         ProgramKindRegistry registry;
+        auto battle_context =
+            battlecontext::BuildBattleContextProgramDescriptor(
+                dependencies.execution_db,
+                dependencies.state_db,
+                dependencies.analysis_db,
+                std::move(config.battle_context));
+        if (battle_context.program_kind
+                != static_cast<std::int32_t>(savor::PK_BattleContext)
+            || battle_context.job_materializer == nullptr
+            || battle_context.workset_reconstruction == nullptr
+            || battle_context.result_handler == nullptr) {
+            return Fail("Battle Context production descriptor is incomplete", error_out);
+        }
+        if (!registry.Register(battle_context)
+            || !registry.RegisterForStepKind("battle.context", battle_context)) {
+            return Fail("Battle Context production descriptor registration failed", error_out);
+        }
+
+        auto battle_single_turn =
+            battle::BuildBattleSingleTurnProgramDescriptor(
+                dependencies.execution_db,
+                dependencies.state_db,
+                dependencies.analysis_db,
+                dependencies.authoring_db,
+                std::move(config.battle_single_turn));
+        if (battle_single_turn.program_kind
+                != static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner)
+            || !battle_single_turn.full_phase_identity
+            || battle_single_turn.job_materializer == nullptr
+            || battle_single_turn.workset_reconstruction == nullptr
+            || battle_single_turn.result_handler == nullptr) {
+            return Fail("Battle Single Turn production descriptor is incomplete", error_out);
+        }
+        if (!registry.Register(battle_single_turn)
+            || !registry.RegisterForStepKind("battle.start", battle_single_turn)
+            || !registry.RegisterForStepKind("battle.single_turn", battle_single_turn)) {
+            return Fail("Battle Single Turn production descriptor registration failed", error_out);
+        }
+
         auto seed_probe =
             seedprobe::BuildSeedProbeProgramDescriptor(
                 dependencies.execution_db,

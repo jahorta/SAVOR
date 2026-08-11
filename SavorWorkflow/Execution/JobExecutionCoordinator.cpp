@@ -14,6 +14,7 @@
 
 #include "Runner/IPC/DurableWorkerTerminalEnvelope.h"
 #include "Runner/Runtime/Worksets/WorksetTypes.h"
+#include "Runner/Runtime/Worksets/WorksetWireCodec.h"
 
 namespace savor::runner::parallel::savordb {
 
@@ -177,10 +178,10 @@ detail::DescribeCancellationDeliveryFailure(
             "Worker cancellation item was not resident",
             "WORKER_CANCELLATION_ITEM_NOT_FOUND",
         };
-    case Rejection::WorksetCatalogMismatch:
+    case Rejection::ProgramPackageRejected:
         return {
-            "Worker cancellation workset catalog did not match",
-            "WORKER_CANCELLATION_WORKSET_CATALOG_MISMATCH",
+            "Worker cancellation encountered a rejected program package",
+            "WORKER_CANCELLATION_PROGRAM_PACKAGE_REJECTED",
         };
     case Rejection::CapacityExceeded:
         return {
@@ -449,6 +450,10 @@ private:
         WorkerCoordinatorEventContext source;
         savor::wrms::WorksetItemStartedPayload payload;
     };
+    struct ProgressEvent {
+        WorkerCoordinatorEventContext source;
+        savor::wrms::InvocationProgressPayload payload;
+    };
     struct PreparedTerminalPersistence {
         savor::db::execution::WorkerResultBlobReference blob;
         savor::db::StageWorkerTerminalCommand command;
@@ -465,7 +470,7 @@ private:
         savor::wrms::WorksetSummaryPayload payload;
     };
     using PersistencePayload =
-        std::variant<ItemStartedEvent, TerminalEvent, SummaryEvent>;
+        std::variant<ItemStartedEvent, ProgressEvent, TerminalEvent, SummaryEvent>;
     struct PersistenceEvent {
         std::size_t worker_id = 0;
         std::uint64_t generation = 0;
@@ -508,7 +513,7 @@ private:
     };
 
     struct WorksetAffinity {
-        std::string module_canonical_id;
+        std::optional<std::string> program_package_sha256;
         std::optional<std::string> execution_key;
     };
 
@@ -527,7 +532,7 @@ private:
         std::optional<std::int64_t> active;
         std::deque<WorkerControlCommand> controls;
         bool has_submitted_workset = false;
-        std::optional<std::string> actual_module_canonical_id;
+        std::optional<std::string> actual_program_package_sha256;
         std::optional<std::string> actual_execution_key;
         std::map<std::int64_t, WorksetAffinity> projected_affinities;
     };
@@ -563,19 +568,19 @@ private:
     void WorkerLaneLoop(const WorkerLanePtr& lane);
 
     WorkerLanePtr EnsureWorkerLane(
-        const ReadyWorkerCompatibilitySnapshot& worker);
+        const ReadyWorkerDispatchSnapshot& worker);
     WorkerLanePtr FindWorkerLane(
         std::size_t worker_id,
         std::uint64_t generation) const;
     void StopWorkerLanes();
     static WorksetAffinity AffinityOf(
-        const savor::db::ExecutionWorksetCompatibility& compatibility);
+        const savor::db::ExecutionWorksetContract& contract);
     static int AffinityScore(
         const WorkerLane& lane,
-        const savor::db::ExecutionWorksetCompatibility& compatibility);
+        const savor::db::ExecutionWorksetContract& contract);
     static void RefreshActualAffinity(
         WorkerLane& lane,
-        const ReadyWorkerCompatibilitySnapshot& worker);
+        const ReadyWorkerDispatchSnapshot& worker);
     static void RemoveProjectedAffinity(
         WorkerLane& lane,
         std::int64_t dispatch_attempt_id);
@@ -590,6 +595,7 @@ private:
     void EnqueuePersistence(PersistenceEvent event);
     bool ProcessPersistenceEvent(PersistenceEvent& event);
     bool HandleItemStarted(const ItemStartedEvent& event);
+    bool HandleProgress(const ProgressEvent& event);
     bool HandleTerminal(TerminalEvent& event);
     bool HandleWorksetSummary(const SummaryEvent& event);
     bool PersistPreparedWorkerEvent(
@@ -787,7 +793,6 @@ private:
     std::atomic<std::uint64_t> submission_accepted_{0};
     std::atomic<std::uint64_t> submission_temporary_unavailable_{0};
     std::atomic<std::uint64_t> submission_stale_generation_{0};
-    std::atomic<std::uint64_t> submission_incompatible_{0};
     std::atomic<std::uint64_t> submission_deterministic_rejection_{0};
     std::atomic<std::uint64_t> submission_ambiguous_after_write_{0};
     std::atomic<std::uint64_t>
@@ -898,18 +903,9 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
         }
         return false;
     }
-    const auto enabled_program_kinds =
-        worker_coordinator_->EnabledProgramKinds();
     const auto descriptor_program_kinds =
         program_kind_registry_->RegisteredProgramKinds();
-    if (enabled_program_kinds != descriptor_program_kinds) {
-        if (error_out) {
-            *error_out =
-                "enabled FullPhase set and execution descriptor registry do not agree";
-        }
-        return false;
-    }
-    for (const auto program_kind : enabled_program_kinds) {
+    for (const auto program_kind : descriptor_program_kinds) {
         const auto* phase = savor::runtime::fullphase::
             ProductionRegistry().Find(program_kind);
         const auto* descriptor =
@@ -919,14 +915,14 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
             || *descriptor->full_phase_identity != phase->identity()) {
             if (error_out) {
                 *error_out =
-                    "execution descriptor does not identify the enabled immutable FullPhase: "
+                    "execution descriptor does not identify its immutable FullPhase: "
                     + std::to_string(program_kind);
             }
             return false;
         }
     }
-    const auto pool_limits =
-        worker_coordinator_->RequiredWorksetLimits();
+    const auto& pool_limits =
+        worker_coordinator_->RuntimeContract().limits;
     if (pool_limits.maximum_items_per_workset
             < config_.maximum_items_per_workset
         || pool_limits.maximum_encoded_workset_bytes
@@ -1552,8 +1548,6 @@ JobExecutionCoordinator::Impl::SnapshotTelemetry() const {
         submission_temporary_unavailable_.load();
     telemetry.submission_stale_generation =
         submission_stale_generation_.load();
-    telemetry.submission_incompatible =
-        submission_incompatible_.load();
     telemetry.submission_deterministic_rejection =
         submission_deterministic_rejection_.load();
     telemetry.submission_ambiguous_after_write =
@@ -1956,8 +1950,17 @@ void JobExecutionCoordinator::Impl::ConfigureWorkerCallbacks() {
                         });
                 },
             .item_progress =
-                [](const WorkerCoordinatorEventContext&,
-                   const savor::wrms::InvocationProgressPayload&) {},
+                [this](
+                    const WorkerCoordinatorEventContext& source,
+                    const savor::wrms::InvocationProgressPayload& payload) {
+                    EnqueuePersistence(
+                        {
+                            .worker_id = source.worker_id,
+                            .generation = source.process_generation,
+                            .enqueued_at = Clock::now(),
+                            .payload = ProgressEvent{source, payload},
+                        });
+                },
             .item_terminal =
                 [this](
                     const savor::runtime::
@@ -2018,7 +2021,7 @@ JobExecutionCoordinator::Impl::FindWorkerLane(
 
 JobExecutionCoordinator::Impl::WorkerLanePtr
 JobExecutionCoordinator::Impl::EnsureWorkerLane(
-    const ReadyWorkerCompatibilitySnapshot& worker) {
+    const ReadyWorkerDispatchSnapshot& worker) {
     WorkerLanePtr old_lane;
     WorkerLanePtr lane;
     {
@@ -2129,44 +2132,39 @@ void JobExecutionCoordinator::Impl::StopWorkerLanes() {
 
 JobExecutionCoordinator::Impl::WorksetAffinity
 JobExecutionCoordinator::Impl::AffinityOf(
-    const savor::db::ExecutionWorksetCompatibility& compatibility) {
+    const savor::db::ExecutionWorksetContract& contract) {
     return {
-        .module_canonical_id = compatibility.module_canonical_id,
-        .execution_key = compatibility.execution_affinity_key,
+        .program_package_sha256 = contract.program_package_sha256,
+        .execution_key = contract.execution_affinity_key,
     };
 }
 
 int JobExecutionCoordinator::Impl::AffinityScore(
     const WorkerLane& lane,
-    const savor::db::ExecutionWorksetCompatibility& compatibility) {
+    const savor::db::ExecutionWorksetContract& contract) {
     const bool declares_affinity =
-        compatibility.execution_affinity_key.has_value();
+        !contract.program_package_sha256.empty()
+        || contract.execution_affinity_key.has_value();
     if (!declares_affinity) return 0;
 
-    // Until a first reservation establishes projected state, a worker that
-    // has never been sent work is universal rather than cold-penalized.
-    if (!lane.has_submitted_workset
-        && lane.projected_affinities.empty()) {
-        return 7;
-    }
-
-    std::optional<std::string> module =
-        lane.actual_module_canonical_id;
+    std::optional<std::string> program_package =
+        lane.actual_program_package_sha256;
     std::optional<std::string> execution = lane.actual_execution_key;
     if (!lane.projected_affinities.empty()) {
         const auto& projected =
             lane.projected_affinities.rbegin()->second;
-        module = projected.module_canonical_id;
+        program_package = projected.program_package_sha256;
         execution = projected.execution_key;
     }
 
     int score = 0;
-    if (module == std::optional<std::string>(
-            compatibility.module_canonical_id)) {
+    if (program_package
+        == std::optional<std::string>(
+            contract.program_package_sha256)) {
         score += 1;
     }
-    if (compatibility.execution_affinity_key.has_value()
-        && execution == compatibility.execution_affinity_key) {
+    if (contract.execution_affinity_key.has_value()
+        && execution == contract.execution_affinity_key) {
         score += 2;
     }
     return score;
@@ -2174,8 +2172,9 @@ int JobExecutionCoordinator::Impl::AffinityScore(
 
 void JobExecutionCoordinator::Impl::RefreshActualAffinity(
     WorkerLane& lane,
-    const ReadyWorkerCompatibilitySnapshot& worker) {
-    lane.actual_module_canonical_id = worker.warm_program_module_id;
+    const ReadyWorkerDispatchSnapshot& worker) {
+    lane.actual_program_package_sha256 =
+        worker.warm_program_package_sha256;
     lane.actual_execution_key = worker.warm_execution_key_sha256;
 }
 
@@ -2191,6 +2190,7 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
         std::size_t initial_depth = 0;
         std::size_t free = 0;
         std::size_t assigned = 0;
+        std::uint32_t available_item_credits = 0;
     };
     while (!stop_.load()) {
         if (IsDispatchAdmissionPaused()) {
@@ -2204,6 +2204,10 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
         lanes.reserve(workers.size());
         std::size_t requested = 0;
         for (const auto& worker : workers) {
+            if (!worker.accepting_workset
+                || !savor::runtime::IsNormalWorkerMode(worker.mode)) {
+                continue;
+            }
             const auto lane = EnsureWorkerLane(worker);
             std::size_t free = 0;
             std::size_t occupied = 0;
@@ -2213,11 +2217,17 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                 RefreshActualAffinity(*lane, worker);
                 occupied =
                     lane->reservations + lane->waiting.size();
-                free = occupied < config_.worker_queue_capacity
-                    ? config_.worker_queue_capacity - occupied
-                    : 0;
+                free = occupied >= config_.worker_queue_capacity
+                    ? 0
+                    : config_.worker_queue_capacity - occupied;
             }
-            lanes.push_back({lane, occupied, free, 0});
+            lanes.push_back({
+                lane,
+                occupied,
+                free,
+                0,
+                worker.available_item_credits,
+            });
             requested += free;
         }
         std::sort(
@@ -2329,6 +2339,8 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                 for (std::size_t index = 0; index < lanes.size(); ++index) {
                     auto& entry = lanes[index];
                     if (entry.assigned >= entry.free
+                        || row.items.size()
+                            > entry.available_item_credits
                         || entry.initial_depth + entry.assigned
                             != minimum_depth) {
                         continue;
@@ -2337,7 +2349,7 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                     if (entry.lane->stop) continue;
                     const auto score = AffinityScore(
                         *entry.lane,
-                        row.compatibility);
+                        row.contract);
                     if (score > best_affinity) {
                         best_affinity = score;
                         candidates.clear();
@@ -2400,7 +2412,7 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                     ++lane->reconstructing;
                     lane->projected_affinities.insert_or_assign(
                         dispatch->claimed.dispatch_attempt_id,
-                        AffinityOf(dispatch->claimed.compatibility));
+                        AffinityOf(dispatch->claimed.contract));
                 }
                 ++selected.assigned;
                 {
@@ -2493,6 +2505,31 @@ bool JobExecutionCoordinator::Impl::Reconstruct(
         error = "program kind " + std::to_string(claimed.program_kind)
             + " has no registered workset reconstruction adapter";
     } else {
+        std::optional<savor::runtime::WorksetCaptureBindingV1>
+            capture;
+        savor::runtime::progress::ProgressPlanV1 progress_plan;
+        const auto capture_decoded =
+            savor::runtime::DecodeWorksetCaptureBindingV1(
+                claimed.observation.capture_binding_payload,
+                capture);
+        const auto progress_decoded =
+            savor::runtime::DecodeProgressPlanV1(
+                claimed.observation.progress_plan_payload,
+                progress_plan);
+        const std::string capture_hash = capture
+            ? capture->content_sha256
+            : savor::runtime::EmptyWorksetCaptureBindingHashV1();
+        if (!capture_decoded || !progress_decoded ||
+            capture_hash !=
+                claimed.observation.capture_binding_sha256 ||
+            progress_plan.content_sha256 !=
+                claimed.observation.progress_plan_sha256) {
+            error = !capture_decoded
+                ? capture_decoded.message
+                : !progress_decoded
+                ? progress_decoded.message
+                : "durable workset observation hashes do not match their payloads";
+        }
         savor::db::execution::programdb::WorksetReconstructionContext
             context{};
         context.workset_id = claimed.workset_id;
@@ -2500,9 +2537,10 @@ bool JobExecutionCoordinator::Impl::Reconstruct(
         context.workflow_step_id = claimed.workflow_step_id;
         context.root_job_set_id = claimed.root_job_set_id;
         context.dispatch_token = claimed.claim_token;
-        context.compatibility_key =
-            claimed.compatibility.compatibility_key;
+        context.contract_key = claimed.contract.contract_key;
         context.state_compatibility = config_.state_compatibility;
+        context.capture = std::move(capture);
+        context.progress_plan = std::move(progress_plan);
         context.items.reserve(claimed.items.size());
         for (const auto& item : claimed.items) {
             context.items.push_back(
@@ -2522,10 +2560,14 @@ bool JobExecutionCoordinator::Impl::Reconstruct(
                 });
         }
         try {
+            if (!error.empty()) {
+                reconstruction.reset();
+            } else {
             reconstruction =
                 descriptor->workset_reconstruction->Reconstruct(
                     context,
                     &error);
+            }
         } catch (const std::exception& exception) {
             error = exception.what();
         } catch (...) {
@@ -2614,31 +2656,53 @@ bool JobExecutionCoordinator::Impl::ValidateReconstruction(
         return fail(
             "reconstructed workset identity or item count changed");
     }
-    const auto& compatibility = claimed.compatibility;
+    const auto& contract = claimed.contract;
+    const auto& observation = claimed.observation;
     const auto& key = reconstruction.workset.execution_key;
+    std::optional<savor::runtime::WorksetCaptureBindingV1>
+        durable_capture;
+    savor::runtime::progress::ProgressPlanV1 durable_progress;
+    if (!savor::runtime::DecodeWorksetCaptureBindingV1(
+            observation.capture_binding_payload,
+            durable_capture) ||
+        !savor::runtime::DecodeProgressPlanV1(
+            observation.progress_plan_payload,
+            durable_progress)) {
+        return fail(
+            "durable workset observation binding could not be decoded");
+    }
     if (key.module.canonical_id
-            != compatibility.module_canonical_id
+            != contract.module_canonical_id
         || key.module.revision
             != static_cast<std::uint32_t>(
-                compatibility.module_version)
+                contract.module_version)
         || key.module.canonical_hash
-            != compatibility.module_sha256
-        || key.entrypoint != compatibility.entrypoint
+            != contract.module_sha256
+        || key.entrypoint != contract.entrypoint
         || key.verified_dependency_sha256
-            != compatibility.verified_dependency_sha256
+            != contract.verified_dependency_sha256
         || key.runtime_profile_sha256
-            != compatibility.runtime_profile_sha256
-        || (compatibility.execution_affinity_key.has_value()
+            != contract.runtime_profile_sha256
+        || key.program_package_sha256
+            != contract.program_package_sha256
+        || key.capture_binding_sha256
+            != observation.capture_binding_sha256
+        || key.progress_plan_sha256
+            != observation.progress_plan_sha256
+        || reconstruction.workset.capture !=
+            durable_capture
+        || reconstruction.workset.progress_plan != durable_progress
+        || (contract.execution_affinity_key.has_value()
             && key.canonical_sha256
-                != *compatibility.execution_affinity_key)
+                != *contract.execution_affinity_key)
         ) {
         return fail(
-            "reconstructed workset changed durable compatibility "
+            "reconstructed workset changed its durable contract "
             "metadata");
     }
-    if (compatibility.estimated_payload_bytes > 0
+    if (contract.estimated_payload_bytes > 0
         && reconstruction.workset.encoded_size_bytes
-            > compatibility.estimated_payload_bytes) {
+            > contract.estimated_payload_bytes) {
         return fail(
             "reconstructed workset exceeded its published payload "
             "estimate");
@@ -2692,9 +2756,7 @@ bool JobExecutionCoordinator::Impl::IsInvariantSubmissionRejection(
     if (result.disposition
             == WorkerSubmitDisposition::InvalidWorkset
         || result.disposition
-            == WorkerSubmitDisposition::DuplicateWorkset
-        || result.disposition
-            == WorkerSubmitDisposition::IncompatibleWorkset) {
+            == WorkerSubmitDisposition::DuplicateWorkset) {
         return true;
     }
     if (result.disposition
@@ -2704,7 +2766,7 @@ bool JobExecutionCoordinator::Impl::IsInvariantSubmissionRejection(
     switch (result.rejection_code) {
     case savor::wrms::RejectionCode::Unsupported:
     case savor::wrms::RejectionCode::InvalidArgument:
-    case savor::wrms::RejectionCode::WorksetCatalogMismatch:
+    case savor::wrms::RejectionCode::ProgramPackageRejected:
         return true;
     default:
         return false;
@@ -2965,9 +3027,6 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
         case WorkerSubmitDisposition::StaleGeneration:
             ++submission_stale_generation_;
             break;
-        case WorkerSubmitDisposition::IncompatibleWorkset:
-            ++submission_incompatible_;
-            break;
         case WorkerSubmitDisposition::CoordinatorNotAccepting:
             ++submission_transport_canceled_before_write_;
             break;
@@ -3045,13 +3104,6 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
                     + submitted.error_code + "]";
             }
             if (invariant_rejection) {
-                if (submitted.disposition
-                    == WorkerSubmitDisposition::IncompatibleWorkset) {
-                    worker_coordinator_->QuarantineWorkerGeneration(
-                        dispatch->target,
-                        "homogeneous pool admission invariant failed: "
-                            + diagnostic);
-                }
                 PauseForInvariant(
                     dispatch,
                     "Worker rejected a locally validated workset "
@@ -3076,7 +3128,7 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
                 lane->waiting.push_front(dispatch);
                 lane->projected_affinities.insert_or_assign(
                     dispatch->claimed.dispatch_attempt_id,
-                    AffinityOf(dispatch->claimed.compatibility));
+                    AffinityOf(dispatch->claimed.contract));
                 lane->cv.notify_all();
             }
             continue;
@@ -3103,7 +3155,7 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
                     dispatch->claimed.dispatch_attempt_id));
         } else if (submitted.submission_receipt->disposition
             == savor::runtime::WorksetSubmissionDispositionV1::
-                AlreadyAccepted) {
+                AlreadyAdmitted) {
             ++sidecar_submit_receipts_repeated_;
         } else {
             ++sidecar_submit_receipts_accepted_;
@@ -3726,6 +3778,8 @@ bool JobExecutionCoordinator::Impl::ProcessPersistenceEvent(
             using T = std::decay_t<decltype(payload)>;
             if constexpr (std::is_same_v<T, ItemStartedEvent>) {
                 return HandleItemStarted(payload);
+            } else if constexpr (std::is_same_v<T, ProgressEvent>) {
+                return HandleProgress(payload);
             } else if constexpr (std::is_same_v<T, TerminalEvent>) {
                 return HandleTerminal(payload);
             } else {
@@ -3854,6 +3908,144 @@ bool JobExecutionCoordinator::Impl::HandleItemStarted(
     if (receipt.disposition
         == savor::db::ExecutionDbOperationDisposition::Applied) {
         ++jobs_started_;
+    }
+    return true;
+}
+
+bool JobExecutionCoordinator::Impl::HandleProgress(
+    const ProgressEvent& event) {
+    const auto dispatch_id =
+        static_cast<std::int64_t>(event.payload.workset_id);
+    const auto dispatch = FindDispatch(dispatch_id);
+    if (!dispatch) {
+        RecordWarning(
+            "Ignored progress for unknown workset",
+            "dispatch_attempt_id=" + std::to_string(dispatch_id),
+            static_cast<std::int64_t>(event.source.worker_id));
+        return true;
+    }
+
+    savor::db::ClaimedPublishedWorkset claimed;
+    savor::db::ClaimedPublishedWorksetItem durable_item;
+    savor::runtime::WorksetItemTemplate runtime_item;
+    bool authority_released = false;
+    {
+        std::lock_guard lock(dispatch->mutex);
+        if (dispatch->submitted && !dispatch->dispatch_marked) {
+            return false;
+        }
+        const auto item_found =
+            dispatch->item_index_by_id.find(event.payload.item_id);
+        if (!dispatch->submitted
+            || item_found == dispatch->item_index_by_id.end()
+            || dispatch->target.worker_id != event.source.worker_id
+            || dispatch->target.process_generation
+                != event.source.process_generation) {
+            if (dispatch->phase == DispatchPhase::ReleasedDraining
+                || dispatch->phase == DispatchPhase::Released
+                || dispatch->phase == DispatchPhase::Retired) {
+                return true;
+            }
+            PauseForInvariant(
+                dispatch,
+                "Worker progress correlation mismatch",
+                "dispatch_attempt_id=" + std::to_string(dispatch_id));
+            return true;
+        }
+        const auto index = item_found->second;
+        runtime_item = dispatch->definition.items[index];
+        durable_item = dispatch->claimed.items[index];
+        claimed = dispatch->claimed;
+        authority_released =
+            dispatch->phase == DispatchPhase::ReleasedDraining
+            || dispatch->phase == DispatchPhase::Released
+            || dispatch->phase == DispatchPhase::Retired;
+        if (authority_released) return true;
+        if (event.payload.item_ordinal != runtime_item.ordinal
+            || event.payload.invocation_id
+                != runtime_item.execution.execution_id.value()
+            || event.payload.attempt_id
+                != runtime_item.execution.attempt_id.value()
+            || event.payload.durable_job_id
+                != std::to_string(durable_item.job_id)
+            || event.payload.ordinal == 0) {
+            PauseForInvariant(
+                dispatch,
+                "Worker progress identity mismatch",
+                "job_id=" + std::to_string(durable_item.job_id));
+            return true;
+        }
+    }
+
+    savor::db::WorkerExecutionEventMutationReceipt batch_receipt{};
+    std::string error;
+    const bool persisted = PersistPreparedWorkerEvent(
+        savor::db::RecordCanonicalJobProgressCommand{
+            .dispatch_attempt_id = dispatch_id,
+            .claim_token = claimed.claim_token,
+            .job_id = durable_item.job_id,
+            .dispatch_item_ordinal = event.payload.item_ordinal,
+            .reserved_attempt_id = durable_item.reserved_attempt_id,
+            .workset_id = event.payload.workset_id,
+            .item_id = event.payload.item_id,
+            .invocation_id = event.payload.invocation_id,
+            .ordinal = event.payload.ordinal,
+            .library_id = event.payload.library_id,
+            .library_revision = event.payload.library_revision,
+            .progress_point_id = event.payload.progress_point_id,
+            .has_routed_provenance =
+                event.payload.has_routed_provenance,
+            .routed_sequence = event.payload.routed_sequence,
+            .sample_snapshot_id = event.payload.sample_snapshot_id,
+            .trigger_epoch = event.payload.trigger_epoch,
+            .schema_id = event.payload.schema_id,
+            .schema_revision = event.payload.schema_revision,
+            .schema_sha256 = event.payload.schema_sha256,
+            .typed_payload = event.payload.typed_payload,
+            .display_text = event.payload.display_text,
+            .requested_by = "job_execution_coordinator",
+        },
+        &batch_receipt,
+        &error);
+    savor::db::CanonicalJobProgressReceipt receipt{};
+    if (persisted) {
+        if (const auto* typed =
+                std::get_if<savor::db::CanonicalJobProgressReceipt>(
+                    &batch_receipt)) {
+            receipt = *typed;
+        } else {
+            error = "worker-event batch returned the wrong progress receipt";
+        }
+    }
+    if (!persisted
+        || (receipt.disposition
+                != savor::db::ExecutionDbOperationDisposition::Applied
+            && receipt.disposition
+                != savor::db::ExecutionDbOperationDisposition::AlreadyApplied)) {
+        if (receipt.disposition
+            == savor::db::ExecutionDbOperationDisposition::BackendError) {
+            RecordError(
+                error.empty()
+                    ? "failed persisting canonical job progress"
+                    : std::move(error));
+            return false;
+        }
+        {
+            std::lock_guard lock(dispatch->mutex);
+            authority_released =
+                dispatch->phase == DispatchPhase::ReleasedDraining
+                || dispatch->phase == DispatchPhase::Released
+                || dispatch->phase == DispatchPhase::Retired;
+        }
+        if (!authority_released) {
+            PauseForInvariant(
+                dispatch,
+                "Canonical job progress durable authority rejected",
+                error.empty()
+                    ? "job_id=" + std::to_string(durable_item.job_id)
+                    : std::move(error),
+                durable_item.job_id);
+        }
     }
     return true;
 }

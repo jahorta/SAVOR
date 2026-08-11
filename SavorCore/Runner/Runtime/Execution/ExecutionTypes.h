@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../../Core/Input/InputPlan.h"
+#include "../../../Core/Input/GCInputFrame.h"
 #include "../IDolphinBackend.h"
 #include "../RuntimeTypes.h"
 #include "../StopPoints/StopPointTypes.h"
@@ -16,26 +16,33 @@ namespace savor::runtime {
 
 struct ExecutionOperationIdTag;
 struct InterruptionFrameIdTag;
-struct InputAdvanceBindingIdTag;
+struct InputExecutionRelationshipIdTag;
+struct InputExecutionBindingIdTag;
 struct InputLeaseIdTag;
 struct InputPublicationTokenTag;
+struct InputDeliveryIdTag;
 
 using ExecutionOperationId = StrongId<ExecutionOperationIdTag>;
 using InterruptionFrameId = StrongId<InterruptionFrameIdTag>;
-using InputAdvanceBindingId = StrongId<InputAdvanceBindingIdTag>;
+using InputExecutionRelationshipId = StrongId<InputExecutionRelationshipIdTag>;
+using InputExecutionBindingId = StrongId<InputExecutionBindingIdTag>;
 using InputLeaseId = StrongId<InputLeaseIdTag>;
 using InputPublicationToken = StrongId<InputPublicationTokenTag>;
+using InputDeliveryId = StrongId<InputDeliveryIdTag>;
 
 static_assert(!std::is_convertible_v<ExecutionOperationId, InvocationId>);
 static_assert(!std::is_convertible_v<InterruptionFrameId, ExecutionOperationId>);
-static_assert(!std::is_convertible_v<InputAdvanceBindingId, InputPublicationToken>);
+static_assert(!std::is_convertible_v<InputExecutionRelationshipId, InputExecutionBindingId>);
+static_assert(!std::is_convertible_v<InputExecutionBindingId, InputPublicationToken>);
 static_assert(!std::is_convertible_v<InputLeaseId, InputPublicationToken>);
 
-struct InputPublicationEvidence
+struct InputExecutionBindingEvidence
 {
     InputLeaseId lease;
+    InputExecutionBindingId binding;
     InputPublicationToken publication;
     WorksetEpoch epoch;
+    std::uint64_t state_generation = 0;
     savor::GCInputFrame frame{};
 };
 
@@ -43,7 +50,6 @@ enum class ExecutionOperationKind : std::uint8_t
 {
     ContinueUntil,
     StepFrames,
-    InputSynchronizedAdvance,
     SafePause,
     InteractiveResume,
 };
@@ -53,7 +59,6 @@ enum class ExecutionActivity : std::uint8_t
     IdlePaused,
     Continuing,
     SteppingFrame,
-    AdvancingInput,
     Pausing,
     InteractiveRunning,
     HandlingInterruption,
@@ -105,7 +110,7 @@ struct ExecutionRequestPolicy
         ExecutionCurrentPointPolicy::Ignore;
     ExecutionInterruptionPolicy interruptions =
         ExecutionInterruptionPolicy::Reject;
-    std::optional<InputAdvanceBindingId> input_relationship;
+    std::optional<InputExecutionRelationshipId> input_relationship;
     CancellationToken cancellation;
 };
 
@@ -125,13 +130,6 @@ struct StepFramesRequest
     std::uint32_t count = 1;
 };
 
-struct InputSynchronizedAdvanceRequest
-{
-    ExecutionRequestPolicy policy;
-    InputAdvanceBindingId binding;
-    std::uint32_t maximum_advances = 1;
-};
-
 struct SafePauseRequest
 {
     ExecutionRequestPolicy policy;
@@ -147,14 +145,13 @@ struct InteractiveResumeRequest
     ExecutionThrottlePolicy throttle = ExecutionThrottlePolicy::Preserve;
     ExecutionInterruptionPolicy interruptions =
         ExecutionInterruptionPolicy::Reject;
-    std::optional<InputAdvanceBindingId> input_relationship;
+    std::optional<InputExecutionRelationshipId> input_relationship;
     CancellationToken cancellation;
 };
 
 using ExecutionRequest = std::variant<
     ContinueUntilRequest,
     StepFramesRequest,
-    InputSynchronizedAdvanceRequest,
     SafePauseRequest,
     InteractiveResumeRequest>;
 
@@ -168,9 +165,7 @@ enum class ExecutionTerminalStatus : std::uint8_t
     // Retains terminal numeric value 5 for WRMS v1 compatibility.
     CoreStalled,
     MovieEnded,
-    ConsumedStop,
     UnexpectedStop,
-    GuardFailed,
     InterruptionUnavailable,
     InterruptionAborted,
     InterruptionDepthExceeded,
@@ -232,7 +227,6 @@ struct ExecutionTerminalResult
     std::uint32_t completed_count = 0;
     ExecutionEnvironmentEvidence evidence;
     std::optional<StopRouteReceipt> stop;
-    std::optional<InputPublicationEvidence> input_publication;
     ExecutionError error;
     BackendIntegrity integrity = BackendIntegrity::Preserved;
 };

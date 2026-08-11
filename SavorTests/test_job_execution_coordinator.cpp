@@ -20,6 +20,7 @@
 #include "Execution/QueuedExecutionDb.h"
 #include "Execution/WorkerCoordinator.h"
 #include "Execution/WorkerResultBlobStore.h"
+#include "Runner/Runtime/Worksets/WorksetWireCodec.h"
 #include "common/RecordingExecutionDb.h"
 
 namespace {
@@ -48,48 +49,37 @@ bool WaitUntil(
     return predicate();
 }
 
-savor::runtime::WorkerRuntimeManifest TestWorkerManifest(
-    std::uint32_t item_credits = 2) {
-    const auto* phase = savor::runtime::fullphase::
-        ProductionRegistry().Find(1);
-    if (phase == nullptr) {
-        throw std::logic_error(
-            "PK_SeedProbe is absent from the production FullPhase registry");
+savor::runtime::WorkerRuntimeContractV1 TestRuntimeContract(
+    std::uint32_t item_credits = 0) {
+    auto contract =
+        savor::runtime::BuildProductionWorkerRuntimeContractV1();
+    if (item_credits != 0) {
+        contract.limits.maximum_item_credits = item_credits;
+        contract.canonical_sha256 =
+            savor::runtime::ComputeWorkerRuntimeContractHashV1(contract);
     }
-    const auto& contract = phase->runtime_contract();
-    savor::runtime::WorkerRuntimeManifest manifest{};
-    manifest.catalog_status =
-        savor::runtime::RuntimeCatalogStatus::CompleteExact;
-    manifest.runtime_profile_sha256 =
-        contract.runtime_profile_sha256;
-    manifest.dependency_manifest_sha256 =
-        std::string(64, 'a');
-    if (item_credits > manifest.limits.maximum_item_credits) {
-        manifest.limits.maximum_item_credits = item_credits;
-    }
-    manifest.modules.push_back(
-        {
-            .module = contract.module,
-            .entrypoints = {contract.entrypoint},
-            .dependency_manifest_sha256 =
-                contract.dependency_lock_sha256,
-            .development_only = false,
-        });
-    manifest.catalog_sha256 =
-        savor::runtime::ComputeRuntimeCatalogHash(
-            manifest.modules,
-            manifest.catalog_status);
-    return manifest;
+    return contract;
 }
 
-savor::runtime::WorkerCapabilityMask TestWorkerCapabilities() {
-    const auto* phase = savor::runtime::fullphase::
-        ProductionRegistry().Find(1);
-    return savor::runtime::CapabilityMask(
-               savor::runtime::WorkerCapability::WorksetDispatch)
-        | (phase == nullptr
-               ? 0
-               : phase->runtime_contract().required_capabilities);
+savor::db::ExecutionWorksetObservationBindingV1 TestObservationBinding()
+{
+    savor::db::ExecutionWorksetObservationBindingV1 result;
+    std::optional<savor::runtime::WorksetCaptureBindingV1> capture;
+    savor::runtime::progress::ProgressPlanV1 progress;
+    if (!savor::runtime::EncodeWorksetCaptureBindingV1(
+            capture,
+            result.capture_binding_payload) ||
+        !savor::runtime::EncodeProgressPlanV1(
+            progress,
+            result.progress_plan_payload))
+    {
+        throw std::logic_error(
+            "empty workset observation binding could not be encoded");
+    }
+    result.capture_binding_sha256 =
+        savor::runtime::EmptyWorksetCaptureBindingHashV1();
+    result.progress_plan_sha256 = progress.content_sha256;
+    return result;
 }
 
 savor::runtime::WorkerWorksetDefinition TestTargetedWorkset(
@@ -103,6 +93,15 @@ savor::runtime::WorkerWorksetDefinition TestTargetedWorkset(
     const auto& contract = phase->runtime_contract();
     savor::runtime::WorkerWorksetDefinition workset{};
     workset.workset_id = savor::runtime::WorkerWorksetId{1};
+    workset.phase_invocation = {
+        .invocation_id = {1, 1},
+        .program_package =
+            savor::runtime::fullphase::BuildFullPhaseProgramPackage(
+                *phase),
+        .common_input =
+            savor::runtime::fullphase::MakeFullPhaseCommonInput(
+                "soa.seed_probe.CommonInput", 1),
+    };
     workset.execution_key.module = contract.module;
     if (!module_id.empty()) {
         workset.execution_key.module.canonical_id =
@@ -115,6 +114,14 @@ savor::runtime::WorkerWorksetDefinition TestTargetedWorkset(
         contract.runtime_profile_sha256;
     workset.execution_key.baseline.sha256 =
         std::string(64, '4');
+    workset.execution_key.program_package_sha256 =
+        workset.phase_invocation.program_package.canonical_sha256;
+    workset.execution_key.common_input_sha256 =
+        workset.phase_invocation.common_input.content_sha256;
+    workset.execution_key.capture_binding_sha256 =
+        savor::runtime::EmptyWorksetCaptureBindingHashV1();
+    workset.execution_key.progress_plan_sha256 =
+        workset.progress_plan.content_sha256;
     workset.execution_key.canonical_sha256 =
         std::string(64, '5');
     workset.items.push_back(
@@ -123,12 +130,6 @@ savor::runtime::WorkerWorksetDefinition TestTargetedWorkset(
             .ordinal = 0,
         });
     return workset;
-}
-
-void EnableSeedProbePool(WorkerCoordinatorConfig* config) {
-    if (config != nullptr) {
-        config->enabled_program_kinds = {1};
-    }
 }
 
 savor::db::execution::programdb::ProgramKindDescriptor
@@ -143,6 +144,8 @@ TestProgramDescriptor(std::string name) {
     descriptor.program_kind = 1;
     descriptor.program_name = std::move(name);
     descriptor.full_phase_identity = phase->identity();
+    descriptor.default_progress_library_ids =
+        std::vector<std::string>{};
     return descriptor;
 }
 
@@ -397,18 +400,21 @@ public:
                 "scripted-" + std::to_string(index);
             claimed.program_kind = 1;
             claimed.program_version = 1;
-            claimed.compatibility.compatibility_key = "test";
-            claimed.compatibility.module_canonical_id =
+            claimed.contract.contract_key = "test";
+            claimed.contract.module_canonical_id =
                 "soa.seed_probe";
-            claimed.compatibility.module_version = 1;
-            claimed.compatibility.module_sha256 =
+            claimed.contract.module_version = 1;
+            claimed.contract.module_sha256 =
                 std::string(64, '3');
-            claimed.compatibility.entrypoint = "probe";
-            claimed.compatibility.verified_dependency_sha256 =
+            claimed.contract.entrypoint = "probe";
+            claimed.contract.verified_dependency_sha256 =
                 std::string(64, '2');
-            claimed.compatibility.runtime_profile_sha256 =
+            claimed.contract.runtime_profile_sha256 =
                 std::string(64, '1');
-            claimed.compatibility.estimated_payload_bytes = 1;
+            claimed.contract.program_package_sha256 =
+                std::string(64, '6');
+            claimed.contract.estimated_payload_bytes = 1;
+            claimed.observation = TestObservationBinding();
             claimed.claim_token =
                 command.batch_nonce + "-"
                 + std::to_string(index + 1);
@@ -629,14 +635,13 @@ TEST(
         .desired_workers = 1,
         .max_worker_start_attempts = 3,
     };
-    EnableSeedProbePool(&config);
-    config.worker_capability_preflight =
+        config.worker_runtime_preflight =
         [](
             std::size_t,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = false,
                     .retryable = false,
                     .error = "nonretryable startup failure",
@@ -664,14 +669,13 @@ TEST(
         .desired_workers = 1,
         .max_worker_start_attempts = 1,
     };
-    EnableSeedProbePool(&config);
-    config.worker_capability_preflight =
+        config.worker_runtime_preflight =
         [](
             std::size_t,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = false,
                     .retryable = true,
                     .error = "retryable startup failure",
@@ -706,8 +710,7 @@ TEST(
         .controller_sleep_ms = 250,
         .max_concurrent_worker_starts = 2,
     };
-    EnableSeedProbePool(&config);
-    config.worker_capability_preflight =
+        config.worker_runtime_preflight =
         [&](std::size_t worker_id,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
@@ -722,10 +725,9 @@ TEST(
                 --active_secondary_starts;
             }
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = true,
-                    .capabilities = TestWorkerCapabilities(),
-                    .runtime_manifest = TestWorkerManifest(),
+                                        .runtime_contract = TestRuntimeContract(),
                 };
         };
     WorkerCoordinator coordinator(std::move(config));
@@ -744,9 +746,9 @@ TEST(
     EXPECT_EQ(fleet.desired, 3u);
     EXPECT_EQ(fleet.ready, 1u);
     EXPECT_EQ(fleet.starting, 2u);
-    EXPECT_EQ(fleet.slots.size(), 3u);
-    if (!fleet.slots.empty()) {
-        EXPECT_EQ(fleet.slots[0].attempt_count, 1u);
+    EXPECT_EQ(fleet.worker_slots.size(), 3u);
+    if (!fleet.worker_slots.empty()) {
+        EXPECT_EQ(fleet.worker_slots[0].attempt_count, 1u);
     }
 
     release_promise.set_value();
@@ -765,8 +767,7 @@ TEST(
         .controller_sleep_ms = 50,
         .max_concurrent_worker_starts = 1,
     };
-    EnableSeedProbePool(&config);
-    config.worker_capability_preflight =
+        config.worker_runtime_preflight =
         [&](std::size_t worker_id,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
@@ -775,10 +776,9 @@ TEST(
                 release.wait();
             }
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = true,
-                    .capabilities = TestWorkerCapabilities(),
-                    .runtime_manifest = TestWorkerManifest(),
+                                        .runtime_contract = TestRuntimeContract(),
                 };
         };
     WorkerCoordinator coordinator(std::move(config));
@@ -808,14 +808,13 @@ TEST(
         .max_worker_start_attempts = 3,
         .max_concurrent_worker_starts = 1,
     };
-    EnableSeedProbePool(&config);
-    config.worker_capability_preflight =
+        config.worker_runtime_preflight =
         [](std::size_t worker_id,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
             if (worker_id == 1) {
                 return savor::runner::parallel::savordb::
-                    WorkerCoordinatorCapabilityPreflightResult{
+                    WorkerCoordinatorRuntimePreflightResult{
                         .process_ready = false,
                         .retryable = false,
                         .error =
@@ -823,10 +822,9 @@ TEST(
                     };
             }
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = true,
-                    .capabilities = TestWorkerCapabilities(),
-                    .runtime_manifest = TestWorkerManifest(),
+                                        .runtime_contract = TestRuntimeContract(),
                 };
         };
     WorkerCoordinator coordinator(std::move(config));
@@ -841,10 +839,10 @@ TEST(
     EXPECT_EQ(fleet.ready, 1u);
     EXPECT_EQ(fleet.exhausted, 1u);
     EXPECT_TRUE(fleet.full_pool_impossible());
-    ASSERT_EQ(fleet.slots.size(), 2u);
-    EXPECT_EQ(fleet.slots[1].attempt_count, 1u);
+    ASSERT_EQ(fleet.worker_slots.size(), 2u);
+    EXPECT_EQ(fleet.worker_slots[1].attempt_count, 1u);
     EXPECT_EQ(
-        fleet.slots[1].terminal_diagnostic,
+        fleet.worker_slots[1].terminal_diagnostic,
         "worker 1 exact startup diagnostic");
 
     coordinator.Stop();
@@ -852,21 +850,19 @@ TEST(
 
 TEST(
     WorkerCoordinator,
-    ExplicitTargetRejectsStaleGenerationAndIncompatibleContractBeforeWrite) {
+    ExplicitTargetRejectsStaleGenerationAndInvalidPackageBeforeWrite) {
     WorkerCoordinatorConfig config{
         .desired_workers = 1,
     };
-    EnableSeedProbePool(&config);
-    config.worker_capability_preflight =
+        config.worker_runtime_preflight =
         [](
             std::size_t,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = true,
-                    .capabilities = TestWorkerCapabilities(),
-                    .runtime_manifest = TestWorkerManifest(),
+                                        .runtime_contract = TestRuntimeContract(),
                 };
         };
     WorkerCoordinator coordinator(std::move(config));
@@ -889,20 +885,20 @@ TEST(
         stale.disposition,
         WorkerSubmitDisposition::StaleGeneration);
 
-    const auto incompatible_workset = TestTargetedWorkset("other.module");
-    const auto incompatible = coordinator.SubmitWorksetToWorker(
+    const auto invalid_workset = TestTargetedWorkset("other.module");
+    const auto invalid = coordinator.SubmitWorksetToWorker(
         WorkerExecutionTarget{
             .worker_id = ready[0].worker_id,
             .process_generation =
                 ready[0].process_generation,
         },
-        incompatible_workset,
+        invalid_workset,
         savor::runtime::InitialWorksetCancellationSidecarV1{
-            .workset_id = incompatible_workset.workset_id,
+            .workset_id = invalid_workset.workset_id,
         });
     EXPECT_EQ(
-        incompatible.disposition,
-        WorkerSubmitDisposition::IncompatibleWorkset);
+        invalid.disposition,
+        WorkerSubmitDisposition::InvalidWorkset);
     EXPECT_EQ(
         coordinator.SnapshotTelemetry().submit_accepted,
         0u);
@@ -911,41 +907,50 @@ TEST(
 
 TEST(
     WorkerCoordinator,
-    ExtraVisualCapabilityRemainsInTheHomogeneousPool) {
-    WorkerCoordinatorConfig config{.desired_workers = 1};
-    EnableSeedProbePool(&config);
-    config.worker_capability_preflight =
+    VisualModeRemainsInTheHomogeneousPool) {
+    WorkerCoordinatorConfig config{
+        .desired_workers = 1,
+        .worker_mode = savor::runtime::WorkerMode::Visual,
+    };
+        config.worker_runtime_preflight =
         [](
             std::size_t,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = true,
-                    .capabilities = TestWorkerCapabilities()
-                        | savor::runtime::CapabilityMask(
-                            savor::runtime::WorkerCapability::
-                                InteractiveVisualDebug),
-                    .runtime_manifest = TestWorkerManifest(),
+                    .runtime_contract = TestRuntimeContract(),
                 };
         };
     WorkerCoordinator coordinator(std::move(config));
     ASSERT_TRUE(coordinator.Start().started());
     const auto ready = coordinator.SnapshotReadyWorkers();
     ASSERT_EQ(ready.size(), 1u);
-    EXPECT_TRUE(savor::runtime::HasCapability(
-        ready.front().capabilities,
-        savor::runtime::WorkerCapability::InteractiveVisualDebug));
-    const auto* phase = savor::runtime::fullphase::
-        ProductionRegistry().Find(1);
-    ASSERT_NE(phase, nullptr);
-    EXPECT_TRUE(std::ranges::any_of(
-        ready.front().runtime_manifest.modules,
-        [&](const auto& module) {
-            return module.module
-                == phase->runtime_contract().module;
-        }));
+    EXPECT_EQ(ready.front().mode, savor::runtime::WorkerMode::Visual);
+    EXPECT_EQ(
+        ready.front().runtime_contract_sha256,
+        TestRuntimeContract().canonical_sha256);
     coordinator.Stop();
+}
+
+TEST(
+    WorkerCoordinator,
+    VisualDebugModeIsExcludedFromScheduledWorkerPools) {
+    WorkerCoordinatorConfig config{
+        .desired_workers = 1,
+        .worker_mode = savor::runtime::WorkerMode::VisualDebug,
+    };
+    WorkerCoordinator coordinator(std::move(config));
+    const auto started = coordinator.Start();
+    EXPECT_EQ(
+        started.status,
+        WorkerCoordinatorStartStatus::StartupExhausted);
+    EXPECT_TRUE(coordinator.SnapshotReadyWorkers().empty());
+    EXPECT_NE(
+        started.diagnostic.find("Headless or Visual"),
+        std::string::npos)
+        << started.diagnostic;
 }
 
 TEST(
@@ -955,19 +960,20 @@ TEST(
         .desired_workers = 1,
         .max_worker_start_attempts = 1,
     };
-    EnableSeedProbePool(&config);
-    config.worker_capability_preflight =
+        config.worker_runtime_preflight =
         [](
             std::size_t,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
-            auto manifest = TestWorkerManifest();
-            manifest.limits.maximum_items_per_workset = 15;
+            auto contract = TestRuntimeContract();
+            contract.limits.maximum_items_per_workset = 15;
+            contract.canonical_sha256 =
+                savor::runtime::ComputeWorkerRuntimeContractHashV1(
+                    contract);
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = true,
-                    .capabilities = TestWorkerCapabilities(),
-                    .runtime_manifest = std::move(manifest),
+                    .runtime_contract = std::move(contract),
                 };
         };
     WorkerCoordinator coordinator(std::move(config));
@@ -977,7 +983,7 @@ TEST(
         WorkerCoordinatorStartStatus::StartupExhausted);
     EXPECT_TRUE(coordinator.SnapshotReadyWorkers().empty());
     EXPECT_NE(
-        start.diagnostic.find("homogeneous pool limits"),
+        start.diagnostic.find("expected homogeneous runtime identity"),
         std::string::npos)
         << start.diagnostic;
     coordinator.Stop();
@@ -1054,8 +1060,7 @@ TEST(
         .controller_sleep_ms = 250,
         .max_concurrent_worker_starts = 1,
     };
-    EnableSeedProbePool(&worker_config);
-    worker_config.worker_capability_preflight =
+        worker_config.worker_runtime_preflight =
         [&](std::size_t worker_id,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
@@ -1064,10 +1069,9 @@ TEST(
                 release.wait();
             }
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = true,
-                    .capabilities = TestWorkerCapabilities(),
-                    .runtime_manifest = TestWorkerManifest(),
+                                        .runtime_contract = TestRuntimeContract(),
                 };
     };
     WorkerCoordinator workers(std::move(worker_config));
@@ -1131,8 +1135,7 @@ TEST(
         .controller_sleep_ms = 250,
         .max_concurrent_worker_starts = 1,
     };
-    EnableSeedProbePool(&worker_config);
-    worker_config.worker_capability_preflight =
+        worker_config.worker_runtime_preflight =
         [&](std::size_t worker_id,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
@@ -1141,10 +1144,9 @@ TEST(
                 release.wait();
             }
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = true,
-                    .capabilities = TestWorkerCapabilities(),
-                    .runtime_manifest = TestWorkerManifest(),
+                                        .runtime_contract = TestRuntimeContract(),
                 };
     };
     WorkerCoordinator workers(std::move(worker_config));
@@ -1209,17 +1211,15 @@ TEST(
         .controller_sleep_ms = 250,
         .max_concurrent_worker_starts = 3,
     };
-    EnableSeedProbePool(&worker_config);
-    worker_config.worker_capability_preflight =
+        worker_config.worker_runtime_preflight =
         [](
             std::size_t,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = true,
-                    .capabilities = TestWorkerCapabilities(),
-                    .runtime_manifest = TestWorkerManifest(),
+                                        .runtime_contract = TestRuntimeContract(),
                 };
     };
     WorkerCoordinator workers(std::move(worker_config));
@@ -1268,17 +1268,15 @@ TEST(
         .liveness_probe_interval_ms = 60000,
         .liveness_probe_failure_threshold = 1000,
     };
-    EnableSeedProbePool(&worker_config);
-    worker_config.worker_capability_preflight =
+        worker_config.worker_runtime_preflight =
         [](
             std::size_t,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = true,
-                    .capabilities = TestWorkerCapabilities(),
-                    .runtime_manifest = TestWorkerManifest(),
+                                        .runtime_contract = TestRuntimeContract(),
                 };
         };
     WorkerCoordinator workers(std::move(worker_config));
@@ -1343,17 +1341,15 @@ TEST(
         .controller_sleep_ms = 250,
         .max_concurrent_worker_starts = 2,
     };
-    EnableSeedProbePool(&worker_config);
-    worker_config.worker_capability_preflight =
+        worker_config.worker_runtime_preflight =
         [](
             std::size_t,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&) {
             return savor::runner::parallel::savordb::
-                WorkerCoordinatorCapabilityPreflightResult{
+                WorkerCoordinatorRuntimePreflightResult{
                     .process_ready = true,
-                    .capabilities = TestWorkerCapabilities(),
-                    .runtime_manifest = TestWorkerManifest(),
+                                        .runtime_contract = TestRuntimeContract(),
                 };
         };
     WorkerCoordinator workers(std::move(worker_config));
@@ -1436,8 +1432,7 @@ TEST(
     ASSERT_TRUE(registry.Register(
         TestProgramDescriptor("test-seed-probe")));
     WorkerCoordinatorConfig worker_config{.desired_workers = 0};
-    EnableSeedProbePool(&worker_config);
-    WorkerCoordinator workers(std::move(worker_config));
+        WorkerCoordinator workers(std::move(worker_config));
     ASSERT_TRUE(workers.Start().started());
     savor::db::execution::WorkerResultBlobStore blob_store(
         object_store);
@@ -1472,8 +1467,7 @@ TEST(
         : 'a';
     ASSERT_TRUE(registry.Register(descriptor));
     WorkerCoordinatorConfig worker_config{.desired_workers = 0};
-    EnableSeedProbePool(&worker_config);
-    WorkerCoordinator workers(std::move(worker_config));
+        WorkerCoordinator workers(std::move(worker_config));
     ASSERT_TRUE(workers.Start().started());
     savor::db::execution::WorkerResultBlobStore blob_store(
         temporary.root() / "object_store");

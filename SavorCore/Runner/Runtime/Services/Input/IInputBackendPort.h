@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../../IDolphinBackend.h"
-#include "../../../../Core/Input/InputPlan.h"
+#include "../../../../Core/Input/GCInputFrame.h"
 
 #include <cstdint>
 
@@ -10,13 +10,13 @@ namespace savor::runtime {
 struct BackendInputPublication
 {
     BackendResult result;
-    std::uint64_t sequence = 0;
+    std::uint64_t publication_epoch = 0;
 };
 
 struct BackendInputPoll
 {
     BackendResult result;
-    std::uint64_t sequence = 0;
+    std::uint64_t publication_epoch = 0;
     std::uint32_t callback_count = 0;
     savor::GCInputFrame frame{};
 };

@@ -108,6 +108,14 @@ enum class CanonicalHashMode : std::uint8_t
     std::span<const Byte> bytes,
     const CodecLimits& limits = {});
 
+[[nodiscard]] EncodeResult EncodeProgramEmissionV1(
+    const ProgramEmission& emission,
+    const CodecLimits& limits = {});
+
+[[nodiscard]] DecodeResult<ProgramEmission> DecodeProgramEmissionV1(
+    std::span<const Byte> bytes,
+    const CodecLimits& limits = {});
+
 [[nodiscard]] EncodeResult EncodeProgramResultV1(
     const ProgramResult& result,
     const CodecLimits& limits = {});

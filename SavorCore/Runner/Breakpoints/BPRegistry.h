@@ -19,9 +19,8 @@ enum class BreakpointVisibility : uint8_t {
 
 enum class BreakpointOwner : uint8_t {
     Shared,
-    InputMacro,
+    Interaction,
     SeedProbe,
-    NavigationContext,
 };
 
 enum class BreakpointConsumer : uint8_t {
@@ -29,7 +28,7 @@ enum class BreakpointConsumer : uint8_t {
     Predicate,
     CaptureProfile,
     UserScript,
-    InputMacroControl,
+    InteractionControl,
 };
 
 struct BPAddr
@@ -117,8 +116,3 @@ namespace bp::overworld {
 #undef ALIAS_ROW
 }
 
-namespace bp::navigation {
-#define ALIAS_ROW(ns, NAME, ID, PC, STR, VISIBILITY, OWNER) inline constexpr BPKey NAME = static_cast<BPKey>(ID);
-    BP_TABLE_NAVIGATION(ALIAS_ROW)
-#undef ALIAS_ROW
-}

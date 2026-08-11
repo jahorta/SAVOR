@@ -344,11 +344,11 @@ boundary above. It does not independently define addresses, observation timing, 
 or waits. Action handlers and session services return typed observations; they do not decide whether a
 check should abort, branch, emit progress, or affect scoring.
 
-A router subscription's optional compiled predicate/sample requirement is only a bounded hit-time
+A router registration's optional compiled predicate/sample requirement is only a bounded hit-time
 filter or sampling qualification. It is not a module-level predicate executor and cannot advance program
-control flow, select a domain result, or emit authoritative program output. Router `Guard` delivery
-remains a session-safety mechanism; an unsatisfied program predicate does not become a router guard
-unless a separate safety contract explicitly requires it.
+control flow, select a domain result, or emit authoritative program output. Passive observations never
+control execution. Foreground waits and separately reserved trusted interruption requests are the only
+registrations with execution authority.
 
 Predicate baselines, sampled addresses, and guest-derived witness handles inherit the observation
 contract's workset binding. Programs do not restore guest state during an invocation; every such value

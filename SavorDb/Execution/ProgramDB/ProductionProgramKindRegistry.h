@@ -3,9 +3,8 @@
 #include <filesystem>
 #include <string>
 
-#include "BattleContext/BattleContextProbePhaseRegistration.h"
-#include "BattleSingleTurn/BattleSingleTurnPhaseRegistration.h"
-#include "NavigationContext/NavigationContextPhaseRegistration.h"
+#include "BattleContext/BattleContextProgram.h"
+#include "BattleSingleTurn/BattleSingleTurnProgram.h"
 #include "ProgramKindRegistry.h"
 #include "SeedProbe/SeedProbeProgram.h"
 #include "TasMovieValidation/TasMovieValidationProgram.h"
@@ -25,9 +24,8 @@ struct ProductionProgramKindRegistryConfig {
     tasmoviecheckpointsterilization::TasMovieCheckpointSterilizationProgramConfig
         tas_movie_checkpoint_sterilization;
     seedprobe::SeedProbeProgramConfig seed_probe;
-    battlecontext::BattleContextProbePhaseRegistrationConfig battle_context;
+    battlecontext::BattleContextProgramConfig battle_context;
     battle::BattleSingleTurnPhaseRegistrationConfig battle_single_turn;
-    navigationcontext::NavigationContextPhaseRegistrationConfig navigation_context;
 };
 
 ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(

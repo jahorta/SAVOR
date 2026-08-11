@@ -78,6 +78,7 @@ runtime::WorkerState MapWorkerState(
     case Wire::Starting: return Runtime::Starting;
     case Wire::AwaitingSession: return Runtime::AwaitingSession;
     case Wire::Ready: return Runtime::Ready;
+    case Wire::InitializingWorkset: return Runtime::InitializingWorkset;
     case Wire::Running: return Runtime::Running;
     case Wire::Cancelling: return Runtime::Cancelling;
     case Wire::Tainted: return Runtime::Tainted;
@@ -130,7 +131,7 @@ runtime::WorkerRejectionCode MapRejectionCode(
     case Wire::WorksetAlreadyActive: return Runtime::WorksetAlreadyActive;
     case Wire::WorksetNotFound: return Runtime::WorksetNotFound;
     case Wire::WorksetItemNotFound: return Runtime::WorksetItemNotFound;
-    case Wire::WorksetCatalogMismatch: return Runtime::WorksetCatalogMismatch;
+    case Wire::ProgramPackageRejected: return Runtime::ProgramPackageRejected;
     case Wire::CapacityExceeded: return Runtime::CapacityExceeded;
     case Wire::TerminalNotFound: return Runtime::TerminalNotFound;
     case Wire::TerminalMismatch: return Runtime::TerminalMismatch;
@@ -140,34 +141,32 @@ runtime::WorkerRejectionCode MapRejectionCode(
     return Runtime::InternalFailure;
 }
 
-bool SameImmutableManifestFields(
-    const runtime::WorkerRuntimeManifest& lhs,
-    const runtime::WorkerRuntimeManifest& rhs) noexcept
+runtime::WorkerMode MapWorkerMode(wrms::WorkerModeCode mode) noexcept
 {
-    return lhs.wrms_protocol_version == rhs.wrms_protocol_version &&
-        lhs.program_module_format_version ==
-            rhs.program_module_format_version &&
-        lhs.program_invocation_format_version ==
-            rhs.program_invocation_format_version &&
-        lhs.program_result_format_version ==
-            rhs.program_result_format_version &&
-        lhs.runtime_profile_sha256 == rhs.runtime_profile_sha256 &&
-        lhs.dependency_manifest_sha256 ==
-            rhs.dependency_manifest_sha256 &&
-        lhs.limits == rhs.limits;
+    switch (mode)
+    {
+    case wrms::WorkerModeCode::Headless:
+        return runtime::WorkerMode::Headless;
+    case wrms::WorkerModeCode::Visual:
+        return runtime::WorkerMode::Visual;
+    case wrms::WorkerModeCode::VisualDebug:
+        return runtime::WorkerMode::VisualDebug;
+    }
+    return runtime::WorkerMode::Headless;
 }
 
-bool ManifestContainsExactModule(
-    const runtime::WorkerRuntimeManifest& manifest,
-    const runtime::EncodedModuleEnvelope& module) noexcept
+wrms::WorkerModeCode MapWorkerMode(runtime::WorkerMode mode) noexcept
 {
-    return std::ranges::any_of(
-        manifest.modules,
-        [&](const runtime::RuntimeModuleManifestEntry& entry)
-        {
-            return entry.module == module.identity &&
-                entry.development_only == module.development_only;
-        });
+    switch (mode)
+    {
+    case runtime::WorkerMode::Headless:
+        return wrms::WorkerModeCode::Headless;
+    case runtime::WorkerMode::Visual:
+        return wrms::WorkerModeCode::Visual;
+    case runtime::WorkerMode::VisualDebug:
+        return wrms::WorkerModeCode::VisualDebug;
+    }
+    return wrms::WorkerModeCode::Headless;
 }
 
 std::uint32_t RemainingMilliseconds(
@@ -371,7 +370,7 @@ bool ProcessWorker::launch_and_negotiate(
         snapshot_ = {};
         snapshot_.worker_state = runtime::WorkerState::Starting;
         hello_ = {};
-        runtime_manifest_.reset();
+        runtime_contract_.reset();
     }
     start_callback_dispatch();
 
@@ -438,7 +437,7 @@ bool ProcessWorker::open_session(
         .runtime_root = options.runtime_root,
         .user_directory = options.user_directory,
         .iso_path = options.iso_path,
-        .visual_requested = options.visual,
+        .worker_mode = MapWorkerMode(options.worker_mode),
         .render_window_handle = options.render_widget_handle,
         .runtime_artifact_root = options.runtime_artifact_root,
     };
@@ -486,85 +485,22 @@ bool ProcessWorker::open_session(
             *error_out = error;
         return false;
     }
+    if (result.worker_mode != request.worker_mode)
+    {
+        const std::string error =
+            "worker confirmed a different mode than OpenSession requested";
+        set_last_error(error);
+        if (error_out)
+            *error_out = error;
+        return false;
+    }
     {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
-        snapshot_.session_visual_intent = options.visual;
+        snapshot_.worker_mode = MapWorkerMode(result.worker_mode);
     }
 
     if (error_out)
         error_out->clear();
-    return true;
-}
-
-bool ProcessWorker::prepare_encoded_module(
-    const runtime::EncodedModuleEnvelope& module,
-    wrms::CommandResultPayload* result_out,
-    std::uint32_t timeout_ms)
-{
-    std::optional<runtime::WorkerRuntimeManifest> manifest_before;
-    {
-        std::lock_guard<std::mutex> lock(snapshot_mutex_);
-        manifest_before = runtime_manifest_;
-    }
-    wrms::PrepareModulePayload request{
-        .canonical_id = module.identity.canonical_id,
-        .revision = module.identity.revision,
-        .canonical_hash = module.identity.canonical_hash,
-        .format_version = module.format_version,
-        .development_only = module.development_only,
-        .encoded_module = module.payload,
-    };
-    std::vector<std::uint8_t> payload;
-    if (!EncodeTypedPayload(request, &payload))
-    {
-        set_last_error("failed encoding PrepareModule payload");
-        return false;
-    }
-    ProcessCommandCompletion completion;
-    if (!request_response(
-            wrms::MessageKind::PrepareModule,
-            payload,
-            wrms::MessageKind::CommandResult,
-            timeout_ms,
-            &completion))
-    {
-        return false;
-    }
-    wrms::CommandResultPayload result;
-    if (!wrms::DecodePayload(completion.payload, result))
-    {
-        set_last_error("invalid PrepareModule command result");
-        return false;
-    }
-    if (result_out)
-        *result_out = result;
-    if (result.status != wrms::CommandStatus::Succeeded)
-        return false;
-
-    std::optional<runtime::WorkerRuntimeManifest> manifest_after;
-    {
-        std::lock_guard<std::mutex> lock(snapshot_mutex_);
-        manifest_after = runtime_manifest_;
-    }
-    const bool existed_before =
-        manifest_before &&
-        ManifestContainsExactModule(*manifest_before, module);
-    const bool exact_after =
-        manifest_after &&
-        ManifestContainsExactModule(*manifest_after, module);
-    const bool observed_barrier =
-        exact_after &&
-        (existed_before ||
-         !manifest_before ||
-         manifest_after->catalog_generation >
-             manifest_before->catalog_generation);
-    if (!observed_barrier)
-    {
-        fail_protocol(
-            "PrepareModule succeeded without an exact RuntimeManifest "
-            "module barrier");
-        return false;
-    }
     return true;
 }
 
@@ -607,7 +543,7 @@ ProcessWorksetSubmitOutcome ProcessWorker::submit_workset_with_outcome(
 
     std::vector<std::uint8_t> encoded_workset;
     const auto encoded =
-        runtime::EncodeWorkerWorksetV2(workset, encoded_workset);
+        runtime::EncodeWorkerWorksetV4(workset, encoded_workset);
     if (!encoded)
     {
         outcome.diagnostic = encoded.message.empty()
@@ -1061,7 +997,8 @@ bool ProcessWorker::validate_execution_result(
     }
     if (result.status != wrms::CommandStatus::Succeeded)
         return true;
-    if (result.workset_epoch != expected_workset_epoch.value() ||
+    if (!result.has_execution_state ||
+        result.workset_epoch != expected_workset_epoch.value() ||
         result.operation_id == 0)
     {
         return fail(
@@ -1138,19 +1075,13 @@ bool ProcessWorker::request_execution_control(
     std::uint32_t command_timeout_ms)
 {
     const ProcessWorkerSnapshot observed = latest_snapshot();
-    if (!runtime::HasCapability(
-            observed.process_capabilities,
-            runtime::WorkerCapability::InteractiveVisualDebug) ||
-        !runtime::HasCapability(
-            observed.session_capabilities,
-            runtime::WorkerCapability::InteractiveVisualDebug))
+    if (observed.worker_mode != runtime::WorkerMode::VisualDebug)
     {
         set_last_error(
-            "worker does not advertise interactive visual-debug control");
+            "execution control is reserved for VisualDebug workers");
         return false;
     }
     if (!observed.session_open ||
-        !observed.session_visual_intent ||
         !workset_id || !item_id ||
         !observed.active_workset ||
         !observed.active_workset_item ||
@@ -1289,41 +1220,17 @@ bool ProcessWorker::step_guest_frames(
         command_timeout_ms);
 }
 
-runtime::WorkerCapabilityMask ProcessWorker::process_capabilities() const
-{
-    std::lock_guard<std::mutex> lock(snapshot_mutex_);
-    return snapshot_.process_capabilities;
-}
-
-runtime::WorkerCapabilityMask ProcessWorker::session_capabilities() const
-{
-    std::lock_guard<std::mutex> lock(snapshot_mutex_);
-    return snapshot_.session_capabilities;
-}
-
-bool ProcessWorker::has_process_capability(
-    runtime::WorkerCapability capability) const
-{
-    return runtime::HasCapability(process_capabilities(), capability);
-}
-
-bool ProcessWorker::has_session_capability(
-    runtime::WorkerCapability capability) const
-{
-    return runtime::HasCapability(session_capabilities(), capability);
-}
-
 ProcessWorkerSnapshot ProcessWorker::latest_snapshot() const
 {
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
     return snapshot_;
 }
 
-std::optional<runtime::WorkerRuntimeManifest>
-ProcessWorker::runtime_manifest() const
+std::optional<runtime::WorkerRuntimeContractV1>
+ProcessWorker::runtime_contract() const
 {
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
-    return runtime_manifest_;
+    return runtime_contract_;
 }
 
 std::string ProcessWorker::last_error() const
@@ -1392,102 +1299,6 @@ void ProcessWorker::set_session_event_callback(
 {
     std::lock_guard<std::mutex> lock(callback_mutex_);
     session_event_callback_ = std::move(callback);
-}
-
-bool ProcessWorker::start(ProcStartParams& params, TSQueue<PRResult>* out_queue)
-{
-    legacy_result_out_ = out_queue;
-    if (params.visual_debug)
-    {
-        set_last_error(
-            "legacy visual-debug startup remains disconnected; use "
-            "launch_and_negotiate(), open_session(), and typed guest "
-            "execution controls");
-        ready_received_.store(true, std::memory_order_release);
-        ready_ok_.store(false, std::memory_order_release);
-        ready_error_.store(1, std::memory_order_release);
-        return false;
-    }
-
-    std::filesystem::path runtime_root =
-        params.dolphin_base_dir.empty()
-            ? std::filesystem::path(params.exe_path).parent_path()
-            : std::filesystem::path(params.dolphin_base_dir);
-    std::filesystem::path log_directory =
-        std::filesystem::path(params.user_dir).parent_path();
-
-    std::string error;
-    if (!launch_and_negotiate(
-            ProcessLaunchOptions{
-                .worker_id = params.worker_id,
-                .exe_path = params.exe_path,
-                .log_directory = log_directory.string(),
-            },
-            &error))
-    {
-        return false;
-    }
-
-    return open_session(
-        ProcessOpenSessionOptions{
-            .runtime_root = runtime_root.string(),
-            .user_directory = params.user_dir,
-            .iso_path = params.iso_path,
-            .visual = params.visual,
-            .render_widget_handle = params.render_widget_handle,
-            .runtime_artifact_root = params.runtime_artifact_root,
-        },
-        nullptr,
-        &error,
-        30000);
-}
-
-bool ProcessWorker::send_job(
-    std::uint64_t,
-    std::uint64_t,
-    const PSJob&)
-{
-    release_slot();
-    return fail_disconnected("send_job");
-}
-
-bool ProcessWorker::ctl_set_program(
-    std::uint8_t,
-    std::uint8_t,
-    const PSInit&)
-{
-    return fail_disconnected("ctl_set_program");
-}
-
-bool ProcessWorker::ctl_run_init_once()
-{
-    return fail_disconnected("ctl_run_init_once");
-}
-
-bool ProcessWorker::ctl_activate_main()
-{
-    return fail_disconnected("ctl_activate_main");
-}
-
-bool ProcessWorker::visual_pause_emulation()
-{
-    set_last_error(
-        "legacy visual pause is disconnected; use pause_guest_execution()");
-    return false;
-}
-
-bool ProcessWorker::visual_resume_emulation()
-{
-    set_last_error(
-        "legacy visual resume is disconnected; use resume_guest_execution()");
-    return false;
-}
-
-bool ProcessWorker::visual_step_vm()
-{
-    set_last_error(
-        "program/VM stepping remains disconnected until canonical ProgramRuntime");
-    return false;
 }
 
 std::shared_ptr<ProcessWorker::OutboundWrite> ProcessWorker::enqueue_frame(
@@ -2184,77 +1995,32 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
                     : "WRMS process hello does not identify the launched worker process");
             return;
         }
+        runtime::WorkerRuntimeContractV1 contract;
+        const auto decoded_contract =
+            runtime::DecodeWorkerRuntimeContractV1(
+                hello.encoded_runtime_contract,
+                contract);
+        if (!decoded_contract ||
+            contract.wrms_protocol_version != wrms::ProtocolVersion)
+        {
+            fail_protocol(
+                decoded_contract.message.empty()
+                    ? "worker runtime contract protocol is incompatible"
+                    : decoded_contract.message);
+            return;
+        }
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             hello_ = hello;
+            runtime_contract_ = std::move(contract);
             snapshot_.hello_received = true;
-            snapshot_.process_capabilities = hello.capability_mask;
+            snapshot_.runtime_contract_received = true;
+            snapshot_.runtime_contract_sha256 =
+                runtime_contract_->canonical_sha256;
             snapshot_.worker_state = runtime::WorkerState::AwaitingSession;
-            if (runtime_manifest_)
-            {
-                ready_received_.store(true, std::memory_order_release);
-                ready_ok_.store(true, std::memory_order_release);
-                ready_error_.store(0, std::memory_order_release);
-            }
-        }
-        hello_cv_.notify_all();
-        return;
-    }
-    case wrms::MessageKind::RuntimeManifest:
-    {
-        wrms::RuntimeManifestPayload payload;
-        runtime::WorkerRuntimeManifest manifest;
-        if (frame.header.request_id != 0 ||
-            !wrms::DecodePayload(frame.payload, payload))
-        {
-            fail_protocol("invalid WRMS runtime manifest envelope");
-            return;
-        }
-        const auto decoded = runtime::DecodeWorkerRuntimeManifestV1(
-            payload.encoded_manifest,
-            manifest);
-        if (!decoded ||
-            manifest.wrms_protocol_version != wrms::ProtocolVersion)
-        {
-            fail_protocol(
-                decoded.message.empty()
-                    ? "worker runtime manifest protocol is incompatible"
-                    : decoded.message);
-            return;
-        }
-        bool invalid_update = false;
-        {
-            std::lock_guard<std::mutex> lock(snapshot_mutex_);
-            if (runtime_manifest_ &&
-                (manifest.catalog_generation <
-                     runtime_manifest_->catalog_generation ||
-                 (manifest.catalog_generation ==
-                      runtime_manifest_->catalog_generation &&
-                  manifest != *runtime_manifest_) ||
-                 !SameImmutableManifestFields(
-                     manifest,
-                     *runtime_manifest_)))
-            {
-                invalid_update = true;
-            }
-            else
-            {
-                runtime_manifest_ = std::move(manifest);
-                snapshot_.runtime_manifest_received = true;
-                if (snapshot_.hello_received)
-                {
-                    ready_received_.store(true, std::memory_order_release);
-                    ready_ok_.store(true, std::memory_order_release);
-                    ready_error_.store(0, std::memory_order_release);
-                }
-            }
-        }
-        if (invalid_update)
-        {
-            fail_protocol(
-                "worker runtime manifest generation regressed, changed "
-                "without advancing, or changed immutable negotiated fields");
-            return;
+            ready_received_.store(true, std::memory_order_release);
+            ready_ok_.store(true, std::memory_order_release);
+            ready_error_.store(0, std::memory_order_release);
         }
         hello_cv_.notify_all();
         return;
@@ -2311,7 +2077,7 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
                 snapshot_.session_open = true;
                 snapshot_.session_id = runtime::SessionId{result.session_id};
                 snapshot_.workset_epoch = runtime::WorksetEpoch{result.workset_epoch};
-                snapshot_.session_capabilities = result.capability_mask;
+                snapshot_.worker_mode = MapWorkerMode(result.worker_mode);
                 snapshot_.worker_state = MapWorkerState(result.worker_state);
                 snapshot_.session_disposition =
                     MapSessionDisposition(result.session_disposition);
@@ -2326,7 +2092,7 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             {
                 snapshot_.session_id = runtime::SessionId{result.session_id};
                 snapshot_.workset_epoch = runtime::WorksetEpoch{result.workset_epoch};
-                snapshot_.session_capabilities = result.capability_mask;
+                snapshot_.worker_mode = MapWorkerMode(result.worker_mode);
                 snapshot_.worker_state = MapWorkerState(result.worker_state);
                 snapshot_.session_disposition =
                     MapSessionDisposition(result.session_disposition);
@@ -2387,7 +2153,6 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             snapshot_.shutdown_graceful =
                 result.status == wrms::ShutdownStatus::Graceful;
             snapshot_.session_open = false;
-            snapshot_.session_visual_intent = false;
             snapshot_.execution_activity =
                 wrms::ExecutionActivityCode::IdlePaused;
             snapshot_.execution_operation_id = 0;
@@ -2421,7 +2186,7 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             snapshot_.session_id = runtime::SessionId{event.session_id};
             snapshot_.workset_epoch = runtime::WorksetEpoch{event.workset_epoch};
-            snapshot_.session_capabilities = event.capability_mask;
+            snapshot_.worker_mode = MapWorkerMode(event.worker_mode);
             snapshot_.worker_state = MapWorkerState(event.worker_state);
             snapshot_.session_disposition =
                 MapSessionDisposition(event.session_disposition);
@@ -2430,7 +2195,6 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
                 wrms::SessionDispositionCode::Closed;
             if (!snapshot_.session_open)
             {
-                snapshot_.session_visual_intent = false;
                 snapshot_.execution_activity =
                     wrms::ExecutionActivityCode::IdlePaused;
                 snapshot_.execution_operation_id = 0;
@@ -2481,22 +2245,15 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
                     callback(progress);
                 },
                 false,
-                sizeof(progress) + progress.progress.size());
+                sizeof(progress)
+                    + progress.durable_job_id.size()
+                    + progress.library_id.size()
+                    + progress.progress_point_id.size()
+                    + progress.schema_id.size()
+                    + progress.schema_sha256.size()
+                    + progress.typed_payload.size()
+                    + progress.display_text.size());
 
-        PRProgress legacy;
-        legacy.worker_id = worker_id_;
-        legacy.job_id = progress.invocation_id;
-        legacy.text.assign(
-            reinterpret_cast<const char*>(progress.progress.data()),
-            progress.progress.size());
-        legacy.record_progress = true;
-        {
-            std::lock_guard<std::mutex> lock(progress_mutex_);
-            last_progress_ = legacy;
-            have_progress_ = true;
-        }
-        if (progress_out_)
-            progress_out_->push(std::move(legacy));
         return;
     }
     case wrms::MessageKind::HostEvent:
@@ -2634,11 +2391,13 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             const runtime::WorkerWorksetId id{state.workset_id};
             switch (state.state)
             {
-            case wrms::WorksetStateCode::Staged:
+            case wrms::WorksetStateCode::Admitted:
                 snapshot_.staged_workset = id;
                 break;
-            case wrms::WorksetStateCode::PreparingBaseline:
+            case wrms::WorksetStateCode::Initializing:
+            case wrms::WorksetStateCode::Ready:
             case wrms::WorksetStateCode::Running:
+            case wrms::WorksetStateCode::ResettingItem:
             case wrms::WorksetStateCode::Draining:
                 if (snapshot_.active_workset != id)
                     snapshot_.active_workset_item.reset();
@@ -2884,15 +2643,6 @@ void ProcessWorker::set_last_error(std::string error)
     snapshot_.last_error = std::move(error);
 }
 
-bool ProcessWorker::fail_disconnected(const char* operation)
-{
-    std::string message = operation ? operation : "legacy worker operation";
-    message += ": ";
-    message += kDisconnectedWorkerApiDiagnostic;
-    set_last_error(std::move(message));
-    return false;
-}
-
 bool ProcessWorker::is_ready() const
 {
     return running_.load(std::memory_order_acquire) &&
@@ -2919,15 +2669,6 @@ bool ProcessWorker::wait_ready(std::uint32_t timeout_ms)
                 !running_.load(std::memory_order_acquire);
         });
     return is_ready();
-}
-
-bool ProcessWorker::try_get_last_progress(PRProgress& out) const
-{
-    std::lock_guard<std::mutex> lock(progress_mutex_);
-    if (!have_progress_)
-        return false;
-    out = last_progress_;
-    return true;
 }
 
 void ProcessWorker::stop()

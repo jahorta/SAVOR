@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runner/Runtime/RuntimeTypes.h"
+#include "../../RuntimeTypes.h"
 
 #include <array>
 #include <compare>

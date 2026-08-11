@@ -1,5 +1,6 @@
 #include "WorksetTypes.h"
 
+#include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "Utils/Hash.h"
 
 #include <algorithm>
@@ -50,6 +51,87 @@ bool CompleteSha256(std::string_view value)
         });
 }
 
+bool ValidWorksetLimits(const WorkerWorksetLimits& limits)
+{
+    return limits.maximum_items_per_workset != 0 &&
+        limits.maximum_encoded_workset_bytes != 0 &&
+        limits.maximum_capture_profile_bytes != 0 &&
+        limits.maximum_item_credits != 0 &&
+        limits.maximum_active_and_staged_items != 0 &&
+        limits.finalizer_threads != 0 &&
+        limits.maximum_pending_finalizers != 0 &&
+        limits.maximum_pending_finalizer_bytes != 0 &&
+        limits.maximum_retained_terminals != 0 &&
+        limits.maximum_retained_terminal_bytes >=
+            kMinimumWorksetTerminalReservationBytes &&
+        limits.progressive_start_concurrency != 0 &&
+        limits.maximum_items_per_workset <=
+            limits.maximum_active_and_staged_items &&
+        limits.maximum_active_and_staged_items <=
+            limits.maximum_item_credits;
+}
+
+std::string ComputeStaticRuntimeAbiHash()
+{
+    std::vector<std::string> identities;
+    const auto catalog =
+        program::capabilities::BuildSourceCapabilityPackCatalog();
+    identities.reserve(
+        catalog.schemas.size() + catalog.actions.size() +
+        catalog.reducers.size() + catalog.manifests.size());
+    for (const auto& schema : catalog.schemas)
+    {
+        identities.push_back(
+            "schema:" + schema.identity.canonical_id + ":" +
+            std::to_string(schema.identity.version) + ":" +
+            schema.identity.schema_hash.ToHex());
+    }
+    for (const auto& action : catalog.actions)
+    {
+        identities.push_back(
+            "action:" + action.identity.canonical_id + ":" +
+            std::to_string(action.identity.version) + ":" +
+            action.identity.signature_hash.ToHex());
+    }
+    for (const auto& reducer : catalog.reducers)
+    {
+        identities.push_back(
+            "reducer:" + reducer.identity.canonical_id + ":" +
+            std::to_string(reducer.identity.version) + ":" +
+            reducer.identity.signature_hash.ToHex());
+    }
+    for (const auto& manifest : catalog.manifests)
+    {
+        identities.push_back(
+            "pack:" + manifest.identity.canonical_id + ":" +
+            std::to_string(manifest.identity.version) + ":" +
+            manifest.identity.manifest_hash.ToHex());
+    }
+    const auto& phases = fullphase::ProductionRegistry();
+    for (const auto& phase : phases.identities())
+    {
+        const fullphase::FullPhaseWorksetPolicy policy =
+            phases.Find(phase.program_kind)->workset_policy();
+        identities.push_back(
+            "handler:" + std::to_string(phase.program_kind) + ":" +
+            std::to_string(phase.program_version) + ":" +
+            phase.canonical_id + ":" +
+            std::to_string(phase.contract_revision) + ":" +
+            phase.canonical_sha256 + ":items:" +
+            std::to_string(policy.minimum_item_count) + ":" +
+            std::to_string(policy.maximum_item_count));
+    }
+    identities.push_back(
+        "progress-registry:" +
+        progress::ProductionProgressRegistry().canonical_sha256());
+    std::sort(identities.begin(), identities.end());
+    std::string canonical;
+    AppendField(canonical, "savor.worker.static-runtime-abi/v1");
+    for (const auto& identity : identities)
+        AppendField(canonical, identity);
+    return hash::sha256(canonical.data(), canonical.size());
+}
+
 } // namespace
 
 ProgramBaselineKey ComputeProgramBaselineKey(
@@ -94,6 +176,29 @@ std::string ComputeWorkerWorksetExecutionKeyHash(
     AppendField(canonical, key.baseline.sha256);
     AppendField(canonical, key.movie_policy_sha256);
     AppendField(canonical, key.service_policy_sha256);
+    AppendField(canonical, key.program_package_sha256);
+    AppendField(canonical, key.common_input_sha256);
+    AppendField(canonical, key.capture_binding_sha256);
+    AppendField(canonical, key.progress_plan_sha256);
+    return hash::sha256(canonical.data(), canonical.size());
+}
+
+std::string ComputeWorksetCaptureBindingHashV1(
+    const WorksetCaptureBindingV1& binding)
+{
+    std::string canonical;
+    AppendField(canonical, "savor.workset.capture-binding/v1");
+    AppendNumber(canonical, binding.version);
+    AppendField(canonical, binding.profile_sha256);
+    AppendField(canonical, binding.expected_module_sha256);
+    AppendField(canonical, binding.resolved_observation_sha256);
+    return hash::sha256(canonical.data(), canonical.size());
+}
+
+std::string EmptyWorksetCaptureBindingHashV1()
+{
+    constexpr std::string_view canonical =
+        "savor.workset.capture-binding/none/v1";
     return hash::sha256(canonical.data(), canonical.size());
 }
 
@@ -158,12 +263,59 @@ WorksetValidationResult ValidateWorkerWorksetDefinition(
             WorkerRejectionCode::InvalidArgument,
             "WorkerWorkset requires a nonzero identity");
     }
-    if (!definition.phase_invocation.invocation_id ||
-        !definition.phase_invocation.program)
+    const auto& phase_invocation = definition.phase_invocation;
+    const auto& package = phase_invocation.program_package;
+    const auto& common_input = phase_invocation.common_input;
+    if (!phase_invocation.invocation_id || !package || !common_input)
     {
         return WorksetValidationResult::Failure(
             WorkerRejectionCode::InvalidArgument,
-            "WorkerWorkset requires one complete Full Phase invocation identity");
+            "WorkerWorkset requires a complete Full Phase package and common input");
+    }
+    if (fullphase::ComputeFullPhaseProgramPackageHash(package) !=
+            package.canonical_sha256 ||
+        hash::sha256(
+            common_input.payload.data(),
+            common_input.payload.size()) != common_input.content_sha256)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset Full Phase package or common-input hash is not canonical");
+    }
+    if (!CompleteSha256(package.identity.canonical_sha256) ||
+        !CompleteSha256(package.canonical_sha256) ||
+        !CompleteSha256(common_input.content_sha256) ||
+        package.module_closure.size() > 64)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset Full Phase package identity or module count is invalid");
+    }
+    bool contains_root = false;
+    std::set<std::tuple<std::string, std::uint32_t, std::string>> modules;
+    for (const EncodedModuleEnvelope& module : package.module_closure)
+    {
+        if (module.identity.canonical_id.empty() ||
+            module.identity.revision == 0 ||
+            !CompleteSha256(module.identity.canonical_hash) ||
+            module.format_version != 1 || module.payload.empty() ||
+            !modules.emplace(
+                module.identity.canonical_id,
+                module.identity.revision,
+                module.identity.canonical_hash).second)
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "WorkerWorkset Full Phase module closure is invalid");
+        }
+        contains_root = contains_root ||
+            module.identity == package.runtime_contract.module;
+    }
+    if (!contains_root)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset Full Phase module closure omits its root module");
     }
     if (definition.items.empty() ||
         definition.items.size() > limits.maximum_items_per_workset)
@@ -200,33 +352,89 @@ WorksetValidationResult ValidateWorkerWorksetDefinition(
             WorkerRejectionCode::InvalidArgument,
             "WorkerWorkset execution key hash is not canonical");
     }
+    const std::string capture_binding_sha256 = definition.capture
+        ? definition.capture->content_sha256
+        : EmptyWorksetCaptureBindingHashV1();
+    if (definition.execution_key.capture_binding_sha256 !=
+            capture_binding_sha256 ||
+        definition.execution_key.progress_plan_sha256 !=
+            definition.progress_plan.content_sha256)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset observation hashes do not match its execution key");
+    }
+    const progress::ProgressValidationResult progress_validation =
+        progress::ValidateProgressPlanV1(definition.progress_plan);
+    if (!progress_validation)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            progress_validation.message.empty()
+                ? "WorkerWorkset progress plan is invalid"
+                : progress_validation.message);
+    }
+    if (definition.capture)
+    {
+        const WorksetCaptureBindingV1& capture = *definition.capture;
+        if (!capture ||
+            !CompleteSha256(capture.profile_sha256) ||
+            !CompleteSha256(capture.expected_module_sha256) ||
+            !CompleteSha256(capture.resolved_observation_sha256) ||
+            ComputeWorksetCaptureBindingHashV1(capture) !=
+                capture.content_sha256)
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "WorkerWorkset capture binding identity is invalid");
+        }
+        switch (capture.storage)
+        {
+        case CaptureProfileStorageV1::Inline:
+            if (capture.profile_json.empty() ||
+                !capture.profile_sidecar_path.empty() ||
+                hash::sha256(
+                    capture.profile_json.data(),
+                    capture.profile_json.size()) !=
+                    capture.profile_sha256)
+            {
+                return WorksetValidationResult::Failure(
+                    WorkerRejectionCode::InvalidArgument,
+                    "Inline capture profile content is not canonical");
+            }
+            break;
+        case CaptureProfileStorageV1::ContentAddressedSidecar:
+            if (!capture.profile_json.empty() ||
+                capture.profile_sidecar_path.empty())
+            {
+                return WorksetValidationResult::Failure(
+                    WorkerRejectionCode::InvalidArgument,
+                    "Capture sidecar binding is incomplete");
+            }
+            break;
+        default:
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Capture profile storage kind is invalid");
+        }
+    }
     const auto* phase = fullphase::ProductionRegistry().Find(
-        definition.phase_invocation.program);
+        package.identity.program_kind);
     if (phase == nullptr)
     {
-        const auto* local = fullphase::ProductionRegistry().Find(
-            definition.phase_invocation.program.program_kind);
-        if (local != nullptr)
-        {
-            const auto& received =
-                definition.phase_invocation.program;
-            const auto& available = local->identity();
-            return WorksetValidationResult::Failure(
-                WorkerRejectionCode::Unsupported,
-                "WorkerWorkset Full Phase identity disagrees with the "
-                "local production definition: received=" +
-                    received.canonical_id + "@" +
-                    std::to_string(received.contract_revision) + "#" +
-                    received.canonical_sha256 + ", local=" +
-                    available.canonical_id + "@" +
-                    std::to_string(available.contract_revision) + "#" +
-                    available.canonical_sha256);
-        }
         return WorksetValidationResult::Failure(
             WorkerRejectionCode::Unsupported,
-            "WorkerWorkset Full Phase identity is not in the local production registry");
+            "WorkerWorkset Full Phase kind has no local production handler");
     }
-    const auto& contract = phase->runtime_contract();
+    const fullphase::FullPhaseWorksetPolicy workset_policy =
+        phase->workset_policy();
+    if (!workset_policy.accepts(definition.items.size()))
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset item count violates its Full Phase program-kind policy");
+    }
+    const auto& contract = package.runtime_contract;
     if (definition.execution_key.module != contract.module ||
         definition.execution_key.entrypoint != contract.entrypoint ||
         definition.execution_key.verified_dependency_sha256 !=
@@ -237,6 +445,10 @@ WorksetValidationResult ValidateWorkerWorksetDefinition(
             contract.movie_policy_sha256 ||
         definition.execution_key.service_policy_sha256 !=
             contract.service_policy_sha256 ||
+        definition.execution_key.program_package_sha256 !=
+            package.canonical_sha256 ||
+        definition.execution_key.common_input_sha256 !=
+            common_input.content_sha256 ||
         definition.baseline.lineage != contract.baseline_lineage)
     {
         return WorksetValidationResult::Failure(
@@ -363,122 +575,75 @@ WorksetValidationResult ValidateWorkerWorksetDefinition(
     return WorksetValidationResult::Success();
 }
 
-std::string ComputeRuntimeCatalogHash(
-    const std::vector<RuntimeModuleManifestEntry>& modules,
-    RuntimeCatalogStatus status)
+std::string ComputeWorkerRuntimeContractHashV1(
+    const WorkerRuntimeContractV1& contract)
 {
-    std::vector<RuntimeModuleManifestEntry> ordered = modules;
-    std::sort(
-        ordered.begin(),
-        ordered.end(),
-        [](const auto& lhs, const auto& rhs)
-        {
-            if (lhs.module.canonical_id != rhs.module.canonical_id)
-                return lhs.module.canonical_id < rhs.module.canonical_id;
-            if (lhs.module.revision != rhs.module.revision)
-                return lhs.module.revision < rhs.module.revision;
-            return lhs.module.canonical_hash < rhs.module.canonical_hash;
-        });
-
     std::string canonical;
-    AppendNumber(canonical, static_cast<std::uint32_t>(status));
-    for (const RuntimeModuleManifestEntry& entry : ordered)
-    {
-        AppendField(canonical, entry.module.canonical_id);
-        AppendNumber(canonical, entry.module.revision);
-        AppendField(canonical, entry.module.canonical_hash);
-        AppendField(canonical, entry.dependency_manifest_sha256);
-        AppendNumber(canonical, entry.development_only ? 1 : 0);
-        std::vector<std::string> entrypoints =
-            entry.entrypoints;
-        std::sort(entrypoints.begin(), entrypoints.end());
-        for (const std::string& entrypoint : entrypoints)
-            AppendField(canonical, entrypoint);
-    }
+    AppendField(canonical, "savor.worker.runtime-contract/v1");
+    AppendNumber(canonical, contract.contract_version);
+    AppendNumber(canonical, contract.wrms_protocol_version);
+    AppendNumber(canonical, contract.workset_wire_version);
+    AppendNumber(canonical, contract.program_module_format_version);
+    AppendNumber(canonical, contract.program_invocation_format_version);
+    AppendNumber(canonical, contract.program_result_format_version);
+    AppendField(canonical, contract.supported_game_id);
+    AppendField(canonical, contract.executable_identity);
+    AppendField(canonical, contract.address_map_revision);
+    AppendField(canonical, contract.emulator_bridge_revision);
+    AppendField(canonical, contract.build_identity);
+    AppendField(canonical, contract.static_runtime_abi_sha256);
+    const auto& limits = contract.limits;
+    AppendNumber(canonical, limits.maximum_items_per_workset);
+    AppendNumber(canonical, limits.maximum_encoded_workset_bytes);
+    AppendNumber(canonical, limits.maximum_capture_profile_bytes);
+    AppendNumber(canonical, limits.maximum_item_credits);
+    AppendNumber(canonical, limits.maximum_active_and_staged_items);
+    AppendNumber(canonical, limits.finalizer_threads);
+    AppendNumber(canonical, limits.maximum_pending_finalizers);
+    AppendNumber(canonical, limits.maximum_pending_finalizer_bytes);
+    AppendNumber(canonical, limits.maximum_retained_terminals);
+    AppendNumber(canonical, limits.maximum_retained_terminal_bytes);
+    AppendNumber(canonical, limits.progressive_start_concurrency);
     return hash::sha256(canonical.data(), canonical.size());
 }
 
-WorksetValidationResult ValidateWorkerRuntimeManifest(
-    const WorkerRuntimeManifest& manifest)
+WorkerRuntimeContractV1 BuildProductionWorkerRuntimeContractV1()
 {
-    if (manifest.wrms_protocol_version != 1 ||
-        manifest.program_module_format_version != 1 ||
-        manifest.program_invocation_format_version != 1 ||
-        manifest.program_result_format_version != 1 ||
-        manifest.catalog_generation == 0 ||
-        !CompleteSha256(manifest.runtime_profile_sha256) ||
-        !CompleteSha256(manifest.dependency_manifest_sha256) ||
-        !CompleteSha256(manifest.catalog_sha256))
+    WorkerRuntimeContractV1 contract{
+        .supported_game_id = std::string(
+            program::capabilities::kSupportedGameId),
+        .executable_identity = std::string(
+            program::capabilities::kSupportedExecutableIdentity),
+        .address_map_revision = std::string(
+            program::capabilities::kSupportedAddressMapRevision),
+        .emulator_bridge_revision = "dolphin-2506a/savor-bridge-v1",
+        .build_identity = "SavorWorker homogeneous-runtime/v1",
+        .static_runtime_abi_sha256 = ComputeStaticRuntimeAbiHash(),
+    };
+    contract.canonical_sha256 =
+        ComputeWorkerRuntimeContractHashV1(contract);
+    return contract;
+}
+
+WorksetValidationResult ValidateWorkerRuntimeContractV1(
+    const WorkerRuntimeContractV1& contract)
+{
+    if (!contract || contract.program_module_format_version != 1 ||
+        contract.program_invocation_format_version != 1 ||
+        contract.program_result_format_version != 1 ||
+        !CompleteSha256(contract.static_runtime_abi_sha256) ||
+        !ValidWorksetLimits(contract.limits))
     {
         return WorksetValidationResult::Failure(
             WorkerRejectionCode::InvalidArgument,
-            "Worker runtime manifest version, generation, or hashes are incomplete");
+            "Worker runtime contract is incomplete or contradictory");
     }
-
-    std::set<std::tuple<std::string, std::uint32_t, std::string>>
-        module_ids;
-    for (const RuntimeModuleManifestEntry& module :
-         manifest.modules)
-    {
-        if (module.module.canonical_id.empty() ||
-            module.module.revision == 0 ||
-            !CompleteSha256(module.module.canonical_hash) ||
-            module.entrypoints.empty() ||
-            !CompleteSha256(module.dependency_manifest_sha256) ||
-            !module_ids
-                 .emplace(
-                     module.module.canonical_id,
-                     module.module.revision,
-                     module.module.canonical_hash)
-                 .second)
-        {
-            return WorksetValidationResult::Failure(
-                WorkerRejectionCode::InvalidArgument,
-                "Worker runtime manifest module identity or dependency hash is invalid");
-        }
-        std::set<std::string> entrypoints;
-        for (const std::string& entrypoint :
-             module.entrypoints)
-        {
-            if (entrypoint.empty() ||
-                !entrypoints.insert(entrypoint).second)
-            {
-                return WorksetValidationResult::Failure(
-                    WorkerRejectionCode::InvalidArgument,
-                    "Worker runtime manifest contains an empty or duplicate entrypoint");
-            }
-        }
-    }
-    if (ComputeRuntimeCatalogHash(
-            manifest.modules,
-            manifest.catalog_status) !=
-        manifest.catalog_sha256)
-    {
-        return WorksetValidationResult::Failure(
-            WorkerRejectionCode::WorksetCatalogMismatch,
-            "Worker runtime manifest catalog hash is not canonical");
-    }
-
-    const WorkerWorksetLimits& limits = manifest.limits;
-    if (limits.maximum_items_per_workset == 0 ||
-        limits.maximum_encoded_workset_bytes == 0 ||
-        limits.maximum_item_credits == 0 ||
-        limits.maximum_active_and_staged_items == 0 ||
-        limits.finalizer_threads == 0 ||
-        limits.maximum_pending_finalizers == 0 ||
-        limits.maximum_pending_finalizer_bytes == 0 ||
-        limits.maximum_retained_terminals == 0 ||
-        limits.maximum_retained_terminal_bytes <
-            kMinimumWorksetTerminalReservationBytes ||
-        limits.progressive_start_concurrency == 0 ||
-        limits.maximum_items_per_workset >
-            limits.maximum_active_and_staged_items ||
-        limits.maximum_active_and_staged_items >
-            limits.maximum_item_credits)
+    if (ComputeWorkerRuntimeContractHashV1(contract) !=
+        contract.canonical_sha256)
     {
         return WorksetValidationResult::Failure(
             WorkerRejectionCode::InvalidArgument,
-            "Worker runtime manifest contains zero or contradictory negotiated limits");
+            "Worker runtime contract hash is not canonical");
     }
     return WorksetValidationResult::Success();
 }

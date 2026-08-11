@@ -27,6 +27,29 @@ struct EncodedModuleEnvelope
     std::uint32_t format_version = 0;
     bool development_only = false;
     std::vector<std::uint8_t> payload;
+
+    auto operator<=>(const EncodedModuleEnvelope&) const = default;
+};
+
+struct ModuleClosureAdmissionRequest
+{
+    ProgramModuleIdentity root;
+    std::string expected_dependency_lock_sha256;
+    std::vector<EncodedModuleEnvelope> modules;
+};
+
+struct ModuleClosureAdmissionReceipt
+{
+    ProgramModuleIdentity root;
+    std::string dependency_lock_sha256;
+    std::size_t admitted_module_count = 0;
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return !root.canonical_id.empty() &&
+            dependency_lock_sha256.size() == 64 &&
+            admitted_module_count > 0;
+    }
 };
 
 struct EncodedInvocationEnvelope
@@ -37,12 +60,6 @@ struct EncodedInvocationEnvelope
     std::string entrypoint;
     WorksetEpoch expected_workset_epoch;
     std::vector<std::uint8_t> input_payload;
-};
-
-struct ModulePreparationRequest
-{
-    WorkerCommandSequence command_sequence;
-    EncodedModuleEnvelope module;
 };
 
 struct InvocationTemplatePreparationRequest
@@ -82,41 +99,20 @@ struct PreparedInvocationStartRequest
     bool state_already_prepared = false;
 };
 
-struct ProgramRuntimeCatalogModule
-{
-    ProgramModuleIdentity identity;
-    std::vector<std::string> entrypoints;
-    std::string dependency_lock_sha256;
-    bool development_only = false;
-
-    auto operator<=>(const ProgramRuntimeCatalogModule&) const = default;
-};
-
-struct ProgramRuntimeCatalogSnapshot
-{
-    bool complete_exact = false;
-    std::uint64_t generation = 1;
-    std::string runtime_profile_sha256;
-    std::string dependency_manifest_sha256;
-    std::string catalog_sha256;
-    std::vector<ProgramRuntimeCatalogModule> modules;
-};
-
-struct ModulePreparationEvent
-{
-    WorkerCommandSequence command_sequence;
-    ProgramModuleIdentity module;
-    bool prepared = false;
-    RuntimeError error;
-};
-
-struct ProgramInvocationProgressEvent
+struct ProgramInvocationObservationEvent
 {
     InvocationId invocation_id;
     AttemptId attempt_id;
-    std::uint64_t progress_sequence = 0;
-    std::string text;
-    bool record_progress = true;
+    program::ProgramEmission emission;
+};
+
+// Actor-mailbox notification that an asynchronously driven runtime has made
+// its exact terminal draft available through TakeFinishedExecution. This is
+// lifecycle signaling only; it is never canonical progress or telemetry.
+struct ProgramInvocationCompletionAvailableEvent
+{
+    InvocationId invocation_id;
+    AttemptId attempt_id;
 };
 
 struct ProgramInvocationTerminalEvent
@@ -129,6 +125,8 @@ struct ProgramInvocationTerminalEvent
     WorksetEpoch workset_epoch;
     std::vector<std::uint8_t> output_payload;
     RuntimeError error;
+    std::vector<program::ArtifactReferenceValue> workset_artifacts;
+    std::vector<std::string> diagnostics;
 };
 
 // Actor-consumed execution draft. It contains the canonical ProgramResult
@@ -152,9 +150,10 @@ struct ProgramExecutionTakeResult
     RuntimeError error;
 };
 
-using ProgramRuntimeEvent = std::variant<
-    ModulePreparationEvent,
-    ProgramInvocationProgressEvent>;
+using ProgramRuntimeEvent =
+    std::variant<
+        ProgramInvocationObservationEvent,
+        ProgramInvocationCompletionAvailableEvent>;
 
 struct ProgramRuntimeSubmission
 {
@@ -200,15 +199,19 @@ public:
     IProgramRuntimePort(const IProgramRuntimePort&) = delete;
     IProgramRuntimePort& operator=(const IProgramRuntimePort&) = delete;
 
-    [[nodiscard]] virtual WorkerCapabilityMask capabilities() const noexcept = 0;
-
-    // This is an invocation-lifecycle boundary, not a session-service escape hatch.
-    // Implementations must not retain or obtain EmulationSession/IDolphinBackend.
-    // Future program effects return to the WorkerRuntime actor through a separate
-    // actor-marshalled service request surface.
-    virtual ProgramRuntimeSubmission PrepareModule(
-        ModulePreparationRequest request,
-        std::shared_ptr<IProgramRuntimeEventSink> events) = 0;
+    // Atomically admits and verifies a workset-supplied closed module set.
+    // Workers reconstruct this in-memory cache after restart; no durable
+    // program cache or database access is involved.
+    virtual ProgramRuntimeSubmission AdmitModuleClosure(
+        ModuleClosureAdmissionRequest request,
+        ModuleClosureAdmissionReceipt& receipt)
+    {
+        (void)request;
+        (void)receipt;
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::Unsupported,
+            "ProgramRuntime does not support workset module admission");
+    }
 
     // Workset admission validates and pins canonical invocation contents
     // before any session mutation. WorkerRuntime receives only an opaque
@@ -244,11 +247,6 @@ public:
         return ProgramRuntimeSubmission::Rejected(
             WorkerRejectionCode::Unsupported,
             "ProgramRuntime does not support prepared invocations");
-    }
-
-    [[nodiscard]] virtual ProgramRuntimeCatalogSnapshot catalog() const
-    {
-        return {};
     }
 
     virtual ProgramRuntimeSubmission RequestCancellation(

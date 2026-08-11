@@ -45,6 +45,9 @@ public:
     }
 
     bool Register(const ProgramKindDescriptor& descriptor) {
+        if (!descriptor.default_progress_library_ids.has_value()) {
+            return false;
+        }
         std::unique_lock lock(mutex_);
         const bool inserted =
             descriptors_
@@ -76,6 +79,9 @@ public:
     }
 
     bool RegisterForStepKind(std::string step_kind, const ProgramKindDescriptor& descriptor) {
+        if (!descriptor.default_progress_library_ids.has_value()) {
+            return false;
+        }
         std::unique_lock lock(mutex_);
         const bool inserted =
             step_kind_descriptors_

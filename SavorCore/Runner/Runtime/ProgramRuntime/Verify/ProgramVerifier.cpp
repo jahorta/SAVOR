@@ -1,6 +1,7 @@
 #include "ProgramVerifier.h"
 
 #include "Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
+#include "Runner/Runtime/ProgramRuntime/Composition/SemanticObservationComposition.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
 
 #include <algorithm>
@@ -194,6 +195,54 @@ struct SchemaLookup
         return !type.is_named() || Resolve(*type.named) != nullptr;
     }
 };
+
+bool ContainsEphemeralInputBinding(
+    const TypeRef& type,
+    const SchemaLookup& schemas,
+    std::set<SchemaIdentity>& visited)
+{
+    if (!type.is_named())
+        return false;
+    const SchemaIdentity& identity = *type.named;
+    const auto binding = CanonicalActionOutputSchemaIdentity(
+        CanonicalAction::InputApplyState);
+    if ((binding && identity == *binding) ||
+        identity == CanonicalRuntimeSchemaIdentity(
+            CanonicalRuntimeSchema::OptionalInputExecutionBinding))
+    {
+        return true;
+    }
+    if (!visited.emplace(identity).second)
+        return false;
+    const TypeSchemaDefinition* definition = schemas.Resolve(identity);
+    if (!definition)
+        return false;
+    if (definition->element_type &&
+        ContainsEphemeralInputBinding(
+            *definition->element_type,
+            schemas,
+            visited))
+    {
+        return true;
+    }
+    return std::ranges::any_of(
+        definition->record_fields,
+        [&](const RecordFieldDefinition& field)
+        {
+            return ContainsEphemeralInputBinding(
+                field.type,
+                schemas,
+                visited);
+        });
+}
+
+bool ContainsEphemeralInputBinding(
+    const TypeRef& type,
+    const SchemaLookup& schemas)
+{
+    std::set<SchemaIdentity> visited;
+    return ContainsEphemeralInputBinding(type, schemas, visited);
+}
 
 struct ValueDefinitionSite
 {
@@ -511,6 +560,26 @@ void ValidateInstruction(
                 VerificationErrorCode::InvalidInstruction,
                 "Constant requires a matching literal and result",
                 instruction.source_location);
+        }
+        if (instruction.literal &&
+            instruction.literal->type == CanonicalRuntimeType(
+                CanonicalRuntimeSchema::SemanticPointSet))
+        {
+            const auto* bytes = std::get_if<std::vector<Byte>>(
+                &instruction.literal->payload);
+            const auto decoded = bytes
+                ? composition::DecodeSemanticPointSetV1(*bytes)
+                : composition::SemanticPointSetDecodeResultV1{};
+            if (!decoded)
+            {
+                Add(
+                    context.diagnostics,
+                    VerificationErrorCode::InvalidInstruction,
+                    decoded.diagnostic.empty()
+                        ? "Semantic point set constant is malformed"
+                        : decoded.diagnostic,
+                    instruction.source_location);
+            }
         }
         break;
     case InstructionOpcode::Copy:
@@ -1272,10 +1341,16 @@ void ValidateInstruction(
                     });
             if (!declared)
             {
+                std::string message =
+                    "Artifact schema is not declared by an entrypoint";
+                if (payload)
+                    message += ": " + payload->canonical_id + "/"
+                        + std::to_string(payload->version) + "#"
+                        + payload->schema_hash.ToHex();
                 Add(
                     context.diagnostics,
                     VerificationErrorCode::UndeclaredEffect,
-                    "Artifact schema is not declared by an entrypoint",
+                    std::move(message),
                     instruction.source_location);
             }
         }
@@ -1944,23 +2019,31 @@ void ValidateFunction(
                          std::size_t index,
                          bool block_argument,
                          bool function_argument) {
-        if (!value.id || !schemas.Resolve(value.type) ||
-            !context.values
-                 .emplace(
-                     value.id,
-                     ValueDefinitionSite{
-                         value.type,
-                         block,
-                         index,
-                         block_argument,
-                         function_argument,
-                     })
-                 .second)
+        const bool has_identity = static_cast<bool>(value.id);
+        const bool has_type = schemas.Resolve(value.type);
+        const bool unique = context.values
+                                .emplace(
+                                    value.id,
+                                    ValueDefinitionSite{
+                                        value.type,
+                                        block,
+                                        index,
+                                        block_argument,
+                                        function_argument,
+                                    })
+                                .second;
+        if (!has_identity || !has_type || !unique)
         {
             Add(
                 diagnostics,
                 VerificationErrorCode::DuplicateIdentity,
-                "Value identity is zero, duplicated, or has unknown type");
+                "Value identity " + std::to_string(value.id.value()) +
+                    " is invalid (identity=" + std::to_string(has_identity) +
+                    ", type=" + std::to_string(has_type) +
+                    ", unique=" + std::to_string(unique) +
+                    ", block=" +
+                    (block ? std::to_string(block->value()) : "function") +
+                    ")");
         }
     };
 
@@ -2132,19 +2215,6 @@ void ValidateEstablishBaselineControlFlow(
                     state.may_be_prepared ||
                     state.may_await_preparation;
                 state.may_await_preparation = false;
-                continue;
-            }
-            if (action == CanonicalAction::StopPointsSubscribeGroup)
-            {
-                if (state.may_await_preparation &&
-                    diagnosed_instructions.emplace(instruction.id).second)
-                {
-                    Add(
-                        diagnostics,
-                        VerificationErrorCode::InvalidPolicy,
-                        "EstablishBaseline subscribes stop points before movie preparation stops the core",
-                        instruction.source_location);
-                }
                 continue;
             }
             if (action == CanonicalAction::MovieStartPlayback)
@@ -2993,6 +3063,18 @@ ProgramVerificationResult ProgramVerifier::Verify(
                 VerificationErrorCode::InvalidPolicy,
                 "Entrypoint policy exceeds module policy");
         }
+        if (ContainsEphemeralInputBinding(
+                entrypoint.output_type,
+                schema_lookup) ||
+            ContainsEphemeralInputBinding(
+                entrypoint.domain_outcome_type,
+                schema_lookup))
+        {
+            Add(
+                result.diagnostics,
+                VerificationErrorCode::InvalidEntrypoint,
+                "Entrypoint results cannot retain ephemeral input execution bindings");
+        }
         if (entrypoint.narrowed_budgets &&
             !BudgetsNarrow(
                 *entrypoint.narrowed_budgets,
@@ -3012,6 +3094,15 @@ ProgramVerificationResult ProgramVerifier::Verify(
                     result.diagnostics,
                     VerificationErrorCode::InvalidSchema,
                     "Entrypoint emission schema is unresolved");
+            }
+            if (ContainsEphemeralInputBinding(
+                    TypeRef::Named(schema),
+                    schema_lookup))
+            {
+                Add(
+                    result.diagnostics,
+                    VerificationErrorCode::InvalidEntrypoint,
+                    "Entrypoint emissions cannot retain ephemeral input execution bindings");
             }
         }
         for (const SchemaIdentity& schema :
