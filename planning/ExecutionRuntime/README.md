@@ -1,5 +1,10 @@
 # Execution Runtime Refactor Guidance
 
+The current typed derived-state contract is defined in
+[`18-derived-state-runtime.md`](18-derived-state-runtime.md). It supersedes all
+legacy derived-buffer, `DERIVED` address-region, byte-offset, and
+capture-backed-decision designs.
+
 The current semantic-routing, immutable workset-capture, and canonical-progress
 contract is defined in
 [`17-semantic-routing-workset-capture-canonical-progress.md`](17-semantic-routing-workset-capture-canonical-progress.md).
@@ -299,9 +304,13 @@ The names have precise meanings:
 18. Semantic-observation and interaction composition introduce no peer runtime, controller, scheduler,
     query VM, domain opcode family, hidden effect channel, filesystem access, database access, or
     persistence model. Their complete lowering is visible to verification, hashing, tracing, and unwind.
-19. A semantic-point receipt, observation, derived guest handle, or baseline is bound to one
-    `WorksetEpoch`. Hit-time sampling is a bounded router concern and ordinary typed reads occur while
-    paused. Exact guest-opcode stepping is not a forward execution contract: breakpoint departure uses
+19. A semantic-point receipt, observation, derived snapshot, or baseline is bound to one
+    `WorksetEpoch`. General hit-time sampling is a bounded router concern. Derived-state native evidence
+    is a distinct trusted CPU-observer operation: registered static providers copy bounded raw guest
+    bytes into fixed item-local handoff storage without pausing, and the actor later validates and
+    atomically publishes typed snapshots without rereading the guest. Paused actor reads are permitted
+    only for a refresh group that explicitly declares retained-current-point initialization. Exact
+    guest-opcode stepping is not a forward execution contract: breakpoint departure uses
     router suppression and behavior that must occur after a guest instruction uses an explicit semantic
     witness or other routed continuation. A future debugger may step `ProgramRuntime` IR instructions,
     which is a distinct facility and remains deferred.

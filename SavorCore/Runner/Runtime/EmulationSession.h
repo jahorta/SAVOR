@@ -4,6 +4,7 @@
 #include "RuntimeTypes.h"
 #include "Execution/ExecutionEngine.h"
 #include "Execution/HostActivityTracker.h"
+#include "DerivedState/DerivedStateService.h"
 #include "Services/Capture/CaptureService.h"
 #include "Services/Artifacts/RuntimeArtifactSink.h"
 #include "Services/Input/InputArbiter.h"
@@ -187,6 +188,16 @@ public:
         return movie_service_.get();
     }
 
+    [[nodiscard]] derived::DerivedStateService* derived_state() noexcept
+    {
+        return derived_state_.get();
+    }
+
+    [[nodiscard]] BackendResult ActivateDerivedStateForItem(
+        const derived::WorksetDerivedStateBindingV1& binding,
+        WorkerWorksetItemId item_id);
+    [[nodiscard]] BackendResult CloseDerivedStateItem() noexcept;
+
     // Starts the exact workset-initialized movie preparation across an
     // execution-evidence replacement boundary. A pre-restart engine is never
     // retained across the guest-core replacement.
@@ -276,10 +287,12 @@ private:
     std::unique_ptr<PhysicalStopPointManager> physical_stop_manager_;
     std::unique_ptr<program::BoundedStopPointCpuEvaluator>
         stop_cpu_evaluator_;
+    std::unique_ptr<StopCpuObserverDispatcher> stop_cpu_observers_;
     std::unique_ptr<StopPointRouter> stop_router_;
     std::unique_ptr<TelemetryBus> telemetry_bus_;
     std::unique_ptr<InputArbiter> input_arbiter_;
     std::unique_ptr<GuestMemory> guest_memory_;
+    std::unique_ptr<derived::DerivedStateService> derived_state_;
     std::unique_ptr<GuestMutationService> guest_mutations_;
     std::unique_ptr<ScreenshotService> screenshot_service_;
     std::unique_ptr<RuntimeArtifactSink> artifact_sink_;

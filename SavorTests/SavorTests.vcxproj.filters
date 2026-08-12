@@ -136,6 +136,7 @@
     <ClCompile Include="test_interaction_composition.cpp" />
     <ClCompile Include="test_predicate_composition.cpp" />
     <ClCompile Include="test_battle_backend_contracts.cpp" />
+    <ClCompile Include="test_derived_state.cpp" />
     <ClCompile Include="test_program_capability_packs.cpp" />
     <ClCompile Include="test_program_codec_v1.cpp" />
     <ClCompile Include="test_program_definition_store.cpp" />

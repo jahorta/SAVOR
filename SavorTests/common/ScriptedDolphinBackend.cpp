@@ -4,6 +4,7 @@
 #include "Runner/Runtime/StopPoints/IPhysicalStopPointBackendPort.h"
 
 #include <fstream>
+#include <limits>
 #include <utility>
 
 namespace savor::test_support {
@@ -490,6 +491,13 @@ ScriptedDolphinBackend::GuestMemory() noexcept
     return this;
 }
 
+runtime::IHitTimeGuestMemoryBackendPort*
+ScriptedDolphinBackend::HitTimeGuestMemory() noexcept
+{
+    std::lock_guard lock(control_->mutex);
+    return control_->hit_time_memory_available ? this : nullptr;
+}
+
 runtime::IScreenshotBackendPort*
 ScriptedDolphinBackend::Screenshots() noexcept
 {
@@ -583,6 +591,38 @@ runtime::GuestBytesResult ScriptedDolphinBackend::Read(
             bytes[index] = found->second;
     }
     return {runtime::BackendResult::Success(), std::move(bytes)};
+}
+
+runtime::HitTimeGuestReadReceipt
+ScriptedDolphinBackend::ReadHitTimeBytes(
+    std::uint32_t address,
+    std::span<std::uint8_t> destination) const noexcept
+{
+    if (destination.empty() ||
+        destination.size() > std::numeric_limits<std::uint32_t>::max() ||
+        address > std::numeric_limits<std::uint32_t>::max() -
+            static_cast<std::uint32_t>(destination.size() - 1))
+    {
+        return {
+            false,
+            runtime::HitTimeGuestReadError::InvalidArgument,
+            address,
+            destination.size()};
+    }
+    std::lock_guard lock(control_->mutex);
+    for (std::size_t index = 0; index < destination.size(); ++index)
+    {
+        const auto found = control_->guest_memory.find(
+            address + static_cast<std::uint32_t>(index));
+        destination[index] = found == control_->guest_memory.end()
+            ? 0
+            : found->second;
+    }
+    return {
+        true,
+        runtime::HitTimeGuestReadError::None,
+        address,
+        destination.size()};
 }
 
 runtime::BackendResult ScriptedDolphinBackend::Write(

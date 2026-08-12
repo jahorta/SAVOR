@@ -1,7 +1,6 @@
 #include "SoaAddrProgram.h"
 #include "../Soa/SoaAddrRegistry.h"
 #include "../../DolphinWrapper.h"
-#include "Battle/DerivedBattleBuffer.h"
 
 #include <utility>
 
@@ -79,16 +78,14 @@ namespace {
 } // namespace
 
     ExecResult exec(const uint8_t* blob, size_t blob_size, uint32_t offset,
-        savor::DolphinWrapper& host,
-        const savor::IDerivedBuffer* derived)
+        savor::DolphinWrapper& host)
     {
-        const auto result = evaluate(blob, blob_size, offset, host, derived);
+        const auto result = evaluate(blob, blob_size, offset, host);
         return { result.va, result.ok };
     }
 
     EvalResult evaluate(const uint8_t* blob, size_t blob_size, uint32_t offset,
         savor::DolphinWrapper& host,
-        const savor::IDerivedBuffer* derived,
         const RegisterReadFn& read_register,
         const bool include_trace)
     {
@@ -99,7 +96,6 @@ namespace {
 
         uint32_t va = 0;
         addr::Region region = addr::Region::MEM1;
-        MemoryDomain domain = MemoryDomain::Host;
         bool have_region = false;
         EvalResult result{};
 
@@ -110,7 +106,6 @@ namespace {
             case END:
                 append_step(result, include_trace, op, va, va);
                 result.va = va;
-                result.domain = domain;
                 result.ok = true;
                 return result;
 
@@ -120,7 +115,6 @@ namespace {
                 auto key = static_cast<addr::AddrKey>(k);
                 va = addr::AddrRegistry::base(key);
                 region = addr::AddrRegistry::region(key);
-                domain = region == addr::Region::DERIVED ? MemoryDomain::Derived : MemoryDomain::Host;
                 have_region = true;
                 append_step(result, include_trace, op, before, va, k, true);
                 break;
@@ -130,24 +124,12 @@ namespace {
                 if (!have_region) return fail("LOAD_PTR32 before base", result);
                 const uint32_t before = va;
                 uint32_t tmp = 0;
-                switch (region) {
-                case addr::Region::MEM1:
-                case addr::Region::MEM2:
-                    if (!host.readU32(va, tmp)) return fail("host LOAD_PTR32 read failed", result);
-                    if (tmp == 0) return fail("LOAD_PTR32 resolved null", result);
-                    va = tmp;
-                    break;
-                case addr::Region::DERIVED: {
-                    if (!derived) return fail("derived LOAD_PTR32 without derived buffer", result);
-                    uint64_t bits = 0;
-                    // requires IDerivedBuffer::read_raw(offset,width,...)
-                    if (!derived->read_raw(va, /*width*/4, bits)) return fail("derived LOAD_PTR32 read failed", result);
-                    va = static_cast<uint32_t>(bits);
-                    if (va == 0) return fail("LOAD_PTR32 resolved null", result);
-                    break;
-                }
-                default: return fail("unsupported LOAD_PTR32 region", result);
-                }
+                if (region != addr::Region::MEM1 &&
+                    region != addr::Region::MEM2)
+                    return fail("unsupported guest-memory region", result);
+                if (!host.readU32(va, tmp)) return fail("guest LOAD_PTR32 read failed", result);
+                if (tmp == 0) return fail("LOAD_PTR32 resolved null", result);
+                va = tmp;
                 append_step(result, include_trace, op, before, va, va, true);
                 break;
             }
@@ -180,7 +162,6 @@ namespace {
                 if (!read_register) return fail("BASE_GPR without register reader", result);
                 if (!read_register(reg, va)) return fail("BASE_GPR register read failed", result);
                 region = addr::Region::MEM1;
-                domain = MemoryDomain::Host;
                 have_region = true;
                 append_step(result, include_trace, op, before, va, reg, true);
                 break;
@@ -189,7 +170,6 @@ namespace {
                 const uint32_t before = va;
                 if (!read_u32(p, e, va)) return fail("truncated BASE_ABS operand", result);
                 region = addr::Region::MEM1;
-                domain = MemoryDomain::Host;
                 have_region = true;
                 append_step(result, include_trace, op, before, va);
                 break;
@@ -202,31 +182,19 @@ namespace {
 
     bool read_value(const uint8_t* blob, size_t blob_size, uint32_t offset,
         savor::DolphinWrapper& host,
-        const savor::IDerivedBuffer* derived,
         const uint8_t width,
         uint64_t& out_bits,
         EvalResult* eval_out,
         const RegisterReadFn& read_register,
         const bool include_trace)
     {
-        auto result = evaluate(blob, blob_size, offset, host, derived, read_register, include_trace);
+        auto result = evaluate(blob, blob_size, offset, host, read_register, include_trace);
         if (!result.ok) {
             if (eval_out) *eval_out = std::move(result);
             return false;
         }
 
-        bool read_ok = false;
-        switch (result.domain) {
-        case MemoryDomain::Host:
-            read_ok = read_host_value(host, result.va, width, out_bits);
-            break;
-        case MemoryDomain::Derived:
-            read_ok = derived != nullptr && derived->read_raw(result.va, width, out_bits);
-            break;
-        default:
-            read_ok = false;
-            break;
-        }
+        const bool read_ok = read_host_value(host, result.va, width, out_bits);
         if (eval_out) *eval_out = std::move(result);
         return read_ok;
     }

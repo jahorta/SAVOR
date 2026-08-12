@@ -45,7 +45,8 @@ public:
     }
 
     bool Register(const ProgramKindDescriptor& descriptor) {
-        if (!descriptor.default_progress_library_ids.has_value()) {
+        if (!descriptor.default_progress_library_ids.has_value() ||
+            !descriptor.default_derived_state_block_ids.has_value()) {
             return false;
         }
         std::unique_lock lock(mutex_);
@@ -79,7 +80,8 @@ public:
     }
 
     bool RegisterForStepKind(std::string step_kind, const ProgramKindDescriptor& descriptor) {
-        if (!descriptor.default_progress_library_ids.has_value()) {
+        if (!descriptor.default_progress_library_ids.has_value() ||
+            !descriptor.default_derived_state_block_ids.has_value()) {
             return false;
         }
         std::unique_lock lock(mutex_);

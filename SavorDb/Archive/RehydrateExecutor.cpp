@@ -1470,10 +1470,16 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                         break;
                     }
 
+                    bool ok_derived_payload = false;
+                    bool ok_derived_hash = false;
                     bool ok_capture_payload = false;
                     bool ok_capture_hash = false;
                     bool ok_progress_payload = false;
                     bool ok_progress_hash = false;
+                    const auto derived_hex = JsonExtractText(
+                        execution_db_, line, "$.derived_state_binding_payload_hex", &ok_derived_payload);
+                    (void)JsonExtractText(
+                        execution_db_, line, "$.derived_state_binding_sha256", &ok_derived_hash);
                     const auto capture_hex = JsonExtractText(
                         execution_db_, line, "$.capture_binding_payload_hex", &ok_capture_payload);
                     (void)JsonExtractText(
@@ -1482,6 +1488,13 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                         execution_db_, line, "$.progress_plan_payload_hex", &ok_progress_payload);
                     (void)JsonExtractText(
                         execution_db_, line, "$.progress_plan_sha256", &ok_progress_hash);
+                    const auto derived_payload = ok_derived_payload
+                        ? DecodeHex(derived_hex)
+                        : std::optional<std::string>{};
+                    if (!ok_derived_payload || !ok_derived_hash || !derived_payload) {
+                        db_error = "archived workset derived-state binding is incomplete";
+                        break;
+                    }
                     const bool has_observation = ok_capture_payload || ok_capture_hash
                         || ok_progress_payload || ok_progress_hash;
                     const auto capture_payload = ok_capture_payload
@@ -1503,6 +1516,7 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                             "INSERT INTO exec_workset(workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,program_kind,program_version,contract_key,"
                             "module_canonical_id,module_version,module_sha256,entrypoint,verified_dependency_sha256,runtime_profile_sha256,"
                             "program_package_sha256,execution_affinity_key,estimated_payload_bytes,priority,item_count,published_at_utc,"
+                            "derived_state_binding_payload,derived_state_binding_sha256,"
                             "capture_binding_payload,capture_binding_sha256,progress_plan_payload,progress_plan_sha256) "
                             "VALUES(?1,?2,?3,?4,json_extract(?5,'$.workset_key'),json_extract(?5,'$.program_kind'),json_extract(?5,'$.program_version'),"
                             "json_extract(?5,'$.contract_key'),json_extract(?5,'$.module_canonical_id'),json_extract(?5,'$.module_version'),"
@@ -1510,8 +1524,9 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                             "json_extract(?5,'$.runtime_profile_sha256'),json_extract(?5,'$.program_package_sha256'),"
                             "json_extract(?5,'$.execution_affinity_key'),"
                             "json_extract(?5,'$.estimated_payload_bytes'),json_extract(?5,'$.priority'),json_extract(?5,'$.item_count'),"
-                            "json_extract(?5,'$.published_at_utc'),?6,json_extract(?5,'$.capture_binding_sha256'),"
-                            "?7,json_extract(?5,'$.progress_plan_sha256'));",
+                            "json_extract(?5,'$.published_at_utc'),?6,json_extract(?5,'$.derived_state_binding_sha256'),"
+                            "?7,json_extract(?5,'$.capture_binding_sha256'),"
+                            "?8,json_extract(?5,'$.progress_plan_sha256'));",
                             &st,
                             &db_error)) break;
                     sqlite3_bind_int64(st.st, 1, new_id);
@@ -1519,22 +1534,28 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     sqlite3_bind_int64(st.st, 3, new_step);
                     sqlite3_bind_int64(st.st, 4, new_root_set);
                     sqlite3_bind_text(st.st, 5, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (derived_payload->empty()) {
+                        sqlite3_bind_zeroblob(st.st, 6, 0);
+                    } else {
+                        sqlite3_bind_blob(st.st, 6, derived_payload->data(),
+                            static_cast<int>(derived_payload->size()), SQLITE_TRANSIENT);
+                    }
                     if (has_observation) {
                         if (capture_payload->empty()) {
-                            sqlite3_bind_zeroblob(st.st, 6, 0);
+                            sqlite3_bind_zeroblob(st.st, 7, 0);
                         } else {
-                            sqlite3_bind_blob(st.st, 6, capture_payload->data(),
+                            sqlite3_bind_blob(st.st, 7, capture_payload->data(),
                                 static_cast<int>(capture_payload->size()), SQLITE_TRANSIENT);
                         }
                         if (progress_payload->empty()) {
-                            sqlite3_bind_zeroblob(st.st, 7, 0);
+                            sqlite3_bind_zeroblob(st.st, 8, 0);
                         } else {
-                            sqlite3_bind_blob(st.st, 7, progress_payload->data(),
+                            sqlite3_bind_blob(st.st, 8, progress_payload->data(),
                                 static_cast<int>(progress_payload->size()), SQLITE_TRANSIENT);
                         }
                     } else {
-                        sqlite3_bind_null(st.st, 6);
                         sqlite3_bind_null(st.st, 7);
+                        sqlite3_bind_null(st.st, 8);
                     }
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
                     ++restored_execution_counts[kind];

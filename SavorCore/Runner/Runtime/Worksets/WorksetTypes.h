@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../IProgramRuntimePort.h"
+#include "../DerivedState/DerivedStateTypes.h"
 #include "../FullPhase/FullPhaseProgram.h"
 #include "../Progress/ProgressTypes.h"
 #include "../Services/Savestate/SavestateTypes.h"
@@ -166,6 +167,7 @@ struct WorkerWorksetExecutionKey
     std::string service_policy_sha256;
     std::string program_package_sha256;
     std::string common_input_sha256;
+    std::string derived_state_binding_sha256;
     std::string capture_binding_sha256;
     std::string progress_plan_sha256;
     std::string canonical_sha256;
@@ -176,6 +178,7 @@ struct WorkerWorksetExecutionKey
             static_cast<bool>(baseline) &&
             program_package_sha256.size() == 64 &&
             common_input_sha256.size() == 64 &&
+            derived_state_binding_sha256.size() == 64 &&
             capture_binding_sha256.size() == 64 &&
             progress_plan_sha256.size() == 64 &&
             canonical_sha256.size() == 64;
@@ -260,6 +263,7 @@ struct WorkerWorksetDefinition
     FullPhaseInvocationEnvelope phase_invocation;
     WorkerWorksetExecutionKey execution_key;
     ProgramBaselineDefinition baseline;
+    derived::WorksetDerivedStateBindingV1 derived_state;
     std::optional<WorksetCaptureBindingV1> capture;
     progress::ProgressPlanV1 progress_plan;
     std::vector<WorksetItemTemplate> items;

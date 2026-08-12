@@ -394,6 +394,75 @@ TEST_F(SqliteDbFixture, BattlePlanRelationalTurnMigrationPreservesAuthoredRows) 
         "SELECT COUNT(1) FROM au_battle_plan_action_preset WHERE action_preset_id=201;"), 1);
 }
 
+TEST_F(SqliteDbFixture, DerivedAddressRegionMigrationDropsOnlyLegacyRows) {
+    using namespace savor::db::migrations;
+
+    sqlite3* raw_legacy_db = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &raw_legacy_db), SQLITE_OK);
+    const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> legacy_db(
+        raw_legacy_db, &sqlite3_close);
+    const auto migrations = LoadContextMigrations(
+        MigrationContext::Authoring,
+        {.source_kind = MigrationSourceKind::Embedded});
+    const auto symbols = std::ranges::find(
+        migrations, "202606101300_authoring_runtime_symbol_packs.sql",
+        &MigrationEntry::name);
+    const auto removal = std::ranges::find(
+        migrations, "202608111100_authoring_remove_derived_address_region.sql",
+        &MigrationEntry::name);
+    ASSERT_NE(symbols, migrations.end());
+    ASSERT_NE(removal, migrations.end());
+    ASSERT_TRUE(ExecSql(legacy_db.get(), symbols->sql.c_str()));
+    ASSERT_TRUE(ExecSql(legacy_db.get(),
+        "INSERT INTO au_runtime_symbol_pack("
+        "runtime_symbol_pack_id,pack_id,schema_name,schema_version,name,"
+        "created_at_utc,imported_at_utc) VALUES(1,'test.pack',"
+        "'savor.runtime-symbol-pack',1,'test',1,1);"
+        "INSERT INTO au_address_symbol("
+        "address_symbol_id,runtime_symbol_pack_id,stable_id,name,region,"
+        "base_address,ordinal) VALUES"
+        "(1,1,'user.addr.mem1','mem1','MEM1',1,0),"
+        "(2,1,'user.addr.mem2','mem2','MEM2',2,1),"
+        "(3,1,'user.addr.derived','derived','DERIVED',3,2);"));
+
+    ASSERT_TRUE(ExecSql(legacy_db.get(), removal->sql.c_str()));
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_address_symbol;"), 2);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_address_symbol WHERE region='DERIVED';"), 0);
+    EXPECT_FALSE(ExecSql(legacy_db.get(),
+        "INSERT INTO au_address_symbol("
+        "address_symbol_id,runtime_symbol_pack_id,stable_id,name,region,"
+        "base_address,ordinal) VALUES"
+        "(4,1,'user.addr.rejected','rejected','DERIVED',4,3);"));
+}
+
+TEST_F(SqliteDbFixture, DerivedWorksetMigrationBackfillsCanonicalEmptyBinding) {
+    using namespace savor::db::migrations;
+
+    sqlite3* raw_legacy_db = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &raw_legacy_db), SQLITE_OK);
+    const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> legacy_db(
+        raw_legacy_db, &sqlite3_close);
+    ASSERT_TRUE(ExecSql(legacy_db.get(),
+        "CREATE TABLE exec_workset(workset_id INTEGER PRIMARY KEY);"
+        "INSERT INTO exec_workset(workset_id) VALUES(1);"));
+    const auto migrations = LoadContextMigrations(
+        MigrationContext::Execution,
+        {.source_kind = MigrationSourceKind::Embedded});
+    const auto migration = std::ranges::find(
+        migrations, "202608111000_execution_derived_state_binding.sql",
+        &MigrationEntry::name);
+    ASSERT_NE(migration, migrations.end());
+    ASSERT_TRUE(ExecSql(legacy_db.get(), migration->sql.c_str()));
+    EXPECT_EQ(ReadText(legacy_db.get(),
+        "SELECT derived_state_binding_sha256 FROM exec_workset WHERE workset_id=1;"),
+        "4bf4d7c8b3d9d28238f46029b93c4649ec76fdfdd387a49565b630560ab8240f");
+    EXPECT_EQ(ReadText(legacy_db.get(),
+        "SELECT lower(hex(derived_state_binding_payload)) FROM exec_workset WHERE workset_id=1;"),
+        "0100000001000000000000004000000034626634643763386233643964323832333866343630323962393363343634396563373666646664643338376134393536356236333035363061623832343066");
+}
+
 TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomicallyWithoutSideEffects) {
     using namespace savor::db::execution::programdb;
 
@@ -430,6 +499,8 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
     ProgramKindDescriptor sentinel{};
     sentinel.program_kind = kSentinelProgramKind;
     sentinel.program_name = "atomic-output-sentinel";
+    sentinel.default_progress_library_ids = std::vector<std::string>{};
+    sentinel.default_derived_state_block_ids = std::vector<std::string>{};
 
     ProgramKindRegistry output;
     ASSERT_TRUE(output.Register(sentinel));
@@ -1893,6 +1964,8 @@ VALUES(2000, 20, 1, 1, 'seedprobe_spec', 44, 'fp-2', 0, 'SUCCEEDED', 0, 1, unixe
     savor::db::execution::programdb::ProgramKindDescriptor descriptor{};
     descriptor.program_kind = 1;
     descriptor.program_name = "seedprobe.neutral";
+    descriptor.default_progress_library_ids = std::vector<std::string>{};
+    descriptor.default_derived_state_block_ids = std::vector<std::string>{};
     descriptor.workflow_transition = std::make_shared<AlwaysAdvanceTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.neutral", descriptor));
     StepCompletionGateService gate;
@@ -2000,6 +2073,8 @@ VALUES(
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = 1;
     descriptor.program_name = "workset.targeted";
+    descriptor.default_progress_library_ids = std::vector<std::string>{};
+    descriptor.default_derived_state_block_ids = std::vector<std::string>{};
     descriptor.job_materializer =
         std::make_shared<TerminalOnlyMaterializer>();
     descriptor.workflow_transition =
@@ -2086,6 +2161,8 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
     savor::db::execution::programdb::ProgramKindDescriptor descriptor{};
     descriptor.program_kind = 1;
     descriptor.program_name = "mock.spawn";
+    descriptor.default_progress_library_ids = std::vector<std::string>{};
+    descriptor.default_derived_state_block_ids = std::vector<std::string>{};
     descriptor.workflow_transition = std::make_shared<SpawnStepTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("mock.spawn", descriptor));
     StepCompletionGateService gate;
@@ -2176,6 +2253,8 @@ VALUES(22000, 220, 1, 1, 'mock_spec', 44, 'fp-22', 0, 'SUCCEEDED', 0, 1, unixepo
     savor::db::execution::programdb::ProgramKindDescriptor descriptor{};
     descriptor.program_kind = 1;
     descriptor.program_name = "mock.source";
+    descriptor.default_progress_library_ids = std::vector<std::string>{};
+    descriptor.default_derived_state_block_ids = std::vector<std::string>{};
     descriptor.workflow_transition = std::make_shared<OutputAdvanceTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("mock.source", descriptor));
     StepCompletionGateService gate;
@@ -2315,6 +2394,8 @@ VALUES(3000, 30, 1, 1, 'seedprobe_spec', 44, 'fp-3', 0, 'SUCCEEDED', 0, 1, unixe
     savor::db::execution::programdb::ProgramKindDescriptor descriptor{};
     descriptor.program_kind = 1;
     descriptor.program_name = "seedprobe.unique";
+    descriptor.default_progress_library_ids = std::vector<std::string>{};
+    descriptor.default_derived_state_block_ids = std::vector<std::string>{};
     descriptor.workflow_transition = std::make_shared<FinalStepTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.unique", descriptor));
     StepCompletionGateService gate;
@@ -2377,6 +2458,8 @@ VALUES(4000, 40, 1, 1, 'seedprobe_spec', 44, 'fp-4', 0, 'FAILED', 0, 1, unixepoc
     savor::db::execution::programdb::ProgramKindDescriptor descriptor{};
     descriptor.program_kind = 1;
     descriptor.program_name = "seedprobe.neutral";
+    descriptor.default_progress_library_ids = std::vector<std::string>{};
+    descriptor.default_derived_state_block_ids = std::vector<std::string>{};
     descriptor.workflow_transition = std::make_shared<AlwaysAdvanceTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.neutral", descriptor));
     StepCompletionGateService gate;
@@ -7362,6 +7445,20 @@ VALUES(8500,8300,'UNREVIEWED',NULL,'restore me',2000);
     EXPECT_EQ(
         ReadText(
             db_,
+            ("SELECT w.derived_state_binding_sha256 "
+             "FROM exec_workset w JOIN exec_job j ON j.workset_id=w.workset_id "
+             "WHERE j.job_id=" + std::to_string(new_job_id) + ";").c_str()),
+        "4bf4d7c8b3d9d28238f46029b93c4649ec76fdfdd387a49565b630560ab8240f");
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            ("SELECT lower(hex(w.derived_state_binding_payload)) "
+             "FROM exec_workset w JOIN exec_job j ON j.workset_id=w.workset_id "
+             "WHERE j.job_id=" + std::to_string(new_job_id) + ";").c_str()),
+        "0100000001000000000000004000000034626634643763386233643964323832333866343630323962393363343634396563373666646664643338376134393536356236333035363061623832343066");
+    EXPECT_EQ(
+        ReadText(
+            db_,
             ("SELECT lower(hex(w.capture_binding_payload)) "
              "FROM exec_workset w JOIN exec_job j ON j.workset_id=w.workset_id "
              "WHERE j.job_id=" + std::to_string(new_job_id) + ";").c_str()),
@@ -10738,6 +10835,12 @@ TEST_F(
     observation.capture_binding_sha256 =
         savor::runtime::EmptyWorksetCaptureBindingHashV1();
     observation.progress_plan_sha256 = progress.content_sha256;
+    savor::db::ExecutionWorksetDerivedStateBindingV1 derived_state;
+    const savor::runtime::derived::WorksetDerivedStateBindingV1
+        empty_derived_state;
+    ASSERT_TRUE(savor::runtime::EncodeWorksetDerivedStateBindingV1(
+        empty_derived_state, derived_state.binding_payload));
+    derived_state.binding_sha256 = empty_derived_state.content_sha256;
     PublishWorksetCommand workset{
         .job_set_id = job_set.job_set_id,
         .workflow_step_id = 36001,
@@ -10756,6 +10859,7 @@ TEST_F(
             .program_package_sha256 = std::string(64, '4'),
             .estimated_payload_bytes = 33,
         },
+        .derived_state = derived_state,
         .observation = observation,
         .priority = 0,
         .ordered_job_ids = job_ids,

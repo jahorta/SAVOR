@@ -3,11 +3,13 @@
 #include "../SavorCore/Core/Input/SoaBattle/BattlePlanValidation.h"
 #include "../SavorCore/Phases/Programs/BattleSingleTurn/BattleSingleTurnModule.h"
 #include "../SavorCore/Runner/Runtime/Predicates/PredicateBundle.h"
+#include "../SavorCore/Runner/Runtime/DerivedState/DerivedStateRegistry.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Store/ProgramDefinitionStore.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Verify/ProgramVerifier.h"
 #include "../SavorDb/Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnProgram.h"
+#include "../SavorDb/Execution/ProgramDB/WorksetDerivedStateBinding.h"
 #include "../SavorDb/Authoring/IAuthoringDb.h"
 
 namespace {
@@ -253,6 +255,105 @@ PredicateBundleExecutionPackageV1 ActiveLiteralPackage(
     return {std::move(hook_contract), std::move(bundle), std::move(binding)};
 }
 
+PredicateBundleExecutionPackageV1 ActiveDerivedEnemyCountPackage()
+{
+    auto hook_contract = BattlePredicateHookContractV1();
+    const auto hook = std::ranges::find_if(
+        hook_contract.points,
+        [](const auto& point) {
+            return point.canonical_id.ends_with(".TurnIsReady");
+        });
+    EXPECT_NE(hook, hook_contract.points.end());
+    const auto query =
+        program::capabilities::BattleDerivedTurnOrderActionIdentity();
+    const auto reducer = program::capabilities::BattleDerivedReducerIdentity(
+        "soa.battle.derived.enemy_count");
+    const auto catalog =
+        program::capabilities::BuildSourceCapabilityPackCatalog();
+    const auto action = std::ranges::find(
+        catalog.actions, query,
+        &program::ActionDescriptor::identity);
+    EXPECT_NE(action, catalog.actions.end());
+    const auto snapshot_type = action->output_type;
+
+    program::composition::PredicateDefinition definition{
+        .canonical_id = "test.battle.derived.enemy_count",
+        .revision = 1,
+        .source_name = "test.battle",
+        .witnesses = {{"turn_order", snapshot_type}},
+        .expression = {
+            {
+                .kind = program::composition::PredicateExpressionKind::Witness,
+                .witness_index = 0,
+                .result_type = snapshot_type,
+                .source_label = "turn order snapshot",
+            },
+            {
+                .kind = program::composition::PredicateExpressionKind::ImportedReducer,
+                .operands = {0},
+                .reducer = reducer,
+                .result_type = program::TypeRef::Builtin(program::BuiltinType::U32),
+                .source_label = "enemy count",
+            },
+            {
+                .kind = program::composition::PredicateExpressionKind::Literal,
+                .literal = program::LiteralValue{
+                    .type = program::TypeRef::Builtin(program::BuiltinType::U32),
+                    .payload = std::uint32_t{0}},
+                .result_type = program::TypeRef::Builtin(program::BuiltinType::U32),
+                .source_label = "zero",
+            },
+            {
+                .kind = program::composition::PredicateExpressionKind::Greater,
+                .operands = {1, 2},
+                .result_type = program::TypeRef::Builtin(program::BuiltinType::Bool),
+                .source_label = "has enemy",
+            },
+        },
+        .root_expression = 3,
+    };
+    ResolvedPredicateBundleV1 bundle{
+        .bundle_revision_id = 43,
+        .canonical_id = "test.battle.derived.bundle",
+        .revision = 1,
+        .definitions = {{.revision_id = 85, .definition = definition}},
+        .observations = {{
+            .ordinal = 0,
+            .stable_key = "turn-order",
+            .semantic_hook_id = hook->canonical_id,
+            .source_kind = PredicateObservationSourceKindV1::RegisteredQuery,
+            .source = query,
+            .value_type = snapshot_type,
+        }},
+        .checks = {{
+            .ordinal = 0,
+            .predicate_definition_revision_id = 85,
+            .use = {
+                .canonical_id = "enemy-count-at-turn-ready",
+                .semantic_point_id = hook->canonical_id,
+            },
+            .occurrence = PredicateOccurrencePolicyV1::First,
+            .witnesses = {{
+                .witness_ordinal = 0,
+                .source_kind = PredicateWitnessSourceKindV1::Observation,
+                .source_ordinal = 0,
+                .value_type = snapshot_type,
+            }},
+        }},
+    };
+    bundle.content_sha256 = ComputeResolvedPredicateBundleHashV1(bundle);
+    PredicateBundleBindingV1 binding{
+        .bundle_revision_id = bundle.bundle_revision_id,
+        .bundle_content_sha256 = bundle.content_sha256,
+        .active_check_ordinals = {0},
+        .structural_active_check_sha256 =
+            ComputePredicateActiveCheckSetHashV1(
+                std::array<std::uint32_t, 1>{0}),
+    };
+    binding.content_sha256 = ComputePredicateBundleBindingHashV1(binding);
+    return {std::move(hook_contract), std::move(bundle), std::move(binding)};
+}
+
 TEST(BattleSingleTurnModule, PreparesAndCachesActivePredicateVariant)
 {
     auto package = ActiveLiteralPackage(
@@ -277,6 +378,35 @@ TEST(BattleSingleTurnModule, PreparesAndCachesActivePredicateVariant)
     ASSERT_TRUE(first_turn) << diagnostic;
     EXPECT_NE(first_turn->identity().canonical_sha256,
               first->identity().canonical_sha256);
+}
+
+TEST(BattleSingleTurnModule, DerivedPredicateImportsSelectItsExactStaticBlock)
+{
+    auto predicate = ActiveDerivedEnemyCountPackage();
+    ASSERT_TRUE(ValidatePredicateBundlePackageV1(predicate));
+    std::string diagnostic;
+    const auto prepared = battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
+        false, predicate, &diagnostic);
+    ASSERT_TRUE(prepared) << diagnostic;
+    const auto package = fullphase::BuildFullPhaseProgramPackage(*prepared);
+
+    savor::db::execution::programdb::ResolvedWorksetDerivedStateBindingV1 resolved;
+    const std::vector<std::string> no_defaults;
+    ASSERT_TRUE(savor::db::execution::programdb::ResolveWorksetDerivedStateBindingV1(
+        no_defaults, package, &resolved, &diagnostic)) << diagnostic;
+    ASSERT_EQ(resolved.binding.blocks.size(), 1u);
+    EXPECT_EQ(resolved.binding.blocks.front().identity.canonical_id,
+        derived::kBattleCoreBlockId);
+
+    const std::array duplicate_defaults{
+        std::string(derived::kBattleCoreBlockId),
+        std::string(derived::kBattleCoreBlockId),
+    };
+    EXPECT_FALSE(savor::db::execution::programdb::ResolveWorksetDerivedStateBindingV1(
+        duplicate_defaults, package, &resolved, &diagnostic));
+    EXPECT_EQ(
+        diagnostic,
+        "Program-kind derived-state defaults contain a duplicate block ID");
 }
 
 TEST(BattleSingleTurnModule, AdmissionRequiresExactStaticReducerIdentity)

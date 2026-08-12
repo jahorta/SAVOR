@@ -5,6 +5,7 @@
 #include "Runner/Breakpoints/BpRegistry.h"
 #include "Runner/Runtime/ProgramRuntime/Composition/CompositionSupport.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
+#include "Runner/Runtime/DerivedState/DerivedStateRegistry.h"
 #include "Core/Memory/Soa/Navigation/NavigationContext.h"
 #include "Core/Memory/Soa/SoaAddrRegistry.h"
 
@@ -196,7 +197,7 @@ TypeSchemaDefinition ListSchema(
 std::vector<TypeSchemaDefinition> BuildSchemas()
 {
     std::vector<TypeSchemaDefinition> schemas;
-    schemas.reserve(18);
+    schemas.reserve(26);
 
     schemas.push_back(StringSchema(
         "runtime.DiagnosticText",
@@ -267,6 +268,79 @@ std::vector<TypeSchemaDefinition> BuildSchemas()
             {"expected_pc", TypeRef::Builtin(BuiltinType::U32)},
         },
         "record CaptureContextRequest/1(workset_epoch,expected_pc)"));
+
+    schemas.push_back(EnumSchema(
+        "soa.battle.derived.Freshness",
+        {
+            {"SameRoutedEvent", 1},
+            {"LatestInItem", 2},
+        },
+        "enum BattleDerivedFreshness/1{SameRoutedEvent=1,LatestInItem=2}"));
+    const auto derived_freshness = schemas.back().identity;
+    schemas.push_back(RecordSchema(
+        "soa.battle.derived.QueryRequest",
+        {
+            {"freshness", Named(derived_freshness)},
+            {"routed_stop", CanonicalRuntimeType(
+                 CanonicalRuntimeSchema::OptionalContinueUntilResult)},
+        },
+        "record BattleDerivedQueryRequest/1(freshness,routed_stop;active_item_is_host_authoritative)"));
+    schemas.push_back(EnumSchema(
+        "soa.battle.derived.Group",
+        {
+            {"TurnEntry", 1},
+            {"TurnOrder", 2},
+            {"Rewards", 3},
+        },
+        "enum BattleDerivedGroup/1{TurnEntry=1,TurnOrder=2,Rewards=3}"));
+    const auto derived_group = schemas.back().identity;
+    schemas.push_back(RecordSchema(
+        "soa.battle.derived.Provenance",
+        {
+            {"workset_epoch", TypeRef::Builtin(BuiltinType::U64)},
+            {"item_id", TypeRef::Builtin(BuiltinType::U64)},
+            {"block_revision", TypeRef::Builtin(BuiltinType::U32)},
+            {"group", Named(derived_group)},
+            {"group_revision", TypeRef::Builtin(BuiltinType::U32)},
+            {"generation", TypeRef::Builtin(BuiltinType::U64)},
+            {"routed_sequence", TypeRef::Builtin(BuiltinType::U64)},
+            {"sample_snapshot", TypeRef::Builtin(BuiltinType::U64)},
+            {"dispatch_generation", TypeRef::Builtin(BuiltinType::U64)},
+            {"physical_generation", TypeRef::Builtin(BuiltinType::U64)},
+            {"trigger_pc", TypeRef::Builtin(BuiltinType::U32)},
+        },
+        "record BattleDerivedProvenance/1(epoch,item,block_revision,group,group_revision,generation,routed_identity,trigger_pc)"));
+    const auto derived_provenance = schemas.back().identity;
+    schemas.push_back(RecordSchema(
+        "soa.battle.derived.ItemTotal",
+        {
+            {"item_id", TypeRef::Builtin(BuiltinType::U16)},
+            {"count", TypeRef::Builtin(BuiltinType::U32)},
+        },
+        "record BattleDerivedItemTotal/1(item_id,count)"));
+    const auto derived_item_total = schemas.back().identity;
+    schemas.push_back(ListSchema(
+        "soa.battle.derived.ItemTotals",
+        Named(derived_item_total),
+        80,
+        "list<BattleDerivedItemTotal>(max=80;sorted_unique_item_id)"));
+    const auto derived_item_totals = schemas.back().identity;
+    schemas.push_back(ListSchema(
+        "soa.battle.derived.TurnOrderSlots",
+        TypeRef::Builtin(BuiltinType::U8),
+        12,
+        "list<u8>(max=12;unique_active_combatant_slots)"));
+    const auto derived_turn_order = schemas.back().identity;
+    schemas.push_back(RecordSchema(
+        "soa.battle.derived.Snapshot",
+        {
+            {"provenance", Named(derived_provenance)},
+            {"current_turn", TypeRef::Builtin(BuiltinType::U32)},
+            {"inventory", Named(derived_item_totals)},
+            {"turn_order", Named(derived_turn_order)},
+            {"drops", Named(derived_item_totals)},
+        },
+        "record BattleDerivedSnapshot/1(provenance,current_turn,inventory,turn_order,drops;group_action_selects_populated_fields)"));
 
     schemas.push_back(EnumSchema(
         "soa.battle.BattleAction",
@@ -504,8 +578,6 @@ std::vector<AddressSymbolDescriptor> BuildBattleAddresses()
     for (const auto& address : addr::AddrRegistry::all())
     {
         const std::string_view name(address.name);
-        // DerivedBattleBuffer entries are offsets into a host-owned buffer,
-        // not compatibility-pinned guest addresses.
         if (!name.starts_with("battle.") || address.spec.base == 0)
             continue;
         addresses.push_back({
@@ -620,6 +692,76 @@ ExactDependencyIdentity QueryActionIdentity(
     return descriptor.identity;
 }
 
+ActionDescriptor DerivedQueryAction(
+    std::string canonical_id,
+    CapabilityPackIdentity pack,
+    TypeRef input,
+    TypeRef output)
+{
+    ActionDescriptor descriptor{
+        .identity = {
+            .canonical_id = std::move(canonical_id),
+            .version = 1,
+        },
+        .providing_pack = std::move(pack),
+        .input_type = std::move(input),
+        .output_type = output,
+        .domain_observation_type = output,
+        .required_derived_state_block_id =
+            std::string(derived::kBattleCoreBlockId),
+        .required_services = ServiceMask(
+            SessionServiceCapability::DerivedState),
+        .effects = EffectMask(ActionEffect::ReadDerivedState),
+        .epoch_policy = ActionEpochPolicy::RequiresCurrentEpoch,
+        .replay_class = ActionReplayClass::RecordedEvidence,
+        .cancellation = ActionCancellationMode::BeforeMutationOnly,
+        .timing = ActionTimingClass::BoundedHostOperation,
+        .default_host_timeout_milliseconds = 1000,
+        .resource_behavior = ActionResourceBehavior::None,
+        .cleanup = ActionCleanupGuarantee::None,
+        .idempotency = ActionIdempotency::NaturallyIdempotent,
+        .diagnostic_categories = {
+            "missing_snapshot",
+            "stale_epoch",
+            "malformed_evidence",
+        },
+    };
+    descriptor.identity.signature_hash =
+        ComputeActionDescriptorContractHash(descriptor);
+    return descriptor;
+}
+
+ReducerDescriptor PureReducer(
+    std::string canonical_id,
+    CapabilityPackIdentity pack,
+    std::vector<TypeRef> inputs,
+    TypeRef output)
+{
+    ReducerDescriptor descriptor{
+        .identity = {
+            .canonical_id = std::move(canonical_id),
+            .version = 1,
+        },
+        .providing_pack = std::move(pack),
+        .input_types = std::move(inputs),
+        .output_type = std::move(output),
+        .maximum_steps = 256,
+        .maximum_value_bytes = 64u * 1024u,
+    };
+    descriptor.identity.signature_hash =
+        ComputeReducerDescriptorContractHash(descriptor);
+    return descriptor;
+}
+
+struct BattleCapabilityCatalog
+{
+    std::vector<ActionDescriptor> actions;
+    std::vector<ReducerDescriptor> reducers;
+    CapabilityPackManifest manifest;
+};
+
+const BattleCapabilityCatalog& CanonicalBattleCapabilityCatalog();
+
 } // namespace
 
 std::vector<SemanticPointDescriptor> BuildBattleCommandPoints();
@@ -647,53 +789,7 @@ CapabilityPackIdentity FieldPackIdentity()
 
 CapabilityPackIdentity BattlePackIdentity()
 {
-    const auto points = BuildBattlePoints();
-    const auto addresses = BuildBattleAddresses();
-    auto schemas = BuildSchemas();
-    std::erase_if(
-        schemas,
-        [](const TypeSchemaDefinition& schema)
-        {
-            return (!schema.identity.canonical_id.starts_with("soa.battle.") ||
-                    schema.identity.canonical_id.starts_with("soa.battle.command.")) &&
-                !schema.identity.canonical_id.starts_with("runtime.input.") &&
-                schema.identity.canonical_id != "runtime.DiagnosticText";
-        });
-    std::vector<SchemaIdentity> schema_identities;
-    schema_identities.reserve(schemas.size());
-    for (const TypeSchemaDefinition& schema : schemas)
-        schema_identities.push_back(schema.identity);
-    const auto& battle_request = RequireSchema(
-        schemas,
-        "soa.battle.CaptureContextRequest");
-    const auto& battle_context = RequireSchema(
-        schemas,
-        "soa.battle.BattleContext");
-
-    CapabilityPackManifest manifest{
-        .identity = UnsignedPackIdentity(
-            std::string(kBattlePackId)),
-        .compatibility = SupportedSoaUsaCompatibility(),
-        .dependencies = {CanonicalRuntimePackIdentity()},
-        .schemas = std::move(schema_identities),
-        .semantic_points = std::move(points),
-        .address_symbols = addresses,
-        .coherent_queries = {{
-            .canonical_id = "soa.battle.query.BattleContext",
-            .result_schema = battle_context.identity,
-            .address_dependencies = AddressIds(addresses),
-            .maximum_guest_reads = 64,
-        }},
-        .cpu_evaluators = {BattleCurrentTurnEvaluator()},
-        .actions = {QueryActionIdentity(
-            "soa.battle.capture_context",
-            std::string(kBattlePackId),
-            Named(battle_request.identity),
-            Named(battle_context.identity))},
-    };
-    manifest.identity.manifest_hash =
-        ComputeCapabilityPackManifestContractHash(manifest);
-    return manifest.identity;
+    return CanonicalBattleCapabilityCatalog().manifest.identity;
 }
 
 CapabilityPackIdentity NavigationPackIdentity()
@@ -767,6 +863,144 @@ std::vector<SemanticPointDescriptor> BuildBattleCommandPoints()
     return points;
 }
 
+namespace {
+
+BattleCapabilityCatalog BuildBattleCapabilityCatalog()
+{
+    auto schemas = BuildSchemas();
+    std::vector<SchemaIdentity> schema_identities;
+    for (const auto& schema : schemas)
+    {
+        if ((schema.identity.canonical_id.starts_with("soa.battle.") &&
+             !schema.identity.canonical_id.starts_with("soa.battle.command.")) ||
+            schema.identity.canonical_id.starts_with("runtime.input.") ||
+            schema.identity.canonical_id == "runtime.DiagnosticText")
+        {
+            schema_identities.push_back(schema.identity);
+        }
+    }
+    const auto& battle_request = RequireSchema(
+        schemas, "soa.battle.CaptureContextRequest");
+    const auto& battle_context = RequireSchema(
+        schemas, "soa.battle.BattleContext");
+    const auto& derived_request = RequireSchema(
+        schemas, "soa.battle.derived.QueryRequest");
+    const auto& derived_snapshot = RequireSchema(
+        schemas, "soa.battle.derived.Snapshot");
+    const CapabilityPackIdentity unsigned_pack =
+        UnsignedPackIdentity(std::string(kBattlePackId));
+
+    BattleCapabilityCatalog catalog;
+    ActionDescriptor capture = QueryAction(
+        {
+            .canonical_id = "soa.battle.capture_context",
+            .version = 1,
+        },
+        unsigned_pack,
+        Named(battle_request.identity),
+        Named(battle_context.identity));
+    capture.identity.signature_hash =
+        ComputeActionDescriptorContractHash(capture);
+    catalog.actions = {
+        std::move(capture),
+        DerivedQueryAction(
+            std::string(derived::kBattleQueryTurnEntryActionId),
+            unsigned_pack,
+            Named(derived_request.identity),
+            Named(derived_snapshot.identity)),
+        DerivedQueryAction(
+            std::string(derived::kBattleQueryTurnOrderActionId),
+            unsigned_pack,
+            Named(derived_request.identity),
+            Named(derived_snapshot.identity)),
+        DerivedQueryAction(
+            std::string(derived::kBattleQueryRewardsActionId),
+            unsigned_pack,
+            Named(derived_request.identity),
+            Named(derived_snapshot.identity)),
+    };
+
+    const TypeRef snapshot = Named(derived_snapshot.identity);
+    const TypeRef u16 = TypeRef::Builtin(BuiltinType::U16);
+    const TypeRef u32 = TypeRef::Builtin(BuiltinType::U32);
+    catalog.reducers = {
+        PureReducer("soa.battle.derived.current_turn", unsigned_pack, {snapshot}, u32),
+        PureReducer("soa.battle.derived.inventory_count", unsigned_pack, {snapshot, u16}, u32),
+        PureReducer("soa.battle.derived.drop_count", unsigned_pack, {snapshot, u16}, u32),
+        PureReducer("soa.battle.derived.player_count", unsigned_pack, {snapshot}, u32),
+        PureReducer("soa.battle.derived.enemy_count", unsigned_pack, {snapshot}, u32),
+        PureReducer("soa.battle.derived.player_min_position", unsigned_pack, {snapshot}, u32),
+        PureReducer("soa.battle.derived.player_max_position", unsigned_pack, {snapshot}, u32),
+        PureReducer("soa.battle.derived.enemy_min_position", unsigned_pack, {snapshot}, u32),
+        PureReducer("soa.battle.derived.enemy_max_position", unsigned_pack, {snapshot}, u32),
+    };
+
+    const auto addresses = BuildBattleAddresses();
+    catalog.manifest = {
+        .identity = unsigned_pack,
+        .compatibility = SupportedSoaUsaCompatibility(),
+        .dependencies = {CanonicalRuntimePackIdentity()},
+        .schemas = std::move(schema_identities),
+        .semantic_points = BuildBattlePoints(),
+        .address_symbols = addresses,
+        .coherent_queries = {{
+            .canonical_id = "soa.battle.query.BattleContext",
+            .result_schema = battle_context.identity,
+            .address_dependencies = AddressIds(addresses),
+            .maximum_guest_reads = 64,
+        }},
+        .cpu_evaluators = {BattleCurrentTurnEvaluator()},
+    };
+    for (const auto& action : catalog.actions)
+        catalog.manifest.actions.push_back(action.identity);
+    for (const auto& reducer : catalog.reducers)
+        catalog.manifest.reducers.push_back(reducer.identity);
+    catalog.manifest.identity.manifest_hash =
+        ComputeCapabilityPackManifestContractHash(catalog.manifest);
+    for (auto& action : catalog.actions)
+        action.providing_pack = catalog.manifest.identity;
+    for (auto& reducer : catalog.reducers)
+        reducer.providing_pack = catalog.manifest.identity;
+    return catalog;
+}
+
+const BattleCapabilityCatalog& CanonicalBattleCapabilityCatalog()
+{
+    static const BattleCapabilityCatalog catalog =
+        BuildBattleCapabilityCatalog();
+    return catalog;
+}
+
+const ActionDescriptor& BattleActionDescriptor(std::string_view canonical_id)
+{
+    const auto& actions = CanonicalBattleCapabilityCatalog().actions;
+    const auto found = std::ranges::find(
+        actions,
+        canonical_id,
+        [](const ActionDescriptor& descriptor) {
+            return std::string_view(descriptor.identity.canonical_id);
+        });
+    if (found == actions.end())
+        throw std::out_of_range("Unknown Battle action");
+    return *found;
+}
+
+const ReducerDescriptor& BattleReducerDescriptor(std::string_view canonical_id)
+{
+    const auto& reducers = CanonicalBattleCapabilityCatalog().reducers;
+    const auto found = std::ranges::find(
+        reducers,
+        canonical_id,
+        [](const ReducerDescriptor& descriptor) {
+            return std::string_view(descriptor.identity.canonical_id);
+        });
+    if (found == reducers.end())
+        throw std::out_of_range("Unknown Battle reducer");
+    return *found;
+}
+
+} // namespace
+
 SchemaIdentity BattleContextSchemaIdentity()
 {
     const auto schemas = BuildSchemas();
@@ -781,6 +1015,29 @@ SchemaIdentity BattleCaptureContextRequestSchemaIdentity()
     return RequireSchema(
         schemas,
         "soa.battle.CaptureContextRequest").identity;
+}
+
+SchemaIdentity BattleDerivedFreshnessSchemaIdentity()
+{
+    const auto schemas = BuildSchemas();
+    return RequireSchema(
+        schemas,
+        "soa.battle.derived.Freshness").identity;
+}
+
+SchemaIdentity BattleDerivedQueryRequestSchemaIdentity()
+{
+    const auto schemas = BuildSchemas();
+    return RequireSchema(
+        schemas,
+        "soa.battle.derived.QueryRequest").identity;
+}
+
+SchemaIdentity BattleDerivedSnapshotSchemaIdentity()
+{
+    const auto schemas = BuildSchemas();
+    return RequireSchema(
+        schemas, "soa.battle.derived.Snapshot").identity;
 }
 
 SchemaIdentity BattleTurnExecutionSpecSchemaIdentity()
@@ -815,16 +1072,32 @@ SchemaIdentity BattleCommandSegmentSchemaIdentity()
 
 ExactDependencyIdentity BattleCaptureContextActionIdentity()
 {
-    const auto schemas = BuildSchemas();
-    return QueryActionIdentity(
-        "soa.battle.capture_context",
-        std::string(kBattlePackId),
-        Named(RequireSchema(
-            schemas,
-            "soa.battle.CaptureContextRequest").identity),
-        Named(RequireSchema(
-            schemas,
-            "soa.battle.BattleContext").identity));
+    return BattleActionDescriptor(
+        "soa.battle.capture_context").identity;
+}
+
+ExactDependencyIdentity BattleDerivedTurnEntryActionIdentity()
+{
+    return BattleActionDescriptor(
+        derived::kBattleQueryTurnEntryActionId).identity;
+}
+
+ExactDependencyIdentity BattleDerivedTurnOrderActionIdentity()
+{
+    return BattleActionDescriptor(
+        derived::kBattleQueryTurnOrderActionId).identity;
+}
+
+ExactDependencyIdentity BattleDerivedRewardsActionIdentity()
+{
+    return BattleActionDescriptor(
+        derived::kBattleQueryRewardsActionId).identity;
+}
+
+ExactDependencyIdentity BattleDerivedReducerIdentity(
+    std::string_view canonical_id)
+{
+    return BattleReducerDescriptor(canonical_id).identity;
 }
 
 ExactDependencyIdentity NavigationCaptureContextActionIdentity()
@@ -1069,12 +1342,6 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         std::make_move_iterator(game_schemas.begin()),
         std::make_move_iterator(game_schemas.end()));
 
-    const auto& battle_request = RequireSchema(
-        catalog.schemas,
-        "soa.battle.CaptureContextRequest");
-    const auto& battle_context = RequireSchema(
-        catalog.schemas,
-        "soa.battle.BattleContext");
     const auto& navigation_request = RequireSchema(
         catalog.schemas,
         "soa.navigation.CaptureContextRequest");
@@ -1082,7 +1349,6 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         catalog.schemas,
         "soa.navigation.NavigationContext");
 
-    std::vector<SchemaIdentity> battle_schemas;
     std::vector<SchemaIdentity> navigation_schemas;
     for (const auto& schema : catalog.schemas)
     {
@@ -1093,23 +1359,16 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         {
             continue;
         }
-        if ((schema.identity.canonical_id.starts_with("soa.battle.") &&
-             !schema.identity.canonical_id.starts_with("soa.battle.command.")) ||
-            schema.identity.canonical_id.starts_with("runtime.input.") ||
-            schema.identity.canonical_id == "runtime.DiagnosticText")
-        {
-            battle_schemas.push_back(schema.identity);
-        }
         if (schema.identity.canonical_id.starts_with("soa.navigation."))
             navigation_schemas.push_back(schema.identity);
     }
 
     catalog.actions = BuildCanonicalRuntimeActionDescriptors();
-    catalog.actions.push_back(QueryAction(
-        BattleCaptureContextActionIdentity(),
-        BattlePackIdentity(),
-        Named(battle_request.identity),
-        Named(battle_context.identity)));
+    const auto& battle_catalog = CanonicalBattleCapabilityCatalog();
+    catalog.actions.insert(
+        catalog.actions.end(),
+        battle_catalog.actions.begin(),
+        battle_catalog.actions.end());
     catalog.actions.push_back(QueryAction(
         NavigationCaptureContextActionIdentity(),
         NavigationPackIdentity(),
@@ -1117,7 +1376,9 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         Named(navigation_context.identity)));
     const auto& battle_command_catalog =
         CanonicalBattleCommandCapabilityCatalog();
-    catalog.reducers.reserve(battle_command_catalog.reducers.size());
+    catalog.reducers = battle_catalog.reducers;
+    catalog.reducers.reserve(
+        catalog.reducers.size() + battle_command_catalog.reducers.size());
     for (const BattleCommandReducerEntry& entry :
          battle_command_catalog.reducers)
     {
@@ -1125,7 +1386,6 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
     }
 
     auto field_addresses = BuildFieldAddresses();
-    auto battle_addresses = BuildBattleAddresses();
     auto navigation_addresses = BuildNavigationAddresses();
 
     CapabilityPackManifest field{
@@ -1138,22 +1398,7 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         .cpu_evaluators = {FieldRngSeedEvaluator()},
     };
 
-    CapabilityPackManifest battle{
-        .identity = BattlePackIdentity(),
-        .compatibility = SupportedSoaUsaCompatibility(),
-        .dependencies = {CanonicalRuntimePackIdentity()},
-        .schemas = std::move(battle_schemas),
-        .semantic_points = BuildBattlePoints(),
-        .address_symbols = battle_addresses,
-        .coherent_queries = {{
-            .canonical_id = "soa.battle.query.BattleContext",
-            .result_schema = battle_context.identity,
-            .address_dependencies = AddressIds(battle_addresses),
-            .maximum_guest_reads = 64,
-        }},
-        .cpu_evaluators = {BattleCurrentTurnEvaluator()},
-        .actions = {BattleCaptureContextActionIdentity()},
-    };
+    CapabilityPackManifest battle = battle_catalog.manifest;
 
     CapabilityPackManifest battle_command =
         battle_command_catalog.manifest;

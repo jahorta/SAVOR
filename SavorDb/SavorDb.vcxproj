@@ -190,6 +190,7 @@
     <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnProgram.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
     <ClInclude Include="Execution\ProgramDB\WorksetObservationBinding.h" />
+    <ClInclude Include="Execution\ProgramDB\WorksetDerivedStateBinding.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramResultProcessor.h" />
     <ClInclude Include="Execution\ProgramDB\ProductionProgramKindRegistry.h" />
@@ -262,6 +263,7 @@
     <ClCompile Include="Execution\ProgramDB\ProgramResultProcessor.cpp" />
     <ClCompile Include="Execution\ProgramDB\ProductionProgramKindRegistry.cpp" />
     <ClCompile Include="Execution\ProgramDB\WorksetObservationBinding.cpp" />
+    <ClCompile Include="Execution\ProgramDB\WorksetDerivedStateBinding.cpp" />
     <ClCompile Include="Execution\ProgramDB\WorkerResultBlobCleanupService.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeExecutionAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeProgram.cpp" />
@@ -323,6 +325,7 @@
     <None Include="migration\Authoring\202606171300_authoring_predicate_required_breakpoints.sql" />
     <None Include="migration\Authoring\202608081000_authoring_predicate_bundles.sql" />
     <None Include="migration\Authoring\202608111000_authoring_battle_plan_relational_turns.sql" />
+    <None Include="migration\Authoring\202608111100_authoring_remove_derived_address_region.sql" />
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql" />
     <None Include="migration\Execution\202604051200_execution_stage3b_workflow.sql" />
     <None Include="migration\Execution\202604061000_execution_phase0_workflow_input_contracts.sql" />
@@ -336,6 +339,7 @@
     <None Include="migration\Execution\202607291000_execution_workset_coordination.sql" />
     <None Include="migration\Execution\202608011000_execution_work_availability.sql" />
     <None Include="migration\Execution\202608091000_execution_structured_job_progress.sql" />
+    <None Include="migration\Execution\202608111000_execution_derived_state_binding.sql" />
     <None Include="migration\State\202604051000_state_stage2_schema.sql" />
     <None Include="migration\State\202607231800_state_derivation_source_context_index.sql" />
     <None Include="migration\State\202608041000_state_tas_movie_roots_and_trees.sql" />

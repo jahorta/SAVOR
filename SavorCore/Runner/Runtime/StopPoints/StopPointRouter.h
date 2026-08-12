@@ -11,6 +11,8 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -74,9 +76,62 @@ public:
     [[nodiscard]] virtual StopCpuObservationResult ObserveRoutedHit(
         std::uint32_t descriptor_id,
         const RoutedStopEvent& event) noexcept = 0;
+    [[nodiscard]] virtual bool RecognizesDescriptor(
+        std::uint32_t descriptor_id) const noexcept
+    {
+        return descriptor_id != 0;
+    }
 
 protected:
     IStopPointCpuObserver() = default;
+};
+
+enum class CanonicalStopCpuObserver : std::uint32_t
+{
+    CaptureProfile = 0x5341564fu,
+    DerivedState = 0x44525631u,
+};
+
+struct CanonicalStopCpuObserverDefinition
+{
+    CanonicalStopCpuObserver key;
+    std::string_view stable_name;
+};
+
+[[nodiscard]] std::span<const CanonicalStopCpuObserverDefinition>
+CanonicalStopCpuObserverDefinitions() noexcept;
+
+[[nodiscard]] constexpr std::uint32_t CanonicalStopCpuObserverId(
+    CanonicalStopCpuObserver observer) noexcept
+{
+    return static_cast<std::uint32_t>(observer);
+}
+
+class StopCpuObserverDispatcher final : public IStopPointCpuObserver
+{
+public:
+    [[nodiscard]] bool Register(
+        CanonicalStopCpuObserver key,
+        IStopPointCpuObserver& observer,
+        std::string* error_out = nullptr);
+    [[nodiscard]] bool Freeze(std::string* error_out = nullptr);
+    [[nodiscard]] bool frozen() const noexcept { return frozen_; }
+
+    [[nodiscard]] StopCpuObservationResult ObserveRoutedHit(
+        std::uint32_t descriptor_id,
+        const RoutedStopEvent& event) noexcept override;
+    [[nodiscard]] bool RecognizesDescriptor(
+        std::uint32_t descriptor_id) const noexcept override;
+
+private:
+    struct Entry
+    {
+        CanonicalStopCpuObserver key;
+        IStopPointCpuObserver* observer = nullptr;
+    };
+
+    std::vector<Entry> entries_;
+    bool frozen_ = false;
 };
 
 enum class StopCurrentPointPolicy : std::uint8_t

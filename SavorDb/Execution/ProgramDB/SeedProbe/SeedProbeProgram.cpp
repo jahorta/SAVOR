@@ -19,6 +19,7 @@
 
 #include "SeedProbeExecutionAdapters.h"
 #include "SeedProbeJobSpec.h"
+#include "../WorksetDerivedStateBinding.h"
 #include "../WorksetObservationBinding.h"
 #include "../../IExecutionDb.h"
 #include "../../../Analysis/IAnalysisDb.h"
@@ -607,6 +608,16 @@ private:
         {
             return std::nullopt;
         }
+        const auto program_package =
+            savor::runtime::fullphase::BuildFullPhaseProgramPackage(*phase_);
+        ResolvedWorksetDerivedStateBindingV1 derived_state;
+        if (!ResolveWorksetDerivedStateBindingV1(
+                std::span<const std::string>{},
+                program_package,
+                &derived_state,
+                error_out)) {
+            return std::nullopt;
+        }
         EnsureMaterializingJobSetReceipt ensured{};
         if (!execution_db_->EnsureMaterializingJobSet(
                 {
@@ -789,13 +800,18 @@ private:
                                 .runtime_profile_sha256 =
                                     runtime_contract
                                         .runtime_profile_sha256,
-                                .program_package_sha256 = savor::runtime::
-                                    fullphase::BuildFullPhaseProgramPackage(
-                                        *phase_).canonical_sha256,
+                                .program_package_sha256 =
+                                    program_package.canonical_sha256,
                                 .estimated_payload_bytes =
                                     static_cast<std::uint64_t>(
                                         (end - begin) * 256 * 1024),
                             },
+                        .derived_state = {
+                            .binding_payload =
+                                derived_state.encoded_binding,
+                            .binding_sha256 =
+                                derived_state.binding_sha256,
+                        },
                         .observation = {
                             .capture_binding_payload =
                                 observation.encoded_capture_binding,
@@ -2090,6 +2106,8 @@ ProgramKindDescriptor BuildSeedProbeProgramDescriptor(
             SeedProbeFullPhaseDefinitionV2()->identity();
     descriptor.default_progress_library_ids =
         ObservationDefaults().progress_library_ids;
+    descriptor.default_derived_state_block_ids =
+        std::vector<std::string>{};
     descriptor.default_progress_runtime_trigger_pcs =
         ObservationDefaults().runtime_sample_trigger_pcs;
     descriptor.job_materializer = std::move(materializer);

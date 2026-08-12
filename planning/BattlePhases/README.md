@@ -47,6 +47,21 @@ deferred or phase-owned. Battle phases use the same immutable workset-level
 capture binding as every other program kind; the worker creates and finalizes a
 fresh session for each item.
 
+The typed derived-state runtime is normative in
+[`../ExecutionRuntime/18-derived-state-runtime.md`](../ExecutionRuntime/18-derived-state-runtime.md).
+`battle.single_turn` selects `soa.derived.battle.core/1` once per workset and
+creates fresh item-local snapshots for turn entry, turn order, and rewards.
+At native semantic triggers, bounded raw Battle evidence is captured
+synchronously on Dolphin's CPU thread before the game leaves the breakpoint;
+the core is not paused for a successful passive observation. Parsing,
+aggregation, validation, generation assignment, and atomic typed publication
+occur later on the worker actor. A later-turn item already paused at
+`TurnInputs` uses the one explicit retained-current-point initialization path;
+no native hit may fall back to delayed actor-side reads. These snapshots are
+never sourced from capture and never survive item unwind. The block is
+available to Full Phase programs and predicates through its exact typed query
+actions and pure reducers. It does not create a general derived artifact.
+
 `battle.single_turn` automatically requests the registered Battle-event and
 predicate-evaluation progress libraries unless planning explicitly disables
 them. The Battle event library preserves the researched typed observations for
@@ -646,9 +661,9 @@ other explicitly defined workset-fatal conditions.
 
 The ending-RNG comparator's predicate key is the count of predicates passed,
 matching legacy `pred_passed`, rather than the number evaluated. Predicate
-accounting counts `Satisfied` as both passed and total and `Unsatisfied` as
-total; optional unavailable or not-applicable checks and checks skipped after
-rejection do not count. Missing required evidence fails execution. Per-check
+accounting counts every executed `Passed` or `Failed` check in total and only
+`Passed` checks in passed; untriggered checks and checks skipped after rejection
+do not count. Missing required evidence fails execution. Per-check
 detail is durable for predicate rejection, execution failure, or explicit
 evidence emission; ordinary successful results retain the bundle identity and
 summary.

@@ -2505,9 +2505,15 @@ bool JobExecutionCoordinator::Impl::Reconstruct(
         error = "program kind " + std::to_string(claimed.program_kind)
             + " has no registered workset reconstruction adapter";
     } else {
+        savor::runtime::derived::WorksetDerivedStateBindingV1
+            derived_state;
         std::optional<savor::runtime::WorksetCaptureBindingV1>
             capture;
         savor::runtime::progress::ProgressPlanV1 progress_plan;
+        const auto derived_decoded =
+            savor::runtime::DecodeWorksetDerivedStateBindingV1(
+                claimed.derived_state.binding_payload,
+                derived_state);
         const auto capture_decoded =
             savor::runtime::DecodeWorksetCaptureBindingV1(
                 claimed.observation.capture_binding_payload,
@@ -2519,12 +2525,16 @@ bool JobExecutionCoordinator::Impl::Reconstruct(
         const std::string capture_hash = capture
             ? capture->content_sha256
             : savor::runtime::EmptyWorksetCaptureBindingHashV1();
-        if (!capture_decoded || !progress_decoded ||
+        if (!derived_decoded || !capture_decoded || !progress_decoded ||
+            derived_state.content_sha256 !=
+                claimed.derived_state.binding_sha256 ||
             capture_hash !=
                 claimed.observation.capture_binding_sha256 ||
             progress_plan.content_sha256 !=
                 claimed.observation.progress_plan_sha256) {
-            error = !capture_decoded
+            error = !derived_decoded
+                ? derived_decoded.message
+                : !capture_decoded
                 ? capture_decoded.message
                 : !progress_decoded
                 ? progress_decoded.message
@@ -2539,6 +2549,7 @@ bool JobExecutionCoordinator::Impl::Reconstruct(
         context.dispatch_token = claimed.claim_token;
         context.contract_key = claimed.contract.contract_key;
         context.state_compatibility = config_.state_compatibility;
+        context.derived_state = std::move(derived_state);
         context.capture = std::move(capture);
         context.progress_plan = std::move(progress_plan);
         context.items.reserve(claimed.items.size());
@@ -2657,12 +2668,18 @@ bool JobExecutionCoordinator::Impl::ValidateReconstruction(
             "reconstructed workset identity or item count changed");
     }
     const auto& contract = claimed.contract;
+    const auto& derived_binding = claimed.derived_state;
     const auto& observation = claimed.observation;
     const auto& key = reconstruction.workset.execution_key;
     std::optional<savor::runtime::WorksetCaptureBindingV1>
         durable_capture;
+    savor::runtime::derived::WorksetDerivedStateBindingV1
+        durable_derived_state;
     savor::runtime::progress::ProgressPlanV1 durable_progress;
-    if (!savor::runtime::DecodeWorksetCaptureBindingV1(
+    if (!savor::runtime::DecodeWorksetDerivedStateBindingV1(
+            derived_binding.binding_payload,
+            durable_derived_state) ||
+        !savor::runtime::DecodeWorksetCaptureBindingV1(
             observation.capture_binding_payload,
             durable_capture) ||
         !savor::runtime::DecodeProgressPlanV1(
@@ -2685,10 +2702,14 @@ bool JobExecutionCoordinator::Impl::ValidateReconstruction(
             != contract.runtime_profile_sha256
         || key.program_package_sha256
             != contract.program_package_sha256
+        || key.derived_state_binding_sha256
+            != derived_binding.binding_sha256
         || key.capture_binding_sha256
             != observation.capture_binding_sha256
         || key.progress_plan_sha256
             != observation.progress_plan_sha256
+        || reconstruction.workset.derived_state !=
+            durable_derived_state
         || reconstruction.workset.capture !=
             durable_capture
         || reconstruction.workset.progress_plan != durable_progress

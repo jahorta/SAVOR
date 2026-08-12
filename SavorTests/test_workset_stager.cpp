@@ -191,6 +191,8 @@ WorkerWorksetDefinition ArtifactWorkset(
         definition.phase_invocation.program_package.canonical_sha256;
     definition.execution_key.common_input_sha256 =
         definition.phase_invocation.common_input.content_sha256;
+    definition.execution_key.derived_state_binding_sha256 =
+        definition.derived_state.content_sha256;
     definition.execution_key.capture_binding_sha256 =
         EmptyWorksetCaptureBindingHashV1();
     definition.execution_key.progress_plan_sha256 =
@@ -288,6 +290,8 @@ WorkerWorksetDefinition MovieWorkset(
         definition.phase_invocation.program_package.canonical_sha256;
     definition.execution_key.common_input_sha256 =
         definition.phase_invocation.common_input.content_sha256;
+    definition.execution_key.derived_state_binding_sha256 =
+        definition.derived_state.content_sha256;
     definition.execution_key.capture_binding_sha256 =
         EmptyWorksetCaptureBindingHashV1();
     definition.execution_key.progress_plan_sha256 =

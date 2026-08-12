@@ -3,6 +3,7 @@
 #include "Runner/Runtime/ProgramKind.h"
 #include "Core/Input/SoaBattle/BattleCommandCodec.h"
 #include "Runner/Runtime/ProgramRuntime/Actions/CanonicalActionPayload.h"
+#include "Runner/Runtime/DerivedState/DerivedStateTypes.h"
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceReducers.h"
 #include "Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
@@ -468,6 +469,35 @@ ProgramValueId AcquireObservation(
         builder.AddActionImport(observation.source);
     else
         builder.AddReducerImport(observation.source);
+    if (observation.source_kind == Kind::RegisteredQuery &&
+        (observation.source == capabilities::BattleDerivedTurnEntryActionIdentity() ||
+         observation.source == capabilities::BattleDerivedTurnOrderActionIdentity() ||
+         observation.source == capabilities::BattleDerivedRewardsActionIdentity()))
+    {
+        const auto freshness_schema =
+            capabilities::BattleDerivedFreshnessSchemaIdentity();
+        const auto freshness = Constant(
+            builder, function, block, TypeRef::Named(freshness_schema),
+            EnumValue{
+                freshness_schema,
+                static_cast<std::int64_t>(
+                    derived::DerivedStateFreshness::SameRoutedEvent)},
+            selector + "/freshness");
+        const auto routed = Optional(
+            builder, function, block,
+            CanonicalRuntimeSchema::OptionalContinueUntilResult,
+            receipt, selector + "/routed-stop");
+        const std::array fields{freshness, routed};
+        const auto request = Construct(
+            builder, function, block,
+            TypeRef::Named(
+                capabilities::BattleDerivedQueryRequestSchemaIdentity()),
+            fields, selector + "/request");
+        return Need(builder.AddInstruction(
+            function, block, InstructionOpcode::AwaitAction,
+            observation.value_type, std::array{request}, target,
+            std::move(selector)), "derived predicate observation");
+    }
     return Need(builder.AddInstruction(
         function, block,
         observation.source_kind == Kind::RegisteredQuery
@@ -1171,6 +1201,8 @@ ProgramModule ConstructModule(
   b.AddCapabilityImport(capabilities::BattleCommandPackIdentity());
   b.AddTypeImport(capabilities::BattleContextSchemaIdentity());
   b.AddTypeImport(capabilities::BattleTurnExecutionSpecSchemaIdentity());
+  b.AddTypeImport(capabilities::BattleDerivedFreshnessSchemaIdentity());
+  b.AddTypeImport(capabilities::BattleDerivedQueryRequestSchemaIdentity());
   b.AddActionImport(capabilities::BattleCaptureContextActionIdentity());
   b.AddReducerImport(CanonicalReducerIdentity(
       CanonicalReducer::BattlePrepareCommandInteraction));

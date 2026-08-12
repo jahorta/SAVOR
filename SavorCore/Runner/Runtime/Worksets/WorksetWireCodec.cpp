@@ -637,6 +637,53 @@ void WriteCaptureBinding(
     writer.String(capture->content_sha256);
 }
 
+void WriteDerivedStateBinding(
+    Writer& writer,
+    const derived::WorksetDerivedStateBindingV1& binding)
+{
+    writer.U32(binding.version);
+    writer.Count(binding.blocks.size());
+    for (const auto& block : binding.blocks)
+    {
+        writer.String(block.identity.canonical_id);
+        writer.U32(block.identity.revision);
+        writer.String(block.identity.descriptor_sha256);
+        writer.Blob(block.configuration);
+        writer.String(block.configuration_sha256);
+        writer.String(block.content_sha256);
+    }
+    writer.String(binding.content_sha256);
+}
+
+bool ReadDerivedStateBinding(
+    Reader& reader,
+    derived::WorksetDerivedStateBindingV1& binding)
+{
+    std::uint32_t block_count = 0;
+    if (!reader.U32(binding.version) ||
+        !reader.Count(block_count, 16))
+    {
+        return false;
+    }
+    binding.blocks.clear();
+    binding.blocks.reserve(block_count);
+    for (std::uint32_t index = 0; index < block_count; ++index)
+    {
+        derived::DerivedStateBlockBindingV1 block;
+        if (!reader.String(block.identity.canonical_id) ||
+            !reader.U32(block.identity.revision) ||
+            !reader.String(block.identity.descriptor_sha256) ||
+            !reader.Blob(block.configuration) ||
+            !reader.String(block.configuration_sha256) ||
+            !reader.String(block.content_sha256))
+        {
+            return false;
+        }
+        binding.blocks.push_back(std::move(block));
+    }
+    return reader.String(binding.content_sha256);
+}
+
 bool ReadCaptureBinding(
     Reader& reader,
     std::optional<WorksetCaptureBindingV1>& capture)
@@ -747,10 +794,12 @@ WorksetWireCodecResult EncodeWorkerWorksetV4(
     writer.String(key.service_policy_sha256);
     writer.String(key.program_package_sha256);
     writer.String(key.common_input_sha256);
+    writer.String(key.derived_state_binding_sha256);
     writer.String(key.capture_binding_sha256);
     writer.String(key.progress_plan_sha256);
     writer.String(key.canonical_sha256);
     WriteBaseline(writer, definition.baseline);
+    WriteDerivedStateBinding(writer, definition.derived_state);
     WriteCaptureBinding(writer, definition.capture);
     WriteProgressPlan(writer, definition.progress_plan);
     writer.Count(definition.items.size());
@@ -799,10 +848,12 @@ WorksetWireCodecResult DecodeWorkerWorksetV4(
         !reader.String(key.service_policy_sha256) ||
         !reader.String(key.program_package_sha256) ||
         !reader.String(key.common_input_sha256) ||
+        !reader.String(key.derived_state_binding_sha256) ||
         !reader.String(key.capture_binding_sha256) ||
         !reader.String(key.progress_plan_sha256) ||
         !reader.String(key.canonical_sha256) ||
         !ReadBaseline(reader, candidate.baseline) ||
+        !ReadDerivedStateBinding(reader, candidate.derived_state) ||
         !ReadCaptureBinding(reader, candidate.capture) ||
         !ReadProgressPlan(reader, candidate.progress_plan))
     {
@@ -870,6 +921,42 @@ WorksetWireCodecResult EncodeWorksetCaptureBindingV1(
     writer.U32(kWorksetCaptureBindingWireVersionV1);
     WriteCaptureBinding(writer, binding);
     return writer.Finish(output, kMaximumWorksetWireBytes);
+}
+
+WorksetWireCodecResult EncodeWorksetDerivedStateBindingV1(
+    const derived::WorksetDerivedStateBindingV1& binding,
+    std::vector<std::uint8_t>& output)
+{
+    std::string error;
+    if (!derived::ValidateWorksetDerivedStateBindingV1(binding, &error))
+        return {false, std::move(error)};
+    Writer writer;
+    writer.U32(kWorksetDerivedStateBindingWireVersionV1);
+    WriteDerivedStateBinding(writer, binding);
+    return writer.Finish(output, kMaximumWorksetWireBytes);
+}
+
+WorksetWireCodecResult DecodeWorksetDerivedStateBindingV1(
+    std::span<const std::uint8_t> input,
+    derived::WorksetDerivedStateBindingV1& output)
+{
+    Reader reader(input);
+    std::uint32_t version = 0;
+    derived::WorksetDerivedStateBindingV1 candidate;
+    if (!reader.U32(version) ||
+        version != kWorksetDerivedStateBindingWireVersionV1 ||
+        !ReadDerivedStateBinding(reader, candidate))
+    {
+        return {false, "Derived-state binding wire payload is invalid"};
+    }
+    const auto finished = reader.Finish();
+    if (!finished)
+        return finished;
+    std::string error;
+    if (!derived::ValidateWorksetDerivedStateBindingV1(candidate, &error))
+        return {false, std::move(error)};
+    output = std::move(candidate);
+    return {true, {}};
 }
 
 WorksetWireCodecResult DecodeWorksetCaptureBindingV1(

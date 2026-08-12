@@ -434,6 +434,8 @@ savor::runtime::WorkerWorksetDefinition MakeTransportTestWorkset()
         workset.phase_invocation.program_package.canonical_sha256;
     workset.execution_key.common_input_sha256 =
         workset.phase_invocation.common_input.content_sha256;
+    workset.execution_key.derived_state_binding_sha256 =
+        workset.derived_state.content_sha256;
     workset.execution_key.capture_binding_sha256 =
         EmptyWorksetCaptureBindingHashV1();
     workset.execution_key.progress_plan_sha256 =

@@ -1,6 +1,8 @@
 #include "WorksetTypes.h"
 
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
+#include "Runner/Runtime/DerivedState/DerivedStateRegistry.h"
+#include "Runner/Runtime/StopPoints/StopPointRouter.h"
 #include "Utils/Hash.h"
 
 #include <algorithm>
@@ -124,6 +126,16 @@ std::string ComputeStaticRuntimeAbiHash()
     identities.push_back(
         "progress-registry:" +
         progress::ProductionProgressRegistry().canonical_sha256());
+    identities.push_back(
+        "derived-state-registry:" +
+        derived::ProductionDerivedStateRegistry().canonical_sha256());
+    for (const auto& observer : CanonicalStopCpuObserverDefinitions())
+    {
+        identities.push_back(
+            "stop-cpu-observer:" +
+            std::to_string(CanonicalStopCpuObserverId(observer.key)) + ":" +
+            std::string(observer.stable_name));
+    }
     std::sort(identities.begin(), identities.end());
     std::string canonical;
     AppendField(canonical, "savor.worker.static-runtime-abi/v1");
@@ -178,6 +190,7 @@ std::string ComputeWorkerWorksetExecutionKeyHash(
     AppendField(canonical, key.service_policy_sha256);
     AppendField(canonical, key.program_package_sha256);
     AppendField(canonical, key.common_input_sha256);
+    AppendField(canonical, key.derived_state_binding_sha256);
     AppendField(canonical, key.capture_binding_sha256);
     AppendField(canonical, key.progress_plan_sha256);
     return hash::sha256(canonical.data(), canonical.size());
@@ -352,10 +365,37 @@ WorksetValidationResult ValidateWorkerWorksetDefinition(
             WorkerRejectionCode::InvalidArgument,
             "WorkerWorkset execution key hash is not canonical");
     }
+    std::string derived_error;
+    if (!derived::ValidateWorksetDerivedStateBindingV1(
+            definition.derived_state, &derived_error))
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            derived_error.empty()
+                ? "WorkerWorkset derived-state binding is invalid"
+                : std::move(derived_error));
+    }
+    const auto& derived_registry =
+        derived::ProductionDerivedStateRegistry();
+    for (const auto& block : definition.derived_state.blocks)
+    {
+        const auto* descriptor =
+            derived_registry.FindBlock(block.identity.canonical_id);
+        if (!descriptor || descriptor->identity != block.identity ||
+            block.configuration.size() >
+                descriptor->maximum_configuration_bytes)
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "WorkerWorkset derived-state block is unavailable or mismatched");
+        }
+    }
     const std::string capture_binding_sha256 = definition.capture
         ? definition.capture->content_sha256
         : EmptyWorksetCaptureBindingHashV1();
-    if (definition.execution_key.capture_binding_sha256 !=
+    if (definition.execution_key.derived_state_binding_sha256 !=
+            definition.derived_state.content_sha256 ||
+        definition.execution_key.capture_binding_sha256 !=
             capture_binding_sha256 ||
         definition.execution_key.progress_plan_sha256 !=
             definition.progress_plan.content_sha256)

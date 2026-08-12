@@ -1839,11 +1839,6 @@ struct WorkerRuntime::Impl
         {
             return;
         }
-        active_workset->state = WorkerWorksetState::Running;
-        PublishWorksetState(
-            active_workset->definition.workset_id,
-            active_workset->state);
-        ChangeState(WorkerState::Running);
         StartNextWorksetItem();
     }
 
@@ -2361,6 +2356,7 @@ struct WorkerRuntime::Impl
             program::SessionResourceBindingTable* bindings =
                 session->resource_bindings();
             CaptureService* capture = session->capture_service();
+            const auto* derived_state = session->derived_state();
             StopPointRouter* stops = session->stop_points();
             if ((session_action_host &&
                  (action.invocation_active ||
@@ -2379,6 +2375,7 @@ struct WorkerRuntime::Impl
                 resources->snapshot().cleanup_execution_pending ||
                 !bindings || bindings->size() != 0 ||
                 (capture && capture->snapshot().attached) ||
+                (derived_state && derived_state->active()) ||
                 !stops || !stops->ingress_enabled())
             {
                 const std::string diagnostic =
@@ -2453,11 +2450,6 @@ struct WorkerRuntime::Impl
                 }
                 return;
             }
-            active_workset->state = WorkerWorksetState::Running;
-            RefreshSnapshot();
-            PublishWorksetState(
-                active_workset->definition.workset_id,
-                active_workset->state);
         }
 
         const std::uint32_t ordinal =
@@ -2473,6 +2465,49 @@ struct WorkerRuntime::Impl
             return;
         }
         const SessionSnapshot current = session->snapshot();
+        const BackendResult derived_activation =
+            session->ActivateDerivedStateForItem(
+                active_workset->definition.derived_state,
+                item.item_id);
+        if (!derived_activation.ok)
+        {
+            active_invocation.emplace(
+                item.execution.execution_id,
+                item.execution.attempt_id,
+                current.workset_epoch,
+                prepared.maximum_artifacts);
+            active_invocation->workset_id =
+                active_workset->definition.workset_id;
+            active_invocation->workset_item_id = item.item_id;
+            active_invocation->workset_item_ordinal = ordinal;
+            ProgramInvocationTerminalEvent terminal;
+            terminal.invocation_id = item.execution.execution_id;
+            terminal.attempt_id = item.execution.attempt_id;
+            terminal.status = InvocationTerminalStatus::InfrastructureFailure;
+            terminal.cleanup = derived_activation.integrity ==
+                    BackendIntegrity::Unknown
+                ? CleanupStatus::Failed
+                : CleanupStatus::Clean;
+            terminal.session_disposition = derived_activation.integrity ==
+                    BackendIntegrity::Unknown
+                ? SessionDisposition::Tainted
+                : session->snapshot().disposition;
+            terminal.workset_epoch = current.workset_epoch;
+            terminal.error = {
+                derived_activation.integrity == BackendIntegrity::Unknown
+                    ? WorkerRejectionCode::SessionTainted
+                    : WorkerRejectionCode::BackendFailure,
+                derived_activation.message.empty()
+                    ? "Derived state could not activate for the workset item"
+                    : derived_activation.message};
+            HandleInvocationTerminal(std::move(terminal));
+            return;
+        }
+        active_workset->state = WorkerWorksetState::Running;
+        PublishWorksetState(
+            active_workset->definition.workset_id,
+            active_workset->state);
+        ChangeState(WorkerState::Running);
         active_invocation.emplace(
             item.execution.execution_id,
             item.execution.attempt_id,
@@ -5481,6 +5516,26 @@ struct WorkerRuntime::Impl
                 ? CleanupStatus::Failed
                 : CleanupStatus::CleanWithDiagnostics;
             terminal.error = capture_finalization;
+        }
+
+        const BackendResult derived_close =
+            session->CloseDerivedStateItem();
+        if (!derived_close.ok)
+        {
+            if (terminal.error && !terminal.error.message.empty())
+            {
+                terminal.diagnostics.push_back(
+                    "Program terminal before derived-state cleanup failure: " +
+                    terminal.error.message);
+            }
+            terminal.status = InvocationTerminalStatus::CleanupFailure;
+            terminal.cleanup = CleanupStatus::Failed;
+            terminal.session_disposition = SessionDisposition::Tainted;
+            terminal.error = {
+                WorkerRejectionCode::SessionTainted,
+                derived_close.message.empty()
+                    ? "Derived-state item cleanup did not preserve routing integrity"
+                    : derived_close.message};
         }
 
         std::string taint_reason;

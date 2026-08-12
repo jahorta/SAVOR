@@ -1,4 +1,5 @@
 #include "BattleContextProgram.h"
+#include "../WorksetDerivedStateBinding.h"
 #include "../WorksetObservationBinding.h"
 
 #include <algorithm>
@@ -238,6 +239,17 @@ public:
         {
             return false;
         }
+        const auto program_package = savor::runtime::fullphase::
+            BuildFullPhaseProgramPackage(*phase_);
+        ResolvedWorksetDerivedStateBindingV1 derived_state;
+        if (!ResolveWorksetDerivedStateBindingV1(
+                std::span<const std::string>{},
+                program_package,
+                &derived_state,
+                error_out))
+        {
+            return false;
+        }
         std::int64_t context_id = 0;
         if (!analysis_db_->CreateBattleContextProbe({
                 .wave_id = 0,
@@ -323,9 +335,13 @@ public:
                         .entrypoint = runtime.entrypoint,
                         .verified_dependency_sha256 = runtime.verified_dependency_sha256,
                         .runtime_profile_sha256 = runtime.runtime_profile_sha256,
-                        .program_package_sha256 = savor::runtime::fullphase::
-                            BuildFullPhaseProgramPackage(*phase_).canonical_sha256,
+                        .program_package_sha256 =
+                            program_package.canonical_sha256,
                         .estimated_payload_bytes = kDeclaredTerminalBytes,
+                    },
+                    .derived_state = {
+                        .binding_payload = derived_state.encoded_binding,
+                        .binding_sha256 = derived_state.binding_sha256,
                     },
                     .observation = {
                         .capture_binding_payload =
@@ -447,6 +463,7 @@ public:
             },
             .lineage = runtime.baseline_lineage,
         };
+        workset.derived_state = context.derived_state;
         workset.capture = context.capture;
         workset.progress_plan = context.progress_plan;
         workset.execution_key = {
@@ -459,6 +476,8 @@ public:
             .service_policy_sha256 = runtime.service_policy_sha256,
             .program_package_sha256 = workset.phase_invocation.program_package.canonical_sha256,
             .common_input_sha256 = workset.phase_invocation.common_input.content_sha256,
+            .derived_state_binding_sha256 =
+                workset.derived_state.content_sha256,
             .capture_binding_sha256 = workset.capture
                 ? workset.capture->content_sha256
                 : savor::runtime::EmptyWorksetCaptureBindingHashV1(),
@@ -627,6 +646,8 @@ ProgramKindDescriptor BuildBattleContextProgramDescriptor(
         BattleContextFullPhaseDefinitionV1()->identity();
     descriptor.default_progress_library_ids =
         ObservationDefaults().progress_library_ids;
+    descriptor.default_derived_state_block_ids =
+        std::vector<std::string>{};
     descriptor.default_progress_runtime_trigger_pcs =
         ObservationDefaults().runtime_sample_trigger_pcs;
     descriptor.job_materializer = std::make_shared<Materializer>(

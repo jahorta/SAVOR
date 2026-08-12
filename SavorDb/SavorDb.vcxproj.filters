@@ -200,6 +200,9 @@
     <ClInclude Include="Execution\ProgramDB\WorksetObservationBinding.h">
       <Filter>Programs</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\WorksetDerivedStateBinding.h">
+      <Filter>Programs</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\ProgramDB\ProgramResultProcessor.h">
       <Filter>Programs</Filter>
     </ClInclude>
@@ -382,6 +385,9 @@
     <ClCompile Include="Execution\ProgramDB\WorksetObservationBinding.cpp">
       <Filter>Programs</Filter>
     </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\WorksetDerivedStateBinding.cpp">
+      <Filter>Programs</Filter>
+    </ClCompile>
     <ClCompile Include="Execution\ProgramDB\WorkerResultBlobCleanupService.cpp">
       <Filter>Programs</Filter>
     </ClCompile>
@@ -516,6 +522,9 @@
     <None Include="migration\Authoring\202606171300_authoring_predicate_required_breakpoints.sql">
       <Filter>Migrations\Authoring</Filter>
     </None>
+    <None Include="migration\Authoring\202608111100_authoring_remove_derived_address_region.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql">
       <Filter>Migrations\Execution</Filter>
     </None>
@@ -553,6 +562,9 @@
       <Filter>Migrations\Execution</Filter>
     </None>
     <None Include="migration\Execution\202608091000_execution_structured_job_progress.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
+    <None Include="migration\Execution\202608111000_execution_derived_state_binding.sql">
       <Filter>Migrations\Execution</Filter>
     </None>
     <None Include="migration\State\202604051000_state_stage2_schema.sql">

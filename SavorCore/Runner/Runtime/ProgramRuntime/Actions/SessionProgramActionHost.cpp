@@ -2700,6 +2700,8 @@ struct SessionProgramActionHost::Impl
         CanonicalActionPayload payload);
     [[nodiscard]] ProgramActionDispatchResult InvokeSourceQuery(
         ProgramActionRequest request);
+    [[nodiscard]] ProgramActionDispatchResult InvokeDerivedStateQuery(
+        ProgramActionRequest request);
     [[nodiscard]] ProgramActionDispatchResult BeginUnwind(
         ProgramActionRequest request,
         ResourceUnwindResult unwind,
@@ -3135,6 +3137,23 @@ SessionProgramActionHost::Impl::Invoke(
         }
         return InvokeSourceQuery(std::move(request));
     }
+    if (*request.action ==
+            capabilities::BattleDerivedTurnEntryActionIdentity() ||
+        *request.action ==
+            capabilities::BattleDerivedTurnOrderActionIdentity() ||
+        *request.action ==
+            capabilities::BattleDerivedRewardsActionIdentity())
+    {
+        if (active && active->baseline_stage != BaselineStage::Established)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "baseline_not_established",
+                "Derived state is unavailable before baseline establishment");
+        }
+        return InvokeDerivedStateQuery(std::move(request));
+    }
     const auto canonical = ResolveCanonicalAction(*request.action);
     if (!canonical)
     {
@@ -3339,6 +3358,84 @@ SessionProgramActionHost::Impl::InvokeSourceQuery(
         }
         completion.output =
             capabilities::EncodeNavigationContextValue(context);
+    }
+    return Immediate(std::move(completion));
+}
+
+ProgramActionDispatchResult
+SessionProgramActionHost::Impl::InvokeDerivedStateQuery(
+    ProgramActionRequest request)
+{
+    derived::DerivedStateQueryV1 query;
+    if (!capabilities::DecodeBattleDerivedQueryValue(
+            request.input, query) ||
+        (query.freshness == derived::DerivedStateFreshness::SameRoutedEvent &&
+         query.workset_epoch != request.expected_epoch))
+    {
+        return Reject(
+            request,
+            ProgramActionResolutionStatus::Rejected,
+            "invalid_derived_state_request",
+            "Battle derived-state request is malformed or stale");
+    }
+    auto* service = session.derived_state();
+    if (!service)
+    {
+        return Reject(
+            request,
+            ProgramActionResolutionStatus::Unsupported,
+            "derived_state_unavailable",
+            "DerivedStateService is unavailable");
+    }
+    query.workset_epoch = request.expected_epoch;
+    query.item_id = service->item_id();
+
+    ProgramActionResolution completion = Completion(
+        request,
+        ProgramActionResolutionStatus::Completed);
+    if (request.action ==
+        capabilities::BattleDerivedTurnEntryActionIdentity())
+    {
+        const auto result = service->QueryBattleTurnEntry(query);
+        if (!result.receipt.ok || !result.snapshot)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Failed,
+                "derived_state_evidence_unavailable",
+                result.receipt.message);
+        }
+        completion.output = capabilities::EncodeBattleDerivedSnapshotValue(
+            *result.snapshot);
+    }
+    else if (request.action ==
+             capabilities::BattleDerivedTurnOrderActionIdentity())
+    {
+        const auto result = service->QueryBattleTurnOrder(query);
+        if (!result.receipt.ok || !result.snapshot)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Failed,
+                "derived_state_evidence_unavailable",
+                result.receipt.message);
+        }
+        completion.output = capabilities::EncodeBattleDerivedSnapshotValue(
+            *result.snapshot);
+    }
+    else
+    {
+        const auto result = service->QueryBattleRewards(query);
+        if (!result.receipt.ok || !result.snapshot)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Failed,
+                "derived_state_evidence_unavailable",
+                result.receipt.message);
+        }
+        completion.output = capabilities::EncodeBattleDerivedSnapshotValue(
+            *result.snapshot);
     }
     return Immediate(std::move(completion));
 }

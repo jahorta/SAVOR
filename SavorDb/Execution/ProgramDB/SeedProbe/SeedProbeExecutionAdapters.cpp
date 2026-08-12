@@ -1,6 +1,7 @@
 #include "SeedProbeExecutionAdapters.h"
 
 #include "SeedProbeJobSpec.h"
+#include "../WorksetDerivedStateBinding.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -422,6 +423,7 @@ public:
                     "soa.seed_probe.CommonInput", 1),
         };
         workset.baseline = std::move(baseline);
+        workset.derived_state = context.derived_state;
         workset.capture = context.capture;
         workset.progress_plan = context.progress_plan;
         workset.execution_key = {
@@ -444,6 +446,8 @@ public:
             .common_input_sha256 =
                 workset.phase_invocation.common_input
                     .content_sha256,
+            .derived_state_binding_sha256 =
+                workset.derived_state.content_sha256,
             .capture_binding_sha256 = workset.capture
                 ? workset.capture->content_sha256
                 : savor::runtime::EmptyWorksetCaptureBindingHashV1(),

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <deque>
+#include <format>
 #include <limits>
 #include <map>
 #include <ranges>
@@ -14,6 +15,37 @@
 
 namespace savor::runtime {
 namespace {
+
+constexpr std::array kCanonicalStopCpuObservers{
+    CanonicalStopCpuObserverDefinition{
+        CanonicalStopCpuObserver::CaptureProfile,
+        "savor.capture.profile"},
+    CanonicalStopCpuObserverDefinition{
+        CanonicalStopCpuObserver::DerivedState,
+        "savor.derived-state.refresh"},
+};
+
+static_assert([] {
+    for (std::size_t i = 0; i < kCanonicalStopCpuObservers.size(); ++i)
+    {
+        if (CanonicalStopCpuObserverId(kCanonicalStopCpuObservers[i].key) == 0 ||
+            kCanonicalStopCpuObservers[i].stable_name.empty())
+        {
+            return false;
+        }
+        for (std::size_t j = i + 1; j < kCanonicalStopCpuObservers.size(); ++j)
+        {
+            if (kCanonicalStopCpuObservers[i].key ==
+                    kCanonicalStopCpuObservers[j].key ||
+                kCanonicalStopCpuObservers[i].stable_name ==
+                    kCanonicalStopCpuObservers[j].stable_name)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}());
 
 struct OneShotGate
 {
@@ -52,6 +84,7 @@ struct GroupRecord
 struct DispatchEntry
 {
     StopSourceId source_id;
+    std::string consumer_name;
     StopSubscriptionGroupId group_id;
     StopSubscriptionId subscription_id;
     StopPointSpec point;
@@ -67,6 +100,22 @@ struct DispatchEntry
     std::shared_ptr<SuppressionGate> suppression;
     SourceDropCounter* drop_counter = nullptr;
 };
+
+[[nodiscard]] std::string StopConsumerFailureMessage(
+    const DispatchEntry& entry,
+    const RoutedStopEvent& event,
+    std::string_view exception_message)
+{
+    return std::format(
+        "Stop consumer '{}' threw at PC 0x{:08X} "
+        "(source={}, group={}, subscription={}): {}",
+        entry.consumer_name,
+        event.evidence.hit_pc,
+        entry.source_id.value(),
+        entry.group_id.value(),
+        entry.subscription_id.value(),
+        exception_message);
+}
 
 struct DispatchSnapshot
 {
@@ -434,6 +483,95 @@ private:
 
 } // namespace
 
+std::span<const CanonicalStopCpuObserverDefinition>
+CanonicalStopCpuObserverDefinitions() noexcept
+{
+    return kCanonicalStopCpuObservers;
+}
+
+bool StopCpuObserverDispatcher::Register(
+    CanonicalStopCpuObserver key,
+    IStopPointCpuObserver& observer,
+    std::string* error_out)
+{
+    const auto definitions = CanonicalStopCpuObserverDefinitions();
+    const bool known = std::ranges::any_of(
+        definitions,
+        [key](const CanonicalStopCpuObserverDefinition& definition) {
+            return definition.key == key;
+        });
+    if (frozen_ || !known || CanonicalStopCpuObserverId(key) == 0 ||
+        std::ranges::any_of(entries_, [key](const Entry& entry) {
+            return entry.key == key;
+        }))
+    {
+        if (error_out)
+        {
+            *error_out = frozen_
+                ? "CPU-observer dispatcher is already frozen"
+                : !known
+                    ? "CPU-observer descriptor is not canonical"
+                    : "CPU-observer descriptor is duplicated";
+        }
+        return false;
+    }
+    entries_.push_back({key, &observer});
+    return true;
+}
+
+bool StopCpuObserverDispatcher::Freeze(std::string* error_out)
+{
+    if (frozen_)
+    {
+        if (error_out)
+            *error_out = "CPU-observer dispatcher is already frozen";
+        return false;
+    }
+    std::ranges::sort(entries_, {}, [](const Entry& entry) {
+        return CanonicalStopCpuObserverId(entry.key);
+    });
+    frozen_ = true;
+    return true;
+}
+
+StopCpuObservationResult StopCpuObserverDispatcher::ObserveRoutedHit(
+    std::uint32_t descriptor_id,
+    const RoutedStopEvent& event) noexcept
+{
+    if (!frozen_ || descriptor_id == 0)
+        return StopCpuObservationResult::Failed;
+    const auto found = std::ranges::lower_bound(
+        entries_,
+        descriptor_id,
+        {},
+        [](const Entry& entry) {
+            return CanonicalStopCpuObserverId(entry.key);
+        });
+    if (found == entries_.end() ||
+        CanonicalStopCpuObserverId(found->key) != descriptor_id ||
+        found->observer == nullptr)
+    {
+        return StopCpuObservationResult::Failed;
+    }
+    return found->observer->ObserveRoutedHit(descriptor_id, event);
+}
+
+bool StopCpuObserverDispatcher::RecognizesDescriptor(
+    std::uint32_t descriptor_id) const noexcept
+{
+    if (!frozen_ || descriptor_id == 0)
+        return false;
+    const auto found = std::ranges::lower_bound(
+        entries_,
+        descriptor_id,
+        {},
+        [](const Entry& entry) {
+            return CanonicalStopCpuObserverId(entry.key);
+        });
+    return found != entries_.end() && found->observer != nullptr &&
+        CanonicalStopCpuObserverId(found->key) == descriptor_id;
+}
+
 struct StopPointLeaseControl
 {
     std::mutex mutex;
@@ -521,11 +659,13 @@ namespace {
         const std::uint32_t cpu_observer_descriptor_id =
             CpuObserverDescriptor(subscription.route);
         if (cpu_observer_descriptor_id != 0 &&
-            observer == nullptr)
+            (observer == nullptr ||
+             !observer->RecognizesDescriptor(
+                 cpu_observer_descriptor_id)))
         {
             return Error(
                 StopPointErrorCode::InvalidArgument,
-                "CPU observer descriptors require a trusted observer port");
+                "CPU observer descriptor is not registered by the frozen trusted observer port");
         }
         if (subscription.sample_descriptor_ids.size() > kMaxRoutedHitSamples)
         {
@@ -718,6 +858,7 @@ namespace {
             const StopSubscriptionDefinition& definition = subscription.definition;
             snapshot->entries.push_back({
                 group.source.id,
+                group.source.stable_name,
                 group.id,
                 definition.id,
                 definition.point,
@@ -1869,12 +2010,24 @@ StopGroupRegistrationResult StopPointRouter::RegisterGroup(
                 {
                     entry.consumer->OnStopPoint(delivery);
                 }
+                catch (const std::exception& exception)
+                {
+                    current.terminal = StopRouteTerminal::RoutingFailure;
+                    current.error = Error(
+                        StopPointErrorCode::InvalidPolicy,
+                        StopConsumerFailureMessage(
+                            entry, *impl_->current_point, exception.what()));
+                    current.core_must_remain_stopped = true;
+                    break;
+                }
                 catch (...)
                 {
                     current.terminal = StopRouteTerminal::RoutingFailure;
                     current.error = Error(
                         StopPointErrorCode::InvalidPolicy,
-                        "A stop consumer threw while accepting the current point");
+                        StopConsumerFailureMessage(
+                            entry, *impl_->current_point,
+                            "unknown non-standard exception"));
                     current.core_must_remain_stopped = true;
                     break;
                 }
@@ -2026,12 +2179,24 @@ StopRouteReceipt StopPointRouter::AcceptCurrentPoint(
             {
                 entry.consumer->OnStopPoint(delivery);
             }
+            catch (const std::exception& exception)
+            {
+                current.terminal = StopRouteTerminal::RoutingFailure;
+                current.error = Error(
+                    StopPointErrorCode::InvalidPolicy,
+                    StopConsumerFailureMessage(
+                        entry, *impl_->current_point, exception.what()));
+                current.core_must_remain_stopped = true;
+                break;
+            }
             catch (...)
             {
                 current.terminal = StopRouteTerminal::RoutingFailure;
                 current.error = Error(
                     StopPointErrorCode::InvalidPolicy,
-                    "A stop consumer threw while accepting the current point");
+                    StopConsumerFailureMessage(
+                        entry, *impl_->current_point,
+                        "unknown non-standard exception"));
                 current.core_must_remain_stopped = true;
                 break;
             }
@@ -2340,6 +2505,12 @@ StopReleaseReceipt StopPointRouter::ReleaseFromHandle(
             ingress_enabled_.store(false, std::memory_order_release);
         return result;
     }
+
+    // Applying the replacement dispatch makes this group unreachable to new
+    // native hits. Wait for callbacks that protected the prior immutable
+    // snapshot before returning the lease so its CPU observer may safely
+    // unpublish and destroy item-local storage.
+    WaitForNativeIngressQuiescence();
 
     impl_->released_registration_sequences[lease.group_id.value()] =
         lease.registration_sequence;
@@ -2915,12 +3086,23 @@ namespace {
         {
             entry.consumer->OnStopPoint(delivery);
         }
+        catch (const std::exception& exception)
+        {
+            receipt.terminal = StopRouteTerminal::RoutingFailure;
+            receipt.error = Error(
+                StopPointErrorCode::InvalidPolicy,
+                StopConsumerFailureMessage(
+                    entry, packet.event, exception.what()));
+            receipt.core_must_remain_stopped = true;
+            break;
+        }
         catch (...)
         {
             receipt.terminal = StopRouteTerminal::RoutingFailure;
             receipt.error = Error(
                 StopPointErrorCode::InvalidPolicy,
-                "A stop consumer threw during routed delivery");
+                StopConsumerFailureMessage(
+                    entry, packet.event, "unknown non-standard exception"));
             receipt.core_must_remain_stopped = true;
             break;
         }

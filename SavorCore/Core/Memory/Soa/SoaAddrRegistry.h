@@ -4,11 +4,10 @@
 #include <optional>
 #include <span>
 #include "SoaAddr.def.h"
-#include "Battle/DerivedBattleBuffer.addr.h"
 
 namespace addr {
 
-    enum class Region : uint8_t { MEM1 = 1, MEM2 = 2, DERIVED = 3 };
+    enum class Region : uint8_t { MEM1 = 1, MEM2 = 2 };
 
     struct DolphinAddr {
         Region     region;
@@ -17,8 +16,7 @@ namespace addr {
 
 #define ADDR_TABLE_ALL(X)       \
   ADDR_TABLE_CORE(X)            \
-  ADDR_TABLE_BATTLE(X)          \
-  ADDR_TABLE_DERIVED_BATTLE(X)
+  ADDR_TABLE_BATTLE(X)
 
     enum class AddrKey : uint16_t {
 #define MK_ENUM(dom, NAME, R, B) dom##_##NAME,
@@ -43,7 +41,7 @@ namespace addr {
         static const bool exists(AddrKey k);
     };
 
-    // ergonomic aliases: addr::core::X, addr::battle::Y, addr::derived::Z
+    // ergonomic aliases: addr::core::X, addr::battle::Y
     namespace core {
 #define MK_ALIAS(dom, NAME, R, B) inline constexpr AddrKey NAME = AddrKey::dom##_##NAME;
         ADDR_TABLE_CORE(MK_ALIAS)
@@ -55,12 +53,5 @@ namespace addr {
         ADDR_TABLE_BATTLE(MK_ALIAS)
 #undef MK_ALIAS
     }
-
-    namespace derived::battle {
-#define MK_ALIAS(dom, NAME, R, B) inline constexpr AddrKey NAME = AddrKey::dom##_##NAME;
-        ADDR_TABLE_DERIVED_BATTLE(MK_ALIAS)
-#undef MK_ALIAS
-    }
-
 
 } // namespace addr

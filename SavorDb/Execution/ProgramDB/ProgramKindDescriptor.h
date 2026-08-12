@@ -168,6 +168,7 @@ struct WorksetReconstructionContext {
     std::string dispatch_token;
     std::string contract_key;
     savor::runtime::ArtifactCompatibilityToken state_compatibility;
+    savor::runtime::derived::WorksetDerivedStateBindingV1 derived_state;
     std::optional<savor::runtime::WorksetCaptureBindingV1> capture;
     savor::runtime::progress::ProgressPlanV1 progress_plan;
     std::vector<WorksetReconstructionItem> items;
@@ -341,6 +342,9 @@ struct ProgramKindDescriptor {
     // workset ProgressPlanV1 before dispatch.
     std::optional<std::vector<std::string>>
         default_progress_library_ids;
+    // Presence is mandatory, including when no derived-state block is needed.
+    std::optional<std::vector<std::string>>
+        default_derived_state_block_ids;
     std::vector<std::uint32_t> default_progress_runtime_trigger_pcs;
 
     std::shared_ptr<IWorkflowTransitionHandler> workflow_transition;

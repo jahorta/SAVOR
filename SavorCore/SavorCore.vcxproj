@@ -179,15 +179,11 @@
     <ClInclude Include="Core\Input\SoaBattle\BattleCommandPreparation.h" />
     <ClInclude Include="Core\Input\SoaBattle\BattleCommandCodec.h" />
     <ClInclude Include="Core\Input\SoaBattle\BattlePlanValidation.h" />
-    <ClInclude Include="Core\Memory\DerivedBase.h" />
     <ClInclude Include="Core\Memory\Endian.h" />
     <ClInclude Include="Core\Memory\IKeyReader.h" />
-    <ClInclude Include="Core\Memory\KeyHostRouter.h" />
     <ClInclude Include="Core\Memory\MemView.h" />
     <ClInclude Include="Core\Memory\Soa\Battle\BattleContext.h" />
     <ClInclude Include="Core\Memory\Soa\Battle\BattleContextCodec.h" />
-    <ClInclude Include="Core\Memory\Soa\Battle\DerivedBattleBuffer.h" />
-    <ClInclude Include="Core\Memory\Soa\Battle\DerivedBattleBuffer.addr.h" />
     <ClInclude Include="Core\Memory\Soa\Navigation\NavigationContext.h" />
     <ClInclude Include="Core\Memory\Soa\Navigation\NavigationContextCodec.h" />
     <ClInclude Include="Core\Memory\Soa\SoaAddr.def.h" />
@@ -287,7 +283,8 @@
     <ClInclude Include="Runner\Runtime\Services\Input\InputArbiter.h" />
     <ClInclude Include="Runner\Runtime\Services\Memory\GuestMemory.h" />
     <ClInclude Include="Runner\Runtime\Services\Memory\GuestMutationService.h" />
-    <ClInclude Include="Runner\Runtime\Services\Memory\IGuestMemoryBackendPort.h" />
+      <ClInclude Include="Runner\Runtime\Services\Memory\IGuestMemoryBackendPort.h" />
+      <ClInclude Include="Runner\Runtime\Services\Memory\IHitTimeGuestMemoryBackendPort.h" />
     <ClInclude Include="Runner\Runtime\Services\Movie\IMovieBackendPort.h" />
     <ClInclude Include="Runner\Runtime\Services\Movie\InputMovieReservationAdapter.h" />
     <ClInclude Include="Runner\Runtime\Services\Movie\MovieService.h" />
@@ -310,6 +307,10 @@
     <ClInclude Include="Runner\Runtime\Worksets\SavestateArtifactFinalizer.h" />
     <ClInclude Include="Runner\Runtime\Worksets\WorkerCompletionLedger.h" />
     <ClInclude Include="Runner\Runtime\Worksets\WorksetTypes.h" />
+    <ClInclude Include="Runner\Runtime\DerivedState\DerivedStateTypes.h" />
+    <ClInclude Include="Runner\Runtime\DerivedState\DerivedStateRegistry.h" />
+    <ClInclude Include="Runner\Runtime\DerivedState\BattleCoreDerivedState.h" />
+    <ClInclude Include="Runner\Runtime\DerivedState\DerivedStateService.h" />
     <ClInclude Include="Runner\Runtime\Worksets\WorksetStager.h" />
     <ClInclude Include="Runner\Runtime\Worksets\WorksetWireCodec.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleRunnerKeys.reg.h" />
@@ -433,6 +434,9 @@
     <ClCompile Include="Runner\Runtime\Worksets\SavestateArtifactFinalizer.cpp" />
     <ClCompile Include="Runner\Runtime\Worksets\WorkerCompletionLedger.cpp" />
     <ClCompile Include="Runner\Runtime\Worksets\WorksetTypes.cpp" />
+    <ClCompile Include="Runner\Runtime\DerivedState\DerivedStateTypes.cpp" />
+    <ClCompile Include="Runner\Runtime\DerivedState\DerivedStateRegistry.cpp" />
+    <ClCompile Include="Runner\Runtime\DerivedState\DerivedStateService.cpp" />
     <ClCompile Include="Runner\Runtime\Worksets\WorksetStager.cpp" />
     <ClCompile Include="Runner\Runtime\Worksets\WorksetWireCodec.cpp" />
     

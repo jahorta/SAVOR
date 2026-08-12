@@ -7,7 +7,6 @@
 
 namespace savor {
 	class DolphinWrapper;
-	class IDerivedBuffer;
 }
 
 namespace addrprog {
@@ -33,11 +32,6 @@ namespace addrprog {
 		bool ok{ false };
 	};
 
-	enum class MemoryDomain : uint8_t {
-		Host = 1,
-		Derived = 2,
-	};
-
 	struct EvalTraceStep {
 		uint8_t op{ 0 };
 		std::string op_name;
@@ -49,7 +43,6 @@ namespace addrprog {
 
 	struct EvalResult {
 		uint32_t va{ 0 };
-		MemoryDomain domain{ MemoryDomain::Host };
 		bool ok{ false };
 		std::string error;
 		std::vector<EvalTraceStep> trace;
@@ -61,18 +54,15 @@ namespace addrprog {
 	// Region must be inferred by the caller (e.g., from a predicate's addr_key).
 
 	ExecResult exec(const uint8_t* blob, size_t blob_size, uint32_t offset,
-		savor::DolphinWrapper& host,
-		const savor::IDerivedBuffer* derived);
+		savor::DolphinWrapper& host);
 
 	EvalResult evaluate(const uint8_t* blob, size_t blob_size, uint32_t offset,
 		savor::DolphinWrapper& host,
-		const savor::IDerivedBuffer* derived,
 		const RegisterReadFn& read_register = {},
 		bool include_trace = false);
 
 	bool read_value(const uint8_t* blob, size_t blob_size, uint32_t offset,
 		savor::DolphinWrapper& host,
-		const savor::IDerivedBuffer* derived,
 		uint8_t width,
 		uint64_t& out_bits,
 		EvalResult* eval_out = nullptr,

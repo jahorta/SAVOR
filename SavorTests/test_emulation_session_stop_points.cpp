@@ -47,6 +47,18 @@ TEST(EmulationSessionWorksetEpoch, InfrastructureOpenHasNoActiveEpoch)
     EXPECT_TRUE(harness.session->Shutdown().ok);
 }
 
+TEST(EmulationSessionWorksetEpoch, RequiresHitTimeGuestMemoryAtStartup)
+{
+    Harness harness;
+    harness.dolphin->hit_time_memory_available = false;
+    const SessionOperationReceipt opened = harness.session->Open({});
+    EXPECT_FALSE(opened.ok);
+    EXPECT_EQ(opened.backend.code, BackendErrorCode::Unavailable);
+    EXPECT_NE(
+        opened.backend.message.find("hit-time guest-memory facet"),
+        std::string::npos);
+}
+
 TEST(EmulationSessionWorksetEpoch, EpochIsStableForWorksetAndClearedAtEnd)
 {
     Harness harness;

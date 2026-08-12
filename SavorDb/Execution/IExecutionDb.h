@@ -364,6 +364,13 @@ struct ExecutionWorksetObservationBindingV1 {
     std::string progress_plan_sha256;
 };
 
+// Exact execution-authoritative derived-state selection. It is deliberately
+// separate from output-only capture and progress observation products.
+struct ExecutionWorksetDerivedStateBindingV1 {
+    std::vector<std::uint8_t> binding_payload;
+    std::string binding_sha256;
+};
+
 struct PublishWorksetCommand {
     std::int64_t job_set_id = 0;
     // Full Phase invocation anchor. It may be supplied before the workflow
@@ -375,6 +382,7 @@ struct PublishWorksetCommand {
     std::int32_t program_kind = 0;
     std::int32_t program_version = 1;
     ExecutionWorksetContract contract;
+    ExecutionWorksetDerivedStateBindingV1 derived_state;
     ExecutionWorksetObservationBindingV1 observation;
     int priority = 0;
     std::vector<std::int64_t> ordered_job_ids;
@@ -467,6 +475,7 @@ struct ClaimedPublishedWorkset {
     std::int32_t program_kind = 0;
     std::int32_t program_version = 0;
     ExecutionWorksetContract contract;
+    ExecutionWorksetDerivedStateBindingV1 derived_state;
     ExecutionWorksetObservationBindingV1 observation;
     int priority = 0;
     std::string claim_token;

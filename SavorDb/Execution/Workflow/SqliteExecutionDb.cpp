@@ -2391,10 +2391,14 @@ bool SqliteExecutionDb::PublishWorkset(
         || !IsSha256(contract.verified_dependency_sha256)
         || !IsSha256(contract.runtime_profile_sha256)
         || !IsSha256(contract.program_package_sha256)
+        || command.derived_state.binding_payload.empty()
+        || !IsSha256(command.derived_state.binding_sha256)
         || observation.capture_binding_payload.empty()
         || !IsSha256(observation.capture_binding_sha256)
         || observation.progress_plan_payload.empty()
         || !IsSha256(observation.progress_plan_sha256)
+        || command.derived_state.binding_payload.size()
+            > 32u * 1024u * 1024u
         || observation.capture_binding_payload.size()
             > 32u * 1024u * 1024u
         || observation.progress_plan_payload.size()
@@ -2566,6 +2570,7 @@ bool SqliteExecutionDb::PublishWorkset(
             "contract_key,module_canonical_id,module_version,"
             "module_sha256,entrypoint,verified_dependency_sha256,"
             "runtime_profile_sha256,program_package_sha256,"
+            "derived_state_binding_payload,derived_state_binding_sha256,"
             "capture_binding_payload,capture_binding_sha256,"
             "progress_plan_payload,progress_plan_sha256,"
             "execution_affinity_key,"
@@ -2613,23 +2618,27 @@ bool SqliteExecutionDb::PublishWorkset(
             && Text(existing.st, 11)
                 == contract.program_package_sha256
             && Blob(existing.st, 12)
-                == observation.capture_binding_payload
+                == command.derived_state.binding_payload
             && Text(existing.st, 13)
-                == observation.capture_binding_sha256
+                == command.derived_state.binding_sha256
             && Blob(existing.st, 14)
-                == observation.progress_plan_payload
+                == observation.capture_binding_payload
             && Text(existing.st, 15)
+                == observation.capture_binding_sha256
+            && Blob(existing.st, 16)
+                == observation.progress_plan_payload
+            && Text(existing.st, 17)
                 == observation.progress_plan_sha256
-            && OptionalText(existing.st, 16)
+            && OptionalText(existing.st, 18)
                 == contract.execution_affinity_key
             && static_cast<std::uint64_t>(
-                sqlite3_column_int64(existing.st, 17))
+                sqlite3_column_int64(existing.st, 19))
                 == contract.estimated_payload_bytes
-            && sqlite3_column_int(existing.st, 18)
+            && sqlite3_column_int(existing.st, 20)
                 == command.priority
-            && sqlite3_column_int64(existing.st, 19)
+            && sqlite3_column_int64(existing.st, 21)
                 == workflow_step_id
-            && sqlite3_column_int64(existing.st, 20)
+            && sqlite3_column_int64(existing.st, 22)
                 == root_job_set_id;
         bool membership_matches = metadata_matches;
         if (membership_matches) {
@@ -2732,12 +2741,13 @@ bool SqliteExecutionDb::PublishWorkset(
             "contract_key,module_canonical_id,module_version,"
             "module_sha256,entrypoint,verified_dependency_sha256,"
             "runtime_profile_sha256,program_package_sha256,"
+            "derived_state_binding_payload,derived_state_binding_sha256,"
             "capture_binding_payload,capture_binding_sha256,"
             "progress_plan_payload,progress_plan_sha256,"
             "execution_affinity_key,"
             "estimated_payload_bytes,priority,item_count,published_at_utc) "
             "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,"
-            "?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23);",
+            "?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25);",
             -1,
             &insert_workset.st,
             nullptr)
@@ -2805,38 +2815,48 @@ bool SqliteExecutionDb::PublishWorkset(
     BindBlob(
         insert_workset.st,
         15,
-        observation.capture_binding_payload);
+        command.derived_state.binding_payload);
     sqlite3_bind_text(
         insert_workset.st,
         16,
-        observation.capture_binding_sha256.c_str(),
+        command.derived_state.binding_sha256.c_str(),
         -1,
         SQLITE_TRANSIENT);
     BindBlob(
         insert_workset.st,
         17,
-        observation.progress_plan_payload);
+        observation.capture_binding_payload);
     sqlite3_bind_text(
         insert_workset.st,
         18,
+        observation.capture_binding_sha256.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    BindBlob(
+        insert_workset.st,
+        19,
+        observation.progress_plan_payload);
+    sqlite3_bind_text(
+        insert_workset.st,
+        20,
         observation.progress_plan_sha256.c_str(),
         -1,
         SQLITE_TRANSIENT);
     BindOptionalText(
         insert_workset.st,
-        19,
+        21,
         contract.execution_affinity_key);
     sqlite3_bind_int64(
         insert_workset.st,
-        20,
+        22,
         static_cast<std::int64_t>(
             contract.estimated_payload_bytes));
-    sqlite3_bind_int(insert_workset.st, 21, command.priority);
+    sqlite3_bind_int(insert_workset.st, 23, command.priority);
     sqlite3_bind_int(
         insert_workset.st,
-        22,
+        24,
         static_cast<int>(command.ordered_job_ids.size()));
-    sqlite3_bind_int64(insert_workset.st, 23, now);
+    sqlite3_bind_int64(insert_workset.st, 25, now);
     if (sqlite3_step(insert_workset.st) != SQLITE_DONE) {
         fail(sqlite3_errmsg(db_));
         return false;
@@ -3103,6 +3123,7 @@ SqliteExecutionDb::ClaimPublishedWorksetBatch(
             "w.module_canonical_id,w.module_version,w.module_sha256,"
             "w.entrypoint,w.verified_dependency_sha256,"
             "w.runtime_profile_sha256,w.program_package_sha256,"
+            "w.derived_state_binding_payload,w.derived_state_binding_sha256,"
             "w.capture_binding_payload,w.capture_binding_sha256,"
             "w.progress_plan_payload,w.progress_plan_sha256,"
             "w.execution_affinity_key,"
@@ -3142,7 +3163,7 @@ SqliteExecutionDb::ClaimPublishedWorksetBatch(
             fail(sqlite3_errmsg(db_));
             return claimed_worksets;
         }
-        const auto priority = sqlite3_column_int(candidates.st, 21);
+        const auto priority = sqlite3_column_int(candidates.st, 23);
         if (!absolute_priority.has_value()) {
             absolute_priority = priority;
         } else if (priority != *absolute_priority) {
@@ -3169,24 +3190,26 @@ SqliteExecutionDb::ClaimPublishedWorksetBatch(
         row.contract.runtime_profile_sha256 =
             Text(candidates.st, 13);
         row.contract.program_package_sha256 = Text(candidates.st, 14);
+        row.derived_state.binding_payload = Blob(candidates.st, 15);
+        row.derived_state.binding_sha256 = Text(candidates.st, 16);
         row.observation.capture_binding_payload =
-            Blob(candidates.st, 15);
-        row.observation.capture_binding_sha256 =
-            Text(candidates.st, 16);
-        row.observation.progress_plan_payload =
             Blob(candidates.st, 17);
-        row.observation.progress_plan_sha256 =
+        row.observation.capture_binding_sha256 =
             Text(candidates.st, 18);
+        row.observation.progress_plan_payload =
+            Blob(candidates.st, 19);
+        row.observation.progress_plan_sha256 =
+            Text(candidates.st, 20);
         row.contract.execution_affinity_key =
-            OptionalText(candidates.st, 19);
+            OptionalText(candidates.st, 21);
         row.contract.estimated_payload_bytes =
             static_cast<std::uint64_t>(
-                sqlite3_column_int64(candidates.st, 20));
+                sqlite3_column_int64(candidates.st, 22));
         row.priority = priority;
         candidate.published_at_utc =
-            sqlite3_column_int64(candidates.st, 22);
+            sqlite3_column_int64(candidates.st, 24);
         candidate.runnable_count =
-            sqlite3_column_int(candidates.st, 23);
+            sqlite3_column_int(candidates.st, 25);
         selected.push_back(std::move(candidate));
     }
     std::stable_sort(

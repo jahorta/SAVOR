@@ -5,15 +5,18 @@
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceReducers.h"
 #include "Runner/Runtime/ProgramRuntime/Composition/CompositionSupport.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
+#include "Runner/Runtime/DerivedState/DerivedStateRegistry.h"
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <string_view>
+#include <vector>
 
 namespace {
 
 using namespace savor::runtime::program;
 using namespace savor::runtime::program::capabilities;
+namespace derived = savor::runtime::derived;
 
 const CapabilityPackManifest& Manifest(
     const SourceCapabilityPackCatalog& catalog,
@@ -288,7 +291,11 @@ TEST(CapabilityPackSources, BattleCommandReducersHaveOneCanonicalContract)
             16},
     };
 
-    ASSERT_EQ(catalog.reducers.size(), expected.size());
+    EXPECT_EQ(std::ranges::count_if(
+        catalog.reducers,
+        [&](const ReducerDescriptor& descriptor) {
+            return descriptor.providing_pack == manifest.identity;
+        }), expected.size());
     ASSERT_EQ(manifest.reducers.size(), expected.size());
     for (const ExpectedReducer& item : expected)
     {
@@ -309,6 +316,75 @@ TEST(CapabilityPackSources, BattleCommandReducersHaveOneCanonicalContract)
     }
     EXPECT_TRUE(
         CanonicalReducerName(static_cast<CanonicalReducer>(0xff)).empty());
+}
+
+TEST(CapabilityPackSources, BattleDerivedReducersAndQueriesUseOneExactPack)
+{
+    const auto catalog = BuildSourceCapabilityPackCatalog();
+    const auto& manifest = Manifest(catalog, "soa.battle");
+    const auto* block =
+        derived::ProductionDerivedStateRegistry().FindBlock(
+            derived::kBattleCoreBlockId);
+    ASSERT_NE(block, nullptr);
+    constexpr std::array<std::string_view, 9> reducers{
+        "soa.battle.derived.current_turn",
+        "soa.battle.derived.inventory_count",
+        "soa.battle.derived.drop_count",
+        "soa.battle.derived.player_count",
+        "soa.battle.derived.enemy_count",
+        "soa.battle.derived.player_min_position",
+        "soa.battle.derived.player_max_position",
+        "soa.battle.derived.enemy_min_position",
+        "soa.battle.derived.enemy_max_position",
+    };
+    ASSERT_EQ(manifest.reducers.size(), reducers.size());
+    ASSERT_EQ(block->reducers.size(), reducers.size());
+    std::vector<ExactDependencyIdentity> expected_reducers;
+    for (const auto canonical_id : reducers)
+    {
+        const auto identity = BattleDerivedReducerIdentity(canonical_id);
+        expected_reducers.push_back(identity);
+        const auto descriptor = std::ranges::find(
+            catalog.reducers, identity, &ReducerDescriptor::identity);
+        ASSERT_NE(descriptor, catalog.reducers.end());
+        EXPECT_EQ(descriptor->providing_pack, manifest.identity);
+        EXPECT_EQ(descriptor->maximum_steps, 256u);
+        EXPECT_EQ(descriptor->maximum_value_bytes, 64u * 1024u);
+        EXPECT_NE(
+            std::ranges::find(manifest.reducers, identity),
+            manifest.reducers.end());
+    }
+    EXPECT_EQ(block->reducers, expected_reducers);
+
+    constexpr std::array<std::string_view, 3> actions{
+        derived::kBattleQueryTurnEntryActionId,
+        derived::kBattleQueryTurnOrderActionId,
+        derived::kBattleQueryRewardsActionId,
+    };
+    for (const auto canonical_id : actions)
+    {
+        const auto descriptor = std::ranges::find(
+            catalog.actions,
+            canonical_id,
+            [](const ActionDescriptor& value)
+            {
+                return std::string_view(value.identity.canonical_id);
+            });
+        ASSERT_NE(descriptor, catalog.actions.end());
+        EXPECT_EQ(descriptor->providing_pack, manifest.identity);
+        EXPECT_EQ(
+            descriptor->required_derived_state_block_id,
+            derived::kBattleCoreBlockId);
+        EXPECT_NE(
+            std::ranges::find(manifest.actions, descriptor->identity),
+            manifest.actions.end());
+        const auto group = std::ranges::find(
+            block->groups,
+            descriptor->identity,
+            &derived::DerivedStateRefreshGroupDescriptor::query_action);
+        ASSERT_NE(group, block->groups.end());
+        EXPECT_EQ(descriptor->output_type, TypeRef::Named(group->output_schema));
+    }
 }
 
 } // namespace

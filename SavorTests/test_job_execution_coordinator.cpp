@@ -82,6 +82,20 @@ savor::db::ExecutionWorksetObservationBindingV1 TestObservationBinding()
     return result;
 }
 
+savor::db::ExecutionWorksetDerivedStateBindingV1 TestDerivedStateBinding()
+{
+    savor::db::ExecutionWorksetDerivedStateBindingV1 result;
+    const savor::runtime::derived::WorksetDerivedStateBindingV1 binding;
+    if (!savor::runtime::EncodeWorksetDerivedStateBindingV1(
+            binding, result.binding_payload))
+    {
+        throw std::logic_error(
+            "empty workset derived-state binding could not be encoded");
+    }
+    result.binding_sha256 = binding.content_sha256;
+    return result;
+}
+
 savor::runtime::WorkerWorksetDefinition TestTargetedWorkset(
     std::string module_id = {}) {
     const auto* phase = savor::runtime::fullphase::
@@ -118,6 +132,8 @@ savor::runtime::WorkerWorksetDefinition TestTargetedWorkset(
         workset.phase_invocation.program_package.canonical_sha256;
     workset.execution_key.common_input_sha256 =
         workset.phase_invocation.common_input.content_sha256;
+    workset.execution_key.derived_state_binding_sha256 =
+        workset.derived_state.content_sha256;
     workset.execution_key.capture_binding_sha256 =
         savor::runtime::EmptyWorksetCaptureBindingHashV1();
     workset.execution_key.progress_plan_sha256 =
@@ -145,6 +161,8 @@ TestProgramDescriptor(std::string name) {
     descriptor.program_name = std::move(name);
     descriptor.full_phase_identity = phase->identity();
     descriptor.default_progress_library_ids =
+        std::vector<std::string>{};
+    descriptor.default_derived_state_block_ids =
         std::vector<std::string>{};
     return descriptor;
 }
@@ -414,6 +432,7 @@ public:
             claimed.contract.program_package_sha256 =
                 std::string(64, '6');
             claimed.contract.estimated_payload_bytes = 1;
+            claimed.derived_state = TestDerivedStateBinding();
             claimed.observation = TestObservationBinding();
             claimed.claim_token =
                 command.batch_nonce + "-"

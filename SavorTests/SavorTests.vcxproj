@@ -274,6 +274,7 @@
     <ClCompile Include="test_program_model.cpp" />
     <ClCompile Include="test_predicate_composition.cpp" />
     <ClCompile Include="test_battle_backend_contracts.cpp" />
+    <ClCompile Include="test_derived_state.cpp" />
     <ClCompile Include="test_program_registries.cpp" />
     <ClCompile Include="test_progress_types.cpp" />
     <ClCompile Include="test_program_runtime.cpp" />

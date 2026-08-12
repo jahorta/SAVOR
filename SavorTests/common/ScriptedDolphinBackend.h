@@ -4,6 +4,7 @@
 #include "Runner/Runtime/Execution/IExecutionBackendPort.h"
 #include "Runner/Runtime/Services/Input/IInputBackendPort.h"
 #include "Runner/Runtime/Services/Memory/IGuestMemoryBackendPort.h"
+#include "Runner/Runtime/Services/Memory/IHitTimeGuestMemoryBackendPort.h"
 #include "Runner/Runtime/Services/Movie/IMovieBackendPort.h"
 #include "Runner/Runtime/Services/Screenshot/IScreenshotBackendPort.h"
 #include "Runner/Runtime/StopPoints/IPhysicalStopPointBackendPort.h"
@@ -72,6 +73,7 @@ struct ScriptedDolphinBackendControl
     std::optional<std::filesystem::path> movie_startup_savestate;
     std::filesystem::path prepared_movie_path;
     bool movie_available = true;
+    bool hit_time_memory_available = true;
 
     int open_count = 0;
     int core_stop_count = 0;
@@ -124,6 +126,7 @@ class ScriptedDolphinBackend final
       private runtime::IExecutionBackendPort,
       private runtime::IInputBackendPort,
       private runtime::IGuestMemoryBackendPort,
+      private runtime::IHitTimeGuestMemoryBackendPort,
       private runtime::IScreenshotBackendPort,
       private runtime::IMovieBackendPort
 {
@@ -164,6 +167,8 @@ public:
     [[nodiscard]] runtime::IExecutionBackendPort* Execution() noexcept override;
     [[nodiscard]] runtime::IInputBackendPort* Input() noexcept override;
     [[nodiscard]] runtime::IGuestMemoryBackendPort* GuestMemory() noexcept override;
+    [[nodiscard]] runtime::IHitTimeGuestMemoryBackendPort*
+    HitTimeGuestMemory() noexcept override;
     [[nodiscard]] runtime::IScreenshotBackendPort* Screenshots() noexcept override;
     [[nodiscard]] runtime::IMovieBackendPort* Movies() noexcept override;
     [[nodiscard]] runtime::ICaptureBackendPort* Captures() noexcept override;
@@ -188,6 +193,9 @@ private:
     [[nodiscard]] runtime::GuestBytesResult Read(
         std::uint32_t address,
         std::size_t size) const override;
+    [[nodiscard]] runtime::HitTimeGuestReadReceipt ReadHitTimeBytes(
+        std::uint32_t address,
+        std::span<std::uint8_t> destination) const noexcept override;
     runtime::BackendResult Write(
         std::uint32_t address,
         const std::vector<std::uint8_t>& bytes) override;

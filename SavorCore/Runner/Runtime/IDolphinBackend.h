@@ -15,6 +15,7 @@ class IPhysicalStopPointBackendPort;
 class IExecutionBackendPort;
 class IInputBackendPort;
 class IGuestMemoryBackendPort;
+class IHitTimeGuestMemoryBackendPort;
 class IScreenshotBackendPort;
 class IMovieBackendPort;
 class ICaptureBackendPort;
@@ -132,6 +133,8 @@ public:
     // services. Program and worker layers never receive them directly.
     [[nodiscard]] virtual IInputBackendPort* Input() noexcept = 0;
     [[nodiscard]] virtual IGuestMemoryBackendPort* GuestMemory() noexcept = 0;
+    [[nodiscard]] virtual IHitTimeGuestMemoryBackendPort*
+    HitTimeGuestMemory() noexcept = 0;
     [[nodiscard]] virtual IScreenshotBackendPort* Screenshots() noexcept = 0;
     [[nodiscard]] virtual IMovieBackendPort* Movies() noexcept = 0;
     [[nodiscard]] virtual ICaptureBackendPort* Captures() noexcept = 0;

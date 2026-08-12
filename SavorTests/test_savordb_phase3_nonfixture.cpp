@@ -401,6 +401,8 @@ namespace savordb {
             savor::db::execution::programdb::ProgramKindDescriptor descriptor{};
             descriptor.program_kind = 1;
             descriptor.program_name = "WorkflowCoordinatorServiceTest";
+            descriptor.default_progress_library_ids = std::vector<std::string>{};
+            descriptor.default_derived_state_block_ids = std::vector<std::string>{};
             descriptor.job_materializer =
                 std::make_shared<TestProgramJobMaterializer>(
                     execution_db,

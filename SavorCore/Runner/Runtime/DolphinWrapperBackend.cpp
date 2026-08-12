@@ -1442,6 +1442,12 @@ IGuestMemoryBackendPort* DolphinWrapperBackend::GuestMemory() noexcept
     return this;
 }
 
+IHitTimeGuestMemoryBackendPort*
+DolphinWrapperBackend::HitTimeGuestMemory() noexcept
+{
+    return this;
+}
+
 IScreenshotBackendPort* DolphinWrapperBackend::Screenshots() noexcept
 {
     return this;
@@ -1987,6 +1993,41 @@ GuestBytesResult DolphinWrapperBackend::Read(
         }
     }
     return {BackendResult::Success(), std::move(bytes)};
+}
+
+HitTimeGuestReadReceipt DolphinWrapperBackend::ReadHitTimeBytes(
+    std::uint32_t address,
+    std::span<std::uint8_t> destination) const noexcept
+{
+    HitTimeGuestReadReceipt receipt{
+        false,
+        HitTimeGuestReadError::BackendUnavailable,
+        address,
+        destination.size()};
+    if (destination.empty() ||
+        destination.size() > std::numeric_limits<std::uint32_t>::max() ||
+        address > std::numeric_limits<std::uint32_t>::max() -
+            static_cast<std::uint32_t>(destination.size() - 1))
+    {
+        receipt.error = HitTimeGuestReadError::InvalidArgument;
+        return receipt;
+    }
+    Core::System* system =
+        impl_ && impl_->wrapper ? impl_->wrapper->system() : nullptr;
+    if (!system)
+        return receipt;
+    auto& memory = system->GetMemory();
+    const auto* source =
+        memory.GetPointerForRange(address, destination.size());
+    if (!source)
+    {
+        receipt.error = HitTimeGuestReadError::UnmappedRange;
+        return receipt;
+    }
+    std::memcpy(destination.data(), source, destination.size());
+    receipt.ok = true;
+    receipt.error = HitTimeGuestReadError::None;
+    return receipt;
 }
 
 BackendResult DolphinWrapperBackend::Write(

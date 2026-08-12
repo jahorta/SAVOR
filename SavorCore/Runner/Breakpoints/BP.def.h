@@ -25,7 +25,7 @@
   X(battle, StartAction,           206, 0x800715dcu, "StartAction",        PlayerVisible, Shared) \
   X(battle, EndAction,             207, 0x8007050cu, "EndAction",          PlayerVisible, Shared) \
   X(battle, EndTurn,               208, 0x800702a0u, "EndTurn",            PlayerVisible, Shared) \
-  X(battle, EndBattleVictory,      209, 0x800706d8u, "Battle_Victory",     PlayerVisible, Shared) \
+  X(battle, EndBattleVictory,      209, 0x800706d8u, "EndBattleVictory",   PlayerVisible, Shared) \
   X(battle, EndBattleDefeat,       210, 0x8007066cu, "Battle_Defeat",      PlayerVisible, Shared) \
   X(battle, BattleLoadComplete,    211, 0x800307a0u, "BattleLoadComplete", PlayerVisible, Shared) \
   X(battle, BattleMacroMainMenuMoveHigher,    220, 0x8007cfd8u, "BattleMacroMainMenuMoveHigher",    Internal, Interaction) \

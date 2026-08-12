@@ -453,6 +453,9 @@
     <ClInclude Include="Runner\Runtime\Services\Memory\IGuestMemoryBackendPort.h">
       <Filter>Runner\Runtime\Services\Memory</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Memory\IHitTimeGuestMemoryBackendPort.h">
+      <Filter>Runner\Runtime\Services\Memory</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Runtime\Services\Movie\IMovieBackendPort.h">
       <Filter>Runner\Runtime\Services\Movie</Filter>
     </ClInclude>
@@ -519,6 +522,18 @@
     <ClInclude Include="Runner\Runtime\Worksets\WorksetTypes.h">
       <Filter>Runner\Runtime\Worksets</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Runtime\DerivedState\DerivedStateTypes.h">
+      <Filter>Runner\Runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\DerivedState\DerivedStateRegistry.h">
+      <Filter>Runner\Runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\DerivedState\BattleCoreDerivedState.h">
+      <Filter>Runner\Runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\DerivedState\DerivedStateService.h">
+      <Filter>Runner\Runtime</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Runtime\Worksets\WorksetStager.h">
       <Filter>Runner\Runtime\Worksets</Filter>
     </ClInclude>
@@ -573,20 +588,8 @@
     <ClInclude Include="Core\Memory\Soa\Battle\BattleContextCodec.h">
       <Filter>Core\Memory\Soa\Battle</Filter>
     </ClInclude>
-    <ClInclude Include="Core\Memory\DerivedBase.h">
-      <Filter>Core\Memory</Filter>
-    </ClInclude>
     <ClInclude Include="Core\Memory\IKeyReader.h">
       <Filter>Core\Memory</Filter>
-    </ClInclude>
-    <ClInclude Include="Core\Memory\KeyHostRouter.h">
-      <Filter>Core\Memory</Filter>
-    </ClInclude>
-    <ClInclude Include="Core\Memory\Soa\Battle\DerivedBattleBuffer.h">
-      <Filter>Core\Memory\Soa\Battle</Filter>
-    </ClInclude>
-    <ClInclude Include="Core\Memory\Soa\Battle\DerivedBattleBuffer.addr.h">
-      <Filter>Core\Memory\Soa\Battle</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Script\PSContext.h">
       <Filter>Runner\VM</Filter>
@@ -850,6 +853,15 @@
     </ClCompile>
     <ClCompile Include="Runner\Runtime\Worksets\WorksetTypes.cpp">
       <Filter>Runner\Runtime\Worksets</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\DerivedState\DerivedStateTypes.cpp">
+      <Filter>Runner\Runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\DerivedState\DerivedStateRegistry.cpp">
+      <Filter>Runner\Runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\DerivedState\DerivedStateService.cpp">
+      <Filter>Runner\Runtime</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Runtime\Worksets\WorksetStager.cpp">
       <Filter>Runner\Runtime\Worksets</Filter>

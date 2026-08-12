@@ -28,6 +28,7 @@ enum class SessionServiceCapability : std::uint32_t
     Screenshot = 1u << 8,
     Telemetry = 1u << 9,
     Artifact = 1u << 10,
+    DerivedState = 1u << 11,
 };
 
 using SessionServiceCapabilityMask = std::uint32_t;
@@ -45,6 +46,7 @@ enum class ActionEffect : std::uint32_t
     Capture = 1u << 7,
     ArtifactIo = 1u << 8,
     Telemetry = 1u << 9,
+    ReadDerivedState = 1u << 10,
 };
 
 using ActionEffectMask = std::uint32_t;
@@ -110,6 +112,7 @@ struct ActionDescriptor
     std::optional<TypeRef> domain_observation_type;
     std::optional<TypeRef> receipt_type;
     std::optional<TypeRef> diagnostic_type;
+    std::string required_derived_state_block_id;
     SessionServiceCapabilityMask required_services = 0;
     ActionEffectMask effects = 0;
     ActionEpochPolicy epoch_policy = ActionEpochPolicy::RequiresCurrentEpoch;

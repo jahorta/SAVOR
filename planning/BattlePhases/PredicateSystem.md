@@ -7,6 +7,16 @@ and is included by default for `battle.single_turn`. It reports requested typed
 evaluations through the worker-to-DB progress stream; it does not change
 predicate accounting, reactions, abort behavior, or execution routing.
 
+Typed derived observations follow
+[`../ExecutionRuntime/18-derived-state-runtime.md`](../ExecutionRuntime/18-derived-state-runtime.md).
+A predicate imports an exact registered derived query and any pure reducer it
+uses. That action dependency selects the static block during workset
+materialization. Predicate observations always query with
+`SameRoutedEvent`: turn-order evidence must match `TurnIsReady`, and reward
+evidence must match the exact `EndTurn` or Victory receipt. Missing or stale
+derived evidence fails the job; it is not a false predicate or a third
+evaluation state. Capture samples are never predicate evidence.
+
 ## Purpose
 
 This is a separate, evidence-first notebook for redesigning predicates as a
@@ -384,9 +394,11 @@ job, and durable result records.
 
 The initial accounting rules are:
 
-- `Satisfied` increments both passed and total;
-- `Unsatisfied` increments total;
-- optional `Unavailable` and `NotApplicable` do not increment either count;
+- every executed check produces exactly `Passed` or `Failed` and increments
+  total;
+- `Passed` also increments passed, while `Failed` does not;
+- checks whose hook or occurrence guard never activates produce no evaluation
+  record and do not increment either count;
 - missing required evidence follows the ordinary execution-failure contract;
   and
 - checks skipped after candidate rejection do not count.

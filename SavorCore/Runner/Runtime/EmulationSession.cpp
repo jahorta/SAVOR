@@ -6,6 +6,7 @@
 #include <exception>
 #include <iterator>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace savor::runtime {
@@ -75,7 +76,8 @@ ProductionCaptureAdapterConfig()
             StopSubscriptionGroupId(0x5341564f5202ull),
         .first_subscription_id =
             StopSubscriptionId(0x5341564f5300ull),
-        .cpu_observer_descriptor_id = 0x5341564fu,
+        .cpu_observer_descriptor_id = CanonicalStopCpuObserverId(
+            CanonicalStopCpuObserver::CaptureProfile),
         .priority = -100,
     };
 }
@@ -183,6 +185,13 @@ SessionOperationReceipt EmulationSession::Open(const SessionOpenOptions& options
     BackendResult result = CallBackend(
         "Dolphin infrastructure boot",
         [&] { return backend_->Open(options.backend); });
+    if (result.ok && backend_->HitTimeGuestMemory() == nullptr)
+    {
+        result = BackendResult::Failure(
+            BackendErrorCode::Unavailable,
+            "Dolphin backend does not provide the required hit-time guest-memory facet",
+            BackendIntegrity::Preserved);
+    }
     if (result.ok)
     {
         opened_ = true;
@@ -1391,16 +1400,49 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
         }
         physical_stop_manager_ =
             std::make_unique<PhysicalStopPointManager>(*port);
+        stop_cpu_observers_ =
+            std::make_unique<StopCpuObserverDispatcher>();
+        if (capture_service_)
+        {
+            std::string error;
+            if (!stop_cpu_observers_->Register(
+                CanonicalStopCpuObserver::CaptureProfile,
+                *capture_service_,
+                &error))
+            {
+                throw std::logic_error(error);
+            }
+        }
+        if (!derived_state_)
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "DerivedStateService was not constructed before stop-point ingress");
+        }
+        std::string derived_error;
+        if (!stop_cpu_observers_->Register(
+            CanonicalStopCpuObserver::DerivedState,
+            *derived_state_,
+            &derived_error))
+        {
+            throw std::logic_error(derived_error);
+        }
+        std::string freeze_error;
+        if (!stop_cpu_observers_->Freeze(&freeze_error))
+        {
+            throw std::logic_error(freeze_error);
+        }
         stop_router_ =
             std::make_unique<StopPointRouter>(
                 *physical_stop_manager_,
                 stop_cpu_evaluator_.get(),
-                capture_service_.get(),
+                stop_cpu_observers_.get(),
                 &host_activity_);
     }
     catch (const std::exception& ex)
     {
         stop_router_.reset();
+        stop_cpu_observers_.reset();
         physical_stop_manager_.reset();
         stop_cpu_evaluator_.reset();
         return BackendResult::Failure(
@@ -1411,6 +1453,7 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
     catch (...)
     {
         stop_router_.reset();
+        stop_cpu_observers_.reset();
         physical_stop_manager_.reset();
         stop_cpu_evaluator_.reset();
         return BackendResult::Failure(
@@ -1423,6 +1466,7 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
                 stop_ingress_notification_counter_))
     {
         stop_router_.reset();
+        stop_cpu_observers_.reset();
         physical_stop_manager_.reset();
         stop_cpu_evaluator_.reset();
         return BackendResult::Failure(
@@ -1436,6 +1480,7 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
                 stop_ingress_notifier_))
     {
         stop_router_.reset();
+        stop_cpu_observers_.reset();
         physical_stop_manager_.reset();
         stop_cpu_evaluator_.reset();
         return BackendResult::Failure(
@@ -1451,6 +1496,7 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
         BackendResult failure =
             FromStopPointLifecycle("stop-point initialization", initialized);
         stop_router_.reset();
+        stop_cpu_observers_.reset();
         physical_stop_manager_.reset();
         stop_cpu_evaluator_.reset();
         return failure;
@@ -1473,10 +1519,28 @@ BackendResult EmulationSession::InitializeStopPoints(WorksetEpoch first_epoch)
                     : BackendIntegrity::Preserved);
             (void)stop_router_->StopIngressDrainAndCleanup();
             stop_router_.reset();
+            stop_cpu_observers_.reset();
             physical_stop_manager_.reset();
             stop_cpu_evaluator_.reset();
             return failure;
         }
+    }
+    const derived::DerivedStateReceipt derived_bound =
+        derived_state_->BindRouter(*stop_router_, first_epoch);
+    if (!derived_bound.ok)
+    {
+        BackendResult failure = BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            derived_bound.message.empty()
+                ? "DerivedStateService could not bind the session router"
+                : derived_bound.message,
+            BackendIntegrity::Preserved);
+        (void)stop_router_->StopIngressDrainAndCleanup();
+        stop_router_.reset();
+        stop_cpu_observers_.reset();
+        physical_stop_manager_.reset();
+        stop_cpu_evaluator_.reset();
+        return failure;
     }
     return BackendResult::Success();
 }
@@ -1487,9 +1551,11 @@ BackendResult EmulationSession::InitializeServiceComposition()
         backend_ ? backend_->Input() : nullptr;
     IGuestMemoryBackendPort* memory =
         backend_ ? backend_->GuestMemory() : nullptr;
+    IHitTimeGuestMemoryBackendPort* hit_time_memory =
+        backend_ ? backend_->HitTimeGuestMemory() : nullptr;
     IScreenshotBackendPort* screenshots =
         backend_ ? backend_->Screenshots() : nullptr;
-    if (!input || !memory || !screenshots)
+    if (!input || !memory || !hit_time_memory || !screenshots)
     {
         return BackendResult::Failure(
             BackendErrorCode::Unavailable,
@@ -1501,6 +1567,9 @@ BackendResult EmulationSession::InitializeServiceComposition()
         telemetry_bus_ = std::make_unique<TelemetryBus>();
         input_arbiter_ = std::make_unique<InputArbiter>(*input);
         guest_memory_ = std::make_unique<GuestMemory>(*memory);
+        derived_state_ = std::make_unique<derived::DerivedStateService>(
+            *guest_memory_,
+            *hit_time_memory);
         guest_mutations_ =
             std::make_unique<GuestMutationService>(
                 *guest_memory_,
@@ -1712,6 +1781,11 @@ BackendResult EmulationSession::CleanupServices() noexcept
             result.message += diagnostic;
         };
 
+    const BackendResult derived_state = CloseDerivedStateItem();
+    if (!derived_state.ok)
+        retain_failure(derived_state);
+    derived_state_.reset();
+
     // Invocation/action resources must unwind while every owning service is
     // still alive. The binding table is the concrete dispatcher for the
     // ledger's otherwise opaque external identities.
@@ -1864,6 +1938,44 @@ BackendResult EmulationSession::CleanupServices() noexcept
     return result;
 }
 
+BackendResult EmulationSession::ActivateDerivedStateForItem(
+    const derived::WorksetDerivedStateBindingV1& binding,
+    WorkerWorksetItemId item_id)
+{
+    if (!derived_state_ || !execution_engine_ || guest_state_transaction_ !=
+            GuestStateTransaction::None || !workset_epoch_)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "Derived state requires committed workset execution evidence");
+    }
+    const auto receipt = derived_state_->ActivateItem(
+        binding,
+        workset_epoch_,
+        item_id);
+    return receipt.ok
+        ? BackendResult::Success()
+        : BackendResult::Failure(
+              receipt.code == derived::DerivedStateErrorCode::InvalidArgument
+                  ? BackendErrorCode::InvalidArgument
+                  : BackendErrorCode::OperationFailed,
+              receipt.message,
+              BackendIntegrity::Preserved);
+}
+
+BackendResult EmulationSession::CloseDerivedStateItem() noexcept
+{
+    if (!derived_state_ || !derived_state_->active())
+        return BackendResult::Success();
+    const auto receipt = derived_state_->CloseItem();
+    return receipt.ok
+        ? BackendResult::Success()
+        : BackendResult::Failure(
+              BackendErrorCode::OperationFailed,
+              receipt.message,
+              BackendIntegrity::Unknown);
+}
+
 
 BackendResult EmulationSession::ValidateStopPointsBeforeMovieCoreStop()
 {
@@ -1962,6 +2074,7 @@ BackendResult EmulationSession::CleanupRuntimeComposition() noexcept
     if (!stop_points.ok && result.ok)
         result = stop_points;
     stop_router_.reset();
+    stop_cpu_observers_.reset();
     physical_stop_manager_.reset();
     stop_cpu_evaluator_.reset();
 

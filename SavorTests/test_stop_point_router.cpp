@@ -83,6 +83,15 @@ public:
     std::size_t delivery_count = 0;
 };
 
+class ThrowingStopConsumer final : public IStopPointConsumer
+{
+public:
+    void OnStopPoint(const StopDelivery&) override
+    {
+        throw std::runtime_error("test consumer detail");
+    }
+};
+
 class RecordingCpuObserver final : public IStopPointCpuObserver
 {
 public:
@@ -105,6 +114,56 @@ public:
     std::vector<std::uint32_t> descriptors;
     std::vector<RoutedStopEvent> events;
 };
+
+TEST(StopCpuObserverDispatcher, IsCanonicalFrozenAndDescriptorKeyed)
+{
+    const auto definitions = CanonicalStopCpuObserverDefinitions();
+    ASSERT_EQ(definitions.size(), 2u);
+    EXPECT_EQ(
+        CanonicalStopCpuObserverId(definitions[0].key),
+        CanonicalStopCpuObserverId(
+            CanonicalStopCpuObserver::CaptureProfile));
+    EXPECT_EQ(
+        CanonicalStopCpuObserverId(definitions[1].key),
+        CanonicalStopCpuObserverId(
+            CanonicalStopCpuObserver::DerivedState));
+
+    RecordingCpuObserver capture;
+    RecordingCpuObserver derived;
+    StopCpuObserverDispatcher dispatcher;
+    std::string error;
+    EXPECT_FALSE(dispatcher.Register(
+        static_cast<CanonicalStopCpuObserver>(0), capture, &error));
+    EXPECT_EQ(error, "CPU-observer descriptor is not canonical");
+    error.clear();
+    EXPECT_FALSE(dispatcher.Register(
+        static_cast<CanonicalStopCpuObserver>(77), capture, &error));
+    EXPECT_EQ(error, "CPU-observer descriptor is not canonical");
+    ASSERT_TRUE(dispatcher.Register(
+        CanonicalStopCpuObserver::CaptureProfile, capture));
+    EXPECT_FALSE(dispatcher.Register(
+        CanonicalStopCpuObserver::CaptureProfile, capture));
+    ASSERT_TRUE(dispatcher.Register(
+        CanonicalStopCpuObserver::DerivedState, derived));
+    ASSERT_TRUE(dispatcher.Freeze());
+    EXPECT_TRUE(dispatcher.frozen());
+    EXPECT_FALSE(dispatcher.Register(
+        CanonicalStopCpuObserver::DerivedState, derived));
+    EXPECT_FALSE(dispatcher.Freeze());
+
+    RoutedStopEvent event;
+    EXPECT_EQ(
+        dispatcher.ObserveRoutedHit(
+            CanonicalStopCpuObserverId(
+                CanonicalStopCpuObserver::DerivedState),
+            event),
+        StopCpuObservationResult::Observed);
+    EXPECT_EQ(derived.events.size(), 1u);
+    EXPECT_TRUE(capture.events.empty());
+    EXPECT_EQ(
+        dispatcher.ObserveRoutedHit(77, event),
+        StopCpuObservationResult::Failed);
+}
 
 void CountRawNotification(void* context) noexcept
 {
@@ -753,6 +812,66 @@ TEST(StopPointRouter, InvokesTrustedCpuObserverOnceAfterFinalWakeSelection)
     EXPECT_TRUE(router.StopIngressDrainAndCleanup().ok);
 }
 
+TEST(StopPointRouter, DispatchesSharedPassiveHitToIndependentCpuObservers)
+{
+    auto control = std::make_shared<FakePhysicalStopBackendControl>();
+    FakePhysicalStopBackend backend(control);
+    PhysicalStopPointManager manager(backend);
+    RecordingCpuObserver capture;
+    RecordingCpuObserver derived;
+    StopCpuObserverDispatcher dispatcher;
+    ASSERT_TRUE(dispatcher.Register(
+        CanonicalStopCpuObserver::CaptureProfile, capture));
+    ASSERT_TRUE(dispatcher.Register(
+        CanonicalStopCpuObserver::DerivedState, derived));
+    ASSERT_TRUE(dispatcher.Freeze());
+    StopPointRouter router(manager, nullptr, &dispatcher);
+    ASSERT_TRUE(router.Initialize(WorksetEpoch(1)).ok);
+
+    RecordingStopConsumer capture_consumer;
+    RecordingStopConsumer derived_consumer;
+    auto unknown_subscription = PcSubscription(
+        99, 0x80001000u, capture_consumer);
+    unknown_subscription.route = PassiveStopObservation{
+        .cpu_observer_descriptor_id = 77,
+        .lossless = true};
+    const auto unknown = router.RegisterGroup(
+        Group(99, {std::move(unknown_subscription)}));
+    EXPECT_FALSE(unknown.receipt.ok);
+    EXPECT_NE(
+        unknown.receipt.error.message.find("not registered"),
+        std::string::npos);
+
+    auto capture_subscription = PcSubscription(
+        1, 0x80001000u, capture_consumer);
+    capture_subscription.route = PassiveStopObservation{
+        .cpu_observer_descriptor_id = CanonicalStopCpuObserverId(
+            CanonicalStopCpuObserver::CaptureProfile),
+        .lossless = true};
+    auto derived_subscription = PcSubscription(
+        2, 0x80001000u, derived_consumer);
+    derived_subscription.route = PassiveStopObservation{
+        .cpu_observer_descriptor_id = CanonicalStopCpuObserverId(
+            CanonicalStopCpuObserver::DerivedState),
+        .lossless = true};
+    auto capture_group = router.RegisterGroup(
+        Group(1, {std::move(capture_subscription)}));
+    auto derived_group = router.RegisterGroup(
+        Group(2, {std::move(derived_subscription)}));
+    ASSERT_TRUE(capture_group.receipt.ok);
+    ASSERT_TRUE(derived_group.receipt.ok);
+
+    EXPECT_FALSE(backend.InjectJitPcStop(0x80001000u).request_break);
+    ASSERT_EQ(capture.events.size(), 1u);
+    ASSERT_EQ(derived.events.size(), 1u);
+    EXPECT_EQ(capture.events[0].identity, derived.events[0].identity);
+    const auto receipts = router.DrainIngress();
+    ASSERT_EQ(receipts.size(), 1u);
+    EXPECT_EQ(receipts[0].terminal, StopRouteTerminal::None);
+    EXPECT_FALSE(receipts[0].core_must_remain_stopped);
+    EXPECT_TRUE(router.StopIngressDrainAndCleanup().ok);
+}
+
 TEST(
     StopPointRouter,
     EmptyIngressDrainDoesNotCreateHostActivityButDeliveryDoes)
@@ -1187,6 +1306,24 @@ TEST_F(StopPointRouterFixture, RevalidatesJitAndRejectsUnmanagedBreakpointDrift)
         StopPointErrorCode::PhysicalIntegrityUnknown);
     EXPECT_FALSE(router.ingress_enabled());
     EXPECT_EQ(manager.generation(), after_revalidate);
+}
+
+TEST_F(StopPointRouterFixture, ConsumerFailureNamesSourcePointAndException)
+{
+    ThrowingStopConsumer consumer;
+    auto registration = router.RegisterGroup(
+        Group(27, {PcSubscription(41, 0x80001000u, consumer)}));
+    ASSERT_TRUE(registration.receipt.ok);
+
+    EXPECT_FALSE(backend.InjectJitPcStop(0x80001000u).request_break);
+    const auto receipts = router.DrainIngress();
+    ASSERT_EQ(receipts.size(), 1u);
+    ASSERT_EQ(receipts[0].terminal, StopRouteTerminal::RoutingFailure);
+    EXPECT_NE(receipts[0].error.message.find("test.source.27"), std::string::npos);
+    EXPECT_NE(receipts[0].error.message.find("0x80001000"), std::string::npos);
+    EXPECT_NE(receipts[0].error.message.find("group=27"), std::string::npos);
+    EXPECT_NE(receipts[0].error.message.find("subscription=41"), std::string::npos);
+    EXPECT_NE(receipts[0].error.message.find("test consumer detail"), std::string::npos);
 }
 
 TEST_F(

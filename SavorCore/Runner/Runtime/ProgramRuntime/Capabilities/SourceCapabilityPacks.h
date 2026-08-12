@@ -108,6 +108,9 @@ struct SourceCapabilityPackCatalog
 
 [[nodiscard]] SchemaIdentity BattleContextSchemaIdentity();
 [[nodiscard]] SchemaIdentity BattleCaptureContextRequestSchemaIdentity();
+[[nodiscard]] SchemaIdentity BattleDerivedFreshnessSchemaIdentity();
+[[nodiscard]] SchemaIdentity BattleDerivedQueryRequestSchemaIdentity();
+[[nodiscard]] SchemaIdentity BattleDerivedSnapshotSchemaIdentity();
 [[nodiscard]] SchemaIdentity BattleTurnExecutionSpecSchemaIdentity();
 [[nodiscard]] SchemaIdentity BattleCommandStateSchemaIdentity();
 [[nodiscard]] SchemaIdentity BattleCommandPreparationSchemaIdentity();
@@ -115,6 +118,11 @@ struct SourceCapabilityPackCatalog
 [[nodiscard]] SchemaIdentity BattleCommandSegmentSchemaIdentity();
 
 [[nodiscard]] ExactDependencyIdentity BattleCaptureContextActionIdentity();
+[[nodiscard]] ExactDependencyIdentity BattleDerivedTurnEntryActionIdentity();
+[[nodiscard]] ExactDependencyIdentity BattleDerivedTurnOrderActionIdentity();
+[[nodiscard]] ExactDependencyIdentity BattleDerivedRewardsActionIdentity();
+[[nodiscard]] ExactDependencyIdentity BattleDerivedReducerIdentity(
+    std::string_view canonical_id);
 [[nodiscard]] ExactDependencyIdentity NavigationCaptureContextActionIdentity();
 
 [[nodiscard]] SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog();

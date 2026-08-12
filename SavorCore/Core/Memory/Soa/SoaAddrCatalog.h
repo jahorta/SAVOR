@@ -18,10 +18,4 @@ namespace addrprog::catalog {
 	template<class FieldT = void>
 	uint32_t enemy_item_field(addrprog::Builder& b, uint16_t combatant_slot, uint16_t item_index, FieldT soa::ItemDrop::* field = nullptr, std::string& description = {});
 
-	// Turn order derived buffer entry: derived_battle::TurnOrderIdx_base + idx
-	uint32_t turn_order_idx(addrprog::Builder& b, uint16_t logical_id_index, std::string& description);
-
-	// Turn order derived buffer entry: derived_battle::TurnOrderIdx_base + idx
-	uint32_t item_drop_amt(addrprog::Builder& b, uint16_t item_id, std::string& description);
-
 }

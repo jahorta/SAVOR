@@ -117,6 +117,7 @@ ContentHash256 ComputeActionDescriptorContractHash(
     AppendOptionalType(contract, descriptor.domain_observation_type);
     AppendOptionalType(contract, descriptor.receipt_type);
     AppendOptionalType(contract, descriptor.diagnostic_type);
+    AppendString(contract, descriptor.required_derived_state_block_id);
     AppendNumber(contract, descriptor.required_services);
     AppendNumber(contract, descriptor.effects);
     AppendNumber(contract, descriptor.epoch_policy);
@@ -303,6 +304,19 @@ RegistryResult ActionRegistry::Validate(
         return RegistryResult::Failure(
             RegistryErrorCode::InvalidArgument,
             "Bounded host actions require a finite nonzero default timeout");
+    }
+    const bool requires_derived_state =
+        !descriptor.required_derived_state_block_id.empty();
+    if (requires_derived_state !=
+            ((descriptor.required_services & ServiceMask(
+                SessionServiceCapability::DerivedState)) != 0) ||
+        requires_derived_state !=
+            ((descriptor.effects & EffectMask(
+                ActionEffect::ReadDerivedState)) != 0))
+    {
+        return RegistryResult::Failure(
+            RegistryErrorCode::InvalidArgument,
+            "Derived-state actions require an exact block dependency, service, and effect");
     }
     if (descriptor.timing == ActionTimingClass::CancellationDriven &&
         descriptor.default_host_timeout_milliseconds != 0)

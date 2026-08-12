@@ -4,6 +4,7 @@
 #include "Execution/IExecutionBackendPort.h"
 #include "Services/Input/IInputBackendPort.h"
 #include "Services/Memory/IGuestMemoryBackendPort.h"
+#include "Services/Memory/IHitTimeGuestMemoryBackendPort.h"
 #include "Services/Movie/IMovieBackendPort.h"
 #include "Services/Screenshot/IScreenshotBackendPort.h"
 #include "Services/Capture/ICaptureBackendPort.h"
@@ -25,6 +26,7 @@ class DolphinWrapperBackend final
       private IPhysicalStopPointBackendPort,
       private IInputBackendPort,
       private IGuestMemoryBackendPort,
+      private IHitTimeGuestMemoryBackendPort,
       private IScreenshotBackendPort,
       private IMovieBackendPort,
       private ICaptureBackendPort
@@ -59,6 +61,8 @@ public:
     [[nodiscard]] IExecutionBackendPort* Execution() noexcept override;
     [[nodiscard]] IInputBackendPort* Input() noexcept override;
     [[nodiscard]] IGuestMemoryBackendPort* GuestMemory() noexcept override;
+    [[nodiscard]] IHitTimeGuestMemoryBackendPort*
+    HitTimeGuestMemory() noexcept override;
     [[nodiscard]] IScreenshotBackendPort* Screenshots() noexcept override;
     [[nodiscard]] IMovieBackendPort* Movies() noexcept override;
     [[nodiscard]] ICaptureBackendPort* Captures() noexcept override;
@@ -84,6 +88,9 @@ private:
     [[nodiscard]] GuestBytesResult Read(
         std::uint32_t address,
         std::size_t size) const override;
+    [[nodiscard]] HitTimeGuestReadReceipt ReadHitTimeBytes(
+        std::uint32_t address,
+        std::span<std::uint8_t> destination) const noexcept override;
     BackendResult Write(
         std::uint32_t address,
         const std::vector<std::uint8_t>& bytes) override;

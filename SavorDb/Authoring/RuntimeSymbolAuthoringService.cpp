@@ -103,7 +103,6 @@ std::string RegionToDb(addr::Region region)
     switch (region) {
     case addr::Region::MEM1: return "MEM1";
     case addr::Region::MEM2: return "MEM2";
-    case addr::Region::DERIVED: return "DERIVED";
     }
     return "";
 }
@@ -112,7 +111,6 @@ std::optional<addr::Region> ParseRegion(std::string_view value)
 {
     if (value == "MEM1") return addr::Region::MEM1;
     if (value == "MEM2") return addr::Region::MEM2;
-    if (value == "DERIVED") return addr::Region::DERIVED;
     return std::nullopt;
 }
 
