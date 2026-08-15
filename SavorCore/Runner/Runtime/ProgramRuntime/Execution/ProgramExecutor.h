@@ -33,6 +33,7 @@ struct ExecutorHostRequest
     ProgramScopeId parent_scope;
     ProgramResourceHandleId resource;
     bool cleanup_only = false;
+    std::string diagnostic_selector;
 };
 
 struct ProgramExecutorSnapshot

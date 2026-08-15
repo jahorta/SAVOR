@@ -29,6 +29,12 @@ ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(
         runtime_working_dir_root / "seedprobe";
     config.battle_context.working_dir_root =
         runtime_working_dir_root / "battle-context";
+    config.battle_completion.working_dir_root =
+        runtime_working_dir_root / "battle-completion";
+    config.battle_record.working_dir_root =
+        runtime_working_dir_root / "battle-record";
+    config.battle_replay.working_dir_root =
+        runtime_working_dir_root / "battle-replay";
     config.battle_single_turn.working_dir_root =
         runtime_working_dir_root / "battle-single-turn";
     return config;
@@ -81,6 +87,65 @@ bool BuildProductionProgramKindRegistry(
         if (!registry.Register(battle_context)
             || !registry.RegisterForStepKind("battle.context", battle_context)) {
             return Fail("Battle Context production descriptor registration failed", error_out);
+        }
+
+        auto battle_completion =
+            battlecompletion::BuildBattleCompletionProgramDescriptor(
+                dependencies.execution_db,
+                dependencies.state_db,
+                dependencies.analysis_db,
+                std::move(config.battle_completion));
+        if (battle_completion.program_kind
+                != static_cast<std::int32_t>(savor::PK_BattleCompletion)
+            || !battle_completion.full_phase_identity
+            || battle_completion.job_materializer == nullptr
+            || battle_completion.workset_reconstruction == nullptr
+            || battle_completion.result_handler == nullptr) {
+            return Fail("Battle Completion production descriptor is incomplete", error_out);
+        }
+        if (!registry.Register(battle_completion)
+            || !registry.RegisterForStepKind("battle.completion", battle_completion)) {
+            return Fail("Battle Completion production descriptor registration failed", error_out);
+        }
+
+        auto battle_record =
+            battlerecord::BuildBattleRecordProgramDescriptor(
+                dependencies.execution_db,
+                dependencies.state_db,
+                dependencies.analysis_db,
+                std::move(config.battle_record));
+        if (battle_record.program_kind
+                != static_cast<std::int32_t>(savor::PK_BattleRecord)
+            || !battle_record.full_phase_identity
+            || battle_record.job_materializer == nullptr
+            || battle_record.workset_reconstruction == nullptr
+            || battle_record.result_handler == nullptr
+            || battle_record.workflow_transition == nullptr) {
+            return Fail("Battle Recording production descriptor is incomplete", error_out);
+        }
+        if (!registry.Register(battle_record)
+            || !registry.RegisterForStepKind("battle.record", battle_record)) {
+            return Fail("Battle Recording production descriptor registration failed", error_out);
+        }
+
+        auto battle_replay =
+            battlereplay::BuildBattleReplayProgramDescriptor(
+                dependencies.execution_db,
+                dependencies.state_db,
+                dependencies.analysis_db,
+                std::move(config.battle_replay));
+        if (battle_replay.program_kind !=
+                static_cast<std::int32_t>(savor::PK_BattleReplay) ||
+            !battle_replay.full_phase_identity ||
+            battle_replay.job_materializer == nullptr ||
+            battle_replay.workset_reconstruction == nullptr ||
+            battle_replay.result_handler == nullptr ||
+            battle_replay.workflow_transition != nullptr) {
+            return Fail("Battle Replay production descriptor is incomplete", error_out);
+        }
+        if (!registry.Register(battle_replay) ||
+            !registry.RegisterForStepKind("battle.replay", battle_replay)) {
+            return Fail("Battle Replay production descriptor registration failed", error_out);
         }
 
         auto battle_single_turn =

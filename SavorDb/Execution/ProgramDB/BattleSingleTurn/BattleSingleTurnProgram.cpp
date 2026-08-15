@@ -80,6 +80,236 @@ BattleTargetAvailability ClassifyBattleTurnTargets(
     return BattleTargetAvailability::Available;
 }
 
+std::optional<BattleTurnVariantCompilation> CompileBattleTurnVariants(
+    const BattlePlanTurnSnapshot& turn,
+    const soa::battle::ctx::BattleContext* context,
+    std::string* error_out) {
+    using soa::battle::actions::BattleAction;
+    using soa::battle::actions::BattleCommand;
+    using soa::battle::actions::BattleTurnCommandSet;
+
+    const auto fail = [&](std::string message)
+        -> std::optional<BattleTurnVariantCompilation> {
+        if (error_out) *error_out = std::move(message);
+        return std::nullopt;
+    };
+    const auto needs_target = [](BattleAction action) {
+        return action == BattleAction::Attack || action == BattleAction::UseItem;
+    };
+
+    struct PlannedAction {
+        BattlePlanActionSnapshot source;
+        BattleCommand base{};
+        bool needs_target = false;
+        std::vector<int> direct_domain;
+        std::optional<int> same_as_actor;
+    };
+
+    std::vector<BattlePlanActionSnapshot> ordered = turn.actions;
+    std::ranges::sort(ordered, {}, &BattlePlanActionSnapshot::ordinal);
+    if (ordered.empty()) return fail("Battle Plan turn has no commands");
+
+    std::set<int> actor_slots;
+    std::set<int> direct_target_actors;
+    std::map<int, int> same_as_by_actor;
+    std::vector<PlannedAction> planned;
+    planned.reserve(ordered.size());
+    constexpr int kEnemyMask = 0x0ff0;
+
+    for (std::size_t index = 0; index < ordered.size(); ++index) {
+        const auto& action = ordered[index];
+        if (action.ordinal != static_cast<int>(index))
+            return fail("Battle Plan action ordinals must be zero-based, unique, and contiguous");
+        if (action.actor_slot < 0 || action.actor_slot > 3
+            || !actor_slots.insert(action.actor_slot).second) {
+            return fail("Battle Plan actors must be unique slots 0 through 3");
+        }
+        const auto& preset = action.action_preset;
+        if (soa::battle::actions::find_battle_action_definition(
+                static_cast<std::int64_t>(preset.macro)) == nullptr) {
+            return fail("Battle Plan action macro is unknown");
+        }
+
+        PlannedAction item{};
+        item.source = action;
+        item.base.actor_slot = static_cast<std::uint8_t>(action.actor_slot);
+        item.base.macro = preset.macro;
+        item.base.params.target_slot = 0xff;
+        item.base.params.item_id = 0xffff;
+        item.needs_target = needs_target(preset.macro);
+
+        if (preset.macro == BattleAction::UseItem) {
+            if (!preset.item_id || *preset.item_id < 0 || *preset.item_id > 0xffff)
+                return fail("UseItem requires a concrete item identifier");
+            item.base.params.item_id = static_cast<std::uint16_t>(*preset.item_id);
+        }
+
+        if (item.needs_target) {
+            switch (preset.target_kind) {
+            case BattlePlanTargetKind::SingleEnemy:
+                if (!preset.target_single_slot
+                    || *preset.target_single_slot < 4
+                    || *preset.target_single_slot > 11
+                    || preset.target_mask_bits
+                    || preset.target_same_as_actor_slot) {
+                    return fail("SingleEnemy requires exactly one enemy slot from 4 through 11");
+                }
+                item.direct_domain.push_back(*preset.target_single_slot);
+                direct_target_actors.insert(action.actor_slot);
+                break;
+            case BattlePlanTargetKind::MultipleEnemies:
+                if (!preset.target_mask_bits || *preset.target_mask_bits <= 0
+                    || (*preset.target_mask_bits & ~kEnemyMask) != 0
+                    || preset.target_single_slot
+                    || preset.target_same_as_actor_slot) {
+                    return fail("MultipleEnemies requires a nonempty mask containing only enemy slots 4 through 11");
+                }
+                for (int slot = 4; slot <= 11; ++slot) {
+                    if ((*preset.target_mask_bits & (1 << slot)) != 0)
+                        item.direct_domain.push_back(slot);
+                }
+                direct_target_actors.insert(action.actor_slot);
+                break;
+            case BattlePlanTargetKind::AnyEnemy:
+                if (preset.target_mask_bits || preset.target_single_slot
+                    || preset.target_same_as_actor_slot) {
+                    return fail("AnyEnemy does not accept a target payload");
+                }
+                for (int slot = 4; slot <= 11; ++slot)
+                    item.direct_domain.push_back(slot);
+                direct_target_actors.insert(action.actor_slot);
+                break;
+            case BattlePlanTargetKind::SameAsOtherPC:
+                if (!preset.target_same_as_actor_slot
+                    || *preset.target_same_as_actor_slot < 0
+                    || *preset.target_same_as_actor_slot > 3
+                    || preset.target_mask_bits || preset.target_single_slot) {
+                    return fail("SameAsOtherPC requires exactly one actor slot from 0 through 3");
+                }
+                item.same_as_actor = *preset.target_same_as_actor_slot;
+                same_as_by_actor.emplace(action.actor_slot, *item.same_as_actor);
+                break;
+            default:
+                return fail("Battle Plan target kind is unknown");
+            }
+        }
+        planned.push_back(std::move(item));
+    }
+
+    for (const auto& [actor, referenced] : same_as_by_actor) {
+        (void)actor;
+        if (!actor_slots.contains(referenced))
+            return fail("SameAsOtherPC references an actor that is not present in the turn");
+    }
+    const auto resolves_to_direct = [&](const auto& self, int actor,
+                                        std::set<int>& visiting) -> bool {
+        if (direct_target_actors.contains(actor)) return true;
+        if (!visiting.insert(actor).second) return false;
+        const auto same = same_as_by_actor.find(actor);
+        if (same == same_as_by_actor.end()) return false;
+        const bool resolved = self(self, same->second, visiting);
+        visiting.erase(actor);
+        return resolved;
+    };
+    for (const auto& [actor, referenced] : same_as_by_actor) {
+        (void)referenced;
+        std::set<int> visiting;
+        if (!resolves_to_direct(resolves_to_direct, actor, visiting))
+            return fail("SameAsOtherPC references must be acyclic and terminate at a direct target selector");
+    }
+
+    BattleTurnVariantCompilation compilation{};
+    compilation.context_applied = context != nullptr;
+    std::vector<BattleCommand> current(planned.size());
+    std::map<int, int> direct_target_by_actor;
+    std::set<std::string> encoded_seen;
+    std::map<std::string, std::string> encoded_by_hash;
+
+    const auto resolve_assigned_target = [&](const auto& self, int actor,
+                                             std::set<int>& visiting)
+        -> std::optional<int> {
+        if (const auto direct = direct_target_by_actor.find(actor);
+            direct != direct_target_by_actor.end()) return direct->second;
+        if (!visiting.insert(actor).second) return std::nullopt;
+        const auto same = same_as_by_actor.find(actor);
+        if (same == same_as_by_actor.end()) return std::nullopt;
+        const auto resolved = self(self, same->second, visiting);
+        visiting.erase(actor);
+        return resolved;
+    };
+
+    bool collision = false;
+    const auto emit = [&]() {
+        BattleTurnCommandSet commands;
+        commands.reserve(planned.size());
+        for (std::size_t index = 0; index < planned.size(); ++index) {
+            auto command = current[index];
+            if (planned[index].same_as_actor) {
+                std::set<int> visiting;
+                const auto target = resolve_assigned_target(
+                    resolve_assigned_target,
+                    planned[index].source.actor_slot,
+                    visiting);
+                if (!target) return;
+                command.params.target_slot = static_cast<std::uint8_t>(*target);
+            }
+            commands.push_back(command);
+        }
+        std::vector<std::uint8_t> encoded_bytes;
+        soa::battle::actions::encode_battle_turn_commands_to_buffer(
+            commands, encoded_bytes);
+        const auto encoded =
+            soa::battle::actions::encode_battle_turn_commands_hex(commands);
+        if (!encoded_seen.insert(encoded).second) return;
+        const auto variant_key = hash::sha256(
+            encoded_bytes.data(), encoded_bytes.size());
+        const auto [where, inserted] = encoded_by_hash.emplace(variant_key, encoded);
+        if (!inserted && where->second != encoded) {
+            collision = true;
+            return;
+        }
+        BattleTurnConcreteVariant variant{
+            .commands = std::move(commands),
+            .encoded_commands = encoded,
+            .variant_key = variant_key,
+        };
+        if (!context || ClassifyBattleTurnTargets(context, variant.commands)
+                == BattleTargetAvailability::Available) {
+            compilation.context_viable_variants.push_back(variant);
+        }
+        compilation.structural_variants.push_back(std::move(variant));
+    };
+
+    const auto recurse = [&](const auto& self, std::size_t index) -> void {
+        if (collision) return;
+        if (index == planned.size()) {
+            emit();
+            return;
+        }
+        const auto& item = planned[index];
+        current[index] = item.base;
+        if (!item.needs_target || item.same_as_actor) {
+            self(self, index + 1);
+            return;
+        }
+        for (const int target : item.direct_domain) {
+            current[index] = item.base;
+            current[index].params.target_slot = static_cast<std::uint8_t>(target);
+            direct_target_by_actor[item.source.actor_slot] = target;
+            self(self, index + 1);
+            direct_target_by_actor.erase(item.source.actor_slot);
+        }
+    };
+    recurse(recurse, 0);
+    if (collision) return fail("Battle target variant hash collision detected");
+    if (compilation.structural_variants.empty())
+        return fail("Battle Plan produced no concrete target variants");
+    if (!context)
+        compilation.context_viable_variants = compilation.structural_variants;
+    if (error_out) error_out->clear();
+    return compilation;
+}
+
 namespace {
 
 using namespace savor::runtime;
@@ -113,6 +343,16 @@ std::int64_t NowMs() { return types::UtcNow().time_since_epoch().count(); }
 bool Fail(std::string message, std::string* error_out) {
     if (error_out) *error_out = std::move(message);
     return false;
+}
+
+bool ValidateBattlePlanForMaterialization(
+    const BattlePlanSnapshot& plan,
+    std::string* error_out) {
+    if (!ValidateBattlePlanTurnSequence(plan, error_out)) return false;
+    for (const auto& turn : plan.turns) {
+        if (!CompileBattleTurnVariants(turn, nullptr, error_out)) return false;
+    }
+    return true;
 }
 
 std::filesystem::path WorkingRoot(const std::filesystem::path& configured) {
@@ -169,6 +409,35 @@ std::optional<std::filesystem::path> ResolveSavestate(
     return destination;
 }
 
+std::optional<soa::battle::ctx::BattleContext> ReadBattleContextArtifact(
+    IStateDb* state_db,
+    std::optional<std::int64_t> artifact_id) {
+    if (!state_db || !artifact_id) return std::nullopt;
+    const auto artifact = state_db->GetArtifact(*artifact_id);
+    if (!artifact || artifact->artifact_kind != "BATTLE_CONTEXT"
+        || artifact->file_ext != soa::battle::ctx::codec::ext
+        || artifact->size_bytes <= 0 || !IsLowerHexSha256(artifact->sha256)) {
+        return std::nullopt;
+    }
+    const std::filesystem::path path(artifact->filename);
+    std::error_code file_error;
+    if (!std::filesystem::is_regular_file(path, file_error) || file_error
+        || static_cast<std::int64_t>(std::filesystem::file_size(path, file_error))
+            != artifact->size_bytes || file_error
+        || HashFile(path) != std::optional<std::string>(artifact->sha256)) {
+        return std::nullopt;
+    }
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) return std::nullopt;
+    std::string bytes(static_cast<std::size_t>(artifact->size_bytes), '\0');
+    stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!stream || stream.gcount() != static_cast<std::streamsize>(bytes.size()))
+        return std::nullopt;
+    soa::battle::ctx::BattleContext context{};
+    if (!soa::battle::ctx::codec::decode(bytes, context)) return std::nullopt;
+    return context;
+}
+
 std::optional<std::int64_t> WaveId(const ProgramJobMaterializationContext& context) {
     if (context.step.domain_ref_id > 0) return context.step.domain_ref_id;
     if (!context.graph) return std::nullopt;
@@ -197,54 +466,6 @@ std::optional<std::int64_t> ExactGraphInput(
 const BattlePlanTurnSnapshot* FindTurn(const BattlePlanSnapshot& plan, int index) {
     const auto found = std::ranges::find(plan.turns, index, &BattlePlanTurnSnapshot::turn_index);
     return found == plan.turns.end() ? nullptr : &*found;
-}
-
-std::optional<soa::battle::actions::BattleTurnCommandSet> ResolveAuthoredCommands(
-    const BattlePlanTurnSnapshot& turn,
-    std::string* error_out) {
-    std::vector<BattlePlanActionSnapshot> ordered = turn.actions;
-    std::ranges::sort(ordered, {}, &BattlePlanActionSnapshot::ordinal);
-    std::set<int> actors;
-    soa::battle::actions::BattleTurnCommandSet commands;
-    commands.reserve(ordered.size());
-    for (const auto& action : ordered) {
-        if (action.actor_slot < 0 || action.actor_slot > 3
-            || !actors.insert(action.actor_slot).second) {
-            Fail("Battle Plan actors must be unique slots 0 through 3", error_out);
-            return std::nullopt;
-        }
-        const auto& preset = action.action_preset;
-        soa::battle::actions::BattleCommand command{};
-        command.actor_slot = static_cast<std::uint8_t>(action.actor_slot);
-        command.macro = preset.macro;
-        command.params.target_slot = 0xff;
-        command.params.item_id = 0xffff;
-        const bool needs_target = preset.macro == soa::battle::actions::BattleAction::Attack
-            || preset.macro == soa::battle::actions::BattleAction::UseItem;
-        if (needs_target) {
-            if (preset.target_kind != BattlePlanTargetKind::SingleEnemy
-                || !preset.target_single_slot
-                || *preset.target_single_slot < 4
-                || *preset.target_single_slot > 11) {
-                Fail("battle.single_turn requires a per-job concrete enemy target", error_out);
-                return std::nullopt;
-            }
-            command.params.target_slot = static_cast<std::uint8_t>(*preset.target_single_slot);
-        }
-        if (preset.macro == soa::battle::actions::BattleAction::UseItem) {
-            if (!preset.item_id || *preset.item_id < 0 || *preset.item_id > 0xffff) {
-                Fail("UseItem requires a concrete item identifier", error_out);
-                return std::nullopt;
-            }
-            command.params.item_id = static_cast<std::uint16_t>(*preset.item_id);
-        }
-        commands.push_back(command);
-    }
-    if (commands.empty()) {
-        Fail("Battle Plan turn has no commands", error_out);
-        return std::nullopt;
-    }
-    return commands;
 }
 
 std::optional<std::int64_t> IntegerArgument(
@@ -539,10 +760,6 @@ std::optional<PredicateBundleExecutionPackageV1> ReconstructPredicatePackage(
     return package;
 }
 
-std::string CommandsHex(const soa::battle::actions::BattleTurnCommandSet& commands) {
-    return soa::battle::actions::encode_battle_turn_commands_hex(commands);
-}
-
 std::string JobInput(std::int64_t turn_job_id,
                      std::string_view binding_hash,
                      std::string_view phase_hash) {
@@ -569,6 +786,33 @@ struct WaveExecutionSource {
     std::optional<std::int64_t> parent_exec_job_id;
     std::uint32_t cumulative_fake_attacks_before = 0;
 };
+
+std::optional<soa::battle::ctx::BattleContext> ResolveWavePlanningContext(
+    const WaveExecutionSource& source,
+    IAnalysisDb* analysis_db,
+    IStateDb* state_db) {
+    std::optional<std::int64_t> artifact_id;
+    if (source.wave.turn_index == 1) {
+        const auto probe = source.wave.context_probe_id && analysis_db
+            ? analysis_db->GetBattleContextProbe(*source.wave.context_probe_id)
+            : std::nullopt;
+        if (probe && probe->probe_status == BattleContextProbeStatus::Succeeded)
+            artifact_id = probe->context_artifact_id;
+    } else if (source.wave.parent_turn_job_id && analysis_db) {
+        const auto parent = analysis_db->GetBattleTurnJob(
+            *source.wave.parent_turn_job_id);
+        const auto result = parent && parent->exec_job_id
+            ? analysis_db->GetBattleSingleTurnResultForExecJob(
+                *parent->exec_job_id)
+            : std::nullopt;
+        if (result && result->terminal_kind == "SUCCEEDED"
+            && result->domain_outcome
+                == std::optional<std::string>("ReachedNextTurn")) {
+            artifact_id = result->battle_context_artifact_id;
+        }
+    }
+    return ReadBattleContextArtifact(state_db, artifact_id);
+}
 
 std::optional<WaveExecutionSource> ResolveWaveSource(
     std::int64_t wave_id,
@@ -764,9 +1008,18 @@ public:
         const auto* turn = plan ? FindTurn(*plan, source->wave.turn_index) : nullptr;
         if (!settings || !run_spec || !plan || !turn)
             return Fail("battle.single_turn authored Battle Plan turn is missing", error_out);
-        if (!ValidateBattlePlanTurnSequence(*plan, error_out)) return false;
-        auto commands = ResolveAuthoredCommands(*turn, error_out);
-        if (!commands) return false;
+        if (!ValidateBattlePlanForMaterialization(*plan, error_out)) return false;
+        const auto planning_context = ResolveWavePlanningContext(
+            *source, analysis_db_, state_db_);
+        auto variants = CompileBattleTurnVariants(
+            *turn,
+            planning_context ? &*planning_context : nullptr,
+            error_out);
+        if (!variants) return false;
+        const auto& selected_variants = planning_context
+            && !variants->context_viable_variants.empty()
+            ? variants->context_viable_variants
+            : variants->structural_variants;
         const auto bundle_revision = turn->default_predicate_bundle_revision_id.value_or(1);
         auto predicate_package = PreparePredicatePackage(
             authoring_db_, bundle_revision, context.graph ? &*context.graph : nullptr, error_out);
@@ -822,8 +1075,6 @@ public:
         binding.created_at_utc = types::UtcNow();
         if (!analysis_db_->BindBattlePredicateBundle(binding, nullptr, error_out)) return false;
 
-        const auto command_hex = CommandsHex(*commands);
-        const auto variant_key = hash::sha256(command_hex.data(), command_hex.size());
         const int minimum = std::min(source->battle_set.launch_fake_attack_min,
                                      source->battle_set.launch_fake_attack_max);
         const int maximum = std::max(source->battle_set.launch_fake_attack_min,
@@ -832,8 +1083,25 @@ public:
             return Fail("battle.single_turn cumulative fake attacks exceed the authored maximum", error_out);
         const int remaining = maximum - static_cast<int>(source->cumulative_fake_attacks_before);
         const int first_fake = std::max(0, minimum - static_cast<int>(source->cumulative_fake_attacks_before));
-        const int expected = remaining - first_fake + 1;
-        if (expected <= 0) return Fail("battle.single_turn fake-attack range is empty", error_out);
+        const auto fake_count = static_cast<std::uint64_t>(remaining - first_fake + 1);
+        if (fake_count == 0)
+            return Fail("battle.single_turn fake-attack range is empty", error_out);
+        if (selected_variants.size()
+            > static_cast<std::size_t>(
+                std::numeric_limits<int>::max() / fake_count)) {
+            return Fail("battle.single_turn target and fake-attack population overflowed", error_out);
+        }
+        const int expected = static_cast<int>(
+            selected_variants.size() * fake_count);
+        const runtime::WorkerWorksetLimits hard_limits{};
+        if (static_cast<std::uint32_t>(expected)
+                > hard_limits.maximum_items_per_workset
+            || static_cast<std::uint64_t>(expected) * kDeclaredTerminalBytes
+                > runtime::kMaximumWorksetTerminalReservationBytes) {
+            return Fail(
+                "battle.single_turn target and fake-attack population exceeds one workset's fixed limits",
+                error_out);
+        }
 
         const std::string materialization_key = "battle.single_turn.wave."
             + std::to_string(source->wave.wave_id);
@@ -853,9 +1121,10 @@ public:
 
         auto durable_turn_jobs = analysis_db_->ListBattleTurnJobsForWave(source->wave.wave_id);
         if (ensured.materialization_state == "MATERIALIZING") {
-            for (int fake = first_fake; fake <= remaining; ++fake) {
+            for (const auto& variant : selected_variants) {
+              for (int fake = first_fake; fake <= remaining; ++fake) {
                 auto existing = std::ranges::find_if(durable_turn_jobs, [&](const BattleTurnJobSnapshot& job) {
-                    return job.resolved_turn_commands_blob == command_hex
+                    return job.resolved_turn_commands_blob == variant.encoded_commands
                         && job.fake_attacks_this_turn == fake
                         && job.source_savestate_id == source->savestate.savestate_id;
                 });
@@ -872,8 +1141,8 @@ public:
                             .seed_candidate_id = source->wave.seed_candidate_id,
                             .authored_plan_id = plan->plan_id,
                             .authored_turn_index = source->wave.turn_index,
-                            .resolved_turn_commands_blob = command_hex,
-                            .resolved_turn_variant_key = variant_key,
+                            .resolved_turn_commands_blob = variant.encoded_commands,
+                            .resolved_turn_variant_key = variant.variant_key,
                             .fake_attacks_this_turn = fake,
                             .fake_attacks_used_before = static_cast<int>(source->cumulative_fake_attacks_before),
                             .job_state = BattleTurnJobState::Queued,
@@ -893,7 +1162,8 @@ public:
                             .program_ref_kind = std::string(kTurnJobRefKind),
                             .program_ref_id = turn_job_id,
                             .savestate_id = source->savestate.savestate_id,
-                            .fingerprint = Fingerprint(source->wave.wave_id, command_hex, fake,
+                            .fingerprint = Fingerprint(source->wave.wave_id,
+                                variant.encoded_commands, fake,
                                 predicate_package->binding.content_sha256, identity.canonical_sha256),
                             .priority = context.step.step_priority,
                             .max_attempts = 1,
@@ -903,6 +1173,7 @@ public:
                     if (!analysis_db_->SetBattleTurnJobExecJobId(turn_job_id, created.job_id, error_out))
                         return false;
                 }
+              }
             }
         }
         const auto jobs = execution_db_->ListJobsInJobSet(ensured.job_set_id);
@@ -974,7 +1245,29 @@ public:
             .program_version = runtime::battlesingleturn::ProgramVersion,
         };
         result_out->event_lines.push_back("[battle-single-turn-materialized] wave="
-            + std::to_string(source->wave.wave_id) + " jobs=" + std::to_string(expected));
+            + std::to_string(source->wave.wave_id)
+            + " target_variants=" + std::to_string(selected_variants.size())
+            + " jobs=" + std::to_string(expected));
+        if (!planning_context) {
+            result_out->event_lines.push_back(
+                "[battle-target-context-unknown] wave="
+                + std::to_string(source->wave.wave_id)
+                + " materialization=structural_superset");
+        } else if (variants->context_viable_variants.empty()) {
+            result_out->event_lines.push_back(
+                "[battle-target-context-unavailable] wave="
+                + std::to_string(source->wave.wave_id)
+                + " materialization=structural_fallback");
+        } else if (variants->context_viable_variants.size()
+                   != variants->structural_variants.size()) {
+            result_out->event_lines.push_back(
+                "[battle-target-context-narrowed] wave="
+                + std::to_string(source->wave.wave_id)
+                + " structural="
+                + std::to_string(variants->structural_variants.size())
+                + " viable="
+                + std::to_string(variants->context_viable_variants.size()));
+        }
         return true;
     }
 
@@ -1014,7 +1307,7 @@ private:
         const auto plan = authoring_db_->GetBattlePlan(*settings->default_plan_id);
         if (!plan)
             return Fail("battle.start authored Battle Plan is missing", error_out);
-        if (!ValidateBattlePlanTurnSequence(*plan, error_out)) return false;
+        if (!ValidateBattlePlanForMaterialization(*plan, error_out)) return false;
         const auto minimum_value = IntegerArgument(
             &*context.graph, "battle.fake_attack_min", "fake_attack_min").value_or(0);
         const auto maximum_value = IntegerArgument(
@@ -1667,34 +1960,15 @@ bool IsTerminalBattleSetStatus(BattleSetStatus status) {
 BattleTargetAvailability ClassifyTargetArtifact(
     IStateDb* state_db,
     const BattleSingleTurnResultSnapshot& result,
-    const soa::battle::actions::BattleTurnCommandSet& commands) {
-    if (!state_db || !result.battle_context_artifact_id)
-        return BattleTargetAvailability::Unknown;
-    const auto artifact = state_db->GetArtifact(*result.battle_context_artifact_id);
-    if (!artifact || artifact->artifact_kind != "BATTLE_CONTEXT"
-        || artifact->file_ext != soa::battle::ctx::codec::ext
-        || artifact->size_bytes <= 0 || !IsLowerHexSha256(artifact->sha256)) {
-        return BattleTargetAvailability::Unknown;
-    }
-    const std::filesystem::path path(artifact->filename);
-    std::error_code file_error;
-    if (!std::filesystem::is_regular_file(path, file_error) || file_error
-        || static_cast<std::int64_t>(std::filesystem::file_size(path, file_error))
-            != artifact->size_bytes || file_error
-        || HashFile(path) != std::optional<std::string>(artifact->sha256)) {
-        return BattleTargetAvailability::Unknown;
-    }
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) return BattleTargetAvailability::Unknown;
-    std::string bytes(
-        static_cast<std::size_t>(artifact->size_bytes), '\0');
-    stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    if (!stream || stream.gcount() != static_cast<std::streamsize>(bytes.size()))
-        return BattleTargetAvailability::Unknown;
-    soa::battle::ctx::BattleContext context{};
-    if (!soa::battle::ctx::codec::decode(bytes, context))
-        return BattleTargetAvailability::Unknown;
-    return ClassifyBattleTurnTargets(&context, commands);
+    const BattlePlanTurnSnapshot& turn) {
+    const auto context = ReadBattleContextArtifact(
+        state_db, result.battle_context_artifact_id);
+    if (!context) return BattleTargetAvailability::Unknown;
+    const auto variants = CompileBattleTurnVariants(turn, &*context, nullptr);
+    if (!variants) return BattleTargetAvailability::Unknown;
+    return variants->context_viable_variants.empty()
+        ? BattleTargetAvailability::Unavailable
+        : BattleTargetAvailability::Available;
 }
 
 std::optional<BattleSetStatus> AggregateBattleSetStatus(
@@ -1799,7 +2073,7 @@ bool Materializer::Continue(
         ? authoring_db_->GetBattlePlan(*settings->default_plan_id) : std::nullopt;
     if (!wave || !battle_set || !settings || !run_spec || !plan)
         return Fail("battle.single_turn continuation authoring lineage is missing", error_out);
-    if (!ValidateBattlePlanTurnSequence(*plan, error_out)) return false;
+    if (!ValidateBattlePlanForMaterialization(*plan, error_out)) return false;
     const auto jobs = analysis_db_->ListBattleTurnJobsForWave(wave->wave_id);
     if (jobs.empty()) return Fail("battle.single_turn wave lost its candidate population", error_out);
     std::vector<RankedCandidate> results;
@@ -1888,8 +2162,7 @@ bool Materializer::Continue(
             + std::to_string(wave->wave_id));
         return true;
     }
-    const auto next_commands = ResolveAuthoredCommands(*next_turn, error_out);
-    if (!next_commands) return false;
+    if (!CompileBattleTurnVariants(*next_turn, nullptr, error_out)) return false;
 
     if (!run_spec->auto_wave_trigger_enable) {
         if (!analysis_db_->UpdateBattleTurnWaveStatus(
@@ -1908,7 +2181,7 @@ bool Materializer::Continue(
     std::size_t unknown_count = 0;
     for (const auto& candidate : reached_next_turn) {
         switch (ClassifyTargetArtifact(
-            state_db_, candidate.result, *next_commands)) {
+            state_db_, candidate.result, *next_turn)) {
         case BattleTargetAvailability::Available:
             eligible.push_back(candidate);
             break;
@@ -2165,11 +2438,11 @@ bool RequestBattleWaveContinuation(
         || battle_set->status != BattleSetStatus::Active) {
         return Fail("manual Battle wave continuation requires an awaiting-selection wave in an active BattleSet", error_out);
     }
-    if (!ValidateBattlePlanTurnSequence(*plan, error_out)) return false;
+    if (!ValidateBattlePlanForMaterialization(*plan, error_out)) return false;
     const auto* next_turn = FindTurn(*plan, parent->turn_index + 1);
     if (!next_turn)
         return Fail("the authored Battle Plan has no next turn", error_out);
-    if (!ResolveAuthoredCommands(*next_turn, error_out)) return false;
+    if (!CompileBattleTurnVariants(*next_turn, nullptr, error_out)) return false;
 
     const auto parent_jobs = analysis_db->ListBattleTurnJobsForWave(parent->wave_id);
     for (const auto& job : parent_jobs) {

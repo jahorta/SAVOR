@@ -382,12 +382,54 @@ TEST(DerivedStateService, BattleCoreRefreshesAtomicallyAndIsItemLocal)
     const auto enemies_only_value =
         program::capabilities::EncodeBattleDerivedSnapshotValue(enemies_only);
     const std::array enemies_only_input{enemies_only_value};
-    std::string reducer_diagnostic;
-    EXPECT_FALSE(ReduceU32(
+    EXPECT_EQ(ReduceU32(
         "soa.battle.derived.player_min_position",
-        enemies_only_input,
-        &reducer_diagnostic));
-    EXPECT_EQ(reducer_diagnostic, "Battle turn-order cohort is empty");
+        enemies_only_input), 12u);
+    EXPECT_EQ(ReduceU32(
+        "soa.battle.derived.player_max_position",
+        enemies_only_input), 0u);
+    EXPECT_EQ(ReduceU32(
+        "soa.battle.derived.enemy_min_position",
+        enemies_only_input), 0u);
+    EXPECT_EQ(ReduceU32(
+        "soa.battle.derived.enemy_max_position",
+        enemies_only_input), 1u);
+
+    BattleTurnOrderSnapshotV1 players_only = *order.snapshot;
+    players_only.active_slots = {0, 1};
+    const auto players_only_value =
+        program::capabilities::EncodeBattleDerivedSnapshotValue(players_only);
+    const std::array players_only_input{players_only_value};
+    EXPECT_EQ(ReduceU32(
+        "soa.battle.derived.player_min_position",
+        players_only_input), 0u);
+    EXPECT_EQ(ReduceU32(
+        "soa.battle.derived.player_max_position",
+        players_only_input), 1u);
+    EXPECT_EQ(ReduceU32(
+        "soa.battle.derived.enemy_min_position",
+        players_only_input), 12u);
+    EXPECT_EQ(ReduceU32(
+        "soa.battle.derived.enemy_max_position",
+        players_only_input), 0u);
+
+    BattleTurnOrderSnapshotV1 empty_order = *order.snapshot;
+    empty_order.active_slots.clear();
+    const auto empty_order_value =
+        program::capabilities::EncodeBattleDerivedSnapshotValue(empty_order);
+    const std::array empty_order_input{empty_order_value};
+    EXPECT_EQ(ReduceU32(
+        "soa.battle.derived.player_min_position",
+        empty_order_input), 12u);
+    EXPECT_EQ(ReduceU32(
+        "soa.battle.derived.player_max_position",
+        empty_order_input), 0u);
+    EXPECT_EQ(ReduceU32(
+        "soa.battle.derived.enemy_min_position",
+        empty_order_input), 12u);
+    EXPECT_EQ(ReduceU32(
+        "soa.battle.derived.enemy_max_position",
+        empty_order_input), 0u);
 
     memory_backend.PutU8(turn_order, 4);
     memory_backend.PutU8(turn_order + 1, 4);

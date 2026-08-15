@@ -68,7 +68,10 @@ public:
     std::optional<events::AnalysisBattleCompletionPayloadView> ResolveBattleCompletion(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const override;
-    std::optional<events::AnalysisBattleResultsPayloadView> ResolveBattleResults(
+    std::optional<events::AnalysisBattleRecordingPayloadView> ResolveBattleRecording(
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const override;
+    std::optional<events::AnalysisBattleReplayPayloadView> ResolveBattleReplay(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const override;
 

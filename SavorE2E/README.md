@@ -15,6 +15,8 @@ SavorE2E never decides whether an observed game trajectory was desirable. A
 coherent negative domain result, a different dynamic population, or an
 output-guarded downstream skip does not fail a scenario. Automated failure is
 reserved for execution/infrastructure failure or malformed durable evidence.
+Canceled execution jobs are normal pruning outcomes: they remain in trajectory
+reporting but do not fail invariant assessment. Failed jobs still do.
 
 ## Usage
 
@@ -40,6 +42,40 @@ SeedProbe and Battle may use an existing approved checkpoint with
 `--workspace-root ... --source-savestate-id ...`. This preserves and appends to
 the existing workspace. Fresh-source scenarios reset only their designated
 scenario workspace.
+
+An exact registered workflow unit with one required input and one static step
+may be launched against an existing complete workspace with:
+
+```bash
+SavorE2E \
+  --scenario workflow_unit \
+  --workspace-root <existing-workspace> \
+  --workflow-unit <unit-kind> \
+  --source-ref-kind <durable-ref-kind> \
+  --source-ref-id <positive-id> \
+  --iso <path-to-game.iso> \
+  --dolphin-base-dir <path>
+```
+
+This is a generic production-unit entry surface. It resolves the static unit
+registry, authors one run-unique node, binds the declared input data kind to the
+supplied durable reference, and uses the normal production registry and split
+coordinators. Hidden units such as `battle_completion` and
+`battle_recording` are supported without phase-specific dispatch. Run them as
+separate explicit requests: completion consumes
+`analysis_battle.turn_job:<turn-job-id>`, while recording consumes the resulting
+`analysis_battle.battle_completion:<completion-id>`. The workspace is preserved
+and the source binding is re-read after execution.
+
+SeedProbe search authoring can be controlled with
+`--seedprobe-min-value`, `--seedprobe-max-value`,
+`--seedprobe-samples-per-axis`,
+`--seedprobe-combo-attempts-per-target`, and
+`--seedprobe-combo-sampler-tries`. Battle additionally accepts
+`--battle-fake-attack-min` and `--battle-fake-attack-max`. The lightweight
+defaults remain unchanged. The legacy-analogous first-Battle investigation uses
+range `48..207`, 20 samples per axis, 32 combination attempts per target, 8
+sampler tries, and fake attacks `0..5` from a prepared checkpoint.
 
 `SavorWorker.exe` is resolved next to `SavorE2E`. Worker-backed scenarios have
 no elapsed run deadline. They stop when the workflow reaches a durable terminal
@@ -98,9 +134,21 @@ exit code.
     PCs and artifacts, BattleSet and realized wave lineage, predicate
     accounting, and outcome-dependent artifact contracts;
   - reports every observed BattleSet, wave, turn, candidate outcome, RNG/timing
-    value, predicate count, artifact, and progress event;
+    value, authored and concrete target, variant key, fake-attack choice,
+    predicate binding/evidence, artifact, and progress event;
+  - authors two generic turns where actor 0 attacks `AnyEnemy` and actor 1
+    attacks the same resolved target; symbolic variants are materialized by
+    coordination before workers receive them;
   - does not require a particular turn, continuation, selection, Victory,
     Defeat, or final BattleSet status.
+- `workflow_unit`
+  - preserves an existing complete workspace and launches one exact registered
+    unit from a durable source reference;
+  - validates the one-node authored contract, static activation/step lineage,
+    immutable source binding, terminal evidence, and any observed root outputs;
+  - reports dynamic downstream steps, domain results, artifacts, and progress
+    without requiring a particular domain trajectory;
+  - does not invoke or synthesize the Battle Results Screen handler.
 
 All active workflow scenarios use the shared split coordinator composition.
 Trajectory acceptance remains a human review activity; short synthetic tests

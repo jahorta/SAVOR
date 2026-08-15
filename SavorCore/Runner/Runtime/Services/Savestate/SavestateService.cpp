@@ -365,19 +365,14 @@ SavestateService::CaptureImmutableArtifact(
     }
 
     std::optional<MovieCheckpointMetadata> movie = request.movie;
-    if (movie && movie->mode == MovieCheckpointMode::Recording)
-    {
-        receipt.result = SavestateServiceResult::Failure(
-            SavestateServiceErrorCode::Unsupported,
-            "Publishing an in-progress recording checkpoint is unsupported");
-        return receipt;
-    }
     if (SavestateServiceResult valid = NormalizeMovieMetadata(movie, false);
         !valid.ok)
     {
         receipt.result = std::move(valid);
         return receipt;
     }
+    if (movie && movie->mode == MovieCheckpointMode::Recording)
+        movie->recording_workset_epoch = workset_epoch_;
 
     // Immutable artifacts must contain Dolphin's portable on-disk savestate
     // representation. Raw SaveToBuffer bytes are reserved for process-local

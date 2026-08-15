@@ -5,6 +5,19 @@ The current typed derived-state contract is defined in
 legacy derived-buffer, `DERIVED` address-region, byte-offset, and
 capture-backed-decision designs.
 
+The current Battle exit contract is defined in
+[`19-battle-completion-recording-and-results-handler.md`](19-battle-completion-recording-and-results-handler.md).
+It supersedes the older split `battle.results_screen` Full Phase, legacy
+Battle Completion stopping contract, and phase-owned recording proposals.
+`battle.completion` and `battle.record` end at accepted field preseed; the
+Results Screen is a reusable built-in interaction invoked by the eventual
+downstream phase after field postseed.
+Worker diagnostics use a bounded asynchronous logger owned through final
+drain by `SavorWorker`; active execution heartbeats reuse the engine's normal
+core/movie observation and inspect controller-poll evidence without mutating
+the input relationship. The exact Battle Record diagnostic boundary is also
+defined in document 19.
+
 The current semantic-routing, immutable workset-capture, and canonical-progress
 contract is defined in
 [`17-semantic-routing-workset-capture-canonical-progress.md`](17-semantic-routing-workset-capture-canonical-progress.md).
@@ -61,13 +74,13 @@ roadmap continues the direct native-builder migrations originally divided across
 - 6F Battle Macro Probe;
 - 6G Battle Single Turn;
 - 6H Battle Completion; and
-- 6I Battle Results Screen.
+- 6I Battle Record.
 
 These slices build typed modules directly from current domain behavior. They do not compile
 `PhaseScript`, add a temporary `PhaseScript` translator, or require a parallel old/new differential
 harness. The disconnected legacy multi-turn `BattleRunner` remains orientation and deletion evidence,
-not a migration target. `BattleEndResults` is likewise not a phase: its surviving names are compatibility
-or container names for the separate Battle Completion and Battle Results Screen phases.
+not a migration target. `BattleEndResults` and `battle.results_screen` are likewise not phases: the
+surviving Results implementation is a reusable interaction owned by a future downstream phase.
 
 The remaining documents guide these current-program migrations and the adapter cutover that restores
 behavior. Component names and concrete API shapes may continue to evolve. The ownership and safety
@@ -326,6 +339,12 @@ The names have precise meanings:
     caller-supplied frame/input cursor: Dolphin restores that cursor from the savestate and
     `MovieService` records the authoritative observed position. Exact cursor equality is required only
     for an internally captured checkpoint that already carries a known cursor.
+    `MovieService` is also the sole semantic authority for movie lifecycle state. The backend reports
+    only raw playback, recording, read-only, frame, and input-count facts; `MovieService` classifies
+    `PreparedReadOnlyPlayback`, `ReadOnlyPlayback`, `Recording`, `PlaybackEnded`, and `Inactive` under
+    the active epoch. `ExecutionEngine` requests that canonical state from `MovieService` and never
+    infers movie completion directly from backend flags. Only natural exhaustion of owned read-only
+    playback becomes `PlaybackEnded`; branching playback into recording remains active execution.
 22. `InputArbiter` alone publishes pad state. One epoch-bound lease distinguishes ownership from its
     `Neutral`, `Held`, `DeliveryPending`, or `NeutralTransitionPending` state. Guest synchronization is
     carried by ephemeral execution bindings; neutral close and stable-neutral apply are host-only, and

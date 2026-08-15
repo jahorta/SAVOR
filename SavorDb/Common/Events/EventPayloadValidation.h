@@ -367,11 +367,20 @@ inline bool ValidateAnalysisBattlePayloadV1(const EventEnvelope& envelope, std::
         }
         return true;
     }
-    if (envelope.event_type == "AnalysisBattle.BattleResultsCreated.v1"
-        || envelope.event_type == "AnalysisBattle.BattleResultsCompleted.v1"
-        || envelope.event_type == "AnalysisBattle.BattleResultsFailed.v1") {
-        if (envelope.payload_ref_kind != "battle_results") {
-            if (error_out) *error_out = "payload_ref_kind must be battle_results for battle results events";
+    if (envelope.event_type == "AnalysisBattle.BattleRecordingCreated.v1"
+        || envelope.event_type == "AnalysisBattle.BattleRecordingCompleted.v1"
+        || envelope.event_type == "AnalysisBattle.BattleRecordingFailed.v1") {
+        if (envelope.payload_ref_kind != "battle_recording") {
+            if (error_out) *error_out = "payload_ref_kind must be battle_recording for battle recording events";
+            return false;
+        }
+        return true;
+    }
+    if (envelope.event_type == "AnalysisBattle.BattleReplayCreated.v1"
+        || envelope.event_type == "AnalysisBattle.BattleReplayCompleted.v1"
+        || envelope.event_type == "AnalysisBattle.BattleReplayFailed.v1") {
+        if (envelope.payload_ref_kind != "battle_replay") {
+            if (error_out) *error_out = "payload_ref_kind must be battle_replay for battle replay events";
             return false;
         }
         return true;

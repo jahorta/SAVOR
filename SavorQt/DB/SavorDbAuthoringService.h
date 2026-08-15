@@ -41,7 +41,6 @@ struct BattlePlanActionDraft {
     std::optional<int> target_mask_bits;
     std::optional<int> target_single_slot;
     std::optional<int> target_same_as_actor_slot;
-    std::optional<std::string> target_expr_ini;
     std::optional<int> item_id;
     int ordinal = 0;
 };
@@ -53,7 +52,6 @@ struct BattlePlanActionPresetDraft {
     std::optional<int> target_mask_bits;
     std::optional<int> target_single_slot;
     std::optional<int> target_same_as_actor_slot;
-    std::optional<std::string> target_expr_ini;
     std::optional<int> item_id;
     int flags = 0;
 };
@@ -292,7 +290,6 @@ public:
                         ? action.target_single_slot
                         : action.target_slot;
                     preset_command.target_same_as_actor_slot = action.target_same_as_actor_slot;
-                    preset_command.target_expr_ini = action.target_expr_ini;
                     preset_command.item_id = action.item_id;
                     preset_command.created_at_utc = now;
                     preset_command.correlation_id = plan.correlation_id;
@@ -337,7 +334,6 @@ public:
         command.target_mask_bits = draft.target_mask_bits;
         command.target_single_slot = draft.target_single_slot;
         command.target_same_as_actor_slot = draft.target_same_as_actor_slot;
-        command.target_expr_ini = draft.target_expr_ini;
         command.item_id = draft.item_id;
         command.flags = draft.flags;
         command.created_at_utc = now;

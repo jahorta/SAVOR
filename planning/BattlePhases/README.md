@@ -2,10 +2,11 @@
 
 ## Purpose
 
-This is the living, evidence-first record for the new `battle.context` and
-`battle.single_turn` phases. Historical investigation remains in place, while
-the Decisions and latest log entries record the approved implementation
-architecture.
+This is the living, evidence-first record for the new `battle.context`,
+`battle.single_turn`, `battle.completion`, `battle.record`, and
+`battle.replay` phases.
+Historical investigation remains in place, while the Decisions and latest log
+entries record the approved implementation architecture.
 
 Battle E2E runs validate the static join, entry and Battle Context provenance,
 predicate accounting, realized dynamic lineage, and outcome-specific artifact
@@ -34,6 +35,185 @@ Current phase: backend implementation is present and compiler/runtime
 validation is in progress for Battle Context, predicate-enabled Battle Single
 Turn, atomic workset initialization, homogeneous workers, and adaptive
 synchronized input. Qt authoring and planning UI remain deferred.
+
+## Normative Battle exit and recording architecture
+
+This section supersedes every earlier Battle-planning statement that models
+the Results Screen as a separate Full Phase, workflow node, result aggregate,
+or savestate-producing operation. The matching ExecutionRuntime contract is
+recorded in
+[`../ExecutionRuntime/19-battle-completion-recording-and-results-handler.md`](../ExecutionRuntime/19-battle-completion-recording-and-results-handler.md).
+
+The Battle exit path has three explicit production phases and one reusable
+downstream interaction:
+
+1. `battle.completion` advances one explicitly selected durable Victory
+   candidate through Battle completion and reward commitment. It ends at the
+   accepted field preseed boundary, publishes the durable `.bcmb` completion
+   manifest, and publishes a movie-inactive planning savestate.
+2. `battle.record` is a separate, explicitly requested commitment operation.
+   It reconstructs the exact selected Battle lineage and restores the
+   movie-paired Battle-entry checkpoint as a `Savestate` baseline with its
+   exact DTM continuation sidecar. It adopts the playback session restored at
+   that cursor through `runtime.movie.adopt_restored_read_only_playback`,
+   branches it into recording before guest advancement,
+   adaptively replays the entire Battle and completion sequence, and ends the
+   recorded segment at the same accepted field preseed boundary. It never uses
+   the TAS-only opt-in `ReadOnlyMovie` origin baseline.
+3. `battle.replay` is the non-recording control phase. It restores the exact
+   `BattleSet.entry_savestate_id` as a `Savestate`, with its exact DTM sidecar
+   when the entry is movie-paired and with no sidecar when it is movie-inactive.
+   The worker branches from `MovieService`'s post-restore observation: it
+   adopts and stops `ReadOnlyPlayback`, or proceeds directly from `Inactive`,
+   then executes the same canonical replay plan and adaptive body without
+   recording or publishing artifacts.
+4. The Battle Results Screen is not a phase. It is a static, reusable adaptive
+   interaction lowered into a future field, cutscene, or ship-runtime phase.
+   That downstream phase performs the ordinary SeedProbe/TBR transition to
+   field postseed and then invokes the handler before beginning its own domain
+   behavior.
+
+`battle.completion` and `battle.record` share one Battle Completion
+interaction. Starting at `EndBattleVictory` (`0x800706D8`), it accepts either
+researched causal completion path, reaches reward entry (`0x8006F598`) and
+reward commit (`0x8006FD58`), requires the committed state to have
+`battleInputState == 2`, and captures
+the before/after character and reward evidence used by
+`BattleCompletionManifestV1`. Foreground waits remain unbounded by elapsed
+time or frame count; cancellation and worker-health policy remain outside the
+phase program.
+
+The common terminal is the first accepted field preseed point:
+
+- fast preseed `0x80101894` is accepted only when
+  `u32[0x803475D4] != 0`;
+- otherwise execution continues to deferred preseed `0x801018AC`.
+
+At that point the worker captures `FieldTransitionContextV1`, including area,
+raw and effective suffixes, reconstructed `me%03d%c.sct` filename, RNG, and
+execution provenance. Area 99 obtains the effective suffix from
+`u8[0x80310A22] + 'a'`. Coordination, not the worker, classifies the filename:
+
+| Filename | Downstream route |
+|---|---|
+| `me099*` | `OverworldNavigation` |
+| other `me000*` through `me199*` | `FieldNavigation` |
+| `me200*` through `me499*` | `Cutscene` |
+| `me500*` and above | `ShipRuntime` |
+
+`ShipRuntime` is a field/SCPT route. No filename classification may create a
+new `battle.*` chain, and there is no Battle-to-Battle transition.
+
+### `battle.completion` contract
+
+- Materialization requires explicit user selection of a durable Victory turn
+  job. Merely observing Victory never launches the phase.
+- The workset is a singleton with the selected Victory successor savestate,
+  exact BattleSet/wave/turn-job/execution-job lineage, empty predicate and
+  derived-state bindings, and one maximum attempt.
+- Entry qualification requires exact paused PC `0x800706D8`.
+- Success publishes a first-class `BATTLE_COMPLETION` `.bcmb` artifact, a
+  movie-inactive preseed successor savestate, and one relational
+  `BattleCompletion` result referencing both.
+- The manifest contains the selected lineage, entry/reward/preseed
+  provenance, Battle RNG evidence, before/after character state, rewards,
+  expected Results presentation, and field-transition context.
+- Unexpected hooks, malformed rewards, or transition inconsistency fail the
+  job atomically and publish neither manifest nor successor.
+
+### `battle.record` contract
+
+- Materialization requires a second explicit user request against a successful
+  `battle.completion` result.
+- Coordination walks the chosen Victory lineage back to turn one and produces
+  one source-neutral immutable `BattleReplayPlanV1`: the confirmed first-turn
+  SeedProbe frame, ordered
+  concrete per-turn commands and fake-attack counts, expected terminal and
+  ending RNG per turn, the expected completion manifest, exact lineage, and a
+  canonical plan hash. A separate `BattleReplaySourceBindingV1` names the
+  exact movie-paired recording checkpoint and inherited DTM/itinerary. Gaps,
+  ambiguity, symbolic commands, or changed source evidence fail before dispatch.
+- Its singleton workset uses the movie-paired checkpoint as a `Savestate`
+  baseline and carries the exact DTM as that state's continuation sidecar.
+  `ReadOnlyMovie` is reserved for TAS Movie phases explicitly starting from
+  the DTM-declared origin; it is neither a TAS default nor valid for
+  `battle.record`.
+- `runtime.movie.adopt_restored_read_only_playback` validates and scopes the
+  playback session already established by savestate restoration. It performs
+  no DTM-origin preparation, core restart, state restore, or guest advancement
+  before the recording branch.
+- `MovieService` alone classifies the restored session as read-only playback,
+  recording, naturally ended playback, or inactive. The execution backend
+  supplies raw native movie facts, and `ExecutionEngine` requests the
+  epoch-qualified canonical state from `MovieService`. The recording branch
+  commits `Recording` before the first replay advance; only genuine source
+  playback exhaustion triggers the existing movie-ended failure policy.
+- The worker executes one job in one item. Predicate execution is disabled. It
+  validates live Battle Context before each turn, reuses the adaptive Battle
+  command interaction, verifies each selected terminal/RNG, and then reuses
+  the shared completion interaction.
+- The observed completion and transition must be semantically equal to the
+  standalone completion. Semantic comparison excludes timing, timestamps,
+  worker identity, predicate/progress data, and artifact IDs.
+- Success publishes the finalized DTM, inherited-plus-appended TMI itinerary,
+  paired preseed recording checkpoint, final-command timing-anchor annotation,
+  durable `BattleRecording`, and an unvalidated TAS Movie tree. Existing TAS
+  Movie validation is scheduled automatically, and checkpoint sterilization
+  is scheduled only after a `Valid` validation result.
+- `ReplayMismatch` is a successful domain outcome. It publishes no DTM,
+  savestate, itinerary, tree, or partial movie artifact; diagnostics and
+  canonical progress remain available.
+- The timing anchor identifies the final turn's last player-controlled command
+  commitment and exact DTM input index. This phase creates no DTM variants;
+  future generic DTM modification may insert neutral input records before the
+  anchor.
+
+### `battle.replay` control contract
+
+- Materialization requires an explicit request against the same completed
+  `battle.completion` input used by Battle Record.
+- Coordination uses the same canonical replay-plan builder. Record and Replay
+  therefore persist byte-identical `BattleReplayPlanV1` bytes and hashes for
+  the same completion lineage.
+- Replay has its own immutable `BattleReplaySourceBindingV1`, whose sole state
+  authority is the exact `BattleSet.entry_savestate_id`. Coordination stages
+  only that SAV and, when durable evidence marks it movie-paired, its exact
+  validated DTM sidecar. It never substitutes the paired ancestor.
+- After restoration, `runtime.movie.observe_state` asks `MovieService` for the
+  canonical state. `Inactive` qualifies `BeforeRandSeedSet` and enters the
+  shared body directly. `ReadOnlyPlayback` adopts the restored session,
+  qualifies the same PC, stops playback, and must observe `Inactive` before
+  entering the body. Prepared playback, recording, exhausted playback, and
+  unknown state fail before input publication or guest advancement.
+- An inactive source creates no playback handle or cleanup. A paired source
+  releases its playback controller reservation before adaptive input begins.
+- SeedProbe delivery, TurnInputs entry, live Battle Context validation,
+  adaptive multi-turn commands, terminal/RNG checks, and completion/transition
+  semantic comparison are shared with Battle Record.
+- `Matched` and `ReplayMismatch` are durable successful domain outcomes.
+  Replay persists source/completion lineage, its canonical source binding and
+  plan, terminal hash, and mismatch or observed completion evidence. DTM and
+  itinerary references are nullable for movie-inactive entry states.
+- Replay declares no artifacts and creates no savestate, DTM, itinerary,
+  timing anchor, TAS tree, validation request, sterilization request, or
+  downstream workflow transition.
+
+### Results Screen handler contract and validation boundary
+
+The handler enters at field postseed `0x801012B4` with the exact completion
+manifest. It owns one adaptive controller lease and follows the researched
+descriptor, intro, gold, normal EXP, stat, magic EXP, learned-magic, item,
+confirmation, fade, lifecycle-exit (`0x800E64A0`), and cleanup
+(`0x800E3694`) gates. At cleanup it requires lifecycle `0xFF`, completion flag
+`1`, a null result pointer, game mode `6`, and RNG unchanged from handler
+entry. It produces only a typed receipt for its enclosing downstream phase;
+it publishes no standalone artifact, savestate, workflow result, or database
+aggregate.
+
+Static construction, lowering, codec, and reducer tests remain appropriate.
+Live, E2E, and test-only Full Phase execution validation of the Results Screen
+handler is explicitly deferred until a real downstream phase exists. We will
+not invent a temporary production-shaped phase merely to run it.
 
 The global controller-input contract is normative in
 [`../ExecutionRuntime/16-adaptive-synchronized-input.md`](../ExecutionRuntime/16-adaptive-synchronized-input.md).
@@ -563,8 +743,9 @@ receipt after validation. Battle Single Turn uses a fresh live context,
 per-job plan validation, adaptive command state, and the exact fake-attack
 ordering: A remains held through target readiness and bounded RNG change,
 then neutral release is observed across exactly seven frames before B. Raw
-Battle input artifacts are no longer part of the result contract; DTM
-recording remains a future explicit production phase.
+Battle input artifacts are no longer part of the result contract;
+`battle.record` is the explicit production phase that commits the selected
+adaptive lineage to the DTM.
 
 ### 2026-08-10 - Coherent context capture uses paused-state authority
 
@@ -676,3 +857,48 @@ or compatibility requirement.
 `StartTurn` and `StartAction` must be backed by genuinely distinct physical
 Battle hooks. The current and legacy registries alias both names to
 `0x800715dc`; that alias is evidence to correct, not a contract to preserve.
+
+### 2026-08-12 - Symbolic target materialization
+
+Battle Plan target selectors remain authoring concepts. Coordination compiles
+each authored turn into deterministic concrete command variants before it
+creates worker jobs. `SingleEnemy` contributes one slot, `MultipleEnemies` and
+`AnyEnemy` contribute ordered alternative slots, and `SameAsOtherPC` reuses an
+already resolved actor target without adding a Cartesian-product dimension.
+References may be forward or transitive, but every chain must terminate at a
+direct selector and cycles are rejected. Actor slots and action ordinals are
+validated exactly.
+
+Variant identity is the SHA-256 of the encoded command bytes. Duplicate command
+sets collapse to one variant, while a hash collision between different command
+bytes is an integrity failure. Each wave materializes the product of concrete
+target variants and permitted fake-attack counts as separate jobs in one
+workset. Workers receive only concrete commands and never resolve authoring or
+access SavorDb.
+
+Battle Context is optional narrowing evidence. A valid first-turn joined
+context or later-turn candidate `.bctx` removes known absent, dead, and
+non-enemy targets. Missing or invalid context retains the structural domain and
+emits a diagnostic. Automatic continuation uses the same availability result
+before ending-RNG deduplication; explicit manual continuation still bypasses
+that filter. If narrowing would leave an already-created first or manual wave
+empty, structural variants are retained so live worker validation remains the
+execution authority.
+
+The old `target_expr_ini` column and API are removed. There is no expression
+adapter or legacy target parser in the new backend.
+
+### 2026-08-12 - Legacy-analogous exploratory fixture
+
+The standard Battle E2E fixture authors two generic turns. Actor 0 attacks
+`AnyEnemy`; actor 1 attacks `SameAsOtherPC` referencing actor 0. Both turns use
+the same ordinary published predicate bundle. The fixture exposes SeedProbe
+bounds, samples, combination attempts, sampler tries, and the cumulative
+fake-attack range as explicit scenario inputs. These settings broaden an
+analogous workflow; they do not target a known frame, RNG, target, command, or
+winning branch.
+
+E2E validates concrete-job identities, predicate bindings, evidence shapes,
+and artifact contracts, then reports the complete trajectory. It does not
+require a target, turn count, continuation path, BattleSet status, or Victory;
+trajectory comparison with legacy runs remains a human judgment.

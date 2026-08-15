@@ -56,6 +56,8 @@ bool ResolveE2eScenarioEntry(
     }
     case E2eScenarioEntrySource::FreshTasMovieValidation:
         break;
+    case E2eScenarioEntrySource::ExistingWorkspaceReference:
+        break;
     case E2eScenarioEntrySource::PreparedSterilizedCheckpoint: {
         if (!options.source_savestate_id
             || *options.source_savestate_id <= 0) {

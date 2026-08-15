@@ -5,24 +5,26 @@
 
 #include <algorithm>
 #include <array>
+#include <exception>
 #include <filesystem>
+#include <limits>
 #include <utility>
 
 namespace savor::runtime {
 namespace {
 
-[[nodiscard]] MovieActivity ActivityOf(MovieCheckpointMode mode) noexcept
+[[nodiscard]] MovieState StateOf(MovieCheckpointMode mode) noexcept
 {
     switch (mode)
     {
     case MovieCheckpointMode::ReadOnlyPlayback:
-        return MovieActivity::ReadOnlyPlayback;
+        return MovieState::ReadOnlyPlayback;
     case MovieCheckpointMode::Recording:
-        return MovieActivity::Recording;
+        return MovieState::Recording;
     case MovieCheckpointMode::None:
-        return MovieActivity::Inactive;
+        return MovieState::Inactive;
     }
-    return MovieActivity::Inactive;
+    return MovieState::Inactive;
 }
 
 [[nodiscard]] bool HasDtmMagic(
@@ -65,7 +67,7 @@ MovieOperationReceipt MovieService::BaseReceipt(
             MovieServiceErrorCode::BackendFailure,
             "Movie operation did not run"),
         .operation = operation,
-        .activity = activity_,
+        .state = state_,
         .workset_epoch = ActiveEpoch(),
         .reservation = reservation_,
     };
@@ -88,6 +90,12 @@ MovieOperationReceipt MovieService::PrepareReadOnlyPlayback(
         receipt.result = MovieServiceResult::Failure(
             MovieServiceErrorCode::InvalidState,
             "Read-only playback requires an active workset");
+        return receipt;
+    }
+    const MovieStateSnapshot current = ObserveState(ActiveEpoch());
+    if (!current.result.ok)
+    {
+        receipt.result = current.result;
         return receipt;
     }
     if (MovieServiceResult idle = ValidateIdle(); !idle.ok)
@@ -277,7 +285,10 @@ MovieOperationReceipt MovieService::PrepareReadOnlyPlayback(
         return receipt;
     }
     const std::optional<MovieCheckpointMetadata> expected_movie{movie};
-    if (MovieServiceResult observed = ValidateSnapshotFor(expected_movie);
+    MovieBackendObservation backend_observation;
+    if (MovieServiceResult observed = ValidateBackendFor(
+            expected_movie,
+            &backend_observation);
         !observed.ok)
     {
         tainted_ = true;
@@ -288,17 +299,16 @@ MovieOperationReceipt MovieService::PrepareReadOnlyPlayback(
         prepared_core_started_ = false;
         return receipt;
     }
-    const MovieSnapshot observed = backend_.Snapshot();
-    movie.current_frame = observed.current_frame;
-    movie.current_input_count = observed.current_input_count;
+    movie.current_frame = backend_observation.current_frame;
+    movie.current_input_count = backend_observation.current_input_count;
     movie.cursor_known = true;
 
     preparation_ = MoviePreparationId(next_preparation_++);
-    activity_ = MovieActivity::PreparedReadOnlyPlayback;
+    state_ = MovieState::PreparedReadOnlyPlayback;
     active_movie_ = movie;
     prepared_starting_savestate_ = prepared.startup_savestate;
     receipt.result = MovieServiceResult::Success();
-    receipt.activity = activity_;
+    receipt.state = state_;
     receipt.workset_epoch = ActiveEpoch();
     receipt.reservation = reservation_;
     receipt.preparation = preparation_;
@@ -312,7 +322,7 @@ std::optional<MovieOperationReceipt>
 MovieService::PreparedReadOnlyPlaybackReceipt() const
 {
     if (!OnOwnerThread() || !ActiveEpoch() ||
-        activity_ != MovieActivity::PreparedReadOnlyPlayback ||
+        state_ != MovieState::PreparedReadOnlyPlayback ||
         !preparation_ || !active_movie_)
     {
         return std::nullopt;
@@ -320,7 +330,7 @@ MovieService::PreparedReadOnlyPlaybackReceipt() const
     MovieOperationReceipt receipt = BaseReceipt(
         MovieOperation::PreparePlayback);
     receipt.result = MovieServiceResult::Success();
-    receipt.activity = activity_;
+    receipt.state = state_;
     receipt.workset_epoch = ActiveEpoch();
     receipt.reservation = reservation_;
     receipt.preparation = preparation_;
@@ -340,7 +350,7 @@ MovieOperationReceipt MovieService::StartPreparedReadOnlyPlayback(
         return receipt;
     }
     if (!ActiveEpoch() ||
-        activity_ != MovieActivity::PreparedReadOnlyPlayback ||
+        state_ != MovieState::PreparedReadOnlyPlayback ||
         !preparation || preparation != preparation_ || !active_movie_)
     {
         receipt.result = MovieServiceResult::Failure(
@@ -360,7 +370,10 @@ MovieOperationReceipt MovieService::StartPreparedReadOnlyPlayback(
             tainted_ = true;
         return receipt;
     }
-    if (MovieServiceResult observed = ValidateSnapshotFor(active_movie_);
+    MovieBackendObservation backend_observation;
+    if (MovieServiceResult observed = ValidateBackendFor(
+            active_movie_,
+            &backend_observation);
         !observed.ok)
     {
         tainted_ = true;
@@ -369,15 +382,14 @@ MovieOperationReceipt MovieService::StartPreparedReadOnlyPlayback(
         return receipt;
     }
 
-    const MovieSnapshot observed = backend_.Snapshot();
-    active_movie_->current_frame = observed.current_frame;
-    active_movie_->current_input_count = observed.current_input_count;
+    active_movie_->current_frame = backend_observation.current_frame;
+    active_movie_->current_input_count = backend_observation.current_input_count;
     active_movie_->cursor_known = true;
-    activity_ = MovieActivity::ReadOnlyPlayback;
+    state_ = MovieState::ReadOnlyPlayback;
     preparation_ = {};
     prepared_core_started_ = false;
     receipt.result = MovieServiceResult::Success();
-    receipt.activity = activity_;
+    receipt.state = state_;
     receipt.workset_epoch = ActiveEpoch();
     receipt.reservation = reservation_;
     receipt.dtm_sha256 = active_movie_->dtm_sha256;
@@ -396,7 +408,7 @@ MovieOperationReceipt MovieService::AbandonPreparedReadOnlyPlayback(
         receipt.result = WrongThread();
         return receipt;
     }
-    if (activity_ != MovieActivity::PreparedReadOnlyPlayback ||
+    if (state_ != MovieState::PreparedReadOnlyPlayback ||
         !preparation || preparation != preparation_)
     {
         receipt.result = MovieServiceResult::Failure(
@@ -409,7 +421,7 @@ MovieOperationReceipt MovieService::AbandonPreparedReadOnlyPlayback(
         ? backend_.StopMovie()
         : backend_.DiscardPreparedReadOnlyMovie();
     const MovieServiceResult released = ReleaseReservation();
-    activity_ = MovieActivity::Inactive;
+    state_ = MovieState::Inactive;
     preparation_ = {};
     active_movie_.reset();
     prepared_starting_savestate_.reset();
@@ -431,7 +443,7 @@ MovieOperationReceipt MovieService::AbandonPreparedReadOnlyPlayback(
             std::move(message),
             GuestIntegrity::Unknown);
     }
-    receipt.activity = activity_;
+    receipt.state = state_;
     receipt.reservation = reservation_;
     return receipt;
 }
@@ -447,36 +459,65 @@ MovieOperationReceipt MovieService::StopPlayback() noexcept
     }
     MovieOperationReceipt receipt = BaseReceipt(
         MovieOperation::StopPlayback);
-    if (activity_ != MovieActivity::ReadOnlyPlayback)
+    if (state_ != MovieState::ReadOnlyPlayback &&
+        state_ != MovieState::PlaybackEnded)
     {
         receipt.result = MovieServiceResult::Failure(
             MovieServiceErrorCode::InvalidState,
             "No read-only movie playback is active");
         return receipt;
     }
-    MovieBackendResult stopped = backend_.StopMovie();
-    if (!stopped.ok)
+    receipt.result = MovieServiceResult::Success();
+
+    // Natural exhaustion has already detached Dolphin's native playback.  Its
+    // retained service state only needs ownership cleanup; issuing another
+    // native stop would incorrectly turn terminal observation into a command.
+    if (state_ == MovieState::ReadOnlyPlayback)
     {
-        if (stopped.integrity == GuestIntegrity::Unknown)
+        MovieBackendResult stopped = backend_.StopMovie();
+        if (!stopped.ok)
+        {
+            if (stopped.integrity == GuestIntegrity::Unknown)
+                tainted_ = true;
+            receipt.result = MovieServiceResult::Failure(
+                MovieServiceErrorCode::BackendFailure,
+                stopped.message.empty() ? "Movie playback stop failed" :
+                                          std::move(stopped.message),
+                stopped.integrity);
+            return receipt;
+        }
+        MovieBackendObservation inactive;
+        if (MovieServiceResult validated = ValidateBackendStateForCleanup(
+                MovieState::Inactive,
+                inactive);
+            !validated.ok)
+        {
             tainted_ = true;
-        receipt.result = MovieServiceResult::Failure(
-            MovieServiceErrorCode::BackendFailure,
-            stopped.message.empty() ? "Movie playback stop failed" :
-                                      std::move(stopped.message),
-            stopped.integrity);
-        return receipt;
+            state_ = MovieState::Unknown;
+            validated.integrity = GuestIntegrity::Unknown;
+            receipt.result = std::move(validated);
+        }
     }
     MovieServiceResult released = ReleaseReservation();
     if (!released.ok)
     {
         tainted_ = true;
-        receipt.result = std::move(released);
+        state_ = MovieState::Unknown;
+        if (receipt.result.ok || receipt.result.message.empty())
+            receipt.result = std::move(released);
+        else
+            receipt.result.message += "; " + released.message;
+    }
+    active_movie_.reset();
+    if (!receipt.result.ok && state_ == MovieState::Unknown)
+    {
+        receipt.state = state_;
+        receipt.reservation = reservation_;
         return receipt;
     }
-    activity_ = MovieActivity::Inactive;
-    active_movie_.reset();
+    state_ = MovieState::Inactive;
     receipt.result = MovieServiceResult::Success();
-    receipt.activity = activity_;
+    receipt.state = state_;
     receipt.reservation = {};
     return receipt;
 }
@@ -500,17 +541,61 @@ MovieOperationReceipt MovieService::StartRecording(
             "Recording requires an active workset");
         return receipt;
     }
-    if (MovieServiceResult idle = ValidateIdle(); !idle.ok)
+    const MovieStateSnapshot current = ObserveState(ActiveEpoch());
+    if (!current.result.ok)
     {
-        receipt.result = std::move(idle);
+        receipt.result = current.result;
         return receipt;
     }
-    if (MovieServiceResult acquired = AcquireReservation(); !acquired.ok)
+    const bool branching = state_ == MovieState::ReadOnlyPlayback;
+    if (!branching)
     {
-        receipt.result = std::move(acquired);
+        if (MovieServiceResult idle = ValidateIdle(); !idle.ok)
+        {
+            receipt.result = std::move(idle);
+            return receipt;
+        }
+    }
+    else if (!active_movie_ || !reservation_)
+    {
+        receipt.result = MovieServiceResult::Failure(
+            MovieServiceErrorCode::IntegrityFailure,
+            "Read-only playback lacks its exact movie or reservation",
+            GuestIntegrity::Unknown);
+        tainted_ = true;
         return receipt;
     }
-    MovieBackendResult started = backend_.BeginRecording();
+
+    recording_prefix_.reset();
+    recording_prefix_input_count_ = 0;
+    if (branching)
+    {
+        if (current.current_input_count >
+            (std::numeric_limits<std::size_t>::max() -
+             savor::tas::DtmFile::kMinHeader) / 8u)
+        {
+            receipt.result = MovieServiceResult::Failure(
+                MovieServiceErrorCode::ArtifactFailure,
+                "Read-only playback cursor exceeds the representable DTM prefix");
+            return receipt;
+        }
+        const std::size_t prefix_size =
+            savor::tas::DtmFile::kMinHeader +
+            static_cast<std::size_t>(current.current_input_count) * 8u;
+        if (prefix_size > active_movie_->dtm_bytes.size())
+        {
+            receipt.result = MovieServiceResult::Failure(
+                MovieServiceErrorCode::ArtifactFailure,
+                "Read-only playback cursor exceeds the admitted DTM payload");
+            return receipt;
+        }
+        recording_prefix_ = *active_movie_;
+        recording_prefix_input_count_ = current.current_input_count;
+    }
+
+    MovieBackendResult started = branching
+        ? backend_.BranchReadOnlyPlaybackToRecording()
+        : backend_.BeginRecording();
     if (!started.ok)
     {
         receipt.result = MovieServiceResult::Failure(
@@ -520,27 +605,73 @@ MovieOperationReceipt MovieService::StartRecording(
             started.integrity);
         if (started.integrity == GuestIntegrity::Unknown)
             tainted_ = true;
-        (void)ReleaseReservation();
+        recording_prefix_.reset();
+        recording_prefix_input_count_ = 0;
         return receipt;
     }
-    const MovieSnapshot observed = backend_.Snapshot();
-    if (observed.activity != MovieActivity::Recording ||
-        observed.read_only)
+    MovieBackendObservation observed;
+    if (MovieServiceResult validated = ValidateBackendState(
+            MovieState::Recording,
+            observed);
+        !validated.ok)
     {
+        const MovieBackendResult cancelled = backend_.CancelRecording();
+        MovieServiceResult released = MovieServiceResult::Success();
+        if (cancelled.ok)
+        {
+            released = ReleaseReservation();
+            RetireRecordingAfterBackendStop();
+            receipt.state = state_;
+            receipt.reservation = reservation_;
+        }
         tainted_ = true;
+        std::string message =
+            validated.message.empty()
+                ? "Movie backend did not enter writable recording mode"
+                : std::move(validated.message);
+        if (!cancelled.ok)
+        {
+            message += "; recording compensation failed: " +
+                (cancelled.message.empty()
+                    ? std::string("backend cancellation failed")
+                    : cancelled.message);
+        }
+        else if (!released.ok)
+        {
+            message += "; input-reservation release failed: " +
+                (released.message.empty()
+                    ? std::string("reservation release failed")
+                    : released.message);
+        }
         receipt.result = MovieServiceResult::Failure(
             MovieServiceErrorCode::IntegrityFailure,
-            "Movie backend did not enter writable recording mode",
+            std::move(message),
             GuestIntegrity::Unknown);
         return receipt;
     }
-    activity_ = MovieActivity::Recording;
-    active_movie_ = MovieCheckpointMetadata{
-        .mode = MovieCheckpointMode::Recording,
-    };
+    if (branching)
+    {
+        MovieServiceResult released = ReleaseReservation();
+        if (!released.ok)
+        {
+            (void)backend_.CancelRecording();
+            recording_prefix_.reset();
+            recording_prefix_input_count_ = 0;
+            tainted_ = true;
+            released.integrity = GuestIntegrity::Unknown;
+            receipt.result = std::move(released);
+            return receipt;
+        }
+    }
+    state_ = MovieState::Recording;
+    active_movie_ = recording_prefix_.value_or(MovieCheckpointMetadata{});
+    active_movie_->mode = MovieCheckpointMode::Recording;
+    active_movie_->current_frame = observed.current_frame;
+    active_movie_->current_input_count = observed.current_input_count;
+    active_movie_->cursor_known = true;
     receipt.result = MovieServiceResult::Success();
-    receipt.activity = activity_;
-    receipt.reservation = reservation_;
+    receipt.state = state_;
+    receipt.reservation = {};
     return receipt;
 }
 
@@ -558,7 +689,7 @@ MovieOperationReceipt MovieService::FinalizeRecording(
     MovieOperationReceipt receipt = BaseReceipt(
         MovieOperation::FinalizeRecording);
     receipt.artifact_path = request.dtm_path;
-    if (activity_ != MovieActivity::Recording)
+    if (state_ != MovieState::Recording)
     {
         receipt.result = MovieServiceResult::Failure(
             MovieServiceErrorCode::InvalidState,
@@ -577,6 +708,55 @@ MovieOperationReceipt MovieService::FinalizeRecording(
             "Recording output must be a new caller-declared path");
         return receipt;
     }
+    receipt.result = MovieServiceResult::Success();
+    const MovieStateSnapshot current = ObserveState(ActiveEpoch());
+    if (!current.result.ok)
+    {
+        receipt.result = current.result;
+        return receipt;
+    }
+
+    if (recording_prefix_)
+    {
+        MovieCheckpointBackendResult pending =
+            backend_.CaptureRecordingCheckpoint();
+        if (!pending.result.ok)
+        {
+            receipt.result = FromBackendResult(
+                pending.result,
+                "Recording prefix checkpoint capture failed");
+            if (pending.result.integrity == GuestIntegrity::Unknown)
+                tainted_ = true;
+            return receipt;
+        }
+        MovieCheckpointMetadata checkpoint = std::move(pending.checkpoint);
+        checkpoint.mode = MovieCheckpointMode::Recording;
+        checkpoint.cursor_known = true;
+        if (MovieServiceResult valid = ValidateCheckpoint(checkpoint); !valid.ok)
+        {
+            receipt.result = std::move(valid);
+            return receipt;
+        }
+        const std::size_t prefix_size =
+            savor::tas::DtmFile::kMinHeader +
+            static_cast<std::size_t>(recording_prefix_input_count_) * 8u;
+        if (checkpoint.dtm_bytes.size() < prefix_size ||
+            recording_prefix_->dtm_bytes.size() < prefix_size ||
+            !std::equal(
+                recording_prefix_->dtm_bytes.begin() +
+                    savor::tas::DtmFile::kMinHeader,
+                recording_prefix_->dtm_bytes.begin() + prefix_size,
+                checkpoint.dtm_bytes.begin() +
+                    savor::tas::DtmFile::kMinHeader))
+        {
+            receipt.result = MovieServiceResult::Failure(
+                MovieServiceErrorCode::IntegrityFailure,
+                "Recording no longer preserves the exact inherited DTM prefix",
+                GuestIntegrity::Unknown);
+            tainted_ = true;
+            return receipt;
+        }
+    }
 
     MovieRecordingFinalizeResult finalized =
         backend_.FinalizeRecording(request.dtm_path);
@@ -592,24 +772,72 @@ MovieOperationReceipt MovieService::FinalizeRecording(
             finalized.result.integrity);
         return receipt;
     }
+
+    const auto discard_finalized_artifacts = [&]() noexcept {
+        std::string failure;
+        for (const auto& path : {
+                 request.dtm_path,
+                 std::filesystem::path(request.dtm_path.string() + ".sav")})
+        {
+            std::error_code error;
+            (void)std::filesystem::remove(path, error);
+            if (error)
+            {
+                if (!failure.empty()) failure += "; ";
+                failure += path.string() + ": " + error.message();
+            }
+        }
+        return failure;
+    };
+    const auto fail_after_backend_finalize =
+        [&](MovieServiceResult failure) -> MovieOperationReceipt {
+            const std::string cleanup = discard_finalized_artifacts();
+            if (!cleanup.empty())
+                failure.message += "; finalized-artifact cleanup failed: " +
+                    cleanup;
+            failure.integrity = GuestIntegrity::Unknown;
+            tainted_ = true;
+            receipt.result = std::move(failure);
+            return receipt;
+        };
+
+    MovieBackendObservation inactive;
+    if (MovieServiceResult validated = ValidateBackendState(
+            MovieState::Inactive,
+            inactive);
+        !validated.ok)
+    {
+        state_ = MovieState::Unknown;
+        return fail_after_backend_finalize(std::move(validated));
+    }
+
+    // A successful backend finalization has already ended Dolphin's movie
+    // session. Retire the service-side recording state before validating the
+    // resulting files so a later artifact failure cannot make resource unwind
+    // attempt to cancel a recording that no longer exists.
+    MovieServiceResult released = ReleaseReservation();
+    RetireRecordingAfterBackendStop();
+    receipt.state = state_;
+    receipt.reservation = reservation_;
+    if (!released.ok)
+    {
+        return fail_after_backend_finalize(std::move(released));
+    }
+
     MovieCheckpointMetadata recorded;
     if (MovieServiceResult valid =
             ValidateDtm(request.dtm_path, recorded);
         !valid.ok)
     {
-        tainted_ = true;
-        receipt.result = std::move(valid);
-        return receipt;
+        return fail_after_backend_finalize(std::move(valid));
     }
     if (recorded.starts_from_savestate !=
         finalized.starting_savestate.has_value())
     {
-        tainted_ = true;
-        receipt.result = MovieServiceResult::Failure(
+        return fail_after_backend_finalize(MovieServiceResult::Failure(
             MovieServiceErrorCode::ArtifactFailure,
             "Final DTM and recording starting-state companion disagree",
-            GuestIntegrity::Unknown);
-        return receipt;
+            GuestIntegrity::Unknown));
     }
     if (finalized.starting_savestate.has_value())
     {
@@ -618,24 +846,14 @@ MovieOperationReceipt MovieService::FinalizeRecording(
         if (*finalized.starting_savestate != expected ||
             !std::filesystem::is_regular_file(expected))
         {
-            tainted_ = true;
-            receipt.result = MovieServiceResult::Failure(
+            return fail_after_backend_finalize(MovieServiceResult::Failure(
                 MovieServiceErrorCode::ArtifactFailure,
                 "Recording starting-state companion was not published at <dtm>.sav",
-                GuestIntegrity::Unknown);
-            return receipt;
+                GuestIntegrity::Unknown));
         }
     }
-    if (MovieServiceResult released = ReleaseReservation(); !released.ok)
-    {
-        tainted_ = true;
-        receipt.result = std::move(released);
-        return receipt;
-    }
-    activity_ = MovieActivity::Inactive;
-    active_movie_.reset();
     receipt.result = MovieServiceResult::Success();
-    receipt.activity = activity_;
+    receipt.state = state_;
     receipt.reservation = {};
     receipt.dtm_sha256 = recorded.dtm_sha256;
     receipt.starting_savestate = finalized.starting_savestate;
@@ -653,13 +871,14 @@ MovieOperationReceipt MovieService::CancelRecording() noexcept
     }
     MovieOperationReceipt receipt = BaseReceipt(
         MovieOperation::CancelRecording);
-    if (activity_ != MovieActivity::Recording)
+    if (state_ != MovieState::Recording)
     {
         receipt.result = MovieServiceResult::Failure(
             MovieServiceErrorCode::InvalidState,
             "No movie recording is active");
         return receipt;
     }
+    receipt.result = MovieServiceResult::Success();
     MovieBackendResult cancelled = backend_.CancelRecording();
     if (!cancelled.ok)
     {
@@ -672,16 +891,38 @@ MovieOperationReceipt MovieService::CancelRecording() noexcept
             cancelled.integrity);
         return receipt;
     }
+    MovieBackendObservation inactive;
+    if (MovieServiceResult validated = ValidateBackendStateForCleanup(
+            MovieState::Inactive,
+            inactive);
+        !validated.ok)
+    {
+        state_ = MovieState::Unknown;
+        tainted_ = true;
+        validated.integrity = GuestIntegrity::Unknown;
+        receipt.result = std::move(validated);
+    }
     if (MovieServiceResult released = ReleaseReservation(); !released.ok)
     {
         tainted_ = true;
-        receipt.result = std::move(released);
+        state_ = MovieState::Unknown;
+        if (receipt.result.ok || receipt.result.message.empty())
+            receipt.result = std::move(released);
+        else
+            receipt.result.message += "; " + released.message;
+    }
+    active_movie_.reset();
+    recording_prefix_.reset();
+    recording_prefix_input_count_ = 0;
+    if (!receipt.result.ok && state_ == MovieState::Unknown)
+    {
+        receipt.state = state_;
+        receipt.reservation = reservation_;
         return receipt;
     }
-    activity_ = MovieActivity::Inactive;
-    active_movie_.reset();
+    state_ = MovieState::Inactive;
     receipt.result = MovieServiceResult::Success();
-    receipt.activity = activity_;
+    receipt.state = state_;
     receipt.reservation = {};
     return receipt;
 }
@@ -695,7 +936,16 @@ MovieCheckpointReceipt MovieService::CaptureCheckpoint()
         return receipt;
     }
     receipt.workset_epoch = ActiveEpoch();
-    if (activity_ == MovieActivity::Inactive || !active_movie_.has_value())
+    const MovieStateSnapshot observed = ObserveState(receipt.workset_epoch);
+    if (!observed.result.ok)
+    {
+        receipt.result = observed.result;
+        return receipt;
+    }
+    if ((state_ != MovieState::ReadOnlyPlayback &&
+         state_ != MovieState::PlaybackEnded &&
+         state_ != MovieState::Recording) ||
+        !active_movie_.has_value())
     {
         receipt.result = MovieServiceResult::Failure(
             MovieServiceErrorCode::InvalidState,
@@ -704,10 +954,10 @@ MovieCheckpointReceipt MovieService::CaptureCheckpoint()
     }
 
     MovieCheckpointMetadata checkpoint;
-    if (activity_ == MovieActivity::ReadOnlyPlayback)
+    if (state_ == MovieState::ReadOnlyPlayback ||
+        state_ == MovieState::PlaybackEnded)
     {
         checkpoint = *active_movie_;
-        const MovieSnapshot observed = backend_.Snapshot();
         checkpoint.current_frame = observed.current_frame;
         checkpoint.current_input_count = observed.current_input_count;
         checkpoint.cursor_known = true;
@@ -742,11 +992,139 @@ MovieCheckpointReceipt MovieService::CaptureCheckpoint()
     return receipt;
 }
 
-MovieSnapshot MovieService::snapshot() const
+MovieStateSnapshot MovieService::ObserveState(
+    WorksetEpoch expected_epoch)
 {
     if (!OnOwnerThread())
-        return {};
-    return backend_.Snapshot();
+        return ObservationFailure(WrongThread(), expected_epoch);
+    const WorksetEpoch active_epoch = ActiveEpoch();
+    if (!expected_epoch || expected_epoch != active_epoch)
+    {
+        return ObservationFailure(
+            MovieServiceResult::Failure(
+                MovieServiceErrorCode::InvalidState,
+                "Movie observation does not belong to the active workset"),
+            expected_epoch);
+    }
+    if (tainted_)
+    {
+        return ObservationFailure(
+            MovieServiceResult::Failure(
+                MovieServiceErrorCode::IntegrityFailure,
+                "MovieService is tainted",
+                GuestIntegrity::Unknown),
+            expected_epoch);
+    }
+
+    const MovieBackendObservation observed = backend_.ObserveMovie();
+    if (!observed.result.ok)
+    {
+        MovieServiceResult failure = FromBackendResult(
+            observed.result,
+            "Movie backend observation failed");
+        if (failure.integrity == GuestIntegrity::Unknown)
+            tainted_ = true;
+        return ObservationFailure(std::move(failure), expected_epoch);
+    }
+    if (observed.playing && observed.recording)
+    {
+        tainted_ = true;
+        state_ = MovieState::Unknown;
+        return ObservationFailure(
+            MovieServiceResult::Failure(
+                MovieServiceErrorCode::IntegrityFailure,
+                "Movie backend reported simultaneous playback and recording",
+                GuestIntegrity::Unknown),
+            expected_epoch);
+    }
+
+    MovieStateSnapshot snapshot{
+        .result = MovieServiceResult::Success(),
+        .workset_epoch = active_epoch,
+        .state = state_,
+        .read_only = observed.read_only,
+        .current_frame = observed.current_frame,
+        .current_input_count = observed.current_input_count,
+    };
+    const auto fail_contradiction = [&](std::string message) {
+        tainted_ = true;
+        state_ = MovieState::Unknown;
+        snapshot.result = MovieServiceResult::Failure(
+            MovieServiceErrorCode::IntegrityFailure,
+            std::move(message),
+            GuestIntegrity::Unknown);
+        snapshot.state = state_;
+        return snapshot;
+    };
+
+    switch (state_)
+    {
+    case MovieState::Inactive:
+        if (observed.playing || observed.recording)
+            return fail_contradiction(
+                "Movie backend became active without MovieService ownership");
+        break;
+    case MovieState::PreparedReadOnlyPlayback:
+        if (!observed.playing || observed.recording || !observed.read_only)
+            return fail_contradiction(
+                "Prepared read-only playback no longer matches the movie backend");
+        break;
+    case MovieState::ReadOnlyPlayback:
+        if (observed.playing && !observed.recording && observed.read_only)
+        {
+            if (active_movie_)
+            {
+                active_movie_->current_frame = observed.current_frame;
+                active_movie_->current_input_count =
+                    observed.current_input_count;
+                active_movie_->cursor_known = true;
+            }
+            break;
+        }
+        if (!observed.playing && !observed.recording && observed.read_only)
+        {
+            state_ = MovieState::PlaybackEnded;
+            if (active_movie_)
+            {
+                active_movie_->current_frame = observed.current_frame;
+                active_movie_->current_input_count =
+                    observed.current_input_count;
+                active_movie_->cursor_known = true;
+            }
+            snapshot.state = state_;
+            break;
+        }
+        return fail_contradiction(
+            "Read-only playback changed to an unrequested movie mode");
+    case MovieState::Recording:
+        if (reservation_)
+            return fail_contradiction(
+                "Movie recording retained an exclusive controller reservation");
+        if (!observed.recording || observed.playing || observed.read_only)
+            return fail_contradiction(
+                "Movie recording disappeared or changed mode unexpectedly");
+        if (active_movie_)
+        {
+            active_movie_->current_frame = observed.current_frame;
+            active_movie_->current_input_count = observed.current_input_count;
+            active_movie_->cursor_known = true;
+        }
+        break;
+    case MovieState::PlaybackEnded:
+        if (observed.playing || observed.recording || !observed.read_only)
+            return fail_contradiction(
+                "Ended playback lost its retained read-only backend evidence");
+        if (active_movie_ && active_movie_->cursor_known)
+        {
+            snapshot.current_frame = active_movie_->current_frame;
+            snapshot.current_input_count = active_movie_->current_input_count;
+        }
+        break;
+    case MovieState::Unknown:
+        return fail_contradiction(
+            "MovieService has an unknown owned state");
+    }
+    return snapshot;
 }
 
 MovieServiceResult MovieService::PrepareSavestateRestore(
@@ -774,14 +1152,28 @@ MovieServiceResult MovieService::PrepareSavestateRestore(
             MovieServiceErrorCode::Unsupported,
             "Cold restoration of an in-progress recording is unsupported");
     }
-    if (context.movie.has_value() && !reservation_)
+    const bool restoring_read_only = context.movie.has_value() &&
+        context.movie->mode == MovieCheckpointMode::ReadOnlyPlayback;
+    const bool restoring_recording = context.movie.has_value() &&
+        context.movie->mode == MovieCheckpointMode::Recording;
+    if (restoring_recording &&
+        context.movie->recording_workset_epoch != ActiveEpoch())
+    {
+        return MovieServiceResult::Failure(
+            MovieServiceErrorCode::InvalidState,
+            "Recording checkpoint does not belong to the active workset");
+    }
+    // Read-only playback owns Dolphin's controller source exclusively.
+    // Recording observes InputArbiter publications and must never acquire that
+    // reservation.
+    if (restoring_read_only && !reservation_)
     {
         MovieServiceResult acquired = AcquireReservation();
         if (!acquired.ok)
             return acquired;
         acquired_for_restore_ = true;
     }
-    original_activity_ = activity_;
+    original_state_ = state_;
     original_movie_ = active_movie_;
     MovieBackendResult prepared =
         backend_.PrepareSavestateRestore(context);
@@ -792,6 +1184,8 @@ MovieServiceResult MovieService::PrepareSavestateRestore(
             (void)ReleaseReservation();
             acquired_for_restore_ = false;
         }
+        original_movie_.reset();
+        original_state_ = MovieState::Inactive;
         return FromBackendResult(
             prepared,
             "Movie backend failed to prepare savestate history");
@@ -816,42 +1210,108 @@ MovieServiceResult MovieService::CommitSavestateRestore(
     if (!committed.ok)
     {
         tainted_ = true;
-        restore_prepared_ = false;
-        return FromBackendResult(
+        state_ = MovieState::Unknown;
+        active_movie_.reset();
+        recording_prefix_.reset();
+        recording_prefix_input_count_ = 0;
+        MovieServiceResult failure = FromBackendResult(
             committed,
             "Movie savestate restore commit failed");
+        if (reservation_)
+        {
+            MovieServiceResult released = ReleaseReservation();
+            if (!released.ok)
+                failure.message += "; " + released.message;
+        }
+        restore_prepared_ = false;
+        acquired_for_restore_ = false;
+        original_movie_.reset();
+        original_state_ = MovieState::Inactive;
+        failure.integrity = GuestIntegrity::Unknown;
+        return failure;
     }
+    MovieBackendObservation backend_observation;
     if (MovieServiceResult observed =
-            ValidateSnapshotFor(context.movie);
+            ValidateBackendFor(context.movie, &backend_observation);
         !observed.ok)
     {
         tainted_ = true;
+        state_ = MovieState::Unknown;
+        active_movie_.reset();
+        recording_prefix_.reset();
+        recording_prefix_input_count_ = 0;
+        if (reservation_)
+        {
+            MovieServiceResult released = ReleaseReservation();
+            if (!released.ok)
+                observed.message += "; " + released.message;
+        }
         restore_prepared_ = false;
+        acquired_for_restore_ = false;
+        original_movie_.reset();
+        original_state_ = MovieState::Inactive;
         observed.integrity = GuestIntegrity::Unknown;
         return observed;
     }
 
     if (context.movie.has_value())
     {
-        activity_ = ActivityOf(context.movie->mode);
         MovieCheckpointMetadata reconciled = *context.movie;
-        const MovieSnapshot observed = backend_.Snapshot();
-        reconciled.current_frame = observed.current_frame;
-        reconciled.current_input_count = observed.current_input_count;
+        reconciled.current_frame = backend_observation.current_frame;
+        reconciled.current_input_count =
+            backend_observation.current_input_count;
         reconciled.cursor_known = true;
-        active_movie_ = std::move(reconciled);
+        const MovieState restored_state = StateOf(context.movie->mode);
+        if (restored_state == MovieState::Recording && reservation_)
+        {
+            MovieServiceResult released = ReleaseReservation();
+            if (!released.ok)
+            {
+                tainted_ = true;
+                state_ = MovieState::Unknown;
+                active_movie_.reset();
+                recording_prefix_.reset();
+                recording_prefix_input_count_ = 0;
+                restore_prepared_ = false;
+                acquired_for_restore_ = false;
+                original_movie_.reset();
+                original_state_ = MovieState::Inactive;
+                released.integrity = GuestIntegrity::Unknown;
+                return released;
+            }
+        }
+        state_ = restored_state;
+        active_movie_ = reconciled;
+        if (restored_state == MovieState::Recording)
+        {
+            // The restored recording history up to its exact cursor is the
+            // immutable prefix that later finalization must preserve.
+            recording_prefix_ = reconciled;
+            recording_prefix_input_count_ = reconciled.current_input_count;
+        }
+        else
+        {
+            recording_prefix_.reset();
+            recording_prefix_input_count_ = 0;
+        }
     }
     else
     {
-        activity_ = MovieActivity::Inactive;
+        state_ = MovieState::Inactive;
         active_movie_.reset();
+        recording_prefix_.reset();
+        recording_prefix_input_count_ = 0;
         if (reservation_)
         {
             MovieServiceResult released = ReleaseReservation();
             if (!released.ok)
             {
                 tainted_ = true;
+                state_ = MovieState::Unknown;
                 restore_prepared_ = false;
+                acquired_for_restore_ = false;
+                original_movie_.reset();
+                original_state_ = MovieState::Inactive;
                 released.integrity = GuestIntegrity::Unknown;
                 return released;
             }
@@ -860,6 +1320,7 @@ MovieServiceResult MovieService::CommitSavestateRestore(
     restore_prepared_ = false;
     acquired_for_restore_ = false;
     original_movie_.reset();
+    original_state_ = MovieState::Inactive;
     return MovieServiceResult::Success();
 }
 
@@ -875,14 +1336,17 @@ MovieServiceResult MovieService::RollbackSavestateRestore(
     MovieServiceResult release = MovieServiceResult::Success();
     if (acquired_for_restore_)
         release = ReleaseReservation();
-    activity_ = original_activity_;
-    active_movie_ = original_movie_;
-    original_movie_.reset();
     restore_prepared_ = false;
     acquired_for_restore_ = false;
     if (!rolled_back.ok || !release.ok)
     {
         tainted_ = true;
+        state_ = MovieState::Unknown;
+        active_movie_.reset();
+        recording_prefix_.reset();
+        recording_prefix_input_count_ = 0;
+        original_movie_.reset();
+        original_state_ = MovieState::Inactive;
         return MovieServiceResult::Failure(
             MovieServiceErrorCode::IntegrityFailure,
             !rolled_back.ok ?
@@ -892,6 +1356,10 @@ MovieServiceResult MovieService::RollbackSavestateRestore(
                 release.message,
             GuestIntegrity::Unknown);
     }
+    state_ = original_state_;
+    active_movie_ = original_movie_;
+    original_movie_.reset();
+    original_state_ = MovieState::Inactive;
     return MovieServiceResult::Success();
 }
 
@@ -904,7 +1372,7 @@ MovieServiceResult MovieService::ValidateIdle() const
             "MovieService is tainted",
             GuestIntegrity::Unknown);
     }
-    if (activity_ != MovieActivity::Inactive || reservation_)
+    if (state_ != MovieState::Inactive || reservation_)
     {
         return MovieServiceResult::Failure(
             MovieServiceErrorCode::InvalidState,
@@ -947,34 +1415,90 @@ MovieServiceResult MovieService::ReleaseReservation() noexcept
     return result;
 }
 
-MovieServiceResult MovieService::ValidateSnapshotFor(
-    const std::optional<MovieCheckpointMetadata>& movie) const
+void MovieService::RetireRecordingAfterBackendStop() noexcept
 {
-    const MovieSnapshot observed = backend_.Snapshot();
-    if (!movie.has_value())
+    state_ = MovieState::Inactive;
+    active_movie_.reset();
+    recording_prefix_.reset();
+    recording_prefix_input_count_ = 0;
+}
+
+MovieServiceResult MovieService::ValidateBackendState(
+    MovieState expected,
+    MovieBackendObservation& observation) const
+{
+    observation = backend_.ObserveMovie();
+    if (!observation.result.ok)
     {
-        if (observed.activity != MovieActivity::Inactive)
-        {
-            return MovieServiceResult::Failure(
-                MovieServiceErrorCode::IntegrityFailure,
-                "Movie backend remained active after state replacement",
-                GuestIntegrity::Unknown);
-        }
-        return MovieServiceResult::Success();
+        return FromBackendResult(
+            observation.result,
+            "Movie backend observation failed");
     }
-    const MovieActivity expected = ActivityOf(movie->mode);
-    if (observed.activity != expected ||
-        (expected == MovieActivity::ReadOnlyPlayback &&
-         !observed.read_only) ||
-        (expected == MovieActivity::Recording &&
-         observed.read_only))
+    if (observation.playing && observation.recording)
     {
         return MovieServiceResult::Failure(
             MovieServiceErrorCode::IntegrityFailure,
-            "Movie backend state does not match the checkpoint",
+            "Movie backend reported simultaneous playback and recording",
             GuestIntegrity::Unknown);
     }
-    if (movie->cursor_known &&
+    const bool matches =
+        (expected == MovieState::Inactive &&
+         !observation.playing && !observation.recording) ||
+        (expected == MovieState::ReadOnlyPlayback &&
+         observation.playing && !observation.recording &&
+         observation.read_only) ||
+        (expected == MovieState::Recording &&
+         !observation.playing && observation.recording &&
+         !observation.read_only);
+    if (!matches)
+    {
+        return MovieServiceResult::Failure(
+            MovieServiceErrorCode::IntegrityFailure,
+            "Movie backend physical state does not match the requested transition",
+            GuestIntegrity::Unknown);
+    }
+    return MovieServiceResult::Success();
+}
+
+MovieServiceResult MovieService::ValidateBackendStateForCleanup(
+    MovieState expected,
+    MovieBackendObservation& observation) const noexcept
+{
+    try
+    {
+        return ValidateBackendState(expected, observation);
+    }
+    catch (const std::exception& error)
+    {
+        return MovieServiceResult::Failure(
+            MovieServiceErrorCode::IntegrityFailure,
+            std::string("Movie backend observation threw during cleanup: ") +
+                error.what(),
+            GuestIntegrity::Unknown);
+    }
+    catch (...)
+    {
+        return MovieServiceResult::Failure(
+            MovieServiceErrorCode::IntegrityFailure,
+            "Movie backend observation threw during cleanup",
+            GuestIntegrity::Unknown);
+    }
+}
+
+MovieServiceResult MovieService::ValidateBackendFor(
+    const std::optional<MovieCheckpointMetadata>& movie,
+    MovieBackendObservation* observation_out) const
+{
+    MovieBackendObservation observed;
+    const MovieState expected = movie.has_value()
+        ? StateOf(movie->mode)
+        : MovieState::Inactive;
+    if (MovieServiceResult valid = ValidateBackendState(expected, observed);
+        !valid.ok)
+    {
+        return valid;
+    }
+    if (movie.has_value() && movie->cursor_known &&
         (observed.current_frame != movie->current_frame ||
          observed.current_input_count != movie->current_input_count))
     {
@@ -983,7 +1507,20 @@ MovieServiceResult MovieService::ValidateSnapshotFor(
             "Movie backend cursor does not match the checkpoint",
             GuestIntegrity::Unknown);
     }
+    if (observation_out)
+        *observation_out = observed;
     return MovieServiceResult::Success();
+}
+
+MovieStateSnapshot MovieService::ObservationFailure(
+    MovieServiceResult result,
+    WorksetEpoch expected_epoch)
+{
+    return {
+        .result = std::move(result),
+        .workset_epoch = expected_epoch,
+        .state = MovieState::Unknown,
+    };
 }
 
 MovieServiceResult MovieService::ValidateDtm(

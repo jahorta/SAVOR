@@ -137,7 +137,8 @@ InteractionDefinition CommandInteraction()
             {"press_down", CanonicalRuntimeType(CanonicalRuntimeSchema::InputFramePayload)},
         },
         .state_type = TypeRef::Named(capabilities::BattleCommandStateSchemaIdentity()),
-        .output_type = receipt,
+        .output_type = TypeRef::Named(
+            capabilities::BattleCommandReceiptSchemaIdentity()),
         .lease_type = CanonicalActionOutputType(CanonicalAction::InputAcquireLease),
         .point_receipt_type = receipt,
         .input_execution_binding_type = CanonicalActionOutputType(CanonicalAction::InputApplyState),
@@ -541,12 +542,16 @@ void LowerTurnExecution(
         FrameBytes(press_up), "command-entry/input/up");
     const auto down = Constant(builder, function, execute, input_type,
         FrameBytes(press_down), "command-entry/input/down");
-    const auto ready_receipt = Need(builder.AddInstruction(
-        function, execute, InstructionOpcode::CallLocal, receipt_type,
+    const auto command_receipt = Need(builder.AddInstruction(
+        function, execute, InstructionOpcode::CallLocal,
+        TypeRef::Named(capabilities::BattleCommandReceiptSchemaIdentity()),
         std::array{interaction_state, a, b, up, down},
         {.kind = InstructionTargetKind::LocalFunction,
          .local_function = interaction_function},
         "command-entry/interaction"), "command interaction");
+    const auto ready_receipt = Project(
+        builder, function, execute, command_receipt, receipt_type,
+        "terminal");
     const auto fake_this = Project(
         builder, function, execute, plan,
         TypeRef::Builtin(BuiltinType::U32), "fake_attack_count");
@@ -1261,7 +1266,7 @@ ProgramModule ConstructModule(
   }
     const auto epoch=Project(b,f,entry,turn_stop,TypeRef::Builtin(BuiltinType::U64),"workset_epoch");const auto pc=Project(b,f,entry,turn_stop,TypeRef::Builtin(BuiltinType::U32),"pc");const auto context=CaptureContext(b,f,entry,epoch,pc,"turn-inputs/context");const auto prepared=Need(b.AddInstruction(f,entry,InstructionOpcode::CallReducer,TypeRef::Named(capabilities::BattleCommandPreparationSchemaIdentity()),std::array{context,plan},Reducer(CanonicalReducer::BattlePrepareCommandInteraction),"plan/validate-and-prepare-adaptive-interaction"),"battle command preparation");const auto prepared_ok=Project(b,f,entry,prepared,TypeRef::Builtin(BuiltinType::Bool),"success");const auto interaction_state=Project(b,f,entry,prepared,TypeRef::Named(capabilities::BattleCommandStateSchemaIdentity()),"state");auto& execute=b.AddBlock(f);auto& invalid=b.AddBlock(f);b.SetTerminator(f,entry,{.kind=TerminatorKind::ConditionalBranch,.condition_or_selector=prepared_ok,.edges={{.target=execute.id},{.target=invalid.id}}},"plan/dispatch");b.SetTerminator(f,invalid,{.kind=TerminatorKind::StructuredFail,.failure=StructuredFailure{"battle_plan_invalid","Battle Plan is inconsistent with the live Battle Context"}},"plan/fail");
     LowerTurnExecution(b,f,execute,*interaction.function,interaction_state,context,plan,cumulative_before,vi_start,save_request,predicate_package,lowered_checks);
-    module.accepted_policies={.state_policies={InvocationStatePolicy::RestoreBaseline},.execution_intents={ExecutionIntent::Live}};module.budgets={.maximum_instructions=kBattleInstructionBudget,.maximum_calls=kBattleCallBudget,.maximum_call_depth=8,.maximum_action_requests=kBattleActionBudget,.maximum_emissions=256,.maximum_artifacts=1,.maximum_values=kBattleValueBudget,.maximum_value_bytes=16*1024*1024,.maximum_trace_events=kBattleTraceBudget};std::vector<SchemaIdentity> emission_schemas;for(const auto& lowered:lowered_checks)if(lowered.check->use.emit_evidence||lowered.check->use.reaction==PredicateReaction::AbortOnFail)emission_schemas.push_back(lowered.evaluation_schema);module.entrypoints={{.name=std::string(Entrypoint),.function=f.id,.input_type=RequestType(),.output_type=ResultType(),.domain_outcome_type=TypeRef::Builtin(BuiltinType::Bool),.emission_schemas=std::move(emission_schemas),.artifact_schemas={*savestate_artifact_schema},.required_capability_packs=module.required_capability_packs,.accepted_policies=module.accepted_policies}};module.identity.module_hash=ComputeProgramModuleHashV1(module);return module;
+    module.accepted_policies={.state_policies={InvocationStatePolicy::RestoreBaseline},.execution_intents={ExecutionIntent::Live}};module.budgets={.maximum_instructions=kBattleInstructionBudget,.maximum_calls=kBattleCallBudget,.maximum_call_depth=8,.maximum_action_requests=kBattleActionBudget,.maximum_emissions=256,.maximum_artifacts=1,.maximum_values=kBattleValueBudget,.maximum_value_bytes=16*1024*1024,.maximum_trace_events=kBattleTraceBudget};std::set<SchemaIdentity> emission_schema_set;for(const auto& lowered:lowered_checks)if(lowered.check->use.emit_evidence||lowered.check->use.reaction==PredicateReaction::AbortOnFail)emission_schema_set.insert(lowered.evaluation_schema);std::vector<SchemaIdentity> emission_schemas(emission_schema_set.begin(),emission_schema_set.end());module.entrypoints={{.name=std::string(Entrypoint),.function=f.id,.input_type=RequestType(),.output_type=ResultType(),.domain_outcome_type=TypeRef::Builtin(BuiltinType::Bool),.emission_schemas=std::move(emission_schemas),.artifact_schemas={*savestate_artifact_schema},.required_capability_packs=module.required_capability_packs,.accepted_policies=module.accepted_policies}};module.identity.module_hash=ComputeProgramModuleHashV1(module);return module;
 }
 
 RuntimeProfile Profile(const ProgramDependencyLock& dependencies){return {.profile_id="soa-usa-jit64-v1",.game_id=std::string(capabilities::kSupportedGameId),.disc_identity=std::string(capabilities::kSupportedGameId),.executable_identity=std::string(capabilities::kSupportedExecutableIdentity),.backend="jit64",.capability_packs=dependencies.capability_packs};}
@@ -1285,6 +1290,11 @@ class Definition final:public IBattleSingleTurnFullPhaseDefinitionV1{public:Defi
 class KindHandler final:public fullphase::IFullPhaseProgramDefinition{public:KindHandler(){base_=std::make_shared<Definition>(false,predicates::PredicateBundleExecutionPackageV1{predicates::BattlePredicateHookContractV1(),predicates::EmptyPredicateBundleV1(),predicates::EmptyPredicateBundleBindingV1()});}const fullphase::FullPhaseProgramIdentity&identity()const noexcept override{return base_->identity();}const fullphase::FullPhaseRuntimeContract&runtime_contract()const noexcept override{return base_->runtime_contract();}const EncodedModuleEnvelope&module_envelope()const noexcept override{return base_->module_envelope();}std::optional<ProgramInvocation>BuildResolvedExecution(std::span<const std::uint8_t>,ProgramExecutionId,AttemptId,std::string*d)const override{SetDiagnostic(d,"battle.single_turn requires a prepared workset package");return std::nullopt;}std::optional<ProgramInvocation>BuildResolvedExecution(const fullphase::FullPhaseProgramPackage&package,std::span<const std::uint8_t>common,std::span<const std::uint8_t>item,ProgramExecutionId execution,AttemptId attempt,std::string*d)const override{predicates::PredicateBundleExecutionPackageV1 predicate_package;bool first=false;if(common.empty()||common.front()>1||!predicates::DecodePredicateBundleExecutionPackageV1(common.subspan(1),predicate_package,d)){SetDiagnostic(d,"battle.single_turn common input is invalid");return std::nullopt;}first=common.front()!=0;auto prepared=PrepareBattleSingleTurnFullPhaseV1(first,std::move(predicate_package),d);if(!prepared||fullphase::BuildFullPhaseProgramPackage(*prepared)!=package){SetDiagnostic(d,"battle.single_turn prepared package identity drifted");return std::nullopt;}return prepared->BuildResolvedExecution(item,execution,attempt,d);}private:std::shared_ptr<const Definition>base_;};
 
 } // namespace
+
+program::composition::InteractionDefinition BattleCommandInteractionV3()
+{
+    return CommandInteraction();
+}
 
 std::vector<std::uint8_t> EncodeBattleSingleTurnCommonInputV1(
     bool first_turn,

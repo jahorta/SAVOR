@@ -1,5 +1,57 @@
 # TAS Movie Phase Family
 
+## Battle recording integration
+
+`battle.record` is the Battle domain's dedicated end-to-end recording replay.
+It is not a generic TAS Movie segment recorder and it does not create
+DTM-entry candidate variants. Its accepted terminal is the field preseed point
+selected by the Battle completion contract, before the field TBR reseed.
+
+The source-neutral immutable replay plan names the confirmed first-turn
+SeedProbe frame, every selected concrete Battle command and
+fake-attack count, each expected turn terminal/RNG, and the standalone
+completion manifest it must reproduce. One `battle.record` workset always has
+exactly one item. Its separate source binding names the canonical movie-paired
+Battle-entry checkpoint and complete inherited DTM/TMI provenance.
+
+During workset initialization the exact checkpoint and DTM continuation
+sidecar are restored together through a `Savestate` baseline. Before any guest
+advancement, `runtime.movie.adopt_restored_read_only_playback` adopts that
+already-restored playback session and `MovieService` branches it into recording
+at the exact restored cursor. Adoption performs no movie preparation, state
+restore, guest advancement, or core restart. This mode change does not reserve
+controller publication:
+`InputArbiter` remains the sole publisher while `MovieService` observes and
+records the resulting synchronized inputs. The Battle replay remains adaptive;
+it never lowers the selected commands into a raw input tape.
+
+`ReadOnlyMovie` remains an explicit opt-in available only to TAS Movie phases,
+and those phases select it only when they intend to start from the
+DTM-declared origin. It is not a TAS phase default. A movie-paired continuation
+checkpoint, including the Battle Record source above, is always restored as a
+`Savestate` with its exact DTM sidecar.
+
+At the accepted field preseed terminal the producer captures the pending
+recording checkpoint while paused, advances only as needed to ensure the final
+neutral publication is observed, finalizes the DTM, and verifies that its
+prefix and restored cursor still match the source movie. It then pairs the
+earlier checkpoint with the finalized DTM and publishes the appended itinerary,
+timing-anchor annotation, durable BattleRecording, and unvalidated TAS Movie
+tree. A `ReplayMismatch` publishes none of those movie artifacts.
+
+Successful Battle recordings automatically enter the existing complete-movie
+validation path. Only a `Valid` result may schedule checkpoint sterilization,
+and only the sterilized checkpoint becomes eligible for the ordinary
+SeedProbe/downstream transition. The Results Screen is not included in the
+recorded Battle segment: the segment ends before TBR reseeding, and a future
+downstream field/cutscene/ship-runtime phase invokes the built-in adaptive
+Results handler after field postseed.
+
+This section supersedes the older statement later in this notebook that
+generated recording validation is always manually requested. Battle recording
+is the explicit exception: validation is automatic, with sterilization gated
+on `Valid`.
+
 The semantic-routing, immutable workset-capture, and canonical-progress
 contract is defined in
 [`../ExecutionRuntime/17-semantic-routing-workset-capture-canonical-progress.md`](../ExecutionRuntime/17-semantic-routing-workset-capture-canonical-progress.md).
@@ -1060,9 +1112,12 @@ Primary evidence currently includes:
 - Expected validation mismatches are typed domain results so their factual evidence can be persisted.
   ProgramRuntime failure remains reserved for infrastructure, contract, cancellation, and backend
   failures.
-- Validation worksets carry an exact `ReadOnlyMovie` artifact baseline: the DTM and, when required by the
-  DTM, its exact startup savestate. The module uses `EstablishBaseline`; worker infrastructure boot is
-  not a phase baseline and cannot satisfy the workset.
+- Validation worksets that intentionally begin at the DTM-declared origin
+  explicitly select an exact `ReadOnlyMovie` artifact baseline: the DTM and,
+  when required by the DTM, its exact declared startup savestate. This is an
+  opt-in TAS Movie phase choice, not a default. The module uses
+  `EstablishBaseline`; worker infrastructure boot is not a phase baseline and
+  cannot satisfy the workset.
 - `MoviePrepareReadOnlyPlayback` validates and stages the exact movie pair, reserves movie input, stops
   only Dolphin's guest core, and returns at its uninitialized boundary. `MovieStartPlayback` consumes that
   scoped preparation and remains the sole phase state-establishing action. Both preserve the wrapper,

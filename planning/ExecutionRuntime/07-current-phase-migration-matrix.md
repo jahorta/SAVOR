@@ -100,7 +100,9 @@ Every current phase follows the same rules:
 | Battle Macro Probe | `soa.battle.macro_probe` | `probe` | Supported diagnostic program |
 | Battle Single Turn | `soa.battle.single_turn` | `execute` | Supported |
 | Battle Completion | `soa.battle.completion` | `complete` | Supported |
-| Battle Results Screen | `soa.battle.results_screen` | `advance` | Supported |
+| Battle Record | `soa.battle.record` | `record` | Supported |
+| Battle Replay | `soa.battle.replay` | `replay` | Supported non-recording control |
+| Battle Results Screen | `soa.battle.results.handler` | reusable interaction | Downstream built-in; not a Full Phase |
 
 Module IDs do not imply one file per module. They are immutable semantic families in
 `ProgramDefinitionStore`. All revisions use the common IR, verifier, invocation, action, result, and
@@ -121,8 +123,8 @@ Document 04 owns the descriptors and signatures. The migration uses these exact 
 | Capture | `runtime.capture.attach`, `runtime.capture.marker`, `runtime.capture.finalize` |
 | Game observations | `soa.battle.capture_context`, `soa.navigation.capture_context` |
 | Pure turn materialization | `soa.battle.materialize_turn_input` |
-| Adaptive battle subprograms | `soa.battle.command_macro`, `soa.battle.completion_macro`, `soa.battle.results_screen_macro` |
-| Pure adaptive reducers | `soa.battle.command_macro.reduce`, `soa.battle.completion_macro.reduce`, `soa.battle.results_screen_macro.reduce` |
+| Adaptive battle components | `soa.battle.command.interaction`, `soa.battle.completion.interaction`, `soa.battle.results.handler` |
+| Pure adaptive reducers | Exact static reducers from the `soa.battle.command`, `soa.battle.completion`, and `soa.battle.results` capability packs |
 
 `soa.battle.materialize_turn_input` is a pure imported reducer/callable, not an awaited action. The three
 macro base IDs are reusable IR subprograms. Their `.reduce` imports are pure transitions over typed state
@@ -480,7 +482,9 @@ ordered checkpoint itinerary through movie end.
 
 `TasMovieValidationRequestV1` contains the closed operation selected by workflow step kind, exact DTM
 path, bounded typed itinerary, and optional authorized final-checkpoint path. The workset declares the
-same exact `ReadOnlyMovie` artifact baseline, and the invocation uses `EstablishBaseline`.
+same exact `ReadOnlyMovie` artifact baseline, and the invocation uses `EstablishBaseline`. Complete
+validation explicitly opts into that baseline because it intentionally starts at the DTM-declared
+origin; this operation-specific choice is not the default for TAS Movie phases.
 
 **Typed output and emissions**
 
@@ -490,7 +494,8 @@ capture, and backend failures remain infrastructure failures.
 
 **Required composition**
 
-- one exact `ReadOnlyMovie` workset baseline staged without consuming infrastructure guest state;
+- one explicitly selected exact `ReadOnlyMovie` workset baseline staged without consuming
+  infrastructure guest state;
 - `MoviePrepareReadOnlyPlayback` staging the DTM and stopping the guest core before any checkpoint group;
 - passive observation registrations armed for the item before playback begins;
 - `MovieStartPlayback` as the sole baseline-establishing action, consuming the preparation and booting
@@ -799,6 +804,13 @@ that result into the existing wave operations; durable wave spawning remains ide
 no VM macro opcode or direct memory/write path is used; and kind `5` plus the Battle Single Turn branches
 in `ProgramRegistry` are removed from worker execution. Existing persisted payload version `5` remains
 readable by the SavorDb handler.
+
+> **Superseded Battle-exit design:** Sections 6H and 6I below preserve the
+> historical migration analysis. The current contract is normative in
+> [`19-battle-completion-recording-and-results-handler.md`](19-battle-completion-recording-and-results-handler.md):
+> `battle.completion` now ends at accepted field preseed, `battle.record` is
+> the explicit recording replay phase, and Results Screen is a reusable
+> downstream interaction rather than Slice 6I or any Full Phase.
 
 ### Slice 6H - `soa.battle.completion::complete`
 

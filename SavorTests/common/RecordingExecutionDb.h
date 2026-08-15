@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "Execution/IExecutionDb.h"
@@ -74,6 +75,30 @@ public:
             return std::nullopt;
         }
         return it->second;
+    }
+    std::vector<savor::db::ExecutionJobSetJobRecord> ListJobsInJobSet(
+        std::int64_t job_set_id) const override {
+        std::vector<savor::db::ExecutionJobSetJobRecord> result;
+        for (const auto& [job_id, job] : jobs_) {
+            if (job.job_set_id != job_set_id) {
+                continue;
+            }
+            result.push_back({
+                .job_id = job_id,
+                .state = job.state,
+                .input_ini = job.input_ini,
+                .cancellation_group_key = job.cancellation_group_key,
+            });
+        }
+        return result;
+    }
+    bool SetJobState(std::int64_t job_id, std::string state) {
+        const auto it = jobs_.find(job_id);
+        if (it == jobs_.end()) {
+            return false;
+        }
+        it->second.state = std::move(state);
+        return true;
     }
     bool MarkQueuedJobsSuperseded(
         std::int64_t job_set_id,

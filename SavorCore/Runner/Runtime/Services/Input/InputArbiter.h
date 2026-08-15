@@ -218,6 +218,9 @@ public:
     [[nodiscard]] InputExecutionRelationshipOperationReceipt Cancel(
         InputExecutionRelationshipId relationship,
         WorksetEpoch epoch) noexcept override;
+    [[nodiscard]] InputExecutionRelationshipInspection Inspect(
+        InputExecutionRelationshipId relationship,
+        WorksetEpoch epoch) const noexcept override;
 
 private:
     struct LeaseState

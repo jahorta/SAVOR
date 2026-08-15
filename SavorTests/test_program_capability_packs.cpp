@@ -40,11 +40,15 @@ TEST(CapabilityPackSources, CatalogIsStableSourceBackedAndJitGuardIsAbsent)
     EXPECT_EQ(
         supported.executable_identity,
         "soal-usa.GEAE8E");
-    ASSERT_EQ(catalog.manifests.size(), 5u);
+    ASSERT_EQ(catalog.manifests.size(), 7u);
     const auto& field = Manifest(catalog, "soa.field");
     const auto& battle = Manifest(catalog, "soa.battle");
     const auto& battle_command = Manifest(
         catalog, "soa.battle.command");
+    const auto& battle_completion = Manifest(
+        catalog, "soa.battle.completion");
+    const auto& battle_results = Manifest(
+        catalog, "soa.battle.results");
     const auto& navigation = Manifest(catalog, "soa.navigation");
 
     EXPECT_EQ(field.semantic_points.size(), 3u);
@@ -55,7 +59,12 @@ TEST(CapabilityPackSources, CatalogIsStableSourceBackedAndJitGuardIsAbsent)
     EXPECT_EQ(navigation.address_symbols.size(), 5u);
 
     for (const auto* manifest : {
-             &field, &battle, &battle_command, &navigation})
+             &field,
+             &battle,
+             &battle_command,
+             &battle_completion,
+             &battle_results,
+             &navigation})
     {
         EXPECT_EQ(manifest->compatibility, supported);
         EXPECT_TRUE(std::ranges::none_of(
@@ -99,7 +108,7 @@ TEST(CapabilityPackSources, RegistersExactSchemasQueriesActionsAndReducer)
         actions,
         packs);
     ASSERT_TRUE(registered.success) << registered.error.message;
-    EXPECT_EQ(packs.size(), 5u);
+    EXPECT_EQ(packs.size(), 7u);
 
     const auto* battle = packs.Resolve(BattlePackIdentity());
     const auto* navigation = packs.Resolve(NavigationPackIdentity());
@@ -288,7 +297,7 @@ TEST(CapabilityPackSources, BattleCommandReducersHaveOneCanonicalContract)
         ExpectedReducer{
             CanonicalReducer::BattleCommandInteractionFinalize,
             1,
-            16},
+            64 * 1024},
     };
 
     EXPECT_EQ(std::ranges::count_if(

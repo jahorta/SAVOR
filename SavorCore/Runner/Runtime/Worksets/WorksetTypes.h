@@ -89,9 +89,12 @@ struct ProgramBaselineArtifact
 {
     ProgramBaselineArtifactKind kind =
         ProgramBaselineArtifactKind::Savestate;
-    // Savestate baselines require state_path. Read-only-movie baselines
-    // require movie_path and may name the exact startup savestate used by
-    // that movie.
+    // ReadOnlyMovie is an explicit opt-in permitted only for TAS phases; it
+    // is never their default. It is used only for a DTM-declared origin and
+    // may name that DTM's exact startup savestate. Movie continuation from a
+    // checkpoint uses Savestate with its exact DTM sidecar instead.
+    // Savestate baselines require state_path; ReadOnlyMovie requires
+    // movie_path.
     std::filesystem::path state_path;
     std::string state_sha256;
     std::optional<std::filesystem::path> movie_path;

@@ -662,6 +662,52 @@ InputExecutionRelationshipOperationReceipt InputArbiter::Cancel(
     return {true, {}};
 }
 
+InputExecutionRelationshipInspection InputArbiter::Inspect(
+    InputExecutionRelationshipId relationship,
+    WorksetEpoch epoch) const noexcept
+{
+    try
+    {
+        const auto validated = ValidateRelationship(relationship, epoch);
+        if (!validated.ok)
+            return {.message = validated.message};
+
+        const auto found = relationships_.find(relationship.value());
+        const BindingState* binding = found == relationships_.end()
+            ? nullptr
+            : FindBinding(found->second.binding);
+        const LeaseState* lease = found == relationships_.end()
+            ? nullptr
+            : FindLease(found->second.lease);
+        if (!binding || !lease)
+            return {.message = "input execution binding is unavailable"};
+
+        const BackendInputPoll poll = backend_.QueryPoll(lease->request.port);
+        if (!poll.result.ok)
+        {
+            return {
+                .message = poll.result.message.empty()
+                    ? "input backend poll inspection failed"
+                    : poll.result.message};
+        }
+        return {
+            .ok = true,
+            .requires_observation = binding->requires_observation,
+            .publication_epoch = poll.publication_epoch,
+            .callback_count = poll.callback_count,
+            .a_control_callback_count = poll.a_control_callback_count,
+            .frame = poll.frame};
+    }
+    catch (const std::exception& ex)
+    {
+        return {.message = ex.what()};
+    }
+    catch (...)
+    {
+        return {.message = "input backend poll inspection threw"};
+    }
+}
+
 InputArbiter::LeaseState* InputArbiter::FindLease(InputLeaseId lease) noexcept
 {
     const auto found = leases_.find(lease.value());

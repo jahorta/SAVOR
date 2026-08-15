@@ -311,10 +311,10 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .breakpoint_profile_key = "battle.completion",
             .default_activation_params_json = "{}",
             .required_inputs = {
-                Port("entry_savestate", "state.movie_inactive_savestate_id", "Battle Victory savestate"),
+                Port("victory_turn_job", "analysis_battle.battle_turn_job", "Selected Victory turn job"),
             },
             .possible_outputs = {
-                Port("completion", "analysis_battle.battle_completion_id", "Battle completion"),
+                Port("completion", "analysis_battle.battle_completion", "Battle completion"),
             },
             .internal_step_kinds = { "battle.completion" },
             .step_templates = SingleStep("battle.completion"),
@@ -323,22 +323,41 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
 
     (void)registry.RegisterUnit(
         WorkflowUnitDefinition{
-            .unit_kind = "battle_results_screen",
-            .display_name = "Battle Results Screen",
-            .description = "Validates the completion manifest and accelerates the deterministic results presentation to BATTLE_END.",
+            .unit_kind = "battle_recording",
+            .display_name = "Battle Recording",
+            .description = "Replays an explicitly completed Battle lineage and records the Battle segment through field preseed.",
             .hidden = true,
             .unit_variant = "battle",
-            .breakpoint_profile_key = "battle.results_screen",
+            .breakpoint_profile_key = "battle.record",
             .default_activation_params_json = "{}",
             .required_inputs = {
-                Port("completion", "analysis_battle.battle_completion_id", "Battle completion"),
-                Port("seeded_savestate", "state.movie_inactive_savestate_id", "Field-return seeded savestate"),
+                Port("completion", "analysis_battle.battle_completion", "Battle completion"),
             },
             .possible_outputs = {
-                Port("terminal_savestate", "state.movie_inactive_savestate_id", "Battle-end terminal savestate"),
+                Port("recording", "analysis_battle.battle_recording", "Battle recording"),
             },
-            .internal_step_kinds = { "battle.results_screen" },
-            .step_templates = SingleStep("battle.results_screen"),
+            .internal_step_kinds = { "battle.record" },
+            .step_templates = SingleStep("battle.record"),
+        },
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
+            .unit_kind = "battle_replay",
+            .display_name = "Battle Replay",
+            .description = "Replays an explicitly completed Battle lineage after stopping movie playback, without producing TAS artifacts.",
+            .hidden = true,
+            .unit_variant = "battle",
+            .breakpoint_profile_key = "battle.replay",
+            .default_activation_params_json = "{}",
+            .required_inputs = {
+                Port("completion", "analysis_battle.battle_completion", "Battle completion"),
+            },
+            .possible_outputs = {
+                Port("replay", "analysis_battle.battle_replay", "Battle replay"),
+            },
+            .internal_step_kinds = { "battle.replay" },
+            .step_templates = SingleStep("battle.replay"),
         },
         &ignored);
 

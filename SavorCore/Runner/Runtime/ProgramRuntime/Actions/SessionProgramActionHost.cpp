@@ -13,6 +13,7 @@
 #include "Core/Memory/Soa/SoaAddrRegistry.h"
 #include "Core/Memory/Soa/SoaStructReaders.h"
 #include "Utils/Hash.h"
+#include "Utils/Log.h"
 
 #include <algorithm>
 #include <array>
@@ -37,6 +38,22 @@ namespace savor::runtime::program {
 namespace {
 
 using Field = CanonicalActionPayloadField;
+
+[[nodiscard]] bool IsDiagnosticAction(CanonicalAction action) noexcept
+{
+    switch (action)
+    {
+    case CanonicalAction::InputAcquireLease:
+    case CanonicalAction::InputApplyState:
+    case CanonicalAction::InputBeginDelivery:
+    case CanonicalAction::InputCompleteDelivery:
+    case CanonicalAction::ExecutionContinueUntil:
+    case CanonicalAction::ExecutionStepFrames:
+        return true;
+    default:
+        return false;
+    }
+}
 
 constexpr ResourceServiceId kSavestateService{1};
 constexpr ResourceServiceId kExecutionService{2};
@@ -523,6 +540,91 @@ std::optional<CanonicalAction> ResolveCanonicalAction(
     return std::nullopt;
 }
 
+bool ReadBattleCompletionSnapshot(
+    GuestMemory& memory,
+    WorksetEpoch epoch,
+    battlecompletion::BattleCompletionSnapshotV1& output,
+    std::string& diagnostic)
+{
+    using battlecompletion::BattleCompletionSnapshotV1;
+    constexpr std::uint32_t kCharacterData = 0x8030b7f4u;
+    constexpr std::uint32_t kNormalExperience = 0x803082f8u;
+    constexpr std::uint32_t kMagicExperience = 0x803082fcu;
+    constexpr std::uint32_t kGold = 0x80308300u;
+    constexpr std::uint32_t kRewardItems = 0x80308304u;
+    constexpr std::uint32_t kRng = 0x803469a8u;
+    constexpr std::uint32_t kBattleInputState = 0x80347338u;
+    constexpr std::uint32_t kRewardPhase = 0x8034737cu;
+
+    BattleCompletionSnapshotV1 snapshot{};
+    for (std::size_t index = 0;
+         index != battlecompletion::CharacterCount; ++index)
+    {
+        const auto address = kCharacterData + static_cast<std::uint32_t>(
+            index * battlecompletion::CharacterRecordSize);
+        const auto bytes = memory.ReadBytes(
+            address,
+            battlecompletion::CharacterRecordSize,
+            epoch);
+        if (!bytes.result.ok ||
+            bytes.bytes.size() != battlecompletion::CharacterRecordSize)
+        {
+            diagnostic = "Battle completion character record " +
+                std::to_string(index) + " is unavailable";
+            return false;
+        }
+        std::ranges::copy(bytes.bytes, snapshot.character_records[index].begin());
+    }
+    const auto read_u32 = [&](std::uint32_t address, std::uint32_t& value,
+                              std::string_view name) {
+        std::uint64_t scalar = 0;
+        if (!ReadGuestScalar(
+                memory, address, GuestScalarWidth::U32, epoch, scalar))
+        {
+            diagnostic = std::string(name) + " is unavailable";
+            return false;
+        }
+        value = static_cast<std::uint32_t>(scalar);
+        return true;
+    };
+    if (!read_u32(kNormalExperience, snapshot.normal_experience_reward,
+                  "Battle normal-experience reward") ||
+        !read_u32(kMagicExperience, snapshot.magic_experience_reward,
+                  "Battle magic-experience reward") ||
+        !read_u32(kGold, snapshot.gold_reward, "Battle gold reward") ||
+        !read_u32(kRng, snapshot.rng_seed, "Battle RNG seed") ||
+        !read_u32(kBattleInputState, snapshot.battle_input_state,
+                  "Battle input state") ||
+        !read_u32(kRewardPhase, snapshot.reward_phase,
+                  "Battle reward phase"))
+        return false;
+
+    for (std::size_t index = 0;
+         index != battlecompletion::RewardItemCount; ++index)
+    {
+        const auto address = kRewardItems + static_cast<std::uint32_t>(index * 4);
+        std::uint64_t item_id = 0;
+        const auto tail = memory.ReadBytes(address + 2, 2, epoch);
+        if (!ReadGuestScalar(
+                memory, address, GuestScalarWidth::U16, epoch, item_id) ||
+            !tail.result.ok || tail.bytes.size() != 2)
+        {
+            diagnostic = "Battle reward item " + std::to_string(index) +
+                " is unavailable";
+            return false;
+        }
+        snapshot.reward_items[index] = {
+            .item_id = static_cast<std::int16_t>(
+                static_cast<std::uint16_t>(item_id)),
+            .quantity = tail.bytes[0],
+            .opaque = tail.bytes[1],
+        };
+    }
+    output = std::move(snapshot);
+    diagnostic.clear();
+    return true;
+}
+
 std::optional<ActionEffectMask> ResolveActionEffects(
     const ExactDependencyIdentity& identity)
 {
@@ -658,6 +760,9 @@ bool UsesTypedRequestRecord(CanonicalAction action) noexcept
     case CanonicalAction::InputApplyState:
     case CanonicalAction::InputBeginDelivery:
     case CanonicalAction::InputCompleteDelivery:
+    case CanonicalAction::MovieAdoptRestoredReadOnlyPlayback:
+    case CanonicalAction::MovieObserveState:
+    case CanonicalAction::MovieStartRecording:
     case CanonicalAction::GuestReadU8:
     case CanonicalAction::GuestReadU16:
     case CanonicalAction::GuestReadU32:
@@ -909,7 +1014,7 @@ bool DecodeStopReceipt(
     }
     const auto* record =
         std::get_if<RecordValue>(&value.payload);
-    if (!record || record->fields.size() != 5)
+    if (!record || record->fields.size() != 6)
     {
         diagnostic = "Observation stop receipt has the wrong result shape";
         return false;
@@ -1525,6 +1630,48 @@ bool DecodeTypedCanonicalRequest(
                         std::vector<Byte>(frame->begin(), frame->end()));
             }();
     }
+    case CanonicalAction::MovieAdoptRestoredReadOnlyPlayback:
+        if (!record->fields.empty())
+        {
+            diagnostic =
+                "Restored movie playback adoption request must have no fields";
+            return false;
+        }
+        return true;
+    case CanonicalAction::MovieObserveState:
+        if (!record->fields.empty())
+        {
+            diagnostic = "Movie state observation request must have no fields";
+            return false;
+        }
+        return true;
+    case CanonicalAction::MovieStartRecording:
+    {
+        const auto* config = bytes(
+            1,
+            CanonicalRuntimeSchema::MovieRecordingStaticConfig);
+        if (record->fields.size() != 2 ||
+            !handle(0, CanonicalAction::MovieStartPlayback) ||
+            !config)
+        {
+            diagnostic =
+                "Movie recording requires its exact playback handle and MRC1 config";
+            return false;
+        }
+        StaticConfigReader reader(*config, {'M','R','C','1'});
+        std::string path;
+        std::string label;
+        if (!reader.String(path, 8192) ||
+            !reader.String(label, 4096) ||
+            !reader.done() ||
+            !payload.AddUtf8(Field::Path, std::move(path)) ||
+            !payload.AddUtf8(Field::Label, std::move(label)))
+        {
+            diagnostic = "Movie recording MRC1 config is malformed";
+            return false;
+        }
+        return true;
+    }
     case CanonicalAction::GuestReadU8:
     case CanonicalAction::GuestReadU16:
     case CanonicalAction::GuestReadU32:
@@ -1665,7 +1812,8 @@ std::uint64_t ProgramStopIdentitySeed(
 StopSubscriptionGroupDefinition BuildPcGroup(
     const CanonicalActionPayload& payload,
     InvocationId invocation,
-    ProgramActionRequestId request)
+    ProgramActionRequestId request,
+    std::string_view diagnostic_selector)
 {
     std::vector<std::uint32_t> pcs;
     std::vector<std::uint32_t> sample_descriptor_ids;
@@ -1693,7 +1841,9 @@ StopSubscriptionGroupDefinition BuildPcGroup(
             UnsignedOr(payload, Field::SourceId, seed | 2u)),
         "program.action." + std::to_string(invocation.value()) +
             "." + std::to_string(request.value()),
-        "canonical program action"};
+        diagnostic_selector.empty()
+            ? "canonical program action"
+            : std::string(diagnostic_selector)};
     const std::uint64_t subscription_seed =
         UnsignedOr(payload, Field::SubscriptionId, seed | 0x80u);
     for (std::size_t index = 0; index < pcs.size(); ++index)
@@ -1930,13 +2080,16 @@ ProgramValueGraph ContinueUntilResultGraph(
     const ProgramValueId input_count = add(
         TypeRef::Builtin(BuiltinType::U64),
         terminal.evidence.movie_input_count);
+    const ProgramValueId vi_count = add(
+        TypeRef::Builtin(BuiltinType::U64),
+        terminal.evidence.vi_count);
     const ProgramValueId epoch = add(
         TypeRef::Builtin(BuiltinType::U64),
         terminal.workset_epoch.value());
     const ProgramValueId root = add(
         CanonicalActionOutputType(
             CanonicalAction::ExecutionContinueUntil),
-        RecordValue{{reason_id, optional_stop, pc, input_count, epoch}});
+        RecordValue{{reason_id, optional_stop, pc, input_count, vi_count, epoch}});
     return {root, std::move(values)};
 }
 
@@ -1967,6 +2120,36 @@ ProgramValueGraph PausedPcReceiptGraph(
             ProgramValueId(2),
             ProgramValueId(3)}}});
     return {ProgramValueId(4), std::move(values)};
+}
+
+ProgramValueGraph MovieStateObservationGraph(
+    const MovieStateSnapshot& snapshot)
+{
+    std::vector<ProgramValue> values;
+    values.push_back({
+        ProgramValueId(1),
+        CanonicalRuntimeType(CanonicalRuntimeSchema::MovieState),
+        EnumValue{
+            CanonicalRuntimeSchemaIdentity(CanonicalRuntimeSchema::MovieState),
+            static_cast<std::int64_t>(snapshot.state)}});
+    values.push_back({
+        ProgramValueId(2), TypeRef::Builtin(BuiltinType::U64),
+        snapshot.workset_epoch.value()});
+    values.push_back({
+        ProgramValueId(3), TypeRef::Builtin(BuiltinType::Bool),
+        snapshot.read_only});
+    values.push_back({
+        ProgramValueId(4), TypeRef::Builtin(BuiltinType::U64),
+        snapshot.current_frame});
+    values.push_back({
+        ProgramValueId(5), TypeRef::Builtin(BuiltinType::U64),
+        snapshot.current_input_count});
+    values.push_back({
+        ProgramValueId(6),
+        CanonicalActionOutputType(CanonicalAction::MovieObserveState),
+        RecordValue{{ProgramValueId(1), ProgramValueId(2), ProgramValueId(3),
+                     ProgramValueId(4), ProgramValueId(5)}}});
+    return {ProgramValueId(6), std::move(values)};
 }
 
 template <typename T>
@@ -2448,6 +2631,10 @@ struct SessionProgramActionHost::Impl
                     ExecutionInterruptionPolicy::Reject)));
         if (active)
             policy.cancellation = active->cancellation.token();
+        policy.diagnostic_invocation = request.invocation_id.value();
+        policy.diagnostic_attempt = request.attempt_id.value();
+        policy.diagnostic_request = request.request_id.value();
+        policy.diagnostic_selector = request.diagnostic_selector;
         return policy;
     }
 
@@ -3125,6 +3312,8 @@ SessionProgramActionHost::Impl::Invoke(
     if (*request.action ==
             capabilities::BattleCaptureContextActionIdentity() ||
         *request.action ==
+            capabilities::BattleCompletionCaptureSnapshotActionIdentity() ||
+        *request.action ==
             capabilities::NavigationCaptureContextActionIdentity())
     {
         if (active && active->baseline_stage != BaselineStage::Established)
@@ -3280,7 +3469,9 @@ SessionProgramActionHost::Impl::InvokeSourceQuery(
     ContextRequestEvidence evidence;
     const bool battle = request.action ==
         capabilities::BattleCaptureContextActionIdentity();
-    const std::string_view input_schema = battle
+    const bool completion_snapshot = request.action ==
+        capabilities::BattleCompletionCaptureSnapshotActionIdentity();
+    const std::string_view input_schema = (battle || completion_snapshot)
         ? "soa.battle.CaptureContextRequest"
         : "soa.navigation.CaptureContextRequest";
     if (!DecodeContextRequest(
@@ -3339,6 +3530,24 @@ SessionProgramActionHost::Impl::InvokeSourceQuery(
         }
         completion.output =
             capabilities::EncodeBattleContextValue(context);
+    }
+    else if (completion_snapshot)
+    {
+        battlecompletion::BattleCompletionSnapshotV1 snapshot{};
+        if (!ReadBattleCompletionSnapshot(
+                *memory,
+                request.expected_epoch,
+                snapshot,
+                diagnostic))
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Failed,
+                "battle_completion_snapshot_unavailable",
+                std::move(diagnostic));
+        }
+        completion.output =
+            capabilities::EncodeBattleCompletionSnapshotValue(snapshot);
     }
     else
     {
@@ -3672,7 +3881,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         StopSubscriptionGroupDefinition wake = BuildPcGroup(
             payload,
             request.invocation_id,
-            request.request_id);
+            request.request_id,
+            request.diagnostic_selector);
         const std::uint64_t seed =
             ProgramStopIdentitySeed(
                 request.invocation_id,
@@ -3755,9 +3965,9 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             if (!playback ||
                 playback->kind != ResourceKind::MovieSession ||
                 playback->concrete_id != static_cast<std::uint64_t>(
-                    MovieActivity::ReadOnlyPlayback) ||
+                    MovieState::ReadOnlyPlayback) ||
                 !movies ||
-                movies->activity() != MovieActivity::ReadOnlyPlayback)
+                movies->state() != MovieState::ReadOnlyPlayback)
             {
                 return Reject(
                     request,
@@ -4054,6 +4264,214 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             std::move(request),
             std::move(result));
     }
+    case CanonicalAction::MovieObserveState:
+    {
+        MovieService* movies = session.movie_service();
+        if (!movies)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Unsupported,
+                "movie_service_unavailable",
+                "MovieService is unavailable");
+        }
+        const MovieStateSnapshot observed =
+            movies->ObserveState(request.expected_epoch);
+        if (!observed.result.ok)
+        {
+            if (observed.result.integrity == GuestIntegrity::Unknown)
+            {
+                session.MarkTainted(
+                    observed.result.message.empty()
+                        ? "Movie state observation has unknown integrity"
+                        : observed.result.message);
+            }
+            return service_failure(
+                "movie_state_observation_failed",
+                observed.result.message.empty()
+                    ? "Movie state could not be observed"
+                    : observed.result.message);
+        }
+        ProgramActionResolution completion = Completion(
+            request,
+            ProgramActionResolutionStatus::Completed);
+        completion.output = MovieStateObservationGraph(observed);
+        return Immediate(std::move(completion));
+    }
+    case CanonicalAction::MovieAdoptRestoredReadOnlyPlayback:
+    {
+        MovieService* movies = session.movie_service();
+        if (!movies)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Unsupported,
+                "movie_service_unavailable",
+                "MovieService is unavailable");
+        }
+
+        PruneReleasedResources();
+        const bool already_adopted = std::ranges::any_of(
+            resources,
+            [&request](const auto& item) {
+                const ResourceMapping& mapping = item.second;
+                return mapping.kind == ResourceKind::MovieSession &&
+                    mapping.epoch == request.expected_epoch &&
+                    mapping.concrete_id == static_cast<std::uint64_t>(
+                        MovieState::ReadOnlyPlayback) &&
+                    (!mapping.finalized || !*mapping.finalized);
+            });
+        if (already_adopted)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "movie_playback_already_adopted",
+                "The restored read-only playback already has an invocation cleanup handle");
+        }
+
+        const MovieStateSnapshot observed =
+            movies->ObserveState(request.expected_epoch);
+        if (!observed.result.ok)
+        {
+            if (observed.result.integrity == GuestIntegrity::Unknown)
+            {
+                session.MarkTainted(
+                    observed.result.message.empty()
+                        ? "Restored movie playback state could not be observed"
+                        : observed.result.message);
+            }
+            return service_failure(
+                "restored_movie_playback_observation_failed",
+                observed.result.message.empty()
+                    ? "Restored movie playback state is unavailable"
+                    : observed.result.message);
+        }
+        if (observed.state != MovieState::ReadOnlyPlayback)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "restored_movie_playback_unavailable",
+                "Movie adoption requires read-only playback restored by the current savestate baseline");
+        }
+
+        const MovieReservationId reservation = movies->reservation();
+        const MovieCheckpointReceipt captured = movies->CaptureCheckpoint();
+        if (!captured.result.ok)
+        {
+            if (captured.result.integrity == GuestIntegrity::Unknown)
+            {
+                session.MarkTainted(
+                    captured.result.message.empty()
+                        ? "Restored movie playback could not prove its active checkpoint"
+                        : captured.result.message);
+            }
+            return service_failure(
+                "restored_movie_playback_invalid",
+                captured.result.message.empty()
+                    ? "Restored movie playback checkpoint is unavailable"
+                    : captured.result.message);
+        }
+
+        const MovieCheckpointMetadata* movie = captured.checkpoint
+            ? &*captured.checkpoint
+            : nullptr;
+        const bool valid =
+            captured.workset_epoch == request.expected_epoch &&
+            reservation &&
+            movie &&
+            movie->mode == MovieCheckpointMode::ReadOnlyPlayback &&
+            movie->cursor_known &&
+            !movie->dtm_bytes.empty() &&
+            !movie->dtm_sha256.empty() &&
+            !movie->dtm_path.empty() &&
+            observed.workset_epoch == request.expected_epoch &&
+            observed.state == MovieState::ReadOnlyPlayback &&
+            observed.read_only &&
+            observed.current_frame == movie->current_frame &&
+            observed.current_input_count == movie->current_input_count;
+        if (!valid)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Failed,
+                "restored_movie_playback_invalid",
+                "Restored read-only playback lacks its active epoch, reservation, movie, or exact cursor");
+        }
+
+        auto finalized = std::make_shared<bool>(false);
+        std::string diagnostic;
+        auto resource = RegisterResource(
+            request.scope,
+            ResourceKind::MovieSession,
+            kMovieService,
+            captured.workset_epoch,
+            [movies,
+             acquisition_epoch = captured.workset_epoch,
+             finalized](const ResourceReleaseRequest& release) {
+                if (*finalized)
+                {
+                    return ResourceReleaseResult{
+                        ResourceReleaseStatus::Released,
+                        {}};
+                }
+                const MovieState current = movies->state();
+                if (current == MovieState::Inactive)
+                {
+                    *finalized = true;
+                    return ResourceReleaseResult{
+                        ResourceReleaseStatus::Released,
+                        release.current_epoch != acquisition_epoch
+                            ? "movie session was reconciled inactive by state replacement"
+                            : std::string{}};
+                }
+                if (current != MovieState::ReadOnlyPlayback &&
+                    current != MovieState::PlaybackEnded)
+                {
+                    if (release.current_epoch != acquisition_epoch)
+                    {
+                        *finalized = true;
+                        return ResourceReleaseResult{
+                            ResourceReleaseStatus::Released,
+                            "movie session was superseded by state replacement"};
+                    }
+                    return ResourceReleaseResult{
+                        ResourceReleaseStatus::Failed,
+                        "movie service activity no longer matches its adopted playback handle"};
+                }
+                const MovieOperationReceipt stopped =
+                    movies->StopPlayback();
+                if (stopped.result.ok)
+                    *finalized = true;
+                return ResourceReleaseResult{
+                    stopped.result.ok
+                        ? ResourceReleaseStatus::Released
+                        : ResourceReleaseStatus::Failed,
+                    stopped.result.message};
+            },
+            static_cast<std::uint64_t>(
+                MovieState::ReadOnlyPlayback),
+            {},
+            "adopted restored read-only movie playback",
+            diagnostic);
+        if (!resource)
+            return ResourceFailure(std::move(request), diagnostic);
+
+        if (ResourceMapping* mapping = Resource(resource->handle))
+        {
+            mapping->artifact_path = movie->dtm_path;
+            mapping->finalized = std::move(finalized);
+        }
+        ProgramActionDispatchResult completed =
+            complete_resource(std::move(request), *resource);
+        if (completed.immediate_result)
+        {
+            completed.immediate_result->resolution.workset_epoch =
+                captured.workset_epoch;
+        }
+        return completed;
+    }
     case CanonicalAction::MoviePrepareReadOnlyPlayback:
     {
         MovieService* movies = session.movie_service();
@@ -4195,6 +4613,19 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         }
         else
         {
+            ResourceMapping* playback = require_handle();
+            if (!playback ||
+                playback->kind != ResourceKind::MovieSession ||
+                playback->concrete_id != static_cast<std::uint64_t>(
+                    MovieState::ReadOnlyPlayback) ||
+                !playback->finalized)
+            {
+                return Reject(
+                    request,
+                    ProgramActionResolutionStatus::Rejected,
+                    "movie_playback_unavailable",
+                    "Movie recording requires its exact active read-only playback handle");
+            }
             MovieRecordingRequest recording;
             recording.diagnostic_label = std::string(
                 payload.Utf8(Field::Label).value_or(
@@ -4210,6 +4641,28 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                     "Movie recording start must declare its immutable DTM output path");
             }
             started = movies->StartRecording(recording);
+            if (started.result.ok)
+            {
+                *playback->finalized = true;
+                SessionResourceLedger* ledger = session.resources();
+                SessionResourceBindingTable* bindings =
+                    session.resource_bindings();
+                const ProgramResourceHandleId consumed_handle =
+                    playback->handle;
+                if (!ledger || !bindings ||
+                    !ledger->Release(
+                        playback->receipt,
+                        *bindings).completed())
+                {
+                    (void)movies->CancelRecording();
+                    session.MarkTainted(
+                        "Playback handle could not be consumed after recording branched");
+                    return service_failure(
+                        "movie_playback_cleanup_failed",
+                        "Playback handle could not be consumed after recording branched");
+                }
+                resources.erase(consumed_handle.value());
+            }
         }
         if (!started.result.ok)
         {
@@ -4225,7 +4678,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 started.result.message);
         }
         PruneReleasedResources();
-        const MovieActivity activity = started.activity;
+        const MovieState state = started.state;
         auto finalized = std::make_shared<bool>(false);
         std::string diagnostic;
         auto resource = RegisterResource(
@@ -4234,7 +4687,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             kMovieService,
             started.workset_epoch,
             [movies,
-             activity,
+             state,
              acquisition_epoch = started.workset_epoch,
              finalized](
                 const ResourceReleaseRequest& release) {
@@ -4244,9 +4697,9 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                         ResourceReleaseStatus::Released,
                         {}};
                 }
-                const MovieActivity current =
-                    movies->activity();
-                if (current == MovieActivity::Inactive)
+                const MovieState current =
+                    movies->state();
+                if (current == MovieState::Inactive)
                 {
                     *finalized = true;
                     return ResourceReleaseResult{
@@ -4255,7 +4708,10 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                             ? "movie session was reconciled inactive by state replacement"
                             : std::string{}};
                 }
-                if (current != activity)
+                const bool ended_owned_playback =
+                    state == MovieState::ReadOnlyPlayback &&
+                    current == MovieState::PlaybackEnded;
+                if (current != state && !ended_owned_playback)
                 {
                     if (release.current_epoch != acquisition_epoch)
                     {
@@ -4271,7 +4727,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                         "movie service activity no longer matches its live program handle"};
                 }
                 const MovieOperationReceipt stopped =
-                    activity == MovieActivity::Recording
+                    state == MovieState::Recording
                     ? movies->CancelRecording()
                     : movies->StopPlayback();
                 if (stopped.result.ok)
@@ -4282,20 +4738,46 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                         : ResourceReleaseStatus::Failed,
                     stopped.result.message};
             },
-            static_cast<std::uint64_t>(activity),
+            static_cast<std::uint64_t>(state),
             {},
             "program movie session",
             diagnostic);
         if (!resource)
         {
-            if (activity == MovieActivity::ReadOnlyPlayback)
+            // RegisterResource may have failed before installing its release
+            // callback, or it may already have invoked that callback while
+            // compensating a ledger failure. Reconcile the actual service
+            // state so a successfully started movie is never left without a
+            // resource-ledger cleanup authority and an already-compensated
+            // movie is not stopped twice.
+            MovieOperationReceipt compensated;
+            bool compensation_required = true;
+            switch (movies->state())
             {
-                const MovieOperationReceipt compensated =
-                    movies->StopPlayback();
-                if (!compensated.result.ok)
-                    session.MarkTainted(
-                        "Movie playback could not be compensated after resource registration failed");
+            case MovieState::ReadOnlyPlayback:
+            case MovieState::PlaybackEnded:
+                compensated = movies->StopPlayback();
+                break;
+            case MovieState::Recording:
+                compensated = movies->CancelRecording();
+                break;
+            case MovieState::Inactive:
+                compensation_required = false;
+                break;
+            case MovieState::PreparedReadOnlyPlayback:
+                compensated = movies->AbandonPreparedReadOnlyPlayback(
+                    movies->preparation());
+                break;
+            case MovieState::Unknown:
+                compensated.result = MovieServiceResult::Failure(
+                    MovieServiceErrorCode::IntegrityFailure,
+                    "Movie state is unknown during resource compensation",
+                    GuestIntegrity::Unknown);
+                break;
             }
+            if (compensation_required && !compensated.result.ok)
+                session.MarkTainted(
+                    "Movie activity could not be compensated after resource registration failed");
             return ResourceFailure(std::move(request), diagnostic);
         }
         ResourceMapping* mapping = Resource(resource->handle);
@@ -4870,6 +5352,27 @@ void SessionProgramActionHost::Impl::CompletePendingExecution(
         completion.session_disposition =
             SessionDisposition::Tainted;
     }
+    if (completed.request.action)
+    {
+        const auto action = ResolveCanonicalAction(*completed.request.action);
+        if (action && IsDiagnosticAction(*action))
+        {
+            SCLOGDX(
+                SC_TAGS("program.action", "program.action.resolved"),
+                "invocation=%llu attempt=%llu request=%llu epoch=%llu selector=%s action=%.*s operation=%llu status=%u code=%s",
+                completed.request.invocation_id.value(),
+                completed.request.attempt_id.value(),
+                completed.request.request_id.value(),
+                completion.workset_epoch.value(),
+                completed.request.diagnostic_selector.empty()
+                    ? "<unnamed>"
+                    : completed.request.diagnostic_selector.c_str(),
+                static_cast<int>(CanonicalActionName(*action).size()),
+                CanonicalActionName(*action).data(), terminal.operation_id.value(),
+                static_cast<unsigned>(completion.status),
+                completion.code.empty() ? "<none>" : completion.code.c_str());
+        }
+    }
     (void)Queue(std::move(completion));
 }
 
@@ -5060,7 +5563,42 @@ SessionProgramActionHost::~SessionProgramActionHost() = default;
 ProgramActionDispatchResult SessionProgramActionHost::Dispatch(
     ProgramActionRequest request)
 {
-    return impl_->Dispatch(std::move(request));
+    const auto action = request.action
+        ? ResolveCanonicalAction(*request.action)
+        : std::nullopt;
+    const bool diagnostic = action && IsDiagnosticAction(*action);
+    const auto invocation = request.invocation_id.value();
+    const auto attempt = request.attempt_id.value();
+    const auto request_id = request.request_id.value();
+    const auto epoch = request.expected_epoch.value();
+    const std::string selector = request.diagnostic_selector;
+    if (diagnostic)
+    {
+        SCLOGDX(
+            SC_TAGS("program.action", "program.action.dispatch"),
+            "invocation=%llu attempt=%llu request=%llu epoch=%llu selector=%s action=%.*s",
+            invocation, attempt, request_id, epoch,
+            selector.empty() ? "<unnamed>" : selector.c_str(),
+            static_cast<int>(CanonicalActionName(*action).size()),
+            CanonicalActionName(*action).data());
+    }
+    ProgramActionDispatchResult result = impl_->Dispatch(std::move(request));
+    if (diagnostic)
+    {
+        const auto status = result.immediate_result
+            ? static_cast<unsigned>(result.immediate_result->resolution.status)
+            : 0u;
+        SCLOGDX(
+            SC_TAGS("program.action", "program.action.accepted"),
+            "invocation=%llu attempt=%llu request=%llu epoch=%llu selector=%s action=%.*s accepted=%u immediate=%u status=%u diagnostic=%s",
+            invocation, attempt, request_id, epoch,
+            selector.empty() ? "<unnamed>" : selector.c_str(),
+            static_cast<int>(CanonicalActionName(*action).size()),
+            CanonicalActionName(*action).data(), result.accepted ? 1u : 0u,
+            result.immediate_result ? 1u : 0u, status,
+            result.diagnostic.empty() ? "<none>" : result.diagnostic.c_str());
+    }
+    return result;
 }
 
 void SessionProgramActionHost::RequestCancellation(

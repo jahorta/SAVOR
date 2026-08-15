@@ -292,7 +292,7 @@ bool DecodeStop(
     if (value == nullptr ||
         value->type != CanonicalActionOutputType(
             CanonicalAction::ExecutionContinueUntil) ||
-        record == nullptr || record->fields.size() != 5)
+        record == nullptr || record->fields.size() != 6)
     {
         return false;
     }

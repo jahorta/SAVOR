@@ -137,7 +137,6 @@ struct SaveBattlePlanActionPresetCommand {
     std::optional<int> target_mask_bits;
     std::optional<int> target_single_slot;
     std::optional<int> target_same_as_actor_slot;
-    std::optional<std::string> target_expr_ini;
     std::optional<int> item_id;
     int flags = 0;
     types::UtcTimePoint created_at_utc{};
@@ -267,7 +266,6 @@ struct BattlePlanActionPresetSnapshot {
     std::optional<int> target_mask_bits;
     std::optional<int> target_single_slot;
     std::optional<int> target_same_as_actor_slot;
-    std::optional<std::string> target_expr_ini;
     std::optional<int> item_id;
     int flags = 0;
     types::UtcTimePoint created_at_utc{};

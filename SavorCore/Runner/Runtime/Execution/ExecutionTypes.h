@@ -3,6 +3,7 @@
 #include "../../../Core/Input/GCInputFrame.h"
 #include "../IDolphinBackend.h"
 #include "../RuntimeTypes.h"
+#include "../Services/Movie/MovieTypes.h"
 #include "../StopPoints/StopPointTypes.h"
 
 #include <chrono>
@@ -66,14 +67,6 @@ enum class ExecutionActivity : std::uint8_t
     Closed,
 };
 
-enum class ExecutionMovieState : std::uint8_t
-{
-    Inactive,
-    Playing,
-    Ended,
-    Unknown,
-};
-
 enum class MovieEndedPolicy : std::uint8_t
 {
     Ignore,
@@ -112,6 +105,12 @@ struct ExecutionRequestPolicy
         ExecutionInterruptionPolicy::Reject;
     std::optional<InputExecutionRelationshipId> input_relationship;
     CancellationToken cancellation;
+    // Worker-local action correlation used only for diagnostics. These are
+    // never encoded in a program, workset, or wire contract.
+    std::uint64_t diagnostic_invocation = 0;
+    std::uint64_t diagnostic_attempt = 0;
+    std::uint64_t diagnostic_request = 0;
+    std::string diagnostic_selector;
 };
 
 struct ContinueUntilRequest
@@ -213,7 +212,7 @@ struct ExecutionEnvironmentEvidence
     bool pause_confirmed = false;
     std::uint32_t pc = 0;
     std::uint64_t vi_count = 0;
-    ExecutionMovieState movie_state = ExecutionMovieState::Unknown;
+    MovieState movie_state = MovieState::Unknown;
     std::uint64_t movie_input_count = 0;
     bool throttle_disabled = false;
 };

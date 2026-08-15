@@ -154,11 +154,11 @@
     <Filter Include="Phases\SeedProbe">
       <UniqueIdentifier>{9970f495-ed71-4548-bb91-77f7142e3522}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Phases\BattleEndResults">
-      <UniqueIdentifier>{7f05199e-d951-4f41-b332-0d6804c48a48}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Phases\BattleCompletion">
       <UniqueIdentifier>{34e2fa87-d5e5-44e8-8a62-a0f8751bf8ed}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Phases\BattleRecord">
+      <UniqueIdentifier>{F9229072-696E-4C30-B6F5-0F67509AE25D}</UniqueIdentifier>
     </Filter>
     <Filter Include="Tas">
       <UniqueIdentifier>{3323c09c-2ff3-43bc-a6ae-4d4bb181334e}</UniqueIdentifier>
@@ -232,12 +232,6 @@
     
     
     
-    <ClInclude Include="Runner\Script\ContextKeys\BattleEndResultsKeys.reg.h">
-      <Filter>Runner\VM\ContextKeys</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Script\ContextKeys\BattleCompletionKeys.reg.h">
-      <Filter>Runner\VM\ContextKeys</Filter>
-    </ClInclude>
     
     
     
@@ -367,6 +361,12 @@
       <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\InteractionComposition.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\BattleCompletionComposition.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\BattleResultsHandler.h">
       <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\PredicateComposition.h">
@@ -605,6 +605,18 @@
     </ClInclude>
     
     
+    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionContracts.h">
+      <Filter>Phases\BattleCompletion</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionModule.h">
+      <Filter>Phases\BattleCompletion</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleRecord\BattleRecordModule.h">
+      <Filter>Phases\BattleRecord</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleRecord\BattleReplayModule.h">
+      <Filter>Phases\BattleRecord</Filter>
+    </ClInclude>
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextModule.h">
       <Filter>Phases\BattleContext</Filter>
     </ClInclude>
@@ -744,6 +756,12 @@
       <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\InteractionComposition.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\BattleCompletionComposition.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\BattleResultsHandler.cpp">
       <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\PredicateComposition.cpp">
@@ -918,6 +936,18 @@
     </ClCompile>
     
     
+    <ClCompile Include="Phases\Programs\BattleCompletion\BattleCompletionContracts.cpp">
+      <Filter>Phases\BattleCompletion</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\Programs\BattleCompletion\BattleCompletionModule.cpp">
+      <Filter>Phases\BattleCompletion</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\Programs\BattleRecord\BattleRecordContracts.cpp">
+      <Filter>Phases\BattleRecord</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\Programs\BattleRecord\BattleRecordModule.cpp">
+      <Filter>Phases\BattleRecord</Filter>
+    </ClCompile>
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextModule.cpp">
       <Filter>Phases\BattleContext</Filter>
     </ClCompile>

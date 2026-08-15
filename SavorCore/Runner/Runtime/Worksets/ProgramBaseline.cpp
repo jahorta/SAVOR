@@ -263,12 +263,12 @@ TasMovieCheckpointSterilizationBaselineComponentProvider::Activate(
             WorkerRejectionCode::SessionUnavailable,
             "MovieService is unavailable during checkpoint sterilization");
     }
-    if (reset && movies->activity() == MovieActivity::Inactive &&
+    if (reset && movies->state() == MovieState::Inactive &&
         !movies->reservation())
     {
         return ProgramBaselineComponentResult::Success();
     }
-    if (movies->activity() != MovieActivity::ReadOnlyPlayback ||
+    if (movies->state() != MovieState::ReadOnlyPlayback ||
         !movies->reservation())
     {
         return ProgramBaselineComponentResult::Failure(
@@ -276,7 +276,7 @@ TasMovieCheckpointSterilizationBaselineComponentProvider::Activate(
             "Checkpoint sterilization requires verified read-only baseline playback");
     }
     const MovieOperationReceipt stopped = movies->StopPlayback();
-    if (!stopped.result.ok || movies->activity() != MovieActivity::Inactive ||
+    if (!stopped.result.ok || movies->state() != MovieState::Inactive ||
         movies->reservation())
     {
         return ProgramBaselineComponentResult::Failure(

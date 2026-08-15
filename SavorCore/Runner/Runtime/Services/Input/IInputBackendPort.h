@@ -18,6 +18,7 @@ struct BackendInputPoll
     BackendResult result;
     std::uint64_t publication_epoch = 0;
     std::uint32_t callback_count = 0;
+    std::uint32_t a_control_callback_count = 0;
     savor::GCInputFrame frame{};
 };
 

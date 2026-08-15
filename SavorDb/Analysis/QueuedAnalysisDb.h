@@ -225,20 +225,47 @@ public:
         const FailBattleCompletionCommand& command,
         std::string* error_out = nullptr) override;
     std::optional<BattleCompletionRecord> GetBattleCompletion(std::int64_t battle_completion_id) const override;
-    bool CreateBattleResults(
-        const CreateBattleResultsCommand& command,
-        std::int64_t* battle_results_id_out = nullptr,
+    std::optional<BattleCompletionRecord> GetBattleCompletionForExecJob(std::int64_t exec_job_id) const override;
+    bool CreateBattleRecording(
+        const CreateBattleRecordingCommand& command,
+        std::int64_t* battle_recording_id_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool BindBattleResultsExecutionJob(
-        const BindBattleResultsExecutionJobCommand& command,
+    bool BindBattleRecordingExecutionJob(
+        const BindBattleRecordingExecutionJobCommand& command,
         std::string* error_out = nullptr) override;
-    bool CompleteBattleResults(
-        const CompleteBattleResultsCommand& command,
+    bool BindBattleRecordingValidation(
+        const BindBattleRecordingValidationCommand& command,
         std::string* error_out = nullptr) override;
-    bool FailBattleResults(
-        const FailBattleResultsCommand& command,
+    bool BindBattleRecordingSterilization(
+        const BindBattleRecordingSterilizationCommand& command,
         std::string* error_out = nullptr) override;
-    std::optional<BattleResultsRecord> GetBattleResults(std::int64_t battle_results_id) const override;
+    bool CompleteBattleRecording(
+        const CompleteBattleRecordingCommand& command,
+        std::string* error_out = nullptr) override;
+    bool FailBattleRecording(
+        const FailBattleRecordingCommand& command,
+        std::string* error_out = nullptr) override;
+    std::optional<BattleRecordingRecord> GetBattleRecording(std::int64_t battle_recording_id) const override;
+    std::optional<BattleRecordingRecord> GetBattleRecordingForExecJob(std::int64_t exec_job_id) const override;
+    std::optional<BattleRecordingRecord> GetBattleRecordingForTasMovieTree(std::int64_t tas_movie_tree_id) const override;
+    std::optional<BattleRecordingRecord> GetBattleRecordingForPairedCheckpoint(std::int64_t paired_checkpoint_savestate_id) const override;
+    bool CreateBattleReplay(
+        const CreateBattleReplayCommand& command,
+        std::int64_t* battle_replay_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool BindBattleReplayExecutionJob(
+        const BindBattleReplayExecutionJobCommand& command,
+        std::string* error_out = nullptr) override;
+    bool CompleteBattleReplay(
+        const CompleteBattleReplayCommand& command,
+        std::string* error_out = nullptr) override;
+    bool FailBattleReplay(
+        const FailBattleReplayCommand& command,
+        std::string* error_out = nullptr) override;
+    std::optional<BattleReplayRecord> GetBattleReplay(
+        std::int64_t battle_replay_id) const override;
+    std::optional<BattleReplayRecord> GetBattleReplayForExecJob(
+        std::int64_t exec_job_id) const override;
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,
         int max_batch_size) override;

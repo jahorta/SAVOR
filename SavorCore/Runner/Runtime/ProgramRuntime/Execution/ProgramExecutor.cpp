@@ -2002,7 +2002,8 @@ struct ProgramExecutor::Impl
                     scopes.back().id,
                     scopes.back().parent,
                     {},
-                    false},
+                    false,
+                    instruction.selector},
                 PendingSuccess::BindValue,
                 instruction.result
                     ? std::optional<ProgramValueId>(

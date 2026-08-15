@@ -47,6 +47,7 @@ enum class ActionEffect : std::uint32_t
     ArtifactIo = 1u << 8,
     Telemetry = 1u << 9,
     ReadDerivedState = 1u << 10,
+    ReadMovieState = 1u << 11,
 };
 
 using ActionEffectMask = std::uint32_t;

@@ -701,6 +701,7 @@ TEST(ProgramExecutor, SuspendsForActionsAndCorrelatesCompletions)
                             .kind = InstructionTargetKind::Action,
                             .dependency = action,
                         },
+                        .selector = "battle.command.fake_accept.main_dispatch",
                     },
                     Instruction{
                         .id = ProgramInstructionId(2),
@@ -749,6 +750,9 @@ TEST(ProgramExecutor, SuspendsForActionsAndCorrelatesCompletions)
         suspended.host_request->operation,
         ProgramHostOperation::InvokeAction);
     EXPECT_EQ(suspended.host_request->action, action);
+    EXPECT_EQ(
+        suspended.host_request->diagnostic_selector,
+        "battle.command.fake_accept.main_dispatch");
     EXPECT_EQ(
         executor.snapshot().activity,
         ProgramExecutorActivity::AwaitingHost);

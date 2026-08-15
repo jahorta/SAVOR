@@ -1,4 +1,5 @@
 #include "StopPointRouter.h"
+#include "../../../Utils/Log.h"
 
 #include <algorithm>
 #include <cassert>
@@ -856,9 +857,14 @@ namespace {
                 continue;
             }
             const StopSubscriptionDefinition& definition = subscription.definition;
+            const std::string consumer_name =
+                group.source.diagnostic_label.empty()
+                ? group.source.stable_name
+                : group.source.diagnostic_label + " [" +
+                    group.source.stable_name + "]";
             snapshot->entries.push_back({
                 group.source.id,
-                group.source.stable_name,
+                consumer_name,
                 group.id,
                 definition.id,
                 definition.point,
@@ -3032,6 +3038,31 @@ namespace {
     StopRouteReceipt receipt;
     receipt.identity = packet.event.identity;
     receipt.event = packet.event;
+
+    const DispatchEntry* ingress_terminal_entry =
+        packet.snapshot != nullptr && packet.terminal_entry >= 0 &&
+            static_cast<std::size_t>(packet.terminal_entry) <
+                packet.snapshot->entries.size()
+        ? &packet.snapshot->entries[packet.terminal_entry]
+        : nullptr;
+    SCLOGDX(
+        SC_TAGS("stop.router", "stop.router.hit"),
+        "path=%u preclassified_terminal=%u consumer=%s matched_entries=%u passive_sources=%u observer_descriptors=%u request_break=%u authoritative=%u routed_sequence=%llu epoch=%llu dispatch_generation=%llu physical_generation=%llu hit_pc=0x%08X",
+        static_cast<unsigned>(packet.event.evidence.path),
+        static_cast<unsigned>(packet.terminal),
+        ingress_terminal_entry
+            ? ingress_terminal_entry->consumer_name.c_str()
+            : "<none>",
+        static_cast<unsigned>(packet.entry_count),
+        static_cast<unsigned>(packet.passive_source_count),
+        static_cast<unsigned>(packet.observer_descriptor_count),
+        packet.request_break ? 1u : 0u,
+        packet.event.authoritative ? 1u : 0u,
+        packet.event.identity.sequence.value(),
+        packet.event.identity.workset_epoch.value(),
+        packet.event.identity.dispatch_generation.value(),
+        packet.event.identity.physical_generation.value(),
+        packet.event.evidence.hit_pc);
     if (!packet.snapshot ||
         packet.event.identity.dispatch_generation != current_generation ||
         packet.event.identity.workset_epoch != current_epoch ||
@@ -3155,6 +3186,29 @@ namespace {
     else
     {
         impl.current_point.reset();
+    }
+    if (receipt.terminal == StopRouteTerminal::ForegroundMatched ||
+        receipt.terminal == StopRouteTerminal::RoutingFailure ||
+        receipt.terminal == StopRouteTerminal::Overflow)
+    {
+        const DispatchEntry* terminal_entry =
+            packet.terminal_entry >= 0 &&
+            static_cast<std::size_t>(packet.terminal_entry) <
+                packet.snapshot->entries.size()
+            ? &packet.snapshot->entries[packet.terminal_entry]
+            : nullptr;
+        SCLOGDX(
+            SC_TAGS("stop.router", "stop.delivery"),
+            "terminal=%u consumer=%s source=%llu group=%llu subscription=%llu routed_sequence=%llu epoch=%llu hit_pc=0x%08X error=%s",
+            static_cast<unsigned>(receipt.terminal),
+            terminal_entry ? terminal_entry->consumer_name.c_str() : "<none>",
+            terminal_entry ? terminal_entry->source_id.value() : 0,
+            terminal_entry ? terminal_entry->group_id.value() : 0,
+            terminal_entry ? terminal_entry->subscription_id.value() : 0,
+            receipt.identity.sequence.value(),
+            receipt.identity.workset_epoch.value(),
+            packet.event.evidence.hit_pc,
+            receipt.error.message.empty() ? "<none>" : receipt.error.message.c_str());
     }
     AppendHistory(impl, receipt);
     return receipt;

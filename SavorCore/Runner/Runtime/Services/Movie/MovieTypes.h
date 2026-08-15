@@ -16,12 +16,17 @@ using MovieReservationId = StrongId<MovieReservationIdTag>;
 struct MoviePreparationIdTag;
 using MoviePreparationId = StrongId<MoviePreparationIdTag>;
 
-enum class MovieActivity : std::uint8_t
+// The single semantic movie lifecycle observed by every runtime consumer.
+// Native Dolphin flags remain physical evidence interpreted exclusively by
+// MovieService.
+enum class MovieState : std::uint8_t
 {
-    Inactive,
-    PreparedReadOnlyPlayback,
-    ReadOnlyPlayback,
-    Recording,
+    Inactive = 0,
+    PreparedReadOnlyPlayback = 1,
+    ReadOnlyPlayback = 2,
+    Recording = 3,
+    PlaybackEnded = 4,
+    Unknown = 255,
 };
 
 enum class MovieOperation : std::uint8_t
@@ -69,11 +74,12 @@ struct MovieServiceResult
     }
 };
 
-struct MovieSnapshot
+struct MovieStateSnapshot
 {
-    MovieActivity activity = MovieActivity::Inactive;
+    MovieServiceResult result;
+    WorksetEpoch workset_epoch;
+    MovieState state = MovieState::Unknown;
     bool read_only = true;
-    bool ended = false;
     std::uint64_t current_frame = 0;
     std::uint64_t current_input_count = 0;
 };
@@ -82,7 +88,7 @@ struct MovieOperationReceipt
 {
     MovieServiceResult result;
     MovieOperation operation = MovieOperation::StartPlayback;
-    MovieActivity activity = MovieActivity::Inactive;
+    MovieState state = MovieState::Inactive;
     WorksetEpoch workset_epoch;
     MovieReservationId reservation;
     MoviePreparationId preparation;

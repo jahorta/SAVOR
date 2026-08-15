@@ -13,10 +13,16 @@ it must never be modified and must never receive build, test, migration, or gene
 
 Every submitted workset contains one exact artifact baseline:
 
-- `Savestate` identifies an exact `.sav` and hash, plus its exact same-name DTM sidecar and hash when
-  present.
-- `ReadOnlyMovie` identifies an exact `.dtm` and hash, plus the exact startup savestate required by the
-  DTM when present.
+- `Savestate` identifies an exact `.sav` and hash, plus its exact same-name DTM continuation sidecar and
+  hash when the restored state is movie-paired.
+- `ReadOnlyMovie` identifies an exact `.dtm` and hash, plus only the startup savestate declared by that
+  DTM when it was originally recorded from a savestate.
+
+`ReadOnlyMovie` is an explicit, opt-in baseline reserved for TAS Movie phases that intentionally start
+from the DTM-declared origin. It is not the default baseline for TAS Movie phases, and no non-TAS phase
+may select it. A checkpoint captured later in movie playback is not a DTM startup savestate: every phase,
+including `battle.record`, restores that checkpoint through `Savestate` with its exact DTM continuation
+sidecar.
 
 The baseline includes complete compatibility and lineage. Worker staging verifies the declared files,
 hashes, DTM shape, startup-state parity, sidecar naming, compatibility, and lineage before the workset
@@ -45,8 +51,24 @@ waits for the prior invocation and promoted savestate publication/compensation t
 action or execution resource remains, drains ingress, and restores the handle under the same epoch. The
 handle is released when the workset ends and is never indexed or retained across worksets.
 
-A read-only-movie workset stages its exact DTM/startup-savestate pair without starting playback. Each
-item begins unestablished and independently establishes that same declared artifact through
+When that savestate is movie-paired, restoration also establishes the exact read-only playback session
+and cursor encoded by the checkpoint and its DTM sidecar. A program that needs scoped movie authority
+uses `runtime.movie.adopt_restored_read_only_playback` after restoration. Adoption validates and takes
+invocation ownership of that existing session; it does not prepare a DTM-origin baseline, restart the
+core, restore state, or advance the guest. The scoped handle may then be branched into recording.
+
+Movie state is not inferred by the execution backend. `MovieService` owns one
+epoch-bound canonical state and observes raw native playback/recording facts
+whenever execution needs movie evidence. Restored adoption requires observed
+`ReadOnlyPlayback`; branching atomically changes that state to `Recording`
+before the first replay advance. Natural playback exhaustion produces the
+owned terminal `PlaybackEnded` state and preserves final cursor/DTM evidence
+until resource cleanup detaches it. Cleanup of that already-ended state is
+host-only and does not issue a redundant native movie stop.
+
+A TAS Movie phase that explicitly selects a read-only-movie workset stages its exact
+DTM/DTM-declared-startup-savestate pair without starting playback. Each item begins unestablished and
+independently establishes that same declared artifact through
 `MoviePrepareReadOnlyPlayback`, a stopped-core breakpoint-installation boundary, and
 `MovieStartPlayback`.
 

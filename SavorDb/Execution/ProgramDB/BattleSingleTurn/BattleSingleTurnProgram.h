@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,7 @@ namespace savor::db {
 struct IAnalysisDb;
 struct IAuthoringDb;
 struct BattlePlanSnapshot;
+struct BattlePlanTurnSnapshot;
 struct IExecutionDb;
 struct IStateDb;
 }
@@ -32,6 +34,29 @@ enum class BattleTargetAvailability {
 [[nodiscard]] BattleTargetAvailability ClassifyBattleTurnTargets(
     const soa::battle::ctx::BattleContext* context,
     const soa::battle::actions::BattleTurnCommandSet& commands) noexcept;
+
+struct BattleTurnConcreteVariant {
+    soa::battle::actions::BattleTurnCommandSet commands;
+    std::string encoded_commands;
+    std::string variant_key;
+};
+
+struct BattleTurnVariantCompilation {
+    std::vector<BattleTurnConcreteVariant> structural_variants;
+    std::vector<BattleTurnConcreteVariant> context_viable_variants;
+    bool context_applied = false;
+};
+
+// Expands authored selectors into deterministic, concrete per-job command
+// sets.  When a context is supplied, context_viable_variants contains the
+// subset whose targets are currently present, living enemies.  The complete
+// structural set is retained so missing/deleted planning context never becomes
+// an execution dependency.
+[[nodiscard]] std::optional<BattleTurnVariantCompilation>
+CompileBattleTurnVariants(
+    const savor::db::BattlePlanTurnSnapshot& turn,
+    const soa::battle::ctx::BattleContext* context,
+    std::string* error_out = nullptr);
 
 struct BattleSingleTurnPhaseRegistrationConfig {
     std::filesystem::path working_dir_root;

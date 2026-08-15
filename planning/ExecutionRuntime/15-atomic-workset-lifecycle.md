@@ -53,11 +53,22 @@ unstarted; unknown integrity taints the session.
 
 ## Movie baseline rule
 
-Movie preparation is split into stopped-core startup/preparation and later
-playback activation. Initialization may perform the former; the job installs
-its subscriptions before it activates playback. Every TAS Movie Full Phase
-kind accepts exactly one item per workset, regardless of baseline artifact
-kind. A multi-item TAS Movie workset is invalid at admission.
+Only a TAS Movie phase may explicitly select `ReadOnlyMovie`, and only when it
+intentionally starts from the origin declared by the DTM header. The option is
+not a TAS family default. Movie preparation for that origin case is split into
+stopped-core startup/preparation and later playback activation. Initialization
+may perform the former; the job installs its subscriptions before it activates
+playback.
+
+A movie-paired continuation checkpoint instead initializes through
+`Savestate` plus its exact DTM sidecar, including when its consumer is a TAS
+Movie phase. Restoring that pair establishes the serialized playback cursor;
+it does not reinterpret the checkpoint as the DTM's startup savestate or run
+the DTM-origin core-restart path.
+
+Every TAS Movie Full Phase kind accepts exactly one item per workset,
+regardless of baseline artifact kind. A multi-item TAS Movie workset is invalid
+at admission.
 
 Immutable module packages and prepared definitions may be cached by structural
 identity. Guest/session/execution evidence may not be cached before

@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -309,6 +310,94 @@ TEST(E2ePreparedCheckpointCli, AcceptsSeedProbeAndBattleAndRejectsMixedInputs) {
     std::filesystem::remove_all(root, cleanup_error);
 }
 
+TEST(E2eWorkflowUnitCli, RequiresOneExistingWorkspaceReferenceAndPreservesMode) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("savor-e2e-workflow-unit-cli-"
+            + std::to_string(std::chrono::steady_clock::now()
+                .time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(root));
+    for (const auto* name : {
+             "execution.db", "state.db", "analysis.db", "authoring.db",
+             "ui_read.db", "archive.db"}) {
+        std::ofstream(root / name, std::ios::binary).put('\0');
+    }
+
+    const auto parse = [&](std::initializer_list<std::string> extra,
+                           savor::e2e::CliOptions* options,
+                           std::string* error) {
+        std::vector<std::string> storage{
+            "SavorE2E", "--scenario", "workflow_unit",
+            "--iso", ".", "--dolphin-base-dir", ".",
+            "--workspace-root", root.string(),
+        };
+        storage.insert(storage.end(), extra.begin(), extra.end());
+        std::vector<char*> argv;
+        for (auto& value : storage) argv.push_back(value.data());
+        return savor::e2e::ParseArgs(
+            static_cast<int>(argv.size()), argv.data(), options, error);
+    };
+
+    savor::e2e::CliOptions options;
+    std::string error;
+    ASSERT_TRUE(parse({
+        "--workflow-unit", "battle_completion",
+        "--source-ref-kind", "analysis_battle.turn_job",
+        "--source-ref-id", "143",
+    }, &options, &error)) << error;
+    ASSERT_EQ(options.scenarios.size(), 1u);
+    EXPECT_EQ(options.scenarios.front(), "workflow_unit");
+    EXPECT_EQ(options.workflow_unit,
+              std::optional<std::string>("battle_completion"));
+    EXPECT_EQ(options.source_ref_kind,
+              std::optional<std::string>("analysis_battle.turn_job"));
+    EXPECT_EQ(options.source_ref_id, std::optional<std::int64_t>(143));
+    const auto* descriptor =
+        savor::e2e::FindE2eScenarioDescriptor("workflow_unit");
+    ASSERT_NE(descriptor, nullptr);
+    EXPECT_EQ(descriptor->default_entry_source,
+        savor::e2e::E2eScenarioEntrySource::ExistingWorkspaceReference);
+    EXPECT_FALSE(savor::e2e::EntrySourceRequiresFreshWorkspace(
+        descriptor->default_entry_source));
+
+    error.clear();
+    EXPECT_FALSE(parse({}, &options, &error));
+    EXPECT_NE(error.find("requires --workflow-unit"), std::string::npos);
+    error.clear();
+    EXPECT_FALSE(parse({
+        "--workflow-unit", "battle_completion",
+        "--source-ref-kind", "analysis_battle.turn_job",
+        "--source-ref-id", "0",
+    }, &options, &error));
+    EXPECT_NE(error.find("positive --source-ref-id"), std::string::npos);
+    error.clear();
+    EXPECT_FALSE(parse({
+        "--workflow-unit", "battle_completion",
+        "--source-ref-kind", "analysis_battle.turn_job",
+        "--source-ref-id", "143", "--dtm-file", ".",
+    }, &options, &error));
+    EXPECT_NE(error.find("rejects savestate, DTM, and RTC"),
+              std::string::npos);
+
+    std::vector<std::string> other_storage{
+        "SavorE2E", "--scenario", "seedprobe", "--iso", ".",
+        "--dolphin-base-dir", ".", "--savestate-file", ".",
+        "--workflow-unit", "battle_completion",
+        "--source-ref-kind", "analysis_battle.turn_job",
+        "--source-ref-id", "143",
+    };
+    std::vector<char*> other_argv;
+    for (auto& value : other_storage) other_argv.push_back(value.data());
+    error.clear();
+    EXPECT_FALSE(savor::e2e::ParseArgs(
+        static_cast<int>(other_argv.size()), other_argv.data(),
+        &options, &error));
+    EXPECT_NE(error.find("require --scenario workflow_unit"),
+              std::string::npos);
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(root, cleanup_error);
+}
+
 TEST(TasMovieSeedProbeCli, AcceptsRtcEndpointsWorkersAndSeedProbeOptions) {
     for (const auto* rtc : {"0", "4294967295"}) {
         for (const auto* workers : {"1", "30"}) {
@@ -332,6 +421,59 @@ TEST(TasMovieSeedProbeCli, AcceptsRtcEndpointsWorkersAndSeedProbeOptions) {
             EXPECT_EQ(options.seedprobe_combo_attempts_per_target, 32);
         }
     }
+}
+
+TEST(BattleCli, AcceptsExplicitAnalogousSearchBreadth) {
+    savor::e2e::CliOptions options;
+    std::string error;
+    ASSERT_TRUE(ParseSeedProbeArgs(
+        {
+            "SavorE2E", "--scenario", "battle",
+            "--tasmovie-rtc", "0",
+            "--iso", ".", "--dolphin-base-dir", ".",
+            "--dtm-file", ".",
+            "--seedprobe-min-value", "48",
+            "--seedprobe-max-value", "207",
+            "--seedprobe-samples-per-axis", "20",
+            "--seedprobe-combo-attempts-per-target", "32",
+            "--seedprobe-combo-sampler-tries", "8",
+            "--battle-fake-attack-min", "0",
+            "--battle-fake-attack-max", "5",
+        },
+        &options, &error)) << error;
+    EXPECT_EQ(options.seedprobe_min_value, 48);
+    EXPECT_EQ(options.seedprobe_max_value, 207);
+    EXPECT_EQ(options.seedprobe_samples_per_axis, 20);
+    EXPECT_EQ(options.seedprobe_combo_attempts_per_target, 32);
+    EXPECT_EQ(options.seedprobe_combo_sampler_tries, 8);
+    EXPECT_EQ(options.battle_fake_attack_min, 0);
+    EXPECT_EQ(options.battle_fake_attack_max, 5);
+}
+
+TEST(BattleCli, RejectsInvalidSearchBreadth) {
+    const auto reject = [](std::initializer_list<const char*> extra) {
+        std::vector<std::string> storage{
+            "SavorE2E", "--scenario", "battle",
+            "--tasmovie-rtc", "0", "--iso", ".",
+            "--dolphin-base-dir", ".", "--dtm-file", ".",
+        };
+        storage.insert(storage.end(), extra.begin(), extra.end());
+        std::vector<char*> argv;
+        for (auto& value : storage) argv.push_back(value.data());
+        savor::e2e::CliOptions options;
+        std::string error;
+        return !savor::e2e::ParseArgs(
+            static_cast<int>(argv.size()), argv.data(), &options, &error);
+    };
+
+    EXPECT_TRUE(reject({"--seedprobe-min-value", "-1"}));
+    EXPECT_TRUE(reject({"--seedprobe-max-value", "256"}));
+    EXPECT_TRUE(reject({"--seedprobe-min-value", "200",
+                        "--seedprobe-max-value", "100"}));
+    EXPECT_TRUE(reject({"--seedprobe-combo-sampler-tries", "0"}));
+    EXPECT_TRUE(reject({"--battle-fake-attack-min", "-1"}));
+    EXPECT_TRUE(reject({"--battle-fake-attack-min", "6",
+                        "--battle-fake-attack-max", "5"}));
 }
 
 TEST(TasMovieSeedProbeCli, RejectsInvalidCompositionArguments) {

@@ -55,6 +55,9 @@ struct ProgramActionRequest
         bounded_host_deadline;
     ActionEffectMask allowed_effects = ~ActionEffectMask{0};
     bool cleanup_only = false;
+    // Existing IR selector carried only inside the worker for diagnostics.
+    // It is not part of the program ABI or any wire/persistence contract.
+    std::string diagnostic_selector;
 };
 
 enum class ProgramActionResolutionStatus : std::uint8_t

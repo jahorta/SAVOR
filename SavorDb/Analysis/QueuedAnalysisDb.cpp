@@ -840,59 +840,173 @@ std::optional<BattleCompletionRecord> QueuedAnalysisDb::GetBattleCompletion(
         std::nullopt);
 }
 
-bool QueuedAnalysisDb::CreateBattleResults(
-    const CreateBattleResultsCommand& command,
-    std::int64_t* battle_results_id_out,
+std::optional<BattleCompletionRecord>
+QueuedAnalysisDb::GetBattleCompletionForExecJob(
+    std::int64_t exec_job_id) const {
+    return ExecuteRead<std::optional<BattleCompletionRecord>>(
+        [this, exec_job_id]() {
+            return inner_ != nullptr
+                ? inner_->GetBattleCompletionForExecJob(exec_job_id)
+                : std::nullopt;
+        }, std::nullopt);
+}
+
+bool QueuedAnalysisDb::CreateBattleRecording(
+    const CreateBattleRecordingCommand& command,
+    std::int64_t* battle_recording_id_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, command, battle_results_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->CreateBattleResults(command, battle_results_id_out, error_out) : false;
+        [this, command, battle_recording_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->CreateBattleRecording(
+                command, battle_recording_id_out, error_out) : false;
         },
         false,
         error_out);
 }
 
-bool QueuedAnalysisDb::BindBattleResultsExecutionJob(
-    const BindBattleResultsExecutionJobCommand& command,
+bool QueuedAnalysisDb::BindBattleRecordingExecutionJob(
+    const BindBattleRecordingExecutionJobCommand& command,
     std::string* error_out) {
     return ExecuteWrite<bool>(
         [this, command, error_out]() {
             return inner_ != nullptr
-                ? inner_->BindBattleResultsExecutionJob(command, error_out)
+                ? inner_->BindBattleRecordingExecutionJob(command, error_out)
                 : false;
         },
         false,
         error_out);
 }
 
-bool QueuedAnalysisDb::CompleteBattleResults(
-    const CompleteBattleResultsCommand& command,
+bool QueuedAnalysisDb::CompleteBattleRecording(
+    const CompleteBattleRecordingCommand& command,
     std::string* error_out) {
     return ExecuteWrite<bool>(
         [this, command, error_out]() {
-            return inner_ != nullptr ? inner_->CompleteBattleResults(command, error_out) : false;
+            return inner_ != nullptr ? inner_->CompleteBattleRecording(command, error_out) : false;
         },
         false,
         error_out);
 }
 
-bool QueuedAnalysisDb::FailBattleResults(
-    const FailBattleResultsCommand& command,
+bool QueuedAnalysisDb::FailBattleRecording(
+    const FailBattleRecordingCommand& command,
     std::string* error_out) {
     return ExecuteWrite<bool>(
         [this, command, error_out]() {
-            return inner_ != nullptr ? inner_->FailBattleResults(command, error_out) : false;
+            return inner_ != nullptr ? inner_->FailBattleRecording(command, error_out) : false;
         },
         false,
         error_out);
 }
 
-std::optional<BattleResultsRecord> QueuedAnalysisDb::GetBattleResults(std::int64_t battle_results_id) const {
-    return ExecuteRead<std::optional<BattleResultsRecord>>(
-        [this, battle_results_id]() {
-            return inner_ != nullptr ? inner_->GetBattleResults(battle_results_id) : std::nullopt;
+std::optional<BattleRecordingRecord> QueuedAnalysisDb::GetBattleRecording(
+    std::int64_t battle_recording_id) const {
+    return ExecuteRead<std::optional<BattleRecordingRecord>>(
+        [this, battle_recording_id]() {
+            return inner_ != nullptr
+                ? inner_->GetBattleRecording(battle_recording_id)
+                : std::nullopt;
         },
         std::nullopt);
+}
+
+bool QueuedAnalysisDb::BindBattleRecordingValidation(
+    const BindBattleRecordingValidationCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr
+                ? inner_->BindBattleRecordingValidation(command, error_out)
+                : false;
+        }, false, error_out);
+}
+
+bool QueuedAnalysisDb::BindBattleRecordingSterilization(
+    const BindBattleRecordingSterilizationCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr
+                ? inner_->BindBattleRecordingSterilization(command, error_out)
+                : false;
+        }, false, error_out);
+}
+
+std::optional<BattleRecordingRecord>
+QueuedAnalysisDb::GetBattleRecordingForExecJob(std::int64_t exec_job_id) const {
+    return ExecuteRead<std::optional<BattleRecordingRecord>>(
+        [this, exec_job_id]() {
+            return inner_ != nullptr
+                ? inner_->GetBattleRecordingForExecJob(exec_job_id)
+                : std::nullopt;
+        }, std::nullopt);
+}
+
+std::optional<BattleRecordingRecord>
+QueuedAnalysisDb::GetBattleRecordingForTasMovieTree(
+    std::int64_t tas_movie_tree_id) const {
+    return ExecuteRead<std::optional<BattleRecordingRecord>>(
+        [this, tas_movie_tree_id]() {
+            return inner_ != nullptr
+                ? inner_->GetBattleRecordingForTasMovieTree(tas_movie_tree_id)
+                : std::nullopt;
+        }, std::nullopt);
+}
+
+std::optional<BattleRecordingRecord>
+QueuedAnalysisDb::GetBattleRecordingForPairedCheckpoint(
+    std::int64_t paired_checkpoint_savestate_id) const {
+    return ExecuteRead<std::optional<BattleRecordingRecord>>(
+        [this, paired_checkpoint_savestate_id]() {
+            return inner_ != nullptr
+                ? inner_->GetBattleRecordingForPairedCheckpoint(
+                    paired_checkpoint_savestate_id)
+                : std::nullopt;
+        }, std::nullopt);
+}
+
+bool QueuedAnalysisDb::CreateBattleReplay(
+    const CreateBattleReplayCommand& command,
+    std::int64_t* id_out, std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, id_out, error_out]() {
+        return inner_ && inner_->CreateBattleReplay(command, id_out, error_out);
+    }, false);
+}
+
+bool QueuedAnalysisDb::BindBattleReplayExecutionJob(
+    const BindBattleReplayExecutionJobCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, error_out]() {
+        return inner_ && inner_->BindBattleReplayExecutionJob(command, error_out);
+    }, false);
+}
+
+bool QueuedAnalysisDb::CompleteBattleReplay(
+    const CompleteBattleReplayCommand& command, std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, error_out]() {
+        return inner_ && inner_->CompleteBattleReplay(command, error_out);
+    }, false);
+}
+
+bool QueuedAnalysisDb::FailBattleReplay(
+    const FailBattleReplayCommand& command, std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, error_out]() {
+        return inner_ && inner_->FailBattleReplay(command, error_out);
+    }, false);
+}
+
+std::optional<BattleReplayRecord> QueuedAnalysisDb::GetBattleReplay(
+    std::int64_t id) const {
+    return ExecuteRead<std::optional<BattleReplayRecord>>([this, id]() {
+        return inner_ ? inner_->GetBattleReplay(id) : std::nullopt;
+    }, std::nullopt);
+}
+
+std::optional<BattleReplayRecord> QueuedAnalysisDb::GetBattleReplayForExecJob(
+    std::int64_t id) const {
+    return ExecuteRead<std::optional<BattleReplayRecord>>([this, id]() {
+        return inner_ ? inner_->GetBattleReplayForExecJob(id) : std::nullopt;
+    }, std::nullopt);
 }
 
 std::vector<events::EventEnvelope> QueuedAnalysisDb::ReadUnpublishedOutboxBatch(

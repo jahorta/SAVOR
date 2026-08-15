@@ -15,6 +15,7 @@ namespace savor {
         struct PollStats {
             uint64_t publication_epoch = 0;
             uint32_t callback_count = 0;
+            uint32_t a_control_callback_count = 0;
             GCInputFrame frame{};
         };
 
@@ -43,6 +44,7 @@ namespace savor {
         GCInputFrame m_cur{}; // guarded by m_mtx
         uint64_t m_publication_epoch{ 0 };
         uint32_t m_callback_count{ 0 };
+        uint32_t m_a_control_callback_count{ 0 };
         mutable std::mutex m_mtx;
     };
 

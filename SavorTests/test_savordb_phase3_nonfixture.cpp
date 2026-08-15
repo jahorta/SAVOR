@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -39,6 +40,7 @@
 #include "Worker/ProcessWorker.h"
 #include "Worker/WorkerStatusRegistry.h"
 #include "Runner/Runtime/FullPhase/FullPhaseProgram.h"
+#include "Runner/Runtime/Worksets/WorksetWireCodec.h"
 #include "common/DbPreparer.h"
 #include "common/RecordingExecutionDb.h"
 #include "common/RecordingJobEventCommandService.h"
@@ -86,6 +88,41 @@ namespace savordb {
                 std::this_thread::sleep_for(std::chrono::milliseconds{ 5 });
             }
             return condition();
+        }
+
+        savor::db::ExecutionWorksetObservationBindingV1
+        CanonicalEmptyTestObservationBinding() {
+            savor::db::ExecutionWorksetObservationBindingV1 result;
+            std::optional<savor::runtime::WorksetCaptureBindingV1> capture;
+            savor::runtime::progress::ProgressPlanV1 progress;
+            if (!savor::runtime::EncodeWorksetCaptureBindingV1(
+                    capture,
+                    result.capture_binding_payload)
+                || !savor::runtime::EncodeProgressPlanV1(
+                    progress,
+                    result.progress_plan_payload)) {
+                throw std::logic_error(
+                    "canonical empty observation binding could not be encoded");
+            }
+            result.capture_binding_sha256 =
+                savor::runtime::EmptyWorksetCaptureBindingHashV1();
+            result.progress_plan_sha256 = progress.content_sha256;
+            return result;
+        }
+
+        savor::db::ExecutionWorksetDerivedStateBindingV1
+        CanonicalEmptyTestDerivedStateBinding() {
+            savor::db::ExecutionWorksetDerivedStateBindingV1 result;
+            const savor::runtime::derived::WorksetDerivedStateBindingV1
+                binding;
+            if (!savor::runtime::EncodeWorksetDerivedStateBindingV1(
+                    binding,
+                    result.binding_payload)) {
+                throw std::logic_error(
+                    "canonical empty derived-state binding could not be encoded");
+            }
+            result.binding_sha256 = binding.content_sha256;
+            return result;
         }
 
         class TestProgramJobMaterializer final
@@ -275,6 +312,10 @@ namespace savordb {
                                 .program_package_sha256 = std::string(64, '4'),
                                 .estimated_payload_bytes = 1,
                             },
+                            .derived_state =
+                                CanonicalEmptyTestDerivedStateBinding(),
+                            .observation =
+                                CanonicalEmptyTestObservationBinding(),
                             .priority = context.step.step_priority,
                             .ordered_job_ids = {job_id},
                             .requested_by = "WorkflowCoordinatorServiceTest",

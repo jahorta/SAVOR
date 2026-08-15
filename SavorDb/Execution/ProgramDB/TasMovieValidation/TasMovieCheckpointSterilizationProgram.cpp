@@ -74,13 +74,17 @@ std::optional<std::string> HashFile(const std::filesystem::path& path) {
 
 std::optional<std::int64_t> Binding(
     const ProgramJobMaterializationContext& context) {
-    if (!context.graph) return std::nullopt;
-    for (const auto& binding : context.graph->input_bindings) {
-        if (binding.input_key == kInputKey && binding.data_kind == kInputDataKind
-            && binding.ref_kind == kStateRefKind && binding.ref_id > 0) {
-            return binding.ref_id;
+    if (context.graph) {
+        for (const auto& binding : context.graph->input_bindings) {
+            if (binding.input_key == kInputKey && binding.data_kind == kInputDataKind
+                && binding.ref_kind == kStateRefKind && binding.ref_id > 0) {
+                return binding.ref_id;
+            }
         }
     }
+    if (context.step.domain_ref_id > 0 &&
+        context.step.domain_ref_kind == kStateRefKind)
+        return context.step.domain_ref_id;
     return std::nullopt;
 }
 
@@ -738,6 +742,84 @@ private:
         ITasMovieCheckpointSterilizationFullPhaseDefinitionV1> phase_;
 };
 
+class BattleRecordingSterilizationTransition final
+    : public IWorkflowTransitionHandler {
+public:
+    explicit BattleRecordingSterilizationTransition(
+        IAnalysisDb* analysis_db)
+        : analysis_db_(analysis_db) {}
+
+    WorkflowTransitionDecision EvaluateTransition(
+        const WorkflowTransitionContext& context) const override {
+        WorkflowTransitionDecision decision{};
+        decision.should_advance = true;
+        if (!analysis_db_ || context.output_ref_kind !=
+                std::optional<std::string>(kStateRefKind) ||
+            !context.output_ref_id)
+            return decision;
+
+        const auto request = analysis_db_
+            ->GetTasMovieCheckpointSterilizationRequestForWorkflowStep(
+                context.workflow_step_id);
+        if (!request)
+            return decision;
+
+        const auto recording = analysis_db_
+            ->GetBattleRecordingForPairedCheckpoint(
+                request->source_savestate_id);
+        if (!recording)
+            return decision;
+
+        if (recording->status != "COMPLETED" ||
+            recording->outcome != std::optional<std::string>("RECORDED") ||
+            !recording->tas_movie_tree_id ||
+            !recording->validation_request_id ||
+            recording->paired_checkpoint_savestate_id !=
+                request->source_savestate_id) {
+            decision.should_advance = false;
+            decision.terminal_failure = true;
+            decision.blocked_reason =
+                "battle_recording_sterilization_source_drifted";
+            return decision;
+        }
+
+        const auto attempts = analysis_db_
+            ->ListTasMovieCheckpointSterilizationAttemptsForRequest(
+                request->sterilization_request_id);
+        const bool exact_attempt = std::ranges::any_of(
+            attempts, [&](const auto& attempt) {
+                return attempt.produced_savestate_id ==
+                    *context.output_ref_id;
+            });
+        if (!exact_attempt) {
+            decision.should_advance = false;
+            decision.terminal_failure = true;
+            decision.blocked_reason =
+                "battle_recording_sterilization_attempt_missing";
+            return decision;
+        }
+
+        std::string error;
+        if (!analysis_db_->BindBattleRecordingSterilization({
+                .battle_recording_id = recording->battle_recording_id,
+                .tas_movie_tree_id = *recording->tas_movie_tree_id,
+                .sterilization_request_id =
+                    request->sterilization_request_id},
+                &error)) {
+            decision.should_advance = false;
+            decision.terminal_failure = true;
+            decision.blocked_reason = error.empty()
+                ? std::optional<std::string>(
+                    "battle_recording_sterilization_binding_failed")
+                : std::optional<std::string>(std::move(error));
+        }
+        return decision;
+    }
+
+private:
+    IAnalysisDb* analysis_db_{};
+};
+
 } // namespace
 
 ProgramKindDescriptor BuildTasMovieCheckpointSterilizationProgramDescriptor(
@@ -762,6 +844,8 @@ ProgramKindDescriptor BuildTasMovieCheckpointSterilizationProgramDescriptor(
     descriptor.workset_reconstruction = std::make_shared<Reconstruction>(
         state_db, analysis_db, config.working_dir_root);
     descriptor.result_handler = std::make_shared<ResultHandler>(state_db, analysis_db);
+    descriptor.workflow_transition =
+        std::make_shared<BattleRecordingSterilizationTransition>(analysis_db);
     descriptor.supports_workflow_orchestration = true;
     descriptor.allow_mixed_success_failed_transition = false;
     return descriptor;

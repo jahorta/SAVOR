@@ -903,19 +903,40 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
     if (!workflow_ids.empty() && IsTablePresent(analysis_db, "ab_battle_completion", nullptr)) {
         specs.push_back({
             "analysis_battle_completions",
-            "SELECT battle_completion_id,workflow_instance_id,workflow_step_id,exec_job_id,entry_savestate_id,"
-                "completion_savestate_id,entry_rng_seed,completion_rng_seed,manifest_version,"
+            "SELECT battle_completion_id,workflow_instance_id,workflow_step_id,exec_job_id,battle_set_id,wave_id,"
+                "selected_turn_job_id,selected_execution_job_id,entry_savestate_id,completion_savestate_id,manifest_version,"
                 "CASE WHEN manifest_blob IS NULL THEN NULL ELSE hex(manifest_blob) END AS manifest_blob_hex,"
-                "manifest_artifact_id,input_trace_artifact_id,mismatch_count,invariant_failure_count,status,"
+                "manifest_sha256,manifest_artifact_id,route_kind,transition_filename,worker_terminal_sha256,error_code,error_text,status,"
                 "created_at_utc,completed_at_utc FROM ab_battle_completion WHERE workflow_instance_id IN (" + workflow_id_list
                 + ") ORDER BY battle_completion_id ASC;"
         });
     }
-    if (!workflow_ids.empty() && IsTablePresent(analysis_db, "ab_battle_results", nullptr)) {
+    if (!workflow_ids.empty() && IsTablePresent(analysis_db, "ab_battle_recording", nullptr)) {
         specs.push_back({
-            "analysis_battle_results",
-            "SELECT * FROM ab_battle_results WHERE workflow_instance_id IN (" + workflow_id_list
-                + ") ORDER BY battle_results_id ASC;"
+            "analysis_battle_recordings",
+            "SELECT battle_recording_id,battle_completion_id,workflow_instance_id,workflow_step_id,exec_job_id,"
+                "source_savestate_id,source_dtm_artifact_id,source_itinerary_artifact_id,replay_plan_version,"
+                "source_binding_version,hex(source_binding_blob) AS source_binding_blob_hex,source_binding_sha256,"
+                "hex(replay_plan_blob) AS replay_plan_blob_hex,replay_plan_sha256,outcome,recorded_dtm_artifact_id,"
+                "recorded_itinerary_artifact_id,paired_checkpoint_savestate_id,timing_anchor_version,"
+                "CASE WHEN timing_anchor_blob IS NULL THEN NULL ELSE hex(timing_anchor_blob) END AS timing_anchor_blob_hex,"
+                "tas_movie_tree_id,validation_request_id,sterilization_request_id,worker_terminal_sha256,error_code,error_text,status,"
+                "created_at_utc,completed_at_utc FROM ab_battle_recording WHERE workflow_instance_id IN (" + workflow_id_list
+                + ") ORDER BY battle_recording_id ASC;"
+        });
+    }
+    if (!workflow_ids.empty() && IsTablePresent(analysis_db, "ab_battle_replay", nullptr)) {
+        specs.push_back({
+            "analysis_battle_replays",
+            "SELECT battle_replay_id,battle_completion_id,workflow_instance_id,workflow_step_id,exec_job_id,"
+                "source_savestate_id,source_dtm_artifact_id,source_itinerary_artifact_id,replay_plan_version,"
+                "source_binding_version,hex(source_binding_blob) AS source_binding_blob_hex,source_binding_sha256,"
+                "hex(replay_plan_blob) AS replay_plan_blob_hex,replay_plan_sha256,outcome,mismatch_turn,expected_rng,observed_rng,"
+                "CASE WHEN observed_completion_blob IS NULL THEN NULL ELSE hex(observed_completion_blob) END AS observed_completion_blob_hex,"
+                "observed_completion_sha256,CASE WHEN observed_transition_blob IS NULL THEN NULL ELSE hex(observed_transition_blob) END AS observed_transition_blob_hex,"
+                "observed_transition_sha256,worker_terminal_sha256,error_code,error_text,status,created_at_utc,completed_at_utc "
+                "FROM ab_battle_replay WHERE workflow_instance_id IN (" + workflow_id_list +
+                ") ORDER BY battle_replay_id ASC;"
         });
     }
     std::vector<std::int64_t> wave_ids;
@@ -999,16 +1020,6 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
                 &error);
             probe_run_ids.insert(probe_run_ids.end(), values.begin(), values.end());
         }
-    }
-    if (!workflow_ids.empty() && IsTablePresent(analysis_db, "ab_battle_results", nullptr)) {
-        auto result_runs = QueryInt64Column(
-            analysis_db,
-            "SELECT DISTINCT r.probe_run_id FROM ab_battle_results br "
-            "JOIN sp_probe_result r ON br.selected_seed_ref_kind='analysisseedprobe.confirmed_result' "
-            "AND r.probe_result_id=br.selected_seed_ref_id "
-            "WHERE br.workflow_instance_id IN (" + workflow_id_list + ");",
-            &error);
-        probe_run_ids.insert(probe_run_ids.end(), result_runs.begin(), result_runs.end());
     }
     std::sort(probe_run_ids.begin(), probe_run_ids.end());
     probe_run_ids.erase(std::unique(probe_run_ids.begin(), probe_run_ids.end()), probe_run_ids.end());
@@ -1320,11 +1331,18 @@ std::vector<std::int64_t> CollectWorkflowSavestateIds(
                     &error);
                 ids.insert(ids.end(), values.begin(), values.end());
             }
-            if (IsTablePresent(analysis_db, "ab_battle_results", nullptr)) {
+            if (IsTablePresent(analysis_db, "ab_battle_recording", nullptr)) {
                 auto values = QueryInt64Column(
                     analysis_db,
-                    "SELECT entry_savestate_id FROM ab_battle_results WHERE workflow_instance_id IN (" + workflow_id_list + ") "
-                    "UNION SELECT final_savestate_id FROM ab_battle_results WHERE workflow_instance_id IN (" + workflow_id_list + ") AND final_savestate_id IS NOT NULL;",
+                    "SELECT source_savestate_id FROM ab_battle_recording WHERE workflow_instance_id IN (" + workflow_id_list + ") "
+                    "UNION SELECT paired_checkpoint_savestate_id FROM ab_battle_recording WHERE workflow_instance_id IN (" + workflow_id_list + ") AND paired_checkpoint_savestate_id IS NOT NULL;",
+                    &error);
+                ids.insert(ids.end(), values.begin(), values.end());
+            }
+            if (IsTablePresent(analysis_db, "ab_battle_replay", nullptr)) {
+                auto values = QueryInt64Column(
+                    analysis_db,
+                    "SELECT source_savestate_id FROM ab_battle_replay WHERE workflow_instance_id IN (" + workflow_id_list + ");",
                     &error);
                 ids.insert(ids.end(), values.begin(), values.end());
             }
@@ -1423,19 +1441,25 @@ std::vector<std::int64_t> CollectWorkflowAggregateArtifactIds(
         auto values = QueryInt64Column(
             analysis_db,
             "SELECT manifest_artifact_id FROM ab_battle_completion WHERE workflow_instance_id IN (" + workflows
-                + ") AND manifest_artifact_id IS NOT NULL "
-                "UNION SELECT input_trace_artifact_id FROM ab_battle_completion WHERE workflow_instance_id IN ("
-                + workflows + ") AND input_trace_artifact_id IS NOT NULL;",
+                + ") AND manifest_artifact_id IS NOT NULL;",
             &error);
         ids.insert(ids.end(), values.begin(), values.end());
     }
-    if (IsTablePresent(analysis_db, "ab_battle_results", nullptr)) {
+    if (IsTablePresent(analysis_db, "ab_battle_recording", nullptr)) {
         auto values = QueryInt64Column(
             analysis_db,
-            "SELECT result_artifact_id FROM ab_battle_results WHERE workflow_instance_id IN (" + workflows
-                + ") AND result_artifact_id IS NOT NULL "
-                "UNION SELECT input_trace_artifact_id FROM ab_battle_results WHERE workflow_instance_id IN ("
-                + workflows + ") AND input_trace_artifact_id IS NOT NULL;",
+            "SELECT source_dtm_artifact_id FROM ab_battle_recording WHERE workflow_instance_id IN (" + workflows + ") "
+                "UNION SELECT source_itinerary_artifact_id FROM ab_battle_recording WHERE workflow_instance_id IN (" + workflows + ") "
+                "UNION SELECT recorded_dtm_artifact_id FROM ab_battle_recording WHERE workflow_instance_id IN (" + workflows + ") AND recorded_dtm_artifact_id IS NOT NULL "
+                "UNION SELECT recorded_itinerary_artifact_id FROM ab_battle_recording WHERE workflow_instance_id IN (" + workflows + ") AND recorded_itinerary_artifact_id IS NOT NULL;",
+            &error);
+        ids.insert(ids.end(), values.begin(), values.end());
+    }
+    if (IsTablePresent(analysis_db, "ab_battle_replay", nullptr)) {
+        auto values = QueryInt64Column(
+            analysis_db,
+            "SELECT source_dtm_artifact_id FROM ab_battle_replay WHERE workflow_instance_id IN (" + workflows + ") "
+                "UNION SELECT source_itinerary_artifact_id FROM ab_battle_replay WHERE workflow_instance_id IN (" + workflows + ");",
             &error);
         ids.insert(ids.end(), values.begin(), values.end());
     }
@@ -1514,16 +1538,6 @@ std::vector<std::int64_t> CollectWorkflowSeedProbeRunIds(
                 &error);
             result_ids.insert(result_ids.end(), values.begin(), values.end());
         }
-    }
-    if (!workflow_ids.empty() && IsTablePresent(analysis_db, "ab_battle_results", nullptr)) {
-        auto values = QueryInt64Column(
-            analysis_db,
-            "SELECT DISTINCT r.probe_run_id FROM ab_battle_results br JOIN sp_probe_result r "
-                "ON br.selected_seed_ref_kind='analysisseedprobe.confirmed_result' "
-                "AND r.probe_result_id=br.selected_seed_ref_id WHERE br.workflow_instance_id IN ("
-                + workflows + ");",
-            &error);
-        ids.insert(ids.end(), values.begin(), values.end());
     }
     if (!result_ids.empty() && IsTablePresent(analysis_db, "sp_probe_result", nullptr)) {
         auto values = QueryInt64Column(
@@ -1726,14 +1740,6 @@ std::vector<std::int64_t> FilterExclusiveWorkflowSeedProbeRunIds(
             }
         }
 
-        if (!referenced && IsTablePresent(analysis_db, "ab_battle_results", nullptr)) {
-            referenced = QuerySingleInt64(
-                analysis_db,
-                "SELECT COUNT(1) FROM ab_battle_results WHERE workflow_instance_id NOT IN (" + workflows
-                    + ") AND selected_seed_ref_kind='analysisseedprobe.confirmed_result' "
-                      "AND selected_seed_ref_id IN (" + results + ");",
-                &error) > 0;
-        }
         if (!referenced && IsTablePresent(analysis_db, "ab_seed_candidate", nullptr)) {
             referenced = QuerySingleInt64(
                 analysis_db,
@@ -2104,12 +2110,20 @@ std::vector<std::int64_t> FilterExclusiveSavestateIds(
                     "AND (entry_savestate_id=" + id + " OR completion_savestate_id=" + id + ");",
                     &error) > 0;
             }
-            if (IsTablePresent(analysis_db, "ab_battle_results", nullptr)) {
+            if (IsTablePresent(analysis_db, "ab_battle_recording", nullptr)) {
                 const auto workflow_filter = workflow_ids.empty() ? std::string("0") : workflow_ids;
                 referenced = referenced || QuerySingleInt64(
                     analysis_db,
-                    "SELECT COUNT(1) FROM ab_battle_results WHERE workflow_instance_id NOT IN (" + workflow_filter + ") "
-                    "AND (entry_savestate_id=" + id + " OR final_savestate_id=" + id + ");",
+                    "SELECT COUNT(1) FROM ab_battle_recording WHERE workflow_instance_id NOT IN (" + workflow_filter + ") "
+                    "AND (source_savestate_id=" + id + " OR paired_checkpoint_savestate_id=" + id + ");",
+                    &error) > 0;
+            }
+            if (IsTablePresent(analysis_db, "ab_battle_replay", nullptr)) {
+                const auto workflow_filter = workflow_ids.empty() ? std::string("0") : workflow_ids;
+                referenced = referenced || QuerySingleInt64(
+                    analysis_db,
+                    "SELECT COUNT(1) FROM ab_battle_replay WHERE workflow_instance_id NOT IN (" + workflow_filter + ") "
+                    "AND source_savestate_id=" + id + ";",
                     &error) > 0;
             }
         }
@@ -2183,17 +2197,27 @@ std::vector<std::int64_t> FilterExclusiveAggregateArtifactIds(
             referenced = QuerySingleInt64(
                 analysis_db,
                 "SELECT COUNT(1) FROM ab_battle_completion WHERE workflow_instance_id NOT IN ("
-                    + workflow_filter + ") AND (manifest_artifact_id=" + id
-                    + " OR input_trace_artifact_id=" + id + ");",
+                    + workflow_filter + ") AND manifest_artifact_id=" + id + ";",
                 &error) > 0;
         }
         if (!referenced && analysis_db != nullptr
-            && IsTablePresent(analysis_db, "ab_battle_results", nullptr)) {
+            && IsTablePresent(analysis_db, "ab_battle_recording", nullptr)) {
             referenced = QuerySingleInt64(
                 analysis_db,
-                "SELECT COUNT(1) FROM ab_battle_results WHERE workflow_instance_id NOT IN ("
-                    + workflow_filter + ") AND (result_artifact_id=" + id
-                    + " OR input_trace_artifact_id=" + id + ");",
+                "SELECT COUNT(1) FROM ab_battle_recording WHERE workflow_instance_id NOT IN ("
+                    + workflow_filter + ") AND (source_dtm_artifact_id=" + id
+                    + " OR source_itinerary_artifact_id=" + id
+                    + " OR recorded_dtm_artifact_id=" + id
+                    + " OR recorded_itinerary_artifact_id=" + id + ");",
+                &error) > 0;
+        }
+        if (!referenced && analysis_db != nullptr
+            && IsTablePresent(analysis_db, "ab_battle_replay", nullptr)) {
+            referenced = QuerySingleInt64(
+                analysis_db,
+                "SELECT COUNT(1) FROM ab_battle_replay WHERE workflow_instance_id NOT IN ("
+                    + workflow_filter + ") AND (source_dtm_artifact_id=" + id
+                    + " OR source_itinerary_artifact_id=" + id + ");",
                 &error) > 0;
         }
         if (!referenced && analysis_db != nullptr
@@ -3225,7 +3249,8 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
         analysis_db_, state_db_, workflow_ids, job_ids, aggregate_artifact_ids);
 
     std::vector<std::int64_t> selected_completion_ids;
-    std::vector<std::int64_t> selected_results_ids;
+    std::vector<std::int64_t> selected_recording_ids;
+    std::vector<std::int64_t> selected_replay_ids;
     std::vector<std::int64_t> exclusive_probe_result_ids;
     std::vector<std::int64_t> exclusive_encounter_projection_ids;
     std::vector<std::int64_t> exclusive_probe_set_ids;
@@ -3240,10 +3265,17 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
                     + workflow_id_list + ");",
                 &query_error);
         }
-        if (query_error.empty() && IsTablePresent(analysis_db_, "ab_battle_results", nullptr)) {
-            selected_results_ids = QueryInt64Column(
+        if (query_error.empty() && IsTablePresent(analysis_db_, "ab_battle_recording", nullptr)) {
+            selected_recording_ids = QueryInt64Column(
                 analysis_db_,
-                "SELECT battle_results_id FROM ab_battle_results WHERE workflow_instance_id IN ("
+                "SELECT battle_recording_id FROM ab_battle_recording WHERE workflow_instance_id IN ("
+                    + workflow_id_list + ");",
+                &query_error);
+        }
+        if (query_error.empty() && IsTablePresent(analysis_db_, "ab_battle_replay", nullptr)) {
+            selected_replay_ids = QueryInt64Column(
+                analysis_db_,
+                "SELECT battle_replay_id FROM ab_battle_replay WHERE workflow_instance_id IN ("
                     + workflow_id_list + ");",
                 &query_error);
         }
@@ -3368,29 +3400,45 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
     const auto completion_ref_kinds =
         "'analysis_battle.battle_completion_id','analysis_battle.battle_completion',"
         "'analysisbattle.battle_completion','ab_battle_completion'";
-    const auto results_ref_kinds =
-        "'analysis_battle.battle_results_id','analysis_battle.battle_results',"
-        "'analysisbattle.battle_results','ab_battle_results'";
+    const auto recording_ref_kinds =
+        "'analysis_battle.battle_recording_id','analysis_battle.battle_recording',"
+        "'analysisbattle.battle_recording','ab_battle_recording'";
+    const auto replay_ref_kinds =
+        "'analysis_battle.battle_replay_id','analysis_battle.battle_replay',"
+        "'analysisbattle.battle_replay','ab_battle_replay'";
     bool external_completion_reference = has_external_aggregate_reference(
         selected_completion_ids, completion_ref_kinds);
     if (!external_completion_reference && analysis_db_ != nullptr
         && !selected_completion_ids.empty()
-        && IsTablePresent(analysis_db_, "ab_battle_results", nullptr)) {
+        && IsTablePresent(analysis_db_, "ab_battle_recording", nullptr)) {
         external_completion_reference = QuerySingleInt64(
             analysis_db_,
-            "SELECT COUNT(1) FROM ab_battle_results WHERE workflow_instance_id NOT IN ("
+            "SELECT COUNT(1) FROM ab_battle_recording WHERE workflow_instance_id NOT IN ("
                 + workflow_id_list + ") AND battle_completion_id IN ("
                 + JoinIds(selected_completion_ids) + ");",
             &query_error) > 0;
     }
-    const bool external_results_reference = has_external_aggregate_reference(
-        selected_results_ids, results_ref_kinds);
+    if (!external_completion_reference && analysis_db_ != nullptr
+        && !selected_completion_ids.empty()
+        && IsTablePresent(analysis_db_, "ab_battle_replay", nullptr)) {
+        external_completion_reference = QuerySingleInt64(
+            analysis_db_,
+            "SELECT COUNT(1) FROM ab_battle_replay WHERE workflow_instance_id NOT IN ("
+                + workflow_id_list + ") AND battle_completion_id IN ("
+                + JoinIds(selected_completion_ids) + ");",
+            &query_error) > 0;
+    }
+    const bool external_recording_reference = has_external_aggregate_reference(
+        selected_recording_ids, recording_ref_kinds);
+    const bool external_replay_reference = has_external_aggregate_reference(
+        selected_replay_ids, replay_ref_kinds);
     if (!query_error.empty()) {
         result.error = query_error;
         if (error_out) *error_out = query_error;
         return result;
     }
-    if (external_completion_reference || external_results_reference) {
+    if (external_completion_reference || external_recording_reference
+        || external_replay_reference) {
         result.blockers.push_back(
             "selected battle-end aggregate is referenced by an unselected workflow or execution record");
         return result;
@@ -3460,17 +3508,24 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
             }
         };
         if (IsTablePresent(analysis_db_, "ab_outbox_message", nullptr)) {
-            if (!selected_results_ids.empty()) {
-                del("DELETE FROM ab_outbox_message WHERE aggregate_kind='battle_results' "
-                    "AND CAST(aggregate_id AS INTEGER) IN (" + JoinIds(selected_results_ids) + ");");
+            if (IsTablePresent(analysis_db_, "ab_battle_replay", nullptr)) {
+                del("DELETE FROM ab_outbox_message WHERE aggregate_kind='battle_replay' "
+                    "AND CAST(aggregate_id AS INTEGER) IN (SELECT battle_replay_id FROM ab_battle_replay WHERE workflow_instance_id IN (" + workflow_id_list + "));" );
+            }
+            if (!selected_recording_ids.empty()) {
+                del("DELETE FROM ab_outbox_message WHERE aggregate_kind='battle_recording' "
+                    "AND CAST(aggregate_id AS INTEGER) IN (" + JoinIds(selected_recording_ids) + ");");
             }
             if (!selected_completion_ids.empty()) {
                 del("DELETE FROM ab_outbox_message WHERE aggregate_kind='battle_completion' "
                     "AND CAST(aggregate_id AS INTEGER) IN (" + JoinIds(selected_completion_ids) + ");");
             }
         }
-        if (IsTablePresent(analysis_db_, "ab_battle_results", nullptr)) {
-            del("DELETE FROM ab_battle_results WHERE workflow_instance_id IN (" + workflow_id_list + ");");
+        if (IsTablePresent(analysis_db_, "ab_battle_replay", nullptr)) {
+            del("DELETE FROM ab_battle_replay WHERE workflow_instance_id IN (" + workflow_id_list + ");");
+        }
+        if (IsTablePresent(analysis_db_, "ab_battle_recording", nullptr)) {
+            del("DELETE FROM ab_battle_recording WHERE workflow_instance_id IN (" + workflow_id_list + ");");
         }
         if (IsTablePresent(analysis_db_, "ab_battle_completion", nullptr)) {
             del("DELETE FROM ab_battle_completion WHERE workflow_instance_id IN (" + workflow_id_list + ");");
@@ -3694,7 +3749,8 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
         && (!exclusive_savestate_ids.empty()
             || !exclusive_artifact_ids.empty()
             || !selected_completion_ids.empty()
-            || !selected_results_ids.empty()
+            || !selected_recording_ids.empty()
+            || !selected_replay_ids.empty()
             || !exclusive_probe_result_ids.empty())) {
         if (!ExecuteSql(state_db_, "BEGIN IMMEDIATE;", &query_error)) return fail(query_error);
         bool state_ok = true;
@@ -3719,12 +3775,12 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
                     "'analysisbattle.battle_completion','ab_battle_completion');",
                 nullptr);
         }
-        if (!selected_results_ids.empty()) {
+        if (!selected_recording_ids.empty()) {
             state_del(
                 "DELETE FROM state_savestate_derivation WHERE source_context_id IN ("
-                    + JoinIds(selected_results_ids) + ") AND source_context_kind IN ("
-                    "'analysis_battle.battle_results_id','analysis_battle.battle_results',"
-                    "'analysisbattle.battle_results','ab_battle_results');",
+                    + JoinIds(selected_recording_ids) + ") AND source_context_kind IN ("
+                    "'analysis_battle.battle_recording_id','analysis_battle.battle_recording',"
+                    "'analysisbattle.battle_recording','ab_battle_recording');",
                 nullptr);
         }
         if (!exclusive_probe_result_ids.empty()) {
@@ -3732,6 +3788,14 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
                 "DELETE FROM state_savestate_derivation WHERE source_context_kind="
                     "'analysisseedprobe.confirmed_result' AND source_context_id IN ("
                     + JoinIds(exclusive_probe_result_ids) + ");",
+                nullptr);
+        }
+        if (!selected_replay_ids.empty()) {
+            state_del(
+                "DELETE FROM state_savestate_derivation WHERE source_context_id IN ("
+                    + JoinIds(selected_replay_ids) + ") AND source_context_kind IN ("
+                    "'analysis_battle.battle_replay_id','analysis_battle.battle_replay',"
+                    "'analysisbattle.battle_replay','ab_battle_replay');",
                 nullptr);
         }
         if (!exclusive_savestate_ids.empty()) {

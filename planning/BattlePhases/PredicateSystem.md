@@ -445,3 +445,25 @@ Read-only legacy checkout:
 - `SavorCore/Runner/Script/PhaseScriptVMPredicates.cpp`
 - `SavorDb/Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnAdapters.cpp`
 - `SavorE2E/BattleSingleTurnScenario.cpp`
+
+## 2026-08-12 - First reusable Battle exploration bundle
+
+The Battle E2E reproduction workflow now authors and publishes ordinary
+relational definitions rather than adding phase-specific predicate behavior.
+One definition queries `soa.derived.battle.core/1` turn order at
+`TurnIsReady`, reduces player maximum and enemy minimum positions, and records
+whether all players precede all enemies. A second definition queries cumulative
+rewards and compares the configured item count with the current turn. It is
+used once at `EndTurn` and once at `EndBattleVictory`, with `AbortOnFail` at
+both terminal hooks.
+
+The bundle declares one typed `u16` parameter, `item_id`. The analogous Battle
+scenario binds it through the workflow as
+`predicate.parameter.item_id=273`. All three checks use `First` occurrence,
+participate in passed-count aggregation, and request durable evidence. A normal
+turn reaches `TurnIsReady` plus exactly one terminal hook, so it ordinarily
+executes two checks; an unvisited terminal hook creates no evaluation.
+
+The bundle is selected by both authored turns but is frozen independently into
+each wave binding. Coordination supplies the resolved package and typed value;
+the worker never consults authoring or execution databases.

@@ -27,6 +27,12 @@ inline constexpr std::string_view FullPhaseCanonicalId =
 inline constexpr std::string_view BeforeRandSeedSetPointId =
     "soa.field.point.prebattle.BeforeRandSeedSet";
 inline constexpr std::uint32_t BeforeRandSeedSetPc = 0x80101E48u;
+inline constexpr std::string_view FieldFastPreseedPointId =
+    "soa.field.point.transition.FastPreseed";
+inline constexpr std::uint32_t FieldFastPreseedPc = 0x80101894u;
+inline constexpr std::string_view FieldDeferredPreseedPointId =
+    "soa.field.point.transition.DeferredPreseed";
+inline constexpr std::uint32_t FieldDeferredPreseedPc = 0x801018ACu;
 inline constexpr std::size_t MaximumItineraryEntries = 4096;
 inline constexpr std::size_t MaximumPathBytes = 4096;
 inline constexpr std::uint64_t GameCubeDtmInputRecordBytes = 8;

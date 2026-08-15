@@ -110,10 +110,11 @@ private:
     MovieBackendResult DiscardPreparedReadOnlyMovie() noexcept override;
     MovieBackendResult StopMovie() noexcept override;
     MovieBackendResult BeginRecording() override;
+    MovieBackendResult BranchReadOnlyPlaybackToRecording() override;
     MovieRecordingFinalizeResult FinalizeRecording(
         const std::filesystem::path& dtm_path) override;
     MovieBackendResult CancelRecording() noexcept override;
-    [[nodiscard]] MovieSnapshot Snapshot() const override;
+    [[nodiscard]] MovieBackendObservation ObserveMovie() const override;
     MovieCheckpointBackendResult CaptureRecordingCheckpoint() override;
     MovieBackendResult PrepareSavestateRestore(
         const SavestateMovieRestoreContext& context) override;

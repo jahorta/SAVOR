@@ -49,7 +49,6 @@ private:
     QSpinBox* targetSingleSlotSpin_ = nullptr;
     QLineEdit* targetMaskEdit_ = nullptr;
     QSpinBox* targetSameAsActorSpin_ = nullptr;
-    QLabel* targetExprLabel_ = nullptr;
     QLineEdit* itemIdEdit_ = nullptr;
     QLabel* noteLabel_ = nullptr;
 

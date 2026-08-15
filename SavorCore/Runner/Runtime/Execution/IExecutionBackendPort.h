@@ -13,7 +13,6 @@ enum class BackendExecutionCapability : std::uint32_t
     Resume = 1u << 1,
     FrameStep = 1u << 2,
     ViObservation = 1u << 4,
-    MovieObservation = 1u << 5,
     ThrottleControl = 1u << 6,
 };
 
@@ -47,14 +46,6 @@ using BackendExecutionCapabilityMask = std::uint32_t;
         ExecutionCapabilityMask(capability);
 }
 
-enum class BackendMovieState : std::uint8_t
-{
-    Inactive,
-    Playing,
-    Ended,
-    Unknown,
-};
-
 struct BackendExecutionSnapshot
 {
     BackendResult result;
@@ -64,8 +55,6 @@ struct BackendExecutionSnapshot
     bool pause_confirmed = false;
     std::uint32_t pc = 0;
     std::uint64_t vi_count = 0;
-    BackendMovieState movie_state = BackendMovieState::Unknown;
-    std::uint64_t movie_input_count = 0;
     bool throttle_disabled = false;
 };
 

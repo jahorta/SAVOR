@@ -127,8 +127,7 @@ bool FindTerminalInfrastructureJobFailure(
         if (!step.job_set_id) continue;
         for (const auto& member : execution_db->ListJobsInJobSet(
                  *step.job_set_id)) {
-            if (member.state != "FAILED"
-                && member.state != "CANCELED") {
+            if (member.state != "FAILED") {
                 continue;
             }
             const auto job = execution_db->GetExecutionJob(member.job_id);

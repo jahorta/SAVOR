@@ -3,8 +3,10 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -39,6 +41,7 @@
 #include "Execution/Workflow/WorkflowProjector.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
 #include "Execution/Workflow/WorkflowCoordinatorService.h"
+#include "Execution/Workflow/WorkflowComposition.h"
 #include "Execution/Workflow/WorkflowGraphRoutingService.h"
 #include "Execution/Workflow/WorkflowStepCompletionGate.h"
 #include "Execution/Workflow/WorkflowTerminalAdvancementService.h"
@@ -52,6 +55,7 @@
 #include "Execution/StepInputAggregationService.h"
 #include "Utils/Hash.h"
 #include "Core/Memory/Soa/Battle/BattleContextCodec.h"
+#include "Phases/Programs/BattleRecord/BattleRecordModule.h"
 #include "Runner/Breakpoints/BpRegistry.h"
 #include "Runner/Runtime/ProgramKind.h"
 #include "Runner/Runtime/Worksets/WorksetWireCodec.h"
@@ -365,16 +369,21 @@ TEST_F(SqliteDbFixture, BattlePlanRelationalTurnMigrationPreservesAuthoredRows) 
     const auto relational = std::ranges::find(
         migrations, "202608111000_authoring_battle_plan_relational_turns.sql",
         &MigrationEntry::name);
+    const auto symbolic_target_hard_cut = std::ranges::find(
+        migrations,
+        "202608121000_authoring_remove_battle_target_expression.sql",
+        &MigrationEntry::name);
     ASSERT_NE(base, migrations.end());
     ASSERT_NE(relational, migrations.end());
+    ASSERT_NE(symbolic_target_hard_cut, migrations.end());
     ASSERT_TRUE(ExecSql(legacy_db.get(), base->sql.c_str()));
     ASSERT_TRUE(ExecSql(legacy_db.get(),
         "INSERT INTO au_battle_plan(plan_id,name,fingerprint,num_turns,created_at_utc) "
         "VALUES(101,'migration-plan','migration-plan-fingerprint',2,1);"));
     ASSERT_TRUE(ExecSql(legacy_db.get(),
         "INSERT INTO au_battle_plan_action_preset("
-        "action_preset_id,name,macro,target_kind,target_single_slot,flags,created_at_utc) "
-        "VALUES(201,'migration-attack',1,1,4,0,1);"));
+        "action_preset_id,name,macro,target_kind,target_single_slot,target_expr_ini,flags,created_at_utc) "
+        "VALUES(201,'migration-attack',1,1,4,'legacy-target-expression',0,1);"));
     ASSERT_TRUE(ExecSql(legacy_db.get(),
         "INSERT INTO au_battle_plan_turn(plan_turn_id,plan_id,turn_index) "
         "VALUES(301,101,1),(302,101,2);"));
@@ -384,6 +393,8 @@ TEST_F(SqliteDbFixture, BattlePlanRelationalTurnMigrationPreservesAuthoredRows) 
         "VALUES(401,301,0,201,0),(402,302,0,201,0);"));
 
     ASSERT_TRUE(ExecSql(legacy_db.get(), relational->sql.c_str()));
+    ASSERT_TRUE(ExecSql(
+        legacy_db.get(), symbolic_target_hard_cut->sql.c_str()));
     EXPECT_EQ(ReadInt64(legacy_db.get(),
         "SELECT COUNT(1) FROM pragma_table_info('au_battle_plan') WHERE name='num_turns';"), 0);
     EXPECT_EQ(ReadInt64(legacy_db.get(), "SELECT COUNT(1) FROM au_battle_plan WHERE plan_id=101;"), 1);
@@ -392,6 +403,61 @@ TEST_F(SqliteDbFixture, BattlePlanRelationalTurnMigrationPreservesAuthoredRows) 
         "SELECT COUNT(1) FROM au_battle_plan_action WHERE plan_turn_id IN (301,302);"), 2);
     EXPECT_EQ(ReadInt64(legacy_db.get(),
         "SELECT COUNT(1) FROM au_battle_plan_action_preset WHERE action_preset_id=201;"), 1);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM pragma_table_info('au_battle_plan_action_preset') WHERE name='target_expr_ini';"), 0);
+}
+
+TEST_F(SqliteDbFixture, BattleCompletionArtifactMigrationPreservesExistingArtifacts) {
+    using namespace savor::db::migrations;
+
+    sqlite3* raw_legacy_db = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &raw_legacy_db), SQLITE_OK);
+    const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> legacy_db(
+        raw_legacy_db, &sqlite3_close);
+
+    const auto migrations = LoadContextMigrations(
+        MigrationContext::State,
+        {.source_kind = MigrationSourceKind::Embedded});
+    const auto battle_context = std::ranges::find(
+        migrations,
+        "202608081000_state_battle_context_artifact.sql",
+        &MigrationEntry::name);
+    const auto battle_completion = std::ranges::find(
+        migrations,
+        "202608131100_state_battle_completion_artifact.sql",
+        &MigrationEntry::name);
+    ASSERT_NE(battle_context, migrations.end());
+    ASSERT_NE(battle_completion, migrations.end());
+    ASSERT_LT(battle_context, battle_completion);
+
+    for (auto migration = migrations.begin();
+         migration != std::next(battle_context);
+         ++migration)
+    {
+        ASSERT_TRUE(ExecSql(legacy_db.get(), migration->sql.c_str()))
+            << migration->name;
+    }
+    ASSERT_TRUE(ExecSql(legacy_db.get(),
+        "INSERT INTO state_artifact(artifact_id,sha256,size_bytes,"
+        "compression_kind,filename,file_ext,artifact_kind,created_at_utc) "
+        "VALUES(1,'existing-context',4,0,'context.bctx','.bctx',"
+        "'BATTLE_CONTEXT',1);"));
+
+    ASSERT_TRUE(ExecSql(
+        legacy_db.get(), battle_completion->sql.c_str()));
+    EXPECT_EQ(ReadText(legacy_db.get(),
+        "SELECT artifact_kind FROM state_artifact WHERE artifact_id=1;"),
+        "BATTLE_CONTEXT");
+    EXPECT_TRUE(ExecSql(legacy_db.get(),
+        "INSERT INTO state_artifact(artifact_id,sha256,size_bytes,"
+        "compression_kind,filename,file_ext,artifact_kind,created_at_utc) "
+        "VALUES(2,'completion-manifest',4,0,'completion.bcmb','.bcmb',"
+        "'BATTLE_COMPLETION',2);"));
+    EXPECT_FALSE(ExecSql(legacy_db.get(),
+        "INSERT INTO state_artifact(artifact_id,sha256,size_bytes,"
+        "compression_kind,filename,file_ext,artifact_kind,created_at_utc) "
+        "VALUES(3,'invalid-kind',4,0,'invalid.bin','.bin',"
+        "'INVALID_KIND',3);"));
 }
 
 TEST_F(SqliteDbFixture, DerivedAddressRegionMigrationDropsOnlyLegacyRows) {
@@ -554,24 +620,33 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
         std::int32_t program_kind;
         const char* program_name;
     };
-    constexpr std::array<ExpectedDescriptor, 4> canonical_descriptors{{
+    constexpr std::array<ExpectedDescriptor, 8> canonical_descriptors{{
         {static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
+        {static_cast<std::int32_t>(savor::PK_TasMovieCheckpointSterilize), "TAS Movie Checkpoint Sterilization"},
         {static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
         {static_cast<std::int32_t>(savor::PK_BattleContext), "Battle Context"},
         {static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner), "Battle Single Turn"},
+        {static_cast<std::int32_t>(savor::PK_BattleCompletion), "Battle Completion"},
+        {static_cast<std::int32_t>(savor::PK_BattleRecord), "Battle Recording"},
+        {static_cast<std::int32_t>(savor::PK_BattleReplay), "Battle Replay"},
     }};
     struct ExpectedStepDescriptor {
         const char* step_kind;
         std::int32_t program_kind;
         const char* program_name;
     };
-    constexpr std::array<ExpectedStepDescriptor, 6> step_descriptors{{
+    constexpr std::array<ExpectedStepDescriptor, 11> step_descriptors{{
         {"tasmovie.establish_root_cursor", static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
         {"tasmovie.validate_root", static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
         {"tasmovie.validate_tree", static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
+        {"tasmovie.checkpoint_sterilize", static_cast<std::int32_t>(savor::PK_TasMovieCheckpointSterilize), "TAS Movie Checkpoint Sterilization"},
         {"seedprobe.run", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
         {"battle.context", static_cast<std::int32_t>(savor::PK_BattleContext), "Battle Context"},
+        {"battle.start", static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner), "Battle Single Turn"},
         {"battle.single_turn", static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner), "Battle Single Turn"},
+        {"battle.completion", static_cast<std::int32_t>(savor::PK_BattleCompletion), "Battle Completion"},
+        {"battle.record", static_cast<std::int32_t>(savor::PK_BattleRecord), "Battle Recording"},
+        {"battle.replay", static_cast<std::int32_t>(savor::PK_BattleReplay), "Battle Replay"},
     }};
 
     const auto expect_complete_descriptor =
@@ -604,8 +679,37 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
         output.Find(static_cast<std::int32_t>(savor::PK_SeedProbe));
     ASSERT_NE(seed_probe, nullptr);
     EXPECT_EQ(seed_probe->program_name, "SeedProbe");
+    const auto* completion =
+        output.Find(static_cast<std::int32_t>(savor::PK_BattleCompletion));
+    ASSERT_NE(completion, nullptr);
+    EXPECT_NE(completion->full_phase_identity, std::nullopt);
+    ASSERT_TRUE(completion->default_progress_library_ids.has_value());
+    EXPECT_TRUE(completion->default_progress_library_ids->empty());
+    ASSERT_TRUE(completion->default_derived_state_block_ids.has_value());
+    EXPECT_TRUE(completion->default_derived_state_block_ids->empty());
+    const auto* recording =
+        output.Find(static_cast<std::int32_t>(savor::PK_BattleRecord));
+    ASSERT_NE(recording, nullptr);
+    EXPECT_NE(recording->full_phase_identity, std::nullopt);
+    EXPECT_NE(recording->workflow_transition, nullptr);
+    EXPECT_EQ(recording->default_progress_library_ids,
+              std::optional<std::vector<std::string>>(
+                  std::vector<std::string>{
+                      "soa.progress.battle.events/1"}));
+    ASSERT_TRUE(recording->default_derived_state_block_ids.has_value());
+    EXPECT_TRUE(recording->default_derived_state_block_ids->empty());
+    const auto* replay =
+        output.Find(static_cast<std::int32_t>(savor::PK_BattleReplay));
+    ASSERT_NE(replay, nullptr);
+    EXPECT_NE(replay->full_phase_identity, std::nullopt);
+    EXPECT_EQ(replay->workflow_transition, nullptr);
+    EXPECT_EQ(replay->default_progress_library_ids,
+              recording->default_progress_library_ids);
+    ASSERT_TRUE(replay->default_derived_state_block_ids.has_value());
+    EXPECT_TRUE(replay->default_derived_state_block_ids->empty());
     EXPECT_EQ(output.FindForStepKind("tas_movie"), nullptr);
     EXPECT_EQ(output.FindForStepKind("tasmovie.play"), nullptr);
+    EXPECT_EQ(output.FindForStepKind("battle.results_screen"), nullptr);
 
     ProgramKindRegistry second_registry;
     ASSERT_TRUE(BuildProductionProgramKindRegistry(
@@ -648,6 +752,465 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
         nullptr,
         &error));
     EXPECT_FALSE(error.empty());
+}
+
+TEST_F(SqliteDbFixture, BattleCompletionAndRecordingPersistExactIdempotentLineage) {
+    using namespace savor::db;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO ab_battle_set(
+    battle_set_id,name,entry_savestate_id,battle_run_spec_id,
+    explorer_settings_id,status,created_at_utc,
+    launch_fake_attack_min,launch_fake_attack_max)
+VALUES(8101,'completion-recording-fixture',7001,11,12,'VICTORY',1000,0,0);
+INSERT INTO ab_seed_candidate(
+    seed_candidate_id,battle_set_id,source_probe_result_id,
+    source_input_frame_id,seed_value,source_kind,candidate_status,
+    created_at_utc)
+VALUES(8102,8101,NULL,NULL,1234,'MANUAL','SELECTED',1000);
+INSERT INTO ab_turn_wave(
+    wave_id,battle_set_id,turn_index,seed_candidate_id,status,
+    created_at_utc)
+VALUES(8103,8101,1,8102,'COMPLETED',1000);
+INSERT INTO ab_turn_job(
+    turn_job_id,wave_id,exec_job_id,plan_id,fake_attacks_this_turn,
+    fake_attacks_used_before,job_state,has_results,battle_outcome,
+    output_savestate_id)
+VALUES(8104,8103,8105,13,0,0,'SUCCEEDED',1,2,7002);
+)SQL"));
+
+    auto* analysis = db_service_->AnalysisDb();
+    ASSERT_NE(analysis, nullptr);
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(2000));
+    const std::string completion_terminal(64, 'a');
+    const std::string manifest_blob("BCM1\0fixture", 12);
+    const std::string manifest_sha = hash::sha256(
+        manifest_blob.data(), manifest_blob.size());
+    std::string error;
+    std::int64_t completion_id = 0;
+    const CreateBattleCompletionCommand completion_create{
+        .workflow_instance_id = 8201,
+        .workflow_step_id = 8202,
+        .battle_set_id = 8101,
+        .wave_id = 8103,
+        .selected_turn_job_id = 8104,
+        .selected_execution_job_id = 8105,
+        .entry_savestate_id = 7002,
+        .status = "QUEUED",
+        .created_at_utc = now,
+        .correlation_id = "completion-recording-fixture",
+        .causation_id = "completion-recording-fixture",
+    };
+    ASSERT_TRUE(analysis->CreateBattleCompletion(
+        completion_create, &completion_id, &error)) << error;
+    ASSERT_GT(completion_id, 0);
+    const auto queued_completion =
+        analysis->GetBattleCompletion(completion_id);
+    ASSERT_TRUE(queued_completion.has_value());
+    EXPECT_FALSE(queued_completion->completion_savestate_id.has_value());
+    EXPECT_FALSE(queued_completion->manifest_artifact_id.has_value());
+
+    std::int64_t repeated_completion_id = 0;
+    ASSERT_TRUE(analysis->CreateBattleCompletion(
+        completion_create, &repeated_completion_id, &error)) << error;
+    EXPECT_EQ(repeated_completion_id, completion_id);
+    auto conflicting_completion = completion_create;
+    conflicting_completion.entry_savestate_id = 7999;
+    EXPECT_FALSE(analysis->CreateBattleCompletion(
+        conflicting_completion, nullptr, &error));
+    EXPECT_NE(error.find("different immutable lineage"), std::string::npos);
+
+    ASSERT_TRUE(analysis->BindBattleCompletionExecutionJob({
+        .battle_completion_id = completion_id,
+        .workflow_instance_id = 8201,
+        .workflow_step_id = 8202,
+        .exec_job_id = 8203,
+    }, &error)) << error;
+    ASSERT_TRUE(analysis->BindBattleCompletionExecutionJob({
+        .battle_completion_id = completion_id,
+        .workflow_instance_id = 8201,
+        .workflow_step_id = 8202,
+        .exec_job_id = 8203,
+    }, &error)) << error;
+
+    auto* state = db_service_->StateDb();
+    ASSERT_NE(state, nullptr);
+    const auto manifest_path = temp_root_ / "completion-result.bcmb";
+    {
+        std::ofstream out(manifest_path, std::ios::binary);
+        out.write(manifest_blob.data(),
+                  static_cast<std::streamsize>(manifest_blob.size()));
+    }
+    std::int64_t manifest_artifact_id = 0;
+    ASSERT_TRUE(state->StoreArtifact({
+        .sha256 = manifest_sha,
+        .size_bytes = static_cast<std::int64_t>(manifest_blob.size()),
+        .compression_kind = 0,
+        .filename = manifest_path.string(),
+        .file_ext = ".bcmb",
+        .artifact_kind = "BATTLE_COMPLETION",
+        .created_at_utc = now,
+        .correlation_id = "completion-recording-fixture",
+        .causation_id = "completion-recording-fixture",
+    }, &manifest_artifact_id, &error)) << error;
+
+    const CompleteBattleCompletionCommand completion_result{
+        .battle_completion_id = completion_id,
+        .completion_savestate_id = 7003,
+        .manifest_version = 1,
+        .manifest_blob = manifest_blob,
+        .manifest_sha256 = manifest_sha,
+        .manifest_artifact_id = manifest_artifact_id,
+        .route_kind = "FIELD_NAVIGATION",
+        .transition_filename = "me123a.sct",
+        .worker_terminal_sha256 = completion_terminal,
+        .status = "COMPLETED",
+        .completed_at_utc = now,
+        .correlation_id = "completion-recording-fixture",
+        .causation_id = "completion-recording-fixture",
+    };
+    ASSERT_TRUE(analysis->CompleteBattleCompletion(
+        completion_result, &error)) << error;
+    ASSERT_TRUE(analysis->CompleteBattleCompletion(
+        completion_result, &error)) << error;
+
+    const auto completion = analysis->GetBattleCompletion(completion_id);
+    ASSERT_TRUE(completion.has_value());
+    EXPECT_EQ(completion->exec_job_id, std::optional<std::int64_t>(8203));
+    EXPECT_EQ(completion->selected_turn_job_id, 8104);
+    EXPECT_EQ(completion->completion_savestate_id,
+              std::optional<std::int64_t>(7003));
+    EXPECT_EQ(completion->manifest_blob,
+              std::optional<std::string>(completion_result.manifest_blob));
+    EXPECT_EQ(completion->route_kind,
+              std::optional<std::string>("FIELD_NAVIGATION"));
+    EXPECT_EQ(completion->transition_filename,
+              std::optional<std::string>("me123a.sct"));
+    const auto completion_by_job =
+        analysis->GetBattleCompletionForExecJob(8203);
+    ASSERT_TRUE(completion_by_job.has_value());
+    EXPECT_EQ(completion_by_job->battle_completion_id, completion_id);
+
+    auto conflicting_result = completion_result;
+    conflicting_result.transition_filename = "me124a.sct";
+    EXPECT_FALSE(analysis->CompleteBattleCompletion(
+        conflicting_result, &error));
+    EXPECT_NE(error.find("different durable result"), std::string::npos);
+
+    ASSERT_TRUE(ExecSql(db_, ("DELETE FROM state_artifact WHERE artifact_id=" +
+        std::to_string(manifest_artifact_id) + ";").c_str()));
+    const auto completion_after_artifact_deletion =
+        analysis->GetBattleCompletion(completion_id);
+    ASSERT_TRUE(completion_after_artifact_deletion.has_value());
+    EXPECT_EQ(completion_after_artifact_deletion->status, "COMPLETED");
+    EXPECT_EQ(completion_after_artifact_deletion->manifest_blob,
+              std::optional<std::string>(manifest_blob));
+    EXPECT_EQ(completion_after_artifact_deletion->manifest_artifact_id,
+              std::optional<std::int64_t>(manifest_artifact_id));
+
+    const std::string replay_plan_sha(64, 'c');
+    savor::runtime::battlerecord::BattleReplaySourceBindingV1 paired_binding{
+        .source_savestate_id = 7001,
+        .source_dtm_artifact_id = 7401,
+        .source_itinerary_artifact_id = 7402,
+        .source_savestate_sha256 = std::string(64, '1'),
+        .source_dtm_sha256 = std::string(64, '2'),
+        .source_itinerary_sha256 = std::string(64, '3'),
+    };
+    paired_binding.canonical_sha256 =
+        savor::runtime::battlerecord::ComputeBattleReplaySourceBindingHashV1(
+            paired_binding);
+    const auto paired_binding_bytes =
+        savor::runtime::battlerecord::EncodeBattleReplaySourceBindingV1(
+            paired_binding);
+    ASSERT_FALSE(paired_binding_bytes.empty());
+    const std::string paired_binding_blob(
+        reinterpret_cast<const char*>(paired_binding_bytes.data()),
+        paired_binding_bytes.size());
+    const CreateBattleRecordingCommand recording_create{
+        .battle_completion_id = completion_id,
+        .workflow_instance_id = 8301,
+        .workflow_step_id = 8302,
+        .source_savestate_id = 7001,
+        .source_dtm_artifact_id = 7401,
+        .source_itinerary_artifact_id = 7402,
+        .source_binding_version = 1,
+        .source_binding_blob = paired_binding_blob,
+        .source_binding_sha256 = paired_binding.canonical_sha256,
+        .replay_plan_version = 1,
+        .replay_plan_blob = std::string("BRP1\0fixture", 12),
+        .replay_plan_sha256 = replay_plan_sha,
+        .status = "QUEUED",
+        .created_at_utc = now,
+        .correlation_id = "completion-recording-fixture",
+        .causation_id = "completion-recording-fixture",
+    };
+    std::int64_t recording_id = 0;
+    ASSERT_TRUE(analysis->CreateBattleRecording(
+        recording_create, &recording_id, &error)) << error;
+    ASSERT_GT(recording_id, 0);
+    std::int64_t repeated_recording_id = 0;
+    ASSERT_TRUE(analysis->CreateBattleRecording(
+        recording_create, &repeated_recording_id, &error)) << error;
+    EXPECT_EQ(repeated_recording_id, recording_id);
+
+    auto conflicting_recording = recording_create;
+    conflicting_recording.replay_plan_blob = "different-plan";
+    EXPECT_FALSE(analysis->CreateBattleRecording(
+        conflicting_recording, nullptr, &error));
+    EXPECT_NE(error.find("different immutable plan"), std::string::npos);
+
+    ASSERT_TRUE(analysis->BindBattleRecordingExecutionJob({
+        .battle_recording_id = recording_id,
+        .workflow_instance_id = 8301,
+        .workflow_step_id = 8302,
+        .exec_job_id = 8303,
+    }, &error)) << error;
+    ASSERT_TRUE(analysis->BindBattleRecordingExecutionJob({
+        .battle_recording_id = recording_id,
+        .workflow_instance_id = 8301,
+        .workflow_step_id = 8302,
+        .exec_job_id = 8303,
+    }, &error)) << error;
+
+    EXPECT_FALSE(analysis->CompleteBattleRecording({
+        .battle_recording_id = recording_id,
+        .outcome = "REPLAY_MISMATCH",
+        .recorded_dtm_artifact_id = 7500,
+        .worker_terminal_sha256 = std::string(64, 'e'),
+        .status = "REPLAY_MISMATCH",
+        .completed_at_utc = now,
+        .correlation_id = "completion-recording-fixture",
+        .causation_id = "completion-recording-fixture",
+    }, &error));
+    const auto still_queued = analysis->GetBattleRecording(recording_id);
+    ASSERT_TRUE(still_queued.has_value());
+    EXPECT_EQ(still_queued->status, "QUEUED");
+
+    const CompleteBattleRecordingCommand recording_result{
+        .battle_recording_id = recording_id,
+        .outcome = "RECORDED",
+        .recorded_dtm_artifact_id = 7501,
+        .recorded_itinerary_artifact_id = 7502,
+        .paired_checkpoint_savestate_id = 7004,
+        .timing_anchor_version = 1,
+        .timing_anchor_blob = std::string("BTA1\0fixture", 12),
+        .tas_movie_tree_id = 7601,
+        .worker_terminal_sha256 = std::string(64, 'd'),
+        .status = "COMPLETED",
+        .completed_at_utc = now,
+        .correlation_id = "completion-recording-fixture",
+        .causation_id = "completion-recording-fixture",
+    };
+    ASSERT_TRUE(analysis->CompleteBattleRecording(recording_result, &error))
+        << error;
+    ASSERT_TRUE(analysis->CompleteBattleRecording(recording_result, &error))
+        << error;
+
+    ASSERT_TRUE(analysis->BindBattleRecordingValidation({
+        .battle_recording_id = recording_id,
+        .tas_movie_tree_id = 7601,
+        .validation_request_id = 7701,
+    }, &error)) << error;
+    ASSERT_TRUE(analysis->BindBattleRecordingValidation({
+        .battle_recording_id = recording_id,
+        .tas_movie_tree_id = 7601,
+        .validation_request_id = 7701,
+    }, &error)) << error;
+    EXPECT_FALSE(analysis->BindBattleRecordingValidation({
+        .battle_recording_id = recording_id,
+        .tas_movie_tree_id = 7601,
+        .validation_request_id = 7702,
+    }, &error));
+
+    ASSERT_TRUE(analysis->BindBattleRecordingSterilization({
+        .battle_recording_id = recording_id,
+        .tas_movie_tree_id = 7601,
+        .sterilization_request_id = 7801,
+    }, &error)) << error;
+    ASSERT_TRUE(analysis->BindBattleRecordingSterilization({
+        .battle_recording_id = recording_id,
+        .tas_movie_tree_id = 7601,
+        .sterilization_request_id = 7801,
+    }, &error)) << error;
+    EXPECT_FALSE(analysis->BindBattleRecordingSterilization({
+        .battle_recording_id = recording_id,
+        .tas_movie_tree_id = 7601,
+        .sterilization_request_id = 7802,
+    }, &error));
+
+    const auto recording = analysis->GetBattleRecording(recording_id);
+    ASSERT_TRUE(recording.has_value());
+    EXPECT_EQ(recording->exec_job_id, std::optional<std::int64_t>(8303));
+    EXPECT_EQ(recording->outcome, std::optional<std::string>("RECORDED"));
+    EXPECT_EQ(recording->recorded_dtm_artifact_id,
+              std::optional<std::int64_t>(7501));
+    EXPECT_EQ(recording->recorded_itinerary_artifact_id,
+              std::optional<std::int64_t>(7502));
+    EXPECT_EQ(recording->paired_checkpoint_savestate_id,
+              std::optional<std::int64_t>(7004));
+    EXPECT_EQ(recording->validation_request_id,
+              std::optional<std::int64_t>(7701));
+    EXPECT_EQ(recording->sterilization_request_id,
+              std::optional<std::int64_t>(7801));
+    const auto recording_by_job =
+        analysis->GetBattleRecordingForExecJob(8303);
+    const auto recording_by_tree =
+        analysis->GetBattleRecordingForTasMovieTree(7601);
+    const auto recording_by_checkpoint =
+        analysis->GetBattleRecordingForPairedCheckpoint(7004);
+    ASSERT_TRUE(recording_by_job.has_value());
+    ASSERT_TRUE(recording_by_tree.has_value());
+    ASSERT_TRUE(recording_by_checkpoint.has_value());
+    EXPECT_EQ(recording_by_job->battle_recording_id, recording_id);
+    EXPECT_EQ(recording_by_tree->battle_recording_id, recording_id);
+    EXPECT_EQ(recording_by_checkpoint->battle_recording_id, recording_id);
+
+    const CreateBattleReplayCommand replay_create{
+        .battle_completion_id = completion_id,
+        .workflow_instance_id = 8401,
+        .workflow_step_id = 8402,
+        .source_savestate_id = 7001,
+        .source_dtm_artifact_id = 7401,
+        .source_itinerary_artifact_id = 7402,
+        .source_binding_version = 1,
+        .source_binding_blob = paired_binding_blob,
+        .source_binding_sha256 = paired_binding.canonical_sha256,
+        .replay_plan_version = 1,
+        .replay_plan_blob = std::string("BRP1\0fixture", 12),
+        .replay_plan_sha256 = replay_plan_sha,
+        .status = "QUEUED",
+        .created_at_utc = now,
+        .correlation_id = "completion-replay-fixture",
+        .causation_id = "completion-replay-fixture",
+    };
+    std::int64_t replay_id = 0;
+    ASSERT_TRUE(analysis->CreateBattleReplay(
+        replay_create, &replay_id, &error)) << error;
+    ASSERT_GT(replay_id, 0);
+    std::int64_t repeated_replay_id = 0;
+    ASSERT_TRUE(analysis->CreateBattleReplay(
+        replay_create, &repeated_replay_id, &error)) << error;
+    EXPECT_EQ(repeated_replay_id, replay_id);
+    auto conflicting_replay = replay_create;
+    conflicting_replay.replay_plan_blob = "different-plan";
+    EXPECT_FALSE(analysis->CreateBattleReplay(
+        conflicting_replay, nullptr, &error));
+    ASSERT_TRUE(analysis->BindBattleReplayExecutionJob({
+        .battle_replay_id = replay_id,
+        .workflow_instance_id = 8401,
+        .workflow_step_id = 8402,
+        .exec_job_id = 8403,
+    }, &error)) << error;
+    const std::string observed_transition("FTC1\0fixture", 12);
+    const CompleteBattleReplayCommand replay_result{
+        .battle_replay_id = replay_id,
+        .outcome = "MATCHED",
+        .observed_completion_blob = manifest_blob,
+        .observed_completion_sha256 = manifest_sha,
+        .observed_transition_blob = observed_transition,
+        .observed_transition_sha256 = hash::sha256(
+            observed_transition.data(), observed_transition.size()),
+        .worker_terminal_sha256 = std::string(64, 'a'),
+        .status = "MATCHED",
+        .completed_at_utc = now,
+        .correlation_id = "completion-replay-fixture",
+        .causation_id = "completion-replay-fixture",
+    };
+    ASSERT_TRUE(analysis->CompleteBattleReplay(replay_result, &error)) << error;
+    ASSERT_TRUE(analysis->CompleteBattleReplay(replay_result, &error)) << error;
+    const auto replay_row = analysis->GetBattleReplay(replay_id);
+    const auto replay_by_job = analysis->GetBattleReplayForExecJob(8403);
+    ASSERT_TRUE(replay_row.has_value());
+    ASSERT_TRUE(replay_by_job.has_value());
+    EXPECT_EQ(replay_row->status, "MATCHED");
+    EXPECT_EQ(replay_row->outcome, std::optional<std::string>("MATCHED"));
+    EXPECT_EQ(replay_row->observed_completion_blob,
+              std::optional<std::string>(manifest_blob));
+    EXPECT_EQ(replay_by_job->battle_replay_id, replay_id);
+    ASSERT_TRUE(ExecSql(db_, ("DELETE FROM ab_battle_replay WHERE battle_replay_id=" +
+        std::to_string(replay_id) + ";").c_str()));
+
+    savor::runtime::battlerecord::BattleReplaySourceBindingV1 inactive_binding{
+        .source_savestate_id = 7002,
+        .source_savestate_sha256 = std::string(64, '4'),
+    };
+    inactive_binding.canonical_sha256 =
+        savor::runtime::battlerecord::ComputeBattleReplaySourceBindingHashV1(
+            inactive_binding);
+    const auto inactive_binding_bytes =
+        savor::runtime::battlerecord::EncodeBattleReplaySourceBindingV1(
+            inactive_binding);
+    ASSERT_FALSE(inactive_binding_bytes.empty());
+    auto inactive_replay_create = replay_create;
+    inactive_replay_create.workflow_instance_id = 8411;
+    inactive_replay_create.workflow_step_id = 8412;
+    inactive_replay_create.source_savestate_id = 7002;
+    inactive_replay_create.source_dtm_artifact_id.reset();
+    inactive_replay_create.source_itinerary_artifact_id.reset();
+    inactive_replay_create.source_binding_blob = std::string(
+        reinterpret_cast<const char*>(inactive_binding_bytes.data()),
+        inactive_binding_bytes.size());
+    inactive_replay_create.source_binding_sha256 =
+        inactive_binding.canonical_sha256;
+    inactive_replay_create.correlation_id = "completion-replay-inactive";
+    inactive_replay_create.causation_id = "completion-replay-inactive";
+    std::int64_t inactive_replay_id = 0;
+    ASSERT_TRUE(analysis->CreateBattleReplay(
+        inactive_replay_create, &inactive_replay_id, &error)) << error;
+    const auto inactive_replay = analysis->GetBattleReplay(inactive_replay_id);
+    ASSERT_TRUE(inactive_replay.has_value());
+    EXPECT_EQ(inactive_replay->source_savestate_id, 7002);
+    EXPECT_FALSE(inactive_replay->source_dtm_artifact_id.has_value());
+    EXPECT_FALSE(inactive_replay->source_itinerary_artifact_id.has_value());
+    EXPECT_EQ(inactive_replay->source_binding_sha256,
+              inactive_binding.canonical_sha256);
+}
+
+TEST_F(SqliteDbFixture, WorkflowCatalogContainsCompletionRecordingAndReplayButNoResultsPhase) {
+    using namespace savor::db::execution::workflow;
+
+    const auto registry = BuildDefaultWorkflowUnitRegistry();
+    const auto* completion = registry.Find("battle_completion");
+    ASSERT_NE(completion, nullptr);
+    EXPECT_TRUE(completion->hidden);
+    ASSERT_EQ(completion->required_inputs.size(), 1u);
+    EXPECT_EQ(completion->required_inputs.front().key, "victory_turn_job");
+    EXPECT_EQ(completion->required_inputs.front().data_kind,
+              "analysis_battle.battle_turn_job");
+    ASSERT_EQ(completion->internal_step_kinds.size(), 1u);
+    EXPECT_EQ(completion->internal_step_kinds.front(), "battle.completion");
+
+    const auto* recording = registry.Find("battle_recording");
+    ASSERT_NE(recording, nullptr);
+    EXPECT_TRUE(recording->hidden);
+    ASSERT_EQ(recording->required_inputs.size(), 1u);
+    EXPECT_EQ(recording->required_inputs.front().data_kind,
+              "analysis_battle.battle_completion");
+    ASSERT_EQ(recording->internal_step_kinds.size(), 1u);
+    EXPECT_EQ(recording->internal_step_kinds.front(), "battle.record");
+
+    const auto* replay = registry.Find("battle_replay");
+    ASSERT_NE(replay, nullptr);
+    EXPECT_TRUE(replay->hidden);
+    ASSERT_EQ(replay->required_inputs.size(), 1u);
+    EXPECT_EQ(replay->required_inputs.front().data_kind,
+              "analysis_battle.battle_completion");
+    ASSERT_EQ(replay->internal_step_kinds.size(), 1u);
+    EXPECT_EQ(replay->internal_step_kinds.front(), "battle.replay");
+    ASSERT_EQ(replay->possible_outputs.size(), 1u);
+    EXPECT_EQ(replay->possible_outputs.front().data_kind,
+              "analysis_battle.battle_replay");
+
+    EXPECT_EQ(registry.Find("battle_results_screen"), nullptr);
+    const auto units = registry.ListUnits();
+    EXPECT_TRUE(std::ranges::none_of(
+        units,
+        [](const WorkflowUnitDefinition& unit) {
+            return std::ranges::find(
+                unit.internal_step_kinds,
+                "battle.results_screen") != unit.internal_step_kinds.end();
+        }));
 }
 
 TEST_F(SqliteDbFixture, BattlePredicateBindingAndSingleTurnResultRoundTripExactly) {
@@ -4613,6 +5176,8 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(battle_plan_turn_count_column));
     EXPECT_EQ(sqlite3_column_int(battle_plan_turn_count_column, 0), 0);
     sqlite3_finalize(battle_plan_turn_count_column);
+    EXPECT_FALSE(ColumnExists(
+        db_, "au_battle_plan_action_preset", "target_expr_ini"));
 
     EXPECT_FALSE(authoring_db.SaveBattlePlanTurn(
         {
@@ -7286,15 +7851,54 @@ TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRestoresExecutionExtrasAnd
     const auto temp_root = std::filesystem::temp_directory_path() / ("savor-workflow-rehydrate-full-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     ASSERT_TRUE(std::filesystem::create_directories(temp_root));
     const auto sav_path = temp_root / "entry-full.sav";
+    const auto dtm_path = temp_root / "entry-full.dtm";
+    const auto itinerary_path = temp_root / "entry-full.tmi";
     {
         std::ofstream out(sav_path, std::ios::binary | std::ios::trunc);
         out << "full-entry-savestate";
     }
+    {
+        std::ofstream out(dtm_path, std::ios::binary | std::ios::trunc);
+        out << "full-entry-dtm";
+    }
+    {
+        std::ofstream out(itinerary_path, std::ios::binary | std::ios::trunc);
+        out << "full-entry-itinerary";
+    }
 
     const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(60,'fullsha',20,'NONE','")
         + sav_path.generic_string() + "','.sav','SAV',1000);"
+        + "INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(61,'fulldtmsha',14,'NONE','"
+        + dtm_path.generic_string() + "','.dtm','DTM',1000);"
+        + "INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(62,'fulltmisha',20,'NONE','"
+        + itinerary_path.generic_string() + "','.tmi','TAS_MOVIE_ITINERARY',1000);"
         + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(601,60,'ENTRY','full',1,1000);";
     ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
+    savor::runtime::battlerecord::BattleReplaySourceBindingV1 archived_binding{
+        .source_savestate_id = 601,
+        .source_dtm_artifact_id = 61,
+        .source_itinerary_artifact_id = 62,
+        .source_savestate_sha256 = std::string(64, '1'),
+        .source_dtm_sha256 = std::string(64, '2'),
+        .source_itinerary_sha256 = std::string(64, '3'),
+    };
+    archived_binding.canonical_sha256 =
+        savor::runtime::battlerecord::ComputeBattleReplaySourceBindingHashV1(
+            archived_binding);
+    const auto archived_binding_bytes =
+        savor::runtime::battlerecord::EncodeBattleReplaySourceBindingV1(
+            archived_binding);
+    ASSERT_FALSE(archived_binding_bytes.empty());
+    const auto sql_hex = [](std::span<const std::uint8_t> bytes) {
+        constexpr char digits[] = "0123456789abcdef";
+        std::string output;
+        output.reserve(bytes.size() * 2);
+        for (const auto byte : bytes) {
+            output.push_back(digits[byte >> 4]);
+            output.push_back(digits[byte & 0x0f]);
+        }
+        return output;
+    };
     ASSERT_TRUE(ExecSql(db_, R"SQL(
 INSERT INTO exec_job_set(
     job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,
@@ -7362,7 +7966,42 @@ INSERT INTO ab_battle_advancement_decision(battle_advancement_decision_id,battle
 VALUES(8400,8200,8300,'SELECTED','best',2000);
 INSERT INTO ab_manual_followup(manual_followup_id,turn_job_id,manual_followup_status,recorded_sav_artifact_id,note,updated_at_utc)
 VALUES(8500,8300,'UNREVIEWED',NULL,'restore me',2000);
+INSERT INTO ab_battle_completion(
+    battle_completion_id,workflow_instance_id,workflow_step_id,exec_job_id,
+    battle_set_id,wave_id,selected_turn_job_id,selected_execution_job_id,
+    entry_savestate_id,completion_savestate_id,manifest_version,manifest_blob,
+    manifest_sha256,route_kind,transition_filename,worker_terminal_sha256,
+    status,created_at_utc,completed_at_utc)
+VALUES(
+    8600,7001,7201,7101,8000,8250,8300,7101,601,601,1,X'42434D31',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'FIELD_NAVIGATION','me001a.sct',
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    'COMPLETED',1000,2000);
 )SQL"));
+    const std::string replay_sql = std::string(R"SQL(
+INSERT INTO ab_battle_replay(
+    battle_replay_id,battle_completion_id,workflow_instance_id,
+    workflow_step_id,exec_job_id,source_savestate_id,source_dtm_artifact_id,
+    source_itinerary_artifact_id,source_binding_version,source_binding_blob,
+    source_binding_sha256,replay_plan_version,replay_plan_blob,
+    replay_plan_sha256,outcome,mismatch_turn,expected_rng,observed_rng,
+    observed_completion_blob,observed_completion_sha256,
+    observed_transition_blob,observed_transition_sha256,
+    worker_terminal_sha256,status,created_at_utc,completed_at_utc)
+VALUES(
+    8700,8600,7001,7201,7101,601,61,62,1,X')SQL") +
+        sql_hex(archived_binding_bytes) + "','" +
+        archived_binding.canonical_sha256 + R"SQL(',1,X'42525031',
+    'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    'MATCHED',0,0,0,X'42434D31',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    X'46544331',
+    'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    'MATCHED',1000,2000);
+)SQL";
+    ASSERT_TRUE(ExecSql(db_, replay_sql.c_str()));
 
     execution::workflow::SqliteExecutionDb execution_db(db_);
     SqliteUiReadDb ui_read_db(db_);
@@ -7385,6 +8024,9 @@ VALUES(8500,8300,'UNREVIEWED',NULL,'restore me',2000);
         .causation_id = "workflow-rehydrate-full",
     });
     ASSERT_TRUE(package.success) << package.error.value_or("unknown error");
+    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
+        + std::to_string(package.archive_package_id)
+        + " AND item_kind='analysis_battle_replays';").c_str()), 1);
 
     SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_, db_);
     ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
@@ -7398,7 +8040,7 @@ VALUES(8500,8300,'UNREVIEWED',NULL,'restore me',2000);
     EXPECT_GT(preview.execution_row_count, 0);
     EXPECT_GT(preview.analysis_row_count, 0);
     EXPECT_EQ(preview.state_savestate_count, 1);
-    EXPECT_EQ(preview.savestate_zip_entry_count, 1);
+    EXPECT_EQ(preview.savestate_zip_entry_count, 3);
 
     std::int64_t request_id = 0;
     ASSERT_TRUE(archive_db.RequestRehydrate(
@@ -7428,12 +8070,16 @@ VALUES(8500,8300,'UNREVIEWED',NULL,'restore me',2000);
     const auto new_wave_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_turn_wave' AND old_id='8250' ORDER BY rehydrate_map_id DESC LIMIT 1;");
     const auto new_context_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_battle_context_probe' AND old_id='8275' ORDER BY rehydrate_map_id DESC LIMIT 1;");
     const auto new_turn_job_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_battle_turn_job' AND old_id='8300' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_completion_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_battle_completion' AND old_id='8600' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_replay_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_battle_replay' AND old_id='8700' ORDER BY rehydrate_map_id DESC LIMIT 1;");
     ASSERT_GT(new_workflow_id, 0);
     ASSERT_GT(new_job_id, 0);
     ASSERT_GT(new_battle_set_id, 0);
     ASSERT_GT(new_wave_id, 0);
     ASSERT_GT(new_context_id, 0);
     ASSERT_GT(new_turn_job_id, 0);
+    ASSERT_GT(new_completion_id, 0);
+    ASSERT_GT(new_replay_id, 0);
 
     EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM exec_workflow_step_output WHERE workflow_instance_id=" + std::to_string(new_workflow_id) + " AND ref_id=601;").c_str()), 1);
     EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM exec_workflow_instance_input_binding WHERE workflow_instance_id=" + std::to_string(new_workflow_id) + " AND ref_id=601;").c_str()), 1);
@@ -7442,6 +8088,12 @@ VALUES(8500,8300,'UNREVIEWED',NULL,'restore me',2000);
     EXPECT_EQ(ReadInt64(db_, ("SELECT exec_job_id FROM ab_turn_job WHERE turn_job_id=" + std::to_string(new_turn_job_id) + ";").c_str()), new_job_id);
     EXPECT_EQ(ReadInt64(db_, ("SELECT context_probe_id FROM ab_turn_wave WHERE wave_id=" + std::to_string(new_wave_id) + ";").c_str()), new_context_id);
     EXPECT_EQ(ReadText(db_, ("SELECT note FROM ab_manual_followup WHERE turn_job_id=" + std::to_string(new_turn_job_id) + ";").c_str()), "restore me");
+    EXPECT_EQ(ReadInt64(db_, ("SELECT battle_completion_id FROM ab_battle_replay WHERE battle_replay_id=" + std::to_string(new_replay_id) + ";").c_str()), new_completion_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_instance_id FROM ab_battle_replay WHERE battle_replay_id=" + std::to_string(new_replay_id) + ";").c_str()), new_workflow_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT exec_job_id FROM ab_battle_replay WHERE battle_replay_id=" + std::to_string(new_replay_id) + ";").c_str()), new_job_id);
+    EXPECT_EQ(ReadText(db_, ("SELECT lower(hex(replay_plan_blob)) FROM ab_battle_replay WHERE battle_replay_id=" + std::to_string(new_replay_id) + ";").c_str()), "42525031");
+    EXPECT_EQ(ReadText(db_, ("SELECT lower(hex(observed_completion_blob)) FROM ab_battle_replay WHERE battle_replay_id=" + std::to_string(new_replay_id) + ";").c_str()), "42434d31");
+    EXPECT_EQ(ReadText(db_, ("SELECT lower(hex(observed_transition_blob)) FROM ab_battle_replay WHERE battle_replay_id=" + std::to_string(new_replay_id) + ";").c_str()), "46544331");
     EXPECT_EQ(
         ReadText(
             db_,
@@ -7827,321 +8479,6 @@ VALUES(9102,'SEED_PROBE','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
     std::filesystem::remove_all(temp_root);
 }
 
-TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRestoresBattleEndAggregatesConfirmedSeedAncestryAndDerivations) {
-    using namespace savor::db;
-    using namespace savor::db::archive;
-    using namespace savor::db::migrations;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisSeedProbe, embedded_options, &err)) << err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisBattle, embedded_options, &err)) << err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
-
-    const auto temp_root = std::filesystem::temp_directory_path()
-        / ("savor-battle-end-roundtrip-"
-            + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
-    const auto sav_path = temp_root / "battle-end-shared.sav";
-    {
-        std::ofstream out(sav_path, std::ios::binary | std::ios::trunc);
-        out << "battle-end-roundtrip-savestate";
-        ASSERT_TRUE(out.good());
-    }
-    const auto sav_sha = hash::sha256_of_file(sav_path.string());
-    const auto sav_size = static_cast<std::int64_t>(std::filesystem::file_size(sav_path));
-    const auto state_sql = std::string(
-        "INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) "
-        "VALUES(70,'") + sav_sha + "'," + std::to_string(sav_size) + ",0,'"
-        + sav_path.generic_string() + "','.sav','SAV',1000);"
-        "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES"
-        "(701,70,'BATTLE','victory',1,1000),"
-        "(702,70,'BATTLE_COMPLETION','completion',1,1100),"
-        "(703,70,'FIELD_RETURN_SEEDED','seeded',1,1200),"
-        "(704,70,'FIELD','results complete',1,1300);";
-    ASSERT_TRUE(ExecSql(db_, state_sql.c_str()));
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_job_set(
-    job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,
-    expected_total,domain_ref_kind,domain_ref_id,meta_note,materialization_key,
-    materialization_state,population_sealed_at_utc,
-    workset_publication_completed_at_utc)
-VALUES(
-    9100,1,'FieldReturn SeedProbe','test',1100,0,
-    2,'sp_probe_run',9010,'stage=SURVEY','fixture.archive.field-return',
-    'WORKSET_PUBLICATION_COMPLETE',1100,1100);
-INSERT INTO exec_workset(
-    workset_id,job_set_id,workset_key,program_kind,program_version,
-    contract_key,module_canonical_id,module_version,module_sha256,
-    entrypoint,verified_dependency_sha256,runtime_profile_sha256,
-    program_package_sha256,execution_affinity_key,
-    estimated_payload_bytes,priority,item_count,published_at_utc)
-VALUES(
-    9110,9100,'fixture.archive.field-return.workset',1,1,
-    'fixture-compatibility','soa.seed_probe',1,
-    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    'soa.seed_probe/probe',
-    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-    'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-    'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
-    NULL,128,0,2,1100);
-INSERT INTO exec_job(
-    job_id,job_set_id,program_kind,program_version,program_ref_kind,
-    program_ref_id,fingerprint,priority,state,attempts,max_attempts,
-    queued_at_utc,ended_at_utc,input_ini,workset_id,workset_item_ordinal)
-VALUES
-    (9101,9100,1,1,'sp_probe_run',9010,'field-return-neutral',0,
-     'SUCCEEDED',1,1,1100,1200,
-     '[SeedProbe.Request]
-input_frame_id=9005
-sample_ordinal=0
-stage=SURVEY
-version=1
-',9110,0),
-    (9102,9100,1,1,'sp_probe_run',9010,'field-return-neutral-confirm',0,
-     'SUCCEEDED',1,1,1100,1200,
-     '[SeedProbe.Request]
-confirmation_of_probe_result_id=9020
-input_frame_id=9005
-sample_ordinal=0
-stage=CONFIRM
-version=1
-',9110,1);
-
-INSERT INTO exec_workflow_instance(
-    workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,
-    created_by,created_at_utc,completed_at_utc)
-VALUES
-    (9190,'SEED_PROBE','COMPLETED','job_set',9100,'test',1000,1200),
-    (9200,'BATTLE_END','COMPLETED','manual',NULL,'test',1000,2000);
-INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,graph_node_key,step_kind,state,priority,attempts,max_attempts,job_set_id,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
-VALUES(9191,9190,'probe','probe','seed_probe_chain','COMPLETED',0,1,1,9100,'state.savestate',702,'sp_probe_run',9010,1000,1200),
-      (9201,9200,'completion','completion','battle.completion','COMPLETED',0,1,1,NULL,'state.savestate',701,'analysis_battle.battle_completion',9300,1000,1100),
-      (9202,9200,'seed','seed','battle.field_return_seed_probe','COMPLETED',0,1,1,NULL,'state.savestate',702,'state.savestate',703,1100,1200),
-      (9203,9200,'results','results','battle.results_screen','COMPLETED',0,1,1,NULL,'analysis_battle.battle_completion',9300,'analysis_battle.battle_results',9400,1200,1300);
-INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
-VALUES(9200,'BATTLE_END','COMPLETED','COMPLETED','manual','test',1000,2000,1);
-
-INSERT INTO sp_probe_set(probe_set_id,name,probe_flavor,breakpoint_policy_name,segment_source_kind,created_at_utc)
-VALUES(9000,'field-return-roundtrip','FIELD_RETURN','battle-end-results','workflow',1000);
-INSERT INTO an_input_set(input_set_id,content_hash,source_ref_kind,source_ref_id,created_at_utc)
-VALUES(9001,'field-return-roundtrip-input','sp_probe_run',9010,1000);
-INSERT INTO sp_axis_xy(axis_xy_id,x,y)
-VALUES(9002,128,128),(9003,0,0);
-INSERT INTO sp_input_frame(
-    input_frame_id,main_axis_xy_id,cstick_axis_xy_id,trigger_axis_xy_id)
-VALUES(9005,9002,9002,9003);
-INSERT INTO an_input_set_frame(input_set_id,ordinal,input_frame_id,added_at_utc)
-VALUES(9001,0,9005,1200);
-INSERT INTO sp_probe_run(
-    probe_run_id,materialization_key,probe_set_id,entry_savestate_id,
-    seed_probe_spec_id,launch_samples_per_axis,codec_version,status,
-    accepted_input_set_id,requested_at_utc,completed_at_utc)
-VALUES(
-    9010,'fixture.archive.field-return',9000,702,
-    1,1,2,'COMPLETED',9001,1100,1200);
-INSERT INTO sp_probe_result(
-    probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
-    origin_worker_id,origin_process_generation,origin_workset_epoch,
-    terminal_sha256,confirmation_of_probe_result_id,
-    evidence_state,recorded_at_utc)
-VALUES
-    (9020,9010,9005,9101,333,1,1,1,
-     '1111111111111111111111111111111111111111111111111111111111111111',
-     NULL,'CONFIRMED',1200),
-    (9021,9010,9005,9102,333,1,1,2,
-     '2222222222222222222222222222222222222222222222222222222222222222',
-     9020,'OBSERVED',1200);
-
-INSERT INTO ab_battle_completion(
-    battle_completion_id,workflow_instance_id,workflow_step_id,entry_savestate_id,completion_savestate_id,
-    entry_rng_seed,completion_rng_seed,manifest_version,manifest_blob,mismatch_count,invariant_failure_count,
-    status,created_at_utc,completed_at_utc)
-VALUES(9300,9200,9201,701,702,111,222,1,X'42434D4200FF',0,0,'COMPLETED',1000,1100);
-INSERT INTO ab_battle_results(
-    battle_results_id,battle_completion_id,workflow_instance_id,workflow_step_id,selected_seed_ref_kind,
-    selected_seed_ref_id,entry_savestate_id,final_savestate_id,selected_seed_value,entry_rng_seed,final_rng_seed,
-    rng_effect_kind,fixed_draw_count,mismatch_count,invariant_failure_count,status,created_at_utc,completed_at_utc)
-VALUES(9400,9300,9200,9203,'analysisseedprobe.confirmed_result',9020,703,704,333,333,333,
-       'PRESERVE',0,0,0,'COMPLETED',1200,1300);
-
-INSERT INTO state_savestate_derivation(
-    derivation_id,from_savestate_id,to_savestate_id,method_kind,source_context_kind,source_context_id,created_at_utc)
-VALUES(9501,701,702,'battle_completion','analysis_battle.battle_completion',9300,1100),
-      (9502,702,703,'field_return_seed_materialization','analysisseedprobe.confirmed_result',9020,1200),
-      (9503,703,704,'battle_results','analysis_battle.battle_results',9400,1300);
-)SQL"));
-
-    execution::workflow::SqliteExecutionDb execution_db(db_);
-    SqliteUiReadDb ui_read_db(db_);
-    SqliteArchiveDb archive_db(db_);
-    SqliteArchivePackageService package_service(
-        db_,
-        &execution_db,
-        &ui_read_db,
-        &archive_db,
-        DbConfigPaths{ .archive_store_root = temp_root },
-        db_,
-        db_,
-        db_);
-    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
-    const auto package = package_service.CreateWorkflowPackage({
-        .selection = { .workflow_instance_ids = {9200} },
-        .created_at_utc = now,
-        .correlation_id = "battle-end-roundtrip",
-        .causation_id = "battle-end-roundtrip",
-    });
-    ASSERT_TRUE(package.success) << package.error.value_or("unknown error");
-    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
-        + std::to_string(package.archive_package_id)
-        + " AND item_kind='analysis_battle_completions';").c_str()), 1);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
-        + std::to_string(package.archive_package_id)
-        + " AND item_kind='analysis_battle_results';").c_str()), 1);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
-        + std::to_string(package.archive_package_id)
-        + " AND item_kind='analysis_seed_probe_runs';").c_str()), 1);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
-        + std::to_string(package.archive_package_id)
-        + " AND item_kind='workflow_instances';").c_str()), 1);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
-        + std::to_string(package.archive_package_id)
-        + " AND item_kind='job_sets';").c_str()), 1);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
-        + std::to_string(package.archive_package_id)
-        + " AND item_kind='worksets';").c_str()), 1);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
-        + std::to_string(package.archive_package_id)
-        + " AND item_kind='jobs';").c_str()), 2);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
-        + std::to_string(package.archive_package_id)
-        + " AND item_kind='state_savestate_derivations';").c_str()), 3);
-
-    std::int64_t request_id = 0;
-    ASSERT_TRUE(archive_db.RequestRehydrate(
-        {
-            .archive_package_id = package.archive_package_id,
-            .status = "REQUESTED",
-            .requested_at_utc = now,
-            .target_namespace = "battle-end-roundtrip",
-            .correlation_id = "battle-end-roundtrip",
-            .causation_id = "battle-end-roundtrip",
-        },
-        &request_id,
-        &err)) << err;
-    SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_, db_);
-    const auto rehydrated = rehydrate_executor.Execute({
-        .rehydrate_request_id = request_id,
-        .now_utc = now,
-        .correlation_id = "battle-end-roundtrip",
-        .causation_id = "battle-end-roundtrip",
-    });
-    ASSERT_TRUE(rehydrated.success) << rehydrated.error.value_or("unknown error");
-
-    const auto mapped = [&](const std::string& kind, std::int64_t old_id) {
-        return ReadInt64(db_, ("SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='"
-            + kind + "' AND old_id='" + std::to_string(old_id)
-            + "' ORDER BY rehydrate_map_id DESC LIMIT 1;").c_str());
-    };
-    const auto new_workflow = mapped("workflow_instance", 9200);
-    const auto new_completion_step = mapped("workflow_step", 9201);
-    const auto new_results_step = mapped("workflow_step", 9203);
-    const auto new_probe_run = mapped("analysis_seed_probe_run", 9010);
-    const auto new_confirmed_result = mapped("analysis_seed_probe_result", 9020);
-    const auto new_confirmation_result = mapped("analysis_seed_probe_result", 9021);
-    const auto new_probe_source_job = mapped("job", 9101);
-    const auto new_confirmation_source_job = mapped("job", 9102);
-    const auto new_completion = mapped("analysis_battle_completion", 9300);
-    const auto new_results = mapped("analysis_battle_results", 9400);
-    const auto new_entry_state = mapped("state_savestate", 701);
-    const auto new_completion_state = mapped("state_savestate", 702);
-    const auto new_seeded_state = mapped("state_savestate", 703);
-    const auto new_final_state = mapped("state_savestate", 704);
-    for (const auto id : {new_workflow, new_completion_step, new_results_step, new_probe_run,
-              new_confirmed_result, new_confirmation_result, new_probe_source_job,
-              new_confirmation_source_job, new_completion, new_results, new_entry_state,
-              new_completion_state, new_seeded_state, new_final_state}) {
-        ASSERT_GT(id, 0);
-    }
-    EXPECT_EQ(
-        ReadInt64(
-            db_,
-            "SELECT COUNT(1) FROM ar_rehydrate_map "
-            "WHERE entity_kind='workflow_instance' AND old_id='9190';"),
-        0);
-
-    EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_instance_id FROM ab_battle_completion WHERE battle_completion_id="
-        + std::to_string(new_completion) + ";").c_str()), new_workflow);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_step_id FROM ab_battle_completion WHERE battle_completion_id="
-        + std::to_string(new_completion) + ";").c_str()), new_completion_step);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT completion_savestate_id FROM ab_battle_completion WHERE battle_completion_id="
-        + std::to_string(new_completion) + ";").c_str()), new_completion_state);
-    EXPECT_EQ(ReadText(db_, ("SELECT hex(manifest_blob) FROM ab_battle_completion WHERE battle_completion_id="
-        + std::to_string(new_completion) + ";").c_str()), "42434D4200FF");
-
-    EXPECT_EQ(ReadInt64(db_, ("SELECT battle_completion_id FROM ab_battle_results WHERE battle_results_id="
-        + std::to_string(new_results) + ";").c_str()), new_completion);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_instance_id FROM ab_battle_results WHERE battle_results_id="
-        + std::to_string(new_results) + ";").c_str()), new_workflow);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_step_id FROM ab_battle_results WHERE battle_results_id="
-        + std::to_string(new_results) + ";").c_str()), new_results_step);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT selected_seed_ref_id FROM ab_battle_results WHERE battle_results_id="
-        + std::to_string(new_results) + ";").c_str()), new_confirmed_result);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT entry_savestate_id FROM ab_battle_results WHERE battle_results_id="
-        + std::to_string(new_results) + ";").c_str()), new_seeded_state);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT final_savestate_id FROM ab_battle_results WHERE battle_results_id="
-        + std::to_string(new_results) + ";").c_str()), new_final_state);
-    EXPECT_EQ(ReadText(db_, ("SELECT selected_seed_ref_kind FROM ab_battle_results WHERE battle_results_id="
-        + std::to_string(new_results) + ";").c_str()), "analysisseedprobe.confirmed_result");
-
-    EXPECT_EQ(ReadInt64(db_, ("SELECT entry_savestate_id FROM sp_probe_run WHERE probe_run_id="
-        + std::to_string(new_probe_run) + ";").c_str()), new_completion_state);
-    EXPECT_EQ(ReadText(db_, ("SELECT ps.probe_flavor FROM sp_probe_run pr JOIN sp_probe_set ps "
-        "ON ps.probe_set_id=pr.probe_set_id WHERE pr.probe_run_id="
-        + std::to_string(new_probe_run) + ";").c_str()), "FIELD_RETURN");
-    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM sp_probe_result "
-        "WHERE probe_result_id=" + std::to_string(new_confirmed_result)
-        + " AND probe_run_id=" + std::to_string(new_probe_run)
-        + " AND evidence_state='CONFIRMED';").c_str()), 1);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT confirmation_of_probe_result_id FROM sp_probe_result "
-        "WHERE probe_result_id=" + std::to_string(new_confirmation_result)
-        + ";").c_str()), new_confirmed_result);
-    EXPECT_EQ(
-        ReadInt64(
-            db_,
-            ("SELECT source_job_id FROM sp_probe_result WHERE probe_result_id="
-                + std::to_string(new_confirmed_result) + ";")
-                .c_str()),
-        new_probe_source_job);
-    EXPECT_EQ(
-        ReadInt64(
-            db_,
-            ("SELECT source_job_id FROM sp_probe_result WHERE probe_result_id="
-                + std::to_string(new_confirmation_result) + ";")
-                .c_str()),
-        new_confirmation_source_job);
-
-    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM state_savestate_derivation WHERE from_savestate_id="
-        + std::to_string(new_entry_state) + " AND to_savestate_id="
-        + std::to_string(new_completion_state)
-        + " AND source_context_kind='analysis_battle.battle_completion' AND source_context_id="
-        + std::to_string(new_completion) + ";").c_str()), 1);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM state_savestate_derivation WHERE from_savestate_id="
-        + std::to_string(new_completion_state) + " AND to_savestate_id="
-        + std::to_string(new_seeded_state)
-        + " AND source_context_kind='analysisseedprobe.confirmed_result' AND source_context_id="
-        + std::to_string(new_confirmed_result) + ";").c_str()), 1);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM state_savestate_derivation WHERE from_savestate_id="
-        + std::to_string(new_seeded_state) + " AND to_savestate_id="
-        + std::to_string(new_final_state)
-        + " AND source_context_kind='analysis_battle.battle_results' AND source_context_id="
-        + std::to_string(new_results) + ";").c_str()), 1);
-
-    std::filesystem::remove_all(temp_root);
-}
 
 TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRejectsCorruptSavestateZipBytes) {
     using namespace savor::db;
@@ -9011,6 +9348,59 @@ TEST_F(SqliteDbFixture, StateDbDedupesArtifactAndUiReadListsSummary) {
     ASSERT_EQ(page.items.size(), 1);
     EXPECT_EQ(page.items.front().artifact_id, first_artifact_id);
     EXPECT_EQ(page.items.front().filename, "second.sav");
+}
+
+TEST_F(SqliteDbFixture, StateDbAcceptsFirstClassBattleCompletionArtifact) {
+    auto* state_db = db_service_->StateDb();
+    ASSERT_NE(state_db, nullptr);
+
+    const std::string manifest_bytes("BCM1\0fixture", 12);
+    const auto manifest_path = temp_root_ / "completion.bcmb";
+    {
+        std::ofstream out(manifest_path, std::ios::binary);
+        out.write(manifest_bytes.data(),
+                  static_cast<std::streamsize>(manifest_bytes.size()));
+    }
+
+    std::string error;
+    std::int64_t artifact_id = 0;
+    ASSERT_TRUE(state_db->StoreArtifact(
+        {
+            .sha256 = hash::sha256(
+                manifest_bytes.data(), manifest_bytes.size()),
+            .size_bytes = static_cast<std::int64_t>(manifest_bytes.size()),
+            .compression_kind = 0,
+            .filename = manifest_path.string(),
+            .file_ext = ".bcmb",
+            .artifact_kind = "BATTLE_COMPLETION",
+            .created_at_utc = savor::db::types::UtcNow(),
+            .correlation_id = "test.state.battle-completion",
+            .causation_id = "test",
+        },
+        &artifact_id,
+        &error)) << error;
+
+    const auto artifact = state_db->GetArtifact(artifact_id);
+    ASSERT_TRUE(artifact.has_value());
+    EXPECT_EQ(artifact->artifact_kind, "BATTLE_COMPLETION");
+    EXPECT_EQ(artifact->file_ext, ".bcmb");
+    EXPECT_EQ(artifact->filename, manifest_path.string());
+
+    std::int64_t rejected_id = 0;
+    EXPECT_FALSE(state_db->StoreArtifact(
+        {
+            .sha256 = std::string(64, 'f'),
+            .size_bytes = 1,
+            .compression_kind = 0,
+            .filename = (temp_root_ / "unknown.bin").string(),
+            .file_ext = ".bin",
+            .artifact_kind = "UNKNOWN_COMPLETION_KIND",
+            .created_at_utc = savor::db::types::UtcNow(),
+            .correlation_id = "test.state.battle-completion",
+            .causation_id = "test",
+        },
+        &rejected_id,
+        &error));
 }
 
 TEST_F(SqliteDbFixture, UiReadProjectionStreamsSeparateStateDatabaseForArtifactSummary) {

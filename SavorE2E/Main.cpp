@@ -16,6 +16,7 @@
 #include "SeedProbeRealWorkerScenario.h"
 #include "ScenarioEntry.h"
 #include "TasMovieRealWorkerScenario.h"
+#include "WorkflowUnitRealWorkerScenario.h"
 
 namespace {
 
@@ -39,7 +40,17 @@ std::string E2EPerfConfiguration(const savor::e2e::CliOptions& options) {
         << " wait_for_workers_ready="
         << (options.wait_for_workers_ready ? "true" : "false")
         << " repeat=" << options.repeat
+        << " seedprobe_min=" << options.seedprobe_min_value.value_or(47)
+        << " seedprobe_max=" << options.seedprobe_max_value.value_or(207)
         << " samples_per_axis=" << options.seedprobe_samples_per_axis.value_or(0)
+        << " combo_attempts="
+        << options.seedprobe_combo_attempts_per_target.value_or(20)
+        << " combo_sampler_tries="
+        << options.seedprobe_combo_sampler_tries.value_or(4)
+        << " fake_attack_min="
+        << options.battle_fake_attack_min.value_or(0)
+        << " fake_attack_max="
+        << options.battle_fake_attack_max.value_or(0)
         << " rtc_min=" << rtc_range.low
         << " rtc_max=" << rtc_range.high;
     return out.str();
@@ -193,6 +204,10 @@ int main(int argc, char** argv) {
                 break;
             case E2eScenarioKind::TasMovieSeedProbe:
                 scenario_passed = RunTasMovieSeedProbeRealWorkerSmoke(
+                    options, entry, argv[0], &service, &scenario_error);
+                break;
+            case E2eScenarioKind::WorkflowUnit:
+                scenario_passed = RunWorkflowUnitRealWorkerScenario(
                     options, entry, argv[0], &service, &scenario_error);
                 break;
             }

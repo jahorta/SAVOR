@@ -528,7 +528,6 @@ struct DolphinWrapperBackend::Impl
     PhysicalPlanGeneration physical_generation;
     DolphinBackendCpuCore cpu_core =
         DolphinBackendCpuCore::ProductionDefault;
-    mutable bool observed_movie_playing = false;
     std::shared_ptr<PauseConfirmation> pause_confirmation =
         std::make_shared<PauseConfirmation>();
     PauseSynchronizer pause_synchronizer;
@@ -739,7 +738,6 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
     impl_->last_open_options = options;
     impl_->has_open_options = true;
     impl_->open = true;
-    impl_->observed_movie_playing = false;
     impl_->active_movie_sha256.reset();
     try
     {
@@ -810,7 +808,6 @@ MovieBackendResult DolphinWrapperBackend::StopCoreForPreparedReadOnlyMovie()
 
     impl_->pause_synchronizer.StopAndJoin();
     impl_->DetachStateCallback();
-    impl_->observed_movie_playing = false;
     impl_->active_movie_sha256.reset();
     std::string error;
     bool stopped = false;
@@ -939,8 +936,8 @@ DolphinWrapperBackend::ActivatePreparedReadOnlyMoviePlayback()
                 ? GuestIntegrity::Unknown
                 : GuestIntegrity::Preserved);
     }
-    const MovieSnapshot movie = Snapshot();
-    if (movie.activity != MovieActivity::ReadOnlyPlayback ||
+    const MovieBackendObservation movie = ObserveMovie();
+    if (!movie.result.ok || !movie.playing || movie.recording ||
         !movie.read_only)
     {
         return MovieBackendResult::Failure(
@@ -984,7 +981,6 @@ BackendResult DolphinWrapperBackend::Close()
         impl_->owned_physical_plan = {};
         impl_->physical_generation = {};
         impl_->open = false;
-        impl_->observed_movie_playing = false;
         impl_->active_movie_sha256.reset();
         impl_->prepared_movie_path.reset();
         impl_->prepared_movie_savestate.reset();
@@ -1026,7 +1022,6 @@ BackendResult DolphinWrapperBackend::Close()
         impl_->DetachStateCallback();
         impl_->wrapper.reset();
         impl_->open = false;
-        impl_->observed_movie_playing = false;
         impl_->active_movie_sha256.reset();
         impl_->prepared_movie_path.reset();
         impl_->prepared_movie_savestate.reset();
@@ -1112,7 +1107,6 @@ DolphinWrapperBackend::Capabilities() const noexcept
         BackendExecutionCapability::Resume |
         BackendExecutionCapability::FrameStep |
         BackendExecutionCapability::ViObservation |
-        BackendExecutionCapability::MovieObservation |
         BackendExecutionCapability::ThrottleControl;
 }
 
@@ -1147,22 +1141,6 @@ DolphinWrapperBackend::QueryExecutionSnapshot() const
         impl_->last_confirmed_pc = impl_->wrapper->getPC();
     }
     snapshot.pc = impl_->last_confirmed_pc;
-    snapshot.movie_input_count =
-        impl_->wrapper->getCurrentMovieInputCount();
-    const bool movie_playing = impl_->wrapper->isMoviePlaying();
-    if (movie_playing)
-    {
-        impl_->observed_movie_playing = true;
-        snapshot.movie_state = BackendMovieState::Playing;
-    }
-    else if (impl_->observed_movie_playing)
-    {
-        snapshot.movie_state = BackendMovieState::Ended;
-    }
-    else
-    {
-        snapshot.movie_state = BackendMovieState::Inactive;
-    }
     snapshot.throttle_disabled =
         Core::GetIsThrottlerTempDisabled();
     return snapshot;
@@ -1524,10 +1502,6 @@ MovieBackendResult DolphinWrapperBackend::StopMovie() noexcept
         if (movie.IsMovieActive())
             movie.EndPlayInput(false);
         movie.SetReadOnly(true);
-        // Explicit detachment establishes an inactive movie boundary. The
-        // sticky observation remains useful for detecting a natural movie
-        // end, but must not leak that terminal state into a later workset.
-        impl_->observed_movie_playing = false;
         return MovieBackendResult::Success();
     }
     catch (const std::exception& ex)
@@ -1617,24 +1591,66 @@ MovieBackendResult DolphinWrapperBackend::CancelRecording() noexcept
     return StopMovie();
 }
 
-MovieSnapshot DolphinWrapperBackend::Snapshot() const
+MovieBackendObservation DolphinWrapperBackend::ObserveMovie() const
 {
-    if (!impl_->wrapper)
-        return {};
-    const auto& movie = impl_->wrapper->system()->GetMovie();
-    MovieActivity activity = MovieActivity::Inactive;
-    if (movie.IsPlayingInput())
-        activity = MovieActivity::ReadOnlyPlayback;
-    else if (movie.IsRecordingInput())
-        activity = MovieActivity::Recording;
-    return {
-        .activity = activity,
-        .read_only = movie.IsReadOnly(),
-        .ended = activity == MovieActivity::Inactive &&
-            impl_->observed_movie_playing,
-        .current_frame = movie.GetCurrentFrame(),
-        .current_input_count = movie.GetCurrentInputCount(),
-    };
+    if (BackendResult open = impl_->RequireOpen(); !open.ok)
+    {
+        return {
+            .result = MovieFailure(
+                open.message.empty()
+                    ? "Dolphin movie observation requires an open backend"
+                    : std::move(open.message),
+                open.integrity == BackendIntegrity::Unknown
+                    ? GuestIntegrity::Unknown
+                    : GuestIntegrity::Preserved),
+        };
+    }
+    Core::System* const system = impl_->wrapper->system();
+    if (!system)
+    {
+        return {
+            .result = MovieFailure(
+                "Dolphin movie observation requires a live core",
+                GuestIntegrity::Unknown),
+        };
+    }
+
+    try
+    {
+        // MovieManager's mode, read-only flag, and cursors are ordinary
+        // CPU-owned fields.  Reading them independently from the worker actor
+        // while the guest is running is both a data race and can manufacture a
+        // state that never existed.  CPUThreadGuard excludes the native CPU
+        // thread (or is a no-op when this is already the CPU thread), so this
+        // is one coherent physical observation.  Semantic lifecycle state
+        // remains exclusively owned by MovieService.
+        Core::CPUThreadGuard guard(*system);
+        const auto& movie = guard.GetSystem().GetMovie();
+        return {
+            .result = MovieBackendResult::Success(),
+            .playing = movie.IsPlayingInput(),
+            .recording = movie.IsRecordingInput(),
+            .read_only = movie.IsReadOnly(),
+            .current_frame = movie.GetCurrentFrame(),
+            .current_input_count = movie.GetCurrentInputCount(),
+        };
+    }
+    catch (const std::exception& ex)
+    {
+        return {
+            .result = MovieFailure(
+                std::string("Dolphin movie observation threw: ") + ex.what(),
+                GuestIntegrity::Unknown),
+        };
+    }
+    catch (...)
+    {
+        return {
+            .result = MovieFailure(
+                "Dolphin movie observation threw",
+                GuestIntegrity::Unknown),
+        };
+    }
 }
 
 MovieCheckpointBackendResult
@@ -1732,7 +1748,12 @@ MovieBackendResult DolphinWrapperBackend::PrepareSavestateRestore(
         return MovieBackendResult::Success();
     }
 
-    const MovieSnapshot current = Snapshot();
+    const MovieBackendObservation current = ObserveMovie();
+    if (!current.result.ok)
+    {
+        impl_->prepared_movie_replacement.reset();
+        return current.result;
+    }
     if (context.movie->mode ==
         MovieCheckpointMode::ReadOnlyPlayback)
     {
@@ -1755,7 +1776,7 @@ MovieBackendResult DolphinWrapperBackend::PrepareSavestateRestore(
             impl_->owned_movie_restore_paths.push_back(exact_dtm);
         }
 
-        if (current.activity == MovieActivity::ReadOnlyPlayback)
+        if (current.playing && !current.recording && current.read_only)
         {
             if (!impl_->active_movie_sha256.has_value() ||
                 *impl_->active_movie_sha256 !=
@@ -1769,7 +1790,7 @@ MovieBackendResult DolphinWrapperBackend::PrepareSavestateRestore(
                 context.movie->dtm_sha256;
             return MovieBackendResult::Success();
         }
-        if (current.activity != MovieActivity::Inactive)
+        if (current.playing || current.recording)
         {
             impl_->prepared_movie_replacement.reset();
             return MovieFailure(
@@ -1792,7 +1813,7 @@ MovieBackendResult DolphinWrapperBackend::PrepareSavestateRestore(
     }
     else if (
         context.movie->mode == MovieCheckpointMode::Recording &&
-        current.activity != MovieActivity::Recording)
+        (!current.recording || current.playing || current.read_only))
     {
         impl_->prepared_movie_replacement.reset();
         return MovieFailure(
@@ -1806,10 +1827,12 @@ MovieBackendResult DolphinWrapperBackend::CommitSavestateRestore(
 {
     if (!impl_->prepared_movie_replacement.has_value())
         return MovieFailure("Movie replacement was not prepared");
-    const MovieSnapshot observed = Snapshot();
+    const MovieBackendObservation observed = ObserveMovie();
+    if (!observed.result.ok)
+        return observed.result;
     if (!context.movie.has_value())
     {
-        if (observed.activity != MovieActivity::Inactive)
+        if (observed.playing || observed.recording)
             return MovieFailure(
                 "Dolphin restored unexpected movie state",
                 GuestIntegrity::Unknown);
@@ -1819,12 +1842,13 @@ MovieBackendResult DolphinWrapperBackend::CommitSavestateRestore(
         impl_->prepared_movie_started_for_replacement = false;
         return MovieBackendResult::Success();
     }
-    const MovieActivity expected =
-        context.movie->mode == MovieCheckpointMode::Recording
-        ? MovieActivity::Recording
-        : MovieActivity::ReadOnlyPlayback;
-    if (observed.activity != expected ||
-        (expected == MovieActivity::ReadOnlyPlayback &&
+    const bool expect_recording =
+        context.movie->mode == MovieCheckpointMode::Recording;
+    if ((expect_recording &&
+         (!observed.recording || observed.playing || observed.read_only)) ||
+        (!expect_recording &&
+         (!observed.playing || observed.recording || !observed.read_only)) ||
+        (!expect_recording &&
          (!impl_->prepared_movie_replacement_sha256.has_value() ||
           *impl_->prepared_movie_replacement_sha256 !=
               context.movie->dtm_sha256)) ||
@@ -1837,7 +1861,7 @@ MovieBackendResult DolphinWrapperBackend::CommitSavestateRestore(
             "Dolphin movie cursor did not reconcile with the restored state",
             GuestIntegrity::Unknown);
     }
-    if (expected == MovieActivity::ReadOnlyPlayback)
+    if (!expect_recording)
     {
         impl_->active_movie_sha256 =
             context.movie->dtm_sha256;
@@ -1947,10 +1971,11 @@ BackendInputPoll DolphinWrapperBackend::QueryPoll(
     }
     const auto receipt = impl_->wrapper->getInputPollReceipt();
     return {
-        BackendResult::Success(),
-        receipt.epoch,
-        receipt.callback_count,
-        receipt.frame};
+        .result = BackendResult::Success(),
+        .publication_epoch = receipt.epoch,
+        .callback_count = receipt.callback_count,
+        .a_control_callback_count = receipt.a_control_callback_count,
+        .frame = receipt.frame};
 }
 
 bool DolphinWrapperBackend::IsPaused() const noexcept
@@ -1993,6 +2018,38 @@ GuestBytesResult DolphinWrapperBackend::Read(
         }
     }
     return {BackendResult::Success(), std::move(bytes)};
+}
+
+MovieBackendResult
+DolphinWrapperBackend::BranchReadOnlyPlaybackToRecording()
+{
+    if (BackendResult open = impl_->RequireOpen(); !open.ok)
+        return MovieFailure(std::move(open.message));
+    auto& movie = impl_->wrapper->system()->GetMovie();
+    if (!movie.IsPlayingInput() || !movie.IsReadOnly())
+        return MovieFailure(
+            "A read-only Dolphin playback session is required");
+    try
+    {
+        movie.SetReadOnly(false);
+        movie.EndPlayInput(true);
+        if (!movie.IsRecordingInput() || movie.IsReadOnly())
+            return MovieFailure(
+                "Dolphin did not enter writable rerecording mode",
+                GuestIntegrity::Unknown);
+        impl_->active_movie_sha256.reset();
+        return MovieBackendResult::Success();
+    }
+    catch (const std::exception& ex)
+    {
+        return MovieFailure(ex.what(), GuestIntegrity::Unknown);
+    }
+    catch (...)
+    {
+        return MovieFailure(
+            "Dolphin playback-to-recording branch threw",
+            GuestIntegrity::Unknown);
+    }
 }
 
 HitTimeGuestReadReceipt DolphinWrapperBackend::ReadHitTimeBytes(

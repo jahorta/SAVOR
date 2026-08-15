@@ -238,7 +238,6 @@ namespace savor {
         if (Core::IsRunning(*m_system))
             shutdownCore();
         destroyRenderSurfaceWindow();
-        logger::Logger::get().close_file();
     }
 
     bool DolphinWrapper::isRunning() const noexcept {
@@ -949,6 +948,7 @@ namespace savor {
         return InputPollReceipt{
             .epoch = stats.publication_epoch,
             .callback_count = stats.callback_count,
+            .a_control_callback_count = stats.a_control_callback_count,
             .frame = stats.frame,
         };
     }
@@ -1416,24 +1416,6 @@ namespace savor {
         case 8: { uint64_t v = 0; if (!readByKey(k, v)) return false; out = v; return true; }
         default: return false;
         }
-    }
-
-    bool DolphinWrapper::isMoviePlaying() const
-    {
-        auto& movie = m_system->GetMovie();
-        return movie.IsPlayingInput();
-    }
-
-    bool DolphinWrapper::isMoviePlaybackEnded() const
-    {
-        auto& movie = m_system->GetMovie();
-        return !movie.IsPlayingInput();
-    }
-
-    uint64_t DolphinWrapper::getCurrentMovieInputCount() const
-    {
-        auto& movie = m_system->GetMovie();
-        return static_cast<uint64_t>(movie.GetCurrentInputCount());
     }
 
     void DolphinWrapper::silenceStdOutInfo()

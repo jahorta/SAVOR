@@ -41,6 +41,7 @@ namespace savor {
         m_cur = f;
         m_publication_epoch = publication_epoch;
         m_callback_count = 0;
+        m_a_control_callback_count = 0;
     }
 
     GCPadOverride::PollStats GCPadOverride::getPollStats() const {
@@ -48,6 +49,7 @@ namespace savor {
         return PollStats{
             .publication_epoch = m_publication_epoch,
             .callback_count = m_callback_count,
+            .a_control_callback_count = m_a_control_callback_count,
             .frame = m_cur,
         };
     }
@@ -71,12 +73,15 @@ namespace savor {
             [this](std::string_view group, std::string_view control, ControlState def)
             -> std::optional<ControlState>
             {
+                const bool is_a_control = group == "Buttons" && control == "A";
                 GCInputFrame f{};
                 {
                     std::lock_guard<std::mutex> lk(m_mtx);
                     f = m_cur;
                     if (m_publication_epoch != 0) {
                         ++m_callback_count;
+                        if (is_a_control)
+                            ++m_a_control_callback_count;
                     }
                 }
 
@@ -128,6 +133,7 @@ namespace savor {
             m_cur = NeutralFrame();
             m_publication_epoch = 0;
             m_callback_count = 0;
+            m_a_control_callback_count = 0;
         }
         m_installed = true;
         SCLOGI("[TAS] Installed input override on GC port %d", m_port);

@@ -3,6 +3,9 @@
 #include "../../../Phases/Programs/SeedProbe/SeedProbeModule.h"
 #include "../../../Phases/Programs/TasMovieValidation/TasMovieValidationModule.h"
 #include "../../../Phases/Programs/BattleContext/BattleContextModule.h"
+#include "../../../Phases/Programs/BattleCompletion/BattleCompletionModule.h"
+#include "../../../Phases/Programs/BattleRecord/BattleRecordModule.h"
+#include "../../../Phases/Programs/BattleRecord/BattleReplayModule.h"
 #include "../../../Phases/Programs/BattleSingleTurn/BattleSingleTurnModule.h"
 #include "Utils/Hash.h"
 
@@ -206,6 +209,12 @@ const FullPhaseProgramRegistry& ProductionRegistry()
         FullPhaseProgramRegistry value;
         (void)value.Register(
             battlecontext::BattleContextFullPhaseDefinitionV1());
+        (void)value.Register(
+            battlecompletion::BattleCompletionFullPhaseDefinitionV1());
+        (void)value.Register(
+            battlerecord::BattleRecordKindHandlerV1());
+        (void)value.Register(
+            battlereplay::BattleReplayKindHandlerV1());
         (void)value.Register(
             battlesingleturn::BattleSingleTurnKindHandlerV1());
         (void)value.Register(

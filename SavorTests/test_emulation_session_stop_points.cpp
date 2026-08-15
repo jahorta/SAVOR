@@ -59,6 +59,28 @@ TEST(EmulationSessionWorksetEpoch, RequiresHitTimeGuestMemoryAtStartup)
         std::string::npos);
 }
 
+TEST(EmulationSessionWorksetEpoch, RequiresMovieFacetAtSessionStartup)
+{
+    Harness harness;
+    harness.dolphin->movie_available = false;
+
+    const SessionOperationReceipt opened = harness.session->Open({});
+
+    EXPECT_FALSE(opened.ok);
+    EXPECT_EQ(opened.backend.code, BackendErrorCode::Unavailable);
+    EXPECT_NE(
+        opened.backend.message.find("required movie facet"),
+        std::string::npos);
+    EXPECT_FALSE(opened.workset_epoch);
+    EXPECT_FALSE(harness.session->snapshot().workset_epoch);
+    EXPECT_EQ(harness.session->movie_service(), nullptr);
+    const SessionOperationReceipt workset =
+        harness.session->OpenWorksetInitialization(WorkerWorksetId(1));
+    EXPECT_FALSE(workset.ok);
+    EXPECT_FALSE(workset.workset_epoch);
+    EXPECT_TRUE(harness.session->Shutdown().ok);
+}
+
 TEST(EmulationSessionWorksetEpoch, EpochIsStableForWorksetAndClearedAtEnd)
 {
     Harness harness;

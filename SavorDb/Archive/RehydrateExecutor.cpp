@@ -12,6 +12,7 @@
 #include "../Common/Migrations/MigrationRunner.h"
 #include "../Common/Events/OutboxEventIds.h"
 #include "../Execution/ProgramDB/SeedProbe/SeedProbeJobSpec.h"
+#include "../../SavorCore/Phases/Programs/BattleRecord/BattleRecordModule.h"
 #include "../../SavorCore/Utils/Hash.h"
 
 namespace savor::db::archive {
@@ -798,7 +799,8 @@ RehydratePackagePreviewResult SqliteRehydrateExecutor::PreviewPackage(const Rehy
         {"analysis_battle_advancement_decisions", "$.battle_advancement_decision_id", "analysis_battle_advancement_decision", "ab_battle_advancement_decision", "battle_advancement_decision_id", analysis_db_},
         {"analysis_manual_followups", "$.manual_followup_id", "analysis_manual_followup", "ab_manual_followup", "manual_followup_id", analysis_db_},
         {"analysis_battle_completions", "$.battle_completion_id", "analysis_battle_completion", "ab_battle_completion", "battle_completion_id", analysis_db_},
-        {"analysis_battle_results", "$.battle_results_id", "analysis_battle_results", "ab_battle_results", "battle_results_id", analysis_db_},
+        {"analysis_battle_recordings", "$.battle_recording_id", "analysis_battle_recording", "ab_battle_recording", "battle_recording_id", analysis_db_},
+        {"analysis_battle_replays", "$.battle_replay_id", "analysis_battle_replay", "ab_battle_replay", "battle_replay_id", analysis_db_},
         {"analysis_seed_probe_sets", "$.probe_set_id", "analysis_seed_probe_set", "sp_probe_set", "probe_set_id", analysis_db_},
         {"analysis_input_sets", "$.input_set_id", "analysis_input_set", "an_input_set", "input_set_id", analysis_db_},
         {"analysis_seed_probe_axis_xy", "$.axis_xy_id", "analysis_seed_probe_axis_xy", "sp_axis_xy", "axis_xy_id", analysis_db_},
@@ -2490,22 +2492,38 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
 
             restore_stream("analysis_battle_completions", [&](const std::string& line) {
                 bool ok_id = false, ok_workflow = false, ok_step = false, ok_job = false;
-                bool ok_entry = false, ok_completion = false, ok_manifest_artifact = false, ok_trace_artifact = false;
+                bool ok_battle_set = false, ok_wave = false, ok_selected_turn_job = false;
+                bool ok_selected_execution_job = false, ok_entry = false, ok_completion = false;
+                bool ok_manifest_artifact = false;
                 bool ok_manifest_hex = false;
                 const auto old_id = JsonExtractInt(analysis_db_, line, "$.battle_completion_id", &ok_id);
                 const auto old_workflow = JsonExtractInt(analysis_db_, line, "$.workflow_instance_id", &ok_workflow);
                 const auto old_step = JsonExtractInt(analysis_db_, line, "$.workflow_step_id", &ok_step);
                 const auto old_job = JsonExtractInt(analysis_db_, line, "$.exec_job_id", &ok_job);
+                const auto old_battle_set = JsonExtractInt(analysis_db_, line, "$.battle_set_id", &ok_battle_set);
+                const auto old_wave = JsonExtractInt(analysis_db_, line, "$.wave_id", &ok_wave);
+                const auto old_selected_turn_job = JsonExtractInt(
+                    analysis_db_, line, "$.selected_turn_job_id", &ok_selected_turn_job);
+                const auto old_selected_execution_job = JsonExtractInt(
+                    analysis_db_, line, "$.selected_execution_job_id", &ok_selected_execution_job);
                 const auto old_entry = JsonExtractInt(analysis_db_, line, "$.entry_savestate_id", &ok_entry);
                 const auto old_completion = JsonExtractInt(analysis_db_, line, "$.completion_savestate_id", &ok_completion);
                 const auto old_manifest_artifact = JsonExtractInt(analysis_db_, line, "$.manifest_artifact_id", &ok_manifest_artifact);
-                const auto old_trace_artifact = JsonExtractInt(analysis_db_, line, "$.input_trace_artifact_id", &ok_trace_artifact);
                 const auto manifest_hex = JsonExtractText(analysis_db_, line, "$.manifest_blob_hex", &ok_manifest_hex);
-                if (!ok_id || !ok_workflow || !ok_step || !ok_entry) return;
+                if (!ok_id || !ok_workflow || !ok_step || !ok_battle_set || !ok_wave
+                    || !ok_selected_turn_job || !ok_selected_execution_job || !ok_entry) {
+                    return;
+                }
                 const auto new_id = map_id("analysis_battle_completion", old_id);
                 const auto workflow = map_optional("workflow_instance", true, old_workflow);
                 const auto step = map_optional("workflow_step", true, old_step);
                 const auto job = map_optional("job", ok_job, old_job);
+                const auto battle_set = map_optional("analysis_battle_set", true, old_battle_set);
+                const auto wave = map_optional("analysis_turn_wave", true, old_wave);
+                const auto selected_turn_job = map_optional(
+                    "analysis_battle_turn_job", true, old_selected_turn_job);
+                const auto selected_execution_job = map_optional(
+                    "job", true, old_selected_execution_job);
                 const auto entry = map_savestate(true, old_entry);
                 const auto completion = map_savestate(ok_completion, old_completion);
                 const auto manifest_blob = ok_manifest_hex
@@ -2518,38 +2536,43 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 const auto manifest_artifact = ok_manifest_artifact
                     ? lookup_map("state_artifact", old_manifest_artifact)
                     : std::optional<std::int64_t>{};
-                const auto trace_artifact = ok_trace_artifact
-                    ? lookup_map("state_artifact", old_trace_artifact)
-                    : std::optional<std::int64_t>{};
-                if ((ok_manifest_artifact && !manifest_artifact.has_value())
-                    || (ok_trace_artifact && !trace_artifact.has_value())) {
+                if (ok_manifest_artifact && !manifest_artifact.has_value()) {
                     db_error = "battle completion artifact mapping is missing";
                     return;
                 }
-                if (new_id == 0 || !workflow || !step || !entry) return;
+                if (new_id == 0 || !workflow || !step || !battle_set || !wave
+                    || !selected_turn_job || !selected_execution_job || !entry) {
+                    return;
+                }
                 Statement st;
                 if (!Prepare(analysis_db_,
                         "INSERT INTO ab_battle_completion(battle_completion_id,workflow_instance_id,workflow_step_id,exec_job_id,"
-                        "entry_savestate_id,completion_savestate_id,entry_rng_seed,completion_rng_seed,manifest_version,manifest_blob,"
-                        "manifest_artifact_id,input_trace_artifact_id,mismatch_count,invariant_failure_count,status,created_at_utc,completed_at_utc) "
-                        "VALUES(?1,?2,?3,?4,?5,?6,json_extract(?7,'$.entry_rng_seed'),json_extract(?7,'$.completion_rng_seed'),"
-                        "json_extract(?7,'$.manifest_version'),?8,?9,?10,json_extract(?7,'$.mismatch_count'),"
-                        "json_extract(?7,'$.invariant_failure_count'),json_extract(?7,'$.status'),json_extract(?7,'$.created_at_utc'),json_extract(?7,'$.completed_at_utc'));",
+                        "battle_set_id,wave_id,selected_turn_job_id,selected_execution_job_id,entry_savestate_id,completion_savestate_id,"
+                        "manifest_version,manifest_blob,manifest_sha256,manifest_artifact_id,route_kind,transition_filename,"
+                        "worker_terminal_sha256,error_code,error_text,status,created_at_utc,completed_at_utc) "
+                        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,json_extract(?11,'$.manifest_version'),?12,"
+                        "json_extract(?11,'$.manifest_sha256'),?13,json_extract(?11,'$.route_kind'),"
+                        "json_extract(?11,'$.transition_filename'),json_extract(?11,'$.worker_terminal_sha256'),"
+                        "json_extract(?11,'$.error_code'),json_extract(?11,'$.error_text'),json_extract(?11,'$.status'),"
+                        "json_extract(?11,'$.created_at_utc'),json_extract(?11,'$.completed_at_utc'));",
                         &st, &db_error)) return;
                 sqlite3_bind_int64(st.st, 1, new_id);
                 sqlite3_bind_int64(st.st, 2, *workflow);
                 sqlite3_bind_int64(st.st, 3, *step);
                 bind_optional_int64(st.st, 4, job);
-                sqlite3_bind_int64(st.st, 5, *entry);
-                bind_optional_int64(st.st, 6, completion);
-                sqlite3_bind_text(st.st, 7, line.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(st.st, 5, *battle_set);
+                sqlite3_bind_int64(st.st, 6, *wave);
+                sqlite3_bind_int64(st.st, 7, *selected_turn_job);
+                sqlite3_bind_int64(st.st, 8, *selected_execution_job);
+                sqlite3_bind_int64(st.st, 9, *entry);
+                bind_optional_int64(st.st, 10, completion);
+                sqlite3_bind_text(st.st, 11, line.c_str(), -1, SQLITE_TRANSIENT);
                 if (manifest_blob.has_value()) {
-                    sqlite3_bind_blob(st.st, 8, manifest_blob->data(), static_cast<int>(manifest_blob->size()), SQLITE_TRANSIENT);
+                    sqlite3_bind_blob(st.st, 12, manifest_blob->data(), static_cast<int>(manifest_blob->size()), SQLITE_TRANSIENT);
                 } else {
-                    sqlite3_bind_null(st.st, 8);
+                    sqlite3_bind_null(st.st, 12);
                 }
-                bind_optional_int64(st.st, 9, manifest_artifact);
-                bind_optional_int64(st.st, 10, trace_artifact);
+                bind_optional_int64(st.st, 13, manifest_artifact);
                 StepDone(analysis_db_, st.st, &db_error);
             });
 
@@ -2977,71 +3000,313 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 bind_optional_int64(st.st, 6, confirmation);
                 StepDone(analysis_db_, st.st, &db_error);
             });
-            restore_stream("analysis_battle_results", [&](const std::string& line) {
-                bool ok_id = false, ok_completion = false, ok_workflow = false, ok_step = false, ok_job = false;
-                bool ok_seed_ref = false, ok_seed_kind = false, ok_entry = false, ok_final = false;
-                bool ok_result_artifact = false, ok_trace_artifact = false;
-                const auto old_id = JsonExtractInt(analysis_db_, line, "$.battle_results_id", &ok_id);
-                const auto old_completion = JsonExtractInt(analysis_db_, line, "$.battle_completion_id", &ok_completion);
-                const auto old_workflow = JsonExtractInt(analysis_db_, line, "$.workflow_instance_id", &ok_workflow);
-                const auto old_step = JsonExtractInt(analysis_db_, line, "$.workflow_step_id", &ok_step);
-                const auto old_job = JsonExtractInt(analysis_db_, line, "$.exec_job_id", &ok_job);
-                const auto seed_kind = JsonExtractText(analysis_db_, line, "$.selected_seed_ref_kind", &ok_seed_kind);
-                const auto old_seed_ref = JsonExtractInt(analysis_db_, line, "$.selected_seed_ref_id", &ok_seed_ref);
-                const auto old_entry = JsonExtractInt(analysis_db_, line, "$.entry_savestate_id", &ok_entry);
-                const auto old_final = JsonExtractInt(analysis_db_, line, "$.final_savestate_id", &ok_final);
-                const auto old_result_artifact = JsonExtractInt(analysis_db_, line, "$.result_artifact_id", &ok_result_artifact);
-                const auto old_trace_artifact = JsonExtractInt(analysis_db_, line, "$.input_trace_artifact_id", &ok_trace_artifact);
-                if (!ok_id || !ok_completion || !ok_workflow || !ok_step || !ok_seed_kind || !ok_seed_ref || !ok_entry) return;
-                const auto new_id = map_id("analysis_battle_results", old_id);
-                const auto completion = map_optional("analysis_battle_completion", true, old_completion);
+            restore_stream("analysis_battle_recordings", [&](const std::string& line) {
+                bool ok_id = false, ok_completion = false, ok_workflow = false;
+                bool ok_step = false, ok_job = false, ok_source_state = false;
+                bool ok_source_dtm = false, ok_source_itinerary = false;
+                bool ok_source_binding_hex = false, ok_replay_plan_hex = false;
+                bool ok_recorded_dtm = false;
+                bool ok_recorded_itinerary = false, ok_paired_checkpoint = false;
+                bool ok_timing_anchor_hex = false, ok_tree = false;
+                bool ok_validation = false, ok_sterilization = false;
+                const auto old_id = JsonExtractInt(
+                    analysis_db_, line, "$.battle_recording_id", &ok_id);
+                const auto old_completion = JsonExtractInt(
+                    analysis_db_, line, "$.battle_completion_id", &ok_completion);
+                const auto old_workflow = JsonExtractInt(
+                    analysis_db_, line, "$.workflow_instance_id", &ok_workflow);
+                const auto old_step = JsonExtractInt(
+                    analysis_db_, line, "$.workflow_step_id", &ok_step);
+                const auto old_job = JsonExtractInt(
+                    analysis_db_, line, "$.exec_job_id", &ok_job);
+                const auto old_source_state = JsonExtractInt(
+                    analysis_db_, line, "$.source_savestate_id", &ok_source_state);
+                const auto old_source_dtm = JsonExtractInt(
+                    analysis_db_, line, "$.source_dtm_artifact_id", &ok_source_dtm);
+                const auto old_source_itinerary = JsonExtractInt(
+                    analysis_db_, line, "$.source_itinerary_artifact_id", &ok_source_itinerary);
+                const auto source_binding_hex = JsonExtractText(
+                    analysis_db_, line, "$.source_binding_blob_hex", &ok_source_binding_hex);
+                const auto replay_plan_hex = JsonExtractText(
+                    analysis_db_, line, "$.replay_plan_blob_hex", &ok_replay_plan_hex);
+                const auto old_recorded_dtm = JsonExtractInt(
+                    analysis_db_, line, "$.recorded_dtm_artifact_id", &ok_recorded_dtm);
+                const auto old_recorded_itinerary = JsonExtractInt(
+                    analysis_db_, line, "$.recorded_itinerary_artifact_id", &ok_recorded_itinerary);
+                const auto old_paired_checkpoint = JsonExtractInt(
+                    analysis_db_, line, "$.paired_checkpoint_savestate_id", &ok_paired_checkpoint);
+                const auto timing_anchor_hex = JsonExtractText(
+                    analysis_db_, line, "$.timing_anchor_blob_hex", &ok_timing_anchor_hex);
+                const auto old_tree = JsonExtractInt(
+                    analysis_db_, line, "$.tas_movie_tree_id", &ok_tree);
+                const auto old_validation = JsonExtractInt(
+                    analysis_db_, line, "$.validation_request_id", &ok_validation);
+                const auto old_sterilization = JsonExtractInt(
+                    analysis_db_, line, "$.sterilization_request_id", &ok_sterilization);
+                if (!ok_id || !ok_completion || !ok_workflow || !ok_step
+                    || !ok_source_state || !ok_source_dtm || !ok_source_itinerary
+                    || !ok_source_binding_hex || !ok_replay_plan_hex) {
+                    return;
+                }
+
+                const auto source_binding_blob = DecodeHex(source_binding_hex);
+                const auto replay_plan_blob = DecodeHex(replay_plan_hex);
+                if (!source_binding_blob.has_value() || !replay_plan_blob.has_value()) {
+                    db_error = "battle recording source binding or replay plan hex is invalid";
+                    return;
+                }
+                runtime::battlerecord::BattleReplaySourceBindingV1 source_binding;
+                std::string binding_diagnostic;
+                if (!runtime::battlerecord::DecodeBattleReplaySourceBindingV1(
+                        std::span<const std::uint8_t>(
+                            reinterpret_cast<const std::uint8_t*>(source_binding_blob->data()),
+                            source_binding_blob->size()),
+                        source_binding,
+                        &binding_diagnostic) ||
+                    source_binding.source_savestate_id !=
+                        static_cast<std::uint64_t>(old_source_state) ||
+                    source_binding.source_dtm_artifact_id !=
+                        std::optional<std::uint64_t>{static_cast<std::uint64_t>(old_source_dtm)} ||
+                    source_binding.source_itinerary_artifact_id !=
+                        std::optional<std::uint64_t>{static_cast<std::uint64_t>(old_source_itinerary)}) {
+                    db_error = "battle recording source binding is invalid: " +
+                        binding_diagnostic;
+                    return;
+                }
+                const auto timing_anchor_blob = ok_timing_anchor_hex
+                    ? DecodeHex(timing_anchor_hex)
+                    : std::optional<std::string>{};
+                if (ok_timing_anchor_hex && !timing_anchor_blob.has_value()) {
+                    db_error = "battle recording timing anchor hex is invalid";
+                    return;
+                }
+
+                const auto new_id = map_id("analysis_battle_recording", old_id);
+                const auto completion = map_optional(
+                    "analysis_battle_completion", true, old_completion);
                 const auto workflow = map_optional("workflow_instance", true, old_workflow);
                 const auto step = map_optional("workflow_step", true, old_step);
                 const auto job = map_optional("job", ok_job, old_job);
-                const auto entry = map_savestate(true, old_entry);
-                const auto final_state = map_savestate(ok_final, old_final);
-                const auto seed_map_kind = seed_kind == "analysisseedprobe.confirmed_result"
-                    ? std::string_view("analysis_seed_probe_result")
-                    : std::string_view{};
-                const auto seed_ref = seed_map_kind.empty() ? std::nullopt : lookup_map(seed_map_kind, old_seed_ref);
-                if (!seed_ref.has_value()) {
-                    db_error = "direct selected seed row mapping is missing during battle results rehydrate";
+                const auto source_state = map_savestate(true, old_source_state);
+                const auto source_dtm = lookup_map("state_artifact", old_source_dtm);
+                const auto source_itinerary = lookup_map(
+                    "state_artifact", old_source_itinerary);
+                const auto recorded_dtm = ok_recorded_dtm
+                    ? lookup_map("state_artifact", old_recorded_dtm)
+                    : std::optional<std::int64_t>{};
+                const auto recorded_itinerary = ok_recorded_itinerary
+                    ? lookup_map("state_artifact", old_recorded_itinerary)
+                    : std::optional<std::int64_t>{};
+                const auto paired_checkpoint = map_savestate(
+                    ok_paired_checkpoint, old_paired_checkpoint);
+                const auto tree = ok_tree
+                    ? lookup_map("state_tas_movie_tree", old_tree)
+                    : std::optional<std::int64_t>{};
+                const auto validation = ok_validation
+                    ? lookup_map("analysis_tas_movie_validation_request", old_validation)
+                    : std::optional<std::int64_t>{};
+                const auto sterilization = ok_sterilization
+                    ? lookup_map(
+                        "analysis_tas_movie_checkpoint_sterilization_request",
+                        old_sterilization)
+                    : std::optional<std::int64_t>{};
+                if (!source_dtm || !source_itinerary
+                    || (ok_recorded_dtm && !recorded_dtm)
+                    || (ok_recorded_itinerary && !recorded_itinerary)
+                    || (ok_tree && !tree)
+                    || (ok_validation && !validation)
+                    || (ok_sterilization && !sterilization)) {
+                    db_error = "battle recording referenced artifact or analysis mapping is missing";
                     return;
                 }
-                const auto result_artifact = ok_result_artifact
-                    ? lookup_map("state_artifact", old_result_artifact)
-                    : std::optional<std::int64_t>{};
-                const auto trace_artifact = ok_trace_artifact
-                    ? lookup_map("state_artifact", old_trace_artifact)
-                    : std::optional<std::int64_t>{};
-                if ((ok_result_artifact && !result_artifact.has_value())
-                    || (ok_trace_artifact && !trace_artifact.has_value())) {
-                    db_error = "battle results artifact mapping is missing";
+                if (new_id == 0 || !completion || !workflow || !step || !source_state) {
                     return;
                 }
-                if (new_id == 0 || !completion || !workflow || !step || !entry) return;
+                source_binding.source_savestate_id =
+                    static_cast<std::uint64_t>(*source_state);
+                source_binding.source_dtm_artifact_id =
+                    static_cast<std::uint64_t>(*source_dtm);
+                source_binding.source_itinerary_artifact_id =
+                    static_cast<std::uint64_t>(*source_itinerary);
+                source_binding.canonical_sha256 =
+                    runtime::battlerecord::ComputeBattleReplaySourceBindingHashV1(
+                        source_binding);
+                const auto mapped_source_binding =
+                    runtime::battlerecord::EncodeBattleReplaySourceBindingV1(
+                        source_binding, &binding_diagnostic);
+                if (mapped_source_binding.empty()) {
+                    db_error = "battle recording source binding remap failed: " +
+                        binding_diagnostic;
+                    return;
+                }
+
                 Statement st;
                 if (!Prepare(analysis_db_,
-                        "INSERT INTO ab_battle_results(battle_results_id,battle_completion_id,workflow_instance_id,workflow_step_id,exec_job_id,"
-                        "selected_seed_ref_kind,selected_seed_ref_id,entry_savestate_id,final_savestate_id,selected_seed_value,entry_rng_seed,final_rng_seed,"
-                        "rng_effect_kind,fixed_draw_count,result_artifact_id,input_trace_artifact_id,mismatch_count,invariant_failure_count,status,created_at_utc,completed_at_utc) "
-                        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,json_extract(?10,'$.selected_seed_value'),json_extract(?10,'$.entry_rng_seed'),"
-                        "json_extract(?10,'$.final_rng_seed'),json_extract(?10,'$.rng_effect_kind'),json_extract(?10,'$.fixed_draw_count'),?11,?12,"
-                        "json_extract(?10,'$.mismatch_count'),json_extract(?10,'$.invariant_failure_count'),json_extract(?10,'$.status'),"
-                        "json_extract(?10,'$.created_at_utc'),json_extract(?10,'$.completed_at_utc'));",
-                        &st, &db_error)) return;
+                        "INSERT INTO ab_battle_recording(battle_recording_id,battle_completion_id,workflow_instance_id,workflow_step_id,exec_job_id,"
+                        "source_savestate_id,source_dtm_artifact_id,source_itinerary_artifact_id,source_binding_version,source_binding_blob,source_binding_sha256,replay_plan_version,replay_plan_blob,replay_plan_sha256,"
+                        "outcome,recorded_dtm_artifact_id,recorded_itinerary_artifact_id,paired_checkpoint_savestate_id,timing_anchor_version,"
+                        "timing_anchor_blob,tas_movie_tree_id,validation_request_id,sterilization_request_id,worker_terminal_sha256,error_code,error_text,"
+                        "status,created_at_utc,completed_at_utc) "
+                        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10,json_extract(?11,'$.replay_plan_version'),?12,"
+                        "json_extract(?11,'$.replay_plan_sha256'),json_extract(?11,'$.outcome'),?13,?14,?15,"
+                        "json_extract(?11,'$.timing_anchor_version'),?16,?17,?18,?19,json_extract(?11,'$.worker_terminal_sha256'),"
+                        "json_extract(?11,'$.error_code'),json_extract(?11,'$.error_text'),json_extract(?11,'$.status'),"
+                        "json_extract(?11,'$.created_at_utc'),json_extract(?11,'$.completed_at_utc'));",
+                        &st, &db_error)) {
+                    return;
+                }
                 sqlite3_bind_int64(st.st, 1, new_id);
                 sqlite3_bind_int64(st.st, 2, *completion);
                 sqlite3_bind_int64(st.st, 3, *workflow);
                 sqlite3_bind_int64(st.st, 4, *step);
                 bind_optional_int64(st.st, 5, job);
-                sqlite3_bind_text(st.st, 6, seed_kind.c_str(), -1, SQLITE_TRANSIENT);
-                sqlite3_bind_int64(st.st, 7, *seed_ref);
-                sqlite3_bind_int64(st.st, 8, *entry);
-                bind_optional_int64(st.st, 9, final_state);
-                sqlite3_bind_text(st.st, 10, line.c_str(), -1, SQLITE_TRANSIENT);
-                bind_optional_int64(st.st, 11, result_artifact);
-                bind_optional_int64(st.st, 12, trace_artifact);
+                sqlite3_bind_int64(st.st, 6, *source_state);
+                sqlite3_bind_int64(st.st, 7, *source_dtm);
+                sqlite3_bind_int64(st.st, 8, *source_itinerary);
+                sqlite3_bind_blob(st.st, 9, mapped_source_binding.data(),
+                    static_cast<int>(mapped_source_binding.size()), SQLITE_TRANSIENT);
+                sqlite3_bind_text(st.st, 10,
+                    source_binding.canonical_sha256.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(st.st, 11, line.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_blob(st.st, 12, replay_plan_blob->data(),
+                    static_cast<int>(replay_plan_blob->size()), SQLITE_TRANSIENT);
+                bind_optional_int64(st.st, 13, recorded_dtm);
+                bind_optional_int64(st.st, 14, recorded_itinerary);
+                bind_optional_int64(st.st, 15, paired_checkpoint);
+                if (timing_anchor_blob.has_value()) {
+                    sqlite3_bind_blob(st.st, 16, timing_anchor_blob->data(),
+                        static_cast<int>(timing_anchor_blob->size()), SQLITE_TRANSIENT);
+                } else {
+                    sqlite3_bind_null(st.st, 16);
+                }
+                bind_optional_int64(st.st, 17, tree);
+                bind_optional_int64(st.st, 18, validation);
+                bind_optional_int64(st.st, 19, sterilization);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_battle_replays", [&](const std::string& line) {
+                bool ok_id=false, ok_completion=false, ok_workflow=false,
+                     ok_step=false, ok_job=false, ok_state=false,
+                     ok_dtm=false, ok_itinerary=false, ok_binding=false,
+                     ok_plan=false,
+                     ok_manifest=false, ok_transition=false;
+                const auto old_id = JsonExtractInt(analysis_db_, line,
+                    "$.battle_replay_id", &ok_id);
+                const auto old_completion = JsonExtractInt(analysis_db_, line,
+                    "$.battle_completion_id", &ok_completion);
+                const auto old_workflow = JsonExtractInt(analysis_db_, line,
+                    "$.workflow_instance_id", &ok_workflow);
+                const auto old_step = JsonExtractInt(analysis_db_, line,
+                    "$.workflow_step_id", &ok_step);
+                const auto old_job = JsonExtractInt(analysis_db_, line,
+                    "$.exec_job_id", &ok_job);
+                const auto old_state = JsonExtractInt(analysis_db_, line,
+                    "$.source_savestate_id", &ok_state);
+                const auto old_dtm = JsonExtractInt(analysis_db_, line,
+                    "$.source_dtm_artifact_id", &ok_dtm);
+                const auto old_itinerary = JsonExtractInt(analysis_db_, line,
+                    "$.source_itinerary_artifact_id", &ok_itinerary);
+                const auto binding_hex = JsonExtractText(analysis_db_, line,
+                    "$.source_binding_blob_hex", &ok_binding);
+                const auto plan_hex = JsonExtractText(analysis_db_, line,
+                    "$.replay_plan_blob_hex", &ok_plan);
+                const auto manifest_hex = JsonExtractText(analysis_db_, line,
+                    "$.observed_completion_blob_hex", &ok_manifest);
+                const auto transition_hex = JsonExtractText(analysis_db_, line,
+                    "$.observed_transition_blob_hex", &ok_transition);
+                if (!ok_id || !ok_completion || !ok_workflow || !ok_step ||
+                    !ok_state || !ok_binding || !ok_plan) return;
+                const auto binding_blob = DecodeHex(binding_hex);
+                const auto plan_blob = DecodeHex(plan_hex);
+                const auto manifest_blob = ok_manifest
+                    ? DecodeHex(manifest_hex) : std::optional<std::string>{};
+                const auto transition_blob = ok_transition
+                    ? DecodeHex(transition_hex) : std::optional<std::string>{};
+                if (!binding_blob || !plan_blob || (ok_manifest && !manifest_blob) ||
+                    (ok_transition && !transition_blob)) {
+                    db_error = "battle replay source binding or evidence hex is invalid";
+                    return;
+                }
+                runtime::battlerecord::BattleReplaySourceBindingV1 source_binding;
+                std::string binding_diagnostic;
+                if (!runtime::battlerecord::DecodeBattleReplaySourceBindingV1(
+                        std::span<const std::uint8_t>(
+                            reinterpret_cast<const std::uint8_t*>(binding_blob->data()),
+                            binding_blob->size()),
+                        source_binding,
+                        &binding_diagnostic) ||
+                    source_binding.source_savestate_id !=
+                        static_cast<std::uint64_t>(old_state) ||
+                    source_binding.source_dtm_artifact_id !=
+                        (ok_dtm ? std::optional<std::uint64_t>{
+                            static_cast<std::uint64_t>(old_dtm)} : std::nullopt) ||
+                    source_binding.source_itinerary_artifact_id !=
+                        (ok_itinerary ? std::optional<std::uint64_t>{
+                            static_cast<std::uint64_t>(old_itinerary)} : std::nullopt)) {
+                    db_error = "battle replay source binding is invalid: " +
+                        binding_diagnostic;
+                    return;
+                }
+                const auto new_id = map_id("analysis_battle_replay", old_id);
+                const auto completion_id = map_optional(
+                    "analysis_battle_completion", true, old_completion);
+                const auto workflow = map_optional("workflow_instance", true,
+                    old_workflow);
+                const auto step = map_optional("workflow_step", true, old_step);
+                const auto job = map_optional("job", ok_job, old_job);
+                const auto state = map_savestate(true, old_state);
+                const auto dtm = ok_dtm
+                    ? lookup_map("state_artifact", old_dtm)
+                    : std::optional<std::int64_t>{};
+                const auto itinerary = ok_itinerary
+                    ? lookup_map("state_artifact", old_itinerary)
+                    : std::optional<std::int64_t>{};
+                if (new_id == 0 || !completion_id || !workflow || !step ||
+                    !state || (ok_dtm && !dtm) || (ok_itinerary && !itinerary)) return;
+                source_binding.source_savestate_id =
+                    static_cast<std::uint64_t>(*state);
+                source_binding.source_dtm_artifact_id = dtm.has_value()
+                    ? std::optional<std::uint64_t>{static_cast<std::uint64_t>(*dtm)}
+                    : std::nullopt;
+                source_binding.source_itinerary_artifact_id = itinerary.has_value()
+                    ? std::optional<std::uint64_t>{static_cast<std::uint64_t>(*itinerary)}
+                    : std::nullopt;
+                source_binding.canonical_sha256 =
+                    runtime::battlerecord::ComputeBattleReplaySourceBindingHashV1(
+                        source_binding);
+                const auto mapped_binding =
+                    runtime::battlerecord::EncodeBattleReplaySourceBindingV1(
+                        source_binding, &binding_diagnostic);
+                if (mapped_binding.empty()) {
+                    db_error = "battle replay source binding remap failed: " +
+                        binding_diagnostic;
+                    return;
+                }
+                Statement st;
+                if (!Prepare(analysis_db_,
+                    "INSERT INTO ab_battle_replay(battle_replay_id,battle_completion_id,workflow_instance_id,workflow_step_id,exec_job_id,source_savestate_id,source_dtm_artifact_id,source_itinerary_artifact_id,source_binding_version,source_binding_blob,source_binding_sha256,replay_plan_version,replay_plan_blob,replay_plan_sha256,outcome,mismatch_turn,expected_rng,observed_rng,observed_completion_blob,observed_completion_sha256,observed_transition_blob,observed_transition_sha256,worker_terminal_sha256,error_code,error_text,status,created_at_utc,completed_at_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10,json_extract(?11,'$.replay_plan_version'),?12,json_extract(?11,'$.replay_plan_sha256'),json_extract(?11,'$.outcome'),json_extract(?11,'$.mismatch_turn'),json_extract(?11,'$.expected_rng'),json_extract(?11,'$.observed_rng'),?13,json_extract(?11,'$.observed_completion_sha256'),?14,json_extract(?11,'$.observed_transition_sha256'),json_extract(?11,'$.worker_terminal_sha256'),json_extract(?11,'$.error_code'),json_extract(?11,'$.error_text'),json_extract(?11,'$.status'),json_extract(?11,'$.created_at_utc'),json_extract(?11,'$.completed_at_utc'));",
+                    &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *completion_id);
+                sqlite3_bind_int64(st.st, 3, *workflow);
+                sqlite3_bind_int64(st.st, 4, *step);
+                bind_optional_int64(st.st, 5, job);
+                sqlite3_bind_int64(st.st, 6, *state);
+                bind_optional_int64(st.st, 7, dtm);
+                bind_optional_int64(st.st, 8, itinerary);
+                sqlite3_bind_blob(st.st, 9, mapped_binding.data(),
+                    static_cast<int>(mapped_binding.size()), SQLITE_TRANSIENT);
+                sqlite3_bind_text(st.st, 10,
+                    source_binding.canonical_sha256.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(st.st, 11, line.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_blob(st.st, 12, plan_blob->data(),
+                    static_cast<int>(plan_blob->size()), SQLITE_TRANSIENT);
+                if (manifest_blob) sqlite3_bind_blob(st.st, 13,
+                    manifest_blob->data(), static_cast<int>(manifest_blob->size()),
+                    SQLITE_TRANSIENT); else sqlite3_bind_null(st.st, 13);
+                if (transition_blob) sqlite3_bind_blob(st.st, 14,
+                    transition_blob->data(), static_cast<int>(transition_blob->size()),
+                    SQLITE_TRANSIENT); else sqlite3_bind_null(st.st, 14);
                 StepDone(analysis_db_, st.st, &db_error);
             });
             restore_stream("analysis_seed_probe_encounter_projections", [&](const std::string& line) {
@@ -3108,11 +3373,17 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     || ref_kind == "ab_battle_completion") {
                     return lookup_map("analysis_battle_completion", old_id);
                 }
-                if (ref_kind == "analysis_battle.battle_results_id"
-                    || ref_kind == "analysis_battle.battle_results"
-                    || ref_kind == "analysisbattle.battle_results"
-                    || ref_kind == "ab_battle_results") {
-                    return lookup_map("analysis_battle_results", old_id);
+                if (ref_kind == "analysis_battle.battle_recording_id"
+                    || ref_kind == "analysis_battle.battle_recording"
+                    || ref_kind == "analysisbattle.battle_recording"
+                    || ref_kind == "ab_battle_recording") {
+                    return lookup_map("analysis_battle_recording", old_id);
+                }
+                if (ref_kind == "analysis_battle.battle_replay_id"
+                    || ref_kind == "analysis_battle.battle_replay"
+                    || ref_kind == "analysisbattle.battle_replay"
+                    || ref_kind == "ab_battle_replay") {
+                    return lookup_map("analysis_battle_replay", old_id);
                 }
                 return std::nullopt;
             };
@@ -3392,10 +3663,14 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     || context_kind == "analysis_battle.battle_completion"
                     || context_kind == "analysisbattle.battle_completion"
                     || context_kind == "ab_battle_completion") map_kind = "analysis_battle_completion";
-                else if (context_kind == "analysis_battle.battle_results_id"
-                    || context_kind == "analysis_battle.battle_results"
-                    || context_kind == "analysisbattle.battle_results"
-                    || context_kind == "ab_battle_results") map_kind = "analysis_battle_results";
+                else if (context_kind == "analysis_battle.battle_recording_id"
+                    || context_kind == "analysis_battle.battle_recording"
+                    || context_kind == "analysisbattle.battle_recording"
+                    || context_kind == "ab_battle_recording") map_kind = "analysis_battle_recording";
+                else if (context_kind == "analysis_battle.battle_replay_id"
+                    || context_kind == "analysis_battle.battle_replay"
+                    || context_kind == "analysisbattle.battle_replay"
+                    || context_kind == "ab_battle_replay") map_kind = "analysis_battle_replay";
                 else if (context_kind == "tmv_checkpoint_sterilization_request")
                     map_kind = "analysis_tas_movie_checkpoint_sterilization_request";
 

@@ -320,6 +320,7 @@ struct BattleCommandState
     std::uint32_t fake_remaining = 0;
     std::uint32_t command_index = 0;
     std::uint32_t moves_remaining = 0;
+    std::uint64_t last_command_commit_input_count = 0;
 };
 
 ProgramValueGraph EncodeBattleCommandState(const BattleCommandState& state);
@@ -331,7 +332,7 @@ bool DecodeBattleCommandState(
     GraphReader reader(graph);
     if (!reader.valid()) return false;
     const auto* record = reader.RootRecord(
-        SchemaIdentityFor("soa.battle.command.State"), 6);
+        SchemaIdentityFor("soa.battle.command.State"), 7);
     if (!record) return false;
     const auto* segment = reader.PayloadOf<EnumValue>(record->fields[2]);
     if (!segment ||
@@ -351,13 +352,377 @@ bool DecodeBattleCommandState(
         !DecodeTurnSpec(plan_graph, decoded.plan) ||
         !Scalar(reader, record->fields[3], decoded.fake_remaining) ||
         !Scalar(reader, record->fields[4], decoded.command_index) ||
-        !Scalar(reader, record->fields[5], decoded.moves_remaining))
+        !Scalar(reader, record->fields[5], decoded.moves_remaining) ||
+        !Scalar(reader, record->fields[6],
+            decoded.last_command_commit_input_count))
     {
         return false;
     }
     decoded.segment = static_cast<BattleCommandSegment>(segment->value);
     output = std::move(decoded);
     return true;
+}
+
+const std::vector<Byte>* RootNamedBytes(
+    const ProgramValueGraph& graph,
+    const SchemaIdentity& schema)
+{
+    GraphReader reader(graph);
+    if (!reader.valid()) return nullptr;
+    const auto* root = reader.Find(graph.root);
+    return root && root->type == TypeRef::Named(schema)
+        ? std::get_if<std::vector<Byte>>(&root->payload)
+        : nullptr;
+}
+
+ProgramValueGraph NamedBytesGraph(
+    const SchemaIdentity& schema,
+    std::vector<std::uint8_t> bytes)
+{
+    GraphBuilder builder;
+    const auto root = builder.Add(
+        TypeRef::Named(schema),
+        std::vector<Byte>(bytes.begin(), bytes.end()));
+    return std::move(builder).Finish(root);
+}
+
+std::optional<std::uint32_t> ContinueResultPc(
+    const ProgramValueGraph& graph)
+{
+    GraphReader reader(graph);
+    if (!reader.valid()) return std::nullopt;
+    const auto* root = reader.Find(graph.root);
+    const auto* record = root
+        ? std::get_if<RecordValue>(&root->payload)
+        : nullptr;
+    if (!root || root->type != CanonicalActionOutputType(
+            CanonicalAction::ExecutionContinueUntil) ||
+        !record || record->fields.size() != 6)
+        return std::nullopt;
+    std::uint32_t pc = 0;
+    return Scalar(reader, record->fields[2], pc)
+        ? std::optional(pc)
+        : std::nullopt;
+}
+
+struct ContinueProvenance
+{
+    std::uint32_t pc = 0;
+    std::uint64_t vi_count = 0;
+    std::uint64_t epoch = 0;
+};
+
+std::optional<ContinueProvenance> ContinueResultProvenance(
+    const ProgramValueGraph& graph)
+{
+    GraphReader reader(graph);
+    if (!reader.valid()) return std::nullopt;
+    const auto* root = reader.Find(graph.root);
+    const auto* record = root
+        ? std::get_if<RecordValue>(&root->payload)
+        : nullptr;
+    ContinueProvenance value{};
+    if (!root || root->type != CanonicalActionOutputType(
+            CanonicalAction::ExecutionContinueUntil) ||
+        !record || record->fields.size() != 6 ||
+        !Scalar(reader, record->fields[2], value.pc) ||
+        !Scalar(reader, record->fields[4], value.vi_count) ||
+        !Scalar(reader, record->fields[5], value.epoch))
+        return std::nullopt;
+    return value;
+}
+
+enum class ResultsSegment : std::uint8_t
+{
+    Descriptor = 0,
+    Dispatch = 1,
+    AcceptIntro = 2,
+    AcceptGold = 3,
+    AcceptNormalExp = 4,
+    AcceptStatWave = 5,
+    AcceptMagicEntry = 6,
+    AcceptMagicExp = 7,
+    AcceptLearnedMagic = 8,
+    AcceptItemPopup = 9,
+    AcceptConfirm = 10,
+    AcceptFade = 11,
+    Cleanup = 12,
+    Complete = 13,
+};
+
+enum class CompletionSegment : std::uint8_t
+{
+    Causal = 0,
+    CountdownCommit = 1,
+    SlotsCommit = 2,
+    RewardEntry = 3,
+    RewardCommit = 4,
+    Complete = 5,
+};
+
+struct CompletionState
+{
+    CompletionSegment segment = CompletionSegment::Causal;
+    ContinueProvenance reward_entry;
+};
+
+ProgramValueGraph EncodeCompletionState(const CompletionState& state)
+{
+    std::vector<std::uint8_t> bytes{
+        'B','C','I','1',1,0,0,0,
+        static_cast<std::uint8_t>(state.segment)};
+    const auto put32 = [&](std::uint32_t value)
+    {
+        for (unsigned shift = 0; shift != 32; shift += 8)
+            bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+    };
+    const auto put64 = [&](std::uint64_t value)
+    {
+        put32(static_cast<std::uint32_t>(value));
+        put32(static_cast<std::uint32_t>(value >> 32u));
+    };
+    put32(state.reward_entry.pc);
+    put64(state.reward_entry.vi_count);
+    put64(state.reward_entry.epoch);
+    return NamedBytesGraph(
+        BattleCompletionInteractionStateSchemaIdentity(),
+        std::move(bytes));
+}
+
+bool DecodeCompletionState(
+    const ProgramValueGraph& graph,
+    CompletionState& state)
+{
+    const auto* bytes = RootNamedBytes(
+        graph, BattleCompletionInteractionStateSchemaIdentity());
+    static constexpr std::array<Byte, 8> kHeader{
+        'B','C','I','1',1,0,0,0};
+    if (!bytes || bytes->size() != 29 ||
+        !std::equal(bytes->begin(), bytes->begin() + 8, kHeader.begin()) ||
+        (*bytes)[8] > static_cast<std::uint8_t>(CompletionSegment::Complete))
+        return false;
+    state.segment = static_cast<CompletionSegment>((*bytes)[8]);
+    std::size_t offset = 9;
+    const auto take32 = [&]()
+    {
+        std::uint32_t value = 0;
+        for (unsigned shift = 0; shift != 32; shift += 8)
+            value |= static_cast<std::uint32_t>((*bytes)[offset++]) << shift;
+        return value;
+    };
+    const auto take64 = [&]()
+    {
+        const auto lo = take32();
+        const auto hi = take32();
+        return static_cast<std::uint64_t>(lo) |
+            (static_cast<std::uint64_t>(hi) << 32u);
+    };
+    state.reward_entry.pc = take32();
+    state.reward_entry.vi_count = take64();
+    state.reward_entry.epoch = take64();
+    return true;
+}
+
+ProgramValueGraph EncodeCompletionTransition(const CompletionState& completion)
+{
+    GraphBuilder builder;
+    const auto state = builder.Import(EncodeCompletionState(completion));
+    const auto selection = builder.Add(
+        TypeRef::Named(BattleCompletionInteractionSegmentSchemaIdentity()),
+        EnumValue{
+            .schema = BattleCompletionInteractionSegmentSchemaIdentity(),
+            .value = static_cast<std::int64_t>(completion.segment),
+        });
+    const auto root = builder.AddRecord(
+        BattleCompletionInteractionTransitionSchemaIdentity(),
+        {state, selection});
+    return std::move(builder).Finish(root);
+}
+
+bool AdvanceCompletionState(
+    CompletionState& state,
+    const ContinueProvenance& stop)
+{
+    auto& segment = state.segment;
+    const auto pc = stop.pc;
+    switch (segment)
+    {
+    case CompletionSegment::Causal:
+        if (pc == 0x8006f554u)
+            segment = CompletionSegment::CountdownCommit;
+        else if (pc == 0x8006f590u)
+            segment = CompletionSegment::SlotsCommit;
+        else
+            return false;
+        return true;
+    case CompletionSegment::CountdownCommit:
+        if (pc != 0x8006f558u) return false;
+        segment = CompletionSegment::RewardEntry;
+        return true;
+    case CompletionSegment::SlotsCommit:
+        if (pc != 0x8006f594u) return false;
+        segment = CompletionSegment::RewardEntry;
+        return true;
+    case CompletionSegment::RewardEntry:
+        if (pc != 0x8006f598u) return false;
+        state.reward_entry = stop;
+        segment = CompletionSegment::RewardCommit;
+        return true;
+    case CompletionSegment::RewardCommit:
+        if (pc != 0x8006fd58u) return false;
+        segment = CompletionSegment::Complete;
+        return true;
+    case CompletionSegment::Complete:
+        return false;
+    }
+    return false;
+}
+
+struct ResultsState
+{
+    battlecompletion::BattleResultsPresentationV1 expected;
+    std::array<std::uint32_t, 10> observed{};
+    ResultsSegment segment = ResultsSegment::Descriptor;
+};
+
+std::vector<std::uint8_t> EncodeResultsState(const ResultsState& state)
+{
+    std::vector<std::uint8_t> bytes{'B','R','S','1',1,0,0,0};
+    const auto put32 = [&](std::uint32_t value)
+    {
+        for (unsigned shift = 0; shift != 32; shift += 8)
+            bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+    };
+    put32(state.expected.gold_pages);
+    put32(state.expected.normal_exp_pages);
+    put32(state.expected.level_panels);
+    put32(state.expected.stat_waves);
+    put32(state.expected.magic_exp_pages);
+    put32(state.expected.magic_rank_events);
+    put32(state.expected.learned_magic_waves);
+    put32(state.expected.item_popups);
+    for (const auto count : state.observed) put32(count);
+    bytes.push_back(static_cast<std::uint8_t>(state.segment));
+    return bytes;
+}
+
+bool DecodeResultsState(
+    const ProgramValueGraph& graph,
+    ResultsState& state)
+{
+    const auto* bytes = RootNamedBytes(
+        graph, BattleResultsStateSchemaIdentity());
+    static constexpr std::array<Byte, 4> kMagic{'B','R','S','1'};
+    if (!bytes || bytes->size() != 81 ||
+        !std::equal(bytes->begin(), bytes->begin() + 4, kMagic.begin()) ||
+        (*bytes)[4] != 1 || (*bytes)[5] != 0 ||
+        (*bytes)[6] != 0 || (*bytes)[7] != 0)
+        return false;
+    std::size_t offset = 8;
+    const auto take32 = [&]()
+    {
+        std::uint32_t value = 0;
+        for (unsigned shift = 0; shift != 32; shift += 8)
+            value |= static_cast<std::uint32_t>((*bytes)[offset++]) << shift;
+        return value;
+    };
+    state.expected.gold_pages = take32();
+    state.expected.normal_exp_pages = take32();
+    state.expected.level_panels = take32();
+    state.expected.stat_waves = take32();
+    state.expected.magic_exp_pages = take32();
+    state.expected.magic_rank_events = take32();
+    state.expected.learned_magic_waves = take32();
+    state.expected.item_popups = take32();
+    for (auto& count : state.observed) count = take32();
+    const auto segment = (*bytes)[offset];
+    if (segment > static_cast<std::uint8_t>(ResultsSegment::Complete))
+        return false;
+    state.segment = static_cast<ResultsSegment>(segment);
+    return true;
+}
+
+ProgramValueGraph EncodeResultsStateGraph(const ResultsState& state)
+{
+    return NamedBytesGraph(
+        BattleResultsStateSchemaIdentity(),
+        EncodeResultsState(state));
+}
+
+ProgramValueGraph EncodeResultsTransition(const ResultsState& state)
+{
+    GraphBuilder builder;
+    const auto encoded_state = builder.Import(EncodeResultsStateGraph(state));
+    const auto segment = builder.Add(
+        TypeRef::Named(BattleResultsSegmentSchemaIdentity()),
+        EnumValue{
+            .schema = BattleResultsSegmentSchemaIdentity(),
+            .value = static_cast<std::int64_t>(state.segment),
+        });
+    const auto root = builder.AddRecord(
+        BattleResultsTransitionSchemaIdentity(),
+        {encoded_state, segment});
+    return std::move(builder).Finish(root);
+}
+
+bool AdvanceResultsState(ResultsState& state, std::uint32_t pc)
+{
+    if (state.segment == ResultsSegment::Descriptor)
+    {
+        if (pc != 0x800e35f0u) return false;
+        state.segment = ResultsSegment::Dispatch;
+        return true;
+    }
+    if (state.segment == ResultsSegment::Cleanup)
+    {
+        if (pc != 0x800e3694u) return false;
+        state.segment = ResultsSegment::Complete;
+        return true;
+    }
+    if (state.segment >= ResultsSegment::AcceptIntro &&
+        state.segment <= ResultsSegment::AcceptFade)
+    {
+        if (pc != 0x801c7948u) return false;
+        const auto index = static_cast<std::size_t>(state.segment) -
+            static_cast<std::size_t>(ResultsSegment::AcceptIntro);
+        ++state.observed[index];
+        state.segment = ResultsSegment::Dispatch;
+        return true;
+    }
+    if (state.segment != ResultsSegment::Dispatch) return false;
+    switch (pc)
+    {
+    case 0x800e4660u: return true;
+    case 0x800e46bcu: state.segment = ResultsSegment::AcceptIntro; return true;
+    case 0x800e488cu: state.segment = ResultsSegment::AcceptGold; return true;
+    case 0x800e4d40u: state.segment = ResultsSegment::AcceptNormalExp; return true;
+    case 0x800e4f2cu: state.segment = ResultsSegment::AcceptStatWave; return true;
+    case 0x800e52d8u: state.segment = ResultsSegment::AcceptMagicEntry; return true;
+    case 0x800e5460u: state.segment = ResultsSegment::AcceptMagicExp; return true;
+    case 0x800e5c3cu: state.segment = ResultsSegment::AcceptLearnedMagic; return true;
+    case 0x800e5f80u: state.segment = ResultsSegment::AcceptItemPopup; return true;
+    case 0x800e6128u: state.segment = ResultsSegment::AcceptConfirm; return true;
+    case 0x800e6470u: state.segment = ResultsSegment::AcceptFade; return true;
+    case 0x800e64a0u: state.segment = ResultsSegment::Cleanup; return true;
+    default: return false;
+    }
+}
+
+bool ResultsPresentationMatchesManifest(const ResultsState& state)
+{
+    const auto& expected = state.expected;
+    const auto expected_stat_waves =
+        expected.level_panels == 0 ? 0u : 3u;
+    const auto expected_magic_entries =
+        expected.magic_rank_events == 0 ? 0u : 1u;
+    return expected.stat_waves == expected_stat_waves &&
+        state.observed[1] == expected.gold_pages &&
+        state.observed[2] == expected.normal_exp_pages &&
+        state.observed[3] == expected.stat_waves &&
+        state.observed[4] == expected_magic_entries &&
+        state.observed[5] == expected.magic_exp_pages &&
+        state.observed[6] == expected.learned_magic_waves &&
+        state.observed[7] == expected.item_popups;
 }
 
 enum class BattleDerivedGroup : std::int64_t
@@ -740,7 +1105,7 @@ bool DecodeBattleDerivedQueryValue(
     if (!result_value ||
         result_value->type != CanonicalActionOutputType(
             CanonicalAction::ExecutionContinueUntil) ||
-        !result || result->fields.size() != 5)
+        !result || result->fields.size() != 6)
     {
         return false;
     }
@@ -848,6 +1213,15 @@ ProgramValueGraph EncodeBattleDerivedSnapshotValue(
         snapshot.inventory,
         {},
         {});
+}
+
+ProgramValueGraph EncodeBattleCompletionSnapshotValue(
+    const battlecompletion::BattleCompletionSnapshotV1& snapshot)
+{
+    std::vector<std::uint8_t> bytes;
+    if (!battlecompletion::EncodeBattleCompletionSnapshotV1(snapshot, bytes))
+        throw std::logic_error("Battle completion snapshot encoding failed");
+    return NamedBytesGraph(BattleCompletionSnapshotSchemaIdentity(), std::move(bytes));
 }
 
 ProgramValueGraph EncodeBattleDerivedSnapshotValue(
@@ -1009,9 +1383,13 @@ ProgramValueGraph EncodeBattleCommandState(const BattleCommandState& state)
         TypeRef::Builtin(BuiltinType::U32), state.command_index);
     const auto moves_remaining = builder.Add(
         TypeRef::Builtin(BuiltinType::U32), state.moves_remaining);
+    const auto last_command_commit_input_count = builder.Add(
+        TypeRef::Builtin(BuiltinType::U64),
+        state.last_command_commit_input_count);
     const auto root = builder.AddRecord(
         SchemaIdentityFor("soa.battle.command.State"),
-        {context, plan, segment, fake_remaining, command_index, moves_remaining});
+        {context, plan, segment, fake_remaining, command_index,
+         moves_remaining, last_command_commit_input_count});
     return std::move(builder).Finish(root);
 }
 
@@ -1127,6 +1505,279 @@ std::optional<ProgramValueGraph> InvokeSourceReducer(
     std::string* diagnostic)
 {
     if (diagnostic != nullptr) diagnostic->clear();
+    if (identity == FieldTransitionBuildContextReducerIdentity())
+    {
+        if (inputs.size() != 8) return std::nullopt;
+        const auto area = RootScalar<std::uint32_t>(inputs[0]);
+        const auto raw_suffix = RootScalar<std::uint8_t>(inputs[1]);
+        const auto area_99_index = RootScalar<std::uint8_t>(inputs[2]);
+        const auto has_area_99_index = RootScalar<bool>(inputs[3]);
+        const auto rng_seed = RootScalar<std::uint32_t>(inputs[4]);
+        const auto pc = RootScalar<std::uint32_t>(inputs[5]);
+        const auto vi_count = RootScalar<std::uint64_t>(inputs[6]);
+        const auto epoch = RootScalar<std::uint64_t>(inputs[7]);
+        if (!area || !raw_suffix || !area_99_index || !has_area_99_index ||
+            !rng_seed || !pc || !vi_count || !epoch)
+            return std::nullopt;
+        battlecompletion::FieldTransitionContextV1 context{};
+        context.area = *area;
+        context.raw_suffix = *raw_suffix;
+        context.used_area_99_suffix = context.area == 99;
+        context.rng_seed = *rng_seed;
+        context.provenance = {
+            .pc = *pc,
+            .vi_count = *vi_count,
+            .workset_epoch = *epoch,
+        };
+        std::string failure;
+        if (!battlecompletion::ReconstructFieldSctFilenameV1(
+                context.area,
+                context.raw_suffix,
+                *has_area_99_index
+                    ? std::optional<std::uint8_t>(*area_99_index)
+                    : std::nullopt,
+                context.effective_suffix,
+                context.sct_filename,
+                &failure))
+        {
+            if (diagnostic) *diagnostic = std::move(failure);
+            return std::nullopt;
+        }
+        std::vector<std::uint8_t> bytes;
+        if (!battlecompletion::EncodeFieldTransitionContextV1(context, bytes))
+            return std::nullopt;
+        return NamedBytesGraph(FieldTransitionContextSchemaIdentity(), std::move(bytes));
+    }
+    if (identity == BattleCompletionInteractionInitializeReducerIdentity())
+    {
+        if (inputs.size() != 1) return std::nullopt;
+        GraphReader reader(inputs[0]);
+        const auto* root = reader.Find(inputs[0].root);
+        if (!reader.valid() || !root || root->type != CanonicalRuntimeType(
+                CanonicalRuntimeSchema::InputFramePayload))
+            return std::nullopt;
+        return EncodeCompletionState(CompletionState{});
+    }
+    if (identity == BattleCompletionInteractionAdvanceReducerIdentity())
+    {
+        if (inputs.size() != 2) return std::nullopt;
+        CompletionState state{};
+        const auto stop = ContinueResultProvenance(inputs[1]);
+        if (!DecodeCompletionState(inputs[0], state) || !stop ||
+            !AdvanceCompletionState(state, *stop))
+        {
+            if (diagnostic) *diagnostic =
+                "Battle completion interaction reached an unexpected semantic point";
+            return std::nullopt;
+        }
+        return EncodeCompletionTransition(state);
+    }
+    if (identity == BattleCompletionInteractionCompleteSegmentReducerIdentity())
+    {
+        return inputs.size() == 2 ? std::optional(inputs[1]) : std::nullopt;
+    }
+    if (identity == BattleCompletionInteractionFinalizeReducerIdentity())
+    {
+        if (inputs.size() != 2) return std::nullopt;
+        CompletionState state{};
+        const auto stop = ContinueResultProvenance(inputs[1]);
+        if (!DecodeCompletionState(inputs[0], state) ||
+            state.segment != CompletionSegment::Complete || !stop ||
+            stop->pc != 0x8006fd58u ||
+            state.reward_entry.pc != 0x8006f598u)
+            return std::nullopt;
+        GraphBuilder builder;
+        const auto pc = builder.Add(
+            TypeRef::Builtin(BuiltinType::U32), state.reward_entry.pc);
+        const auto vi = builder.Add(
+            TypeRef::Builtin(BuiltinType::U64), state.reward_entry.vi_count);
+        const auto epoch = builder.Add(
+            TypeRef::Builtin(BuiltinType::U64), state.reward_entry.epoch);
+        const auto commit = builder.Import(inputs[1]);
+        const auto root = builder.AddRecord(
+            BattleCompletionInteractionReceiptSchemaIdentity(),
+            {pc, vi, epoch, commit});
+        return std::move(builder).Finish(root);
+    }
+    if (identity == BattleCompletionBuildManifestReducerIdentity())
+    {
+        if (inputs.size() != 16) return std::nullopt;
+        const auto* before_bytes = RootNamedBytes(
+            inputs[0], BattleCompletionSnapshotSchemaIdentity());
+        const auto* after_bytes = RootNamedBytes(
+            inputs[1], BattleCompletionSnapshotSchemaIdentity());
+        const auto entry_pc = RootScalar<std::uint32_t>(inputs[2]);
+        const auto entry_vi = RootScalar<std::uint64_t>(inputs[3]);
+        const auto entry_epoch = RootScalar<std::uint64_t>(inputs[4]);
+        const auto reward_entry_pc = RootScalar<std::uint32_t>(inputs[5]);
+        const auto reward_entry_vi = RootScalar<std::uint64_t>(inputs[6]);
+        const auto reward_entry_epoch = RootScalar<std::uint64_t>(inputs[7]);
+        const auto reward_commit_pc = RootScalar<std::uint32_t>(inputs[8]);
+        const auto reward_commit_vi = RootScalar<std::uint64_t>(inputs[9]);
+        const auto reward_commit_epoch = RootScalar<std::uint64_t>(inputs[10]);
+        const auto* transition_bytes = RootNamedBytes(
+            inputs[11], FieldTransitionContextSchemaIdentity());
+        const auto battle_set_id = RootScalar<std::uint64_t>(inputs[12]);
+        const auto wave_id = RootScalar<std::uint64_t>(inputs[13]);
+        const auto turn_job_id = RootScalar<std::uint64_t>(inputs[14]);
+        const auto execution_job_id = RootScalar<std::uint64_t>(inputs[15]);
+        if (!before_bytes || !after_bytes || !entry_pc || !entry_vi ||
+            !entry_epoch || !reward_entry_pc || !reward_entry_vi ||
+            !reward_entry_epoch || !reward_commit_pc || !reward_commit_vi ||
+            !reward_commit_epoch || !transition_bytes || !battle_set_id ||
+            !wave_id || !turn_job_id || !execution_job_id)
+            return std::nullopt;
+        battlecompletion::BattleCompletionSnapshotV1 before{}, after{};
+        battlecompletion::FieldTransitionContextV1 transition{};
+        if (!battlecompletion::DecodeBattleCompletionSnapshotV1(
+                *before_bytes, before) ||
+            !battlecompletion::DecodeBattleCompletionSnapshotV1(
+                *after_bytes, after) ||
+            !battlecompletion::DecodeFieldTransitionContextV1(
+                *transition_bytes, transition))
+            return std::nullopt;
+        battlecompletion::BattleCompletionManifestV1 manifest{};
+        std::string failure;
+        if (!battlecompletion::BuildBattleCompletionManifestV1(
+                {*battle_set_id, *wave_id, *turn_job_id, *execution_job_id},
+                before,
+                after,
+                {*entry_pc, *entry_vi, *entry_epoch},
+                {*reward_entry_pc, *reward_entry_vi, *reward_entry_epoch},
+                {*reward_commit_pc, *reward_commit_vi, *reward_commit_epoch},
+                std::move(transition),
+                manifest,
+                &failure))
+        {
+            if (diagnostic) *diagnostic = std::move(failure);
+            return std::nullopt;
+        }
+        std::vector<std::uint8_t> bytes;
+        if (!battlecompletion::EncodeBattleCompletionManifestV1(manifest, bytes))
+            return std::nullopt;
+        return NamedBytesGraph(BattleCompletionManifestSchemaIdentity(), std::move(bytes));
+    }
+    if (identity == BattleCompletionSemanticEqualReducerIdentity())
+    {
+        if (inputs.size() != 2) return std::nullopt;
+        const auto* left = RootNamedBytes(
+            inputs[0], BattleCompletionManifestSchemaIdentity());
+        const auto* right = RootNamedBytes(
+            inputs[1], BattleCompletionManifestSchemaIdentity());
+        battlecompletion::BattleCompletionManifestV1 a{}, b{};
+        if (!left || !right ||
+            !battlecompletion::DecodeBattleCompletionManifestV1(*left, a) ||
+            !battlecompletion::DecodeBattleCompletionManifestV1(*right, b))
+            return std::nullopt;
+        GraphBuilder builder;
+        const auto root = builder.Add(
+            TypeRef::Builtin(BuiltinType::Bool),
+            battlecompletion::SemanticallyEqualBattleCompletionManifestV1(a, b));
+        return std::move(builder).Finish(root);
+    }
+    if (identity == BattleResultsInitializeReducerIdentity())
+    {
+        if (inputs.size() != 2) return std::nullopt;
+        const auto* manifest_bytes = RootNamedBytes(
+            inputs[0], BattleCompletionManifestSchemaIdentity());
+        if (!manifest_bytes) return std::nullopt;
+        battlecompletion::BattleCompletionManifestV1 manifest{};
+        if (!battlecompletion::DecodeBattleCompletionManifestV1(
+                *manifest_bytes, manifest))
+            return std::nullopt;
+        GraphReader frame_reader(inputs[1]);
+        const auto* frame_root = frame_reader.Find(inputs[1].root);
+        if (!frame_reader.valid() || !frame_root ||
+            frame_root->type != CanonicalRuntimeType(
+                CanonicalRuntimeSchema::InputFramePayload))
+            return std::nullopt;
+        ResultsState state{};
+        state.expected = manifest.presentation;
+        return EncodeResultsStateGraph(state);
+    }
+    if (identity == BattleResultsAdvanceReducerIdentity())
+    {
+        if (inputs.size() != 2) return std::nullopt;
+        ResultsState state{};
+        const auto pc = ContinueResultPc(inputs[1]);
+        if (!DecodeResultsState(inputs[0], state) || !pc ||
+            !AdvanceResultsState(state, *pc))
+        {
+            if (diagnostic) *diagnostic =
+                "Battle Results handler reached an unexpected semantic point";
+            return std::nullopt;
+        }
+        return EncodeResultsTransition(state);
+    }
+    if (identity == BattleResultsCompleteSegmentReducerIdentity())
+    {
+        return inputs.size() == 2 ? std::optional(inputs[1]) : std::nullopt;
+    }
+    if (identity == BattleResultsFinalizeReducerIdentity())
+    {
+        if (inputs.size() != 2) return std::nullopt;
+        ResultsState state{};
+        const auto pc = ContinueResultPc(inputs[1]);
+        if (!DecodeResultsState(inputs[0], state) || !pc ||
+            state.segment != ResultsSegment::Complete || *pc != 0x800e3694u)
+            return std::nullopt;
+        if (!ResultsPresentationMatchesManifest(state))
+        {
+            if (diagnostic) *diagnostic =
+                "Battle Results presentation did not match the completion manifest";
+            return std::nullopt;
+        }
+        auto receipt = EncodeResultsState(state);
+        receipt[0] = 'B'; receipt[1] = 'R'; receipt[2] = 'R'; receipt[3] = '1';
+        const auto put32 = [&](std::uint32_t value)
+        {
+            for (unsigned shift = 0; shift != 32; shift += 8)
+                receipt.push_back(static_cast<std::uint8_t>(value >> shift));
+        };
+        const auto put64 = [&](std::uint64_t value)
+        {
+            put32(static_cast<std::uint32_t>(value));
+            put32(static_cast<std::uint32_t>(value >> 32u));
+        };
+        const auto terminal = ContinueResultProvenance(inputs[1]);
+        if (!terminal) return std::nullopt;
+        put32(terminal->pc);
+        put64(terminal->vi_count);
+        put64(terminal->epoch);
+        return NamedBytesGraph(BattleResultsReceiptSchemaIdentity(), std::move(receipt));
+    }
+    if (identity == BattleResultsAttachInvariantsReducerIdentity())
+    {
+        if (inputs.size() != 7) return std::nullopt;
+        const auto* receipt = RootNamedBytes(
+            inputs[0], BattleResultsReceiptSchemaIdentity());
+        const auto entry_rng = RootScalar<std::uint32_t>(inputs[1]);
+        const auto exit_rng = RootScalar<std::uint32_t>(inputs[2]);
+        const auto lifecycle = RootScalar<std::uint32_t>(inputs[3]);
+        const auto completed = RootScalar<std::uint32_t>(inputs[4]);
+        const auto result_pointer = RootScalar<std::uint32_t>(inputs[5]);
+        const auto game_mode = RootScalar<std::uint32_t>(inputs[6]);
+        if (!receipt || receipt->size() != 101 || !entry_rng || !exit_rng ||
+            !lifecycle || !completed || !result_pointer || !game_mode ||
+            (*receipt)[0] != 'B' || (*receipt)[1] != 'R' ||
+            (*receipt)[2] != 'R' || (*receipt)[3] != '1' ||
+            *entry_rng != *exit_rng || *lifecycle != 0xffu ||
+            *completed != 1u || *result_pointer != 0u || *game_mode != 6u)
+            return std::nullopt;
+        auto bytes = std::vector<std::uint8_t>(receipt->begin(), receipt->end());
+        const auto put32 = [&](std::uint32_t value)
+        {
+            for (unsigned shift = 0; shift != 32; shift += 8)
+                bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+        };
+        put32(*entry_rng);
+        put32(*exit_rng);
+        put32(*lifecycle);
+        put32(*completed);
+        put32(*result_pointer);
+        put32(*game_mode);
+        return NamedBytesGraph(BattleResultsReceiptSchemaIdentity(), std::move(bytes));
+    }
     const auto derived_reducer = [&](std::string_view canonical_id) {
         return identity == BattleDerivedReducerIdentity(canonical_id);
     };
@@ -1204,15 +1855,18 @@ std::optional<ProgramValueGraph> InvokeSourceReducer(
         {
             return ScalarU32(static_cast<std::uint32_t>(positions.size()));
         }
-        if (positions.empty())
-        {
-            if (diagnostic) *diagnostic =
-                "Battle turn-order cohort is empty";
-            return std::nullopt;
-        }
         const bool minimum =
             derived_reducer("soa.battle.derived.player_min_position") ||
             derived_reducer("soa.battle.derived.enemy_min_position");
+        if (positions.empty())
+        {
+            constexpr std::uint32_t kEmptyMinimumPosition = 12u;
+            constexpr std::uint32_t kEmptyMaximumPosition = 0u;
+            return ScalarU32(
+                minimum
+                    ? kEmptyMinimumPosition
+                    : kEmptyMaximumPosition);
+        }
         return ScalarU32(minimum ? positions.front() : positions.back());
     }
     if (identity == CanonicalReducerIdentity(
@@ -1249,6 +1903,25 @@ std::optional<ProgramValueGraph> InvokeSourceReducer(
         if (inputs.size() != 2) return std::nullopt;
         BattleCommandState state;
         if (!DecodeBattleCommandState(inputs[0], state)) return std::nullopt;
+        if (state.segment == BattleCommandSegment::AttackTargetAccept ||
+            state.segment == BattleCommandSegment::DirectCommandAccept)
+        {
+            GraphReader receipt(inputs[1]);
+            const auto* root = receipt.valid()
+                ? receipt.Find(inputs[1].root)
+                : nullptr;
+            const auto* record = root
+                ? std::get_if<RecordValue>(&root->payload)
+                : nullptr;
+            if (!root || root->type != CanonicalActionOutputType(
+                    CanonicalAction::ExecutionContinueUntil) ||
+                !record || record->fields.size() != 6 ||
+                !Scalar(receipt, record->fields[3],
+                    state.last_command_commit_input_count))
+            {
+                return std::nullopt;
+            }
+        }
         AdvanceBattleCommandState(state);
         return EncodeTransition(state);
     }
@@ -1261,7 +1934,18 @@ std::optional<ProgramValueGraph> InvokeSourceReducer(
             CanonicalReducer::BattleCommandInteractionFinalize))
     {
         if (inputs.size() != 2) return std::nullopt;
-        return inputs[1];
+        BattleCommandState state;
+        if (!DecodeBattleCommandState(inputs[0], state))
+            return std::nullopt;
+        GraphBuilder builder;
+        const auto terminal = builder.Import(inputs[1]);
+        const auto anchor = builder.Add(
+            TypeRef::Builtin(BuiltinType::U64),
+            state.last_command_commit_input_count);
+        const auto root = builder.AddRecord(
+            BattleCommandReceiptSchemaIdentity(),
+            {terminal, anchor});
+        return std::move(builder).Finish(root);
     }
     if (diagnostic != nullptr)
         *diagnostic = "unknown source reducer identity";

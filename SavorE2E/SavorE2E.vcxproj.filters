@@ -29,6 +29,9 @@
     <ClCompile Include="BattlePhasesRealWorkerScenario.cpp">
       <Filter>Scenarios</Filter>
     </ClCompile>
+    <ClCompile Include="WorkflowUnitRealWorkerScenario.cpp">
+      <Filter>Scenarios</Filter>
+    </ClCompile>
     <ClCompile Include="DbSetup.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
@@ -71,6 +74,9 @@
       <Filter>Scenarios</Filter>
     </ClInclude>
     <ClInclude Include="BattlePhasesRealWorkerScenario.h">
+      <Filter>Scenarios</Filter>
+    </ClInclude>
+    <ClInclude Include="WorkflowUnitRealWorkerScenario.h">
       <Filter>Scenarios</Filter>
     </ClInclude>
     <ClInclude Include="MultiLineProgressRenderer.h">

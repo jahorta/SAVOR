@@ -127,6 +127,7 @@
     <ClCompile Include="SplitCoordinatorRuntime.cpp" />
     <ClCompile Include="TasMovieRealWorkerScenario.cpp" />
     <ClCompile Include="WorkerStartupBarrier.cpp" />
+    <ClCompile Include="WorkflowUnitRealWorkerScenario.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Cli.h" />
@@ -140,6 +141,7 @@
     <ClInclude Include="SplitCoordinatorRuntime.h" />
     <ClInclude Include="TasMovieRealWorkerScenario.h" />
     <ClInclude Include="WorkerStartupBarrier.h" />
+    <ClInclude Include="WorkflowUnitRealWorkerScenario.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SavorWorker\SavorWorker.vcxproj">

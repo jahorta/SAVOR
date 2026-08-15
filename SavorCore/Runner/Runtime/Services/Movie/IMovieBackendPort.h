@@ -28,6 +28,22 @@ struct MovieBackendResult
     }
 };
 
+// One coherent raw physical observation from the emulator. Implementations
+// must synchronize with the emulator's movie owner while collecting every
+// field; a sequence of unrelated cross-thread reads is not a valid snapshot.
+// This deliberately carries no semantic "ended" state: only MovieService has
+// the lifecycle context needed to distinguish natural playback exhaustion from
+// ordinary inactivity.
+struct MovieBackendObservation
+{
+    MovieBackendResult result;
+    bool playing = false;
+    bool recording = false;
+    bool read_only = true;
+    std::uint64_t current_frame = 0;
+    std::uint64_t current_input_count = 0;
+};
+
 struct MoviePlaybackPrepareResult
 {
     MovieBackendResult result;
@@ -65,11 +81,15 @@ public:
     virtual MovieBackendResult StopMovie() noexcept = 0;
 
     virtual MovieBackendResult BeginRecording() = 0;
+    // Converts the exact current read-only playback cursor into a writable
+    // rerecording session without advancing the guest or discarding the
+    // already-played input prefix.
+    virtual MovieBackendResult BranchReadOnlyPlaybackToRecording() = 0;
     virtual MovieRecordingFinalizeResult FinalizeRecording(
         const std::filesystem::path& dtm_path) = 0;
     virtual MovieBackendResult CancelRecording() noexcept = 0;
 
-    [[nodiscard]] virtual MovieSnapshot Snapshot() const = 0;
+    [[nodiscard]] virtual MovieBackendObservation ObserveMovie() const = 0;
     virtual MovieCheckpointBackendResult CaptureRecordingCheckpoint() = 0;
 
     // These operations stage and verify movie history around one workset-owned

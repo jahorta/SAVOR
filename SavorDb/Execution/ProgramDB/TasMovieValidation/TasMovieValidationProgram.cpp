@@ -227,11 +227,16 @@ std::optional<std::int64_t> Binding(
     std::string_view input_key,
     std::string_view data_kind,
     std::string_view ref_kind) {
-    if (!context.graph) return std::nullopt;
-    for (const auto& binding : context.graph->input_bindings) {
-        if (binding.input_key == input_key && binding.data_kind == data_kind
-            && binding.ref_kind == ref_kind && binding.ref_id > 0) return binding.ref_id;
+    if (context.graph) {
+        for (const auto& binding : context.graph->input_bindings) {
+            if (binding.input_key == input_key && binding.data_kind == data_kind
+                && binding.ref_kind == ref_kind && binding.ref_id > 0)
+                return binding.ref_id;
+        }
     }
+    if (context.step.domain_ref_id > 0 &&
+        context.step.domain_ref_kind == ref_kind)
+        return context.step.domain_ref_id;
     return std::nullopt;
 }
 
@@ -1076,6 +1081,88 @@ private:
     std::shared_ptr<const savor::runtime::tasmovie::ITasMovieValidationFullPhaseDefinitionV1> phase_;
 };
 
+class BattleRecordingValidationTransition final
+    : public IWorkflowTransitionHandler {
+public:
+    BattleRecordingValidationTransition(
+        IStateDb* state_db, IAnalysisDb* analysis_db)
+        : state_db_(state_db), analysis_db_(analysis_db) {}
+
+    WorkflowTransitionDecision EvaluateTransition(
+        const WorkflowTransitionContext& context) const override {
+        WorkflowTransitionDecision decision{};
+        decision.should_advance = true;
+        if (!state_db_ || !analysis_db_ ||
+            context.output_ref_kind !=
+                std::optional<std::string>("tmv_validation_attempt") ||
+            !context.output_ref_id)
+            return decision;
+
+        const auto attempt = analysis_db_->GetTasMovieValidationAttempt(
+            *context.output_ref_id);
+        const auto request = attempt
+            ? analysis_db_->GetTasMovieValidationRequest(
+                attempt->validation_request_id)
+            : std::nullopt;
+        if (!attempt || !request) {
+            decision.should_advance = false;
+            decision.terminal_failure = true;
+            decision.blocked_reason =
+                "battle_recording_validation_evidence_missing";
+            return decision;
+        }
+        if (request->source_kind != TasMovieValidationSourceKind::Tree)
+            return decision;
+
+        const auto tree = state_db_->GetTasMovieTree(request->source_ref_id);
+        if (!tree || tree->source_context_kind !=
+                "analysis_battle.battle_recording")
+            return decision;
+        const auto recording = analysis_db_->GetBattleRecording(
+            tree->source_context_id);
+        if (!recording || recording->status != "COMPLETED" ||
+            recording->outcome != std::optional<std::string>("RECORDED") ||
+            recording->tas_movie_tree_id != tree->tas_movie_tree_id ||
+            recording->paired_checkpoint_savestate_id !=
+                tree->checkpoint_savestate_id) {
+            decision.should_advance = false;
+            decision.terminal_failure = true;
+            decision.blocked_reason = "battle_recording_tree_identity_drifted";
+            return decision;
+        }
+        std::string error;
+        if (!analysis_db_->BindBattleRecordingValidation({
+                .battle_recording_id = recording->battle_recording_id,
+                .tas_movie_tree_id = tree->tas_movie_tree_id,
+                .validation_request_id = request->validation_request_id},
+                &error)) {
+            decision.should_advance = false;
+            decision.terminal_failure = true;
+            decision.blocked_reason = error.empty()
+                ? std::optional<std::string>(
+                    "battle_recording_validation_binding_failed")
+                : std::optional<std::string>(std::move(error));
+            return decision;
+        }
+        if (attempt->outcome == TasMovieValidationOutcome::Valid) {
+            decision.spawn_steps.push_back({
+                .step_key = "BattleRecording/" +
+                    std::to_string(recording->battle_recording_id) +
+                    "/sterilize",
+                .step_kind = "tasmovie.checkpoint_sterilize",
+                .input_ref_kind = "state.savestate",
+                .input_ref_id = tree->checkpoint_savestate_id,
+                .priority = context.priority,
+                .max_attempts = 1});
+        }
+        return decision;
+    }
+
+private:
+    IStateDb* state_db_{};
+    IAnalysisDb* analysis_db_{};
+};
+
 } // namespace
 
 ProgramKindDescriptor BuildTasMovieValidationProgramDescriptor(
@@ -1096,6 +1183,9 @@ ProgramKindDescriptor BuildTasMovieValidationProgramDescriptor(
     descriptor.job_materializer = std::make_shared<Materializer>(execution_db, state_db, analysis_db, config);
     descriptor.workset_reconstruction = std::make_shared<Reconstruction>(state_db, analysis_db, config.working_dir_root);
     descriptor.result_handler = std::make_shared<ResultHandler>(state_db, analysis_db, config.working_dir_root);
+    descriptor.workflow_transition =
+        std::make_shared<BattleRecordingValidationTransition>(
+            state_db, analysis_db);
     descriptor.supports_workflow_orchestration = true;
     descriptor.allow_mixed_success_failed_transition = false;
     return descriptor;

@@ -20,7 +20,9 @@ Only these implementation directions are currently approved:
   cursor)` entries; and
 - return expected validation mismatches as typed domain results. ProgramRuntime failure remains reserved
   for infrastructure, contract, cancellation, and backend failures;
-- use an exact `ReadOnlyMovie` workset baseline and `EstablishBaseline`, with module-owned
+- explicitly opt this Complete Validation phase into an exact `ReadOnlyMovie` workset baseline because
+  it intentionally begins at the DTM-declared origin; this is not a default for TAS Movie phases. Use
+  `EstablishBaseline`, with module-owned
   `MoviePrepareReadOnlyPlayback` owning the core stop and `MovieStartPlayback` remaining the sole
   state-establishing action;
 - install the operation-specific checkpoint stop group after the core reaches its uninitialized boundary
@@ -472,8 +474,9 @@ parallel.
 - decode and verify the exact candidate/validated `TMI1` artifact when required;
 - rely on the checkpoint set embedded in the exact Full Phase module rather than reconstructing external
   catalog input;
-- construct a required `ReadOnlyMovie` workset baseline containing the exact DTM and optional exact
-  startup savestate, with complete compatibility and lineage, plus an `EstablishBaseline` invocation;
+- construct the phase's explicitly selected `ReadOnlyMovie` workset baseline containing the exact DTM
+  and only its DTM-declared optional startup savestate, with complete compatibility and lineage, plus an
+  `EstablishBaseline` invocation;
 - require the scalar TAS Movie request and the workset baseline to identify the same materialized DTM and
   startup savestate;
 - declare deterministic state/diagnostic output paths beneath the workset artifact root;

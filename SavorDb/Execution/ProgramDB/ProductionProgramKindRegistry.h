@@ -4,6 +4,9 @@
 #include <string>
 
 #include "BattleContext/BattleContextProgram.h"
+#include "BattleCompletion/BattleCompletionProgram.h"
+#include "BattleRecord/BattleRecordProgram.h"
+#include "BattleRecord/BattleReplayProgram.h"
 #include "BattleSingleTurn/BattleSingleTurnProgram.h"
 #include "ProgramKindRegistry.h"
 #include "SeedProbe/SeedProbeProgram.h"
@@ -25,6 +28,9 @@ struct ProductionProgramKindRegistryConfig {
         tas_movie_checkpoint_sterilization;
     seedprobe::SeedProbeProgramConfig seed_probe;
     battlecontext::BattleContextProgramConfig battle_context;
+    battlecompletion::BattleCompletionProgramConfig battle_completion;
+    battlerecord::BattleRecordProgramConfig battle_record;
+    battlereplay::BattleReplayProgramConfig battle_replay;
     battle::BattleSingleTurnPhaseRegistrationConfig battle_single_turn;
 };
 

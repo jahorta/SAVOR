@@ -503,11 +503,40 @@ plan while retaining the same `WorksetEpoch`. Preserved backend failure with suc
 the workset without taint. Unknown backend integrity, rollback failure, or failed reconciliation taints
 the session while preserving the primary diagnostic.
 
+For a movie-paired `Savestate` baseline,
+`runtime.movie.adopt_restored_read_only_playback` validates the playback
+session and cursor already established by restoration and places one handle in
+the invocation resource scope. It performs no backend movie preparation, core
+restart, state restore, or guest advancement. The handle may be consumed by a
+later mode transition such as branching the restored playback into recording.
+This is distinct from establishing a DTM-origin TAS Movie baseline.
+
+`MovieService` owns the canonical movie state and cursor evidence for the
+workset. Its backend facet exposes raw physical playback/recording flags,
+read-only status, frame, and input count, but does not classify lifecycle
+state. `ExecutionEngine` combines its core snapshot with an epoch-qualified
+`MovieService::ObserveState` result. It never asks the execution backend to
+interpret movie state. Natural exhaustion of an owned read-only playback
+transitions the service to `PlaybackEnded`; that terminal state retains the
+reservation, DTM metadata, and final cursor until scoped cleanup calls
+`StopPlayback`. A successful playback-to-recording branch instead commits
+`Recording` before guest advancement and cannot satisfy `MovieEndedPolicy`.
+
+`runtime.movie.observe_state` is the program-facing, host-only view of that
+same authority. It returns the canonical `MovieState`, workset epoch,
+read-only evidence, frame, and input cursor. It exposes no raw Dolphin flags,
+creates no resource, advances no guest state, and performs no mode transition.
+Programs that support multiple valid restored source shapes branch on this
+typed result rather than on coordination metadata.
+
 A multi-item savestate workset may hold one private in-memory baseline handle only until that workset
 ends. A later workset must import its own declared artifact; no handle, guest observation, input receipt,
 mutation, stop subscription, or movie authority crosses the boundary.
 
-A `ReadOnlyMovie` workset begins unestablished. `MoviePrepareReadOnlyPlayback` stages the exact artifacts,
+A TAS Movie phase may explicitly opt into a `ReadOnlyMovie` workset only when
+starting from the DTM-declared origin; this baseline is not a TAS default and
+is unavailable to non-TAS phases. Such a workset begins unestablished.
+`MoviePrepareReadOnlyPlayback` stages the exact artifacts,
 stops only Dolphin's guest core, and drains pre-stop ingress. The program then installs passive stop groups
 while the core is uninitialized. `MovieStartPlayback` consumes that preparation, loads the DTM, boots
 paused, and validates the exact physical plan without changing the workset epoch. Programs have no generic

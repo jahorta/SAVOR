@@ -198,6 +198,10 @@
     <ClInclude Include="Core\Shims\StateBufferShim.h" />
     <ClInclude Include="framework.h" />
     
+    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionContracts.h" />
+    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionModule.h" />
+    <ClInclude Include="Phases\Programs\BattleRecord\BattleRecordModule.h" />
+    <ClInclude Include="Phases\Programs\BattleRecord\BattleReplayModule.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextModule.h" />
     <ClInclude Include="Phases\Programs\BattleSingleTurn\BattleSingleTurnModule.h" />
     
@@ -255,6 +259,8 @@
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Codec\ProgramCodecV1.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\CompositionSupport.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\InteractionComposition.h" />
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\BattleCompletionComposition.h" />
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\BattleResultsHandler.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\InputDeliveryComposition.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\PredicateComposition.h" />
     <ClInclude Include="Runner\Runtime\Predicates\PredicateBundle.h" />
@@ -314,8 +320,6 @@
     <ClInclude Include="Runner\Runtime\Worksets\WorksetStager.h" />
     <ClInclude Include="Runner\Runtime\Worksets\WorksetWireCodec.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleRunnerKeys.reg.h" />
-    <ClInclude Include="Runner\Script\ContextKeys\BattleCompletionKeys.reg.h" />
-    <ClInclude Include="Runner\Script\ContextKeys\BattleEndResultsKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\KeyIds.h" />
     <ClInclude Include="Runner\Script\ContextKeys\NavigationContextKeys.reg.h" />
     <ClInclude Include="Runner\Script\CtxRegistry.h" />
@@ -368,6 +372,10 @@
     <ClCompile Include="Core\Memory\Soa\SoaAddrRegistry.cpp" />
     <ClCompile Include="Core\Shims\StateBufferShim.cpp" />
     
+    <ClCompile Include="Phases\Programs\BattleCompletion\BattleCompletionContracts.cpp" />
+    <ClCompile Include="Phases\Programs\BattleCompletion\BattleCompletionModule.cpp" />
+    <ClCompile Include="Phases\Programs\BattleRecord\BattleRecordContracts.cpp" />
+    <ClCompile Include="Phases\Programs\BattleRecord\BattleRecordModule.cpp" />
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextModule.cpp" />
     <ClCompile Include="Phases\Programs\BattleSingleTurn\BattleSingleTurnModule.cpp" />
     
@@ -396,6 +404,8 @@
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Codec\ProgramCodecV1.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\CompositionSupport.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\InteractionComposition.cpp" />
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\BattleCompletionComposition.cpp" />
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\BattleResultsHandler.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\InputDeliveryComposition.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\PredicateComposition.cpp" />
     <ClCompile Include="Runner\Runtime\Predicates\PredicateBundle.cpp" />

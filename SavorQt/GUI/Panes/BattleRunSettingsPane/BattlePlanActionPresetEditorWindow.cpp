@@ -104,11 +104,6 @@ void BattlePlanActionPresetEditorWindow::createWidgets()
     targetMaskEdit_->setValidator(new QRegularExpressionValidator(QRegularExpression(QStringLiteral("[0-9A-Fa-fxX]+")), targetMaskEdit_));
     targetSameAsActorSpin_ = new QSpinBox(panel);
     targetSameAsActorSpin_->setRange(0, 3);
-    targetExprLabel_ = new QLabel(panel);
-    targetExprLabel_->setWordWrap(true);
-    targetExprLabel_->setObjectName("sectionDescription");
-    targetExprLabel_->hide();
-
     itemIdEdit_ = new QLineEdit(panel);
     itemIdEdit_->setPlaceholderText(QStringLiteral("Optional item id"));
     itemIdEdit_->setValidator(new QRegularExpressionValidator(QRegularExpression(QStringLiteral("-?[0-9]+")), itemIdEdit_));
@@ -122,7 +117,6 @@ void BattlePlanActionPresetEditorWindow::createWidgets()
     form->addRow(QStringLiteral("Single enemy slot"), targetSingleSlotSpin_);
     form->addRow(QStringLiteral("Target mask bits"), targetMaskEdit_);
     form->addRow(QStringLiteral("Same as actor slot"), targetSameAsActorSpin_);
-    form->addRow(QStringLiteral("Target expression (legacy)"), targetExprLabel_);
     form->addRow(QStringLiteral("Item id"), itemIdEdit_);
     form->addRow(QStringLiteral(""), noteLabel_);
     root->addWidget(panel, 1);
@@ -157,8 +151,6 @@ void BattlePlanActionPresetEditorWindow::loadNew()
     targetMaskEdit_->setText(QStringLiteral("0"));
     targetSameAsActorSpin_->setValue(0);
     itemIdEdit_->clear();
-    targetExprLabel_->clear();
-    targetExprLabel_->hide();
     noteLabel_->setText(QStringLiteral("Create a new preset to be reused across battle plans."));
     syncControlsForPresetMode();
     refreshTitleForMode();
@@ -173,15 +165,7 @@ void BattlePlanActionPresetEditorWindow::applyLoadedSnapshot(const savor::db::Ba
     targetMaskEdit_->setText(QString::number(snapshot.target_mask_bits.value_or(0)));
     targetSameAsActorSpin_->setValue(snapshot.target_same_as_actor_slot.value_or(0));
     itemIdEdit_->setText(snapshot.item_id ? QString::number(*snapshot.item_id) : QString());
-    if (snapshot.target_expr_ini.has_value() && !snapshot.target_expr_ini->empty()) {
-        targetExprLabel_->setText(QString::fromStdString(*snapshot.target_expr_ini));
-        targetExprLabel_->show();
-        noteLabel_->setText(QStringLiteral("This preset contains legacy target-expression text and will preserve it when saving."));
-    } else {
-        targetExprLabel_->clear();
-        targetExprLabel_->hide();
-        noteLabel_->clear();
-    }
+    noteLabel_->clear();
 }
 
 void BattlePlanActionPresetEditorWindow::loadSnapshot(const savor::db::BattlePlanActionPresetSnapshot& snapshot, bool duplicate)
@@ -219,12 +203,10 @@ void BattlePlanActionPresetEditorWindow::syncControlsForPresetMode()
     const bool needsTarget = (macro == savor::db::BattlePlanActionMacro::Attack || macro == savor::db::BattlePlanActionMacro::UseItem);
     const bool needsItem = (macro == savor::db::BattlePlanActionMacro::UseItem);
     const auto targetKind = static_cast<savor::db::BattlePlanTargetKind>(targetKindCombo_->currentData().toInt());
-    const bool legacyTargetExpr = targetExprLabel_->isVisible();
-
-    targetKindCombo_->setEnabled(needsTarget && !legacyTargetExpr);
-    targetSingleSlotSpin_->setEnabled(needsTarget && !legacyTargetExpr && targetKind == savor::db::BattlePlanTargetKind::SingleEnemy);
-    targetMaskEdit_->setEnabled(needsTarget && !legacyTargetExpr && targetKind == savor::db::BattlePlanTargetKind::MultipleEnemies);
-    targetSameAsActorSpin_->setEnabled(needsTarget && !legacyTargetExpr && targetKind == savor::db::BattlePlanTargetKind::SameAsOtherPC);
+    targetKindCombo_->setEnabled(needsTarget);
+    targetSingleSlotSpin_->setEnabled(needsTarget && targetKind == savor::db::BattlePlanTargetKind::SingleEnemy);
+    targetMaskEdit_->setEnabled(needsTarget && targetKind == savor::db::BattlePlanTargetKind::MultipleEnemies);
+    targetSameAsActorSpin_->setEnabled(needsTarget && targetKind == savor::db::BattlePlanTargetKind::SameAsOtherPC);
     itemIdEdit_->setEnabled(needsItem);
     if (!needsItem) {
         itemIdEdit_->clear();
@@ -234,13 +216,9 @@ void BattlePlanActionPresetEditorWindow::syncControlsForPresetMode()
         targetSingleSlotSpin_->setEnabled(false);
         targetMaskEdit_->setEnabled(false);
         targetSameAsActorSpin_->setEnabled(false);
-        targetExprLabel_->setText(QStringLiteral("No target binding required for this action."));
-        targetExprLabel_->show();
-    } else if (!legacyTargetExpr) {
-        targetExprLabel_->setText(QStringLiteral("Standard target mode."));
-        targetExprLabel_->show();
+        noteLabel_->setText(QStringLiteral("No target binding is required for this action."));
     } else {
-        targetExprLabel_->show();
+        noteLabel_->clear();
     }
 }
 
@@ -265,17 +243,11 @@ bool BattlePlanActionPresetEditorWindow::buildDraft(savorqt::db::BattlePlanActio
     draft.name = name.toStdString();
     draft.macro = macro;
     draft.target_kind = targetKind;
-    if (targetExprLabel_->isVisible() && !targetExprLabel_->text().trimmed().isEmpty()
-        && targetExprLabel_->text() != QStringLiteral("No target binding required for this action.")
-        && targetExprLabel_->text() != QStringLiteral("Standard target mode.")) {
-        draft.target_expr_ini = targetExprLabel_->text().toStdString();
-    }
-
     if (macro == savor::db::BattlePlanActionMacro::Attack || macro == savor::db::BattlePlanActionMacro::UseItem) {
         switch (targetKind) {
         case savor::db::BattlePlanTargetKind::SingleEnemy:
             draft.target_single_slot = targetSingleSlotSpin_->value();
-            draft.target_mask_bits = 0;
+            draft.target_mask_bits.reset();
             draft.target_same_as_actor_slot.reset();
             break;
         case savor::db::BattlePlanTargetKind::MultipleEnemies:
@@ -312,7 +284,6 @@ bool BattlePlanActionPresetEditorWindow::buildDraft(savorqt::db::BattlePlanActio
         draft.target_mask_bits.reset();
         draft.target_single_slot.reset();
         draft.target_same_as_actor_slot.reset();
-        draft.target_expr_ini.reset();
     }
 
     const QString itemText = itemIdEdit_->text().trimmed();
@@ -359,8 +330,7 @@ bool BattlePlanActionPresetEditorWindow::canSaveCurrentInPlace(const savorqt::db
         && draft.target_single_slot == loadedSnapshot_.target_single_slot
         && draft.target_same_as_actor_slot == loadedSnapshot_.target_same_as_actor_slot
         && draft.item_id == loadedSnapshot_.item_id
-        && draft.flags == loadedSnapshot_.flags
-        && draft.target_expr_ini == loadedSnapshot_.target_expr_ini;
+        && draft.flags == loadedSnapshot_.flags;
 }
 
 void BattlePlanActionPresetEditorWindow::saveAsNew()

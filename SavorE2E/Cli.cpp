@@ -70,6 +70,16 @@ constexpr auto kScenarioCatalog = std::to_array<E2eScenarioDescriptor>({
         .must_run_alone = true,
         .requires_repeat_one = true,
     },
+    {
+        .name = "workflow_unit",
+        .kind = E2eScenarioKind::WorkflowUnit,
+        .supported_entry_sources = EntrySourceBit(
+            E2eScenarioEntrySource::ExistingWorkspaceReference),
+        .default_entry_source =
+            E2eScenarioEntrySource::ExistingWorkspaceReference,
+        .must_run_alone = true,
+        .requires_repeat_one = true,
+    },
 });
 
 bool IsSupportedScenario(const std::string_view scenario) {
@@ -98,12 +108,12 @@ bool HasAnyRtcArgument(const CliOptions& options) {
         || options.tasmovie_rtc_max.has_value();
 }
 
-bool IsCompletePreparedWorkspace(
+bool IsCompleteExistingWorkspace(
     const std::filesystem::path& root,
     std::string* error_out) {
     if (root.empty() || !std::filesystem::is_directory(root)) {
         if (error_out) {
-            *error_out = "prepared-checkpoint mode requires an existing --workspace-root";
+            *error_out = "existing-workspace mode requires an existing --workspace-root";
         }
         return false;
     }
@@ -115,7 +125,7 @@ bool IsCompletePreparedWorkspace(
         const auto path = root / name;
         if (!std::filesystem::is_regular_file(path)) {
             if (error_out) {
-                *error_out = "prepared-checkpoint workspace is incomplete; missing "
+                *error_out = "existing workspace is incomplete; missing "
                     + path.string();
             }
             return false;
@@ -304,12 +314,15 @@ std::string_view ToString(const E2eScenarioEntrySource source) {
         return "FreshTasMovieValidation";
     case E2eScenarioEntrySource::PreparedSterilizedCheckpoint:
         return "PreparedSterilizedCheckpoint";
+    case E2eScenarioEntrySource::ExistingWorkspaceReference:
+        return "ExistingWorkspaceReference";
     }
     return "Unknown";
 }
 
 bool EntrySourceRequiresFreshWorkspace(const E2eScenarioEntrySource source) {
-    return source != E2eScenarioEntrySource::PreparedSterilizedCheckpoint;
+    return source != E2eScenarioEntrySource::PreparedSterilizedCheckpoint
+        && source != E2eScenarioEntrySource::ExistingWorkspaceReference;
 }
 
 std::filesystem::path ResolveWorkerExePath(const char* argv0) {
@@ -346,8 +359,11 @@ void PrintUsage() {
               << " --dolphin-base-dir <path>"
               << " [--savestate-file <path>]"
               << " [--source-savestate-id <id>]"
+              << " [--workflow-unit <unit-kind>]"
+              << " [--source-ref-kind <kind>]"
+              << " [--source-ref-id <positive-id>]"
               << " [--dtm-file <path>]"
-              << " [--scenario seedprobe|battle|tasmovie|tasmovie_with_validation|tasmovie_seedprobe|all]"
+              << " [--scenario seedprobe|battle|tasmovie|tasmovie_with_validation|tasmovie_seedprobe|workflow_unit|all]"
               << " [--poll-ms <100..5000 - default 100>]"
               << " [--worker-count <1..30 - default 1>]"
               << " [--wait-for-workers-ready]"
@@ -364,12 +380,18 @@ void PrintUsage() {
               << " [--tasmovie-rtc <value>]"
               << " [--tasmovie-rtc-min <value>]"
               << " [--tasmovie-rtc-max <value>]"
+              << " [--seedprobe-min-value <0..255>]"
+              << " [--seedprobe-max-value <0..255>]"
               << " [--seedprobe-samples-per-axis <count>]"
               << " [--seedprobe-combo-attempts-per-target <count>]"
+              << " [--seedprobe-combo-sampler-tries <count>]"
+              << " [--battle-fake-attack-min <count>]"
+              << " [--battle-fake-attack-max <count>]"
               << "\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
     std::cout << "E2E perf mode requires Release builds and load-level low|mid|high; worker-count defaults to 15 and accepts 1..30.\n";
     std::cout << "Prepared checkpoint mode is selected by --source-savestate-id and preserves the complete existing workspace.\n";
+    std::cout << "The workflow_unit scenario preserves an existing workspace and launches one exact static unit from --workflow-unit, --source-ref-kind, and --source-ref-id.\n";
     std::cout << "The tasmovie scenario establishes the handcrafted root cursor only; it takes no RTC and must run alone.\n";
     std::cout << "The tasmovie_with_validation scenario requires one exact --tasmovie-rtc in 0..4294967295 and must run alone.\n";
     std::cout << "The tasmovie_seedprobe scenario composes validation with SeedProbe, requires an exact RTC and no external savestate, and must run alone.\n";
@@ -387,7 +409,8 @@ void PrintUsage() {
         for (const auto source : {
                  E2eScenarioEntrySource::ImportedSavestateFile,
                  E2eScenarioEntrySource::FreshTasMovieValidation,
-                 E2eScenarioEntrySource::PreparedSterilizedCheckpoint}) {
+                 E2eScenarioEntrySource::PreparedSterilizedCheckpoint,
+                 E2eScenarioEntrySource::ExistingWorkspaceReference}) {
             if ((descriptor.supported_entry_sources & EntrySourceBit(source)) == 0) {
                 continue;
             }
@@ -478,6 +501,26 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
                 if (error_out) *error_out = "invalid integer for --source-savestate-id: " + v;
                 return false;
             }
+        } else if (arg == "--workflow-unit") {
+            std::string v;
+            if (!require_value("--workflow-unit", &v)) return false;
+            if (v.empty()) {
+                if (error_out) *error_out = "--workflow-unit must not be empty";
+                return false;
+            }
+            options.workflow_unit = std::move(v);
+        } else if (arg == "--source-ref-kind") {
+            std::string v;
+            if (!require_value("--source-ref-kind", &v)) return false;
+            if (v.empty()) {
+                if (error_out) *error_out = "--source-ref-kind must not be empty";
+                return false;
+            }
+            options.source_ref_kind = std::move(v);
+        } else if (arg == "--source-ref-id") {
+            std::int64_t v = 0;
+            if (!require_int64("--source-ref-id", &v)) return false;
+            options.source_ref_id = v;
         } else if (arg == "--dtm-file") {
             std::string v;
             if (!require_value("--dtm-file", &v)) return false;
@@ -560,10 +603,30 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             if (!require_int(arg.c_str(), &v)) return false;
             options.seedprobe_samples_per_axis = v;
             samples_per_axis_explicit = true;
+        } else if (arg == "--seedprobe-min-value") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.seedprobe_min_value = v;
+        } else if (arg == "--seedprobe-max-value") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.seedprobe_max_value = v;
         } else if (arg == "--seedprobe-combo-attempts-per-target" || arg == "--combo-attempts-per-target") {
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
             options.seedprobe_combo_attempts_per_target = v;
+        } else if (arg == "--seedprobe-combo-sampler-tries") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.seedprobe_combo_sampler_tries = v;
+        } else if (arg == "--battle-fake-attack-min") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_attack_min = v;
+        } else if (arg == "--battle-fake-attack-max") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_attack_max = v;
         } else if (arg == "--help" || arg == "-h") {
             PrintUsage();
             std::exit(0);
@@ -617,6 +680,7 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     bool is_tasmovie_with_validation = false;
     bool is_tasmovie_seedprobe = false;
     bool is_battle = false;
+    bool is_workflow_unit = false;
     bool needs_savestate = false;
     bool needs_dtm = false;
     std::vector<std::string> savestate_required_scenarios;
@@ -668,6 +732,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         is_tasmovie_seedprobe = is_tasmovie_seedprobe
             || descriptor->kind == E2eScenarioKind::TasMovieSeedProbe;
         is_battle = is_battle || descriptor->kind == E2eScenarioKind::Battle;
+        is_workflow_unit = is_workflow_unit
+            || descriptor->kind == E2eScenarioKind::WorkflowUnit;
 
         switch (source) {
         case E2eScenarioEntrySource::ImportedSavestateFile:
@@ -681,7 +747,39 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         case E2eScenarioEntrySource::PreparedSterilizedCheckpoint:
             prepared_checkpoint_mode = true;
             break;
+        case E2eScenarioEntrySource::ExistingWorkspaceReference:
+            break;
         }
+    }
+
+    const bool has_workflow_unit_arguments = options.workflow_unit.has_value()
+        || options.source_ref_kind.has_value()
+        || options.source_ref_id.has_value();
+    if (is_workflow_unit) {
+        if (!options.workflow_unit || options.workflow_unit->empty()
+            || !options.source_ref_kind || options.source_ref_kind->empty()
+            || !options.source_ref_id || *options.source_ref_id <= 0) {
+            if (error_out) {
+                *error_out = "workflow_unit requires --workflow-unit, --source-ref-kind, and a positive --source-ref-id";
+            }
+            return false;
+        }
+        if (!options.workspace_root
+            || !IsCompleteExistingWorkspace(*options.workspace_root, error_out)) {
+            return false;
+        }
+        if (options.source_savestate_id || !options.savestate_file.empty()
+            || !options.dtm_file.empty() || HasAnyRtcArgument(options)) {
+            if (error_out) {
+                *error_out = "workflow_unit rejects savestate, DTM, and RTC entry arguments";
+            }
+            return false;
+        }
+    } else if (has_workflow_unit_arguments) {
+        if (error_out) {
+            *error_out = "--workflow-unit, --source-ref-kind, and --source-ref-id require --scenario workflow_unit";
+        }
+        return false;
     }
 
     if (prepared_checkpoint_mode) {
@@ -693,7 +791,7 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             return false;
         }
         if (!options.workspace_root.has_value()
-            || !IsCompletePreparedWorkspace(*options.workspace_root, error_out)) {
+            || !IsCompleteExistingWorkspace(*options.workspace_root, error_out)) {
             return false;
         }
         if (!options.savestate_file.empty() || !options.dtm_file.empty()
@@ -815,8 +913,40 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "--seedprobe-samples-per-axis must be > 0";
         return false;
     }
+    const auto seedprobe_min = options.seedprobe_min_value.value_or(47);
+    const auto seedprobe_max = options.seedprobe_max_value.value_or(207);
+    if (seedprobe_min < 0 || seedprobe_min > 255) {
+        if (error_out) *error_out = "--seedprobe-min-value must be between 0 and 255";
+        return false;
+    }
+    if (seedprobe_max < 0 || seedprobe_max > 255) {
+        if (error_out) *error_out = "--seedprobe-max-value must be between 0 and 255";
+        return false;
+    }
+    if (seedprobe_min > seedprobe_max) {
+        if (error_out) *error_out = "--seedprobe-min-value must be <= --seedprobe-max-value";
+        return false;
+    }
     if (options.seedprobe_combo_attempts_per_target.has_value() && *options.seedprobe_combo_attempts_per_target <= 0) {
         if (error_out) *error_out = "--seedprobe-combo-attempts-per-target must be > 0";
+        return false;
+    }
+    if (options.seedprobe_combo_sampler_tries.has_value() && *options.seedprobe_combo_sampler_tries <= 0) {
+        if (error_out) *error_out = "--seedprobe-combo-sampler-tries must be > 0";
+        return false;
+    }
+    const auto fake_attack_min = options.battle_fake_attack_min.value_or(0);
+    const auto fake_attack_max = options.battle_fake_attack_max.value_or(0);
+    if (fake_attack_min < 0) {
+        if (error_out) *error_out = "--battle-fake-attack-min must be >= 0";
+        return false;
+    }
+    if (fake_attack_max < 0) {
+        if (error_out) *error_out = "--battle-fake-attack-max must be >= 0";
+        return false;
+    }
+    if (fake_attack_min > fake_attack_max) {
+        if (error_out) *error_out = "--battle-fake-attack-min must be <= --battle-fake-attack-max";
         return false;
     }
     if (options.visual_worker) {

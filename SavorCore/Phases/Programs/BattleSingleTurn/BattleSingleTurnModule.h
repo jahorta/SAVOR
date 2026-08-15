@@ -5,6 +5,7 @@
 #include "Core/Memory/Soa/Battle/BattleContext.h"
 #include "Runner/Runtime/FullPhase/FullPhaseProgram.h"
 #include "Runner/Runtime/Predicates/PredicateBundle.h"
+#include "Runner/Runtime/ProgramRuntime/Composition/InteractionComposition.h"
 
 #include <array>
 #include <memory>
@@ -156,5 +157,10 @@ PrepareBattleSingleTurnFullPhaseV1(
 // database and accepts only a package produced by the preparer above.
 [[nodiscard]] std::shared_ptr<const fullphase::IFullPhaseProgramDefinition>
 BattleSingleTurnKindHandlerV1();
+
+// Shared adaptive Battle command entry contract. Battle recording reuses this
+// exact interaction rather than carrying a second command implementation.
+[[nodiscard]] program::composition::InteractionDefinition
+BattleCommandInteractionV3();
 
 } // namespace savor::runtime::battlesingleturn

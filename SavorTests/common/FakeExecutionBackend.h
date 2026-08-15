@@ -25,7 +25,6 @@ struct FakeExecutionBackendControl
         runtime::BackendExecutionCapability::Resume |
         runtime::BackendExecutionCapability::FrameStep |
         runtime::BackendExecutionCapability::ViObservation |
-        runtime::BackendExecutionCapability::MovieObservation |
         runtime::BackendExecutionCapability::ThrottleControl;
     runtime::BackendExecutionSnapshot snapshot{
         .result = runtime::BackendResult::Success(),
@@ -48,8 +47,6 @@ struct FakeExecutionBackendControl
     void SetSnapshot(runtime::BackendExecutionSnapshot value);
     void SetCoreState(runtime::BackendCoreState value);
     void SetViCount(std::uint64_t value);
-    void SetMovieInputCount(std::uint64_t value);
-    void SetMovieState(runtime::BackendMovieState value);
     void SetPauseResult(runtime::BackendResult value);
     void SetResumeResult(runtime::BackendResult value);
     void SetFrameStepResult(runtime::BackendResult value);

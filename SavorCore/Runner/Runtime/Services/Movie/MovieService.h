@@ -54,8 +54,11 @@ public:
     [[nodiscard]] MovieServiceResult RollbackSavestateRestore(
         const SavestateMovieRestoreContext& context) noexcept;
 
-    [[nodiscard]] MovieSnapshot snapshot() const;
-    [[nodiscard]] MovieActivity activity() const noexcept { return activity_; }
+    // Classifies the backend's raw physical movie facts against the owned
+    // workset-local lifecycle. This is the only semantic movie-state query.
+    [[nodiscard]] MovieStateSnapshot ObserveState(
+        WorksetEpoch expected_epoch);
+    [[nodiscard]] MovieState state() const noexcept { return state_; }
     [[nodiscard]] MovieReservationId reservation() const noexcept
     {
         return reservation_;
@@ -73,13 +76,26 @@ private:
     [[nodiscard]] MovieServiceResult ValidateIdle() const;
     [[nodiscard]] MovieServiceResult AcquireReservation();
     [[nodiscard]] MovieServiceResult ReleaseReservation() noexcept;
-    [[nodiscard]] MovieServiceResult ValidateSnapshotFor(
-        const std::optional<MovieCheckpointMetadata>& movie) const;
+    [[nodiscard]] MovieServiceResult ValidateBackendFor(
+        const std::optional<MovieCheckpointMetadata>& movie,
+        MovieBackendObservation* observation_out = nullptr) const;
+    [[nodiscard]] MovieServiceResult ValidateBackendState(
+        MovieState expected,
+        MovieBackendObservation& observation) const;
+    // Cleanup paths are noexcept and must not terminate if a backend
+    // observation implementation throws while we verify a completed stop.
+    [[nodiscard]] MovieServiceResult ValidateBackendStateForCleanup(
+        MovieState expected,
+        MovieBackendObservation& observation) const noexcept;
+    [[nodiscard]] MovieStateSnapshot ObservationFailure(
+        MovieServiceResult result,
+        WorksetEpoch expected_epoch);
     [[nodiscard]] MovieServiceResult ValidateDtm(
         const std::filesystem::path& path,
         MovieCheckpointMetadata& metadata) const;
     [[nodiscard]] MovieServiceResult ValidateCheckpoint(
         MovieCheckpointMetadata& metadata) const;
+    void RetireRecordingAfterBackendStop() noexcept;
     [[nodiscard]] static MovieServiceResult FromBackendResult(
         const MovieBackendResult& result,
         std::string fallback);
@@ -93,15 +109,17 @@ private:
     std::function<MovieServiceResult()> settle_after_core_stop_;
     std::function<MovieServiceResult()> validate_after_core_start_;
     std::thread::id owner_thread_;
-    MovieActivity activity_ = MovieActivity::Inactive;
+    MovieState state_ = MovieState::Inactive;
     MovieReservationId reservation_;
     MoviePreparationId preparation_;
     std::uint64_t next_preparation_ = 1;
     std::optional<std::filesystem::path> prepared_starting_savestate_;
     bool prepared_core_started_ = false;
     std::optional<MovieCheckpointMetadata> active_movie_;
+    std::optional<MovieCheckpointMetadata> recording_prefix_;
+    std::uint64_t recording_prefix_input_count_ = 0;
     std::optional<MovieCheckpointMetadata> original_movie_;
-    MovieActivity original_activity_ = MovieActivity::Inactive;
+    MovieState original_state_ = MovieState::Inactive;
     bool restore_prepared_ = false;
     bool acquired_for_restore_ = false;
     bool tainted_ = false;

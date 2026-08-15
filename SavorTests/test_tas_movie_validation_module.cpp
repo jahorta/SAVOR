@@ -22,6 +22,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -189,13 +190,22 @@ ProgramValueGraph ContinueObservation(
     const ProgramValueId count_id = add(
         TypeRef::Builtin(BuiltinType::U64),
         count);
+    const ProgramValueId vi_count_id = add(
+        TypeRef::Builtin(BuiltinType::U64),
+        0ull);
     const ProgramValueId epoch_id = add(
         TypeRef::Builtin(BuiltinType::U64),
         epoch);
     const ProgramValueId root = add(
         CanonicalActionOutputType(
             CanonicalAction::ExecutionContinueUntil),
-        RecordValue{{reason_id, no_stop, pc_id, count_id, epoch_id}});
+        RecordValue{{
+            reason_id,
+            no_stop,
+            pc_id,
+            count_id,
+            vi_count_id,
+            epoch_id}});
     return {root, std::move(values)};
 }
 
@@ -669,10 +679,23 @@ TEST(TasMovieValidationModule, ProductionDefinitionVerifiesAndIsExactTasMovieKin
     EXPECT_FALSE(phase->runtime_contract().execution.record_trace);
 
     const auto catalog = TasMovieBoundaryCatalogV1();
-    ASSERT_EQ(catalog.size(), 1u);
-    EXPECT_EQ(catalog.front().stable_point_id,
-              BeforeRandSeedSetPointId);
-    EXPECT_EQ(catalog.front().pc, 0x80101E48u);
+    ASSERT_EQ(catalog.size(), 3u);
+    for (const auto& [stable_point_id, pc] :
+         std::array{
+             std::pair{BeforeRandSeedSetPointId, BeforeRandSeedSetPc},
+             std::pair{FieldFastPreseedPointId, FieldFastPreseedPc},
+             std::pair{
+                 FieldDeferredPreseedPointId,
+                 FieldDeferredPreseedPc},
+         })
+    {
+        const auto found = std::ranges::find(
+            catalog,
+            stable_point_id,
+            &TasMovieBoundaryCatalogEntryV1::stable_point_id);
+        ASSERT_NE(found, catalog.end());
+        EXPECT_EQ(found->pc, pc);
+    }
 
     const ProgramModule module = ProductionModule();
     ASSERT_EQ(module.entrypoints.size(), 1u);

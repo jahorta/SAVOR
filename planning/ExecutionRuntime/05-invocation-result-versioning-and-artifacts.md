@@ -175,6 +175,12 @@ State policies have fixed semantics:
   `MoviePrepareReadOnlyPlayback` before passive stop subscription, and requires successful consumption by
   `MovieStartPlayback` before any guest-dependent operation or successful return.
 
+`ReadOnlyMovie`/`EstablishBaseline` is not the TAS Movie family default. It is an explicit option that
+only a TAS Movie phase may select, and only when that invocation intentionally begins at the origin
+declared by the DTM header (including its declared startup savestate, when present). Every movie-paired
+continuation checkpoint instead uses `Savestate` with its exact same-name DTM sidecar and
+`RestoreBaseline`, including when the consuming phase is itself a TAS Movie phase.
+
 An entrypoint may reject a state policy it does not declare. There is no implicit “latest savestate” or
 ambient workflow result.
 

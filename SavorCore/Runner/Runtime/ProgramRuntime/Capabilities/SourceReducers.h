@@ -5,6 +5,7 @@
 #include "Core/Memory/Soa/Battle/BattleContext.h"
 #include "Core/Memory/Soa/Navigation/NavigationContext.h"
 #include "Runner/Runtime/DerivedState/BattleCoreDerivedState.h"
+#include "Phases/Programs/BattleCompletion/BattleCompletionContracts.h"
 
 #include <optional>
 #include <span>
@@ -24,6 +25,9 @@ namespace savor::runtime::program::capabilities {
 
 [[nodiscard]] ProgramValueGraph EncodeBattleTurnExecutionSpecValue(
     const soa::battle::actions::BattleTurnExecutionSpec& specification);
+
+[[nodiscard]] ProgramValueGraph EncodeBattleCompletionSnapshotValue(
+    const battlecompletion::BattleCompletionSnapshotV1& snapshot);
 
 [[nodiscard]] bool DecodeBattleDerivedQueryValue(
     const ProgramValueGraph& graph,

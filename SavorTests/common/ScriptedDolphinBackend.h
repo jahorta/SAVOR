@@ -59,17 +59,17 @@ struct ScriptedDolphinBackendControl
     runtime::BackendCoreState open_core_state = runtime::BackendCoreState::Paused;
     std::uint32_t pc = 0x80000000u;
     std::uint64_t vi_count = 0;
-    runtime::BackendMovieState movie_state = runtime::BackendMovieState::Inactive;
-    std::uint64_t movie_input_count = 0;
     bool throttle_disabled = false;
     std::uint64_t input_publication_epoch = 0;
     std::uint32_t input_callback_count = 0;
+    std::uint32_t input_a_control_callback_count = 0;
     savor::GCInputFrame input_frame{};
     std::map<std::uint32_t, std::uint8_t> guest_memory;
     std::vector<std::pair<std::uint32_t, std::size_t>> invalidations;
     std::vector<std::uint8_t> save_buffer_bytes{0x10, 0x20, 0x30};
     std::vector<std::uint8_t> save_file_bytes{0x10, 0x20, 0x30};
-    runtime::MovieSnapshot movie_snapshot;
+    runtime::MovieBackendObservation movie_observation{
+        .result = runtime::MovieBackendResult::Success()};
     std::optional<std::filesystem::path> movie_startup_savestate;
     std::filesystem::path prepared_movie_path;
     bool movie_available = true;
@@ -216,10 +216,11 @@ private:
     runtime::MovieBackendResult DiscardPreparedReadOnlyMovie() noexcept override;
     runtime::MovieBackendResult StopMovie() noexcept override;
     runtime::MovieBackendResult BeginRecording() override;
+    runtime::MovieBackendResult BranchReadOnlyPlaybackToRecording() override;
     runtime::MovieRecordingFinalizeResult FinalizeRecording(
         const std::filesystem::path& dtm_path) override;
     runtime::MovieBackendResult CancelRecording() noexcept override;
-    [[nodiscard]] runtime::MovieSnapshot Snapshot() const override;
+    [[nodiscard]] runtime::MovieBackendObservation ObserveMovie() const override;
     runtime::MovieCheckpointBackendResult
     CaptureRecordingCheckpoint() override;
     runtime::MovieBackendResult PrepareSavestateRestore(

@@ -207,6 +207,10 @@ execution/input/capture/movie/mutation/relevant-service compatibility. The works
 row, workflow step, queue record, claim token, attempt, result, artifact, or recovery object. The worker
 cannot add items, reorder them, select later durable work, or inspect SavorDb.
 
+The `ReadOnlyMovie` form is an explicit option available only to TAS Movie phases that intentionally
+begin at the DTM-declared origin; it is not their default. A later movie-paired checkpoint is always the
+`Savestate` form with its exact DTM continuation sidecar, even when a TAS Movie phase consumes it.
+
 One workset owns the session at a time, but the worker may also hold one immutable staged successor
 package. Staging is limited to transport decoding, complete definition/input/dependency validation,
 verified-module pinning, and host-only immutable artifact validation. It cannot mutate the session, load
@@ -254,9 +258,10 @@ asynchronous cancellation path below rather than an authorization roundtrip.
 6. Active common preparation materializes and verifies the exact required `ProgramBaselineDefinition`.
    A savestate workset restores its artifact baseline before its first child. If it contains multiple
    children, the active workset captures one private in-memory handle and restores that handle before
-   every later child. A read-only-movie workset stages its artifacts without starting playback; every
-   child independently establishes the declared movie through `MovieStartPlayback`. All workset-owned
-   handles are released when that workset terminates.
+   every later child. A TAS Movie workset that explicitly opts into a DTM-origin `ReadOnlyMovie`
+   baseline stages its artifacts without starting playback; every child independently establishes the
+   declared movie through `MovieStartPlayback`. All workset-owned handles are released when that workset
+   terminates.
 7. Immediately before a child's first effect, the worker publishes its ordered item-start event and
    activates the sole `ProgramInvocation`/`ProgramInstance` without waiting for a coordinator decision.
    The coordinator consumes that event and appends the existing per-job `JobStarted` event before
@@ -320,10 +325,11 @@ decides whether current SavorDb operations create later work.
 
 ### State and session policy
 
-Runtime state policy distinguishes an already restored artifact baseline from an invocation that must
-establish its declared read-only movie artifact. Infrastructure boot is not a phase baseline. This does
-not change how SavorDb stores savestate or artifact references; program-kind handlers map the existing
-references into the runtime artifact baseline in memory.
+Runtime state policy distinguishes an already restored artifact baseline from an explicitly opted-in
+TAS Movie invocation that must establish its declared DTM-origin read-only movie artifact.
+Infrastructure boot is not a phase baseline. This does not change how SavorDb stores savestate or
+artifact references; program-kind handlers map the existing references into the runtime artifact
+baseline in memory.
 
 Worker reuse remains an optimization. `ProgramResult` cleanup/session status governs whether the current
 worker session may be reused, without requiring a new persisted cleanup-status field. Workset locality

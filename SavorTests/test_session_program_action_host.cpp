@@ -87,7 +87,8 @@ public:
 
     bool Open(
         SessionProgramActionHostConfig config = {},
-        std::optional<std::filesystem::path> movie = std::nullopt)
+        std::optional<std::filesystem::path> movie = std::nullopt,
+        std::optional<MovieCheckpointMetadata> restored_movie = std::nullopt)
     {
         const SessionOperationReceipt opened =
             session.Open({});
@@ -106,6 +107,21 @@ public:
                 movies->PrepareReadOnlyPlayback({.dtm_path = *movie});
             if (!prepared.result.ok || !prepared.preparation)
                 return false;
+        }
+        if (restored_movie)
+        {
+            MovieService* movies = session.movie_service();
+            if (!movies)
+                return false;
+            const SavestateMovieRestoreContext restore{
+                initialization.workset_epoch,
+                std::move(restored_movie),
+                false};
+            if (!movies->PrepareSavestateRestore(restore).ok ||
+                !movies->CommitSavestateRestore(restore).ok)
+            {
+                return false;
+            }
         }
         const SessionOperationReceipt committed =
             session.CommitWorksetInitialization(WorkerWorksetId(1));
@@ -312,6 +328,38 @@ public:
 private:
     std::vector<Byte> bytes_;
 };
+
+ProgramValueGraph StartMovieRecordingRequestGraph(
+    const ProgramValue& playback,
+    const std::filesystem::path& output)
+{
+    TestStaticConfigWriter writer({'M', 'R', 'C', '1'});
+    writer.String(output.string());
+    writer.String("test movie recording");
+    TestValueGraphBuilder builder;
+    const ProgramValueId playback_id = builder.AddFrom(playback);
+    const ProgramValueId config = builder.Add(
+        CanonicalRuntimeType(
+            CanonicalRuntimeSchema::MovieRecordingStaticConfig),
+        writer.Finish());
+    return builder.Finish(
+        CanonicalAction::MovieStartRecording,
+        {playback_id, config});
+}
+
+ProgramValueGraph AdoptRestoredMoviePlaybackRequestGraph()
+{
+    TestValueGraphBuilder builder;
+    return builder.Finish(
+        CanonicalAction::MovieAdoptRestoredReadOnlyPlayback,
+        {});
+}
+
+ProgramValueGraph ObserveMovieStateRequestGraph()
+{
+    TestValueGraphBuilder builder;
+    return builder.Finish(CanonicalAction::MovieObserveState, {});
+}
 
 ProgramValueGraph StepFramesRequestGraph(
     std::uint64_t count,
@@ -599,6 +647,20 @@ std::vector<std::uint8_t> MakeDtm()
     bytes[9] = '0';
     bytes[11] = 1;
     return bytes;
+}
+
+MovieCheckpointMetadata RestoredReadOnlyMovie(
+    const std::filesystem::path& dtm,
+    std::vector<std::uint8_t> bytes)
+{
+    MovieCheckpointMetadata movie;
+    movie.mode = MovieCheckpointMode::ReadOnlyPlayback;
+    movie.dtm_bytes = std::move(bytes);
+    movie.dtm_path = dtm;
+    movie.current_frame = 37;
+    movie.current_input_count = 0;
+    movie.cursor_known = true;
+    return movie;
 }
 
 void PumpHostExecution(HostHarness& harness)
@@ -1098,7 +1160,7 @@ TEST(
     const auto* record =
         std::get_if<RecordValue>(&result->payload);
     ASSERT_NE(record, nullptr);
-    ASSERT_EQ(record->fields.size(), 5u);
+    ASSERT_EQ(record->fields.size(), 6u);
     const auto optional_stop_iterator = std::ranges::find(
         completions.front().resolution.output.values,
         record->fields[1],
@@ -1214,6 +1276,59 @@ TEST(
 
 TEST(
     SessionProgramActionHost,
+    MovieStateObservationReturnsServiceOwnedStateWithoutMutation)
+{
+    HostHarness harness;
+    harness.control->movie_available = true;
+    ASSERT_TRUE(harness.Open());
+    ASSERT_TRUE(harness.Prepare(
+        InvocationStatePolicy::RestoreBaseline,
+        "movie-state-observation").accepted);
+    MovieService* movies = harness.session.movie_service();
+    ASSERT_NE(movies, nullptr);
+    ASSERT_EQ(movies->state(), MovieState::Inactive);
+    const WorksetEpoch epoch = harness.session.snapshot().workset_epoch;
+    const auto calls_before = harness.control->Calls();
+
+    const ProgramActionDispatchResult observed = harness.InvokeGraph(
+        CanonicalAction::MovieObserveState,
+        ObserveMovieStateRequestGraph());
+
+    ASSERT_TRUE(observed.accepted) << observed.diagnostic;
+    ASSERT_TRUE(observed.immediate_result);
+    const auto& output = observed.immediate_result->resolution.output;
+    const ProgramValue* root = Root(output);
+    ASSERT_NE(root, nullptr);
+    const auto* record = std::get_if<RecordValue>(&root->payload);
+    ASSERT_NE(record, nullptr);
+    ASSERT_EQ(record->fields.size(), 5u);
+    const auto value = [&](std::size_t index) -> const ProgramValue* {
+        const auto found = std::ranges::find(
+            output.values, record->fields[index], &ProgramValue::id);
+        return found == output.values.end() ? nullptr : &*found;
+    };
+    ASSERT_NE(value(0), nullptr);
+    const auto* state = std::get_if<EnumValue>(&value(0)->payload);
+    ASSERT_NE(state, nullptr);
+    EXPECT_EQ(state->value, static_cast<std::int64_t>(MovieState::Inactive));
+    ASSERT_NE(value(1), nullptr);
+    EXPECT_EQ(std::get<std::uint64_t>(value(1)->payload), epoch.value());
+    ASSERT_NE(value(2), nullptr);
+    EXPECT_TRUE(std::get<bool>(value(2)->payload));
+    ASSERT_NE(value(3), nullptr);
+    ASSERT_NE(value(4), nullptr);
+    EXPECT_EQ(movies->state(), MovieState::Inactive);
+    EXPECT_FALSE(movies->reservation());
+    EXPECT_EQ(harness.control->Calls(), calls_before);
+    EXPECT_EQ(harness.host->snapshot().mapped_resource_count, 0u);
+
+    EXPECT_TRUE(harness.Finish().accepted);
+    harness.host->Shutdown();
+    EXPECT_TRUE(harness.session.Shutdown().ok);
+}
+
+TEST(
+    SessionProgramActionHost,
     MoviePlaybackPreservesEpochAndReturnsAWorksetBoundHandle)
 {
     TemporaryDirectory temporary;
@@ -1270,6 +1385,307 @@ TEST(
         ProgramCleanupStatus::Clean);
 
     ASSERT_TRUE(harness.Finish().accepted);
+    harness.host->Shutdown();
+    EXPECT_TRUE(harness.session.Shutdown().ok);
+}
+
+TEST(
+    SessionProgramActionHost,
+    AdoptsRestoredReadOnlyPlaybackExactlyOnceWithoutRestartingIt)
+{
+    TemporaryDirectory temporary;
+    const std::filesystem::path dtm =
+        temporary.File("restored-playback.dtm");
+    const std::vector<std::uint8_t> bytes = MakeDtm();
+    WriteBytes(dtm, bytes);
+
+    HostHarness harness;
+    harness.control->movie_available = true;
+    ASSERT_TRUE(harness.Open(
+        {},
+        std::nullopt,
+        RestoredReadOnlyMovie(dtm, bytes)));
+    ASSERT_TRUE(harness.Prepare(
+        InvocationStatePolicy::RestoreBaseline,
+        "restored-playback-adoption").accepted);
+    MovieService* movies = harness.session.movie_service();
+    ASSERT_NE(movies, nullptr);
+    ASSERT_EQ(movies->state(), MovieState::ReadOnlyPlayback);
+    const WorksetEpoch epoch = harness.session.snapshot().workset_epoch;
+    const MovieReservationId reservation = movies->reservation();
+    ASSERT_TRUE(reservation);
+    const MovieStateSnapshot cursor = movies->ObserveState(epoch);
+    ASSERT_TRUE(cursor.result.ok) << cursor.result.message;
+    const auto calls_before = harness.control->Calls();
+    const int core_stops_before = harness.control->core_stop_count;
+    const int core_starts_before = harness.control->core_start_count;
+
+    ProgramActionDispatchResult adopted = harness.InvokeGraph(
+        CanonicalAction::MovieAdoptRestoredReadOnlyPlayback,
+        AdoptRestoredMoviePlaybackRequestGraph());
+
+    ASSERT_TRUE(adopted.accepted) << adopted.diagnostic;
+    ASSERT_TRUE(adopted.immediate_result);
+    EXPECT_EQ(
+        adopted.immediate_result->resolution.status,
+        ProgramActionResolutionStatus::Completed);
+    ASSERT_EQ(adopted.immediate_result->resolution.resources.size(), 1u);
+    EXPECT_EQ(
+        harness.host->snapshot().mapped_resource_count,
+        1u);
+    const ProgramValue* playback =
+        Root(adopted.immediate_result->resolution.output);
+    ASSERT_NE(playback, nullptr);
+    EXPECT_EQ(
+        playback->type,
+        CanonicalActionOutputType(
+            CanonicalAction::MovieStartPlayback));
+    EXPECT_EQ(
+        adopted.immediate_result->resolution.workset_epoch,
+        epoch);
+    EXPECT_EQ(movies->state(), MovieState::ReadOnlyPlayback);
+    EXPECT_EQ(movies->reservation(), reservation);
+    const MovieStateSnapshot cursor_after = movies->ObserveState(epoch);
+    ASSERT_TRUE(cursor_after.result.ok) << cursor_after.result.message;
+    EXPECT_EQ(cursor_after.state, cursor.state);
+    EXPECT_EQ(cursor_after.read_only, cursor.read_only);
+    EXPECT_EQ(cursor_after.current_frame, cursor.current_frame);
+    EXPECT_EQ(
+        cursor_after.current_input_count,
+        cursor.current_input_count);
+    EXPECT_EQ(harness.control->core_stop_count, core_stops_before);
+    EXPECT_EQ(harness.control->core_start_count, core_starts_before);
+    EXPECT_EQ(harness.control->Calls(), calls_before);
+
+    ProgramActionDispatchResult duplicate = harness.InvokeGraph(
+        CanonicalAction::MovieAdoptRestoredReadOnlyPlayback,
+        AdoptRestoredMoviePlaybackRequestGraph());
+    EXPECT_FALSE(duplicate.accepted);
+    ASSERT_TRUE(duplicate.immediate_result);
+    EXPECT_EQ(
+        duplicate.immediate_result->resolution.code,
+        "movie_playback_already_adopted");
+    EXPECT_EQ(
+        harness.host->snapshot().mapped_resource_count,
+        1u);
+    EXPECT_EQ(movies->reservation(), reservation);
+    EXPECT_EQ(harness.control->Calls(), calls_before);
+
+    ProgramActionDispatchResult finished = harness.Finish();
+    ASSERT_TRUE(finished.accepted);
+    ASSERT_TRUE(finished.immediate_result);
+    ASSERT_EQ(
+        finished.immediate_result->resolution.cleanup_receipts.size(),
+        1u);
+    EXPECT_EQ(
+        finished.immediate_result->resolution.cleanup_receipts[0].status,
+        ProgramCleanupStatus::Clean);
+    EXPECT_EQ(movies->state(), MovieState::Inactive);
+    EXPECT_FALSE(movies->reservation());
+    EXPECT_EQ(
+        std::ranges::count(
+            harness.control->Calls(),
+            std::string("movie.stop")),
+        1);
+
+    harness.host->Shutdown();
+    EXPECT_TRUE(harness.session.Shutdown().ok);
+}
+
+TEST(
+    SessionProgramActionHost,
+    AdoptedRestoredPlaybackIsAcceptedByMovieRecordingBranch)
+{
+    TemporaryDirectory temporary;
+    const std::filesystem::path dtm =
+        temporary.File("restored-recording-source.dtm");
+    const std::filesystem::path output =
+        temporary.File("restored-recording-output.dtm");
+    const std::vector<std::uint8_t> bytes = MakeDtm();
+    WriteBytes(dtm, bytes);
+
+    HostHarness harness;
+    harness.control->movie_available = true;
+    ASSERT_TRUE(harness.Open(
+        {},
+        std::nullopt,
+        RestoredReadOnlyMovie(dtm, bytes)));
+    ASSERT_TRUE(harness.Prepare(
+        InvocationStatePolicy::RestoreBaseline,
+        "restored-playback-recording").accepted);
+    ProgramActionDispatchResult adopted = harness.InvokeGraph(
+        CanonicalAction::MovieAdoptRestoredReadOnlyPlayback,
+        AdoptRestoredMoviePlaybackRequestGraph());
+    ASSERT_TRUE(adopted.accepted) << adopted.diagnostic;
+    ASSERT_TRUE(adopted.immediate_result);
+    const ProgramValue* playback =
+        Root(adopted.immediate_result->resolution.output);
+    ASSERT_NE(playback, nullptr);
+    const int core_stops_before = harness.control->core_stop_count;
+    const int core_starts_before = harness.control->core_start_count;
+
+    ProgramActionDispatchResult recording = harness.InvokeGraph(
+        CanonicalAction::MovieStartRecording,
+        StartMovieRecordingRequestGraph(*playback, output));
+
+    ASSERT_TRUE(recording.accepted) << recording.diagnostic;
+    ASSERT_TRUE(recording.immediate_result);
+    ASSERT_NE(harness.session.movie_service(), nullptr);
+    EXPECT_EQ(
+        harness.session.movie_service()->state(),
+        MovieState::Recording);
+    EXPECT_EQ(harness.control->core_stop_count, core_stops_before);
+    EXPECT_EQ(harness.control->core_start_count, core_starts_before);
+    EXPECT_EQ(
+        std::ranges::count(
+            harness.control->Calls(),
+            std::string("movie.branch-playback-to-recording")),
+        1);
+    EXPECT_EQ(
+        harness.host->snapshot().mapped_resource_count,
+        1u);
+
+    EXPECT_TRUE(harness.Finish().accepted);
+    harness.host->Shutdown();
+    EXPECT_TRUE(harness.session.Shutdown().ok);
+}
+
+TEST(
+    SessionProgramActionHost,
+    AdoptedPlaybackNaturalEndRetainsCheckpointUntilHostOnlyCleanup)
+{
+    TemporaryDirectory temporary;
+    const std::filesystem::path dtm =
+        temporary.File("restored-playback-ended.dtm");
+    const std::vector<std::uint8_t> bytes = MakeDtm();
+    WriteBytes(dtm, bytes);
+
+    HostHarness harness;
+    harness.control->movie_available = true;
+    ASSERT_TRUE(harness.Open(
+        {},
+        std::nullopt,
+        RestoredReadOnlyMovie(dtm, bytes)));
+    ASSERT_TRUE(harness.Prepare(
+        InvocationStatePolicy::RestoreBaseline,
+        "restored-playback-ended").accepted);
+    ProgramActionDispatchResult adopted = harness.InvokeGraph(
+        CanonicalAction::MovieAdoptRestoredReadOnlyPlayback,
+        AdoptRestoredMoviePlaybackRequestGraph());
+    ASSERT_TRUE(adopted.accepted) << adopted.diagnostic;
+
+    MovieService* movies = harness.session.movie_service();
+    ASSERT_NE(movies, nullptr);
+    const WorksetEpoch epoch = harness.session.snapshot().workset_epoch;
+    {
+        std::lock_guard lock(harness.control->mutex);
+        harness.control->movie_observation.playing = false;
+        harness.control->movie_observation.recording = false;
+        harness.control->movie_observation.read_only = true;
+        harness.control->movie_observation.current_frame = 41;
+        harness.control->movie_observation.current_input_count = 3;
+    }
+    const MovieStateSnapshot ended = movies->ObserveState(epoch);
+    ASSERT_TRUE(ended.result.ok) << ended.result.message;
+    EXPECT_EQ(ended.state, MovieState::PlaybackEnded);
+    EXPECT_EQ(ended.current_frame, 41u);
+    EXPECT_EQ(ended.current_input_count, 3u);
+
+    const MovieCheckpointReceipt checkpoint = movies->CaptureCheckpoint();
+    ASSERT_TRUE(checkpoint.result.ok) << checkpoint.result.message;
+    ASSERT_TRUE(checkpoint.checkpoint);
+    EXPECT_EQ(
+        checkpoint.checkpoint->mode,
+        MovieCheckpointMode::ReadOnlyPlayback);
+    EXPECT_EQ(checkpoint.checkpoint->current_frame, 41u);
+    EXPECT_EQ(checkpoint.checkpoint->current_input_count, 3u);
+
+    ASSERT_TRUE(harness.Finish().accepted);
+    EXPECT_EQ(movies->state(), MovieState::Inactive);
+    EXPECT_FALSE(movies->reservation());
+    EXPECT_EQ(
+        std::ranges::count(
+            harness.control->Calls(),
+            std::string("movie.stop")),
+        0);
+
+    harness.host->Shutdown();
+    EXPECT_TRUE(harness.session.Shutdown().ok);
+}
+
+TEST(
+    SessionProgramActionHost,
+    RejectsPlaybackAdoptionWithoutARestoredMovie)
+{
+    HostHarness harness;
+    harness.control->movie_available = true;
+    ASSERT_TRUE(harness.Open());
+    ASSERT_TRUE(harness.Prepare(
+        InvocationStatePolicy::RestoreBaseline,
+        "missing-restored-playback").accepted);
+
+    ProgramActionDispatchResult adopted = harness.InvokeGraph(
+        CanonicalAction::MovieAdoptRestoredReadOnlyPlayback,
+        AdoptRestoredMoviePlaybackRequestGraph());
+
+    EXPECT_FALSE(adopted.accepted);
+    ASSERT_TRUE(adopted.immediate_result);
+    EXPECT_EQ(
+        adopted.immediate_result->resolution.code,
+        "restored_movie_playback_unavailable");
+    EXPECT_EQ(
+        harness.host->snapshot().mapped_resource_count,
+        0u);
+    EXPECT_TRUE(harness.Finish().accepted);
+    harness.host->Shutdown();
+    EXPECT_TRUE(harness.session.Shutdown().ok);
+}
+
+TEST(
+    SessionProgramActionHost,
+    RecordingStartWithoutARegistrableScopeIsCompensatedImmediately)
+{
+    TemporaryDirectory temporary;
+    const std::filesystem::path dtm = temporary.File("branch-source.dtm");
+    const std::filesystem::path output = temporary.File("recording.dtm");
+    WriteBytes(dtm, MakeDtm());
+
+    HostHarness harness;
+    harness.control->movie_available = true;
+    ASSERT_TRUE(harness.Open({}, dtm));
+    ASSERT_TRUE(harness.Prepare(
+        InvocationStatePolicy::EstablishBaseline,
+        "recording-registration-compensation",
+        false).accepted);
+    ProgramActionDispatchResult prepared = PrepareMoviePlayback(harness, dtm);
+    ASSERT_TRUE(prepared.accepted) << prepared.diagnostic;
+    ProgramActionDispatchResult playback =
+        StartPreparedMoviePlayback(harness, prepared);
+    ASSERT_TRUE(playback.accepted) << playback.diagnostic;
+    ASSERT_TRUE(playback.immediate_result);
+    const ProgramValue* playback_handle =
+        Root(playback.immediate_result->resolution.output);
+    ASSERT_NE(playback_handle, nullptr);
+
+    ProgramActionDispatchResult recording = harness.InvokeGraph(
+        CanonicalAction::MovieStartRecording,
+        StartMovieRecordingRequestGraph(*playback_handle, output),
+        ProgramScopeId(999));
+
+    EXPECT_FALSE(recording.accepted);
+    ASSERT_TRUE(recording.immediate_result);
+    EXPECT_EQ(recording.immediate_result->resolution.code,
+              "resource_registration_failed");
+    ASSERT_NE(harness.session.movie_service(), nullptr);
+    EXPECT_EQ(harness.session.movie_service()->state(),
+              MovieState::Inactive);
+    const auto calls = harness.control->Calls();
+    EXPECT_EQ(std::ranges::count(
+        calls, std::string("movie.branch-playback-to-recording")), 1);
+    EXPECT_EQ(std::ranges::count(
+        calls, std::string("movie.cancel-recording")), 1);
+
+    EXPECT_TRUE(harness.Finish().accepted);
     harness.host->Shutdown();
     EXPECT_TRUE(harness.session.Shutdown().ok);
 }
@@ -1384,8 +1800,10 @@ TEST(
 
     {
         std::lock_guard lock(harness.control->mutex);
-        harness.control->movie_state = BackendMovieState::Ended;
-        harness.control->movie_input_count = 5;
+        harness.control->movie_observation.playing = false;
+        harness.control->movie_observation.recording = false;
+        harness.control->movie_observation.read_only = true;
+        harness.control->movie_observation.current_input_count = 5;
     }
     ProgramActionDispatchResult continued = harness.InvokeGraph(
         CanonicalAction::ExecutionContinueUntil,
@@ -1402,7 +1820,7 @@ TEST(
     ASSERT_NE(result, nullptr);
     const auto* record = std::get_if<RecordValue>(&result->payload);
     ASSERT_NE(record, nullptr);
-    ASSERT_EQ(record->fields.size(), 5u);
+    ASSERT_EQ(record->fields.size(), 6u);
     const auto reason_iterator = std::ranges::find(
         completions.front().resolution.output.values,
         record->fields[0],
@@ -1425,7 +1843,19 @@ TEST(
     ASSERT_NE(optional_stop, nullptr);
     EXPECT_FALSE(optional_stop->value.has_value());
 
+    ASSERT_NE(harness.session.movie_service(), nullptr);
+    EXPECT_EQ(
+        harness.session.movie_service()->state(),
+        MovieState::PlaybackEnded);
     ASSERT_TRUE(harness.Finish().accepted);
+    EXPECT_EQ(
+        harness.session.movie_service()->state(),
+        MovieState::Inactive);
+    EXPECT_EQ(
+        std::ranges::count(
+            harness.control->Calls(),
+            std::string("movie.stop")),
+        0);
     harness.host->Shutdown();
     EXPECT_TRUE(harness.session.Shutdown().ok);
 }

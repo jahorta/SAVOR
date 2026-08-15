@@ -1268,8 +1268,8 @@ bool SqliteAuthoringDb::SaveBattlePlanActionPreset(
     if (sqlite3_prepare_v2(
             db_,
             "INSERT INTO au_battle_plan_action_preset("
-            "name,macro,target_kind,item_id,target_mask_bits,target_single_slot,target_same_as_actor_slot,target_expr_ini,flags,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);",
+            "name,macro,target_kind,item_id,target_mask_bits,target_single_slot,target_same_as_actor_slot,flags,created_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);",
             -1,
             &insert_preset.st,
             nullptr)
@@ -1285,9 +1285,8 @@ bool SqliteAuthoringDb::SaveBattlePlanActionPreset(
     BindOptionalInt(insert_preset.st, 5, command.target_mask_bits);
     BindOptionalInt(insert_preset.st, 6, command.target_single_slot);
     BindOptionalInt(insert_preset.st, 7, command.target_same_as_actor_slot);
-    BindOptionalText(insert_preset.st, 8, command.target_expr_ini);
-    sqlite3_bind_int(insert_preset.st, 9, command.flags);
-    sqlite3_bind_int64(insert_preset.st, 10, ToEpochMillis(command.created_at_utc));
+    sqlite3_bind_int(insert_preset.st, 8, command.flags);
+    sqlite3_bind_int64(insert_preset.st, 9, ToEpochMillis(command.created_at_utc));
     if (sqlite3_step(insert_preset.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
@@ -1395,7 +1394,7 @@ std::optional<BattlePlanActionPresetSnapshot> SqliteAuthoringDb::GetBattlePlanAc
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT action_preset_id,name,macro,target_kind,item_id,target_mask_bits,target_single_slot,target_same_as_actor_slot,target_expr_ini,flags,created_at_utc,updated_at_utc "
+            "SELECT action_preset_id,name,macro,target_kind,item_id,target_mask_bits,target_single_slot,target_same_as_actor_slot,flags,created_at_utc,updated_at_utc "
             "FROM au_battle_plan_action_preset WHERE action_preset_id=?1;",
             -1,
             &st.st,
@@ -1417,10 +1416,9 @@ std::optional<BattlePlanActionPresetSnapshot> SqliteAuthoringDb::GetBattlePlanAc
     out.target_mask_bits = ColumnIntOptional(st.st, 5);
     out.target_single_slot = ColumnIntOptional(st.st, 6);
     out.target_same_as_actor_slot = ColumnIntOptional(st.st, 7);
-    out.target_expr_ini = ColumnTextOptional(st.st, 8);
-    out.flags = sqlite3_column_int(st.st, 9);
-    out.created_at_utc = FromEpochMillis(sqlite3_column_int64(st.st, 10));
-    if (const auto updated = ColumnInt64Optional(st.st, 11); updated.has_value()) {
+    out.flags = sqlite3_column_int(st.st, 8);
+    out.created_at_utc = FromEpochMillis(sqlite3_column_int64(st.st, 9));
+    if (const auto updated = ColumnInt64Optional(st.st, 10); updated.has_value()) {
         out.updated_at_utc = FromEpochMillis(*updated);
     }
     return out;
@@ -1644,7 +1642,7 @@ std::optional<BattlePlanSnapshot> SqliteAuthoringDb::GetBattlePlan(
         if (sqlite3_prepare_v2(
                 db_,
                 "SELECT a.plan_action_id,a.plan_turn_id,a.actor_slot,a.action_preset_id,a.ordinal,"
-                "p.name,p.macro,p.target_kind,p.item_id,p.target_mask_bits,p.target_single_slot,p.target_same_as_actor_slot,p.target_expr_ini,p.flags,p.created_at_utc,p.updated_at_utc "
+                "p.name,p.macro,p.target_kind,p.item_id,p.target_mask_bits,p.target_single_slot,p.target_same_as_actor_slot,p.flags,p.created_at_utc,p.updated_at_utc "
                 "FROM au_battle_plan_action a "
                 "JOIN au_battle_plan_action_preset p ON p.action_preset_id=a.action_preset_id "
                 "WHERE a.plan_turn_id=?1 ORDER BY a.ordinal ASC, a.plan_action_id ASC;",
@@ -1668,10 +1666,9 @@ std::optional<BattlePlanSnapshot> SqliteAuthoringDb::GetBattlePlan(
                 action.action_preset.target_mask_bits = ColumnIntOptional(action_st.st, 9);
                 action.action_preset.target_single_slot = ColumnIntOptional(action_st.st, 10);
                 action.action_preset.target_same_as_actor_slot = ColumnIntOptional(action_st.st, 11);
-                action.action_preset.target_expr_ini = ColumnTextOptional(action_st.st, 12);
-                action.action_preset.flags = sqlite3_column_int(action_st.st, 13);
-                action.action_preset.created_at_utc = FromEpochMillis(sqlite3_column_int64(action_st.st, 14));
-                if (const auto updated = ColumnInt64Optional(action_st.st, 15); updated.has_value()) {
+                action.action_preset.flags = sqlite3_column_int(action_st.st, 12);
+                action.action_preset.created_at_utc = FromEpochMillis(sqlite3_column_int64(action_st.st, 13));
+                if (const auto updated = ColumnInt64Optional(action_st.st, 14); updated.has_value()) {
                     action.action_preset.updated_at_utc = FromEpochMillis(*updated);
                 }
                 turn.actions.push_back(std::move(action));

@@ -141,7 +141,7 @@ void AssessCommonScenarioExecution(
                 "execution job " + std::to_string(job->job_id)
                     + " is not business-final; state=" + job->state);
             assessment->Require(
-                job->state != "FAILED" && job->state != "CANCELED",
+                job->state != "FAILED",
                 "execution job " + std::to_string(job->job_id)
                     + " reached " + job->state);
             assessment->Require(

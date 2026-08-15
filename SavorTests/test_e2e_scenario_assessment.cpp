@@ -64,3 +64,74 @@ TEST(E2eScenarioAssessment, NonterminalStepIsAnInfrastructureFailure) {
         &execution_db, workflows, {}, {}, &assessment);
     EXPECT_FALSE(assessment.Passed());
 }
+
+TEST(E2eScenarioAssessment, CanceledJobsAreSuccessfulPruningOutcomes) {
+    RecordingExecutionDb execution_db;
+    std::int64_t job_set_id = 0;
+    ASSERT_TRUE(execution_db.CreateJobSet({}, &job_set_id));
+    std::int64_t job_id = 0;
+    ASSERT_TRUE(execution_db.EnqueueJob({
+        .job_set_id = job_set_id,
+        .program_kind = 1,
+        .program_version = 1,
+        .program_ref_kind = "fixture",
+        .program_ref_id = 1,
+        .fingerprint = "canceled-pruning-candidate",
+    }, &job_id));
+    ASSERT_TRUE(execution_db.SetJobState(job_id, "CANCELED"));
+
+    savor::db::execution::workflow::WorkflowGraphSnapshot graph{};
+    graph.instance.workflow_instance_id = 9;
+    graph.instance.state = savor::db::execution::workflow::
+        WorkflowInstanceState::Completed;
+    savor::db::execution::workflow::WorkflowStepRecord step{};
+    step.workflow_step_id = 1;
+    step.step_key = "pruned_population";
+    step.state = savor::db::execution::workflow::
+        WorkflowStepState::Completed;
+    step.job_set_id = job_set_id;
+    graph.steps.push_back(std::move(step));
+
+    const std::array workflows{graph};
+    savor::e2e::ScenarioAssessment assessment;
+    savor::e2e::AssessCommonScenarioExecution(
+        &execution_db, workflows, {}, {}, &assessment);
+    EXPECT_TRUE(assessment.Passed()) << assessment.FailureSummary("fixture");
+}
+
+TEST(E2eScenarioAssessment, FailedJobsRemainInfrastructureFailures) {
+    RecordingExecutionDb execution_db;
+    std::int64_t job_set_id = 0;
+    ASSERT_TRUE(execution_db.CreateJobSet({}, &job_set_id));
+    std::int64_t job_id = 0;
+    ASSERT_TRUE(execution_db.EnqueueJob({
+        .job_set_id = job_set_id,
+        .program_kind = 1,
+        .program_version = 1,
+        .program_ref_kind = "fixture",
+        .program_ref_id = 1,
+        .fingerprint = "failed-candidate",
+    }, &job_id));
+    ASSERT_TRUE(execution_db.SetJobState(job_id, "FAILED"));
+
+    savor::db::execution::workflow::WorkflowGraphSnapshot graph{};
+    graph.instance.workflow_instance_id = 10;
+    graph.instance.state = savor::db::execution::workflow::
+        WorkflowInstanceState::Completed;
+    savor::db::execution::workflow::WorkflowStepRecord step{};
+    step.workflow_step_id = 1;
+    step.step_key = "failed_population";
+    step.state = savor::db::execution::workflow::
+        WorkflowStepState::Completed;
+    step.job_set_id = job_set_id;
+    graph.steps.push_back(std::move(step));
+
+    const std::array workflows{graph};
+    savor::e2e::ScenarioAssessment assessment;
+    savor::e2e::AssessCommonScenarioExecution(
+        &execution_db, workflows, {}, {}, &assessment);
+    EXPECT_FALSE(assessment.Passed());
+    EXPECT_NE(
+        assessment.FailureSummary("fixture").find("reached FAILED"),
+        std::string::npos);
+}

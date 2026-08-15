@@ -379,23 +379,45 @@ std::optional<events::AnalysisBattleCompletionPayloadView> SqliteBattlePayloadRo
     };
 }
 
-std::optional<events::AnalysisBattleResultsPayloadView> SqliteBattlePayloadRowResolver::ResolveBattleResults(
+std::optional<events::AnalysisBattleRecordingPayloadView> SqliteBattlePayloadRowResolver::ResolveBattleRecording(
     std::string_view payload_ref_kind,
     std::int64_t payload_ref_id) const {
-    if (db_ == nullptr || !MatchesRef("battle_results", payload_ref_kind, payload_ref_id)) {
+    if (db_ == nullptr || !MatchesRef("battle_recording", payload_ref_kind, payload_ref_id)) {
         return std::nullopt;
     }
     Statement st;
     if (sqlite3_prepare_v2(
-            db_, "SELECT battle_completion_id,battle_results_id FROM ab_battle_results WHERE battle_results_id=?1;",
+            db_, "SELECT battle_completion_id,battle_recording_id FROM ab_battle_recording WHERE battle_recording_id=?1;",
             -1, &st.st, nullptr) != SQLITE_OK) {
         return std::nullopt;
     }
     sqlite3_bind_int64(st.st, 1, payload_ref_id);
     if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
-    return events::AnalysisBattleResultsPayloadView{
+    return events::AnalysisBattleRecordingPayloadView{
         .battle_completion_id = sqlite3_column_int64(st.st, 0),
-        .battle_results_id = sqlite3_column_int64(st.st, 1),
+        .battle_recording_id = sqlite3_column_int64(st.st, 1),
+    };
+}
+
+std::optional<events::AnalysisBattleReplayPayloadView>
+SqliteBattlePayloadRowResolver::ResolveBattleReplay(
+    std::string_view payload_ref_kind,
+    std::int64_t payload_ref_id) const {
+    if (db_ == nullptr ||
+        !MatchesRef("battle_replay", payload_ref_kind, payload_ref_id)) {
+        return std::nullopt;
+    }
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_, "SELECT battle_completion_id,battle_replay_id FROM ab_battle_replay WHERE battle_replay_id=?1;",
+            -1, &st.st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, payload_ref_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return events::AnalysisBattleReplayPayloadView{
+        .battle_completion_id = sqlite3_column_int64(st.st, 0),
+        .battle_replay_id = sqlite3_column_int64(st.st, 1),
     };
 }
 

@@ -1,6 +1,7 @@
 #include "gtest/gtest.h"
 
 #include "../SavorCore/Core/Input/SoaBattle/BattlePlanValidation.h"
+#include "../SavorCore/Core/Input/SoaBattle/BattleCommandCodec.h"
 #include "../SavorCore/Phases/Programs/BattleSingleTurn/BattleSingleTurnModule.h"
 #include "../SavorCore/Runner/Runtime/Predicates/PredicateBundle.h"
 #include "../SavorCore/Runner/Runtime/DerivedState/DerivedStateRegistry.h"
@@ -35,6 +36,27 @@ BattleTurnExecutionSpec AttackPlan(std::uint8_t target = 4)
     return {.commands = {{.actor_slot = 0,
         .macro = BattleAction::Attack,
         .params = {.target_slot = target}}}};
+}
+
+savor::db::BattlePlanActionSnapshot AuthoredAttack(
+    int actor,
+    int ordinal,
+    savor::db::BattlePlanTargetKind target_kind,
+    std::optional<int> single = std::nullopt,
+    std::optional<int> mask = std::nullopt,
+    std::optional<int> same_as = std::nullopt)
+{
+    return {
+        .actor_slot = actor,
+        .action_preset = {
+            .macro = BattleAction::Attack,
+            .target_kind = target_kind,
+            .target_mask_bits = mask,
+            .target_single_slot = single,
+            .target_same_as_actor_slot = same_as,
+        },
+        .ordinal = ordinal,
+    };
 }
 
 TEST(BattlePlanValidation, ValidatesLiveActorsAndTargets)
@@ -380,6 +402,59 @@ TEST(BattleSingleTurnModule, PreparesAndCachesActivePredicateVariant)
               first->identity().canonical_sha256);
 }
 
+TEST(BattleSingleTurnModule, DeclaresSharedPredicateEvaluationSchemaOnce)
+{
+    auto package = ActiveLiteralPackage(
+        program::composition::PredicateReaction::RecordAndContinue);
+    const auto end_turn = std::ranges::find_if(
+        package.hook_contract.points,
+        [](const auto& point) {
+            return point.canonical_id.ends_with(".EndTurn");
+        });
+    const auto victory = std::ranges::find_if(
+        package.hook_contract.points,
+        [](const auto& point) {
+            return point.canonical_id.ends_with(".EndBattleVictory");
+        });
+    ASSERT_NE(end_turn, package.hook_contract.points.end());
+    ASSERT_NE(victory, package.hook_contract.points.end());
+
+    auto& first = package.bundle.checks.front();
+    first.use.canonical_id = "literal-at-end-turn";
+    first.use.semantic_point_id = end_turn->canonical_id;
+    first.use.emit_evidence = true;
+    auto second = first;
+    second.ordinal = 1;
+    second.use.canonical_id = "literal-at-victory";
+    second.use.semantic_point_id = victory->canonical_id;
+    package.bundle.checks.push_back(std::move(second));
+    package.bundle.content_sha256 =
+        ComputeResolvedPredicateBundleHashV1(package.bundle);
+    package.binding.bundle_content_sha256 = package.bundle.content_sha256;
+    package.binding.active_check_ordinals = {0, 1};
+    package.binding.structural_active_check_sha256 =
+        ComputePredicateActiveCheckSetHashV1(
+            std::array<std::uint32_t, 2>{0, 1});
+    package.binding.content_sha256 =
+        ComputePredicateBundleBindingHashV1(package.binding);
+
+    ASSERT_TRUE(ValidatePredicateBundlePackageV1(package));
+    std::string diagnostic;
+    const auto prepared =
+        battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
+            false, package, &diagnostic);
+    ASSERT_TRUE(prepared) << diagnostic;
+    const auto decoded = program::DecodeProgramModuleV1(
+        prepared->module_envelope().payload);
+    ASSERT_TRUE(decoded) << decoded.status.message;
+    ASSERT_EQ(decoded.value->entrypoints.size(), 1u);
+    ASSERT_EQ(decoded.value->entrypoints.front().emission_schemas.size(), 1u);
+    EXPECT_EQ(
+        decoded.value->entrypoints.front().emission_schemas.front().canonical_id,
+        package.bundle.definitions.front().definition.canonical_id +
+            ".Evaluation");
+}
+
 TEST(BattleSingleTurnModule, DerivedPredicateImportsSelectItsExactStaticBlock)
 {
     auto predicate = ActiveDerivedEnemyCountPackage();
@@ -672,6 +747,144 @@ TEST(BattleTargetAvailability, UsesOptionalLiveEnemyEvidence)
     context.slots_[4].is_player = 1;
     EXPECT_EQ(ClassifyBattleTurnTargets(&context, commands),
               BattleTargetAvailability::Unavailable);
+}
+
+TEST(BattleTargetMaterialization, ExpandsAnyEnemyAndTransitiveSameAsDeterministically)
+{
+    using savor::db::BattlePlanTargetKind;
+    using savor::db::BattlePlanTurnSnapshot;
+    using savor::db::execution::programdb::battle::CompileBattleTurnVariants;
+
+    BattlePlanTurnSnapshot turn{
+        .turn_index = 1,
+        .actions = {
+            AuthoredAttack(0, 0, BattlePlanTargetKind::SameAsOtherPC,
+                           std::nullopt, std::nullopt, 2),
+            AuthoredAttack(1, 1, BattlePlanTargetKind::SameAsOtherPC,
+                           std::nullopt, std::nullopt, 0),
+            AuthoredAttack(2, 2, BattlePlanTargetKind::AnyEnemy),
+        },
+    };
+    std::string error;
+    const auto structural = CompileBattleTurnVariants(turn, nullptr, &error);
+    ASSERT_TRUE(structural) << error;
+    ASSERT_EQ(structural->structural_variants.size(), 8u);
+    ASSERT_EQ(structural->context_viable_variants.size(), 8u);
+    for (std::size_t index = 0;
+         index < structural->structural_variants.size(); ++index) {
+        const auto& variant = structural->structural_variants[index];
+        ASSERT_EQ(variant.commands.size(), 3u);
+        EXPECT_EQ(variant.commands[0].params.target_slot, index + 4);
+        EXPECT_EQ(variant.commands[1].params.target_slot, index + 4);
+        EXPECT_EQ(variant.commands[2].params.target_slot, index + 4);
+        EXPECT_EQ(variant.encoded_commands,
+            encode_battle_turn_commands_hex(variant.commands));
+        std::vector<std::uint8_t> command_bytes;
+        encode_battle_turn_commands_to_buffer(
+            variant.commands, command_bytes);
+        EXPECT_EQ(variant.variant_key,
+            hash::sha256(command_bytes.data(), command_bytes.size()));
+    }
+
+    auto context = Context();
+    context.slots_[5].present = 1;
+    context.slots_[5].is_alive = 1;
+    const auto narrowed = CompileBattleTurnVariants(turn, &context, &error);
+    ASSERT_TRUE(narrowed) << error;
+    ASSERT_EQ(narrowed->structural_variants.size(), 8u);
+    ASSERT_EQ(narrowed->context_viable_variants.size(), 2u);
+    EXPECT_EQ(narrowed->context_viable_variants[0].commands[0].params.target_slot, 4);
+    EXPECT_EQ(narrowed->context_viable_variants[1].commands[0].params.target_slot, 5);
+}
+
+TEST(BattleTargetMaterialization, MaskedSelectorsFormCartesianAlternatives)
+{
+    using savor::db::BattlePlanTargetKind;
+    savor::db::BattlePlanTurnSnapshot turn{
+        .turn_index = 1,
+        .actions = {
+            AuthoredAttack(0, 0, BattlePlanTargetKind::MultipleEnemies,
+                           std::nullopt, (1 << 4) | (1 << 5)),
+            AuthoredAttack(1, 1, BattlePlanTargetKind::MultipleEnemies,
+                           std::nullopt, (1 << 6) | (1 << 7)),
+        },
+    };
+    std::string error;
+    const auto variants = savor::db::execution::programdb::battle::
+        CompileBattleTurnVariants(turn, nullptr, &error);
+    ASSERT_TRUE(variants) << error;
+    ASSERT_EQ(variants->structural_variants.size(), 4u);
+    EXPECT_EQ(variants->structural_variants[0].commands[0].params.target_slot, 4);
+    EXPECT_EQ(variants->structural_variants[0].commands[1].params.target_slot, 6);
+    EXPECT_EQ(variants->structural_variants[3].commands[0].params.target_slot, 5);
+    EXPECT_EQ(variants->structural_variants[3].commands[1].params.target_slot, 7);
+}
+
+TEST(BattleTargetMaterialization, RejectsMalformedSelectorGraphs)
+{
+    using savor::db::BattlePlanTargetKind;
+    using savor::db::execution::programdb::battle::CompileBattleTurnVariants;
+    std::string error;
+
+    savor::db::BattlePlanTurnSnapshot turn{
+        .turn_index = 1,
+        .actions = {
+            AuthoredAttack(0, 0, BattlePlanTargetKind::SameAsOtherPC,
+                           std::nullopt, std::nullopt, 1),
+            AuthoredAttack(1, 1, BattlePlanTargetKind::SameAsOtherPC,
+                           std::nullopt, std::nullopt, 0),
+        },
+    };
+    EXPECT_FALSE(CompileBattleTurnVariants(turn, nullptr, &error));
+    EXPECT_NE(error.find("acyclic"), std::string::npos) << error;
+
+    turn.actions = {
+        AuthoredAttack(0, 1, BattlePlanTargetKind::AnyEnemy),
+    };
+    EXPECT_FALSE(CompileBattleTurnVariants(turn, nullptr, &error));
+    EXPECT_NE(error.find("ordinals"), std::string::npos) << error;
+
+    turn.actions = {
+        AuthoredAttack(0, 0, BattlePlanTargetKind::MultipleEnemies,
+                       std::nullopt, 1 << 3),
+    };
+    EXPECT_FALSE(CompileBattleTurnVariants(turn, nullptr, &error));
+    EXPECT_NE(error.find("mask"), std::string::npos) << error;
+
+    turn.actions = {
+        AuthoredAttack(0, 0, BattlePlanTargetKind::SameAsOtherPC,
+                       std::nullopt, std::nullopt, 1),
+    };
+    EXPECT_FALSE(CompileBattleTurnVariants(turn, nullptr, &error));
+    EXPECT_NE(error.find("not present"), std::string::npos) << error;
+
+    turn.actions = {
+        AuthoredAttack(0, 0, BattlePlanTargetKind::AnyEnemy),
+        AuthoredAttack(0, 1, BattlePlanTargetKind::SingleEnemy, 4),
+    };
+    EXPECT_FALSE(CompileBattleTurnVariants(turn, nullptr, &error));
+    EXPECT_NE(error.find("unique slots"), std::string::npos) << error;
+}
+
+TEST(BattleTargetMaterialization, ExactTargetAndAllInvalidContextRemainExplicit)
+{
+    using savor::db::BattlePlanTargetKind;
+    savor::db::BattlePlanTurnSnapshot turn{
+        .turn_index = 1,
+        .actions = {
+            AuthoredAttack(0, 0, BattlePlanTargetKind::SingleEnemy, 7),
+        },
+    };
+    auto context = Context();
+    std::string error;
+    const auto variants = savor::db::execution::programdb::battle::
+        CompileBattleTurnVariants(turn, &context, &error);
+    ASSERT_TRUE(variants) << error;
+    ASSERT_EQ(variants->structural_variants.size(), 1u);
+    EXPECT_TRUE(variants->context_viable_variants.empty());
+    EXPECT_EQ(variants->structural_variants.front()
+                  .commands.front().params.target_slot,
+              7);
 }
 
 } // namespace

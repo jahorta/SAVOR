@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "Runner/Runtime/Execution/ExecutionEngine.h"
+#include "Runner/Runtime/Services/Movie/MovieService.h"
 #include "Runner/Runtime/Worksets/SavestateArtifactFinalizer.h"
+#include "Tas/DtmFile.h"
 #include "common/FakeExecutionBackend.h"
 #include "common/FakePhysicalStopBackend.h"
 
@@ -105,6 +107,181 @@ ExecutionRequestPolicy Policy(WorksetEpoch epoch = kEpoch)
     policy.expected_epoch = epoch;
     return policy;
 }
+
+class ExecutionMovieBackend final : public IMovieBackendPort
+{
+public:
+    MoviePlaybackPrepareResult PrepareReadOnlyPlaybackForRestart(
+        const std::filesystem::path&) override
+    {
+        return {
+            MovieBackendResult::Failure("unused movie preparation"),
+            std::nullopt};
+    }
+
+    MovieBackendResult StopCoreForPreparedReadOnlyMovie() override
+    {
+        return MovieBackendResult::Failure("unused movie core stop");
+    }
+
+    MovieBackendResult StartPreparedReadOnlyMovieCorePaused() override
+    {
+        return MovieBackendResult::Failure("unused movie core start");
+    }
+
+    MovieBackendResult ActivatePreparedReadOnlyMoviePlayback() override
+    {
+        return MovieBackendResult::Failure("unused movie activation");
+    }
+
+    MovieBackendResult DiscardPreparedReadOnlyMovie() noexcept override
+    {
+        observation = InactiveObservation();
+        return MovieBackendResult::Success();
+    }
+
+    MovieBackendResult StopMovie() noexcept override
+    {
+        observation = InactiveObservation();
+        return MovieBackendResult::Success();
+    }
+
+    MovieBackendResult BeginRecording() override
+    {
+        observation.playing = false;
+        observation.recording = true;
+        observation.read_only = false;
+        return MovieBackendResult::Success();
+    }
+
+    MovieBackendResult BranchReadOnlyPlaybackToRecording() override
+    {
+        if (!observation.playing || observation.recording ||
+            !observation.read_only)
+        {
+            return MovieBackendResult::Failure(
+                "read-only playback is unavailable");
+        }
+        observation.playing = false;
+        observation.recording = true;
+        observation.read_only = false;
+        return MovieBackendResult::Success();
+    }
+
+    MovieRecordingFinalizeResult FinalizeRecording(
+        const std::filesystem::path&) override
+    {
+        return {
+            MovieBackendResult::Failure("unused recording finalization"),
+            std::nullopt};
+    }
+
+    MovieBackendResult CancelRecording() noexcept override
+    {
+        observation = InactiveObservation();
+        return MovieBackendResult::Success();
+    }
+
+    MovieBackendObservation ObserveMovie() const override
+    {
+        return observation;
+    }
+
+    MovieCheckpointBackendResult CaptureRecordingCheckpoint() override
+    {
+        return {
+            MovieBackendResult::Failure("unused checkpoint capture"),
+            {}};
+    }
+
+    MovieBackendResult PrepareSavestateRestore(
+        const SavestateMovieRestoreContext&) override
+    {
+        return MovieBackendResult::Success();
+    }
+
+    MovieBackendResult CommitSavestateRestore(
+        const SavestateMovieRestoreContext& context) override
+    {
+        observation = InactiveObservation();
+        if (!context.movie)
+            return MovieBackendResult::Success();
+
+        observation.current_frame = context.movie->current_frame;
+        observation.current_input_count =
+            context.movie->current_input_count;
+        if (context.movie->mode == MovieCheckpointMode::ReadOnlyPlayback)
+        {
+            observation.playing = true;
+            observation.read_only = true;
+        }
+        else if (context.movie->mode == MovieCheckpointMode::Recording)
+        {
+            observation.recording = true;
+            observation.read_only = false;
+        }
+        return MovieBackendResult::Success();
+    }
+
+    MovieBackendResult RollbackSavestateRestore(
+        const SavestateMovieRestoreContext&) noexcept override
+    {
+        return MovieBackendResult::Success();
+    }
+
+    void SetInputCount(std::uint64_t input_count) noexcept
+    {
+        observation.current_input_count = input_count;
+    }
+
+    void EndPlayback() noexcept
+    {
+        observation.playing = false;
+    }
+
+    [[nodiscard]] static MovieBackendObservation InactiveObservation()
+    {
+        return {
+            .result = MovieBackendResult::Success(),
+            .read_only = true,
+        };
+    }
+
+    MovieBackendObservation observation = InactiveObservation();
+};
+
+class ExecutionMovieReservations final : public IMovieInputReservationPort
+{
+public:
+    MovieInputReservationReceipt AcquireUnsuspendableMovieReservation() override
+    {
+        if (held)
+        {
+            return {
+                MovieServiceResult::Failure(
+                    MovieServiceErrorCode::ReservationFailure,
+                    "movie reservation is already held"),
+                {}};
+        }
+        held = MovieReservationId(1);
+        return {MovieServiceResult::Success(), held};
+    }
+
+    MovieServiceResult ReleaseMovieReservation(
+        MovieReservationId reservation) noexcept override
+    {
+        if (!held || reservation != held)
+        {
+            return MovieServiceResult::Failure(
+                MovieServiceErrorCode::ReservationFailure,
+                "movie reservation does not match");
+        }
+        held = {};
+        return MovieServiceResult::Success();
+    }
+
+    MovieReservationId held;
+};
 
 StopSubscriptionGroupDefinition WakeGroup(std::uint32_t pc = kWakePc)
 {
@@ -272,6 +449,13 @@ protected:
 
     void SetUp() override
     {
+        movie_service = std::make_unique<MovieService>(
+            movie_backend,
+            movie_reservations,
+            [] { return kEpoch; },
+            [] { return MovieServiceResult::Success(); },
+            [] { return MovieServiceResult::Success(); },
+            [] { return MovieServiceResult::Success(); });
         ASSERT_TRUE(router.Initialize(kEpoch).ok);
     }
 
@@ -293,6 +477,40 @@ protected:
         const StopPointLifecycleReceipt cleanup =
             router.StopIngressDrainAndCleanup();
         EXPECT_TRUE(cleanup.ok) << cleanup.error.message;
+        movie_service.reset();
+    }
+
+    void RestoreReadOnlyPlayback(
+        std::uint64_t input_count = 0,
+        std::uint64_t frame = 0)
+    {
+        MovieCheckpointMetadata movie;
+        movie.mode = MovieCheckpointMode::ReadOnlyPlayback;
+        movie.cursor_known = true;
+        movie.current_frame = frame;
+        movie.current_input_count = input_count;
+        movie.dtm_bytes.resize(
+            savor::tas::DtmFile::kMinHeader +
+            static_cast<std::size_t>(input_count) * 8u);
+        const SavestateMovieRestoreContext context{
+            .workset_epoch = kEpoch,
+            .movie = movie,
+        };
+        const MovieServiceResult prepared =
+            movie_service->PrepareSavestateRestore(context);
+        ASSERT_TRUE(prepared.ok) << prepared.message;
+        const MovieServiceResult committed =
+            movie_service->CommitSavestateRestore(context);
+        ASSERT_TRUE(committed.ok) << committed.message;
+        ASSERT_EQ(movie_service->state(), MovieState::ReadOnlyPlayback);
+    }
+
+    void BranchPlaybackToRecording()
+    {
+        const MovieOperationReceipt recording =
+            movie_service->StartRecording();
+        ASSERT_TRUE(recording.result.ok) << recording.result.message;
+        ASSERT_EQ(recording.state, MovieState::Recording);
     }
 
     void CreateEngine(
@@ -311,6 +529,7 @@ protected:
         config.interruption_handlers = std::move(handlers);
         engine = std::make_unique<ExecutionEngine>(
             execution_backend,
+            *movie_service,
             router,
             std::move(config));
         const BackendResult initialized = engine->Initialize(kEpoch);
@@ -402,6 +621,9 @@ protected:
     std::shared_ptr<FakeExecutionBackendControl> execution_control =
         std::make_shared<FakeExecutionBackendControl>();
     FakeExecutionBackend execution_backend{execution_control};
+    ExecutionMovieBackend movie_backend;
+    ExecutionMovieReservations movie_reservations;
+    std::unique_ptr<MovieService> movie_service;
     std::unique_ptr<ExecutionEngine> engine;
     RecordingInterruptionConsumer interruption_consumer;
     std::optional<StopSubscriptionGroupHandle> interruption_group;
@@ -1475,7 +1697,7 @@ TEST_F(ExecutionEngineFixture, RestoresThePriorThrottleStateOnCompletion)
 
 TEST_F(ExecutionEngineFixture, MovieEndCompletesAccordingToPolicy)
 {
-    execution_control->SetMovieState(BackendMovieState::Inactive);
+    RestoreReadOnlyPlayback();
     CreateEngine();
     ExecutionRequestPolicy policy = Policy();
     policy.movie_ended = MovieEndedPolicy::Complete;
@@ -1490,17 +1712,13 @@ TEST_F(ExecutionEngineFixture, MovieEndCompletesAccordingToPolicy)
     engine->Pump();
     EXPECT_FALSE(TakeTerminal(*engine).has_value());
 
-    execution_control->SetMovieState(BackendMovieState::Playing);
-    engine->Pump();
-    EXPECT_FALSE(TakeTerminal(*engine).has_value());
-
-    execution_control->SetMovieState(BackendMovieState::Ended);
+    movie_backend.EndPlayback();
     const auto terminal = DrainTerminal(*engine);
     ASSERT_TRUE(terminal.has_value());
     EXPECT_EQ(terminal->status, ExecutionTerminalStatus::MovieEnded);
     EXPECT_EQ(
         terminal->evidence.movie_state,
-        ExecutionMovieState::Ended);
+        MovieState::PlaybackEnded);
     EXPECT_EQ(terminal->evidence.core_state, BackendCoreState::Paused);
 }
 
@@ -1508,7 +1726,8 @@ TEST_F(
     ExecutionEngineFixture,
     MovieEndFailureBeforeInitialResumePreservesItsError)
 {
-    execution_control->SetMovieState(BackendMovieState::Ended);
+    RestoreReadOnlyPlayback();
+    movie_backend.EndPlayback();
     CreateEngine();
     ExecutionRequestPolicy policy = Policy();
     policy.movie_ended = MovieEndedPolicy::Fail;
@@ -1531,10 +1750,43 @@ TEST_F(
 
 TEST_F(
     ExecutionEngineFixture,
+    SameEngineObservesPlaybackBranchToRecordingWithoutMovieEndFailure)
+{
+    RestoreReadOnlyPlayback(10);
+    CreateEngine();
+    BranchPlaybackToRecording();
+    ExecutionRequestPolicy policy = Policy();
+    policy.movie_ended = MovieEndedPolicy::Fail;
+
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = std::move(policy),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    EXPECT_EQ(CountCall(execution_control->Calls(), "resume"), 1u);
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    (void)physical_backend.InjectJitPcStop(kWakePc);
+    auto receipts = router.DrainIngress();
+    ASSERT_EQ(receipts.size(), 1u);
+    execution_control->SetCoreState(BackendCoreState::Paused);
+    engine->HandleStopPointReceipt(std::move(receipts.front()));
+
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(
+        terminal->status,
+        ExecutionTerminalStatus::RequestedCompletion);
+    EXPECT_EQ(terminal->evidence.movie_state, MovieState::Recording);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
     CursorOverrunBeforeInitialResumeCompletesWithoutResuming)
 {
-    execution_control->SetMovieState(BackendMovieState::Playing);
-    execution_control->SetMovieInputCount(11);
+    RestoreReadOnlyPlayback(11);
     CreateEngine();
     ExecutionRequestPolicy policy = Policy();
     policy.movie_ended = MovieEndedPolicy::Complete;
@@ -1557,8 +1809,7 @@ TEST_F(
     ExecutionEngineFixture,
     CursorOverrunDuringMaintenancePollingPausesAndCompletes)
 {
-    execution_control->SetMovieState(BackendMovieState::Playing);
-    execution_control->SetMovieInputCount(10);
+    RestoreReadOnlyPlayback(10);
     CreateEngine();
     ExecutionRequestPolicy policy = Policy();
     policy.movie_ended = MovieEndedPolicy::Complete;
@@ -1571,7 +1822,7 @@ TEST_F(
         });
     ASSERT_TRUE(submission.accepted) << submission.error.message;
     EXPECT_EQ(CountCall(execution_control->Calls(), "resume"), 1u);
-    execution_control->SetMovieInputCount(12);
+    movie_backend.SetInputCount(12);
     now += 11ms;
     const auto terminal = DrainTerminal(*engine);
     ASSERT_TRUE(terminal.has_value());
@@ -1584,8 +1835,8 @@ TEST_F(
     ExecutionEngineFixture,
     CursorOverrunTakesPriorityOverOwnedMovieEnd)
 {
-    execution_control->SetMovieState(BackendMovieState::Ended);
-    execution_control->SetMovieInputCount(21);
+    RestoreReadOnlyPlayback(21);
+    movie_backend.EndPlayback();
     CreateEngine();
     ExecutionRequestPolicy policy = Policy();
     policy.movie_ended = MovieEndedPolicy::Complete;
@@ -1606,8 +1857,8 @@ TEST_F(
     ExecutionEngineFixture,
     OwnedMovieEndAtOrBelowExpectedCountCompletesAsMovieEnded)
 {
-    execution_control->SetMovieState(BackendMovieState::Ended);
-    execution_control->SetMovieInputCount(19);
+    RestoreReadOnlyPlayback(19);
+    movie_backend.EndPlayback();
     CreateEngine();
     ExecutionRequestPolicy policy = Policy();
     policy.movie_ended = MovieEndedPolicy::Complete;
@@ -1629,8 +1880,7 @@ TEST_F(
     ExecutionEngineFixture,
     BreakpointDuringPauseConfirmationReplacesPendingCursorOverrun)
 {
-    execution_control->SetMovieState(BackendMovieState::Playing);
-    execution_control->SetMovieInputCount(10);
+    RestoreReadOnlyPlayback(10);
     execution_control->SetPauseChangesState(false);
     CreateEngine();
     ExecutionRequestPolicy policy = Policy();
@@ -1643,7 +1893,7 @@ TEST_F(
         });
     ASSERT_TRUE(submission.accepted) << submission.error.message;
 
-    execution_control->SetMovieInputCount(11);
+    movie_backend.SetInputCount(11);
     now += 11ms;
     engine->Pump();
     EXPECT_TRUE(engine->has_active_operation());
@@ -1668,7 +1918,7 @@ TEST_F(
     ExecutionEngineFixture,
     AcceptedWakePrecedesCancellationMovieEndAndHealthMaintenance)
 {
-    execution_control->SetMovieState(BackendMovieState::Playing);
+    RestoreReadOnlyPlayback();
     CreateEngine();
     CancellationSource cancellation(InvocationId(77));
     ExecutionRequestPolicy policy = Policy();
@@ -1684,7 +1934,7 @@ TEST_F(
     (void)engine->DrainEvents();
 
     now += 20s;
-    execution_control->SetMovieState(BackendMovieState::Ended);
+    movie_backend.EndPlayback();
     ASSERT_TRUE(cancellation.request_cancellation(
         CancellationReason::ExternalRequest));
     execution_control->SetCoreState(BackendCoreState::Paused);

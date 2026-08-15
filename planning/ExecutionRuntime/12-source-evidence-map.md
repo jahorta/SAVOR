@@ -114,8 +114,11 @@ projection. The target uses that evidence narrowly:
   `ProgramBaselineDefinition`/`ProgramBaselineKey`, current child, global completion ledger, one outbound
   sequence, and drain state. Every definition carries either an exact savestate with an optional exact
   DTM sidecar or an exact read-only DTM with an optional startup savestate. An active multi-item
-  savestate workset owns one private handle and restores it before later children; a movie child
-  independently establishes playback. No handle or guest state survives workset completion;
+  savestate workset owns one private handle and restores it before later children. Only a TAS Movie
+  phase may explicitly select the read-only DTM form, only for a DTM-declared origin, and that choice is
+  not a TAS default; its movie child independently establishes playback. Any movie-paired continuation
+  instead uses the savestate form plus its exact DTM sidecar. No handle or guest state survives workset
+  completion;
 - every dependent successor is a new artifact-atomic workset and materializes its own declared baseline;
 - the coordinator negotiates one `CompleteExact` worker as the data-plane gate, then starts the remaining
   desired pool with at most two concurrent startups; and
@@ -236,7 +239,8 @@ Current fixed programs are under `SavorCore/Phases/Programs`:
 - Battle Single Turn;
 - Battle Macro Probe;
 - Battle Completion;
-- Battle Results Screen; and
+- Battle Record;
+- the reusable Battle Results interaction; and
 - Navigation Context.
 
 `ProgramRegistry.cpp`, `Wire.h`, the phase builders/payloads, and the corresponding SavorDb adapters are
@@ -354,10 +358,12 @@ Current generic session-service code is under `SavorCore/Runner/Runtime/Services
     only for internally captured checkpoints, reject recording file-artifact capture/import/restore,
     and permit only same-session memory-handle recording rewind.
 - `Movie/MovieService.*` and `InputMovieReservationAdapter.*`
-  - materialize and hash-validate the exact read-only DTM baseline, stage its optional startup
-    savestate, and restart only Dolphin's guest core while retaining the wrapper, session ID, and
-    `WorksetEpoch`; reconcile playback mode/cursor and physical stop points; hold one unsuspendable
-    movie-exclusive input reservation; and publish typed finalized recording artifacts.
+  - for an explicitly opted-in TAS Movie DTM-origin baseline, materialize and hash-validate the exact
+    read-only DTM, stage only its DTM-declared optional startup savestate, and restart only Dolphin's
+    guest core while retaining the wrapper, session ID, and `WorksetEpoch`; adopt exact playback already
+    restored by a movie-paired `Savestate` without repeating origin preparation; reconcile playback
+    mode/cursor and physical stop points; hold one unsuspendable movie-exclusive input reservation; and
+    publish typed finalized recording artifacts.
 - `Input/InputArbiter.*`
   - owns epoch-bound leases, sole pad publication, fresh publication/poll receipts, two-phase neutral
     release, typed one-use neutral borrow witnesses issued for the exact parent
@@ -565,11 +571,14 @@ or required refactor phase.
 - The private state-load bootstrap step remains inside `DolphinWrapper`'s state transaction; it is not a
   precedent for an execution action or WRMS command. Future ProgramRuntime IR/source-level stepping is a
   distinct deferred authoring/debugging concern.
-- The deprecated multi-turn BattleRunner has no target module, and Battle Completion plus Battle Results
-  Screen replace the old combined battle-end flow as two explicit programs.
-- Battle Completion publishes neutral while paused after restore and requires host publication success,
-  then observes `0x8006F554 -> 0x8006F558` or `0x8006F590 -> 0x8006F594`. It does not require a guest
-  neutral poll/release witness.
+- The deprecated multi-turn BattleRunner has no target module. Battle
+  Completion and Battle Record are the two explicit production programs;
+  Results Screen is a reusable interaction owned by the downstream phase.
+- Battle Completion and Battle Record share the causal
+  `0x8006F554 -> 0x8006F558` or `0x8006F590 -> 0x8006F594` interaction,
+  capture rewards, and terminate at the accepted fast/deferred field preseed.
+  Battle Record branches exact read-only playback into recording before guest
+  advancement while leaving `InputArbiter` as the sole controller publisher.
 - Existing `savor.capture.profile/1` semantics remain opaque behind passive `CaptureService`.
   `StopPointRouter` and `ExecutionEngine` own wake/control authority; capture observes the same routed
   sequence/snapshot/epoch identity so profile-visible control, window, recorder, progress, queue, and

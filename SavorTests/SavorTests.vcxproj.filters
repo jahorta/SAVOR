@@ -136,6 +136,7 @@
     <ClCompile Include="test_interaction_composition.cpp" />
     <ClCompile Include="test_predicate_composition.cpp" />
     <ClCompile Include="test_battle_backend_contracts.cpp" />
+    <ClCompile Include="test_battle_completion_record.cpp" />
     <ClCompile Include="test_derived_state.cpp" />
     <ClCompile Include="test_program_capability_packs.cpp" />
     <ClCompile Include="test_program_codec_v1.cpp" />
@@ -155,6 +156,7 @@
     <ClCompile Include="test_worker_startup_barrier.cpp" />
     <ClCompile Include="test_worker_result_blob_store.cpp" />
     <ClCompile Include="test_session_program_action_host.cpp" />
+    <ClCompile Include="test_async_logger.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />
     <ClCompile Include="test_session_services.cpp" />
     <ClCompile Include="test_movie_service.cpp" />

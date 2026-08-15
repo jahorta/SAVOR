@@ -47,6 +47,7 @@ struct WorkflowStepScheduleContext {
     std::int64_t workflow_step_id = 0;
     std::string step_key;
     std::string step_kind;
+    std::optional<std::string> domain_ref_kind;
     std::int64_t domain_ref_id = 0;
     int step_priority = 0;
 };

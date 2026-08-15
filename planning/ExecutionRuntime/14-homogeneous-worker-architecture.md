@@ -59,6 +59,12 @@ host-only admission. TAS Movie validation and checkpoint sterilization both
 require exactly one item per workset; the rule follows the program kind, not
 the read-only-movie baseline artifact kind.
 
+Baseline choice is likewise phase-specific. A TAS Movie phase may explicitly
+select `ReadOnlyMovie` only when starting from the DTM-declared origin, and
+that option is not the family default. Checkpoint sterilization demonstrates
+the other case: a TAS Movie phase consuming a movie-paired continuation uses
+`Savestate` with the exact DTM sidecar.
+
 The worker keeps only a private, transient cache by structural package
 identity. Any worker can reconstruct an empty cache from the next workset.
 There is no `RuntimeManifest`, installed module catalog, `PrepareModule`,

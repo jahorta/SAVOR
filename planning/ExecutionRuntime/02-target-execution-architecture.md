@@ -551,7 +551,7 @@ interaction segments.
 | `GuestMutationService` | Through declared mutation actions | Checked writes, patches, receipts, restoration |
 | `InputArbiter` | Through input actions | Epoch-bound leases, pad publication, poll acknowledgement, neutral release, typed arbiter-issued neutral borrow witnesses, declared interruption borrowing, movie-exclusive reservations, and `IInputAdvancePort` |
 | `SavestateService` | Through immutable-save actions; private baseline APIs are reserved to `WorksetStateCoordinator` | Bounded workset-local memory handles; caller-declared immutable artifacts, SHA-256, compatibility, lineage, and optional exact DTM history |
-| `MovieService` | Through movie actions | Read-only playback/recording lifecycle, unsuspendable input reservation, hash-verified DTM history, active-DTM identity, and core-only restart for an exact movie baseline |
+| `MovieService` | Through movie actions | Read-only playback/recording lifecycle, unsuspendable input reservation, hash-verified DTM history, active-DTM identity, adoption of playback restored from a movie-paired `Savestate`, and core-only restart for an explicitly selected TAS Movie DTM-origin `ReadOnlyMovie` baseline |
 | `CaptureService` | Through capture actions | At most one opaque existing-profile attachment, passive routed-hit observation, recorder lifecycle, mandatory publication/finalization, and taint that blocks reuse |
 | `ScreenshotService` | Through screenshot actions | One correlated synchronous actor-thread bounded screenshot call and typed terminal receipt; active cancellation deferred pending nonblocking ingress |
 | `TelemetryBus` | Through bounded emit actions | Monotonic ordered progress/diagnostic events, order-preserving coalescing, serialized publication |

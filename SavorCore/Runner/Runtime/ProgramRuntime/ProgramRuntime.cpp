@@ -1230,6 +1230,8 @@ bool ProgramRuntime::Pump()
         request.parent_scope = pumped.host_request->parent_scope;
         request.resource = pumped.host_request->resource;
         request.cleanup_only = pumped.host_request->cleanup_only;
+        request.diagnostic_selector =
+            std::move(pumped.host_request->diagnostic_selector);
         request.allowed_effects =
             AllowedEffects(impl_->active->invocation.execution);
         request.timing = ActionTimingClass::BoundedHostOperation;

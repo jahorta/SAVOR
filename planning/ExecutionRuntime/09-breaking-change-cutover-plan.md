@@ -9,6 +9,11 @@ adaptable implementation order, not approval gates, release numbers, or calendar
 Repository code defines the current system. Documents 02 through 08 provide the target constraints and
 design direction; implementation may adapt their concrete shape while preserving the core boundaries.
 
+The Battle-exit portions of this cutover plan are superseded by
+[`19-battle-completion-recording-and-results-handler.md`](19-battle-completion-recording-and-results-handler.md).
+In particular, Slice 6I is `battle.record`; Results Screen is a downstream
+reusable interaction and not a Full Phase.
+
 ## Purpose and non-goals
 
 The plan replaces the current worker execution path with one universal typed runtime without leaving a
@@ -137,7 +142,8 @@ first `WorkerRuntime` change.
 | BattleMacroProbe | `soa.battle.macro_probe/probe` |
 | BattleSingleTurn | `soa.battle.single_turn/execute` |
 | Battle completion | `soa.battle.completion/complete` |
-| Battle results screen | `soa.battle.results_screen/advance` |
+| Battle recording | `soa.battle.record/record` |
+| Battle results handling | reusable `soa.battle.results.handler` interaction |
 
 **Completion checks:**
 
@@ -294,9 +300,11 @@ integration guard passed without creating or controlling a GUI.
   DTM-sidecar preparation, ingress quiescence, rollback, and reconciliation.
 - Initial and later-item savestate restores retain the same workset epoch. Programs have no generic
   process-local state capture/restore action and cannot rewind state within an invocation.
-- `MovieService::PrepareReadOnlyPlayback` uses the staged `ReadOnlyMovie` baseline, stops the guest core,
-  and exposes the debugger boundary for stop subscription. `StartPreparedReadOnlyPlayback` loads and boots
-  the movie, then validates the installed plan. Both preserve the wrapper and workset epoch.
+- For a TAS Movie phase that explicitly selects a DTM-origin `ReadOnlyMovie` baseline,
+  `MovieService::PrepareReadOnlyPlayback` uses the staged artifact, stops the guest core, and exposes the
+  debugger boundary for stop subscription. `StartPreparedReadOnlyPlayback` loads and boots the movie,
+  then validates the installed plan. Both preserve the wrapper and workset epoch. This is not a TAS
+  family default; movie-paired continuation checkpoints use `Savestate` plus their exact DTM sidecar.
 - The resource ledger is workset-scoped and has no epoch-transition, supersession, or rebind policy.
   Complete invocation unwind and artifact finalization/compensation are required before another item
   restores its baseline.
@@ -601,7 +609,8 @@ IDs/hashes and their exact dependency manifests are present and no extra module 
 #### Slice 6C - TAS Movie
 
 - Implement native `soa.tas_movie/play_and_checkpoint` over `MovieService`.
-- Make the `ReadOnlyMovie` baseline, establish-baseline policy, configured stop,
+- For complete validation's intentional DTM-origin start, explicitly opt into the `ReadOnlyMovie`
+  baseline and make its establish-baseline policy, configured stop,
   movie-completion/failure policy, and checkpoint publication
   explicit in the typed contract.
 - Adapt the existing TAS Movie payload/result representations without moving movie ownership into the
@@ -660,18 +669,24 @@ IDs/hashes and their exact dependency manifests are present and no extra module 
 - Validate both causal routes, mismatched successors, neutral-before-resume ordering, reward branches,
   BCMB/state lineage, cancellation, and cleanup.
 
-#### Slice 6I - Battle Results Screen
+#### Slice 6I - Battle Record
 
-- Implement native `soa.battle.results_screen/advance` directly from the split Results Screen contract.
-- Consume BCMB and state lineage, preserve real UI request/release acknowledgement semantics, and publish
-  BERB plus final state through the current handler projection.
-- Do not call, wrap, or reconstruct the monolithic victory-to-results provider path.
-- Validate the split entry boundary, required/full adaptive policies, UI acknowledgement and release,
-  lifecycle invariants, BERB/state lineage, cancellation, and cleanup.
+- Implement native `soa.battle.record/record` from the exact selected Battle
+  lineage and movie-paired Battle-entry checkpoint.
+- Restore that checkpoint as a `Savestate` baseline with its exact DTM
+  continuation sidecar, adopt the restored playback session through
+  `runtime.movie.adopt_restored_read_only_playback`, and branch it into
+  recording before guest advancement; retain `InputArbiter` as the sole
+  controller publisher. Do not use the TAS-only opt-in `ReadOnlyMovie` origin
+  baseline.
+- Replay concrete turns and completion adaptively, compare terminal/RNG and
+  semantic completion evidence, and publish the DTM/TMI/paired preseed
+  checkpoint/anchor/tree only on a match.
+- Treat Results Screen as a reusable downstream interaction. Do not publish a
+  BERB, standalone Results state, workflow step, or database aggregate.
 
-There is no Slice 6J, `soa.battle.legacy_path`, legacy BattleRunner module or adapter, or monolithic
-BattleEndResults module. `PK_BattleEndResultsRunner` remains only an alias for the Results Screen
-representation where existing compatibility requires it.
+There is no Slice 6J, `soa.battle.legacy_path`, legacy BattleRunner module or
+adapter, monolithic BattleEndResults module, or Results Screen Full Phase.
 
 ### Dependency slice 7: final production activation
 

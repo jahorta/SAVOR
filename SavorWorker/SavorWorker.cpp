@@ -42,6 +42,35 @@ enum class WorkerExitCode : int {
     InvalidHandles = 100,
     ProtocolFailure = 101,
     PublisherFailure = 102,
+    LoggerFailure = 103,
+};
+
+class WorkerLoggerOwner final {
+public:
+    explicit WorkerLoggerOwner(savor::logger::Logger& logger) noexcept
+        : logger_(&logger)
+    {
+    }
+
+    ~WorkerLoggerOwner()
+    {
+        if (logger_ != nullptr)
+            logger_->Shutdown();
+    }
+
+    WorkerLoggerOwner(const WorkerLoggerOwner&) = delete;
+    WorkerLoggerOwner& operator=(const WorkerLoggerOwner&) = delete;
+
+    void Shutdown() noexcept
+    {
+        if (logger_ == nullptr)
+            return;
+        logger_->Shutdown();
+        logger_ = nullptr;
+    }
+
+private:
+    savor::logger::Logger* logger_ = nullptr;
 };
 
 template <class... Ts>
@@ -1515,10 +1544,12 @@ int main(int argc, char** argv) {
         log_directory /
         ("worker-" + std::to_string(worker_id) + ".log");
     auto& logger = savor::logger::Logger::get();
-    logger.open_file(log_path.string().c_str(), false);
     logger.set_levels(
         savor::logger::Level::Off,
         savor::logger::Level::Debug);
+    WorkerLoggerOwner logger_owner(logger);
+    if (!logger.open_file(log_path.string().c_str(), false))
+        return static_cast<int>(WorkerExitCode::LoggerFailure);
 
     HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
     HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -1650,6 +1681,13 @@ int main(int argc, char** argv) {
     savor::hoststubs::ClearHostEventSink();
     publisher.StopAndDrain();
     runtime.reset();
+
+    SCLOGI(
+        "[WORKER] shutdown complete worker=%llu protocol_ok=%u publisher_ok=%u",
+        static_cast<unsigned long long>(worker_id),
+        protocol_ok ? 1u : 0u,
+        publisher.healthy() ? 1u : 0u);
+    logger_owner.Shutdown();
 
     if (!publisher.healthy())
         return static_cast<int>(WorkerExitCode::PublisherFailure);

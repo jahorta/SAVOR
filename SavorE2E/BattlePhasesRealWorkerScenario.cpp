@@ -21,6 +21,7 @@
 #include "Common/DbService.h"
 #include "Common/Types/UtcTimestamp.h"
 #include "Core/Input/SoaBattle/ActionTypes.h"
+#include "Core/Input/SoaBattle/BattleCommandCodec.h"
 #include "DbSetup.h"
 #include "DurableLogFile.h"
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
@@ -29,6 +30,7 @@
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Execution/Workflow/WorkflowUnitActivationFactory.h"
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
+#include "Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
 #include "ScenarioAssessment.h"
 #include "SplitCoordinatorRuntime.h"
 #include "Utils/Hash.h"
@@ -47,12 +49,323 @@ using savor::db::execution::workflow::WorkflowStepState;
 // deadline must leave a full execution window for the Battle jobs as well.
 constexpr auto kScenarioTimeout = std::chrono::minutes(20);
 constexpr std::string_view kCorrelation = "savor-e2e.battle-phases-v1";
+constexpr std::int64_t kPredicateItemId = 273;
 
 bool Fail(std::string message, std::string* error_out)
 {
     if (error_out != nullptr)
         *error_out = std::move(message);
     return false;
+}
+
+std::string_view BattleTargetKindName(
+    const savor::db::BattlePlanTargetKind kind) noexcept
+{
+    switch (kind) {
+    case savor::db::BattlePlanTargetKind::SingleEnemy:
+        return "SingleEnemy";
+    case savor::db::BattlePlanTargetKind::MultipleEnemies:
+        return "MultipleEnemies";
+    case savor::db::BattlePlanTargetKind::AnyEnemy:
+        return "AnyEnemy";
+    case savor::db::BattlePlanTargetKind::SameAsOtherPC:
+        return "SameAsOtherPC";
+    }
+    return "Unknown";
+}
+
+const savor::runtime::program::ProgramValue* FindProgramValue(
+    const savor::runtime::program::ProgramValueGraph& graph,
+    const savor::runtime::program::ProgramValueId id) noexcept
+{
+    const auto found = std::ranges::find(
+        graph.values, id, &savor::runtime::program::ProgramValue::id);
+    return found == graph.values.end() ? nullptr : &*found;
+}
+
+bool SeedBattlePredicateBundle(
+    savor::db::IAuthoringDb* authoring_db,
+    std::string_view run_identity,
+    std::int64_t* bundle_revision_id_out,
+    std::string* error_out)
+{
+    using namespace savor::runtime::predicates;
+    namespace program = savor::runtime::program;
+    namespace composition = savor::runtime::program::composition;
+    namespace capabilities =
+        savor::runtime::program::capabilities;
+
+    if (!authoring_db || !bundle_revision_id_out)
+        return Fail("Battle predicate authoring database is unavailable",
+                    error_out);
+
+    const auto hooks = BattlePredicateHookContractV1();
+    const auto hook_id = [&](std::string_view suffix)
+        -> std::optional<std::string> {
+        const auto found = std::ranges::find_if(
+            hooks.points, [&](const auto& point) {
+                return point.canonical_id.ends_with(suffix);
+            });
+        return found == hooks.points.end()
+            ? std::nullopt
+            : std::optional<std::string>(found->canonical_id);
+    };
+    const auto turn_is_ready = hook_id(".TurnIsReady");
+    const auto end_turn = hook_id(".EndTurn");
+    const auto victory = hook_id(".EndBattleVictory");
+    if (!turn_is_ready || !end_turn || !victory)
+        return Fail("Battle predicate hook contract is incomplete", error_out);
+
+    const auto catalog = capabilities::BuildSourceCapabilityPackCatalog();
+    const auto turn_order_query =
+        capabilities::BattleDerivedTurnOrderActionIdentity();
+    const auto rewards_query =
+        capabilities::BattleDerivedRewardsActionIdentity();
+    const auto output_type = [&](const program::ExactDependencyIdentity& identity)
+        -> std::optional<program::TypeRef> {
+        const auto found = std::ranges::find(
+            catalog.actions, identity, &program::ActionDescriptor::identity);
+        return found == catalog.actions.end()
+            ? std::nullopt
+            : std::optional<program::TypeRef>(found->output_type);
+    };
+    const auto turn_order_type = output_type(turn_order_query);
+    const auto rewards_type = output_type(rewards_query);
+    if (!turn_order_type || !rewards_type)
+        return Fail("Battle derived query descriptors are unavailable",
+                    error_out);
+
+    const auto u16 = program::TypeRef::Builtin(program::BuiltinType::U16);
+    const auto u32 = program::TypeRef::Builtin(program::BuiltinType::U32);
+    const auto boolean =
+        program::TypeRef::Builtin(program::BuiltinType::Bool);
+    const std::string suffix(run_identity);
+    const auto now = savor::db::types::UtcNow();
+
+    composition::PredicateDefinition turn_order_definition{
+        .canonical_id = "savor.e2e.battle.turn_order." + suffix,
+        .revision = 1,
+        .source_name = "SavorE2E.Battle",
+        .witnesses = {{"turn_order", *turn_order_type}},
+        .expression = {
+            {
+                .kind = composition::PredicateExpressionKind::Witness,
+                .witness_index = 0,
+                .result_type = *turn_order_type,
+                .source_label = "turn order snapshot",
+            },
+            {
+                .kind = composition::PredicateExpressionKind::ImportedReducer,
+                .operands = {0},
+                .reducer = capabilities::BattleDerivedReducerIdentity(
+                    "soa.battle.derived.player_max_position"),
+                .result_type = u32,
+                .source_label = "last player position",
+            },
+            {
+                .kind = composition::PredicateExpressionKind::ImportedReducer,
+                .operands = {0},
+                .reducer = capabilities::BattleDerivedReducerIdentity(
+                    "soa.battle.derived.enemy_min_position"),
+                .result_type = u32,
+                .source_label = "first enemy position",
+            },
+            {
+                .kind = composition::PredicateExpressionKind::Less,
+                .operands = {1, 2},
+                .result_type = boolean,
+                .source_label = "players act before enemies",
+            },
+        },
+        .root_expression = 3,
+    };
+    std::int64_t turn_order_revision_id = 0;
+    if (!authoring_db->SavePredicateDefinitionDraftV2({
+            .stable_key = turn_order_definition.canonical_id,
+            .name = "Players act before enemies " + suffix,
+            .description =
+                "The last active player position precedes the first active enemy position.",
+            .definition = turn_order_definition,
+            .created_at_utc = now,
+        }, &turn_order_revision_id, error_out)
+        || !authoring_db->PublishPredicateDefinitionRevisionV2(
+            turn_order_revision_id, now, error_out)) {
+        return false;
+    }
+
+    composition::PredicateDefinition drop_definition{
+        .canonical_id = "savor.e2e.battle.drop_count." + suffix,
+        .revision = 1,
+        .source_name = "SavorE2E.Battle",
+        .witnesses = {
+            {"rewards", *rewards_type},
+            {"item_id", u16},
+        },
+        .expression = {
+            {
+                .kind = composition::PredicateExpressionKind::Witness,
+                .witness_index = 0,
+                .result_type = *rewards_type,
+                .source_label = "reward snapshot",
+            },
+            {
+                .kind = composition::PredicateExpressionKind::Witness,
+                .witness_index = 1,
+                .result_type = u16,
+                .source_label = "requested item id",
+            },
+            {
+                .kind = composition::PredicateExpressionKind::ImportedReducer,
+                .operands = {0, 1},
+                .reducer = capabilities::BattleDerivedReducerIdentity(
+                    "soa.battle.derived.drop_count"),
+                .result_type = u32,
+                .source_label = "cumulative item drops",
+            },
+            {
+                .kind = composition::PredicateExpressionKind::ImportedReducer,
+                .operands = {0},
+                .reducer = capabilities::BattleDerivedReducerIdentity(
+                    "soa.battle.derived.current_turn"),
+                .result_type = u32,
+                .source_label = "current battle turn",
+            },
+            {
+                .kind = composition::PredicateExpressionKind::GreaterEqual,
+                .operands = {2, 3},
+                .result_type = boolean,
+                .source_label = "drop count keeps pace with turn",
+            },
+        },
+        .root_expression = 4,
+    };
+    std::int64_t drop_revision_id = 0;
+    if (!authoring_db->SavePredicateDefinitionDraftV2({
+            .stable_key = drop_definition.canonical_id,
+            .name = "Cumulative drop count by turn " + suffix,
+            .description =
+                "The cumulative selected-item drop count is at least the current Battle turn.",
+            .definition = drop_definition,
+            .created_at_utc = now,
+        }, &drop_revision_id, error_out)
+        || !authoring_db->PublishPredicateDefinitionRevisionV2(
+            drop_revision_id, now, error_out)) {
+        return false;
+    }
+
+    const auto observation = [](
+        std::uint32_t ordinal,
+        std::string stable_key,
+        const std::string& hook,
+        const program::ExactDependencyIdentity& source,
+        const program::TypeRef& type) {
+        return PredicateObservationV1{
+            .ordinal = ordinal,
+            .stable_key = std::move(stable_key),
+            .semantic_hook_id = hook,
+            .source_kind = PredicateObservationSourceKindV1::RegisteredQuery,
+            .source = source,
+            .value_type = type,
+        };
+    };
+    const auto witness = [](
+        std::uint32_t ordinal,
+        PredicateWitnessSourceKindV1 source_kind,
+        std::uint32_t source_ordinal,
+        const program::TypeRef& type) {
+        return PredicateWitnessBindingV1{
+            .witness_ordinal = ordinal,
+            .source_kind = source_kind,
+            .source_ordinal = source_ordinal,
+            .value_type = type,
+        };
+    };
+    const auto check_use = [](
+        std::string canonical_id,
+        const std::string& hook,
+        composition::PredicateReaction reaction) {
+        return composition::PredicateCheckUse{
+            .canonical_id = std::move(canonical_id),
+            .semantic_point_id = hook,
+            .reaction = reaction,
+            .emit_evidence = true,
+            .participates_in_aggregation = true,
+        };
+    };
+
+    ResolvedPredicateBundleV1 bundle{
+        .canonical_id = "savor.e2e.battle.first_battle." + suffix,
+        .revision = 1,
+        .definitions = {
+            {turn_order_revision_id, turn_order_definition},
+            {drop_revision_id, drop_definition},
+        },
+        .parameters = {{0, "item_id", u16}},
+        .observations = {
+            observation(0, "turn-order", *turn_is_ready,
+                        turn_order_query, *turn_order_type),
+            observation(1, "rewards-end-turn", *end_turn,
+                        rewards_query, *rewards_type),
+            observation(2, "rewards-victory", *victory,
+                        rewards_query, *rewards_type),
+        },
+        .checks = {
+            {
+                .ordinal = 0,
+                .predicate_definition_revision_id = turn_order_revision_id,
+                .use = check_use(
+                    "players-before-enemies", *turn_is_ready,
+                    composition::PredicateReaction::RecordAndContinue),
+                .occurrence = PredicateOccurrencePolicyV1::First,
+                .witnesses = {witness(
+                    0, PredicateWitnessSourceKindV1::Observation,
+                    0, *turn_order_type)},
+            },
+            {
+                .ordinal = 1,
+                .predicate_definition_revision_id = drop_revision_id,
+                .use = check_use(
+                    "drop-count-at-end-turn", *end_turn,
+                    composition::PredicateReaction::AbortOnFail),
+                .occurrence = PredicateOccurrencePolicyV1::First,
+                .witnesses = {
+                    witness(0, PredicateWitnessSourceKindV1::Observation,
+                            1, *rewards_type),
+                    witness(1, PredicateWitnessSourceKindV1::Parameter,
+                            0, u16),
+                },
+            },
+            {
+                .ordinal = 2,
+                .predicate_definition_revision_id = drop_revision_id,
+                .use = check_use(
+                    "drop-count-at-victory", *victory,
+                    composition::PredicateReaction::AbortOnFail),
+                .occurrence = PredicateOccurrencePolicyV1::First,
+                .witnesses = {
+                    witness(0, PredicateWitnessSourceKindV1::Observation,
+                            2, *rewards_type),
+                    witness(1, PredicateWitnessSourceKindV1::Parameter,
+                            0, u16),
+                },
+            },
+        },
+    };
+    std::int64_t bundle_revision_id = 0;
+    if (!authoring_db->SavePredicateBundleDraftV2({
+            .stable_key = bundle.canonical_id,
+            .name = "First Battle exploration predicates " + suffix,
+            .description =
+                "Turn-order scoring plus cumulative item-drop rejection at either terminal hook.",
+            .bundle = bundle,
+            .created_at_utc = now,
+        }, &bundle_revision_id, error_out)
+        || !authoring_db->PublishPredicateBundleRevisionV2(
+            bundle_revision_id, now, error_out)) {
+        return false;
+    }
+    *bundle_revision_id_out = bundle_revision_id;
+    return true;
 }
 
 bool SeedBattleAuthoring(
@@ -66,6 +379,12 @@ bool SeedBattleAuthoring(
 
     const auto now = savor::db::types::UtcNow();
     const std::string suffix(run_identity);
+    std::int64_t predicate_bundle_revision_id = 0;
+    if (!SeedBattlePredicateBundle(
+            authoring_db, run_identity,
+            &predicate_bundle_revision_id, error_out)) {
+        return false;
+    }
     std::int64_t run_spec_id = 0;
     if (!authoring_db->SaveBattleRunSpec({
             .name = "SavorE2E Battle phases " + suffix,
@@ -89,26 +408,38 @@ bool SeedBattleAuthoring(
         }, &plan_id, error_out))
         return false;
 
-    std::int64_t attack_slot_four_id = 0;
+    std::int64_t attack_any_enemy_id = 0;
     if (!authoring_db->SaveBattlePlanActionPreset({
-            .name = "Attack enemy slot 4 " + suffix,
+            .name = "Attack any enemy " + suffix,
             .macro = soa::battle::actions::BattleAction::Attack,
-            .target_kind = savor::db::BattlePlanTargetKind::SingleEnemy,
-            .target_single_slot = 4,
+            .target_kind = savor::db::BattlePlanTargetKind::AnyEnemy,
             .created_at_utc = now,
             .correlation_id = std::string(kCorrelation),
             .causation_id = "plan-" + std::to_string(plan_id),
-        }, &attack_slot_four_id, error_out))
+        }, &attack_any_enemy_id, error_out))
+        return false;
+
+    std::int64_t attack_same_as_actor_zero_id = 0;
+    if (!authoring_db->SaveBattlePlanActionPreset({
+            .name = "Attack same target as actor 0 " + suffix,
+            .macro = soa::battle::actions::BattleAction::Attack,
+            .target_kind = savor::db::BattlePlanTargetKind::SameAsOtherPC,
+            .target_same_as_actor_slot = 0,
+            .created_at_utc = now,
+            .correlation_id = std::string(kCorrelation),
+            .causation_id = "plan-" + std::to_string(plan_id),
+        }, &attack_same_as_actor_zero_id, error_out))
         return false;
 
     std::int64_t turn_id = 0;
     if (!authoring_db->SaveBattlePlanTurn({
             .plan_id = plan_id,
             .turn_index = 1,
-            .default_predicate_bundle_revision_id = 1,
+            .default_predicate_bundle_revision_id =
+                predicate_bundle_revision_id,
             .actions = {
-                {.actor_slot = 0, .action_preset_id = attack_slot_four_id, .ordinal = 0},
-                {.actor_slot = 1, .action_preset_id = attack_slot_four_id, .ordinal = 1},
+                {.actor_slot = 0, .action_preset_id = attack_any_enemy_id, .ordinal = 0},
+                {.actor_slot = 1, .action_preset_id = attack_same_as_actor_zero_id, .ordinal = 1},
             },
             .created_at_utc = now,
             .correlation_id = std::string(kCorrelation),
@@ -119,10 +450,11 @@ bool SeedBattleAuthoring(
     if (!authoring_db->SaveBattlePlanTurn({
             .plan_id = plan_id,
             .turn_index = 2,
-            .default_predicate_bundle_revision_id = 1,
+            .default_predicate_bundle_revision_id =
+                predicate_bundle_revision_id,
             .actions = {
-                {.actor_slot = 0, .action_preset_id = attack_slot_four_id, .ordinal = 0},
-                {.actor_slot = 1, .action_preset_id = attack_slot_four_id, .ordinal = 1},
+                {.actor_slot = 0, .action_preset_id = attack_any_enemy_id, .ordinal = 0},
+                {.actor_slot = 1, .action_preset_id = attack_same_as_actor_zero_id, .ordinal = 1},
             },
             .created_at_utc = now,
             .correlation_id = std::string(kCorrelation),
@@ -160,6 +492,8 @@ bool SeedBattleWorkflow(
     std::int64_t battle_chain_spec_id,
     std::int64_t rtc_value,
     int samples_per_axis,
+    int fake_attack_min,
+    int fake_attack_max,
     const std::string_view run_identity,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out)
@@ -444,14 +778,21 @@ bool SeedBattleWorkflow(
         .node_key = "battle_1",
         .argument_key = "fake_attack_min",
         .value_type = "integer",
-        .integer_value = 0,
+        .integer_value = fake_attack_min,
         .source_kind = "scenario",
     });
     command.arguments.push_back({
         .node_key = "battle_1",
         .argument_key = "fake_attack_max",
         .value_type = "integer",
-        .integer_value = 0,
+        .integer_value = fake_attack_max,
+        .source_kind = "scenario",
+    });
+    command.arguments.push_back({
+        .node_key = "battle_1",
+        .argument_key = "predicate.parameter.item_id",
+        .value_type = "integer",
+        .integer_value = kPredicateItemId,
         .source_kind = "scenario",
     });
     return execution_db->CreateWorkflowInstance(
@@ -465,6 +806,8 @@ bool SeedPreparedBattleWorkflow(
     const std::int64_t seed_probe_spec_id,
     const std::int64_t battle_chain_spec_id,
     const int samples_per_axis,
+    const int fake_attack_min,
+    const int fake_attack_max,
     const std::string_view run_identity,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out)
@@ -618,15 +961,27 @@ bool SeedPreparedBattleWorkflow(
         .integer_value = samples_per_axis,
         .source_kind = "scenario",
     });
-    for (const auto argument_key : {"fake_attack_min", "fake_attack_max"}) {
-        command.arguments.push_back({
-            .node_key = "battle_1",
-            .argument_key = argument_key,
-            .value_type = "integer",
-            .integer_value = 0,
-            .source_kind = "scenario",
-        });
-    }
+    command.arguments.push_back({
+        .node_key = "battle_1",
+        .argument_key = "fake_attack_min",
+        .value_type = "integer",
+        .integer_value = fake_attack_min,
+        .source_kind = "scenario",
+    });
+    command.arguments.push_back({
+        .node_key = "battle_1",
+        .argument_key = "fake_attack_max",
+        .value_type = "integer",
+        .integer_value = fake_attack_max,
+        .source_kind = "scenario",
+    });
+    command.arguments.push_back({
+        .node_key = "battle_1",
+        .argument_key = "predicate.parameter.item_id",
+        .value_type = "integer",
+        .integer_value = kPredicateItemId,
+        .source_kind = "scenario",
+    });
     return execution_db->CreateWorkflowInstance(
         command, workflow_instance_id_out, error_out);
 }
@@ -635,6 +990,7 @@ bool CheckBattleInvariantsAndReportTrajectory(
     savor::db::core::DBService* db_service,
     const savor::db::execution::workflow::WorkflowGraphSnapshot& graph,
     const ResolvedE2eScenarioEntry& entry,
+    const CliOptions& options,
     const std::function<void(const std::string&)>& report,
     std::string* error_out)
 {
@@ -734,6 +1090,121 @@ bool CheckBattleInvariantsAndReportTrajectory(
         return Fail("Battle authored graph guarded edges drifted", error_out);
     }
 
+    const auto authored_probe = std::ranges::find(
+        authored->nodes, std::string("probe_1"),
+        &savor::db::WorkflowGraphNodeSnapshot::node_key);
+    const auto authored_battle = std::ranges::find(
+        authored->nodes, std::string("battle_1"),
+        &savor::db::WorkflowGraphNodeSnapshot::node_key);
+    if (authored_probe == authored->nodes.end()
+        || authored_probe->authored_ref_kind
+            != std::optional<std::string>("seed_probe_spec")
+        || !authored_probe->authored_ref_id
+        || authored_battle == authored->nodes.end()
+        || authored_battle->authored_ref_kind
+            != std::optional<std::string>("authoring.battle_chain_spec")
+        || !authored_battle->authored_ref_id) {
+        return Fail("Battle authored graph references are incomplete",
+                    error_out);
+    }
+    const auto seed_spec = db_service->AuthoringDb()->GetSeedProbeSpec(
+        *authored_probe->authored_ref_id);
+    if (!seed_spec
+        || seed_spec->min_value != options.seedprobe_min_value.value_or(47)
+        || seed_spec->max_value != options.seedprobe_max_value.value_or(207)
+        || seed_spec->combo_attempts_per_target
+            != options.seedprobe_combo_attempts_per_target.value_or(20)
+        || seed_spec->combo_sampler_tries
+            != options.seedprobe_combo_sampler_tries.value_or(4)) {
+        return Fail("Battle SeedProbe search settings were not persisted exactly",
+                    error_out);
+    }
+    {
+        std::ostringstream line;
+        line << "[battle-search] seedprobe_min=" << seed_spec->min_value
+             << " seedprobe_max=" << seed_spec->max_value
+             << " samples_per_axis="
+             << options.seedprobe_samples_per_axis.value_or(1)
+             << " combo_attempts="
+             << seed_spec->combo_attempts_per_target
+             << " combo_sampler_tries="
+             << seed_spec->combo_sampler_tries
+             << " fake_attack_min="
+             << options.battle_fake_attack_min.value_or(0)
+             << " fake_attack_max="
+             << options.battle_fake_attack_max.value_or(0)
+             << " predicate_item_id=" << kPredicateItemId;
+        report(line.str());
+    }
+
+    const auto chain = db_service->AuthoringDb()->GetBattleChainSpec(
+        *authored_battle->authored_ref_id);
+    const auto explorer = chain
+        ? db_service->AuthoringDb()->GetExplorerSettings(
+              chain->explorer_settings_id)
+        : std::nullopt;
+    const auto plan = explorer && explorer->default_plan_id
+        ? db_service->AuthoringDb()->GetBattlePlan(
+              *explorer->default_plan_id)
+        : std::nullopt;
+    if (!chain || !explorer || !plan || plan->turns.size() != 2) {
+        return Fail("Battle generic two-turn authoring is unavailable",
+                    error_out);
+    }
+    for (const auto& turn : plan->turns) {
+        const auto actor_zero = std::ranges::find(
+            turn.actions, 0, &savor::db::BattlePlanActionSnapshot::actor_slot);
+        const auto actor_one = std::ranges::find(
+            turn.actions, 1, &savor::db::BattlePlanActionSnapshot::actor_slot);
+        if ((turn.turn_index != 1 && turn.turn_index != 2)
+            || turn.actions.size() != 2
+            || actor_zero == turn.actions.end()
+            || actor_one == turn.actions.end()
+            || actor_zero->action_preset.target_kind
+                != savor::db::BattlePlanTargetKind::AnyEnemy
+            || actor_one->action_preset.target_kind
+                != savor::db::BattlePlanTargetKind::SameAsOtherPC
+            || actor_one->action_preset.target_same_as_actor_slot
+                != std::optional<int>(0)
+            || actor_zero->action_preset.macro
+                != soa::battle::actions::BattleAction::Attack
+            || actor_one->action_preset.macro
+                != soa::battle::actions::BattleAction::Attack
+            || !turn.default_predicate_bundle_revision_id) {
+            return Fail("Battle generic authored turn contract drifted",
+                        error_out);
+        }
+        for (const auto& action : turn.actions) {
+            std::ostringstream line;
+            line << "[battle-authored-command] turn=" << turn.turn_index
+                 << " ordinal=" << action.ordinal
+                 << " actor=" << action.actor_slot
+                 << " action="
+                 << soa::battle::actions::get_action_string(
+                        action.action_preset.macro)
+                 << " target_kind="
+                 << BattleTargetKindName(action.action_preset.target_kind)
+                 << " target_single="
+                 << (action.action_preset.target_single_slot
+                         ? std::to_string(
+                               *action.action_preset.target_single_slot)
+                         : "none")
+                 << " target_mask="
+                 << (action.action_preset.target_mask_bits
+                         ? std::to_string(
+                               *action.action_preset.target_mask_bits)
+                         : "none")
+                 << " target_same_as_actor="
+                 << (action.action_preset.target_same_as_actor_slot
+                         ? std::to_string(
+                               *action.action_preset.target_same_as_actor_slot)
+                         : "none")
+                 << " predicate_bundle="
+                 << *turn.default_predicate_bundle_revision_id;
+            report(line.str());
+        }
+    }
+
     const auto find_step_by_node = [&](std::string_view key) {
         return std::ranges::find(
             graph.steps, key,
@@ -824,17 +1295,26 @@ bool CheckBattleInvariantsAndReportTrajectory(
                     && argument.source_kind == "scenario";
             }) == 1;
     };
-    const auto expected_argument_count = prepared ? 3u : 4u;
+    const auto expected_argument_count = prepared ? 4u : 5u;
     if (graph.arguments.size() != expected_argument_count
         || !has_integer_argument(
             "probe_1", "samples_per_axis",
-            [](std::int64_t value) { return value > 0; })
+            [&](std::int64_t value) {
+                return value == options.seedprobe_samples_per_axis.value_or(1);
+            })
         || !has_integer_argument(
             "battle_1", "fake_attack_min",
-            [](std::int64_t value) { return value == 0; })
+            [&](std::int64_t value) {
+                return value == options.battle_fake_attack_min.value_or(0);
+            })
         || !has_integer_argument(
             "battle_1", "fake_attack_max",
-            [](std::int64_t value) { return value == 0; })
+            [&](std::int64_t value) {
+                return value == options.battle_fake_attack_max.value_or(0);
+            })
+        || !has_integer_argument(
+            "battle_1", "predicate.parameter.item_id",
+            [](std::int64_t value) { return value == kPredicateItemId; })
         || (!prepared && !has_integer_argument(
             "tas_validate_1", "rtc",
             [](std::int64_t value) {
@@ -1076,6 +1556,19 @@ bool CheckBattleInvariantsAndReportTrajectory(
             return Fail("Battle wave predicate binding does not resolve to its authored bundle",
                         error_out);
         }
+        if (binding->parameter_values.size() != 1
+            || binding->parameter_values.front().ordinal != 0
+            || binding->parameter_values.front().value_kind != "INTEGER"
+            || binding->parameter_values.front().builtin_type
+                != std::optional<int>(static_cast<int>(
+                    savor::runtime::program::BuiltinType::U16))
+            || binding->parameter_values.front().integer_value
+                != std::optional<std::int64_t>(kPredicateItemId)
+            || binding->active_check_ordinals
+                != std::vector<std::uint32_t>({0, 1, 2})) {
+            return Fail("Battle wave predicate parameter or active-check binding drifted",
+                        error_out);
+        }
 
         {
             std::ostringstream line;
@@ -1092,6 +1585,9 @@ bool CheckBattleInvariantsAndReportTrajectory(
                          ? std::to_string(*wave.parent_turn_job_id) : "none")
                  << " predicate_bundle="
                  << binding->predicate_bundle_revision_id
+                 << " bundle_hash=" << binding->bundle_content_sha256
+                 << " binding_hash=" << binding->binding_content_sha256
+                 << " item_id=" << kPredicateItemId
                  << " active_checks="
                  << binding->active_check_ordinals.size();
             report(line.str());
@@ -1114,6 +1610,61 @@ bool CheckBattleInvariantsAndReportTrajectory(
         for (const auto& job : jobs) {
             if (job.wave_id != wave.wave_id || job.turn_job_id <= 0)
                 return Fail("Battle turn job lineage is malformed", error_out);
+            if (!job.resolved_turn_commands_blob
+                || !job.resolved_turn_variant_key) {
+                return Fail("Battle turn job variant identity is malformed",
+                            error_out);
+            }
+            const auto commands =
+                soa::battle::actions::decode_battle_turn_commands_hex(
+                    *job.resolved_turn_commands_blob);
+            std::vector<std::uint8_t> command_bytes;
+            if (commands) {
+                soa::battle::actions::encode_battle_turn_commands_to_buffer(
+                    *commands, command_bytes);
+            }
+            if (!commands || commands->empty()
+                || hash::sha256(command_bytes.data(), command_bytes.size())
+                    != *job.resolved_turn_variant_key
+                || std::ranges::any_of(*commands, [](const auto& command) {
+                    const bool requires_target =
+                        command.macro
+                            == soa::battle::actions::BattleAction::Attack
+                        || command.macro
+                            == soa::battle::actions::BattleAction::UseItem;
+                    return requires_target
+                        && (command.params.target_slot < 4
+                            || command.params.target_slot > 11);
+                })) {
+                return Fail("Battle worker job does not contain exact concrete targets",
+                            error_out);
+            }
+            {
+                std::ostringstream line;
+                line << "[battle-concrete-command] wave=" << wave.wave_id
+                     << " turn=" << wave.turn_index
+                     << " turn_job=" << job.turn_job_id
+                     << " variant=" << *job.resolved_turn_variant_key
+                     << " command_blob="
+                     << *job.resolved_turn_commands_blob
+                     << " commands=";
+                for (std::size_t index = 0; index < commands->size(); ++index) {
+                    if (index != 0) line << ',';
+                    const auto& command = (*commands)[index];
+                    line << "actor" << static_cast<int>(command.actor_slot)
+                         << ':'
+                         << soa::battle::actions::get_action_string(
+                                command.macro)
+                         << "@slot"
+                         << static_cast<int>(command.params.target_slot);
+                    if (command.macro
+                        == soa::battle::actions::BattleAction::UseItem) {
+                        line << "#item" << command.params.item_id;
+                    }
+                }
+                line << " fake_attacks=" << job.fake_attacks_this_turn;
+                report(line.str());
+            }
             if (!job.exec_job_id)
             {
                 std::ostringstream line;
@@ -1154,6 +1705,56 @@ bool CheckBattleInvariantsAndReportTrajectory(
                 && (*result->pred_passed != 0 || *result->pred_total != 0)) {
                 return Fail("battle.single_turn empty-bundle accounting drifted",
                             error_out);
+            }
+            if (result->predicate_evidence_blob.empty()) {
+                return Fail("battle.single_turn omitted requested durable predicate evidence",
+                            error_out);
+            }
+            const auto predicate_evidence =
+                savor::runtime::program::DecodeProgramResultV1(
+                    result->predicate_evidence_blob);
+            if (!predicate_evidence || !predicate_evidence.value
+                || predicate_evidence.value->emissions.size()
+                    != *result->pred_total) {
+                return Fail("battle.single_turn predicate evidence is malformed or incomplete",
+                            error_out);
+            }
+            for (const auto& emission :
+                 predicate_evidence.value->emissions) {
+                const auto* root = FindProgramValue(
+                    emission.value, emission.value.root);
+                const auto* evaluation = root
+                    ? std::get_if<savor::runtime::program::EnumValue>(
+                          &root->payload)
+                    : nullptr;
+                const bool known_definition = std::ranges::any_of(
+                    authored_bundle->bundle.definitions,
+                    [&](const auto& definition) {
+                        return emission.schema.canonical_id
+                            == definition.definition.canonical_id
+                                + ".Evaluation";
+                    });
+                if (!emission.complete || !evaluation
+                    || evaluation->schema != emission.schema
+                    || (evaluation->value != 0
+                        && evaluation->value != 1)
+                    || !known_definition) {
+                    return Fail("battle.single_turn predicate evidence does not match the authored bundle",
+                                error_out);
+                }
+                std::ostringstream evidence_line;
+                evidence_line
+                    << "[battle-predicate-evidence] wave=" << wave.wave_id
+                    << " turn_job=" << job.turn_job_id
+                    << " exec_job=" << *job.exec_job_id
+                    << " sequence=" << emission.sequence.value()
+                    << " schema=" << emission.schema.canonical_id
+                    << " schema_revision=" << emission.schema.version
+                    << " schema_hash="
+                    << emission.schema.schema_hash.ToHex()
+                    << " evaluation="
+                    << (evaluation->value == 0 ? "Passed" : "Failed");
+                report(evidence_line.str());
             }
             if (*result->domain_outcome == "ReachedNextTurn") {
                 if (!result->successor_savestate_id
@@ -1313,11 +1914,15 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
             dtm_artifact_id, seed_probe_spec_id, battle_chain_spec_id,
             *options.tasmovie_rtc,
             options.seedprobe_samples_per_axis.value_or(1),
+            options.battle_fake_attack_min.value_or(0),
+            options.battle_fake_attack_max.value_or(0),
             entry.run_identity, &workflow_instance_id, &error)
         : SeedPreparedBattleWorkflow(
             db_service->AuthoringDb(), db_service->ExecutionDb(),
             *entry.savestate_id, seed_probe_spec_id, battle_chain_spec_id,
             options.seedprobe_samples_per_axis.value_or(1),
+            options.battle_fake_attack_min.value_or(0),
+            options.battle_fake_attack_max.value_or(0),
             entry.run_identity, &workflow_instance_id, &error);
     if (!seeded)
         return Fail("failed seeding Battle workflow: " + error, error_out);
@@ -1458,7 +2063,7 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
     if (workflow_completed) {
         const bool battle_invariants_valid =
             CheckBattleInvariantsAndReportTrajectory(
-                db_service, *graph, entry, event_sink,
+                db_service, *graph, entry, options, event_sink,
                 &battle_invariant_error);
         assessment.Require(
             battle_invariants_valid,

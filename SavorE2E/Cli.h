@@ -76,14 +76,22 @@ struct CliOptions {
     std::optional<std::filesystem::path> perf_report_dir;
     bool visual_worker = false;
     std::optional<std::filesystem::path> visual_screenshot_dir;
+    std::optional<std::string> workflow_unit;
+    std::optional<std::string> source_ref_kind;
+    std::optional<std::int64_t> source_ref_id;
     std::int64_t perf_snapshot_interval_ms = 1000;
     int repeat = 1;
     std::string load_level;
     std::optional<std::int64_t> tasmovie_rtc;
     std::optional<std::int64_t> tasmovie_rtc_min;
     std::optional<std::int64_t> tasmovie_rtc_max;
+    std::optional<int> seedprobe_min_value;
+    std::optional<int> seedprobe_max_value;
     std::optional<int> seedprobe_samples_per_axis;
     std::optional<int> seedprobe_combo_attempts_per_target;
+    std::optional<int> seedprobe_combo_sampler_tries;
+    std::optional<int> battle_fake_attack_min;
+    std::optional<int> battle_fake_attack_max;
 };
 
 struct TasMovieRtcRange {
@@ -97,12 +105,14 @@ enum class E2eScenarioKind {
     TasMovie,
     TasMovieWithValidation,
     TasMovieSeedProbe,
+    WorkflowUnit,
 };
 
 enum class E2eScenarioEntrySource : std::uint32_t {
     ImportedSavestateFile = 1u << 0,
     FreshTasMovieValidation = 1u << 1,
     PreparedSterilizedCheckpoint = 1u << 2,
+    ExistingWorkspaceReference = 1u << 3,
 };
 
 struct E2eScenarioDescriptor {

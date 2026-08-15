@@ -12,7 +12,10 @@ enum : std::uint8_t {
     PK_TasMovie = 2,
     PK_BattleContext = 4,
     PK_BattleSingleTurnRunner = 5,
+    PK_BattleCompletion = 9,
+    PK_BattleRecord = 10,
     PK_TasMovieCheckpointSterilize = 11,
+    PK_BattleReplay = 12,
 };
 
 } // namespace savor

@@ -94,6 +94,7 @@ namespace savor {
         struct InputPollReceipt {
             uint64_t epoch{0};
             uint32_t callback_count{0};
+            uint32_t a_control_callback_count{0};
             GCInputFrame frame{};
 
             bool acknowledged() const noexcept
@@ -170,10 +171,6 @@ namespace savor {
         void silenceStdOutInfo();
         void restoreStdOutInfo();
 
-        // Convenience: query whether a DTM is currently being played back.
-        bool isMoviePlaying() const;
-        bool isMoviePlaybackEnded() const;
-        uint64_t getCurrentMovieInputCount() const;
         bool setGCMemoryCardA(const std::string& raw_path);
         bool isEmulationPaused() const;
 

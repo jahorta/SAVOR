@@ -226,7 +226,11 @@ runtime::BackendResult ScriptedDolphinBackend::Open(
     ++control_->open_count;
     runtime::BackendResult result = control_->open_result;
     if (result.ok)
+    {
         control_->core_state = control_->open_core_state;
+        control_->movie_observation = {
+            .result = runtime::MovieBackendResult::Success()};
+    }
     control_->changed.notify_all();
     return result;
 }
@@ -256,10 +260,11 @@ ScriptedDolphinBackend::StartPreparedReadOnlyMovieCorePaused()
     if (result.ok)
     {
         control_->core_state = runtime::BackendCoreState::Paused;
-        control_->movie_snapshot.activity =
-            runtime::MovieActivity::ReadOnlyPlayback;
-        control_->movie_snapshot.read_only = true;
-        control_->movie_state = runtime::BackendMovieState::Playing;
+        control_->movie_observation = {
+            .result = runtime::MovieBackendResult::Success(),
+            .playing = true,
+            .recording = false,
+            .read_only = true};
     }
     else if (result.integrity == runtime::GuestIntegrity::Unknown)
         control_->core_state = runtime::BackendCoreState::Unknown;
@@ -294,6 +299,11 @@ runtime::BackendResult ScriptedDolphinBackend::Close()
     control_->core_state = result.ok
         ? runtime::BackendCoreState::Closed
         : runtime::BackendCoreState::Unknown;
+    if (result.ok)
+    {
+        control_->movie_observation = {
+            .result = runtime::MovieBackendResult::Success()};
+    }
     control_->changed.notify_all();
     return result;
 }
@@ -540,6 +550,7 @@ runtime::BackendInputPublication ScriptedDolphinBackend::Publish(
     }
     control_->input_frame = frame;
     control_->input_callback_count = 0;
+    control_->input_a_control_callback_count = 0;
     ++control_->input_publication_epoch;
     control_->RecordLocked("input.publish");
     return {runtime::BackendResult::Success(), control_->input_publication_epoch};
@@ -557,10 +568,11 @@ runtime::BackendInputPoll ScriptedDolphinBackend::QueryPoll(
                 "scripted input port is unavailable")};
     }
     return {
-        runtime::BackendResult::Success(),
-        control_->input_publication_epoch,
-        control_->input_callback_count,
-        control_->input_frame};
+        .result = runtime::BackendResult::Success(),
+        .publication_epoch = control_->input_publication_epoch,
+        .callback_count = control_->input_callback_count,
+        .a_control_callback_count = control_->input_a_control_callback_count,
+        .frame = control_->input_frame};
 }
 
 bool ScriptedDolphinBackend::IsPaused() const noexcept
@@ -680,10 +692,8 @@ ScriptedDolphinBackend::StopMovie() noexcept
     std::lock_guard lock(control_->mutex);
     control_->RecordLocked("movie.stop");
     if (control_->movie_result.ok)
-    {
-        control_->movie_snapshot = {};
-        control_->movie_state = runtime::BackendMovieState::Inactive;
-    }
+        control_->movie_observation = {
+            .result = runtime::MovieBackendResult::Success()};
     return control_->movie_result;
 }
 
@@ -694,11 +704,33 @@ ScriptedDolphinBackend::BeginRecording()
     control_->RecordLocked("movie.begin-recording");
     if (control_->movie_result.ok)
     {
-        control_->movie_snapshot.activity =
-            runtime::MovieActivity::Recording;
-        control_->movie_snapshot.read_only = false;
+        control_->movie_observation.result =
+            runtime::MovieBackendResult::Success();
+        control_->movie_observation.playing = false;
+        control_->movie_observation.recording = true;
+        control_->movie_observation.read_only = false;
     }
     return control_->movie_result;
+}
+
+runtime::MovieBackendResult
+ScriptedDolphinBackend::BranchReadOnlyPlaybackToRecording()
+{
+    std::lock_guard lock(control_->mutex);
+    control_->RecordLocked("movie.branch-playback-to-recording");
+    if (!control_->movie_observation.playing ||
+        control_->movie_observation.recording ||
+        !control_->movie_observation.read_only)
+    {
+        return runtime::MovieBackendResult::Failure(
+            "read-only playback is not active");
+    }
+    control_->movie_observation.playing = false;
+    control_->movie_observation.recording = true;
+    control_->movie_observation.read_only = false;
+    control_->movie_observation.result =
+        runtime::MovieBackendResult::Success();
+    return runtime::MovieBackendResult::Success();
 }
 
 runtime::MovieRecordingFinalizeResult
@@ -719,14 +751,16 @@ ScriptedDolphinBackend::CancelRecording() noexcept
     std::lock_guard lock(control_->mutex);
     control_->RecordLocked("movie.cancel-recording");
     if (control_->movie_result.ok)
-        control_->movie_snapshot = {};
+        control_->movie_observation = {
+            .result = runtime::MovieBackendResult::Success()};
     return control_->movie_result;
 }
 
-runtime::MovieSnapshot ScriptedDolphinBackend::Snapshot() const
+runtime::MovieBackendObservation
+ScriptedDolphinBackend::ObserveMovie() const
 {
     std::lock_guard lock(control_->mutex);
-    return control_->movie_snapshot;
+    return control_->movie_observation;
 }
 
 runtime::MovieCheckpointBackendResult
@@ -759,23 +793,23 @@ ScriptedDolphinBackend::CommitSavestateRestore(
         return control_->movie_result;
     if (!context.movie.has_value())
     {
-        control_->movie_snapshot = {};
+        control_->movie_observation = {
+            .result = runtime::MovieBackendResult::Success()};
     }
     else
     {
-        control_->movie_snapshot.activity =
-            context.movie->mode ==
-                    runtime::MovieCheckpointMode::Recording
-                ? runtime::MovieActivity::Recording
-                : runtime::MovieActivity::ReadOnlyPlayback;
-        control_->movie_snapshot.read_only =
-            context.movie->mode ==
-            runtime::MovieCheckpointMode::ReadOnlyPlayback;
+        const bool recording = context.movie->mode ==
+            runtime::MovieCheckpointMode::Recording;
+        control_->movie_observation.result =
+            runtime::MovieBackendResult::Success();
+        control_->movie_observation.playing = !recording;
+        control_->movie_observation.recording = recording;
+        control_->movie_observation.read_only = !recording;
         if (context.movie->cursor_known)
         {
-            control_->movie_snapshot.current_frame =
+            control_->movie_observation.current_frame =
                 context.movie->current_frame;
-            control_->movie_snapshot.current_input_count =
+            control_->movie_observation.current_input_count =
                 context.movie->current_input_count;
         }
     }
@@ -798,7 +832,6 @@ ScriptedDolphinBackend::Capabilities() const noexcept
         runtime::BackendExecutionCapability::Resume |
         runtime::BackendExecutionCapability::FrameStep |
         runtime::BackendExecutionCapability::ViObservation |
-        runtime::BackendExecutionCapability::MovieObservation |
         runtime::BackendExecutionCapability::ThrottleControl;
 }
 
@@ -814,8 +847,6 @@ ScriptedDolphinBackend::QueryExecutionSnapshot() const
         control_->core_state == runtime::BackendCoreState::Paused,
         control_->pc,
         control_->vi_count,
-        control_->movie_state,
-        control_->movie_input_count,
         control_->throttle_disabled};
 }
 

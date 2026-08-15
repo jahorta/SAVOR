@@ -192,6 +192,13 @@ SessionOperationReceipt EmulationSession::Open(const SessionOpenOptions& options
             "Dolphin backend does not provide the required hit-time guest-memory facet",
             BackendIntegrity::Preserved);
     }
+    if (result.ok && backend_->Movies() == nullptr)
+    {
+        result = BackendResult::Failure(
+            BackendErrorCode::Unavailable,
+            "Dolphin backend does not provide the required movie facet",
+            BackendIntegrity::Preserved);
+    }
     if (result.ok)
     {
         opened_ = true;
@@ -438,7 +445,7 @@ EmulationSession::CaptureImmutableSavestateArtifact(
     }
     SavestateCaptureRequest normalized = request;
     if (movie_service_ &&
-        movie_service_->activity() != MovieActivity::Inactive)
+        movie_service_->state() != MovieState::Inactive)
     {
         MovieCheckpointReceipt movie =
             movie_service_->CaptureCheckpoint();
@@ -556,7 +563,7 @@ SavestateHandleReceipt EmulationSession::CaptureWorksetBaselineHandle()
         return receipt;
     }
     SavestateHandleCaptureRequest request;
-    if (movie_service_ && movie_service_->activity() != MovieActivity::Inactive)
+    if (movie_service_ && movie_service_->state() != MovieState::Inactive)
     {
         MovieCheckpointReceipt movie = movie_service_->CaptureCheckpoint();
         if (!movie.result.ok)
@@ -1555,7 +1562,9 @@ BackendResult EmulationSession::InitializeServiceComposition()
         backend_ ? backend_->HitTimeGuestMemory() : nullptr;
     IScreenshotBackendPort* screenshots =
         backend_ ? backend_->Screenshots() : nullptr;
-    if (!input || !memory || !hit_time_memory || !screenshots)
+    IMovieBackendPort* movies =
+        backend_ ? backend_->Movies() : nullptr;
+    if (!input || !memory || !hit_time_memory || !screenshots || !movies)
     {
         return BackendResult::Failure(
             BackendErrorCode::Unavailable,
@@ -1598,49 +1607,46 @@ BackendResult EmulationSession::InitializeServiceComposition()
                 [this] {
                     return workset_epoch_;
                 });
-        if (IMovieBackendPort* movies = backend_->Movies())
-        {
-            movie_service_ = std::make_unique<MovieService>(
-                *movies,
-                *movie_input_reservations_,
-                [this] { return workset_epoch_; },
-                [this] {
-                    const BackendResult result =
-                        ValidateStopPointsBeforeMovieCoreStop();
-                    return result.ok
-                        ? MovieServiceResult::Success()
-                        : MovieServiceResult::Failure(
-                              MovieServiceErrorCode::IntegrityFailure,
-                              result.message,
-                              result.integrity == BackendIntegrity::Unknown
-                                  ? GuestIntegrity::Unknown
-                                  : GuestIntegrity::Preserved);
-                },
-                [this] {
-                    const BackendResult result =
-                        SettleStopPointsAfterMovieCoreStop();
-                    return result.ok
-                        ? MovieServiceResult::Success()
-                        : MovieServiceResult::Failure(
-                              MovieServiceErrorCode::IntegrityFailure,
-                              result.message,
-                              result.integrity == BackendIntegrity::Unknown
-                                  ? GuestIntegrity::Unknown
-                                  : GuestIntegrity::Preserved);
-                },
-                [this] {
-                    const BackendResult result =
-                        ValidateStopPointsAfterMovieCoreStart();
-                    return result.ok
-                        ? MovieServiceResult::Success()
-                        : MovieServiceResult::Failure(
-                              MovieServiceErrorCode::IntegrityFailure,
-                              result.message,
-                              result.integrity == BackendIntegrity::Unknown
-                                  ? GuestIntegrity::Unknown
-                                  : GuestIntegrity::Preserved);
-                });
-        }
+        movie_service_ = std::make_unique<MovieService>(
+            *movies,
+            *movie_input_reservations_,
+            [this] { return workset_epoch_; },
+            [this] {
+                const BackendResult result =
+                    ValidateStopPointsBeforeMovieCoreStop();
+                return result.ok
+                    ? MovieServiceResult::Success()
+                    : MovieServiceResult::Failure(
+                          MovieServiceErrorCode::IntegrityFailure,
+                          result.message,
+                          result.integrity == BackendIntegrity::Unknown
+                              ? GuestIntegrity::Unknown
+                              : GuestIntegrity::Preserved);
+            },
+            [this] {
+                const BackendResult result =
+                    SettleStopPointsAfterMovieCoreStop();
+                return result.ok
+                    ? MovieServiceResult::Success()
+                    : MovieServiceResult::Failure(
+                          MovieServiceErrorCode::IntegrityFailure,
+                          result.message,
+                          result.integrity == BackendIntegrity::Unknown
+                              ? GuestIntegrity::Unknown
+                              : GuestIntegrity::Preserved);
+            },
+            [this] {
+                const BackendResult result =
+                    ValidateStopPointsAfterMovieCoreStart();
+                return result.ok
+                    ? MovieServiceResult::Success()
+                    : MovieServiceResult::Failure(
+                          MovieServiceErrorCode::IntegrityFailure,
+                          result.message,
+                          result.integrity == BackendIntegrity::Unknown
+                              ? GuestIntegrity::Unknown
+                              : GuestIntegrity::Preserved);
+            });
 
         resource_relationships_ =
             std::make_unique<
@@ -1678,7 +1684,7 @@ BackendResult EmulationSession::InitializeServices(WorksetEpoch first_epoch)
 {
     if (!telemetry_bus_ || !input_arbiter_ ||
         !guest_memory_ || !guest_mutations_ ||
-        !screenshot_service_)
+        !screenshot_service_ || !movie_service_)
     {
         return BackendResult::Failure(
             BackendErrorCode::Unavailable,
@@ -1704,11 +1710,11 @@ BackendResult EmulationSession::InitializeExecution(WorksetEpoch first_epoch)
 {
     IExecutionBackendPort* port =
         backend_ ? backend_->Execution() : nullptr;
-    if (!port || !stop_router_)
+    if (!port || !stop_router_ || !movie_service_)
     {
         return BackendResult::Failure(
             BackendErrorCode::Unavailable,
-            "Dolphin backend does not provide the required execution facet");
+            "Dolphin backend does not provide the required execution or movie service");
     }
     try
     {
@@ -1718,6 +1724,7 @@ BackendResult EmulationSession::InitializeExecution(WorksetEpoch first_epoch)
         execution_engine_ =
             std::make_unique<ExecutionEngine>(
                 *port,
+                *movie_service_,
                 *stop_router_,
                 std::move(config));
     }
@@ -1850,19 +1857,18 @@ BackendResult EmulationSession::CleanupServices() noexcept
                 "MovieService ended the workset with unknown guest integrity",
                 BackendIntegrity::Unknown));
         }
-        if (movie_service_->activity() ==
-            MovieActivity::ReadOnlyPlayback)
+        if (movie_service_->state() == MovieState::ReadOnlyPlayback ||
+            movie_service_->state() == MovieState::PlaybackEnded)
         {
             movie = movie_service_->StopPlayback().result;
         }
-        else if (movie_service_->activity() ==
-                 MovieActivity::PreparedReadOnlyPlayback)
+        else if (movie_service_->state() ==
+                 MovieState::PreparedReadOnlyPlayback)
         {
             movie = movie_service_->AbandonPreparedReadOnlyPlayback(
                 movie_service_->preparation()).result;
         }
-        else if (movie_service_->activity() ==
-                 MovieActivity::Recording)
+        else if (movie_service_->state() == MovieState::Recording)
         {
             movie = movie_service_->CancelRecording().result;
         }

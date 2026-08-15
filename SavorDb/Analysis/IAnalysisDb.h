@@ -795,6 +795,10 @@ struct CreateBattleCompletionCommand {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
     std::optional<std::int64_t> exec_job_id;
+    std::int64_t battle_set_id = 0;
+    std::int64_t wave_id = 0;
+    std::int64_t selected_turn_job_id = 0;
+    std::int64_t selected_execution_job_id = 0;
     std::int64_t entry_savestate_id = 0;
     std::string status;
     types::UtcTimePoint created_at_utc{};
@@ -812,14 +816,13 @@ struct BindBattleCompletionExecutionJobCommand {
 struct CompleteBattleCompletionCommand {
     std::int64_t battle_completion_id = 0;
     std::int64_t completion_savestate_id = 0;
-    std::optional<std::int64_t> entry_rng_seed;
-    std::optional<std::int64_t> completion_rng_seed;
     int manifest_version = 1;
     std::string manifest_blob;
-    std::optional<std::int64_t> manifest_artifact_id;
-    std::optional<std::int64_t> input_trace_artifact_id;
-    int mismatch_count = 0;
-    int invariant_failure_count = 0;
+    std::string manifest_sha256;
+    std::int64_t manifest_artifact_id = 0;
+    std::string route_kind;
+    std::string transition_filename;
+    std::string worker_terminal_sha256;
     std::string status;
     types::UtcTimePoint completed_at_utc{};
     std::string correlation_id;
@@ -828,10 +831,9 @@ struct CompleteBattleCompletionCommand {
 
 struct FailBattleCompletionCommand {
     std::int64_t battle_completion_id = 0;
-    std::optional<int> manifest_version;
-    std::optional<std::string> manifest_blob;
-    int mismatch_count = 0;
-    int invariant_failure_count = 0;
+    std::string error_code;
+    std::string error_text;
+    std::optional<std::string> worker_terminal_sha256;
     types::UtcTimePoint completed_at_utc{};
     std::string correlation_id;
     std::string causation_id;
@@ -842,92 +844,205 @@ struct BattleCompletionRecord {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
     std::optional<std::int64_t> exec_job_id;
+    std::int64_t battle_set_id = 0;
+    std::int64_t wave_id = 0;
+    std::int64_t selected_turn_job_id = 0;
+    std::int64_t selected_execution_job_id = 0;
     std::int64_t entry_savestate_id = 0;
     std::optional<std::int64_t> completion_savestate_id;
-    std::optional<std::int64_t> entry_rng_seed;
-    std::optional<std::int64_t> completion_rng_seed;
     std::optional<int> manifest_version;
     std::optional<std::string> manifest_blob;
+    std::optional<std::string> manifest_sha256;
     std::optional<std::int64_t> manifest_artifact_id;
-    std::optional<std::int64_t> input_trace_artifact_id;
-    int mismatch_count = 0;
-    int invariant_failure_count = 0;
+    std::optional<std::string> route_kind;
+    std::optional<std::string> transition_filename;
+    std::optional<std::string> worker_terminal_sha256;
+    std::optional<std::string> error_code;
+    std::optional<std::string> error_text;
     std::string status;
     types::UtcTimePoint created_at_utc{};
     std::optional<types::UtcTimePoint> completed_at_utc;
 };
 
-struct CreateBattleResultsCommand {
+struct CreateBattleRecordingCommand {
     std::int64_t battle_completion_id = 0;
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
     std::optional<std::int64_t> exec_job_id;
-    std::string selected_seed_ref_kind;
-    std::int64_t selected_seed_ref_id = 0;
-    std::int64_t entry_savestate_id = 0;
-    std::int64_t selected_seed_value = 0;
-    RngEffectKind rng_effect_kind = RngEffectKind::Unknown;
-    std::optional<std::int64_t> fixed_draw_count;
+    std::int64_t source_savestate_id = 0;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::int64_t source_itinerary_artifact_id = 0;
+    int source_binding_version = 1;
+    std::string source_binding_blob;
+    std::string source_binding_sha256;
+    int replay_plan_version = 1;
+    std::string replay_plan_blob;
+    std::string replay_plan_sha256;
     std::string status;
     types::UtcTimePoint created_at_utc{};
     std::string correlation_id;
     std::string causation_id;
 };
 
-struct BindBattleResultsExecutionJobCommand {
-    std::int64_t battle_results_id = 0;
+struct BindBattleRecordingExecutionJobCommand {
+    std::int64_t battle_recording_id = 0;
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
     std::int64_t exec_job_id = 0;
 };
 
-struct CompleteBattleResultsCommand {
-    std::int64_t battle_results_id = 0;
-    std::int64_t final_savestate_id = 0;
-    std::optional<std::int64_t> entry_rng_seed;
-    std::optional<std::int64_t> final_rng_seed;
-    std::optional<std::int64_t> result_artifact_id;
-    std::optional<std::int64_t> input_trace_artifact_id;
-    int mismatch_count = 0;
-    int invariant_failure_count = 0;
+struct CompleteBattleRecordingCommand {
+    std::int64_t battle_recording_id = 0;
+    std::string outcome;
+    std::optional<std::int64_t> recorded_dtm_artifact_id;
+    std::optional<std::int64_t> recorded_itinerary_artifact_id;
+    std::optional<std::int64_t> paired_checkpoint_savestate_id;
+    std::optional<int> timing_anchor_version;
+    std::optional<std::string> timing_anchor_blob;
+    std::optional<std::int64_t> tas_movie_tree_id;
+    std::optional<std::int64_t> validation_request_id;
+    std::optional<std::int64_t> sterilization_request_id;
+    std::string worker_terminal_sha256;
     std::string status;
     types::UtcTimePoint completed_at_utc{};
     std::string correlation_id;
     std::string causation_id;
 };
 
-struct FailBattleResultsCommand {
-    std::int64_t battle_results_id = 0;
-    std::optional<std::int64_t> entry_rng_seed;
-    std::optional<std::int64_t> final_rng_seed;
-    std::optional<std::int64_t> result_artifact_id;
-    std::optional<std::int64_t> input_trace_artifact_id;
-    int mismatch_count = 0;
-    int invariant_failure_count = 0;
+struct FailBattleRecordingCommand {
+    std::int64_t battle_recording_id = 0;
+    std::string error_code;
+    std::string error_text;
+    std::optional<std::string> worker_terminal_sha256;
     types::UtcTimePoint completed_at_utc{};
     std::string correlation_id;
     std::string causation_id;
 };
 
-struct BattleResultsRecord {
-    std::int64_t battle_results_id = 0;
+struct BattleRecordingRecord {
+    std::int64_t battle_recording_id = 0;
     std::int64_t battle_completion_id = 0;
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
     std::optional<std::int64_t> exec_job_id;
-    std::string selected_seed_ref_kind;
-    std::int64_t selected_seed_ref_id = 0;
-    std::int64_t entry_savestate_id = 0;
-    std::optional<std::int64_t> final_savestate_id;
-    std::int64_t selected_seed_value = 0;
-    std::optional<std::int64_t> entry_rng_seed;
-    std::optional<std::int64_t> final_rng_seed;
-    RngEffectKind rng_effect_kind = RngEffectKind::Unknown;
-    std::optional<std::int64_t> fixed_draw_count;
-    std::optional<std::int64_t> result_artifact_id;
-    std::optional<std::int64_t> input_trace_artifact_id;
-    int mismatch_count = 0;
-    int invariant_failure_count = 0;
+    std::int64_t source_savestate_id = 0;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::int64_t source_itinerary_artifact_id = 0;
+    int source_binding_version = 0;
+    std::string source_binding_blob;
+    std::string source_binding_sha256;
+    int replay_plan_version = 0;
+    std::string replay_plan_blob;
+    std::string replay_plan_sha256;
+    std::optional<std::string> outcome;
+    std::optional<std::int64_t> recorded_dtm_artifact_id;
+    std::optional<std::int64_t> recorded_itinerary_artifact_id;
+    std::optional<std::int64_t> paired_checkpoint_savestate_id;
+    std::optional<int> timing_anchor_version;
+    std::optional<std::string> timing_anchor_blob;
+    std::optional<std::int64_t> tas_movie_tree_id;
+    std::optional<std::int64_t> validation_request_id;
+    std::optional<std::int64_t> sterilization_request_id;
+    std::optional<std::string> worker_terminal_sha256;
+    std::optional<std::string> error_code;
+    std::optional<std::string> error_text;
+    std::string status;
+    types::UtcTimePoint created_at_utc{};
+    std::optional<types::UtcTimePoint> completed_at_utc;
+};
+
+struct BindBattleRecordingValidationCommand {
+    std::int64_t battle_recording_id = 0;
+    std::int64_t tas_movie_tree_id = 0;
+    std::int64_t validation_request_id = 0;
+};
+
+struct BindBattleRecordingSterilizationCommand {
+    std::int64_t battle_recording_id = 0;
+    std::int64_t tas_movie_tree_id = 0;
+    std::int64_t sterilization_request_id = 0;
+};
+
+struct CreateBattleReplayCommand {
+    std::int64_t battle_completion_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::optional<std::int64_t> exec_job_id;
+    std::int64_t source_savestate_id = 0;
+    std::optional<std::int64_t> source_dtm_artifact_id;
+    std::optional<std::int64_t> source_itinerary_artifact_id;
+    int source_binding_version = 1;
+    std::string source_binding_blob;
+    std::string source_binding_sha256;
+    int replay_plan_version = 1;
+    std::string replay_plan_blob;
+    std::string replay_plan_sha256;
+    std::string status;
+    types::UtcTimePoint created_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct BindBattleReplayExecutionJobCommand {
+    std::int64_t battle_replay_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t exec_job_id = 0;
+};
+
+struct CompleteBattleReplayCommand {
+    std::int64_t battle_replay_id = 0;
+    std::string outcome;
+    std::uint32_t mismatch_turn = 0;
+    std::uint32_t expected_rng = 0;
+    std::uint32_t observed_rng = 0;
+    std::optional<std::string> observed_completion_blob;
+    std::optional<std::string> observed_completion_sha256;
+    std::optional<std::string> observed_transition_blob;
+    std::optional<std::string> observed_transition_sha256;
+    std::string worker_terminal_sha256;
+    std::string status;
+    types::UtcTimePoint completed_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct FailBattleReplayCommand {
+    std::int64_t battle_replay_id = 0;
+    std::string error_code;
+    std::string error_text;
+    std::optional<std::string> worker_terminal_sha256;
+    types::UtcTimePoint completed_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct BattleReplayRecord {
+    std::int64_t battle_replay_id = 0;
+    std::int64_t battle_completion_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::optional<std::int64_t> exec_job_id;
+    std::int64_t source_savestate_id = 0;
+    std::optional<std::int64_t> source_dtm_artifact_id;
+    std::optional<std::int64_t> source_itinerary_artifact_id;
+    int source_binding_version = 0;
+    std::string source_binding_blob;
+    std::string source_binding_sha256;
+    int replay_plan_version = 0;
+    std::string replay_plan_blob;
+    std::string replay_plan_sha256;
+    std::optional<std::string> outcome;
+    std::uint32_t mismatch_turn = 0;
+    std::uint32_t expected_rng = 0;
+    std::uint32_t observed_rng = 0;
+    std::optional<std::string> observed_completion_blob;
+    std::optional<std::string> observed_completion_sha256;
+    std::optional<std::string> observed_transition_blob;
+    std::optional<std::string> observed_transition_sha256;
+    std::optional<std::string> worker_terminal_sha256;
+    std::optional<std::string> error_code;
+    std::optional<std::string> error_text;
     std::string status;
     types::UtcTimePoint created_at_utc{};
     std::optional<types::UtcTimePoint> completed_at_utc;
@@ -1406,22 +1521,53 @@ struct IAnalysisDb {
         std::string* error_out = nullptr) = 0;
     virtual std::optional<BattleCompletionRecord> GetBattleCompletion(
         std::int64_t battle_completion_id) const = 0;
+    virtual std::optional<BattleCompletionRecord> GetBattleCompletionForExecJob(
+        std::int64_t exec_job_id) const = 0;
 
-    virtual bool CreateBattleResults(
-        const CreateBattleResultsCommand& command,
-        std::int64_t* battle_results_id_out = nullptr,
+    virtual bool CreateBattleRecording(
+        const CreateBattleRecordingCommand& command,
+        std::int64_t* battle_recording_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
-    virtual bool BindBattleResultsExecutionJob(
-        const BindBattleResultsExecutionJobCommand& command,
+    virtual bool BindBattleRecordingExecutionJob(
+        const BindBattleRecordingExecutionJobCommand& command,
         std::string* error_out = nullptr) = 0;
-    virtual bool CompleteBattleResults(
-        const CompleteBattleResultsCommand& command,
+    virtual bool BindBattleRecordingValidation(
+        const BindBattleRecordingValidationCommand& command,
         std::string* error_out = nullptr) = 0;
-    virtual bool FailBattleResults(
-        const FailBattleResultsCommand& command,
+    virtual bool BindBattleRecordingSterilization(
+        const BindBattleRecordingSterilizationCommand& command,
         std::string* error_out = nullptr) = 0;
-    virtual std::optional<BattleResultsRecord> GetBattleResults(
-        std::int64_t battle_results_id) const = 0;
+    virtual bool CompleteBattleRecording(
+        const CompleteBattleRecordingCommand& command,
+        std::string* error_out = nullptr) = 0;
+    virtual bool FailBattleRecording(
+        const FailBattleRecordingCommand& command,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<BattleRecordingRecord> GetBattleRecording(
+        std::int64_t battle_recording_id) const = 0;
+    virtual std::optional<BattleRecordingRecord> GetBattleRecordingForExecJob(
+        std::int64_t exec_job_id) const = 0;
+    virtual std::optional<BattleRecordingRecord> GetBattleRecordingForTasMovieTree(
+        std::int64_t tas_movie_tree_id) const = 0;
+    virtual std::optional<BattleRecordingRecord> GetBattleRecordingForPairedCheckpoint(
+        std::int64_t paired_checkpoint_savestate_id) const = 0;
+    virtual bool CreateBattleReplay(
+        const CreateBattleReplayCommand& command,
+        std::int64_t* battle_replay_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual bool BindBattleReplayExecutionJob(
+        const BindBattleReplayExecutionJobCommand& command,
+        std::string* error_out = nullptr) = 0;
+    virtual bool CompleteBattleReplay(
+        const CompleteBattleReplayCommand& command,
+        std::string* error_out = nullptr) = 0;
+    virtual bool FailBattleReplay(
+        const FailBattleReplayCommand& command,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<BattleReplayRecord> GetBattleReplay(
+        std::int64_t battle_replay_id) const = 0;
+    virtual std::optional<BattleReplayRecord> GetBattleReplayForExecJob(
+        std::int64_t exec_job_id) const = 0;
 
     virtual std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

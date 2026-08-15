@@ -15,6 +15,8 @@
 
 namespace savor::runtime {
 
+class MovieService;
+
 struct ExecutionEngineConfig
 {
     std::chrono::milliseconds maintenance_interval{10};
@@ -39,6 +41,7 @@ class ExecutionEngine final : private IStopPointConsumer
 public:
     ExecutionEngine(
         IExecutionBackendPort& backend,
+        MovieService& movies,
         StopPointRouter& stop_points,
         ExecutionEngineConfig config = {});
     ~ExecutionEngine();

@@ -26,8 +26,10 @@ shapes are legal.
 
 The harness returns failure for invalid or changed entry evidence,
 worker/coordinator/runtime-contract/reconciliation/shutdown failure,
-failed/canceled workflow execution, or malformed graph, provenance, predicate,
-result, or artifact evidence. Short synthetic tests verify this boundary; game
+failed or canceled workflow instances, or malformed graph, provenance,
+predicate, result, or artifact evidence. Canceled execution jobs are a native
+pruning outcome and remain non-gating trajectory evidence; failed execution
+jobs remain invariant failures. Short synthetic tests verify this boundary; game
 trajectory expectations are deliberately not moved into `SavorTests`.
 
 This section supersedes older language in this document that describes
@@ -584,8 +586,8 @@ Cover:
 Cover:
 
 - infrastructure open without movie preparation or an active workset epoch;
-- read-only playback from the active workset's exact movie baseline through one wrapper-preserving
-  guest-core restart;
+- read-only playback from an explicitly selected TAS Movie DTM-origin `ReadOnlyMovie` baseline through
+  one wrapper-preserving guest-core restart, without treating that baseline as a TAS family default;
 - verification of the optional startup savestate, resulting playback mode, unchanged session and
   workset epoch, and reservation cleanup after restart failure;
 - forced physical-stop reconciliation and rejection of stale pre-restart dispatch generations;
@@ -858,8 +860,10 @@ production path still performs the supported work; no legacy-path differential r
 | 6E | `soa.battle.context/capture` | Qualification, captured context, state lineage, failure ordering | Typical singleton isolation; workset dispatch cannot absorb durable downstream fan-out |
 | 6F | `soa.battle.macro_probe/probe` | Input-before-departure publication, alternative semantic gates, exact source suppression, verifier-known successor witnesses, exact receipt matching, baseline/change waits, required release witnesses, unchanged capture profile, error mapping, unattended one-item production-process activation through the partial catalog with no SavorDb descriptor, and no guest-step import | One-item direct workset; macro commands and interaction segments remain one module's domain control flow |
 | 6G | `soa.battle.single_turn/execute` | RNG mutation receipt, semantic point/observation ordering, adaptive interaction trace, request/release acknowledgements, predicate trigger/baseline/comparison, abort/result mapping, passed/total accounting, progress emissions, unchanged capture-profile behavior, outcome, context, output savestate | Strong exact-wave/source/config fit; each candidate retains a scalar terminal and output state, while survivor reduction and next-wave creation remain durable external work |
-| 6H | `soa.battle.completion/complete` | Paused restore, successful neutral host publication without a guest-neutral poll/release witness, causal `0x8006F554 -> 0x8006F558` or `0x8006F590 -> 0x8006F594` successor receipt, completion observations, emitted state/reward/manifest artifacts, terminal classification, and no guest-step import | Typical singleton isolation; distinct victory-state lineages cannot be treated as one reusable baseline |
-| 6I | `soa.battle.results_screen/advance` | Split field-return reseed/completion-manifest input, ready/accepted/neutral interaction semantics, results capture, terminal state, and no monolithic victory-to-results module | Typical singleton isolation; the causal 6H-to-6I dependency is not fused into a workset, though ordinary worker affinity may still apply |
+| Battle Completion | `soa.battle.completion/complete` | Exact Victory restore, both causal completion paths, reward evidence, accepted fast/deferred preseed, `.bcmb` plus movie-inactive planning state, route evidence, and atomic failure | Explicitly selected singleton; no automatic launch from Victory |
+| Battle Record | `soa.battle.record/record` | Exact movie-paired lineage, `Savestate` plus exact DTM continuation-sidecar restore, mutation-free adoption of the restored playback, playback-to-recording cursor handoff before advancement, adaptive multi-turn replay, per-turn terminal/RNG checks, completion semantic equality, terminal neutral observation, DTM/TMI/paired checkpoint/anchor/tree publication, and artifact-free `ReplayMismatch` | Explicitly selected singleton; predicates disabled; never uses the TAS-only opt-in `ReadOnlyMovie` origin baseline; validation automatic and sterilization gated on `Valid` |
+| Battle Replay | `soa.battle.replay/replay` | Byte-identical source-neutral replay plan, exact `BattleSet.entry_savestate_id`, inactive SAV-only and paired SAV-plus-DTM staging, MovieService-only state dispatch, direct inactive and adopt-qualify-stop-verify paired paths, shared adaptive replay/completion body, durable `Matched` or `ReplayMismatch`, and artifact rejection | Explicitly selected singleton control; no ancestor substitution, recording, output artifacts, downstream transition, validation, or sterilization |
+| Battle Results handler | reusable `soa.battle.results.handler` interaction | Static construction, lowering, typed contracts, reducer behavior, postseed/cleanup qualification logic, and RNG invariant | Not a Full Phase. Live, E2E, and test-only Full Phase execution validation is deferred until a real downstream phase exists. |
 
 Characterization compares domain semantics and durable evidence, not old internal breakpoint-set
 mutation or `PSContext` layout. Any intentional behavior change requires an explicit decision and new
@@ -1103,8 +1107,10 @@ no SQL/schema, durable queue state, workflow record, or artifact-format contract
 - No production path links or selects the legacy interpreter or a second controller.
 - No production module or action imports public guest-opcode stepping; the private state-load bootstrap
   remains isolated inside the Dolphin savestate backend.
-- No `soa.battle.legacy_path`/`BattleRunner` module and no monolithic `BattleEndResults` module are
-  introduced; Battle Completion and Battle Results Screen remain separate native programs.
+- No `soa.battle.legacy_path`/`BattleRunner` module, monolithic
+  `BattleEndResults` module, or `battle.results_screen` Full Phase is
+  introduced. Battle Completion and Battle Record are native programs; Results
+  handling is a reusable downstream interaction.
 - Semantic observations and interactions lower completely into verified ordinary IR, actions, router
   subscriptions, pure reducers, and emissions; no peer runtime, scheduler, query VM, or opcode family
   remains.

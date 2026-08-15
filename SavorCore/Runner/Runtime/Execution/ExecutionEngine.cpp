@@ -1,6 +1,10 @@
 #include "ExecutionEngine.h"
 
+#include "../Services/Movie/MovieService.h"
+#include "../../../Utils/Log.h"
+
 #include <algorithm>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <thread>
@@ -11,6 +15,67 @@ namespace savor::runtime {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+[[nodiscard]] const char* KindName(ExecutionOperationKind kind) noexcept
+{
+    switch (kind)
+    {
+    case ExecutionOperationKind::ContinueUntil: return "continue_until";
+    case ExecutionOperationKind::StepFrames: return "step_frames";
+    case ExecutionOperationKind::SafePause: return "safe_pause";
+    case ExecutionOperationKind::InteractiveResume: return "interactive_resume";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] const char* TerminalName(ExecutionTerminalStatus status) noexcept
+{
+    switch (status)
+    {
+    case ExecutionTerminalStatus::RequestedCompletion: return "requested_completion";
+    case ExecutionTerminalStatus::StepsCompleted: return "steps_completed";
+    case ExecutionTerminalStatus::Paused: return "paused";
+    case ExecutionTerminalStatus::Cancelled: return "cancelled";
+    case ExecutionTerminalStatus::TimedOut: return "timed_out";
+    case ExecutionTerminalStatus::CoreStalled: return "core_stalled";
+    case ExecutionTerminalStatus::MovieEnded: return "movie_ended";
+    case ExecutionTerminalStatus::UnexpectedStop: return "unexpected_stop";
+    case ExecutionTerminalStatus::InterruptionUnavailable: return "interruption_unavailable";
+    case ExecutionTerminalStatus::InterruptionAborted: return "interruption_aborted";
+    case ExecutionTerminalStatus::InterruptionDepthExceeded: return "interruption_depth_exceeded";
+    case ExecutionTerminalStatus::InterruptionFailed: return "interruption_failed";
+    case ExecutionTerminalStatus::WorksetEpochMismatch: return "epoch_mismatch";
+    case ExecutionTerminalStatus::Unsupported: return "unsupported";
+    case ExecutionTerminalStatus::BackendFailure: return "backend_failure";
+    case ExecutionTerminalStatus::CleanupFailure: return "cleanup_failure";
+    case ExecutionTerminalStatus::CursorOverrun: return "cursor_overrun";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] std::string AwaitedPcs(const ExecutionRequest& request)
+{
+    const auto* until = std::get_if<ContinueUntilRequest>(&request);
+    if (!until)
+        return "[]";
+    std::string output = "[";
+    bool first = true;
+    for (const StopSubscriptionDefinition& subscription :
+         until->wake_group.subscriptions)
+    {
+        const auto* pc = std::get_if<PcStopPointSpec>(&subscription.point);
+        if (!pc)
+            continue;
+        char encoded[16]{};
+        std::snprintf(encoded, sizeof(encoded), "0x%08X", pc->pc);
+        if (!first)
+            output.push_back(',');
+        output.append(encoded);
+        first = false;
+    }
+    output.push_back(']');
+    return output;
+}
 
 [[nodiscard]] ExecutionOperationKind KindOf(const ExecutionRequest& request)
 {
@@ -110,32 +175,21 @@ using Clock = std::chrono::steady_clock;
         request);
 }
 
-[[nodiscard]] ExecutionMovieState ConvertMovieState(
-    BackendMovieState state) noexcept
+struct ExecutionObservation : BackendExecutionSnapshot
 {
-    switch (state)
-    {
-    case BackendMovieState::Inactive:
-        return ExecutionMovieState::Inactive;
-    case BackendMovieState::Playing:
-        return ExecutionMovieState::Playing;
-    case BackendMovieState::Ended:
-        return ExecutionMovieState::Ended;
-    case BackendMovieState::Unknown:
-        return ExecutionMovieState::Unknown;
-    }
-    return ExecutionMovieState::Unknown;
-}
+    MovieState movie_state = MovieState::Unknown;
+    std::uint64_t movie_input_count = 0;
+};
 
 [[nodiscard]] ExecutionEnvironmentEvidence ConvertEvidence(
-    const BackendExecutionSnapshot& snapshot)
+    const ExecutionObservation& snapshot)
 {
     return {
         snapshot.core_state,
         snapshot.pause_confirmed,
         snapshot.pc,
         snapshot.vi_count,
-        ConvertMovieState(snapshot.movie_state),
+        snapshot.movie_state,
         snapshot.movie_input_count,
         snapshot.throttle_disabled,
     };
@@ -183,6 +237,8 @@ struct ExecutionEngine::Impl
         ExecutionRequest request;
         ExecutionOperationKind kind = ExecutionOperationKind::SafePause;
         Clock::time_point started;
+        Clock::time_point next_diagnostic_heartbeat;
+        std::uint64_t start_movie_input_count = 0;
         Clock::time_point health_baseline;
         std::uint64_t health_last_vi = 0;
         std::uint64_t health_host_generation = 0;
@@ -226,6 +282,7 @@ struct ExecutionEngine::Impl
     };
 
     IExecutionBackendPort& backend;
+    MovieService& movies;
     StopPointRouter& stop_points;
     ExecutionEngineConfig config;
     HostActivityTracker owned_host_activity;
@@ -247,9 +304,11 @@ struct ExecutionEngine::Impl
 
     Impl(
         IExecutionBackendPort& backend_value,
+        MovieService& movies_value,
         StopPointRouter& stop_points_value,
         ExecutionEngineConfig config_value)
         : backend(backend_value),
+          movies(movies_value),
           stop_points(stop_points_value),
           config(std::move(config_value)),
           now(config.now
@@ -305,6 +364,84 @@ struct ExecutionEngine::Impl
         return owner_thread == std::this_thread::get_id();
     }
 
+    [[nodiscard]] static const ExecutionRequestPolicy* DiagnosticPolicy(
+        const ActiveOperation& operation) noexcept
+    {
+        return PolicyOf(operation.request);
+    }
+
+    void LogOperationStart(
+        const ActiveOperation& operation,
+        const ExecutionObservation& observed) const
+    {
+        if (operation.kind != ExecutionOperationKind::ContinueUntil &&
+            operation.kind != ExecutionOperationKind::StepFrames)
+            return;
+        const ExecutionRequestPolicy* policy = DiagnosticPolicy(operation);
+        const auto relationship = InputRelationshipOf(operation.request);
+        SCLOGDX(
+            SC_TAGS("execution.operation", "execution.begin"),
+            "operation=%llu kind=%s epoch=%llu invocation=%llu attempt=%llu request=%llu selector=%s awaited_pcs=%s input_relationship=%llu core_state=%u pc=0x%08X vi=%llu movie_state=%u recording_input_count=%llu",
+            operation.id.value(), KindName(operation.kind), epoch.value(),
+            policy ? policy->diagnostic_invocation : 0,
+            policy ? policy->diagnostic_attempt : 0,
+            policy ? policy->diagnostic_request : 0,
+            policy && !policy->diagnostic_selector.empty()
+                ? policy->diagnostic_selector.c_str()
+                : "<unnamed>",
+            AwaitedPcs(operation.request).c_str(),
+            relationship ? relationship->value() : 0,
+            static_cast<unsigned>(observed.core_state), observed.pc,
+            observed.vi_count, static_cast<unsigned>(observed.movie_state),
+            observed.movie_input_count);
+    }
+
+    void LogHeartbeat(
+        ActiveOperation& operation,
+        const ExecutionObservation& observed,
+        Clock::time_point current) const
+    {
+        if (current < operation.next_diagnostic_heartbeat)
+            return;
+        operation.next_diagnostic_heartbeat = current + std::chrono::seconds(1);
+        if (operation.kind != ExecutionOperationKind::ContinueUntil &&
+            operation.kind != ExecutionOperationKind::StepFrames)
+            return;
+
+        InputExecutionRelationshipInspection input;
+        const auto relationship = InputRelationshipOf(operation.request);
+        if (relationship && config.input_relationships)
+        {
+            input = config.input_relationships->Inspect(*relationship, epoch);
+        }
+        const ExecutionRequestPolicy* policy = DiagnosticPolicy(operation);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            current - operation.started).count();
+        const std::uint64_t recording_delta =
+            observed.movie_input_count >= operation.start_movie_input_count
+            ? observed.movie_input_count - operation.start_movie_input_count
+            : 0;
+        SCLOGDX(
+            SC_TAGS("execution.operation", "execution.heartbeat"),
+            "operation=%llu kind=%s epoch=%llu invocation=%llu attempt=%llu request=%llu selector=%s elapsed_ms=%lld awaited_pcs=%s input_relationship=%llu publication_epoch=%llu buttons=0x%04X callbacks=%u a_callbacks=%u poll_inspection=%s core_state=%u pc=0x%08X vi=%llu movie_state=%u recording_input_count=%llu recording_input_delta=%llu",
+            operation.id.value(), KindName(operation.kind), epoch.value(),
+            policy ? policy->diagnostic_invocation : 0,
+            policy ? policy->diagnostic_attempt : 0,
+            policy ? policy->diagnostic_request : 0,
+            policy && !policy->diagnostic_selector.empty()
+                ? policy->diagnostic_selector.c_str()
+                : "<unnamed>",
+            static_cast<long long>(elapsed), AwaitedPcs(operation.request).c_str(),
+            relationship ? relationship->value() : 0,
+            input.publication_epoch, input.frame.buttons,
+            input.callback_count, input.a_control_callback_count,
+            input.ok ? (input.requires_observation ? "observed" : "not_required")
+                     : (relationship ? input.message.c_str() : "none"),
+            static_cast<unsigned>(observed.core_state), observed.pc,
+            observed.vi_count, static_cast<unsigned>(observed.movie_state),
+            observed.movie_input_count, recording_delta);
+    }
+
     [[nodiscard]] ExecutionOperationId NextOperationId()
     {
         if (next_operation == 0)
@@ -329,7 +466,7 @@ struct ExecutionEngine::Impl
         return id;
     }
 
-    void RefreshSnapshot(const BackendExecutionSnapshot* backend_snapshot = nullptr)
+    void RefreshSnapshot(const ExecutionObservation* backend_snapshot = nullptr)
     {
         snapshot.workset_epoch = epoch;
         snapshot.active_operation =
@@ -374,7 +511,7 @@ struct ExecutionEngine::Impl
         }
     }
 
-    void PublishState(const BackendExecutionSnapshot* backend_snapshot = nullptr)
+    void PublishState(const ExecutionObservation* backend_snapshot = nullptr)
     {
         RefreshSnapshot(backend_snapshot);
         events.push_back({
@@ -386,7 +523,7 @@ struct ExecutionEngine::Impl
 
     void PublishProgress(
         const ActiveOperation& operation,
-        const BackendExecutionSnapshot& observed)
+        const ExecutionObservation& observed)
     {
         RefreshSnapshot(&observed);
         ExecutionProgress progress;
@@ -495,15 +632,49 @@ struct ExecutionEngine::Impl
         DrainCompletedHostActivityWarnings(operation);
     }
 
-    [[nodiscard]] BackendExecutionSnapshot Query()
+    [[nodiscard]] ExecutionObservation Query()
     {
         try
         {
-            return backend.QueryExecutionSnapshot();
+            ExecutionObservation observed;
+            static_cast<BackendExecutionSnapshot&>(observed) =
+                backend.QueryExecutionSnapshot();
+            if (!observed.result.ok)
+                return observed;
+
+            const MovieStateSnapshot movie = movies.ObserveState(epoch);
+            if (!movie.result.ok)
+            {
+                observed.result = BackendResult::Failure(
+                    movie.result.code == MovieServiceErrorCode::Unsupported
+                        ? BackendErrorCode::Unavailable
+                        : movie.result.code == MovieServiceErrorCode::InvalidState
+                            ? BackendErrorCode::InvalidState
+                            : BackendErrorCode::OperationFailed,
+                    movie.result.message.empty()
+                        ? "MovieService state observation failed"
+                        : "MovieService state observation failed: " +
+                            movie.result.message,
+                    movie.result.integrity == GuestIntegrity::Unknown
+                        ? BackendIntegrity::Unknown
+                        : BackendIntegrity::Preserved);
+                return observed;
+            }
+            if (!movie.workset_epoch || movie.workset_epoch != epoch)
+            {
+                observed.result = BackendResult::Failure(
+                    BackendErrorCode::InvalidState,
+                    "MovieService returned state for the wrong workset epoch",
+                    BackendIntegrity::Unknown);
+                return observed;
+            }
+            observed.movie_state = movie.state;
+            observed.movie_input_count = movie.current_input_count;
+            return observed;
         }
         catch (const std::exception& ex)
         {
-            BackendExecutionSnapshot snapshot_result;
+            ExecutionObservation snapshot_result;
             snapshot_result.result = BackendResult::Failure(
                 BackendErrorCode::OperationFailed,
                 std::string("execution snapshot query threw: ") + ex.what(),
@@ -512,7 +683,7 @@ struct ExecutionEngine::Impl
         }
         catch (...)
         {
-            BackendExecutionSnapshot snapshot_result;
+            ExecutionObservation snapshot_result;
             snapshot_result.result = BackendResult::Failure(
                 BackendErrorCode::OperationFailed,
                 "execution snapshot query threw",
@@ -589,7 +760,7 @@ struct ExecutionEngine::Impl
 
     void RebaselineHealth(
         ActiveOperation& operation,
-        const BackendExecutionSnapshot& observed,
+        const ExecutionObservation& observed,
         Clock::time_point current)
     {
         const HostActivityTracker::Snapshot host =
@@ -602,7 +773,7 @@ struct ExecutionEngine::Impl
 
     [[nodiscard]] bool PumpCoreHealth(
         ActiveOperation& operation,
-        const BackendExecutionSnapshot& observed,
+        const ExecutionObservation& observed,
         Clock::time_point current)
     {
         DrainCompletedHostActivityWarnings(operation);
@@ -643,7 +814,7 @@ struct ExecutionEngine::Impl
             config.suspect_core_stall_after +
                 config.confirm_core_stall_after)
         {
-            const BackendExecutionSnapshot confirmation = Query();
+            const ExecutionObservation confirmation = Query();
             const HostActivityTracker::Snapshot confirmation_host =
                 host_activity->snapshot();
             if (!confirmation.result.ok)
@@ -752,10 +923,18 @@ struct ExecutionEngine::Impl
         ExecutionTerminalStatus status,
         ExecutionError error = {},
         std::optional<StopRouteReceipt> stop = std::nullopt,
-        const BackendExecutionSnapshot* known_snapshot = nullptr)
+        const ExecutionObservation* known_snapshot = nullptr)
     {
         DrainCompletedHostActivityWarnings(operation);
-        BackendExecutionSnapshot observed =
+        InputExecutionRelationshipInspection diagnostic_input;
+        const auto diagnostic_relationship =
+            InputRelationshipOf(operation.request);
+        if (diagnostic_relationship && config.input_relationships)
+        {
+            diagnostic_input = config.input_relationships->Inspect(
+                *diagnostic_relationship, epoch);
+        }
+        ExecutionObservation observed =
             known_snapshot ? *known_snapshot : Query();
         if (!observed.result.ok && !error)
             error = BackendError("execution terminal snapshot failed", observed.result);
@@ -829,6 +1008,46 @@ struct ExecutionEngine::Impl
             ? terminal.error.integrity
             : observed.result.integrity;
 
+        if (operation.kind == ExecutionOperationKind::ContinueUntil ||
+            operation.kind == ExecutionOperationKind::StepFrames)
+        {
+            const ExecutionRequestPolicy* policy = DiagnosticPolicy(operation);
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now() - operation.started).count();
+            const std::uint64_t recording_delta =
+                observed.movie_input_count >= operation.start_movie_input_count
+                ? observed.movie_input_count - operation.start_movie_input_count
+                : 0;
+            SCLOGDX(
+                SC_TAGS("execution.operation", "execution.terminal"),
+                "operation=%llu kind=%s epoch=%llu invocation=%llu attempt=%llu request=%llu selector=%s status=%s elapsed_ms=%lld awaited_pcs=%s input_relationship=%llu publication_epoch=%llu buttons=0x%04X callbacks=%u a_callbacks=%u core_state=%u pc=0x%08X vi=%llu movie_state=%u recording_input_count=%llu recording_input_delta=%llu routed_sequence=%llu hit_pc=0x%08X error=%s",
+                operation.id.value(), KindName(operation.kind), epoch.value(),
+                policy ? policy->diagnostic_invocation : 0,
+                policy ? policy->diagnostic_attempt : 0,
+                policy ? policy->diagnostic_request : 0,
+                policy && !policy->diagnostic_selector.empty()
+                    ? policy->diagnostic_selector.c_str()
+                    : "<unnamed>",
+                TerminalName(terminal.status), static_cast<long long>(elapsed),
+                AwaitedPcs(operation.request).c_str(),
+                diagnostic_relationship ? diagnostic_relationship->value() : 0,
+                diagnostic_input.publication_epoch,
+                static_cast<unsigned>(diagnostic_input.frame.buttons),
+                diagnostic_input.callback_count,
+                diagnostic_input.a_control_callback_count,
+                static_cast<unsigned>(observed.core_state), observed.pc,
+                observed.vi_count, static_cast<unsigned>(observed.movie_state),
+                observed.movie_input_count, recording_delta,
+                terminal.stop ? terminal.stop->identity.sequence.value() : 0,
+                terminal.stop && terminal.stop->event
+                    ? terminal.stop->event->evidence.hit_pc
+                    : 0,
+                terminal.error.message.empty()
+                    ? "<none>"
+                    : terminal.error.message.c_str());
+        }
+
         const std::optional<ExecutionOperationId> pause_control_id =
             operation.pause_control_id;
         active.reset();
@@ -900,7 +1119,7 @@ struct ExecutionEngine::Impl
     {
         if (!active || active->pending_terminal)
             return;
-        BackendExecutionSnapshot observed = Query();
+        ExecutionObservation observed = Query();
         if (!observed.result.ok)
         {
             ActiveOperation finished = std::move(*active);
@@ -1023,19 +1242,6 @@ struct ExecutionEngine::Impl
                     BackendIntegrity::Unknown);
             }
         }
-        if (const ExecutionRequestPolicy* policy = PolicyOf(request))
-        {
-            if (policy->movie_ended != MovieEndedPolicy::Ignore &&
-                !HasExecutionCapability(
-                    backend.Capabilities(),
-                    BackendExecutionCapability::MovieObservation))
-            {
-                return Error(
-                    ExecutionErrorCode::Unsupported,
-                    "Execution backend does not support movie observation");
-            }
-        }
-
         switch (KindOf(request))
         {
         case ExecutionOperationKind::ContinueUntil:
@@ -1058,15 +1264,6 @@ struct ExecutionEngine::Impl
                 return Error(
                     ExecutionErrorCode::InvalidArgument,
                     "ContinueUntil group may contain only foreground-wait alternatives");
-            }
-            if (value.expected_movie_input_count &&
-                !HasExecutionCapability(
-                    backend.Capabilities(),
-                    BackendExecutionCapability::MovieObservation))
-            {
-                return Error(
-                    ExecutionErrorCode::Unsupported,
-                    "ContinueUntil movie input-count observation is unavailable");
             }
             break;
         }
@@ -1100,7 +1297,7 @@ struct ExecutionEngine::Impl
 
     [[nodiscard]] ExecutionError ApplyThrottle(
         ActiveOperation& operation,
-        const BackendExecutionSnapshot& observed)
+        const ExecutionObservation& observed)
     {
         const ExecutionThrottlePolicy policy = ThrottleOf(operation.request);
         if (policy == ExecutionThrottlePolicy::Preserve)
@@ -1251,7 +1448,7 @@ struct ExecutionEngine::Impl
 
     [[nodiscard]] ExecutionError BeginAdvance(ActiveOperation& operation)
     {
-        BackendExecutionSnapshot observed = Query();
+        ExecutionObservation observed = Query();
         if (!observed.result.ok)
             return BackendError("execution advance snapshot failed", observed.result);
         if (observed.core_state != BackendCoreState::Paused ||
@@ -1304,7 +1501,7 @@ struct ExecutionEngine::Impl
                 ExecutionErrorCode::Unsupported,
                 "Guest-frame stepping is unavailable");
         }
-        BackendExecutionSnapshot observed = Query();
+        ExecutionObservation observed = Query();
         if (!observed.result.ok)
             return BackendError("execution start snapshot failed", observed.result);
         if (operation.kind != ExecutionOperationKind::SafePause &&
@@ -1338,7 +1535,7 @@ struct ExecutionEngine::Impl
             }
             if (request.policy.movie_ended !=
                     MovieEndedPolicy::Ignore &&
-                observed.movie_state == BackendMovieState::Ended)
+                observed.movie_state == MovieState::PlaybackEnded)
             {
                 operation.pending_terminal =
                     ExecutionTerminalStatus::MovieEnded;
@@ -1384,7 +1581,7 @@ struct ExecutionEngine::Impl
 
     [[nodiscard]] bool AdvanceCompleted(
         ActiveOperation& operation,
-        const BackendExecutionSnapshot& observed) const
+        const ExecutionObservation& observed) const
     {
         if (!operation.awaiting_advance ||
             observed.core_state != BackendCoreState::Paused ||
@@ -1407,7 +1604,7 @@ struct ExecutionEngine::Impl
         }
     }
 
-    void CompleteAdvance(const BackendExecutionSnapshot& observed)
+    void CompleteAdvance(const ExecutionObservation& observed)
     {
         if (!active)
             return;
@@ -1439,10 +1636,12 @@ struct ExecutionEngine::Impl
 
 ExecutionEngine::ExecutionEngine(
     IExecutionBackendPort& backend,
+    MovieService& movies,
     StopPointRouter& stop_points,
     ExecutionEngineConfig config)
     : impl_(std::make_unique<Impl>(
           backend,
+          movies,
           stop_points,
           std::move(config)))
 {
@@ -1486,18 +1685,22 @@ BackendResult ExecutionEngine::Initialize(WorksetEpoch epoch)
             "Execution backend lacks required pause/resume capabilities");
     }
 
-    BackendExecutionSnapshot observed = impl_->Query();
+    impl_->epoch = epoch;
+    ExecutionObservation observed = impl_->Query();
     if (!observed.result.ok)
+    {
+        impl_->epoch = {};
         return observed.result;
+    }
     if (observed.core_state != BackendCoreState::Paused ||
         !observed.pause_confirmed)
     {
+        impl_->epoch = {};
         return BackendResult::Failure(
             BackendErrorCode::OperationFailed,
             "Execution backend did not open at an authoritatively paused CPU boundary",
             BackendIntegrity::Unknown);
     }
-    impl_->epoch = epoch;
     impl_->initialized = true;
     impl_->snapshot.activity = ExecutionActivity::IdlePaused;
     impl_->PublishState(&observed);
@@ -1574,19 +1777,23 @@ ExecutionSubmissionReceipt ExecutionEngine::Submit(ExecutionRequest request)
     operation.kind = kind;
     operation.request = std::move(request);
     operation.started = impl_->now();
+    operation.next_diagnostic_heartbeat =
+        operation.started + std::chrono::seconds(1);
     operation.health_baseline = operation.started;
-    const BackendExecutionSnapshot observed = impl_->Query();
+    const ExecutionObservation observed = impl_->Query();
     if (!observed.result.ok)
     {
         receipt.error =
             BackendError("execution start snapshot failed", observed.result);
         return receipt;
     }
+    operation.start_movie_input_count = observed.movie_input_count;
     operation.health_last_vi = observed.vi_count;
     (void)impl_->host_activity->DrainCompletedActivities();
     operation.health_host_generation =
         impl_->host_activity->snapshot().generation;
     impl_->active.emplace(std::move(operation));
+    impl_->LogOperationStart(*impl_->active, observed);
     receipt.accepted = true;
     receipt.operation_id = operation_id;
 
@@ -1616,7 +1823,7 @@ ExecutionSubmissionReceipt ExecutionEngine::Submit(ExecutionRequest request)
     }
     else
     {
-        const BackendExecutionSnapshot started = impl_->Query();
+        const ExecutionObservation started = impl_->Query();
         if (!started.result.ok)
         {
             impl_->BeginFinish(
@@ -1701,7 +1908,7 @@ ExecutionSubmissionReceipt ExecutionEngine::SubmitInterruptionChild(
     child.handler_owner = frame_id;
     child.started = impl_->now();
     child.health_baseline = child.started;
-    const BackendExecutionSnapshot observed = impl_->Query();
+    const ExecutionObservation observed = impl_->Query();
     if (!observed.result.ok)
     {
         receipt.error = BackendError(
@@ -1733,7 +1940,7 @@ ExecutionSubmissionReceipt ExecutionEngine::SubmitInterruptionChild(
     }
     else
     {
-        const BackendExecutionSnapshot started = impl_->Query();
+        const ExecutionObservation started = impl_->Query();
         if (!started.result.ok)
         {
             impl_->BeginFinish(
@@ -1938,7 +2145,7 @@ ExecutionControlReceipt ExecutionEngine::CompleteInterruptionHandler(
     }
     else
     {
-        const BackendExecutionSnapshot observed = impl_->Query();
+        const ExecutionObservation observed = impl_->Query();
         if (!observed.result.ok)
         {
             impl_->BeginFinish(
@@ -1960,6 +2167,28 @@ void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
     if (!impl_->OnOwnerThread() || !impl_->active)
     {
         return;
+    }
+    if (receipt.terminal == StopRouteTerminal::ForegroundMatched ||
+        receipt.terminal == StopRouteTerminal::RoutingFailure ||
+        receipt.terminal == StopRouteTerminal::Overflow)
+    {
+        const ExecutionRequestPolicy* policy =
+            PolicyOf(impl_->active->request);
+        SCLOGDX(
+            SC_TAGS("execution.operation", "execution.stop"),
+            "operation=%llu kind=%s epoch=%llu invocation=%llu attempt=%llu request=%llu selector=%s terminal=%u routed_sequence=%llu hit_pc=0x%08X awaited_pcs=%s",
+            impl_->active->id.value(), KindName(impl_->active->kind),
+            impl_->epoch.value(),
+            policy ? policy->diagnostic_invocation : 0,
+            policy ? policy->diagnostic_attempt : 0,
+            policy ? policy->diagnostic_request : 0,
+            policy && !policy->diagnostic_selector.empty()
+                ? policy->diagnostic_selector.c_str()
+                : "<unnamed>",
+            static_cast<unsigned>(receipt.terminal),
+            receipt.identity.sequence.value(),
+            receipt.event ? receipt.event->evidence.hit_pc : 0,
+            AwaitedPcs(impl_->active->request).c_str());
     }
     if (impl_->active->pending_terminal)
     {
@@ -2163,7 +2392,7 @@ void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
         std::move(parent),
         false,
         suspended_at + impl_->config.pause_confirmation_timeout});
-    BackendExecutionSnapshot observed = impl_->Query();
+    ExecutionObservation observed = impl_->Query();
     if (!observed.result.ok)
     {
         Impl::SuspendedFrame failed =
@@ -2254,7 +2483,7 @@ void ExecutionEngine::Pump()
     {
         if (impl_->handlers.empty())
             return;
-        const BackendExecutionSnapshot observed = impl_->Query();
+        const ExecutionObservation observed = impl_->Query();
         if (!observed.result.ok)
         {
             Impl::SuspendedFrame failed =
@@ -2309,7 +2538,7 @@ void ExecutionEngine::Pump()
         return;
     }
 
-    BackendExecutionSnapshot observed = impl_->Query();
+    ExecutionObservation observed = impl_->Query();
     if (!observed.result.ok)
     {
         Impl::ActiveOperation failed = std::move(*impl_->active);
@@ -2328,6 +2557,7 @@ void ExecutionEngine::Pump()
         return;
     }
     Impl::ActiveOperation& operation = *impl_->active;
+    impl_->LogHeartbeat(operation, observed, current);
 
     if (operation.pending_terminal)
     {
@@ -2413,7 +2643,7 @@ void ExecutionEngine::Pump()
             PolicyOf(operation.request))
     {
         if (policy->movie_ended != MovieEndedPolicy::Ignore &&
-            observed.movie_state == BackendMovieState::Ended)
+            observed.movie_state == MovieState::PlaybackEnded)
         {
             impl_->BeginFinish(
                 ExecutionTerminalStatus::MovieEnded,
@@ -2573,7 +2803,7 @@ BackendResult ExecutionEngine::Shutdown()
         (void)Cancel(CancellationReason::Shutdown);
     }
 
-    BackendExecutionSnapshot observed = impl_->Query();
+    ExecutionObservation observed = impl_->Query();
     if (!observed.result.ok ||
         observed.core_state != BackendCoreState::Paused ||
         !observed.pause_confirmed)

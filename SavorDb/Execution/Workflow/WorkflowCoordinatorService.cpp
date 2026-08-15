@@ -827,6 +827,7 @@ WorkflowCoordinatorService::BuildMaterializationContext(
                 .workflow_step_id = step.workflow_step_id,
                 .step_key = step.step_key,
                 .step_kind = step.step_kind,
+                .domain_ref_kind = step.input_ref_kind,
                 .domain_ref_id = step.input_ref_id.value_or(0),
                 .step_priority = step.priority,
             },

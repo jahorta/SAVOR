@@ -41,6 +41,7 @@ public:
         current_frame = frame;
         current_publication_epoch = ++next_publication_epoch;
         callback_count = 0;
+        a_control_callback_count = 0;
         return {BackendResult::Success(), current_publication_epoch};
     }
 
@@ -50,20 +51,23 @@ public:
         if (port != 0)
             return {BackendResult::Failure(BackendErrorCode::Unavailable, "port")};
         return {
-            BackendResult::Success(),
-            current_publication_epoch,
-            callback_count,
-            current_frame};
+            .result = BackendResult::Success(),
+            .publication_epoch = current_publication_epoch,
+            .callback_count = callback_count,
+            .a_control_callback_count = a_control_callback_count,
+            .frame = current_frame};
     }
 
     void Poll(std::uint32_t count = 1)
     {
         callback_count += count;
+        ++a_control_callback_count;
     }
 
     std::uint64_t next_publication_epoch = 0;
     std::uint64_t current_publication_epoch = 0;
     std::uint32_t callback_count = 0;
+    std::uint32_t a_control_callback_count = 0;
     GCInputFrame current_frame{};
     mutable std::size_t availability_queries = 0;
     std::size_t publish_calls = 0;
@@ -279,6 +283,66 @@ TEST(InputArbiter, HeldAndNeutralTransitionsRequireExactGuestObservation)
     const std::size_t publications = backend.publish_calls;
     EXPECT_TRUE(arbiter.CloseLease(lease.lease, kEpoch).ok);
     EXPECT_EQ(backend.publish_calls, publications);
+}
+
+TEST(InputArbiter, DiagnosticInspectionIsReadOnlyAndReportsExactPollCounters)
+{
+    FakeInputBackend backend;
+    InputArbiter arbiter(backend);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
+    const InputLeaseReceipt lease =
+        arbiter.Acquire({.owner = InputOwnerId(1)}, kEpoch);
+    ASSERT_TRUE(lease.ok);
+    GCInputFrame pressed;
+    pressed.A();
+    const InputExecutionBindingReceipt held =
+        arbiter.ApplyState(lease.lease, pressed, kEpoch);
+    ASSERT_TRUE(held.ok);
+    const InputExecutionRelationshipReceipt related = Relate(arbiter, held);
+    ASSERT_TRUE(related.ok);
+
+    const auto before = arbiter.Inspect(related.relationship, kEpoch);
+    ASSERT_TRUE(before.ok) << before.message;
+    EXPECT_TRUE(before.requires_observation);
+    EXPECT_EQ(before.publication_epoch, backend.current_publication_epoch);
+    EXPECT_EQ(before.callback_count, 0u);
+    EXPECT_EQ(before.a_control_callback_count, 0u);
+    EXPECT_EQ(before.frame, pressed);
+    EXPECT_EQ(arbiter.snapshot().relationship_count, 1u);
+
+    backend.Poll(18);
+    const auto after = arbiter.Inspect(related.relationship, kEpoch);
+    ASSERT_TRUE(after.ok) << after.message;
+    EXPECT_EQ(after.callback_count, 18u);
+    EXPECT_EQ(after.a_control_callback_count, 1u);
+    EXPECT_EQ(arbiter.snapshot().relationship_count, 1u);
+    EXPECT_TRUE(arbiter.Validate(related.relationship, kEpoch).ok);
+    EXPECT_TRUE(arbiter.Complete(related.relationship, kEpoch).ok);
+}
+
+TEST(InputArbiter, StableNeutralInspectionReportsBackendWithoutRequiringPoll)
+{
+    FakeInputBackend backend;
+    InputArbiter arbiter(backend);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
+    const InputLeaseReceipt lease =
+        arbiter.Acquire({.owner = InputOwnerId(1)}, kEpoch);
+    ASSERT_TRUE(lease.ok);
+    const auto neutral = arbiter.ApplyState(lease.lease, {}, kEpoch);
+    ASSERT_TRUE(neutral.ok);
+    const auto related = Relate(arbiter, neutral);
+    ASSERT_TRUE(related.ok);
+
+    const auto inspection = arbiter.Inspect(related.relationship, kEpoch);
+    ASSERT_TRUE(inspection.ok) << inspection.message;
+    EXPECT_FALSE(inspection.requires_observation);
+    EXPECT_EQ(inspection.publication_epoch, 0u);
+    EXPECT_EQ(inspection.callback_count, 0u);
+    EXPECT_EQ(inspection.a_control_callback_count, 0u);
+    EXPECT_EQ(backend.poll_queries, 1u);
+    EXPECT_EQ(arbiter.snapshot().relationship_count, 1u);
+    EXPECT_TRUE(arbiter.Complete(related.relationship, kEpoch).ok);
+    EXPECT_EQ(backend.poll_queries, 1u);
 }
 
 TEST(InputArbiter, BindingsRejectStaleSupersededWrongLeaseAndWrongEpochEvidence)

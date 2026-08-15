@@ -31,8 +31,10 @@ using namespace program;
 using composition::detail::ModuleFragmentBuilder;
 using Field = CanonicalActionPayloadField;
 
-constexpr std::array<TasMovieBoundaryCatalogEntryV1, 1> kBoundaryCatalog{{
+constexpr std::array<TasMovieBoundaryCatalogEntryV1, 3> kBoundaryCatalog{{
     {BeforeRandSeedSetPointId, BeforeRandSeedSetPc},
+    {FieldFastPreseedPointId, FieldFastPreseedPc},
+    {FieldDeferredPreseedPointId, FieldDeferredPreseedPc},
 }};
 
 constexpr std::string_view kInputCountContract =

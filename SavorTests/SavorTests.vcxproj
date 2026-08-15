@@ -274,6 +274,7 @@
     <ClCompile Include="test_program_model.cpp" />
     <ClCompile Include="test_predicate_composition.cpp" />
     <ClCompile Include="test_battle_backend_contracts.cpp" />
+    <ClCompile Include="test_battle_completion_record.cpp" />
     <ClCompile Include="test_derived_state.cpp" />
     <ClCompile Include="test_program_registries.cpp" />
     <ClCompile Include="test_progress_types.cpp" />
@@ -281,6 +282,7 @@
     <ClCompile Include="test_program_runtime_action_support.cpp" />
     <ClCompile Include="test_program_verifier.cpp" />
     <ClCompile Include="test_session_program_action_host.cpp" />
+    <ClCompile Include="test_async_logger.cpp" />
     <ClCompile Include="test_semantic_observation_composition.cpp" />
     <ClCompile Include="test_seedprobe_module.cpp" />
     <ClCompile Include="test_tas_movie_validation_module.cpp" />
