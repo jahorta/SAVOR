@@ -54,9 +54,13 @@ public:
     [[nodiscard]] MovieServiceResult RollbackSavestateRestore(
         const SavestateMovieRestoreContext& context) noexcept;
 
-    // Classifies the backend's raw physical movie facts against the owned
-    // workset-local lifecycle. This is the only semantic movie-state query.
-    [[nodiscard]] MovieStateSnapshot ObserveState(
+    // Returns the service-owned lifecycle and last authoritative cursor. This
+    // path never calls the backend or controls guest execution.
+    [[nodiscard]] MovieStateSnapshot SnapshotState(
+        WorksetEpoch expected_epoch) const;
+    // Reconciles raw native facts while the core is already authoritatively
+    // paused. This is the only physical movie-state query.
+    [[nodiscard]] MovieStateSnapshot ReconcilePausedState(
         WorksetEpoch expected_epoch);
     [[nodiscard]] MovieState state() const noexcept { return state_; }
     [[nodiscard]] MovieReservationId reservation() const noexcept
@@ -76,6 +80,8 @@ private:
     [[nodiscard]] MovieServiceResult ValidateIdle() const;
     [[nodiscard]] MovieServiceResult AcquireReservation();
     [[nodiscard]] MovieServiceResult ReleaseReservation() noexcept;
+    [[nodiscard]] MovieServiceResult AcquirePauseAtPlaybackEnd();
+    [[nodiscard]] MovieServiceResult ReleasePauseAtPlaybackEnd() noexcept;
     [[nodiscard]] MovieServiceResult ValidateBackendFor(
         const std::optional<MovieCheckpointMetadata>& movie,
         MovieBackendObservation* observation_out = nullptr) const;
@@ -122,6 +128,7 @@ private:
     MovieState original_state_ = MovieState::Inactive;
     bool restore_prepared_ = false;
     bool acquired_for_restore_ = false;
+    bool pause_at_playback_end_owned_ = false;
     bool tainted_ = false;
 };
 

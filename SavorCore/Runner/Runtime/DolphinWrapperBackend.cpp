@@ -538,6 +538,9 @@ struct DolphinWrapperBackend::Impl
     std::optional<std::string> prepared_movie_sha256;
     bool prepared_movie_core_started = false;
     std::optional<std::string> active_movie_sha256;
+    bool pause_at_playback_end_owned = false;
+    bool pause_at_playback_end_had_current_run_value = false;
+    bool pause_at_playback_end_previous_value = false;
     std::optional<SavestateMovieRestoreContext> prepared_movie_replacement;
     std::optional<std::string> prepared_movie_replacement_sha256;
     bool prepared_movie_started_for_replacement = false;
@@ -936,7 +939,7 @@ DolphinWrapperBackend::ActivatePreparedReadOnlyMoviePlayback()
                 ? GuestIntegrity::Unknown
                 : GuestIntegrity::Preserved);
     }
-    const MovieBackendObservation movie = ObserveMovie();
+    const MovieBackendObservation movie = ObserveMovieWhilePaused();
     if (!movie.result.ok || !movie.playing || movie.recording ||
         !movie.read_only)
     {
@@ -968,6 +971,8 @@ DolphinWrapperBackend::DiscardPreparedReadOnlyMovie() noexcept
 
 BackendResult DolphinWrapperBackend::Close()
 {
+    const MovieBackendResult pause_at_end =
+        ReleasePauseAtPlaybackEnd();
     impl_->pause_synchronizer.StopAndJoin();
     if (!impl_->wrapper)
     {
@@ -999,18 +1004,38 @@ BackendResult DolphinWrapperBackend::Close()
         }
         impl_->owned_movie_restore_paths.clear();
         impl_->ResetPauseConfirmation(false);
+        if (!pause_at_end.ok)
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                pause_at_end.message.empty()
+                    ? "Dolphin pause-at-playback-end configuration was not restored"
+                    : pause_at_end.message,
+                BackendIntegrity::Unknown);
+        }
         return BackendResult::Success();
     }
 
     try
     {
-        bool cleanup_ok = impl_->owned_physical_plan.pcs.empty() &&
+        bool cleanup_ok = pause_at_end.ok &&
+            impl_->owned_physical_plan.pcs.empty() &&
             impl_->owned_physical_plan.memory.empty();
-        std::string cleanup_message = cleanup_ok
-            ? std::string{}
-            : std::string(
-                  "PhysicalStopPointManager did not remove all owned sites "
-                  "before backend close");
+        std::string cleanup_message;
+        if (!pause_at_end.ok)
+        {
+            cleanup_message = pause_at_end.message.empty()
+                ? "Dolphin pause-at-playback-end configuration was not restored"
+                : pause_at_end.message;
+        }
+        if (!impl_->owned_physical_plan.pcs.empty() ||
+            !impl_->owned_physical_plan.memory.empty())
+        {
+            if (!cleanup_message.empty())
+                cleanup_message += "; ";
+            cleanup_message +=
+                "PhysicalStopPointManager did not remove all owned sites before backend close";
+        }
         if (impl_->native_sink)
         {
             cleanup_ok =
@@ -1591,7 +1616,8 @@ MovieBackendResult DolphinWrapperBackend::CancelRecording() noexcept
     return StopMovie();
 }
 
-MovieBackendObservation DolphinWrapperBackend::ObserveMovie() const
+MovieBackendObservation
+DolphinWrapperBackend::ObserveMovieWhilePaused() const
 {
     if (BackendResult open = impl_->RequireOpen(); !open.ok)
     {
@@ -1614,18 +1640,28 @@ MovieBackendObservation DolphinWrapperBackend::ObserveMovie() const
                 GuestIntegrity::Unknown),
         };
     }
+    const BackendExecutionSnapshot execution = QueryExecutionSnapshot();
+    if (!execution.result.ok ||
+        execution.core_state != BackendCoreState::Paused ||
+        !execution.pause_confirmed)
+    {
+        return {
+            .result = MovieFailure(
+                execution.result.message.empty()
+                    ? "Dolphin movie inspection requires an authoritatively paused core"
+                    : execution.result.message,
+                execution.result.integrity == BackendIntegrity::Unknown
+                    ? GuestIntegrity::Unknown
+                    : GuestIntegrity::Preserved),
+        };
+    }
 
     try
     {
-        // MovieManager's mode, read-only flag, and cursors are ordinary
-        // CPU-owned fields.  Reading them independently from the worker actor
-        // while the guest is running is both a data race and can manufacture a
-        // state that never existed.  CPUThreadGuard excludes the native CPU
-        // thread (or is a no-op when this is already the CPU thread), so this
-        // is one coherent physical observation.  Semantic lifecycle state
-        // remains exclusively owned by MovieService.
-        Core::CPUThreadGuard guard(*system);
-        const auto& movie = guard.GetSystem().GetMovie();
+        // Pause confirmation proves the CPU owner is quiescent. Reading these
+        // ordinary MovieManager fields is therefore coherent without taking
+        // CPUThreadGuard or otherwise changing guest execution.
+        const auto& movie = system->GetMovie();
         return {
             .result = MovieBackendResult::Success(),
             .playing = movie.IsPlayingInput(),
@@ -1650,6 +1686,103 @@ MovieBackendObservation DolphinWrapperBackend::ObserveMovie() const
                 "Dolphin movie observation threw",
                 GuestIntegrity::Unknown),
         };
+    }
+}
+
+MovieBackendResult DolphinWrapperBackend::AcquirePauseAtPlaybackEnd()
+{
+    if (BackendResult open = impl_->RequireOpen(); !open.ok)
+        return MovieFailure(std::move(open.message));
+    if (impl_->pause_at_playback_end_owned)
+        return MovieFailure("Pause-at-playback-end override is already owned");
+    try
+    {
+        const auto layer = Config::GetLayer(Config::LayerType::CurrentRun);
+        const auto& setting = Config::MAIN_MOVIE_PAUSE_MOVIE;
+        impl_->pause_at_playback_end_had_current_run_value =
+            layer->Exists(setting.GetLocation());
+        if (impl_->pause_at_playback_end_had_current_run_value)
+        {
+            impl_->pause_at_playback_end_previous_value =
+                layer->Get(setting);
+        }
+        // Mark ownership before mutating CurrentRun so every failure path can
+        // restore the exact prior layer entry through the normal release
+        // operation.
+        impl_->pause_at_playback_end_owned = true;
+        Config::SetCurrent(setting, true);
+        if (!Config::Get(setting))
+        {
+            const MovieBackendResult restored =
+                ReleasePauseAtPlaybackEnd();
+            std::string message =
+                "Dolphin did not enable pause at playback end";
+            if (!restored.ok)
+            {
+                message += "; prior CurrentRun configuration could not be restored";
+                if (!restored.message.empty())
+                    message += ": " + restored.message;
+            }
+            return MovieFailure(
+                std::move(message),
+                GuestIntegrity::Unknown);
+        }
+        return MovieBackendResult::Success();
+    }
+    catch (const std::exception& ex)
+    {
+        (void)ReleasePauseAtPlaybackEnd();
+        return MovieFailure(
+            std::string("Dolphin pause-at-playback-end setup threw: ") +
+                ex.what(),
+            GuestIntegrity::Unknown);
+    }
+    catch (...)
+    {
+        (void)ReleasePauseAtPlaybackEnd();
+        return MovieFailure(
+            "Dolphin pause-at-playback-end setup threw",
+            GuestIntegrity::Unknown);
+    }
+}
+
+MovieBackendResult
+DolphinWrapperBackend::ReleasePauseAtPlaybackEnd() noexcept
+{
+    if (!impl_->pause_at_playback_end_owned)
+        return MovieBackendResult::Success();
+    try
+    {
+        const auto& setting = Config::MAIN_MOVIE_PAUSE_MOVIE;
+        if (impl_->pause_at_playback_end_had_current_run_value)
+        {
+            Config::SetCurrent(
+                setting,
+                impl_->pause_at_playback_end_previous_value);
+        }
+        else
+        {
+            Config::DeleteKey(
+                Config::LayerType::CurrentRun,
+                setting);
+        }
+        impl_->pause_at_playback_end_owned = false;
+        impl_->pause_at_playback_end_had_current_run_value = false;
+        impl_->pause_at_playback_end_previous_value = false;
+        return MovieBackendResult::Success();
+    }
+    catch (const std::exception& ex)
+    {
+        return MovieFailure(
+            std::string("Dolphin pause-at-playback-end restoration threw: ") +
+                ex.what(),
+            GuestIntegrity::Unknown);
+    }
+    catch (...)
+    {
+        return MovieFailure(
+            "Dolphin pause-at-playback-end restoration threw",
+            GuestIntegrity::Unknown);
     }
 }
 
@@ -1748,7 +1881,7 @@ MovieBackendResult DolphinWrapperBackend::PrepareSavestateRestore(
         return MovieBackendResult::Success();
     }
 
-    const MovieBackendObservation current = ObserveMovie();
+    const MovieBackendObservation current = ObserveMovieWhilePaused();
     if (!current.result.ok)
     {
         impl_->prepared_movie_replacement.reset();
@@ -1827,15 +1960,8 @@ MovieBackendResult DolphinWrapperBackend::CommitSavestateRestore(
 {
     if (!impl_->prepared_movie_replacement.has_value())
         return MovieFailure("Movie replacement was not prepared");
-    const MovieBackendObservation observed = ObserveMovie();
-    if (!observed.result.ok)
-        return observed.result;
     if (!context.movie.has_value())
     {
-        if (observed.playing || observed.recording)
-            return MovieFailure(
-                "Dolphin restored unexpected movie state",
-                GuestIntegrity::Unknown);
         impl_->active_movie_sha256.reset();
         impl_->prepared_movie_replacement.reset();
         impl_->prepared_movie_replacement_sha256.reset();
@@ -1844,23 +1970,18 @@ MovieBackendResult DolphinWrapperBackend::CommitSavestateRestore(
     }
     const bool expect_recording =
         context.movie->mode == MovieCheckpointMode::Recording;
-    if ((expect_recording &&
-         (!observed.recording || observed.playing || observed.read_only)) ||
-        (!expect_recording &&
-         (!observed.playing || observed.recording || !observed.read_only)) ||
-        (!expect_recording &&
+    if ((!expect_recording &&
          (!impl_->prepared_movie_replacement_sha256.has_value() ||
           *impl_->prepared_movie_replacement_sha256 !=
-              context.movie->dtm_sha256)) ||
-        (context.movie->cursor_known &&
-         (observed.current_frame != context.movie->current_frame ||
-          observed.current_input_count !=
-              context.movie->current_input_count)))
+              context.movie->dtm_sha256)))
     {
         return MovieFailure(
-            "Dolphin movie cursor did not reconcile with the restored state",
+            "Dolphin movie identity did not reconcile with the restored state",
             GuestIntegrity::Unknown);
     }
+    // MovieService performs the one authoritative paused reconciliation after
+    // this commit. Keeping physical state and cursor classification there
+    // avoids a competing second inspection in the backend commit path.
     if (!expect_recording)
     {
         impl_->active_movie_sha256 =

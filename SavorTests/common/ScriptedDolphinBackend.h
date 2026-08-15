@@ -70,6 +70,9 @@ struct ScriptedDolphinBackendControl
     std::vector<std::uint8_t> save_file_bytes{0x10, 0x20, 0x30};
     runtime::MovieBackendObservation movie_observation{
         .result = runtime::MovieBackendResult::Success()};
+    bool pause_at_playback_end = false;
+    bool pause_at_playback_end_available = true;
+    int movie_observation_count = 0;
     std::optional<std::filesystem::path> movie_startup_savestate;
     std::filesystem::path prepared_movie_path;
     bool movie_available = true;
@@ -220,7 +223,10 @@ private:
     runtime::MovieRecordingFinalizeResult FinalizeRecording(
         const std::filesystem::path& dtm_path) override;
     runtime::MovieBackendResult CancelRecording() noexcept override;
-    [[nodiscard]] runtime::MovieBackendObservation ObserveMovie() const override;
+    [[nodiscard]] runtime::MovieBackendObservation
+    ObserveMovieWhilePaused() const override;
+    runtime::MovieBackendResult AcquirePauseAtPlaybackEnd() override;
+    runtime::MovieBackendResult ReleasePauseAtPlaybackEnd() noexcept override;
     runtime::MovieCheckpointBackendResult
     CaptureRecordingCheckpoint() override;
     runtime::MovieBackendResult PrepareSavestateRestore(

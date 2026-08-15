@@ -1319,7 +1319,9 @@ TEST(
     ASSERT_NE(value(4), nullptr);
     EXPECT_EQ(movies->state(), MovieState::Inactive);
     EXPECT_FALSE(movies->reservation());
-    EXPECT_EQ(harness.control->Calls(), calls_before);
+    const auto calls_after = harness.control->Calls();
+    EXPECT_EQ(calls_after.size(), calls_before.size() + 1u);
+    EXPECT_EQ(calls_after.back(), "movie.observe-paused");
     EXPECT_EQ(harness.host->snapshot().mapped_resource_count, 0u);
 
     EXPECT_TRUE(harness.Finish().accepted);
@@ -1414,7 +1416,7 @@ TEST(
     const WorksetEpoch epoch = harness.session.snapshot().workset_epoch;
     const MovieReservationId reservation = movies->reservation();
     ASSERT_TRUE(reservation);
-    const MovieStateSnapshot cursor = movies->ObserveState(epoch);
+    const MovieStateSnapshot cursor = movies->ReconcilePausedState(epoch);
     ASSERT_TRUE(cursor.result.ok) << cursor.result.message;
     const auto calls_before = harness.control->Calls();
     const int core_stops_before = harness.control->core_stop_count;
@@ -1445,7 +1447,8 @@ TEST(
         epoch);
     EXPECT_EQ(movies->state(), MovieState::ReadOnlyPlayback);
     EXPECT_EQ(movies->reservation(), reservation);
-    const MovieStateSnapshot cursor_after = movies->ObserveState(epoch);
+    const MovieStateSnapshot cursor_after =
+        movies->ReconcilePausedState(epoch);
     ASSERT_TRUE(cursor_after.result.ok) << cursor_after.result.message;
     EXPECT_EQ(cursor_after.state, cursor.state);
     EXPECT_EQ(cursor_after.read_only, cursor.read_only);
@@ -1455,7 +1458,28 @@ TEST(
         cursor.current_input_count);
     EXPECT_EQ(harness.control->core_stop_count, core_stops_before);
     EXPECT_EQ(harness.control->core_start_count, core_starts_before);
-    EXPECT_EQ(harness.control->Calls(), calls_before);
+    const auto calls_after_adopt = harness.control->Calls();
+    EXPECT_EQ(
+        std::ranges::count(
+            calls_after_adopt,
+            std::string("movie.observe-paused")),
+        std::ranges::count(
+            calls_before,
+            std::string("movie.observe-paused")) + 3);
+    EXPECT_EQ(
+        std::ranges::count(
+            calls_after_adopt,
+            std::string("movie.prepare")),
+        std::ranges::count(
+            calls_before,
+            std::string("movie.prepare")));
+    EXPECT_EQ(
+        std::ranges::count(
+            calls_after_adopt,
+            std::string("movie.activate")),
+        std::ranges::count(
+            calls_before,
+            std::string("movie.activate")));
 
     ProgramActionDispatchResult duplicate = harness.InvokeGraph(
         CanonicalAction::MovieAdoptRestoredReadOnlyPlayback,
@@ -1469,7 +1493,21 @@ TEST(
         harness.host->snapshot().mapped_resource_count,
         1u);
     EXPECT_EQ(movies->reservation(), reservation);
-    EXPECT_EQ(harness.control->Calls(), calls_before);
+    const auto calls_after_duplicate = harness.control->Calls();
+    EXPECT_EQ(
+        std::ranges::count(
+            calls_after_duplicate,
+            std::string("movie.prepare")),
+        std::ranges::count(
+            calls_before,
+            std::string("movie.prepare")));
+    EXPECT_EQ(
+        std::ranges::count(
+            calls_after_duplicate,
+            std::string("movie.activate")),
+        std::ranges::count(
+            calls_before,
+            std::string("movie.activate")));
 
     ProgramActionDispatchResult finished = harness.Finish();
     ASSERT_TRUE(finished.accepted);
@@ -1585,7 +1623,7 @@ TEST(
         harness.control->movie_observation.current_frame = 41;
         harness.control->movie_observation.current_input_count = 3;
     }
-    const MovieStateSnapshot ended = movies->ObserveState(epoch);
+    const MovieStateSnapshot ended = movies->ReconcilePausedState(epoch);
     ASSERT_TRUE(ended.result.ok) << ended.result.message;
     EXPECT_EQ(ended.state, MovieState::PlaybackEnded);
     EXPECT_EQ(ended.current_frame, 41u);

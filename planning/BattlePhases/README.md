@@ -143,11 +143,14 @@ new `battle.*` chain, and there is no Battle-to-Battle transition.
   no DTM-origin preparation, core restart, state restore, or guest advancement
   before the recording branch.
 - `MovieService` alone classifies the restored session as read-only playback,
-  recording, naturally ended playback, or inactive. The execution backend
-  supplies raw native movie facts, and `ExecutionEngine` requests the
-  epoch-qualified canonical state from `MovieService`. The recording branch
-  commits `Recording` before the first replay advance; only genuine source
-  playback exhaustion triggers the existing movie-ended failure policy.
+  recording, naturally ended playback, or inactive. It reconciles raw native
+  facts only while the core is authoritatively paused; running
+  `ExecutionEngine` maintenance reads the epoch-qualified cached state. The
+  recording branch verifies and commits `Recording` before the first replay
+  advance, then receives no physical movie polling. Owned playback uses
+  Dolphin's pause-at-movie-end setting, so only a confirmed pause followed by
+  genuine source playback exhaustion triggers the existing movie-ended failure
+  policy.
 - The worker executes one job in one item. Predicate execution is disabled. It
   validates live Battle Context before each turn, reuses the adaptive Battle
   command interaction, verifies each selected terminal/RNG, and then reuses

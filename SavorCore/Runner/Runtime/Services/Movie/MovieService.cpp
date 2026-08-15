@@ -92,7 +92,10 @@ MovieOperationReceipt MovieService::PrepareReadOnlyPlayback(
             "Read-only playback requires an active workset");
         return receipt;
     }
-    const MovieStateSnapshot current = ObserveState(ActiveEpoch());
+    // Workset initialization already reconciled the paused baseline. Use the
+    // owned idle state here; the newly prepared playback is verified after
+    // Dolphin establishes it.
+    const MovieStateSnapshot current = SnapshotState(ActiveEpoch());
     if (!current.result.ok)
     {
         receipt.result = current.result;
@@ -381,6 +384,17 @@ MovieOperationReceipt MovieService::StartPreparedReadOnlyPlayback(
         receipt.result = std::move(observed);
         return receipt;
     }
+    if (MovieServiceResult pause_at_end = AcquirePauseAtPlaybackEnd();
+        !pause_at_end.ok)
+    {
+        tainted_ = true;
+        (void)backend_.StopMovie();
+        (void)ReleaseReservation();
+        state_ = MovieState::Unknown;
+        pause_at_end.integrity = GuestIntegrity::Unknown;
+        receipt.result = std::move(pause_at_end);
+        return receipt;
+    }
 
     active_movie_->current_frame = backend_observation.current_frame;
     active_movie_->current_input_count = backend_observation.current_input_count;
@@ -498,6 +512,17 @@ MovieOperationReceipt MovieService::StopPlayback() noexcept
             receipt.result = std::move(validated);
         }
     }
+    MovieServiceResult pause_at_end = ReleasePauseAtPlaybackEnd();
+    if (!pause_at_end.ok)
+    {
+        tainted_ = true;
+        state_ = MovieState::Unknown;
+        pause_at_end.integrity = GuestIntegrity::Unknown;
+        if (receipt.result.ok || receipt.result.message.empty())
+            receipt.result = std::move(pause_at_end);
+        else
+            receipt.result.message += "; " + pause_at_end.message;
+    }
     MovieServiceResult released = ReleaseReservation();
     if (!released.ok)
     {
@@ -541,7 +566,10 @@ MovieOperationReceipt MovieService::StartRecording(
             "Recording requires an active workset");
         return receipt;
     }
-    const MovieStateSnapshot current = ObserveState(ActiveEpoch());
+    // The paused execution boundary that admitted this action already
+    // captured the authoritative cursor. Do not inspect Dolphin again before
+    // requesting the transition; verify recording exactly once afterward.
+    const MovieStateSnapshot current = SnapshotState(ActiveEpoch());
     if (!current.result.ok)
     {
         receipt.result = current.result;
@@ -662,6 +690,18 @@ MovieOperationReceipt MovieService::StartRecording(
             receipt.result = std::move(released);
             return receipt;
         }
+        MovieServiceResult pause_at_end = ReleasePauseAtPlaybackEnd();
+        if (!pause_at_end.ok)
+        {
+            (void)backend_.CancelRecording();
+            recording_prefix_.reset();
+            recording_prefix_input_count_ = 0;
+            tainted_ = true;
+            state_ = MovieState::Unknown;
+            pause_at_end.integrity = GuestIntegrity::Unknown;
+            receipt.result = std::move(pause_at_end);
+            return receipt;
+        }
     }
     state_ = MovieState::Recording;
     active_movie_ = recording_prefix_.value_or(MovieCheckpointMetadata{});
@@ -709,7 +749,7 @@ MovieOperationReceipt MovieService::FinalizeRecording(
         return receipt;
     }
     receipt.result = MovieServiceResult::Success();
-    const MovieStateSnapshot current = ObserveState(ActiveEpoch());
+    const MovieStateSnapshot current = ReconcilePausedState(ActiveEpoch());
     if (!current.result.ok)
     {
         receipt.result = current.result;
@@ -936,7 +976,8 @@ MovieCheckpointReceipt MovieService::CaptureCheckpoint()
         return receipt;
     }
     receipt.workset_epoch = ActiveEpoch();
-    const MovieStateSnapshot observed = ObserveState(receipt.workset_epoch);
+    const MovieStateSnapshot observed =
+        ReconcilePausedState(receipt.workset_epoch);
     if (!observed.result.ok)
     {
         receipt.result = observed.result;
@@ -992,7 +1033,69 @@ MovieCheckpointReceipt MovieService::CaptureCheckpoint()
     return receipt;
 }
 
-MovieStateSnapshot MovieService::ObserveState(
+MovieStateSnapshot MovieService::SnapshotState(
+    WorksetEpoch expected_epoch) const
+{
+    if (!OnOwnerThread())
+    {
+        return {
+            .result = WrongThread(),
+            .workset_epoch = expected_epoch,
+            .state = MovieState::Unknown,
+        };
+    }
+    const WorksetEpoch active_epoch = ActiveEpoch();
+    if (!expected_epoch || expected_epoch != active_epoch)
+    {
+        return {
+            .result = MovieServiceResult::Failure(
+                MovieServiceErrorCode::InvalidState,
+                "Movie snapshot does not belong to the active workset"),
+            .workset_epoch = expected_epoch,
+            .state = MovieState::Unknown,
+        };
+    }
+    if (tainted_)
+    {
+        return {
+            .result = MovieServiceResult::Failure(
+                MovieServiceErrorCode::IntegrityFailure,
+                "MovieService is tainted",
+                GuestIntegrity::Unknown),
+            .workset_epoch = expected_epoch,
+            .state = MovieState::Unknown,
+        };
+    }
+    const bool playback_owned =
+        state_ == MovieState::ReadOnlyPlayback ||
+        state_ == MovieState::PlaybackEnded;
+    if (playback_owned != pause_at_playback_end_owned_)
+    {
+        return {
+            .result = MovieServiceResult::Failure(
+                MovieServiceErrorCode::IntegrityFailure,
+                "MovieService pause-at-playback-end ownership is inconsistent",
+                GuestIntegrity::Unknown),
+            .workset_epoch = expected_epoch,
+            .state = MovieState::Unknown,
+        };
+    }
+
+    MovieStateSnapshot snapshot{
+        .result = MovieServiceResult::Success(),
+        .workset_epoch = active_epoch,
+        .state = state_,
+        .read_only = state_ != MovieState::Recording,
+    };
+    if (active_movie_ && active_movie_->cursor_known)
+    {
+        snapshot.current_frame = active_movie_->current_frame;
+        snapshot.current_input_count = active_movie_->current_input_count;
+    }
+    return snapshot;
+}
+
+MovieStateSnapshot MovieService::ReconcilePausedState(
     WorksetEpoch expected_epoch)
 {
     if (!OnOwnerThread())
@@ -1016,7 +1119,8 @@ MovieStateSnapshot MovieService::ObserveState(
             expected_epoch);
     }
 
-    const MovieBackendObservation observed = backend_.ObserveMovie();
+    const MovieBackendObservation observed =
+        backend_.ObserveMovieWhilePaused();
     if (!observed.result.ok)
     {
         MovieServiceResult failure = FromBackendResult(
@@ -1070,6 +1174,9 @@ MovieStateSnapshot MovieService::ObserveState(
                 "Prepared read-only playback no longer matches the movie backend");
         break;
     case MovieState::ReadOnlyPlayback:
+        if (!pause_at_playback_end_owned_)
+            return fail_contradiction(
+                "Read-only playback lacks pause-at-playback-end ownership");
         if (observed.playing && !observed.recording && observed.read_only)
         {
             if (active_movie_)
@@ -1097,6 +1204,9 @@ MovieStateSnapshot MovieService::ObserveState(
         return fail_contradiction(
             "Read-only playback changed to an unrequested movie mode");
     case MovieState::Recording:
+        if (pause_at_playback_end_owned_)
+            return fail_contradiction(
+                "Movie recording retained pause-at-playback-end ownership");
         if (reservation_)
             return fail_contradiction(
                 "Movie recording retained an exclusive controller reservation");
@@ -1111,6 +1221,9 @@ MovieStateSnapshot MovieService::ObserveState(
         }
         break;
     case MovieState::PlaybackEnded:
+        if (!pause_at_playback_end_owned_)
+            return fail_contradiction(
+                "Ended playback lacks pause-at-playback-end ownership");
         if (observed.playing || observed.recording || !observed.read_only)
             return fail_contradiction(
                 "Ended playback lost its retained read-only backend evidence");
@@ -1262,6 +1375,44 @@ MovieServiceResult MovieService::CommitSavestateRestore(
             backend_observation.current_input_count;
         reconciled.cursor_known = true;
         const MovieState restored_state = StateOf(context.movie->mode);
+        if (restored_state == MovieState::ReadOnlyPlayback &&
+            !pause_at_playback_end_owned_)
+        {
+            MovieServiceResult pause_at_end = AcquirePauseAtPlaybackEnd();
+            if (!pause_at_end.ok)
+            {
+                tainted_ = true;
+                state_ = MovieState::Unknown;
+                active_movie_.reset();
+                recording_prefix_.reset();
+                recording_prefix_input_count_ = 0;
+                restore_prepared_ = false;
+                acquired_for_restore_ = false;
+                original_movie_.reset();
+                original_state_ = MovieState::Inactive;
+                pause_at_end.integrity = GuestIntegrity::Unknown;
+                return pause_at_end;
+            }
+        }
+        else if (restored_state != MovieState::ReadOnlyPlayback &&
+                 pause_at_playback_end_owned_)
+        {
+            MovieServiceResult pause_at_end = ReleasePauseAtPlaybackEnd();
+            if (!pause_at_end.ok)
+            {
+                tainted_ = true;
+                state_ = MovieState::Unknown;
+                active_movie_.reset();
+                recording_prefix_.reset();
+                recording_prefix_input_count_ = 0;
+                restore_prepared_ = false;
+                acquired_for_restore_ = false;
+                original_movie_.reset();
+                original_state_ = MovieState::Inactive;
+                pause_at_end.integrity = GuestIntegrity::Unknown;
+                return pause_at_end;
+            }
+        }
         if (restored_state == MovieState::Recording && reservation_)
         {
             MovieServiceResult released = ReleaseReservation();
@@ -1297,6 +1448,21 @@ MovieServiceResult MovieService::CommitSavestateRestore(
     }
     else
     {
+        if (pause_at_playback_end_owned_)
+        {
+            MovieServiceResult pause_at_end = ReleasePauseAtPlaybackEnd();
+            if (!pause_at_end.ok)
+            {
+                tainted_ = true;
+                state_ = MovieState::Unknown;
+                restore_prepared_ = false;
+                acquired_for_restore_ = false;
+                original_movie_.reset();
+                original_state_ = MovieState::Inactive;
+                pause_at_end.integrity = GuestIntegrity::Unknown;
+                return pause_at_end;
+            }
+        }
         state_ = MovieState::Inactive;
         active_movie_.reset();
         recording_prefix_.reset();
@@ -1415,6 +1581,45 @@ MovieServiceResult MovieService::ReleaseReservation() noexcept
     return result;
 }
 
+MovieServiceResult MovieService::AcquirePauseAtPlaybackEnd()
+{
+    if (pause_at_playback_end_owned_)
+    {
+        return MovieServiceResult::Failure(
+            MovieServiceErrorCode::InvalidState,
+            "Pause-at-playback-end ownership is already active");
+    }
+    const MovieBackendResult acquired =
+        backend_.AcquirePauseAtPlaybackEnd();
+    if (!acquired.ok)
+    {
+        return FromBackendResult(
+            acquired,
+            "Movie backend could not enable pause at playback end");
+    }
+    pause_at_playback_end_owned_ = true;
+    return MovieServiceResult::Success();
+}
+
+MovieServiceResult MovieService::ReleasePauseAtPlaybackEnd() noexcept
+{
+    if (!pause_at_playback_end_owned_)
+        return MovieServiceResult::Success();
+    const MovieBackendResult released =
+        backend_.ReleasePauseAtPlaybackEnd();
+    if (!released.ok)
+    {
+        return MovieServiceResult::Failure(
+            MovieServiceErrorCode::IntegrityFailure,
+            released.message.empty()
+                ? "Movie backend could not restore pause-at-playback-end configuration"
+                : released.message,
+            GuestIntegrity::Unknown);
+    }
+    pause_at_playback_end_owned_ = false;
+    return MovieServiceResult::Success();
+}
+
 void MovieService::RetireRecordingAfterBackendStop() noexcept
 {
     state_ = MovieState::Inactive;
@@ -1427,7 +1632,7 @@ MovieServiceResult MovieService::ValidateBackendState(
     MovieState expected,
     MovieBackendObservation& observation) const
 {
-    observation = backend_.ObserveMovie();
+    observation = backend_.ObserveMovieWhilePaused();
     if (!observation.result.ok)
     {
         return FromBackendResult(

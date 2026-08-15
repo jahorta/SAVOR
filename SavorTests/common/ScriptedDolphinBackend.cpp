@@ -757,10 +757,47 @@ ScriptedDolphinBackend::CancelRecording() noexcept
 }
 
 runtime::MovieBackendObservation
-ScriptedDolphinBackend::ObserveMovie() const
+ScriptedDolphinBackend::ObserveMovieWhilePaused() const
 {
     std::lock_guard lock(control_->mutex);
+    control_->RecordLocked("movie.observe-paused");
+    ++control_->movie_observation_count;
+    if (control_->core_state != runtime::BackendCoreState::Paused)
+    {
+        return {
+            .result = runtime::MovieBackendResult::Failure(
+                "scripted movie inspection requires a paused core"),
+        };
+    }
     return control_->movie_observation;
+}
+
+runtime::MovieBackendResult
+ScriptedDolphinBackend::AcquirePauseAtPlaybackEnd()
+{
+    std::lock_guard lock(control_->mutex);
+    control_->RecordLocked("movie.acquire-pause-at-end");
+    if (!control_->pause_at_playback_end_available)
+    {
+        return runtime::MovieBackendResult::Failure(
+            "scripted pause-at-playback-end is unavailable");
+    }
+    if (control_->pause_at_playback_end)
+    {
+        return runtime::MovieBackendResult::Failure(
+            "scripted pause-at-playback-end is already owned");
+    }
+    control_->pause_at_playback_end = true;
+    return runtime::MovieBackendResult::Success();
+}
+
+runtime::MovieBackendResult
+ScriptedDolphinBackend::ReleasePauseAtPlaybackEnd() noexcept
+{
+    std::lock_guard lock(control_->mutex);
+    control_->RecordLocked("movie.release-pause-at-end");
+    control_->pause_at_playback_end = false;
+    return runtime::MovieBackendResult::Success();
 }
 
 runtime::MovieCheckpointBackendResult

@@ -4276,7 +4276,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 "MovieService is unavailable");
         }
         const MovieStateSnapshot observed =
-            movies->ObserveState(request.expected_epoch);
+            movies->ReconcilePausedState(request.expected_epoch);
         if (!observed.result.ok)
         {
             if (observed.result.integrity == GuestIntegrity::Unknown)
@@ -4331,7 +4331,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         }
 
         const MovieStateSnapshot observed =
-            movies->ObserveState(request.expected_epoch);
+            movies->ReconcilePausedState(request.expected_epoch);
         if (!observed.result.ok)
         {
             if (observed.result.integrity == GuestIntegrity::Unknown)

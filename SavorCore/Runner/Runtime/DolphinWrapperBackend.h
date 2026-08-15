@@ -114,7 +114,10 @@ private:
     MovieRecordingFinalizeResult FinalizeRecording(
         const std::filesystem::path& dtm_path) override;
     MovieBackendResult CancelRecording() noexcept override;
-    [[nodiscard]] MovieBackendObservation ObserveMovie() const override;
+    [[nodiscard]] MovieBackendObservation
+    ObserveMovieWhilePaused() const override;
+    MovieBackendResult AcquirePauseAtPlaybackEnd() override;
+    MovieBackendResult ReleasePauseAtPlaybackEnd() noexcept override;
     MovieCheckpointBackendResult CaptureRecordingCheckpoint() override;
     MovieBackendResult PrepareSavestateRestore(
         const SavestateMovieRestoreContext& context) override;

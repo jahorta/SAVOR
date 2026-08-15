@@ -182,9 +182,22 @@ public:
         return MovieBackendResult::Success();
     }
 
-    MovieBackendObservation ObserveMovie() const override
+    MovieBackendObservation ObserveMovieWhilePaused() const override
     {
+        ++observation_count;
         return observation;
+    }
+
+    MovieBackendResult AcquirePauseAtPlaybackEnd() override
+    {
+        pause_at_playback_end = true;
+        return MovieBackendResult::Success();
+    }
+
+    MovieBackendResult ReleasePauseAtPlaybackEnd() noexcept override
+    {
+        pause_at_playback_end = false;
+        return MovieBackendResult::Success();
     }
 
     MovieCheckpointBackendResult CaptureRecordingCheckpoint() override
@@ -248,6 +261,8 @@ public:
     }
 
     MovieBackendObservation observation = InactiveObservation();
+    mutable std::uint64_t observation_count = 0;
+    bool pause_at_playback_end = false;
 };
 
 class ExecutionMovieReservations final : public IMovieInputReservationPort
@@ -1713,6 +1728,11 @@ TEST_F(ExecutionEngineFixture, MovieEndCompletesAccordingToPolicy)
     EXPECT_FALSE(TakeTerminal(*engine).has_value());
 
     movie_backend.EndPlayback();
+    BackendExecutionSnapshot externally_paused =
+        execution_control->Snapshot();
+    externally_paused.core_state = BackendCoreState::Paused;
+    externally_paused.pause_confirmed = false;
+    execution_control->SetSnapshot(std::move(externally_paused));
     const auto terminal = DrainTerminal(*engine);
     ASSERT_TRUE(terminal.has_value());
     EXPECT_EQ(terminal->status, ExecutionTerminalStatus::MovieEnded);
@@ -1720,6 +1740,82 @@ TEST_F(ExecutionEngineFixture, MovieEndCompletesAccordingToPolicy)
         terminal->evidence.movie_state,
         MovieState::PlaybackEnded);
     EXPECT_EQ(terminal->evidence.core_state, BackendCoreState::Paused);
+    EXPECT_EQ(CountCall(execution_control->Calls(), "pause"), 1u);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    RunningInactiveMaintenanceUsesOnlyTheMovieServiceSnapshot)
+{
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission = engine->Submit(
+        ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    const std::uint64_t observations_before =
+        movie_backend.observation_count;
+
+    for (int iteration = 0; iteration < 5; ++iteration)
+    {
+        now += 11ms;
+        engine->Pump();
+    }
+
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_EQ(movie_backend.observation_count, observations_before);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    RunningReadOnlyPlaybackMaintenanceUsesOnlyTheMovieServiceSnapshot)
+{
+    RestoreReadOnlyPlayback();
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission = engine->Submit(
+        ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    const std::uint64_t observations_before =
+        movie_backend.observation_count;
+
+    for (int iteration = 0; iteration < 5; ++iteration)
+    {
+        now += 11ms;
+        engine->Pump();
+    }
+
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_EQ(movie_backend.observation_count, observations_before);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    RunningRecordingMaintenanceUsesOnlyTheMovieServiceSnapshot)
+{
+    RestoreReadOnlyPlayback();
+    CreateEngine();
+    BranchPlaybackToRecording();
+    const ExecutionSubmissionReceipt submission = engine->Submit(
+        ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    const std::uint64_t observations_before =
+        movie_backend.observation_count;
+
+    for (int iteration = 0; iteration < 5; ++iteration)
+    {
+        now += 11ms;
+        engine->Pump();
+    }
+
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_EQ(movie_backend.observation_count, observations_before);
 }
 
 TEST_F(
@@ -1807,7 +1903,7 @@ TEST_F(
 
 TEST_F(
     ExecutionEngineFixture,
-    CursorOverrunDuringMaintenancePollingPausesAndCompletes)
+    CursorOverrunIsDetectedAtTheNextAuthoritativePause)
 {
     RestoreReadOnlyPlayback(10);
     CreateEngine();
@@ -1822,8 +1918,15 @@ TEST_F(
         });
     ASSERT_TRUE(submission.accepted) << submission.error.message;
     EXPECT_EQ(CountCall(execution_control->Calls(), "resume"), 1u);
+    const std::uint64_t observations_before =
+        movie_backend.observation_count;
     movie_backend.SetInputCount(12);
     now += 11ms;
+    engine->Pump();
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+    EXPECT_EQ(movie_backend.observation_count, observations_before);
+
+    execution_control->SetCoreState(BackendCoreState::Paused);
     const auto terminal = DrainTerminal(*engine);
     ASSERT_TRUE(terminal.has_value());
     EXPECT_EQ(terminal->status, ExecutionTerminalStatus::CursorOverrun);

@@ -167,11 +167,28 @@ public:
         SetInactive();
         return MovieBackendResult::Success();
     }
-    MovieBackendObservation ObserveMovie() const override
+    MovieBackendObservation ObserveMovieWhilePaused() const override
     {
+        ++observation_count;
         if (throw_on_observe)
             throw std::runtime_error("injected observation failure");
         return observation;
+    }
+    MovieBackendResult AcquirePauseAtPlaybackEnd() override
+    {
+        calls.push_back("acquire-pause-at-end");
+        if (!pause_at_end_result.ok)
+            return pause_at_end_result;
+        if (pause_at_end_owned)
+            return MovieBackendResult::Failure("pause at end already owned");
+        pause_at_end_owned = true;
+        return MovieBackendResult::Success();
+    }
+    MovieBackendResult ReleasePauseAtPlaybackEnd() noexcept override
+    {
+        calls.push_back("release-pause-at-end");
+        pause_at_end_owned = false;
+        return MovieBackendResult::Success();
     }
     MovieCheckpointBackendResult CaptureRecordingCheckpoint() override
     {
@@ -230,6 +247,9 @@ public:
         .read_only = true,
     };
     bool throw_on_observe = false;
+    mutable std::uint64_t observation_count = 0;
+    bool pause_at_end_owned = false;
+    MovieBackendResult pause_at_end_result = MovieBackendResult::Success();
     MovieBackendResult prepare_result = MovieBackendResult::Success();
     MovieBackendResult stop_core_result = MovieBackendResult::Success();
     MovieBackendResult start_core_result = MovieBackendResult::Success();
@@ -309,7 +329,7 @@ TEST(MovieService, InitializationStartsPausedCoreBeforePlaybackActivation)
     EXPECT_EQ(backend.calls,
               (std::vector<std::string>{
                   "prepare", "stop-core", "start-core",
-                  "activate-playback"}));
+                  "activate-playback", "acquire-pause-at-end"}));
     EXPECT_TRUE(result.reservation);
 }
 
@@ -391,7 +411,7 @@ TEST(MovieService, NaturalPlaybackExhaustionRetainsCursorUntilOwnedCleanup)
     backend.observation.current_frame = 44;
     backend.observation.current_input_count = 4;
 
-    const MovieStateSnapshot ended = service.ObserveState(epoch);
+    const MovieStateSnapshot ended = service.ReconcilePausedState(epoch);
 
     ASSERT_TRUE(ended.result.ok) << ended.result.message;
     EXPECT_EQ(ended.state, MovieState::PlaybackEnded);
@@ -410,6 +430,27 @@ TEST(MovieService, NaturalPlaybackExhaustionRetainsCursorUntilOwnedCleanup)
     EXPECT_EQ(stopped.state, MovieState::Inactive);
     EXPECT_FALSE(service.reservation());
     EXPECT_EQ(std::ranges::count(backend.calls, std::string("stop")), 0);
+}
+
+TEST(MovieService, CachedStateSnapshotPerformsNoBackendInspection)
+{
+    WorksetEpoch epoch(18);
+    Backend backend;
+    Reservations reservations;
+    MovieService service(
+        backend,
+        reservations,
+        [&] { return epoch; },
+        [] { return MovieServiceResult::Success(); },
+        [] { return MovieServiceResult::Success(); },
+        [] { return MovieServiceResult::Success(); });
+    const std::uint64_t observations_before = backend.observation_count;
+
+    const MovieStateSnapshot snapshot = service.SnapshotState(epoch);
+
+    ASSERT_TRUE(snapshot.result.ok) << snapshot.result.message;
+    EXPECT_EQ(snapshot.state, MovieState::Inactive);
+    EXPECT_EQ(backend.observation_count, observations_before);
 }
 
 TEST(MovieService, PlaybackCannotEndWithoutRetainedReadOnlyEvidence)
@@ -434,7 +475,7 @@ TEST(MovieService, PlaybackCannotEndWithoutRetainedReadOnlyEvidence)
     backend.observation.recording = false;
     backend.observation.read_only = false;
 
-    const MovieStateSnapshot result = service.ObserveState(epoch);
+    const MovieStateSnapshot result = service.ReconcilePausedState(epoch);
 
     EXPECT_FALSE(result.result.ok);
     EXPECT_EQ(result.result.code, MovieServiceErrorCode::IntegrityFailure);
@@ -523,7 +564,7 @@ TEST(MovieService, ContradictoryNativeModesTaintOwnedState)
         prepared.preparation).result.ok);
     backend.observation.recording = true;
 
-    const MovieStateSnapshot result = service.ObserveState(epoch);
+    const MovieStateSnapshot result = service.ReconcilePausedState(epoch);
 
     EXPECT_FALSE(result.result.ok);
     EXPECT_EQ(result.result.code, MovieServiceErrorCode::IntegrityFailure);
@@ -587,6 +628,11 @@ TEST(MovieService,
     ASSERT_TRUE(reservations.held);
     backend.observation.current_frame = 17;
     backend.observation.current_input_count = 2;
+    const MovieStateSnapshot paused =
+        service.ReconcilePausedState(epoch);
+    ASSERT_TRUE(paused.result.ok) << paused.result.message;
+    const std::uint64_t observations_before_recording =
+        backend.observation_count;
 
     const auto recording = service.StartRecording();
     ASSERT_TRUE(recording.result.ok) << recording.result.message;
@@ -597,6 +643,9 @@ TEST(MovieService,
     EXPECT_FALSE(reservations.held);
     EXPECT_EQ(backend.observation.current_frame, 17u);
     EXPECT_EQ(backend.observation.current_input_count, 2u);
+    EXPECT_EQ(
+        backend.observation_count,
+        observations_before_recording + 1u);
 
     backend.capture_result = MovieBackendResult::Success();
     backend.capture_checkpoint = RecordingCheckpoint(Dtm(false, 3), 23, 3);
@@ -720,6 +769,9 @@ TEST(MovieService,
         prepared.preparation).result.ok);
     backend.observation.current_frame = 9;
     backend.observation.current_input_count = 2;
+    const MovieStateSnapshot paused =
+        service.ReconcilePausedState(epoch);
+    ASSERT_TRUE(paused.result.ok) << paused.result.message;
     ASSERT_TRUE(service.StartRecording().result.ok);
 
     auto changed = Dtm(false, 3);
@@ -816,7 +868,9 @@ TEST(MovieService, SavestateRestoreHandshakeUsesExactActiveWorkset)
     EXPECT_EQ(service.state(), MovieState::ReadOnlyPlayback);
     EXPECT_EQ(backend.calls,
               (std::vector<std::string>{
-                  "prepare-savestate", "commit-savestate"}));
+                  "prepare-savestate", "commit-savestate",
+                  "acquire-pause-at-end"}));
+    EXPECT_EQ(backend.observation_count, 1u);
 
     SavestateMovieRestoreContext stale = context;
     stale.workset_epoch = WorksetEpoch(5);

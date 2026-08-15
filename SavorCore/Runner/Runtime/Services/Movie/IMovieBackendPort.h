@@ -29,8 +29,8 @@ struct MovieBackendResult
 };
 
 // One coherent raw physical observation from the emulator. Implementations
-// must synchronize with the emulator's movie owner while collecting every
-// field; a sequence of unrelated cross-thread reads is not a valid snapshot.
+// may collect it only while the guest core is already authoritatively paused;
+// the observation operation must never pause or otherwise control execution.
 // This deliberately carries no semantic "ended" state: only MovieService has
 // the lifecycle context needed to distinguish natural playback exhaustion from
 // ordinary inactivity.
@@ -89,7 +89,12 @@ public:
         const std::filesystem::path& dtm_path) = 0;
     virtual MovieBackendResult CancelRecording() noexcept = 0;
 
-    [[nodiscard]] virtual MovieBackendObservation ObserveMovie() const = 0;
+    [[nodiscard]] virtual MovieBackendObservation
+    ObserveMovieWhilePaused() const = 0;
+    // Installs a session-local override for Dolphin's existing pause-at-movie-
+    // end behavior and restores the exact prior CurrentRun value on release.
+    virtual MovieBackendResult AcquirePauseAtPlaybackEnd() = 0;
+    virtual MovieBackendResult ReleasePauseAtPlaybackEnd() noexcept = 0;
     virtual MovieCheckpointBackendResult CaptureRecordingCheckpoint() = 0;
 
     // These operations stage and verify movie history around one workset-owned

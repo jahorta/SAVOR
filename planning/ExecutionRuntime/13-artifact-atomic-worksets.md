@@ -58,13 +58,17 @@ invocation ownership of that existing session; it does not prepare a DTM-origin 
 core, restore state, or advance the guest. The scoped handle may then be branched into recording.
 
 Movie state is not inferred by the execution backend. `MovieService` owns one
-epoch-bound canonical state and observes raw native playback/recording facts
-whenever execution needs movie evidence. Restored adoption requires observed
-`ReadOnlyPlayback`; branching atomically changes that state to `Recording`
-before the first replay advance. Natural playback exhaustion produces the
-owned terminal `PlaybackEnded` state and preserves final cursor/DTM evidence
-until resource cleanup detaches it. Cleanup of that already-ended state is
-host-only and does not issue a redundant native movie stop.
+epoch-bound canonical state. Baseline restoration reconciles raw native
+playback/recording facts and the exact cursor once while the core is
+authoritatively paused; running execution reads only the cached state and
+cursor. Restored adoption requires owned `ReadOnlyPlayback`; branching verifies
+the requested native transition once and atomically changes that state to
+`Recording` before the first replay advance. Owned playback temporarily enables
+Dolphin's CurrentRun pause-at-movie-end setting. When that pause occurs, SAVOR
+confirms it before reconciling natural exhaustion into `PlaybackEnded` and
+preserves final cursor/DTM evidence until resource cleanup detaches it. Cleanup
+of that already-ended state is host-only and does not issue a redundant native
+movie stop.
 
 A TAS Movie phase that explicitly selects a read-only-movie workset stages its exact
 DTM/DTM-declared-startup-savestate pair without starting playback. Each item begins unestablished and

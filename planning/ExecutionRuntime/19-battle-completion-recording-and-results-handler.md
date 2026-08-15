@@ -93,12 +93,14 @@ controller publisher. No phase input tape or competing movie-input owner is
 introduced.
 
 `MovieService` is the sole authority for the movie state throughout this
-handoff. Adoption observes the exact restored cursor as `ReadOnlyPlayback`,
-and a successful branch commits `Recording` before the first Battle Record
-`ContinueUntil`. `ExecutionEngine` requests the current state and input cursor
-from `MovieService`; it does not classify Dolphin movie flags itself. Thus a
-recording branch cannot be mistaken for playback exhaustion, while genuine
-source-DTM exhaustion remains a `MovieEndedPolicy::Fail` canary.
+handoff. Paused restoration reconciles the exact restored cursor as
+`ReadOnlyPlayback`, and a successful branch performs one native verification,
+commits `Recording`, and restores the prior pause-at-playback-end configuration
+before the first Battle Record `ContinueUntil`. Running `ExecutionEngine`
+maintenance reads only `MovieService`'s cached state and cursor; it performs no
+physical movie query. Thus a recording branch cannot be mistaken for playback
+exhaustion. Genuine source-DTM exhaustion makes Dolphin pause, after which the
+confirmed paused boundary is reconciled as a `MovieEndedPolicy::Fail` canary.
 
 The program reuses canonical SeedProbe delivery, live Battle Context
 validation, adaptive Battle commands, and the shared completion interaction.

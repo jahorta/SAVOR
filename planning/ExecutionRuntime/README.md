@@ -14,8 +14,8 @@ Results Screen is a reusable built-in interaction invoked by the eventual
 downstream phase after field postseed.
 Worker diagnostics use a bounded asynchronous logger owned through final
 drain by `SavorWorker`; active execution heartbeats reuse the engine's normal
-core/movie observation and inspect controller-poll evidence without mutating
-the input relationship. The exact Battle Record diagnostic boundary is also
+core observation and `MovieService`'s cached state, and inspect controller-poll
+evidence without mutating the input relationship. The exact Battle Record diagnostic boundary is also
 defined in document 19.
 
 The current semantic-routing, immutable workset-capture, and canonical-progress
@@ -339,12 +339,15 @@ The names have precise meanings:
     caller-supplied frame/input cursor: Dolphin restores that cursor from the savestate and
     `MovieService` records the authoritative observed position. Exact cursor equality is required only
     for an internally captured checkpoint that already carries a known cursor.
-    `MovieService` is also the sole semantic authority for movie lifecycle state. The backend reports
-    only raw playback, recording, read-only, frame, and input-count facts; `MovieService` classifies
-    `PreparedReadOnlyPlayback`, `ReadOnlyPlayback`, `Recording`, `PlaybackEnded`, and `Inactive` under
-    the active epoch. `ExecutionEngine` requests that canonical state from `MovieService` and never
-    infers movie completion directly from backend flags. Only natural exhaustion of owned read-only
-    playback becomes `PlaybackEnded`; branching playback into recording remains active execution.
+    `MovieService` is also the sole semantic authority for movie lifecycle state. It reconciles raw
+    playback, recording, read-only, frame, and input-count facts once at paused lifecycle boundaries,
+    then owns the resulting `PreparedReadOnlyPlayback`, `ReadOnlyPlayback`, `Recording`,
+    `PlaybackEnded`, or `Inactive` state under the active epoch. Running `ExecutionEngine`
+    maintenance reads only that cached state; it never polls Dolphin's movie manager or infers movie
+    completion directly. Owned read-only playback enables Dolphin's CurrentRun pause-at-movie-end
+    setting. A resulting core pause is authoritatively confirmed before one physical reconciliation;
+    only natural exhaustion becomes `PlaybackEnded`. Branching playback into recording commits
+    `Recording` once and restores the prior pause-at-end setting before guest advancement.
 22. `InputArbiter` alone publishes pad state. One epoch-bound lease distinguishes ownership from its
     `Neutral`, `Held`, `DeliveryPending`, or `NeutralTransitionPending` state. Guest synchronization is
     carried by ephemeral execution bindings; neutral close and stable-neutral apply are host-only, and

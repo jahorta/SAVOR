@@ -642,7 +642,11 @@ struct ExecutionEngine::Impl
             if (!observed.result.ok)
                 return observed;
 
-            const MovieStateSnapshot movie = movies.ObserveState(epoch);
+            const MovieStateSnapshot movie =
+                observed.core_state == BackendCoreState::Paused &&
+                    observed.pause_confirmed
+                ? movies.ReconcilePausedState(epoch)
+                : movies.SnapshotState(epoch);
             if (!movie.result.ok)
             {
                 observed.result = BackendResult::Failure(
@@ -2664,6 +2668,22 @@ void ExecutionEngine::Pump()
         impl_->RebaselineHealth(operation, observed, current);
         if (!operation.unconfirmed_pause_deadline)
         {
+            // Dolphin's pause-at-movie-end path pauses the core without going
+            // through SAVOR's pause synchronizer. Confirm that already-paused
+            // state before MovieService performs its one paused inspection.
+            // This requests no movie observation and does not resume the core.
+            const BackendResult pause = impl_->CallBackend(
+                "confirm externally paused Dolphin core",
+                [&] { return impl_->backend.RequestPause(); });
+            if (!pause.ok)
+            {
+                impl_->BeginFinish(
+                    ExecutionTerminalStatus::BackendFailure,
+                    BackendError(
+                        "failed confirming externally paused Dolphin core",
+                        pause));
+                return;
+            }
             operation.unconfirmed_pause_deadline =
                 current + impl_->config.pause_confirmation_timeout;
         }

@@ -512,18 +512,26 @@ later mode transition such as branching the restored playback into recording.
 This is distinct from establishing a DTM-origin TAS Movie baseline.
 
 `MovieService` owns the canonical movie state and cursor evidence for the
-workset. Its backend facet exposes raw physical playback/recording flags,
-read-only status, frame, and input count, but does not classify lifecycle
-state. `ExecutionEngine` combines its core snapshot with an epoch-qualified
-`MovieService::ObserveState` result. It never asks the execution backend to
-interpret movie state. Natural exhaustion of an owned read-only playback
-transitions the service to `PlaybackEnded`; that terminal state retains the
-reservation, DTM metadata, and final cursor until scoped cleanup calls
-`StopPlayback`. A successful playback-to-recording branch instead commits
-`Recording` before guest advancement and cannot satisfy `MovieEndedPolicy`.
+workset. `SnapshotState` returns the service-owned state and last authoritative
+cursor without calling the backend. `ReconcilePausedState` is the only
+physical inspection surface; it requires an already authoritatively paused
+core and maps raw playback/recording flags, read-only status, frame, and input
+count into the owned lifecycle. Running `ExecutionEngine` maintenance and
+heartbeats use only `SnapshotState`.
 
-`runtime.movie.observe_state` is the program-facing, host-only view of that
-same authority. It returns the canonical `MovieState`, workset epoch,
+Owned read-only playback installs a session-local CurrentRun override for
+Dolphin's pause-at-movie-end setting and restores the exact prior presence and
+value when playback stops or branches to recording. If Dolphin pauses at the
+end, `ExecutionEngine` confirms that core pause through its existing pause
+synchronizer, then performs one reconciliation. Only neither-native-mode with
+retained read-only evidence becomes `PlaybackEnded`; ordinary breakpoint
+pauses leave playback active. The terminal state retains its reservation, DTM
+metadata, and final cursor until scoped cleanup calls `StopPlayback`. A
+successful playback-to-recording branch verifies and commits `Recording`
+before guest advancement and cannot satisfy `MovieEndedPolicy`.
+
+`runtime.movie.observe_state` is the program-facing, host-only paused
+reconciliation of that same authority. It returns the canonical `MovieState`, workset epoch,
 read-only evidence, frame, and input cursor. It exposes no raw Dolphin flags,
 creates no resource, advances no guest state, and performs no mode transition.
 Programs that support multiple valid restored source shapes branch on this
