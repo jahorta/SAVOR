@@ -8,7 +8,9 @@
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Composition/BattleCompletionComposition.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Composition/BattleResultsHandler.h"
+#include "../SavorCore/Runner/Runtime/ProgramRuntime/Actions/CanonicalActionPayload.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
+#include "../SavorCore/Runner/Runtime/Services/Savestate/SavestateTypes.h"
 
 #include <algorithm>
 #include <array>
@@ -697,6 +699,7 @@ TEST(BattleRecordModule,
              CanonicalAction::MovieAdoptRestoredReadOnlyPlayback,
              CanonicalAction::ExecutionRequirePausedPc,
              CanonicalAction::MovieStartRecording,
+             CanonicalAction::ExecutionContinueUntilInputObserved,
          })
     {
         EXPECT_NE(
@@ -766,6 +769,104 @@ TEST(BattleRecordModule,
     EXPECT_LT(adopt, require_paused);
     EXPECT_LT(require_paused, start_recording);
     EXPECT_LT(start_recording, first_guest_advance);
+}
+
+TEST(BattleRecordModule,
+     CapturesCheckpointThenPublishesNeutralTailAndExtendedDtm)
+{
+    std::string diagnostic;
+    const auto definition = recording::PrepareBattleRecordFullPhaseV1(
+        ReplayPlan(), &diagnostic);
+    ASSERT_NE(definition, nullptr) << diagnostic;
+    const auto decoded = DecodeProgramModuleV1(
+        definition->module_envelope().payload);
+    ASSERT_TRUE(decoded) << decoded.status.message;
+    const auto& module = *decoded.value;
+    const auto function = std::ranges::find(
+        module.functions, recording::Entrypoint, &ProgramFunction::name);
+    ASSERT_NE(function, module.functions.end());
+
+    const auto find = [&](std::string_view selector) {
+        for (const auto& block : function->blocks)
+        {
+            const auto instruction = std::ranges::find(
+                block.instructions, selector, &Instruction::selector);
+            if (instruction != block.instructions.end())
+                return std::pair{&block, &*instruction};
+        }
+        return std::pair<const BasicBlock*, const Instruction*>{nullptr, nullptr};
+    };
+    const auto save = find("record/capture-checkpoint-sav");
+    const auto begin = find("record/neutral-tail/binding");
+    const auto observe = find("record/neutral-tail/observe-poll");
+    const auto complete = find("record/neutral-tail/complete");
+    const auto finalize = find("record/finalize-extended-dtm");
+    const auto publish = find("record/publish-extended-dtm");
+    for (const auto* instruction : {
+             save.second, begin.second, observe.second,
+             complete.second, finalize.second, publish.second})
+        ASSERT_NE(instruction, nullptr);
+    EXPECT_EQ(save.first, begin.first);
+    EXPECT_EQ(save.first, observe.first);
+    EXPECT_EQ(save.first, complete.first);
+    EXPECT_EQ(save.first, finalize.first);
+    EXPECT_EQ(save.first, publish.first);
+    EXPECT_LT(save.second, begin.second);
+    EXPECT_LT(begin.second, observe.second);
+    EXPECT_LT(observe.second, complete.second);
+    EXPECT_LT(complete.second, finalize.second);
+    EXPECT_LT(finalize.second, publish.second);
+    ASSERT_TRUE(observe.second->target.dependency.has_value());
+    EXPECT_EQ(*observe.second->target.dependency,
+        CanonicalActionIdentity(
+            CanonicalAction::ExecutionContinueUntilInputObserved));
+    EXPECT_EQ(publish.second->opcode, InstructionOpcode::PublishArtifact);
+    ASSERT_EQ(publish.second->operands.size(), 1u);
+    ASSERT_TRUE(finalize.second->result.has_value());
+    EXPECT_EQ(publish.second->operands.front(), finalize.second->result->id);
+    EXPECT_EQ(std::ranges::count_if(
+        Instructions(module),
+        [](const Instruction* instruction) {
+            return instruction->opcode == InstructionOpcode::PublishArtifact;
+        }), 1u);
+
+    const recording::BattleRecordRequestV1 request{
+        .output_dtm_path = "extended.dtm",
+        .output_preseed_savestate_path = "checkpoint.sav",
+    };
+    const auto invocation = definition->BuildResolvedExecution(
+        recording::EncodeBattleRecordExecutionInputV1(request),
+        savor::runtime::InvocationId(1), savor::runtime::AttemptId(1),
+        &diagnostic);
+    ASSERT_TRUE(invocation.has_value()) << diagnostic;
+    const auto root = std::ranges::find(
+        invocation->input.values,
+        invocation->input.root,
+        &ProgramValue::id);
+    ASSERT_NE(root, invocation->input.values.end());
+    const auto* record = std::get_if<RecordValue>(&root->payload);
+    ASSERT_NE(record, nullptr);
+    ASSERT_GE(record->fields.size(), 2u);
+    const auto save_value = std::ranges::find(
+        invocation->input.values,
+        record->fields[1],
+        &ProgramValue::id);
+    ASSERT_NE(save_value, invocation->input.values.end());
+    ProgramValueGraph save_graph{
+        save_value->id,
+        std::vector<ProgramValue>{*save_value}};
+    CanonicalActionPayload save_payload;
+    ASSERT_TRUE(DecodeCanonicalActionPayload(
+        save_graph,
+        *CanonicalActionInputType(
+            CanonicalAction::SavestateSaveImmutableArtifact).named,
+        save_payload,
+        &diagnostic)) << diagnostic;
+    EXPECT_EQ(save_payload.Unsigned(
+        CanonicalActionPayloadField::MovieArtifactMode),
+        static_cast<std::uint64_t>(
+            savor::runtime::SavestateMovieArtifactMode::
+                DeferredFinalRecordingPair));
 }
 
 TEST(BattleResultsHandler, ReceiptPreservesExactManifestCountsAndValidatesGates)

@@ -596,6 +596,7 @@ MovieOperationReceipt MovieService::StartRecording(
 
     recording_prefix_.reset();
     recording_prefix_input_count_ = 0;
+    deferred_recording_pair_pending_ = false;
     if (branching)
     {
         if (current.current_input_count >
@@ -635,6 +636,7 @@ MovieOperationReceipt MovieService::StartRecording(
             tainted_ = true;
         recording_prefix_.reset();
         recording_prefix_input_count_ = 0;
+        deferred_recording_pair_pending_ = false;
         return receipt;
     }
     MovieBackendObservation observed;
@@ -685,6 +687,7 @@ MovieOperationReceipt MovieService::StartRecording(
             (void)backend_.CancelRecording();
             recording_prefix_.reset();
             recording_prefix_input_count_ = 0;
+            deferred_recording_pair_pending_ = false;
             tainted_ = true;
             released.integrity = GuestIntegrity::Unknown;
             receipt.result = std::move(released);
@@ -696,6 +699,7 @@ MovieOperationReceipt MovieService::StartRecording(
             (void)backend_.CancelRecording();
             recording_prefix_.reset();
             recording_prefix_input_count_ = 0;
+            deferred_recording_pair_pending_ = false;
             tainted_ = true;
             state_ = MovieState::Unknown;
             pause_at_end.integrity = GuestIntegrity::Unknown;
@@ -755,7 +759,11 @@ MovieOperationReceipt MovieService::FinalizeRecording(
         receipt.result = current.result;
         return receipt;
     }
+    const bool deferred_pair = deferred_recording_pair_pending_;
+    const std::uint64_t deferred_checkpoint_input_count =
+        recording_prefix_input_count_;
 
+    std::optional<MovieCheckpointMetadata> prefinal_checkpoint;
     if (recording_prefix_)
     {
         MovieCheckpointBackendResult pending =
@@ -777,6 +785,14 @@ MovieOperationReceipt MovieService::FinalizeRecording(
             receipt.result = std::move(valid);
             return receipt;
         }
+        if (deferred_pair &&
+            checkpoint.current_input_count <= deferred_checkpoint_input_count)
+        {
+            receipt.result = MovieServiceResult::Failure(
+                MovieServiceErrorCode::IntegrityFailure,
+                "Final recording contains no input after its deferred checkpoint");
+            return receipt;
+        }
         const std::size_t prefix_size =
             savor::tas::DtmFile::kMinHeader +
             static_cast<std::size_t>(recording_prefix_input_count_) * 8u;
@@ -796,6 +812,7 @@ MovieOperationReceipt MovieService::FinalizeRecording(
             tainted_ = true;
             return receipt;
         }
+        prefinal_checkpoint = std::move(checkpoint);
     }
 
     MovieRecordingFinalizeResult finalized =
@@ -870,6 +887,27 @@ MovieOperationReceipt MovieService::FinalizeRecording(
         !valid.ok)
     {
         return fail_after_backend_finalize(std::move(valid));
+    }
+    savor::tas::DtmFile finalized_dtm;
+    std::string finalized_dtm_reason;
+    const bool deferred_dtm_valid = !deferred_pair ||
+        (finalized_dtm.load(request.dtm_path.string()) &&
+         finalized_dtm.supports_gc_poll_editing(&finalized_dtm_reason) &&
+         finalized_dtm.info().input_count ==
+             finalized_dtm.gc_poll_count());
+    if (deferred_pair &&
+        (!prefinal_checkpoint || !deferred_dtm_valid ||
+         finalized_dtm.info().input_count !=
+             prefinal_checkpoint->current_input_count ||
+         finalized_dtm.info().input_count <= deferred_checkpoint_input_count))
+    {
+        return fail_after_backend_finalize(MovieServiceResult::Failure(
+            MovieServiceErrorCode::IntegrityFailure,
+            finalized_dtm_reason.empty()
+                ? "Final DTM does not retain the required post-checkpoint input trail"
+                : "Final DTM is not an exact GC input stream: " +
+                      finalized_dtm_reason,
+            GuestIntegrity::Unknown));
     }
     if (recorded.starts_from_savestate !=
         finalized.starting_savestate.has_value())
@@ -954,6 +992,7 @@ MovieOperationReceipt MovieService::CancelRecording() noexcept
     active_movie_.reset();
     recording_prefix_.reset();
     recording_prefix_input_count_ = 0;
+    deferred_recording_pair_pending_ = false;
     if (!receipt.result.ok && state_ == MovieState::Unknown)
     {
         receipt.state = state_;
@@ -1030,6 +1069,53 @@ MovieCheckpointReceipt MovieService::CaptureCheckpoint()
     }
     receipt.result = MovieServiceResult::Success();
     receipt.checkpoint = std::move(checkpoint);
+    return receipt;
+}
+
+MovieCheckpointReceipt
+MovieService::CaptureDeferredRecordingPairCheckpoint()
+{
+    MovieCheckpointReceipt receipt;
+    if (!OnOwnerThread())
+    {
+        receipt.result = WrongThread();
+        return receipt;
+    }
+    receipt.workset_epoch = ActiveEpoch();
+    if (state_ != MovieState::Recording)
+    {
+        receipt.result = MovieServiceResult::Failure(
+            MovieServiceErrorCode::InvalidState,
+            "Deferred recording-pair capture requires an active recording");
+        return receipt;
+    }
+    if (deferred_recording_pair_pending_)
+    {
+        receipt.result = MovieServiceResult::Failure(
+            MovieServiceErrorCode::InvalidState,
+            "A deferred recording-pair checkpoint is already pending");
+        return receipt;
+    }
+
+    receipt = CaptureCheckpoint();
+    if (!receipt.result.ok || !receipt.checkpoint ||
+        receipt.checkpoint->mode != MovieCheckpointMode::Recording ||
+        !receipt.checkpoint->cursor_known ||
+        receipt.checkpoint->dtm_bytes.empty())
+    {
+        if (receipt.result.ok)
+        {
+            receipt.result = MovieServiceResult::Failure(
+                MovieServiceErrorCode::IntegrityFailure,
+                "Deferred recording-pair checkpoint lacks exact recording evidence");
+        }
+        return receipt;
+    }
+
+    recording_prefix_ = *receipt.checkpoint;
+    recording_prefix_input_count_ =
+        receipt.checkpoint->current_input_count;
+    deferred_recording_pair_pending_ = true;
     return receipt;
 }
 
@@ -1327,6 +1413,7 @@ MovieServiceResult MovieService::CommitSavestateRestore(
         active_movie_.reset();
         recording_prefix_.reset();
         recording_prefix_input_count_ = 0;
+        deferred_recording_pair_pending_ = false;
         MovieServiceResult failure = FromBackendResult(
             committed,
             "Movie savestate restore commit failed");
@@ -1353,6 +1440,7 @@ MovieServiceResult MovieService::CommitSavestateRestore(
         active_movie_.reset();
         recording_prefix_.reset();
         recording_prefix_input_count_ = 0;
+        deferred_recording_pair_pending_ = false;
         if (reservation_)
         {
             MovieServiceResult released = ReleaseReservation();
@@ -1386,6 +1474,7 @@ MovieServiceResult MovieService::CommitSavestateRestore(
                 active_movie_.reset();
                 recording_prefix_.reset();
                 recording_prefix_input_count_ = 0;
+                deferred_recording_pair_pending_ = false;
                 restore_prepared_ = false;
                 acquired_for_restore_ = false;
                 original_movie_.reset();
@@ -1405,6 +1494,7 @@ MovieServiceResult MovieService::CommitSavestateRestore(
                 active_movie_.reset();
                 recording_prefix_.reset();
                 recording_prefix_input_count_ = 0;
+                deferred_recording_pair_pending_ = false;
                 restore_prepared_ = false;
                 acquired_for_restore_ = false;
                 original_movie_.reset();
@@ -1423,6 +1513,7 @@ MovieServiceResult MovieService::CommitSavestateRestore(
                 active_movie_.reset();
                 recording_prefix_.reset();
                 recording_prefix_input_count_ = 0;
+                deferred_recording_pair_pending_ = false;
                 restore_prepared_ = false;
                 acquired_for_restore_ = false;
                 original_movie_.reset();
@@ -1444,6 +1535,7 @@ MovieServiceResult MovieService::CommitSavestateRestore(
         {
             recording_prefix_.reset();
             recording_prefix_input_count_ = 0;
+            deferred_recording_pair_pending_ = false;
         }
     }
     else
@@ -1467,6 +1559,7 @@ MovieServiceResult MovieService::CommitSavestateRestore(
         active_movie_.reset();
         recording_prefix_.reset();
         recording_prefix_input_count_ = 0;
+        deferred_recording_pair_pending_ = false;
         if (reservation_)
         {
             MovieServiceResult released = ReleaseReservation();
@@ -1511,6 +1604,7 @@ MovieServiceResult MovieService::RollbackSavestateRestore(
         active_movie_.reset();
         recording_prefix_.reset();
         recording_prefix_input_count_ = 0;
+        deferred_recording_pair_pending_ = false;
         original_movie_.reset();
         original_state_ = MovieState::Inactive;
         return MovieServiceResult::Failure(
@@ -1626,6 +1720,7 @@ void MovieService::RetireRecordingAfterBackendStop() noexcept
     active_movie_.reset();
     recording_prefix_.reset();
     recording_prefix_input_count_ = 0;
+    deferred_recording_pair_pending_ = false;
 }
 
 MovieServiceResult MovieService::ValidateBackendState(

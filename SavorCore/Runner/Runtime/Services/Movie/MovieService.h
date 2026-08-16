@@ -43,6 +43,11 @@ public:
         const MovieFinalizeRequest& request);
     [[nodiscard]] MovieOperationReceipt CancelRecording() noexcept;
     [[nodiscard]] MovieCheckpointReceipt CaptureCheckpoint();
+    // Captures and retains the exact recording prefix belonging to a SAV
+    // produced at the current paused cursor. The witness is item-local and is
+    // consumed only by successful recording finalization.
+    [[nodiscard]] MovieCheckpointReceipt
+    CaptureDeferredRecordingPairCheckpoint();
 
     // WorksetStateCoordinator uses this handshake only around a savestate
     // load.  It stages the exact DTM history before Dolphin reads the state,
@@ -124,6 +129,7 @@ private:
     std::optional<MovieCheckpointMetadata> active_movie_;
     std::optional<MovieCheckpointMetadata> recording_prefix_;
     std::uint64_t recording_prefix_input_count_ = 0;
+    bool deferred_recording_pair_pending_ = false;
     std::optional<MovieCheckpointMetadata> original_movie_;
     MovieState original_state_ = MovieState::Inactive;
     bool restore_prepared_ = false;

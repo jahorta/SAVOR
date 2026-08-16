@@ -550,7 +550,10 @@ TEST_F(SqliteDbFixture, PreparedSterilizedCheckpointRequiresCompletePhysicalEvid
         .artifact_id = paired_artifact_id,
         .playback_state = SavestatePlaybackState::MoviePaired,
         .dtm_artifact_id = dtm_id,
-        .savestate_type = "TAS_MOVIE_ROOT_CHECKPOINT",
+        // Physical MoviePaired evidence, not the domain-specific savestate
+        // label, is the sterilization source contract. Battle recording uses
+        // this label for its validated tree checkpoint.
+        .savestate_type = "BATTLE_RECORD_PRESEED_CHECKPOINT",
         .note = "prepared source",
         .is_complete = true,
         .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(205)),

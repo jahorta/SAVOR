@@ -1406,8 +1406,9 @@ public:
             result.timing_anchor.semantic_role !=
                 "final_player_command_commitment" ||
             result.timing_anchor.dtm_input_index == 0 ||
-            result.terminal_input_count <
-                result.timing_anchor.dtm_input_index)
+            result.checkpoint_input_count <
+                result.timing_anchor.dtm_input_index ||
+            result.final_input_count <= result.checkpoint_input_count)
             return PersistFailure(*row, context,
                 "BATTLE_RECORD_SEMANTIC_DRIFT",
                 "Recorded replay does not match its immutable completion plan");
@@ -1445,7 +1446,14 @@ public:
             std::to_string(row->battle_recording_id) + " tree=" +
             std::to_string(published->tree_id) + " dtm=" +
             std::to_string(published->dtm_artifact_id) + " checkpoint=" +
-            std::to_string(published->checkpoint_savestate_id));
+            std::to_string(published->checkpoint_savestate_id) +
+            " checkpoint_input_count=" +
+            std::to_string(result.checkpoint_input_count) +
+            " final_input_count=" +
+            std::to_string(result.final_input_count) +
+            " neutral_tail=" +
+            std::to_string(
+                result.final_input_count - result.checkpoint_input_count));
         return decision;
     }
 
@@ -1583,7 +1591,6 @@ private:
         const std::filesystem::path sidecar(sav_path.string() + ".dtm");
         const auto sav_sha = HashFile(sav_path);
         const auto dtm_sha = HashFile(dtm_path);
-        const auto sidecar_sha = HashFile(sidecar);
         std::error_code size_error;
         const auto sav_size = std::filesystem::file_size(sav_path, size_error);
         if (size_error || sav_size == 0 || sav_path.extension() != ".sav" ||
@@ -1593,12 +1600,20 @@ private:
                  error_out);
             return std::nullopt;
         }
+        size_error.clear();
         const auto dtm_size = std::filesystem::file_size(dtm_path, size_error);
         if (size_error || dtm_size == 0 || dtm_path.extension() != ".dtm" ||
-            !dtm_sha || *dtm_sha != dtm->content_hash.ToHex() ||
-            !sidecar_sha || *sidecar_sha != *dtm_sha)
+            !dtm_sha || *dtm_sha != dtm->content_hash.ToHex())
         {
-            Fail("Battle Recording DTM or preseed sidecar is incomplete",
+            Fail("Battle Recording finalized DTM does not match worker evidence",
+                 error_out);
+            return std::nullopt;
+        }
+        std::error_code sidecar_error;
+        if (std::filesystem::exists(sidecar, sidecar_error) ||
+            sidecar_error)
+        {
+            Fail("Battle Recording returned an unexpected checkpoint-time DTM sidecar",
                  error_out);
             return std::nullopt;
         }
@@ -1607,9 +1622,10 @@ private:
         std::string reason;
         if (!recorded.load(dtm_path.string()) ||
             !recorded.supports_gc_poll_editing(&reason) ||
-            !recorded.info().starts_from_savestate ||
+            recorded.info().starts_from_savestate ||
             recorded.info().input_count != recorded.gc_poll_count() ||
-            result.terminal_input_count >= recorded.info().input_count)
+            result.final_input_count != recorded.info().input_count ||
+            result.checkpoint_input_count >= result.final_input_count)
         {
             Fail("Battle Recording finalized DTM is not a valid paired GC movie: " +
                      reason,
@@ -1657,7 +1673,7 @@ private:
             return std::nullopt;
         itinerary.checkpoints.push_back({
             .pc = transition.provenance.pc,
-            .input_count = {.value = result.terminal_input_count},
+            .input_count = {.value = result.checkpoint_input_count},
         });
         if (!tasmovie::ValidateTasMovieItineraryArtifactV1(
                 itinerary, recorded.info().input_count,

@@ -110,10 +110,20 @@ standalone manifest; artifact identity, worker identity, timestamps, VI
 timing, predicate data, progress, and other incidental provenance are excluded
 from semantic equality.
 
-On success, checkpoint capture occurs while paused at accepted preseed. The
-program records through observation of the terminal neutral publication,
-finalizes the DTM, and verifies source prefix/cursor consistency. Coordination
-publishes the DTM, inherited-plus-appended TMI, paired preseed checkpoint,
+On success, checkpoint capture occurs while paused at accepted preseed at
+movie input count `N`. Deferred-pair capture stages only the SAV and retains
+the checkpoint-time DTM bytes as an item-local prefix witness. The program
+then creates one fresh neutral publication and resumes without a frame or time
+bound until the Savor-owned A-control poll latch proves that exact publication
+was sampled. It pauses, reconciles `Recording`, requires the movie input count
+`M > N`, completes the delivery, and finalizes a DTM containing exactly `M`
+GC input records whose first `N` records match the witness. Finalization
+preserves the source movie's boot-origin header: the SAV points into the DTM
+through their durable pairing and is not the DTM's origin. The short DTM at
+`N` is never published. Coordination stores the SAV and extended DTM as
+separate immutable artifacts and makes their StateDB `MoviePaired` relation
+authoritative; later staging materializes the linked DTM beside the SAV.
+Coordination also publishes the inherited-plus-appended TMI, paired preseed checkpoint,
 final-command `BattleTimingAdjustmentAnchorV1`, `BattleRecording` aggregate,
 and unvalidated TAS Movie tree. Validation is scheduled automatically;
 sterilization is scheduled only for `Valid`.

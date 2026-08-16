@@ -591,6 +591,16 @@ std::vector<SemanticPointDescriptor> BuildFieldPoints()
             .pc = point.pc,
         });
     }
+    points.push_back({
+        .canonical_id = "soa.field.point.transition.FastPreseed",
+        .kind = SemanticPointKind::ProgramCounter,
+        .pc = 0x80101894u,
+    });
+    points.push_back({
+        .canonical_id = "soa.field.point.transition.DeferredPreseed",
+        .kind = SemanticPointKind::ProgramCounter,
+        .pc = 0x801018acu,
+    });
     return points;
 }
 

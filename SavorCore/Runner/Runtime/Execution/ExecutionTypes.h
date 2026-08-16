@@ -51,6 +51,7 @@ enum class ExecutionOperationKind : std::uint8_t
 {
     ContinueUntil,
     StepFrames,
+    ContinueUntilInputObserved,
     SafePause,
     InteractiveResume,
 };
@@ -129,6 +130,15 @@ struct StepFramesRequest
     std::uint32_t count = 1;
 };
 
+// Runs without a frame/time bound until the exact bound input publication is
+// polled. The terminal pause must still prove that recording advanced beyond
+// the caller's checkpoint cursor.
+struct ContinueUntilInputObservedRequest
+{
+    ExecutionRequestPolicy policy;
+    std::uint64_t expected_movie_input_count = 0;
+};
+
 struct SafePauseRequest
 {
     ExecutionRequestPolicy policy;
@@ -151,6 +161,7 @@ struct InteractiveResumeRequest
 using ExecutionRequest = std::variant<
     ContinueUntilRequest,
     StepFramesRequest,
+    ContinueUntilInputObservedRequest,
     SafePauseRequest,
     InteractiveResumeRequest>;
 
@@ -174,6 +185,7 @@ enum class ExecutionTerminalStatus : std::uint8_t
     BackendFailure,
     CleanupFailure,
     CursorOverrun,
+    InputObserved,
 };
 
 enum class ExecutionErrorCode : std::uint16_t

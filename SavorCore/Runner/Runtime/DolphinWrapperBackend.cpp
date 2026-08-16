@@ -1307,12 +1307,26 @@ BackendBufferResult DolphinWrapperBackend::SaveStateFileBytes()
         impl_->savestate_file_capture_sequence++;
     const std::filesystem::path staging = directory /
         ("capture-" + std::to_string(sequence) + ".sav");
+    const std::filesystem::path staging_movie =
+        std::filesystem::path(staging.string() + ".dtm");
     std::filesystem::remove(staging, error);
     error.clear();
+    std::filesystem::remove(staging_movie, error);
+    if (error)
+    {
+        return {
+            BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "Native savestate capture staging sidecar could not be cleared: " +
+                    error.message()),
+            {}};
+    }
 
     if (!impl_->wrapper->saveSavestateBlocking(staging.string()))
     {
         std::filesystem::remove(staging, error);
+        error.clear();
+        std::filesystem::remove(staging_movie, error);
         return {
             BackendResult::Failure(
                 BackendErrorCode::OperationFailed,
@@ -1323,6 +1337,10 @@ BackendBufferResult DolphinWrapperBackend::SaveStateFileBytes()
     std::vector<std::uint8_t> bytes;
     const bool read = ReadBinaryFile(staging, bytes);
     std::filesystem::remove(staging, error);
+    const std::error_code state_cleanup_error = error;
+    error.clear();
+    std::filesystem::remove(staging_movie, error);
+    const std::error_code movie_cleanup_error = error;
     if (!read || bytes.empty())
     {
         return {
@@ -1331,13 +1349,15 @@ BackendBufferResult DolphinWrapperBackend::SaveStateFileBytes()
                 "Completed native savestate file could not be read back"),
             {}};
     }
-    if (error)
+    if (state_cleanup_error || movie_cleanup_error)
     {
         return {
             BackendResult::Failure(
                 BackendErrorCode::OperationFailed,
-                "Native savestate capture staging file could not be removed: " +
-                    error.message()),
+                "Native savestate capture staging files could not be removed: " +
+                    (state_cleanup_error
+                        ? state_cleanup_error.message()
+                        : movie_cleanup_error.message())),
             {}};
     }
     return {BackendResult::Success(), std::move(bytes)};

@@ -93,6 +93,7 @@ enum class CanonicalActionPayloadField : std::uint16_t
     StateGeneration = 77,
     DeliveryId = 78,
     HitTimeSampleDescriptorIds = 79,
+    MovieArtifactMode = 80,
 };
 
 enum class CanonicalActionPayloadKind : std::uint8_t

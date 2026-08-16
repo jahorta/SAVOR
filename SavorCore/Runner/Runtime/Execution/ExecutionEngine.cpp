@@ -22,6 +22,8 @@ using Clock = std::chrono::steady_clock;
     {
     case ExecutionOperationKind::ContinueUntil: return "continue_until";
     case ExecutionOperationKind::StepFrames: return "step_frames";
+    case ExecutionOperationKind::ContinueUntilInputObserved:
+        return "continue_until_input_observed";
     case ExecutionOperationKind::SafePause: return "safe_pause";
     case ExecutionOperationKind::InteractiveResume: return "interactive_resume";
     }
@@ -49,6 +51,7 @@ using Clock = std::chrono::steady_clock;
     case ExecutionTerminalStatus::BackendFailure: return "backend_failure";
     case ExecutionTerminalStatus::CleanupFailure: return "cleanup_failure";
     case ExecutionTerminalStatus::CursorOverrun: return "cursor_overrun";
+    case ExecutionTerminalStatus::InputObserved: return "input_observed";
     }
     return "unknown";
 }
@@ -86,6 +89,10 @@ using Clock = std::chrono::steady_clock;
                 return ExecutionOperationKind::ContinueUntil;
             if constexpr (std::is_same_v<Request, StepFramesRequest>)
                 return ExecutionOperationKind::StepFrames;
+            if constexpr (std::is_same_v<
+                              Request,
+                              ContinueUntilInputObservedRequest>)
+                return ExecutionOperationKind::ContinueUntilInputObserved;
             if constexpr (std::is_same_v<Request, SafePauseRequest>)
                 return ExecutionOperationKind::SafePause;
             return ExecutionOperationKind::InteractiveResume;
@@ -375,7 +382,9 @@ struct ExecutionEngine::Impl
         const ExecutionObservation& observed) const
     {
         if (operation.kind != ExecutionOperationKind::ContinueUntil &&
-            operation.kind != ExecutionOperationKind::StepFrames)
+            operation.kind != ExecutionOperationKind::StepFrames &&
+            operation.kind !=
+                ExecutionOperationKind::ContinueUntilInputObserved)
             return;
         const ExecutionRequestPolicy* policy = DiagnosticPolicy(operation);
         const auto relationship = InputRelationshipOf(operation.request);
@@ -405,7 +414,9 @@ struct ExecutionEngine::Impl
             return;
         operation.next_diagnostic_heartbeat = current + std::chrono::seconds(1);
         if (operation.kind != ExecutionOperationKind::ContinueUntil &&
-            operation.kind != ExecutionOperationKind::StepFrames)
+            operation.kind != ExecutionOperationKind::StepFrames &&
+            operation.kind !=
+                ExecutionOperationKind::ContinueUntilInputObserved)
             return;
 
         InputExecutionRelationshipInspection input;
@@ -500,6 +511,9 @@ struct ExecutionEngine::Impl
                 break;
             case ExecutionOperationKind::StepFrames:
                 snapshot.activity = ExecutionActivity::SteppingFrame;
+                break;
+            case ExecutionOperationKind::ContinueUntilInputObserved:
+                snapshot.activity = ExecutionActivity::Continuing;
                 break;
             case ExecutionOperationKind::SafePause:
                 snapshot.activity = ExecutionActivity::Pausing;
@@ -979,6 +993,7 @@ struct ExecutionEngine::Impl
                 status ==
                     ExecutionTerminalStatus::RequestedCompletion ||
                 status == ExecutionTerminalStatus::StepsCompleted ||
+                status == ExecutionTerminalStatus::InputObserved ||
                 status == ExecutionTerminalStatus::Paused;
             const InputExecutionRelationshipOperationReceipt retired = borrowed_from_parent
                 ? InputExecutionRelationshipOperationReceipt{true, {}}
@@ -1013,7 +1028,9 @@ struct ExecutionEngine::Impl
             : observed.result.integrity;
 
         if (operation.kind == ExecutionOperationKind::ContinueUntil ||
-            operation.kind == ExecutionOperationKind::StepFrames)
+            operation.kind == ExecutionOperationKind::StepFrames ||
+            operation.kind ==
+                ExecutionOperationKind::ContinueUntilInputObserved)
         {
             const ExecutionRequestPolicy* policy = DiagnosticPolicy(operation);
             const auto elapsed =
@@ -1293,6 +1310,15 @@ struct ExecutionEngine::Impl
                     "SafePause requires a positive host confirmation timeout");
             }
             break;
+        case ExecutionOperationKind::ContinueUntilInputObserved:
+            if (!std::get<ContinueUntilInputObservedRequest>(request)
+                     .policy.input_relationship)
+            {
+                return Error(
+                    ExecutionErrorCode::InvalidArgument,
+                    "Input-observation execution requires an exact input relationship");
+            }
+            break;
         case ExecutionOperationKind::InteractiveResume:
             break;
         }
@@ -1556,6 +1582,21 @@ struct ExecutionEngine::Impl
         }
         case ExecutionOperationKind::StepFrames:
             return BeginAdvance(operation);
+        case ExecutionOperationKind::ContinueUntilInputObserved:
+        {
+            const auto& request =
+                std::get<ContinueUntilInputObservedRequest>(
+                    operation.request);
+            if (observed.movie_state != MovieState::Recording ||
+                observed.movie_input_count !=
+                    request.expected_movie_input_count)
+            {
+                return Error(
+                    ExecutionErrorCode::InvalidState,
+                    "Input-observation execution requires the exact paused recording checkpoint cursor");
+            }
+            return ResumeBackend();
+        }
         case ExecutionOperationKind::SafePause:
             if (observed.core_state == BackendCoreState::Paused &&
                 observed.pause_confirmed)
@@ -2120,6 +2161,7 @@ ExecutionControlReceipt ExecutionEngine::CompleteInterruptionHandler(
         switch (impl_->active->kind)
         {
         case ExecutionOperationKind::ContinueUntil:
+        case ExecutionOperationKind::ContinueUntilInputObserved:
         case ExecutionOperationKind::InteractiveResume:
             resumed = impl_->ResumeBackend();
             break;
@@ -2569,10 +2611,27 @@ void ExecutionEngine::Pump()
             observed.pause_confirmed)
         {
             Impl::ActiveOperation finished = std::move(operation);
-            const ExecutionTerminalStatus status =
+            ExecutionTerminalStatus status =
                 *finished.pending_terminal;
             ExecutionError error =
                 finished.pending_error.value_or(ExecutionError{});
+            if (finished.kind ==
+                    ExecutionOperationKind::ContinueUntilInputObserved &&
+                status == ExecutionTerminalStatus::InputObserved)
+            {
+                const auto& request =
+                    std::get<ContinueUntilInputObservedRequest>(
+                        finished.request);
+                if (observed.movie_state != MovieState::Recording ||
+                    observed.movie_input_count <=
+                        request.expected_movie_input_count)
+                {
+                    status = ExecutionTerminalStatus::BackendFailure;
+                    error = Error(
+                        ExecutionErrorCode::InvalidState,
+                        "observed input did not advance the recording beyond the checkpoint cursor");
+                }
+            }
             impl_->ApplyCoreStallHealthProof(status, error);
             std::optional<StopRouteReceipt> stop =
                 std::move(finished.pending_stop);
@@ -2751,6 +2810,42 @@ void ExecutionEngine::Pump()
                     "Dolphin paused without a routed completion"));
         }
         break;
+    case ExecutionOperationKind::ContinueUntilInputObserved:
+    {
+        const auto relationship = InputRelationshipOf(operation.request);
+        const InputExecutionRelationshipInspection inspection =
+            relationship && impl_->config.input_relationships
+            ? impl_->config.input_relationships->Inspect(
+                  *relationship,
+                  impl_->epoch)
+            : InputExecutionRelationshipInspection{};
+        if (!inspection.ok)
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::BackendFailure,
+                Error(
+                    ExecutionErrorCode::InputUnavailable,
+                    inspection.message.empty()
+                        ? "input-observation inspection failed"
+                        : inspection.message));
+            break;
+        }
+        if (inspection.exact_publication_observed)
+        {
+            impl_->BeginFinish(ExecutionTerminalStatus::InputObserved);
+            break;
+        }
+        if (observed.core_state == BackendCoreState::Paused &&
+            observed.pause_confirmed)
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::UnexpectedStop,
+                Error(
+                    ExecutionErrorCode::BackendFailure,
+                    "Dolphin paused before the exact input publication was observed"));
+        }
+        break;
+    }
     }
 }
 

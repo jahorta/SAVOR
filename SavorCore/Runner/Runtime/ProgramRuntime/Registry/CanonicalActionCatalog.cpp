@@ -11,7 +11,7 @@
 namespace savor::runtime::program {
 namespace {
 
-constexpr std::array<CanonicalActionDefinition, 25> kActions{{
+constexpr std::array<CanonicalActionDefinition, 26> kActions{{
     {CanonicalAction::SavestateSaveImmutableArtifact, "runtime.savestate.save_immutable_artifact", "(SavestateArtifactSaveRequest)->PendingSavestateArtifactPublicationReceipt"},
     {CanonicalAction::ExecutionContinueUntil, "runtime.execution.continue_until", "(ContinueUntilRequest)->ContinueUntilResult"},
     {CanonicalAction::ExecutionStepFrames, "runtime.execution.step_frames", "(StepFramesRequest)->ExecutionResult"},
@@ -37,12 +37,13 @@ constexpr std::array<CanonicalActionDefinition, 25> kActions{{
     {CanonicalAction::ScreenshotCapture, "runtime.screenshot.capture", "(ScreenshotRequest)->ScreenshotArtifactRef"},
     {CanonicalAction::TelemetryEmit, "runtime.telemetry.emit", "(TypedTelemetryRecord)->TelemetryReceipt"},
     {CanonicalAction::ExecutionRequirePausedPc, "runtime.execution.require_paused_pc", "(RequirePausedPcRequest)->PausedPcReceipt"},
+    {CanonicalAction::ExecutionContinueUntilInputObserved, "runtime.execution.continue_until_input_observed", "(ContinueUntilInputObservedRequest)->InputObservedExecutionResult"},
 }};
 
 consteval bool CanonicalActionDefinitionsAreComplete()
 {
     constexpr auto expected = static_cast<std::size_t>(
-        CanonicalAction::ExecutionRequirePausedPc) + 1u;
+        CanonicalAction::ExecutionContinueUntilInputObserved) + 1u;
     if (kActions.size() != expected)
         return false;
     std::array<bool, expected> seen{};
@@ -136,6 +137,7 @@ bool UsesTypedRequestRecord(CanonicalAction action) noexcept
     {
     case CanonicalAction::ExecutionContinueUntil:
     case CanonicalAction::ExecutionStepFrames:
+    case CanonicalAction::ExecutionContinueUntilInputObserved:
     case CanonicalAction::InputAcquireLease:
     case CanonicalAction::InputApplyState:
     case CanonicalAction::InputBeginDelivery:
@@ -338,6 +340,14 @@ std::vector<RecordFieldDefinition> TypedRequestFields(
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::InputFramePayload)},
         };
+    case CanonicalAction::ExecutionContinueUntilInputObserved:
+        return {
+            {"input_binding", CanonicalActionOutputType(
+                 CanonicalAction::InputBeginDelivery)},
+            {"expected_movie_input_count", u64},
+            {"static_config", CanonicalRuntimeType(
+                 CanonicalRuntimeSchema::ExecutionAdvanceStaticConfig)},
+        };
     case CanonicalAction::InputCompleteDelivery:
         return {
             {"lease", input_lease},
@@ -422,6 +432,7 @@ ActionDescriptor Descriptor(
     const bool cancellation_driven =
         action == CanonicalAction::ExecutionContinueUntil ||
         action == CanonicalAction::ExecutionStepFrames ||
+        action == CanonicalAction::ExecutionContinueUntilInputObserved ||
         false;
     const TypeRef input = CanonicalActionInputType(action);
     const TypeRef output = CanonicalActionOutputType(action);
@@ -989,6 +1000,23 @@ BuildCanonicalRuntimeActionSchemas()
             });
             continue;
         }
+        if (action == CanonicalAction::ExecutionContinueUntilInputObserved)
+        {
+            append({
+                .identity =
+                    *CanonicalActionOutputSchemaIdentity(action),
+                .kind = TypeSchemaKind::Record,
+                .record_fields = {
+                    {"pc", TypeRef::Builtin(BuiltinType::U32)},
+                    {"movie_input_count",
+                     TypeRef::Builtin(BuiltinType::U64)},
+                    {"vi_count", TypeRef::Builtin(BuiltinType::U64)},
+                    {"workset_epoch",
+                     TypeRef::Builtin(BuiltinType::U64)},
+                },
+            });
+            continue;
+        }
         if (action == CanonicalAction::MovieObserveState)
             continue;
 
@@ -1197,6 +1225,13 @@ BuildCanonicalRuntimeActionDescriptors()
     result.push_back(Descriptor(
         CanonicalAction::ExecutionStepFrames,
         service(SessionServiceCapability::Execution),
+        effect(ActionEffect::AdvanceEmulation),
+        0));
+    result.push_back(Descriptor(
+        CanonicalAction::ExecutionContinueUntilInputObserved,
+        services(
+            SessionServiceCapability::Execution,
+            SessionServiceCapability::Input),
         effect(ActionEffect::AdvanceEmulation),
         0));
     result.push_back(Descriptor(

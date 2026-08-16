@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Runner/Runtime/Services/Movie/MovieService.h"
+#include "Tas/DtmFile.h"
 #include "Utils/Hash.h"
 
 #include <algorithm>
@@ -46,6 +47,11 @@ std::vector<std::uint8_t> Dtm(
     bytes[7] = 'E'; bytes[8] = '8'; bytes[9] = 'E';
     bytes[11] = 1;
     bytes[12] = from_state ? 1 : 0;
+    for (unsigned shift = 0; shift != 64; shift += 8)
+    {
+        bytes[savor::tas::DtmFile::kOffInputCount + shift / 8] =
+            static_cast<std::uint8_t>(input_count >> shift);
+    }
     for (std::size_t input = 0; input < input_count; ++input)
     {
         for (std::size_t byte = 0; byte < 8; ++byte)
@@ -667,6 +673,100 @@ TEST(MovieService,
     ASSERT_NE(capture, backend.calls.end());
     ASSERT_NE(finish, backend.calls.end());
     EXPECT_LT(capture, finish);
+}
+
+TEST(MovieService,
+     DeferredRecordingPairRetainsCheckpointPrefixAndRequiresANeutralTail)
+{
+    TemporaryDirectory temp;
+    const auto source = temp.path() / "source.dtm";
+    const auto output = temp.path() / "extended.dtm";
+    Write(source, Dtm(false, 2));
+    WorksetEpoch epoch(31);
+    Backend backend;
+    Reservations reservations;
+    MovieService service(
+        backend, reservations, [&] { return epoch; },
+        [] { return MovieServiceResult::Success(); },
+        [] { return MovieServiceResult::Success(); },
+        [] { return MovieServiceResult::Success(); });
+
+    const auto prepared = service.PrepareReadOnlyPlayback({.dtm_path = source});
+    ASSERT_TRUE(prepared.result.ok) << prepared.result.message;
+    ASSERT_TRUE(service.StartPreparedReadOnlyPlayback(
+        prepared.preparation).result.ok);
+    backend.observation.current_frame = 12;
+    backend.observation.current_input_count = 2;
+    ASSERT_TRUE(service.StartRecording().result.ok);
+
+    backend.capture_result = MovieBackendResult::Success();
+    backend.capture_checkpoint = RecordingCheckpoint(Dtm(false, 2), 12, 2);
+    const auto checkpoint =
+        service.CaptureDeferredRecordingPairCheckpoint();
+    ASSERT_TRUE(checkpoint.result.ok) << checkpoint.result.message;
+    ASSERT_TRUE(checkpoint.checkpoint.has_value());
+    EXPECT_EQ(checkpoint.checkpoint->current_input_count, 2u);
+    EXPECT_FALSE(service.CaptureDeferredRecordingPairCheckpoint().result.ok);
+
+    backend.observation.current_frame = 13;
+    backend.observation.current_input_count = 3;
+    backend.capture_checkpoint = RecordingCheckpoint(Dtm(false, 3), 13, 3);
+    backend.finalize_result = MovieBackendResult::Success();
+    backend.finalized_dtm = Dtm(false, 3);
+    const auto finalized = service.FinalizeRecording({.dtm_path = output});
+
+    ASSERT_TRUE(finalized.result.ok) << finalized.result.message;
+    EXPECT_EQ(finalized.state, MovieState::Inactive);
+    EXPECT_TRUE(std::filesystem::is_regular_file(output));
+    savor::tas::DtmFile paired;
+    ASSERT_TRUE(paired.load(output.string()));
+    EXPECT_FALSE(paired.info().starts_from_savestate);
+    EXPECT_EQ(paired.info().input_count, 3u);
+    EXPECT_EQ(paired.gc_poll_count(), 3u);
+    EXPECT_EQ(std::ranges::count(
+        backend.calls, std::string("capture-recording-checkpoint")), 2);
+    EXPECT_EQ(std::ranges::count(
+        backend.calls, std::string("finalize-recording")), 1);
+}
+
+TEST(MovieService,
+     DeferredRecordingPairRejectsFinalizationAtTheCheckpointCursor)
+{
+    TemporaryDirectory temp;
+    const auto source = temp.path() / "source.dtm";
+    const auto output = temp.path() / "must-not-exist.dtm";
+    Write(source, Dtm(false, 2));
+    WorksetEpoch epoch(32);
+    Backend backend;
+    Reservations reservations;
+    MovieService service(
+        backend, reservations, [&] { return epoch; },
+        [] { return MovieServiceResult::Success(); },
+        [] { return MovieServiceResult::Success(); },
+        [] { return MovieServiceResult::Success(); });
+
+    const auto prepared = service.PrepareReadOnlyPlayback({.dtm_path = source});
+    ASSERT_TRUE(prepared.result.ok) << prepared.result.message;
+    ASSERT_TRUE(service.StartPreparedReadOnlyPlayback(
+        prepared.preparation).result.ok);
+    backend.observation.current_frame = 12;
+    backend.observation.current_input_count = 2;
+    ASSERT_TRUE(service.StartRecording().result.ok);
+    backend.capture_result = MovieBackendResult::Success();
+    backend.capture_checkpoint = RecordingCheckpoint(Dtm(false, 2), 12, 2);
+    ASSERT_TRUE(service.CaptureDeferredRecordingPairCheckpoint().result.ok);
+    backend.finalize_result = MovieBackendResult::Success();
+    backend.finalized_dtm = Dtm(false, 2);
+
+    const auto finalized = service.FinalizeRecording({.dtm_path = output});
+
+    EXPECT_FALSE(finalized.result.ok);
+    EXPECT_EQ(finalized.result.code, MovieServiceErrorCode::IntegrityFailure);
+    EXPECT_EQ(service.state(), MovieState::Recording);
+    EXPECT_FALSE(std::filesystem::exists(output));
+    EXPECT_EQ(std::ranges::count(
+        backend.calls, std::string("finalize-recording")), 0);
+    EXPECT_TRUE(service.CancelRecording().result.ok);
 }
 
 TEST(MovieService, BranchFailureLeavesReadOnlyPlaybackAndReservationIntact)

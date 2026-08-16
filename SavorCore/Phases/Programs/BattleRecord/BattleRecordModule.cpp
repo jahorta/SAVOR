@@ -15,6 +15,7 @@
 #include "Runner/Runtime/ProgramRuntime/Registry/TypeSchemaRegistry.h"
 #include "Runner/Runtime/ProgramRuntime/Store/ProgramDefinitionStore.h"
 #include "Runner/Runtime/ProgramRuntime/Verify/ProgramVerifier.h"
+#include "Runner/Runtime/Services/Savestate/SavestateTypes.h"
 #include "Utils/Hash.h"
 
 #include <algorithm>
@@ -91,7 +92,7 @@ SchemaIdentity ResultSchema(PhaseFlavor flavor)
 {
     return flavor == PhaseFlavor::Record
         ? ExactSchema("soa.battle.record.Result",
-            "record BattleRecordResult/1(outcome:Outcome,mismatch_turn:u32,expected_rng:u32,observed_rng:u32,observed_manifest:optional<soa.battle.completion.Manifest/1>,observed_transition:optional<soa.field.TransitionContext/1>,anchor_input_count:u64,terminal_input_count:u64)")
+            "record BattleRecordResult/1(outcome:Outcome,mismatch_turn:u32,expected_rng:u32,observed_rng:u32,observed_manifest:optional<soa.battle.completion.Manifest/1>,observed_transition:optional<soa.field.TransitionContext/1>,anchor_input_count:u64,checkpoint_input_count:u64,final_input_count:u64)")
         : ExactSchema("soa.battle.replay.Result",
             "record BattleReplayResult/1(outcome:Outcome,mismatch_turn:u32,expected_rng:u32,observed_rng:u32,observed_manifest:optional<soa.battle.completion.Manifest/1>,observed_transition:optional<soa.field.TransitionContext/1>)");
 }
@@ -166,6 +167,21 @@ std::vector<Byte> RecordingConfig(
 {
     StaticWriter writer({'M','R','C','1'});
     writer.Text(path); writer.Text(label); return writer.Finish();
+}
+
+std::vector<Byte> LeaseConfig()
+{
+    StaticWriter writer({'I','L','C','2'});
+    writer.U32(0); writer.U32(0);
+    writer.Bool(true); writer.Bool(true); writer.Bool(false);
+    return writer.Finish();
+}
+
+std::vector<Byte> AdvanceConfig()
+{
+    StaticWriter writer({'E','A','C','1'});
+    writer.U8(2); writer.Bool(false); writer.U8(0); writer.U8(0);
+    return writer.Finish();
 }
 
 std::vector<Byte> FrameBytes(const GCInputFrame& frame)
@@ -369,7 +385,8 @@ ProgramValueId Result(
     ProgramValueId mismatch_turn, ProgramValueId expected_rng,
     ProgramValueId observed_rng, std::optional<ProgramValueId> manifest,
     std::optional<ProgramValueId> transition, ProgramValueId anchor,
-    ProgramValueId terminal_input_count)
+    ProgramValueId checkpoint_input_count,
+    ProgramValueId final_input_count)
 {
     const auto outcome_value = Constant(b, f, block,
         TypeRef::Named(OutcomeSchema(flavor)),
@@ -395,7 +412,7 @@ ProgramValueId Result(
     return Construct(b, f, block, ResultType(flavor),
         std::array{outcome_value, mismatch_turn, expected_rng, observed_rng,
                    optional_manifest, optional_transition, anchor,
-                   terminal_input_count}, "result/value");
+                   checkpoint_input_count, final_input_count}, "result/value");
 }
 
 BasicBlock& Block(ProgramFunction& function, ProgramBlockId id)
@@ -467,7 +484,8 @@ ProgramModule ConstructModule(const BattleReplayPlanV1& plan, PhaseFlavor flavor
     if (flavor == PhaseFlavor::Record)
     {
         result_fields.push_back({"anchor_input_count", TypeRef::Builtin(BuiltinType::U64)});
-        result_fields.push_back({"terminal_input_count", TypeRef::Builtin(BuiltinType::U64)});
+        result_fields.push_back({"checkpoint_input_count", TypeRef::Builtin(BuiltinType::U64)});
+        result_fields.push_back({"final_input_count", TypeRef::Builtin(BuiltinType::U64)});
     }
     b.AddLocalType({.identity = ResultSchema(flavor),
         .kind = TypeSchemaKind::Record, .record_fields = std::move(result_fields)});
@@ -498,6 +516,7 @@ ProgramModule ConstructModule(const BattleReplayPlanV1& plan, PhaseFlavor flavor
         CanonicalAction::GuestReadU32}) AddAction(b, action);
     if (flavor == PhaseFlavor::Record)
     {
+        AddAction(b, CanonicalAction::ExecutionContinueUntilInputObserved);
         AddAction(b, CanonicalAction::MovieStartRecording);
         AddAction(b, CanonicalAction::MovieStopRecording);
         AddAction(b, CanonicalAction::SavestateSaveImmutableArtifact);
@@ -744,7 +763,7 @@ ProgramModule ConstructModule(const BattleReplayPlanV1& plan, PhaseFlavor flavor
         const auto mismatch_result = Result(b, f, mismatch, flavor,
             battlecompletion::BattleRecordOutcomeV1::ReplayMismatch,
             turn_index, expected_rng_value, observed_rng,
-            std::nullopt, std::nullopt, last_anchor, zero_u64);
+            std::nullopt, std::nullopt, last_anchor, zero_u64, zero_u64);
         const auto domain_success = Constant(b, f, mismatch,
             TypeRef::Builtin(BuiltinType::Bool), true, "mismatch/domain-success");
         (void)b.AddInstruction(f, mismatch, InstructionOpcode::ExitScope,
@@ -813,7 +832,7 @@ ProgramModule ConstructModule(const BattleReplayPlanV1& plan, PhaseFlavor flavor
         final_turn, zero_u32, zero_u32,
         std::optional<ProgramValueId>{manifest},
         std::optional<ProgramValueId>{transition}, last_anchor,
-        zero_u64);
+        zero_u64, zero_u64);
     const auto mismatch_success = Constant(b, f, completion_mismatch,
         TypeRef::Builtin(BuiltinType::Bool), true, "completion-mismatch/success");
     (void)b.AddInstruction(f, completion_mismatch,
@@ -824,15 +843,66 @@ ProgramModule ConstructModule(const BattleReplayPlanV1& plan, PhaseFlavor flavor
         .domain_outcome = mismatch_success}, "completion-mismatch/return");
 
     auto& publish = Block(f, publish_id);
+    ProgramValueId final_input_count = terminal_input_count;
     if (flavor == PhaseFlavor::Record)
     {
         const auto save_request = Project(b, f, publish, argument.id,
             CanonicalActionInputType(CanonicalAction::SavestateSaveImmutableArtifact),
             "save_request");
         (void)Await(b, f, publish, CanonicalAction::SavestateSaveImmutableArtifact,
-            save_request, "record/save-paired-preseed");
-        (void)Await(b, f, publish, CanonicalAction::MovieStopRecording,
-            *recording, "record/finalize-dtm");
+            save_request, "record/capture-checkpoint-sav");
+
+        const auto tail_scope = b.NewScope();
+        (void)b.AddInstruction(f, publish, InstructionOpcode::EnterScope,
+            std::nullopt, {}, {}, "record/neutral-tail/scope", std::nullopt,
+            tail_scope);
+        const auto lease_config = Constant(b, f, publish,
+            CanonicalRuntimeType(CanonicalRuntimeSchema::InputLeaseStaticConfig),
+            LeaseConfig(), "record/neutral-tail/lease-config");
+        const auto lease_request = Construct(b, f, publish,
+            CanonicalActionInputType(CanonicalAction::InputAcquireLease),
+            std::array{lease_config}, "record/neutral-tail/lease-request",
+            tail_scope);
+        const auto lease = Await(b, f, publish,
+            CanonicalAction::InputAcquireLease, lease_request,
+            "record/neutral-tail/lease", tail_scope);
+        const auto begin_request = Construct(b, f, publish,
+            CanonicalActionInputType(CanonicalAction::InputBeginDelivery),
+            std::array{lease, neutral}, "record/neutral-tail/begin-request",
+            tail_scope);
+        const auto binding = Await(b, f, publish,
+            CanonicalAction::InputBeginDelivery, begin_request,
+            "record/neutral-tail/binding");
+        const auto advance_config = Constant(b, f, publish,
+            CanonicalRuntimeType(
+                CanonicalRuntimeSchema::ExecutionAdvanceStaticConfig),
+            AdvanceConfig(), "record/neutral-tail/execution-config");
+        const auto observe_request = Construct(b, f, publish,
+            CanonicalActionInputType(
+                CanonicalAction::ExecutionContinueUntilInputObserved),
+            std::array{binding, terminal_input_count, advance_config},
+            "record/neutral-tail/observe-request", tail_scope);
+        const auto observed = Await(b, f, publish,
+            CanonicalAction::ExecutionContinueUntilInputObserved,
+            observe_request, "record/neutral-tail/observe-poll");
+        final_input_count = Project(b, f, publish, observed,
+            TypeRef::Builtin(BuiltinType::U64), "movie_input_count");
+        const auto complete_request = Construct(b, f, publish,
+            CanonicalActionInputType(CanonicalAction::InputCompleteDelivery),
+            std::array{lease, binding}, "record/neutral-tail/complete-request",
+            tail_scope);
+        (void)Await(b, f, publish, CanonicalAction::InputCompleteDelivery,
+            complete_request, "record/neutral-tail/complete");
+        (void)b.AddInstruction(f, publish, InstructionOpcode::ExitScope,
+            std::nullopt, {}, {}, "record/neutral-tail/release-scope",
+            std::nullopt, tail_scope);
+
+        const auto finalized_dtm = Await(b, f, publish,
+            CanonicalAction::MovieStopRecording, *recording,
+            "record/finalize-extended-dtm");
+        (void)b.AddInstruction(f, publish,
+            InstructionOpcode::PublishArtifact, std::nullopt,
+            std::array{finalized_dtm}, {}, "record/publish-extended-dtm");
     }
     (void)b.AddInstruction(f, publish, InstructionOpcode::ExitScope,
         std::nullopt, {}, {}, "movie/scope-complete", std::nullopt,
@@ -842,7 +912,7 @@ ProgramModule ConstructModule(const BattleReplayPlanV1& plan, PhaseFlavor flavor
         zero_u32, zero_u32, zero_u32,
         std::optional<ProgramValueId>{manifest},
         std::optional<ProgramValueId>{transition}, last_anchor,
-        terminal_input_count);
+        terminal_input_count, final_input_count);
     const auto recorded = Constant(b, f, publish,
         TypeRef::Builtin(BuiltinType::Bool), true, "record/domain-success");
     b.SetTerminator(f, publish, {.kind = TerminatorKind::Return,
@@ -982,6 +1052,10 @@ ProgramValueGraph InputGraph(
         request.output_preseed_savestate_path);
     save_payload.AddUtf8(CanonicalActionPayloadField::Label,
         "battle.record paired accepted preseed");
+    save_payload.AddUnsigned(
+        CanonicalActionPayloadField::MovieArtifactMode,
+        static_cast<std::uint64_t>(
+            SavestateMovieArtifactMode::DeferredFinalRecordingPair));
     const auto save = encode_action(
         CanonicalAction::SavestateSaveImmutableArtifact, std::move(save_payload));
     if (!save) return {};
@@ -1093,7 +1167,7 @@ bool DecodeOutput(
     const auto* root = Find(graph, graph.root);
     const auto* record = root && root->type == ResultType(PhaseFlavor::Record)
         ? std::get_if<RecordValue>(&root->payload) : nullptr;
-    if (!record || record->fields.size() != 8) return false;
+    if (!record || record->fields.size() != 9) return false;
     const auto* outcome_value = Find(graph, record->fields[0]);
     const auto* outcome = outcome_value
         ? std::get_if<EnumValue>(&outcome_value->payload) : nullptr;
@@ -1154,7 +1228,8 @@ bool DecodeOutput(
                     bytes, value);
             }) ||
         !Scalar(graph, record->fields[6], anchor) ||
-        !Scalar(graph, record->fields[7], output.terminal_input_count))
+        !Scalar(graph, record->fields[7], output.checkpoint_input_count) ||
+        !Scalar(graph, record->fields[8], output.final_input_count))
         return false;
     output.timing_anchor = {
         .turn_index = plan.turns.back().turn_index,
@@ -1334,8 +1409,9 @@ public:
                 output.transition.has_value() &&
                 output.artifacts.size() == 2 &&
                 output.timing_anchor.dtm_input_index != 0 &&
-                output.terminal_input_count >=
-                    output.timing_anchor.dtm_input_index;
+                output.checkpoint_input_count >=
+                    output.timing_anchor.dtm_input_index &&
+                output.final_input_count > output.checkpoint_input_count;
         return output.mismatch_turn != 0 && output.artifacts.empty() &&
             output.observed_completion.has_value() ==
                 output.transition.has_value();

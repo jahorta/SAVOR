@@ -693,6 +693,11 @@ InputExecutionRelationshipInspection InputArbiter::Inspect(
         return {
             .ok = true,
             .requires_observation = binding->requires_observation,
+            .exact_publication_observed =
+                !binding->requires_observation ||
+                (poll.publication_epoch ==
+                     binding->backend_publication_epoch &&
+                 poll.a_control_callback_count != 0),
             .publication_epoch = poll.publication_epoch,
             .callback_count = poll.callback_count,
             .a_control_callback_count = poll.a_control_callback_count,

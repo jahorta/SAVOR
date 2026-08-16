@@ -31,11 +31,17 @@ DTM-declared origin. It is not a TAS phase default. A movie-paired continuation
 checkpoint, including the Battle Record source above, is always restored as a
 `Savestate` with its exact DTM sidecar.
 
-At the accepted field preseed terminal the producer captures the pending
-recording checkpoint while paused, advances only as needed to ensure the final
-neutral publication is observed, finalizes the DTM, and verifies that its
-prefix and restored cursor still match the source movie. It then pairs the
-earlier checkpoint with the finalized DTM and publishes the appended itinerary,
+At the accepted field preseed terminal the producer captures the SAV while
+paused at cursor `N` and retains the checkpoint-time DTM only as an item-local
+prefix witness. It publishes a fresh neutral frame, resumes without a time or
+frame bound until the exact publication's A-control poll latch is observed,
+pauses, and requires a reconciled recording cursor `M > N`. It then finalizes
+the DTM with exactly `M` records and verifies that its first `N` records extend
+the witness unchanged without changing the inherited boot-origin movie header.
+The SAV is an editing checkpoint into that boot-origin DTM, not its startup
+savestate. The worker publishes no short DTM and no SAV sidecar.
+Coordination stores the SAV and extended DTM separately and creates one
+authoritative StateDB `MoviePaired` relationship. It also publishes the appended itinerary,
 timing-anchor annotation, durable BattleRecording, and unvalidated TAS Movie
 tree. A `ReplayMismatch` publishes none of those movie artifacts.
 

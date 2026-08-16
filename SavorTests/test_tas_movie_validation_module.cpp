@@ -768,6 +768,20 @@ TEST(TasMovieValidationModule, ProductionDefinitionVerifiesAndIsExactTasMovieKin
         const std::string encoded(bytes->begin(), bytes->end());
         EXPECT_NE(encoded.find(BeforeRandSeedSetPointId),
                   std::string::npos);
+        if (selector == "validation/stop-catalog")
+        {
+            EXPECT_NE(encoded.find(FieldFastPreseedPointId),
+                      std::string::npos);
+            EXPECT_NE(encoded.find(FieldDeferredPreseedPointId),
+                      std::string::npos);
+        }
+        else
+        {
+            EXPECT_EQ(encoded.find(FieldFastPreseedPointId),
+                      std::string::npos);
+            EXPECT_EQ(encoded.find(FieldDeferredPreseedPointId),
+                      std::string::npos);
+        }
     }
     EXPECT_EQ(FindInstruction(module, "input/acquire"), nullptr);
     EXPECT_EQ(FindInstruction(module, "movie/stop"), nullptr);
@@ -958,6 +972,50 @@ TEST(TasMovieValidationModule, ValidationToleratesEarlierHitsThenRequiresMovieEn
             run.actions,
             CanonicalAction::ExecutionContinueUntil),
         3u);
+}
+
+TEST(TasMovieValidationModule,
+     ValidationAcceptsDistinctCanonicalFieldBoundaryPoints)
+{
+    TemporaryDtm dtm(5, 5);
+    const TasMovieValidationRequestV1 request{
+        .operation = TasMovieValidationOperationV1::Validate,
+        .dtm_path = dtm.path(),
+        .itinerary = {{
+            {BeforeRandSeedSetPc, DtmInputCount{1}},
+            {FieldFastPreseedPc, DtmInputCount{4}},
+        }},
+    };
+    ScriptedModuleResult run = RunScriptedModule(
+        request,
+        {
+            ContinueObservation(
+                ContinueUntilCompletionReasonV1::Breakpoint,
+                BeforeRandSeedSetPc,
+                1),
+            ContinueObservation(
+                ContinueUntilCompletionReasonV1::Breakpoint,
+                FieldFastPreseedPc,
+                4),
+            ContinueObservation(
+                ContinueUntilCompletionReasonV1::MovieEnded,
+                0x80000000u,
+                5),
+        });
+    ASSERT_EQ(
+        run.terminal.infrastructure,
+        ProgramInfrastructureStatus::Completed)
+        << (run.terminal.diagnostics.empty()
+                ? ""
+                : run.terminal.diagnostics.back().message);
+    ASSERT_TRUE(run.terminal.output.has_value());
+    TasMovieValidationResultV1 result;
+    std::string diagnostic;
+    ASSERT_TRUE(DecodeTasMovieValidationResultV1(
+        *run.terminal.output,
+        result,
+        &diagnostic)) << diagnostic;
+    EXPECT_EQ(result.outcome, TasMovieValidationOutcomeV1::Valid);
 }
 
 TEST(TasMovieValidationModule, CursorOverrunRetainsLastVerifiedIndex)

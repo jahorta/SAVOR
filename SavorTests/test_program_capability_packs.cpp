@@ -51,7 +51,23 @@ TEST(CapabilityPackSources, CatalogIsStableSourceBackedAndJitGuardIsAbsent)
         catalog, "soa.battle.results");
     const auto& navigation = Manifest(catalog, "soa.navigation");
 
-    EXPECT_EQ(field.semantic_points.size(), 3u);
+    EXPECT_EQ(field.semantic_points.size(), 5u);
+    for (const auto& [identity, pc] : std::array{
+             std::pair{
+                 std::string_view("soa.field.point.transition.FastPreseed"),
+                 0x80101894u},
+             std::pair{
+                 std::string_view("soa.field.point.transition.DeferredPreseed"),
+                 0x801018acu},
+         })
+    {
+        const auto point = std::ranges::find(
+            field.semantic_points,
+            identity,
+            &SemanticPointDescriptor::canonical_id);
+        ASSERT_NE(point, field.semantic_points.end());
+        EXPECT_EQ(point->pc, pc);
+    }
     EXPECT_EQ(battle.semantic_points.size(), 10u);
     EXPECT_TRUE(navigation.semantic_points.empty());
     EXPECT_EQ(field.address_symbols.size(), 7u);

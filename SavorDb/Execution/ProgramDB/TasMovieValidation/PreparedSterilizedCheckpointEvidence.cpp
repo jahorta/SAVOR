@@ -16,7 +16,6 @@ namespace {
 
 constexpr std::string_view kSterilizedType =
     "TAS_MOVIE_STERILIZED_CHECKPOINT";
-constexpr std::string_view kPairedType = "TAS_MOVIE_ROOT_CHECKPOINT";
 constexpr std::string_view kSterilizationContext =
     "tmv_checkpoint_sterilization_request";
 constexpr std::string_view kValidationContext = "tmv_validation_request";
@@ -99,7 +98,6 @@ bool VerifyMoviePairedCheckpointSnapshot(
         ? state_db->GetSavestate(request.source_savestate_id)
         : std::nullopt;
     if (!source || !source->is_complete
-        || source->savestate_type != kPairedType
         || source->playback_state != SavestatePlaybackState::MoviePaired
         || source->artifact_id != request.source_savestate_artifact_id
         || source->artifact_sha256 != request.source_savestate_sha256

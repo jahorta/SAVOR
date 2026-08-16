@@ -49,6 +49,7 @@ using Field = CanonicalActionPayloadField;
     case CanonicalAction::InputCompleteDelivery:
     case CanonicalAction::ExecutionContinueUntil:
     case CanonicalAction::ExecutionStepFrames:
+    case CanonicalAction::ExecutionContinueUntilInputObserved:
         return true;
     default:
         return false;
@@ -756,6 +757,7 @@ bool UsesTypedRequestRecord(CanonicalAction action) noexcept
     {
     case CanonicalAction::ExecutionContinueUntil:
     case CanonicalAction::ExecutionStepFrames:
+    case CanonicalAction::ExecutionContinueUntilInputObserved:
     case CanonicalAction::InputAcquireLease:
     case CanonicalAction::InputApplyState:
     case CanonicalAction::InputBeginDelivery:
@@ -1569,6 +1571,47 @@ bool DecodeTypedCanonicalRequest(
         (void)binding;
         return true;
     }
+    case CanonicalAction::ExecutionContinueUntilInputObserved:
+    {
+        const ProgramValue* binding = record->fields.size() == 3
+            ? FindValue(graph, record->fields[0])
+            : nullptr;
+        CanonicalActionPayload receipt;
+        std::uint64_t expected_count = 0;
+        const auto* config = bytes(
+            2,
+            CanonicalRuntimeSchema::ExecutionAdvanceStaticConfig);
+        if (!binding ||
+            !DecodeReceiptPayload(
+                *binding,
+                CanonicalAction::InputBeginDelivery,
+                receipt) ||
+            !u64(1, expected_count) ||
+            !config ||
+            !DecodeAdvanceConfig(*config, payload, diagnostic))
+        {
+            if (diagnostic.empty())
+                diagnostic =
+                    "ContinueUntilInputObservedRequest is malformed";
+            return false;
+        }
+        const auto id = receipt.Unsigned(Field::Binding);
+        const auto lease = receipt.Unsigned(Field::Handle);
+        const auto publication = receipt.Unsigned(Field::Publication);
+        const auto epoch = receipt.Unsigned(Field::ResultEpoch);
+        const auto generation = receipt.Unsigned(Field::StateGeneration);
+        const auto frame = receipt.Bytes(Field::ResultFrame);
+        return id && lease && publication && epoch && generation && frame &&
+            payload.AddUnsigned(Field::Binding, *id) &&
+            payload.AddUnsigned(Field::ParentHandle, *lease) &&
+            payload.AddUnsigned(Field::Publication, *publication) &&
+            payload.AddUnsigned(Field::ResultEpoch, *epoch) &&
+            payload.AddUnsigned(Field::StateGeneration, *generation) &&
+            payload.AddBytes(Field::ResultFrame,
+                std::vector<Byte>(frame->begin(), frame->end())) &&
+            payload.AddUnsigned(
+                Field::ExpectedMovieInputCount, expected_count);
+    }
     case CanonicalAction::ExecutionRequirePausedPc:
     {
         std::uint64_t expected_pc = 0;
@@ -1891,6 +1934,7 @@ bool ExecutionSucceeded(const ExecutionTerminalResult& terminal) noexcept
     return terminal.status ==
             ExecutionTerminalStatus::RequestedCompletion ||
         terminal.status == ExecutionTerminalStatus::StepsCompleted ||
+        terminal.status == ExecutionTerminalStatus::InputObserved ||
         terminal.status == ExecutionTerminalStatus::Paused ||
         terminal.status == ExecutionTerminalStatus::CursorOverrun ||
         (terminal.status == ExecutionTerminalStatus::MovieEnded &&
@@ -2120,6 +2164,40 @@ ProgramValueGraph PausedPcReceiptGraph(
             ProgramValueId(2),
             ProgramValueId(3)}}});
     return {ProgramValueId(4), std::move(values)};
+}
+
+ProgramValueGraph InputObservedExecutionResultGraph(
+    const ExecutionTerminalResult& terminal)
+{
+    if (terminal.status != ExecutionTerminalStatus::InputObserved)
+        return {};
+    std::vector<ProgramValue> values;
+    values.push_back({
+        ProgramValueId(1),
+        TypeRef::Builtin(BuiltinType::U32),
+        terminal.evidence.pc});
+    values.push_back({
+        ProgramValueId(2),
+        TypeRef::Builtin(BuiltinType::U64),
+        terminal.evidence.movie_input_count});
+    values.push_back({
+        ProgramValueId(3),
+        TypeRef::Builtin(BuiltinType::U64),
+        terminal.evidence.vi_count});
+    values.push_back({
+        ProgramValueId(4),
+        TypeRef::Builtin(BuiltinType::U64),
+        terminal.workset_epoch.value()});
+    values.push_back({
+        ProgramValueId(5),
+        CanonicalActionOutputType(
+            CanonicalAction::ExecutionContinueUntilInputObserved),
+        RecordValue{{
+            ProgramValueId(1),
+            ProgramValueId(2),
+            ProgramValueId(3),
+            ProgramValueId(4)}}});
+    return {ProgramValueId(5), std::move(values)};
 }
 
 ProgramValueGraph MovieStateObservationGraph(
@@ -3823,6 +3901,22 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         }
         SavestateCaptureRequest capture;
         capture.path = std::filesystem::path(*path);
+        const std::uint64_t movie_artifact_mode = UnsignedOr(
+            payload,
+            Field::MovieArtifactMode,
+            static_cast<std::uint64_t>(
+                SavestateMovieArtifactMode::ExactCheckpointSidecar));
+        if (movie_artifact_mode > static_cast<std::uint64_t>(
+                SavestateMovieArtifactMode::DeferredFinalRecordingPair))
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "invalid_artifact_request",
+                "State artifact capture has an unknown movie pairing mode");
+        }
+        capture.movie_artifact_mode =
+            static_cast<SavestateMovieArtifactMode>(movie_artifact_mode);
         capture.lineage.edge = std::string(
             payload.Utf8(Field::Label).value_or(
                 "program state artifact"));
@@ -4050,6 +4144,43 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 static_cast<std::uint32_t>(count)},
             PendingKind::Action,
             input_relationship);
+    }
+    case CanonicalAction::ExecutionContinueUntilInputObserved:
+    {
+        InputArbiter* input = session.input_arbiter();
+        const auto binding =
+            InputExecutionBindingEvidenceFromPayload(payload);
+        const auto expected_count =
+            payload.Unsigned(Field::ExpectedMovieInputCount);
+        if (!input || !binding || !expected_count)
+        {
+            return Reject(
+                request,
+                input ? ProgramActionResolutionStatus::Rejected
+                      : ProgramActionResolutionStatus::Unsupported,
+                "input_binding_invalid",
+                "Input-observation execution requires an exact input binding and recording cursor");
+        }
+        const InputExecutionRelationshipReceipt relationship =
+            input->CreateExecutionRelationship(*binding);
+        if (!relationship.ok)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "input_binding_invalid",
+                relationship.message);
+        }
+        ExecutionRequestPolicy policy =
+            ExecutionPolicy(request, payload);
+        policy.input_relationship = relationship.relationship;
+        return SubmitExecutionAction(
+            std::move(request),
+            ContinueUntilInputObservedRequest{
+                std::move(policy),
+                *expected_count},
+            PendingKind::Action,
+            relationship.relationship);
     }
     case CanonicalAction::ExecutionRequirePausedPc:
     {
@@ -5269,6 +5400,21 @@ SessionProgramActionHost::Impl::ExecutionCompletion(
             completion.code = "result_encoding_failed";
             completion.message =
                 "ContinueUntil completed without a typed terminal observation";
+            return completion;
+        }
+        completion.code.clear();
+        completion.message.clear();
+        return completion;
+    }
+    if (*action == CanonicalAction::ExecutionContinueUntilInputObserved)
+    {
+        completion.output = InputObservedExecutionResultGraph(terminal);
+        if (completion.output.values.empty())
+        {
+            completion.status = ProgramActionResolutionStatus::Failed;
+            completion.code = "result_encoding_failed";
+            completion.message =
+                "Input-observation execution completed without its typed terminal evidence";
             return completion;
         }
         completion.code.clear();

@@ -444,8 +444,34 @@ EmulationSession::CaptureImmutableSavestateArtifact(
         return receipt;
     }
     SavestateCaptureRequest normalized = request;
-    if (movie_service_ &&
-        movie_service_->state() != MovieState::Inactive)
+    if (normalized.movie_artifact_mode ==
+        SavestateMovieArtifactMode::DeferredFinalRecordingPair)
+    {
+        if (!movie_service_ ||
+            movie_service_->state() != MovieState::Recording)
+        {
+            receipt.result = SavestateServiceResult::Failure(
+                SavestateServiceErrorCode::InvalidState,
+                "Deferred recording-pair capture requires an active recording");
+            return receipt;
+        }
+        MovieCheckpointReceipt movie =
+            movie_service_->CaptureDeferredRecordingPairCheckpoint();
+        if (!movie.result.ok)
+        {
+            receipt.result = SavestateServiceResult::Failure(
+                SavestateServiceErrorCode::BackendFailure,
+                movie.result.message,
+                movie.result.integrity);
+            return receipt;
+        }
+        // The exact movie bytes remain owned by MovieService as the prefix
+        // witness. The immutable artifact published here is deliberately the
+        // SAV alone; coordination later pairs it with the extended final DTM.
+        normalized.movie.reset();
+    }
+    else if (movie_service_ &&
+             movie_service_->state() != MovieState::Inactive)
     {
         MovieCheckpointReceipt movie =
             movie_service_->CaptureCheckpoint();

@@ -260,11 +260,23 @@ struct SavestateHandleCaptureRequest
     ArtifactLineage lineage;
 };
 
+// Controls only the movie bytes published beside an immutable SAV. The
+// ordinary mode publishes the exact checkpoint-time movie sidecar. A complete
+// DTM producer may instead retain that checkpoint internally as a prefix
+// witness and return the SAV for later pairing with the finalized recording.
+enum class SavestateMovieArtifactMode : std::uint8_t
+{
+    ExactCheckpointSidecar = 0,
+    DeferredFinalRecordingPair = 1,
+};
+
 struct SavestateCaptureRequest
 {
     std::filesystem::path path;
     std::optional<MovieCheckpointMetadata> movie;
     ArtifactLineage lineage;
+    SavestateMovieArtifactMode movie_artifact_mode =
+        SavestateMovieArtifactMode::ExactCheckpointSidecar;
 };
 
 struct SavestateImportRequest

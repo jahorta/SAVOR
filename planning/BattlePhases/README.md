@@ -158,8 +158,16 @@ new `battle.*` chain, and there is no Battle-to-Battle transition.
 - The observed completion and transition must be semantically equal to the
   standalone completion. Semantic comparison excludes timing, timestamps,
   worker identity, predicate/progress data, and artifact IDs.
-- Success publishes the finalized DTM, inherited-plus-appended TMI itinerary,
-  paired preseed recording checkpoint, final-command timing-anchor annotation,
+- Success captures the preseed SAV at cursor `N`, then records a fresh neutral
+  publication until its exact controller poll is observed and the paused
+  recording cursor is `M > N`. The finalized DTM contains `M` records and
+  extends the item-local `N`-record prefix witness exactly while preserving
+  the inherited boot-origin DTM header. The paired SAV is a checkpoint into
+  that movie; it does not make the DTM savestate-starting. The worker never
+  publishes the short checkpoint-time DTM or a SAV sidecar. Coordination
+  stores the SAV and extended DTM independently, links them through one
+  authoritative `MoviePaired` StateDB savestate, and publishes the
+  inherited-plus-appended TMI itinerary, final-command timing-anchor annotation,
   durable `BattleRecording`, and an unvalidated TAS Movie tree. Existing TAS
   Movie validation is scheduled automatically, and checkpoint sterilization
   is scheduled only after a `Valid` validation result.

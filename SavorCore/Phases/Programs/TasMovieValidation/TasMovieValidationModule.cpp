@@ -2211,12 +2211,24 @@ ProgramModule ConstructTasMovieValidationModuleV1()
         },
         "root/shared-setup");
 
-    const std::array<composition::SemanticPointReference, 1> global_points{{
+    const std::array<composition::SemanticPointReference, 3> global_points{{
         {
             .capability_pack = capabilities::FieldPackIdentity(),
             .canonical_id = std::string(BeforeRandSeedSetPointId),
             .kind = program::SemanticPointKind::ProgramCounter,
             .physical_pc = BeforeRandSeedSetPc,
+        },
+        {
+            .capability_pack = capabilities::FieldPackIdentity(),
+            .canonical_id = std::string(FieldFastPreseedPointId),
+            .kind = program::SemanticPointKind::ProgramCounter,
+            .physical_pc = FieldFastPreseedPc,
+        },
+        {
+            .capability_pack = capabilities::FieldPackIdentity(),
+            .canonical_id = std::string(FieldDeferredPreseedPointId),
+            .kind = program::SemanticPointKind::ProgramCounter,
+            .physical_pc = FieldDeferredPreseedPc,
         },
     }};
     const ProgramValueId global_stop_config = ConstantBytes(

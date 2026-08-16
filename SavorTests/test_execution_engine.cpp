@@ -298,6 +298,61 @@ public:
     MovieReservationId held;
 };
 
+class InputObservationPort final : public IInputExecutionBindingPort
+{
+public:
+    InputExecutionRelationshipOperationReceipt Validate(
+        InputExecutionRelationshipId relationship,
+        WorksetEpoch epoch) override
+    {
+        return relationship == expected_relationship && epoch == kEpoch
+            ? InputExecutionRelationshipOperationReceipt{true, {}}
+            : InputExecutionRelationshipOperationReceipt{
+                  false, "unexpected input relationship"};
+    }
+
+    InputExecutionRelationshipOperationReceipt Complete(
+        InputExecutionRelationshipId relationship,
+        WorksetEpoch epoch) noexcept override
+    {
+        const auto receipt = Validate(relationship, epoch);
+        if (receipt.ok)
+            ++complete_count;
+        return receipt;
+    }
+
+    InputExecutionRelationshipOperationReceipt Cancel(
+        InputExecutionRelationshipId relationship,
+        WorksetEpoch epoch) noexcept override
+    {
+        const auto receipt = Validate(relationship, epoch);
+        if (receipt.ok)
+            ++cancel_count;
+        return receipt;
+    }
+
+    InputExecutionRelationshipInspection Inspect(
+        InputExecutionRelationshipId relationship,
+        WorksetEpoch epoch) const noexcept override
+    {
+        if (relationship != expected_relationship || epoch != kEpoch)
+            return {.message = "unexpected input relationship"};
+        return {
+            .ok = true,
+            .requires_observation = true,
+            .exact_publication_observed = exact_publication_observed,
+            .publication_epoch = 77,
+            .callback_count = exact_publication_observed ? 1u : 0u,
+            .a_control_callback_count = exact_publication_observed ? 1u : 0u,
+        };
+    }
+
+    InputExecutionRelationshipId expected_relationship{91};
+    bool exact_publication_observed = false;
+    std::uint32_t complete_count = 0;
+    std::uint32_t cancel_count = 0;
+};
+
 StopSubscriptionGroupDefinition WakeGroup(std::uint32_t pc = kWakePc)
 {
     return {
@@ -1876,6 +1931,49 @@ TEST_F(
         terminal->status,
         ExecutionTerminalStatus::RequestedCompletion);
     EXPECT_EQ(terminal->evidence.movie_state, MovieState::Recording);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    InputObservationWaitsForExactPublicationAndRequiresRecordingAdvance)
+{
+    RestoreReadOnlyPlayback(10);
+    BranchPlaybackToRecording();
+    InputObservationPort input;
+    CreateEngine(&input);
+    ExecutionRequestPolicy policy = Policy();
+    policy.input_relationship = input.expected_relationship;
+
+    const ExecutionSubmissionReceipt submission = engine->Submit(
+        ContinueUntilInputObservedRequest{
+            .policy = std::move(policy),
+            .expected_movie_input_count = 10,
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    EXPECT_EQ(CountCall(execution_control->Calls(), "resume"), 1u);
+
+    now += 11ms;
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+    EXPECT_EQ(input.complete_count, 0u);
+    EXPECT_EQ(input.cancel_count, 0u);
+
+    movie_backend.SetInputCount(11);
+    input.exact_publication_observed = true;
+    now += 11ms;
+    engine->Pump();
+
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->kind,
+        ExecutionOperationKind::ContinueUntilInputObserved);
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::InputObserved);
+    EXPECT_EQ(terminal->evidence.movie_state, MovieState::Recording);
+    EXPECT_EQ(terminal->evidence.movie_input_count, 11u);
+    EXPECT_EQ(input.complete_count, 1u);
+    EXPECT_EQ(input.cancel_count, 0u);
+    EXPECT_GE(CountCall(execution_control->Calls(), "pause"), 1u);
 }
 
 TEST_F(

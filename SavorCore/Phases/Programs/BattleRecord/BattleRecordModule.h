@@ -71,7 +71,8 @@ struct BattleRecordResultV1
         observed_completion;
     std::optional<battlecompletion::FieldTransitionContextV1> transition;
     battlecompletion::BattleTimingAdjustmentAnchorV1 timing_anchor;
-    std::uint64_t terminal_input_count = 0;
+    std::uint64_t checkpoint_input_count = 0;
+    std::uint64_t final_input_count = 0;
     std::vector<program::ProgramArtifact> artifacts;
 };
 

@@ -37,6 +37,7 @@ enum class CanonicalAction : std::uint8_t
     ScreenshotCapture,
     TelemetryEmit,
     ExecutionRequirePausedPc,
+    ExecutionContinueUntilInputObserved,
 };
 
 struct CanonicalActionDefinition
