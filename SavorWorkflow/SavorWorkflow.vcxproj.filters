@@ -12,6 +12,9 @@
     <ClInclude Include="Execution\ArchiveWorkflowCommands.h">
       <Filter>Execution</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\CoordinatorRuntime.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\FleetStartupSnapshot.h">
       <Filter>Execution</Filter>
     </ClInclude>
@@ -50,6 +53,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Execution\ArchiveWorkflowCommands.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\CoordinatorRuntime.cpp">
       <Filter>Execution</Filter>
     </ClCompile>
     <ClCompile Include="Execution\JobExecutionCoordinator.cpp">

@@ -1,469 +1,331 @@
-# Reusable Predicate System Investigation
+# Typed Predicate System
+
+This document defines the current predicate authoring and execution model. It
+is normative for the hard-cut implementation. There is no predecessor codec,
+database adapter, runtime alias, or import path.
 
 Predicate evaluation progress follows the canonical observation contract in
 [`../ExecutionRuntime/17-semantic-routing-workset-capture-canonical-progress.md`](../ExecutionRuntime/17-semantic-routing-workset-capture-canonical-progress.md).
-`soa.progress.predicate.evaluations/1` is a registered phase-library provider
-and is included by default for `battle.single_turn`. It reports requested typed
-evaluations through the worker-to-DB progress stream; it does not change
-predicate accounting, reactions, abort behavior, or execution routing.
-
 Typed derived observations follow
 [`../ExecutionRuntime/18-derived-state-runtime.md`](../ExecutionRuntime/18-derived-state-runtime.md).
-A predicate imports an exact registered derived query and any pure reducer it
-uses. That action dependency selects the static block during workset
-materialization. Predicate observations always query with
-`SameRoutedEvent`: turn-order evidence must match `TurnIsReady`, and reward
-evidence must match the exact `EndTurn` or Victory receipt. Missing or stale
-derived evidence fails the job; it is not a false predicate or a third
-evaluation state. Capture samples are never predicate evidence.
+Capture samples never become predicate evidence.
 
-## Purpose
+## Canonical authored concepts
 
-This is a separate, evidence-first notebook for redesigning predicates as a
-reusable system. Battle will consume this system, but neither
-`battle.context` nor `battle.single_turn` owns it.
+The system has three authored concepts and one resolved execution form.
 
-This is not an API proposal yet. It records what exists, what legacy Battle
-actually did, and which choices need to be made together.
+### Predicate Definition
 
-## Decisions already made
+A Predicate Definition is a reusable, pure typed Boolean expression. A
+definition revision contains:
 
-- Predicate preparation runs on the homogeneous-worker architecture described
-  by
-  [`../ExecutionRuntime/14-homogeneous-worker-architecture.md`](../ExecutionRuntime/14-homogeneous-worker-architecture.md).
-  The prepared predicate-linked Full Phase package is workset input, not an
-  installed worker catalog entry or advertised capability.
+- named, ordered typed witnesses;
+- a finite expression graph;
+- a Boolean root node; and
+- exact imported reducer identities where specialized pure calculations are
+  required.
 
-- The predicate system must be reusable outside Battle.
-- Battle-specific automatic selection will not absorb predicate behavior.
-- Predicates may support user-authored rejection and early abort, but those
-  policies are not enabled by default.
-- Completed Battle results retain predicate passed/total counts.
-- Predicate rejection is a successful typed Battle domain result, not a failed
-  execution job.
-- Predicate rejection does not publish a successor savestate.
-- Predicate definitions and predicate bundles are first-class authored database
-  objects.
-- Referenced bundle revisions are immutable. Editing an authored bundle creates
-  a new revision rather than changing queued or historical execution inputs.
-- Pure predicate definitions remain reusable across domains. A predicate bundle
-  binds definitions to ordered checks, observations, semantic hooks, reactions,
-  and aggregation policy.
-- Predicate preparation does not occur per candidate job. An exact bundle is
-  linked to the phase's stable hook contract once per active structural key,
-  verified, and reused by every compatible workset. The first implementation
-  does not require a durable prepared-program cache; a missing variant can be
-  reconstructed from its immutable authored definition.
-- An authored Battle turn may provide a default predicate bundle, but each wave
-  freezes the exact bundle revision it will use and may select a different
-  compatible revision.
-- One wave/workset uses one exact bundle revision so its candidates share the
-  same prepared program and produce comparable predicate results.
-- Workers never query authoring, analysis, or execution databases. Coordination
-  resolves database records into a self-contained workset package before
-  dispatch.
-- The canonical resolved predicate bundle is sent once as workset-shared input,
-  alongside the exact prepared program definition. Database IDs may be carried
-  for provenance but are never execution authorities for the worker.
+Definitions contain no semantic hooks, guest addresses, concrete parameter
+values, occurrence rules, reactions, aggregation rules, or evidence policy.
+They perform no guest access and have no execution side effects.
 
-## Current new-backend substrate
+The expression graph supports typed literals and witnesses, equality and
+ordered comparisons, Boolean operators, checked arithmetic, and exact
+registered reducers. The authoring backend validates arity, graph order,
+operand and result types, reducer signatures, and the Boolean root before a
+revision can be published.
 
-The new runtime has two relevant composition frontends:
+### Predicate Execution Binding
 
-- `SemanticObservationComposition` describes semantic points, typed reads and
-  coherent queries, optional versus required evidence, named baseline updates,
-  and optional publication. It lowers those declarations to ordinary program
-  IR and registered actions.
-- `PredicateComposition` describes typed witness parameters, a finite
-  expression graph, four evaluation statuses, and several check-use policies.
-  It also lowers to ordinary program IR.
+A Predicate Execution Binding specializes one exact published definition
+revision. The author supplies the concrete values which make that predicate
+specific, such as `item_id=273`. Semantic Battle-state witnesses are planned
+by the backend rather than selected by the user. Runtime source forms are:
 
-Both are currently isolated composition components. Searches of the current
-checkout found production definitions and focused unit tests, but no phase
-module or program-kind adapter that calls either lowerer. The joint path from a
-semantic observation to a predicate check therefore remains to be designed and
-integrated.
+- a concrete typed value;
+- a backend-planned derived-state query captured at its registered hook and
+  read later in the same Battle item;
+- a field from the current routed hook receipt;
+- a pinned read-only guest-memory read; or
+- a baseline observation captured at one exact hook with `First` or `Latest`
+  update policy.
 
-The current `PredicateComposition` surface does not yet fully match the
-separation described in the Execution Runtime planning documents:
+Concrete values are binding content. For example, `item_id=273` is part of the
+execution-binding revision. Changing it creates a different binding revision
+and hash; it does not mutate the definition, Battle Plan, wave, or workflow
+arguments.
 
-- `PredicateDefinition` currently embeds `PredicateCheck`.
-- witness required/optional policy currently lives in the definition;
-- check point identity and effect policy live beside the pure expression;
-- `StructuredFail`, domain rejection, and emission have distinct lowering,
-  while `Branch` and `Accumulate` currently lower like ordinary status returns;
+Each source must exactly match its witness type and any registered action or
+schema dependency. The user cannot override the source chosen for a semantic
+Battle value. Execution Binding revisions are immutable after publication.
+
+### Predicate Group
+
+A Predicate Group is an ordered collection of atomic predicate memberships.
+Each `PredicateGroupMemberV1` contains:
+
+- one exact published Execution Binding revision;
+- a sorted, unique, nonempty set of semantic hooks;
+- one occurrence policy and any ordinal or compatible guard binding;
+- one reaction;
+- aggregation participation; and
+- durable-evidence policy.
+
+An Execution Binding revision may occur only once in a group. Multiple hooks
+do not create separate predicates. They are mutually visible entry points into
+one atomic member. `First`, `Every`, `Ordinal`, and `GuardOnce` operate over the
+combined routed-hook stream in routed order.
+
+For example, a cumulative-drop member may name both `EndTurn` and
+`EndBattleVictory`. Those hooks are mutually exclusive for a normal Battle
+turn, so `First` evaluates the same bound predicate at whichever terminal hook
+is reached. There is no separate hook-use provenance object.
+
+Group revisions reference only published Execution Bindings. Hooks, occurrence,
+reaction, aggregation, and evidence policy belong only to group memberships;
+parameters and witness sources do not.
+
+### Predicate Execution Package
+
+Coordination resolves one exact published group into a
+`PredicateExecutionPackageV1`. The package contains the exact group, Execution
+Bindings, Predicate Definitions, phase identity, semantic-hook contract, and
+dependency closure needed by the worker. It is canonical, immutable, and
+content-hashed.
+
+Workers receive the package bytes and never query Authoring, Analysis, or
+Execution databases. Database identifiers are lineage only; exact hashes and
+typed identities are execution authority.
+
+When a Battle turn has no selected Predicate Group, coordination and the worker
+use the canonical runtime-only empty group and empty Execution Package. No
+empty authored database row exists.
+
+## Authoring lifecycle
+
+Definitions, Execution Bindings, and Groups use the same revision discipline:
+
+- the Authoring database transactionally generates one opaque, type-prefixed
+  128-bit stable key when a logical object is created;
+- callers never propose or edit a stable key;
+- the parent row owns mutable `name` and `description` presentation metadata;
+- metadata-only updates retain the stable key and every revision and content
+  hash, including when the current revision is published;
+- each revision owns a backend-computed semantic fingerprint over executable
+  content only, excluding its stable key, revision number, name, and
+  description;
+- one stable identity may have at most one draft;
+- saving updates that draft;
+- editing a published revision creates the next draft revision;
+- saving semantics already present in the same lineage returns the existing
+  revision without rewriting its relational children;
+- an explicit Duplicate operation creates a new stable identity and revision
+  1, even when its semantic fingerprint matches the source;
+- abandoning deletes only a draft; and
+- published revisions are immutable.
+
+Create and Duplicate commands carry a 128-bit creation-request key generated
+once per editor intent. The Authoring database records the operation, request
+key, canonical request hash, and returned identity in the same transaction.
+An exact retry returns the original receipt without writes; reusing that key
+with different content is an integrity conflict. Publication and metadata set
+operations are likewise idempotent.
+
+These identities have deliberately different jobs:
+
+- the generated stable key identifies the logical authored object across
+  revisions;
+- name and description are current mutable presentation metadata;
+- the semantic fingerprint detects executable-content equality within that
+  logical lineage; and
+- the exact immutable revision and runtime package hashes remain execution and
+  provenance authority.
+
+Group drafts may reference only published Execution Bindings. Battle Plans may
+reference only published Groups.
+
+The backend-owned `PredicateAuthoringCatalogV2` is built deterministically from
+the phase hook contract, capability packs, and derived-state registry. In
+addition to the exact typed identities required for validation, it owns the
+friendly hook, query, reducer, value-recipe, argument, category, and semantic
+input metadata used for authoring. The same catalog drives Qt filtering, draft
+validation, publication, materialization, and package dependency resolution.
+Qt does not hardcode action hashes, reducer identities, type compatibility, or
+source availability.
+
+The Qt authoring surface provides:
+
+- a **Predicates** library that displays definitions with their named
+  Execution Bindings beneath them;
+- a guided Definition editor phrased as values, comparisons, and nested
+  `All`/`Any`/`Not` conditions;
+- a guided Execution Binding editor containing only the concrete values needed
+  to specialize the Definition;
+- a **Predicate Groups** library with ordered, policy-oriented predicate cards;
   and
-- the semantic-observation composer records named baseline values internally,
-  but currently returns only its last observed value and has no composed
-  predicate caller.
-
-These are observations about the unfinished integration surface, not decisions
-that those APIs must be preserved.
-
-## Current persisted authoring model
-
-The authoring database still stores the legacy execution shape:
-
-- physical breakpoint IDs;
-- a scalar LHS and RHS plus width;
-- legacy flag bits;
-- optional address-program IDs;
-- baseline breakpoint IDs;
-- a value mask used as a turn mask;
-- `abort_on_fail`; and
-- named predicate sets attached through Explorer settings.
-
-Validation calls the breakpoint registry directly and understands legacy
-predicate flags. The current Qt editor exposes the same physical-breakpoint,
-width, source-mode, turn-mask, negation, and abort controls.
-
-The earlier Execution Runtime plan treated these records as compatibility
-inputs that would be translated in memory. The new request for a lean,
-flexible, reusable predicate system reopens whether that compatibility-only
-strategy is still the desired authoring model.
-
-## Legacy Battle behavior actually observed
-
-A legacy predicate combines several concerns in one record:
-
-1. where it evaluates;
-2. how its LHS and RHS are acquired;
-3. how values are compared;
-4. how baseline values are captured;
-5. whether failure aborts the run; and
-6. how passed/total progress is accumulated.
-
-Observed supported comparisons are `==`, `!=`, `<`, `<=`, `>`, and `>=` over
-1-, 2-, 4-, or 8-byte unsigned values. A value may come from an absolute guest
-address, registered address key, address program, immediate RHS, or captured
-LHS baseline.
-
-The legacy VM behavior is more specific than the stored shape suggests:
-
-- each required breakpoint expands to a separate runtime predicate record;
-- the predicate is evaluated and counted every time its required breakpoint is
-  encountered;
-- a successful evaluation increments both passed and total; an unsatisfied
-  evaluation increments total only;
-- an `AbortOnFail` evaluation sets the abort flag immediately and prevents
-  later records in that evaluation loop from running;
-- an unreadable LHS or RHS silently skips that record rather than producing
-  false, unavailable, or a job failure;
-- multiple baseline breakpoints overwrite the same stored baseline, so the
-  latest successful capture is used;
-- the baseline capture operation runs before predicate evaluation for a routed
-  hit;
-- multiple required breakpoints can cause the same authored predicate to count
-  multiple times; and
-- a turn mask is persisted and packed, but no legacy evaluation use of that
-  mask was found. The VM checks only `Active` and required-breakpoint identity.
-
-Two legacy Battle examples exercise distinct use cases:
-
-- an Electribox-drop condition evaluates an address-program value at `EndTurn`
-  against the current-turn key and aborts on failure; and
-- a turn-order condition compares two derived address keys at `TurnIsReady`,
-  records its score, and does not abort on failure.
-
-Some legacy flags also appear to be data without matching VM behavior:
-`LhsIsNeg`, `RhsIsNeg`, `PredKind`, and the turn mask are stored or packed but
-are not consulted by the evaluation loop found in the legacy checkout. These
-should not be called retained functionality unless another execution path is
-found.
-
-## Accepted architecture direction
-
-### Separation of concerns
-
-The reusable system has three distinct authored concepts:
-
-- **Observation** obtains typed evidence at declared public semantic points and
-  owns baseline timing and evidence availability.
-- **Predicate definition** is a pure typed expression over supplied evidence.
-- **Check use** binds one predicate definition to observations and a semantic
-  hook, then declares what the evaluation does: continue, reject the domain
-  candidate, explicitly fail execution, emit evidence, or contribute to an
-  aggregate.
-
-Battle-specific concepts such as turn selection, `TurnInputs`, wave
-continuation, and Battle outcome types stay outside predicate definitions.
-
-### Legacy capability mapping
-
-The new authoring model retains the intended flexibility of the legacy system
-through explicit typed concepts rather than packed VM flags:
-
-| Legacy capability | New representation |
-| --- | --- |
-| Required breakpoint | Public semantic hook |
-| Multiple required breakpoints | Multiple explicit check-hook bindings |
-| Absolute address | Compatibility pinned-address observation |
-| Address key | Registered typed observation |
-| Address program | Checked address expression or coherent query |
-| Read width | Typed value such as `u8`, `u16`, `u32`, or `u64` |
-| Immediate RHS | Literal or wave-supplied parameter |
-| Baseline breakpoints | Named baseline observation with explicit capture hooks |
-| Comparison operator | Pure typed expression |
-| `AbortOnFail` | Check reaction that rejects the domain candidate |
-| Non-aborting predicate | Record/score reaction |
-| `Active` and turn mask | Wave-level bundle binding and active-check selection |
-| Predicate set | Versioned predicate bundle |
-
-### Authored check model
-
-One check use declares:
-
-- stable identity;
-- one public semantic hook;
-- an explicit occurrence policy;
-- named typed witness bindings;
-- a pure predicate definition, either private to the bundle or reusable;
-- required or optional evidence policy;
-- reaction policy; and
-- aggregation participation.
-
-Reusing a predicate at multiple semantic points creates multiple explicit check
-uses. This avoids the legacy behavior where one authored predicate silently
-expanded into several runtime records and could be counted repeatedly.
-
-The supported value-source categories are:
-
-- typed guest observations;
-- registered coherent domain queries;
-- named baseline values;
-- wave-supplied bundle parameters;
-- bundle literals;
-- typed hook-receipt fields;
-- pure values derived by exact registered reducers; and
-- earlier pure expression nodes.
-
-Predicates perform no guest access. Observation binding supplies ordinary typed
-values before the pure expression executes.
-
-The initial expression surface includes typed literals, comparisons, Boolean
-logic, modest typed arithmetic, and exact registered pure reducers for
-specialized calculations. Arbitrary user scripts are not part of the accepted
-initial design. Exact types replace legacy read-width flags and allow signed or
-otherwise domain-specific semantics to be declared rather than inferred.
-
-### Authoring experience
-
-The authoring UI presents two views over the same stored model:
-
-- a simple comparison editor for the common legacy form of semantic hook, left
-  value, operator, right value, and reaction; and
-- an advanced expression editor for multiple witnesses, Boolean composition,
-  arithmetic, and pure reducers.
-
-A simple one-off check may create a private inline predicate definition behind
-the scenes. A definition intended for reuse may be promoted to the shared
-predicate library without changing the check model.
-
-### Authored and prepared forms
-
-Predicate definitions and bundles are authored and stored durably in SavorDb.
-A bundle revision contains an ordered set of check uses and the exact references
-needed to resolve their predicates, semantic hooks, observations, reactions,
-aggregation behavior, and typed parameter schema. Once a revision is referenced
-by a queued or completed wave it is immutable; edits create a new revision.
-
-A wave uses a `PredicateBundleBinding`, consisting conceptually of:
-
-- the exact bundle revision and content hash;
-- frozen typed parameter values;
-- the active check set; and
-- aggregation configuration.
-
-Parameter values allow one prepared bundle to be reused with different item
-identities, thresholds, limits, and similar data across turns and waves. Values
-are workset inputs and do not change the prepared program key. Changes to hook
-assignments, observation graphs, value types, check topology, or the
-structurally active check set do require another prepared variant, which is
-still built only once per unique structural key and reused by all matching
-worksets.
-
-Execution uses a separate prepared form. A stable phase module exposes a
-versioned semantic-hook contract. Preparation links one exact bundle revision
-to those hooks, lowers it to ordinary ExecutionRuntime IR, verifies the closed
-module and dependency set, and reuses the resulting prepared phase variant in
-memory. Preparation is keyed by the phase module revision, hook-contract
-revision, bundle content hash, and exact capability dependency closure. It is
-never candidate-specific. Prepared bytes are reconstructible and are not
-durably cached in the first implementation.
-
-Thousands of jobs using the same bundle and compatible phase revision therefore
-reuse the same prepared program definition. Job-specific savestates, input
-candidates, live Battle state, turn numbers, and fake-attack choices remain
-runtime inputs and do not affect the preparation key. A persisted `.bctx` is a
-Battle planning aid, not a predicate or phase execution dependency.
-
-### Occurrence policies and baselines
-
-Check evaluation frequency is explicit. The initial occurrence-policy surface
-supports:
-
-- first matching hit;
-- every matching hit;
-- a specified matching-hit ordinal; and
-- once when a typed guard becomes satisfied.
-
-Typed guards may use declared receipt or observation fields such as actor slot,
-action index, or action kind. They do not restore a generic breakpoint VM or
-hidden turn mask.
-
-Baselines are named, candidate-local observation state. A baseline declaration
-selects its capture hook, typed source, and `First` or `Latest` update policy.
-Checks receive current and baseline values as ordinary witnesses and may compare
-them directly or calculate a delta through pure arithmetic or a reducer.
-Baseline state is scoped to one candidate invocation and is never shared across
-jobs.
-
-### Reactions
-
-The initial author-facing reaction surface remains small:
-
-- record and continue;
-- contribute to the configured aggregate;
-- reject the domain candidate when unsatisfied; and
-- emit detailed condition evidence when explicitly requested.
-
-Missing required evidence, invalid observation, dependency failure, or reducer
-failure follows the ordinary ExecutionRuntime failure contract. Infrastructure
-failure is not an authored predicate reaction.
-
-### Battle turn and wave assignment
-
-An authored Battle turn may name a default predicate bundle revision. Wave
-creation resolves that default but may explicitly select a different compatible
-bundle or an empty bundle. The created wave freezes the exact resolved revision,
-content hash, typed parameter values, active check set, and aggregation
-configuration.
-
-The wave is the execution authority because separate waves for the same authored
-turn may intentionally test different predicates. Every candidate within one
-wave/workset uses the same bundle so predicate summaries remain comparable and
-the workset can share one prepared program variant. Automatic continuation uses
-the next authored turn's default. Manual continuation may select another
-compatible revision before the wave is created.
-
-### Self-contained workset materialization
-
-Coordination is the only database-aware execution boundary. It resolves the
-authored plan, selected bundle revision, predicate-definition references,
-prepared program definition, capability dependencies, and input artifacts into
-one immutable workset package.
-
-The generalized workset has explicit common inputs and per-job inputs. It
-carries the canonical resolved predicate bundle once as common input, not once
-per candidate. Common inputs also carry the exact prepared program definition,
-resolved `PredicateBundleBinding`, dependency identity, and any genuinely shared
-baseline. Each job carries its own Battle Plan as per-job input, together with
-candidate variation such as a SeedProbe-derived input, fake-attack choice,
-execution identity, and correlation. The prepared program, bundle, and binding
-are bound by content hashes, and the worker rejects the workset before candidate
-execution if their identities disagree or required versions and dependencies
-are unavailable.
-
-Database row IDs may be included for diagnostics and provenance, but workers do
-not dereference them. A worker must not query authoring, analysis, or execution
-databases and should not require SavorDb services. It validates the supplied
-package, executes candidates, stages output artifacts, and returns typed
-results. Coordination registers artifacts and persists results after receiving
-those outputs.
-
-The initial transport may inline the canonical bundle and prepared definition.
-An in-memory worker cache may omit bytes already admitted during that worker
-process, but durable caching is not required. Cache misses are satisfied through
-coordination or artifact transport rather than database access.
-
-### Workset homogeneity and result provenance
-
-A predicate-bearing workset is homogeneous over at least:
-
-- phase module revision;
-- semantic-hook contract revision;
-- predicate bundle revision and content hash;
-- structurally active check set; and
-- exact capability dependency closure.
-
-Worker results carry the predicate bundle hash and typed predicate summary.
-Coordination maps those DB-independent outputs back to their workflow, wave,
-job, and durable result records.
-
-### Evaluation accounting and evidence retention
-
-The initial accounting rules are:
-
-- every executed check produces exactly `Passed` or `Failed` and increments
-  total;
-- `Passed` also increments passed, while `Failed` does not;
-- checks whose hook or occurrence guard never activates produce no evaluation
-  record and do not increment either count;
-- missing required evidence follows the ordinary execution-failure contract;
-  and
-- checks skipped after candidate rejection do not count.
-
-Battle's ending-RNG comparator uses the passed count (`pred_passed`), matching
-the relevant legacy behavior. It does not rank by the number evaluated.
-
-Every result retains the bundle identity and aggregate summary. Detailed
-per-check evidence is durable for predicate rejection, execution failure, and
-checks explicitly configured to emit evidence; it is otherwise transient.
-
-### New-model boundary
-
-The new predicate persistence model is designed cleanly for the new runtime.
-There is no legacy predicate import, migration, or compatibility requirement.
-
-## Deferred design details
-
-The following remains open and should be refined separately from the accepted
-preparation, persistence, wave-assignment, and worker-isolation architecture:
-
-- the concrete clean-model SavorDb schema and authoring UI.
-
-## Evidence locations
-
-Current checkout:
-
-- `SavorCore/Runner/Runtime/ProgramRuntime/Composition/PredicateComposition.h`
-- `SavorCore/Runner/Runtime/ProgramRuntime/Composition/PredicateComposition.cpp`
-- `SavorCore/Runner/Runtime/ProgramRuntime/Composition/SemanticObservationComposition.h`
-- `SavorCore/Runner/Runtime/ProgramRuntime/Composition/SemanticObservationComposition.cpp`
-- `SavorTests/test_predicate_composition.cpp`
-- `SavorTests/test_semantic_observation_composition.cpp`
-- `SavorDb/Authoring/IAuthoringDb.h`
-- `SavorDb/Authoring/SqliteAuthoringDb.cpp`
-- `SavorQt/GUI/Panes/BattleRunSettingsPane/PredicateSpecEditorWindow.cpp`
-- `planning/ExecutionRuntime/03-program-modules-ir-and-types.md`
-- `planning/ExecutionRuntime/07-current-phase-migration-matrix.md`
-
-Read-only legacy checkout:
-
-- `SavorCore/Runner/Breakpoints/Predicate.h`
-- `SavorCore/Runner/Breakpoints/Predicate.cpp`
-- `SavorCore/Runner/Script/PhaseScriptVMPredicates.cpp`
-- `SavorDb/Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnAdapters.cpp`
-- `SavorE2E/BattleSingleTurnScenario.cpp`
-
-## 2026-08-12 - First reusable Battle exploration bundle
-
-The Battle E2E reproduction workflow now authors and publishes ordinary
-relational definitions rather than adding phase-specific predicate behavior.
-One definition queries `soa.derived.battle.core/1` turn order at
-`TurnIsReady`, reduces player maximum and enemy minimum positions, and records
-whether all players precede all enemies. A second definition queries cumulative
-rewards and compares the configured item count with the current turn. It is
-used once at `EndTurn` and once at `EndBattleVictory`, with `AbortOnFail` at
-both terminal hooks.
-
-The bundle declares one typed `u16` parameter, `item_id`. The analogous Battle
-scenario binds it through the workflow as
-`predicate.parameter.item_id=273`. All three checks use `First` occurrence,
-participate in passed-count aggregation, and request durable evidence. A normal
-turn reaches `TurnIsReady` plus exactly one terminal hook, so it ordinarily
-executes two checks; an unvisited terminal hook creates no evaluation.
-
-The bundle is selected by both authored turns but is frozen independently into
-each wave binding. Coordination supplies the resolved package and typed value;
-the worker never consults authoring or execution databases.
+- a published-group selector on each Battle Plan turn.
+
+The three editors are intentionally connected as one authoring path:
+
+1. **What must be true?** The Definition editor starts with a
+   `left value -> comparison -> right value` condition and can grow into a
+   Boolean tree. Domain choices such as *Last player turn position* and
+   *Cumulative item drop count* compile through catalog recipes into the exact
+   typed reducer graph.
+2. **Which concrete values does it use?** Creating a Binding from a published
+   Definition preselects that exact revision. Required Battle snapshots are
+   planned automatically, while parameters such as `item_id` use typed value
+   controls.
+3. **When is it evaluated, and what happens on failure?** Creating or extending
+   a Group from a published Binding uses friendly hook chips and policies such
+   as *first matching hook*, *record and continue*, and *reject this job*.
+
+The guided tree is an authoring-only representation. The backend compiles it
+deterministically into the existing witnesses and expression nodes, infers all
+types and the Boolean root, and can reconstruct a guided tree from any valid
+stored Definition. The editable surface uses a compact semantic tree and one
+selected-item detail pane: a left
+game value, a compatible comparison, and a right game value, with `All`, `Any`,
+and `Not` available as condition structure. Values are selected as Battle
+values, fixed values, or calculations. Semantic inputs and recipe parameters
+are generated by the backend; the Definition editor never asks users to name
+or type them.
+
+The collapsed read-only Technical Details panel shows generated inputs,
+inferred types, reducer descriptions, and the compiled expression structure.
+Opaque stable keys, database IDs, hashes, node indexes, and dependency
+identities are absent from the UI. An unchanged reopened Definition retains
+its original semantic body so presentation normalization alone cannot create a
+revision.
+
+Editors do not ask the user for stable keys. A new editor retains its
+creation-request key across failed or retried asynchronous saves, adopts the
+backend-returned object and revision references invisibly after the first
+successful save, and creates a new request key only for an explicit Duplicate
+intent. Save feedback distinguishes metadata, semantic, and no-op changes and
+refers to the authored object by name.
+
+Existing databases whose earlier `202608161400` migration name masks the
+interim physical schema are repaired by the forward-only
+`202608162300_authoring_predicate_identity_schema_repair.sql` migration. The
+migration preserves non-predicate authoring and Battle Plans, clears interim
+predicate rows and turn selections under the approved hard cut, and recreates
+the current request-ledger, revision, child, index, and immutability schema.
+Migration history is advanced only by the normal migration runner.
+
+Raw JSON, canonical hashes, generated dependency identities, and package bytes
+are not editable UI fields.
+
+## Runtime semantics
+
+### Evaluation hooks and automatic snapshot acquisition
+
+The prepared Full Phase exposes an exact versioned semantic-hook contract.
+Predicate Group hooks answer only *when should this predicate be evaluated?*
+They do not select snapshot-capture breakpoints. The backend catalog separately
+declares which hooks refresh each derived snapshot and the later hooks where
+that snapshot is valid. Group publication and workset materialization prove
+that:
+
+- every member hook is present in that contract;
+- every required snapshot can be captured before every selected evaluation
+  hook;
+- baseline capture hooks are valid;
+- guard bindings are type- and hook-compatible;
+- imported reducers and registered queries match exact identities; and
+- all expression and source types lower successfully.
+
+The derived-state service registers capture hooks independently of the Group
+and refreshes snapshots passively. Predicate evaluation reads the authoritative
+`LatestInItem` snapshot. Turn order can therefore be captured at `TurnIsReady`
+and evaluated later at `EndTurn` or Victory; turn-entry state can be captured
+at `TurnInputs` and evaluated at either terminal hook. Rewards are captured and
+evaluated on the mutually exclusive terminal path. Missing, stale, malformed,
+or failed source evidence is a job failure, never a false predicate or an
+additional evaluation status.
+
+### Occurrence and reactions
+
+Occurrence policies are:
+
+- `First`: evaluate on the first matching member hook;
+- `Every`: evaluate on every matching member hook;
+- `Ordinal`: evaluate on one combined-stream ordinal; and
+- `GuardOnce`: evaluate once when a compatible typed guard becomes true.
+
+An executed member returns exactly `Passed` or `Failed`. `RecordAndContinue`
+records the result and permits execution to continue. `AbortOnFail` records the
+failing result before returning a successful typed predicate-rejection Battle
+outcome. A false condition is not an infrastructure failure.
+
+Every participating evaluation increments total; only `Passed` increments
+passed. A member whose hook or occurrence condition is never reached does not
+count. Checks skipped after rejection do not count.
+
+Evidence identifies the definition revision, Execution Binding revision,
+Predicate Group revision, actual hook, observed values, and result. Detailed
+evidence is durable when requested by the member or required by rejection or
+failure. There is no synthetic per-hook-use identity.
+
+## Battle ownership and materialization
+
+A Battle Plan turn stores only an optional
+`default_predicate_group_revision_id`. It stores no predicate parameter values,
+witness sources, active-member list, or workflow overrides.
+
+Wave materialization:
+
+1. resolves the turn's exact published group, or the canonical empty group;
+2. resolves every referenced Execution Binding and Predicate Definition;
+3. validates the complete authored graph against the Battle authoring catalog
+   and hook contract;
+4. builds and hashes one immutable Execution Package; and
+5. derives required query actions and derived-state blocks from that package.
+
+All jobs in one wave/workset share the package, prepared phase, hook contract,
+and observation bindings. Candidate savestates, concrete commands, SeedProbe
+inputs, and fake-attack choices remain per-job input.
+
+Analysis persistence records exact group, binding, definition, package, phase,
+and hook-contract lineage needed for restart reconstruction. Historical Battle
+counts and evidence remain data, but pre-cut authored lineage is intentionally
+unset because it does not identify a current Group or Execution Package.
+
+## First Battle authored example
+
+The analogous first-Battle workflow authors two pure definitions:
+
+1. **Players before enemies**
+   - the backend captures `turn_order` at `TurnIsReady`;
+   - reducers calculate `player_max_position` and `enemy_min_position`;
+   - expression: `player_max_position < enemy_min_position`.
+
+2. **Cumulative item drops**
+   - the backend captures rewards on the reached terminal path and turn-entry
+     state at `TurnInputs`;
+   - reducers calculate `drop_count(snapshot, item_id)` and
+     `current_turn(snapshot)`;
+   - expression: `drop_count >= current_turn`.
+
+The item-drop Execution Binding contains the concrete typed value
+`item_id=273`. The First Battle Predicate Group has two members:
+
+- the turn-order binding at `TurnIsReady`, `First`, `RecordAndContinue`; and
+- the drop binding at `{EndTurn, EndBattleVictory}`, `First`, `AbortOnFail`.
+
+Both participate in passed/total aggregation and emit durable evidence. A
+normally observed turn evaluates the turn-order member and exactly one terminal
+drop member.
+
+## Hard-cut boundary
+
+The current database contains clean Definition, Execution Binding, Group, and
+authoring-request-ledger tables. The hard-cut migration clears every interim
+Predicate Definition, Execution Binding, and Group row, drops the superseded
+authored composition tables, and clears Battle-turn references that cannot
+identify a current Group. Approved content is reauthored through the
+backend-owned create APIs.
+
+There is no predecessor runtime decoder, authoring adapter, parameter recovery,
+alias, or import facility. The current types and database structure are the
+only supported system.

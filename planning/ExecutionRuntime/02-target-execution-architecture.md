@@ -249,9 +249,9 @@ and resident-resource values without introducing an elapsed execution bound.
 ### Predicate composition boundary
 
 Reusable predicate composition is a module-authoring facility, not another component in the live
-execution graph. The shared library accepts pure typed predicate definitions plus explicit `Check` use
-policies and lowers them into a `ProgramModule`'s ordinary IR, exact imports, scoped resource operations,
-and declared emissions before verification.
+execution graph. The shared library accepts one resolved Predicate Execution Package: pure Definitions,
+typed Execution Bindings, and ordered Predicate Group members. It lowers them into a `ProgramModule`'s
+ordinary IR, exact imports, scoped resource operations, and declared emissions before verification.
 
 At runtime there is no `PredicateRuntime`, predicate scheduler, predicate VM, or predicate-specific
 dispatch path. `ProgramExecutor` executes the lowered control flow, registered actions acquire typed

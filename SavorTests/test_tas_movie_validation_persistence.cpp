@@ -149,14 +149,28 @@ std::int64_t StoreArtifact(
     std::string kind,
     std::int64_t ordinal)
 {
+    const auto display_filename =
+        "tas-movie-artifact-" + std::to_string(ordinal) + extension;
+    const auto source_root = std::filesystem::temp_directory_path() /
+        "savor-tests-tas-movie-artifacts";
+    std::filesystem::create_directories(source_root);
+    const auto source_path = source_root /
+        (sha + "-" + display_filename);
+    const auto size = 100 + ordinal;
+    {
+        std::ofstream out(source_path, std::ios::binary | std::ios::trunc);
+        const std::string bytes(static_cast<std::size_t>(size), 'x');
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
     std::int64_t id = 0;
     std::string error;
     const bool stored = state->StoreArtifact(
         {
             .sha256 = std::move(sha),
-            .size_bytes = 100 + ordinal,
+            .size_bytes = size,
             .compression_kind = 0,
-            .filename = "tas-movie-artifact-" + std::to_string(ordinal) + extension,
+            .filename = source_path.string(),
+            .display_filename = display_filename,
             .file_ext = std::move(extension),
             .artifact_kind = std::move(kind),
             .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(ordinal)),
@@ -363,6 +377,52 @@ TEST_F(SqliteDbFixture, TasMoviePersistenceStateRootTreeIdentityAndLineageAreImm
     });
     EXPECT_EQ(root_events, 1);
     EXPECT_EQ(tree_events, 2);
+
+    const auto ui_path = temp_root_ / "tas-movie-state-projection.sqlite";
+    DbConfigPaths ui_paths{};
+    ui_paths.execution_db_path = ui_path;
+    ui_paths.state_db_path = ui_path;
+    ui_paths.analysis_db_path = ui_path;
+    ui_paths.authoring_db_path = ui_path;
+    ui_paths.ui_read_db_path = ui_path;
+    ui_paths.archive_db_path = ui_path;
+    core::DBService ui_initializer(
+        ui_paths,
+        migrations::MigrationSourceOptions{
+            .source_kind = migrations::MigrationSourceKind::Embedded});
+    ASSERT_TRUE(ui_initializer.Start(&error)) << error;
+    ui_initializer.Stop();
+
+    const auto source_path = temp_root_ / "savordb_test.sqlite";
+    uiread::projectors::UiReadProjectionService projection({
+        .ui_read_db_path = ui_path,
+        .execution_db_path = source_path,
+        .state_db_path = source_path,
+        .analysis_db_path = source_path,
+        .archive_db_path = source_path,
+        .poll_interval = std::chrono::hours(24),
+        .enabled_stream_ids = {"state"},
+    });
+    ASSERT_TRUE(projection.Start(&error)) << error;
+    ASSERT_TRUE(projection.RunOnce(&error)) << error;
+    projection.Stop();
+
+    sqlite3* ui_db = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(ui_path.string().c_str(), &ui_db));
+    const auto projected_count = [&](const char* table) {
+        sqlite3_stmt* statement = nullptr;
+        const std::string sql = "SELECT COUNT(1) FROM " + std::string(table) + ";";
+        EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+            ui_db, sql.c_str(), -1, &statement, nullptr));
+        EXPECT_EQ(SQLITE_ROW, sqlite3_step(statement));
+        const auto count = sqlite3_column_int64(statement, 0);
+        sqlite3_finalize(statement);
+        return count;
+    };
+    EXPECT_EQ(projected_count("ui_state_savestate_summary"), 3);
+    EXPECT_EQ(projected_count("ui_tas_movie_root_summary"), 1);
+    EXPECT_EQ(projected_count("ui_tas_movie_tree_summary"), 2);
+    EXPECT_EQ(sqlite3_close(ui_db), SQLITE_OK);
 }
 
 TEST_F(SqliteDbFixture, TasMovieCheckpointSterilizationIsTypedCanonicalAndRecoverable)
@@ -405,13 +465,16 @@ TEST_F(SqliteDbFixture, TasMovieCheckpointSterilizationIsTypedCanonicalAndRecove
         .causation_id = "test",
     }, &source_id, &error)) << error;
 
+    const auto inactive_artifact = state->GetArtifact(inactive_sav);
+    ASSERT_TRUE(inactive_artifact.has_value());
     CreateOrGetSterilizedCheckpointCommand create{
         .from_savestate_id = source_id,
         .artifact = {
             .sha256 = Sha('c'),
-            .size_bytes = 103,
+            .size_bytes = inactive_artifact->size_bytes,
             .compression_kind = 0,
-            .filename = "tas-movie-artifact-103.sav",
+            .filename = inactive_artifact->filename,
+            .display_filename = inactive_artifact->display_filename,
             .file_ext = ".sav",
             .artifact_kind = "SAV",
             .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(104)),
@@ -502,6 +565,24 @@ TEST_F(SqliteDbFixture, TasMovieCheckpointSterilizationIsTypedCanonicalAndRecove
             request_id);
     ASSERT_EQ(attempts.size(), 1u);
     EXPECT_EQ(attempts.front().sterilization_attempt_id, attempt_id);
+
+    sqlite3_stmt* outbox = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT event_type,COUNT(1) FROM tmv_outbox_message "
+        "WHERE event_type LIKE 'AnalysisTasMovie.Sterilization%' "
+        "GROUP BY event_type ORDER BY event_type;",
+        -1, &outbox, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(outbox));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(outbox, 0)),
+        "AnalysisTasMovie.SterilizationAttemptRecorded.v1");
+    EXPECT_EQ(sqlite3_column_int64(outbox, 1), 1);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(outbox));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(outbox, 0)),
+        "AnalysisTasMovie.SterilizationRequestCreated.v1");
+    EXPECT_EQ(sqlite3_column_int64(outbox, 1), 1);
+    EXPECT_EQ(SQLITE_DONE, sqlite3_step(outbox));
+    sqlite3_finalize(outbox);
 }
 
 TEST_F(SqliteDbFixture, PreparedSterilizedCheckpointRequiresCompletePhysicalEvidenceChain)
@@ -807,6 +888,99 @@ TEST_F(SqliteDbFixture, TasMoviePersistenceAnalysisLedgerQuarantinesAndRestoresE
     EXPECT_TRUE(analysis->GetTasMovieValidationAttempt(invalid_attempt_id).has_value());
 }
 
+TEST_F(SqliteDbFixture, TasMoviePersistenceOutboxProjectsValidationHistoryIdempotently)
+{
+    auto* analysis = db_service_->AnalysisDb();
+    ASSERT_NE(analysis, nullptr);
+    std::string error;
+
+    auto request = RootValidationRequest(410, 411, Sha('e'));
+    std::int64_t request_id = 0;
+    ASSERT_TRUE(analysis->CreateTasMovieValidationRequest(
+        request, &request_id, &error)) << error;
+    std::int64_t repeated_request_id = 0;
+    ASSERT_TRUE(analysis->CreateTasMovieValidationRequest(
+        request, &repeated_request_id, &error)) << error;
+    EXPECT_EQ(repeated_request_id, request_id);
+
+    RecordTasMovieValidationAttemptCommand attempt{
+        .validation_request_id = request_id,
+        .source_job_id = 412,
+        .worker_terminal_sha256 = Sha('f'),
+        .outcome = TasMovieValidationOutcome::Invalid,
+        .failure_reason = TasMovieValidationFailureReason::MovieDesynchronized,
+        .expected_pc = kRootPc,
+        .expected_input_count = 19,
+        .actual_pc = kRootPc,
+        .actual_input_count = 20,
+        .worker_id = "projection-worker",
+        .worker_process_generation = 1,
+        .workset_epoch = 2,
+        .recorded_at_utc = types::UtcTimePoint(std::chrono::milliseconds(412)),
+    };
+    std::int64_t attempt_id = 0;
+    ASSERT_TRUE(analysis->RecordTasMovieValidationAttempt(
+        attempt, &attempt_id, &error)) << error;
+    std::int64_t repeated_attempt_id = 0;
+    ASSERT_TRUE(analysis->RecordTasMovieValidationAttempt(
+        attempt, &repeated_attempt_id, &error)) << error;
+    EXPECT_EQ(repeated_attempt_id, attempt_id);
+
+    sqlite3_stmt* outbox_count = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_, "SELECT COUNT(1) FROM tmv_outbox_message;", -1,
+        &outbox_count, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(outbox_count));
+    EXPECT_EQ(sqlite3_column_int64(outbox_count, 0), 2);
+    sqlite3_finalize(outbox_count);
+
+    const auto ui_path = temp_root_ / "tas-movie-projection.sqlite";
+    DbConfigPaths ui_paths{};
+    ui_paths.execution_db_path = ui_path;
+    ui_paths.state_db_path = ui_path;
+    ui_paths.analysis_db_path = ui_path;
+    ui_paths.authoring_db_path = ui_path;
+    ui_paths.ui_read_db_path = ui_path;
+    ui_paths.archive_db_path = ui_path;
+    core::DBService ui_initializer(
+        ui_paths,
+        migrations::MigrationSourceOptions{
+            .source_kind = migrations::MigrationSourceKind::Embedded});
+    ASSERT_TRUE(ui_initializer.Start(&error)) << error;
+    ui_initializer.Stop();
+
+    const auto source_path = temp_root_ / "savordb_test.sqlite";
+    uiread::projectors::UiReadProjectionService projection({
+        .ui_read_db_path = ui_path,
+        .execution_db_path = source_path,
+        .state_db_path = source_path,
+        .analysis_db_path = source_path,
+        .archive_db_path = source_path,
+        .poll_interval = std::chrono::hours(24),
+        .enabled_stream_ids = {"analysis-tasmovie"},
+    });
+    ASSERT_TRUE(projection.Start(&error)) << error;
+    ASSERT_TRUE(projection.RunOnce(&error)) << error;
+    projection.Stop();
+
+    sqlite3* ui_db = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(ui_path.string().c_str(), &ui_db));
+    sqlite3_stmt* projected = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        ui_db,
+        "SELECT latest_validation_attempt_id,latest_outcome,latest_failure_reason,latest_actual_input_count "
+        "FROM ui_tas_movie_validation_request_summary WHERE validation_request_id=?1;",
+        -1, &projected, nullptr));
+    sqlite3_bind_int64(projected, 1, request_id);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(projected));
+    EXPECT_EQ(sqlite3_column_int64(projected, 0), attempt_id);
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(projected, 1)), "INVALID");
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(projected, 2)), "MOVIE_DESYNCHRONIZED");
+    EXPECT_EQ(sqlite3_column_int64(projected, 3), 20);
+    sqlite3_finalize(projected);
+    EXPECT_EQ(sqlite3_close(ui_db), SQLITE_OK);
+}
+
 TEST_F(
     SqliteDbFixture,
     TasMoviePersistenceDescriptorMaterializesReconstructsAndPersistsRootCursor)
@@ -844,11 +1018,13 @@ TEST_F(
                 .inputs = {{
                     .input_key = "root_dtm",
                     .data_kind = "state_artifact.dtm_artifact_id",
+                    .ref_kind = "state_artifact",
                     .display_name = "Handcrafted root DTM",
                 }},
                 .possible_outputs = {{
                     .output_key = "tas_movie_validation_attempt",
                     .data_kind = "analysis.tas_movie_validation_attempt_id",
+                    .ref_kind = "tmv_validation_attempt",
                     .display_name = "Validation attempt",
                 }},
             }},
@@ -1144,11 +1320,13 @@ TEST_F(
                 .inputs = {{
                     .input_key = "root_establishment",
                     .data_kind = "analysis.tas_movie_validation_attempt_id",
+                    .ref_kind = "tmv_validation_attempt",
                     .display_name = "Root cursor establishment",
                 }},
                 .possible_outputs = {{
                     .output_key = "tas_movie_validation_attempt",
                     .data_kind = "analysis.tas_movie_validation_attempt_id",
+                    .ref_kind = "tmv_validation_attempt",
                     .display_name = "Validation attempt",
                 }},
             }},

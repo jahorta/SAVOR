@@ -70,25 +70,44 @@ core::QueuedDbTelemetrySnapshot QueuedAuthoringDb::GetTelemetrySnapshot() const 
     return BuildTelemetrySnapshot(write_lane_.get(), read_lane_.get());
 }
 
-bool QueuedAuthoringDb::SavePredicateDefinitionDraftV2(
-    const SavePredicateDefinitionDraftV2Command& command,
-    std::int64_t* revision_id_out,
+bool QueuedAuthoringDb::CreatePredicateDefinitionDraft(
+    const CreatePredicateDefinitionDraftCommand& command,
+    PredicateAuthoringRevisionReceipt* receipt_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, command, revision_id_out, error_out]() {
-            return inner_ && inner_->SavePredicateDefinitionDraftV2(
-                command, revision_id_out, error_out);
+        [this, command, receipt_out, error_out]() {
+            return inner_ && inner_->CreatePredicateDefinitionDraft(
+                command, receipt_out, error_out);
         }, false, error_out);
+}
+
+bool QueuedAuthoringDb::SavePredicateDefinitionDraft(
+    const SavePredicateDefinitionDraftCommand& command,
+    PredicateAuthoringRevisionReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, receipt_out, error_out]() {
+        return inner_ && inner_->SavePredicateDefinitionDraft(command, receipt_out, error_out);
+    }, false, error_out);
+}
+
+bool QueuedAuthoringDb::DuplicatePredicateDefinition(
+    const DuplicatePredicateDefinitionCommand& command,
+    PredicateAuthoringRevisionReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, receipt_out, error_out]() {
+        return inner_ && inner_->DuplicatePredicateDefinition(command, receipt_out, error_out);
+    }, false, error_out);
 }
 
 bool QueuedAuthoringDb::PublishPredicateDefinitionRevisionV2(
     std::int64_t revision_id,
     types::UtcTimePoint published_at_utc,
+    PredicateAuthoringRevisionReceipt* receipt_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, revision_id, published_at_utc, error_out]() {
+        [this, revision_id, published_at_utc, receipt_out, error_out]() {
             return inner_ && inner_->PublishPredicateDefinitionRevisionV2(
-                revision_id, published_at_utc, error_out);
+                revision_id, published_at_utc, receipt_out, error_out);
         }, false, error_out);
 }
 
@@ -102,36 +121,147 @@ QueuedAuthoringDb::GetPredicateDefinitionRevisionV2(
         }, std::nullopt);
 }
 
-bool QueuedAuthoringDb::SavePredicateBundleDraftV2(
-    const SavePredicateBundleDraftV2Command& command,
-    std::int64_t* revision_id_out,
+PredicateRevisionPageV2<PredicateDefinitionRevisionV2Summary>
+QueuedAuthoringDb::ListPredicateDefinitionRevisionsV2(
+    const PredicateRevisionListQueryV2& query) const {
+    return ExecuteRead<PredicateRevisionPageV2<PredicateDefinitionRevisionV2Summary>>(
+        [this, query]() { return inner_ ? inner_->ListPredicateDefinitionRevisionsV2(query)
+                                      : PredicateRevisionPageV2<PredicateDefinitionRevisionV2Summary>{}; }, {});
+}
+
+bool QueuedAuthoringDb::AbandonPredicateDefinitionDraftV2(
+    std::int64_t revision_id, std::string* error_out) {
+    return ExecuteWrite<bool>([this,revision_id,error_out]() {
+        return inner_ && inner_->AbandonPredicateDefinitionDraftV2(
+            revision_id,error_out);},false,error_out);
+}
+
+bool QueuedAuthoringDb::CreatePredicateExecutionBindingDraft(
+    const CreatePredicateExecutionBindingDraftCommand& command,
+    PredicateAuthoringRevisionReceipt* receipt_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, command, revision_id_out, error_out]() {
-            return inner_ && inner_->SavePredicateBundleDraftV2(
-                command, revision_id_out, error_out);
+        [this, command, receipt_out, error_out]() {
+            return inner_ && inner_->CreatePredicateExecutionBindingDraft(
+                command, receipt_out, error_out);
         }, false, error_out);
 }
 
-bool QueuedAuthoringDb::PublishPredicateBundleRevisionV2(
+bool QueuedAuthoringDb::SavePredicateExecutionBindingDraft(
+    const SavePredicateExecutionBindingDraftCommand& command,
+    PredicateAuthoringRevisionReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, receipt_out, error_out]() {
+        return inner_ && inner_->SavePredicateExecutionBindingDraft(command, receipt_out, error_out);
+    }, false, error_out);
+}
+
+bool QueuedAuthoringDb::DuplicatePredicateExecutionBinding(
+    const DuplicatePredicateExecutionBindingCommand& command,
+    PredicateAuthoringRevisionReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, receipt_out, error_out]() {
+        return inner_ && inner_->DuplicatePredicateExecutionBinding(command, receipt_out, error_out);
+    }, false, error_out);
+}
+
+bool QueuedAuthoringDb::PublishPredicateExecutionBindingRevision(
     std::int64_t revision_id,
     types::UtcTimePoint published_at_utc,
+    PredicateAuthoringRevisionReceipt* receipt_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, revision_id, published_at_utc, error_out]() {
-            return inner_ && inner_->PublishPredicateBundleRevisionV2(
-                revision_id, published_at_utc, error_out);
+        [this, revision_id, published_at_utc, receipt_out, error_out]() {
+            return inner_ && inner_->PublishPredicateExecutionBindingRevision(
+                revision_id, published_at_utc, receipt_out, error_out);
         }, false, error_out);
 }
 
-std::optional<PredicateBundleRevisionV2Snapshot>
-QueuedAuthoringDb::GetPredicateBundleRevisionV2(
+std::optional<PredicateExecutionBindingRevisionSnapshot>
+QueuedAuthoringDb::GetPredicateExecutionBindingRevision(
     std::int64_t revision_id) const {
-    return ExecuteRead<std::optional<PredicateBundleRevisionV2Snapshot>>(
+    return ExecuteRead<std::optional<PredicateExecutionBindingRevisionSnapshot>>(
         [this, revision_id]() {
-            return inner_ ? inner_->GetPredicateBundleRevisionV2(revision_id)
+            return inner_ ? inner_->GetPredicateExecutionBindingRevision(revision_id)
                           : std::nullopt;
         }, std::nullopt);
+}
+
+PredicateRevisionPageV2<PredicateExecutionBindingRevisionSummary>
+QueuedAuthoringDb::ListPredicateExecutionBindingRevisions(
+    const PredicateRevisionListQueryV2& query) const {
+    return ExecuteRead<PredicateRevisionPageV2<PredicateExecutionBindingRevisionSummary>>(
+        [this, query]() { return inner_ ? inner_->ListPredicateExecutionBindingRevisions(query)
+                                      : PredicateRevisionPageV2<PredicateExecutionBindingRevisionSummary>{}; }, {});
+}
+
+bool QueuedAuthoringDb::AbandonPredicateExecutionBindingDraft(
+    std::int64_t revision_id, std::string* error_out) {
+    return ExecuteWrite<bool>([this,revision_id,error_out]() {
+        return inner_ && inner_->AbandonPredicateExecutionBindingDraft(
+            revision_id,error_out);},false,error_out);
+}
+
+bool QueuedAuthoringDb::CreatePredicateGroupDraft(
+    const CreatePredicateGroupDraftCommand& command,
+    PredicateAuthoringRevisionReceipt* receipt_out, std::string* error_out) {
+    return ExecuteWrite<bool>([this,command,receipt_out,error_out]() {
+        return inner_ && inner_->CreatePredicateGroupDraft(
+            command,receipt_out,error_out);},false,error_out);
+}
+
+bool QueuedAuthoringDb::SavePredicateGroupDraft(
+    const SavePredicateGroupDraftCommand& command,
+    PredicateAuthoringRevisionReceipt* receipt_out, std::string* error_out) {
+    return ExecuteWrite<bool>([this,command,receipt_out,error_out]() {
+        return inner_ && inner_->SavePredicateGroupDraft(
+            command,receipt_out,error_out);},false,error_out);
+}
+
+bool QueuedAuthoringDb::DuplicatePredicateGroup(
+    const DuplicatePredicateGroupCommand& command,
+    PredicateAuthoringRevisionReceipt* receipt_out, std::string* error_out) {
+    return ExecuteWrite<bool>([this,command,receipt_out,error_out]() {
+        return inner_ && inner_->DuplicatePredicateGroup(
+            command,receipt_out,error_out);},false,error_out);
+}
+
+bool QueuedAuthoringDb::PublishPredicateGroupRevision(
+    std::int64_t revision_id, types::UtcTimePoint published_at_utc,
+    PredicateAuthoringRevisionReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>([this,revision_id,published_at_utc,receipt_out,error_out]() {
+        return inner_ && inner_->PublishPredicateGroupRevision(
+            revision_id,published_at_utc,receipt_out,error_out);},false,error_out);
+}
+
+std::optional<PredicateGroupRevisionSnapshot>
+QueuedAuthoringDb::GetPredicateGroupRevision(std::int64_t revision_id) const {
+    return ExecuteRead<std::optional<PredicateGroupRevisionSnapshot>>(
+        [this,revision_id]() { return inner_ ? inner_->GetPredicateGroupRevision(revision_id)
+                                             : std::nullopt; },std::nullopt);
+}
+
+PredicateRevisionPageV2<PredicateGroupRevisionSummary>
+QueuedAuthoringDb::ListPredicateGroupRevisions(
+    const PredicateRevisionListQueryV2& query) const {
+    return ExecuteRead<PredicateRevisionPageV2<PredicateGroupRevisionSummary>>(
+        [this,query]() { return inner_ ? inner_->ListPredicateGroupRevisions(query)
+                                      : PredicateRevisionPageV2<PredicateGroupRevisionSummary>{}; },{});
+}
+
+bool QueuedAuthoringDb::AbandonPredicateGroupDraft(
+    std::int64_t revision_id, std::string* error_out) {
+    return ExecuteWrite<bool>([this,revision_id,error_out]() {
+        return inner_ && inner_->AbandonPredicateGroupDraft(revision_id,error_out);},false,error_out);
+}
+
+bool QueuedAuthoringDb::UpdatePredicateAuthoringMetadata(
+    const UpdatePredicateAuthoringMetadataCommand& command,
+    bool* changed_out, std::string* error_out) {
+    return ExecuteWrite<bool>([this,command,changed_out,error_out]() {
+        return inner_ && inner_->UpdatePredicateAuthoringMetadata(
+            command,changed_out,error_out);},false,error_out);
 }
 
 bool QueuedAuthoringDb::SaveSeedProbeSpec(
@@ -216,36 +346,6 @@ std::vector<TasSpecSnapshot> QueuedAuthoringDb::ListTasSpecs(
         {});
 }
 
-bool QueuedAuthoringDb::SaveBattleRunSpec(
-    const SaveBattleRunSpecCommand& command,
-    std::int64_t* battle_run_spec_id_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, battle_run_spec_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->SaveBattleRunSpec(command, battle_run_spec_id_out, error_out) : false;
-        },
-        false,
-        error_out);
-}
-
-std::optional<BattleRunSpecSnapshot> QueuedAuthoringDb::GetBattleRunSpec(
-    std::int64_t battle_run_spec_id) const {
-    return ExecuteRead<std::optional<BattleRunSpecSnapshot>>(
-        [this, battle_run_spec_id]() {
-            return inner_ != nullptr ? inner_->GetBattleRunSpec(battle_run_spec_id) : std::nullopt;
-        },
-        std::nullopt);
-}
-
-std::vector<BattleRunSpecSnapshot> QueuedAuthoringDb::ListBattleRunSpecs(
-    int max_count) const {
-    return ExecuteRead<std::vector<BattleRunSpecSnapshot>>(
-        [this, max_count]() {
-            return inner_ != nullptr ? inner_->ListBattleRunSpecs(max_count) : std::vector<BattleRunSpecSnapshot>{};
-        },
-        {});
-}
-
 bool QueuedAuthoringDb::SavePlan(
     const SavePlanCommand& command,
     std::int64_t* plan_id_out,
@@ -325,66 +425,6 @@ std::vector<BattlePlanSnapshot> QueuedAuthoringDb::ListBattlePlans(
     return ExecuteRead<std::vector<BattlePlanSnapshot>>(
         [this, max_count]() {
             return inner_ != nullptr ? inner_->ListBattlePlans(max_count) : std::vector<BattlePlanSnapshot>{};
-        },
-        {});
-}
-
-bool QueuedAuthoringDb::SaveExplorerSettings(
-    const SaveExplorerSettingsCommand& command,
-    std::int64_t* explorer_settings_id_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, explorer_settings_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->SaveExplorerSettings(command, explorer_settings_id_out, error_out) : false;
-        },
-        false,
-        error_out);
-}
-
-std::optional<ExplorerSettingsSnapshot> QueuedAuthoringDb::GetExplorerSettings(
-    std::int64_t explorer_settings_id) const {
-    return ExecuteRead<std::optional<ExplorerSettingsSnapshot>>(
-        [this, explorer_settings_id]() {
-            return inner_ != nullptr ? inner_->GetExplorerSettings(explorer_settings_id) : std::nullopt;
-        },
-        std::nullopt);
-}
-
-std::vector<ExplorerSettingsSnapshot> QueuedAuthoringDb::ListExplorerSettings(
-    int max_count) const {
-    return ExecuteRead<std::vector<ExplorerSettingsSnapshot>>(
-        [this, max_count]() {
-            return inner_ != nullptr ? inner_->ListExplorerSettings(max_count) : std::vector<ExplorerSettingsSnapshot>{};
-        },
-        {});
-}
-
-bool QueuedAuthoringDb::SaveBattleChainSpec(
-    const SaveBattleChainSpecCommand& command,
-    std::int64_t* battle_chain_spec_id_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, battle_chain_spec_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->SaveBattleChainSpec(command, battle_chain_spec_id_out, error_out) : false;
-        },
-        false,
-        error_out);
-}
-
-std::optional<BattleChainSpecSnapshot> QueuedAuthoringDb::GetBattleChainSpec(
-    std::int64_t battle_chain_spec_id) const {
-    return ExecuteRead<std::optional<BattleChainSpecSnapshot>>(
-        [this, battle_chain_spec_id]() {
-            return inner_ != nullptr ? inner_->GetBattleChainSpec(battle_chain_spec_id) : std::nullopt;
-        },
-        std::nullopt);
-}
-
-std::vector<BattleChainSpecSnapshot> QueuedAuthoringDb::ListBattleChainSpecs(
-    int max_count) const {
-    return ExecuteRead<std::vector<BattleChainSpecSnapshot>>(
-        [this, max_count]() {
-            return inner_ != nullptr ? inner_->ListBattleChainSpecs(max_count) : std::vector<BattleChainSpecSnapshot>{};
         },
         {});
 }

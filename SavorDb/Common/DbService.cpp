@@ -30,6 +30,11 @@ DBService::DBService(
     migrations::MigrationSourceOptions migration_options)
     : config_paths_(std::move(config_paths))
     , migration_options_(std::move(migration_options)) {
+    if (config_paths_.object_store_root.empty() &&
+        !config_paths_.state_db_path.empty()) {
+        config_paths_.object_store_root =
+            config_paths_.state_db_path.parent_path() / "object_store";
+    }
 }
 
 DBService::~DBService() {
@@ -98,7 +103,13 @@ bool DBService::Start(std::string* error_out) {
         return fail_start("Failed starting Execution queue workers: " + (error_out ? *error_out : std::string{}));
     }
 
-    sqlite_state_db_ = std::make_unique<savor::db::state::SqliteStateDb>(state_sqlite_);
+    sqlite_state_db_ = std::make_unique<savor::db::state::SqliteStateDb>(
+        state_sqlite_, config_paths_.object_store_root);
+    if (!sqlite_state_db_->ReconcileArtifactObjectLocators(error_out)) {
+        return fail_start(
+            "Failed reconciling State artifact object locators: " +
+            (error_out ? *error_out : std::string{}));
+    }
     state_db_ = std::make_unique<savor::db::state::QueuedStateDb>(sqlite_state_db_.get());
     if (!state_db_->Start(error_out)) {
         return fail_start("Failed starting State queue workers: " + (error_out ? *error_out : std::string{}));

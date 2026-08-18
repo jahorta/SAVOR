@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <QtCore/QString>
+#include <QtCore/QStringList>
 #include <QtCore/QtTypes>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QWidget>
@@ -21,20 +22,22 @@ class QVBoxLayout;
 enum class AuthoringLibraryKey {
     Tas,
     SeedProbe,
-    BattleRun,
-    ExplorerSettings,
-    BattleChain,
     BattlePlan,
+    Predicates,
+    PredicateGroups,
 };
 
 struct SpecLibraryRow {
     qint64 id = 0;
     QString text;
+    QString details;
+    bool enabled = true;
 };
 
 struct SpecLibraryCallbacks {
     std::function<void(const QString&, StatusToast::Severity)> postStatus;
     std::function<void()> refreshLibrary;
+    std::function<void(qint64)> openPredicateGroup;
 };
 
 struct SpecLibraryOperationResult {
@@ -53,10 +56,13 @@ public:
     virtual QString savedItemsLabel() const;
     virtual QString newButtonText() const;
     virtual QString editButtonText() const;
+    virtual QStringList newActionLabels() const;
     virtual bool supportsDelete() const;
     virtual bool editCreatesCopy() const;
     virtual std::vector<SpecLibraryRow> refreshRows(QString* errorText) = 0;
     virtual QWidget* createNewEditor(QWidget* parent, SpecLibraryCallbacks callbacks) = 0;
+    virtual QWidget* createNewEditorForAction(int action, QWidget* parent,
+                                               SpecLibraryCallbacks callbacks);
     virtual QWidget* createEditorForRow(int row, bool duplicate, QWidget* parent, SpecLibraryCallbacks callbacks) = 0;
     virtual SpecLibraryOperationResult deleteRow(int row, QWidget* parent);
 };
@@ -94,6 +100,8 @@ private:
     void showEditorForSelectedRow();
     void deleteSelectedRow();
     void handleSavedRowChanged();
+    void openPredicateGroup(qint64 bindingRevisionId);
+    void installNewActionMenu();
     void updateActionState();
     void postStatusMessage(const QString& text, StatusToast::Severity severity);
     int selectedSavedRow() const;

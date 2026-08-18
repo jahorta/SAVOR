@@ -10,7 +10,7 @@
 #include "../Common/Types/UtcTimestamp.h"
 #include "../Common/Retention/OutboxRetention.h"
 #include "../../SavorCore/Core/Input/SoaBattle/ActionTypes.h"
-#include "../../SavorCore/Runner/Runtime/Predicates/PredicateBundle.h"
+#include "../../SavorCore/Runner/Runtime/Predicates/PredicateExecution.h"
 
 namespace savor::db {
 
@@ -27,11 +27,8 @@ enum class BattlePlanTargetKind : int {
 using BattlePlanActionMacro = soa::battle::actions::BattleAction;
 
 struct AuthoringPayloadRecord {
-    std::int64_t battle_chain_spec_id = 0;
     std::int64_t seed_probe_spec_id = 0;
     std::int64_t tas_spec_id = 0;
-    std::int64_t battle_run_spec_id = 0;
-    std::int64_t explorer_settings_id = 0;
     std::int64_t battle_plan_action_preset_id = 0;
     std::int64_t workflow_graph_id = 0;
     std::int64_t workflow_graph_revision_id = 0;
@@ -111,17 +108,6 @@ struct TasSpecSnapshot {
     std::int64_t base_dtm_artifact_id = 0;
 };
 
-struct SaveBattleRunSpecCommand {
-    std::string name;
-    int priority = 0;
-    bool progress_enable = true;
-    bool use_single_turn_runner = false;
-    bool auto_wave_trigger_enable = false;
-    types::UtcTimePoint created_at_utc{};
-    std::string correlation_id;
-    std::string causation_id;
-};
-
 struct SavePlanCommand {
     std::string name;
     std::string fingerprint;
@@ -161,7 +147,7 @@ struct SaveBattlePlanActionCommand {
 struct SaveBattlePlanTurnCommand {
     std::int64_t plan_id = 0;
     int turn_index = 0;
-    std::optional<std::int64_t> default_predicate_bundle_revision_id;
+    std::optional<std::int64_t> default_predicate_group_revision_id;
     std::vector<SaveBattlePlanActionCommand> actions;
     bool replace_existing_actions = true;
     types::UtcTimePoint created_at_utc{};
@@ -169,36 +155,10 @@ struct SaveBattlePlanTurnCommand {
     std::string causation_id;
 };
 
-struct SaveExplorerSettingsCommand {
-    std::string name;
-    std::string description;
-    std::optional<std::int64_t> default_plan_id;
-    types::UtcTimePoint created_at_utc{};
-    std::string correlation_id;
-    std::string causation_id;
-};
-
-struct SaveBattleChainSpecCommand {
-    std::string name;
-    std::string description;
-    std::int64_t battle_run_spec_id = 0;
-    std::int64_t explorer_settings_id = 0;
-    types::UtcTimePoint created_at_utc{};
-    std::string correlation_id;
-    std::string causation_id;
-};
-
-struct BattleChainSpecSnapshot {
-    std::int64_t battle_chain_spec_id = 0;
-    std::string name;
-    std::string description;
-    std::int64_t battle_run_spec_id = 0;
-    std::int64_t explorer_settings_id = 0;
-};
-
 struct SaveWorkflowGraphNodeInputCommand {
     std::string input_key;
     std::string data_kind;
+    std::string ref_kind;
     std::string display_name;
     bool required = true;
 };
@@ -206,7 +166,29 @@ struct SaveWorkflowGraphNodeInputCommand {
 struct SaveWorkflowGraphNodeOutputCommand {
     std::string output_key;
     std::string data_kind;
+    std::string ref_kind;
     std::string display_name;
+};
+
+struct SaveWorkflowGraphNodeArgumentCommand {
+    std::string argument_key;
+    std::string display_name;
+    std::string value_type;
+    bool required = false;
+    std::optional<std::string> default_value;
+    std::optional<std::int64_t> minimum_integer;
+    std::optional<std::uint64_t> maximum_integer;
+    struct Choice {
+        std::string value;
+        std::string display_name;
+    };
+    std::vector<Choice> choices;
+};
+
+struct SaveWorkflowGraphNodeArgumentConstraintCommand {
+    std::string lesser_or_equal_key;
+    std::string greater_or_equal_key;
+    std::string message;
 };
 
 struct SaveWorkflowGraphNodeCommand {
@@ -217,6 +199,8 @@ struct SaveWorkflowGraphNodeCommand {
     std::optional<std::int64_t> authored_ref_id;
     std::vector<SaveWorkflowGraphNodeInputCommand> inputs;
     std::vector<SaveWorkflowGraphNodeOutputCommand> possible_outputs;
+    std::vector<SaveWorkflowGraphNodeArgumentCommand> arguments;
+    std::vector<SaveWorkflowGraphNodeArgumentConstraintCommand> argument_constraints;
 };
 
 struct SaveWorkflowGraphEdgeCommand {
@@ -249,15 +233,6 @@ struct SaveWorkflowGraphResult {
     std::int64_t workflow_graph_revision_id = 0;
 };
 
-struct BattleRunSpecSnapshot {
-    std::int64_t battle_run_spec_id = 0;
-    std::string name;
-    int priority = 0;
-    bool progress_enable = true;
-    bool use_single_turn_runner = false;
-    bool auto_wave_trigger_enable = false;
-};
-
 struct BattlePlanActionPresetSnapshot {
     std::int64_t action_preset_id = 0;
     std::string name;
@@ -285,7 +260,7 @@ struct BattlePlanTurnSnapshot {
     std::int64_t plan_turn_id = 0;
     std::int64_t plan_id = 0;
     int turn_index = 0;
-    std::optional<std::int64_t> default_predicate_bundle_revision_id;
+    std::optional<std::int64_t> default_predicate_group_revision_id;
     std::vector<BattlePlanActionSnapshot> actions;
 };
 
@@ -296,16 +271,10 @@ struct BattlePlanSnapshot {
     std::vector<BattlePlanTurnSnapshot> turns;
 };
 
-struct ExplorerSettingsSnapshot {
-    std::int64_t explorer_settings_id = 0;
-    std::string name;
-    std::string description;
-    std::optional<std::int64_t> default_plan_id;
-};
-
 struct WorkflowGraphNodeInputSnapshot {
     std::string input_key;
     std::string data_kind;
+    std::string ref_kind;
     std::string display_name;
     bool required = true;
 };
@@ -313,7 +282,29 @@ struct WorkflowGraphNodeInputSnapshot {
 struct WorkflowGraphNodeOutputSnapshot {
     std::string output_key;
     std::string data_kind;
+    std::string ref_kind;
     std::string display_name;
+};
+
+struct WorkflowGraphNodeArgumentSnapshot {
+    std::string argument_key;
+    std::string display_name;
+    std::string value_type;
+    bool required = false;
+    std::optional<std::string> default_value;
+    std::optional<std::int64_t> minimum_integer;
+    std::optional<std::uint64_t> maximum_integer;
+    struct Choice {
+        std::string value;
+        std::string display_name;
+    };
+    std::vector<Choice> choices;
+};
+
+struct WorkflowGraphNodeArgumentConstraintSnapshot {
+    std::string lesser_or_equal_key;
+    std::string greater_or_equal_key;
+    std::string message;
 };
 
 struct WorkflowGraphNodeSnapshot {
@@ -325,6 +316,8 @@ struct WorkflowGraphNodeSnapshot {
     std::optional<std::int64_t> authored_ref_id;
     std::vector<WorkflowGraphNodeInputSnapshot> inputs;
     std::vector<WorkflowGraphNodeOutputSnapshot> possible_outputs;
+    std::vector<WorkflowGraphNodeArgumentSnapshot> arguments;
+    std::vector<WorkflowGraphNodeArgumentConstraintSnapshot> argument_constraints;
 };
 
 struct WorkflowGraphEdgeSnapshot {
@@ -354,11 +347,43 @@ struct WorkflowGraphSnapshot {
 // Clean predicate-v2 authoring surface. These records intentionally expose
 // the same DB-independent resolved model that coordination places in a
 // workset. Draft writes are relational; published snapshots are immutable.
-struct SavePredicateDefinitionDraftV2Command {
+struct PredicateAuthoringRevisionReceipt {
+    std::int64_t parent_id = 0;
     std::string stable_key;
+    std::int64_t revision_id = 0;
+    int revision_number = 0;
+    std::string revision_state;
+    std::string semantic_sha256;
+    bool identity_created = false;
+    bool metadata_changed = false;
+    bool semantic_changed = false;
+};
+
+struct PredicateDefinitionDraftBody {
+    std::vector<savor::runtime::program::composition::PredicateWitness> witnesses;
+    std::vector<savor::runtime::program::composition::PredicateExpressionNode> expression;
+    std::size_t root_expression = 0;
+};
+
+struct CreatePredicateDefinitionDraftCommand {
+    std::string creation_request_key;
     std::string name;
     std::string description;
-    savor::runtime::program::composition::PredicateDefinition definition;
+    PredicateDefinitionDraftBody body;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct SavePredicateDefinitionDraftCommand {
+    std::int64_t predicate_definition_id = 0;
+    PredicateDefinitionDraftBody body;
+    types::UtcTimePoint saved_at_utc{};
+};
+
+struct DuplicatePredicateDefinitionCommand {
+    std::int64_t source_revision_id = 0;
+    std::string creation_request_key;
+    std::string name;
+    std::string description;
     types::UtcTimePoint created_at_utc{};
 };
 
@@ -369,63 +394,276 @@ struct PredicateDefinitionRevisionV2Snapshot {
     std::string name;
     std::string description;
     std::string revision_state;
+    std::string semantic_sha256;
     std::string content_sha256;
     savor::runtime::program::composition::PredicateDefinition definition;
 };
 
-struct SavePredicateBundleDraftV2Command {
-    std::string stable_key;
+struct PredicateExecutionBindingDraftBody {
+    std::int64_t predicate_definition_revision_id = 0;
+    std::vector<savor::runtime::predicates::PredicateWitnessSourceBindingV1> witnesses;
+};
+
+struct CreatePredicateExecutionBindingDraftCommand {
+    std::string creation_request_key;
     std::string name;
     std::string description;
-    savor::runtime::predicates::ResolvedPredicateBundleV1 bundle;
+    PredicateExecutionBindingDraftBody body;
     types::UtcTimePoint created_at_utc{};
 };
 
-struct PredicateBundleRevisionV2Snapshot {
-    std::int64_t predicate_bundle_id = 0;
+struct SavePredicateExecutionBindingDraftCommand {
+    std::int64_t predicate_execution_binding_id = 0;
+    PredicateExecutionBindingDraftBody body;
+    types::UtcTimePoint saved_at_utc{};
+};
+
+struct DuplicatePredicateExecutionBindingCommand {
+    std::int64_t source_revision_id = 0;
+    std::string creation_request_key;
+    std::string name;
+    std::string description;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct PredicateExecutionBindingRevisionSnapshot {
+    std::int64_t predicate_execution_binding_id = 0;
     std::string stable_key;
     std::string name;
     std::string description;
     std::string revision_state;
-    savor::runtime::predicates::ResolvedPredicateBundleV1 bundle;
+    std::string semantic_sha256;
+    savor::runtime::predicates::PredicateExecutionBindingV1 binding;
+};
+
+struct PredicateGroupDraftBody {
+    std::vector<savor::runtime::predicates::PredicateGroupMemberV1> members;
+};
+
+struct CreatePredicateGroupDraftCommand {
+    std::string creation_request_key;
+    std::string name;
+    std::string description;
+    PredicateGroupDraftBody body;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct SavePredicateGroupDraftCommand {
+    std::int64_t predicate_group_id = 0;
+    PredicateGroupDraftBody body;
+    types::UtcTimePoint saved_at_utc{};
+};
+
+struct DuplicatePredicateGroupCommand {
+    std::int64_t source_revision_id = 0;
+    std::string creation_request_key;
+    std::string name;
+    std::string description;
+    types::UtcTimePoint created_at_utc{};
+};
+
+enum class PredicateAuthoringObjectKind : std::uint8_t {
+    Definition,
+    ExecutionBinding,
+    Group,
+};
+
+struct UpdatePredicateAuthoringMetadataCommand {
+    PredicateAuthoringObjectKind object_kind = PredicateAuthoringObjectKind::Definition;
+    std::int64_t parent_id = 0;
+    std::string name;
+    std::string description;
+    types::UtcTimePoint updated_at_utc{};
+};
+
+struct PredicateGroupRevisionSnapshot {
+    std::int64_t predicate_group_id = 0;
+    std::string stable_key;
+    std::string name;
+    std::string description;
+    std::string revision_state;
+    std::string semantic_sha256;
+    savor::runtime::predicates::ResolvedPredicateGroupV1 group;
+};
+
+struct PredicateRevisionListQueryV2 {
+    std::optional<std::string> revision_state;
+    std::string search_text;
+    std::optional<std::int64_t> before_revision_id;
+    int limit = 100;
+};
+
+struct PredicateDefinitionRevisionV2Summary {
+    std::int64_t predicate_definition_revision_id = 0;
+    int revision_number = 0;
+    std::string stable_key;
+    std::string name;
+    std::string description;
+    std::string revision_state;
+    std::string semantic_sha256;
+    std::string content_sha256;
+    int witness_count = 0;
+    int expression_node_count = 0;
+};
+
+struct PredicateExecutionBindingRevisionSummary {
+    std::int64_t predicate_execution_binding_revision_id = 0;
+    int revision_number = 0;
+    std::string stable_key;
+    std::string name;
+    std::string description;
+    std::string revision_state;
+    std::string semantic_sha256;
+    std::string content_sha256;
+    std::int64_t predicate_definition_revision_id = 0;
+    int witness_source_count = 0;
+};
+
+struct PredicateGroupRevisionSummary {
+    std::int64_t predicate_group_revision_id = 0;
+    int revision_number = 0;
+    std::string stable_key;
+    std::string name;
+    std::string description;
+    std::string revision_state;
+    std::string semantic_sha256;
+    std::string content_sha256;
+    int member_count = 0;
+    int hook_count = 0;
+};
+
+template <typename T>
+struct PredicateRevisionPageV2 {
+    std::vector<T> items;
+    std::optional<std::int64_t> next_before_revision_id;
 };
 
 struct IAuthoringDb {
     virtual ~IAuthoringDb() = default;
 
-    virtual bool SavePredicateDefinitionDraftV2(
-        const SavePredicateDefinitionDraftV2Command&,
-        std::int64_t* = nullptr,
+    virtual bool CreatePredicateDefinitionDraft(
+        const CreatePredicateDefinitionDraftCommand&,
+        PredicateAuthoringRevisionReceipt* = nullptr,
         std::string* error_out = nullptr) {
-        if (error_out) *error_out = "predicate-v2 authoring is unavailable";
+        if (error_out) *error_out = "predicate definition authoring is unavailable";
+        return false;
+    }
+    virtual bool SavePredicateDefinitionDraft(
+        const SavePredicateDefinitionDraftCommand&,
+        PredicateAuthoringRevisionReceipt* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate definition authoring is unavailable";
+        return false;
+    }
+    virtual bool DuplicatePredicateDefinition(
+        const DuplicatePredicateDefinitionCommand&,
+        PredicateAuthoringRevisionReceipt* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate definition authoring is unavailable";
         return false;
     }
     virtual bool PublishPredicateDefinitionRevisionV2(
         std::int64_t,
         types::UtcTimePoint,
+        PredicateAuthoringRevisionReceipt* = nullptr,
         std::string* error_out = nullptr) {
         if (error_out) *error_out = "predicate-v2 authoring is unavailable";
         return false;
     }
     virtual std::optional<PredicateDefinitionRevisionV2Snapshot>
     GetPredicateDefinitionRevisionV2(std::int64_t) const { return std::nullopt; }
-
-    virtual bool SavePredicateBundleDraftV2(
-        const SavePredicateBundleDraftV2Command&,
-        std::int64_t* = nullptr,
-        std::string* error_out = nullptr) {
-        if (error_out) *error_out = "predicate-v2 authoring is unavailable";
+    virtual PredicateRevisionPageV2<PredicateDefinitionRevisionV2Summary>
+    ListPredicateDefinitionRevisionsV2(const PredicateRevisionListQueryV2&) const { return {}; }
+    virtual bool AbandonPredicateDefinitionDraftV2(
+        std::int64_t, std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate authoring is unavailable";
         return false;
     }
-    virtual bool PublishPredicateBundleRevisionV2(
+
+    virtual bool CreatePredicateExecutionBindingDraft(
+        const CreatePredicateExecutionBindingDraftCommand&,
+        PredicateAuthoringRevisionReceipt* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate execution-binding authoring is unavailable";
+        return false;
+    }
+    virtual bool SavePredicateExecutionBindingDraft(
+        const SavePredicateExecutionBindingDraftCommand&,
+        PredicateAuthoringRevisionReceipt* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate execution-binding authoring is unavailable";
+        return false;
+    }
+    virtual bool DuplicatePredicateExecutionBinding(
+        const DuplicatePredicateExecutionBindingCommand&,
+        PredicateAuthoringRevisionReceipt* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate execution-binding authoring is unavailable";
+        return false;
+    }
+    virtual bool PublishPredicateExecutionBindingRevision(
         std::int64_t,
         types::UtcTimePoint,
+        PredicateAuthoringRevisionReceipt* = nullptr,
         std::string* error_out = nullptr) {
-        if (error_out) *error_out = "predicate-v2 authoring is unavailable";
+        if (error_out) *error_out = "predicate execution-binding authoring is unavailable";
         return false;
     }
-    virtual std::optional<PredicateBundleRevisionV2Snapshot>
-    GetPredicateBundleRevisionV2(std::int64_t) const { return std::nullopt; }
+    virtual std::optional<PredicateExecutionBindingRevisionSnapshot>
+    GetPredicateExecutionBindingRevision(std::int64_t) const { return std::nullopt; }
+    virtual PredicateRevisionPageV2<PredicateExecutionBindingRevisionSummary>
+    ListPredicateExecutionBindingRevisions(const PredicateRevisionListQueryV2&) const { return {}; }
+    virtual bool AbandonPredicateExecutionBindingDraft(
+        std::int64_t, std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate execution-binding authoring is unavailable";
+        return false;
+    }
+
+    virtual bool CreatePredicateGroupDraft(
+        const CreatePredicateGroupDraftCommand&,
+        PredicateAuthoringRevisionReceipt* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate-group authoring is unavailable";
+        return false;
+    }
+    virtual bool SavePredicateGroupDraft(
+        const SavePredicateGroupDraftCommand&,
+        PredicateAuthoringRevisionReceipt* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate-group authoring is unavailable";
+        return false;
+    }
+    virtual bool DuplicatePredicateGroup(
+        const DuplicatePredicateGroupCommand&,
+        PredicateAuthoringRevisionReceipt* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate-group authoring is unavailable";
+        return false;
+    }
+    virtual bool PublishPredicateGroupRevision(
+        std::int64_t, types::UtcTimePoint,
+        PredicateAuthoringRevisionReceipt* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate-group authoring is unavailable";
+        return false;
+    }
+    virtual std::optional<PredicateGroupRevisionSnapshot>
+    GetPredicateGroupRevision(std::int64_t) const { return std::nullopt; }
+    virtual PredicateRevisionPageV2<PredicateGroupRevisionSummary>
+    ListPredicateGroupRevisions(const PredicateRevisionListQueryV2&) const { return {}; }
+    virtual bool AbandonPredicateGroupDraft(
+        std::int64_t, std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate-group authoring is unavailable";
+        return false;
+    }
+
+    virtual bool UpdatePredicateAuthoringMetadata(
+        const UpdatePredicateAuthoringMetadataCommand&,
+        bool* changed_out = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "predicate metadata authoring is unavailable";
+        return false;
+    }
 
     virtual bool SaveSeedProbeSpec(
         const SaveSeedProbeSpecCommand& command,
@@ -458,17 +696,6 @@ struct IAuthoringDb {
     virtual std::vector<TasSpecSnapshot> ListTasSpecs(
         int max_count) const = 0;
 
-    virtual bool SaveBattleRunSpec(
-        const SaveBattleRunSpecCommand& command,
-        std::int64_t* battle_run_spec_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-
-    virtual std::optional<BattleRunSpecSnapshot> GetBattleRunSpec(
-        std::int64_t battle_run_spec_id) const = 0;
-
-    virtual std::vector<BattleRunSpecSnapshot> ListBattleRunSpecs(
-        int max_count) const = 0;
-
     virtual bool SavePlan(
         const SavePlanCommand& command,
         std::int64_t* plan_id_out = nullptr,
@@ -498,28 +725,6 @@ struct IAuthoringDb {
         std::int64_t plan_id) const = 0;
 
     virtual std::vector<BattlePlanSnapshot> ListBattlePlans(
-        int max_count) const = 0;
-
-    virtual bool SaveExplorerSettings(
-        const SaveExplorerSettingsCommand& command,
-        std::int64_t* explorer_settings_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-
-    virtual std::optional<ExplorerSettingsSnapshot> GetExplorerSettings(
-        std::int64_t explorer_settings_id) const = 0;
-
-    virtual std::vector<ExplorerSettingsSnapshot> ListExplorerSettings(
-        int max_count) const = 0;
-
-    virtual bool SaveBattleChainSpec(
-        const SaveBattleChainSpecCommand& command,
-        std::int64_t* battle_chain_spec_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-
-    virtual std::optional<BattleChainSpecSnapshot> GetBattleChainSpec(
-        std::int64_t battle_chain_spec_id) const = 0;
-
-    virtual std::vector<BattleChainSpecSnapshot> ListBattleChainSpecs(
         int max_count) const = 0;
 
     virtual bool SaveWorkflowGraph(

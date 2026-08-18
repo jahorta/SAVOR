@@ -11,7 +11,7 @@
 namespace savor::runtime::program {
 namespace {
 
-constexpr std::array<CanonicalActionDefinition, 26> kActions{{
+constexpr std::array<CanonicalActionDefinition, 27> kActions{{
     {CanonicalAction::SavestateSaveImmutableArtifact, "runtime.savestate.save_immutable_artifact", "(SavestateArtifactSaveRequest)->PendingSavestateArtifactPublicationReceipt"},
     {CanonicalAction::ExecutionContinueUntil, "runtime.execution.continue_until", "(ContinueUntilRequest)->ContinueUntilResult"},
     {CanonicalAction::ExecutionStepFrames, "runtime.execution.step_frames", "(StepFramesRequest)->ExecutionResult"},
@@ -38,12 +38,13 @@ constexpr std::array<CanonicalActionDefinition, 26> kActions{{
     {CanonicalAction::TelemetryEmit, "runtime.telemetry.emit", "(TypedTelemetryRecord)->TelemetryReceipt"},
     {CanonicalAction::ExecutionRequirePausedPc, "runtime.execution.require_paused_pc", "(RequirePausedPcRequest)->PausedPcReceipt"},
     {CanonicalAction::ExecutionContinueUntilInputObserved, "runtime.execution.continue_until_input_observed", "(ContinueUntilInputObservedRequest)->InputObservedExecutionResult"},
+    {CanonicalAction::ExecutionObservePausedPc, "runtime.execution.observe_paused_pc", "(ObservePausedPcRequest)->PausedPcReceipt"},
 }};
 
 consteval bool CanonicalActionDefinitionsAreComplete()
 {
     constexpr auto expected = static_cast<std::size_t>(
-        CanonicalAction::ExecutionContinueUntilInputObserved) + 1u;
+        CanonicalAction::ExecutionObservePausedPc) + 1u;
     if (kActions.size() != expected)
         return false;
     std::array<bool, expected> seen{};
@@ -151,6 +152,7 @@ bool UsesTypedRequestRecord(CanonicalAction action) noexcept
     case CanonicalAction::GuestReadU64:
     case CanonicalAction::GuestRunCoherentQuery:
     case CanonicalAction::ExecutionRequirePausedPc:
+    case CanonicalAction::ExecutionObservePausedPc:
         return true;
     default:
         return false;
@@ -210,6 +212,7 @@ std::optional<SchemaIdentity> SharedOutputSchemaIdentity(
             "runtime.execution.ExecutionResult",
             "bytes(max=65536;ExecutionResult/1)");
     case CanonicalAction::ExecutionRequirePausedPc:
+    case CanonicalAction::ExecutionObservePausedPc:
         return RuntimeSchemaIdentity(
             "runtime.execution.PausedPcReceipt",
             "record PausedPcReceipt/1(pc:u32,vi_count:u64,workset_epoch:u64)");
@@ -392,6 +395,8 @@ std::vector<RecordFieldDefinition> TypedRequestFields(
         };
     case CanonicalAction::ExecutionRequirePausedPc:
         return {{"expected_pc", u64}};
+    case CanonicalAction::ExecutionObservePausedPc:
+        return {};
     default:
         return {};
     }
@@ -986,7 +991,8 @@ BuildCanonicalRuntimeActionSchemas()
             });
             continue;
         }
-        if (action == CanonicalAction::ExecutionRequirePausedPc)
+        if (action == CanonicalAction::ExecutionRequirePausedPc ||
+            action == CanonicalAction::ExecutionObservePausedPc)
         {
             append({
                 .identity =
@@ -1432,6 +1438,18 @@ BuildCanonicalRuntimeActionDescriptors()
         ActionIdempotency::ReceiptProven));
     result.push_back(Descriptor(
         CanonicalAction::ExecutionRequirePausedPc,
+        service(SessionServiceCapability::Execution),
+        0,
+        5000,
+        ActionEpochPolicy::RequiresCurrentEpoch,
+        ActionReplayClass::RecordedEvidence,
+        ActionCancellationMode::BeforeMutationOnly,
+        ActionResourceBehavior::None,
+        ActionCleanupGuarantee::None,
+        false,
+        ActionIdempotency::NaturallyIdempotent));
+    result.push_back(Descriptor(
+        CanonicalAction::ExecutionObservePausedPc,
         service(SessionServiceCapability::Execution),
         0,
         5000,

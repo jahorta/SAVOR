@@ -28,6 +28,13 @@ The baseline includes complete compatibility and lineage. Worker staging verifie
 hashes, DTM shape, startup-state parity, sidecar naming, compatibility, and lineage before the workset
 can mutate Dolphin.
 
+StateDB does not persist machine-specific artifact paths. Every managed object is stored beneath the
+database root's `object_store`, and `state_artifact.object_relpath` carries its validated relative
+locator. The `filename` column is display metadata. Coordination resolves the locator against the
+active `DbConfigPaths::object_store_root` before staging, so relocating the database root with its
+object store preserves exact artifact identity without rewriting worksets or domain records. External
+paths exist only as ingestion sources and are never durable locators.
+
 There is no phase baseline based on booting Dolphin and no baseline based on guest state left by an
 earlier workset. Program execution is submitted only as an immutable `WorkerWorkset`; a duplicate
 transport delivery can repeat the existing acceptance receipt but cannot run the accepted workset a

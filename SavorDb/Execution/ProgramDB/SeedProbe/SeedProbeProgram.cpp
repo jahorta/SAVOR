@@ -185,41 +185,6 @@ int ResolveSamplesPerAxis(
     return 1;
 }
 
-std::pair<std::string, std::string> ResolveFlavorAndPolicy(
-    const ProgramJobMaterializationContext& context) {
-    if (!context.graph.has_value()) {
-        return {"BATTLE_PRE", "seedprobe.battle"};
-    }
-    const auto& graph = *context.graph;
-    if (graph.unit_variant == "field_return"
-        || graph.breakpoint_profile_key
-            == "seedprobe.field_return") {
-        return {"FIELD_RETURN", "seedprobe.field_return"};
-    }
-    if (graph.unit_variant == "dungeon") {
-        return {
-            "DUNGEON_PRE",
-            graph.breakpoint_profile_key.empty()
-                ? "seedprobe.dungeon"
-                : graph.breakpoint_profile_key,
-        };
-    }
-    if (graph.unit_variant == "overworld") {
-        return {
-            "OVERWORLD_PRE",
-            graph.breakpoint_profile_key.empty()
-                ? "seedprobe.overworld"
-                : graph.breakpoint_profile_key,
-        };
-    }
-    return {
-        "BATTLE_PRE",
-        graph.breakpoint_profile_key.empty()
-            ? "seedprobe.battle"
-            : graph.breakpoint_profile_key,
-    };
-}
-
 bool IsBusinessFinal(std::string_view state) {
     return state == "COMPLETED" || state == "SUCCEEDED"
         || state == "SUCCEEDED_WINNER"
@@ -351,15 +316,17 @@ public:
             root_job_set_id = existing->job_set_id;
             probe_run_id = *existing->domain_ref_id;
         } else {
-            const auto [flavor, policy] =
-                ResolveFlavorAndPolicy(context);
+            constexpr std::string_view flavor = "ENTRY_QUALIFIED";
+            constexpr std::string_view policy = "seedprobe.entry_pc.v1";
             std::int64_t probe_set_id = 0;
             if (!analysis_db_->CreateSeedProbeSet(
                     {
                         .name =
-                            "seedprobe." + flavor + "." + policy,
-                        .probe_flavor = flavor,
-                        .breakpoint_policy_name = policy,
+                            std::string("seedprobe.") +
+                            std::string(flavor) + "." +
+                            std::string(policy),
+                        .probe_flavor = std::string(flavor),
+                        .breakpoint_policy_name = std::string(policy),
                         .segment_source_kind =
                             "workflow_program_kind",
                         .created_at_utc = types::UtcNow(),

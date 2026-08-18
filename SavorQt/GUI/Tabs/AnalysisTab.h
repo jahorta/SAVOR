@@ -20,6 +20,7 @@ public:
         std::function<void()> openArtifacts;
         std::function<void()> openWorkflows;
         std::function<void(qint64)> replayVisual;
+        std::function<void(const QString&, const QString&, qint64)> openWorkflowLauncher;
     };
 
     explicit AnalysisTab(Actions actions, QWidget* parent = nullptr);
@@ -57,6 +58,7 @@ private:
 
     QTableWidget* overviewTable_ = nullptr;
     QTableWidget* workflowsTable_ = nullptr;
+    QTableWidget* tasMoviesTable_ = nullptr;
     savorqt::gui::BattleRunsWidget* battleRunsWidget_ = nullptr;
 
     int currentPaneIndex_ = 0;

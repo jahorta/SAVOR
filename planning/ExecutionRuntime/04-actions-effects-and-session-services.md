@@ -652,9 +652,9 @@ Migration implications:
     the canonical subprogram/reducer IDs rather than preserving `InputMacroEngine`.
 12. Add source-backed cutscene or overworld packs only when a concrete migrated client defines their
     inventories; delete old domain opcodes only after phase parity.
-13. Re-author current battle predicate arming, baseline capture, evaluation, and reporting through the
-    implemented predicate and semantic-observation composers; consume existing stored records in memory
-    through the production adapter and remove the VM-specific evaluator after parity.
+13. Resolve the hard-cut Predicate Group, Execution Binding, and Definition records through the
+    implemented predicate and semantic-observation composers; no old stored-record adapter or
+    VM-specific evaluator remains.
 
 Current programs are re-authored through the canonical builders and composition frontends. The old broad
 host interfaces are not exposed to new modules.

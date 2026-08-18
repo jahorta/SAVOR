@@ -885,6 +885,90 @@ UiReadPage<UiArtifactSummary> SqliteUiReadDb::ListArtifacts(
     return page;
 }
 
+std::vector<UiSavestateSummary> SqliteUiReadDb::ListSavestates(
+    std::string_view playback_state, bool complete_only, std::string_view search, int limit) const {
+    std::vector<UiSavestateSummary> rows;
+    if (db_ == nullptr || limit <= 0) return rows;
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT savestate_id,artifact_id,savestate_type,COALESCE(note,''),is_complete,playback_state,"
+        "dtm_artifact_id,sha256,size_bytes,filename,created_at_utc FROM ui_state_savestate_summary "
+        "WHERE (?1='' OR playback_state=?1) AND (?2=0 OR is_complete=1) "
+        "AND (?3='' OR filename LIKE ?4 OR sha256 LIKE ?4 OR CAST(savestate_id AS TEXT) LIKE ?4) "
+        "ORDER BY created_at_utc DESC,savestate_id DESC LIMIT ?5;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) return rows;
+    const std::string playback(playback_state);
+    const std::string needle(search);
+    const std::string like = "%" + needle + "%";
+    sqlite3_bind_text(st, 1, playback.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 2, complete_only ? 1 : 0);
+    sqlite3_bind_text(st, 3, needle.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 4, like.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 5, limit);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        UiSavestateSummary row{};
+        row.savestate_id = sqlite3_column_int64(st, 0);
+        row.artifact_id = sqlite3_column_int64(st, 1);
+        row.savestate_type = ColumnText(st, 2);
+        row.note = ColumnText(st, 3);
+        row.is_complete = sqlite3_column_int(st, 4) != 0;
+        row.playback_state = ColumnText(st, 5);
+        row.dtm_artifact_id = ColumnInt64Optional(st, 6);
+        row.sha256 = ColumnText(st, 7);
+        row.size_bytes = static_cast<std::uint64_t>(sqlite3_column_int64(st, 8));
+        row.filename = ColumnText(st, 9);
+        row.created_at_utc = sqlite3_column_int64(st, 10);
+        rows.push_back(std::move(row));
+    }
+    sqlite3_finalize(st);
+    return rows;
+}
+
+std::vector<UiTasMovieRootSummary> SqliteUiReadDb::ListTasMovieRoots(int limit) const {
+    std::vector<UiTasMovieRootSummary> rows;
+    if (db_ == nullptr || limit <= 0) return rows;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_,
+            "SELECT tas_movie_root_id,source_dtm_artifact_id,dtm_artifact_id,rtc_value,itinerary_artifact_id,required_final_breakpoint_pc,checkpoint_savestate_id,source_context_kind,source_context_id,created_at_utc FROM ui_tas_movie_root_summary ORDER BY created_at_utc DESC,tas_movie_root_id DESC LIMIT ?1;",
+            -1, &st, nullptr) != SQLITE_OK) return rows;
+    sqlite3_bind_int(st, 1, limit);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        UiTasMovieRootSummary row{};
+        row.tas_movie_root_id=sqlite3_column_int64(st,0); row.source_dtm_artifact_id=sqlite3_column_int64(st,1);
+        row.dtm_artifact_id=sqlite3_column_int64(st,2); row.rtc_value=static_cast<std::uint32_t>(sqlite3_column_int64(st,3));
+        row.itinerary_artifact_id=sqlite3_column_int64(st,4); row.required_final_breakpoint_pc=static_cast<std::uint32_t>(sqlite3_column_int64(st,5));
+        row.checkpoint_savestate_id=sqlite3_column_int64(st,6); row.source_context_kind=ColumnText(st,7);
+        row.source_context_id=sqlite3_column_int64(st,8); row.created_at_utc=sqlite3_column_int64(st,9); rows.push_back(std::move(row));
+    }
+    sqlite3_finalize(st); return rows;
+}
+
+std::vector<UiTasMovieTreeSummary> SqliteUiReadDb::ListTasMovieTrees(int limit) const {
+    std::vector<UiTasMovieTreeSummary> rows;
+    if (db_ == nullptr || limit <= 0) return rows;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_,
+            "SELECT tas_movie_tree_id,tas_movie_root_id,parent_tas_movie_tree_id,dtm_artifact_id,itinerary_artifact_id,required_final_breakpoint_pc,checkpoint_savestate_id,source_context_kind,source_context_id,created_at_utc FROM ui_tas_movie_tree_summary ORDER BY created_at_utc DESC,tas_movie_tree_id DESC LIMIT ?1;",
+            -1, &st, nullptr) != SQLITE_OK) return rows;
+    sqlite3_bind_int(st,1,limit);
+    while(sqlite3_step(st)==SQLITE_ROW){ UiTasMovieTreeSummary row{}; row.tas_movie_tree_id=sqlite3_column_int64(st,0); row.tas_movie_root_id=sqlite3_column_int64(st,1); row.parent_tas_movie_tree_id=ColumnInt64Optional(st,2); row.dtm_artifact_id=sqlite3_column_int64(st,3); row.itinerary_artifact_id=sqlite3_column_int64(st,4); row.required_final_breakpoint_pc=static_cast<std::uint32_t>(sqlite3_column_int64(st,5)); row.checkpoint_savestate_id=sqlite3_column_int64(st,6); row.source_context_kind=ColumnText(st,7); row.source_context_id=sqlite3_column_int64(st,8); row.created_at_utc=sqlite3_column_int64(st,9); rows.push_back(std::move(row)); }
+    sqlite3_finalize(st); return rows;
+}
+
+std::vector<UiTasMovieValidationRequestSummary> SqliteUiReadDb::ListTasMovieValidationRequests(int limit) const {
+    std::vector<UiTasMovieValidationRequestSummary> rows; if(db_==nullptr||limit<=0)return rows; sqlite3_stmt* st=nullptr;
+    if(sqlite3_prepare_v2(db_,"SELECT validation_request_id,workflow_instance_id,workflow_step_id,step_kind,operation,source_kind,source_ref_id,source_dtm_artifact_id,source_dtm_sha256,rtc_value,effective_dtm_sha256,itinerary_artifact_id,COALESCE(itinerary_sha256,''),required_final_breakpoint_pc,latest_validation_attempt_id,COALESCE(latest_outcome,''),COALESCE(latest_failure_reason,''),latest_actual_pc,latest_actual_input_count,produced_tas_movie_root_id,created_at_utc FROM ui_tas_movie_validation_request_summary ORDER BY created_at_utc DESC,validation_request_id DESC LIMIT ?1;",-1,&st,nullptr)!=SQLITE_OK)return rows; sqlite3_bind_int(st,1,limit);
+    while(sqlite3_step(st)==SQLITE_ROW){UiTasMovieValidationRequestSummary row{}; row.validation_request_id=sqlite3_column_int64(st,0);row.workflow_instance_id=sqlite3_column_int64(st,1);row.workflow_step_id=sqlite3_column_int64(st,2);row.step_kind=ColumnText(st,3);row.operation=ColumnText(st,4);row.source_kind=ColumnText(st,5);row.source_ref_id=sqlite3_column_int64(st,6);row.source_dtm_artifact_id=sqlite3_column_int64(st,7);row.source_dtm_sha256=ColumnText(st,8);if(auto v=ColumnInt64Optional(st,9))row.rtc_value=static_cast<std::uint32_t>(*v);row.effective_dtm_sha256=ColumnText(st,10);row.itinerary_artifact_id=ColumnInt64Optional(st,11);row.itinerary_sha256=ColumnText(st,12);row.required_final_breakpoint_pc=static_cast<std::uint32_t>(sqlite3_column_int64(st,13));row.latest_validation_attempt_id=ColumnInt64Optional(st,14);row.latest_outcome=ColumnText(st,15);row.latest_failure_reason=ColumnText(st,16);if(auto v=ColumnInt64Optional(st,17))row.latest_actual_pc=static_cast<std::uint32_t>(*v);if(auto v=ColumnInt64Optional(st,18))row.latest_actual_input_count=static_cast<std::uint64_t>(*v);row.produced_tas_movie_root_id=ColumnInt64Optional(st,19);row.created_at_utc=sqlite3_column_int64(st,20);rows.push_back(std::move(row));}sqlite3_finalize(st);return rows;
+}
+
+std::vector<UiTasMovieValidationAttemptSummary> SqliteUiReadDb::ListTasMovieValidationAttempts(std::optional<std::int64_t> request_id,int limit) const {std::vector<UiTasMovieValidationAttemptSummary> rows;if(db_==nullptr||limit<=0)return rows;sqlite3_stmt* st=nullptr;if(sqlite3_prepare_v2(db_,"SELECT validation_attempt_id,validation_request_id,source_job_id,outcome,COALESCE(failure_reason,''),expected_pc,expected_input_count,actual_pc,actual_input_count,last_known_good_savestate_id,produced_tas_movie_root_id,worker_id,recorded_at_utc FROM ui_tas_movie_validation_attempt_summary WHERE (?1=0 OR validation_request_id=?1) ORDER BY validation_attempt_id DESC LIMIT ?2;",-1,&st,nullptr)!=SQLITE_OK)return rows;sqlite3_bind_int64(st,1,request_id.value_or(0));sqlite3_bind_int(st,2,limit);while(sqlite3_step(st)==SQLITE_ROW){UiTasMovieValidationAttemptSummary row{};row.validation_attempt_id=sqlite3_column_int64(st,0);row.validation_request_id=sqlite3_column_int64(st,1);row.source_job_id=sqlite3_column_int64(st,2);row.outcome=ColumnText(st,3);row.failure_reason=ColumnText(st,4);if(auto v=ColumnInt64Optional(st,5))row.expected_pc=static_cast<std::uint32_t>(*v);if(auto v=ColumnInt64Optional(st,6))row.expected_input_count=static_cast<std::uint64_t>(*v);row.actual_pc=static_cast<std::uint32_t>(sqlite3_column_int64(st,7));row.actual_input_count=static_cast<std::uint64_t>(sqlite3_column_int64(st,8));row.last_known_good_savestate_id=ColumnInt64Optional(st,9);row.produced_tas_movie_root_id=ColumnInt64Optional(st,10);row.worker_id=ColumnText(st,11);row.recorded_at_utc=sqlite3_column_int64(st,12);rows.push_back(std::move(row));}sqlite3_finalize(st);return rows;}
+
+std::vector<UiTasMovieSterilizationRequestSummary> SqliteUiReadDb::ListTasMovieSterilizationRequests(int limit) const {std::vector<UiTasMovieSterilizationRequestSummary> rows;if(db_==nullptr||limit<=0)return rows;sqlite3_stmt* st=nullptr;if(sqlite3_prepare_v2(db_,"SELECT sterilization_request_id,workflow_instance_id,workflow_step_id,source_savestate_id,source_savestate_artifact_id,source_savestate_sha256,source_dtm_artifact_id,source_dtm_sha256,reused_savestate_id,latest_sterilization_attempt_id,latest_produced_savestate_id,COALESCE(latest_candidate_savestate_sha256,''),created_at_utc FROM ui_tas_movie_sterilization_request_summary ORDER BY created_at_utc DESC,sterilization_request_id DESC LIMIT ?1;",-1,&st,nullptr)!=SQLITE_OK)return rows;sqlite3_bind_int(st,1,limit);while(sqlite3_step(st)==SQLITE_ROW){UiTasMovieSterilizationRequestSummary row{};row.sterilization_request_id=sqlite3_column_int64(st,0);row.workflow_instance_id=sqlite3_column_int64(st,1);row.workflow_step_id=sqlite3_column_int64(st,2);row.source_savestate_id=sqlite3_column_int64(st,3);row.source_savestate_artifact_id=sqlite3_column_int64(st,4);row.source_savestate_sha256=ColumnText(st,5);row.source_dtm_artifact_id=sqlite3_column_int64(st,6);row.source_dtm_sha256=ColumnText(st,7);row.reused_savestate_id=ColumnInt64Optional(st,8);row.latest_sterilization_attempt_id=ColumnInt64Optional(st,9);row.latest_produced_savestate_id=ColumnInt64Optional(st,10);row.latest_candidate_savestate_sha256=ColumnText(st,11);row.created_at_utc=sqlite3_column_int64(st,12);rows.push_back(std::move(row));}sqlite3_finalize(st);return rows;}
+
+std::vector<UiTasMovieSterilizationAttemptSummary> SqliteUiReadDb::ListTasMovieSterilizationAttempts(std::optional<std::int64_t> request_id,int limit) const {std::vector<UiTasMovieSterilizationAttemptSummary> rows;if(db_==nullptr||limit<=0)return rows;sqlite3_stmt* st=nullptr;if(sqlite3_prepare_v2(db_,"SELECT sterilization_attempt_id,sterilization_request_id,source_job_id,candidate_savestate_sha256,produced_savestate_id,worker_id,recorded_at_utc FROM ui_tas_movie_sterilization_attempt_summary WHERE (?1=0 OR sterilization_request_id=?1) ORDER BY sterilization_attempt_id DESC LIMIT ?2;",-1,&st,nullptr)!=SQLITE_OK)return rows;sqlite3_bind_int64(st,1,request_id.value_or(0));sqlite3_bind_int(st,2,limit);while(sqlite3_step(st)==SQLITE_ROW){UiTasMovieSterilizationAttemptSummary row{};row.sterilization_attempt_id=sqlite3_column_int64(st,0);row.sterilization_request_id=sqlite3_column_int64(st,1);row.source_job_id=sqlite3_column_int64(st,2);row.candidate_savestate_sha256=ColumnText(st,3);row.produced_savestate_id=sqlite3_column_int64(st,4);row.worker_id=ColumnText(st,5);row.recorded_at_utc=sqlite3_column_int64(st,6);rows.push_back(std::move(row));}sqlite3_finalize(st);return rows;}
+
+std::vector<UiBattleContextSummary> SqliteUiReadDb::ListBattleContexts(bool complete_only,int limit) const {std::vector<UiBattleContextSummary> rows;if(db_==nullptr||limit<=0)return rows;sqlite3_stmt* st=nullptr;if(sqlite3_prepare_v2(db_,"SELECT context_probe_id,wave_id,source_savestate_id,exec_job_id,probe_status,context_version,context_artifact_id,entry_pc,recorded_at_utc,created_at_utc FROM ui_battle_context_summary WHERE (?1=0 OR probe_status='COMPLETED') ORDER BY created_at_utc DESC,context_probe_id DESC LIMIT ?2;",-1,&st,nullptr)!=SQLITE_OK)return rows;sqlite3_bind_int(st,1,complete_only?1:0);sqlite3_bind_int(st,2,limit);while(sqlite3_step(st)==SQLITE_ROW){UiBattleContextSummary row{};row.context_probe_id=sqlite3_column_int64(st,0);row.wave_id=ColumnInt64Optional(st,1);row.source_savestate_id=sqlite3_column_int64(st,2);row.exec_job_id=ColumnInt64Optional(st,3);row.probe_status=ColumnText(st,4);if(auto v=ColumnInt64Optional(st,5))row.context_version=static_cast<int>(*v);row.context_artifact_id=ColumnInt64Optional(st,6);if(auto v=ColumnInt64Optional(st,7))row.entry_pc=static_cast<std::uint32_t>(*v);row.recorded_at_utc=ColumnInt64Optional(st,8);row.created_at_utc=sqlite3_column_int64(st,9);rows.push_back(std::move(row));}sqlite3_finalize(st);return rows;}
+
 std::vector<UiArchiveCatalogRow> SqliteUiReadDb::ListArchiveCatalog(
     const UiArchiveCatalogListQuery& query) const {
     std::vector<UiArchiveCatalogRow> rows;

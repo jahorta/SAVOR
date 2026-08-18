@@ -109,12 +109,9 @@ inline constexpr EventDispatchBinding kPayloadDispatchBindingsV1[] = {
     { { "AnalysisBattle.BattleReplayFailed.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
     { { "Authoring.SeedProbeSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.TasSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
-    { { "Authoring.BattleRunSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.PlanSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.BattlePlanActionPresetSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.BattlePlanActionPresetRenamed.v1", 1 }, PayloadResolverContract::AuthoringV1 },
-    { { "Authoring.SettingsSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
-    { { "Authoring.BattleChainSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.WorkflowGraphSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
 };
 

@@ -1034,6 +1034,14 @@ Primary evidence currently includes:
   standalone validation workflow or one node in a larger authored workflow
   graph. Composition passes only durable typed output references; it never
   continues from worker state or affinity.
+- SavorQt presents root and recorded-branch validation under one **TAS Movie
+  Validation** launcher heading. A successful root-cursor establishment
+  attempt selects `tas_movie_validate_root` and exposes its RTC controls; an
+  immutable TAS Movie tree, labeled **Recorded TAS Branch** in Qt, selects
+  `tas_movie_validate_tree` and exposes no RTC control. The selected option
+  carries the exact member unit, input key, data kind, reference kind, and
+  reference ID. The two typed backend contracts remain independent; the UI
+  family adds no union reference or generic validation operation.
 - Every outcome emits `tas_movie_validation_attempt`. A successful
   `RootCursorEstablished` additionally emits
   `established_root_cursor_attempt`. A root or tree `Valid` additionally emits

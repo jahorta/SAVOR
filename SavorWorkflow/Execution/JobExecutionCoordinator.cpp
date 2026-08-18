@@ -1697,6 +1697,8 @@ JobExecutionCoordinator::Impl::SnapshotTelemetry() const {
             dispatch_release_phase_counts_;
     }
     telemetry.blob_store_ready = blob_store_ready_.load();
+    telemetry.cancellation_admission_open =
+        cancellation_admission_open_.load();
     telemetry.user_admission_paused = user_paused_.load();
     telemetry.invariant_admission_paused = invariant_paused_.load();
     telemetry.storage_admission_paused = storage_paused_.load()

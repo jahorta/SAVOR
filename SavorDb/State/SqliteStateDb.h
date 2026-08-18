@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,7 +15,9 @@ namespace savor::db::state {
 
 class SqliteStateDb final : public savor::db::IStateDb {
 public:
-    explicit SqliteStateDb(sqlite3* db);
+    SqliteStateDb(sqlite3* db, std::filesystem::path object_store_root);
+
+    bool ReconcileArtifactObjectLocators(std::string* error_out = nullptr);
 
     bool StoreArtifact(
         const StoreArtifactCommand& command,
@@ -113,6 +116,7 @@ private:
         std::int64_t payload_ref_id) const;
 
     sqlite3* db_ = nullptr;
+    std::filesystem::path object_store_root_;
 };
 
 } // namespace savor::db::state

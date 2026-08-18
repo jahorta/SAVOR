@@ -134,7 +134,8 @@
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.cpp" />
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateAuthoringEditors.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\GuidedPredicateRuleEditor.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunsPane\BattleRunsWidget.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp" />
@@ -142,6 +143,7 @@
     <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp" />
     <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
     <ClCompile Include="DB\DBCore\DbSnapshotService.cpp" />
+    <ClCompile Include="DB\WorkflowReferenceSelectorProvider.cpp" />
     <ClCompile Include="SavorDbRuntime.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowGraphEditorWindow.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.cpp" />
@@ -188,11 +190,12 @@
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateAuthoringEditors.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\GuidedPredicateRuleEditor.h" />
     <ClInclude Include="GUI\Panes\BattleRunsPane\BattleRunsWidget.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
-    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.h" />
     <QtMoc Include="GUI\Panes\DtmEditorPane\DtmEditorPage.h" />
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsController.h" />
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h" />
@@ -213,7 +216,7 @@
     <ClInclude Include="GUI\StyleSheet.h" />
     <ClInclude Include="GUI\Tabs\AnalysisTab.h" />
     <ClInclude Include="GUI\Tabs\RunningTab.h" />
-    <ClInclude Include="GUI\Tabs\SetupTab.h" />
+    <QtMoc Include="GUI\Tabs\SetupTab.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h" />
     <ClInclude Include="GUI\Widgets\SegmentedProgressDelegate.h" />
@@ -229,6 +232,7 @@
     <ClInclude Include="DB\SavorDbJobService.h" />
     <ClInclude Include="DB\SavorDbServiceResult.h" />
     <ClInclude Include="DB\SavorDbWorkflowService.h" />
+    <ClInclude Include="DB\WorkflowReferenceSelectorProvider.h" />
     <ClInclude Include="DB\DBCore\DbSnapshotService.h" />
     <ClInclude Include="SavorDbRuntime.h" />
     <QtRcc Include="SavorQt.qrc" />

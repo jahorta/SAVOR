@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <numeric>
 #include <sstream>
 #include <unordered_map>
 
@@ -323,7 +324,7 @@ void WorkflowGraphEditorWindow::createWidgets()
 
 void WorkflowGraphEditorWindow::loadUnits()
 {
-    const auto result = savorqt::db::SavorDbWorkflowService::ListWorkflowUnits();
+    const auto result = savorqt::db::SavorDbWorkflowService::ListComposableWorkflowUnits();
     if (!result.ok) {
         postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
         return;
@@ -532,6 +533,7 @@ void WorkflowGraphEditorWindow::saveGraph()
             node_command.inputs.push_back(savor::db::SaveWorkflowGraphNodeInputCommand{
                 .input_key = input.key,
                 .data_kind = input.data_kind,
+                .ref_kind = input.ref_kind,
                 .display_name = input.display_name,
                 .required = input.required,
             });
@@ -540,7 +542,38 @@ void WorkflowGraphEditorWindow::saveGraph()
             node_command.possible_outputs.push_back(savor::db::SaveWorkflowGraphNodeOutputCommand{
                 .output_key = output.key,
                 .data_kind = output.data_kind,
+                .ref_kind = output.ref_kind,
                 .display_name = output.display_name,
+            });
+        }
+        for (const auto& argument : unit->launch_arguments) {
+            using Type = savor::db::execution::workflow::WorkflowLaunchArgumentValueType;
+            const auto valueType = argument.value_type == Type::Integer ? "integer"
+                : argument.value_type == Type::Boolean ? "boolean"
+                : argument.value_type == Type::Json ? "json"
+                : argument.value_type == Type::Choice ? "choice" : "text";
+            savor::db::SaveWorkflowGraphNodeArgumentCommand argument_command{
+                .argument_key = argument.key,
+                .display_name = argument.display_name,
+                .value_type = valueType,
+                .required = argument.required,
+                .default_value = argument.default_value,
+                .minimum_integer = argument.minimum_integer,
+                .maximum_integer = argument.maximum_integer,
+            };
+            for (const auto& choice : argument.choices) {
+                argument_command.choices.push_back({
+                    .value = choice.value,
+                    .display_name = choice.display_name,
+                });
+            }
+            node_command.arguments.push_back(std::move(argument_command));
+        }
+        for (const auto& constraint : unit->launch_argument_constraints) {
+            node_command.argument_constraints.push_back({
+                .lesser_or_equal_key = constraint.lesser_or_equal_key,
+                .greater_or_equal_key = constraint.greater_or_equal_key,
+                .message = constraint.message,
             });
         }
         draft.nodes.push_back(std::move(node_command));
@@ -718,21 +751,26 @@ void WorkflowGraphEditorWindow::loadAuthoredRefOptionsForSelectedNode()
                 .ref_id = spec.seed_probe_spec_id,
             });
         }
-    } else if (*requiredKind == "authoring.battle_chain_spec") {
-        const auto result = savorqt::db::SavorDbAuthoringService::ListBattleChainSpecs();
+    } else if (*requiredKind == "authoring.battle_plan") {
+        const auto result = savorqt::db::SavorDbAuthoringService::ListBattlePlans();
         if (!result.ok) {
             postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
             return;
         }
-        for (const auto& battle_chain_spec : result.value) {
+        for (const auto& plan : result.value) {
+            const auto actionCount = std::accumulate(
+                plan.turns.begin(), plan.turns.end(), std::size_t{0},
+                [](std::size_t total, const auto& turn) {
+                    return total + turn.actions.size();
+                });
             authoredRefOptions_.push_back(AuthoredRefOption{
-                .label = QStringLiteral("#%1 %2 battle=%3 battle explorer=%4")
-                    .arg(static_cast<qint64>(battle_chain_spec.battle_chain_spec_id))
-                    .arg(QString::fromStdString(battle_chain_spec.name))
-                    .arg(QString::number(battle_chain_spec.battle_run_spec_id))
-                    .arg(QString::number(battle_chain_spec.explorer_settings_id)),
-                .ref_kind = "authoring.battle_chain_spec",
-                .ref_id = battle_chain_spec.battle_chain_spec_id,
+                .label = QStringLiteral("%1 — %2 turns, %3 actions — %4")
+                    .arg(QString::fromStdString(plan.name))
+                    .arg(static_cast<int>(plan.turns.size()))
+                    .arg(static_cast<qulonglong>(actionCount))
+                    .arg(QString::fromStdString(plan.fingerprint)),
+                .ref_kind = "authoring.battle_plan",
+                .ref_id = plan.plan_id,
             });
         }
     }

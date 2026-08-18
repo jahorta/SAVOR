@@ -38,6 +38,7 @@ enum class CanonicalAction : std::uint8_t
     TelemetryEmit,
     ExecutionRequirePausedPc,
     ExecutionContinueUntilInputObserved,
+    ExecutionObservePausedPc,
 };
 
 struct CanonicalActionDefinition

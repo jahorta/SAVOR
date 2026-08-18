@@ -3,6 +3,7 @@
 #include <optional>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <QtCore/QPointer>
@@ -13,13 +14,14 @@
 #include "GUI/Common/StatusToast.h"
 #include "GUI/Refresh/AsyncRefreshPipeline.h"
 #include "DB/SavorDbServiceResult.h"
+#include "DB/WorkflowReferenceSelectorProvider.h"
+#include "DB/SavorDbWorkflowService.h"
 
 class QComboBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
 class QPushButton;
-class QCheckBox;
 class QFrame;
 class QSpinBox;
 class QTableWidget;
@@ -32,6 +34,7 @@ class WorkflowLauncherPage final : public QWidget
 
 public:
     explicit WorkflowLauncherPage(QWidget* parent = nullptr);
+    void preselectStandaloneInput(const QString& unit_kind, const QString& input_key, qint64 ref_id);
 
 signals:
     void statusToastRequested(StatusToast toast);
@@ -43,7 +46,11 @@ private:
         QString input_key;
         QString display_name;
         QString data_kind;
-        QString default_ref_kind;
+        QString ref_kind;
+        bool required = true;
+        bool satisfied_by_edge = false;
+        QString edge_evidence;
+        QString presentation_family_key;
     };
     struct AuthoredRefOption {
         QString label;
@@ -53,22 +60,24 @@ private:
     struct ExternalInputDraft {
         QString refKind;
         QString refId;
+        QString memberUnitKind;
     };
     struct LauncherDraft {
-        QString rootScopeKind;
-        QString rootScopeId;
         QString rtcLow;
         QString rtcHigh;
         int seedSamplesPerAxis = 5;
-        bool battleFakeOverride = false;
         int battleFakeMin = 0;
         int battleFakeMax = 0;
+        QString continuationMode;
         qint64 authoredRefId = 0;
         std::map<QString, ExternalInputDraft> externalInputs;
     };
     using WorkflowUnitDefinition = savor::db::execution::workflow::WorkflowUnitDefinition;
+    using StandaloneLaunchEntry = savorqt::db::WorkflowStandaloneLaunchEntry;
     using WorkflowGraphListResult = savorqt::db::ServiceResult<std::vector<savor::db::WorkflowGraphSnapshot>>;
-    using WorkflowUnitListResult = savorqt::db::ServiceResult<std::vector<WorkflowUnitDefinition>>;
+    using StandaloneLaunchEntryListResult = savorqt::db::ServiceResult<std::vector<StandaloneLaunchEntry>>;
+    using ReferenceOptions = std::map<QString, std::vector<savorqt::db::WorkflowReferenceOption>>;
+    using ReferenceOptionsResult = savorqt::db::ServiceResult<ReferenceOptions>;
 
     void createWidgets();
     void refreshWorkflowGraphs();
@@ -85,10 +94,15 @@ private:
     void launchStandaloneUnit();
     void populateExternalInputs(const savor::db::WorkflowGraphSnapshot& graph);
     void populateExternalInputsForUnit(const WorkflowUnitDefinition& unit);
+    void populateExternalInputsForStandaloneEntry(const StandaloneLaunchEntry& entry);
+    void handleStandaloneSourceSelectionChanged(int row);
+    void updateStandaloneArgumentControls();
     void applyExternalInputs(std::vector<ExternalInputRow> rows);
+    void refreshExternalInputOptions();
     void refreshAuthoredRefsForStandaloneUnit(const WorkflowUnitDefinition& unit);
     std::optional<savor::db::WorkflowGraphSnapshot> selectedGraph() const;
     const WorkflowUnitDefinition* selectedUnit() const;
+    const StandaloneLaunchEntry* selectedStandaloneEntry() const;
     bool standaloneModeActive() const;
     QString currentDraftKey() const;
     void postStatusMessage(const QString& text, StatusToast::Severity severity);
@@ -96,20 +110,16 @@ private:
     static QString externalInputKey(const ExternalInputRow& input);
     static QString graphLaunchShapeSignature(const savor::db::WorkflowGraphSnapshot& graph);
     static QString unitLaunchShapeSignature(const WorkflowUnitDefinition& unit);
+    static QString standaloneEntryShapeSignature(const StandaloneLaunchEntry& entry);
     static QString graphListText(const savor::db::WorkflowGraphSnapshot& graph);
     static QString nodeDisplayName(const savor::db::WorkflowGraphSnapshot& graph, const std::string& node_key);
-    static QString defaultRefKindForDataKind(const QString& data_kind);
     static QString unitListText(const WorkflowUnitDefinition& unit);
     static std::string standaloneNodeKey(const WorkflowUnitDefinition& unit);
-    static std::vector<QString> tasMovieNodeKeys(const savor::db::WorkflowGraphSnapshot& graph);
-    static std::vector<QString> seedProbeNodeKeys(const savor::db::WorkflowGraphSnapshot& graph);
-    static std::vector<QString> battleChainNodeKeys(const savor::db::WorkflowGraphSnapshot& graph);
+    static std::vector<QString> argumentNodeKeys(const savor::db::WorkflowGraphSnapshot& graph, std::string_view argument_key);
 
     QTabWidget* launchModeTabs_ = nullptr;
     QListWidget* graphList_ = nullptr;
     QListWidget* unitList_ = nullptr;
-    QLineEdit* rootScopeKindEdit_ = nullptr;
-    QLineEdit* rootScopeIdEdit_ = nullptr;
     QLabel* authoredRefLabel_ = nullptr;
     QComboBox* authoredRefCombo_ = nullptr;
     QLabel* rtcRangeLabel_ = nullptr;
@@ -118,11 +128,12 @@ private:
     QLineEdit* rtcHighEdit_ = nullptr;
     QLabel* seedSamplesLabel_ = nullptr;
     QSpinBox* seedSamplesSpin_ = nullptr;
-    QCheckBox* battleFakeOverrideCheck_ = nullptr;
     QLabel* battleFakeRangeLabel_ = nullptr;
     QFrame* battleFakeRangePanel_ = nullptr;
     QSpinBox* battleFakeMinSpin_ = nullptr;
     QSpinBox* battleFakeMaxSpin_ = nullptr;
+    QLabel* continuationLabel_ = nullptr;
+    QComboBox* continuationCombo_ = nullptr;
     QTableWidget* externalInputsTable_ = nullptr;
     QLabel* graphDetailLabel_ = nullptr;
     QLabel* launchStatusLabel_ = nullptr;
@@ -132,13 +143,16 @@ private:
 
     QPointer<WorkflowGraphEditorWindow> workflowGraphEditor_;
     savorqt::gui::AsyncRefreshPipeline<int, WorkflowGraphListResult>* graphRefreshPipeline_ = nullptr;
-    savorqt::gui::AsyncRefreshPipeline<int, WorkflowUnitListResult>* unitRefreshPipeline_ = nullptr;
+    savorqt::gui::AsyncRefreshPipeline<int, StandaloneLaunchEntryListResult>* unitRefreshPipeline_ = nullptr;
+    savorqt::gui::AsyncRefreshPipeline<std::vector<ExternalInputRow>, ReferenceOptionsResult>* referenceRefreshPipeline_ = nullptr;
     std::map<QString, LauncherDraft> launchDrafts_;
     QString renderedTargetKey_;
     QString renderedTargetShape_;
     std::vector<savor::db::WorkflowGraphSnapshot> workflowGraphs_;
-    std::vector<WorkflowUnitDefinition> workflowUnits_;
+    std::vector<StandaloneLaunchEntry> standaloneLaunchEntries_;
     std::vector<AuthoredRefOption> authoredRefOptions_;
     std::vector<ExternalInputRow> externalInputs_;
     std::vector<ExternalInputRow> currentExternalInputRows_;
+    QString pendingUnitKind_;
+    QString activeStandaloneMemberUnitKind_;
 };

@@ -82,7 +82,7 @@ void AssessCommonScenarioExecution(
     savor::db::IExecutionDb* execution_db,
     std::span<const savor::db::execution::workflow::WorkflowGraphSnapshot>
         workflows,
-    const SplitCoordinatorTelemetry& telemetry,
+    const savor::runner::parallel::savordb::CoordinatorRuntimeTelemetry& telemetry,
     std::span<const savor::runner::parallel::savordb::
         ReadyWorkerDispatchSnapshot> ready_workers,
     ScenarioAssessment* assessment) {

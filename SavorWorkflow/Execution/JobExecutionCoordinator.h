@@ -223,6 +223,7 @@ struct JobExecutionCoordinatorTelemetry {
     std::map<std::string, std::uint64_t>
         dispatch_release_phase_counts;
     bool blob_store_ready = false;
+    bool cancellation_admission_open = false;
     bool user_admission_paused = false;
     bool invariant_admission_paused = false;
     bool storage_admission_paused = false;

@@ -375,7 +375,7 @@
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\InputDeliveryComposition.h">
       <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Runtime\Predicates\PredicateBundle.h">
+    <ClInclude Include="Runner\Runtime\Predicates\PredicateExecution.h">
       <Filter>Runner\Runtime</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\SemanticObservationComposition.h">
@@ -770,7 +770,7 @@
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\InputDeliveryComposition.cpp">
       <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
     </ClCompile>
-    <ClCompile Include="Runner\Runtime\Predicates\PredicateBundle.cpp">
+    <ClCompile Include="Runner\Runtime\Predicates\PredicateExecution.cpp">
       <Filter>Runner\Runtime</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\SemanticObservationComposition.cpp">

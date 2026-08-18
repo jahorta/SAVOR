@@ -83,22 +83,20 @@ CoordinatorController::~CoordinatorController()
 
 bool CoordinatorController::isRunning() const
 {
-    return worker_coordinator_ != nullptr
-        && job_execution_coordinator_ != nullptr
-        && worker_coordinator_->IsStarted()
-        && job_execution_coordinator_->IsRunning();
+    return coordinator_runtime_ != nullptr
+        && coordinator_runtime_->IsStarted();
 }
 bool CoordinatorController::isPaused() const
 {
-    return job_execution_coordinator_
-        ? job_execution_coordinator_->IsPaused()
+    return coordinator_runtime_
+        ? coordinator_runtime_->IsExecutionPaused()
         : paused_;
 }
 int CoordinatorController::targetWorkers() const { return targetWorkers_; }
 int CoordinatorController::activeWorkers() const
 {
-    return worker_coordinator_
-        ? static_cast<int>(worker_coordinator_->SnapshotWorkers().size())
+    return coordinator_runtime_
+        ? static_cast<int>(coordinator_runtime_->SnapshotWorkers().size())
         : 0;
 }
 bool CoordinatorController::startPaused() const { return startPaused_; }
@@ -109,8 +107,8 @@ QString CoordinatorController::validationMessage() const { return validationMess
 const std::vector<WorkerSnapshot>& CoordinatorController::snapshot() const { return snapshotCache_; }
 std::vector<WorkerSnapshot> CoordinatorController::freshSnapshot() const
 {
-    return worker_coordinator_
-        ? worker_coordinator_->SnapshotWorkers()
+    return coordinator_runtime_
+        ? coordinator_runtime_->SnapshotWorkers()
         : std::vector<WorkerSnapshot>{};
 }
 const std::vector<WorkerSnapshot>& CoordinatorController::visualSnapshot() const { return visualSnapshotCache_; }
@@ -141,7 +139,7 @@ bool CoordinatorController::visualReplayControlsEnabled() const
 
 void CoordinatorController::startCoordinator()
 {
-    if (worker_coordinator_ || job_execution_coordinator_) {
+    if (coordinator_runtime_) {
         return;
     }
 
@@ -160,12 +158,10 @@ void CoordinatorController::startCoordinator()
     }
 
     auto* executionDb = runtime.executionDb();
-    auto* resultBlobStore = runtime.workerResultBlobStore();
-    if (executionDb == nullptr || resultBlobStore == nullptr
-        || !runtime.workflowCoordinatorRunning()
-        || !runtime.programResultProcessorRunning()) {
+    auto* authoringDb = runtime.authoringDb();
+    if (executionDb == nullptr || authoringDb == nullptr) {
         validationMessage_ = QStringLiteral(
-            "Execution scheduling services are unavailable.");
+            "Coordinator database services are unavailable.");
         emit stateChanged();
         return;
     }
@@ -182,10 +178,11 @@ void CoordinatorController::startCoordinator()
     }
 
     try {
-        auto workerCoordinator = std::make_unique<
-            savor::runner::parallel::savordb::WorkerCoordinator>(
-                buildWorkerConfig());
+        std::vector<savor::runner::parallel::savordb::
+            CoordinatorWorkerVisualSurface> visualSurfaces;
         if (visualWorkerPoolEnabled_) {
+            visualSurfaces.reserve(
+                static_cast<std::size_t>(targetWorkers_));
             for (int workerIndex = 0; workerIndex < targetWorkers_; ++workerIndex) {
                 const auto it = visualWorkerSurfaces_.find(workerIndex);
                 if (it == visualWorkerSurfaces_.end() || it->second.renderWidgetHandle == 0) {
@@ -193,61 +190,51 @@ void CoordinatorController::startCoordinator()
                     emit stateChanged();
                     return;
                 }
-                workerCoordinator->SetWorkerVisualSurface(
-                    static_cast<size_t>(workerIndex),
-                    static_cast<uint64_t>(it->second.renderWidgetHandle),
-                    it->second.hostEventsPipeName.toStdString());
+                visualSurfaces.push_back({
+                    .worker_id = static_cast<std::size_t>(workerIndex),
+                    .render_widget_handle = static_cast<std::uint64_t>(
+                        it->second.renderWidgetHandle),
+                    .host_events_pipe_name =
+                        it->second.hostEventsPipeName.toStdString(),
+                });
             }
         }
-        const auto startResult = workerCoordinator->Start();
-        if (!startResult) {
-            validationMessage_ =
-                QStringLiteral("Worker coordinator startup failed: %1")
-                    .arg(QString::fromStdString(
-                        startResult.diagnostic));
-            workerCoordinator->Stop();
-            emit stateChanged();
-            return;
-        }
-        workerCoordinator->SetPaused(startPaused_);
-
-        savor::runner::parallel::savordb::
-            JobExecutionCoordinatorConfig executionConfig{};
-        executionConfig.state_compatibility = {
-            .game_id = std::string(
-                savor::runtime::program::capabilities::
-                    kSupportedGameId),
-            .iso_sha256 = *isoSha256,
-            .emulator_build = "dolphin-2506a",
-            .runtime_revision = "worker-runtime-slice4",
-        };
-
-        auto jobExecutionCoordinator = std::make_unique<
-            savor::runner::parallel::savordb::JobExecutionCoordinator>(
+        auto coordinatorRuntime = std::make_unique<
+            savor::runner::parallel::savordb::CoordinatorRuntime>();
+        savor::runner::parallel::savordb::CoordinatorRuntimeConfig
+            coordinatorConfig{
+                .worker = buildWorkerConfig(),
+                .state_compatibility = {
+                    .game_id = std::string(
+                        savor::runtime::program::capabilities::
+                            kSupportedGameId),
+                    .iso_sha256 = *isoSha256,
+                    .emulator_build = "dolphin-2506a",
+                    .runtime_revision = "worker-runtime-slice4",
+                },
+                .initially_paused = startPaused_,
+                .object_store_root = runtime.root() / "object_store",
+                .event_line_callback = [](const std::string&) {},
+                .visual_surfaces = std::move(visualSurfaces),
+            };
+        std::string startupError;
+        if (!coordinatorRuntime->Start(
                 executionDb,
+                authoringDb,
                 programRegistry,
-                workerCoordinator.get(),
-                resultBlobStore,
-                std::move(executionConfig));
-        jobExecutionCoordinator->SetPaused(startPaused_);
-        std::string execution_start_error;
-        if (!jobExecutionCoordinator->Start(
-                &execution_start_error)) {
+                std::move(coordinatorConfig),
+                &startupError)) {
             validationMessage_ =
                 QStringLiteral(
-                    "Job execution coordinator startup failed: %1")
+                    "Coordinator startup failed: %1")
                     .arg(QString::fromStdString(
-                        execution_start_error));
-            jobExecutionCoordinator->Stop();
-            workerCoordinator->Stop();
+                        startupError));
             emit stateChanged();
             return;
         }
 
         paused_ = startPaused_;
-        worker_coordinator_ = std::move(workerCoordinator);
-        job_execution_coordinator_ =
-            std::move(jobExecutionCoordinator);
+        coordinator_runtime_ = std::move(coordinatorRuntime);
     } catch (const std::exception& ex) {
         validationMessage_ = QStringLiteral("Coordinator startup failed: %1").arg(QString::fromUtf8(ex.what()));
         stopCoordinatorServices();
@@ -267,7 +254,7 @@ void CoordinatorController::startCoordinator()
 
 void CoordinatorController::stopCoordinator()
 {
-    if (!worker_coordinator_ && !job_execution_coordinator_) {
+    if (!coordinator_runtime_) {
         return;
     }
 
@@ -281,11 +268,8 @@ void CoordinatorController::stopCoordinator()
 void CoordinatorController::setPaused(bool paused)
 {
     paused_ = paused;
-    if (worker_coordinator_) {
-        worker_coordinator_->SetPaused(paused_);
-    }
-    if (job_execution_coordinator_) {
-        job_execution_coordinator_->SetPaused(paused_);
+    if (coordinator_runtime_) {
+        coordinator_runtime_->SetExecutionPaused(paused_);
         updateSnapshotCache();
         emit snapshotChanged();
     }
@@ -303,8 +287,8 @@ void CoordinatorController::setTargetWorkers(int targetWorkers)
 
     targetWorkers_ = clampedValue;
     persistInt(kTargetWorkersKey, targetWorkers_);
-    if (worker_coordinator_) {
-        worker_coordinator_->SetDesiredWorkerCount(
+    if (coordinator_runtime_) {
+        coordinator_runtime_->SetDesiredWorkerCount(
             static_cast<size_t>(targetWorkers_));
     }
     emit stateChanged();
@@ -325,7 +309,7 @@ void CoordinatorController::setVisualWorkerPoolEnabled(bool enabled)
     if (visualWorkerPoolEnabled_ == enabled) {
         return;
     }
-    if (worker_coordinator_ || job_execution_coordinator_) {
+    if (coordinator_runtime_) {
         return;
     }
     visualWorkerPoolEnabled_ = enabled;
@@ -342,12 +326,6 @@ void CoordinatorController::setVisualWorkerSurface(int workerIndex, quintptr hwn
         .renderWidgetHandle = hwnd,
         .hostEventsPipeName = hostEventsPipeName,
     };
-    if (worker_coordinator_) {
-        worker_coordinator_->SetWorkerVisualSurface(
-            static_cast<size_t>(workerIndex),
-            static_cast<uint64_t>(hwnd),
-            hostEventsPipeName.toStdString());
-    }
 }
 
 void CoordinatorController::clearVisualWorkerSurfaces()
@@ -504,20 +482,17 @@ void CoordinatorController::updateValidationMessage()
 
 void CoordinatorController::updateSnapshotCache()
 {
-    if (!worker_coordinator_) {
+    if (!coordinator_runtime_) {
         snapshotCache_.clear();
         visualSnapshotCache_.clear();
         warningSnapshotCache_.clear();
         return;
     }
 
-    snapshotCache_ = worker_coordinator_->SnapshotWorkers();
+    snapshotCache_ = coordinator_runtime_->SnapshotWorkers();
     visualSnapshotCache_.clear();
-    warningSnapshotCache_ = job_execution_coordinator_
-        ? job_execution_coordinator_->SnapshotWarnings()
-        : std::vector<
-              savor::runner::parallel::savordb::
-                  JobExecutionCoordinatorWarning>{};
+    warningSnapshotCache_ =
+        coordinator_runtime_->SnapshotExecutionWarnings();
 }
 
 savor::runner::parallel::savordb::WorkerCoordinatorConfig
@@ -538,52 +513,15 @@ CoordinatorController::buildWorkerConfig() const
 void CoordinatorController::stopCoordinatorServices()
 {
     std::string shutdownError;
-    if (job_execution_coordinator_) {
-        job_execution_coordinator_->Quiesce();
-        std::string releaseError;
-        if (!job_execution_coordinator_->ReleaseBufferedClaims(
-                &releaseError)
-            && !releaseError.empty()) {
-            shutdownError = std::move(releaseError);
-        }
+    if (coordinator_runtime_) {
+        (void)coordinator_runtime_->Stop(&shutdownError);
+        coordinator_runtime_.reset();
     }
-
-    if (worker_coordinator_) {
-        worker_coordinator_->Stop();
-    }
-
-    if (job_execution_coordinator_) {
-        std::string recoveryError;
-        if (!job_execution_coordinator_->RecoverAfterWorkersStopped(
-                &recoveryError)
-            && shutdownError.empty() && !recoveryError.empty()) {
-            shutdownError = std::move(recoveryError);
-        }
-        job_execution_coordinator_->Stop();
-        job_execution_coordinator_.reset();
-    }
-    worker_coordinator_.reset();
 
     if (!shutdownError.empty()) {
         validationMessage_ =
             QStringLiteral("Coordinator shutdown warning: %1")
                 .arg(QString::fromStdString(shutdownError));
-    }
-}
-
-void CoordinatorController::applyVisualWorkerSurfaces()
-{
-    if (!worker_coordinator_) {
-        return;
-    }
-    for (const auto& [workerIndex, surface] : visualWorkerSurfaces_) {
-        if (workerIndex < 0 || surface.renderWidgetHandle == 0) {
-            continue;
-        }
-        worker_coordinator_->SetWorkerVisualSurface(
-            static_cast<size_t>(workerIndex),
-            static_cast<uint64_t>(surface.renderWidgetHandle),
-            surface.hostEventsPipeName.toStdString());
     }
 }
 

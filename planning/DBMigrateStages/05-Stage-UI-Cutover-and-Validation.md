@@ -102,10 +102,19 @@ This order supersedes any older implication that all Stage 5 UI surfaces must cu
    - Workflow graph editors never collect external input values or launch workflow instances.
 8. Keep workflow launch separate from authoring:
    - Add/complete a Workflow Launcher pane that selects an authored graph revision.
+   - Treat composability and standalone exposure as separate catalog properties. The graph editor lists
+     public composable units; the launcher lists only declarative standalone entries.
+   - Expose one `seed_probe` unit as both composable and standalone-launchable. Its restored paused PC
+     selects the exact runtime endpoint, so Qt does not offer Battle/Dungeon/Overworld SeedProbe choices.
    - Collect required external input bindings from State/Analysis source records.
    - Collect scalar instance arguments such as TAS RTC and battle fake-attack bounds.
    - Fan out TAS RTC ranges into one workflow instance per RTC value.
+   - Present `tas_movie_validate_root` and `tas_movie_validate_tree` as one **TAS Movie Validation**
+     family while retaining the selected member's exact typed contract. Root sources expose RTC; recorded
+     TAS branches do not. Root establishment and checkpoint sterilization remain separate actions.
    - Submit instances to Execution DB without mutating the authored graph revision.
+   - Do not expose workflow root-scope kind or ID. New launches persist the historical scope fields as
+     `manual`/null, while exact typed node input bindings remain authoritative.
 9. Demote job sets to workflow drill-down:
    - The primary operations surface should group work by workflow instance, then step, then step job set.
    - Job sets remain available as a detail tab for execution diagnostics, retries, and per-job inspection.

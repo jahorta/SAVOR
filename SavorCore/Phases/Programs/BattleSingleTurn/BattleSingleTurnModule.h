@@ -4,7 +4,7 @@
 #include "Core/Input/SoaBattle/ActionTypes.h"
 #include "Core/Memory/Soa/Battle/BattleContext.h"
 #include "Runner/Runtime/FullPhase/FullPhaseProgram.h"
-#include "Runner/Runtime/Predicates/PredicateBundle.h"
+#include "Runner/Runtime/Predicates/PredicateExecution.h"
 #include "Runner/Runtime/ProgramRuntime/Composition/InteractionComposition.h"
 
 #include <array>
@@ -114,16 +114,16 @@ struct BattleSingleTurnResultV1
     std::uint32_t cumulative_fake_attacks = 0;
     bool has_battle_context = false;
     soa::battle::ctx::BattleContext battle_context;
-    std::int64_t predicate_bundle_revision_id = 0;
-    std::string predicate_bundle_sha256;
-    std::string predicate_binding_sha256;
+    std::int64_t predicate_group_revision_id = 0;
+    std::string predicate_group_sha256;
+    std::string predicate_execution_package_sha256;
     std::vector<program::ProgramEmission> predicate_evidence;
     std::vector<program::ProgramArtifact> artifacts;
 };
 
 [[nodiscard]] std::vector<std::uint8_t> EncodeBattleSingleTurnCommonInputV1(
     bool first_turn,
-    const predicates::PredicateBundleExecutionPackageV1& predicate_package);
+    const predicates::PredicateExecutionPackageV1& predicate_package);
 
 [[nodiscard]] std::vector<std::uint8_t> EncodeBattleSingleTurnExecutionInputV1(
     const BattleSingleTurnRequestV1& request);
@@ -136,7 +136,7 @@ class IBattleSingleTurnFullPhaseDefinitionV1
     : public fullphase::IFullPhaseProgramDefinition
 {
 public:
-    [[nodiscard]] virtual const predicates::PredicateBundleExecutionPackageV1&
+    [[nodiscard]] virtual const predicates::PredicateExecutionPackageV1&
     predicate_package() const noexcept = 0;
     [[nodiscard]] virtual bool first_turn() const noexcept = 0;
     [[nodiscard]] virtual bool DecodeProgramResult(
@@ -145,12 +145,12 @@ public:
         std::string* diagnostic = nullptr) const = 0;
 };
 
-// Preparation is coordination-owned and cached by the structural bundle and
+// Preparation is coordination-owned and cached by the execution package and
 // entry-path identity. The returned package is self-contained for workers.
 [[nodiscard]] std::shared_ptr<const IBattleSingleTurnFullPhaseDefinitionV1>
 PrepareBattleSingleTurnFullPhaseV1(
     bool first_turn,
-    predicates::PredicateBundleExecutionPackageV1 predicate_package,
+    predicates::PredicateExecutionPackageV1 predicate_package,
     std::string* diagnostic = nullptr);
 
 // Static per-kind codec/handler used by worker admission. It never accesses a

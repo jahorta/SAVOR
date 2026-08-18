@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 #include <QtCore/QPointer>
@@ -10,8 +11,12 @@
 
 #include "GUI/Common/StatusToast.h"
 #include "Authoring/IAuthoringDb.h"
+#include "DB/SavorDbServiceResult.h"
+#include "GUI/Refresh/AsyncRefreshPipeline.h"
 
 class QCloseEvent;
+class QCheckBox;
+class QComboBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -40,6 +45,7 @@ public:
     struct TurnDraft {
         int turn_index = 1;
         int player_combatants = 1;
+        std::optional<std::int64_t> predicate_group_revision_id;
         std::vector<ActionDraft> actions;
     };
 
@@ -60,6 +66,11 @@ private:
     void closeEvent(QCloseEvent* event) override;
     void createWidgets();
     void populateActionLibrary();
+    void configurePredicateLibraryRefresh();
+    void requestPredicateLibraryRefresh();
+    void applyPredicateGroupSelection();
+    void syncPredicateSelectorToTurn();
+    void showPredicateGroupDetail(std::int64_t revisionId);
     void rebuildPlanTree();
     void applyCombatantCountToAllTurns(int combatantCount);
     void addActionFromLibrarySelection();
@@ -106,9 +117,30 @@ private:
     QListWidget* actionLibraryList_ = nullptr;
     QTreeWidget* planTree_ = nullptr;
     QSpinBox* combatantCountSpin_ = nullptr;
+    QComboBox* predicateGroupCombo_ = nullptr;
+    QLineEdit* predicateSearchEdit_ = nullptr;
+    QCheckBox* includeDraftPredicatesCheck_ = nullptr;
+    QListWidget* predicateLibraryList_ = nullptr;
+    QLabel* predicateDetailLabel_ = nullptr;
     QPushButton* saveButton_ = nullptr;
     std::vector<savor::db::BattlePlanActionPresetSnapshot> actionPresets_;
+    std::vector<savor::db::PredicateGroupRevisionSummary> predicateGroups_;
     std::vector<TurnDraft> turns_;
     std::vector<PlanTreeTurnRow> currentPlanTreeRows_;
     QPointer<BattlePlanActionPresetEditorWindow> presetEditor_;
+    struct PredicateRefreshRequest {
+        std::optional<std::string> revision_state;
+        std::string search_text;
+    };
+    using PredicatePageResult =
+        savorqt::db::ServiceResult<savor::db::PredicateRevisionPageV2<savor::db::PredicateGroupRevisionSummary>>;
+    struct PredicateRefreshData {
+        PredicatePageResult library;
+        PredicatePageResult published;
+    };
+    savorqt::gui::AsyncRefreshPipeline<PredicateRefreshRequest, PredicateRefreshData>*
+        predicateRefreshPipeline_ = nullptr;
+    using PredicateDetailData = savorqt::db::ServiceResult<savor::db::PredicateGroupRevisionSnapshot>;
+    savorqt::gui::AsyncRefreshPipeline<std::int64_t, PredicateDetailData>*
+        predicateDetailPipeline_ = nullptr;
 };

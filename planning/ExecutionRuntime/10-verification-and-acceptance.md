@@ -322,13 +322,13 @@ characterization coverage:
 
 The reusable predicate library receives focused pure-contract and fake-session coverage:
 
-- one definition is reused at multiple check sites, including a synthetic non-battle module, without a
-  runtime change;
-- each check consumes typed semantic-observation results and lowers only into canonical IR, declared
+- one Definition is reused by multiple Execution Bindings and Group members, including a synthetic
+  non-battle module, without a runtime change;
+- each member consumes exact typed sources and lowers only into canonical IR, declared
   action/type/capability imports, ordinary branches, and declared emissions;
-- branch, clean domain rejection, explicit fail, record-only progress, and result accumulation remain
-  independent use-site policies;
-- `Unsatisfied`, `NotApplicable`, and `Unavailable` remain distinct;
+- clean domain rejection, record-and-continue progress, aggregation, and evidence emission remain
+  independent member policies;
+- `Passed` and `Failed` remain the only predicate evaluation results;
 - required observation failure cannot silently become false or be skipped;
 - baselines and guest-derived witness state use semantic-observation rules and obey `WorksetEpoch`;
 - type, import, capability, subscription, and emission mismatches reject the module before effects begin;
@@ -882,8 +882,8 @@ Use the current workflow persistence and restart fixtures to prove:
 - `ProgramResult` projects through existing result, artifact, and transition operations;
 - current payload/result codecs retain recognized semantic fields where stored records require them;
   obsolete timing keys are ignored and old legacy payload revisions do not become native invocations;
-- existing predicate records load and translate through current interfaces/storage, and their result
-  projection and survivor-selection behavior remain compatible without migration or conversion;
+- current Predicate Definitions, Execution Bindings, and Groups publish and resolve through the hard-cut
+  interfaces, and result projection preserves exact package lineage and survivor-selection behavior;
 - existing macro, address-program, and capture-profile representations are translated or consumed in
   memory without migration, conversion, or new storage contracts;
 - current durable job lifecycle, priority/claim order, affinity meaning, retry, cancellation, outbox,

@@ -70,20 +70,24 @@ enum class PredicateReaction : std::uint8_t
     AbortOnFail,
 };
 
-struct PredicateCheckUse
+// Runtime lowering policy supplied by one Predicate Group membership at one
+// concrete hook.  This is not an authored/provenanced object of its own.
+struct PredicateEvaluationPolicy
 {
-    std::string canonical_id;
+    std::int64_t predicate_group_revision_id = 0;
+    std::int64_t execution_binding_revision_id = 0;
+    std::uint32_t member_ordinal = 0;
     std::string semantic_point_id;
     PredicateReaction reaction = PredicateReaction::RecordAndContinue;
     bool emit_evidence = false;
     bool participates_in_aggregation = true;
 
-    auto operator<=>(const PredicateCheckUse&) const = default;
+    auto operator<=>(const PredicateEvaluationPolicy&) const = default;
 };
 
 [[nodiscard]] CompositionResult LowerPredicate(
     const PredicateDefinition& definition,
-    const PredicateCheckUse& check,
+    const PredicateEvaluationPolicy& policy,
     ProgramModule& module);
 
 } // namespace savor::runtime::program::composition

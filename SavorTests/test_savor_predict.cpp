@@ -497,8 +497,9 @@ protected:
             {
                 .name = "prediction-input-fixture",
                 .entry_savestate_id = 501,
-                .battle_run_spec_id = 601,
-                .explorer_settings_id = 701,
+                .battle_plan_id = 601,
+                .battle_plan_fingerprint = "prediction-input-plan",
+                .continuation_mode = BattleContinuationMode::AutomaticBestPerEndingRng,
                 .status = BattleSetStatus::Active,
                 .created_at_utc = now,
                 .correlation_id = "predict-corr",

@@ -155,6 +155,7 @@ struct SeededSourceBattle {
     std::int64_t job_set_id = 0;
     std::int64_t unrelated_exec_job_id = 0;
     std::filesystem::path source_sav_path;
+    std::filesystem::path stored_sav_path;
 };
 
 class SavorDbUtilsMinimalCopyFixture : public ::testing::Test {
@@ -207,6 +208,13 @@ protected:
             },
             &seeded.artifact_id,
             &err), err, "store source artifact");
+        const auto stored_artifact = db_service.StateDb()->GetArtifact(
+            seeded.artifact_id);
+        RequireFixtureStep(
+            stored_artifact.has_value(),
+            "stored State artifact could not be resolved",
+            "resolve stored source artifact");
+        seeded.stored_sav_path = stored_artifact->filename;
         RequireFixtureStep(db_service.StateDb()->CreateSavestate(
             {
                 .artifact_id = seeded.artifact_id,
@@ -220,18 +228,6 @@ protected:
             &seeded.savestate_id,
             &err), err, "create source savestate");
 
-        std::int64_t run_spec_id = 0;
-        RequireFixtureStep(db_service.AuthoringDb()->SaveBattleRunSpec(
-            {
-                .name = "dbutils-run-spec-" + std::to_string(key),
-                .priority = 1,
-                .use_single_turn_runner = true,
-                .created_at_utc = now,
-                .correlation_id = "dbutils-test",
-                .causation_id = "seed",
-            },
-            &run_spec_id,
-            &err), err, "save battle run spec");
         RequireFixtureStep(db_service.AuthoringDb()->SavePlan(
             {
                 .name = "dbutils-plan-" + std::to_string(key),
@@ -274,24 +270,13 @@ protected:
             },
             &plan_turn_id,
             &err), err, "save plan turn");
-        std::int64_t settings_id = 0;
-        RequireFixtureStep(db_service.AuthoringDb()->SaveExplorerSettings(
-            {
-                .name = "dbutils-settings-" + std::to_string(key),
-                .default_plan_id = seeded.plan_id,
-                .created_at_utc = now,
-                .correlation_id = "dbutils-test",
-                .causation_id = "seed",
-            },
-            &settings_id,
-            &err), err, "save explorer settings");
-
         RequireFixtureStep(db_service.AnalysisDb()->CreateBattleSet(
             {
                 .name = "dbutils-set-" + std::to_string(key),
                 .entry_savestate_id = seeded.savestate_id,
-                .battle_run_spec_id = run_spec_id,
-                .explorer_settings_id = settings_id,
+                .battle_plan_id = seeded.plan_id,
+                .battle_plan_fingerprint = "dbutils-plan-" + std::to_string(key),
+                .continuation_mode = BattleContinuationMode::AutomaticBestPerEndingRng,
                 .status = BattleSetStatus::Active,
                 .created_at_utc = now,
                 .correlation_id = "dbutils-test",
@@ -705,7 +690,6 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesSelectedClosureAndLoc
 {
     const auto source_root = root_ / "source";
     const auto target_root = root_ / "target";
-    const auto artifact_root = root_ / "run" / "source-artifacts";
     const auto seeded = SeedSourceDb(source_root);
 
     savor::dbutils::BattleSingleTurnJobSubsetResult result;
@@ -715,7 +699,6 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesSelectedClosureAndLoc
         {
             .source_root = source_root,
             .target_root = target_root,
-            .artifact_root = artifact_root,
             .selector = { .exec_job_id = seeded.exec_job_id },
         },
         &result,
@@ -738,9 +721,14 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesSelectedClosureAndLoc
     EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_workflow_unit_activation;").value_or(-1), 1);
     EXPECT_EQ(QueryI64(target_paths.analysis_db_path, "SELECT COUNT(*) FROM ab_turn_job WHERE turn_job_id=?1;", seeded.turn_job_id).value_or(-1), 1);
 
-    const auto localized = QueryText(target_paths.state_db_path, "SELECT filename FROM state_artifact WHERE artifact_id=?1;", seeded.artifact_id);
+    const auto localized = QueryText(target_paths.state_db_path, "SELECT object_relpath FROM state_artifact WHERE artifact_id=?1;", seeded.artifact_id);
     ASSERT_TRUE(localized.has_value());
-    EXPECT_NE(localized->find((root_ / "run" / "source-artifacts").string()), std::string::npos);
+    EXPECT_TRUE(std::filesystem::path(*localized).is_relative());
+    EXPECT_EQ(
+        result.copied_artifacts.front().copied_path
+            .lexically_relative(target_paths.object_store_root)
+            .generic_string(),
+        *localized);
 }
 
 TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesConfirmedSeedProbeResultClosure)
@@ -765,7 +753,6 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesConfirmedSeedProbeRes
         {
             .source_root = source_root,
             .target_root = target_root,
-            .artifact_root = root_ / "run" / "source-artifacts",
             .selector = { .exec_job_id = seeded.exec_job_id },
         },
         &result,
@@ -797,7 +784,6 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalBatchCopyPreservesSelectedClosures
 {
     const auto source_root = root_ / "source";
     const auto target_root = root_ / "target";
-    const auto artifact_root = root_ / "run" / "source-artifacts";
     const auto first = SeedSourceDb(source_root, 1, 101, true);
     const auto second = SeedSourceDb(source_root, 1, 102);
 
@@ -808,7 +794,6 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalBatchCopyPreservesSelectedClosures
         {
             .source_root = source_root,
             .target_root = target_root,
-            .artifact_root = artifact_root,
             .selectors = {
                 { .exec_job_id = first.exec_job_id },
                 { .exec_job_id = second.exec_job_id },
@@ -845,7 +830,7 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyRejectsMissingSavestateArtifac
     const auto source_root = root_ / "source";
     const auto target_root = root_ / "target";
     const auto seeded = SeedSourceDb(source_root);
-    ASSERT_TRUE(std::filesystem::remove(seeded.source_sav_path));
+    ASSERT_TRUE(std::filesystem::remove(seeded.stored_sav_path));
 
     savor::dbutils::BattleSingleTurnJobSubsetResult result;
     std::ostringstream out;
@@ -854,7 +839,6 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyRejectsMissingSavestateArtifac
         {
             .source_root = source_root,
             .target_root = target_root,
-            .artifact_root = root_ / "run" / "source-artifacts",
             .selector = { .exec_job_id = seeded.exec_job_id },
         },
         &result,
@@ -876,7 +860,6 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyRejectsNonFirstTurnJob)
         {
             .source_root = source_root,
             .target_root = target_root,
-            .artifact_root = root_ / "run" / "source-artifacts",
             .selector = { .exec_job_id = seeded.exec_job_id },
         },
         &result,

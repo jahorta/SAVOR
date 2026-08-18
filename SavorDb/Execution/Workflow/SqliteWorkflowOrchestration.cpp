@@ -856,8 +856,9 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
         if (argument.value_type != "integer"
             && argument.value_type != "text"
             && argument.value_type != "json"
-            && argument.value_type != "boolean") {
-            if (error_out) *error_out = "argument value_type must be integer, text, json, or boolean";
+            && argument.value_type != "boolean"
+            && argument.value_type != "choice") {
+            if (error_out) *error_out = "argument value_type must be integer, text, json, boolean, or choice";
             return false;
         }
         if ((argument.value_type == "integer" || argument.value_type == "boolean")
@@ -865,7 +866,7 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
             if (error_out) *error_out = "integer and boolean arguments require integer_value";
             return false;
         }
-        if ((argument.value_type == "text" || argument.value_type == "json")
+        if ((argument.value_type == "text" || argument.value_type == "json" || argument.value_type == "choice")
             && !argument.text_value.has_value()) {
             if (error_out) *error_out = "text and json arguments require text_value";
             return false;

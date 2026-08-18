@@ -325,6 +325,11 @@ ProgramValueGraph ResultGraph(
         TypeRef::Builtin(BuiltinType::U64),
         std::uint64_t{31},
     };
+    ProgramValue vi_count{
+        ProgramValueId(16),
+        TypeRef::Builtin(BuiltinType::U64),
+        std::uint64_t{37},
+    };
     ProgramValue stop{
         ProgramValueId(15),
         CanonicalActionOutputType(
@@ -334,6 +339,7 @@ ProgramValueGraph ResultGraph(
             optional_stop.id,
             stopped_pc.id,
             movie_input_count.id,
+            vi_count.id,
             workset_epoch.id,
         }},
     };
@@ -360,6 +366,7 @@ ProgramValueGraph ResultGraph(
             std::move(optional_stop),
             std::move(reason),
             std::move(movie_input_count),
+            std::move(vi_count),
             std::move(stop),
             std::move(delivery),
             std::move(endpoint_value),
@@ -586,7 +593,7 @@ ProgramJobMaterializationContext TestMaterializationContext(
                 .workflow_instance_id = workflow_step_id - 1,
                 .workflow_step_id = workflow_step_id,
                 .step_key = "seedprobe.run",
-                .step_kind = "seed_probe_chain",
+                .step_kind = "seedprobe.run",
                 .domain_ref_id = 0,
                 .step_priority = 0,
             },
@@ -596,13 +603,10 @@ ProgramJobMaterializationContext TestMaterializationContext(
                 .workflow_step_id = workflow_step_id,
                 .workflow_graph_revision_id = 1,
                 .step_key = "seedprobe.run",
-                .step_kind = "seed_probe_chain",
+                .step_kind = "seedprobe.run",
                 .activation_key = "seedprobe.run",
                 .activation_graph_node_key = "seedprobe.run",
-                .unit_kind = "seed_probe_chain",
-                .unit_variant = "battle",
-                .breakpoint_profile_key =
-                    "seedprobe.battle",
+                .unit_kind = "seed_probe",
                 .activation_params_json = "{}",
                 .authored_ref_kind =
                     std::string("seed_probe_spec"),
@@ -645,6 +649,22 @@ bool SetJobState(
     return ExecSql(db, sql.c_str());
 }
 
+std::string ReadSqlText(sqlite3* db, const std::string& sql)
+{
+    sqlite3_stmt* statement = nullptr;
+    if (db == nullptr ||
+        sqlite3_prepare_v2(db, sql.c_str(), -1, &statement, nullptr) != SQLITE_OK)
+        return {};
+    std::string value;
+    if (sqlite3_step(statement) == SQLITE_ROW &&
+        sqlite3_column_type(statement, 0) != SQLITE_NULL) {
+        const auto* text = sqlite3_column_text(statement, 0);
+        if (text != nullptr) value = reinterpret_cast<const char*>(text);
+    }
+    sqlite3_finalize(statement);
+    return value;
+}
+
 bool EnsureTestWorkflowStep(
     sqlite3* db,
     std::int64_t workflow_step_id)
@@ -664,7 +684,7 @@ bool EnsureTestWorkflowStep(
         "priority,attempts,max_attempts,ready_at_utc,created_at_utc) VALUES("
         + std::to_string(workflow_step_id) + ","
         + std::to_string(workflow_instance_id)
-        + ",'seedprobe.run','seed_probe_chain','READY',0,0,3,1000,1000);";
+        + ",'seedprobe.run','seedprobe.run','READY',0,0,3,1000,1000);";
     return ExecSql(db, step_sql.c_str());
 }
 
@@ -1543,21 +1563,41 @@ TEST(SeedProbeModule, OrdersFactualActionsAndContainsNoLegacyEffects)
 {
     const ProgramModule module = ProductionSeedProbeModule();
     const auto all_instructions = Instructions(module, "");
-    const std::size_t semantic_points = SelectorPosition(
-        all_instructions, "delivery/semantic-points");
-    const std::size_t begin_delivery = SelectorPosition(
-        all_instructions, "delivery/binding");
-    const std::size_t stop = SelectorPosition(
-        all_instructions, "delivery/stop");
-    const std::size_t complete_delivery = SelectorPosition(
-        all_instructions, "delivery/receipt");
-    ASSERT_NE(semantic_points, std::numeric_limits<std::size_t>::max());
-    ASSERT_NE(begin_delivery, std::numeric_limits<std::size_t>::max());
-    ASSERT_NE(stop, std::numeric_limits<std::size_t>::max());
-    ASSERT_NE(complete_delivery, std::numeric_limits<std::size_t>::max());
-    EXPECT_LT(semantic_points, begin_delivery);
-    EXPECT_LT(begin_delivery, stop);
-    EXPECT_LT(stop, complete_delivery);
+    const std::size_t observe = SelectorPosition(
+        all_instructions, "entry/observe-paused-pc");
+    ASSERT_NE(observe, std::numeric_limits<std::size_t>::max());
+    const std::size_t first_delivery = SelectorPosition(
+        all_instructions, "delivery/prebattle/semantic-points");
+    ASSERT_NE(first_delivery, std::numeric_limits<std::size_t>::max());
+    EXPECT_LT(observe, first_delivery);
+    EXPECT_NE(
+        std::ranges::find(
+            module.action_imports,
+            CanonicalActionIdentity(
+                CanonicalAction::ExecutionObservePausedPc)),
+        module.action_imports.end());
+
+    for (const std::string_view delivery_prefix : {
+             std::string_view("delivery/prebattle/"),
+             std::string_view("delivery/field-return/"),
+         }) {
+        const auto instructions = Instructions(module, delivery_prefix);
+        const std::size_t semantic_points = SelectorPosition(
+            instructions, "semantic-points");
+        const std::size_t begin_delivery = SelectorPosition(
+            instructions, "binding");
+        const std::size_t stop = SelectorPosition(
+            instructions, "stop");
+        const std::size_t complete_delivery = SelectorPosition(
+            instructions, "receipt");
+        ASSERT_NE(semantic_points, std::numeric_limits<std::size_t>::max());
+        ASSERT_NE(begin_delivery, std::numeric_limits<std::size_t>::max());
+        ASSERT_NE(stop, std::numeric_limits<std::size_t>::max());
+        ASSERT_NE(complete_delivery, std::numeric_limits<std::size_t>::max());
+        EXPECT_LT(semantic_points, begin_delivery);
+        EXPECT_LT(begin_delivery, stop);
+        EXPECT_LT(stop, complete_delivery);
+    }
 
     for (const std::string_view branch : {
              std::string_view("prebattle/"),
@@ -1612,43 +1652,34 @@ TEST(SeedProbeModule, OrdersFactualActionsAndContainsNoLegacyEffects)
         }
     }
     EXPECT_EQ(deferred_input_compensations, 0u);
-    EXPECT_EQ(scope_exits, 1u);
+    EXPECT_EQ(scope_exits, 2u);
+    EXPECT_TRUE(std::ranges::any_of(
+        module.functions.front().blocks,
+        [](const auto& block) {
+            return block.terminator.kind == TerminatorKind::StructuredFail &&
+                block.terminator.failure.has_value() &&
+                block.terminator.failure->code ==
+                    "seedprobe_entry_pc_unsupported";
+        }));
 }
 
-TEST(SeedProbeModule, SemanticPointSetEncodesBothEndpointsWithoutRoutingPolicy)
+TEST(SeedProbeModule, EachEntryBranchArmsOnlyItsResolvedEndpoint)
 {
     const ProgramModule module = ProductionSeedProbeModule();
-    const auto configs = Instructions(
-        module,
-        "delivery/semantic-points");
-    ASSERT_EQ(configs.size(), 1u);
-    ASSERT_TRUE(configs.front()->literal);
-    const auto* bytes = std::get_if<std::vector<Byte>>(
-        &configs.front()->literal->payload);
-    ASSERT_NE(bytes, nullptr);
-
-    StaticConfigTestReader reader(*bytes);
-    ASSERT_TRUE(reader.Magic("SPS1"));
-    std::uint32_t alternative_count = 0;
-    ASSERT_TRUE(reader.U32(alternative_count));
-    ASSERT_EQ(alternative_count, 2u);
-
     const auto field_pack = FieldPackIdentity();
-    const std::array expected_points{
-        std::pair{
-            std::string(SeedProbeEndpointPointId(
-                SeedProbeEndpointV2::AfterRandSeedSet)),
-            SeedProbeEndpointPc(
-                SeedProbeEndpointV2::AfterRandSeedSet)},
-        std::pair{
-            std::string(SeedProbeEndpointPointId(
-                SeedProbeEndpointV2::RandSeedCommitted)),
-            SeedProbeEndpointPc(
-                SeedProbeEndpointV2::RandSeedCommitted)},
-    };
-    for (const auto& [expected_point, expected_pc] :
-         expected_points)
-    {
+    const auto require_one_point = [&](std::string_view prefix,
+                                       SeedProbeEndpointV2 endpoint) {
+        const auto configs = Instructions(module, prefix);
+        ASSERT_EQ(configs.size(), 1u);
+        ASSERT_TRUE(configs.front()->literal);
+        const auto* bytes = std::get_if<std::vector<Byte>>(
+            &configs.front()->literal->payload);
+        ASSERT_NE(bytes, nullptr);
+        StaticConfigTestReader reader(*bytes);
+        ASSERT_TRUE(reader.Magic("SPS1"));
+        std::uint32_t alternative_count = 0;
+        ASSERT_TRUE(reader.U32(alternative_count));
+        ASSERT_EQ(alternative_count, 1u);
         std::string pack_id;
         std::uint32_t pack_version = 0;
         ContentHash256 pack_hash;
@@ -1664,15 +1695,31 @@ TEST(SeedProbeModule, SemanticPointSetEncodesBothEndpointsWithoutRoutingPolicy)
         EXPECT_EQ(pack_id, field_pack.canonical_id);
         EXPECT_EQ(pack_version, field_pack.version);
         EXPECT_EQ(pack_hash, field_pack.manifest_hash);
-        EXPECT_EQ(point_id, expected_point);
+        EXPECT_EQ(point_id, SeedProbeEndpointPointId(endpoint));
         EXPECT_EQ(kind, 0u);
-        EXPECT_EQ(pc, expected_pc);
-    }
+        EXPECT_EQ(pc, SeedProbeEndpointPc(endpoint));
+        std::uint32_t sample_count = 1;
+        ASSERT_TRUE(reader.U32(sample_count));
+        EXPECT_EQ(sample_count, 0u);
+        EXPECT_TRUE(reader.done());
+    };
+    require_one_point(
+        "delivery/prebattle/semantic-points",
+        SeedProbeEndpointV2::AfterRandSeedSet);
+    require_one_point(
+        "delivery/field-return/semantic-points",
+        SeedProbeEndpointV2::RandSeedCommitted);
+}
 
-    std::uint32_t sample_count = 1;
-    ASSERT_TRUE(reader.U32(sample_count));
-    EXPECT_EQ(sample_count, 0u);
-    EXPECT_TRUE(reader.done());
+TEST(SeedProbeModule, EntryPcCatalogSelectsOnlySupportedPhaseEndpoints)
+{
+    EXPECT_EQ(SeedProbeEndpointForEntryPc(PreBattleBeforeRandSeedSetPc),
+        SeedProbeEndpointV2::AfterRandSeedSet);
+    EXPECT_EQ(SeedProbeEndpointForEntryPc(FieldTransitionFastPreseedPc),
+        SeedProbeEndpointV2::RandSeedCommitted);
+    EXPECT_EQ(SeedProbeEndpointForEntryPc(FieldTransitionDeferredPreseedPc),
+        SeedProbeEndpointV2::RandSeedCommitted);
+    EXPECT_FALSE(SeedProbeEndpointForEntryPc(0x80000000u).has_value());
 }
 
 TEST(SeedProbeModule, DecodesAndValidatesCorrelatedFactualReceipts)
@@ -1856,6 +1903,18 @@ TEST_F(
         &error)) << error;
     ASSERT_GT(first.root_job_set_id, 0);
     ASSERT_GT(first.persistence.program_ref_id, 0);
+    EXPECT_EQ(ReadSqlText(db_,
+        "SELECT s.probe_flavor FROM sp_probe_run r "
+        "JOIN sp_probe_set s ON s.probe_set_id=r.probe_set_id "
+        "WHERE r.probe_run_id=" +
+            std::to_string(first.persistence.program_ref_id) + ";"),
+        "ENTRY_QUALIFIED");
+    EXPECT_EQ(ReadSqlText(db_,
+        "SELECT s.breakpoint_policy_name FROM sp_probe_run r "
+        "JOIN sp_probe_set s ON s.probe_set_id=r.probe_set_id "
+        "WHERE r.probe_run_id=" +
+            std::to_string(first.persistence.program_ref_id) + ";"),
+        "seedprobe.entry_pc.v1");
     const auto survey_jobs =
         execution_db->ListJobsInJobSet(
             first.root_job_set_id);

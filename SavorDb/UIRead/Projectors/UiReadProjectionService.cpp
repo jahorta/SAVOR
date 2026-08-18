@@ -851,6 +851,28 @@ bool ProjectArtifact(sqlite3* source, sqlite3* ui, std::int64_t artifact_id, std
     return StepDone(ui, upsert.st, error_out);
 }
 
+bool ProjectSavestate(sqlite3* source, sqlite3* ui, std::int64_t id, std::string* error_out) {
+    Statement src;
+    if (!Prepare(source,"SELECT s.savestate_id,s.artifact_id,s.savestate_type,COALESCE(s.note,''),s.is_complete,s.playback_state,s.dtm_artifact_id,a.sha256,a.size_bytes,a.filename,s.created_at_utc FROM state_savestate s JOIN state_artifact a ON a.artifact_id=s.artifact_id WHERE s.savestate_id=?1;",&src,error_out)) return false;
+    sqlite3_bind_int64(src.st,1,id); if(sqlite3_step(src.st)!=SQLITE_ROW)return true;
+    Statement dst; constexpr const char* sql="INSERT INTO ui_state_savestate_summary(savestate_id,artifact_id,savestate_type,note,is_complete,playback_state,dtm_artifact_id,sha256,size_bytes,filename,created_at_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(savestate_id) DO UPDATE SET artifact_id=excluded.artifact_id,savestate_type=excluded.savestate_type,note=excluded.note,is_complete=excluded.is_complete,playback_state=excluded.playback_state,dtm_artifact_id=excluded.dtm_artifact_id,sha256=excluded.sha256,size_bytes=excluded.size_bytes,filename=excluded.filename,created_at_utc=excluded.created_at_utc;";
+    if(!Prepare(ui,sql,&dst,error_out))return false;for(int i=0;i<11;++i)BindColumn(dst.st,i+1,src.st,i);return StepDone(ui,dst.st,error_out);
+}
+
+bool ProjectTasMovieRoot(sqlite3* source,sqlite3* ui,std::int64_t id,std::string* error_out){Statement src;if(!Prepare(source,"SELECT tas_movie_root_id,source_dtm_artifact_id,dtm_artifact_id,rtc_value,itinerary_artifact_id,required_final_breakpoint_pc,checkpoint_savestate_id,source_context_kind,source_context_id,created_at_utc FROM state_tas_movie_root WHERE tas_movie_root_id=?1;",&src,error_out))return false;sqlite3_bind_int64(src.st,1,id);if(sqlite3_step(src.st)!=SQLITE_ROW)return true;Statement dst;constexpr const char* sql="INSERT INTO ui_tas_movie_root_summary VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(tas_movie_root_id) DO UPDATE SET source_dtm_artifact_id=excluded.source_dtm_artifact_id,dtm_artifact_id=excluded.dtm_artifact_id,rtc_value=excluded.rtc_value,itinerary_artifact_id=excluded.itinerary_artifact_id,required_final_breakpoint_pc=excluded.required_final_breakpoint_pc,checkpoint_savestate_id=excluded.checkpoint_savestate_id,source_context_kind=excluded.source_context_kind,source_context_id=excluded.source_context_id,created_at_utc=excluded.created_at_utc;";if(!Prepare(ui,sql,&dst,error_out))return false;for(int i=0;i<10;++i)BindColumn(dst.st,i+1,src.st,i);return StepDone(ui,dst.st,error_out);}
+
+bool ProjectTasMovieTree(sqlite3* source,sqlite3* ui,std::int64_t id,std::string* error_out){Statement src;if(!Prepare(source,"SELECT tas_movie_tree_id,tas_movie_root_id,parent_tas_movie_tree_id,dtm_artifact_id,itinerary_artifact_id,required_final_breakpoint_pc,checkpoint_savestate_id,source_context_kind,source_context_id,created_at_utc FROM state_tas_movie_trees WHERE tas_movie_tree_id=?1;",&src,error_out))return false;sqlite3_bind_int64(src.st,1,id);if(sqlite3_step(src.st)!=SQLITE_ROW)return true;Statement dst;constexpr const char* sql="INSERT INTO ui_tas_movie_tree_summary VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(tas_movie_tree_id) DO UPDATE SET tas_movie_root_id=excluded.tas_movie_root_id,parent_tas_movie_tree_id=excluded.parent_tas_movie_tree_id,dtm_artifact_id=excluded.dtm_artifact_id,itinerary_artifact_id=excluded.itinerary_artifact_id,required_final_breakpoint_pc=excluded.required_final_breakpoint_pc,checkpoint_savestate_id=excluded.checkpoint_savestate_id,source_context_kind=excluded.source_context_kind,source_context_id=excluded.source_context_id,created_at_utc=excluded.created_at_utc;";if(!Prepare(ui,sql,&dst,error_out))return false;for(int i=0;i<10;++i)BindColumn(dst.st,i+1,src.st,i);return StepDone(ui,dst.st,error_out);}
+
+bool ProjectTasMovieValidationRequest(sqlite3* source,sqlite3* ui,std::int64_t id,std::string* error_out){
+    Statement src;constexpr const char* q="SELECT r.validation_request_id,r.workflow_instance_id,r.workflow_step_id,r.step_kind,r.operation,r.source_kind,r.source_ref_id,r.source_dtm_artifact_id,r.source_dtm_sha256,r.rtc_value,r.effective_dtm_sha256,r.itinerary_artifact_id,r.itinerary_sha256,r.required_final_breakpoint_pc,a.validation_attempt_id,a.outcome,a.failure_reason,a.actual_pc,a.actual_input_count,a.produced_tas_movie_root_id,r.created_at_utc FROM tmv_validation_request r LEFT JOIN tmv_validation_attempt a ON a.validation_attempt_id=(SELECT MAX(x.validation_attempt_id) FROM tmv_validation_attempt x WHERE x.validation_request_id=r.validation_request_id) WHERE r.validation_request_id=?1;";if(!Prepare(source,q,&src,error_out))return false;sqlite3_bind_int64(src.st,1,id);if(sqlite3_step(src.st)!=SQLITE_ROW)return true;Statement dst;constexpr const char* u="INSERT INTO ui_tas_movie_validation_request_summary VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21) ON CONFLICT(validation_request_id) DO UPDATE SET latest_validation_attempt_id=excluded.latest_validation_attempt_id,latest_outcome=excluded.latest_outcome,latest_failure_reason=excluded.latest_failure_reason,latest_actual_pc=excluded.latest_actual_pc,latest_actual_input_count=excluded.latest_actual_input_count,produced_tas_movie_root_id=excluded.produced_tas_movie_root_id;";if(!Prepare(ui,u,&dst,error_out))return false;for(int i=0;i<21;++i)BindColumn(dst.st,i+1,src.st,i);if(!StepDone(ui,dst.st,error_out))return false;
+    Statement del;if(!Prepare(ui,"DELETE FROM ui_tas_movie_validation_attempt_summary WHERE validation_request_id=?1;",&del,error_out))return false;sqlite3_bind_int64(del.st,1,id);if(!StepDone(ui,del.st,error_out))return false;
+    Statement attempts;if(!Prepare(source,"SELECT validation_attempt_id,validation_request_id,source_job_id,outcome,failure_reason,expected_pc,expected_input_count,actual_pc,actual_input_count,last_known_good_savestate_id,produced_tas_movie_root_id,worker_id,recorded_at_utc FROM tmv_validation_attempt WHERE validation_request_id=?1 ORDER BY validation_attempt_id;",&attempts,error_out))return false;sqlite3_bind_int64(attempts.st,1,id);while(sqlite3_step(attempts.st)==SQLITE_ROW){Statement a; if(!Prepare(ui,"INSERT INTO ui_tas_movie_validation_attempt_summary VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13);",&a,error_out))return false;for(int i=0;i<13;++i)BindColumn(a.st,i+1,attempts.st,i);if(!StepDone(ui,a.st,error_out))return false;}return true;
+}
+
+bool ProjectTasMovieSterilizationRequest(sqlite3* source,sqlite3* ui,std::int64_t id,std::string* error_out){Statement src;constexpr const char* q="SELECT r.sterilization_request_id,r.workflow_instance_id,r.workflow_step_id,r.source_savestate_id,r.source_savestate_artifact_id,r.source_savestate_sha256,r.source_dtm_artifact_id,r.source_dtm_sha256,r.reused_savestate_id,a.sterilization_attempt_id,a.produced_savestate_id,a.candidate_savestate_sha256,r.created_at_utc FROM tmv_checkpoint_sterilization_request r LEFT JOIN tmv_checkpoint_sterilization_attempt a ON a.sterilization_attempt_id=(SELECT MAX(x.sterilization_attempt_id) FROM tmv_checkpoint_sterilization_attempt x WHERE x.sterilization_request_id=r.sterilization_request_id) WHERE r.sterilization_request_id=?1;";if(!Prepare(source,q,&src,error_out))return false;sqlite3_bind_int64(src.st,1,id);if(sqlite3_step(src.st)!=SQLITE_ROW)return true;Statement dst;constexpr const char* u="INSERT INTO ui_tas_movie_sterilization_request_summary VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(sterilization_request_id) DO UPDATE SET latest_sterilization_attempt_id=excluded.latest_sterilization_attempt_id,latest_produced_savestate_id=excluded.latest_produced_savestate_id,latest_candidate_savestate_sha256=excluded.latest_candidate_savestate_sha256;";if(!Prepare(ui,u,&dst,error_out))return false;for(int i=0;i<13;++i)BindColumn(dst.st,i+1,src.st,i);if(!StepDone(ui,dst.st,error_out))return false;Statement del;if(!Prepare(ui,"DELETE FROM ui_tas_movie_sterilization_attempt_summary WHERE sterilization_request_id=?1;",&del,error_out))return false;sqlite3_bind_int64(del.st,1,id);if(!StepDone(ui,del.st,error_out))return false;Statement attempts;if(!Prepare(source,"SELECT sterilization_attempt_id,sterilization_request_id,source_job_id,candidate_savestate_sha256,produced_savestate_id,worker_id,recorded_at_utc FROM tmv_checkpoint_sterilization_attempt WHERE sterilization_request_id=?1 ORDER BY sterilization_attempt_id;",&attempts,error_out))return false;sqlite3_bind_int64(attempts.st,1,id);while(sqlite3_step(attempts.st)==SQLITE_ROW){Statement a;if(!Prepare(ui,"INSERT INTO ui_tas_movie_sterilization_attempt_summary VALUES(?1,?2,?3,?4,?5,?6,?7);",&a,error_out))return false;for(int i=0;i<7;++i)BindColumn(a.st,i+1,attempts.st,i);if(!StepDone(ui,a.st,error_out))return false;}return true;}
+
+bool ProjectBattleContext(sqlite3* source,sqlite3* ui,std::int64_t id,std::string* error_out){Statement src;if(!Prepare(source,"SELECT context_probe_id,wave_id,source_savestate_id,exec_job_id,probe_status,context_version,context_artifact_id,entry_pc,recorded_at_utc,created_at_utc FROM ab_battle_context_probe WHERE context_probe_id=?1;",&src,error_out))return false;sqlite3_bind_int64(src.st,1,id);if(sqlite3_step(src.st)!=SQLITE_ROW)return true;Statement dst;constexpr const char* u="INSERT INTO ui_battle_context_summary VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(context_probe_id) DO UPDATE SET wave_id=excluded.wave_id,source_savestate_id=excluded.source_savestate_id,exec_job_id=excluded.exec_job_id,probe_status=excluded.probe_status,context_version=excluded.context_version,context_artifact_id=excluded.context_artifact_id,entry_pc=excluded.entry_pc,recorded_at_utc=excluded.recorded_at_utc,created_at_utc=excluded.created_at_utc;";if(!Prepare(ui,u,&dst,error_out))return false;for(int i=0;i<10;++i)BindColumn(dst.st,i+1,src.st,i);return StepDone(ui,dst.st,error_out);}
+
 std::int64_t ResolveProbeRunId(sqlite3* source, const OutboxEvent& event, std::string* error_out) {
     if (event.aggregate_kind == "probe_run") return ParseInt64(event.aggregate_id);
     if (event.payload_ref_kind == "probe_run") return event.payload_ref_id;
@@ -1457,6 +1479,7 @@ enum class StreamKind {
     State,
     AnalysisSeedProbe,
     AnalysisBattle,
+    AnalysisTasMovie,
     Archive,
 };
 
@@ -1516,6 +1539,21 @@ bool ClassifyOutboxEvent(
     case StreamKind::State:
         if (event.event_type == "State.ArtifactStored.v1") {
             return AddDirty(dirty, "artifact", event.payload_ref_id, event, error_out);
+        }
+        if (event.event_type == "State.SavestateCreated.v1") {
+            return AddDirty(dirty, "savestate", event.payload_ref_id, event, error_out);
+        }
+        if (event.event_type == "State.SavestateDerived.v1") {
+            Statement st;
+            if (!Prepare(source,"SELECT to_savestate_id FROM state_savestate_derivation WHERE derivation_id=?1;",&st,error_out)) return false;
+            sqlite3_bind_int64(st.st,1,event.payload_ref_id);
+            return sqlite3_step(st.st)==SQLITE_ROW ? AddDirty(dirty,"savestate",sqlite3_column_int64(st.st,0),event,error_out) : true;
+        }
+        if (event.event_type == "State.TasMovieRootCreated.v1") {
+            return AddDirty(dirty,"tas_movie_root",event.payload_ref_id,event,error_out);
+        }
+        if (event.event_type == "State.TasMovieTreeCreated.v1") {
+            return AddDirty(dirty,"tas_movie_tree",event.payload_ref_id,event,error_out);
         }
         break;
     case StreamKind::AnalysisSeedProbe:
@@ -1583,11 +1621,24 @@ bool ClassifyOutboxEvent(
             const auto battle_set_id = ResolveBattleSetId(source, event, error_out);
             return battle_set_id <= 0 || AddDirty(dirty, "battle_group", battle_set_id, event, error_out);
         }
+        if (event.event_type == "AnalysisBattle.ContextProbeCreated.v1"
+            || event.event_type == "AnalysisBattle.ContextProbeCompleted.v1") {
+            return AddDirty(dirty,"battle_context",event.payload_ref_id,event,error_out);
+        }
         if (event.event_type == "AnalysisBattle.SeedCandidateAdded.v1"
-            || event.event_type == "AnalysisBattle.ContextProbeCreated.v1"
             || event.event_type == "AnalysisBattle.BattleAdvancementPoolCreated.v1") {
             return true;
         }
+        break;
+    case StreamKind::AnalysisTasMovie:
+        if (event.event_type == "AnalysisTasMovie.ValidationRequestCreated.v1")
+            return AddDirty(dirty,"validation_request",event.payload_ref_id,event,error_out);
+        if (event.event_type == "AnalysisTasMovie.ValidationAttemptRecorded.v1")
+            return AddDirty(dirty,"validation_request",ParseInt64(event.aggregate_id),event,error_out);
+        if (event.event_type == "AnalysisTasMovie.SterilizationRequestCreated.v1")
+            return AddDirty(dirty,"sterilization_request",event.payload_ref_id,event,error_out);
+        if (event.event_type == "AnalysisTasMovie.SterilizationAttemptRecorded.v1")
+            return AddDirty(dirty,"sterilization_request",ParseInt64(event.aggregate_id),event,error_out);
         break;
     case StreamKind::Archive:
         if (event.event_type == "Archive.PackageCreated.v1"
@@ -2000,8 +2051,11 @@ bool MaterializeDirtyEntity(
         if (entity.kind == "job_set") return ProjectJobSet(stream.source_db, stream.ui_db, entity.id, stop_requested, error_out);
         if (entity.kind == "workflow") return ProjectWorkflowInstance(stream.source_db, stream.ui_db, entity.id, error_out);
     }
-    if (stream.kind == StreamKind::State && entity.kind == "artifact") {
-        return ProjectArtifact(stream.source_db, stream.ui_db, entity.id, error_out);
+    if (stream.kind == StreamKind::State) {
+        if (entity.kind == "artifact") return ProjectArtifact(stream.source_db, stream.ui_db, entity.id, error_out);
+        if (entity.kind == "savestate") return ProjectSavestate(stream.source_db,stream.ui_db,entity.id,error_out);
+        if (entity.kind == "tas_movie_root") return ProjectTasMovieRoot(stream.source_db,stream.ui_db,entity.id,error_out);
+        if (entity.kind == "tas_movie_tree") return ProjectTasMovieTree(stream.source_db,stream.ui_db,entity.id,error_out);
     }
     if (stream.kind == StreamKind::AnalysisSeedProbe && entity.kind == "seed_probe_run") {
         return ProjectSeedProbeRun(stream.source_db, stream.ui_db, entity.id, error_out);
@@ -2012,6 +2066,11 @@ bool MaterializeDirtyEntity(
         if (entity.kind == "battle_turn_job") return ProjectBattleTurnJob(stream.source_db, stream.ui_db, entity.id, error_out);
         if (entity.kind == "battle_advancement_decision") return ProjectBattleAdvancementDecision(stream.source_db, stream.ui_db, entity.id, error_out);
         if (entity.kind == "battle_manual_followup") return ProjectBattleManualFollowupForTurnJob(stream.source_db, stream.ui_db, entity.id, error_out);
+        if (entity.kind == "battle_context") return ProjectBattleContext(stream.source_db,stream.ui_db,entity.id,error_out);
+    }
+    if (stream.kind == StreamKind::AnalysisTasMovie) {
+        if(entity.kind=="validation_request")return ProjectTasMovieValidationRequest(stream.source_db,stream.ui_db,entity.id,error_out);
+        if(entity.kind=="sterilization_request")return ProjectTasMovieSterilizationRequest(stream.source_db,stream.ui_db,entity.id,error_out);
     }
     if (stream.kind == StreamKind::Archive) {
         OutboxEvent event{};
@@ -2162,6 +2221,7 @@ UiReadProjectionService::UiReadProjectionService(UiReadProjectionConfig config)
     if (stream_enabled("state")) add_stream(StreamKind::State, "state", "State", "state_outbox_message", config_.state_db_path);
     if (stream_enabled("analysis-seedprobe")) add_stream(StreamKind::AnalysisSeedProbe, "analysis-seedprobe", "AnalysisSeedProbe", "sp_outbox_message", config_.analysis_db_path);
     if (stream_enabled("analysis-battle")) add_stream(StreamKind::AnalysisBattle, "analysis-battle", "AnalysisBattle", "ab_outbox_message", config_.analysis_db_path);
+    if (stream_enabled("analysis-tasmovie")) add_stream(StreamKind::AnalysisTasMovie, "analysis-tasmovie", "AnalysisTasMovie", "tmv_outbox_message", config_.analysis_db_path);
     if (stream_enabled("archive")) add_stream(StreamKind::Archive, "archive", "Archive", "ar_outbox_message", config_.archive_db_path);
 }
 

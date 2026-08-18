@@ -2,6 +2,7 @@
 
 #include "Common/DbService.h"
 #include "Common/Migrations/MigrationRunner.h"
+#include "State/ArtifactObjectStore.h"
 
 #include <algorithm>
 #include <array>
@@ -75,8 +76,7 @@ struct SourceTurnJob {
 struct SourceBattleSet {
     std::int64_t battle_set_id = 0;
     std::int64_t entry_savestate_id = 0;
-    std::int64_t battle_run_spec_id = 0;
-    std::int64_t explorer_settings_id = 0;
+    std::int64_t battle_plan_id = 0;
 };
 
 struct SourceWaveRefs {
@@ -99,17 +99,13 @@ struct SourceConfirmedProbeResult {
     std::int64_t input_frame_id = 0;
 };
 
-struct SourceExplorerSettings {
-    std::int64_t explorer_settings_id = 0;
-    std::optional<std::int64_t> default_plan_id;
-    std::optional<std::int64_t> default_predicate_set_id;
-};
-
 struct ArtifactRecord {
     std::int64_t savestate_id = 0;
     std::int64_t artifact_id = 0;
     std::string sha256;
+    std::int64_t size_bytes = 0;
     std::string file_ext;
+    fs::path object_relpath;
     fs::path source_path;
 };
 
@@ -608,7 +604,7 @@ std::optional<SourceTurnJob> read_source_turn_job(sqlite3* analysis_db, const Ba
 std::optional<SourceBattleSet> read_battle_set(sqlite3* analysis_db, std::int64_t battle_set_id, std::ostream& err) {
     Statement st;
     constexpr const char* kSql =
-        "SELECT battle_set_id,entry_savestate_id,battle_run_spec_id,explorer_settings_id "
+        "SELECT battle_set_id,entry_savestate_id,battle_plan_id "
         "FROM ab_battle_set WHERE battle_set_id=?1;";
     if (!prepare(analysis_db, kSql, &st, err)) {
         return std::nullopt;
@@ -621,8 +617,7 @@ std::optional<SourceBattleSet> read_battle_set(sqlite3* analysis_db, std::int64_
     return SourceBattleSet{
         .battle_set_id = sqlite3_column_int64(st.st, 0),
         .entry_savestate_id = sqlite3_column_int64(st.st, 1),
-        .battle_run_spec_id = sqlite3_column_int64(st.st, 2),
-        .explorer_settings_id = sqlite3_column_int64(st.st, 3),
+        .battle_plan_id = sqlite3_column_int64(st.st, 2),
     };
 }
 
@@ -667,26 +662,6 @@ std::optional<SourceSeedCandidate> read_seed_candidate(sqlite3* analysis_db, std
     row.seed_candidate_id = sqlite3_column_int64(st.st, 0);
     row.source_probe_result_id = column_i64_optional(st.st, 1);
     row.source_input_frame_id = column_i64_optional(st.st, 2);
-    return row;
-}
-
-std::optional<SourceExplorerSettings> read_explorer_settings(sqlite3* authoring_db, std::int64_t settings_id, std::ostream& err) {
-    Statement st;
-    constexpr const char* kSql =
-        "SELECT explorer_settings_id,default_plan_id,default_predicate_set_id "
-        "FROM au_explorer_settings WHERE explorer_settings_id=?1;";
-    if (!prepare(authoring_db, kSql, &st, err)) {
-        return std::nullopt;
-    }
-    sqlite3_bind_int64(st.st, 1, settings_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        err << "Explorer settings not found: " << settings_id << "\n";
-        return std::nullopt;
-    }
-    SourceExplorerSettings row{};
-    row.explorer_settings_id = sqlite3_column_int64(st.st, 0);
-    row.default_plan_id = column_i64_optional(st.st, 1);
-    row.default_predicate_set_id = column_i64_optional(st.st, 2);
     return row;
 }
 
@@ -760,10 +735,15 @@ void collect_input_frame_axis_ids(sqlite3* analysis_db, const std::set<std::int6
     }
 }
 
-std::optional<ArtifactRecord> read_artifact_for_savestate(sqlite3* state_db, std::int64_t savestate_id, std::ostream& err) {
+std::optional<ArtifactRecord> read_artifact_for_savestate(
+    sqlite3* state_db,
+    const fs::path& object_store_root,
+    std::int64_t savestate_id,
+    std::ostream& err) {
     Statement st;
     constexpr const char* kSql =
-        "SELECT s.savestate_id,a.artifact_id,a.sha256,a.file_ext,a.filename "
+        "SELECT s.savestate_id,a.artifact_id,a.sha256,a.size_bytes,a.file_ext,"
+        "a.filename,a.object_relpath "
         "FROM state_savestate s JOIN state_artifact a ON a.artifact_id=s.artifact_id "
         "WHERE s.savestate_id=?1;";
     if (!prepare(state_db, kSql, &st, err)) {
@@ -778,20 +758,47 @@ std::optional<ArtifactRecord> read_artifact_for_savestate(sqlite3* state_db, std
     row.savestate_id = sqlite3_column_int64(st.st, 0);
     row.artifact_id = sqlite3_column_int64(st.st, 1);
     row.sha256 = column_text(st.st, 2);
-    row.file_ext = column_text(st.st, 3);
-    row.source_path = column_text(st.st, 4);
+    row.size_bytes = sqlite3_column_int64(st.st, 3);
+    row.file_ext = column_text(st.st, 4);
+    const auto legacy_filename = fs::path(column_text(st.st, 5));
+    row.object_relpath = fs::path(column_text(st.st, 6));
+    std::string resolve_error;
+    std::optional<fs::path> source;
+    if (!row.object_relpath.empty()) {
+        source = savor::db::state::ResolveArtifactObjectPath(
+            object_store_root, row.object_relpath, &resolve_error);
+    } else {
+        source = savor::db::state::ResolveLegacyArtifactSource(
+            object_store_root, legacy_filename, &resolve_error);
+    }
+    if (!source.has_value()) {
+        err << "Failed resolving savestate artifact " << row.artifact_id
+            << ": " << resolve_error << "\n";
+        return std::nullopt;
+    }
+    row.source_path = std::move(*source);
     return row;
 }
 
-bool rewrite_artifact_filename(sqlite3* target_state_db, std::int64_t artifact_id, const fs::path& path, std::ostream& err) {
+bool rewrite_artifact_object_locator(
+    sqlite3* target_state_db,
+    std::int64_t artifact_id,
+    const fs::path& relative_path,
+    std::ostream& err) {
     Statement st;
-    if (!prepare(target_state_db, "UPDATE state_artifact SET filename=?2 WHERE artifact_id=?1;", &st, err)) {
+    if (!prepare(
+            target_state_db,
+            "UPDATE state_artifact SET object_relpath=?2 WHERE artifact_id=?1;",
+            &st,
+            err)) {
         return false;
     }
     sqlite3_bind_int64(st.st, 1, artifact_id);
-    sqlite3_bind_text(st.st, 2, path.string().c_str(), -1, SQLITE_TRANSIENT);
+    const auto portable = relative_path.generic_string();
+    sqlite3_bind_text(st.st, 2, portable.c_str(), -1, SQLITE_TRANSIENT);
     if (sqlite3_step(st.st) != SQLITE_DONE) {
-        err << "Failed rewriting artifact filename: " << sqlite3_errmsg(target_state_db) << "\n";
+        err << "Failed rewriting artifact object locator: "
+            << sqlite3_errmsg(target_state_db) << "\n";
         return false;
     }
     return true;
@@ -940,10 +947,6 @@ int hydrate_battle_single_turn_job_subset_into_existing(
         return 1;
     }
 
-    const auto artifact_root = options.artifact_root.empty()
-        ? options.target_root.parent_path() / "source-artifacts"
-        : options.artifact_root;
-
     SqliteHandle source_execution;
     SqliteHandle source_analysis;
     SqliteHandle source_authoring;
@@ -989,11 +992,6 @@ int hydrate_battle_single_turn_job_subset_into_existing(
     auto seed_candidate = seed_candidate_id > 0
         ? read_seed_candidate(source_analysis.get(), seed_candidate_id, err)
         : std::optional<SourceSeedCandidate>{};
-    auto settings = read_explorer_settings(source_authoring.get(), battle_set->explorer_settings_id, err);
-    if (!settings.has_value()) {
-        return 1;
-    }
-
     result_out->source_turn_job_id = turn->turn_job_id;
     result_out->source_exec_job_id = *turn->exec_job_id;
     result_out->source_job_set_id = exec_job->job_set_id;
@@ -1089,14 +1087,8 @@ int hydrate_battle_single_turn_job_subset_into_existing(
     }
     collect_input_frame_axis_ids(source_analysis.get(), input_frame_ids, &axis_ids, err);
 
-    std::set<std::int64_t> plan_ids = { turn->plan_id };
-    if (settings->default_plan_id.has_value()) {
-        plan_ids.insert(*settings->default_plan_id);
-    }
+    std::set<std::int64_t> plan_ids = { turn->plan_id, battle_set->battle_plan_id };
     std::set<std::int64_t> predicate_set_ids;
-    if (settings->default_predicate_set_id.has_value()) {
-        predicate_set_ids.insert(*settings->default_predicate_set_id);
-    }
     std::set<std::int64_t> action_preset_ids;
     for (const auto plan_id : plan_ids) {
         auto ids = query_i64_set(
@@ -1151,7 +1143,11 @@ int hydrate_battle_single_turn_job_subset_into_existing(
     std::set<std::int64_t> artifact_ids;
     std::vector<ArtifactRecord> artifacts;
     for (const auto savestate_id : savestate_ids) {
-        auto artifact = read_artifact_for_savestate(source_state.get(), savestate_id, err);
+        auto artifact = read_artifact_for_savestate(
+            source_state.get(),
+            options.source_root / "object_store",
+            savestate_id,
+            err);
         if (!artifact.has_value()) {
             result_out->validation_errors.push_back("missing state savestate/artifact");
             return 1;
@@ -1256,9 +1252,7 @@ int hydrate_battle_single_turn_job_subset_into_existing(
                         }
                         return ids.str();
                     }() + "))", result_out, err)
-                    && copy_rows_by_ids(db, "authoring", "au_battle_plan_action_preset", "action_preset_id", action_preset_ids, result_out, err)
-                    && copy_one_by_id(db, "authoring", "au_battle_run_spec", "battle_run_spec_id", battle_set->battle_run_spec_id, result_out, err)
-                    && copy_one_by_id(db, "authoring", "au_explorer_settings", "explorer_settings_id", battle_set->explorer_settings_id, result_out, err);
+                    && copy_rows_by_ids(db, "authoring", "au_battle_plan_action_preset", "action_preset_id", action_preset_ids, result_out, err);
             },
             err)) {
         return 1;
@@ -1280,25 +1274,29 @@ int hydrate_battle_single_turn_job_subset_into_existing(
     if (!open_sqlite(target_paths.state_db_path, SQLITE_OPEN_READWRITE, &target_state, err)) {
         return 1;
     }
-    fs::create_directories(artifact_root, ec);
-    if (ec) {
-        err << "Failed creating artifact root: " << ec.message() << "\n";
-        return 1;
-    }
     std::set<std::int64_t> copied_artifacts;
     for (const auto& artifact : artifacts) {
         if (copied_artifacts.contains(artifact.artifact_id)) {
             continue;
         }
-        const auto ext = artifact.file_ext.empty() ? artifact.source_path.extension().string() : artifact.file_ext;
-        const auto copied_path = artifact_root / ("artifact-" + std::to_string(artifact.artifact_id) + ext);
-        fs::copy_file(artifact.source_path, copied_path, fs::copy_options::overwrite_existing, ec);
-        if (ec) {
+        std::string import_error;
+        const auto imported = savor::db::state::ImportArtifactObject(
+            target_paths.object_store_root,
+            artifact.source_path,
+            artifact.sha256,
+            artifact.size_bytes,
+            artifact.file_ext,
+            &import_error);
+        if (!imported.has_value()) {
             err << "Failed copying artifact file " << artifact.source_path.string()
-                << " to " << copied_path.string() << ": " << ec.message() << "\n";
+                << " into the target object store: " << import_error << "\n";
             return 1;
         }
-        if (!rewrite_artifact_filename(target_state.get(), artifact.artifact_id, copied_path, err)) {
+        if (!rewrite_artifact_object_locator(
+                target_state.get(),
+                artifact.artifact_id,
+                imported->relative_path,
+                err)) {
             return 1;
         }
         copied_artifacts.insert(artifact.artifact_id);
@@ -1306,7 +1304,7 @@ int hydrate_battle_single_turn_job_subset_into_existing(
             .artifact_id = artifact.artifact_id,
             .savestate_id = artifact.savestate_id,
             .source_path = artifact.source_path,
-            .copied_path = copied_path,
+            .copied_path = imported->absolute_path,
         });
     }
 
@@ -1388,7 +1386,6 @@ int HydrateBattleSingleTurnJobSubsets(
         HydrateBattleSingleTurnJobSubsetOptions job_options{
             .source_root = options.source_root,
             .target_root = options.target_root,
-            .artifact_root = options.artifact_root,
             .selector = selector,
             .overwrite_target = false,
         };

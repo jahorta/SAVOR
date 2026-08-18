@@ -270,10 +270,11 @@ InteractionDefinition CommandInteraction()
     return definition;
 }
 
-struct LoweredPredicateCheck
+struct LoweredPredicateMember
 {
-    const predicates::PredicateCheckV1* check = nullptr;
-    const PredicateDefinition* definition = nullptr;
+    const predicates::PredicateGroupMemberV1* member = nullptr;
+    const predicates::PredicateExecutionBindingV1* binding = nullptr;
+    std::string semantic_hook_id;
     ProgramFunctionId function;
     SchemaIdentity evaluation_schema;
     std::optional<ProgramFunctionId> guard_function;
@@ -289,66 +290,77 @@ SchemaIdentity PredicateEvaluationSchema(
         "enum PredicateEvaluation{Passed=0,Failed=1}");
 }
 
-const PredicateDefinition* FindPredicateDefinition(
-    const predicates::ResolvedPredicateBundleV1& bundle,
+const predicates::PredicateExecutionBindingV1* FindPredicateBinding(
+    const predicates::PredicateExecutionPackageV1& package,
     std::int64_t revision_id)
 {
     const auto found = std::ranges::find(
-        bundle.definitions,
+        package.execution_bindings,
         revision_id,
-        &predicates::ResolvedPredicateDefinitionV1::revision_id);
-    return found == bundle.definitions.end() ? nullptr : &found->definition;
+        &predicates::PredicateExecutionBindingV1::execution_binding_revision_id);
+    return found == package.execution_bindings.end() ? nullptr : &*found;
 }
 
-std::vector<LoweredPredicateCheck> LowerActivePredicates(
-    const predicates::PredicateBundleExecutionPackageV1& package,
+std::vector<LoweredPredicateMember> LowerActivePredicates(
+    const predicates::PredicateExecutionPackageV1& package,
     ProgramModule& module)
 {
-    std::vector<LoweredPredicateCheck> lowered;
-    lowered.reserve(package.binding.active_check_ordinals.size());
-    for (const auto ordinal : package.binding.active_check_ordinals)
+    std::vector<LoweredPredicateMember> lowered;
+    for (const auto& member : package.group.members)
     {
-        const auto& check = package.bundle.checks.at(ordinal);
-        const auto* definition = FindPredicateDefinition(
-            package.bundle, check.predicate_definition_revision_id);
-        if (!definition)
-            throw std::logic_error("active predicate definition is unavailable");
-
-        auto executable_use = check.use;
-        // Abort evidence is mandatory even when the author did not request
-        // ordinary successful-check evidence.
-        if (executable_use.reaction == PredicateReaction::AbortOnFail)
-            executable_use.emit_evidence = true;
-        const auto result = LowerPredicate(
-            *definition, executable_use, module);
-        if (!result || !result.function)
-            throw std::logic_error("active predicate lowering failed");
-
-        LoweredPredicateCheck item{
-            .check = &check,
-            .definition = definition,
-            .function = *result.function,
-            .evaluation_schema = PredicateEvaluationSchema(*definition),
-        };
-        if (check.guard_predicate_definition_revision_id)
+        const auto* binding = FindPredicateBinding(
+            package, member.execution_binding_revision_id);
+        if (!binding)
+            throw std::logic_error("active predicate execution binding is unavailable");
+        for (const auto& hook_id : member.semantic_hook_ids)
         {
-            const auto* guard = FindPredicateDefinition(
-                package.bundle,
-                *check.guard_predicate_definition_revision_id);
-            if (!guard)
-                throw std::logic_error("GuardOnce predicate definition is unavailable");
-            PredicateCheckUse guard_use{
-                .canonical_id = check.use.canonical_id + ".occurrence_guard",
-                .semantic_point_id = check.use.semantic_point_id,
+            PredicateEvaluationPolicy policy{
+                .predicate_group_revision_id =
+                    package.group.predicate_group_revision_id,
+                .execution_binding_revision_id =
+                    member.execution_binding_revision_id,
+                .member_ordinal = member.ordinal,
+                .semantic_point_id = hook_id,
+                .reaction = member.reaction,
+                .emit_evidence = member.emit_evidence ||
+                    member.reaction == PredicateReaction::AbortOnFail,
+                .participates_in_aggregation =
+                    member.participates_in_aggregation,
             };
-            const auto guard_result = LowerPredicate(
-                *guard, guard_use, module);
-            if (!guard_result || !guard_result.function)
-                throw std::logic_error("GuardOnce predicate lowering failed");
-            item.guard_function = *guard_result.function;
-            item.guard_evaluation_schema = PredicateEvaluationSchema(*guard);
+            const auto result = LowerPredicate(
+                binding->definition.definition, policy, module);
+            if (!result || !result.function)
+                throw std::logic_error("active predicate lowering failed");
+            LoweredPredicateMember item{
+                .member = &member,
+                .binding = binding,
+                .semantic_hook_id = hook_id,
+                .function = *result.function,
+                .evaluation_schema = PredicateEvaluationSchema(
+                    binding->definition.definition),
+            };
+            if (member.guard_execution_binding_revision_id)
+            {
+                const auto* guard = FindPredicateBinding(
+                    package, *member.guard_execution_binding_revision_id);
+                if (!guard)
+                    throw std::logic_error(
+                        "GuardOnce predicate execution binding is unavailable");
+                auto guard_policy = policy;
+                guard_policy.execution_binding_revision_id =
+                    guard->execution_binding_revision_id;
+                guard_policy.emit_evidence = false;
+                guard_policy.reaction = PredicateReaction::RecordAndContinue;
+                const auto guard_result = LowerPredicate(
+                    guard->definition.definition, guard_policy, module);
+                if (!guard_result || !guard_result.function)
+                    throw std::logic_error("GuardOnce predicate lowering failed");
+                item.guard_function = *guard_result.function;
+                item.guard_evaluation_schema = PredicateEvaluationSchema(
+                    guard->definition.definition);
+            }
+            lowered.push_back(std::move(item));
         }
-        lowered.push_back(std::move(item));
     }
     return lowered;
 }
@@ -429,16 +441,16 @@ ProgramValueId AcquireObservation(
     BasicBlock& block,
     ProgramValueId receipt,
     std::uint32_t hook_pc,
-    const predicates::PredicateObservationV1& observation,
+    const predicates::PredicateWitnessSourceBindingV1& observation,
     std::string selector)
 {
     using Kind = predicates::PredicateObservationSourceKindV1;
-    if (observation.source_kind == Kind::HookReceipt)
+    if (observation.observation_source_kind == Kind::HookReceipt)
         return HookReceiptField(
             builder, function, block, receipt, hook_pc,
             observation.value_type, observation.source_field,
             std::move(selector));
-    if (observation.source_kind == Kind::GuestAddress)
+    if (observation.observation_source_kind == Kind::GuestAddress)
     {
         const auto action = GuestReadAction(observation.value_type);
         const auto optional = Optional(
@@ -460,20 +472,22 @@ ProgramValueId AcquireObservation(
             builder, function, block, action, request,
             selector + "/read");
     }
+    if (!observation.source)
+        throw std::logic_error("predicate observation dependency is unavailable");
     const InstructionTarget target{
-        .kind = observation.source_kind == Kind::RegisteredQuery
+        .kind = observation.observation_source_kind == Kind::RegisteredQuery
             ? InstructionTargetKind::Action
             : InstructionTargetKind::Reducer,
-        .dependency = observation.source,
+        .dependency = *observation.source,
     };
-    if (observation.source_kind == Kind::RegisteredQuery)
-        builder.AddActionImport(observation.source);
+    if (observation.observation_source_kind == Kind::RegisteredQuery)
+        builder.AddActionImport(*observation.source);
     else
-        builder.AddReducerImport(observation.source);
-    if (observation.source_kind == Kind::RegisteredQuery &&
-        (observation.source == capabilities::BattleDerivedTurnEntryActionIdentity() ||
-         observation.source == capabilities::BattleDerivedTurnOrderActionIdentity() ||
-         observation.source == capabilities::BattleDerivedRewardsActionIdentity()))
+        builder.AddReducerImport(*observation.source);
+    if (observation.observation_source_kind == Kind::RegisteredQuery &&
+        (*observation.source == capabilities::BattleDerivedTurnEntryActionIdentity() ||
+         *observation.source == capabilities::BattleDerivedTurnOrderActionIdentity() ||
+         *observation.source == capabilities::BattleDerivedRewardsActionIdentity()))
     {
         const auto freshness_schema =
             capabilities::BattleDerivedFreshnessSchemaIdentity();
@@ -482,12 +496,19 @@ ProgramValueId AcquireObservation(
             EnumValue{
                 freshness_schema,
                 static_cast<std::int64_t>(
-                    derived::DerivedStateFreshness::SameRoutedEvent)},
+                    observation.source_kind ==
+                            predicates::PredicateWitnessSourceKindV1::DerivedStateQuery
+                        ? derived::DerivedStateFreshness::LatestInItem
+                        : derived::DerivedStateFreshness::SameRoutedEvent)},
             selector + "/freshness");
         const auto routed = Optional(
             builder, function, block,
             CanonicalRuntimeSchema::OptionalContinueUntilResult,
-            receipt, selector + "/routed-stop");
+            observation.source_kind ==
+                    predicates::PredicateWitnessSourceKindV1::DerivedStateQuery
+                ? std::optional<ProgramValueId>{}
+                : std::optional<ProgramValueId>{receipt},
+            selector + "/routed-stop");
         const std::array fields{freshness, routed};
         const auto request = Construct(
             builder, function, block,
@@ -501,7 +522,7 @@ ProgramValueId AcquireObservation(
     }
     return Need(builder.AddInstruction(
         function, block,
-        observation.source_kind == Kind::RegisteredQuery
+        observation.observation_source_kind == Kind::RegisteredQuery
             ? InstructionOpcode::AwaitAction
             : InstructionOpcode::CallReducer,
         observation.value_type, std::array{receipt}, target,
@@ -519,12 +540,12 @@ void LowerTurnExecution(
     ProgramValueId cumulative_before,
     ProgramValueId vi_start,
     ProgramValueId save_request,
-    const predicates::PredicateBundleExecutionPackageV1& package,
-    const std::vector<LoweredPredicateCheck>& lowered_checks)
+    const predicates::PredicateExecutionPackageV1& package,
+    const std::vector<LoweredPredicateMember>& lowered_members)
 {
     const bool has_abort_on_fail = std::ranges::any_of(
-        lowered_checks, [](const LoweredPredicateCheck& lowered) {
-            return lowered.check->use.reaction == PredicateReaction::AbortOnFail;
+        lowered_members, [](const LoweredPredicateMember& lowered) {
+            return lowered.member->reaction == PredicateReaction::AbortOnFail;
         });
     const auto receipt_type = CanonicalActionOutputType(
         CanonicalAction::ExecutionContinueUntil);
@@ -561,36 +582,42 @@ void LowerTurnExecution(
         std::array{cumulative_before, fake_this}, {},
         "fake-attacks/cumulative"), "fake-attack accounting");
 
-    std::set<std::uint32_t> used_baseline_ordinals;
-    for (const auto& lowered : lowered_checks)
-        for (const auto& witness : lowered.check->witnesses)
-            if (witness.source_kind == predicates::PredicateWitnessSourceKindV1::Baseline)
-                used_baseline_ordinals.insert(*witness.source_ordinal);
-    std::vector<const predicates::PredicateBaselineV1*> baselines;
-    for (const auto ordinal : used_baseline_ordinals)
-        baselines.push_back(&package.bundle.baselines.at(ordinal));
+    struct BaselineRef
+    {
+        std::int64_t binding_revision_id = 0;
+        std::uint32_t witness_ordinal = 0;
+        const predicates::PredicateWitnessSourceBindingV1* source = nullptr;
+    };
+    std::vector<BaselineRef> baselines;
+    for (const auto& binding : package.execution_bindings)
+        for (const auto& witness : binding.witnesses)
+            if (witness.source_kind ==
+                predicates::PredicateWitnessSourceKindV1::BaselineObservation)
+                baselines.push_back({binding.execution_binding_revision_id,
+                    witness.witness_ordinal, &witness});
 
     std::vector<TypeRef> state_types{
         TypeRef::Builtin(BuiltinType::U32), // pred_passed
         TypeRef::Builtin(BuiltinType::U32), // pred_total
     };
     std::map<std::uint32_t, std::size_t> check_state;
-    for (const auto& lowered : lowered_checks)
+    for (const auto& member : package.group.members)
     {
-        check_state.emplace(lowered.check->ordinal, state_types.size());
+        check_state.emplace(member.ordinal, state_types.size());
         state_types.push_back(TypeRef::Builtin(BuiltinType::U32)); // hook hits
         state_types.push_back(TypeRef::Builtin(BuiltinType::Bool)); // completed
     }
-    std::map<std::uint32_t, std::size_t> baseline_state;
-    for (const auto* baseline : baselines)
+    std::map<std::pair<std::int64_t, std::uint32_t>, std::size_t>
+        baseline_state;
+    for (const auto& baseline : baselines)
     {
-        baseline_state.emplace(baseline->ordinal, state_types.size());
+        baseline_state.emplace(
+            std::pair{baseline.binding_revision_id, baseline.witness_ordinal},
+            state_types.size());
         state_types.push_back(TypeRef::Builtin(BuiltinType::Bool));
-        const auto& observation = package.bundle.observations.at(
-            baseline->observation_ordinal);
-        if (!ZeroPayload(observation.value_type))
+        if (!ZeroPayload(baseline.source->value_type))
             throw std::logic_error("predicate baseline type has no canonical empty state");
-        state_types.push_back(observation.value_type);
+        state_types.push_back(baseline.source->value_type);
     }
 
     std::vector<ProgramValueId> initial_state;
@@ -639,10 +666,10 @@ void LowerTurnExecution(
         if (!hook) throw std::logic_error("predicate hook contract drifted");
         hooks_by_id.emplace(hook->canonical_id, hook);
     };
-    for (const auto& lowered : lowered_checks)
-        require_hook(lowered.check->use.semantic_point_id);
-    for (const auto* baseline : baselines)
-        require_hook(baseline->capture_hook_id);
+    for (const auto& lowered : lowered_members)
+        require_hook(lowered.semantic_hook_id);
+    for (const auto& baseline : baselines)
+        require_hook(baseline.source->baseline_capture_hook_id);
     for (const auto pc : {TurnIsReadyPc, TurnInputsPc, VictoryPc, DefeatPc})
     {
         const auto found = std::ranges::find(
@@ -837,26 +864,29 @@ void LowerTurnExecution(
         ProgramValueId receipt = current->arguments[0].id;
         auto state = ids(current->arguments, 1);
 
-        // Baseline capture is deliberately ordered before check evaluation at
-        // the same hook, matching the useful legacy timing while making it
-        // explicit in the bundle.
-        for (const auto* baseline : baselines)
+        // Binding-owned baselines are captured before any member evaluation at
+        // the same hook.  This ordering is part of the execution package.
+        for (const auto& baseline : baselines)
         {
-            if (baseline->capture_hook_id != hook->canonical_id) continue;
-            const auto& observation = package.bundle.observations.at(
-                baseline->observation_ordinal);
+            if (baseline.source->baseline_capture_hook_id != hook->canonical_id)
+                continue;
             const auto value = AcquireObservation(
-                builder, function, *current, receipt, hook->pc, observation,
-                std::format("predicate/baseline/{}/capture", baseline->ordinal));
-            const auto offset = baseline_state.at(baseline->ordinal);
-            if (baseline->update_policy ==
+                builder, function, *current, receipt, hook->pc,
+                *baseline.source,
+                std::format("predicate/binding/{}/witness/{}/baseline/capture",
+                    baseline.binding_revision_id, baseline.witness_ordinal));
+            const auto offset = baseline_state.at(std::pair{
+                baseline.binding_revision_id, baseline.witness_ordinal});
+            if (baseline.source->baseline_update_policy ==
                 predicates::PredicateBaselineUpdatePolicyV1::First)
             {
                 state[offset + 1] = Need(builder.AddInstruction(
                     function, *current, InstructionOpcode::Select,
-                    observation.value_type,
+                    baseline.source->value_type,
                     std::array{state[offset], state[offset + 1], value}, {},
-                    std::format("predicate/baseline/{}/first", baseline->ordinal)),
+                    std::format("predicate/binding/{}/witness/{}/baseline/first",
+                        baseline.binding_revision_id,
+                        baseline.witness_ordinal)),
                     "predicate baseline selection");
             }
             else
@@ -865,42 +895,44 @@ void LowerTurnExecution(
             }
             state[offset] = bool_value(
                 *current, true,
-                std::format("predicate/baseline/{}/present", baseline->ordinal));
+                std::format("predicate/binding/{}/witness/{}/baseline/present",
+                    baseline.binding_revision_id, baseline.witness_ordinal));
         }
 
-        for (const auto& lowered : lowered_checks)
+        for (const auto& lowered : lowered_members)
         {
-            const auto& check = *lowered.check;
-            if (check.use.semantic_point_id != hook->canonical_id) continue;
-            const auto check_offset = check_state.at(check.ordinal);
+            const auto& member = *lowered.member;
+            const auto& binding = *lowered.binding;
+            if (lowered.semantic_hook_id != hook->canonical_id) continue;
+            const auto check_offset = check_state.at(member.ordinal);
             const auto one = one_u32(
-                *current, std::format("predicate/check/{}/one", check.ordinal));
+                *current, std::format("predicate/member/{}/one", member.ordinal));
             const auto next_hit = Need(builder.AddInstruction(
                 function, *current, InstructionOpcode::AddChecked,
                 TypeRef::Builtin(BuiltinType::U32),
                 std::array{state[check_offset], one}, {},
-                std::format("predicate/check/{}/hit", check.ordinal)),
+                std::format("predicate/member/{}/hit", member.ordinal)),
                 "predicate occurrence accounting");
             state[check_offset] = next_hit;
 
             ProgramValueId should_evaluate{};
             using Occurrence = predicates::PredicateOccurrencePolicyV1;
-            if (check.occurrence == Occurrence::Every)
+            if (member.occurrence == Occurrence::Every)
                 should_evaluate = bool_value(
                     *current, true,
-                    std::format("predicate/check/{}/every", check.ordinal));
-            else if (check.occurrence == Occurrence::Ordinal)
+                    std::format("predicate/member/{}/every", member.ordinal));
+            else if (member.occurrence == Occurrence::Ordinal)
             {
                 const auto expected = Constant(
                     builder, function, *current,
                     TypeRef::Builtin(BuiltinType::U32),
-                    *check.occurrence_ordinal,
-                    std::format("predicate/check/{}/ordinal", check.ordinal));
+                    *member.occurrence_ordinal,
+                    std::format("predicate/member/{}/ordinal", member.ordinal));
                 should_evaluate = Need(builder.AddInstruction(
                     function, *current, InstructionOpcode::Equal,
                     TypeRef::Builtin(BuiltinType::Bool),
                     std::array{next_hit, expected}, {},
-                    std::format("predicate/check/{}/at-ordinal", check.ordinal)),
+                    std::format("predicate/member/{}/at-ordinal", member.ordinal)),
                     "predicate ordinal comparison");
             }
             else
@@ -909,7 +941,7 @@ void LowerTurnExecution(
                     function, *current, InstructionOpcode::BooleanNot,
                     TypeRef::Builtin(BuiltinType::Bool),
                     std::array{state[check_offset + 1]}, {},
-                    std::format("predicate/check/{}/not-complete", check.ordinal)),
+                    std::format("predicate/member/{}/not-complete", member.ordinal)),
                     "predicate completion guard");
             }
 
@@ -927,56 +959,49 @@ void LowerTurnExecution(
                     .target = merge.id,
                     .arguments = edge_values(receipt, state),
                 }},
-            }, std::format("predicate/check/{}/occurrence", check.ordinal));
+            }, std::format("predicate/member/{}/occurrence", member.ordinal));
 
             BasicBlock* evaluation_block = &evaluation;
             ProgramValueId evaluation_receipt = evaluation.arguments[0].id;
             auto evaluation_state = ids(evaluation.arguments, 1);
             std::vector<ProgramValueId> witnesses;
-            witnesses.reserve(check.witnesses.size());
-            for (const auto& witness : check.witnesses)
+            witnesses.reserve(binding.witnesses.size());
+            for (const auto& witness : binding.witnesses)
             {
                 using Source = predicates::PredicateWitnessSourceKindV1;
-                if (witness.source_kind == Source::Literal)
+                if (witness.source_kind == Source::ConcreteValue)
                 {
                     witnesses.push_back(Constant(
                         builder, function, *evaluation_block,
-                        witness.value_type, witness.literal->payload,
-                        std::format("predicate/check/{}/witness/{}/literal",
-                            check.ordinal, witness.witness_ordinal)));
+                        witness.value_type, witness.concrete_value->payload,
+                        std::format("predicate/member/{}/witness/{}/concrete",
+                            member.ordinal, witness.witness_ordinal)));
                 }
-                else if (witness.source_kind == Source::Parameter)
-                {
-                    const auto& value = package.binding.parameter_values.at(
-                        *witness.source_ordinal);
-                    witnesses.push_back(Constant(
-                        builder, function, *evaluation_block,
-                        value.type, value.payload,
-                        std::format("predicate/check/{}/witness/{}/parameter",
-                            check.ordinal, witness.witness_ordinal)));
-                }
-                else if (witness.source_kind == Source::HookReceipt)
+                else if (witness.source_kind == Source::CurrentHookReceipt)
                 {
                     witnesses.push_back(HookReceiptField(
                         builder, function, *evaluation_block,
                         evaluation_receipt, hook->pc, witness.value_type,
                         witness.source_field,
-                        std::format("predicate/check/{}/witness/{}/receipt",
-                            check.ordinal, witness.witness_ordinal)));
+                        std::format("predicate/member/{}/witness/{}/receipt",
+                            member.ordinal, witness.witness_ordinal)));
                 }
-                else if (witness.source_kind == Source::Observation)
+                else if (witness.source_kind ==
+                             Source::DerivedStateQuery ||
+                         witness.source_kind == Source::PinnedGuestMemory)
                 {
                     witnesses.push_back(AcquireObservation(
                         builder, function, *evaluation_block,
                         evaluation_receipt, hook->pc,
-                        package.bundle.observations.at(*witness.source_ordinal),
-                        std::format("predicate/check/{}/witness/{}/observation",
-                            check.ordinal, witness.witness_ordinal)));
+                        witness,
+                        std::format("predicate/member/{}/witness/{}/observation",
+                            member.ordinal, witness.witness_ordinal)));
                 }
                 else
                 {
-                    const auto offset = baseline_state.at(
-                        *witness.source_ordinal);
+                    const auto offset = baseline_state.at(std::pair{
+                        binding.execution_binding_revision_id,
+                        witness.witness_ordinal});
                     auto available_arguments = state_arguments(true);
                     auto& available = builder.AddBlock(
                         function, available_arguments);
@@ -989,15 +1014,15 @@ void LowerTurnExecution(
                             .arguments = edge_values(
                                 evaluation_receipt, evaluation_state),
                         }, {.target = missing.id}},
-                    }, std::format("predicate/check/{}/witness/{}/baseline-present",
-                        check.ordinal, witness.witness_ordinal));
+                    }, std::format("predicate/member/{}/witness/{}/baseline-present",
+                        member.ordinal, witness.witness_ordinal));
                     builder.SetTerminator(function, missing, {
                         .kind = TerminatorKind::StructuredFail,
                         .failure = StructuredFailure{
                             "predicate_evidence_missing",
                             "A required predicate baseline was not captured"},
-                    }, std::format("predicate/check/{}/witness/{}/baseline-missing",
-                        check.ordinal, witness.witness_ordinal));
+                    }, std::format("predicate/member/{}/witness/{}/baseline-missing",
+                        member.ordinal, witness.witness_ordinal));
                     evaluation_block = &available;
                     evaluation_receipt = available.arguments[0].id;
                     evaluation_state = ids(available.arguments, 1);
@@ -1005,7 +1030,7 @@ void LowerTurnExecution(
                 }
             }
 
-            if (check.occurrence == Occurrence::GuardOnce)
+            if (member.occurrence == Occurrence::GuardOnce)
             {
                 const auto guard_evaluation = Need(builder.AddInstruction(
                     function, *evaluation_block, InstructionOpcode::CallLocal,
@@ -1013,12 +1038,12 @@ void LowerTurnExecution(
                     witnesses,
                     {.kind = InstructionTargetKind::LocalFunction,
                      .local_function = *lowered.guard_function},
-                    std::format("predicate/check/{}/guard", check.ordinal)),
+                    std::format("predicate/member/{}/guard", member.ordinal)),
                     "predicate occurrence guard");
                 const auto guard_passed = evaluation_passed(
                     *evaluation_block, guard_evaluation,
                     *lowered.guard_evaluation_schema,
-                    std::format("predicate/check/{}/guard", check.ordinal));
+                    std::format("predicate/member/{}/guard", member.ordinal));
                 auto actual_arguments = state_arguments(true);
                 auto& actual = builder.AddBlock(function, actual_arguments);
                 builder.SetTerminator(function, *evaluation_block, {
@@ -1033,7 +1058,7 @@ void LowerTurnExecution(
                         .arguments = edge_values(
                             evaluation_receipt, evaluation_state),
                     }},
-                }, std::format("predicate/check/{}/guard-branch", check.ordinal));
+                }, std::format("predicate/member/{}/guard-branch", member.ordinal));
                 evaluation_block = &actual;
                 evaluation_receipt = actual.arguments[0].id;
                 evaluation_state = ids(actual.arguments, 1);
@@ -1044,43 +1069,46 @@ void LowerTurnExecution(
                 TypeRef::Named(lowered.evaluation_schema), witnesses,
                 {.kind = InstructionTargetKind::LocalFunction,
                  .local_function = lowered.function},
-                std::format("predicate/check/{}/evaluate", check.ordinal)),
+                std::format("predicate/member/{}/evaluate", member.ordinal)),
                 "predicate evaluation");
             const auto passed = evaluation_passed(
                 *evaluation_block, evaluation_value,
                 lowered.evaluation_schema,
-                std::format("predicate/check/{}/evaluation", check.ordinal));
-            const auto count_one = one_u32(
-                *evaluation_block,
-                std::format("predicate/check/{}/count-one", check.ordinal));
-            const auto count_zero = Constant(
-                builder, function, *evaluation_block,
-                TypeRef::Builtin(BuiltinType::U32), std::uint32_t{0},
-                std::format("predicate/check/{}/count-zero", check.ordinal));
-            evaluation_state[1] = Need(builder.AddInstruction(
-                function, *evaluation_block, InstructionOpcode::AddChecked,
-                TypeRef::Builtin(BuiltinType::U32),
-                std::array{evaluation_state[1], count_one}, {},
-                std::format("predicate/check/{}/total", check.ordinal)),
-                "predicate total accounting");
-            const auto passed_increment = Need(builder.AddInstruction(
-                function, *evaluation_block, InstructionOpcode::Select,
-                TypeRef::Builtin(BuiltinType::U32),
-                std::array{passed, count_one, count_zero}, {},
-                std::format("predicate/check/{}/passed-increment", check.ordinal)),
-                "predicate passed selection");
-            evaluation_state[0] = Need(builder.AddInstruction(
-                function, *evaluation_block, InstructionOpcode::AddChecked,
-                TypeRef::Builtin(BuiltinType::U32),
-                std::array{evaluation_state[0], passed_increment}, {},
-                std::format("predicate/check/{}/passed-total", check.ordinal)),
-                "predicate passed accounting");
-            if (check.occurrence != Occurrence::Every)
+                std::format("predicate/member/{}/evaluation", member.ordinal));
+            if (member.participates_in_aggregation)
+            {
+                const auto count_one = one_u32(
+                    *evaluation_block,
+                    std::format("predicate/member/{}/count-one", member.ordinal));
+                const auto count_zero = Constant(
+                    builder, function, *evaluation_block,
+                    TypeRef::Builtin(BuiltinType::U32), std::uint32_t{0},
+                    std::format("predicate/member/{}/count-zero", member.ordinal));
+                evaluation_state[1] = Need(builder.AddInstruction(
+                    function, *evaluation_block, InstructionOpcode::AddChecked,
+                    TypeRef::Builtin(BuiltinType::U32),
+                    std::array{evaluation_state[1], count_one}, {},
+                    std::format("predicate/member/{}/total", member.ordinal)),
+                    "predicate total accounting");
+                const auto passed_increment = Need(builder.AddInstruction(
+                    function, *evaluation_block, InstructionOpcode::Select,
+                    TypeRef::Builtin(BuiltinType::U32),
+                    std::array{passed, count_one, count_zero}, {},
+                    std::format("predicate/member/{}/passed-increment", member.ordinal)),
+                    "predicate passed selection");
+                evaluation_state[0] = Need(builder.AddInstruction(
+                    function, *evaluation_block, InstructionOpcode::AddChecked,
+                    TypeRef::Builtin(BuiltinType::U32),
+                    std::array{evaluation_state[0], passed_increment}, {},
+                    std::format("predicate/member/{}/passed-total", member.ordinal)),
+                    "predicate passed accounting");
+            }
+            if (member.occurrence != Occurrence::Every)
                 evaluation_state[check_offset + 1] = bool_value(
                     *evaluation_block, true,
-                    std::format("predicate/check/{}/complete", check.ordinal));
+                    std::format("predicate/member/{}/complete", member.ordinal));
 
-            if (check.use.reaction == PredicateReaction::AbortOnFail)
+            if (member.reaction == PredicateReaction::AbortOnFail)
             {
                 builder.SetTerminator(function, *evaluation_block, {
                     .kind = TerminatorKind::ConditionalBranch,
@@ -1094,7 +1122,7 @@ void LowerTurnExecution(
                         .arguments = edge_values(
                             evaluation_receipt, evaluation_state),
                     }},
-                }, std::format("predicate/check/{}/abort-on-fail", check.ordinal));
+                }, std::format("predicate/member/{}/abort-on-fail", member.ordinal));
             }
             else
             {
@@ -1105,7 +1133,7 @@ void LowerTurnExecution(
                         .arguments = edge_values(
                             evaluation_receipt, evaluation_state),
                     }},
-                }, std::format("predicate/check/{}/continue", check.ordinal));
+                }, std::format("predicate/member/{}/continue", member.ordinal));
             }
             current = &merge;
             receipt = merge.arguments[0].id;
@@ -1161,12 +1189,12 @@ void LowerTurnExecution(
 
 ProgramModule ConstructModule(
     bool first_turn,
-    const predicates::PredicateBundleExecutionPackageV1& predicate_package){
+    const predicates::PredicateExecutionPackageV1& predicate_package){
   ProgramModule module{
       .identity = {.canonical_id = std::string(ModuleCanonicalId) +
                                    (first_turn ? ".first" : ".later"),
                    .revision = 3}};
-  const auto lowered_checks = LowerActivePredicates(predicate_package, module);
+  const auto lowered_members = LowerActivePredicates(predicate_package, module);
   const auto interaction = LowerInteraction(CommandInteraction(), module);
   if (!interaction || !interaction.function)
     throw std::logic_error("battle command interaction lowering failed");
@@ -1265,8 +1293,8 @@ ProgramModule ConstructModule(
     turn_stop = ContinueTo(b, f, entry, turn_points, "prelude/turn-inputs");
   }
     const auto epoch=Project(b,f,entry,turn_stop,TypeRef::Builtin(BuiltinType::U64),"workset_epoch");const auto pc=Project(b,f,entry,turn_stop,TypeRef::Builtin(BuiltinType::U32),"pc");const auto context=CaptureContext(b,f,entry,epoch,pc,"turn-inputs/context");const auto prepared=Need(b.AddInstruction(f,entry,InstructionOpcode::CallReducer,TypeRef::Named(capabilities::BattleCommandPreparationSchemaIdentity()),std::array{context,plan},Reducer(CanonicalReducer::BattlePrepareCommandInteraction),"plan/validate-and-prepare-adaptive-interaction"),"battle command preparation");const auto prepared_ok=Project(b,f,entry,prepared,TypeRef::Builtin(BuiltinType::Bool),"success");const auto interaction_state=Project(b,f,entry,prepared,TypeRef::Named(capabilities::BattleCommandStateSchemaIdentity()),"state");auto& execute=b.AddBlock(f);auto& invalid=b.AddBlock(f);b.SetTerminator(f,entry,{.kind=TerminatorKind::ConditionalBranch,.condition_or_selector=prepared_ok,.edges={{.target=execute.id},{.target=invalid.id}}},"plan/dispatch");b.SetTerminator(f,invalid,{.kind=TerminatorKind::StructuredFail,.failure=StructuredFailure{"battle_plan_invalid","Battle Plan is inconsistent with the live Battle Context"}},"plan/fail");
-    LowerTurnExecution(b,f,execute,*interaction.function,interaction_state,context,plan,cumulative_before,vi_start,save_request,predicate_package,lowered_checks);
-    module.accepted_policies={.state_policies={InvocationStatePolicy::RestoreBaseline},.execution_intents={ExecutionIntent::Live}};module.budgets={.maximum_instructions=kBattleInstructionBudget,.maximum_calls=kBattleCallBudget,.maximum_call_depth=8,.maximum_action_requests=kBattleActionBudget,.maximum_emissions=256,.maximum_artifacts=1,.maximum_values=kBattleValueBudget,.maximum_value_bytes=16*1024*1024,.maximum_trace_events=kBattleTraceBudget};std::set<SchemaIdentity> emission_schema_set;for(const auto& lowered:lowered_checks)if(lowered.check->use.emit_evidence||lowered.check->use.reaction==PredicateReaction::AbortOnFail)emission_schema_set.insert(lowered.evaluation_schema);std::vector<SchemaIdentity> emission_schemas(emission_schema_set.begin(),emission_schema_set.end());module.entrypoints={{.name=std::string(Entrypoint),.function=f.id,.input_type=RequestType(),.output_type=ResultType(),.domain_outcome_type=TypeRef::Builtin(BuiltinType::Bool),.emission_schemas=std::move(emission_schemas),.artifact_schemas={*savestate_artifact_schema},.required_capability_packs=module.required_capability_packs,.accepted_policies=module.accepted_policies}};module.identity.module_hash=ComputeProgramModuleHashV1(module);return module;
+    LowerTurnExecution(b,f,execute,*interaction.function,interaction_state,context,plan,cumulative_before,vi_start,save_request,predicate_package,lowered_members);
+  module.accepted_policies={.state_policies={InvocationStatePolicy::RestoreBaseline},.execution_intents={ExecutionIntent::Live}};module.budgets={.maximum_instructions=kBattleInstructionBudget,.maximum_calls=kBattleCallBudget,.maximum_call_depth=8,.maximum_action_requests=kBattleActionBudget,.maximum_emissions=256,.maximum_artifacts=1,.maximum_values=kBattleValueBudget,.maximum_value_bytes=16*1024*1024,.maximum_trace_events=kBattleTraceBudget};std::set<SchemaIdentity> emission_schema_set;for(const auto& lowered:lowered_members)if(lowered.member->emit_evidence||lowered.member->reaction==PredicateReaction::AbortOnFail)emission_schema_set.insert(lowered.evaluation_schema);std::vector<SchemaIdentity> emission_schemas(emission_schema_set.begin(),emission_schema_set.end());module.entrypoints={{.name=std::string(Entrypoint),.function=f.id,.input_type=RequestType(),.output_type=ResultType(),.domain_outcome_type=TypeRef::Builtin(BuiltinType::Bool),.emission_schemas=std::move(emission_schemas),.artifact_schemas={*savestate_artifact_schema},.required_capability_packs=module.required_capability_packs,.accepted_policies=module.accepted_policies}};module.identity.module_hash=ComputeProgramModuleHashV1(module);return module;
 }
 
 RuntimeProfile Profile(const ProgramDependencyLock& dependencies){return {.profile_id="soa-usa-jit64-v1",.game_id=std::string(capabilities::kSupportedGameId),.disc_identity=std::string(capabilities::kSupportedGameId),.executable_identity=std::string(capabilities::kSupportedExecutableIdentity),.backend="jit64",.capability_packs=dependencies.capability_packs};}
@@ -1279,15 +1307,15 @@ ProgramValueGraph InputGraph(const BattleSingleTurnRequestV1&r,std::string*d){Gr
 const ProgramValue* Find(const ProgramValueGraph&g,ProgramValueId id){const auto found=std::ranges::find(g.values,id,&ProgramValue::id);return found==g.values.end()?nullptr:&*found;}
 bool DecodeOutput(const ProgramValueGraph&g,BattleSingleTurnResultV1&out){const auto*root=Find(g,g.root);const auto*record=root?std::get_if<RecordValue>(&root->payload):nullptr;if(!record||record->fields.size()!=9)return false;const auto scalar=[&](std::size_t i,auto&v){const auto*x=Find(g,record->fields[i]);using T=std::remove_reference_t<decltype(v)>;const auto*p=x?std::get_if<T>(&x->payload):nullptr;if(!p)return false;v=*p;return true;};const auto*oe=Find(g,record->fields[0]);const auto*e=oe?std::get_if<EnumValue>(&oe->payload):nullptr;const auto*outcome=e?FindBattleSingleTurnOutcomeDefinitionV1(e->value):nullptr;if(outcome==nullptr)return false;out.outcome=outcome->outcome;if(!scalar(1,out.ending_rng)||!scalar(2,out.vi_start)||!scalar(3,out.vi_end)||!scalar(4,out.pred_passed)||!scalar(5,out.pred_total)||!scalar(6,out.cumulative_fake_attacks)||!scalar(7,out.has_battle_context))return false;ProgramValueGraph context=g;context.root=record->fields[8];return capabilities::DecodeBattleContextValue(context,out.battle_context);}
 
-class Definition final:public IBattleSingleTurnFullPhaseDefinitionV1{public:Definition(bool first,predicates::PredicateBundleExecutionPackageV1 predicate_package):first_(first),predicate_package_(std::move(predicate_package)){std::string diagnostic;module_=ConstructModule(first_,predicate_package_);auto dependencies=Verify(module_,&diagnostic);auto encoded=EncodeProgramModuleV1(module_);if(!dependencies||!encoded)throw std::logic_error(diagnostic.empty()?encoded.status.message:diagnostic);dependencies_=*dependencies;profile_=Profile(*dependencies);envelope_={{module_.identity.canonical_id,module_.identity.revision,module_.identity.module_hash.ToHex()},kProgramCodecVersionV1,false,encoded.bytes};InvocationExecutionPolicy execution{.intent=ExecutionIntent::Live,.allow_input=true,.record_trace=false};runtime_={.module=envelope_.identity,.entrypoint=std::string(Entrypoint),.dependency_lock_sha256=ComputeProgramDependencyLockHashV1(*dependencies).ToHex(),.runtime_profile_sha256=ProfileHash(profile_),.state_policy=InvocationStatePolicy::RestoreBaseline,.execution=execution,.limits=module_.budgets,.baseline_lineage=first_?"soa.battle.single_turn/prebattle-entry/v1":"soa.battle.single_turn/turn-inputs/v1"};ProgramInvocation sample=Resolve({.turn_index=first_?1u:2u,.plan={.commands={{.actor_slot=0,.macro=soa::battle::actions::BattleAction::Attack,.params={.target_slot=4}}}},.confirmed_seed_frame=first_?std::optional<GCInputFrame>(GCInputFrame{}):std::nullopt,.output_savestate_path="successor.sav"},ProgramExecutionId(1),AttemptId(1),nullptr);runtime_.verified_dependency_sha256=ComputeProgramInvocationCompatibilityHashV1(sample);constexpr std::string_view movie="soa.battle.single_turn/no-movie/v1";runtime_.movie_policy_sha256=hash::sha256(movie.data(),movie.size());std::string service="soa.battle.single_turn/exact-entry-interaction/v1\0"+predicate_package_.bundle.content_sha256;runtime_.service_policy_sha256=hash::sha256(service.data(),service.size());std::string canonical=std::string(FullPhaseCanonicalId)+'\0'+runtime_.module.canonical_hash+'\0'+predicate_package_.binding.content_sha256+'\0'+(first_?'1':'0');identity_={static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner),ProgramVersion,std::string(FullPhaseCanonicalId),1,hash::sha256(canonical.data(),canonical.size())};}
-    const fullphase::FullPhaseProgramIdentity&identity()const noexcept override{return identity_;}const fullphase::FullPhaseRuntimeContract&runtime_contract()const noexcept override{return runtime_;}const EncodedModuleEnvelope&module_envelope()const noexcept override{return envelope_;}const predicates::PredicateBundleExecutionPackageV1&predicate_package()const noexcept override{return predicate_package_;}bool first_turn()const noexcept override{return first_;}
+class Definition final:public IBattleSingleTurnFullPhaseDefinitionV1{public:Definition(bool first,predicates::PredicateExecutionPackageV1 predicate_package):first_(first),predicate_package_(std::move(predicate_package)){std::string diagnostic;module_=ConstructModule(first_,predicate_package_);auto dependencies=Verify(module_,&diagnostic);auto encoded=EncodeProgramModuleV1(module_);if(!dependencies||!encoded)throw std::logic_error(diagnostic.empty()?encoded.status.message:diagnostic);dependencies_=*dependencies;profile_=Profile(*dependencies);envelope_={{module_.identity.canonical_id,module_.identity.revision,module_.identity.module_hash.ToHex()},kProgramCodecVersionV1,false,encoded.bytes};InvocationExecutionPolicy execution{.intent=ExecutionIntent::Live,.allow_input=true,.record_trace=false};runtime_={.module=envelope_.identity,.entrypoint=std::string(Entrypoint),.dependency_lock_sha256=ComputeProgramDependencyLockHashV1(*dependencies).ToHex(),.runtime_profile_sha256=ProfileHash(profile_),.state_policy=InvocationStatePolicy::RestoreBaseline,.execution=execution,.limits=module_.budgets,.baseline_lineage=first_?"soa.battle.single_turn/prebattle-entry/v1":"soa.battle.single_turn/turn-inputs/v1"};ProgramInvocation sample=Resolve({.turn_index=first_?1u:2u,.plan={.commands={{.actor_slot=0,.macro=soa::battle::actions::BattleAction::Attack,.params={.target_slot=4}}}},.confirmed_seed_frame=first_?std::optional<GCInputFrame>(GCInputFrame{}):std::nullopt,.output_savestate_path="successor.sav"},ProgramExecutionId(1),AttemptId(1),nullptr);runtime_.verified_dependency_sha256=ComputeProgramInvocationCompatibilityHashV1(sample);constexpr std::string_view movie="soa.battle.single_turn/no-movie/v1";runtime_.movie_policy_sha256=hash::sha256(movie.data(),movie.size());std::string service="soa.battle.single_turn/exact-entry-interaction/v1\0"+predicate_package_.content_sha256;runtime_.service_policy_sha256=hash::sha256(service.data(),service.size());std::string canonical=std::string(FullPhaseCanonicalId)+'\0'+runtime_.module.canonical_hash+'\0'+predicate_package_.content_sha256+'\0'+(first_?'1':'0');identity_={static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner),ProgramVersion,std::string(FullPhaseCanonicalId),1,hash::sha256(canonical.data(),canonical.size())};}
+    const fullphase::FullPhaseProgramIdentity&identity()const noexcept override{return identity_;}const fullphase::FullPhaseRuntimeContract&runtime_contract()const noexcept override{return runtime_;}const EncodedModuleEnvelope&module_envelope()const noexcept override{return envelope_;}const predicates::PredicateExecutionPackageV1&predicate_package()const noexcept override{return predicate_package_;}bool first_turn()const noexcept override{return first_;}
     std::optional<ProgramInvocation>BuildResolvedExecution(std::span<const std::uint8_t>input,ProgramExecutionId execution,AttemptId attempt,std::string*d)const override{BattleSingleTurnRequestV1 request;if(!DecodeBattleSingleTurnExecutionInputV1(input,request,d)||request.turn_index==0||first_!=(request.turn_index==1)||first_!=request.confirmed_seed_frame.has_value()||request.output_savestate_path.empty())return std::nullopt;return Resolve(request,execution,attempt,d);}
-    bool DecodeProgramResult(std::span<const Byte>bytes,BattleSingleTurnResultV1&out,std::string*d)const override{auto decoded=DecodeProgramResultV1(bytes);if(!decoded||!decoded.value||decoded.value->module!=module_.identity||decoded.value->resolved_dependencies!=dependencies_||decoded.value->infrastructure!=ProgramInfrastructureStatus::Completed||decoded.value->cleanup!=ProgramCleanupStatus::Clean||decoded.value->session_disposition!=SessionDisposition::Clean||!decoded.value->output){SetDiagnostic(d,"battle.single_turn did not complete cleanly");return false;}if(!DecodeOutput(*decoded.value->output,out)){SetDiagnostic(d,"battle.single_turn result is malformed");return false;}out.predicate_bundle_revision_id=predicate_package_.bundle.bundle_revision_id;out.predicate_bundle_sha256=predicate_package_.bundle.content_sha256;out.predicate_binding_sha256=predicate_package_.binding.content_sha256;out.predicate_evidence=decoded.value->emissions;out.artifacts=decoded.value->artifacts;return true;}
- private:ProgramInvocation Resolve(const BattleSingleTurnRequestV1&r,ProgramExecutionId execution,AttemptId attempt,std::string*d)const{auto input=InputGraph(r,d);return {.invocation_id=execution,.attempt_id=attempt,.module=module_.identity,.entrypoint=std::string(Entrypoint),.dependencies=dependencies_,.runtime_profile=profile_,.state={.policy=InvocationStatePolicy::RestoreBaseline,.session_lineage=runtime_.baseline_lineage},.execution=runtime_.execution,.input=std::move(input),.limits=runtime_.limits,.provenance={.requesting_component="SavorDb.battle.single_turn",.attributes={{"predicate_bundle",predicate_package_.bundle.content_sha256}}}};}
-    bool first_{};predicates::PredicateBundleExecutionPackageV1 predicate_package_;ProgramModule module_;ProgramDependencyLock dependencies_;RuntimeProfile profile_;EncodedModuleEnvelope envelope_;fullphase::FullPhaseRuntimeContract runtime_;fullphase::FullPhaseProgramIdentity identity_;
+    bool DecodeProgramResult(std::span<const Byte>bytes,BattleSingleTurnResultV1&out,std::string*d)const override{auto decoded=DecodeProgramResultV1(bytes);if(!decoded||!decoded.value||decoded.value->module!=module_.identity||decoded.value->resolved_dependencies!=dependencies_||decoded.value->infrastructure!=ProgramInfrastructureStatus::Completed||decoded.value->cleanup!=ProgramCleanupStatus::Clean||decoded.value->session_disposition!=SessionDisposition::Clean||!decoded.value->output){SetDiagnostic(d,"battle.single_turn did not complete cleanly");return false;}if(!DecodeOutput(*decoded.value->output,out)){SetDiagnostic(d,"battle.single_turn result is malformed");return false;}out.predicate_group_revision_id=predicate_package_.group.predicate_group_revision_id;out.predicate_group_sha256=predicate_package_.group.content_sha256;out.predicate_execution_package_sha256=predicate_package_.content_sha256;out.predicate_evidence=decoded.value->emissions;out.artifacts=decoded.value->artifacts;return true;}
+ private:ProgramInvocation Resolve(const BattleSingleTurnRequestV1&r,ProgramExecutionId execution,AttemptId attempt,std::string*d)const{auto input=InputGraph(r,d);return {.invocation_id=execution,.attempt_id=attempt,.module=module_.identity,.entrypoint=std::string(Entrypoint),.dependencies=dependencies_,.runtime_profile=profile_,.state={.policy=InvocationStatePolicy::RestoreBaseline,.session_lineage=runtime_.baseline_lineage},.execution=runtime_.execution,.input=std::move(input),.limits=runtime_.limits,.provenance={.requesting_component="SavorDb.battle.single_turn",.attributes={{"predicate_execution_package",predicate_package_.content_sha256}}}};}
+    bool first_{};predicates::PredicateExecutionPackageV1 predicate_package_;ProgramModule module_;ProgramDependencyLock dependencies_;RuntimeProfile profile_;EncodedModuleEnvelope envelope_;fullphase::FullPhaseRuntimeContract runtime_;fullphase::FullPhaseProgramIdentity identity_;
 };
 
-class KindHandler final:public fullphase::IFullPhaseProgramDefinition{public:KindHandler(){base_=std::make_shared<Definition>(false,predicates::PredicateBundleExecutionPackageV1{predicates::BattlePredicateHookContractV1(),predicates::EmptyPredicateBundleV1(),predicates::EmptyPredicateBundleBindingV1()});}const fullphase::FullPhaseProgramIdentity&identity()const noexcept override{return base_->identity();}const fullphase::FullPhaseRuntimeContract&runtime_contract()const noexcept override{return base_->runtime_contract();}const EncodedModuleEnvelope&module_envelope()const noexcept override{return base_->module_envelope();}std::optional<ProgramInvocation>BuildResolvedExecution(std::span<const std::uint8_t>,ProgramExecutionId,AttemptId,std::string*d)const override{SetDiagnostic(d,"battle.single_turn requires a prepared workset package");return std::nullopt;}std::optional<ProgramInvocation>BuildResolvedExecution(const fullphase::FullPhaseProgramPackage&package,std::span<const std::uint8_t>common,std::span<const std::uint8_t>item,ProgramExecutionId execution,AttemptId attempt,std::string*d)const override{predicates::PredicateBundleExecutionPackageV1 predicate_package;bool first=false;if(common.empty()||common.front()>1||!predicates::DecodePredicateBundleExecutionPackageV1(common.subspan(1),predicate_package,d)){SetDiagnostic(d,"battle.single_turn common input is invalid");return std::nullopt;}first=common.front()!=0;auto prepared=PrepareBattleSingleTurnFullPhaseV1(first,std::move(predicate_package),d);if(!prepared||fullphase::BuildFullPhaseProgramPackage(*prepared)!=package){SetDiagnostic(d,"battle.single_turn prepared package identity drifted");return std::nullopt;}return prepared->BuildResolvedExecution(item,execution,attempt,d);}private:std::shared_ptr<const Definition>base_;};
+class KindHandler final:public fullphase::IFullPhaseProgramDefinition{public:KindHandler(){base_=std::make_shared<Definition>(false,predicates::EmptyPredicateExecutionPackageV1());}const fullphase::FullPhaseProgramIdentity&identity()const noexcept override{return base_->identity();}const fullphase::FullPhaseRuntimeContract&runtime_contract()const noexcept override{return base_->runtime_contract();}const EncodedModuleEnvelope&module_envelope()const noexcept override{return base_->module_envelope();}std::optional<ProgramInvocation>BuildResolvedExecution(std::span<const std::uint8_t>,ProgramExecutionId,AttemptId,std::string*d)const override{SetDiagnostic(d,"battle.single_turn requires a prepared workset package");return std::nullopt;}std::optional<ProgramInvocation>BuildResolvedExecution(const fullphase::FullPhaseProgramPackage&package,std::span<const std::uint8_t>common,std::span<const std::uint8_t>item,ProgramExecutionId execution,AttemptId attempt,std::string*d)const override{predicates::PredicateExecutionPackageV1 predicate_package;bool first=false;if(common.empty()||common.front()>1||!predicates::DecodePredicateExecutionPackageV1(common.subspan(1),predicate_package,d)){SetDiagnostic(d,"battle.single_turn common input is invalid");return std::nullopt;}first=common.front()!=0;auto prepared=PrepareBattleSingleTurnFullPhaseV1(first,std::move(predicate_package),d);if(!prepared||fullphase::BuildFullPhaseProgramPackage(*prepared)!=package){SetDiagnostic(d,"battle.single_turn prepared package identity drifted");return std::nullopt;}return prepared->BuildResolvedExecution(item,execution,attempt,d);}private:std::shared_ptr<const Definition>base_;};
 
 } // namespace
 
@@ -1298,11 +1326,11 @@ program::composition::InteractionDefinition BattleCommandInteractionV3()
 
 std::vector<std::uint8_t> EncodeBattleSingleTurnCommonInputV1(
     bool first_turn,
-    const predicates::PredicateBundleExecutionPackageV1& predicate_package)
+    const predicates::PredicateExecutionPackageV1& predicate_package)
 {
     std::vector<std::uint8_t> encoded_package;
     std::string diagnostic;
-    if (!predicates::EncodePredicateBundleExecutionPackageV1(
+    if (!predicates::EncodePredicateExecutionPackageV1(
             predicate_package, encoded_package, &diagnostic))
     {
         return {};
@@ -1317,7 +1345,7 @@ std::vector<std::uint8_t> EncodeBattleSingleTurnCommonInputV1(
 std::vector<std::uint8_t> EncodeBattleSingleTurnExecutionInputV1(const BattleSingleTurnRequestV1&r){Writer w;for(auto b:kWireMagic)w.U8(b);w.U32(r.turn_index);w.U32(r.cumulative_fake_attacks_before);w.U32(r.plan.fake_attack_count);std::vector<std::uint8_t> commands;soa::battle::actions::encode_battle_turn_commands_to_buffer(r.plan.commands,commands);w.U32(static_cast<std::uint32_t>(commands.size()));for(auto b:commands)w.U8(b);w.U8(r.confirmed_seed_frame?1:0);if(r.confirmed_seed_frame)for(auto b:FrameBytes(*r.confirmed_seed_frame))w.U8(b);w.Text(r.output_savestate_path);return std::move(w.bytes);}
 bool DecodeBattleSingleTurnExecutionInputV1(std::span<const std::uint8_t>input,BattleSingleTurnRequestV1&r,std::string*d){Reader reader(input);for(auto expected:kWireMagic){std::uint8_t value=0;if(!reader.U8(value)||value!=expected){SetDiagnostic(d,"battle.single_turn input magic is invalid");return false;}}BattleSingleTurnRequestV1 out;std::uint32_t command_size=0;if(!reader.U32(out.turn_index)||!reader.U32(out.cumulative_fake_attacks_before)||!reader.U32(out.plan.fake_attack_count)||!reader.U32(command_size)||command_size>1024){SetDiagnostic(d,"battle.single_turn input header is invalid");return false;}std::vector<std::uint8_t> commands(command_size);for(auto&b:commands)if(!reader.U8(b))return false;if(!soa::battle::actions::decode_battle_turn_commands_from_buffer(commands,out.plan.commands))return false;std::uint8_t has=0;if(!reader.U8(has)||has>1)return false;if(has){GCInputFrame frame;if(!ReadFrame(reader,frame))return false;out.confirmed_seed_frame=frame;}if(!reader.Text(out.output_savestate_path)||!reader.Done()){SetDiagnostic(d,"battle.single_turn input is malformed");return false;}r=std::move(out);return true;}
 
-std::shared_ptr<const IBattleSingleTurnFullPhaseDefinitionV1> PrepareBattleSingleTurnFullPhaseV1(bool first,predicates::PredicateBundleExecutionPackageV1 predicate_package,std::string*d){const auto validation=predicates::ValidatePredicateBundlePackageV1(predicate_package);if(!validation){SetDiagnostic(d,validation.code+": "+validation.message);return {};}static std::mutex mutex;static std::map<std::pair<bool,std::string>,std::weak_ptr<const Definition>> cache;const auto key=std::pair<bool,std::string>{first,predicate_package.binding.content_sha256};std::lock_guard lock(mutex);if(auto found=cache.find(key);found!=cache.end())if(auto value=found->second.lock())return value;try{auto value=std::make_shared<Definition>(first,std::move(predicate_package));cache[key]=value;return value;}catch(const std::exception&e){SetDiagnostic(d,e.what());return {};}}
+std::shared_ptr<const IBattleSingleTurnFullPhaseDefinitionV1> PrepareBattleSingleTurnFullPhaseV1(bool first,predicates::PredicateExecutionPackageV1 predicate_package,std::string*d){const auto validation=predicates::ValidatePredicateExecutionPackageV1(predicate_package);if(!validation){SetDiagnostic(d,validation.code+": "+validation.message);return {};}static std::mutex mutex;static std::map<std::pair<bool,std::string>,std::weak_ptr<const Definition>> cache;const auto key=std::pair<bool,std::string>{first,predicate_package.content_sha256};std::lock_guard lock(mutex);if(auto found=cache.find(key);found!=cache.end())if(auto value=found->second.lock())return value;try{auto value=std::make_shared<Definition>(first,std::move(predicate_package));cache[key]=value;return value;}catch(const std::exception&e){SetDiagnostic(d,e.what());return {};}}
 
 std::shared_ptr<const fullphase::IFullPhaseProgramDefinition> BattleSingleTurnKindHandlerV1(){static auto value=std::make_shared<KindHandler>();return value;}
 

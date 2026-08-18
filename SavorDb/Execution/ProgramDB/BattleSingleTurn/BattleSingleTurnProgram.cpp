@@ -31,7 +31,7 @@
 #include "../../../../SavorCore/Phases/Programs/BattleSingleTurn/BattleSingleTurnModule.h"
 #include "../../../../SavorCore/Runner/IPC/DurableWorkerTerminalEnvelope.h"
 #include "../../../../SavorCore/Runner/Runtime/ProgramKind.h"
-#include "../../../../SavorCore/Runner/Runtime/Predicates/PredicateBundle.h"
+#include "../../../../SavorCore/Runner/Runtime/Predicates/PredicateExecution.h"
 #include "../../../../SavorCore/Runner/Runtime/DerivedState/DerivedStateRegistry.h"
 #include "../../../../SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
 #include "../../../../SavorCore/Runner/Runtime/Worksets/WorksetWireCodec.h"
@@ -503,138 +503,42 @@ std::optional<T> CheckedInteger(std::int64_t value) {
     return static_cast<T>(value);
 }
 
-std::optional<LiteralValue> ParameterValue(
-    const PredicateParameterV1& parameter,
-    const WorkflowGraphStepScheduleContext* graph,
-    std::string* error_out) {
-    const auto ordinal_key = "predicate.parameter." + std::to_string(parameter.ordinal);
-    const auto name_key = "predicate.parameter." + parameter.name;
-    const auto integer = IntegerArgument(graph, ordinal_key, name_key);
-    const auto text = TextArgument(graph, ordinal_key, name_key);
-    LiteralValue value{.type = parameter.value_type};
-    if (parameter.value_type.is_named()) {
-        if (integer) {
-            value.payload = EnumValue{*parameter.value_type.named, *integer};
-            return value;
-        }
-        if (text) {
-            value.payload = *text;
-            return value;
-        }
-        Fail("missing typed predicate parameter " + parameter.name, error_out);
-        return std::nullopt;
-    }
-    const auto missing_integer = [&]() -> std::optional<LiteralValue> {
-        Fail("missing integer predicate parameter " + parameter.name, error_out);
-        return std::nullopt;
-    };
-    switch (parameter.value_type.builtin) {
-    case BuiltinType::Unit: value.payload = UnitValue{}; break;
-    case BuiltinType::Bool:
-        if (!integer || (*integer != 0 && *integer != 1)) return missing_integer();
-        value.payload = *integer != 0; break;
-    case BuiltinType::U8: {
-        if (!integer) return missing_integer(); auto parsed = CheckedInteger<std::uint8_t>(*integer);
-        if (!parsed) return missing_integer(); value.payload = *parsed; break; }
-    case BuiltinType::U16: {
-        if (!integer) return missing_integer(); auto parsed = CheckedInteger<std::uint16_t>(*integer);
-        if (!parsed) return missing_integer(); value.payload = *parsed; break; }
-    case BuiltinType::U32: {
-        if (!integer) return missing_integer(); auto parsed = CheckedInteger<std::uint32_t>(*integer);
-        if (!parsed) return missing_integer(); value.payload = *parsed; break; }
-    case BuiltinType::U64:
-        if (!integer || *integer < 0) return missing_integer();
-        value.payload = static_cast<std::uint64_t>(*integer); break;
-    case BuiltinType::I32: {
-        if (!integer) return missing_integer(); auto parsed = CheckedInteger<std::int32_t>(*integer);
-        if (!parsed) return missing_integer(); value.payload = *parsed; break; }
-    case BuiltinType::I64:
-        if (!integer) return missing_integer(); value.payload = *integer; break;
-    case BuiltinType::F32:
-    case BuiltinType::F64: {
-        if (!text) {
-            Fail("floating predicate parameter requires a text value: " + parameter.name, error_out);
-            return std::nullopt;
-        }
-        try {
-            const double parsed = std::stod(*text);
-            if (!std::isfinite(parsed)) throw std::out_of_range("non-finite");
-            if (parameter.value_type.builtin == BuiltinType::F32)
-                value.payload = static_cast<float>(parsed);
-            else value.payload = parsed;
-        } catch (...) {
-            Fail("floating predicate parameter is malformed: " + parameter.name, error_out);
-            return std::nullopt;
-        }
-        break;
-    }
-    }
-    return value;
-}
-
-std::optional<std::vector<std::uint32_t>> ActiveChecks(
-    const ResolvedPredicateBundleV1& bundle,
-    const WorkflowGraphStepScheduleContext* graph,
-    std::string* error_out) {
-    const auto configured = TextArgument(graph, "predicate.active_checks");
-    if (!configured) {
-        std::vector<std::uint32_t> all;
-        all.reserve(bundle.checks.size());
-        for (const auto& check : bundle.checks) all.push_back(check.ordinal);
-        return all;
-    }
-    std::vector<std::uint32_t> values;
-    std::string_view remaining(*configured);
-    while (!remaining.empty()) {
-        const auto split = remaining.find(',');
-        const auto token = remaining.substr(0, split);
-        std::uint32_t value = 0;
-        const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
-        if (token.empty() || parsed.ec != std::errc{} || parsed.ptr != token.data() + token.size()) {
-            Fail("predicate.active_checks must be a comma-separated ordinal list", error_out);
-            return std::nullopt;
-        }
-        values.push_back(value);
-        if (split == std::string_view::npos) break;
-        remaining.remove_prefix(split + 1);
-    }
-    std::ranges::sort(values);
-    values.erase(std::unique(values.begin(), values.end()), values.end());
-    return values;
-}
-
-std::optional<PredicateBundleExecutionPackageV1> PreparePredicatePackage(
+std::optional<PredicateExecutionPackageV1> PreparePredicatePackage(
     IAuthoringDb* authoring_db,
-    std::int64_t revision_id,
-    const WorkflowGraphStepScheduleContext* graph,
+    std::optional<std::int64_t> group_revision_id,
     std::string* error_out) {
-    const auto authored = authoring_db ? authoring_db->GetPredicateBundleRevisionV2(revision_id)
-                                      : std::nullopt;
-    if (!authored || authored->revision_state != "PUBLISHED") {
-        Fail("Battle predicate bundle revision is not published", error_out);
+    if (!group_revision_id) return EmptyPredicateExecutionPackageV1();
+    if (!authoring_db) {
+        Fail("predicate group resolution requires Authoring DB", error_out);
         return std::nullopt;
     }
-    PredicateBundleBindingV1 binding{};
-    binding.bundle_revision_id = authored->bundle.bundle_revision_id;
-    binding.bundle_content_sha256 = authored->bundle.content_sha256;
-    for (const auto& parameter : authored->bundle.parameters) {
-        auto value = ParameterValue(parameter, graph, error_out);
-        if (!value) return std::nullopt;
-        binding.parameter_values.push_back(std::move(*value));
+    const auto authored = authoring_db->GetPredicateGroupRevision(*group_revision_id);
+    if (!authored || authored->revision_state != "PUBLISHED") {
+        Fail("Battle predicate group revision is not published", error_out);
+        return std::nullopt;
     }
-    auto active = ActiveChecks(authored->bundle, graph, error_out);
-    if (!active) return std::nullopt;
-    binding.active_check_ordinals = std::move(*active);
-    binding.aggregation = PredicateAggregationKindV1::PassedCount;
-    binding.structural_active_check_sha256 =
-        ComputePredicateActiveCheckSetHashV1(binding.active_check_ordinals);
-    binding.content_sha256 = ComputePredicateBundleBindingHashV1(binding);
-    PredicateBundleExecutionPackageV1 package{
+
+    std::set<std::int64_t> required_binding_ids;
+    for (const auto& member : authored->group.members) {
+        required_binding_ids.insert(member.execution_binding_revision_id);
+        if (member.guard_execution_binding_revision_id)
+            required_binding_ids.insert(*member.guard_execution_binding_revision_id);
+    }
+    PredicateExecutionPackageV1 package{
         .hook_contract = BattlePredicateHookContractV1(),
-        .bundle = authored->bundle,
-        .binding = std::move(binding),
+        .group = authored->group,
     };
-    const auto validation = ValidatePredicateBundlePackageV1(package);
+    package.execution_bindings.reserve(required_binding_ids.size());
+    for (const auto binding_id : required_binding_ids) {
+        const auto binding = authoring_db->GetPredicateExecutionBindingRevision(binding_id);
+        if (!binding || binding->revision_state != "PUBLISHED") {
+            Fail("predicate group references an unpublished execution binding", error_out);
+            return std::nullopt;
+        }
+        package.execution_bindings.push_back(binding->binding);
+    }
+    package.content_sha256 = ComputePredicateExecutionPackageHashV1(package);
+    const auto validation = ValidatePredicateExecutionPackageV1(package);
     if (!validation) {
         Fail(validation.code + ": " + validation.message, error_out);
         return std::nullopt;
@@ -642,119 +546,24 @@ std::optional<PredicateBundleExecutionPackageV1> PreparePredicatePackage(
     return package;
 }
 
-BattlePredicateParameterValue ToStoredParameter(
-    std::uint32_t ordinal, const LiteralValue& value) {
-    BattlePredicateParameterValue out{};
-    out.ordinal = ordinal;
-    if (value.type.named) {
-        out.builtin_type.reset();
-        out.schema_canonical_id = value.type.named->canonical_id;
-        out.schema_revision = value.type.named->version;
-        out.schema_sha256 = value.type.named->schema_hash.ToHex();
-    } else out.builtin_type = static_cast<int>(value.type.builtin);
-    std::visit([&](const auto& item) {
-        using T = std::decay_t<decltype(item)>;
-        if constexpr (std::is_same_v<T, UnitValue>) out.value_kind = "UNIT";
-        else if constexpr (std::is_same_v<T, bool>) { out.value_kind = "BOOL"; out.integer_value = item ? 1 : 0; }
-        else if constexpr (std::is_integral_v<T>) { out.value_kind = "INTEGER"; out.integer_value = static_cast<std::int64_t>(item); }
-        else if constexpr (std::is_floating_point_v<T>) { out.value_kind = "REAL"; out.real_value = static_cast<double>(item); }
-        else if constexpr (std::is_same_v<T, std::string>) { out.value_kind = "TEXT"; out.text_value = item; }
-        else if constexpr (std::is_same_v<T, std::vector<Byte>>) { out.value_kind = "BLOB"; out.blob_value = item; }
-        else if constexpr (std::is_same_v<T, EnumValue>) { out.value_kind = "ENUM"; out.integer_value = item.value; }
-    }, value.payload);
-    return out;
-}
-
-std::optional<LiteralValue> FromStoredParameter(
-    const BattlePredicateParameterValue& stored,
+std::optional<PredicateExecutionPackageV1> ReconstructPredicatePackage(
+    const BattlePredicateExecutionPackageSnapshot& stored,
     std::string* error_out) {
-    LiteralValue out{};
-    if (stored.builtin_type) {
-        if (*stored.builtin_type < static_cast<int>(BuiltinType::Unit)
-            || *stored.builtin_type > static_cast<int>(BuiltinType::F64)) {
-            Fail("stored predicate parameter builtin type is invalid", error_out);
-            return std::nullopt;
-        }
-        out.type = TypeRef::Builtin(static_cast<BuiltinType>(*stored.builtin_type));
-    } else if (stored.schema_canonical_id && stored.schema_revision && stored.schema_sha256) {
-        const auto parsed = ContentHash256::FromHex(*stored.schema_sha256);
-        if (!parsed) {
-            Fail("stored predicate parameter schema hash is invalid", error_out);
-            return std::nullopt;
-        }
-        out.type = TypeRef::Named({*stored.schema_canonical_id, *stored.schema_revision, *parsed});
-    } else {
-        Fail("stored predicate parameter type is incomplete", error_out);
+    PredicateExecutionPackageV1 package{};
+    std::string diagnostic;
+    if (!DecodePredicateExecutionPackageV1(stored.execution_package_blob, package, &diagnostic)) {
+        Fail("persisted predicate execution package is malformed: " + diagnostic, error_out);
         return std::nullopt;
     }
-    const auto integer = stored.integer_value.value_or(0);
-    if (stored.value_kind == "UNIT") out.payload = UnitValue{};
-    else if (stored.value_kind == "BOOL") out.payload = integer != 0;
-    else if (stored.value_kind == "INTEGER") {
-        switch (out.type.builtin) {
-        case BuiltinType::U8: out.payload = static_cast<std::uint8_t>(integer); break;
-        case BuiltinType::U16: out.payload = static_cast<std::uint16_t>(integer); break;
-        case BuiltinType::U32: out.payload = static_cast<std::uint32_t>(integer); break;
-        case BuiltinType::U64: out.payload = static_cast<std::uint64_t>(integer); break;
-        case BuiltinType::I32: out.payload = static_cast<std::int32_t>(integer); break;
-        default: out.payload = integer; break;
-        }
-    } else if (stored.value_kind == "REAL" && stored.real_value) {
-        out.payload = out.type.builtin == BuiltinType::F32
-            ? LiteralPayload(static_cast<float>(*stored.real_value))
-            : LiteralPayload(*stored.real_value);
-    } else if (stored.value_kind == "TEXT" && stored.text_value) out.payload = *stored.text_value;
-    else if (stored.value_kind == "BLOB") out.payload = stored.blob_value;
-    else if (stored.value_kind == "ENUM" && out.type.named) out.payload = EnumValue{*out.type.named, integer};
-    else {
-        Fail("stored predicate parameter value is incomplete", error_out);
-        return std::nullopt;
-    }
-    return out;
-}
-
-std::optional<PredicateBundleExecutionPackageV1> ReconstructPredicatePackage(
-    IAuthoringDb* authoring_db,
-    const BattlePredicateBundleBindingSnapshot& stored,
-    std::string* error_out) {
-    const auto authored = authoring_db
-        ? authoring_db->GetPredicateBundleRevisionV2(stored.predicate_bundle_revision_id)
-        : std::nullopt;
-    if (!authored || authored->revision_state != "PUBLISHED"
-        || authored->bundle.content_sha256 != stored.bundle_content_sha256) {
-        Fail("persisted predicate bundle revision drifted", error_out);
-        return std::nullopt;
-    }
-    PredicateBundleBindingV1 binding{};
-    binding.bundle_revision_id = stored.predicate_bundle_revision_id;
-    binding.bundle_content_sha256 = stored.bundle_content_sha256;
-    auto parameters = stored.parameter_values;
-    std::ranges::sort(parameters, {}, &BattlePredicateParameterValue::ordinal);
-    for (const auto& parameter : parameters) {
-        if (parameter.ordinal != binding.parameter_values.size()) {
-            Fail("persisted predicate parameter ordinals drifted", error_out);
-            return std::nullopt;
-        }
-        auto value = FromStoredParameter(parameter, error_out);
-        if (!value) return std::nullopt;
-        binding.parameter_values.push_back(std::move(*value));
-    }
-    binding.active_check_ordinals = stored.active_check_ordinals;
-    binding.aggregation = PredicateAggregationKindV1::PassedCount;
-    binding.structural_active_check_sha256 = stored.structural_active_check_sha256;
-    binding.content_sha256 = stored.binding_content_sha256;
-    PredicateBundleExecutionPackageV1 package{
-        .hook_contract = BattlePredicateHookContractV1(),
-        .bundle = authored->bundle,
-        .binding = std::move(binding),
-    };
-    const auto validation = ValidatePredicateBundlePackageV1(package);
-    if (!validation || package.hook_contract.canonical_id != stored.hook_contract_canonical_id
+    const auto expected_group_id = stored.predicate_group_revision_id.value_or(
+        EmptyPredicateGroupV1().predicate_group_revision_id);
+    if (package.group.predicate_group_revision_id != expected_group_id
+        || package.group.content_sha256 != stored.predicate_group_sha256
+        || package.content_sha256 != stored.execution_package_sha256
+        || package.hook_contract.canonical_id != stored.hook_contract_canonical_id
         || package.hook_contract.revision != stored.hook_contract_revision
         || package.hook_contract.content_sha256 != stored.hook_contract_sha256) {
-        Fail(validation ? "persisted predicate hook contract drifted"
-                        : validation.code + ": " + validation.message,
-             error_out);
+        Fail("persisted predicate execution package lineage drifted", error_out);
         return std::nullopt;
     }
     return package;
@@ -1001,12 +810,9 @@ public:
         auto source = wave_id ? ResolveWaveSource(*wave_id, analysis_db_, state_db_, error_out)
                               : std::nullopt;
         if (!source) return wave_id.has_value() ? false : Fail("battle.single_turn wave input is missing", error_out);
-        const auto settings = authoring_db_->GetExplorerSettings(source->battle_set.explorer_settings_id);
-        const auto run_spec = authoring_db_->GetBattleRunSpec(source->battle_set.battle_run_spec_id);
-        const auto plan = settings && settings->default_plan_id
-            ? authoring_db_->GetBattlePlan(*settings->default_plan_id) : std::nullopt;
+        const auto plan = authoring_db_->GetBattlePlan(source->battle_set.battle_plan_id);
         const auto* turn = plan ? FindTurn(*plan, source->wave.turn_index) : nullptr;
-        if (!settings || !run_spec || !plan || !turn)
+        if (!plan || plan->fingerprint != source->battle_set.battle_plan_fingerprint || !turn)
             return Fail("battle.single_turn authored Battle Plan turn is missing", error_out);
         if (!ValidateBattlePlanForMaterialization(*plan, error_out)) return false;
         const auto planning_context = ResolveWavePlanningContext(
@@ -1020,9 +826,8 @@ public:
             && !variants->context_viable_variants.empty()
             ? variants->context_viable_variants
             : variants->structural_variants;
-        const auto bundle_revision = turn->default_predicate_bundle_revision_id.value_or(1);
         auto predicate_package = PreparePredicatePackage(
-            authoring_db_, bundle_revision, context.graph ? &*context.graph : nullptr, error_out);
+            authoring_db_, turn->default_predicate_group_revision_id, error_out);
         if (!predicate_package) return false;
         const bool first_turn = source->wave.turn_index == 1;
         auto phase = runtime::battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
@@ -1054,16 +859,20 @@ public:
             return false;
         }
 
-        BindBattlePredicateBundleCommand binding{};
+        std::vector<std::uint8_t> encoded_predicate_package;
+        std::string predicate_diagnostic;
+        if (!EncodePredicateExecutionPackageV1(
+                *predicate_package, encoded_predicate_package,
+                &predicate_diagnostic)) {
+            return Fail("predicate execution package encoding failed: "
+                + predicate_diagnostic, error_out);
+        }
+        BindBattlePredicateExecutionPackageCommand binding{};
         binding.wave_id = source->wave.wave_id;
-        binding.predicate_bundle_revision_id = predicate_package->bundle.bundle_revision_id;
-        binding.bundle_content_sha256 = predicate_package->bundle.content_sha256;
-        binding.binding_content_sha256 = predicate_package->binding.content_sha256;
-        binding.structural_active_check_sha256 = predicate_package->binding.structural_active_check_sha256;
-        for (std::size_t index = 0; index < predicate_package->binding.parameter_values.size(); ++index)
-            binding.parameter_values.push_back(ToStoredParameter(
-                static_cast<std::uint32_t>(index), predicate_package->binding.parameter_values[index]));
-        binding.active_check_ordinals = predicate_package->binding.active_check_ordinals;
+        binding.predicate_group_revision_id = turn->default_predicate_group_revision_id;
+        binding.predicate_group_sha256 = predicate_package->group.content_sha256;
+        binding.execution_package_sha256 = predicate_package->content_sha256;
+        binding.execution_package_blob = std::move(encoded_predicate_package);
         binding.phase_program_kind = identity.program_kind;
         binding.phase_program_version = identity.program_version;
         binding.phase_canonical_id = identity.canonical_id;
@@ -1073,7 +882,8 @@ public:
         binding.hook_contract_revision = predicate_package->hook_contract.revision;
         binding.hook_contract_sha256 = predicate_package->hook_contract.content_sha256;
         binding.created_at_utc = types::UtcNow();
-        if (!analysis_db_->BindBattlePredicateBundle(binding, nullptr, error_out)) return false;
+        if (!analysis_db_->BindBattlePredicateExecutionPackage(
+                binding, nullptr, error_out)) return false;
 
         const int minimum = std::min(source->battle_set.launch_fake_attack_min,
                                      source->battle_set.launch_fake_attack_max);
@@ -1164,11 +974,11 @@ public:
                             .savestate_id = source->savestate.savestate_id,
                             .fingerprint = Fingerprint(source->wave.wave_id,
                                 variant.encoded_commands, fake,
-                                predicate_package->binding.content_sha256, identity.canonical_sha256),
+                                predicate_package->content_sha256, identity.canonical_sha256),
                             .priority = context.step.step_priority,
                             .max_attempts = 1,
                             .input_ini = JobInput(turn_job_id,
-                                predicate_package->binding.content_sha256, identity.canonical_sha256),
+                                predicate_package->content_sha256, identity.canonical_sha256),
                         }, &created, error_out)) return false;
                     if (!analysis_db_->SetBattleTurnJobExecJobId(turn_job_id, created.job_id, error_out))
                         return false;
@@ -1204,7 +1014,7 @@ public:
                         .contract_key = "battle-single-turn:v1:wave:"
                             + std::to_string(source->wave.wave_id) + ":phase:"
                             + identity.canonical_sha256 + ":binding:"
-                            + predicate_package->binding.content_sha256,
+                            + predicate_package->content_sha256,
                         .module_canonical_id = runtime_contract.module.canonical_id,
                         .module_version = static_cast<std::int32_t>(runtime_contract.module.revision),
                         .module_sha256 = runtime_contract.module.canonical_hash,
@@ -1283,7 +1093,7 @@ private:
         if (!result_out || !execution_db_ || !analysis_db_ || !authoring_db_
             || !context.graph || !context.graph->authored_ref_id
             || context.graph->authored_ref_kind
-                != std::optional<std::string>("authoring.battle_chain_spec")) {
+                != std::optional<std::string>("authoring.battle_plan")) {
             return Fail("battle.start coordination input is incomplete", error_out);
         }
         *result_out = {};
@@ -1292,26 +1102,23 @@ private:
         const auto context_probe_id = ExactGraphInput(
             context, "battle_context", "analysis_battle.battle_context_id",
             "ab_battle_context");
-        const auto chain = authoring_db_->GetBattleChainSpec(
+        const auto plan = authoring_db_->GetBattlePlan(
             *context.graph->authored_ref_id);
         const auto run = probe_run_id
             ? analysis_db_->GetSeedProbeRun(*probe_run_id) : std::nullopt;
-        if (!probe_run_id || !context_probe_id || !chain || !run)
-            return Fail("battle.start requires completed SeedProbe and Battle Context outputs plus a Battle Chain spec", error_out);
-        const auto run_spec = authoring_db_->GetBattleRunSpec(
-            chain->battle_run_spec_id);
-        const auto settings = authoring_db_->GetExplorerSettings(
-            chain->explorer_settings_id);
-        if (!run_spec || !settings || !settings->default_plan_id)
-            return Fail("battle.start authored Battle Run and Battle Plan lineage is missing", error_out);
-        const auto plan = authoring_db_->GetBattlePlan(*settings->default_plan_id);
-        if (!plan)
-            return Fail("battle.start authored Battle Plan is missing", error_out);
+        if (!probe_run_id || !context_probe_id || !plan || !run)
+            return Fail("battle.start requires completed SeedProbe and Battle Context outputs plus a Battle Plan", error_out);
         if (!ValidateBattlePlanForMaterialization(*plan, error_out)) return false;
+        const auto continuation_text = TextArgument(&*context.graph, "continuation_mode");
+        const auto continuation_mode = continuation_text
+            ? ParseBattleContinuationMode(*continuation_text)
+            : BattleContinuationMode::Unknown;
+        if (continuation_mode == BattleContinuationMode::Unknown)
+            return Fail("battle.start continuation mode is missing or invalid", error_out);
         const auto minimum_value = IntegerArgument(
-            &*context.graph, "battle.fake_attack_min", "fake_attack_min").value_or(0);
+            &*context.graph, "fake_attack_min").value_or(0);
         const auto maximum_value = IntegerArgument(
-            &*context.graph, "battle.fake_attack_max", "fake_attack_max").value_or(minimum_value);
+            &*context.graph, "fake_attack_max").value_or(minimum_value);
         const auto minimum = CheckedInteger<int>(minimum_value);
         const auto maximum = CheckedInteger<int>(maximum_value);
         if (!minimum || !maximum || *minimum < 0 || *maximum < *minimum)
@@ -1327,8 +1134,9 @@ private:
                 .context_probe_id = *context_probe_id,
                 .battle_set_name = materialization_key,
                 .entry_savestate_id = run->entry_savestate_id,
-                .battle_run_spec_id = chain->battle_run_spec_id,
-                .explorer_settings_id = chain->explorer_settings_id,
+                .battle_plan_id = plan->plan_id,
+                .battle_plan_fingerprint = plan->fingerprint,
+                .continuation_mode = continuation_mode,
                 .launch_fake_attack_min = *minimum,
                 .launch_fake_attack_max = *maximum,
                 .created_at_utc = types::UtcNow(),
@@ -1430,9 +1238,9 @@ public:
                     != static_cast<int>(source->cumulative_fake_attacks_before))
                 return fail("battle.single_turn turn lineage drifted");
         }
-        const auto stored_binding = analysis_db_->GetBattlePredicateBundleBindingForWave(*wave_id);
+        const auto stored_binding = analysis_db_->GetBattlePredicateExecutionPackageForWave(*wave_id);
         if (!stored_binding) return fail("battle.single_turn predicate binding is missing");
-        auto package = ReconstructPredicatePackage(authoring_db_, *stored_binding, error_out);
+        auto package = ReconstructPredicatePackage(*stored_binding, error_out);
         if (!package) return std::nullopt;
         const bool first_turn = source->wave.turn_index == 1;
         auto phase = runtime::battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
@@ -1511,7 +1319,7 @@ public:
             const auto& item = context.items[index];
             const auto& job = turn_jobs[index];
             if (item.input_ini != JobInput(job.turn_job_id,
-                    package->binding.content_sha256, identity.canonical_sha256))
+                    package->content_sha256, identity.canonical_sha256))
                 return fail("battle.single_turn item input identity drifted");
             const auto commands = soa::battle::actions::decode_battle_turn_commands_hex(
                 *job.resolved_turn_commands_blob);
@@ -1672,10 +1480,10 @@ public:
             return FinalDecision("FAILED", "BATTLE_SINGLE_TURN_REQUEST_DRIFT",
                                  "durable turn-job identity drifted");
         auto source = ResolveWaveSource(turn_job->wave_id, analysis_db_, state_db_, nullptr);
-        const auto stored_binding = analysis_db_->GetBattlePredicateBundleBindingForWave(turn_job->wave_id);
+        const auto stored_binding = analysis_db_->GetBattlePredicateExecutionPackageForWave(turn_job->wave_id);
         std::string error;
         auto package = stored_binding
-            ? ReconstructPredicatePackage(authoring_db_, *stored_binding, &error) : std::nullopt;
+            ? ReconstructPredicatePackage(*stored_binding, &error) : std::nullopt;
         auto phase = source && package
             ? runtime::battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
                 source->wave.turn_index == 1, *package, &error)
@@ -1723,9 +1531,9 @@ public:
             || result.outcome == Outcome::Victory;
         const bool needs_context = result.outcome == Outcome::ReachedNextTurn;
         if (result.vi_end < result.vi_start || result.pred_passed > result.pred_total
-            || result.predicate_bundle_revision_id != package->bundle.bundle_revision_id
-            || result.predicate_bundle_sha256 != package->bundle.content_sha256
-            || result.predicate_binding_sha256 != package->binding.content_sha256
+            || result.predicate_group_revision_id != package->group.predicate_group_revision_id
+            || result.predicate_group_sha256 != package->group.content_sha256
+            || result.predicate_execution_package_sha256 != package->content_sha256
             || result.has_battle_context != needs_context
             || result.artifacts.size() != (needs_successor ? 1u : 0u))
             return PersistFailure(context, *turn_job, generic,
@@ -1789,9 +1597,9 @@ public:
                 .cumulative_fake_attacks = result.cumulative_fake_attacks,
                 .successor_savestate_id = successor,
                 .battle_context_artifact_id = context_artifact,
-                .predicate_bundle_revision_id = result.predicate_bundle_revision_id,
-                .predicate_bundle_sha256 = result.predicate_bundle_sha256,
-                .predicate_binding_sha256 = result.predicate_binding_sha256,
+                .predicate_group_revision_id = stored_binding->predicate_group_revision_id,
+                .predicate_group_sha256 = result.predicate_group_sha256,
+                .predicate_execution_package_sha256 = result.predicate_execution_package_sha256,
                 .predicate_evidence_blob = std::move(evidence),
                 .recorded_at_utc = now,
             }, nullptr, &error)) throw std::runtime_error(error);
@@ -1844,7 +1652,7 @@ private:
                 .has_results = false,
                 .recorded_at_utc = now,
             }, &error)) throw std::runtime_error(error);
-        const auto binding = analysis_db_->GetBattlePredicateBundleBindingForWave(turn_job.wave_id);
+        const auto binding = analysis_db_->GetBattlePredicateExecutionPackageForWave(turn_job.wave_id);
         if (!analysis_db_->RecordBattleSingleTurnResult({
                 .turn_job_id = turn_job.turn_job_id,
                 .exec_job_id = context.job_id,
@@ -1852,12 +1660,12 @@ private:
                 .terminal_kind = terminal_kind,
                 .error_code = code,
                 .error_text = message,
-                .predicate_bundle_revision_id = binding
-                    ? std::optional<std::int64_t>(binding->predicate_bundle_revision_id) : std::nullopt,
-                .predicate_bundle_sha256 = binding
-                    ? std::optional<std::string>(binding->bundle_content_sha256) : std::nullopt,
-                .predicate_binding_sha256 = binding
-                    ? std::optional<std::string>(binding->binding_content_sha256) : std::nullopt,
+                .predicate_group_revision_id = binding
+                    ? binding->predicate_group_revision_id : std::nullopt,
+                .predicate_group_sha256 = binding
+                    ? std::optional<std::string>(binding->predicate_group_sha256) : std::nullopt,
+                .predicate_execution_package_sha256 = binding
+                    ? std::optional<std::string>(binding->execution_package_sha256) : std::nullopt,
                 .predicate_evidence_blob = std::move(semantic_evidence),
                 .recorded_at_utc = now,
             }, nullptr, &error)) throw std::runtime_error(error);
@@ -2065,13 +1873,10 @@ bool Materializer::Continue(
     const auto wave_id = WaveId(context.materialization);
     const auto wave = wave_id ? analysis_db_->GetBattleTurnWave(*wave_id) : std::nullopt;
     const auto battle_set = wave ? analysis_db_->GetBattleSet(wave->battle_set_id) : std::nullopt;
-    const auto settings = battle_set
-        ? authoring_db_->GetExplorerSettings(battle_set->explorer_settings_id) : std::nullopt;
-    const auto run_spec = battle_set
-        ? authoring_db_->GetBattleRunSpec(battle_set->battle_run_spec_id) : std::nullopt;
-    const auto plan = settings && settings->default_plan_id
-        ? authoring_db_->GetBattlePlan(*settings->default_plan_id) : std::nullopt;
-    if (!wave || !battle_set || !settings || !run_spec || !plan)
+    const auto plan = battle_set
+        ? authoring_db_->GetBattlePlan(battle_set->battle_plan_id) : std::nullopt;
+    if (!wave || !battle_set || !plan
+        || plan->fingerprint != battle_set->battle_plan_fingerprint)
         return Fail("battle.single_turn continuation authoring lineage is missing", error_out);
     if (!ValidateBattlePlanForMaterialization(*plan, error_out)) return false;
     const auto jobs = analysis_db_->ListBattleTurnJobsForWave(wave->wave_id);
@@ -2164,7 +1969,7 @@ bool Materializer::Continue(
     }
     if (!CompileBattleTurnVariants(*next_turn, nullptr, error_out)) return false;
 
-    if (!run_spec->auto_wave_trigger_enable) {
+    if (battle_set->continuation_mode == BattleContinuationMode::ManualSelection) {
         if (!analysis_db_->UpdateBattleTurnWaveStatus(
                 wave->wave_id, BattleTurnWaveStatus::AwaitingSelection,
                 std::nullopt, error_out)) return false;
@@ -2424,16 +2229,12 @@ bool RequestBattleWaveContinuation(
     const auto parent = analysis_db->GetBattleTurnWave(command.parent_wave_id);
     const auto battle_set = parent
         ? analysis_db->GetBattleSet(parent->battle_set_id) : std::nullopt;
-    const auto settings = battle_set
-        ? authoring_db->GetExplorerSettings(battle_set->explorer_settings_id)
+    const auto plan = battle_set
+        ? authoring_db->GetBattlePlan(battle_set->battle_plan_id)
         : std::nullopt;
-    const auto run_spec = battle_set
-        ? authoring_db->GetBattleRunSpec(battle_set->battle_run_spec_id)
-        : std::nullopt;
-    const auto plan = settings && settings->default_plan_id
-        ? authoring_db->GetBattlePlan(*settings->default_plan_id)
-        : std::nullopt;
-    if (!parent || !battle_set || !settings || !run_spec || !plan
+    if (!parent || !battle_set || !plan
+        || plan->fingerprint != battle_set->battle_plan_fingerprint
+        || battle_set->continuation_mode != BattleContinuationMode::ManualSelection
         || parent->status != BattleTurnWaveStatus::AwaitingSelection
         || battle_set->status != BattleSetStatus::Active) {
         return Fail("manual Battle wave continuation requires an awaiting-selection wave in an active BattleSet", error_out);

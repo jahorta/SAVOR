@@ -8,8 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "Execution/JobExecutionCoordinator.h"
-#include "Execution/WorkerCoordinator.h"
+#include "Execution/CoordinatorRuntime.h"
 
 class CoordinatorController : public QObject
 {
@@ -76,7 +75,6 @@ private:
     void updateSnapshotCache();
     savor::runner::parallel::savordb::WorkerCoordinatorConfig buildWorkerConfig() const;
     void stopCoordinatorServices();
-    void applyVisualWorkerSurfaces();
     QString workerExePath() const;
     QString workerRootPath() const;
 
@@ -86,11 +84,8 @@ private:
     };
 
     std::unique_ptr<
-        savor::runner::parallel::savordb::WorkerCoordinator>
-        worker_coordinator_;
-    std::unique_ptr<
-        savor::runner::parallel::savordb::JobExecutionCoordinator>
-        job_execution_coordinator_;
+        savor::runner::parallel::savordb::CoordinatorRuntime>
+        coordinator_runtime_;
     std::vector<WorkerSnapshot> snapshotCache_;
     std::vector<WorkerSnapshot> visualSnapshotCache_;
     std::vector<

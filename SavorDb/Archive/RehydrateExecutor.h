@@ -64,7 +64,8 @@ public:
         savor::db::IArchiveDb* archive_service,
         std::filesystem::path archive_store_root,
         sqlite3* state_db = nullptr,
-        sqlite3* analysis_db = nullptr);
+        sqlite3* analysis_db = nullptr,
+        std::filesystem::path object_store_root = {});
 
     RehydratePackagePreviewResult PreviewPackage(const RehydratePackagePreviewRequest& request) override;
     RehydrateExecutionResult Execute(const RehydrateExecutionRequest& request) override;
@@ -76,6 +77,7 @@ private:
     sqlite3* analysis_db_ = nullptr;
     savor::db::IArchiveDb* archive_service_ = nullptr;
     std::filesystem::path archive_store_root_{};
+    std::filesystem::path object_store_root_{};
 };
 
 } // namespace savor::db::archive

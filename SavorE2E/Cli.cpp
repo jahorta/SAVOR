@@ -39,8 +39,8 @@ constexpr auto kScenarioCatalog = std::to_array<E2eScenarioDescriptor>({
         .requires_repeat_one = true,
     },
     {
-        .name = "tasmovie",
-        .kind = E2eScenarioKind::TasMovie,
+        .name = "tasmovie_establish",
+        .kind = E2eScenarioKind::TasMovieEstablish,
         .supported_entry_sources =
             EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation),
         .default_entry_source =
@@ -50,8 +50,19 @@ constexpr auto kScenarioCatalog = std::to_array<E2eScenarioDescriptor>({
         .requires_one_worker = true,
     },
     {
-        .name = "tasmovie_with_validation",
-        .kind = E2eScenarioKind::TasMovieWithValidation,
+        .name = "tasmovie_validation",
+        .kind = E2eScenarioKind::TasMovieValidation,
+        .supported_entry_sources =
+            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation),
+        .default_entry_source =
+            E2eScenarioEntrySource::FreshTasMovieValidation,
+        .must_run_alone = true,
+        .requires_repeat_one = true,
+        .requires_one_worker = true,
+    },
+    {
+        .name = "tasmovie_sterile",
+        .kind = E2eScenarioKind::TasMovieSterile,
         .supported_entry_sources =
             EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation),
         .default_entry_source =
@@ -363,7 +374,7 @@ void PrintUsage() {
               << " [--source-ref-kind <kind>]"
               << " [--source-ref-id <positive-id>]"
               << " [--dtm-file <path>]"
-              << " [--scenario seedprobe|battle|tasmovie|tasmovie_with_validation|tasmovie_seedprobe|workflow_unit|all]"
+              << " [--scenario seedprobe|battle|tasmovie_establish|tasmovie_validation|tasmovie_sterile|tasmovie_seedprobe|workflow_unit|all]"
               << " [--poll-ms <100..5000 - default 100>]"
               << " [--worker-count <1..30 - default 1>]"
               << " [--wait-for-workers-ready]"
@@ -392,10 +403,12 @@ void PrintUsage() {
     std::cout << "E2E perf mode requires Release builds and load-level low|mid|high; worker-count defaults to 15 and accepts 1..30.\n";
     std::cout << "Prepared checkpoint mode is selected by --source-savestate-id and preserves the complete existing workspace.\n";
     std::cout << "The workflow_unit scenario preserves an existing workspace and launches one exact static unit from --workflow-unit, --source-ref-kind, and --source-ref-id.\n";
-    std::cout << "The tasmovie scenario establishes the handcrafted root cursor only; it takes no RTC and must run alone.\n";
-    std::cout << "The tasmovie_with_validation scenario requires one exact --tasmovie-rtc in 0..4294967295 and must run alone.\n";
+    std::cout << "The tasmovie_establish scenario establishes the handcrafted root cursor only; it takes no RTC and must run alone.\n";
+    std::cout << "The tasmovie_validation scenario requires one exact --tasmovie-rtc in 0..4294967295 and must run alone.\n";
+    std::cout << "The tasmovie_sterile scenario composes validation and sterilization, requires an exact RTC and no external savestate, and must run alone.\n";
     std::cout << "The tasmovie_seedprobe scenario composes validation with SeedProbe, requires an exact RTC and no external savestate, and must run alone.\n";
-    std::cout << "The battle scenario validates the approved DTM, sterilizes its checkpoint, and requires an exact RTC with no external savestate.\n";
+    std::cout << "The battle scenario validates the approved DTM, sterilizes its checkpoint, and in Fresh mode requires one exact --tasmovie-rtc with no external savestate.\n";
+    std::cout << "With --source-savestate-id, battle starts from a prepared sterilized checkpoint.\n";
     std::cout << "Visual worker locks worker count to 1.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
     std::cout << "Scenarios: all";
@@ -676,8 +689,9 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         }
     }
 
-    bool is_tasmovie_establishment = false;
-    bool is_tasmovie_with_validation = false;
+    bool is_tasmovie_establish = false;
+    bool is_tasmovie_validation = false;
+    bool is_tasmovie_sterile = false;
     bool is_tasmovie_seedprobe = false;
     bool is_battle = false;
     bool is_workflow_unit = false;
@@ -725,10 +739,12 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             return false;
         }
 
-        is_tasmovie_establishment = is_tasmovie_establishment
-            || descriptor->kind == E2eScenarioKind::TasMovie;
-        is_tasmovie_with_validation = is_tasmovie_with_validation
-            || descriptor->kind == E2eScenarioKind::TasMovieWithValidation;
+        is_tasmovie_establish = is_tasmovie_establish
+            || descriptor->kind == E2eScenarioKind::TasMovieEstablish;
+        is_tasmovie_validation = is_tasmovie_validation
+            || descriptor->kind == E2eScenarioKind::TasMovieValidation;
+        is_tasmovie_sterile = is_tasmovie_sterile
+            || descriptor->kind == E2eScenarioKind::TasMovieSterile;
         is_tasmovie_seedprobe = is_tasmovie_seedprobe
             || descriptor->kind == E2eScenarioKind::TasMovieSeedProbe;
         is_battle = is_battle || descriptor->kind == E2eScenarioKind::Battle;
@@ -802,14 +818,14 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             return false;
         }
     }
-    if (is_tasmovie_establishment && (options.tasmovie_rtc.has_value()
+    if (is_tasmovie_establish && (options.tasmovie_rtc.has_value()
         || options.tasmovie_rtc_min.has_value()
         || options.tasmovie_rtc_max.has_value())) {
-        if (error_out) *error_out = "tasmovie establishment does not accept RTC arguments";
+        if (error_out) *error_out = "tasmovie_establish does not accept RTC arguments";
         return false;
     }
     if (!prepared_checkpoint_mode
-        && (is_tasmovie_with_validation || is_battle)
+        && (is_tasmovie_validation || is_tasmovie_sterile || is_battle)
         && (!options.tasmovie_rtc.has_value()
             || options.tasmovie_rtc_min.has_value()
             || options.tasmovie_rtc_max.has_value())) {
@@ -818,16 +834,18 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         }
         return false;
     }
-    if (!prepared_checkpoint_mode && is_tasmovie_seedprobe
+    if (!prepared_checkpoint_mode
+        && (is_tasmovie_seedprobe || is_tasmovie_sterile)
         && (!options.tasmovie_rtc.has_value()
             || options.tasmovie_rtc_min.has_value()
             || options.tasmovie_rtc_max.has_value())) {
         if (error_out) {
-            *error_out = "tasmovie_seedprobe requires exactly one --tasmovie-rtc and does not accept RTC range arguments";
+            *error_out = "the selected validation-backed scenario requires exactly one --tasmovie-rtc and does not accept RTC range arguments";
         }
         return false;
     }
-    if (!prepared_checkpoint_mode && (is_tasmovie_seedprobe || is_battle) &&
+    if (!prepared_checkpoint_mode
+        && (is_tasmovie_seedprobe || is_tasmovie_sterile || is_battle) &&
         !options.savestate_file.empty()) {
         if (error_out) {
             *error_out = "validation-backed Battle scenarios do not accept --savestate-file; downstream phases use the sterilized validation checkpoint";

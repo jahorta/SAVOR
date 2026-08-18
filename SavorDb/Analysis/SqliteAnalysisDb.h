@@ -129,12 +129,12 @@ public:
         const EnsureBattleStartCommand& command,
         EnsureBattleStartReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool BindBattlePredicateBundle(
-        const BindBattlePredicateBundleCommand& command,
+    bool BindBattlePredicateExecutionPackage(
+        const BindBattlePredicateExecutionPackageCommand& command,
         std::int64_t* binding_id_out = nullptr,
         std::string* error_out = nullptr) override;
-    std::optional<BattlePredicateBundleBindingSnapshot>
-    GetBattlePredicateBundleBindingForWave(std::int64_t wave_id) const override;
+    std::optional<BattlePredicateExecutionPackageSnapshot>
+    GetBattlePredicateExecutionPackageForWave(std::int64_t wave_id) const override;
     bool CreateBattleContextProbe(
         const CreateBattleContextProbeCommand& command,
         std::int64_t* context_probe_id_out = nullptr,

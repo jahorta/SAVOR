@@ -409,6 +409,14 @@ ProgramValueGraph RequirePausedPcRequestGraph(
         {pc});
 }
 
+ProgramValueGraph ObservePausedPcRequestGraph()
+{
+    TestValueGraphBuilder builder;
+    return builder.Finish(
+        CanonicalAction::ExecutionObservePausedPc,
+        {});
+}
+
 ProgramValueGraph InputLeaseRequestGraph()
 {
     TestStaticConfigWriter writer({'I', 'L', 'C', '2'});
@@ -1773,6 +1781,47 @@ TEST(
         &receipt->payload);
     ASSERT_NE(fields, nullptr);
     ASSERT_EQ(fields->fields.size(), 3u);
+    EXPECT_EQ(harness.control->Calls().size(), calls_before);
+
+    ASSERT_TRUE(harness.Finish().accepted);
+    harness.host->Shutdown();
+    EXPECT_TRUE(harness.session.Shutdown().ok);
+}
+
+TEST(
+    SessionProgramActionHost,
+    ObservesAuthoritativePausedPcWithoutAdvancingOrPublishingInput)
+{
+    HostHarness harness;
+    {
+        std::lock_guard lock(harness.control->mutex);
+        harness.control->pc = 0x80101894u;
+        harness.control->vi_count = 912;
+    }
+    ASSERT_TRUE(harness.Open());
+    ASSERT_TRUE(harness.Prepare(
+        InvocationStatePolicy::RestoreBaseline,
+        "seedprobe-entry").accepted);
+    const auto calls_before = harness.control->Calls().size();
+
+    const auto observed = harness.InvokeGraph(
+        CanonicalAction::ExecutionObservePausedPc,
+        ObservePausedPcRequestGraph());
+    ASSERT_TRUE(observed.immediate_result);
+    EXPECT_EQ(observed.immediate_result->resolution.status,
+        ProgramActionResolutionStatus::Completed);
+    const ProgramValue* receipt = Root(
+        observed.immediate_result->resolution.output);
+    ASSERT_NE(receipt, nullptr);
+    const auto* record = std::get_if<RecordValue>(&receipt->payload);
+    ASSERT_NE(record, nullptr);
+    ASSERT_EQ(record->fields.size(), 3u);
+    const auto& values =
+        observed.immediate_result->resolution.output.values;
+    const auto pc = std::ranges::find(
+        values, record->fields[0], &ProgramValue::id);
+    ASSERT_NE(pc, values.end());
+    EXPECT_EQ(std::get<std::uint32_t>(pc->payload), 0x80101894u);
     EXPECT_EQ(harness.control->Calls().size(), calls_before);
 
     ASSERT_TRUE(harness.Finish().accepted);

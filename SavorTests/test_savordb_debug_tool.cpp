@@ -262,8 +262,9 @@ void SeedAnalysisBattleBackfillDb(BackfillSeededDebugDb* seeded) {
         {
             .name = "debug-tool-backfill",
             .entry_savestate_id = 111,
-            .battle_run_spec_id = 222,
-            .explorer_settings_id = 333,
+            .battle_plan_id = 222,
+            .battle_plan_fingerprint = "debug-tool-plan",
+            .continuation_mode = BattleContinuationMode::AutomaticBestPerEndingRng,
             .status = BattleSetStatus::Active,
             .created_at_utc = now,
             .correlation_id = "backfill",
@@ -444,8 +445,9 @@ void SeedSecondTurnQueuedBattleJobs(SeededDebugDb* seeded) {
         {
             .name = "debug-tool-turn-two",
             .entry_savestate_id = 111,
-            .battle_run_spec_id = 222,
-            .explorer_settings_id = 333,
+            .battle_plan_id = 222,
+            .battle_plan_fingerprint = "debug-tool-plan",
+            .continuation_mode = BattleContinuationMode::AutomaticBestPerEndingRng,
             .status = BattleSetStatus::Active,
             .created_at_utc = now,
             .correlation_id = "debug-tool",

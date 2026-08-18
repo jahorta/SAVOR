@@ -8,26 +8,78 @@ namespace savor::db {
 
 class SqliteAuthoringDb final : public IAuthoringDb {
 public:
-    bool SavePredicateDefinitionDraftV2(
-        const SavePredicateDefinitionDraftV2Command& command,
-        std::int64_t* revision_id_out = nullptr,
+    bool CreatePredicateDefinitionDraft(
+        const CreatePredicateDefinitionDraftCommand& command,
+        PredicateAuthoringRevisionReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool SavePredicateDefinitionDraft(
+        const SavePredicateDefinitionDraftCommand& command,
+        PredicateAuthoringRevisionReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool DuplicatePredicateDefinition(
+        const DuplicatePredicateDefinitionCommand& command,
+        PredicateAuthoringRevisionReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
     bool PublishPredicateDefinitionRevisionV2(
         std::int64_t revision_id,
         types::UtcTimePoint published_at_utc,
+        PredicateAuthoringRevisionReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
     std::optional<PredicateDefinitionRevisionV2Snapshot>
     GetPredicateDefinitionRevisionV2(std::int64_t revision_id) const override;
-    bool SavePredicateBundleDraftV2(
-        const SavePredicateBundleDraftV2Command& command,
-        std::int64_t* revision_id_out = nullptr,
+    PredicateRevisionPageV2<PredicateDefinitionRevisionV2Summary>
+    ListPredicateDefinitionRevisionsV2(const PredicateRevisionListQueryV2& query) const override;
+    bool AbandonPredicateDefinitionDraftV2(
+        std::int64_t revision_id, std::string* error_out = nullptr) override;
+    bool CreatePredicateExecutionBindingDraft(
+        const CreatePredicateExecutionBindingDraftCommand& command,
+        PredicateAuthoringRevisionReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool PublishPredicateBundleRevisionV2(
+    bool SavePredicateExecutionBindingDraft(
+        const SavePredicateExecutionBindingDraftCommand& command,
+        PredicateAuthoringRevisionReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool DuplicatePredicateExecutionBinding(
+        const DuplicatePredicateExecutionBindingCommand& command,
+        PredicateAuthoringRevisionReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool PublishPredicateExecutionBindingRevision(
         std::int64_t revision_id,
         types::UtcTimePoint published_at_utc,
+        PredicateAuthoringRevisionReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
-    std::optional<PredicateBundleRevisionV2Snapshot>
-    GetPredicateBundleRevisionV2(std::int64_t revision_id) const override;
+    std::optional<PredicateExecutionBindingRevisionSnapshot>
+    GetPredicateExecutionBindingRevision(std::int64_t revision_id) const override;
+    PredicateRevisionPageV2<PredicateExecutionBindingRevisionSummary>
+    ListPredicateExecutionBindingRevisions(const PredicateRevisionListQueryV2& query) const override;
+    bool AbandonPredicateExecutionBindingDraft(
+        std::int64_t revision_id, std::string* error_out = nullptr) override;
+    bool CreatePredicateGroupDraft(
+        const CreatePredicateGroupDraftCommand& command,
+        PredicateAuthoringRevisionReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool SavePredicateGroupDraft(
+        const SavePredicateGroupDraftCommand& command,
+        PredicateAuthoringRevisionReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool DuplicatePredicateGroup(
+        const DuplicatePredicateGroupCommand& command,
+        PredicateAuthoringRevisionReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool PublishPredicateGroupRevision(
+        std::int64_t revision_id, types::UtcTimePoint published_at_utc,
+        PredicateAuthoringRevisionReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<PredicateGroupRevisionSnapshot>
+    GetPredicateGroupRevision(std::int64_t revision_id) const override;
+    PredicateRevisionPageV2<PredicateGroupRevisionSummary>
+    ListPredicateGroupRevisions(const PredicateRevisionListQueryV2& query) const override;
+    bool AbandonPredicateGroupDraft(
+        std::int64_t revision_id, std::string* error_out = nullptr) override;
+    bool UpdatePredicateAuthoringMetadata(
+        const UpdatePredicateAuthoringMetadataCommand& command,
+        bool* changed_out = nullptr,
+        std::string* error_out = nullptr) override;
     explicit SqliteAuthoringDb(sqlite3* db);
 
     bool SaveSeedProbeSpec(
@@ -55,16 +107,6 @@ public:
     std::optional<TasSpecSnapshot> GetTasSpec(
         std::int64_t tas_spec_id) const override;
     std::vector<TasSpecSnapshot> ListTasSpecs(
-        int max_count) const override;
-
-    bool SaveBattleRunSpec(
-        const SaveBattleRunSpecCommand& command,
-        std::int64_t* battle_run_spec_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-
-    std::optional<BattleRunSpecSnapshot> GetBattleRunSpec(
-        std::int64_t battle_run_spec_id) const override;
-    std::vector<BattleRunSpecSnapshot> ListBattleRunSpecs(
         int max_count) const override;
 
     bool SavePlan(
@@ -96,26 +138,6 @@ public:
         std::int64_t plan_id) const override;
 
     std::vector<BattlePlanSnapshot> ListBattlePlans(
-        int max_count) const override;
-
-    bool SaveExplorerSettings(
-        const SaveExplorerSettingsCommand& command,
-        std::int64_t* explorer_settings_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-
-    std::optional<ExplorerSettingsSnapshot> GetExplorerSettings(
-        std::int64_t explorer_settings_id) const override;
-    std::vector<ExplorerSettingsSnapshot> ListExplorerSettings(
-        int max_count) const override;
-
-    bool SaveBattleChainSpec(
-        const SaveBattleChainSpecCommand& command,
-        std::int64_t* battle_chain_spec_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-
-    std::optional<BattleChainSpecSnapshot> GetBattleChainSpec(
-        std::int64_t battle_chain_spec_id) const override;
-    std::vector<BattleChainSpecSnapshot> ListBattleChainSpecs(
         int max_count) const override;
 
     bool SaveWorkflowGraph(

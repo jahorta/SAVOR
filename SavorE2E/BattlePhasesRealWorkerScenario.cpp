@@ -32,12 +32,18 @@
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
 #include "ScenarioAssessment.h"
-#include "SplitCoordinatorRuntime.h"
+#include "Execution/CoordinatorRuntime.h"
 #include "Utils/Hash.h"
 #include "WorkerStartupBarrier.h"
 
 namespace savor::e2e {
 namespace {
+
+std::string PredicateCreationRequestKey(std::string_view run_identity, std::string_view object)
+{
+    const auto value = std::string(run_identity) + ":" + std::string(object);
+    return hash::sha256(value.data(), value.size()).substr(0, 32);
+}
 
 using namespace std::chrono_literals;
 using savor::db::execution::workflow::WorkflowInstanceState;
@@ -83,10 +89,10 @@ const savor::runtime::program::ProgramValue* FindProgramValue(
     return found == graph.values.end() ? nullptr : &*found;
 }
 
-bool SeedBattlePredicateBundle(
+bool SeedBattlePredicateGroup(
     savor::db::IAuthoringDb* authoring_db,
     std::string_view run_identity,
-    std::int64_t* bundle_revision_id_out,
+    std::int64_t* group_revision_id_out,
     std::string* error_out)
 {
     using namespace savor::runtime::predicates;
@@ -95,7 +101,7 @@ bool SeedBattlePredicateBundle(
     namespace capabilities =
         savor::runtime::program::capabilities;
 
-    if (!authoring_db || !bundle_revision_id_out)
+    if (!authoring_db || !group_revision_id_out)
         return Fail("Battle predicate authoring database is unavailable",
                     error_out);
 
@@ -179,19 +185,21 @@ bool SeedBattlePredicateBundle(
         },
         .root_expression = 3,
     };
-    std::int64_t turn_order_revision_id = 0;
-    if (!authoring_db->SavePredicateDefinitionDraftV2({
-            .stable_key = turn_order_definition.canonical_id,
+    savor::db::PredicateAuthoringRevisionReceipt turn_order_receipt{};
+    if (!authoring_db->CreatePredicateDefinitionDraft({
+            .creation_request_key = PredicateCreationRequestKey(run_identity, "definition.turn_order"),
             .name = "Players act before enemies " + suffix,
             .description =
                 "The last active player position precedes the first active enemy position.",
-            .definition = turn_order_definition,
+            .body = {turn_order_definition.witnesses, turn_order_definition.expression,
+                     turn_order_definition.root_expression},
             .created_at_utc = now,
-        }, &turn_order_revision_id, error_out)
+        }, &turn_order_receipt, error_out)
         || !authoring_db->PublishPredicateDefinitionRevisionV2(
-            turn_order_revision_id, now, error_out)) {
+            turn_order_receipt.revision_id, now, nullptr, error_out)) {
         return false;
     }
+    const auto turn_order_revision_id = turn_order_receipt.revision_id;
 
     composition::PredicateDefinition drop_definition{
         .canonical_id = "savor.e2e.battle.drop_count." + suffix,
@@ -239,165 +247,161 @@ bool SeedBattlePredicateBundle(
         },
         .root_expression = 4,
     };
-    std::int64_t drop_revision_id = 0;
-    if (!authoring_db->SavePredicateDefinitionDraftV2({
-            .stable_key = drop_definition.canonical_id,
+    savor::db::PredicateAuthoringRevisionReceipt drop_receipt{};
+    if (!authoring_db->CreatePredicateDefinitionDraft({
+            .creation_request_key = PredicateCreationRequestKey(run_identity, "definition.drop_count"),
             .name = "Cumulative drop count by turn " + suffix,
             .description =
                 "The cumulative selected-item drop count is at least the current Battle turn.",
-            .definition = drop_definition,
+            .body = {drop_definition.witnesses, drop_definition.expression,
+                     drop_definition.root_expression},
             .created_at_utc = now,
-        }, &drop_revision_id, error_out)
+        }, &drop_receipt, error_out)
         || !authoring_db->PublishPredicateDefinitionRevisionV2(
-            drop_revision_id, now, error_out)) {
+            drop_receipt.revision_id, now, nullptr, error_out)) {
         return false;
     }
+    const auto drop_revision_id = drop_receipt.revision_id;
 
-    const auto observation = [](
-        std::uint32_t ordinal,
-        std::string stable_key,
-        const std::string& hook,
-        const program::ExactDependencyIdentity& source,
-        const program::TypeRef& type) {
-        return PredicateObservationV1{
-            .ordinal = ordinal,
-            .stable_key = std::move(stable_key),
-            .semantic_hook_id = hook,
-            .source_kind = PredicateObservationSourceKindV1::RegisteredQuery,
-            .source = source,
-            .value_type = type,
-        };
-    };
-    const auto witness = [](
-        std::uint32_t ordinal,
-        PredicateWitnessSourceKindV1 source_kind,
-        std::uint32_t source_ordinal,
-        const program::TypeRef& type) {
-        return PredicateWitnessBindingV1{
-            .witness_ordinal = ordinal,
-            .source_kind = source_kind,
-            .source_ordinal = source_ordinal,
-            .value_type = type,
-        };
-    };
-    const auto check_use = [](
-        std::string canonical_id,
-        const std::string& hook,
-        composition::PredicateReaction reaction) {
-        return composition::PredicateCheckUse{
-            .canonical_id = std::move(canonical_id),
-            .semantic_point_id = hook,
-            .reaction = reaction,
-            .emit_evidence = true,
-            .participates_in_aggregation = true,
-        };
-    };
+    const auto published_turn_order =
+        authoring_db->GetPredicateDefinitionRevisionV2(turn_order_revision_id);
+    const auto published_drop =
+        authoring_db->GetPredicateDefinitionRevisionV2(drop_revision_id);
+    if (!published_turn_order || !published_drop
+        || published_turn_order->revision_state != "PUBLISHED"
+        || published_drop->revision_state != "PUBLISHED") {
+        return Fail("published Battle predicate definitions are unavailable", error_out);
+    }
 
-    ResolvedPredicateBundleV1 bundle{
-        .canonical_id = "savor.e2e.battle.first_battle." + suffix,
+    PredicateExecutionBindingV1 turn_order_binding{
+        .canonical_id = "savor.e2e.battle.binding.turn_order." + suffix,
         .revision = 1,
-        .definitions = {
-            {turn_order_revision_id, turn_order_definition},
-            {drop_revision_id, drop_definition},
+        .definition = {
+            turn_order_revision_id,
+            published_turn_order->content_sha256,
+            published_turn_order->definition,
         },
-        .parameters = {{0, "item_id", u16}},
-        .observations = {
-            observation(0, "turn-order", *turn_is_ready,
-                        turn_order_query, *turn_order_type),
-            observation(1, "rewards-end-turn", *end_turn,
-                        rewards_query, *rewards_type),
-            observation(2, "rewards-victory", *victory,
-                        rewards_query, *rewards_type),
+        .witnesses = {{
+            .witness_ordinal = 0,
+            .source_kind = PredicateWitnessSourceKindV1::DerivedStateQuery,
+            .value_type = *turn_order_type,
+            .source = turn_order_query,
+        }},
+    };
+    savor::db::PredicateAuthoringRevisionReceipt turn_order_binding_receipt{};
+    if (!authoring_db->CreatePredicateExecutionBindingDraft({
+            .creation_request_key = PredicateCreationRequestKey(run_identity, "binding.turn_order"),
+            .name = "Current turn order " + suffix,
+            .description = "Reads the Battle turn-order snapshot at evaluation time.",
+            .body = {turn_order_revision_id, turn_order_binding.witnesses},
+            .created_at_utc = now,
+        }, &turn_order_binding_receipt, error_out)
+        || !authoring_db->PublishPredicateExecutionBindingRevision(
+            turn_order_binding_receipt.revision_id, now, nullptr, error_out)) {
+        return false;
+    }
+    const auto turn_order_binding_id = turn_order_binding_receipt.revision_id;
+
+    PredicateExecutionBindingV1 drop_binding{
+        .canonical_id = "savor.e2e.battle.binding.electri_box_273." + suffix,
+        .revision = 1,
+        .definition = {
+            drop_revision_id,
+            published_drop->content_sha256,
+            published_drop->definition,
         },
-        .checks = {
+        .witnesses = {
+            {
+                .witness_ordinal = 0,
+                .source_kind = PredicateWitnessSourceKindV1::DerivedStateQuery,
+                .value_type = *rewards_type,
+                .source = rewards_query,
+            },
+            {
+                .witness_ordinal = 1,
+                .source_kind = PredicateWitnessSourceKindV1::ConcreteValue,
+                .value_type = u16,
+                .concrete_value = program::LiteralValue{
+                    .type = u16,
+                    .payload = static_cast<std::uint16_t>(273),
+                },
+            },
+        },
+    };
+    savor::db::PredicateAuthoringRevisionReceipt drop_binding_receipt{};
+    if (!authoring_db->CreatePredicateExecutionBindingDraft({
+            .creation_request_key = PredicateCreationRequestKey(run_identity, "binding.drop_count.273"),
+            .name = "Electri Box cumulative drops " + suffix,
+            .description = "Specializes the reusable drop predicate with item_id=273.",
+            .body = {drop_revision_id, drop_binding.witnesses},
+            .created_at_utc = now,
+        }, &drop_binding_receipt, error_out)
+        || !authoring_db->PublishPredicateExecutionBindingRevision(
+            drop_binding_receipt.revision_id, now, nullptr, error_out)) {
+        return false;
+    }
+    const auto drop_binding_id = drop_binding_receipt.revision_id;
+
+    std::vector<std::string> terminal_hooks{*end_turn, *victory};
+    std::ranges::sort(terminal_hooks);
+    ResolvedPredicateGroupV1 group{
+        .canonical_id = "savor.e2e.battle.group.first_battle." + suffix,
+        .revision = 1,
+        .members = {
             {
                 .ordinal = 0,
-                .predicate_definition_revision_id = turn_order_revision_id,
-                .use = check_use(
-                    "players-before-enemies", *turn_is_ready,
-                    composition::PredicateReaction::RecordAndContinue),
+                .execution_binding_revision_id = turn_order_binding_id,
+                .semantic_hook_ids = {*turn_is_ready},
                 .occurrence = PredicateOccurrencePolicyV1::First,
-                .witnesses = {witness(
-                    0, PredicateWitnessSourceKindV1::Observation,
-                    0, *turn_order_type)},
+                .reaction = composition::PredicateReaction::RecordAndContinue,
+                .participates_in_aggregation = true,
+                .emit_evidence = true,
             },
             {
                 .ordinal = 1,
-                .predicate_definition_revision_id = drop_revision_id,
-                .use = check_use(
-                    "drop-count-at-end-turn", *end_turn,
-                    composition::PredicateReaction::AbortOnFail),
+                .execution_binding_revision_id = drop_binding_id,
+                .semantic_hook_ids = std::move(terminal_hooks),
                 .occurrence = PredicateOccurrencePolicyV1::First,
-                .witnesses = {
-                    witness(0, PredicateWitnessSourceKindV1::Observation,
-                            1, *rewards_type),
-                    witness(1, PredicateWitnessSourceKindV1::Parameter,
-                            0, u16),
-                },
-            },
-            {
-                .ordinal = 2,
-                .predicate_definition_revision_id = drop_revision_id,
-                .use = check_use(
-                    "drop-count-at-victory", *victory,
-                    composition::PredicateReaction::AbortOnFail),
-                .occurrence = PredicateOccurrencePolicyV1::First,
-                .witnesses = {
-                    witness(0, PredicateWitnessSourceKindV1::Observation,
-                            2, *rewards_type),
-                    witness(1, PredicateWitnessSourceKindV1::Parameter,
-                            0, u16),
-                },
+                .reaction = composition::PredicateReaction::AbortOnFail,
+                .participates_in_aggregation = true,
+                .emit_evidence = true,
             },
         },
     };
-    std::int64_t bundle_revision_id = 0;
-    if (!authoring_db->SavePredicateBundleDraftV2({
-            .stable_key = bundle.canonical_id,
-            .name = "First Battle exploration predicates " + suffix,
+    savor::db::PredicateAuthoringRevisionReceipt group_receipt{};
+    if (!authoring_db->CreatePredicateGroupDraft({
+            .creation_request_key = PredicateCreationRequestKey(run_identity, "group.first_battle"),
+            .name = "First Battle predicates " + suffix,
             .description =
-                "Turn-order scoring plus cumulative item-drop rejection at either terminal hook.",
-            .bundle = bundle,
+                "Turn order plus one atomic cumulative-drop predicate across the mutually exclusive terminal hooks.",
+            .body = {group.members},
             .created_at_utc = now,
-        }, &bundle_revision_id, error_out)
-        || !authoring_db->PublishPredicateBundleRevisionV2(
-            bundle_revision_id, now, error_out)) {
+        }, &group_receipt, error_out)
+        || !authoring_db->PublishPredicateGroupRevision(
+            group_receipt.revision_id, now, nullptr, error_out)) {
         return false;
     }
-    *bundle_revision_id_out = bundle_revision_id;
+    *group_revision_id_out = group_receipt.revision_id;
     return true;
 }
 
 bool SeedBattleAuthoring(
     savor::db::IAuthoringDb* authoring_db,
     const std::string_view run_identity,
-    std::int64_t* battle_chain_spec_id_out,
+    std::int64_t* battle_plan_id_out,
     std::string* error_out)
 {
-    if (authoring_db == nullptr || battle_chain_spec_id_out == nullptr)
+    if (authoring_db == nullptr || battle_plan_id_out == nullptr)
         return Fail("Battle authoring database is unavailable", error_out);
 
     const auto now = savor::db::types::UtcNow();
     const std::string suffix(run_identity);
-    std::int64_t predicate_bundle_revision_id = 0;
-    if (!SeedBattlePredicateBundle(
+    std::int64_t predicate_group_revision_id = 0;
+    if (!SeedBattlePredicateGroup(
             authoring_db, run_identity,
-            &predicate_bundle_revision_id, error_out)) {
+            &predicate_group_revision_id, error_out)) {
         return false;
     }
-    std::int64_t run_spec_id = 0;
-    if (!authoring_db->SaveBattleRunSpec({
-            .name = "SavorE2E Battle phases " + suffix,
-            .priority = 1,
-            .progress_enable = true,
-            .use_single_turn_runner = true,
-            .auto_wave_trigger_enable = true,
-            .created_at_utc = now,
-            .correlation_id = std::string(kCorrelation),
-            .causation_id = "scenario",
-        }, &run_spec_id, error_out))
-        return false;
-
     std::int64_t plan_id = 0;
     if (!authoring_db->SavePlan({
             .name = "SavorE2E two-turn Battle plan " + suffix,
@@ -435,8 +439,8 @@ bool SeedBattleAuthoring(
     if (!authoring_db->SaveBattlePlanTurn({
             .plan_id = plan_id,
             .turn_index = 1,
-            .default_predicate_bundle_revision_id =
-                predicate_bundle_revision_id,
+            .default_predicate_group_revision_id =
+                predicate_group_revision_id,
             .actions = {
                 {.actor_slot = 0, .action_preset_id = attack_any_enemy_id, .ordinal = 0},
                 {.actor_slot = 1, .action_preset_id = attack_same_as_actor_zero_id, .ordinal = 1},
@@ -450,8 +454,8 @@ bool SeedBattleAuthoring(
     if (!authoring_db->SaveBattlePlanTurn({
             .plan_id = plan_id,
             .turn_index = 2,
-            .default_predicate_bundle_revision_id =
-                predicate_bundle_revision_id,
+            .default_predicate_group_revision_id =
+                predicate_group_revision_id,
             .actions = {
                 {.actor_slot = 0, .action_preset_id = attack_any_enemy_id, .ordinal = 0},
                 {.actor_slot = 1, .action_preset_id = attack_same_as_actor_zero_id, .ordinal = 1},
@@ -462,26 +466,8 @@ bool SeedBattleAuthoring(
         }, &turn_id, error_out))
         return false;
 
-    std::int64_t explorer_settings_id = 0;
-    if (!authoring_db->SaveExplorerSettings({
-            .name = "SavorE2E Battle phases settings " + suffix,
-            .description = "New-backend Battle Context and Single Turn E2E",
-            .default_plan_id = plan_id,
-            .created_at_utc = now,
-            .correlation_id = std::string(kCorrelation),
-            .causation_id = "plan-" + std::to_string(plan_id),
-        }, &explorer_settings_id, error_out))
-        return false;
-
-    return authoring_db->SaveBattleChainSpec({
-        .name = "SavorE2E Battle chain " + suffix,
-        .description = "Parallel SeedProbe and Battle Context joined by battle.start",
-        .battle_run_spec_id = run_spec_id,
-        .explorer_settings_id = explorer_settings_id,
-        .created_at_utc = now,
-        .correlation_id = std::string(kCorrelation),
-        .causation_id = "scenario",
-    }, battle_chain_spec_id_out, error_out);
+    *battle_plan_id_out = plan_id;
+    return true;
 }
 
 bool SeedBattleWorkflow(
@@ -489,7 +475,7 @@ bool SeedBattleWorkflow(
     savor::db::IExecutionDb* execution_db,
     std::int64_t dtm_artifact_id,
     std::int64_t seed_probe_spec_id,
-    std::int64_t battle_chain_spec_id,
+    std::int64_t battle_plan_id,
     std::int64_t rtc_value,
     int samples_per_axis,
     int fake_attack_min,
@@ -500,7 +486,7 @@ bool SeedBattleWorkflow(
 {
     if (authoring_db == nullptr || execution_db == nullptr ||
         dtm_artifact_id <= 0 || seed_probe_spec_id <= 0 ||
-        battle_chain_spec_id <= 0 || rtc_value < 0 ||
+        battle_plan_id <= 0 || rtc_value < 0 ||
         static_cast<std::uint64_t>(rtc_value) >
             std::numeric_limits<std::uint32_t>::max() ||
         workflow_instance_id_out == nullptr)
@@ -523,17 +509,20 @@ bool SeedBattleWorkflow(
                     .inputs = {{
                         .input_key = "root_dtm",
                         .data_kind = "state_artifact.dtm_artifact_id",
+                        .ref_kind = "state_artifact",
                         .display_name = "Approved root DTM",
                     }},
                     .possible_outputs = {
                         {
                             .output_key = "tas_movie_validation_attempt",
                             .data_kind = "analysis.tas_movie_validation_attempt_id",
+                            .ref_kind = "tmv_validation_attempt",
                             .display_name = "Validation attempt",
                         },
                         {
                             .output_key = "established_root_cursor_attempt",
                             .data_kind = "analysis.tas_movie_validation_attempt_id",
+                            .ref_kind = "tmv_validation_attempt",
                             .display_name = "Established root cursor attempt",
                         },
                     },
@@ -545,20 +534,31 @@ bool SeedBattleWorkflow(
                     .inputs = {{
                         .input_key = "root_establishment",
                         .data_kind = "analysis.tas_movie_validation_attempt_id",
+                        .ref_kind = "tmv_validation_attempt",
                         .display_name = "Root cursor establishment",
                     }},
                     .possible_outputs = {
                         {
                             .output_key = "tas_movie_validation_attempt",
                             .data_kind = "analysis.tas_movie_validation_attempt_id",
+                            .ref_kind = "tmv_validation_attempt",
                             .display_name = "Validation attempt",
                         },
                         {
                             .output_key = "validated_checkpoint_savestate",
                             .data_kind = "state.movie_paired_savestate_id",
+                            .ref_kind = "state.savestate",
                             .display_name = "Validated movie-paired checkpoint",
                         },
                     },
+                    .arguments = {{
+                        .argument_key = "rtc",
+                        .display_name = "RTC",
+                        .value_type = "integer",
+                        .required = true,
+                        .minimum_integer = 0,
+                        .maximum_integer = 4294967295ULL,
+                    }},
                 },
                 {
                     .node_key = "tas_sterilize_1",
@@ -567,29 +567,42 @@ bool SeedBattleWorkflow(
                     .inputs = {{
                         .input_key = "paired_checkpoint_savestate",
                         .data_kind = "state.movie_paired_savestate_id",
+                        .ref_kind = "state.savestate",
                         .display_name = "Validated movie-paired checkpoint",
                     }},
                     .possible_outputs = {{
                         .output_key = "sterilized_checkpoint_savestate",
                         .data_kind = "state.movie_inactive_savestate_id",
+                        .ref_kind = "state.savestate",
                         .display_name = "Sterilized movie-inactive checkpoint",
                     }},
                 },
                 {
                     .node_key = "probe_1",
-                    .unit_kind = "battle_seed_probe",
-                    .display_name = "Battle Seed Probe",
+                    .unit_kind = "seed_probe",
+                    .display_name = "SeedProbe",
                     .authored_ref_kind = std::string("seed_probe_spec"),
                     .authored_ref_id = seed_probe_spec_id,
                     .inputs = {{
                         .input_key = "entry_savestate",
                         .data_kind = "state.movie_inactive_savestate_id",
+                        .ref_kind = "state.savestate",
                         .display_name = "Sterilized entry savestate",
                     }},
                     .possible_outputs = {{
                         .output_key = "seed_probe_run",
                         .data_kind = "analysis.seed_probe_run",
+                        .ref_kind = "sp_probe_run",
                         .display_name = "Confirmed SeedProbe run",
+                    }},
+                    .arguments = {{
+                        .argument_key = "samples_per_axis",
+                        .display_name = "Samples per axis",
+                        .value_type = "integer",
+                        .required = false,
+                        .default_value = std::string("5"),
+                        .minimum_integer = 1,
+                        .maximum_integer = 64,
                     }},
                 },
                 {
@@ -599,36 +612,74 @@ bool SeedBattleWorkflow(
                     .inputs = {{
                         .input_key = "entry_savestate",
                         .data_kind = "state.movie_inactive_savestate_id",
+                        .ref_kind = "state.savestate",
                         .display_name = "Sterilized entry savestate",
                     }},
                     .possible_outputs = {{
                         .output_key = "battle_context",
                         .data_kind = "analysis_battle.battle_context_id",
+                        .ref_kind = "ab_battle_context",
                         .display_name = "Battle context",
                     }},
                 },
                 {
                     .node_key = "battle_1",
-                    .unit_kind = "battle_chain",
-                    .display_name = "Battle Chain",
-                    .authored_ref_kind = std::string("authoring.battle_chain_spec"),
-                    .authored_ref_id = battle_chain_spec_id,
+                    .unit_kind = "battle",
+                    .display_name = "Battle",
+                    .authored_ref_kind = std::string("authoring.battle_plan"),
+                    .authored_ref_id = battle_plan_id,
                     .inputs = {
                         {
                             .input_key = "seed_probe_run",
                             .data_kind = "analysis.seed_probe_run",
+                            .ref_kind = "sp_probe_run",
                             .display_name = "Confirmed SeedProbe run",
                         },
                         {
                             .input_key = "battle_context",
                             .data_kind = "analysis_battle.battle_context_id",
+                            .ref_kind = "ab_battle_context",
                             .display_name = "Battle context",
                         },
                     },
                     .possible_outputs = {{
                         .output_key = "battle_set",
                         .data_kind = "analysis_battle.battle_set",
+                        .ref_kind = "analysis_battle.battle_set",
                         .display_name = "Battle set",
+                    }},
+                    .arguments = {
+                        {
+                            .argument_key = "continuation_mode",
+                            .display_name = "Continuation",
+                            .value_type = "choice",
+                            .required = true,
+                            .choices = {
+                                {"manual_selection", "Manual selection after each wave"},
+                                {"automatic_best_per_ending_rng", "Automatically continue the best candidate for each ending RNG"},
+                            },
+                        },
+                        {
+                            .argument_key = "fake_attack_min",
+                            .display_name = "Minimum fake attacks",
+                            .value_type = "integer",
+                            .default_value = std::string("0"),
+                            .minimum_integer = 0,
+                            .maximum_integer = 2147483647,
+                        },
+                        {
+                            .argument_key = "fake_attack_max",
+                            .display_name = "Maximum fake attacks",
+                            .value_type = "integer",
+                            .default_value = std::string("0"),
+                            .minimum_integer = 0,
+                            .maximum_integer = 2147483647,
+                        },
+                    },
+                    .argument_constraints = {{
+                        .lesser_or_equal_key = "fake_attack_min",
+                        .greater_or_equal_key = "fake_attack_max",
+                        .message = "minimum fake attacks must not exceed maximum fake attacks",
                     }},
                 },
             },
@@ -711,8 +762,8 @@ bool SeedBattleWorkflow(
             {"tas_validate_1"}, &activation_error);
     auto probe = savor::db::execution::workflow::
         BuildUnitActivationSpecFromDefinition(
-            unit_registry, "probe_1", "probe_1", "battle_seed_probe",
-            "Battle Seed Probe", std::optional<std::string>("seed_probe_spec"),
+            unit_registry, "probe_1", "probe_1", "seed_probe",
+            "SeedProbe", std::optional<std::string>("seed_probe_spec"),
             seed_probe_spec_id, {"tas_sterilize_1"}, &activation_error);
     auto context = savor::db::execution::workflow::
         BuildUnitActivationSpecFromDefinition(
@@ -722,9 +773,9 @@ bool SeedBattleWorkflow(
             &activation_error);
     auto battle = savor::db::execution::workflow::
         BuildUnitActivationSpecFromDefinition(
-            unit_registry, "battle_1", "battle_1", "battle_chain",
-            "Battle Chain", std::optional<std::string>(
-                "authoring.battle_chain_spec"), battle_chain_spec_id,
+            unit_registry, "battle_1", "battle_1", "battle",
+            "Battle", std::optional<std::string>(
+                "authoring.battle_plan"), battle_plan_id,
             {"probe_1", "context_1"}, &activation_error);
     if (!establish || !validate || !sterilize || !probe || !context ||
         !battle)
@@ -745,7 +796,6 @@ bool SeedBattleWorkflow(
     savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
     command.workflow_kind = "workflow_graph";
     command.root_scope_kind = "manual";
-    command.root_scope_id = dtm_artifact_id;
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "savor-e2e";
     command.created_at_utc = now.time_since_epoch().count();
@@ -790,9 +840,9 @@ bool SeedBattleWorkflow(
     });
     command.arguments.push_back({
         .node_key = "battle_1",
-        .argument_key = "predicate.parameter.item_id",
-        .value_type = "integer",
-        .integer_value = kPredicateItemId,
+        .argument_key = "continuation_mode",
+        .value_type = "choice",
+        .text_value = std::string("automatic_best_per_ending_rng"),
         .source_kind = "scenario",
     });
     return execution_db->CreateWorkflowInstance(
@@ -804,7 +854,7 @@ bool SeedPreparedBattleWorkflow(
     savor::db::IExecutionDb* execution_db,
     const std::int64_t entry_savestate_id,
     const std::int64_t seed_probe_spec_id,
-    const std::int64_t battle_chain_spec_id,
+    const std::int64_t battle_plan_id,
     const int samples_per_axis,
     const int fake_attack_min,
     const int fake_attack_max,
@@ -814,7 +864,7 @@ bool SeedPreparedBattleWorkflow(
 {
     if (authoring_db == nullptr || execution_db == nullptr ||
         entry_savestate_id <= 0 || seed_probe_spec_id <= 0 ||
-        battle_chain_spec_id <= 0 || workflow_instance_id_out == nullptr)
+        battle_plan_id <= 0 || workflow_instance_id_out == nullptr)
         return Fail("Prepared Battle workflow seed input is incomplete",
                     error_out);
 
@@ -830,19 +880,29 @@ bool SeedPreparedBattleWorkflow(
             .nodes = {
                 {
                     .node_key = "probe_1",
-                    .unit_kind = "battle_seed_probe",
-                    .display_name = "Battle Seed Probe",
+                    .unit_kind = "seed_probe",
+                    .display_name = "SeedProbe",
                     .authored_ref_kind = std::string("seed_probe_spec"),
                     .authored_ref_id = seed_probe_spec_id,
                     .inputs = {{
                         .input_key = "entry_savestate",
                         .data_kind = "state.movie_inactive_savestate_id",
+                        .ref_kind = "state.savestate",
                         .display_name = "Prepared entry savestate",
                     }},
                     .possible_outputs = {{
                         .output_key = "seed_probe_run",
                         .data_kind = "analysis.seed_probe_run",
+                        .ref_kind = "sp_probe_run",
                         .display_name = "Confirmed SeedProbe run",
+                    }},
+                    .arguments = {{
+                        .argument_key = "samples_per_axis",
+                        .display_name = "Samples per axis",
+                        .value_type = "integer",
+                        .default_value = std::string("5"),
+                        .minimum_integer = 1,
+                        .maximum_integer = 64,
                     }},
                 },
                 {
@@ -852,37 +912,75 @@ bool SeedPreparedBattleWorkflow(
                     .inputs = {{
                         .input_key = "entry_savestate",
                         .data_kind = "state.movie_inactive_savestate_id",
+                        .ref_kind = "state.savestate",
                         .display_name = "Prepared entry savestate",
                     }},
                     .possible_outputs = {{
                         .output_key = "battle_context",
                         .data_kind = "analysis_battle.battle_context_id",
+                        .ref_kind = "ab_battle_context",
                         .display_name = "Battle context",
                     }},
                 },
                 {
                     .node_key = "battle_1",
-                    .unit_kind = "battle_chain",
-                    .display_name = "Battle Chain",
+                    .unit_kind = "battle",
+                    .display_name = "Battle",
                     .authored_ref_kind = std::string(
-                        "authoring.battle_chain_spec"),
-                    .authored_ref_id = battle_chain_spec_id,
+                        "authoring.battle_plan"),
+                    .authored_ref_id = battle_plan_id,
                     .inputs = {
                         {
                             .input_key = "seed_probe_run",
                             .data_kind = "analysis.seed_probe_run",
+                            .ref_kind = "sp_probe_run",
                             .display_name = "Confirmed SeedProbe run",
                         },
                         {
                             .input_key = "battle_context",
                             .data_kind = "analysis_battle.battle_context_id",
+                            .ref_kind = "ab_battle_context",
                             .display_name = "Battle context",
                         },
                     },
                     .possible_outputs = {{
                         .output_key = "battle_set",
                         .data_kind = "analysis_battle.battle_set",
+                        .ref_kind = "analysis_battle.battle_set",
                         .display_name = "Battle set",
+                    }},
+                    .arguments = {
+                        {
+                            .argument_key = "continuation_mode",
+                            .display_name = "Continuation",
+                            .value_type = "choice",
+                            .required = true,
+                            .choices = {
+                                {"manual_selection", "Manual selection after each wave"},
+                                {"automatic_best_per_ending_rng", "Automatically continue the best candidate for each ending RNG"},
+                            },
+                        },
+                        {
+                            .argument_key = "fake_attack_min",
+                            .display_name = "Minimum fake attacks",
+                            .value_type = "integer",
+                            .default_value = std::string("0"),
+                            .minimum_integer = 0,
+                            .maximum_integer = 2147483647,
+                        },
+                        {
+                            .argument_key = "fake_attack_max",
+                            .display_name = "Maximum fake attacks",
+                            .value_type = "integer",
+                            .default_value = std::string("0"),
+                            .minimum_integer = 0,
+                            .maximum_integer = 2147483647,
+                        },
+                    },
+                    .argument_constraints = {{
+                        .lesser_or_equal_key = "fake_attack_min",
+                        .greater_or_equal_key = "fake_attack_max",
+                        .message = "minimum fake attacks must not exceed maximum fake attacks",
                     }},
                 },
             },
@@ -915,8 +1013,8 @@ bool SeedPreparedBattleWorkflow(
     std::string activation_error;
     auto probe = savor::db::execution::workflow::
         BuildUnitActivationSpecFromDefinition(
-            unit_registry, "probe_1", "probe_1", "battle_seed_probe",
-            "Battle Seed Probe", std::optional<std::string>(
+            unit_registry, "probe_1", "probe_1", "seed_probe",
+            "SeedProbe", std::optional<std::string>(
                 "seed_probe_spec"), seed_probe_spec_id, {},
             &activation_error);
     auto context = savor::db::execution::workflow::
@@ -926,9 +1024,9 @@ bool SeedPreparedBattleWorkflow(
             &activation_error);
     auto battle = savor::db::execution::workflow::
         BuildUnitActivationSpecFromDefinition(
-            unit_registry, "battle_1", "battle_1", "battle_chain",
-            "Battle Chain", std::optional<std::string>(
-                "authoring.battle_chain_spec"), battle_chain_spec_id,
+            unit_registry, "battle_1", "battle_1", "battle",
+            "Battle", std::optional<std::string>(
+                "authoring.battle_plan"), battle_plan_id,
             {"probe_1", "context_1"}, &activation_error);
     if (!probe || !context || !battle)
         return Fail("Prepared Battle workflow activation failed: "
@@ -938,7 +1036,6 @@ bool SeedPreparedBattleWorkflow(
     savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
     command.workflow_kind = "workflow_graph";
     command.root_scope_kind = "manual";
-    command.root_scope_id = entry_savestate_id;
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "savor-e2e";
     command.created_at_utc = now.time_since_epoch().count();
@@ -977,9 +1074,9 @@ bool SeedPreparedBattleWorkflow(
     });
     command.arguments.push_back({
         .node_key = "battle_1",
-        .argument_key = "predicate.parameter.item_id",
-        .value_type = "integer",
-        .integer_value = kPredicateItemId,
+        .argument_key = "continuation_mode",
+        .value_type = "choice",
+        .text_value = std::string("automatic_best_per_ending_rng"),
         .source_kind = "scenario",
     });
     return execution_db->CreateWorkflowInstance(
@@ -997,6 +1094,11 @@ bool CheckBattleInvariantsAndReportTrajectory(
     if (!graph.instance.workflow_graph_revision_id)
         return Fail("Battle workflow has no authored graph revision",
                     error_out);
+    if (graph.instance.root_scope_kind != "manual"
+        || graph.instance.root_scope_id.has_value()) {
+        return Fail("Battle workflow root scope is not the canonical manual scope",
+                    error_out);
+    }
     const auto authored = db_service->AuthoringDb()->GetWorkflowGraphRevision(
         *graph.instance.workflow_graph_revision_id);
     if (!authored)
@@ -1014,17 +1116,17 @@ bool CheckBattleInvariantsAndReportTrajectory(
         std::string_view input;
     };
     static constexpr std::array kPreparedNodes{
-        ExpectedNode{"probe_1", "battle_seed_probe"},
+        ExpectedNode{"probe_1", "seed_probe"},
         ExpectedNode{"context_1", "battle.context"},
-        ExpectedNode{"battle_1", "battle_chain"},
+        ExpectedNode{"battle_1", "battle"},
     };
     static constexpr std::array kFreshNodes{
         ExpectedNode{"tas_establish_1", "tas_movie_establish_root_cursor"},
         ExpectedNode{"tas_validate_1", "tas_movie_validate_root"},
         ExpectedNode{"tas_sterilize_1", "tas_movie_checkpoint_sterilize"},
-        ExpectedNode{"probe_1", "battle_seed_probe"},
+        ExpectedNode{"probe_1", "seed_probe"},
         ExpectedNode{"context_1", "battle.context"},
-        ExpectedNode{"battle_1", "battle_chain"},
+        ExpectedNode{"battle_1", "battle"},
     };
     static constexpr std::array kPreparedEdges{
         ExpectedEdge{"probe_1", "seed_probe_run", "battle_1",
@@ -1102,7 +1204,7 @@ bool CheckBattleInvariantsAndReportTrajectory(
         || !authored_probe->authored_ref_id
         || authored_battle == authored->nodes.end()
         || authored_battle->authored_ref_kind
-            != std::optional<std::string>("authoring.battle_chain_spec")
+            != std::optional<std::string>("authoring.battle_plan")
         || !authored_battle->authored_ref_id) {
         return Fail("Battle authored graph references are incomplete",
                     error_out);
@@ -1137,17 +1239,9 @@ bool CheckBattleInvariantsAndReportTrajectory(
         report(line.str());
     }
 
-    const auto chain = db_service->AuthoringDb()->GetBattleChainSpec(
+    const auto plan = db_service->AuthoringDb()->GetBattlePlan(
         *authored_battle->authored_ref_id);
-    const auto explorer = chain
-        ? db_service->AuthoringDb()->GetExplorerSettings(
-              chain->explorer_settings_id)
-        : std::nullopt;
-    const auto plan = explorer && explorer->default_plan_id
-        ? db_service->AuthoringDb()->GetBattlePlan(
-              *explorer->default_plan_id)
-        : std::nullopt;
-    if (!chain || !explorer || !plan || plan->turns.size() != 2) {
+    if (!plan || plan->turns.size() != 2) {
         return Fail("Battle generic two-turn authoring is unavailable",
                     error_out);
     }
@@ -1170,7 +1264,7 @@ bool CheckBattleInvariantsAndReportTrajectory(
                 != soa::battle::actions::BattleAction::Attack
             || actor_one->action_preset.macro
                 != soa::battle::actions::BattleAction::Attack
-            || !turn.default_predicate_bundle_revision_id) {
+            || !turn.default_predicate_group_revision_id) {
             return Fail("Battle generic authored turn contract drifted",
                         error_out);
         }
@@ -1199,8 +1293,8 @@ bool CheckBattleInvariantsAndReportTrajectory(
                          ? std::to_string(
                                *action.action_preset.target_same_as_actor_slot)
                          : "none")
-                 << " predicate_bundle="
-                 << *turn.default_predicate_bundle_revision_id;
+                 << " predicate_group="
+                 << *turn.default_predicate_group_revision_id;
             report(line.str());
         }
     }
@@ -1273,11 +1367,17 @@ bool CheckBattleInvariantsAndReportTrajectory(
                         error_out);
         }
     } else {
-        if (external_binding_count != 1
-            || !graph.instance.root_scope_id
-            || !has_binding("tas_establish_1", "root_dtm",
-                            "state_artifact.dtm_artifact_id",
-                            *graph.instance.root_scope_id)) {
+        const auto root_dtm_binding_count = std::ranges::count_if(
+            graph.input_bindings, [](const auto& binding) {
+                return binding.node_key == "tas_establish_1"
+                    && binding.input_key == "root_dtm"
+                    && binding.data_kind ==
+                        "state_artifact.dtm_artifact_id"
+                    && binding.ref_kind == "state_artifact"
+                    && binding.ref_id > 0
+                    && binding.source_kind == "external";
+            });
+        if (external_binding_count != 1 || root_dtm_binding_count != 1) {
             return Fail("Fresh Battle DTM entry binding drifted", error_out);
         }
     }
@@ -1292,6 +1392,19 @@ bool CheckBattleInvariantsAndReportTrajectory(
                     && argument.integer_value
                     && accept(*argument.integer_value)
                     && !argument.text_value
+                    && argument.source_kind == "scenario";
+            }) == 1;
+    };
+    const auto has_choice_argument = [&](std::string_view node,
+                                         std::string_view key,
+                                         std::string_view token) {
+        return std::ranges::count_if(
+            graph.arguments, [&](const auto& argument) {
+                return argument.node_key == node
+                    && argument.argument_key == key
+                    && argument.value_type == "choice"
+                    && argument.text_value == token
+                    && !argument.integer_value
                     && argument.source_kind == "scenario";
             }) == 1;
     };
@@ -1312,9 +1425,9 @@ bool CheckBattleInvariantsAndReportTrajectory(
             [&](std::int64_t value) {
                 return value == options.battle_fake_attack_max.value_or(0);
             })
-        || !has_integer_argument(
-            "battle_1", "predicate.parameter.item_id",
-            [](std::int64_t value) { return value == kPredicateItemId; })
+        || !has_choice_argument(
+            "battle_1", "continuation_mode",
+            "automatic_best_per_ending_rng")
         || (!prepared && !has_integer_argument(
             "tas_validate_1", "rtc",
             [](std::int64_t value) {
@@ -1467,6 +1580,17 @@ bool CheckBattleInvariantsAndReportTrajectory(
         *start_step->input_ref_id);
     if (!battle_set)
         return Fail("battle.start BattleSet is unavailable", error_out);
+    if (battle_set->battle_plan_id != plan->plan_id
+        || battle_set->battle_plan_fingerprint != plan->fingerprint
+        || battle_set->continuation_mode !=
+            savor::db::BattleContinuationMode::AutomaticBestPerEndingRng
+        || battle_set->launch_fake_attack_min !=
+            options.battle_fake_attack_min.value_or(0)
+        || battle_set->launch_fake_attack_max !=
+            options.battle_fake_attack_max.value_or(0)) {
+        return Fail("BattleSet did not freeze the exact direct plan and launch policy",
+                    error_out);
+    }
     const auto final_output = find_output(
         "battle_1", "battle_set", "analysis_battle.battle_set",
         "analysis_battle.battle_set");
@@ -1539,34 +1663,45 @@ bool CheckBattleInvariantsAndReportTrajectory(
         }
 
         const auto binding = db_service->AnalysisDb()
-            ->GetBattlePredicateBundleBindingForWave(wave.wave_id);
-        if (!binding || binding->predicate_bundle_revision_id <= 0
-            || binding->bundle_content_sha256.size() != 64
-            || binding->binding_content_sha256.size() != 64
-            || binding->structural_active_check_sha256.size() != 64) {
-            return Fail("Battle wave predicate binding is missing or malformed",
+            ->GetBattlePredicateExecutionPackageForWave(wave.wave_id);
+        if (!binding || !binding->predicate_group_revision_id
+            || binding->predicate_group_sha256.size() != 64
+            || binding->execution_package_sha256.size() != 64
+            || binding->execution_package_blob.empty()) {
+            return Fail("Battle wave predicate execution package is missing or malformed",
                         error_out);
         }
-        const auto authored_bundle = db_service->AuthoringDb()
-            ->GetPredicateBundleRevisionV2(
-                binding->predicate_bundle_revision_id);
-        if (!authored_bundle
-            || authored_bundle->bundle.content_sha256
-                != binding->bundle_content_sha256) {
-            return Fail("Battle wave predicate binding does not resolve to its authored bundle",
+        const auto authored_group = db_service->AuthoringDb()
+            ->GetPredicateGroupRevision(*binding->predicate_group_revision_id);
+        savor::runtime::predicates::PredicateExecutionPackageV1 package{};
+        std::string package_diagnostic;
+        if (!authored_group
+            || authored_group->revision_state != "PUBLISHED"
+            || authored_group->group.content_sha256
+                != binding->predicate_group_sha256
+            || !savor::runtime::predicates::DecodePredicateExecutionPackageV1(
+                binding->execution_package_blob, package,
+                &package_diagnostic)
+            || package.content_sha256 != binding->execution_package_sha256) {
+            return Fail("Battle wave predicate package does not resolve to its authored group",
                         error_out);
         }
-        if (binding->parameter_values.size() != 1
-            || binding->parameter_values.front().ordinal != 0
-            || binding->parameter_values.front().value_kind != "INTEGER"
-            || binding->parameter_values.front().builtin_type
-                != std::optional<int>(static_cast<int>(
-                    savor::runtime::program::BuiltinType::U16))
-            || binding->parameter_values.front().integer_value
-                != std::optional<std::int64_t>(kPredicateItemId)
-            || binding->active_check_ordinals
-                != std::vector<std::uint32_t>({0, 1, 2})) {
-            return Fail("Battle wave predicate parameter or active-check binding drifted",
+        const auto has_item_273 = std::ranges::any_of(
+            package.execution_bindings, [](const auto& execution_binding) {
+                return std::ranges::any_of(
+                    execution_binding.witnesses, [](const auto& witness) {
+                        return witness.source_kind == savor::runtime::predicates::
+                                PredicateWitnessSourceKindV1::ConcreteValue
+                            && witness.concrete_value
+                            && std::holds_alternative<std::uint16_t>(
+                                witness.concrete_value->payload)
+                            && std::get<std::uint16_t>(
+                                witness.concrete_value->payload)
+                                == kPredicateItemId;
+                    });
+            });
+        if (package.group.members.size() != 2 || !has_item_273) {
+            return Fail("Battle wave predicate group or execution binding drifted",
                         error_out);
         }
 
@@ -1583,13 +1718,12 @@ bool CheckBattleInvariantsAndReportTrajectory(
                  << " parent_job="
                  << (wave.parent_turn_job_id
                          ? std::to_string(*wave.parent_turn_job_id) : "none")
-                 << " predicate_bundle="
-                 << binding->predicate_bundle_revision_id
-                 << " bundle_hash=" << binding->bundle_content_sha256
-                 << " binding_hash=" << binding->binding_content_sha256
+                 << " predicate_group="
+                 << *binding->predicate_group_revision_id
+                 << " group_hash=" << binding->predicate_group_sha256
+                 << " package_hash=" << binding->execution_package_sha256
                  << " item_id=" << kPredicateItemId
-                 << " active_checks="
-                 << binding->active_check_ordinals.size();
+                 << " members=" << package.group.members.size();
             report(line.str());
         }
         if (wave.battle_advancement_pool_id) {
@@ -1690,20 +1824,20 @@ bool CheckBattleInvariantsAndReportTrajectory(
                 return Fail("Battle execution job has an unknown domain outcome",
                             error_out);
             }
-            if (result->predicate_bundle_revision_id
-                    != binding->predicate_bundle_revision_id
-                || result->predicate_bundle_sha256
-                    != binding->bundle_content_sha256
-                || result->predicate_binding_sha256
-                    != binding->binding_content_sha256
+            if (result->predicate_group_revision_id
+                    != binding->predicate_group_revision_id
+                || result->predicate_group_sha256
+                    != binding->predicate_group_sha256
+                || result->predicate_execution_package_sha256
+                    != binding->execution_package_sha256
                 || !result->pred_passed || !result->pred_total
                 || *result->pred_passed > *result->pred_total) {
                 return Fail("battle.single_turn predicate identity or accounting drifted",
                             error_out);
             }
-            if (authored_bundle->bundle.checks.empty()
+            if (authored_group->group.members.empty()
                 && (*result->pred_passed != 0 || *result->pred_total != 0)) {
-                return Fail("battle.single_turn empty-bundle accounting drifted",
+                return Fail("battle.single_turn empty-group accounting drifted",
                             error_out);
             }
             if (result->predicate_evidence_blob.empty()) {
@@ -1728,10 +1862,10 @@ bool CheckBattleInvariantsAndReportTrajectory(
                           &root->payload)
                     : nullptr;
                 const bool known_definition = std::ranges::any_of(
-                    authored_bundle->bundle.definitions,
-                    [&](const auto& definition) {
+                    package.execution_bindings,
+                    [&](const auto& execution_binding) {
                         return emission.schema.canonical_id
-                            == definition.definition.canonical_id
+                            == execution_binding.definition.definition.canonical_id
                                 + ".Evaluation";
                     });
                 if (!emission.complete || !evaluation
@@ -1739,7 +1873,7 @@ bool CheckBattleInvariantsAndReportTrajectory(
                     || (evaluation->value != 0
                         && evaluation->value != 1)
                     || !known_definition) {
-                    return Fail("battle.single_turn predicate evidence does not match the authored bundle",
+                    return Fail("battle.single_turn predicate evidence does not match the authored group",
                                 error_out);
                 }
                 std::ostringstream evidence_line;
@@ -1844,12 +1978,12 @@ bool CheckBattleInvariantsAndReportTrajectory(
     if (is_terminal) {
         if (final_output == outputs.end()
             || final_output->ref_id != battle_set->battle_set_id) {
-            return Fail("Terminal Battle chain did not publish its exact durable BattleSet",
+            return Fail("Terminal Battle workflow did not publish its exact durable BattleSet",
                         error_out);
         }
     } else if (battle_set->status == savor::db::BattleSetStatus::Active) {
         if (final_output != outputs.end())
-            return Fail("Active Battle chain published a terminal BattleSet output",
+            return Fail("Active Battle workflow published a terminal BattleSet output",
                         error_out);
     } else {
         return Fail("BattleSet finished E2E validation in an invalid status",
@@ -1902,16 +2036,16 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
                            &seed_probe_spec_id, &error))
         return Fail("failed seeding Battle SeedProbe spec: " + error,
                     error_out);
-    std::int64_t battle_chain_spec_id = 0;
+    std::int64_t battle_plan_id = 0;
     if (!SeedBattleAuthoring(db_service->AuthoringDb(), entry.run_identity,
-                             &battle_chain_spec_id, &error))
+                             &battle_plan_id, &error))
         return Fail("failed seeding Battle authoring: " + error, error_out);
     std::int64_t workflow_instance_id = 0;
     const auto seeded = entry.source
             == E2eScenarioEntrySource::FreshTasMovieValidation
         ? SeedBattleWorkflow(
             db_service->AuthoringDb(), db_service->ExecutionDb(),
-            dtm_artifact_id, seed_probe_spec_id, battle_chain_spec_id,
+            dtm_artifact_id, seed_probe_spec_id, battle_plan_id,
             *options.tasmovie_rtc,
             options.seedprobe_samples_per_axis.value_or(1),
             options.battle_fake_attack_min.value_or(0),
@@ -1919,7 +2053,7 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
             entry.run_identity, &workflow_instance_id, &error)
         : SeedPreparedBattleWorkflow(
             db_service->AuthoringDb(), db_service->ExecutionDb(),
-            *entry.savestate_id, seed_probe_spec_id, battle_chain_spec_id,
+            *entry.savestate_id, seed_probe_spec_id, battle_plan_id,
             options.seedprobe_samples_per_axis.value_or(1),
             options.battle_fake_attack_min.value_or(0),
             options.battle_fake_attack_max.value_or(0),
@@ -1986,17 +2120,24 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
         std::cout << line << '\n';
     };
 
-    SplitCoordinatorRuntime coordinators;
+    savor::runner::parallel::savordb::CoordinatorRuntime coordinators;
     ArmInitialWorkerPoolBarrier(
         options.wait_for_workers_ready,
         [&](bool paused) { coordinators.SetExecutionPaused(paused); },
         event_sink);
+    savor::runner::parallel::savordb::CoordinatorRuntimeConfig
+        coordinator_config{
+            .worker = std::move(worker_config),
+            .poll_interval = std::chrono::milliseconds(
+                std::max<std::int64_t>(1, options.poll_ms)),
+            .state_compatibility = std::move(compatibility),
+            .initially_paused = options.wait_for_workers_ready,
+            .object_store_root = workspace_root / "object_store",
+            .event_line_callback = event_sink,
+        };
     if (!coordinators.Start(
             db_service->ExecutionDb(), db_service->AuthoringDb(),
-            &program_registry, std::move(worker_config),
-            workspace_root / "object_store",
-            std::chrono::milliseconds(std::max<std::int64_t>(1, options.poll_ms)),
-            std::move(compatibility), event_sink, &error))
+            &program_registry, std::move(coordinator_config), &error))
         return Fail("Battle coordinator startup failed: " + error, error_out);
 
     const auto barrier = WaitForInitialWorkerPool(

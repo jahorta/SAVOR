@@ -13,6 +13,7 @@
 #include "SavorDbRuntime.h"
 #include "DB/SavorDbAuthoringService.h"
 #include "Execution/Workflow/WorkflowComposition.h"
+#include "Execution/Workflow/WorkflowLaunchContract.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Execution/Workflow/WorkflowUnitActivationFactory.h"
 #include "UIRead/IUiReadDb.h"
@@ -50,8 +51,6 @@ struct WorkflowGraphArgumentDraft {
 
 struct WorkflowGraphStartRequest {
     std::int64_t workflow_graph_revision_id = 0;
-    std::string root_scope_kind = "manual";
-    std::optional<std::int64_t> root_scope_id;
     std::string created_by = "SavorQt";
     std::vector<WorkflowGraphInputBindingDraft> input_bindings;
     std::vector<WorkflowGraphArgumentDraft> arguments;
@@ -64,21 +63,36 @@ struct StandaloneWorkflowUnitGraphRequest {
     bool hidden = true;
 };
 
+using WorkflowStandaloneLaunchEntry =
+    savor::db::execution::workflow::WorkflowStandalonePresentationEntry;
+
 class SavorDbWorkflowService {
 public:
     using WorkflowUnitDefinition = savor::db::execution::workflow::WorkflowUnitDefinition;
     using WorkflowCompositionSpec = savor::db::execution::workflow::WorkflowCompositionSpec;
     using WorkflowCompositionPreview = savor::db::execution::workflow::WorkflowCompositionPreview;
 
-    static ServiceResult<std::vector<WorkflowUnitDefinition>> ListWorkflowUnits(bool include_hidden = false) {
+    static ServiceResult<std::vector<WorkflowUnitDefinition>> ListComposableWorkflowUnits(bool include_hidden = false) {
         const auto registry = savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
         auto units = registry.ListUnits();
+        FilterUnavailableProductionUnits(units);
         if (!include_hidden) {
             units.erase(
                 std::remove_if(units.begin(), units.end(), [](const auto& unit) { return unit.hidden; }),
                 units.end());
         }
         return ServiceResult<std::vector<WorkflowUnitDefinition>>::Ok(std::move(units));
+    }
+
+    static ServiceResult<std::vector<WorkflowStandaloneLaunchEntry>> ListStandaloneLaunchEntries() {
+        const auto registry = savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+        auto units = registry.ListUnits();
+        FilterUnavailableProductionUnits(units);
+
+        auto entries = savor::db::execution::workflow::
+            BuildStandalonePresentationEntries(std::move(units));
+        return ServiceResult<std::vector<WorkflowStandaloneLaunchEntry>>::Ok(
+            std::move(entries));
     }
 
     static ServiceResult<WorkflowCompositionPreview> PreviewComposition(
@@ -96,7 +110,7 @@ public:
 
         const auto registry = savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
         const auto* unit = registry.Find(request.unit_kind);
-        if (unit == nullptr || unit->hidden) {
+        if (unit == nullptr || unit->hidden || !unit->standalone_launchable) {
             return NotFound<savor::db::SaveWorkflowGraphResult>("workflow unit not found");
         }
         if (unit->authored_refs.size() > 1) {
@@ -140,6 +154,7 @@ public:
             node.inputs.push_back(savor::db::SaveWorkflowGraphNodeInputCommand{
                 .input_key = input.key,
                 .data_kind = input.data_kind,
+                .ref_kind = input.ref_kind,
                 .display_name = input.display_name,
                 .required = input.required,
             });
@@ -148,7 +163,44 @@ public:
             node.possible_outputs.push_back(savor::db::SaveWorkflowGraphNodeOutputCommand{
                 .output_key = output.key,
                 .data_kind = output.data_kind,
+                .ref_kind = output.ref_kind,
                 .display_name = output.display_name,
+            });
+        }
+        for (const auto& argument : unit->launch_arguments) {
+            const auto value_type = [&]() -> std::string {
+                using Type = savor::db::execution::workflow::WorkflowLaunchArgumentValueType;
+                switch (argument.value_type) {
+                case Type::Integer: return "integer";
+                case Type::Text: return "text";
+                case Type::Boolean: return "boolean";
+                case Type::Json: return "json";
+                case Type::Choice: return "choice";
+                }
+                return {};
+            }();
+            savor::db::SaveWorkflowGraphNodeArgumentCommand argument_command{
+                .argument_key = argument.key,
+                .display_name = argument.display_name,
+                .value_type = value_type,
+                .required = argument.required,
+                .default_value = argument.default_value,
+                .minimum_integer = argument.minimum_integer,
+                .maximum_integer = argument.maximum_integer,
+            };
+            for (const auto& choice : argument.choices) {
+                argument_command.choices.push_back({
+                    .value = choice.value,
+                    .display_name = choice.display_name,
+                });
+            }
+            node.arguments.push_back(std::move(argument_command));
+        }
+        for (const auto& constraint : unit->launch_argument_constraints) {
+            node.argument_constraints.push_back(savor::db::SaveWorkflowGraphNodeArgumentConstraintCommand{
+                .lesser_or_equal_key = constraint.lesser_or_equal_key,
+                .greater_or_equal_key = constraint.greater_or_equal_key,
+                .message = constraint.message,
             });
         }
 
@@ -221,6 +273,38 @@ public:
             return Invalid<std::int64_t>("workflow graph revision has no nodes");
         }
 
+        const auto registry = savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+        std::vector<savor::db::execution::workflow::WorkflowLaunchInputValue> contract_inputs;
+        contract_inputs.reserve(request.input_bindings.size());
+        for (const auto& binding : request.input_bindings) {
+            contract_inputs.push_back({
+                .node_key = binding.node_key,
+                .input_key = binding.input_key,
+                .data_kind = binding.data_kind,
+                .ref_kind = binding.ref_kind,
+                .ref_id = binding.ref_id,
+                .source_kind = binding.source_kind,
+            });
+        }
+        std::vector<savor::db::execution::workflow::WorkflowLaunchArgumentValue> contract_arguments;
+        contract_arguments.reserve(request.arguments.size());
+        for (const auto& argument : request.arguments) {
+            contract_arguments.push_back({
+                .node_key = argument.node_key,
+                .argument_key = argument.argument_key,
+                .value_type = argument.value_type,
+                .integer_value = argument.integer_value,
+                .text_value = argument.text_value,
+                .source_kind = argument.source_kind,
+            });
+        }
+        const auto contract = savor::db::execution::workflow::WorkflowLaunchContractValidator::Validate(
+            graph, registry, contract_inputs, contract_arguments);
+        if (!contract.valid) {
+            return Invalid<std::int64_t>(contract.issues.empty()
+                ? "workflow launch contract is invalid" : contract.issues.front());
+        }
+
         const auto binding_key = [](const std::string& node_key, const std::string& input_key) {
             return node_key + "\n" + input_key;
         };
@@ -255,8 +339,11 @@ public:
         supplied_by_binding.reserve(request.input_bindings.size());
         savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
         command.workflow_kind = "workflow_graph";
-        command.root_scope_kind = request.root_scope_kind.empty() ? "manual" : request.root_scope_kind;
-        command.root_scope_id = request.root_scope_id;
+        // Root-scope fields are retained only as historical Execution DB
+        // storage. Current graph launches are manual, and their exact typed
+        // input bindings are the source authority.
+        command.root_scope_kind = "manual";
+        command.root_scope_id = std::nullopt;
         command.workflow_graph_revision_id = graph.workflow_graph_revision_id;
         command.created_by = request.created_by.empty() ? "SavorQt" : request.created_by;
         command.created_at_utc = savor::db::types::UtcNow().time_since_epoch().count();
@@ -273,8 +360,9 @@ public:
             if (input_it == input_by_key.end()) {
                 return Invalid<std::int64_t>("input binding references an unknown workflow input");
             }
-            if (!input_it->second->data_kind.empty() && input_it->second->data_kind != binding.data_kind) {
-                return Invalid<std::int64_t>("input binding data kind does not match workflow input");
+            if (input_it->second->data_kind != binding.data_kind
+                || input_it->second->ref_kind != binding.ref_kind) {
+                return Invalid<std::int64_t>("input binding data/ref kind does not match workflow input");
             }
             if (binding.data_kind == "analysis.input_frame_set_id"
                 && binding.ref_kind != "an.input_set"
@@ -298,8 +386,8 @@ public:
         }
 
         std::unordered_set<std::string> supplied_arguments;
-        supplied_arguments.reserve(request.arguments.size());
-        for (const auto& argument : request.arguments) {
+        supplied_arguments.reserve(contract.normalized_arguments.size());
+        for (const auto& argument : contract.normalized_arguments) {
             if (!argument.node_key.empty() && node_by_key.find(argument.node_key) == node_by_key.end()) {
                 return Invalid<std::int64_t>("workflow argument references an unknown workflow node");
             }
@@ -309,8 +397,9 @@ public:
             if (argument.value_type != "integer"
                 && argument.value_type != "text"
                 && argument.value_type != "json"
-                && argument.value_type != "boolean") {
-                return Invalid<std::int64_t>("workflow argument value type must be integer, text, json, or boolean");
+                && argument.value_type != "boolean"
+                && argument.value_type != "choice") {
+                return Invalid<std::int64_t>("workflow argument value type must be integer, text, json, boolean, or choice");
             }
             const auto key = argument.node_key + "\n" + argument.argument_key;
             if (!supplied_arguments.emplace(key).second) {
@@ -326,7 +415,6 @@ public:
             });
         }
 
-        const auto registry = savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
         for (const auto& node : graph.nodes) {
             for (const auto& input : node.inputs) {
                 if (!input.required) {
@@ -419,6 +507,20 @@ public:
     }
 
 private:
+    static void FilterUnavailableProductionUnits(
+        std::vector<WorkflowUnitDefinition>& units) {
+        auto* production = savorqt::SavorDbRuntime::instance().programKindRegistry();
+        units.erase(
+            std::remove_if(units.begin(), units.end(), [&](const auto& unit) {
+                if (production == nullptr || unit.internal_step_kinds.empty()) return true;
+                return std::any_of(unit.internal_step_kinds.begin(), unit.internal_step_kinds.end(),
+                    [&](const auto& step_kind) {
+                        return !production->HasRequiredAdaptersForStepKind(step_kind);
+                    });
+            }),
+            units.end());
+    }
+
     static std::string StandaloneNodeKey(const WorkflowUnitDefinition& unit) {
         return unit.unit_kind + "_standalone";
     }

@@ -8,7 +8,9 @@
 
 #include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
+#include <QtCore/QVariant>
 #include <QtWidgets/QAbstractItemView>
+#include <QtWidgets/QCompleter>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QFrame>
@@ -19,14 +21,23 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QPushButton>
-#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTableWidgetItem>
 #include <QtWidgets/QVBoxLayout>
 
+#include <algorithm>
+#include <numeric>
+#include <limits>
 #include <set>
+
+namespace {
+constexpr int kMemberUnitKindRole = Qt::UserRole + 1;
+constexpr int kInputKeyRole = Qt::UserRole + 2;
+constexpr int kDataKindRole = Qt::UserRole + 3;
+constexpr int kRefKindRole = Qt::UserRole + 4;
+}
 
 WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
     : QWidget(parent)
@@ -76,37 +87,51 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
     });
     graphRefreshPipeline_->setActive(true);
 
-    unitRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<int, WorkflowUnitListResult>(this);
+    unitRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<int, StandaloneLaunchEntryListResult>(this);
     unitRefreshPipeline_->setAutoRefreshEnabled(false);
     unitRefreshPipeline_->setRequestBuilder([](savorqt::gui::RefreshReason) { return 0; });
     unitRefreshPipeline_->setLoadAndPrepare([](int) {
-        return savorqt::gui::AsyncRefreshResult<WorkflowUnitListResult>::Ok(
-            savorqt::db::SavorDbWorkflowService::ListWorkflowUnits());
+        return savorqt::gui::AsyncRefreshResult<StandaloneLaunchEntryListResult>::Ok(
+            savorqt::db::SavorDbWorkflowService::ListStandaloneLaunchEntries());
     });
-    unitRefreshPipeline_->setApply([this](const WorkflowUnitListResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+    unitRefreshPipeline_->setApply([this](const StandaloneLaunchEntryListResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         if (!result.ok) {
             postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
             return;
         }
 
         captureLauncherDraft();
-        const auto* previousUnit = selectedUnit();
-        const QString previousUnitKind = previousUnit == nullptr ? QString() : QString::fromStdString(previousUnit->unit_kind);
-        workflowUnits_ = result.value;
+        const auto* previousEntry = selectedStandaloneEntry();
+        const QString previousEntryKey = previousEntry == nullptr
+            ? QString()
+            : QString::fromStdString(previousEntry->presentation_key);
+        standaloneLaunchEntries_ = result.value;
         int rowToSelect = -1;
         const ItemViewScrollSnapshot unitListScrollSnapshot = captureItemViewScrollSnapshot(unitList_);
         {
             QSignalBlocker blocker(unitList_);
             unitList_->clear();
-            for (int row = 0; row < static_cast<int>(workflowUnits_.size()); ++row) {
-                const auto& unit = workflowUnits_[static_cast<std::size_t>(row)];
-                auto* item = new QListWidgetItem(unitListText(unit), unitList_);
-                item->setData(Qt::UserRole, QString::fromStdString(unit.unit_kind));
-                if (QString::fromStdString(unit.unit_kind) == previousUnitKind) {
+            for (int row = 0; row < static_cast<int>(standaloneLaunchEntries_.size()); ++row) {
+                const auto& entry = standaloneLaunchEntries_[static_cast<std::size_t>(row)];
+                auto* item = new QListWidgetItem(
+                    QStringLiteral("%1\n%2 workflow contract%3")
+                        .arg(QString::fromStdString(entry.display_name))
+                        .arg(static_cast<int>(entry.members.size()))
+                        .arg(entry.members.size() == 1u ? QString() : QStringLiteral("s")),
+                    unitList_);
+                item->setData(Qt::UserRole, QString::fromStdString(entry.presentation_key));
+                if (QString::fromStdString(entry.presentation_key) == previousEntryKey) {
+                    rowToSelect = row;
+                }
+                if (!pendingUnitKind_.isEmpty() &&
+                    std::any_of(entry.members.begin(), entry.members.end(), [this](const auto& member) {
+                        return QString::fromStdString(member.unit_kind) == pendingUnitKind_;
+                    })) {
+                    activeStandaloneMemberUnitKind_ = pendingUnitKind_;
                     rowToSelect = row;
                 }
             }
-            if (!workflowUnits_.empty()) {
+            if (!standaloneLaunchEntries_.empty()) {
                 unitList_->setCurrentRow(rowToSelect >= 0 ? rowToSelect : 0);
             }
         }
@@ -114,11 +139,66 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
         if (standaloneModeActive()) {
             renderCurrentUnitIfNeeded(rowToSelect < 0);
         }
+        pendingUnitKind_.clear();
     });
     unitRefreshPipeline_->setApplyError([this](const QString& error, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         postStatusMessage(error, StatusToast::Severity::Error);
     });
     unitRefreshPipeline_->setActive(true);
+    referenceRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<std::vector<ExternalInputRow>, ReferenceOptionsResult>(this);
+    referenceRefreshPipeline_->setAutoRefreshEnabled(false);
+    referenceRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) { return externalInputs_; });
+    referenceRefreshPipeline_->setLoadAndPrepare([](std::vector<ExternalInputRow> inputs) {
+        ReferenceOptions options;
+        for (const auto& input : inputs) {
+            if (input.satisfied_by_edge) continue;
+            const auto result = input.presentation_family_key.isEmpty()
+                ? savorqt::db::WorkflowReferenceSelectorProvider::List(
+                    input.ref_kind.toStdString(), input.data_kind.toStdString())
+                : savorqt::db::WorkflowReferenceSelectorProvider::ListPresentationFamily(
+                    input.presentation_family_key.toStdString());
+            if (!result.ok) return savorqt::gui::AsyncRefreshResult<ReferenceOptionsResult>::Ok(ReferenceOptionsResult::Err(result.error));
+            options.emplace(externalInputKey(input), result.value);
+        }
+        return savorqt::gui::AsyncRefreshResult<ReferenceOptionsResult>::Ok(ReferenceOptionsResult::Ok(std::move(options)));
+    });
+    referenceRefreshPipeline_->setApply([this](const ReferenceOptionsResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        if (!result.ok) { postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error); return; }
+        const auto draft = launchDrafts_.find(renderedTargetKey_);
+        for (int row=0; row<externalInputsTable_->rowCount() && row<static_cast<int>(externalInputs_.size()); ++row) {
+            if (externalInputs_[static_cast<std::size_t>(row)].satisfied_by_edge) continue;
+            auto* combo=qobject_cast<QComboBox*>(externalInputsTable_->cellWidget(row,4)); if(combo==nullptr)continue;
+            const auto key=externalInputKey(externalInputs_[static_cast<std::size_t>(row)]);
+            const auto priorDraft = draft!=launchDrafts_.end() && draft->second.externalInputs.contains(key)
+                ? std::optional<ExternalInputDraft>(draft->second.externalInputs.at(key))
+                : std::nullopt;
+            const QString prior = priorDraft.has_value() ? priorDraft->refId : combo->currentText();
+            QSignalBlocker blocker(combo); combo->clear(); combo->addItem(QStringLiteral("Select..."),QVariant::fromValue<qint64>(0));
+            const auto it=result.value.find(key);
+            if(it!=result.value.end()) for(const auto& option:it->second) {
+                combo->addItem(QString::fromStdString(option.primary_label+" — "+option.secondary_evidence),QVariant::fromValue<qint64>(option.ref_id));
+                const int index = combo->count() - 1;
+                combo->setItemData(index, QString::fromStdString(option.member_unit_kind), kMemberUnitKindRole);
+                combo->setItemData(index, QString::fromStdString(option.input_key), kInputKeyRole);
+                combo->setItemData(index, QString::fromStdString(option.data_kind), kDataKindRole);
+                combo->setItemData(index, QString::fromStdString(option.ref_kind), kRefKindRole);
+            }
+            bool ok=false;const auto priorId=prior.toLongLong(&ok);if(ok&&priorId>0){
+                int index = -1;
+                for (int candidate = 1; candidate < combo->count(); ++candidate) {
+                    if (combo->itemData(candidate).toLongLong() != priorId) continue;
+                    if (priorDraft.has_value() && !priorDraft->memberUnitKind.isEmpty() &&
+                        combo->itemData(candidate, kMemberUnitKindRole).toString() != priorDraft->memberUnitKind) continue;
+                    index = candidate;
+                    break;
+                }
+                if(index>=0)combo->setCurrentIndex(index);else combo->setEditText(prior);
+            }
+            blocker.unblock();
+            handleStandaloneSourceSelectionChanged(row);
+        }
+    });
+    referenceRefreshPipeline_->setActive(true);
     refreshWorkflowGraphs();
     refreshStandaloneUnits();
 }
@@ -183,10 +263,6 @@ void WorkflowLauncherPage::createWidgets()
     auto* formPanel = new QFrame(body);
     auto* form = new QFormLayout(formPanel);
     form->setContentsMargins(0, 0, 0, 0);
-    rootScopeKindEdit_ = new QLineEdit(formPanel);
-    rootScopeKindEdit_->setText(QStringLiteral("manual"));
-    rootScopeIdEdit_ = new QLineEdit(formPanel);
-    rootScopeIdEdit_->setPlaceholderText(QStringLiteral("optional numeric id"));
     authoredRefLabel_ = new QLabel(QStringLiteral("Authored settings"), formPanel);
     authoredRefCombo_ = new QComboBox(formPanel);
     rtcRangeLabel_ = new QLabel(QStringLiteral("RTC range"), formPanel);
@@ -203,16 +279,15 @@ void WorkflowLauncherPage::createWidgets()
     rtcLayout->addWidget(rtcHighEdit_);
     seedSamplesLabel_ = new QLabel(QStringLiteral("Seed samples/axis"), formPanel);
     seedSamplesSpin_ = new QSpinBox(formPanel);
-    seedSamplesSpin_->setRange(1, 255);
+    seedSamplesSpin_->setRange(1, 64);
     seedSamplesSpin_->setValue(5);
-    battleFakeOverrideCheck_ = new QCheckBox(QStringLiteral("Override battle fake range"), formPanel);
     battleFakeRangeLabel_ = new QLabel(QStringLiteral("Fake attack range"), formPanel);
     battleFakeMinSpin_ = new QSpinBox(formPanel);
-    battleFakeMinSpin_->setRange(0, 100000);
-    battleFakeMinSpin_->setValue(22);
+    battleFakeMinSpin_->setRange(0, std::numeric_limits<int>::max());
+    battleFakeMinSpin_->setValue(0);
     battleFakeMaxSpin_ = new QSpinBox(formPanel);
-    battleFakeMaxSpin_->setRange(0, 100000);
-    battleFakeMaxSpin_->setValue(25);
+    battleFakeMaxSpin_->setRange(0, std::numeric_limits<int>::max());
+    battleFakeMaxSpin_->setValue(0);
     battleFakeRangePanel_ = new QFrame(formPanel);
     auto* fakeLayout = new QHBoxLayout(battleFakeRangePanel_);
     fakeLayout->setContentsMargins(0, 0, 0, 0);
@@ -220,13 +295,14 @@ void WorkflowLauncherPage::createWidgets()
     fakeLayout->addWidget(battleFakeMinSpin_);
     fakeLayout->addWidget(new QLabel(QStringLiteral("to"), battleFakeRangePanel_));
     fakeLayout->addWidget(battleFakeMaxSpin_);
-    form->addRow(QStringLiteral("Root scope kind"), rootScopeKindEdit_);
-    form->addRow(QStringLiteral("Root scope id"), rootScopeIdEdit_);
+    continuationLabel_ = new QLabel(QStringLiteral("Continuation"), formPanel);
+    continuationCombo_ = new QComboBox(formPanel);
+    continuationCombo_->setEditable(false);
     form->addRow(authoredRefLabel_, authoredRefCombo_);
     form->addRow(rtcRangeLabel_, rtcRangePanel_);
     form->addRow(seedSamplesLabel_, seedSamplesSpin_);
-    form->addRow(battleFakeOverrideCheck_);
     form->addRow(battleFakeRangeLabel_, battleFakeRangePanel_);
+    form->addRow(continuationLabel_, continuationCombo_);
     bodyLayout->addWidget(formPanel, 1, 1);
 
     graphDetailLabel_ = new QLabel(body);
@@ -343,30 +419,57 @@ void WorkflowLauncherPage::renderCurrentGraphIfNeeded(bool forceRebuild)
         rtcRangePanel_->hide();
         seedSamplesLabel_->hide();
         seedSamplesSpin_->hide();
-        battleFakeOverrideCheck_->hide();
         battleFakeRangeLabel_->hide();
         battleFakeRangePanel_->hide();
+        continuationLabel_->hide();
+        continuationCombo_->hide();
         return;
     }
 
     populateExternalInputs(*graph);
     authoredRefLabel_->hide();
     authoredRefCombo_->hide();
-    const bool hasTasMovie = !tasMovieNodeKeys(*graph).empty();
-    const bool hasSeedProbe = !seedProbeNodeKeys(*graph).empty();
-    const bool hasBattleChain = !battleChainNodeKeys(*graph).empty();
+    const bool hasTasMovie = !argumentNodeKeys(*graph,"rtc").empty();
+    const bool hasSeedProbe = !argumentNodeKeys(*graph,"samples_per_axis").empty();
+    const bool hasBattle = !argumentNodeKeys(*graph,"fake_attack_min").empty();
+    const auto continuationNodes = argumentNodeKeys(*graph, "continuation_mode");
     rtcRangeLabel_->setVisible(hasTasMovie);
     rtcRangePanel_->setVisible(hasTasMovie);
     seedSamplesLabel_->setVisible(hasSeedProbe);
     seedSamplesSpin_->setVisible(hasSeedProbe);
-    battleFakeOverrideCheck_->setVisible(hasBattleChain);
-    battleFakeRangeLabel_->setVisible(hasBattleChain);
-    battleFakeRangePanel_->setVisible(hasBattleChain);
+    battleFakeRangeLabel_->setVisible(hasBattle);
+    battleFakeRangePanel_->setVisible(hasBattle);
+    continuationLabel_->setVisible(!continuationNodes.empty());
+    continuationCombo_->setVisible(!continuationNodes.empty());
+    continuationCombo_->clear();
+    if (!continuationNodes.empty()) {
+        const auto node = std::find_if(graph->nodes.begin(), graph->nodes.end(),
+            [&](const auto& candidate) {
+                return candidate.node_key == continuationNodes.front().toStdString();
+            });
+        if (node != graph->nodes.end()) {
+            const auto argument = std::find_if(node->arguments.begin(), node->arguments.end(),
+                [](const auto& candidate) {
+                    return candidate.argument_key == "continuation_mode";
+                });
+            if (argument != node->arguments.end()) {
+                continuationCombo_->addItem(QStringLiteral("Select continuation…"), QString());
+                for (const auto& choice : argument->choices) {
+                    continuationCombo_->addItem(
+                        QString::fromStdString(choice.display_name),
+                        QString::fromStdString(choice.value));
+                }
+            }
+        }
+    }
     graphDetailLabel_->setText(QStringLiteral("%1 nodes, %2 edges, revision %3")
         .arg(static_cast<int>(graph->nodes.size()))
         .arg(static_cast<int>(graph->edges.size()))
         .arg(static_cast<qint64>(graph->workflow_graph_revision_id)));
-    launchStatusLabel_->setText(externalInputs_.empty()
+    const bool hasUnsatisfiedInputs = std::any_of(
+        externalInputs_.begin(), externalInputs_.end(),
+        [](const auto& input) { return !input.satisfied_by_edge; });
+    launchStatusLabel_->setText(!hasUnsatisfiedInputs
         ? (hasTasMovie
             ? QStringLiteral("All required inputs are supplied by graph edges. One workflow instance will be launched per RTC value.")
             : QStringLiteral("All required inputs are supplied by graph edges."))
@@ -388,16 +491,25 @@ void WorkflowLauncherPage::handleStandaloneUnitSelectionChanged()
 
 void WorkflowLauncherPage::renderCurrentUnitIfNeeded(bool forceRebuild)
 {
+    const auto* entry = selectedStandaloneEntry();
+    if (entry != nullptr &&
+        std::none_of(entry->members.begin(), entry->members.end(), [this](const auto& member) {
+            return QString::fromStdString(member.unit_kind) == activeStandaloneMemberUnitKind_;
+        })) {
+        activeStandaloneMemberUnitKind_ = entry->members.empty()
+            ? QString()
+            : QString::fromStdString(entry->members.front().unit_kind);
+    }
     const auto* unit = selectedUnit();
     const QString targetKey = currentDraftKey();
-    const QString targetShape = unit == nullptr ? QString() : unitLaunchShapeSignature(*unit);
+    const QString targetShape = entry == nullptr ? QString() : standaloneEntryShapeSignature(*entry);
     if (!forceRebuild && targetKey == renderedTargetKey_ && targetShape == renderedTargetShape_) {
         return;
     }
     renderedTargetKey_ = targetKey;
     renderedTargetShape_ = targetShape;
 
-    if (unit == nullptr) {
+    if (entry == nullptr || unit == nullptr) {
         applyExternalInputs({});
         authoredRefOptions_.clear();
         authoredRefCombo_->clear();
@@ -410,31 +522,21 @@ void WorkflowLauncherPage::renderCurrentUnitIfNeeded(bool forceRebuild)
         rtcRangePanel_->hide();
         seedSamplesLabel_->hide();
         seedSamplesSpin_->hide();
-        battleFakeOverrideCheck_->hide();
         battleFakeRangeLabel_->hide();
         battleFakeRangePanel_->hide();
+        continuationLabel_->hide();
+        continuationCombo_->hide();
         return;
     }
 
     refreshAuthoredRefsForStandaloneUnit(*unit);
-    populateExternalInputsForUnit(*unit);
-    const bool hasTasMovie = unit->unit_kind == "tas_movie_validate_root";
-    const bool hasSeedProbe = unit->unit_kind == "seed_probe_chain"
-        || unit->unit_kind == "battle_seed_probe"
-        || unit->unit_kind == "dungeon_seed_probe"
-        || unit->unit_kind == "overworld_seed_probe";
-    const bool hasBattleChain = unit->unit_kind == "battle_chain";
-    rtcRangeLabel_->setVisible(hasTasMovie);
-    rtcRangePanel_->setVisible(hasTasMovie);
-    seedSamplesLabel_->setVisible(hasSeedProbe);
-    seedSamplesSpin_->setVisible(hasSeedProbe);
-    battleFakeOverrideCheck_->setVisible(hasBattleChain);
-    battleFakeRangeLabel_->setVisible(hasBattleChain);
-    battleFakeRangePanel_->setVisible(hasBattleChain);
+    populateExternalInputsForStandaloneEntry(*entry);
+    updateStandaloneArgumentControls();
     graphDetailLabel_->setText(QStringLiteral("%1\n%2 inputs, %3 possible outputs")
-        .arg(QString::fromStdString(unit->description))
+        .arg(QString::fromStdString(entry->description))
         .arg(static_cast<int>(unit->required_inputs.size()))
         .arg(static_cast<int>(unit->possible_outputs.size())));
+    const bool hasTasMovie = std::any_of(unit->launch_arguments.begin(), unit->launch_arguments.end(), [](const auto& argument) { return argument.key == "rtc"; });
     launchStatusLabel_->setText(hasTasMovie
         ? QStringLiteral("Select authored settings, provide external references, and choose the RTC range. A hidden single-unit graph will be reused or created before launch.")
         : QStringLiteral("Select authored settings if required and provide external references. A hidden single-unit graph will be reused or created before launch."));
@@ -449,23 +551,23 @@ void WorkflowLauncherPage::captureLauncherDraft()
     }
 
     LauncherDraft draft;
-    draft.rootScopeKind = rootScopeKindEdit_ == nullptr ? QString() : rootScopeKindEdit_->text();
-    draft.rootScopeId = rootScopeIdEdit_ == nullptr ? QString() : rootScopeIdEdit_->text();
     draft.rtcLow = rtcLowEdit_ == nullptr ? QString() : rtcLowEdit_->text();
     draft.rtcHigh = rtcHighEdit_ == nullptr ? QString() : rtcHighEdit_->text();
     draft.seedSamplesPerAxis = seedSamplesSpin_ == nullptr ? 5 : seedSamplesSpin_->value();
-    draft.battleFakeOverride = battleFakeOverrideCheck_ != nullptr && battleFakeOverrideCheck_->isChecked();
     draft.battleFakeMin = battleFakeMinSpin_ == nullptr ? 0 : battleFakeMinSpin_->value();
     draft.battleFakeMax = battleFakeMaxSpin_ == nullptr ? 0 : battleFakeMaxSpin_->value();
+    draft.continuationMode = continuationCombo_ == nullptr
+        ? QString() : continuationCombo_->currentData().toString();
     draft.authoredRefId = authoredRefCombo_ == nullptr ? 0 : authoredRefCombo_->currentData().toLongLong();
 
     for (int row = 0; row < static_cast<int>(externalInputs_.size()) && row < externalInputsTable_->rowCount(); ++row) {
         const auto& input = externalInputs_[static_cast<std::size_t>(row)];
-        const auto* refKindItem = externalInputsTable_->item(row, 3);
-        const auto* refIdItem = externalInputsTable_->item(row, 4);
+        if (input.satisfied_by_edge) continue;
+        const auto* combo = qobject_cast<QComboBox*>(externalInputsTable_->cellWidget(row,4));
         draft.externalInputs[externalInputKey(input)] = ExternalInputDraft{
-            refKindItem == nullptr ? QString() : refKindItem->text(),
-            refIdItem == nullptr ? QString() : refIdItem->text(),
+            input.ref_kind,
+            combo == nullptr ? QString() : QString::number(combo->currentData().toLongLong()),
+            combo == nullptr ? QString() : combo->currentData(kMemberUnitKindRole).toString(),
         };
     }
 
@@ -480,12 +582,6 @@ void WorkflowLauncherPage::restoreLauncherDraft()
     }
 
     const LauncherDraft& draft = it->second;
-    if (rootScopeKindEdit_ != nullptr) {
-        rootScopeKindEdit_->setText(draft.rootScopeKind);
-    }
-    if (rootScopeIdEdit_ != nullptr) {
-        rootScopeIdEdit_->setText(draft.rootScopeId);
-    }
     if (rtcLowEdit_ != nullptr) {
         rtcLowEdit_->setText(draft.rtcLow);
     }
@@ -495,14 +591,15 @@ void WorkflowLauncherPage::restoreLauncherDraft()
     if (seedSamplesSpin_ != nullptr) {
         seedSamplesSpin_->setValue(draft.seedSamplesPerAxis);
     }
-    if (battleFakeOverrideCheck_ != nullptr) {
-        battleFakeOverrideCheck_->setChecked(draft.battleFakeOverride);
-    }
     if (battleFakeMinSpin_ != nullptr) {
         battleFakeMinSpin_->setValue(draft.battleFakeMin);
     }
     if (battleFakeMaxSpin_ != nullptr) {
         battleFakeMaxSpin_->setValue(draft.battleFakeMax);
+    }
+    if (continuationCombo_ != nullptr && !draft.continuationMode.isEmpty()) {
+        const int continuationIndex = continuationCombo_->findData(draft.continuationMode);
+        if (continuationIndex >= 0) continuationCombo_->setCurrentIndex(continuationIndex);
     }
     if (authoredRefCombo_ != nullptr && draft.authoredRefId > 0) {
         const int authoredIndex = authoredRefCombo_->findData(draft.authoredRefId);
@@ -512,15 +609,27 @@ void WorkflowLauncherPage::restoreLauncherDraft()
     }
 
     for (int row = 0; row < static_cast<int>(externalInputs_.size()) && row < externalInputsTable_->rowCount(); ++row) {
-        const auto inputDraft = draft.externalInputs.find(externalInputKey(externalInputs_[static_cast<std::size_t>(row)]));
+        const auto& input = externalInputs_[static_cast<std::size_t>(row)];
+        if (input.satisfied_by_edge) continue;
+        const auto inputDraft = draft.externalInputs.find(externalInputKey(input));
         if (inputDraft == draft.externalInputs.end()) {
             continue;
         }
-        if (auto* refKindItem = externalInputsTable_->item(row, 3)) {
-            refKindItem->setText(inputDraft->second.refKind);
-        }
-        if (auto* refIdItem = externalInputsTable_->item(row, 4)) {
-            refIdItem->setText(inputDraft->second.refId);
+        if (auto* combo=qobject_cast<QComboBox*>(externalInputsTable_->cellWidget(row,4))) {
+            bool ok=false;
+            const auto id=inputDraft->second.refId.toLongLong(&ok);
+            int index=-1;
+            if (ok) {
+                for (int candidate=1; candidate<combo->count(); ++candidate) {
+                    if (combo->itemData(candidate).toLongLong()!=id) continue;
+                    if (!inputDraft->second.memberUnitKind.isEmpty() &&
+                        combo->itemData(candidate,kMemberUnitKindRole).toString()!=inputDraft->second.memberUnitKind) continue;
+                    index=candidate;
+                    break;
+                }
+            }
+            if(index>=0)combo->setCurrentIndex(index);
+            else if(ok&&id>0)combo->setEditText(inputDraft->second.refId);
         }
     }
 }
@@ -538,9 +647,10 @@ void WorkflowLauncherPage::launchSelectedGraph()
         return;
     }
 
-    const auto tasNodes = tasMovieNodeKeys(*graph);
-    const auto seedNodes = seedProbeNodeKeys(*graph);
-    const auto battleNodes = battleChainNodeKeys(*graph);
+    const auto tasNodes = argumentNodeKeys(*graph,"rtc");
+    const auto seedNodes = argumentNodeKeys(*graph,"samples_per_axis");
+    const auto battleNodes = argumentNodeKeys(*graph,"fake_attack_min");
+    const auto continuationNodes = argumentNodeKeys(*graph,"continuation_mode");
     std::int64_t rtcLow = 0;
     std::int64_t rtcHigh = 0;
     if (!tasNodes.empty()) {
@@ -557,9 +667,7 @@ void WorkflowLauncherPage::launchSelectedGraph()
             return;
         }
     }
-    const bool useBattleFakeOverride = !battleNodes.empty()
-        && battleFakeOverrideCheck_ != nullptr
-        && battleFakeOverrideCheck_->isChecked();
+    const bool useBattleFakeOverride = !battleNodes.empty();
     int battleFakeMin = 0;
     int battleFakeMax = 0;
     if (useBattleFakeOverride) {
@@ -571,27 +679,22 @@ void WorkflowLauncherPage::launchSelectedGraph()
         }
     }
 
-    const auto rootScopeKind = rootScopeKindEdit_->text().trimmed().isEmpty()
-        ? std::string("manual")
-        : rootScopeKindEdit_->text().trimmed().toStdString();
-    std::optional<std::int64_t> rootScopeId;
-
-    if (!rootScopeIdEdit_->text().trimmed().isEmpty()) {
-        bool ok = false;
-        const auto parsedRootScopeId = rootScopeIdEdit_->text().trimmed().toLongLong(&ok, 0);
-        if (!ok || parsedRootScopeId <= 0) {
-            postStatusMessage(QStringLiteral("Root scope id must be a positive number."), StatusToast::Severity::Warn);
-            return;
-        }
-        rootScopeId = parsedRootScopeId;
+    const QString continuationMode = continuationCombo_ == nullptr
+        ? QString() : continuationCombo_->currentData().toString();
+    if (!continuationNodes.empty() && continuationMode.isEmpty()) {
+        postStatusMessage(QStringLiteral("Select how Battle waves should continue."), StatusToast::Severity::Warn);
+        return;
     }
 
     std::vector<savorqt::db::WorkflowGraphInputBindingDraft> inputBindings;
     for (int row = 0; row < externalInputsTable_->rowCount(); ++row) {
-        const auto refKindText = externalInputsTable_->item(row, 3)->text().trimmed();
-        const auto refIdText = externalInputsTable_->item(row, 4)->text().trimmed();
-        if (refKindText.isEmpty() || refIdText.isEmpty()) {
-            postStatusMessage(QStringLiteral("Every external input requires ref kind and ref id."), StatusToast::Severity::Warn);
+        const auto& input = externalInputs_[static_cast<std::size_t>(row)];
+        if (input.satisfied_by_edge) continue;
+        const auto* combo=qobject_cast<QComboBox*>(externalInputsTable_->cellWidget(row,4));
+        const auto refIdText=combo==nullptr?QString():combo->currentData().toString();
+        if ((refIdText.isEmpty() || refIdText==QStringLiteral("0")) && !input.required) continue;
+        if (input.ref_kind.isEmpty() || refIdText.isEmpty() || refIdText==QStringLiteral("0")) {
+            postStatusMessage(QStringLiteral("Every external input requires a typed reference selection."), StatusToast::Severity::Warn);
             return;
         }
 
@@ -602,12 +705,11 @@ void WorkflowLauncherPage::launchSelectedGraph()
             return;
         }
 
-        const auto& input = externalInputs_[static_cast<std::size_t>(row)];
         inputBindings.push_back(savorqt::db::WorkflowGraphInputBindingDraft{
             .node_key = input.node_key.toStdString(),
             .input_key = input.input_key.toStdString(),
             .data_kind = input.data_kind.toStdString(),
-            .ref_kind = refKindText.toStdString(),
+            .ref_kind = input.ref_kind.toStdString(),
             .ref_id = refId,
             .source_kind = "external",
         });
@@ -620,8 +722,6 @@ void WorkflowLauncherPage::launchSelectedGraph()
     for (std::int64_t rtc = launchLow; rtc <= launchHigh; ++rtc) {
         savorqt::db::WorkflowGraphStartRequest request{};
         request.workflow_graph_revision_id = graph->workflow_graph_revision_id;
-        request.root_scope_kind = rootScopeKind;
-        request.root_scope_id = rootScopeId;
         request.input_bindings = inputBindings;
         for (const auto& nodeKey : tasNodes) {
             request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
@@ -658,6 +758,15 @@ void WorkflowLauncherPage::launchSelectedGraph()
                     .source_kind = "launcher",
                 });
             }
+        }
+        for (const auto& nodeKey : continuationNodes) {
+            request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
+                .node_key = nodeKey.toStdString(),
+                .argument_key = "continuation_mode",
+                .value_type = "choice",
+                .text_value = continuationMode.toStdString(),
+                .source_kind = "launcher",
+            });
         }
         const auto result = savorqt::db::SavorDbWorkflowService::StartWorkflowGraphRevision(request);
         if (!result.ok) {
@@ -703,7 +812,8 @@ void WorkflowLauncherPage::launchStandaloneUnit()
 
     std::int64_t rtcLow = 0;
     std::int64_t rtcHigh = 0;
-    if (unit->unit_kind == "tas_movie_validate_root") {
+    const auto hasArgument=[unit](std::string_view key){return std::any_of(unit->launch_arguments.begin(),unit->launch_arguments.end(),[key](const auto& value){return value.key==key;});};
+    if (hasArgument("rtc")) {
         bool lowOk = false;
         bool highOk = false;
         rtcLow = rtcLowEdit_->text().trimmed().toLongLong(&lowOk, 0);
@@ -718,9 +828,7 @@ void WorkflowLauncherPage::launchStandaloneUnit()
         }
     }
 
-    const bool useBattleFakeOverride = unit->unit_kind == "battle_chain"
-        && battleFakeOverrideCheck_ != nullptr
-        && battleFakeOverrideCheck_->isChecked();
+    const bool useBattleFakeOverride = hasArgument("fake_attack_min");
     int battleFakeMin = 0;
     int battleFakeMax = 0;
     if (useBattleFakeOverride) {
@@ -732,26 +840,22 @@ void WorkflowLauncherPage::launchStandaloneUnit()
         }
     }
 
-    const auto rootScopeKind = rootScopeKindEdit_->text().trimmed().isEmpty()
-        ? std::string("manual")
-        : rootScopeKindEdit_->text().trimmed().toStdString();
-    std::optional<std::int64_t> rootScopeId;
-    if (!rootScopeIdEdit_->text().trimmed().isEmpty()) {
-        bool ok = false;
-        const auto parsedRootScopeId = rootScopeIdEdit_->text().trimmed().toLongLong(&ok, 0);
-        if (!ok || parsedRootScopeId <= 0) {
-            postStatusMessage(QStringLiteral("Root scope id must be a positive number."), StatusToast::Severity::Warn);
-            return;
-        }
-        rootScopeId = parsedRootScopeId;
+    const QString continuationMode = continuationCombo_ == nullptr
+        ? QString() : continuationCombo_->currentData().toString();
+    if (hasArgument("continuation_mode") && continuationMode.isEmpty()) {
+        postStatusMessage(QStringLiteral("Select how Battle waves should continue."), StatusToast::Severity::Warn);
+        return;
     }
 
     std::vector<savorqt::db::WorkflowGraphInputBindingDraft> inputBindings;
     for (int row = 0; row < externalInputsTable_->rowCount(); ++row) {
-        const auto refKindText = externalInputsTable_->item(row, 3)->text().trimmed();
-        const auto refIdText = externalInputsTable_->item(row, 4)->text().trimmed();
-        if (refKindText.isEmpty() || refIdText.isEmpty()) {
-            postStatusMessage(QStringLiteral("Every external input requires ref kind and ref id."), StatusToast::Severity::Warn);
+        const auto& input=externalInputs_[static_cast<std::size_t>(row)];
+        if (input.satisfied_by_edge) continue;
+        const auto* combo=qobject_cast<QComboBox*>(externalInputsTable_->cellWidget(row,4));
+        const auto refIdText=combo==nullptr?QString():combo->currentData().toString();
+        if ((refIdText.isEmpty() || refIdText==QStringLiteral("0")) && !input.required) continue;
+        if (input.ref_kind.isEmpty() || refIdText.isEmpty() || refIdText==QStringLiteral("0")) {
+            postStatusMessage(QStringLiteral("Every external input requires a typed reference selection."), StatusToast::Severity::Warn);
             return;
         }
 
@@ -762,12 +866,11 @@ void WorkflowLauncherPage::launchStandaloneUnit()
             return;
         }
 
-        const auto& input = externalInputs_[static_cast<std::size_t>(row)];
         inputBindings.push_back(savorqt::db::WorkflowGraphInputBindingDraft{
             .node_key = input.node_key.toStdString(),
             .input_key = input.input_key.toStdString(),
             .data_kind = input.data_kind.toStdString(),
-            .ref_kind = refKindText.toStdString(),
+            .ref_kind = input.ref_kind.toStdString(),
             .ref_id = refId,
             .source_kind = "external",
         });
@@ -788,16 +891,14 @@ void WorkflowLauncherPage::launchStandaloneUnit()
     }
 
     std::vector<std::int64_t> workflowIds;
-    const std::int64_t launchLow = unit->unit_kind == "tas_movie_validate_root" ? rtcLow : 0;
-    const std::int64_t launchHigh = unit->unit_kind == "tas_movie_validate_root" ? rtcHigh : 0;
+    const std::int64_t launchLow = hasArgument("rtc") ? rtcLow : 0;
+    const std::int64_t launchHigh = hasArgument("rtc") ? rtcHigh : 0;
     const auto nodeKey = standaloneNodeKey(*unit);
     for (std::int64_t rtc = launchLow; rtc <= launchHigh; ++rtc) {
         savorqt::db::WorkflowGraphStartRequest request{};
         request.workflow_graph_revision_id = graphResult.value.workflow_graph_revision_id;
-        request.root_scope_kind = rootScopeKind;
-        request.root_scope_id = rootScopeId;
         request.input_bindings = inputBindings;
-        if (unit->unit_kind == "tas_movie_validate_root") {
+        if (hasArgument("rtc")) {
             request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
                 .node_key = nodeKey,
                 .argument_key = "rtc",
@@ -806,10 +907,7 @@ void WorkflowLauncherPage::launchStandaloneUnit()
                 .source_kind = "launcher",
             });
         }
-        if (unit->unit_kind == "seed_probe_chain"
-            || unit->unit_kind == "battle_seed_probe"
-            || unit->unit_kind == "dungeon_seed_probe"
-            || unit->unit_kind == "overworld_seed_probe") {
+        if (hasArgument("samples_per_axis")) {
             request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
                 .node_key = nodeKey,
                 .argument_key = "samples_per_axis",
@@ -831,6 +929,15 @@ void WorkflowLauncherPage::launchStandaloneUnit()
                 .argument_key = "fake_attack_max",
                 .value_type = "integer",
                 .integer_value = battleFakeMax,
+                .source_kind = "launcher",
+            });
+        }
+        if (hasArgument("continuation_mode")) {
+            request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
+                .node_key = nodeKey,
+                .argument_key = "continuation_mode",
+                .value_type = "choice",
+                .text_value = continuationMode.toStdString(),
                 .source_kind = "launcher",
             });
         }
@@ -865,21 +972,18 @@ void WorkflowLauncherPage::launchStandaloneUnit()
 
 void WorkflowLauncherPage::populateExternalInputs(const savor::db::WorkflowGraphSnapshot& graph)
 {
-    std::set<QString> suppliedByEdge;
+    std::map<QString, QString> suppliedByEdge;
     for (const auto& edge : graph.edges) {
-        suppliedByEdge.emplace(QString::fromStdString(edge.to_node_key + "\n" + edge.input_key));
+        suppliedByEdge.emplace(
+            QString::fromStdString(edge.to_node_key + "\n" + edge.input_key),
+            QString::fromStdString(edge.from_node_key + "." + edge.output_key));
     }
 
     std::vector<ExternalInputRow> rows;
     for (const auto& node : graph.nodes) {
         for (const auto& input : node.inputs) {
-            if (!input.required) {
-                continue;
-            }
             const auto edgeKey = QString::fromStdString(node.node_key + "\n" + input.input_key);
-            if (suppliedByEdge.find(edgeKey) != suppliedByEdge.end()) {
-                continue;
-            }
+            const auto edge = suppliedByEdge.find(edgeKey);
             const auto dataKind = QString::fromStdString(input.data_kind);
             rows.push_back(ExternalInputRow{
                 .node_key = QString::fromStdString(node.node_key),
@@ -887,7 +991,10 @@ void WorkflowLauncherPage::populateExternalInputs(const savor::db::WorkflowGraph
                 .input_key = QString::fromStdString(input.input_key),
                 .display_name = QString::fromStdString(input.display_name),
                 .data_kind = dataKind,
-                .default_ref_kind = defaultRefKindForDataKind(dataKind),
+                .ref_kind = QString::fromStdString(input.ref_kind),
+                .required = input.required,
+                .satisfied_by_edge = edge != suppliedByEdge.end(),
+                .edge_evidence = edge == suppliedByEdge.end() ? QString() : edge->second,
             });
         }
     }
@@ -900,9 +1007,6 @@ void WorkflowLauncherPage::populateExternalInputsForUnit(const WorkflowUnitDefin
     std::vector<ExternalInputRow> rows;
     const auto nodeKey = QString::fromStdString(standaloneNodeKey(unit));
     for (const auto& input : unit.required_inputs) {
-        if (!input.required) {
-            continue;
-        }
         const auto dataKind = QString::fromStdString(input.data_kind);
         rows.push_back(ExternalInputRow{
             .node_key = nodeKey,
@@ -910,11 +1014,107 @@ void WorkflowLauncherPage::populateExternalInputsForUnit(const WorkflowUnitDefin
             .input_key = QString::fromStdString(input.key),
             .display_name = QString::fromStdString(input.display_name),
             .data_kind = dataKind,
-            .default_ref_kind = defaultRefKindForDataKind(dataKind),
+            .ref_kind = QString::fromStdString(input.ref_kind),
+            .required = input.required,
         });
     }
 
     applyExternalInputs(std::move(rows));
+}
+
+void WorkflowLauncherPage::populateExternalInputsForStandaloneEntry(
+    const StandaloneLaunchEntry& entry)
+{
+    if (entry.members.size() == 1u) {
+        populateExternalInputsForUnit(entry.members.front());
+        return;
+    }
+
+    applyExternalInputs({ExternalInputRow{
+        .node_key = QStringLiteral("family:%1").arg(
+            QString::fromStdString(entry.presentation_key)),
+        .node_name = QString::fromStdString(entry.display_name),
+        .input_key = QStringLiteral("source"),
+        .display_name = QStringLiteral("Root establishment or recorded TAS branch"),
+        .data_kind = QStringLiteral("Selected source contract"),
+        .ref_kind = QStringLiteral("Selected source contract"),
+        .required = true,
+        .presentation_family_key = QString::fromStdString(
+            entry.presentation_key),
+    }});
+}
+
+void WorkflowLauncherPage::handleStandaloneSourceSelectionChanged(int row)
+{
+    if (!standaloneModeActive() || row < 0 ||
+        row >= static_cast<int>(externalInputs_.size()) ||
+        externalInputs_[static_cast<std::size_t>(row)].presentation_family_key.isEmpty()) {
+        return;
+    }
+    auto* combo = qobject_cast<QComboBox*>(
+        externalInputsTable_->cellWidget(row, 4));
+    if (combo == nullptr || combo->currentData().toLongLong() <= 0) return;
+    const int index = combo->currentIndex();
+    const QString member = combo->itemData(index, kMemberUnitKindRole).toString();
+    const QString inputKey = combo->itemData(index, kInputKeyRole).toString();
+    const QString dataKind = combo->itemData(index, kDataKindRole).toString();
+    const QString refKind = combo->itemData(index, kRefKindRole).toString();
+    if (member.isEmpty() || inputKey.isEmpty() || dataKind.isEmpty() || refKind.isEmpty()) return;
+
+    activeStandaloneMemberUnitKind_ = member;
+    auto& input = externalInputs_[static_cast<std::size_t>(row)];
+    const auto* unit = selectedUnit();
+    if (unit == nullptr) return;
+    input.node_key = QString::fromStdString(standaloneNodeKey(*unit));
+    input.node_name = QString::fromStdString(unit->display_name);
+    input.input_key = inputKey;
+    input.data_kind = dataKind;
+    input.ref_kind = refKind;
+    externalInputsTable_->item(row, 0)->setText(input.node_name);
+    externalInputsTable_->item(row, 1)->setText(
+        QString::fromStdString(unit->required_inputs.front().display_name));
+    externalInputsTable_->item(row, 2)->setText(dataKind);
+    externalInputsTable_->item(row, 3)->setText(refKind);
+    refreshAuthoredRefsForStandaloneUnit(*unit);
+    updateStandaloneArgumentControls();
+}
+
+void WorkflowLauncherPage::updateStandaloneArgumentControls()
+{
+    const auto* unit = selectedUnit();
+    const auto hasArgument=[unit](std::string_view key){
+        return unit != nullptr && std::any_of(
+            unit->launch_arguments.begin(), unit->launch_arguments.end(),
+            [key](const auto& value){return value.key==key;});
+    };
+    const bool hasTasMovie = hasArgument("rtc");
+    const bool hasSeedProbe = hasArgument("samples_per_axis");
+    const bool hasBattle = hasArgument("fake_attack_min");
+    const bool hasContinuation = hasArgument("continuation_mode");
+    rtcRangeLabel_->setVisible(hasTasMovie);
+    rtcRangePanel_->setVisible(hasTasMovie);
+    seedSamplesLabel_->setVisible(hasSeedProbe);
+    seedSamplesSpin_->setVisible(hasSeedProbe);
+    battleFakeRangeLabel_->setVisible(hasBattle);
+    battleFakeRangePanel_->setVisible(hasBattle);
+    continuationLabel_->setVisible(hasContinuation);
+    continuationCombo_->setVisible(hasContinuation);
+    continuationCombo_->clear();
+    if (hasContinuation) {
+        continuationCombo_->addItem(QStringLiteral("Select continuation…"), QString());
+        const auto definition = std::find_if(
+            unit->launch_arguments.begin(), unit->launch_arguments.end(),
+            [](const auto& argument) {
+                return argument.key == "continuation_mode";
+            });
+        if (definition != unit->launch_arguments.end()) {
+            for (const auto& choice : definition->choices) {
+                continuationCombo_->addItem(
+                    QString::fromStdString(choice.display_name),
+                    QString::fromStdString(choice.value));
+            }
+        }
+    }
 }
 
 void WorkflowLauncherPage::applyExternalInputs(std::vector<ExternalInputRow> rows)
@@ -931,19 +1131,75 @@ void WorkflowLauncherPage::applyExternalInputs(std::vector<ExternalInputRow> row
                 && lhs.input_key == rhs.input_key
                 && lhs.display_name == rhs.display_name
                 && lhs.data_kind == rhs.data_kind
-                && lhs.default_ref_kind == rhs.default_ref_kind;
+                && lhs.ref_kind == rhs.ref_kind
+                && lhs.required == rhs.required
+                && lhs.satisfied_by_edge == rhs.satisfied_by_edge
+                && lhs.edge_evidence == rhs.edge_evidence
+                && lhs.presentation_family_key == rhs.presentation_family_key;
         },
-        [](QTableWidget* table, int row, const ExternalInputRow& input) {
+        [this](QTableWidget* table, int row, const ExternalInputRow& input) {
             table->setItem(row, 0, new QTableWidgetItem(input.node_name));
             table->setItem(row, 1, new QTableWidgetItem(input.display_name.isEmpty() ? input.input_key : input.display_name));
             table->setItem(row, 2, new QTableWidgetItem(input.data_kind));
-            table->setItem(row, 3, new QTableWidgetItem(input.default_ref_kind));
-            table->setItem(row, 4, new QTableWidgetItem(QString()));
-            for (int column = 0; column < 3; ++column) {
+            table->setItem(row, 3, new QTableWidgetItem(input.ref_kind));
+            if (input.satisfied_by_edge) {
+                table->setItem(
+                    row,
+                    4,
+                    new QTableWidgetItem(
+                        QStringLiteral("Upstream: %1").arg(input.edge_evidence)));
+                table->item(row, 4)->setFlags(
+                    table->item(row, 4)->flags() & ~Qt::ItemIsEditable);
+            } else {
+                auto* selector = new QComboBox(table);
+                selector->setEditable(true);
+                selector->setInsertPolicy(QComboBox::NoInsert);
+                selector->setPlaceholderText(QStringLiteral("Search by ID or label"));
+                selector->completer()->setCompletionMode(QCompleter::PopupCompletion);
+                selector->completer()->setFilterMode(Qt::MatchContains);
+                selector->completer()->setCaseSensitivity(Qt::CaseInsensitive);
+                table->setCellWidget(row, 4, selector);
+                if (!input.presentation_family_key.isEmpty()) {
+                    connect(selector, qOverload<int>(&QComboBox::currentIndexChanged),
+                        this, [this, row](int) {
+                            handleStandaloneSourceSelectionChanged(row);
+                        });
+                }
+            }
+            for (int column = 0; column < 4; ++column) {
                 table->item(row, column)->setFlags(table->item(row, column)->flags() & ~Qt::ItemIsEditable);
             }
         });
+    refreshExternalInputOptions();
 }
+
+void WorkflowLauncherPage::preselectStandaloneInput(const QString& unit_kind,const QString& input_key,qint64 ref_id)
+{
+    pendingUnitKind_=unit_kind;
+    const auto registry =
+        savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+    const auto* unit = registry.Find(unit_kind.toStdString());
+    const QString presentationKey = unit != nullptr &&
+        !unit->standalone_presentation_family_key.empty()
+        ? QString::fromStdString(unit->standalone_presentation_family_key)
+        : unit_kind;
+    LauncherDraft& draft=launchDrafts_[QStringLiteral("unit:%1").arg(presentationKey)];
+    const bool family = unit != nullptr &&
+        !unit->standalone_presentation_family_key.empty();
+    const QString inputDraftKey = family
+        ? QStringLiteral("family:%1").arg(presentationKey) + QChar(0x1f) + QStringLiteral("source")
+        : unit_kind+QStringLiteral("_standalone")+QChar(0x1f)+input_key;
+    draft.externalInputs[inputDraftKey]=ExternalInputDraft{
+        unit != nullptr && !unit->required_inputs.empty()
+            ? QString::fromStdString(unit->required_inputs.front().ref_kind)
+            : QString(),
+        QString::number(ref_id),
+        unit_kind};
+    if(launchModeTabs_!=nullptr)launchModeTabs_->setCurrentIndex(1);
+    refreshStandaloneUnits();
+}
+
+void WorkflowLauncherPage::refreshExternalInputOptions(){if(referenceRefreshPipeline_!=nullptr)referenceRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);}
 
 void WorkflowLauncherPage::refreshAuthoredRefsForStandaloneUnit(const WorkflowUnitDefinition& unit)
 {
@@ -990,21 +1246,26 @@ void WorkflowLauncherPage::refreshAuthoredRefsForStandaloneUnit(const WorkflowUn
                 .ref_id = spec.seed_probe_spec_id,
             });
         }
-    } else if (requirement.ref_kind == "authoring.battle_chain_spec") {
-        const auto result = savorqt::db::SavorDbAuthoringService::ListBattleChainSpecs();
+    } else if (requirement.ref_kind == "authoring.battle_plan") {
+        const auto result = savorqt::db::SavorDbAuthoringService::ListBattlePlans();
         if (!result.ok) {
             postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
             return;
         }
-        for (const auto& battle_chain_spec : result.value) {
+        for (const auto& plan : result.value) {
+            const auto actionCount = std::accumulate(
+                plan.turns.begin(), plan.turns.end(), std::size_t{0},
+                [](std::size_t total, const auto& turn) {
+                    return total + turn.actions.size();
+                });
             authoredRefOptions_.push_back(AuthoredRefOption{
-                .label = QStringLiteral("#%1 %2 battle=%3 battle explorer=%4")
-                    .arg(static_cast<qint64>(battle_chain_spec.battle_chain_spec_id))
-                    .arg(QString::fromStdString(battle_chain_spec.name))
-                    .arg(QString::number(battle_chain_spec.battle_run_spec_id))
-                    .arg(QString::number(battle_chain_spec.explorer_settings_id)),
-                .ref_kind = "authoring.battle_chain_spec",
-                .ref_id = battle_chain_spec.battle_chain_spec_id,
+                .label = QStringLiteral("%1 — %2 turns, %3 actions — %4")
+                    .arg(QString::fromStdString(plan.name))
+                    .arg(static_cast<int>(plan.turns.size()))
+                    .arg(static_cast<qulonglong>(actionCount))
+                    .arg(QString::fromStdString(plan.fingerprint)),
+                .ref_kind = "authoring.battle_plan",
+                .ref_id = plan.plan_id,
             });
         }
     }
@@ -1028,11 +1289,23 @@ std::optional<savor::db::WorkflowGraphSnapshot> WorkflowLauncherPage::selectedGr
 
 const WorkflowLauncherPage::WorkflowUnitDefinition* WorkflowLauncherPage::selectedUnit() const
 {
+    const auto* entry = selectedStandaloneEntry();
+    if (entry == nullptr) return nullptr;
+    const auto found = std::find_if(entry->members.begin(), entry->members.end(), [this](const auto& member) {
+        return QString::fromStdString(member.unit_kind) == activeStandaloneMemberUnitKind_;
+    });
+    if (found != entry->members.end()) return &*found;
+    return entry->members.empty() ? nullptr : &entry->members.front();
+}
+
+const WorkflowLauncherPage::StandaloneLaunchEntry*
+WorkflowLauncherPage::selectedStandaloneEntry() const
+{
     const int row = unitList_ != nullptr ? unitList_->currentRow() : -1;
-    if (row < 0 || row >= static_cast<int>(workflowUnits_.size())) {
+    if (row < 0 || row >= static_cast<int>(standaloneLaunchEntries_.size())) {
         return nullptr;
     }
-    return &workflowUnits_[static_cast<std::size_t>(row)];
+    return &standaloneLaunchEntries_[static_cast<std::size_t>(row)];
 }
 
 bool WorkflowLauncherPage::standaloneModeActive() const
@@ -1043,10 +1316,10 @@ bool WorkflowLauncherPage::standaloneModeActive() const
 QString WorkflowLauncherPage::currentDraftKey() const
 {
     if (standaloneModeActive()) {
-        const auto* unit = selectedUnit();
-        return unit == nullptr
+        const auto* entry = selectedStandaloneEntry();
+        return entry == nullptr
             ? QStringLiteral("unit:")
-            : QStringLiteral("unit:%1").arg(QString::fromStdString(unit->unit_kind));
+            : QStringLiteral("unit:%1").arg(QString::fromStdString(entry->presentation_key));
     }
 
     const auto graph = selectedGraph();
@@ -1065,6 +1338,10 @@ void WorkflowLauncherPage::postStatusMessage(const QString& text, StatusToast::S
 
 QString WorkflowLauncherPage::externalInputKey(const ExternalInputRow& input)
 {
+    if (!input.presentation_family_key.isEmpty()) {
+        return QStringLiteral("family:%1").arg(input.presentation_family_key) +
+            QChar(0x1f) + QStringLiteral("source");
+    }
     return input.node_key + QChar(0x1f) + input.input_key;
 }
 
@@ -1079,28 +1356,26 @@ QString WorkflowLauncherPage::graphLaunchShapeSignature(const savor::db::Workflo
     for (const auto& node : graph.nodes) {
         const QString unitKind = QString::fromStdString(node.unit_kind);
         parts << QStringLiteral("node:%1:%2").arg(QString::fromStdString(node.node_key), unitKind);
-        if (unitKind == QStringLiteral("tas_movie_validate_root")) {
-            parts << QStringLiteral("rtc");
-        }
-        if (unitKind == QStringLiteral("seed_probe_chain")
-            || unitKind == QStringLiteral("battle_seed_probe")
-            || unitKind == QStringLiteral("dungeon_seed_probe")
-            || unitKind == QStringLiteral("overworld_seed_probe")) {
-            parts << QStringLiteral("samples_per_axis");
-        }
-        if (unitKind == QStringLiteral("battle_chain")) {
-            parts << QStringLiteral("battle_fake");
+        for (const auto& argument : node.arguments) {
+            parts << QStringLiteral("argument:%1:%2")
+                .arg(QString::fromStdString(argument.argument_key),
+                     QString::fromStdString(argument.value_type));
+            for (const auto& choice : argument.choices) {
+                parts << QStringLiteral("choice:%1:%2")
+                    .arg(QString::fromStdString(choice.value),
+                         QString::fromStdString(choice.display_name));
+            }
         }
         for (const auto& input : node.inputs) {
-            if (!input.required) {
-                continue;
-            }
             const auto edgeKey = QString::fromStdString(node.node_key + "\n" + input.input_key);
-            if (suppliedByEdge.find(edgeKey) != suppliedByEdge.end()) {
-                continue;
-            }
-            parts << QStringLiteral("input:%1:%2:%3")
-                .arg(QString::fromStdString(node.node_key), QString::fromStdString(input.input_key), QString::fromStdString(input.data_kind));
+            parts << QStringLiteral("input:%1:%2:%3:%4:%5:%6")
+                .arg(
+                    QString::fromStdString(node.node_key),
+                    QString::fromStdString(input.input_key),
+                    QString::fromStdString(input.data_kind),
+                    QString::fromStdString(input.ref_kind),
+                    input.required ? QStringLiteral("required") : QStringLiteral("optional"),
+                    suppliedByEdge.contains(edgeKey) ? QStringLiteral("edge") : QStringLiteral("external"));
         }
     }
     return parts.join(QChar(0x1d));
@@ -1110,17 +1385,15 @@ QString WorkflowLauncherPage::unitLaunchShapeSignature(const WorkflowUnitDefinit
 {
     QStringList parts;
     parts << QStringLiteral("unit:%1").arg(QString::fromStdString(unit.unit_kind));
-    if (unit.unit_kind == "tas_movie_validate_root") {
-        parts << QStringLiteral("rtc");
-    }
-    if (unit.unit_kind == "seed_probe_chain"
-        || unit.unit_kind == "battle_seed_probe"
-        || unit.unit_kind == "dungeon_seed_probe"
-        || unit.unit_kind == "overworld_seed_probe") {
-        parts << QStringLiteral("samples_per_axis");
-    }
-    if (unit.unit_kind == "battle_chain") {
-        parts << QStringLiteral("battle_fake");
+    for (const auto& argument : unit.launch_arguments) {
+        parts << QStringLiteral("argument:%1:%2")
+            .arg(QString::fromStdString(argument.key))
+            .arg(static_cast<int>(argument.value_type));
+        for (const auto& choice : argument.choices) {
+            parts << QStringLiteral("choice:%1:%2")
+                .arg(QString::fromStdString(choice.value),
+                     QString::fromStdString(choice.display_name));
+        }
     }
     for (const auto& authoredRef : unit.authored_refs) {
         parts << QStringLiteral("authored:%1:%2")
@@ -1128,13 +1401,26 @@ QString WorkflowLauncherPage::unitLaunchShapeSignature(const WorkflowUnitDefinit
             .arg(authoredRef.required ? QStringLiteral("required") : QStringLiteral("optional"));
     }
     for (const auto& input : unit.required_inputs) {
-        if (!input.required) {
-            continue;
-        }
-        parts << QStringLiteral("input:%1:%2")
-            .arg(QString::fromStdString(input.key), QString::fromStdString(input.data_kind));
+        parts << QStringLiteral("input:%1:%2:%3:%4")
+            .arg(
+                QString::fromStdString(input.key),
+                QString::fromStdString(input.data_kind),
+                QString::fromStdString(input.ref_kind),
+                input.required ? QStringLiteral("required") : QStringLiteral("optional"));
     }
     return parts.join(QChar(0x1d));
+}
+
+QString WorkflowLauncherPage::standaloneEntryShapeSignature(
+    const StandaloneLaunchEntry& entry)
+{
+    QStringList parts;
+    parts << QStringLiteral("entry:%1").arg(
+        QString::fromStdString(entry.presentation_key));
+    for (const auto& member : entry.members) {
+        parts << unitLaunchShapeSignature(member);
+    }
+    return parts.join(QChar(0x1c));
 }
 
 QString WorkflowLauncherPage::graphListText(const savor::db::WorkflowGraphSnapshot& graph)
@@ -1161,29 +1447,6 @@ QString WorkflowLauncherPage::nodeDisplayName(
     return QString::fromStdString(node_key);
 }
 
-QString WorkflowLauncherPage::defaultRefKindForDataKind(const QString& data_kind)
-{
-    if (data_kind == QStringLiteral("state_artifact.dtm_artifact_id")) {
-        return QStringLiteral("state_artifact");
-    }
-    if (data_kind == QStringLiteral("state.savestate_id")) {
-        return QStringLiteral("state.savestate");
-    }
-    if (data_kind == QStringLiteral("analysis.input_frame_set_id")) {
-        return QStringLiteral("au.input_set");
-    }
-    if (data_kind == QStringLiteral("analysis.tas_movie_validation_attempt_id")) {
-        return QStringLiteral("tmv_validation_attempt");
-    }
-    if (data_kind == QStringLiteral("state.tas_movie_tree_id")) {
-        return QStringLiteral("state_tas_movie_tree");
-    }
-    if (data_kind == QStringLiteral("analysis.battle_manual_followup_id")) {
-        return QStringLiteral("analysis.battle_manual_followup");
-    }
-    return data_kind;
-}
-
 QString WorkflowLauncherPage::unitListText(const WorkflowUnitDefinition& unit)
 {
     return QStringLiteral("%1\n%2 inputs, %3 possible outputs")
@@ -1197,36 +1460,11 @@ std::string WorkflowLauncherPage::standaloneNodeKey(const WorkflowUnitDefinition
     return unit.unit_kind + "_standalone";
 }
 
-std::vector<QString> WorkflowLauncherPage::tasMovieNodeKeys(const savor::db::WorkflowGraphSnapshot& graph)
+std::vector<QString> WorkflowLauncherPage::argumentNodeKeys(const savor::db::WorkflowGraphSnapshot& graph,std::string_view argument_key)
 {
     std::vector<QString> keys;
     for (const auto& node : graph.nodes) {
-        if (node.unit_kind == "tas_movie_validate_root") {
-            keys.push_back(QString::fromStdString(node.node_key));
-        }
-    }
-    return keys;
-}
-
-std::vector<QString> WorkflowLauncherPage::seedProbeNodeKeys(const savor::db::WorkflowGraphSnapshot& graph)
-{
-    std::vector<QString> keys;
-    for (const auto& node : graph.nodes) {
-        if (node.unit_kind == "seed_probe_chain"
-            || node.unit_kind == "battle_seed_probe"
-            || node.unit_kind == "dungeon_seed_probe"
-            || node.unit_kind == "overworld_seed_probe") {
-            keys.push_back(QString::fromStdString(node.node_key));
-        }
-    }
-    return keys;
-}
-
-std::vector<QString> WorkflowLauncherPage::battleChainNodeKeys(const savor::db::WorkflowGraphSnapshot& graph)
-{
-    std::vector<QString> keys;
-    for (const auto& node : graph.nodes) {
-        if (node.unit_kind == "battle_chain") {
+        if(std::any_of(node.arguments.begin(),node.arguments.end(),[argument_key](const auto& argument){return argument.argument_key==argument_key;})) {
             keys.push_back(QString::fromStdString(node.node_key));
         }
     }

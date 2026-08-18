@@ -65,9 +65,11 @@ receives the same routed event. Successful observation returns
 `request_break=false`; only a failed observation fails closed and asks Dolphin
 to break. Derived state has no authority to stop, wake, resume, or interrupt
 execution. `SameRoutedEvent` requires the exact routed identity and is mandatory
-for predicate observations. `LatestInItem` uses the active host-authoritative
-item and epoch and supports a later-turn baseline already paused at
-`TurnInputs`.
+when a consumer requires evidence from that exact stop. Predicate semantic
+Battle values instead use `LatestInItem`: their capture hooks are registered by
+the derived-state block, independently of the Predicate Group's later
+evaluation hooks. `LatestInItem` uses the active host-authoritative item and
+epoch and also supports a later-turn baseline already paused at `TurnInputs`.
 
 ## Capture isolation
 
@@ -99,6 +101,6 @@ malformed evidence.
 
 `battle.single_turn` selects this block by default. Battle Context, SeedProbe,
 TAS Movie phases, and checkpoint sterilization declare empty defaults.
-Predicate bundles may import these query actions and reducers; the exact action
+Predicate Execution Packages may import these query actions and reducers; the exact action
 imports select the block automatically. No general derived-state artifact is
 published.

@@ -35,7 +35,7 @@
 #include "DurableLogFile.h"
 #include "MultiLineProgressRenderer.h"
 #include "ScenarioAssessment.h"
-#include "SplitCoordinatorRuntime.h"
+#include "Execution/CoordinatorRuntime.h"
 #include "WorkerStartupBarrier.h"
 
 #ifdef _WIN32
@@ -305,7 +305,7 @@ std::vector<std::string> BuildNewMaterializedStepEventLines(
 }
 
 std::string FormatCoordinatorTelemetryLine(
-    const SplitCoordinatorTelemetry& telemetry,
+    const savor::runner::parallel::savordb::CoordinatorRuntimeTelemetry& telemetry,
     size_t active_workers) {
     std::ostringstream oss;
     oss << "workers=" << active_workers
@@ -784,7 +784,7 @@ std::size_t CountActiveWorkers(const std::vector<WorkerSnapshot>& workers) {
 
 std::vector<std::string> BuildProgressLines(
     savor::db::IExecutionDb* execution_db,
-    const SplitCoordinatorTelemetry& telemetry,
+    const savor::runner::parallel::savordb::CoordinatorRuntimeTelemetry& telemetry,
     const std::vector<WorkerSnapshot>& worker_snapshot,
     const std::optional<savor::db::execution::workflow::WorkflowGraphSnapshot>& graph) {
     std::vector<std::string> lines;
@@ -829,7 +829,7 @@ bool ValidateSplitCoordinatorExecution(
     savor::db::IExecutionDb* execution_db,
     const std::optional<
         savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
-    const SplitCoordinatorTelemetry& telemetry,
+    const savor::runner::parallel::savordb::CoordinatorRuntimeTelemetry& telemetry,
     const std::vector<ReadyWorkerDispatchSnapshot>& ready_workers,
     const savor::runtime::ProgramModuleIdentity&
         expected_seed_probe_module,
@@ -1273,7 +1273,7 @@ bool ValidateSplitCoordinatorExecution(
     }
 
     std::ostringstream error;
-    error << "split coordinator E2E assertions failed:";
+    error << "coordinator runtime E2E assertions failed:";
     for (const auto& failure : failures) {
         error << "\n  - " << failure;
     }
@@ -1611,7 +1611,7 @@ bool CheckSeedProbeInvariants(
     savor::db::IAnalysisDb* analysis_db,
     const std::optional<
         savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
-    const SplitCoordinatorTelemetry& telemetry,
+    const savor::runner::parallel::savordb::CoordinatorRuntimeTelemetry& telemetry,
     const std::vector<ReadyWorkerDispatchSnapshot>& ready_workers,
     const savor::runtime::ProgramModuleIdentity& expected_seed_probe_module,
     const SeedProbeWorkflowValidationOptions& options,
@@ -1972,7 +1972,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
                 (scenario_workspace_root / "runtime-artifacts").string(),
         };
 
-    SplitCoordinatorRuntime coordinators;
+    savor::runner::parallel::savordb::CoordinatorRuntime coordinators;
     ArmInitialWorkerPoolBarrier(
         options.wait_for_workers_ready,
         [&](bool paused) {
@@ -1981,18 +1981,25 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         [&](const std::string& line) {
             enqueue_event_line(line);
         });
+    savor::runner::parallel::savordb::CoordinatorRuntimeConfig
+        coordinator_config{
+            .worker = std::move(worker_config),
+            .poll_interval = std::chrono::milliseconds(
+                std::max<std::int64_t>(1, options.poll_ms)),
+            .state_compatibility = std::move(state_compatibility),
+            .initially_paused = options.wait_for_workers_ready,
+            .object_store_root =
+                scenario_workspace_root / "object_store",
+            .event_line_callback =
+                [&](const std::string& line) {
+                    enqueue_event_line(line);
+                },
+        };
     if (!coordinators.Start(
             execution_db,
             db_service->AuthoringDb(),
             &program_kind_registry,
-            std::move(worker_config),
-            scenario_workspace_root / "object_store",
-            std::chrono::milliseconds(
-                std::max<std::int64_t>(1, options.poll_ms)),
-            std::move(state_compatibility),
-            [&](const std::string& line) {
-                enqueue_event_line(line);
-            },
+            std::move(coordinator_config),
             &err)) {
         if (options.wait_for_workers_ready) {
             std::string terminal_error;
@@ -2008,7 +2015,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         }
         if (error_out) {
             *error_out =
-                "split SeedProbe coordinator startup failed: " + err;
+                "SeedProbe coordinator runtime startup failed: " + err;
         }
         return false;
     }
@@ -2423,7 +2430,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     ScenarioAssessment assessment;
     assessment.Require(
         clean_shutdown,
-        "split coordinator shutdown failed: " + shutdown_error);
+        "coordinator runtime shutdown failed: " + shutdown_error);
     assessment.Require(
         coordinator_failure.empty(),
         "coordinator infrastructure failed: " + coordinator_failure);
@@ -2453,12 +2460,12 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         const bool static_graph_valid = authored
             && authored->nodes.size() == 1 && authored->edges.empty()
             && authored->nodes.front().node_key == "probe_1"
-            && authored->nodes.front().unit_kind == "battle_seed_probe"
+            && authored->nodes.front().unit_kind == "seed_probe"
             && final_graph->unit_activations.size() == 1
             && final_graph->unit_activations.front().graph_node_key
                 == "probe_1"
             && final_graph->unit_activations.front().unit_kind
-                == "battle_seed_probe"
+                == "seed_probe"
             && final_graph->input_bindings.size() == 1
             && final_graph->input_bindings.front().node_key == "probe_1"
             && final_graph->input_bindings.front().input_key

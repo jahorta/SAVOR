@@ -2,6 +2,7 @@
 
 #include "AuthoringSpecEditorWindows.h"
 #include "BattlePlanEditorWindow.h"
+#include "PredicateAuthoringEditors.h"
 #include "DB/SavorDbAuthoringService.h"
 
 #include <QtCore/QDateTime>
@@ -10,10 +11,13 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QMessageBox>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QVBoxLayout>
+
+#include <ranges>
 
 namespace {
 
@@ -29,6 +33,9 @@ void attachCallbacks(TEditor* editor, const SpecLibraryCallbacks& callbacks)
 {
     editor->setStatusCallback(callbacks.postStatus);
     editor->setSavedCallback(callbacks.refreshLibrary);
+    if constexpr (requires { editor->setOpenGroupCallback(callbacks.openPredicateGroup); }) {
+        editor->setOpenGroupCallback(callbacks.openPredicateGroup);
+    }
 }
 
 class SeedProbeSpecLibraryAdapter final : public ISpecLibraryAdapter {
@@ -125,52 +132,6 @@ private:
     std::vector<savor::db::TasSpecSnapshot> rows_;
 };
 
-class BattleRunSpecLibraryAdapter final : public ISpecLibraryAdapter {
-public:
-    AuthoringLibraryKey key() const override { return AuthoringLibraryKey::BattleRun; }
-    QString title() const override { return QStringLiteral("Battle Run Specs"); }
-    QString placeholderText() const override { return QStringLiteral("Create a new battle run spec, or select one from the library to edit a copy."); }
-
-    std::vector<SpecLibraryRow> refreshRows(QString* errorText) override
-    {
-        const auto result = savorqt::db::SavorDbAuthoringService::ListBattleRunSpecs();
-        if (!result.ok) {
-            if (errorText != nullptr) *errorText = QString::fromStdString(result.error.message);
-            return {};
-        }
-        rows_ = result.value;
-        std::vector<SpecLibraryRow> rows;
-        rows.reserve(rows_.size());
-        for (const auto& row : rows_) {
-            rows.push_back(SpecLibraryRow{
-                static_cast<qint64>(row.battle_run_spec_id),
-                QStringLiteral("#%1  %2")
-                    .arg(static_cast<qint64>(row.battle_run_spec_id))
-                    .arg(QString::fromStdString(row.name))
-            });
-        }
-        return rows;
-    }
-
-    QWidget* createNewEditor(QWidget* parent, SpecLibraryCallbacks callbacks) override
-    {
-        auto* editor = new BattleRunSpecEditorWindow(parent, true);
-        attachCallbacks(editor, callbacks);
-        return editor;
-    }
-
-    QWidget* createEditorForRow(int row, bool duplicate, QWidget* parent, SpecLibraryCallbacks callbacks) override
-    {
-        if (row < 0 || row >= static_cast<int>(rows_.size())) return nullptr;
-        auto* editor = new BattleRunSpecEditorWindow(parent, true);
-        attachCallbacks(editor, callbacks);
-        editor->loadSnapshot(rows_[static_cast<std::size_t>(row)], duplicate);
-        return editor;
-    }
-
-private:
-    std::vector<savor::db::BattleRunSpecSnapshot> rows_;
-};
 
 class BattlePlanSpecLibraryAdapter final : public ISpecLibraryAdapter {
 public:
@@ -219,100 +180,161 @@ private:
     std::vector<savor::db::BattlePlanSnapshot> rows_;
 };
 
-class ExplorerSettingsSpecLibraryAdapter final : public ISpecLibraryAdapter {
+
+class PredicateLibraryAdapter final : public ISpecLibraryAdapter {
 public:
-    AuthoringLibraryKey key() const override { return AuthoringLibraryKey::ExplorerSettings; }
-    QString title() const override { return QStringLiteral("Battle Explorer Settings"); }
-    QString placeholderText() const override { return QStringLiteral("Create new battle explorer settings, or select one from the library to edit a copy."); }
+    AuthoringLibraryKey key() const override { return AuthoringLibraryKey::Predicates; }
+    QString title() const override { return QStringLiteral("Predicates"); }
+    QString placeholderText() const override { return QStringLiteral("Author pure Predicate Definitions and their concrete Execution Bindings."); }
+    QString savedItemsLabel() const override { return QStringLiteral("Definitions and Execution Bindings"); }
+    bool supportsDelete() const override { return true; }
+    bool editCreatesCopy() const override { return false; }
+    QStringList newActionLabels() const override
+    {
+        return {QStringLiteral("New Predicate Definition"),
+                QStringLiteral("New Execution Binding")};
+    }
 
     std::vector<SpecLibraryRow> refreshRows(QString* errorText) override
     {
-        const auto result = savorqt::db::SavorDbAuthoringService::ListExplorerSettings();
-        if (!result.ok) {
-            if (errorText != nullptr) *errorText = QString::fromStdString(result.error.message);
+        const auto definitions = savorqt::db::SavorDbAuthoringService::ListPredicateDefinitionRevisions(std::nullopt, {}, 500);
+        const auto bindings = savorqt::db::SavorDbAuthoringService::ListPredicateExecutionBindingRevisions(std::nullopt, {}, 1000);
+        if (!definitions.ok || !bindings.ok) {
+            if (errorText) *errorText = QString::fromStdString((!definitions.ok ? definitions.error : bindings.error).message);
             return {};
         }
-        rows_ = result.value;
-        std::vector<SpecLibraryRow> rows;
-        rows.reserve(rows_.size());
-        for (const auto& row : rows_) {
-            rows.push_back(SpecLibraryRow{
-                static_cast<qint64>(row.explorer_settings_id),
-                QStringLiteral("#%1  %2")
-                    .arg(static_cast<qint64>(row.explorer_settings_id))
-                    .arg(QString::fromStdString(row.name))
-            });
+        definitionSnapshots_.clear(); bindingSnapshots_.clear(); entries_.clear();
+        struct PreparedRow { QString name; int kind = 0; int revision = 0; SpecLibraryRow row; Entry entry; };
+        std::vector<PreparedRow> prepared;
+        for (const auto& summary : definitions.value.items) {
+            const auto detail = savorqt::db::SavorDbAuthoringService::GetPredicateDefinitionRevision(summary.predicate_definition_revision_id);
+            if (detail.ok) {
+                const auto index=definitionSnapshots_.size();definitionSnapshots_.push_back(detail.value);
+                const auto secondary=QStringLiteral("Predicate Definition — %1 — revision %2 — %3\n%4 inputs; %5 expression steps")
+                    .arg(QString::fromStdString(summary.description)).arg(summary.revision_number)
+                    .arg(QString::fromStdString(summary.revision_state)).arg(summary.witness_count).arg(summary.expression_node_count);
+                prepared.push_back({QString::fromStdString(summary.name),0,summary.revision_number,
+                    {summary.predicate_definition_revision_id,QStringLiteral("%1\n%2").arg(QString::fromStdString(summary.name),secondary),secondary,true},
+                    {false,index,summary.revision_state,true}});
+            } else {
+                const auto message=QString::fromStdString(detail.error.message);
+                const auto secondary=QStringLiteral("Predicate Definition — revision %1 — %2 — unavailable: %3")
+                    .arg(summary.revision_number).arg(QString::fromStdString(summary.revision_state),message);
+                prepared.push_back({QString::fromStdString(summary.name),0,summary.revision_number,
+                    {summary.predicate_definition_revision_id,QStringLiteral("%1\n%2").arg(QString::fromStdString(summary.name),secondary),secondary,false},
+                    {false,0,summary.revision_state,false}});
+            }
         }
+        for (const auto& summary : bindings.value.items) {
+            const auto detail = savorqt::db::SavorDbAuthoringService::GetPredicateExecutionBindingRevision(summary.predicate_execution_binding_revision_id);
+            if (detail.ok) {
+                const auto index=bindingSnapshots_.size();bindingSnapshots_.push_back(detail.value);
+                const auto secondary=QStringLiteral("Execution Binding — %1 — revision %2 — %3\n%4 bound inputs")
+                    .arg(QString::fromStdString(summary.description)).arg(summary.revision_number)
+                    .arg(QString::fromStdString(summary.revision_state)).arg(summary.witness_source_count);
+                prepared.push_back({QString::fromStdString(summary.name),1,summary.revision_number,
+                    {summary.predicate_execution_binding_revision_id,QStringLiteral("%1\n%2").arg(QString::fromStdString(summary.name),secondary),secondary,true},
+                    {true,index,summary.revision_state,true}});
+            } else {
+                const auto message=QString::fromStdString(detail.error.message);
+                const auto secondary=QStringLiteral("Execution Binding — revision %1 — %2 — unavailable: %3")
+                    .arg(summary.revision_number).arg(QString::fromStdString(summary.revision_state),message);
+                prepared.push_back({QString::fromStdString(summary.name),1,summary.revision_number,
+                    {summary.predicate_execution_binding_revision_id,QStringLiteral("%1\n%2").arg(QString::fromStdString(summary.name),secondary),secondary,false},
+                    {true,0,summary.revision_state,false}});
+            }
+        }
+        std::ranges::sort(prepared, [](const auto& a, const auto& b) {
+            const auto byName=QString::compare(a.name,b.name,Qt::CaseInsensitive);
+            if(byName!=0)return byName<0;if(a.kind!=b.kind)return a.kind<b.kind;return a.revision<b.revision;
+        });
+        std::vector<SpecLibraryRow> rows;
+        for(auto&item:prepared){rows.push_back(std::move(item.row));entries_.push_back(std::move(item.entry));}
         return rows;
     }
 
     QWidget* createNewEditor(QWidget* parent, SpecLibraryCallbacks callbacks) override
     {
-        auto* editor = new ExplorerSettingsEditorWindow(parent, true);
+        return createNewEditorForAction(0, parent, std::move(callbacks));
+    }
+    QWidget* createNewEditorForAction(int action, QWidget* parent,
+                                      SpecLibraryCallbacks callbacks) override
+    {
+        auto* editor = new PredicateAuthoringEditor(parent,
+            action == 1 ? PredicateAuthoringEditor::ObjectKind::ExecutionBinding
+                        : PredicateAuthoringEditor::ObjectKind::Definition);
         attachCallbacks(editor, callbacks);
         return editor;
     }
-
     QWidget* createEditorForRow(int row, bool duplicate, QWidget* parent, SpecLibraryCallbacks callbacks) override
     {
-        if (row < 0 || row >= static_cast<int>(rows_.size())) return nullptr;
-        auto* editor = new ExplorerSettingsEditorWindow(parent, true);
-        attachCallbacks(editor, callbacks);
-        editor->loadSnapshot(rows_[static_cast<std::size_t>(row)], duplicate);
+        if (row < 0 || row >= static_cast<int>(entries_.size()) || !entries_[static_cast<std::size_t>(row)].resolved) return nullptr;
+        auto* editor = new PredicateAuthoringEditor(parent); attachCallbacks(editor, callbacks);
+        const auto& entry = entries_[static_cast<std::size_t>(row)];
+        if (entry.binding) editor->loadExecutionBinding(bindingSnapshots_[entry.index], duplicate);
+        else editor->loadDefinition(definitionSnapshots_[entry.index], duplicate);
         return editor;
     }
-
+    SpecLibraryOperationResult deleteRow(int row, QWidget*) override
+    {
+        if (row < 0 || row >= static_cast<int>(entries_.size()) || !entries_[static_cast<std::size_t>(row)].resolved) return {false,QStringLiteral("This revision could not be loaded and cannot be changed."),StatusToast::Severity::Warn};
+        const auto& entry = entries_[static_cast<std::size_t>(row)];
+        if (entry.state != "DRAFT") return {false, QStringLiteral("Published Predicate revisions are immutable."), StatusToast::Severity::Warn};
+        const auto result = entry.binding
+            ? savorqt::db::SavorDbAuthoringService::AbandonPredicateExecutionBindingDraft(bindingSnapshots_[entry.index].binding.execution_binding_revision_id)
+            : savorqt::db::SavorDbAuthoringService::AbandonPredicateDefinitionDraft(definitionSnapshots_[entry.index].predicate_definition_revision_id);
+        return result.ok
+            ? SpecLibraryOperationResult{true, QStringLiteral("Predicate draft abandoned."), StatusToast::Severity::Info}
+            : SpecLibraryOperationResult{false, QString::fromStdString(result.error.message), StatusToast::Severity::Error};
+    }
 private:
-    std::vector<savor::db::ExplorerSettingsSnapshot> rows_;
+    struct Entry { bool binding = false; std::size_t index = 0; std::string state; bool resolved = true; };
+    std::vector<Entry> entries_;
+    std::vector<savor::db::PredicateDefinitionRevisionV2Snapshot> definitionSnapshots_;
+    std::vector<savor::db::PredicateExecutionBindingRevisionSnapshot> bindingSnapshots_;
 };
 
-class BattleChainSpecLibraryAdapter final : public ISpecLibraryAdapter {
+class PredicateGroupLibraryAdapter final : public ISpecLibraryAdapter {
 public:
-    AuthoringLibraryKey key() const override { return AuthoringLibraryKey::BattleChain; }
-    QString title() const override { return QStringLiteral("Battle Chain Specs"); }
-    QString placeholderText() const override { return QStringLiteral("Create a new battle chain spec, or select one from the library to edit a copy."); }
-
+    AuthoringLibraryKey key() const override { return AuthoringLibraryKey::PredicateGroups; }
+    QString title() const override { return QStringLiteral("Predicate Groups"); }
+    QString placeholderText() const override { return QStringLiteral("Order published Execution Bindings and assign their hooks and evaluation policy."); }
+    QString savedItemsLabel() const override { return QStringLiteral("Predicate Group revisions"); }
+    bool supportsDelete() const override { return true; }
+    bool editCreatesCopy() const override { return false; }
     std::vector<SpecLibraryRow> refreshRows(QString* errorText) override
     {
-        const auto result = savorqt::db::SavorDbAuthoringService::ListBattleChainSpecs();
-        if (!result.ok) {
-            if (errorText != nullptr) *errorText = QString::fromStdString(result.error.message);
-            return {};
-        }
-        rows_ = result.value;
+        const auto result = savorqt::db::SavorDbAuthoringService::ListPredicateGroupRevisions(std::nullopt, {}, std::nullopt, 500);
+        if (!result.ok) { if (errorText) *errorText = QString::fromStdString(result.error.message); return {}; }
+        snapshots_.clear();entries_.clear();
+        auto summaries=result.value.items;
+        std::ranges::sort(summaries,[](const auto&a,const auto&b){const auto byName=QString::compare(QString::fromStdString(a.name),QString::fromStdString(b.name),Qt::CaseInsensitive);return byName!=0?byName<0:a.revision_number<b.revision_number;});
         std::vector<SpecLibraryRow> rows;
-        rows.reserve(rows_.size());
-        for (const auto& row : rows_) {
-            rows.push_back(SpecLibraryRow{
-                static_cast<qint64>(row.battle_chain_spec_id),
-                QStringLiteral("#%1  %2  battle=%3 explorer=%4")
-                    .arg(static_cast<qint64>(row.battle_chain_spec_id))
-                    .arg(QString::fromStdString(row.name))
-                    .arg(static_cast<qint64>(row.battle_run_spec_id))
-                    .arg(static_cast<qint64>(row.explorer_settings_id))
-            });
+        for (const auto& summary : summaries) {
+            const auto detail = savorqt::db::SavorDbAuthoringService::GetPredicateGroupRevision(summary.predicate_group_revision_id);
+            const auto secondary=detail.ok
+                ?QStringLiteral("Predicate Group — %1 — revision %2 — %3\n%4 predicates; %5 hooks").arg(QString::fromStdString(summary.description)).arg(summary.revision_number).arg(QString::fromStdString(summary.revision_state)).arg(summary.member_count).arg(summary.hook_count)
+                :QStringLiteral("Predicate Group — revision %1 — %2 — unavailable: %3").arg(summary.revision_number).arg(QString::fromStdString(summary.revision_state),QString::fromStdString(detail.error.message));
+            if(detail.ok){entries_.push_back(snapshots_.size());snapshots_.push_back(detail.value);}else entries_.push_back(std::nullopt);
+            rows.push_back({summary.predicate_group_revision_id,QStringLiteral("%1\n%2").arg(QString::fromStdString(summary.name),secondary),secondary,detail.ok});
         }
         return rows;
     }
-
     QWidget* createNewEditor(QWidget* parent, SpecLibraryCallbacks callbacks) override
-    {
-        auto* editor = new BattleChainSpecEditorWindow(parent, true);
-        attachCallbacks(editor, callbacks);
-        return editor;
-    }
-
+    { auto* editor = new PredicateGroupEditor(parent); attachCallbacks(editor, callbacks); return editor; }
     QWidget* createEditorForRow(int row, bool duplicate, QWidget* parent, SpecLibraryCallbacks callbacks) override
+    { if (row < 0 || row >= static_cast<int>(entries_.size()) || !entries_[static_cast<std::size_t>(row)]) return nullptr; auto* editor = new PredicateGroupEditor(parent); attachCallbacks(editor, callbacks); editor->loadSnapshot(snapshots_[*entries_[static_cast<std::size_t>(row)]], duplicate); return editor; }
+    SpecLibraryOperationResult deleteRow(int row, QWidget*) override
     {
-        if (row < 0 || row >= static_cast<int>(rows_.size())) return nullptr;
-        auto* editor = new BattleChainSpecEditorWindow(parent, true);
-        attachCallbacks(editor, callbacks);
-        editor->loadSnapshot(rows_[static_cast<std::size_t>(row)], duplicate);
-        return editor;
+        if (row < 0 || row >= static_cast<int>(entries_.size()) || !entries_[static_cast<std::size_t>(row)]) return {false,QStringLiteral("This revision could not be loaded and cannot be changed."),StatusToast::Severity::Warn};
+        const auto& snapshot=snapshots_[*entries_[static_cast<std::size_t>(row)]];
+        if(snapshot.revision_state!="DRAFT")return{false,QStringLiteral("Published Predicate Group revisions are immutable."),StatusToast::Severity::Warn};
+        const auto result=savorqt::db::SavorDbAuthoringService::AbandonPredicateGroupDraft(snapshot.group.predicate_group_revision_id);
+        return result.ok?SpecLibraryOperationResult{true,QStringLiteral("Predicate Group draft abandoned."),StatusToast::Severity::Info}:SpecLibraryOperationResult{false,QString::fromStdString(result.error.message),StatusToast::Severity::Error};
     }
-
 private:
-    std::vector<savor::db::BattleChainSpecSnapshot> rows_;
+    std::vector<std::optional<std::size_t>> entries_;
+    std::vector<savor::db::PredicateGroupRevisionSnapshot> snapshots_;
 };
 
 } // namespace
@@ -330,6 +352,17 @@ QString ISpecLibraryAdapter::newButtonText() const
 QString ISpecLibraryAdapter::editButtonText() const
 {
     return editCreatesCopy() ? QStringLiteral("Edit Selected (copy)") : QStringLiteral("Edit Selected");
+}
+
+QStringList ISpecLibraryAdapter::newActionLabels() const
+{
+    return {newButtonText()};
+}
+
+QWidget* ISpecLibraryAdapter::createNewEditorForAction(
+    int, QWidget* parent, SpecLibraryCallbacks callbacks)
+{
+    return createNewEditor(parent, std::move(callbacks));
 }
 
 bool ISpecLibraryAdapter::supportsDelete() const
@@ -379,11 +412,9 @@ AuthoringLibraryKey AuthoringLibraryWidget::currentLibrary() const
 
 void AuthoringLibraryWidget::createAdapters()
 {
-    adapters_.push_back(std::make_unique<TasSpecLibraryAdapter>());
     adapters_.push_back(std::make_unique<SeedProbeSpecLibraryAdapter>());
-    adapters_.push_back(std::make_unique<BattleRunSpecLibraryAdapter>());
-    adapters_.push_back(std::make_unique<ExplorerSettingsSpecLibraryAdapter>());
-    adapters_.push_back(std::make_unique<BattleChainSpecLibraryAdapter>());
+    adapters_.push_back(std::make_unique<PredicateLibraryAdapter>());
+    adapters_.push_back(std::make_unique<PredicateGroupLibraryAdapter>());
     adapters_.push_back(std::make_unique<BattlePlanSpecLibraryAdapter>());
 }
 
@@ -473,10 +504,12 @@ void AuthoringLibraryWidget::createWidgets()
     connect(newButton_, &QPushButton::clicked, this, [this]() {
         auto* adapter = currentAdapter();
         if (adapter == nullptr) return;
+        if (adapter->newActionLabels().size() != 1) return;
         clearRightPane();
-        installEditorWidget(adapter->createNewEditor(rightPane_, SpecLibraryCallbacks{
+        installEditorWidget(adapter->createNewEditorForAction(0, rightPane_, SpecLibraryCallbacks{
             [this](const QString& text, StatusToast::Severity severity) { postStatusMessage(text, severity); },
-            [this]() { refreshLibrary(); }
+            [this]() { refreshLibrary(); },
+            [this](qint64 binding) { openPredicateGroup(binding); }
         }));
     });
     connect(editButton_, &QPushButton::clicked, this, &AuthoringLibraryWidget::showEditorForSelectedRow);
@@ -515,6 +548,8 @@ void AuthoringLibraryWidget::createWidgets()
         for (const auto& row : data.rows) {
             auto* item = new QListWidgetItem(row.text, savedItemsList_);
             item->setData(Qt::UserRole, row.id);
+            item->setToolTip(row.details);
+            if (!row.enabled) item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
         }
         libraryStatusLabel_->setText(QStringLiteral("Saved: %1").arg(static_cast<int>(data.rows.size())));
         updateActionState();
@@ -541,6 +576,7 @@ void AuthoringLibraryWidget::selectLibraryIndex(int index, bool forceRefresh)
     clearRightPane();
     savedItemsLabel_->setText(adapter->savedItemsLabel());
     newButton_->setText(adapter->newButtonText());
+    installNewActionMenu();
     editButton_->setText(adapter->editButtonText());
     deleteButton_->setVisible(adapter->supportsDelete());
     placeholderLabel_->setText(adapter->placeholderText());
@@ -602,8 +638,65 @@ void AuthoringLibraryWidget::showEditorForSelectedRow()
 
     installEditorWidget(adapter->createEditorForRow(row, adapter->editCreatesCopy(), rightPane_, SpecLibraryCallbacks{
         [this](const QString& text, StatusToast::Severity severity) { postStatusMessage(text, severity); },
-        [this]() { refreshLibrary(); }
+        [this]() { refreshLibrary(); },
+        [this](qint64 binding) { openPredicateGroup(binding); }
     }));
+}
+
+void AuthoringLibraryWidget::installNewActionMenu()
+{
+    if (newButton_ == nullptr) return;
+    newButton_->setMenu(nullptr);
+    auto* adapter = currentAdapter();
+    if (adapter == nullptr) return;
+    const auto labels = adapter->newActionLabels();
+    if (labels.size() <= 1) {
+        newButton_->setText(labels.isEmpty() ? adapter->newButtonText() : labels.front());
+        return;
+    }
+    newButton_->setText(QStringLiteral("New..."));
+    auto* menu = new QMenu(newButton_);
+    for (int index = 0; index < labels.size(); ++index) {
+        auto* action = menu->addAction(labels[index]);
+        connect(action, &QAction::triggered, this, [this, index] {
+            auto* selectedAdapter = currentAdapter();
+            if (selectedAdapter == nullptr) return;
+            clearRightPane();
+            installEditorWidget(selectedAdapter->createNewEditorForAction(
+                index, rightPane_, SpecLibraryCallbacks{
+                    [this](const QString& text, StatusToast::Severity severity) {
+                        postStatusMessage(text, severity);
+                    },
+                    [this]() { refreshLibrary(); },
+                    [this](qint64 binding) { openPredicateGroup(binding); }
+                }));
+        });
+    }
+    newButton_->setMenu(menu);
+}
+
+void AuthoringLibraryWidget::openPredicateGroup(qint64 bindingRevisionId)
+{
+    int groupIndex = -1;
+    for (int index = 0; index < static_cast<int>(adapters_.size()); ++index) {
+        if (adapters_[static_cast<std::size_t>(index)]->key()
+            == AuthoringLibraryKey::PredicateGroups) {
+            groupIndex = index;
+            break;
+        }
+    }
+    if (groupIndex < 0) return;
+    librarySelector_->setCurrentRow(groupIndex);
+    auto* editor = new PredicateGroupEditor(rightPane_);
+    attachCallbacks(editor, SpecLibraryCallbacks{
+        [this](const QString& text, StatusToast::Severity severity) {
+            postStatusMessage(text, severity);
+        },
+        [this]() { refreshLibrary(); },
+        [this](qint64 binding) { openPredicateGroup(binding); }
+    });
+    editor->preselectBinding(bindingRevisionId);
+    installEditorWidget(editor);
 }
 
 void AuthoringLibraryWidget::deleteSelectedRow()
@@ -640,7 +733,9 @@ void AuthoringLibraryWidget::handleSavedRowChanged()
 void AuthoringLibraryWidget::updateActionState()
 {
     const auto* adapter = currentAdapter();
-    const bool hasSelection = selectedSavedRow() >= 0;
+    const auto* selected = savedItemsList_ ? savedItemsList_->currentItem() : nullptr;
+    const bool hasSelection = selectedSavedRow() >= 0 && selected &&
+                              (selected->flags() & Qt::ItemIsEnabled);
     if (editButton_ != nullptr) {
         editButton_->setEnabled(hasSelection);
     }

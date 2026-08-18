@@ -14,6 +14,8 @@
 #include <QtGui/QDragMoveEvent>
 #include <QtGui/QDropEvent>
 #include <QtWidgets/QAbstractItemView>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
@@ -54,6 +56,8 @@ std::string fingerprintForDraft(const savorqt::db::BattlePlanDraft& draft)
     std::string content = draft.name + "\n";
     for (const auto& turn : draft.turns) {
         content += "turn:" + std::to_string(turn.turn_index) + "\n";
+        content += "predicate_group:"
+            + std::to_string(turn.predicate_group_revision_id.value_or(0)) + "\n";
         for (const auto& action : turn.actions) {
             content += "action:" + std::to_string(action.actor_slot)
                 + ":" + std::to_string(action.action_preset_id.value_or(0))
@@ -262,6 +266,8 @@ void BattlePlanEditorWindow::loadSnapshot(const savor::db::BattlePlanSnapshot& s
             continue;
         }
         auto& targetTurn = turns_[static_cast<std::size_t>(turn.turn_index - 1)];
+        targetTurn.predicate_group_revision_id =
+            turn.default_predicate_group_revision_id;
         for (const auto& action : turn.actions) {
             const auto& preset = action.action_preset;
             ActionDraft draft{};
@@ -323,6 +329,9 @@ void BattlePlanEditorWindow::createWidgets()
     topLayout->addRow(QStringLiteral("Name"), nameEdit_);
     topLayout->addRow(QStringLiteral("Turns"), turnCountSpin_);
     topLayout->addRow(QStringLiteral("Combatants"), combatantCountSpin_);
+    predicateGroupCombo_ = new QComboBox(topPanel);
+    predicateGroupCombo_->addItem(QStringLiteral("No predicates"), QVariant::fromValue<qint64>(0));
+    topLayout->addRow(QStringLiteral("Selected turn predicates"), predicateGroupCombo_);
     rootLayout->addWidget(topPanel);
 
     auto* splitter = new QSplitter(Qt::Horizontal, this);
@@ -347,7 +356,21 @@ void BattlePlanEditorWindow::createWidgets()
     libraryButtons->addWidget(editPresetButton);
     libraryButtons->addStretch();
     libraryLayout->addLayout(libraryButtons);
+    auto* predicateTitle = new QLabel(QStringLiteral("Predicate Groups"), libraryPanel);
+    predicateTitle->setObjectName("sectionHeading");
+    predicateSearchEdit_ = new QLineEdit(libraryPanel);
+    predicateSearchEdit_->setPlaceholderText(QStringLiteral("Search Predicate Groups"));
+    includeDraftPredicatesCheck_ = new QCheckBox(QStringLiteral("Include drafts"), libraryPanel);
+    predicateLibraryList_ = new QListWidget(libraryPanel);
+    predicateDetailLabel_ = new QLabel(QStringLiteral("Select a Predicate Group to inspect its published contract."), libraryPanel);
+    predicateDetailLabel_->setWordWrap(true);
+    libraryLayout->addWidget(predicateTitle);
+    libraryLayout->addWidget(predicateSearchEdit_);
+    libraryLayout->addWidget(includeDraftPredicatesCheck_);
+    libraryLayout->addWidget(predicateLibraryList_, 1);
+    libraryLayout->addWidget(predicateDetailLabel_);
     populateActionLibrary();
+    configurePredicateLibraryRefresh();
 
     auto* planPanel = new QFrame(splitter);
     planPanel->setObjectName("jobsSurfacePanel");
@@ -389,6 +412,21 @@ void BattlePlanEditorWindow::createWidgets()
     connect(newPresetButton, &QPushButton::clicked, this, &BattlePlanEditorWindow::openNewActionPresetEditor);
     connect(editPresetButton, &QPushButton::clicked, this, &BattlePlanEditorWindow::openActionPresetEditorForSelection);
     connect(planTree_, &QWidget::customContextMenuRequested, this, &BattlePlanEditorWindow::showPlanContextMenu);
+    connect(planTree_, &QTreeWidget::currentItemChanged, this, [this]() {
+        syncPredicateSelectorToTurn();
+    });
+    connect(predicateGroupCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this]() {
+        applyPredicateGroupSelection();
+    });
+    connect(predicateSearchEdit_, &QLineEdit::textChanged, this, [this]() {
+        requestPredicateLibraryRefresh();
+    });
+    connect(includeDraftPredicatesCheck_, &QCheckBox::toggled, this, [this]() {
+        requestPredicateLibraryRefresh();
+    });
+    connect(predicateLibraryList_, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* current) {
+        showPredicateGroupDetail(current ? current->data(Qt::UserRole).toLongLong() : 0);
+    });
     connect(nameEdit_, &QLineEdit::textChanged, this, [this]() { markDirty(); });
     connect(turnCountSpin_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
         ensureTurnCount(value);
@@ -399,6 +437,7 @@ void BattlePlanEditorWindow::createWidgets()
         markDirty();
         rebuildPlanTree();
     });
+    requestPredicateLibraryRefresh();
 }
 
 void BattlePlanEditorWindow::populateActionLibrary()
@@ -426,6 +465,158 @@ void BattlePlanEditorWindow::populateActionLibrary()
     }
 }
 
+void BattlePlanEditorWindow::configurePredicateLibraryRefresh()
+{
+    predicateRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<PredicateRefreshRequest, PredicateRefreshData>(this);
+    predicateRefreshPipeline_->setAutoRefreshEnabled(false);
+    predicateRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) -> std::optional<PredicateRefreshRequest> {
+        return PredicateRefreshRequest{
+            .revision_state = includeDraftPredicatesCheck_->isChecked()
+                ? std::nullopt : std::optional<std::string>("PUBLISHED"),
+            .search_text = predicateSearchEdit_->text().trimmed().toStdString(),
+        };
+    });
+    predicateRefreshPipeline_->setLoadAndPrepare([](PredicateRefreshRequest request) {
+        PredicateRefreshData data{};
+        data.library = savorqt::db::SavorDbAuthoringService::ListPredicateGroupRevisions(
+            std::move(request.revision_state), std::move(request.search_text), std::nullopt, 250);
+        data.published = savorqt::db::SavorDbAuthoringService::ListPredicateGroupRevisions(
+            std::optional<std::string>("PUBLISHED"), {}, std::nullopt, 500);
+        return savorqt::gui::AsyncRefreshResult<PredicateRefreshData>::Ok(std::move(data));
+    });
+    predicateRefreshPipeline_->setApply([this](const PredicateRefreshData& data, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        if (!data.library.ok || !data.published.ok) {
+            const auto& error = !data.library.ok ? data.library.error : data.published.error;
+            postStatusMessage(QString::fromStdString(error.message), StatusToast::Severity::Warn);
+            return;
+        }
+        const auto selectedLibraryId = predicateLibraryList_->currentItem()
+            ? predicateLibraryList_->currentItem()->data(Qt::UserRole).toLongLong() : 0;
+        predicateGroups_ = data.published.value.items;
+        predicateLibraryList_->clear();
+        for (const auto& group : data.library.value.items) {
+            auto* item = new QListWidgetItem(
+                QStringLiteral("%1 r%2 [%3]")
+                    .arg(QString::fromStdString(group.name))
+                    .arg(group.revision_number)
+                    .arg(QString::fromStdString(group.revision_state)),
+                predicateLibraryList_);
+            item->setData(Qt::UserRole, QVariant::fromValue<qint64>(group.predicate_group_revision_id));
+            item->setToolTip(QString::fromStdString(group.description));
+            if (group.predicate_group_revision_id == selectedLibraryId) predicateLibraryList_->setCurrentItem(item);
+        }
+
+        const auto desiredTurnId = selectedTurn()
+            ? selectedTurn()->predicate_group_revision_id.value_or(0) : 0;
+        const QSignalBlocker blocker(predicateGroupCombo_);
+        predicateGroupCombo_->clear();
+        predicateGroupCombo_->addItem(QStringLiteral("No predicates"), QVariant::fromValue<qint64>(0));
+        bool resolved = desiredTurnId == 0;
+        for (const auto& group : predicateGroups_) {
+            if (group.revision_state != "PUBLISHED") continue;
+            predicateGroupCombo_->addItem(
+                QStringLiteral("%1 r%2 (#%3)")
+                    .arg(QString::fromStdString(group.name))
+                    .arg(group.revision_number)
+                    .arg(group.predicate_group_revision_id),
+                QVariant::fromValue<qint64>(group.predicate_group_revision_id));
+            if (group.predicate_group_revision_id == desiredTurnId) {
+                predicateGroupCombo_->setCurrentIndex(predicateGroupCombo_->count() - 1);
+                resolved = true;
+            }
+        }
+        if (!resolved) {
+            predicateGroupCombo_->addItem(
+                QStringLiteral("Unresolved group #%1").arg(desiredTurnId),
+                QVariant::fromValue<qint64>(desiredTurnId));
+            predicateGroupCombo_->setCurrentIndex(predicateGroupCombo_->count() - 1);
+        }
+    });
+    predicateRefreshPipeline_->setApplyError([this](const QString& error, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        postStatusMessage(error, StatusToast::Severity::Warn);
+    });
+    predicateRefreshPipeline_->setActive(true);
+
+    predicateDetailPipeline_ = new savorqt::gui::AsyncRefreshPipeline<std::int64_t, PredicateDetailData>(this);
+    predicateDetailPipeline_->setAutoRefreshEnabled(false);
+    predicateDetailPipeline_->setRequestBuilder([](savorqt::gui::RefreshReason) -> std::optional<std::int64_t> {
+        return std::nullopt;
+    });
+    predicateDetailPipeline_->setLoadAndPrepare([](std::int64_t revisionId) {
+        return savorqt::gui::AsyncRefreshResult<PredicateDetailData>::Ok(
+            savorqt::db::SavorDbAuthoringService::GetPredicateGroupRevision(revisionId));
+    });
+    predicateDetailPipeline_->setApply([this](const PredicateDetailData& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        if (!result.ok) {
+            predicateDetailLabel_->setText(QString::fromStdString(result.error.message));
+            return;
+        }
+        const auto& group = result.value.group;
+        QStringList lines;
+        lines << QStringLiteral("%1\n%2\nHash: %3")
+            .arg(QString::fromStdString(result.value.name))
+            .arg(QString::fromStdString(result.value.description))
+            .arg(QString::fromStdString(group.content_sha256));
+        lines << QStringLiteral("Members: %1").arg(group.members.size());
+        for (const auto& member : group.members) {
+            QStringList hooks;
+            for (const auto& hook : member.semantic_hook_ids)
+                hooks << QString::fromStdString(hook);
+            lines << QStringLiteral("Binding #%1 at %2: %3, aggregate=%4, evidence=%5")
+                .arg(member.execution_binding_revision_id)
+                .arg(hooks.join(QStringLiteral(", ")))
+                .arg(member.reaction == savor::runtime::program::composition::PredicateReaction::AbortOnFail
+                    ? QStringLiteral("AbortOnFail") : QStringLiteral("RecordAndContinue"))
+                .arg(member.participates_in_aggregation ? QStringLiteral("yes") : QStringLiteral("no"))
+                .arg(member.emit_evidence ? QStringLiteral("yes") : QStringLiteral("no"));
+        }
+        predicateDetailLabel_->setText(lines.join(QStringLiteral("\n")));
+    });
+    predicateDetailPipeline_->setActive(true);
+}
+
+void BattlePlanEditorWindow::requestPredicateLibraryRefresh()
+{
+    if (predicateRefreshPipeline_) predicateRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
+}
+
+void BattlePlanEditorWindow::applyPredicateGroupSelection()
+{
+    auto* turn = selectedTurn();
+    if (turn == nullptr || predicateGroupCombo_ == nullptr) return;
+    const auto id = predicateGroupCombo_->currentData().toLongLong();
+    const auto next = id > 0 ? std::optional<std::int64_t>(id) : std::nullopt;
+    if (turn->predicate_group_revision_id == next) return;
+    turn->predicate_group_revision_id = next;
+    markDirty();
+    rebuildPlanTree();
+}
+
+void BattlePlanEditorWindow::syncPredicateSelectorToTurn()
+{
+    if (!predicateGroupCombo_) return;
+    const auto id = selectedTurn() ? selectedTurn()->predicate_group_revision_id.value_or(0) : 0;
+    const QSignalBlocker blocker(predicateGroupCombo_);
+    for (int index = 0; index < predicateGroupCombo_->count(); ++index) {
+        if (predicateGroupCombo_->itemData(index).toLongLong() == id) {
+            predicateGroupCombo_->setCurrentIndex(index);
+            return;
+        }
+    }
+}
+
+void BattlePlanEditorWindow::showPredicateGroupDetail(std::int64_t revisionId)
+{
+    if (revisionId <= 0 || predicateDetailPipeline_ == nullptr) {
+        predicateDetailLabel_->setText(QStringLiteral("Select a Predicate Group to inspect its contract."));
+        return;
+    }
+    predicateDetailPipeline_->setRequestBuilder([revisionId](savorqt::gui::RefreshReason) -> std::optional<std::int64_t> {
+        return revisionId;
+    });
+    predicateDetailPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
+}
+
 void BattlePlanEditorWindow::rebuildPlanTree()
 {
     if (planTree_ == nullptr) {
@@ -449,6 +640,9 @@ void BattlePlanEditorWindow::rebuildPlanTree()
         row.summary = QStringLiteral("%1/%2 slots assigned")
             .arg(assignedActions)
             .arg(turn.player_combatants);
+        row.summary += turn.predicate_group_revision_id
+            ? QStringLiteral(" / predicates #%1").arg(*turn.predicate_group_revision_id)
+            : QStringLiteral(" / no predicates");
 
         for (int slotIndex = 0; slotIndex < turn.player_combatants; ++slotIndex) {
             const int actionIndex = findActionIndexBySlot(turn, slotIndex);
@@ -939,6 +1133,19 @@ void BattlePlanEditorWindow::saveBattlePlan()
         const auto& sourceTurn = turns_[static_cast<std::size_t>(turnIndex)];
         auto& targetTurn = draft.turns[static_cast<std::size_t>(turnIndex)];
         targetTurn.turn_index = turnIndex + 1;
+        targetTurn.predicate_group_revision_id = sourceTurn.predicate_group_revision_id;
+        if (sourceTurn.predicate_group_revision_id) {
+            const auto resolved = std::find_if(predicateGroups_.begin(), predicateGroups_.end(), [&](const auto& group) {
+                return group.predicate_group_revision_id == *sourceTurn.predicate_group_revision_id
+                    && group.revision_state == "PUBLISHED";
+            });
+            if (resolved == predicateGroups_.end()) {
+                postStatusMessage(
+                    QStringLiteral("Turn %1 references a missing or unpublished predicate group.").arg(turnIndex + 1),
+                    StatusToast::Severity::Warn);
+                return;
+            }
+        }
         if (!hasValidSlotAssignments(sourceTurn)) {
             postStatusMessage(QStringLiteral("Every combatant slot must be assigned."), StatusToast::Severity::Warn);
             return;

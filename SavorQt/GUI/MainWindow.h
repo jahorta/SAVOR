@@ -18,6 +18,8 @@
 
 class CoordinatorController;
 class CoordinatorPane;
+class SetupTab;
+class RunningTab;
 class AnalysisTab;
 class JobsPage;
 class QLabel;
@@ -60,10 +62,9 @@ private slots:
     void handleVisualReplayRequested(qint64 jobId);
     void syncStatusBar();
     void openSeedProbeSpecLibrary();
-    void openTasSpecLibrary();
-    void openBattleRunSpecLibrary();
     void openBattlePlanSpecLibrary();
-    void openExplorerSettingsSpecLibrary();
+    void openPredicateLibrary();
+    void openPredicateGroupLibrary();
 
 private:
     void createWidgets();
@@ -76,6 +77,7 @@ private:
     void openFocusedTool(FocusedTool tool);
     void showBattleRunsAnalysisPane();
     void openWorkflowGraphEditor();
+    void openWorkflowLauncherPreselected(const QString& unitKind,const QString& inputKey,qint64 refId);
     void openWorkflowGraphEditor(const savor::db::WorkflowGraphSnapshot& snapshot, bool duplicate);
     void openSettingsTool(SettingsPage::CoordinatorFocusTarget focusTarget = SettingsPage::CoordinatorFocusTarget::Section);
     QDialog* createFocusedDialog(const QString& key, const QString& title);
@@ -84,6 +86,8 @@ private:
 
     QStackedWidget* workspaceStack_ = nullptr;
     savorqt::gui::WorkspaceSelectorBar* workspaceSelector_ = nullptr;
+	SetupTab* setupTab_ = nullptr;
+	RunningTab* runningTab_ = nullptr;
     AnalysisTab* analysisTab_ = nullptr;
     CoordinatorController* coordinatorController_ = nullptr;
     CoordinatorPane* visualReplayHost_ = nullptr;

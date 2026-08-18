@@ -17,11 +17,18 @@
 namespace savor::runtime::seedprobe {
 
 inline constexpr std::string_view ModuleCanonicalId = "soa.seed_probe";
-inline constexpr std::uint32_t ModuleRevision = 3;
-inline constexpr std::int32_t ProgramVersion = 3;
+inline constexpr std::uint32_t ModuleRevision = 4;
+inline constexpr std::int32_t ProgramVersion = 4;
 inline constexpr std::string_view Entrypoint = "probe";
 inline constexpr std::string_view BaselineLineage =
-    "soa.seed_probe/restore-baseline/v3";
+    "soa.seed_probe/restore-baseline/v4";
+
+inline constexpr std::uint32_t PreBattleBeforeRandSeedSetPc =
+    0x80101E48u;
+inline constexpr std::uint32_t FieldTransitionFastPreseedPc =
+    0x80101894u;
+inline constexpr std::uint32_t FieldTransitionDeferredPreseedPc =
+    0x801018ACu;
 
 inline constexpr std::uint32_t PreBattleAfterRandSeedSetPc =
     0x8000A1DCu;
@@ -123,6 +130,8 @@ SeedProbeResultSchemaIdentityV3();
     SeedProbeEndpointV2 endpoint) noexcept;
 [[nodiscard]] std::optional<SeedProbeEndpointV2>
 SeedProbeEndpointFromPc(std::uint32_t pc) noexcept;
+[[nodiscard]] std::optional<SeedProbeEndpointV2>
+SeedProbeEndpointForEntryPc(std::uint32_t pc) noexcept;
 
 [[nodiscard]] program::ProgramValueGraph EncodeSeedProbeRequestV2(
     const SeedProbeRequestV2& request);

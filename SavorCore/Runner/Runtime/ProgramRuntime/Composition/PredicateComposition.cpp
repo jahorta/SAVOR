@@ -59,11 +59,13 @@ bool IsNumeric(const TypeRef& type)
 
 std::optional<CompositionResult> Validate(
     const PredicateDefinition& definition,
-    const PredicateCheckUse& check)
+    const PredicateEvaluationPolicy& policy)
 {
     if (definition.canonical_id.empty() || definition.revision == 0 ||
-        check.canonical_id.empty() || check.semantic_point_id.empty())
-        return detail::Fail("predicate.invalid_identity", "predicate definition and check require stable identities");
+        policy.predicate_group_revision_id <= 0 ||
+        policy.execution_binding_revision_id <= 0 ||
+        policy.semantic_point_id.empty())
+        return detail::Fail("predicate.invalid_identity", "predicate definition and group membership require stable identities");
     if (definition.expression.empty() || definition.root_expression >= definition.expression.size())
         return detail::Fail("predicate.invalid_expression", "predicate requires a valid finite expression");
     std::set<std::string> names;
@@ -147,23 +149,28 @@ std::optional<ProgramValueId> EvaluationConstant(
 
 void EmitEvidence(ModuleFragmentBuilder& builder, ProgramFunction& function,
                   BasicBlock& block, ProgramValueId evaluation,
-                  const PredicateCheckUse& check, std::string_view status)
+                  const PredicateEvaluationPolicy& policy,
+                  const PredicateDefinition& definition,
+                  std::string_view status)
 {
-    if (!check.emit_evidence) return;
+    if (!policy.emit_evidence) return;
     (void)builder.AddInstruction(function, block, InstructionOpcode::EmitRecord,
         std::nullopt, std::array{evaluation}, {}, std::format(
-            "predicate-evidence/{}/{}/{}", check.canonical_id,
-            check.semantic_point_id, status));
+            "predicate-evidence/definition/{}/{}/binding/{}/group/{}/member/{}/hook/{}/{}",
+            definition.canonical_id, definition.revision,
+            policy.execution_binding_revision_id,
+            policy.predicate_group_revision_id, policy.member_ordinal,
+            policy.semantic_point_id, status));
 }
 
 } // namespace
 
 CompositionResult LowerPredicate(
     const PredicateDefinition& definition,
-    const PredicateCheckUse& check,
+    const PredicateEvaluationPolicy& policy,
     ProgramModule& module)
 {
-    if (const auto invalid = Validate(definition, check)) return *invalid;
+    if (const auto invalid = Validate(definition, policy)) return *invalid;
     ProgramModule candidate = module;
     ModuleFragmentBuilder builder(candidate,
         definition.source_name.empty() ? definition.canonical_id : definition.source_name,
@@ -177,7 +184,9 @@ CompositionResult LowerPredicate(
     std::vector<ValueDefinition> arguments;
     for (const auto& witness : definition.witnesses)
         arguments.push_back(builder.NewArgument(witness.value_type));
-    auto& function = builder.AddFunction("predicate." + check.canonical_id,
+    auto& function = builder.AddFunction(std::format(
+        "predicate.group{}.member{}.{}", policy.predicate_group_revision_id,
+        policy.member_ordinal, policy.semantic_point_id),
         arguments, TypeRef::Named(evaluation_identity));
     function.blocks.reserve(3);
     auto& evaluation = builder.AddBlock(function);
@@ -220,7 +229,7 @@ CompositionResult LowerPredicate(
 
     const auto passed = EvaluationConstant(builder, function, passed_block,
         evaluation_identity, 0, "evaluation/passed");
-    EmitEvidence(builder, function, passed_block, *passed, check, "passed");
+    EmitEvidence(builder, function, passed_block, *passed, policy, definition, "passed");
     builder.SetTerminator(function, passed_block, {
         .kind = TerminatorKind::Return,
         .return_value = passed,
@@ -228,11 +237,11 @@ CompositionResult LowerPredicate(
 
     const auto failed = EvaluationConstant(builder, function, failed_block,
         evaluation_identity, 1, "evaluation/failed");
-    EmitEvidence(builder, function, failed_block, *failed, check, "failed");
+    EmitEvidence(builder, function, failed_block, *failed, policy, definition, "failed");
     builder.SetTerminator(function, failed_block, {
         .kind = TerminatorKind::Return,
         .return_value = failed,
-    }, check.reaction == PredicateReaction::AbortOnFail
+    }, policy.reaction == PredicateReaction::AbortOnFail
         ? "return/failed-abort-on-fail" : "return/failed");
 
     const auto function_id = function.id;

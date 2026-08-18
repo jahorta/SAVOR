@@ -97,7 +97,7 @@ and therefore cannot be reconstructed as current worksets.
 - WRMS v1 and workset v3 are rejected without adapters or negotiation.
 - Coordinator and workers are rebuilt and deployed atomically.
 
-The split coordinator is the sole production path:
+The shared production `CoordinatorRuntime` is the sole application path:
 
 - `WorkerCoordinator` owns the homogeneous physical fleet;
 - `JobExecutionCoordinator` owns durable workset dispatch; and

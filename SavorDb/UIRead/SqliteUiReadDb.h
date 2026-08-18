@@ -31,6 +31,17 @@ public:
         int jobs_limit) const override;
     UiReadPage<UiArtifactSummary> ListArtifacts(
         const UiReadArtifactListQuery& query) const override;
+    std::vector<UiSavestateSummary> ListSavestates(
+        std::string_view playback_state, bool complete_only, std::string_view search, int limit) const override;
+    std::vector<UiTasMovieRootSummary> ListTasMovieRoots(int limit) const override;
+    std::vector<UiTasMovieTreeSummary> ListTasMovieTrees(int limit) const override;
+    std::vector<UiTasMovieValidationRequestSummary> ListTasMovieValidationRequests(int limit) const override;
+    std::vector<UiTasMovieValidationAttemptSummary> ListTasMovieValidationAttempts(
+        std::optional<std::int64_t> request_id, int limit) const override;
+    std::vector<UiTasMovieSterilizationRequestSummary> ListTasMovieSterilizationRequests(int limit) const override;
+    std::vector<UiTasMovieSterilizationAttemptSummary> ListTasMovieSterilizationAttempts(
+        std::optional<std::int64_t> request_id, int limit) const override;
+    std::vector<UiBattleContextSummary> ListBattleContexts(bool complete_only, int limit) const override;
     std::vector<UiArchiveCatalogRow> ListArchiveCatalog(
         const UiArchiveCatalogListQuery& query) const override;
     std::vector<UiArchiveRehydrateRequestRow> ListArchiveRehydrateRequests(

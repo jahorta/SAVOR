@@ -163,6 +163,19 @@ UiReadPage<UiArtifactSummary> QueuedUiReadDb::ListArtifacts(
         {});
 }
 
+std::vector<UiSavestateSummary> QueuedUiReadDb::ListSavestates(
+    std::string_view playback_state, bool complete_only, std::string_view search, int limit) const {
+    const std::string state(playback_state), needle(search);
+    return ExecuteRead<std::vector<UiSavestateSummary>>([this,state,complete_only,needle,limit](){return inner_?inner_->ListSavestates(state,complete_only,needle,limit):std::vector<UiSavestateSummary>{};},{});
+}
+std::vector<UiTasMovieRootSummary> QueuedUiReadDb::ListTasMovieRoots(int limit) const { return ExecuteRead<std::vector<UiTasMovieRootSummary>>([this,limit](){return inner_?inner_->ListTasMovieRoots(limit):std::vector<UiTasMovieRootSummary>{};},{}); }
+std::vector<UiTasMovieTreeSummary> QueuedUiReadDb::ListTasMovieTrees(int limit) const { return ExecuteRead<std::vector<UiTasMovieTreeSummary>>([this,limit](){return inner_?inner_->ListTasMovieTrees(limit):std::vector<UiTasMovieTreeSummary>{};},{}); }
+std::vector<UiTasMovieValidationRequestSummary> QueuedUiReadDb::ListTasMovieValidationRequests(int limit) const { return ExecuteRead<std::vector<UiTasMovieValidationRequestSummary>>([this,limit](){return inner_?inner_->ListTasMovieValidationRequests(limit):std::vector<UiTasMovieValidationRequestSummary>{};},{}); }
+std::vector<UiTasMovieValidationAttemptSummary> QueuedUiReadDb::ListTasMovieValidationAttempts(std::optional<std::int64_t> request_id,int limit) const { return ExecuteRead<std::vector<UiTasMovieValidationAttemptSummary>>([this,request_id,limit](){return inner_?inner_->ListTasMovieValidationAttempts(request_id,limit):std::vector<UiTasMovieValidationAttemptSummary>{};},{}); }
+std::vector<UiTasMovieSterilizationRequestSummary> QueuedUiReadDb::ListTasMovieSterilizationRequests(int limit) const { return ExecuteRead<std::vector<UiTasMovieSterilizationRequestSummary>>([this,limit](){return inner_?inner_->ListTasMovieSterilizationRequests(limit):std::vector<UiTasMovieSterilizationRequestSummary>{};},{}); }
+std::vector<UiTasMovieSterilizationAttemptSummary> QueuedUiReadDb::ListTasMovieSterilizationAttempts(std::optional<std::int64_t> request_id,int limit) const { return ExecuteRead<std::vector<UiTasMovieSterilizationAttemptSummary>>([this,request_id,limit](){return inner_?inner_->ListTasMovieSterilizationAttempts(request_id,limit):std::vector<UiTasMovieSterilizationAttemptSummary>{};},{}); }
+std::vector<UiBattleContextSummary> QueuedUiReadDb::ListBattleContexts(bool complete_only,int limit) const { return ExecuteRead<std::vector<UiBattleContextSummary>>([this,complete_only,limit](){return inner_?inner_->ListBattleContexts(complete_only,limit):std::vector<UiBattleContextSummary>{};},{}); }
+
 std::vector<UiArchiveCatalogRow> QueuedUiReadDb::ListArchiveCatalog(
     const UiArchiveCatalogListQuery& query) const {
     return ExecuteRead<std::vector<UiArchiveCatalogRow>>(

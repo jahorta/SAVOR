@@ -9,14 +9,10 @@
 #include "GUI/Common/StatusToast.h"
 
 class BattlePlanEditorWindow;
-class BattleRunSpecEditorWindow;
-class ExplorerSettingsEditorWindow;
 class QLabel;
 class QListWidget;
 class QPushButton;
 class SeedProbeSpecEditorWindow;
-class TasSpecEditorWindow;
-class BattleChainSpecEditorWindow;
 
 class BattleRunSettingsPage final : public QWidget
 {
@@ -32,10 +28,6 @@ signals:
 private:
     void createWidgets();
     void openSeedProbeSpecEditor();
-    void openTasSpecEditor();
-    void openBattleRunSpecEditor();
-    void openExplorerSettingsEditor();
-    void openBattleChainSpecEditor();
     void openBattlePlanEditor();
     void editSelectedBattlePlan();
     void duplicateSelectedBattlePlan();
@@ -43,10 +35,6 @@ private:
     void postStatusMessage(const QString& text, StatusToast::Severity severity);
 
     QPushButton* newSeedProbeSpecButton_ = nullptr;
-    QPushButton* newTasSpecButton_ = nullptr;
-    QPushButton* newBattleRunSpecButton_ = nullptr;
-    QPushButton* newExplorerSettingsButton_ = nullptr;
-    QPushButton* newBattleChainSpecButton_ = nullptr;
     QPushButton* newBattlePlanButton_ = nullptr;
     QPushButton* editBattlePlanButton_ = nullptr;
     QPushButton* duplicateBattlePlanButton_ = nullptr;
@@ -55,9 +43,5 @@ private:
     QLabel* libraryStatusLabel_ = nullptr;
     std::vector<savor::db::BattlePlanSnapshot> battlePlans_;
     QPointer<SeedProbeSpecEditorWindow> seedProbeSpecEditor_;
-    QPointer<TasSpecEditorWindow> tasSpecEditor_;
-    QPointer<BattleRunSpecEditorWindow> battleRunSpecEditor_;
-    QPointer<ExplorerSettingsEditorWindow> explorerSettingsEditor_;
-    QPointer<BattleChainSpecEditorWindow> battleChainSpecEditor_;
     QPointer<BattlePlanEditorWindow> battlePlanEditor_;
 };

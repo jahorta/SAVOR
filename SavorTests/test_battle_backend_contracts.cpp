@@ -3,7 +3,7 @@
 #include "../SavorCore/Core/Input/SoaBattle/BattlePlanValidation.h"
 #include "../SavorCore/Core/Input/SoaBattle/BattleCommandCodec.h"
 #include "../SavorCore/Phases/Programs/BattleSingleTurn/BattleSingleTurnModule.h"
-#include "../SavorCore/Runner/Runtime/Predicates/PredicateBundle.h"
+#include "../SavorCore/Runner/Runtime/Predicates/PredicateExecution.h"
 #include "../SavorCore/Runner/Runtime/DerivedState/DerivedStateRegistry.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
@@ -155,9 +155,7 @@ TEST(BattleEnumDefinitions, SingleTurnOutcomeMapDrivesModuleSchema)
     const auto phase =
         battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
             false,
-            {BattlePredicateHookContractV1(),
-             EmptyPredicateBundleV1(),
-             EmptyPredicateBundleBindingV1()},
+            EmptyPredicateExecutionPackageV1(),
             &diagnostic);
     ASSERT_TRUE(phase) << diagnostic;
     const auto decoded = program::DecodeProgramModuleV1(
@@ -187,23 +185,22 @@ TEST(BattleEnumDefinitions, SingleTurnOutcomeMapDrivesModuleSchema)
     }
 }
 
-TEST(PredicateBundle, CanonicalEmptyPackageRoundTrips)
+TEST(PredicateExecution, CanonicalEmptyPackageRoundTrips)
 {
-    PredicateBundleExecutionPackageV1 package{
-        BattlePredicateHookContractV1(),
-        EmptyPredicateBundleV1(),
-        EmptyPredicateBundleBindingV1()};
-    ASSERT_TRUE(ValidatePredicateBundlePackageV1(package));
+    const auto package = EmptyPredicateExecutionPackageV1();
+    ASSERT_TRUE(ValidatePredicateExecutionPackageV1(package));
     std::vector<std::uint8_t> encoded;
-    ASSERT_TRUE(EncodePredicateBundleExecutionPackageV1(package, encoded));
-    PredicateBundleExecutionPackageV1 decoded;
-    ASSERT_TRUE(DecodePredicateBundleExecutionPackageV1(encoded, decoded));
-    EXPECT_EQ(decoded.hook_contract, package.hook_contract);
-    EXPECT_EQ(decoded.bundle.content_sha256, package.bundle.content_sha256);
-    EXPECT_EQ(decoded.binding.content_sha256, package.binding.content_sha256);
+    ASSERT_TRUE(EncodePredicateExecutionPackageV1(package, encoded));
+    PredicateExecutionPackageV1 decoded;
+    ASSERT_TRUE(DecodePredicateExecutionPackageV1(encoded, decoded));
+    EXPECT_EQ(decoded.content_sha256, package.content_sha256);
+    EXPECT_EQ(decoded.group.content_sha256, package.group.content_sha256);
+    EXPECT_EQ(decoded.hook_contract.content_sha256,
+              package.hook_contract.content_sha256);
+    EXPECT_TRUE(decoded.execution_bindings.empty());
 }
 
-TEST(PredicateBundle, BattleHookContractExcludesStartActionAndRetainsStartTurn)
+TEST(PredicateExecution, BattleHookContractExcludesStartActionAndRetainsStartTurn)
 {
     const auto contract = BattlePredicateHookContractV1();
     EXPECT_EQ(std::ranges::count_if(contract.points, [](const auto& point) {
@@ -215,19 +212,16 @@ TEST(PredicateBundle, BattleHookContractExcludesStartActionAndRetainsStartTurn)
     }), 1);
 }
 
-TEST(PredicateBundle, RejectsHashDriftBeforeExecution)
+TEST(PredicateExecution, RejectsHashDriftBeforeExecution)
 {
-    PredicateBundleExecutionPackageV1 package{
-        BattlePredicateHookContractV1(),
-        EmptyPredicateBundleV1(),
-        EmptyPredicateBundleBindingV1()};
-    package.binding.content_sha256.assign(64, '0');
-    const auto validation = ValidatePredicateBundlePackageV1(package);
+    auto package = EmptyPredicateExecutionPackageV1();
+    package.content_sha256.assign(64, '0');
+    const auto validation = ValidatePredicateExecutionPackageV1(package);
     EXPECT_FALSE(validation);
-    EXPECT_EQ(validation.code, "predicate.binding_hash_mismatch");
+    EXPECT_EQ(validation.code, "predicate.package_hash_mismatch");
 }
 
-PredicateBundleExecutionPackageV1 ActiveLiteralPackage(
+PredicateExecutionPackageV1 ActiveLiteralPackage(
     program::composition::PredicateReaction reaction)
 {
     auto hook_contract = BattlePredicateHookContractV1();
@@ -249,35 +243,42 @@ PredicateBundleExecutionPackageV1 ActiveLiteralPackage(
         }},
         .root_expression = 0,
     };
-    ResolvedPredicateBundleV1 bundle{
-        .bundle_revision_id = 42,
-        .canonical_id = "test.battle.bundle",
+    ResolvedPredicateDefinitionV1 resolved_definition{
+        .revision_id = 84,
+        .definition = definition,
+    };
+    resolved_definition.content_sha256 =
+        ComputePredicateDefinitionHashV1(definition);
+    PredicateExecutionBindingV1 binding{
+        .execution_binding_revision_id = 85,
+        .canonical_id = "test.battle.binding.literal_true",
         .revision = 1,
-        .definitions = {{.revision_id = 84, .definition = definition}},
-        .checks = {{
+        .definition = resolved_definition,
+    };
+    binding.content_sha256 = ComputePredicateExecutionBindingHashV1(binding);
+    ResolvedPredicateGroupV1 group{
+        .predicate_group_revision_id = 42,
+        .canonical_id = "test.battle.group",
+        .revision = 1,
+        .members = {{
             .ordinal = 0,
-            .predicate_definition_revision_id = 84,
-            .use = {
-                .canonical_id = "literal-at-start-turn",
-                .semantic_point_id = hook->canonical_id,
-                .reaction = reaction,
-            },
+            .execution_binding_revision_id = binding.execution_binding_revision_id,
+            .semantic_hook_ids = {hook->canonical_id},
             .occurrence = PredicateOccurrencePolicyV1::First,
+            .reaction = reaction,
         }},
     };
-    bundle.content_sha256 = ComputeResolvedPredicateBundleHashV1(bundle);
-    PredicateBundleBindingV1 binding{
-        .bundle_revision_id = bundle.bundle_revision_id,
-        .bundle_content_sha256 = bundle.content_sha256,
-        .active_check_ordinals = {0},
-        .structural_active_check_sha256 =
-            ComputePredicateActiveCheckSetHashV1(std::array<std::uint32_t, 1>{0}),
+    group.content_sha256 = ComputeResolvedPredicateGroupHashV1(group);
+    PredicateExecutionPackageV1 package{
+        .hook_contract = std::move(hook_contract),
+        .group = std::move(group),
+        .execution_bindings = {std::move(binding)},
     };
-    binding.content_sha256 = ComputePredicateBundleBindingHashV1(binding);
-    return {std::move(hook_contract), std::move(bundle), std::move(binding)};
+    package.content_sha256 = ComputePredicateExecutionPackageHashV1(package);
+    return package;
 }
 
-PredicateBundleExecutionPackageV1 ActiveDerivedEnemyCountPackage()
+PredicateExecutionPackageV1 ActiveDerivedEnemyCountPackage()
 {
     auto hook_contract = BattlePredicateHookContractV1();
     const auto hook = std::ranges::find_if(
@@ -334,53 +335,51 @@ PredicateBundleExecutionPackageV1 ActiveDerivedEnemyCountPackage()
         },
         .root_expression = 3,
     };
-    ResolvedPredicateBundleV1 bundle{
-        .bundle_revision_id = 43,
-        .canonical_id = "test.battle.derived.bundle",
+    ResolvedPredicateDefinitionV1 resolved_definition{
+        .revision_id = 85,
+        .definition = definition,
+    };
+    resolved_definition.content_sha256 =
+        ComputePredicateDefinitionHashV1(definition);
+    PredicateExecutionBindingV1 binding{
+        .execution_binding_revision_id = 86,
+        .canonical_id = "test.battle.binding.derived.enemy_count",
         .revision = 1,
-        .definitions = {{.revision_id = 85, .definition = definition}},
-        .observations = {{
-            .ordinal = 0,
-            .stable_key = "turn-order",
-            .semantic_hook_id = hook->canonical_id,
-            .source_kind = PredicateObservationSourceKindV1::RegisteredQuery,
-            .source = query,
+        .definition = resolved_definition,
+        .witnesses = {{
+            .witness_ordinal = 0,
+            .source_kind = PredicateWitnessSourceKindV1::DerivedStateQuery,
             .value_type = snapshot_type,
+            .source = query,
         }},
-        .checks = {{
+    };
+    binding.content_sha256 = ComputePredicateExecutionBindingHashV1(binding);
+    ResolvedPredicateGroupV1 group{
+        .predicate_group_revision_id = 43,
+        .canonical_id = "test.battle.group.derived",
+        .revision = 1,
+        .members = {{
             .ordinal = 0,
-            .predicate_definition_revision_id = 85,
-            .use = {
-                .canonical_id = "enemy-count-at-turn-ready",
-                .semantic_point_id = hook->canonical_id,
-            },
+            .execution_binding_revision_id = binding.execution_binding_revision_id,
+            .semantic_hook_ids = {hook->canonical_id},
             .occurrence = PredicateOccurrencePolicyV1::First,
-            .witnesses = {{
-                .witness_ordinal = 0,
-                .source_kind = PredicateWitnessSourceKindV1::Observation,
-                .source_ordinal = 0,
-                .value_type = snapshot_type,
-            }},
         }},
     };
-    bundle.content_sha256 = ComputeResolvedPredicateBundleHashV1(bundle);
-    PredicateBundleBindingV1 binding{
-        .bundle_revision_id = bundle.bundle_revision_id,
-        .bundle_content_sha256 = bundle.content_sha256,
-        .active_check_ordinals = {0},
-        .structural_active_check_sha256 =
-            ComputePredicateActiveCheckSetHashV1(
-                std::array<std::uint32_t, 1>{0}),
+    group.content_sha256 = ComputeResolvedPredicateGroupHashV1(group);
+    PredicateExecutionPackageV1 package{
+        .hook_contract = std::move(hook_contract),
+        .group = std::move(group),
+        .execution_bindings = {std::move(binding)},
     };
-    binding.content_sha256 = ComputePredicateBundleBindingHashV1(binding);
-    return {std::move(hook_contract), std::move(bundle), std::move(binding)};
+    package.content_sha256 = ComputePredicateExecutionPackageHashV1(package);
+    return package;
 }
 
 TEST(BattleSingleTurnModule, PreparesAndCachesActivePredicateVariant)
 {
     auto package = ActiveLiteralPackage(
         program::composition::PredicateReaction::AbortOnFail);
-    ASSERT_TRUE(ValidatePredicateBundlePackageV1(package));
+    ASSERT_TRUE(ValidatePredicateExecutionPackageV1(package));
     std::string diagnostic;
     const auto first = battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
         false, package, &diagnostic);
@@ -389,10 +388,10 @@ TEST(BattleSingleTurnModule, PreparesAndCachesActivePredicateVariant)
         false, package, &diagnostic);
     ASSERT_TRUE(second) << diagnostic;
     EXPECT_EQ(first.get(), second.get());
-    EXPECT_EQ(first->predicate_package().bundle.content_sha256,
-              package.bundle.content_sha256);
-    EXPECT_EQ(first->predicate_package().binding.content_sha256,
-              package.binding.content_sha256);
+    EXPECT_EQ(first->predicate_package().group.content_sha256,
+              package.group.content_sha256);
+    EXPECT_EQ(first->predicate_package().content_sha256,
+              package.content_sha256);
 
     const auto first_turn =
         battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
@@ -419,26 +418,16 @@ TEST(BattleSingleTurnModule, DeclaresSharedPredicateEvaluationSchemaOnce)
     ASSERT_NE(end_turn, package.hook_contract.points.end());
     ASSERT_NE(victory, package.hook_contract.points.end());
 
-    auto& first = package.bundle.checks.front();
-    first.use.canonical_id = "literal-at-end-turn";
-    first.use.semantic_point_id = end_turn->canonical_id;
-    first.use.emit_evidence = true;
-    auto second = first;
-    second.ordinal = 1;
-    second.use.canonical_id = "literal-at-victory";
-    second.use.semantic_point_id = victory->canonical_id;
-    package.bundle.checks.push_back(std::move(second));
-    package.bundle.content_sha256 =
-        ComputeResolvedPredicateBundleHashV1(package.bundle);
-    package.binding.bundle_content_sha256 = package.bundle.content_sha256;
-    package.binding.active_check_ordinals = {0, 1};
-    package.binding.structural_active_check_sha256 =
-        ComputePredicateActiveCheckSetHashV1(
-            std::array<std::uint32_t, 2>{0, 1});
-    package.binding.content_sha256 =
-        ComputePredicateBundleBindingHashV1(package.binding);
+    auto& member = package.group.members.front();
+    member.semantic_hook_ids = {end_turn->canonical_id, victory->canonical_id};
+    std::ranges::sort(member.semantic_hook_ids);
+    member.emit_evidence = true;
+    package.group.content_sha256 =
+        ComputeResolvedPredicateGroupHashV1(package.group);
+    package.content_sha256 =
+        ComputePredicateExecutionPackageHashV1(package);
 
-    ASSERT_TRUE(ValidatePredicateBundlePackageV1(package));
+    ASSERT_TRUE(ValidatePredicateExecutionPackageV1(package));
     std::string diagnostic;
     const auto prepared =
         battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
@@ -451,14 +440,14 @@ TEST(BattleSingleTurnModule, DeclaresSharedPredicateEvaluationSchemaOnce)
     ASSERT_EQ(decoded.value->entrypoints.front().emission_schemas.size(), 1u);
     EXPECT_EQ(
         decoded.value->entrypoints.front().emission_schemas.front().canonical_id,
-        package.bundle.definitions.front().definition.canonical_id +
+        package.execution_bindings.front().definition.definition.canonical_id +
             ".Evaluation");
 }
 
 TEST(BattleSingleTurnModule, DerivedPredicateImportsSelectItsExactStaticBlock)
 {
     auto predicate = ActiveDerivedEnemyCountPackage();
-    ASSERT_TRUE(ValidatePredicateBundlePackageV1(predicate));
+    ASSERT_TRUE(ValidatePredicateExecutionPackageV1(predicate));
     std::string diagnostic;
     const auto prepared = battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
         false, predicate, &diagnostic);
@@ -484,15 +473,47 @@ TEST(BattleSingleTurnModule, DerivedPredicateImportsSelectItsExactStaticBlock)
         "Program-kind derived-state defaults contain a duplicate block ID");
 }
 
+TEST(BattleSingleTurnModule, DerivedSnapshotCaptureIsIndependentFromEvaluationHook)
+{
+    auto package = ActiveDerivedEnemyCountPackage();
+    const auto end_turn = std::ranges::find_if(
+        package.hook_contract.points,
+        [](const auto& point) {
+            return point.canonical_id.ends_with(".EndTurn");
+        });
+    ASSERT_NE(end_turn, package.hook_contract.points.end());
+    package.group.members.front().semantic_hook_ids = {
+        end_turn->canonical_id};
+    package.group.content_sha256 =
+        ComputeResolvedPredicateGroupHashV1(package.group);
+    package.content_sha256 =
+        ComputePredicateExecutionPackageHashV1(package);
+    EXPECT_TRUE(ValidatePredicateExecutionPackageV1(package));
+
+    const auto turn_inputs = std::ranges::find_if(
+        package.hook_contract.points,
+        [](const auto& point) {
+            return point.canonical_id.ends_with(".TurnInputs");
+        });
+    ASSERT_NE(turn_inputs, package.hook_contract.points.end());
+    package.group.members.front().semantic_hook_ids = {
+        turn_inputs->canonical_id};
+    package.group.content_sha256 =
+        ComputeResolvedPredicateGroupHashV1(package.group);
+    package.content_sha256 =
+        ComputePredicateExecutionPackageHashV1(package);
+    const auto invalid = ValidatePredicateExecutionPackageV1(package);
+    EXPECT_FALSE(invalid);
+    EXPECT_EQ(invalid.code, "predicate.observation_unschedulable");
+}
+
 TEST(BattleSingleTurnModule, AdmissionRequiresExactStaticReducerIdentity)
 {
     std::string diagnostic;
     const auto phase =
         battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
             false,
-            {BattlePredicateHookContractV1(),
-             EmptyPredicateBundleV1(),
-             EmptyPredicateBundleBindingV1()},
+            EmptyPredicateExecutionPackageV1(),
             &diagnostic);
     ASSERT_TRUE(phase) << diagnostic;
     const auto decoded = program::DecodeProgramModuleV1(
@@ -549,9 +570,7 @@ TEST(BattleSingleTurnModule, FakeAttackUsesLegacySevenFrameTargetDwell)
     const auto phase =
         battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
             false,
-            {BattlePredicateHookContractV1(),
-             EmptyPredicateBundleV1(),
-             EmptyPredicateBundleBindingV1()},
+            EmptyPredicateExecutionPackageV1(),
             &diagnostic);
     ASSERT_TRUE(phase) << diagnostic;
     const auto decoded = program::DecodeProgramModuleV1(
@@ -615,9 +634,7 @@ TEST(BattleSingleTurnModule, SharedAttackAcceptEnumRoutesToHeldAInputSegment)
     const auto phase =
         battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
             false,
-            {BattlePredicateHookContractV1(),
-             EmptyPredicateBundleV1(),
-             EmptyPredicateBundleBindingV1()},
+            EmptyPredicateExecutionPackageV1(),
             &diagnostic);
     ASSERT_TRUE(phase) << diagnostic;
     const auto decoded = program::DecodeProgramModuleV1(

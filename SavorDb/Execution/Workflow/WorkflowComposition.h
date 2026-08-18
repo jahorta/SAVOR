@@ -17,8 +17,39 @@ enum class WorkflowPortDirection {
 struct WorkflowPortDefinition {
     std::string key;
     std::string data_kind;
+    std::string ref_kind;
     std::string display_name;
     bool required = true;
+};
+
+enum class WorkflowLaunchArgumentValueType : std::uint8_t {
+    Integer = 1,
+    Text = 2,
+    Boolean = 3,
+    Json = 4,
+    Choice = 5,
+};
+
+struct WorkflowLaunchArgumentChoiceDefinition {
+    std::string value;
+    std::string display_name;
+};
+
+struct WorkflowLaunchArgumentDefinition {
+    std::string key;
+    std::string display_name;
+    WorkflowLaunchArgumentValueType value_type = WorkflowLaunchArgumentValueType::Text;
+    bool required = false;
+    std::optional<std::string> default_value;
+    std::optional<std::int64_t> minimum_integer;
+    std::optional<std::uint64_t> maximum_integer;
+    std::vector<WorkflowLaunchArgumentChoiceDefinition> choices;
+};
+
+struct WorkflowLaunchArgumentConstraint {
+    std::string lesser_or_equal_key;
+    std::string greater_or_equal_key;
+    std::string message;
 };
 
 struct WorkflowAuthoredRefRequirement {
@@ -39,12 +70,17 @@ struct WorkflowUnitDefinition {
     std::string display_name;
     std::string description;
     bool hidden = false;
+    bool standalone_launchable = true;
+    std::string standalone_presentation_family_key;
+    std::string standalone_presentation_family_display_name;
     std::string unit_variant;
     std::string breakpoint_profile_key;
     std::string default_activation_params_json;
     std::vector<WorkflowAuthoredRefRequirement> authored_refs;
     std::vector<WorkflowPortDefinition> required_inputs;
     std::vector<WorkflowPortDefinition> possible_outputs;
+    std::vector<WorkflowLaunchArgumentDefinition> launch_arguments;
+    std::vector<WorkflowLaunchArgumentConstraint> launch_argument_constraints;
     std::vector<std::string> internal_step_kinds;
     std::vector<WorkflowUnitStepTemplate> step_templates;
 };
@@ -53,8 +89,20 @@ struct WorkflowExternalInputBinding {
     std::string node_key;
     std::string input_key;
     std::string data_kind;
+    std::string ref_kind;
     std::optional<std::int64_t> ref_id;
 };
+
+struct WorkflowStandalonePresentationEntry {
+    std::string presentation_key;
+    std::string display_name;
+    std::string description;
+    std::vector<WorkflowUnitDefinition> members;
+};
+
+[[nodiscard]] std::vector<WorkflowStandalonePresentationEntry>
+BuildStandalonePresentationEntries(
+    std::vector<WorkflowUnitDefinition> units);
 
 struct WorkflowUnitOutputBinding {
     std::string from_node_key;

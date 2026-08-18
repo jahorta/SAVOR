@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "../Common/Types/UtcTimestamp.h"
@@ -217,6 +218,125 @@ struct UiArtifactSummary {
     std::uint64_t size_bytes = 0;
     std::string artifact_kind;
     std::string filename;
+    std::int64_t created_at_utc = 0;
+};
+
+struct UiSavestateSummary {
+    std::int64_t savestate_id = 0;
+    std::int64_t artifact_id = 0;
+    std::string savestate_type;
+    std::string note;
+    bool is_complete = false;
+    std::string playback_state;
+    std::optional<std::int64_t> dtm_artifact_id;
+    std::string sha256;
+    std::uint64_t size_bytes = 0;
+    std::string filename;
+    std::int64_t created_at_utc = 0;
+};
+
+struct UiTasMovieRootSummary {
+    std::int64_t tas_movie_root_id = 0;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::int64_t dtm_artifact_id = 0;
+    std::uint32_t rtc_value = 0;
+    std::int64_t itinerary_artifact_id = 0;
+    std::uint32_t required_final_breakpoint_pc = 0;
+    std::int64_t checkpoint_savestate_id = 0;
+    std::string source_context_kind;
+    std::int64_t source_context_id = 0;
+    std::int64_t created_at_utc = 0;
+};
+
+struct UiTasMovieTreeSummary {
+    std::int64_t tas_movie_tree_id = 0;
+    std::int64_t tas_movie_root_id = 0;
+    std::optional<std::int64_t> parent_tas_movie_tree_id;
+    std::int64_t dtm_artifact_id = 0;
+    std::int64_t itinerary_artifact_id = 0;
+    std::uint32_t required_final_breakpoint_pc = 0;
+    std::int64_t checkpoint_savestate_id = 0;
+    std::string source_context_kind;
+    std::int64_t source_context_id = 0;
+    std::int64_t created_at_utc = 0;
+};
+
+struct UiTasMovieValidationAttemptSummary {
+    std::int64_t validation_attempt_id = 0;
+    std::int64_t validation_request_id = 0;
+    std::int64_t source_job_id = 0;
+    std::string outcome;
+    std::string failure_reason;
+    std::optional<std::uint32_t> expected_pc;
+    std::optional<std::uint64_t> expected_input_count;
+    std::uint32_t actual_pc = 0;
+    std::uint64_t actual_input_count = 0;
+    std::optional<std::int64_t> last_known_good_savestate_id;
+    std::optional<std::int64_t> produced_tas_movie_root_id;
+    std::string worker_id;
+    std::int64_t recorded_at_utc = 0;
+};
+
+struct UiTasMovieValidationRequestSummary {
+    std::int64_t validation_request_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::string step_kind;
+    std::string operation;
+    std::string source_kind;
+    std::int64_t source_ref_id = 0;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::string source_dtm_sha256;
+    std::optional<std::uint32_t> rtc_value;
+    std::string effective_dtm_sha256;
+    std::optional<std::int64_t> itinerary_artifact_id;
+    std::string itinerary_sha256;
+    std::uint32_t required_final_breakpoint_pc = 0;
+    std::optional<std::int64_t> latest_validation_attempt_id;
+    std::string latest_outcome;
+    std::string latest_failure_reason;
+    std::optional<std::uint32_t> latest_actual_pc;
+    std::optional<std::uint64_t> latest_actual_input_count;
+    std::optional<std::int64_t> produced_tas_movie_root_id;
+    std::int64_t created_at_utc = 0;
+};
+
+struct UiTasMovieSterilizationAttemptSummary {
+    std::int64_t sterilization_attempt_id = 0;
+    std::int64_t sterilization_request_id = 0;
+    std::int64_t source_job_id = 0;
+    std::string candidate_savestate_sha256;
+    std::int64_t produced_savestate_id = 0;
+    std::string worker_id;
+    std::int64_t recorded_at_utc = 0;
+};
+
+struct UiTasMovieSterilizationRequestSummary {
+    std::int64_t sterilization_request_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t source_savestate_id = 0;
+    std::int64_t source_savestate_artifact_id = 0;
+    std::string source_savestate_sha256;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::string source_dtm_sha256;
+    std::optional<std::int64_t> reused_savestate_id;
+    std::optional<std::int64_t> latest_sterilization_attempt_id;
+    std::optional<std::int64_t> latest_produced_savestate_id;
+    std::string latest_candidate_savestate_sha256;
+    std::int64_t created_at_utc = 0;
+};
+
+struct UiBattleContextSummary {
+    std::int64_t context_probe_id = 0;
+    std::optional<std::int64_t> wave_id;
+    std::int64_t source_savestate_id = 0;
+    std::optional<std::int64_t> exec_job_id;
+    std::string probe_status;
+    std::optional<int> context_version;
+    std::optional<std::int64_t> context_artifact_id;
+    std::optional<std::uint32_t> entry_pc;
+    std::optional<std::int64_t> recorded_at_utc;
     std::int64_t created_at_utc = 0;
 };
 
@@ -541,6 +661,18 @@ struct IUiReadDb {
 
     virtual UiReadPage<UiArtifactSummary> ListArtifacts(
         const UiReadArtifactListQuery& query) const = 0;
+
+    virtual std::vector<UiSavestateSummary> ListSavestates(
+        std::string_view playback_state, bool complete_only, std::string_view search, int limit) const = 0;
+    virtual std::vector<UiTasMovieRootSummary> ListTasMovieRoots(int limit) const = 0;
+    virtual std::vector<UiTasMovieTreeSummary> ListTasMovieTrees(int limit) const = 0;
+    virtual std::vector<UiTasMovieValidationRequestSummary> ListTasMovieValidationRequests(int limit) const = 0;
+    virtual std::vector<UiTasMovieValidationAttemptSummary> ListTasMovieValidationAttempts(
+        std::optional<std::int64_t> request_id, int limit) const = 0;
+    virtual std::vector<UiTasMovieSterilizationRequestSummary> ListTasMovieSterilizationRequests(int limit) const = 0;
+    virtual std::vector<UiTasMovieSterilizationAttemptSummary> ListTasMovieSterilizationAttempts(
+        std::optional<std::int64_t> request_id, int limit) const = 0;
+    virtual std::vector<UiBattleContextSummary> ListBattleContexts(bool complete_only, int limit) const = 0;
 
     virtual std::vector<UiArchiveCatalogRow> ListArchiveCatalog(
         const UiArchiveCatalogListQuery& query) const = 0;

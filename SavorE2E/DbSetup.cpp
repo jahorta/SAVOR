@@ -431,8 +431,8 @@ bool SeedWorkflowGraphExecution(
                 .nodes = {
                     {
                         .node_key = "probe_1",
-                        .unit_kind = "battle_seed_probe",
-                        .display_name = "Battle Seed Probe",
+                        .unit_kind = "seed_probe",
+                        .display_name = "SeedProbe",
                         .authored_ref_kind = std::string("seed_probe_spec"),
                         .authored_ref_id = seed_probe_spec_id,
                         .inputs = {
@@ -464,8 +464,8 @@ bool SeedWorkflowGraphExecution(
         registry,
         "probe_1",
         "probe_1",
-        "battle_seed_probe",
-        "Battle Seed Probe",
+            "seed_probe",
+            "SeedProbe",
         std::optional<std::string>("seed_probe_spec"),
         seed_probe_spec_id,
         {},
@@ -479,7 +479,7 @@ bool SeedWorkflowGraphExecution(
             != "seedprobe.run") {
         if (error_out) {
             *error_out =
-                "battle_seed_probe must resolve to exactly one "
+                "seed_probe must resolve to exactly one "
                 "seedprobe.run workflow step";
         }
         return false;
@@ -527,11 +527,16 @@ bool SeedTasMovieWorkflow(
                         .unit_kind = "tas_movie_establish_root_cursor",
                         .display_name = "TAS Movie: Establish Root Cursor",
                         .inputs = {
-                            { .input_key = "root_dtm", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "Handcrafted root DTM" },
+                            {
+                                .input_key = "root_dtm",
+                                .data_kind = "state_artifact.dtm_artifact_id",
+                                .ref_kind = "state_artifact",
+                                .display_name = "Handcrafted root DTM",
+                            },
                         },
                         .possible_outputs = {
-                            { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .display_name = "Validation attempt" },
-                            { .output_key = "established_root_cursor_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .display_name = "Established root cursor attempt" },
+                            { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Validation attempt" },
+                            { .output_key = "established_root_cursor_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Established root cursor attempt" },
                         },
                     },
                 },
@@ -547,7 +552,6 @@ bool SeedTasMovieWorkflow(
     savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
     command.workflow_kind = "workflow_graph";
     command.root_scope_kind = "manual";
-    command.root_scope_id = dtm_artifact_id;
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "savor-e2e";
     command.created_at_utc = UtcNow().time_since_epoch().count();
@@ -617,11 +621,16 @@ bool SeedTasMovieRootValidationWorkflow(
                         .unit_kind = "tas_movie_validate_root",
                         .display_name = "TAS Movie: Validate Root",
                         .inputs = {
-                            { .input_key = "root_establishment", .data_kind = "analysis.tas_movie_validation_attempt_id", .display_name = "Root cursor establishment" },
+                            {
+                                .input_key = "root_establishment",
+                                .data_kind = "analysis.tas_movie_validation_attempt_id",
+                                .ref_kind = "tmv_validation_attempt",
+                                .display_name = "Root cursor establishment",
+                            },
                         },
                         .possible_outputs = {
-                            { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .display_name = "Validation attempt" },
-                            { .output_key = "validated_checkpoint_savestate", .data_kind = "state.movie_paired_savestate_id", .display_name = "Validated checkpoint savestate" },
+                            { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Validation attempt" },
+                            { .output_key = "validated_checkpoint_savestate", .data_kind = "state.movie_paired_savestate_id", .ref_kind = "state.savestate", .display_name = "Validated checkpoint savestate" },
                         },
                     },
                 },
@@ -637,7 +646,6 @@ bool SeedTasMovieRootValidationWorkflow(
     savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
     command.workflow_kind = "workflow_graph";
     command.root_scope_kind = "manual";
-    command.root_scope_id = establishment_attempt_id;
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "savor-e2e";
     command.created_at_utc = UtcNow().time_since_epoch().count();
@@ -687,6 +695,189 @@ bool SeedTasMovieRootValidationWorkflow(
         command, workflow_instance_id_out, error_out);
 }
 
+bool SeedTasMovieSterileWorkflow(
+    savor::db::IAuthoringDb* authoring_db,
+    savor::db::IExecutionDb* execution_db,
+    std::int64_t dtm_artifact_id,
+    std::int64_t rtc_value,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out) {
+    if (authoring_db == nullptr || execution_db == nullptr
+        || dtm_artifact_id <= 0
+        || rtc_value < 0
+        || static_cast<std::uint64_t>(rtc_value)
+            > std::numeric_limits<std::uint32_t>::max()) {
+        if (error_out) {
+            *error_out = "authoring/execution DB, DTM, or GameCube RTC is invalid";
+        }
+        return false;
+    }
+
+    savor::db::SaveWorkflowGraphResult saved{};
+    if (!authoring_db->SaveWorkflowGraph(
+            {
+                .name = "SavorE2E TAS Movie to Sterilization",
+                .description = "Establish and validate a root DTM, then sterilize the resulting checkpoint",
+                .graph_version = 1,
+                .graph_hash = "savor-e2e.workflow_graph.tasmovie_sterile.v1",
+                .nodes = {
+                    {
+                        .node_key = "tas_establish_1",
+                        .unit_kind = "tas_movie_establish_root_cursor",
+                        .display_name = "TAS Movie: Establish Root Cursor",
+                        .inputs = {
+                            {
+                                .input_key = "root_dtm",
+                                .data_kind = "state_artifact.dtm_artifact_id",
+                                .ref_kind = "state_artifact",
+                                .display_name = "Handcrafted root DTM",
+                            },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Validation attempt" },
+                            { .output_key = "established_root_cursor_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Established root cursor attempt" },
+                        },
+                    },
+                    {
+                        .node_key = "tas_validate_1",
+                        .unit_kind = "tas_movie_validate_root",
+                        .display_name = "TAS Movie: Validate Root",
+                        .inputs = {
+                            {
+                                .input_key = "root_establishment",
+                                .data_kind = "analysis.tas_movie_validation_attempt_id",
+                                .ref_kind = "tmv_validation_attempt",
+                                .display_name = "Root cursor establishment",
+                            },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Validation attempt" },
+                            { .output_key = "validated_checkpoint_savestate", .data_kind = "state.movie_paired_savestate_id", .ref_kind = "state.savestate", .display_name = "Validated checkpoint savestate" },
+                        },
+                    },
+                    {
+                        .node_key = "tas_sterilize_1",
+                        .unit_kind = "tas_movie_checkpoint_sterilize",
+                        .display_name = "TAS Movie: Sterilize Checkpoint",
+                        .inputs = {
+                            {
+                                .input_key = "paired_checkpoint_savestate",
+                                .data_kind = "state.movie_paired_savestate_id",
+                                .ref_kind = "state.savestate",
+                                .display_name = "Movie-paired checkpoint",
+                            },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "sterilized_checkpoint_savestate", .data_kind = "state.movie_inactive_savestate_id", .ref_kind = "state.savestate", .display_name = "Movie-inactive checkpoint" },
+                        },
+                    },
+                },
+                .edges = {
+                    {
+                        .from_node_key = "tas_establish_1",
+                        .output_key = "established_root_cursor_attempt",
+                        .to_node_key = "tas_validate_1",
+                        .input_key = "root_establishment",
+                        .guard_kind = std::string(savor::db::kWorkflowOutputPresentGuard),
+                    },
+                    {
+                        .from_node_key = "tas_validate_1",
+                        .output_key = "validated_checkpoint_savestate",
+                        .to_node_key = "tas_sterilize_1",
+                        .input_key = "paired_checkpoint_savestate",
+                        .guard_kind = std::string(savor::db::kWorkflowOutputPresentGuard),
+                    },
+                },
+                .created_at_utc = UtcNow(),
+                .correlation_id = "savor-e2e.workflow_graph.tasmovie_sterile",
+                .causation_id = "savor-e2e.seed",
+            },
+            &saved,
+            error_out)) {
+        return false;
+    }
+
+    const auto registry =
+        savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+    std::string activation_error;
+    auto establish =
+        savor::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+            registry,
+            "tas_establish_1",
+            "tas_establish_1",
+            "tas_movie_establish_root_cursor",
+            "TAS Movie: Establish Root Cursor",
+            std::nullopt,
+            std::nullopt,
+            {},
+            &activation_error);
+    auto validate =
+        savor::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+            registry,
+            "tas_validate_1",
+            "tas_validate_1",
+            "tas_movie_validate_root",
+            "TAS Movie: Validate Root",
+            std::nullopt,
+            std::nullopt,
+            { "tas_establish_1" },
+            &activation_error);
+    auto sterilize =
+        savor::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+            registry,
+            "tas_sterilize_1",
+            "tas_sterilize_1",
+            "tas_movie_checkpoint_sterilize",
+            "TAS Movie: Sterilize Checkpoint",
+            std::nullopt,
+            std::nullopt,
+            { "tas_validate_1" },
+            &activation_error);
+    if (!establish || !validate || !sterilize) {
+        if (error_out) *error_out = activation_error;
+        return false;
+    }
+    if (establish->steps.size() != 1
+        || establish->steps.front().step_kind
+            != "tasmovie.establish_root_cursor"
+        || validate->steps.size() != 1
+        || validate->steps.front().step_kind != "tasmovie.validate_root"
+        || sterilize->steps.size() != 1
+        || sterilize->steps.front().step_kind != "tasmovie.checkpoint_sterilize") {
+        if (error_out) {
+            *error_out = "composed TAS Movie sterilization units did not resolve to their exact singleton steps";
+        }
+        return false;
+    }
+
+    savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
+    command.workflow_kind = "workflow_graph";
+    command.root_scope_kind = "manual";
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "savor-e2e";
+    command.created_at_utc = UtcNow().time_since_epoch().count();
+    command.unit_activations.push_back(std::move(*establish));
+    command.unit_activations.push_back(std::move(*validate));
+    command.unit_activations.push_back(std::move(*sterilize));
+    command.input_bindings.push_back({
+        .node_key = "tas_establish_1",
+        .input_key = "root_dtm",
+        .data_kind = "state_artifact.dtm_artifact_id",
+        .ref_kind = "state_artifact",
+        .ref_id = dtm_artifact_id,
+        .source_kind = "external",
+    });
+    command.arguments.push_back({
+        .node_key = "tas_validate_1",
+        .argument_key = "rtc",
+        .value_type = "integer",
+        .integer_value = rtc_value,
+        .source_kind = "scenario",
+    });
+    return execution_db->CreateWorkflowInstance(
+        command, workflow_instance_id_out, error_out);
+}
+
 bool SeedTasMovieSeedProbeWorkflow(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IExecutionDb* execution_db,
@@ -720,11 +911,16 @@ bool SeedTasMovieSeedProbeWorkflow(
                         .unit_kind = "tas_movie_establish_root_cursor",
                         .display_name = "TAS Movie: Establish Root Cursor",
                         .inputs = {
-                            { .input_key = "root_dtm", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "Handcrafted root DTM" },
+                            {
+                                .input_key = "root_dtm",
+                                .data_kind = "state_artifact.dtm_artifact_id",
+                                .ref_kind = "state_artifact",
+                                .display_name = "Handcrafted root DTM",
+                            },
                         },
                         .possible_outputs = {
-                            { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .display_name = "Validation attempt" },
-                            { .output_key = "established_root_cursor_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .display_name = "Established root cursor attempt" },
+                            { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Validation attempt" },
+                            { .output_key = "established_root_cursor_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Established root cursor attempt" },
                         },
                     },
                     {
@@ -732,11 +928,16 @@ bool SeedTasMovieSeedProbeWorkflow(
                         .unit_kind = "tas_movie_validate_root",
                         .display_name = "TAS Movie: Validate Root",
                         .inputs = {
-                            { .input_key = "root_establishment", .data_kind = "analysis.tas_movie_validation_attempt_id", .display_name = "Root cursor establishment" },
+                            {
+                                .input_key = "root_establishment",
+                                .data_kind = "analysis.tas_movie_validation_attempt_id",
+                                .ref_kind = "tmv_validation_attempt",
+                                .display_name = "Root cursor establishment",
+                            },
                         },
                         .possible_outputs = {
-                            { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .display_name = "Validation attempt" },
-                            { .output_key = "validated_checkpoint_savestate", .data_kind = "state.movie_paired_savestate_id", .display_name = "Validated checkpoint savestate" },
+                            { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Validation attempt" },
+                            { .output_key = "validated_checkpoint_savestate", .data_kind = "state.movie_paired_savestate_id", .ref_kind = "state.savestate", .display_name = "Validated checkpoint savestate" },
                         },
                     },
                     {
@@ -744,20 +945,30 @@ bool SeedTasMovieSeedProbeWorkflow(
                         .unit_kind = "tas_movie_checkpoint_sterilize",
                         .display_name = "TAS Movie: Sterilize Checkpoint",
                         .inputs = {
-                            { .input_key = "paired_checkpoint_savestate", .data_kind = "state.movie_paired_savestate_id", .display_name = "Movie-paired checkpoint" },
+                            {
+                                .input_key = "paired_checkpoint_savestate",
+                                .data_kind = "state.movie_paired_savestate_id",
+                                .ref_kind = "state.savestate",
+                                .display_name = "Movie-paired checkpoint",
+                            },
                         },
                         .possible_outputs = {
-                            { .output_key = "sterilized_checkpoint_savestate", .data_kind = "state.movie_inactive_savestate_id", .display_name = "Movie-inactive checkpoint" },
+                            { .output_key = "sterilized_checkpoint_savestate", .data_kind = "state.movie_inactive_savestate_id", .ref_kind = "state.savestate", .display_name = "Movie-inactive checkpoint" },
                         },
                     },
                     {
                         .node_key = "probe_1",
-                        .unit_kind = "battle_seed_probe",
-                        .display_name = "Battle Seed Probe",
+                        .unit_kind = "seed_probe",
+                        .display_name = "SeedProbe",
                         .authored_ref_kind = std::string("seed_probe_spec"),
                         .authored_ref_id = seed_probe_spec_id,
                         .inputs = {
-                            { .input_key = "entry_savestate", .data_kind = "state.movie_inactive_savestate_id", .display_name = "Sterilized entry savestate" },
+                            {
+                                .input_key = "entry_savestate",
+                                .data_kind = "state.movie_inactive_savestate_id",
+                                .ref_kind = "state.savestate",
+                                .display_name = "Sterilized entry savestate",
+                            },
                         },
                         .possible_outputs = {
                             { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
@@ -826,8 +1037,8 @@ bool SeedTasMovieSeedProbeWorkflow(
             registry,
             "probe_1",
             "probe_1",
-            "battle_seed_probe",
-            "Battle Seed Probe",
+        "seed_probe",
+        "SeedProbe",
             std::optional<std::string>("seed_probe_spec"),
             seed_probe_spec_id,
             { "tas_sterilize_1" },
@@ -865,7 +1076,6 @@ bool SeedTasMovieSeedProbeWorkflow(
     savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
     command.workflow_kind = "workflow_graph";
     command.root_scope_kind = "manual";
-    command.root_scope_id = dtm_artifact_id;
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "savor-e2e";
     command.created_at_utc = UtcNow().time_since_epoch().count();

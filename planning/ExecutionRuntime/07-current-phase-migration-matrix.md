@@ -201,32 +201,37 @@ distinguishable.
 
 ### Reusable predicate composition
 
-Predicates migrate as one reusable module-composition library, not as battle opcodes or a predicate
-runtime. A `PredicateDefinition` is a pure typed condition over semantic-observation results. A `Check`
-binds that definition to:
+Predicates use one reusable module-composition library, not battle opcodes or a predicate runtime. A
+`PredicateDefinition` is a pure typed condition. A `PredicateExecutionBindingV1` supplies every typed
+witness source. A `PredicateGroupMemberV1` binds one exact published Execution Binding to:
 
 - a semantic evaluation point;
-- an ordered typed semantic-observation plan;
-- required or optional evidence;
-- a use policy such as branch, clean domain rejection, explicit fail, record, or accumulate; and
+- a sorted nonempty semantic-hook set;
+- one combined-stream occurrence policy;
+- a reaction such as clean domain rejection or record-and-continue; and
 - an optional declared `ConditionObservation` emission.
 
-Before activation, the library lowers each check into canonical IR, exact action/type/capability imports,
+Before activation, coordination resolves the published Group into a canonical Predicate Execution
+Package and the library lowers each member into canonical IR, exact action/type/capability imports,
 scoped router-subscription operations acquired through awaited actions, ordinary branches or returns,
 and typed emissions. After lowering, `ProgramExecutor` sees no predicate opcode, service, private loop,
 or separate executor. A predicate definition cannot read Dolphin, advance emulation, acquire resources,
 write persistence, or determine workflow topology.
 
-Current `AbortOnFail` data translates into a require/reject policy at the check use site; it is not part
-of the reusable pure predicate definition. An unsatisfied required predicate is a typed domain
+`AbortOnFail` is a Predicate Group member reaction; it is not part
+of the reusable pure predicate definition. A `Failed` abort-on-fail member is a typed domain
 rejection. Failure to obtain required evidence is an action or infrastructure failure, and cleanup
 status remains independent. Record-only predicates may evaluate false and still represent successful
 program progress.
 
-Current stored battle predicate definitions and result fields remain unchanged. Program-kind adapters
-translate them into composition inputs in memory and project typed observations, passed/total counts,
-and predicate-rejection outcomes through existing result operations. Current battle baseline behavior
-translates as `Latest`, with the new value installed before evaluation at the same routed hit.
+The hard-cut authoring schema contains only Predicate Definitions, Execution
+Bindings, Predicate Groups, and the predicate authoring request ledger. All
+three logical identity families are backend-generated; mutable parent metadata
+is excluded from semantic and runtime hashes, and exact create/duplicate
+retries resolve through the transactional ledger. Battle turns reference
+published Groups; old composed-predicate rows have no runtime adapter.
+Typed observations, passed/total counts, evidence, and predicate-rejection outcomes persist with exact
+Group and Execution Package lineage.
 
 ### Existing capture-profile compatibility
 
@@ -336,11 +341,24 @@ become a `WorkerWorkset`, and a workset never flattens or interprets such a list
 
 **Current control flow**
 
-`MakeSeedProbeProgram` restores the VM baseline, applies one input frame, selects a pre-battle gated stop
-or field-return canonical stop, reads the RNG seed, optionally compares an expected seed and saves a
-state, emits the seed, and returns a run outcome. One worker definition serves neutral, grid, unique, and
-field-return workflow variants; the existing SavorDb handlers continue to generate those variants and
-later steps through current operations.
+`MakeSeedProbeProgram` restores the exact baseline and first executes the
+read-only `runtime.execution.observe_paused_pc` action. A local keyed map selects
+exactly one observation endpoint from that authoritative entry PC:
+
+- `BeforeRandSeedSet` (`0x80101E48`) selects `AfterRandSeedSet`
+  (`0x8000A1DC`);
+- fast field preseed (`0x80101894`) selects
+  `FieldReturnRandSeedCommitted` (`0x801012B4`); and
+- deferred field preseed (`0x801018AC`) selects the same field-return endpoint.
+
+Only after that selection does the program acquire an input lease and lower
+synchronized delivery with the selected one-point set. Unknown, stale,
+unconfirmed, or non-paused entry evidence fails before controller acquisition,
+input publication, or guest advancement. The program then reads the RNG seed,
+optionally compares an expected seed and saves a state, emits the seed, and
+returns a run outcome. Survey/Search/Confirm coordination remains unchanged;
+catalog-selected Battle/Dungeon/Overworld profiles do not participate in
+endpoint selection.
 
 **Typed input**
 
@@ -384,9 +402,15 @@ The scalar `SeedProbeRequest` does not change. Grid and Unique fan-outs are expe
 populations because many independent requests share one exact source baseline and module revision.
 Grid may use bounded chunks directly. Unique uses small chunks, publishes each child result immediately,
 and accepts asynchronous cancellation of unstarted siblings after the authoritative winner/supersession
-path reacts; it must not hide a large committed candidate tail behind one worker. Neutral, prebattle, and
-field-return requests are typically singleton, but no phase allowlist prevents an exact-key match from
-using the generic path.
+path reacts; it must not hide a large committed candidate tail behind one worker.
+
+The current catalog exposes one `seed_probe` unit. It is public, composable,
+and standalone-launchable through the same typed savestate/specification
+contract. It persists the fixed
+`ENTRY_QUALIFIED` flavor and `seedprobe.entry_pc.v1` policy; the established
+endpoint on the durable run remains the factual endpoint authority. Existing
+authored graphs using retired phase-flavored unit names are hard-cut to this
+unit without changing historical Execution DB instances.
 
 **Parity checks**
 
@@ -398,7 +422,7 @@ using the generic path.
 
 **Legacy removal condition**
 
-All SeedProbe workflow step kinds construct `soa.seed_probe::probe` at the runtime boundary; the result
+The `seedprobe.run` workflow step constructs `soa.seed_probe::probe` at the runtime boundary; the result
 handler consumes typed output and writes through the existing SeedProbe persistence contract; the E2E
 scenario uses `ProgramInvocation`; and no worker-side caller uses `SeedProbeKeys`, `PK_SeedProbe`, or the
 SeedProbe branches in `ProgramRegistry`. `SeedProbePayload` may remain only where an existing SavorDb
@@ -633,7 +657,7 @@ module does not absorb downstream wave fan-out or combine contexts from distinct
 
 **Legacy removal condition**
 
-Both `battle.context_probe` and `battle_chain` bootstrap construct the target invocation at the runtime
+Both `battle.context_probe` and the direct-plan `battle` bootstrap construct the target invocation at the runtime
 boundary; their existing transition handlers consume adapter-projected output; and
 `PK_BattleContextProbe` plus the `GET_BATTLE_CONTEXT` worker opcode path have no worker-side caller. The
 payload codec may remain only behind the SavorDb handler to preserve stored data.
@@ -724,7 +748,7 @@ Battle Single Turn is the most demanding current migration. It:
 - current turn index and maximum turn;
 - optional initial input;
 - typed `TurnPlan`;
-- existing predicate set translated into reusable predicate-composition inputs;
+- exact resolved Predicate Execution Package;
 - fake-attack budget/accounting;
 - optional starting RNG override;
 - bounded same-attempt retry policy, fixed to at most one retry for parity;
@@ -989,7 +1013,7 @@ Migration changes:
 - fixed behavior from current source and tests to direct native module builders;
 - current stop/address/query/baseline constructs to shared semantic-observation composition before module
   verification;
-- current predicate records to shared in-memory predicate composition before module verification;
+- exact Predicate Execution Packages to shared predicate composition before module verification;
 - VM host calls to registered actions over session services;
 - input macro providers to pure reducers plus verifier-known interaction segments;
 - existing `savor.capture.profile/1` artifacts to passive `CaptureService` without representation or
@@ -1015,10 +1039,9 @@ Every phase behavior test must classify terminal behavior into:
 - **cleanup/session status:** whether all acquired resources were released/restored and the session is
   reusable.
 
-For predicates, `Unsatisfied` follows the check's explicit record/branch/domain/fail/accumulate policy.
-Failure to obtain or evaluate required evidence is not rewritten as false. A record-only false predicate
-is successful program progress; a required false predicate may return a clean predicate-rejection domain
-outcome.
+For predicates, `Failed` follows the Group member's explicit reaction. Failure to obtain or evaluate
+required evidence is not rewritten as false. A record-and-continue false predicate is successful program
+progress; `AbortOnFail` may return a clean predicate-rejection domain outcome after recording evidence.
 
 For observations, optional `Unavailable` is not false or zero, required missing evidence is a structured
 failure, and a stale receipt/baseline is rejected after `WorksetEpoch` replacement. For interactions,
@@ -1047,7 +1070,8 @@ This matrix depends on documents 02 through 06:
 - invocation/result/artifact identity; and
 - the fixed SavorDb integration boundary in document 06.
 
-No DB migration is part of this refactor. Public authoring timing fields and generated timing arguments
+The Predicate Definition/Execution Binding/Group hard cut has an explicit authoring and analysis
+migration. Public authoring timing fields and generated timing arguments
 are removed before 6A; the six physical columns remain ignored behind private neutral insert shims until
 the separate database refactor. Compatibility translation for recognized semantic fields belongs in
 program-kind handlers or adjacent runtime adapters. In-flight incompatible worker activations may be
@@ -1058,8 +1082,8 @@ into `ProgramInstance`.
 
 Portable domain codecs such as NCTX, BCMB, and BERB may remain because they are artifact formats.
 Program-specific job payload codecs and `PSContext` are not retained as the permanent runtime ABI.
-Existing persisted macro, predicate, address-program, and capture-profile representations remain
-unchanged; adapters translate or consume them in memory.
+Existing macro, address-program, and capture-profile representations remain unchanged; adapters
+translate or consume them in memory. Predicate authoring uses only the hard-cut current structure.
 
 ## Completion checks
 
@@ -1076,8 +1100,8 @@ The current-phase migration is complete only when:
   artifact-storage-interface change is introduced; public authoring interfaces lose obsolete timing
   fields, and other database interfaces change only for the shared ordered batch claim, exact-set lease
   renewal, claim/start validation, and targeted terminal reconciliation operations documented in 06;
-- current predicate records and result fields remain compatible through in-memory composition and
-  existing result projection;
+- current Predicate Groups resolve deterministically into exact Execution Packages and result projection
+  retains Group/package lineage plus passed/total/evidence accounting;
 - current stop/address/query/baseline behavior lowers through semantic-observation composition with
   equivalent point, ordering, availability, and epoch semantics;
 - current input behavior lowers through interaction composition with equivalent
@@ -1088,8 +1112,7 @@ The current-phase migration is complete only when:
 - `SavorWorker` has no `ProgramKind` program-selection or payload-decoder switch;
 - `PhaseScriptVM`, `PSContext` worker execution, domain opcodes, and `InputMacroRuntime` scheduler are
   deleted after the native modules and production activation are complete;
-- no predicate opcode, executor, runtime service, direct guest access, or predicate-specific persistence
-  remains after lowering;
+- no predicate opcode, executor, runtime service, or direct guest access remains after lowering;
 - no observation or interaction executor, scheduler, query VM, opcode family, direct Dolphin access, or
   hidden controller remains after lowering;
 - no production dual activation path or `PK_UserScript` exists; and

@@ -771,6 +771,7 @@ bool UsesTypedRequestRecord(CanonicalAction action) noexcept
     case CanonicalAction::GuestReadU64:
     case CanonicalAction::GuestRunCoherentQuery:
     case CanonicalAction::ExecutionRequirePausedPc:
+    case CanonicalAction::ExecutionObservePausedPc:
         return true;
     default:
         return false;
@@ -1625,6 +1626,13 @@ bool DecodeTypedCanonicalRequest(
         }
         return true;
     }
+    case CanonicalAction::ExecutionObservePausedPc:
+        if (!record->fields.empty())
+        {
+            diagnostic = "ObservePausedPcRequest must be empty";
+            return false;
+        }
+        return true;
     case CanonicalAction::InputAcquireLease:
     {
         const auto* config = bytes(
@@ -4232,6 +4240,44 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                     std::to_string(*expected) +
                     " but observed " +
                     std::to_string(execution->evidence.pc));
+        }
+        ProgramActionResolution completion = Completion(
+            request,
+            ProgramActionResolutionStatus::Completed);
+        completion.output = PausedPcReceiptGraph(
+            execution->evidence.pc,
+            execution->evidence.vi_count,
+            execution->workset_epoch);
+        return Immediate(std::move(completion));
+    }
+    case CanonicalAction::ExecutionObservePausedPc:
+    {
+        const std::optional<ExecutionSnapshot> execution =
+            session.execution_snapshot();
+        if (!execution)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "execution_unavailable",
+                "Paused-PC observation requires committed workset execution evidence");
+        }
+        if (execution->workset_epoch != request.expected_epoch)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::StaleEpoch,
+                "stale_epoch",
+                "Paused-PC observation observed another workset epoch");
+        }
+        if (execution->activity != ExecutionActivity::IdlePaused ||
+            !execution->evidence.pause_confirmed)
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Failed,
+                "execution_not_paused",
+                "Paused-PC observation requires a confirmed paused session");
         }
         ProgramActionResolution completion = Completion(
             request,

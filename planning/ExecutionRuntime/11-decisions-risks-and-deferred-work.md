@@ -456,7 +456,7 @@ No deferred implementation detail may weaken these rules:
 - data mutation restores unless explicitly committed, executable patches always restore, and any
   unproven patch cleanup taints the session;
 - a domain failure can be a clean infrastructure completion;
-- an unsatisfied predicate follows its explicit check policy, while inability to obtain required evidence
+- a `Failed` predicate follows its Predicate Group member reaction, while inability to obtain required evidence
   remains a distinct action or infrastructure failure;
 - existing SavorDb retry, idempotency, and lineage behavior remains unchanged; runtime trace identity is
   not a new persistence requirement;

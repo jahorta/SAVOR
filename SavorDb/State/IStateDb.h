@@ -40,7 +40,9 @@ struct StoreArtifactCommand {
     std::string sha256;
     std::int64_t size_bytes = 0;
     int compression_kind = 0;
+    // Physical source used only for ingestion; never persisted as a locator.
     std::string filename;
+    std::string display_filename;
     std::string file_ext;
     std::string artifact_kind;
     types::UtcTimePoint created_at_utc{};
@@ -77,7 +79,10 @@ struct ArtifactRecord {
     std::string sha256;
     std::int64_t size_bytes = 0;
     int compression_kind = 0;
+    // Resolved physical path for trusted backend consumers.
     std::string filename;
+    std::string object_relpath;
+    std::string display_filename;
     std::string file_ext;
     std::string artifact_kind;
     types::UtcTimePoint created_at_utc{};

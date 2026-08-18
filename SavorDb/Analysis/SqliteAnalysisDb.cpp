@@ -531,6 +531,56 @@ bool InsertBattleOutboxEvent(
     return false;
 }
 
+bool InsertTasMovieOutboxEvent(
+    sqlite3* db,
+    std::string_view event_type,
+    std::string_view aggregate_kind,
+    std::int64_t aggregate_id,
+    std::int64_t occurred_at_utc,
+    std::string_view payload_ref_kind,
+    std::int64_t payload_ref_id,
+    std::string* error_out) {
+    constexpr int kMaxEventIdAttempts = 5;
+    for (int attempt = 0; attempt < kMaxEventIdAttempts; ++attempt) {
+        std::string event_id;
+        if (!outbox::MakeDbOwnedEventId(
+                db,
+                "AnalysisTasMovie",
+                event_type,
+                payload_ref_kind,
+                payload_ref_id,
+                &event_id,
+                error_out)) {
+            return false;
+        }
+        Statement st;
+        constexpr const char* kSql =
+            "INSERT INTO tmv_outbox_message("
+            "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
+            "VALUES(?1,?2,1,'AnalysisTasMovie',?3,?4,'','',?5,?6,?7);";
+        if (sqlite3_prepare_v2(db, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db);
+            return false;
+        }
+        sqlite3_bind_text(st.st, 1, event_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
+        const auto aggregate_text = std::to_string(aggregate_id);
+        sqlite3_bind_text(st.st, 4, aggregate_text.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 5, occurred_at_utc);
+        sqlite3_bind_text(st.st, 6, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 7, payload_ref_id);
+        const auto rc = sqlite3_step(st.st);
+        if (rc == SQLITE_DONE) return true;
+        if (!outbox::IsUniqueConstraint(db)) {
+            if (error_out) *error_out = sqlite3_errmsg(db);
+            return false;
+        }
+    }
+    if (error_out) *error_out = "failed to generate a unique TAS movie outbox event id";
+    return false;
+}
+
 std::optional<std::int64_t> CreateAnalysisInputSetForPendingProbeRun(
     sqlite3* db,
     std::int64_t created_at_utc,
@@ -1014,6 +1064,10 @@ bool SqliteAnalysisDb::CreateTasMovieValidationRequest(
         if (validation_request_id_out) *validation_request_id_out = existing->validation_request_id;
         return true;
     }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
     Statement st;
     constexpr const char* kSql =
         "INSERT INTO tmv_validation_request(materialization_key,workflow_instance_id,workflow_step_id,step_kind,"
@@ -1024,6 +1078,7 @@ bool SqliteAnalysisDb::CreateTasMovieValidationRequest(
         "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24);";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     sqlite3_bind_text(st.st, 1, command.materialization_key.c_str(), -1, SQLITE_TRANSIENT);
@@ -1054,9 +1109,19 @@ bool SqliteAnalysisDb::CreateTasMovieValidationRequest(
     sqlite3_bind_int64(st.st, 24, command.created_at_utc.time_since_epoch().count());
     if (sqlite3_step(st.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
-    if (validation_request_id_out) *validation_request_id_out = sqlite3_last_insert_rowid(db_);
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (!InsertTasMovieOutboxEvent(
+            db_, "AnalysisTasMovie.ValidationRequestCreated.v1", "validation_request", id,
+            command.created_at_utc.time_since_epoch().count(), "validation_request", id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (validation_request_id_out) *validation_request_id_out = id;
     return true;
 }
 
@@ -1215,7 +1280,11 @@ bool SqliteAnalysisDb::RecordTasMovieValidationAttempt(
             return false;
         }
     }
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+    if (!InsertTasMovieOutboxEvent(
+            db_, "AnalysisTasMovie.ValidationAttemptRecorded.v1", "validation_request",
+            command.validation_request_id, command.recorded_at_utc.time_since_epoch().count(),
+            "validation_attempt", id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
@@ -1316,6 +1385,11 @@ bool SqliteAnalysisDb::CreateTasMovieCheckpointSterilizationRequest(
         return true;
     }
 
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
     Statement st;
     constexpr const char* kSql =
         "INSERT INTO tmv_checkpoint_sterilization_request("
@@ -1327,6 +1401,7 @@ bool SqliteAnalysisDb::CreateTasMovieCheckpointSterilizationRequest(
         "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18);";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     sqlite3_bind_text(st.st, 1, command.materialization_key.c_str(), -1, SQLITE_TRANSIENT);
@@ -1352,9 +1427,19 @@ bool SqliteAnalysisDb::CreateTasMovieCheckpointSterilizationRequest(
     sqlite3_bind_int64(st.st, 18, command.created_at_utc.time_since_epoch().count());
     if (sqlite3_step(st.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
-    if (request_id_out) *request_id_out = sqlite3_last_insert_rowid(db_);
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (!InsertTasMovieOutboxEvent(
+            db_, "AnalysisTasMovie.SterilizationRequestCreated.v1", "sterilization_request", id,
+            command.created_at_utc.time_since_epoch().count(), "sterilization_request", id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (request_id_out) *request_id_out = id;
     return true;
 }
 
@@ -1455,6 +1540,11 @@ bool SqliteAnalysisDb::RecordTasMovieCheckpointSterilizationAttempt(
         return true;
     }
 
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
     Statement st;
     constexpr const char* kSql =
         "INSERT INTO tmv_checkpoint_sterilization_attempt(sterilization_request_id,"
@@ -1463,6 +1553,7 @@ bool SqliteAnalysisDb::RecordTasMovieCheckpointSterilizationAttempt(
         "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     sqlite3_bind_int64(st.st, 1, command.sterilization_request_id);
@@ -1476,9 +1567,20 @@ bool SqliteAnalysisDb::RecordTasMovieCheckpointSterilizationAttempt(
     sqlite3_bind_int64(st.st, 9, command.recorded_at_utc.time_since_epoch().count());
     if (sqlite3_step(st.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
-    if (attempt_id_out) *attempt_id_out = sqlite3_last_insert_rowid(db_);
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (!InsertTasMovieOutboxEvent(
+            db_, "AnalysisTasMovie.SterilizationAttemptRecorded.v1", "sterilization_request",
+            command.sterilization_request_id, command.recorded_at_utc.time_since_epoch().count(),
+            "sterilization_attempt", id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (attempt_id_out) *attempt_id_out = id;
     return true;
 }
 
@@ -3157,8 +3259,9 @@ bool SqliteAnalysisDb::CreateBattleSet(
     }
     if (command.name.empty()
         || command.entry_savestate_id <= 0
-        || command.battle_run_spec_id <= 0
-        || command.explorer_settings_id <= 0
+        || command.battle_plan_id <= 0
+        || command.battle_plan_fingerprint.empty()
+        || command.continuation_mode == BattleContinuationMode::Unknown
         || command.status == BattleSetStatus::Unknown) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
@@ -3174,8 +3277,8 @@ bool SqliteAnalysisDb::CreateBattleSet(
     Statement insert_set;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ab_battle_set(name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,launch_fake_attack_min,launch_fake_attack_max,status,created_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,NULL);",
+            "INSERT INTO ab_battle_set(name,entry_savestate_id,battle_plan_id,battle_plan_fingerprint,continuation_mode,launch_fake_attack_min,launch_fake_attack_max,status,created_at_utc,completed_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL);",
             -1,
             &insert_set.st,
             nullptr)
@@ -3187,13 +3290,15 @@ bool SqliteAnalysisDb::CreateBattleSet(
 
     sqlite3_bind_text(insert_set.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_set.st, 2, command.entry_savestate_id);
-    sqlite3_bind_int64(insert_set.st, 3, command.battle_run_spec_id);
-    sqlite3_bind_int64(insert_set.st, 4, command.explorer_settings_id);
-    sqlite3_bind_int(insert_set.st, 5, command.launch_fake_attack_min);
-    sqlite3_bind_int(insert_set.st, 6, command.launch_fake_attack_max);
+    sqlite3_bind_int64(insert_set.st, 3, command.battle_plan_id);
+    sqlite3_bind_text(insert_set.st, 4, command.battle_plan_fingerprint.c_str(), -1, SQLITE_TRANSIENT);
+    const auto continuation = ToDbString(command.continuation_mode);
+    sqlite3_bind_text(insert_set.st, 5, continuation.data(), static_cast<int>(continuation.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert_set.st, 6, command.launch_fake_attack_min);
+    sqlite3_bind_int(insert_set.st, 7, command.launch_fake_attack_max);
     const auto status = ToDbString(command.status);
-    sqlite3_bind_text(insert_set.st, 7, status.data(), static_cast<int>(status.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_set.st, 8, command.created_at_utc.time_since_epoch().count());
+    sqlite3_bind_text(insert_set.st, 8, status.data(), static_cast<int>(status.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_set.st, 9, command.created_at_utc.time_since_epoch().count());
     if (sqlite3_step(insert_set.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
@@ -3457,8 +3562,9 @@ bool SqliteAnalysisDb::EnsureBattleStart(
     if (db_ == nullptr || command.workflow_instance_id <= 0
         || command.workflow_step_id <= 0 || command.probe_run_id <= 0
         || command.context_probe_id <= 0 || command.battle_set_name.empty()
-        || command.entry_savestate_id <= 0 || command.battle_run_spec_id <= 0
-        || command.explorer_settings_id <= 0
+        || command.entry_savestate_id <= 0 || command.battle_plan_id <= 0
+        || command.battle_plan_fingerprint.empty()
+        || command.continuation_mode == BattleContinuationMode::Unknown
         || command.launch_fake_attack_min < 0
         || command.launch_fake_attack_max < command.launch_fake_attack_min) {
         if (error_out) *error_out = "battle start join is incomplete";
@@ -3492,8 +3598,8 @@ bool SqliteAnalysisDb::EnsureBattleStart(
             db_,
             "SELECT battle_start_id,workflow_instance_id,probe_run_id,"
             "context_probe_id,battle_set_id,entry_savestate_id,"
-            "battle_run_spec_id,explorer_settings_id,launch_fake_attack_min,"
-            "launch_fake_attack_max FROM ab_battle_start "
+            "battle_plan_id,battle_plan_fingerprint,continuation_mode,"
+            "launch_fake_attack_min,launch_fake_attack_max FROM ab_battle_start "
             "WHERE workflow_step_id=?1;",
             -1, &existing.st, nullptr) != SQLITE_OK) {
         return rollback(sqlite3_errmsg(db_));
@@ -3508,10 +3614,11 @@ bool SqliteAnalysisDb::EnsureBattleStart(
             && sqlite3_column_int64(existing.st, 2) == command.probe_run_id
             && sqlite3_column_int64(existing.st, 3) == command.context_probe_id
             && sqlite3_column_int64(existing.st, 5) == command.entry_savestate_id
-            && sqlite3_column_int64(existing.st, 6) == command.battle_run_spec_id
-            && sqlite3_column_int64(existing.st, 7) == command.explorer_settings_id
-            && sqlite3_column_int(existing.st, 8) == command.launch_fake_attack_min
-            && sqlite3_column_int(existing.st, 9) == command.launch_fake_attack_max;
+            && sqlite3_column_int64(existing.st, 6) == command.battle_plan_id
+            && ColumnText(existing.st, 7) == command.battle_plan_fingerprint
+            && ParseBattleContinuationMode(ColumnText(existing.st, 8)) == command.continuation_mode
+            && sqlite3_column_int(existing.st, 9) == command.launch_fake_attack_min
+            && sqlite3_column_int(existing.st, 10) == command.launch_fake_attack_max;
         if (!exact) return rollback("workflow step already identifies a different battle start join");
         Statement waves;
         if (sqlite3_prepare_v2(
@@ -3601,20 +3708,22 @@ bool SqliteAnalysisDb::EnsureBattleStart(
     Statement insert_set;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ab_battle_set(name,entry_savestate_id,battle_run_spec_id,"
-            "explorer_settings_id,launch_fake_attack_min,launch_fake_attack_max,"
+            "INSERT INTO ab_battle_set(name,entry_savestate_id,battle_plan_id,"
+            "battle_plan_fingerprint,continuation_mode,launch_fake_attack_min,launch_fake_attack_max,"
             "status,created_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,'ACTIVE',?7,NULL);",
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,'ACTIVE',?8,NULL);",
             -1, &insert_set.st, nullptr) != SQLITE_OK) {
         return rollback(sqlite3_errmsg(db_));
     }
     sqlite3_bind_text(insert_set.st, 1, command.battle_set_name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_set.st, 2, command.entry_savestate_id);
-    sqlite3_bind_int64(insert_set.st, 3, command.battle_run_spec_id);
-    sqlite3_bind_int64(insert_set.st, 4, command.explorer_settings_id);
-    sqlite3_bind_int(insert_set.st, 5, command.launch_fake_attack_min);
-    sqlite3_bind_int(insert_set.st, 6, command.launch_fake_attack_max);
-    sqlite3_bind_int64(insert_set.st, 7, now);
+    sqlite3_bind_int64(insert_set.st, 3, command.battle_plan_id);
+    sqlite3_bind_text(insert_set.st, 4, command.battle_plan_fingerprint.c_str(), -1, SQLITE_TRANSIENT);
+    const auto continuation = ToDbString(command.continuation_mode);
+    sqlite3_bind_text(insert_set.st, 5, continuation.data(), static_cast<int>(continuation.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert_set.st, 6, command.launch_fake_attack_min);
+    sqlite3_bind_int(insert_set.st, 7, command.launch_fake_attack_max);
+    sqlite3_bind_int64(insert_set.st, 8, now);
     if (sqlite3_step(insert_set.st) != SQLITE_DONE)
         return rollback(sqlite3_errmsg(db_));
     receipt.battle_set_id = sqlite3_last_insert_rowid(db_);
@@ -3687,9 +3796,9 @@ bool SqliteAnalysisDb::EnsureBattleStart(
             db_,
             "INSERT INTO ab_battle_start(workflow_instance_id,workflow_step_id,"
             "probe_run_id,context_probe_id,battle_set_id,entry_savestate_id,"
-            "battle_run_spec_id,explorer_settings_id,launch_fake_attack_min,"
+            "battle_plan_id,battle_plan_fingerprint,continuation_mode,launch_fake_attack_min,"
             "launch_fake_attack_max,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11);",
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12);",
             -1, &insert_start.st, nullptr) != SQLITE_OK) {
         return rollback(sqlite3_errmsg(db_));
     }
@@ -3699,11 +3808,12 @@ bool SqliteAnalysisDb::EnsureBattleStart(
     sqlite3_bind_int64(insert_start.st, 4, command.context_probe_id);
     sqlite3_bind_int64(insert_start.st, 5, receipt.battle_set_id);
     sqlite3_bind_int64(insert_start.st, 6, command.entry_savestate_id);
-    sqlite3_bind_int64(insert_start.st, 7, command.battle_run_spec_id);
-    sqlite3_bind_int64(insert_start.st, 8, command.explorer_settings_id);
-    sqlite3_bind_int(insert_start.st, 9, command.launch_fake_attack_min);
-    sqlite3_bind_int(insert_start.st, 10, command.launch_fake_attack_max);
-    sqlite3_bind_int64(insert_start.st, 11, now);
+    sqlite3_bind_int64(insert_start.st, 7, command.battle_plan_id);
+    sqlite3_bind_text(insert_start.st, 8, command.battle_plan_fingerprint.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_start.st, 9, continuation.data(), static_cast<int>(continuation.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert_start.st, 10, command.launch_fake_attack_min);
+    sqlite3_bind_int(insert_start.st, 11, command.launch_fake_attack_max);
+    sqlite3_bind_int64(insert_start.st, 12, now);
     if (sqlite3_step(insert_start.st) != SQLITE_DONE)
         return rollback(sqlite3_errmsg(db_));
     receipt.battle_start_id = sqlite3_last_insert_rowid(db_);
@@ -3711,32 +3821,29 @@ bool SqliteAnalysisDb::EnsureBattleStart(
     return commit();
 }
 
-bool SqliteAnalysisDb::BindBattlePredicateBundle(
-    const BindBattlePredicateBundleCommand& command,
+bool SqliteAnalysisDb::BindBattlePredicateExecutionPackage(
+    const BindBattlePredicateExecutionPackageCommand& command,
     std::int64_t* binding_id_out,
     std::string* error_out) {
-    if (db_ == nullptr || command.predicate_bundle_revision_id <= 0 ||
-        command.bundle_content_sha256.size() != 64 ||
-        command.binding_content_sha256.size() != 64 ||
-        command.structural_active_check_sha256.size() != 64 ||
+    if (db_ == nullptr || command.predicate_group_sha256.size() != 64 ||
+        command.execution_package_sha256.size() != 64 ||
+        command.execution_package_blob.empty() ||
         command.phase_program_kind <= 0 || command.phase_program_version <= 0 ||
         command.phase_canonical_id.empty() ||
         command.phase_sha256.size() != 64 ||
         command.hook_contract_canonical_id.empty() ||
         command.hook_contract_sha256.size() != 64) {
-        if (error_out) *error_out = "predicate bundle binding is incomplete";
+        if (error_out) *error_out = "predicate execution package is incomplete";
         return false;
     }
     if (command.wave_id.has_value()) {
-        if (const auto existing = GetBattlePredicateBundleBindingForWave(
+        if (const auto existing = GetBattlePredicateExecutionPackageForWave(
                 *command.wave_id); existing.has_value()) {
             const bool exact =
-                existing->predicate_bundle_revision_id == command.predicate_bundle_revision_id &&
-                existing->bundle_content_sha256 == command.bundle_content_sha256 &&
-                existing->binding_content_sha256 == command.binding_content_sha256 &&
-                existing->structural_active_check_sha256 == command.structural_active_check_sha256 &&
-                existing->parameter_values == command.parameter_values &&
-                existing->active_check_ordinals == command.active_check_ordinals &&
+                existing->predicate_group_revision_id == command.predicate_group_revision_id &&
+                existing->predicate_group_sha256 == command.predicate_group_sha256 &&
+                existing->execution_package_sha256 == command.execution_package_sha256 &&
+                existing->execution_package_blob == command.execution_package_blob &&
                 existing->phase_program_kind == command.phase_program_kind &&
                 existing->phase_program_version == command.phase_program_version &&
                 existing->phase_canonical_id == command.phase_canonical_id &&
@@ -3747,11 +3854,11 @@ bool SqliteAnalysisDb::BindBattlePredicateBundle(
                 existing->hook_contract_sha256 == command.hook_contract_sha256;
             if (!exact) {
                 if (error_out) *error_out =
-                    "wave already has a different predicate bundle binding";
+                    "wave already has a different predicate execution package";
                 return false;
             }
             if (binding_id_out)
-                *binding_id_out = existing->predicate_bundle_binding_id;
+                *binding_id_out = existing->predicate_execution_package_id;
             return true;
         }
     }
@@ -3764,12 +3871,12 @@ bool SqliteAnalysisDb::BindBattlePredicateBundle(
     };
     Statement insert;
     constexpr const char* sql =
-        "INSERT INTO ab_predicate_bundle_binding_v2("
-        "wave_id,predicate_bundle_revision_id,bundle_content_sha256,"
-        "binding_content_sha256,structural_active_check_sha256,aggregation_kind,"
+        "INSERT INTO ab_predicate_execution_package_v1("
+        "wave_id,predicate_group_revision_id,predicate_group_sha256,"
+        "execution_package_sha256,execution_package_blob,"
         "phase_program_kind,phase_program_version,phase_canonical_id,phase_revision,"
         "phase_sha256,hook_contract_canonical_id,hook_contract_revision,"
-        "hook_contract_sha256,created_at_utc) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
+        "hook_contract_sha256,created_at_utc) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
     if (sqlite3_prepare_v2(db_, sql, -1, &insert.st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         rollback();
@@ -3777,85 +3884,28 @@ bool SqliteAnalysisDb::BindBattlePredicateBundle(
     }
     if (command.wave_id) sqlite3_bind_int64(insert.st, 1, *command.wave_id);
     else sqlite3_bind_null(insert.st, 1);
-    sqlite3_bind_int64(insert.st, 2, command.predicate_bundle_revision_id);
-    sqlite3_bind_text(insert.st, 3, command.bundle_content_sha256.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert.st, 4, command.binding_content_sha256.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert.st, 5, command.structural_active_check_sha256.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert.st, 6, "PASSED_COUNT", -1, SQLITE_STATIC);
-    sqlite3_bind_int(insert.st, 7, command.phase_program_kind);
-    sqlite3_bind_int(insert.st, 8, command.phase_program_version);
-    sqlite3_bind_text(insert.st, 9, command.phase_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert.st, 10, command.phase_revision);
-    sqlite3_bind_text(insert.st, 11, command.phase_sha256.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert.st, 12, command.hook_contract_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert.st, 13, command.hook_contract_revision);
-    sqlite3_bind_text(insert.st, 14, command.hook_contract_sha256.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert.st, 15, command.created_at_utc.time_since_epoch().count());
+    if (command.predicate_group_revision_id)
+        sqlite3_bind_int64(insert.st, 2, *command.predicate_group_revision_id);
+    else sqlite3_bind_null(insert.st, 2);
+    sqlite3_bind_text(insert.st, 3, command.predicate_group_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 4, command.execution_package_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(insert.st, 5, command.execution_package_blob.data(),
+        static_cast<int>(command.execution_package_blob.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert.st, 6, command.phase_program_kind);
+    sqlite3_bind_int(insert.st, 7, command.phase_program_version);
+    sqlite3_bind_text(insert.st, 8, command.phase_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert.st, 9, command.phase_revision);
+    sqlite3_bind_text(insert.st, 10, command.phase_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 11, command.hook_contract_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert.st, 12, command.hook_contract_revision);
+    sqlite3_bind_text(insert.st, 13, command.hook_contract_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert.st, 14, command.created_at_utc.time_since_epoch().count());
     if (sqlite3_step(insert.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         rollback();
         return false;
     }
     const auto binding_id = sqlite3_last_insert_rowid(db_);
-    for (std::size_t ordinal = 0;
-         ordinal < command.parameter_values.size(); ++ordinal) {
-        Statement parameter;
-        if (sqlite3_prepare_v2(
-                db_,
-                "INSERT INTO ab_predicate_bundle_parameter_value_v2("
-                "predicate_bundle_binding_id,parameter_ordinal,value_kind,"
-                "value_builtin_type,value_schema_canonical_id,value_schema_revision,"
-                "value_schema_sha256,integer_value,real_value,text_value,blob_value) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?);",
-                -1, &parameter.st, nullptr) != SQLITE_OK) {
-            if (error_out) *error_out = sqlite3_errmsg(db_);
-            rollback();
-            return false;
-        }
-        sqlite3_bind_int64(parameter.st, 1, binding_id);
-        sqlite3_bind_int64(parameter.st, 2, static_cast<std::int64_t>(ordinal));
-        const auto& value = command.parameter_values[ordinal];
-        sqlite3_bind_text(parameter.st, 3, value.value_kind.c_str(), -1, SQLITE_TRANSIENT);
-        if (value.builtin_type) sqlite3_bind_int(parameter.st, 4, *value.builtin_type);
-        else sqlite3_bind_null(parameter.st, 4);
-        if (value.schema_canonical_id) sqlite3_bind_text(parameter.st, 5, value.schema_canonical_id->c_str(), -1, SQLITE_TRANSIENT);
-        else sqlite3_bind_null(parameter.st, 5);
-        if (value.schema_revision) sqlite3_bind_int64(parameter.st, 6, *value.schema_revision);
-        else sqlite3_bind_null(parameter.st, 6);
-        if (value.schema_sha256) sqlite3_bind_text(parameter.st, 7, value.schema_sha256->c_str(), -1, SQLITE_TRANSIENT);
-        else sqlite3_bind_null(parameter.st, 7);
-        if (value.integer_value) sqlite3_bind_int64(parameter.st, 8, *value.integer_value);
-        else sqlite3_bind_null(parameter.st, 8);
-        if (value.real_value) sqlite3_bind_double(parameter.st, 9, *value.real_value);
-        else sqlite3_bind_null(parameter.st, 9);
-        if (value.text_value) sqlite3_bind_text(parameter.st, 10, value.text_value->c_str(), -1, SQLITE_TRANSIENT);
-        else sqlite3_bind_null(parameter.st, 10);
-        if (!value.blob_value.empty()) sqlite3_bind_blob(parameter.st, 11, value.blob_value.data(), static_cast<int>(value.blob_value.size()), SQLITE_TRANSIENT);
-        else sqlite3_bind_null(parameter.st, 11);
-        if (value.ordinal != ordinal || value.value_kind.empty() ||
-            sqlite3_step(parameter.st) != SQLITE_DONE) {
-            if (error_out) *error_out = sqlite3_errmsg(db_);
-            rollback();
-            return false;
-        }
-    }
-    for (const auto ordinal : command.active_check_ordinals) {
-        Statement check;
-        if (sqlite3_prepare_v2(db_,
-                "INSERT INTO ab_predicate_bundle_active_check_v2 VALUES(?,?);",
-                -1, &check.st, nullptr) != SQLITE_OK) {
-            if (error_out) *error_out = sqlite3_errmsg(db_);
-            rollback();
-            return false;
-        }
-        sqlite3_bind_int64(check.st, 1, binding_id);
-        sqlite3_bind_int64(check.st, 2, ordinal);
-        if (sqlite3_step(check.st) != SQLITE_DONE) {
-            if (error_out) *error_out = sqlite3_errmsg(db_);
-            rollback();
-            return false;
-        }
-    }
     if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         rollback();
@@ -3865,76 +3915,39 @@ bool SqliteAnalysisDb::BindBattlePredicateBundle(
     return true;
 }
 
-std::optional<BattlePredicateBundleBindingSnapshot>
-SqliteAnalysisDb::GetBattlePredicateBundleBindingForWave(
+std::optional<BattlePredicateExecutionPackageSnapshot>
+SqliteAnalysisDb::GetBattlePredicateExecutionPackageForWave(
     std::int64_t wave_id) const {
     if (db_ == nullptr || wave_id <= 0) return std::nullopt;
     Statement root;
     constexpr const char* sql =
-        "SELECT predicate_bundle_binding_id,wave_id,predicate_bundle_revision_id,"
-        "bundle_content_sha256,binding_content_sha256,structural_active_check_sha256,"
-        "aggregation_kind,phase_program_kind,phase_program_version,phase_canonical_id,"
+        "SELECT predicate_execution_package_id,wave_id,predicate_group_revision_id,"
+        "predicate_group_sha256,execution_package_sha256,execution_package_blob,"
+        "phase_program_kind,phase_program_version,phase_canonical_id,"
         "phase_revision,phase_sha256,hook_contract_canonical_id,hook_contract_revision,"
-        "hook_contract_sha256,created_at_utc FROM ab_predicate_bundle_binding_v2 WHERE wave_id=?1;";
+        "hook_contract_sha256,created_at_utc FROM ab_predicate_execution_package_v1 WHERE wave_id=?1;";
     if (sqlite3_prepare_v2(db_, sql, -1, &root.st, nullptr) != SQLITE_OK)
         return std::nullopt;
     sqlite3_bind_int64(root.st, 1, wave_id);
     if (sqlite3_step(root.st) != SQLITE_ROW) return std::nullopt;
-    BattlePredicateBundleBindingSnapshot out{};
-    out.predicate_bundle_binding_id = sqlite3_column_int64(root.st, 0);
+    BattlePredicateExecutionPackageSnapshot out{};
+    out.predicate_execution_package_id = sqlite3_column_int64(root.st, 0);
     out.wave_id = ColumnInt64Optional(root.st, 1);
-    out.predicate_bundle_revision_id = sqlite3_column_int64(root.st, 2);
-    out.bundle_content_sha256 = ColumnText(root.st, 3);
-    out.binding_content_sha256 = ColumnText(root.st, 4);
-    out.structural_active_check_sha256 = ColumnText(root.st, 5);
-    if (ColumnText(root.st, 6) != "PASSED_COUNT") return std::nullopt;
-    out.phase_program_kind = sqlite3_column_int(root.st, 7);
-    out.phase_program_version = sqlite3_column_int(root.st, 8);
-    out.phase_canonical_id = ColumnText(root.st, 9);
-    out.phase_revision = static_cast<std::uint32_t>(sqlite3_column_int64(root.st, 10));
-    out.phase_sha256 = ColumnText(root.st, 11);
-    out.hook_contract_canonical_id = ColumnText(root.st, 12);
-    out.hook_contract_revision = static_cast<std::uint32_t>(sqlite3_column_int64(root.st, 13));
-    out.hook_contract_sha256 = ColumnText(root.st, 14);
+    out.predicate_group_revision_id = ColumnInt64Optional(root.st, 2);
+    out.predicate_group_sha256 = ColumnText(root.st, 3);
+    out.execution_package_sha256 = ColumnText(root.st, 4);
+    const auto blob = ColumnBlob(root.st, 5);
+    out.execution_package_blob.assign(blob.begin(), blob.end());
+    out.phase_program_kind = sqlite3_column_int(root.st, 6);
+    out.phase_program_version = sqlite3_column_int(root.st, 7);
+    out.phase_canonical_id = ColumnText(root.st, 8);
+    out.phase_revision = static_cast<std::uint32_t>(sqlite3_column_int64(root.st, 9));
+    out.phase_sha256 = ColumnText(root.st, 10);
+    out.hook_contract_canonical_id = ColumnText(root.st, 11);
+    out.hook_contract_revision = static_cast<std::uint32_t>(sqlite3_column_int64(root.st, 12));
+    out.hook_contract_sha256 = ColumnText(root.st, 13);
     out.created_at_utc = types::UtcTimePoint(
-        std::chrono::milliseconds(sqlite3_column_int64(root.st, 15)));
-
-    Statement parameters;
-    if (sqlite3_prepare_v2(db_,
-            "SELECT parameter_ordinal,value_kind,value_builtin_type,value_schema_canonical_id,"
-            "value_schema_revision,value_schema_sha256,integer_value,real_value,"
-            "text_value,blob_value FROM ab_predicate_bundle_parameter_value_v2 "
-            "WHERE predicate_bundle_binding_id=?1 ORDER BY parameter_ordinal;",
-            -1, &parameters.st, nullptr) != SQLITE_OK) return std::nullopt;
-    sqlite3_bind_int64(parameters.st, 1, out.predicate_bundle_binding_id);
-    while (sqlite3_step(parameters.st) == SQLITE_ROW) {
-        BattlePredicateParameterValue value{};
-        value.ordinal = static_cast<std::uint32_t>(sqlite3_column_int64(parameters.st, 0));
-        value.value_kind = ColumnText(parameters.st, 1);
-        value.builtin_type = ColumnIntOptional(parameters.st, 2);
-        value.schema_canonical_id = ColumnTextOptional(parameters.st, 3);
-        if (const auto revision = ColumnInt64Optional(parameters.st, 4))
-            value.schema_revision = static_cast<std::uint32_t>(*revision);
-        value.schema_sha256 = ColumnTextOptional(parameters.st, 5);
-        value.integer_value = ColumnInt64Optional(parameters.st, 6);
-        if (sqlite3_column_type(parameters.st, 7) != SQLITE_NULL)
-            value.real_value = sqlite3_column_double(parameters.st, 7);
-        value.text_value = ColumnTextOptional(parameters.st, 8);
-        if (sqlite3_column_type(parameters.st, 9) != SQLITE_NULL) {
-            const auto blob = ColumnBlob(parameters.st, 9);
-            value.blob_value.assign(blob.begin(), blob.end());
-        }
-        out.parameter_values.push_back(std::move(value));
-    }
-    Statement checks;
-    if (sqlite3_prepare_v2(db_,
-            "SELECT check_ordinal FROM ab_predicate_bundle_active_check_v2 "
-            "WHERE predicate_bundle_binding_id=?1 ORDER BY check_ordinal;",
-            -1, &checks.st, nullptr) != SQLITE_OK) return std::nullopt;
-    sqlite3_bind_int64(checks.st, 1, out.predicate_bundle_binding_id);
-    while (sqlite3_step(checks.st) == SQLITE_ROW)
-        out.active_check_ordinals.push_back(
-            static_cast<std::uint32_t>(sqlite3_column_int64(checks.st, 0)));
+        std::chrono::milliseconds(sqlite3_column_int64(root.st, 14)));
     return out;
 }
 
@@ -4107,6 +4120,21 @@ bool SqliteAnalysisDb::CompleteBattleContextProbe(
         if (error_out) *error_out = "exec_job_id and probe_status are required";
         return false;
     }
+    Statement lookup;
+    if (sqlite3_prepare_v2(db_, "SELECT context_probe_id FROM ab_battle_context_probe WHERE exec_job_id=?1;", -1, &lookup.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(lookup.st, 1, command.exec_job_id);
+    if (sqlite3_step(lookup.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "battle context probe does not exist";
+        return false;
+    }
+    const auto context_probe_id = sqlite3_column_int64(lookup.st, 0);
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
@@ -4118,6 +4146,7 @@ bool SqliteAnalysisDb::CompleteBattleContextProbe(
             nullptr)
         != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     sqlite3_bind_int64(st.st, 1, command.exec_job_id);
@@ -4145,9 +4174,19 @@ bool SqliteAnalysisDb::CompleteBattleContextProbe(
     if (command.capture_epoch) sqlite3_bind_int64(st.st, 13, static_cast<sqlite3_int64>(*command.capture_epoch)); else sqlite3_bind_null(st.st, 13);
     if (sqlite3_step(st.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
-    return sqlite3_changes(db_) > 0;
+    if (sqlite3_changes(db_) <= 0
+        || !InsertBattleOutboxEvent(db_, "AnalysisBattle.ContextProbeCompleted.v1", "battle_context_probe",
+            std::to_string(context_probe_id), "", "", command.recorded_at_utc.time_since_epoch().count(),
+            "battle_context_probe", context_probe_id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    return true;
 }
 
 bool SqliteAnalysisDb::RecordBattleTurnJob(
@@ -4446,7 +4485,7 @@ bool SqliteAnalysisDb::RecordBattleSingleTurnResult(
         "turn_job_id,exec_job_id,worker_terminal_sha256,terminal_kind,domain_outcome,"
         "error_code,error_text,ending_rng,vi_start,vi_end,pred_passed,pred_total,"
         "cumulative_fake_attacks,successor_savestate_id,battle_context_artifact_id,"
-        "predicate_bundle_revision_id,predicate_bundle_sha256,predicate_binding_sha256,"
+        "predicate_group_revision_id,predicate_group_sha256,predicate_execution_package_sha256,"
         "predicate_evidence_blob,applied_input_artifact_id,input_trace_artifact_id,"
         "recorded_at_utc) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(turn_job_id) DO NOTHING;";
@@ -4477,9 +4516,9 @@ bool SqliteAnalysisDb::RecordBattleSingleTurnResult(
     bind_i64(13, command.cumulative_fake_attacks);
     bind_i64(14, command.successor_savestate_id);
     bind_i64(15, command.battle_context_artifact_id);
-    bind_i64(16, command.predicate_bundle_revision_id);
-    bind_text(17, command.predicate_bundle_sha256);
-    bind_text(18, command.predicate_binding_sha256);
+    bind_i64(16, command.predicate_group_revision_id);
+    bind_text(17, command.predicate_group_sha256);
+    bind_text(18, command.predicate_execution_package_sha256);
     if (!command.predicate_evidence_blob.empty())
         sqlite3_bind_blob(insert.st, 19, command.predicate_evidence_blob.data(),
             static_cast<int>(command.predicate_evidence_blob.size()), SQLITE_TRANSIENT);
@@ -4509,8 +4548,8 @@ SqliteAnalysisDb::GetBattleSingleTurnResultForExecJob(std::int64_t exec_job_id) 
         "SELECT battle_single_turn_result_id,turn_job_id,exec_job_id,"
         "worker_terminal_sha256,terminal_kind,domain_outcome,error_code,error_text,"
         "ending_rng,vi_start,vi_end,pred_passed,pred_total,cumulative_fake_attacks,"
-        "successor_savestate_id,battle_context_artifact_id,predicate_bundle_revision_id,"
-        "predicate_bundle_sha256,predicate_binding_sha256,predicate_evidence_blob,"
+        "successor_savestate_id,battle_context_artifact_id,predicate_group_revision_id,"
+        "predicate_group_sha256,predicate_execution_package_sha256,predicate_evidence_blob,"
         "applied_input_artifact_id,input_trace_artifact_id,recorded_at_utc "
         "FROM ab_battle_single_turn_result_v1 WHERE exec_job_id=?1;";
     if (sqlite3_prepare_v2(db_, sql, -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
@@ -4533,9 +4572,9 @@ SqliteAnalysisDb::GetBattleSingleTurnResultForExecJob(std::int64_t exec_job_id) 
     if (const auto value = ColumnInt64Optional(st.st, 13)) out.cumulative_fake_attacks = static_cast<std::uint32_t>(*value);
     out.successor_savestate_id = ColumnInt64Optional(st.st, 14);
     out.battle_context_artifact_id = ColumnInt64Optional(st.st, 15);
-    out.predicate_bundle_revision_id = ColumnInt64Optional(st.st, 16);
-    out.predicate_bundle_sha256 = ColumnTextOptional(st.st, 17);
-    out.predicate_binding_sha256 = ColumnTextOptional(st.st, 18);
+    out.predicate_group_revision_id = ColumnInt64Optional(st.st, 16);
+    out.predicate_group_sha256 = ColumnTextOptional(st.st, 17);
+    out.predicate_execution_package_sha256 = ColumnTextOptional(st.st, 18);
     if (sqlite3_column_type(st.st, 19) != SQLITE_NULL) {
         const auto blob = ColumnBlob(st.st, 19);
         out.predicate_evidence_blob.assign(blob.begin(), blob.end());
@@ -5030,7 +5069,7 @@ std::optional<BattleSetSnapshot> SqliteAnalysisDb::GetBattleSet(std::int64_t bat
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT battle_set_id,name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,launch_fake_attack_min,launch_fake_attack_max,status,created_at_utc,completed_at_utc "
+        "SELECT battle_set_id,name,entry_savestate_id,battle_plan_id,battle_plan_fingerprint,continuation_mode,launch_fake_attack_min,launch_fake_attack_max,status,created_at_utc,completed_at_utc "
         "FROM ab_battle_set WHERE battle_set_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return std::nullopt;
@@ -5043,13 +5082,14 @@ std::optional<BattleSetSnapshot> SqliteAnalysisDb::GetBattleSet(std::int64_t bat
     out.battle_set_id = sqlite3_column_int64(st.st, 0);
     out.name = ColumnText(st.st, 1);
     out.entry_savestate_id = sqlite3_column_int64(st.st, 2);
-    out.battle_run_spec_id = sqlite3_column_int64(st.st, 3);
-    out.explorer_settings_id = sqlite3_column_int64(st.st, 4);
-    out.launch_fake_attack_min = sqlite3_column_int(st.st, 5);
-    out.launch_fake_attack_max = sqlite3_column_int(st.st, 6);
-    out.status = ParseBattleSetStatus(ColumnText(st.st, 7));
-    out.created_at_utc = ColumnTime(st.st, 8);
-    out.completed_at_utc = ColumnTimeOptional(st.st, 9);
+    out.battle_plan_id = sqlite3_column_int64(st.st, 3);
+    out.battle_plan_fingerprint = ColumnText(st.st, 4);
+    out.continuation_mode = ParseBattleContinuationMode(ColumnText(st.st, 5));
+    out.launch_fake_attack_min = sqlite3_column_int(st.st, 6);
+    out.launch_fake_attack_max = sqlite3_column_int(st.st, 7);
+    out.status = ParseBattleSetStatus(ColumnText(st.st, 8));
+    out.created_at_utc = ColumnTime(st.st, 9);
+    out.completed_at_utc = ColumnTimeOptional(st.st, 10);
     return out;
 }
 

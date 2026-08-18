@@ -119,10 +119,13 @@
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.cpp">
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateAuthoringEditors.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.cpp">
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\GuidedPredicateRuleEditor.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.cpp">
@@ -206,6 +209,9 @@
     <ClCompile Include="DB\DBCore\DbSnapshotService.cpp">
       <Filter>DB</Filter>
     </ClCompile>
+    <ClCompile Include="DB\WorkflowReferenceSelectorProvider.cpp">
+      <Filter>DB</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.cpp" />
     <ClCompile Include="GUI\Tabs\AnalysisTab.cpp">
@@ -261,9 +267,6 @@
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </QtMoc>
-    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </QtMoc>
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </QtMoc>
@@ -277,6 +280,9 @@
       <Filter>GUI\Panes\JobSets</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\DtmEditorPane\DtmEditorPage.h" />
+    <QtMoc Include="GUI\Tabs\SetupTab.h">
+      <Filter>GUI\Tabs</Filter>
+    </QtMoc>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h">
@@ -289,6 +295,12 @@
       <Filter>Main</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateAuthoringEditors.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\GuidedPredicateRuleEditor.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h">
@@ -381,6 +393,9 @@
     <ClInclude Include="DB\SavorDbWorkflowService.h">
       <Filter>DB</Filter>
     </ClInclude>
+    <ClInclude Include="DB\WorkflowReferenceSelectorProvider.h">
+      <Filter>DB</Filter>
+    </ClInclude>
     <ClInclude Include="DB\DBCore\DbSnapshotService.h">
       <Filter>DB</Filter>
     </ClInclude>
@@ -389,9 +404,6 @@
       <Filter>GUI\Tabs</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Tabs\RunningTab.h">
-      <Filter>GUI\Tabs</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Tabs\SetupTab.h">
       <Filter>GUI\Tabs</Filter>
     </ClInclude>
   </ItemGroup>

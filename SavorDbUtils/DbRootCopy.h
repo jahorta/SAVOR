@@ -49,7 +49,6 @@ struct BattleJobSelector {
 struct HydrateBattleSingleTurnJobSubsetOptions {
     std::filesystem::path source_root;
     std::filesystem::path target_root;
-    std::filesystem::path artifact_root;
     BattleJobSelector selector;
     bool overwrite_target = false;
 };
@@ -57,7 +56,6 @@ struct HydrateBattleSingleTurnJobSubsetOptions {
 struct HydrateBattleSingleTurnJobSubsetsOptions {
     std::filesystem::path source_root;
     std::filesystem::path target_root;
-    std::filesystem::path artifact_root;
     std::vector<BattleJobSelector> selectors;
     bool overwrite_target = false;
 };

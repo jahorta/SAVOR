@@ -128,6 +128,9 @@
     <ClInclude Include="Execution\Workflow\WorkflowComposition.h">
       <Filter>Workflows</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowLaunchContract.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
     <ClInclude Include="Archive\SqliteArchiveDb.h">
       <Filter>Archive</Filter>
     </ClInclude>
@@ -154,6 +157,9 @@
     </ClInclude>
     <ClInclude Include="Authoring\RuntimeSymbolAuthoringService.h">
       <Filter>Authoring</Filter>
+    </ClInclude>
+    <ClInclude Include="State\ArtifactObjectStore.h">
+      <Filter>State</Filter>
     </ClInclude>
     <ClInclude Include="State\SqliteStateDb.h">
       <Filter>State</Filter>
@@ -340,6 +346,9 @@
     <ClCompile Include="Execution\Workflow\WorkflowComposition.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowLaunchContract.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
     <ClCompile Include="Archive\ArchivePackageService.cpp">
       <Filter>Archive</Filter>
     </ClCompile>
@@ -355,11 +364,17 @@
     <ClCompile Include="Authoring\RelationalPredicateAuthoring.cpp">
       <Filter>Authoring</Filter>
     </ClCompile>
+    <ClCompile Include="Authoring\PredicateGroupAuthoring.cpp">
+      <Filter>Authoring</Filter>
+    </ClCompile>
     <ClCompile Include="Authoring\QueuedAuthoringDb.cpp">
       <Filter>Authoring</Filter>
     </ClCompile>
     <ClCompile Include="Authoring\RuntimeSymbolAuthoringService.cpp">
       <Filter>Authoring</Filter>
+    </ClCompile>
+    <ClCompile Include="State\ArtifactObjectStore.cpp">
+      <Filter>State</Filter>
     </ClCompile>
     <ClCompile Include="State\SqliteStateDb.cpp">
       <Filter>State</Filter>
@@ -495,13 +510,25 @@
     <None Include="migration\AnalysisBattle\202608151000_analysisbattle_replay_source_binding_hard_cut.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
+    <None Include="migration\AnalysisBattle\202608161400_analysisbattle_predicate_execution_package.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
+    <None Include="migration\AnalysisBattle\202608171500_analysisbattle_direct_plan_hard_cut.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
     <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
     <None Include="migration\AnalysisSeedProbe\202607211100_analysisseedprobe_field_return_flavor.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
+    <None Include="migration\AnalysisSeedProbe\202608161200_analysisseedprobe_entry_qualified_flavor.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
     <None Include="migration\AnalysisTasMovie\202608041100_analysis_tas_movie_validation.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
+    <None Include="migration\AnalysisTasMovie\202608161100_analysis_tas_movie_outbox.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
     <None Include="migration\AnalysisSpine\202604051000_analysisspine_stage2_schema.sql">
@@ -534,6 +561,9 @@
     <None Include="migration\Archive\202608141100_archive_battle_replay.sql">
       <Filter>Migrations\Archive</Filter>
     </None>
+    <None Include="migration\Archive\202608161410_archive_predicate_execution_packages.sql">
+      <Filter>Migrations\Archive</Filter>
+    </None>
     <None Include="migration\Authoring\202604051000_authoring_stage2_schema.sql">
       <Filter>Migrations\Authoring</Filter>
     </None>
@@ -564,6 +594,24 @@
     <None Include="migration\Authoring\202608111100_authoring_remove_derived_address_region.sql">
       <Filter>Migrations\Authoring</Filter>
     </None>
+    <None Include="migration\Authoring\202608161000_authoring_workflow_launch_contracts.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
+    <None Include="migration\Authoring\202608161200_authoring_adaptive_seed_probe.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
+    <None Include="migration\Authoring\202608161400_authoring_predicate_groups.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
+    <None Include="migration\Authoring\202608162300_authoring_predicate_identity_schema_repair.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
+    <None Include="migration\Authoring\202608171130_authoring_predicate_observation_planning.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
+    <None Include="migration\Authoring\202608171500_authoring_direct_battle_workflow.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql">
       <Filter>Migrations\Execution</Filter>
     </None>
@@ -583,6 +631,9 @@
       <Filter>Migrations\Execution</Filter>
     </None>
     <None Include="migration\Execution\202604101500_execution_workflow_instance_arguments.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
+    <None Include="migration\Execution\202608171500_execution_workflow_choice_and_battle_hard_cut.sql">
       <Filter>Migrations\Execution</Filter>
     </None>
     <None Include="migration\Execution\202604111000_execution_graph_routing.sql">
@@ -616,6 +667,9 @@
       <Filter>Migrations\State</Filter>
     </None>
     <None Include="migration\State\202608131100_state_battle_completion_artifact.sql">
+      <Filter>Migrations\State</Filter>
+    </None>
+    <None Include="migration\State\202608161300_state_artifact_relative_object_locator.sql">
       <Filter>Migrations\State</Filter>
     </None>
     <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql">
@@ -679,6 +733,12 @@
       <Filter>Migrations\UiRead</Filter>
     </None>
     <None Include="migration\UIRead\202608091000_uiread_structured_job_progress.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202608161100_uiread_tas_movie_workbench.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202608171500_uiread_battle_direct_plan_hard_cut.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
   </ItemGroup>

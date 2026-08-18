@@ -1,5 +1,7 @@
 #include "RehydrateExecutor.h"
 
+#include "../State/ArtifactObjectStore.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -715,13 +717,17 @@ SqliteRehydrateExecutor::SqliteRehydrateExecutor(
     savor::db::IArchiveDb* archive_service,
     std::filesystem::path archive_store_root,
     sqlite3* state_db,
-    sqlite3* analysis_db)
+    sqlite3* analysis_db,
+    std::filesystem::path object_store_root)
     : execution_db_(execution_db)
     , archive_db_(archive_db)
     , state_db_(state_db)
     , analysis_db_(analysis_db)
     , archive_service_(archive_service)
-    , archive_store_root_(std::move(archive_store_root)) {
+    , archive_store_root_(std::move(archive_store_root))
+    , object_store_root_(object_store_root.empty()
+          ? archive_store_root_.parent_path() / "object_store"
+          : std::move(object_store_root)) {
 }
 
 RehydratePackagePreviewResult SqliteRehydrateExecutor::PreviewPackage(const RehydratePackagePreviewRequest& request) {
@@ -794,6 +800,7 @@ RehydratePackagePreviewResult SqliteRehydrateExecutor::PreviewPackage(const Rehy
         {"analysis_seed_candidates", "$.seed_candidate_id", "analysis_seed_candidate", "ab_seed_candidate", "seed_candidate_id", analysis_db_},
         {"analysis_battle_advancement_pools", "$.battle_advancement_pool_id", "analysis_battle_advancement_pool", "ab_battle_advancement_pool", "battle_advancement_pool_id", analysis_db_},
         {"analysis_turn_waves", "$.wave_id", "analysis_turn_wave", "ab_turn_wave", "wave_id", analysis_db_},
+        {"analysis_predicate_execution_packages", "$.predicate_execution_package_id", "analysis_predicate_execution_package", "ab_predicate_execution_package_v1", "predicate_execution_package_id", analysis_db_},
         {"analysis_battle_context_probes", "$.context_probe_id", "analysis_battle_context_probe", "ab_battle_context_probe", "context_probe_id", analysis_db_},
         {"analysis_battle_turn_jobs", "$.turn_job_id", "analysis_battle_turn_job", "ab_turn_job", "turn_job_id", analysis_db_},
         {"analysis_battle_advancement_decisions", "$.battle_advancement_decision_id", "analysis_battle_advancement_decision", "ab_battle_advancement_decision", "battle_advancement_decision_id", analysis_db_},
@@ -1059,13 +1066,20 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     if (line.empty()) continue;
                     bool ok_artifact = false;
                     bool ok_sha = false;
+                    bool ok_size = false;
+                    bool ok_filename = false;
                     bool ok_file_ext = false;
                     bool ok_artifact_kind = false;
                     const auto old_artifact_id = JsonExtractInt(state_db_, line, "$.artifact_id", &ok_artifact);
                     const auto sha = JsonExtractText(state_db_, line, "$.sha256", &ok_sha);
+                    const auto expected_size = JsonExtractInt(
+                        state_db_, line, "$.size_bytes", &ok_size);
+                    const auto display_filename = JsonExtractText(
+                        state_db_, line, "$.filename", &ok_filename);
                     const auto file_ext = JsonExtractText(state_db_, line, "$.file_ext", &ok_file_ext);
                     const auto artifact_kind = JsonExtractText(state_db_, line, "$.artifact_kind", &ok_artifact_kind);
-                    if (!ok_artifact || !ok_sha || sha.empty()) continue;
+                    if (!ok_artifact || !ok_sha || sha.empty() ||
+                        !ok_size || expected_size < 0) continue;
 
                     auto existing = FindArtifactBySha(state_db_, sha, &state_error);
                     std::int64_t new_artifact_id = existing.value_or(0);
@@ -1088,17 +1102,26 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                             break;
                         }
 
+                        auto imported = state::ImportArtifactObject(
+                            object_store_root_, output_path, sha, expected_size,
+                            ok_file_ext ? file_ext : extension, &state_error);
+                        if (!imported) break;
+
                         Statement insert_artifact;
                         if (!Prepare(
                                 state_db_,
-                                "INSERT INTO state_artifact(sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) "
-                                "VALUES(?1,json_extract(?2,'$.size_bytes'),json_extract(?2,'$.compression_kind'),?3,json_extract(?2,'$.file_ext'),json_extract(?2,'$.artifact_kind'),json_extract(?2,'$.created_at_utc'));",
+                                "INSERT INTO state_artifact(sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc,object_relpath) "
+                                "VALUES(?1,json_extract(?2,'$.size_bytes'),json_extract(?2,'$.compression_kind'),?3,json_extract(?2,'$.file_ext'),json_extract(?2,'$.artifact_kind'),json_extract(?2,'$.created_at_utc'),?4);",
                                 &insert_artifact,
                                 &state_error)) break;
                         sqlite3_bind_text(insert_artifact.st, 1, sha.c_str(), -1, SQLITE_TRANSIENT);
                         sqlite3_bind_text(insert_artifact.st, 2, line.c_str(), -1, SQLITE_TRANSIENT);
-                        const auto filename = output_path.string();
+                        const auto filename = ok_filename && !display_filename.empty()
+                            ? std::filesystem::path(display_filename).filename().string()
+                            : entry_name;
+                        const auto relative = imported->relative_path.generic_string();
                         sqlite3_bind_text(insert_artifact.st, 3, filename.c_str(), -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(insert_artifact.st, 4, relative.c_str(), -1, SQLITE_TRANSIENT);
                         if (!StepDone(state_db_, insert_artifact.st, &state_error)) break;
                         new_artifact_id = sqlite3_last_insert_rowid(state_db_);
                     }
@@ -2588,8 +2611,8 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 const auto name = spec.target_namespace + ":rehydrate:" + JsonExtractText(analysis_db_, line, "$.name", &ok_id);
                 Statement st;
                 if (!Prepare(analysis_db_,
-                        "INSERT INTO ab_battle_set(battle_set_id,name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,status,created_at_utc,completed_at_utc) "
-                        "VALUES(?1,?2,?3,json_extract(?4,'$.battle_run_spec_id'),json_extract(?4,'$.explorer_settings_id'),json_extract(?4,'$.status'),json_extract(?4,'$.created_at_utc'),json_extract(?4,'$.completed_at_utc'));",
+                        "INSERT INTO ab_battle_set(battle_set_id,name,entry_savestate_id,battle_plan_id,battle_plan_fingerprint,continuation_mode,launch_fake_attack_min,launch_fake_attack_max,status,created_at_utc,completed_at_utc) "
+                        "VALUES(?1,?2,?3,json_extract(?4,'$.battle_plan_id'),json_extract(?4,'$.battle_plan_fingerprint'),json_extract(?4,'$.continuation_mode'),json_extract(?4,'$.launch_fake_attack_min'),json_extract(?4,'$.launch_fake_attack_max'),json_extract(?4,'$.status'),json_extract(?4,'$.created_at_utc'),json_extract(?4,'$.completed_at_utc'));",
                         &st,
                         &db_error)) return;
                 sqlite3_bind_int64(st.st, 1, new_id);
@@ -2668,6 +2691,47 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 bind_optional_int64(st.st, 4, parent_wave);
                 sqlite3_bind_int64(st.st, 5, *seed);
                 bind_optional_int64(st.st, 6, pool);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_predicate_execution_packages", [&](const std::string& line) {
+                bool ok_id = false, ok_wave = false, ok_group = false, ok_blob = false;
+                const auto old_id = JsonExtractInt(
+                    analysis_db_, line, "$.predicate_execution_package_id", &ok_id);
+                const auto old_wave = JsonExtractInt(
+                    analysis_db_, line, "$.wave_id", &ok_wave);
+                const auto old_group = JsonExtractInt(
+                    analysis_db_, line, "$.predicate_group_revision_id", &ok_group);
+                const auto blob_hex = JsonExtractText(
+                    analysis_db_, line, "$.execution_package_blob_hex", &ok_blob);
+                if (!ok_id || !ok_wave || !ok_blob) return;
+                const auto new_id = map_id(
+                    "analysis_predicate_execution_package", old_id);
+                const auto wave = map_optional("analysis_turn_wave", true, old_wave);
+                const auto blob = DecodeHex(blob_hex);
+                if (new_id == 0 || !wave || !blob) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO ab_predicate_execution_package_v1("
+                        "predicate_execution_package_id,wave_id,predicate_group_revision_id,"
+                        "predicate_group_sha256,execution_package_sha256,execution_package_blob,"
+                        "phase_program_kind,phase_program_version,phase_canonical_id,phase_revision,"
+                        "phase_sha256,hook_contract_canonical_id,hook_contract_revision,"
+                        "hook_contract_sha256,created_at_utc) VALUES("
+                        "?1,?2,?3,json_extract(?4,'$.predicate_group_sha256'),"
+                        "json_extract(?4,'$.execution_package_sha256'),?5,"
+                        "json_extract(?4,'$.phase_program_kind'),json_extract(?4,'$.phase_program_version'),"
+                        "json_extract(?4,'$.phase_canonical_id'),json_extract(?4,'$.phase_revision'),"
+                        "json_extract(?4,'$.phase_sha256'),json_extract(?4,'$.hook_contract_canonical_id'),"
+                        "json_extract(?4,'$.hook_contract_revision'),json_extract(?4,'$.hook_contract_sha256'),"
+                        "json_extract(?4,'$.created_at_utc'));",
+                        &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *wave);
+                if (ok_group) sqlite3_bind_int64(st.st, 3, old_group);
+                else sqlite3_bind_null(st.st, 3);
+                sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_blob64(st.st, 5, blob->data(),
+                    static_cast<sqlite3_uint64>(blob->size()), SQLITE_TRANSIENT);
                 StepDone(analysis_db_, st.st, &db_error);
             });
             restore_stream("analysis_battle_context_probes", [&](const std::string& line) {

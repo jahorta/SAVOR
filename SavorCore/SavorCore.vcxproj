@@ -263,7 +263,7 @@
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\BattleResultsHandler.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\InputDeliveryComposition.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\PredicateComposition.h" />
-    <ClInclude Include="Runner\Runtime\Predicates\PredicateBundle.h" />
+    <ClInclude Include="Runner\Runtime\Predicates\PredicateExecution.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\SemanticObservationComposition.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Execution\ProgramExecutor.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Model\ProgramIdentifiers.h" />
@@ -408,7 +408,7 @@
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\BattleResultsHandler.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\InputDeliveryComposition.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\PredicateComposition.cpp" />
-    <ClCompile Include="Runner\Runtime\Predicates\PredicateBundle.cpp" />
+    <ClCompile Include="Runner\Runtime\Predicates\PredicateExecution.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\SemanticObservationComposition.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Execution\ProgramExecutor.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Model\ProgramIdentifiers.cpp" />

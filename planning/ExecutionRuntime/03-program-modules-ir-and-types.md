@@ -385,7 +385,17 @@ cleanup paths are replaced by ordinary runtime cancellation and structured unwin
 ### Reusable predicate composition
 
 The shared predicate composition library is a typed module-builder/frontend library. It is not a runtime
-service, executor, action family, durable catalog, or persistence system.
+service, executor, or action family. Authoring persists immutable Predicate Definitions, Predicate
+Execution Bindings, and Predicate Groups; coordination resolves them into one exact Predicate Execution
+Package before worker admission.
+
+The Authoring database, not the user or Qt, owns each logical predicate key.
+That generated key is stable across semantic revisions, while mutable parent
+name/description metadata is excluded from semantic fingerprints and all
+runtime hashes. Backend semantic fingerprints provide same-lineage
+idempotency; exact published revisions and Execution Package hashes remain the
+runtime provenance boundary. An explicit idempotent Duplicate request is the
+only operation that creates another logical key for equivalent content.
 
 A reusable `PredicateDefinition` contains:
 
@@ -398,14 +408,16 @@ cannot access session services, Dolphin, the filesystem, SavorDb, the clock, or 
 evaluation lowers to ordinary arithmetic, logic, comparisons, and control flow, an exact reusable IR
 subprogram, or an imported pure reducer.
 
-A `Check` is one use of a predicate definition. Each check separately declares:
+A `PredicateExecutionBindingV1` supplies one exact typed source for every definition witness. Concrete
+values, registered queries, receipt fields, pinned reads, and baseline captures belong to the binding.
+
+A `PredicateGroupMemberV1` is one atomic use of an Execution Binding. Each member declares:
 
 - its semantic evaluation point;
 - the exact `ObservationDefinition`/`ObservationUse` values and optional named baseline needed to
-  supply the witnesses;
-- whether each witness is required or optional;
-- a use policy such as branch, return a typed domain rejection, explicitly fail, emit an evaluation
-  record, or accumulate a result for later scoring; and
+  supply the witnesses through the referenced Execution Binding;
+- a sorted nonempty semantic-hook set and one combined-stream occurrence policy;
+- a reaction such as record-and-continue or return a typed domain rejection; and
 - whether a declared typed `ConditionObservation` is emitted.
 
 Predicate lowering may produce only ordinary canonical constructs:
@@ -415,10 +427,10 @@ Predicate lowering may produce only ordinary canonical constructs:
 - ordinary conditional branches, returns, or structured failures; and
 - declared typed emissions, with optional telemetry for live presentation.
 
-Each evaluation produces one of `Satisfied`, `Unsatisfied`, `NotApplicable`, or `Unavailable`.
-`Unsatisfied` is an ordinary typed result and becomes terminal only because the check's use policy says
-so. Failure to obtain required evidence is an action/runtime failure and must not silently become
-`Unsatisfied` or be ignored. Epoch-bound baselines and witness values cannot be reused after
+Each executed member produces exactly `Passed` or `Failed`. `Failed` is an ordinary typed result and
+becomes terminal only because the member reaction says so. Failure to obtain required evidence is an
+action/runtime failure and must not silently become `Failed` or be ignored. Epoch-bound baselines and
+witness values cannot be reused after
 `WorksetEpoch` changes.
 
 The library lowers predicates before module verification. The verifier receives only canonical IR,
@@ -430,7 +442,7 @@ and dependencies.
 
 Predicates do not independently define timing, address resolution, baseline lifetime, or guest reads.
 They consume the typed results of the semantic-observation composition library. This keeps one
-authoritative acquisition contract for predicate checks, interaction progress, and ordinary module
+authoritative acquisition contract for predicate members, interaction progress, and ordinary module
 branching.
 
 ### Calls, loops, reducers, and boundedness
@@ -681,8 +693,8 @@ Program failures are classified before result assembly:
   allowed by its descriptor; otherwise the invocation fails and unwinds.
 - **Domain terminal:** an entrypoint returns a valid domain outcome such as locked, no successor, or no
   anomaly. This can be a clean completed invocation.
-- **Predicate evaluation:** `Unsatisfied` follows the check's explicit branch/domain/fail/record policy;
-  `Unavailable` remains distinct and follows the required-observation or action-failure contract.
+- **Predicate evaluation:** `Failed` follows the Predicate Group member's explicit reaction. Missing or
+  invalid evidence is not an evaluation status and follows the action-failure contract.
 - **Cancellation or confirmed infrastructure failure:** ordinary flow does not resume; the pending
   action is cancelled and all scopes unwind.
 - **Cleanup failure:** diagnostics accumulate, remaining cleanup continues, and the result marks the
@@ -753,9 +765,9 @@ execution path.
 - Interaction tests distinguish input request from guest-observed release and preserve
   input-before-continuation, exact current-receipt suppression, declared gate-or-successor completion,
   exact point/sequence/epoch, baseline-before-advance, and common-unwind behavior.
-- One predicate definition can be used as record-only and fail-fast at different check sites without
-  changing its pure condition.
-- Required predicate evidence failure is distinguishable from an unsatisfied condition, and predicate
+- One Predicate Definition can be specialized by different Execution Bindings and used by
+  record-and-continue or abort-on-fail Group members without changing its pure condition.
+- Required predicate evidence failure is distinguishable from a `Failed` condition, and predicate
   lowering introduces no opcode, executor, service, or runtime registry.
 - The current phase module IDs and entrypoints in document 07 compile without changes to the executor.
 - Future `soa.navigation.survey` exposes `establish_anchors` and `probe_geometry` through the same module

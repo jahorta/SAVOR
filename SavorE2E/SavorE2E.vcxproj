@@ -124,7 +124,6 @@
     <ClCompile Include="ScenarioAssessment.cpp" />
     <ClCompile Include="BattlePhasesRealWorkerScenario.cpp" />
     <ClCompile Include="SeedProbeRealWorkerScenario.cpp" />
-    <ClCompile Include="SplitCoordinatorRuntime.cpp" />
     <ClCompile Include="TasMovieRealWorkerScenario.cpp" />
     <ClCompile Include="WorkerStartupBarrier.cpp" />
     <ClCompile Include="WorkflowUnitRealWorkerScenario.cpp" />
@@ -138,7 +137,6 @@
     <ClInclude Include="ScenarioAssessment.h" />
     <ClInclude Include="BattlePhasesRealWorkerScenario.h" />
     <ClInclude Include="SeedProbeRealWorkerScenario.h" />
-    <ClInclude Include="SplitCoordinatorRuntime.h" />
     <ClInclude Include="TasMovieRealWorkerScenario.h" />
     <ClInclude Include="WorkerStartupBarrier.h" />
     <ClInclude Include="WorkflowUnitRealWorkerScenario.h" />

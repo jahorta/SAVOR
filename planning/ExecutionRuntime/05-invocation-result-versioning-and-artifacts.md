@@ -263,16 +263,15 @@ Reusable predicates are authored through the composition library in document 03 
 activation into canonical IR, exact action imports, scoped router operations, and declared emissions.
 They do not add another result-status dimension or a predicate-specific runtime channel.
 
-`ConditionObservation` is an ordinary typed emitted record. Its declared schema identifies the predicate
-and evaluation sequence, records the current `WorksetEpoch`, carries the typed witness values needed by
-that condition, and reports `Satisfied`, `Unsatisfied`, `NotApplicable`, or `Unavailable`.
-`Unavailable` is not equivalent to `Unsatisfied`: failure to acquire required evidence follows the
-action/infrastructure-failure contract unless the check explicitly defines absence as a domain
-condition.
+`ConditionObservation` is an ordinary typed emitted record. Its declared schema identifies the exact
+Definition, Execution Binding, Predicate Group, member, actual hook, and evaluation sequence. It records
+the current `WorksetEpoch`, carries the typed witness values needed by that condition, and reports
+`Passed` or `Failed`. Failure to acquire required evidence follows the action/infrastructure-failure
+contract and does not create another predicate status.
 
-Emission and reaction are use-site policies. The same pure predicate may be used to branch, return a
-clean domain rejection, explicitly fail, record progress, or accumulate a domain result. The predicate
-definition itself performs no effects and does not decide the program outcome.
+Emission and reaction are Predicate Group member policies. The same pure Definition may be specialized
+by different Execution Bindings and used by members that record-and-continue or return a clean domain
+rejection. The Definition itself performs no effects and does not decide the program outcome.
 
 ### ArtifactRef and immutable artifacts
 
@@ -374,9 +373,10 @@ Matching these inputs permits comparison of action and branch traces. It does no
 wall-clock durations. Any tolerated backend nondeterminism must be declared by the affected actions and
 reported in provenance.
 
-The canonical lowered module is the replay authority for predicate composition. Stable predicate/check
-identities remain in source maps, traces, and declared condition observations so a replay can explain
-which evidence and decision produced a branch or emission.
+The canonical lowered module is the replay authority for predicate composition. Exact Definition,
+Execution Binding, Predicate Group, member, and actual-hook identities remain in source maps, traces,
+and declared condition observations so a replay can explain which evidence and decision produced a
+branch or emission.
 
 ## Interfaces and ownership affected
 
@@ -465,11 +465,9 @@ It then publishes the affected workflow-step identity and commit sequence to the
 path. Targeted advancement does not delay acknowledgement; the existing broad reconciliation scan
 remains the recovery guard if the in-process notification is missed.
 
-Existing persisted battle predicate definitions are decoded through current SavorDb interfaces and
-supplied to in-memory predicate composition before module verification. Completion adapters project
-condition summaries, passed/total compatibility fields, and predicate-rejection outcomes through
-existing result operations. Neither `ConditionObservation` nor the composition source requires a new
-stored representation.
+Published Predicate Groups are resolved through exact Execution Bindings and Definitions before module
+verification. Completion adapters persist exact Group/Execution Package lineage, condition evidence,
+passed/total fields, and predicate-rejection outcomes through current result operations.
 
 ## Failure and cleanup behavior
 
@@ -523,8 +521,8 @@ result-publication, and recovery mechanisms remain unchanged.
 - Each supported current phase uses a direct native typed-module builder. Existing persisted payload and
   result codecs remain at the adapter boundary and are decoded or projected in memory; no `PhaseScript`
   translator contributes module bytes, identity, or verification evidence.
-- Predicate definitions supplied by existing adapters lower through the same module builder and are
-  covered by the resulting canonical module identity; their persisted representation remains unchanged.
+- Predicate Execution Packages lower through the same module builder and are covered by the resulting
+  canonical module identity. There is no pre-cut predicate adapter or decoder.
 - Worker-side result mapping migrates from a single `PSContext` blob to declared outputs, emissions,
   artifacts, and provenance; the program-kind adapter then writes the existing SavorDb representation.
 - State paths or references are adapted in memory into an exact artifact baseline without changing
@@ -582,7 +580,7 @@ result-publication, and recovery mechanisms remain unchanged.
 - A cleanup failure produces a tainted session even when the domain objective was achieved.
 - One invocation can emit many observations and artifacts without placing them in one opaque context blob.
 - Condition observations are deterministic typed emissions, and unavailable required evidence cannot
-  silently become an unsatisfied predicate.
+  silently become a `Failed` predicate evaluation.
 - Restoring state invalidates an epoch-bound handle and the executor prevents its later use.
 - Built-in and authored programs have one module verification and invocation path.
 - `ProgramKind` is absent from executor dispatch and exact replay identity.

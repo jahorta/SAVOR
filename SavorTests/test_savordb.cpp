@@ -36,6 +36,7 @@
 #include "Execution/Workflow/SqliteExecutionDb.h"
 #include "Execution/Jobs/JobEventOrchestration.h"
 #include "Execution/Workflow/WorkflowComposition.h"
+#include "Execution/Workflow/WorkflowLaunchContract.h"
 #include "Execution/Workflow/WorkflowIntegrityChecks.h"
 #include "Execution/Workflow/WorkflowProjector.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
@@ -82,17 +83,22 @@ TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
     const auto* validate_root = registry.Find("tas_movie_validate_root");
     const auto* validate_tree = registry.Find("tas_movie_validate_tree");
     const auto* sterilize = registry.Find("tas_movie_checkpoint_sterilize");
-    const auto* seed_probe = registry.Find("seed_probe_chain");
-    const auto* battle = registry.Find("battle_chain");
+    const auto* seed_probe = registry.Find("seed_probe");
+    const auto* battle = registry.Find("battle");
     ASSERT_NE(establish, nullptr);
     ASSERT_NE(validate_root, nullptr);
     ASSERT_NE(validate_tree, nullptr);
     ASSERT_NE(sterilize, nullptr);
     ASSERT_NE(seed_probe, nullptr);
     ASSERT_NE(battle, nullptr);
+    EXPECT_EQ(registry.Find("seed_probe_chain"), nullptr);
+    EXPECT_EQ(registry.Find("battle_seed_probe"), nullptr);
+    EXPECT_EQ(registry.Find("dungeon_seed_probe"), nullptr);
+    EXPECT_EQ(registry.Find("overworld_seed_probe"), nullptr);
 
     ASSERT_EQ(establish->required_inputs.size(), 1u);
     EXPECT_EQ(establish->required_inputs[0].data_kind, "state_artifact.dtm_artifact_id");
+    EXPECT_EQ(establish->required_inputs[0].ref_kind, "state_artifact");
     ASSERT_EQ(establish->possible_outputs.size(), 2u);
     EXPECT_TRUE(std::any_of(
         establish->possible_outputs.begin(),
@@ -100,10 +106,12 @@ TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
         [](const auto& output) {
             return output.key == "established_root_cursor_attempt"
                 && output.data_kind
-                    == "analysis.tas_movie_validation_attempt_id";
+                    == "analysis.tas_movie_validation_attempt_id"
+                && output.ref_kind == "tmv_validation_attempt";
         }));
     ASSERT_EQ(validate_root->required_inputs.size(), 1u);
     EXPECT_EQ(validate_root->required_inputs[0].data_kind, "analysis.tas_movie_validation_attempt_id");
+    EXPECT_EQ(validate_root->required_inputs[0].ref_kind, "tmv_validation_attempt");
     EXPECT_TRUE(std::any_of(
         validate_root->possible_outputs.begin(),
         validate_root->possible_outputs.end(),
@@ -113,6 +121,7 @@ TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
         }));
     ASSERT_EQ(validate_tree->required_inputs.size(), 1u);
     EXPECT_EQ(validate_tree->required_inputs[0].data_kind, "state.tas_movie_tree_id");
+    EXPECT_EQ(validate_tree->required_inputs[0].ref_kind, "state_tas_movie_tree");
     ASSERT_EQ(sterilize->required_inputs.size(), 1u);
     EXPECT_EQ(sterilize->required_inputs[0].data_kind,
         "state.movie_paired_savestate_id");
@@ -125,7 +134,50 @@ TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
         "state.movie_inactive_savestate_id");
     ASSERT_EQ(seed_probe->possible_outputs.size(), 1u);
     EXPECT_EQ(seed_probe->possible_outputs[0].data_kind, "analysis.seed_probe_run");
+    EXPECT_EQ(seed_probe->possible_outputs[0].ref_kind, "sp_probe_run");
+    EXPECT_FALSE(seed_probe->hidden);
+    EXPECT_TRUE(seed_probe->standalone_launchable);
+    EXPECT_TRUE(seed_probe->unit_variant.empty());
+    EXPECT_TRUE(seed_probe->breakpoint_profile_key.empty());
+    EXPECT_EQ(validate_root->standalone_presentation_family_key,
+        "tas_movie_validation");
+    EXPECT_EQ(validate_tree->standalone_presentation_family_key,
+        "tas_movie_validation");
+    EXPECT_EQ(validate_root->standalone_presentation_family_display_name,
+        "TAS Movie Validation");
+    EXPECT_EQ(validate_tree->standalone_presentation_family_display_name,
+        "TAS Movie Validation");
+    EXPECT_EQ(validate_tree->display_name,
+        "Validate Recorded TAS Branch");
+    const auto standalone = BuildStandalonePresentationEntries(
+        registry.ListUnits());
+    const auto validation_entry = std::ranges::find(
+        standalone,
+        std::string("tas_movie_validation"),
+        &WorkflowStandalonePresentationEntry::presentation_key);
+    ASSERT_NE(validation_entry, standalone.end());
+    EXPECT_EQ(validation_entry->display_name, "TAS Movie Validation");
+    ASSERT_EQ(validation_entry->members.size(), 2u);
+    EXPECT_TRUE(std::ranges::any_of(
+        validation_entry->members,
+        [](const auto& member) {
+            return member.unit_kind == "tas_movie_validate_root";
+        }));
+    EXPECT_TRUE(std::ranges::any_of(
+        validation_entry->members,
+        [](const auto& member) {
+            return member.unit_kind == "tas_movie_validate_tree";
+        }));
+    EXPECT_TRUE(std::ranges::any_of(
+        standalone,
+        [](const auto& entry) {
+            return entry.presentation_key == "seed_probe" &&
+                entry.members.size() == 1u &&
+                entry.members.front().unit_kind == "seed_probe";
+        }));
     ASSERT_EQ(battle->required_inputs.size(), 2u);
+    ASSERT_EQ(battle->authored_refs.size(), 1u);
+    EXPECT_EQ(battle->authored_refs[0].ref_kind, "authoring.battle_plan");
     EXPECT_EQ(battle->required_inputs[0].data_kind,
         "analysis.seed_probe_run");
     EXPECT_EQ(battle->required_inputs[1].data_kind,
@@ -135,8 +187,14 @@ TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
         battle->possible_outputs.end(),
         [](const auto& output) {
             return output.key == "battle_set"
-                && output.data_kind == "analysis_battle.battle_set";
+                && output.data_kind == "analysis_battle.battle_set"
+                && output.ref_kind == "analysis_battle.battle_set";
         }));
+
+    for (const auto& unit : registry.ListUnits()) {
+        for (const auto& input : unit.required_inputs) EXPECT_FALSE(input.ref_kind.empty());
+        for (const auto& output : unit.possible_outputs) EXPECT_FALSE(output.ref_kind.empty());
+    }
 }
 
 TEST(Stage5WorkflowComposition, ValidatesTasSeedProbeBattleCompatibility) {
@@ -150,7 +208,7 @@ TEST(Stage5WorkflowComposition, ValidatesTasSeedProbeBattleCompatibility) {
         { .node_key = "tas_1", .unit_kind = "tas_movie_establish_root_cursor" },
     };
     composition.external_inputs = {
-        { .node_key = "tas_1", .input_key = "root_dtm", .data_kind = "state_artifact.dtm_artifact_id", .ref_id = 10 },
+        { .node_key = "tas_1", .input_key = "root_dtm", .data_kind = "state_artifact.dtm_artifact_id", .ref_kind = "state_artifact", .ref_id = 10 },
     };
 
     const auto preview = service.Preview(composition);
@@ -169,12 +227,13 @@ TEST(Stage5WorkflowComposition, AcceptsOnlyOutputPresentGuardWithoutValue) {
     composition.nodes = {
         { .node_key = "validate", .unit_kind = "tas_movie_validate_root" },
         { .node_key = "sterilize", .unit_kind = "tas_movie_checkpoint_sterilize" },
-        { .node_key = "probe", .unit_kind = "battle_seed_probe" },
+        { .node_key = "probe", .unit_kind = "seed_probe" },
     };
     composition.external_inputs = {{
         .node_key = "validate",
         .input_key = "root_establishment",
         .data_kind = "analysis.tas_movie_validation_attempt_id",
+        .ref_kind = "tmv_validation_attempt",
         .ref_id = 7,
     }};
     composition.output_bindings = {{
@@ -208,7 +267,7 @@ TEST(Stage5WorkflowComposition, ReportsUnresolvedAndMismatchedInputs) {
 
     WorkflowCompositionSpec unresolved;
     unresolved.nodes = {
-        { .node_key = "battle_1", .unit_kind = "battle_chain" },
+        { .node_key = "battle_1", .unit_kind = "battle" },
     };
     auto preview = service.Preview(unresolved);
     EXPECT_FALSE(preview.valid);
@@ -216,11 +275,11 @@ TEST(Stage5WorkflowComposition, ReportsUnresolvedAndMismatchedInputs) {
 
     WorkflowCompositionSpec mismatched;
     mismatched.nodes = {
-        { .node_key = "probe_1", .unit_kind = "seed_probe_chain" },
-        { .node_key = "battle_1", .unit_kind = "battle_chain" },
+        { .node_key = "probe_1", .unit_kind = "seed_probe" },
+        { .node_key = "battle_1", .unit_kind = "battle" },
     };
     mismatched.external_inputs = {
-        { .node_key = "probe_1", .input_key = "entry_savestate", .data_kind = "state.movie_inactive_savestate_id", .ref_id = 99 },
+        { .node_key = "probe_1", .input_key = "entry_savestate", .data_kind = "state.movie_inactive_savestate_id", .ref_kind = "state.savestate", .ref_id = 99 },
     };
     mismatched.output_bindings = {
         { .from_node_key = "probe_1", .output_key = "seed_probe_run", .to_node_key = "battle_1", .input_key = "battle_context" },
@@ -235,6 +294,129 @@ TEST(Stage5WorkflowComposition, ReportsUnresolvedAndMismatchedInputs) {
         [](const auto& issue) {
             return issue.message.find("type mismatch") != std::string::npos;
         }));
+}
+
+TEST(Stage5WorkflowLaunchContract, NormalizesDefaultsAndRejectsMalformedTypedLaunches) {
+    using namespace savor::db;
+    using namespace savor::db::execution::workflow;
+
+    const auto registry = BuildDefaultWorkflowUnitRegistry();
+    const auto make_graph = [](const WorkflowUnitDefinition& unit) {
+        savor::db::WorkflowGraphSnapshot graph{};
+        WorkflowGraphNodeSnapshot node{};
+        node.node_key = "unit_1";
+        node.unit_kind = unit.unit_kind;
+        node.display_name = unit.display_name;
+        if (!unit.authored_refs.empty()) {
+            node.authored_ref_kind = unit.authored_refs.front().ref_kind;
+            node.authored_ref_id = 17;
+        }
+        for (const auto& input : unit.required_inputs) {
+            node.inputs.push_back({ input.key, input.data_kind, input.ref_kind, input.display_name, input.required });
+        }
+        for (const auto& output : unit.possible_outputs) {
+            node.possible_outputs.push_back({ output.key, output.data_kind, output.ref_kind, output.display_name });
+        }
+        for (const auto& argument : unit.launch_arguments) {
+            std::string value_type;
+            switch (argument.value_type) {
+            case WorkflowLaunchArgumentValueType::Integer: value_type = "integer"; break;
+            case WorkflowLaunchArgumentValueType::Text: value_type = "text"; break;
+            case WorkflowLaunchArgumentValueType::Boolean: value_type = "boolean"; break;
+            case WorkflowLaunchArgumentValueType::Json: value_type = "json"; break;
+            case WorkflowLaunchArgumentValueType::Choice: value_type = "choice"; break;
+            }
+            WorkflowGraphNodeArgumentSnapshot persisted_argument{
+                argument.key,
+                argument.display_name,
+                value_type,
+                argument.required,
+                argument.default_value,
+                argument.minimum_integer,
+                argument.maximum_integer,
+            };
+            for (const auto& choice : argument.choices) {
+                persisted_argument.choices.push_back({ choice.value, choice.display_name });
+            }
+            node.arguments.push_back(std::move(persisted_argument));
+        }
+        for (const auto& constraint : unit.launch_argument_constraints) {
+            node.argument_constraints.push_back({
+                constraint.lesser_or_equal_key,
+                constraint.greater_or_equal_key,
+                constraint.message,
+            });
+        }
+        graph.nodes.push_back(std::move(node));
+        return graph;
+    };
+
+    const auto* seed = registry.Find("seed_probe");
+    ASSERT_NE(seed, nullptr);
+    auto seed_graph = make_graph(*seed);
+    std::vector<WorkflowLaunchInputValue> seed_inputs{{
+        "unit_1", "entry_savestate", "state.movie_inactive_savestate_id",
+        "state.savestate", 91, "external",
+    }};
+    auto result = WorkflowLaunchContractValidator::Validate(seed_graph, registry, seed_inputs, {});
+    ASSERT_TRUE(result.valid);
+    ASSERT_EQ(result.normalized_arguments.size(), 1u);
+    EXPECT_EQ(result.normalized_arguments.front().argument_key, "samples_per_axis");
+    EXPECT_EQ(result.normalized_arguments.front().integer_value, 5);
+
+    auto wrong_ref = seed_inputs;
+    wrong_ref.front().ref_kind = "state_artifact";
+    EXPECT_FALSE(WorkflowLaunchContractValidator::Validate(seed_graph, registry, wrong_ref, {}).valid);
+    auto duplicate = seed_inputs;
+    duplicate.push_back(seed_inputs.front());
+    EXPECT_FALSE(WorkflowLaunchContractValidator::Validate(seed_graph, registry, duplicate, {}).valid);
+    EXPECT_FALSE(WorkflowLaunchContractValidator::Validate(seed_graph, registry, seed_inputs, {{
+        "unit_1", "unknown", "integer", 1, std::nullopt, "test",
+    }}).valid);
+
+    const auto* battle = registry.Find("battle");
+    ASSERT_NE(battle, nullptr);
+    auto battle_graph = make_graph(*battle);
+    std::vector<WorkflowLaunchInputValue> battle_inputs;
+    for (const auto& input : battle->required_inputs) {
+        battle_inputs.push_back({ "unit_1", input.key, input.data_kind, input.ref_kind, 42, "external" });
+    }
+    EXPECT_FALSE(WorkflowLaunchContractValidator::Validate(
+        battle_graph, registry, battle_inputs, {}).valid);
+    EXPECT_FALSE(WorkflowLaunchContractValidator::Validate(battle_graph, registry, battle_inputs, {
+        { "unit_1", "fake_attack_min", "integer", 5, std::nullopt, "test" },
+        { "unit_1", "fake_attack_max", "integer", 4, std::nullopt, "test" },
+        { "unit_1", "continuation_mode", "choice", std::nullopt, std::string("automatic_best_per_ending_rng"), "test" },
+    }).valid);
+    EXPECT_FALSE(WorkflowLaunchContractValidator::Validate(battle_graph, registry, battle_inputs, {
+        { "unit_1", "continuation_mode", "choice", std::nullopt, std::string("unknown"), "test" },
+    }).valid);
+    const auto valid_battle = WorkflowLaunchContractValidator::Validate(battle_graph, registry, battle_inputs, {
+        { "unit_1", "continuation_mode", "choice", std::nullopt, std::string("manual_selection"), "test" },
+    });
+    ASSERT_TRUE(valid_battle.valid);
+    const auto continuation = std::ranges::find(
+        valid_battle.normalized_arguments,
+        std::string("continuation_mode"),
+        &WorkflowLaunchArgumentValue::argument_key);
+    ASSERT_NE(continuation, valid_battle.normalized_arguments.end());
+    EXPECT_EQ(continuation->value_type, "choice");
+    EXPECT_EQ(continuation->text_value.value_or(""), "manual_selection");
+
+    const auto* validate_root = registry.Find("tas_movie_validate_root");
+    ASSERT_NE(validate_root, nullptr);
+    const auto validate_root_graph = make_graph(*validate_root);
+    const std::vector<WorkflowLaunchInputValue> validate_root_inputs{{
+        "unit_1", "root_establishment", "analysis.tas_movie_validation_attempt_id",
+        "tmv_validation_attempt", 7, "external",
+    }};
+    EXPECT_FALSE(WorkflowLaunchContractValidator::Validate(validate_root_graph, registry, validate_root_inputs, {}).valid);
+    EXPECT_FALSE(WorkflowLaunchContractValidator::Validate(validate_root_graph, registry, validate_root_inputs, {{
+        "unit_1", "rtc", "integer", -1, std::nullopt, "test",
+    }}).valid);
+    EXPECT_TRUE(WorkflowLaunchContractValidator::Validate(validate_root_graph, registry, validate_root_inputs, {{
+        "unit_1", "rtc", "integer", 555, std::nullopt, "test",
+    }}).valid);
 }
 
 TEST(Stage3cCoordinatorBridge, DeduplicatesTerminalSignalsAndSchedulesReadySteps) {
@@ -529,15 +711,12 @@ TEST(Stage3cEventContracts, AnalysisSpineFamilyDispatchRoutesToSpineContractV1) 
 TEST(Stage3cEventContracts, AuthoringFamilyDispatchRoutesToAuthoringContractV1) {
     using namespace savor::db::events;
 
-    constexpr std::array<std::string_view, 9> kAuthoringEventTypes{ {
+    constexpr std::array<std::string_view, 6> kAuthoringEventTypes{ {
         "Authoring.SeedProbeSpecSaved.v1",
         "Authoring.TasSpecSaved.v1",
-        "Authoring.BattleRunSpecSaved.v1",
         "Authoring.PlanSaved.v1",
         "Authoring.BattlePlanActionPresetSaved.v1",
         "Authoring.BattlePlanActionPresetRenamed.v1",
-        "Authoring.SettingsSaved.v1",
-        "Authoring.BattleChainSpecSaved.v1",
         "Authoring.WorkflowGraphSaved.v1",
     } };
 
@@ -566,7 +745,7 @@ TEST(Stage3cEventContracts, AuthoringCatalogEntriesRemainDispatched) {
         EXPECT_EQ(*contract, PayloadResolverContract::AuthoringV1) << event_type;
     }
 
-    EXPECT_EQ(authoring_entries, 12u);
+    EXPECT_EQ(authoring_entries, 6u);
 }
 
 } // namespace savordb

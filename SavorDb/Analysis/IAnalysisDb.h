@@ -53,6 +53,12 @@ enum class BattleSetStatus {
     Failed,
 };
 
+enum class BattleContinuationMode {
+    Unknown = 0,
+    ManualSelection,
+    AutomaticBestPerEndingRng,
+};
+
 enum class BattleSeedCandidateSourceKind {
     Unknown = 0,
     SeedProbeConfirmedResult,
@@ -167,6 +173,24 @@ inline BattleSetStatus ParseBattleSetStatus(std::string_view value) {
     if (value == "NO_SURVIVORS") return BattleSetStatus::NoSurvivors;
     if (value == "FAILED") return BattleSetStatus::Failed;
     return BattleSetStatus::Unknown;
+}
+
+inline std::string_view ToDbString(BattleContinuationMode value) {
+    switch (value) {
+    case BattleContinuationMode::ManualSelection: return "manual_selection";
+    case BattleContinuationMode::AutomaticBestPerEndingRng:
+        return "automatic_best_per_ending_rng";
+    case BattleContinuationMode::Unknown: break;
+    }
+    return "";
+}
+
+inline BattleContinuationMode ParseBattleContinuationMode(std::string_view value) {
+    if (value == "manual_selection") return BattleContinuationMode::ManualSelection;
+    if (value == "automatic_best_per_ending_rng") {
+        return BattleContinuationMode::AutomaticBestPerEndingRng;
+    }
+    return BattleContinuationMode::Unknown;
 }
 
 inline std::string_view ToDbString(BattleSeedCandidateSourceKind value) {
@@ -535,8 +559,9 @@ struct RecordSeedProbeEncounterProjectionCommand {
 struct CreateBattleSetCommand {
     std::string name;
     std::int64_t entry_savestate_id = 0;
-    std::int64_t battle_run_spec_id = 0;
-    std::int64_t explorer_settings_id = 0;
+    std::int64_t battle_plan_id = 0;
+    std::string battle_plan_fingerprint;
+    BattleContinuationMode continuation_mode = BattleContinuationMode::Unknown;
     int launch_fake_attack_min = 0;
     int launch_fake_attack_max = 0;
     BattleSetStatus status = BattleSetStatus::Unknown;
@@ -643,8 +668,9 @@ struct BattleSetSnapshot {
     std::int64_t battle_set_id = 0;
     std::string name;
     std::int64_t entry_savestate_id = 0;
-    std::int64_t battle_run_spec_id = 0;
-    std::int64_t explorer_settings_id = 0;
+    std::int64_t battle_plan_id = 0;
+    std::string battle_plan_fingerprint;
+    BattleContinuationMode continuation_mode = BattleContinuationMode::Unknown;
     int launch_fake_attack_min = 0;
     int launch_fake_attack_max = 0;
     BattleSetStatus status = BattleSetStatus::Unknown;
@@ -1059,8 +1085,9 @@ struct EnsureBattleStartCommand {
     std::int64_t context_probe_id = 0;
     std::string battle_set_name;
     std::int64_t entry_savestate_id = 0;
-    std::int64_t battle_run_spec_id = 0;
-    std::int64_t explorer_settings_id = 0;
+    std::int64_t battle_plan_id = 0;
+    std::string battle_plan_fingerprint;
+    BattleContinuationMode continuation_mode = BattleContinuationMode::Unknown;
     int launch_fake_attack_min = 0;
     int launch_fake_attack_max = 0;
     types::UtcTimePoint created_at_utc{};
@@ -1091,9 +1118,9 @@ struct RecordBattleSingleTurnResultCommand {
     std::optional<std::uint32_t> cumulative_fake_attacks;
     std::optional<std::int64_t> successor_savestate_id;
     std::optional<std::int64_t> battle_context_artifact_id;
-    std::optional<std::int64_t> predicate_bundle_revision_id;
-    std::optional<std::string> predicate_bundle_sha256;
-    std::optional<std::string> predicate_binding_sha256;
+    std::optional<std::int64_t> predicate_group_revision_id;
+    std::optional<std::string> predicate_group_sha256;
+    std::optional<std::string> predicate_execution_package_sha256;
     std::vector<std::uint8_t> predicate_evidence_blob;
     std::optional<std::int64_t> applied_input_artifact_id;
     std::optional<std::int64_t> input_trace_artifact_id;
@@ -1104,28 +1131,12 @@ struct BattleSingleTurnResultSnapshot : RecordBattleSingleTurnResultCommand {
     std::int64_t battle_single_turn_result_id = 0;
 };
 
-struct BattlePredicateParameterValue {
-    std::uint32_t ordinal = 0;
-    std::string value_kind;
-    std::optional<int> builtin_type;
-    std::optional<std::string> schema_canonical_id;
-    std::optional<std::uint32_t> schema_revision;
-    std::optional<std::string> schema_sha256;
-    std::optional<std::int64_t> integer_value;
-    std::optional<double> real_value;
-    std::optional<std::string> text_value;
-    std::vector<std::uint8_t> blob_value;
-    bool operator==(const BattlePredicateParameterValue&) const = default;
-};
-
-struct BindBattlePredicateBundleCommand {
+struct BindBattlePredicateExecutionPackageCommand {
     std::optional<std::int64_t> wave_id;
-    std::int64_t predicate_bundle_revision_id = 0;
-    std::string bundle_content_sha256;
-    std::string binding_content_sha256;
-    std::string structural_active_check_sha256;
-    std::vector<BattlePredicateParameterValue> parameter_values;
-    std::vector<std::uint32_t> active_check_ordinals;
+    std::optional<std::int64_t> predicate_group_revision_id;
+    std::string predicate_group_sha256;
+    std::string execution_package_sha256;
+    std::vector<std::uint8_t> execution_package_blob;
     std::int32_t phase_program_kind = 0;
     std::int32_t phase_program_version = 0;
     std::string phase_canonical_id;
@@ -1137,15 +1148,13 @@ struct BindBattlePredicateBundleCommand {
     types::UtcTimePoint created_at_utc{};
 };
 
-struct BattlePredicateBundleBindingSnapshot {
-    std::int64_t predicate_bundle_binding_id = 0;
+struct BattlePredicateExecutionPackageSnapshot {
+    std::int64_t predicate_execution_package_id = 0;
     std::optional<std::int64_t> wave_id;
-    std::int64_t predicate_bundle_revision_id = 0;
-    std::string bundle_content_sha256;
-    std::string binding_content_sha256;
-    std::string structural_active_check_sha256;
-    std::vector<BattlePredicateParameterValue> parameter_values;
-    std::vector<std::uint32_t> active_check_ordinals;
+    std::optional<std::int64_t> predicate_group_revision_id;
+    std::string predicate_group_sha256;
+    std::string execution_package_sha256;
+    std::vector<std::uint8_t> execution_package_blob;
     std::int32_t phase_program_kind = 0;
     std::int32_t phase_program_version = 0;
     std::string phase_canonical_id;
@@ -1416,12 +1425,12 @@ struct IAnalysisDb {
         const EnsureBattleStartCommand& command,
         EnsureBattleStartReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) = 0;
-    virtual bool BindBattlePredicateBundle(
-        const BindBattlePredicateBundleCommand& command,
+    virtual bool BindBattlePredicateExecutionPackage(
+        const BindBattlePredicateExecutionPackageCommand& command,
         std::int64_t* binding_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
-    virtual std::optional<BattlePredicateBundleBindingSnapshot>
-    GetBattlePredicateBundleBindingForWave(std::int64_t wave_id) const = 0;
+    virtual std::optional<BattlePredicateExecutionPackageSnapshot>
+    GetBattlePredicateExecutionPackageForWave(std::int64_t wave_id) const = 0;
 
     virtual bool CreateBattleContextProbe(
         const CreateBattleContextProbeCommand& command,

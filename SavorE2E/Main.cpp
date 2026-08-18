@@ -194,12 +194,16 @@ int main(int argc, char** argv) {
                 scenario_passed = RunBattleWorkflowGraphRealWorkerScenario(
                     options, entry, argv[0], &service, &scenario_error);
                 break;
-            case E2eScenarioKind::TasMovie:
-                scenario_passed = RunTasMovieRealWorkerSmoke(
+            case E2eScenarioKind::TasMovieEstablish:
+                scenario_passed = RunTasMovieEstablishRealWorkerSmoke(
                     options, entry, argv[0], &service, &scenario_error);
                 break;
-            case E2eScenarioKind::TasMovieWithValidation:
-                scenario_passed = RunTasMovieWithValidationRealWorkerSmoke(
+            case E2eScenarioKind::TasMovieValidation:
+                scenario_passed = RunTasMovieValidationRealWorkerSmoke(
+                    options, entry, argv[0], &service, &scenario_error);
+                break;
+            case E2eScenarioKind::TasMovieSterile:
+                scenario_passed = RunTasMovieSterileRealWorkerSmoke(
                     options, entry, argv[0], &service, &scenario_error);
                 break;
             case E2eScenarioKind::TasMovieSeedProbe:

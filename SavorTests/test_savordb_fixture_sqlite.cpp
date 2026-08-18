@@ -32,6 +32,7 @@
 #include "Archive/SqliteArchiveDb.h"
 #include "Archive/ArchivePackageService.h"
 #include "Archive/RehydrateExecutor.h"
+#include "State/ArtifactObjectStore.h"
 #include "State/SqliteStateDb.h"
 #include "UIRead/SqliteUiReadDb.h"
 #include "Execution/ArchiveWorkflowCommands.h"
@@ -53,11 +54,13 @@
 #include "Execution/WorkflowCoordinatorBridge.h"
 #include "Execution/WorkflowSchedulerAdapter.h"
 #include "Execution/StepInputAggregationService.h"
+#include "Execution/CoordinatorRuntime.h"
 #include "Utils/Hash.h"
 #include "Core/Memory/Soa/Battle/BattleContextCodec.h"
 #include "Phases/Programs/BattleRecord/BattleRecordModule.h"
 #include "Runner/Breakpoints/BpRegistry.h"
 #include "Runner/Runtime/ProgramKind.h"
+#include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "Runner/Runtime/Worksets/WorksetWireCodec.h"
 
 #include "common/RecordingExecutionDb.h"
@@ -407,6 +410,423 @@ TEST_F(SqliteDbFixture, BattlePlanRelationalTurnMigrationPreservesAuthoredRows) 
         "SELECT COUNT(1) FROM pragma_table_info('au_battle_plan_action_preset') WHERE name='target_expr_ini';"), 0);
 }
 
+TEST_F(SqliteDbFixture, WorkflowLaunchContractMigrationBackfillsExactKindsArgumentsAndEmptyPredicateNull) {
+    using namespace savor::db::migrations;
+
+    const auto migrations = LoadContextMigrations(
+        MigrationContext::Authoring,
+        {.source_kind = MigrationSourceKind::Embedded});
+    const auto contract = std::ranges::find(
+        migrations,
+        "202608161000_authoring_workflow_launch_contracts.sql",
+        &MigrationEntry::name);
+    ASSERT_NE(contract, migrations.end());
+    const auto adaptive = std::ranges::find(
+        migrations,
+        "202608161200_authoring_adaptive_seed_probe.sql",
+        &MigrationEntry::name);
+    ASSERT_NE(adaptive, migrations.end());
+    ASSERT_LT(contract, adaptive);
+
+    sqlite3* raw_legacy_db = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &raw_legacy_db), SQLITE_OK);
+    const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> legacy_db(
+        raw_legacy_db, &sqlite3_close);
+    for (auto migration = migrations.begin(); migration != contract; ++migration) {
+        ASSERT_TRUE(ExecSql(legacy_db.get(), migration->sql.c_str()))
+            << migration->name;
+    }
+
+    ASSERT_TRUE(ExecSql(legacy_db.get(), R"SQL(
+INSERT INTO au_battle_plan(plan_id,name,fingerprint,created_at_utc)
+VALUES(101,'contract-plan','contract-plan-fingerprint',1);
+INSERT INTO au_battle_plan_turn(
+    plan_turn_id,plan_id,turn_index,default_predicate_bundle_revision_id)
+VALUES(102,101,1,1);
+INSERT INTO au_workflow_graph(
+    workflow_graph_id,name,description,active_revision_id,created_at_utc)
+VALUES(201,'contract-graph','migration fixture',NULL,1);
+INSERT INTO au_workflow_graph_revision(
+    workflow_graph_revision_id,workflow_graph_id,graph_version,graph_hash,status,created_at_utc)
+VALUES(202,201,1,'contract-graph-hash','active',1);
+UPDATE au_workflow_graph SET active_revision_id=202 WHERE workflow_graph_id=201;
+INSERT INTO au_workflow_graph_revision_node(
+    workflow_graph_revision_node_id,workflow_graph_revision_id,node_key,unit_kind,
+    display_name,authored_ref_kind,authored_ref_id,ordinal)
+VALUES(203,202,'probe','seed_probe_chain','Seed Probe','seed_probe_spec',9,0);
+INSERT INTO au_workflow_graph_revision_node(
+    workflow_graph_revision_node_id,workflow_graph_revision_id,node_key,unit_kind,
+    display_name,authored_ref_kind,authored_ref_id,ordinal)
+VALUES
+    (206,202,'battle-probe','battle_seed_probe','Battle Probe','seed_probe_spec',9,1),
+    (207,202,'dungeon-probe','dungeon_seed_probe','Dungeon Probe','seed_probe_spec',9,2),
+    (208,202,'overworld-probe','overworld_seed_probe','Overworld Probe','seed_probe_spec',9,3);
+INSERT INTO au_workflow_graph_revision_node_input(
+    workflow_graph_revision_node_input_id,workflow_graph_revision_node_id,
+    input_key,data_kind,display_name,required,ordinal)
+VALUES(204,203,'entry_savestate','state.movie_inactive_savestate_id','Entry',1,0);
+INSERT INTO au_workflow_graph_revision_node_output(
+    workflow_graph_revision_node_output_id,workflow_graph_revision_node_id,
+    output_key,data_kind,display_name,ordinal)
+VALUES(205,203,'seed_probe_run','analysis.seed_probe_run','Run',0);
+INSERT INTO au_workflow_graph_revision_edge(
+    workflow_graph_revision_edge_id,workflow_graph_revision_id,
+    from_revision_node_id,output_key,to_revision_node_id,input_key,ordinal)
+VALUES(209,202,203,'seed_probe_run',206,'entry_savestate',0);
+)SQL"));
+
+    ASSERT_TRUE(ExecSql(legacy_db.get(), contract->sql.c_str()));
+    EXPECT_EQ(ReadText(legacy_db.get(),
+        "SELECT ref_kind FROM au_workflow_graph_revision_node_input WHERE workflow_graph_revision_node_input_id=204;"),
+        "state.savestate");
+    EXPECT_EQ(ReadText(legacy_db.get(),
+        "SELECT ref_kind FROM au_workflow_graph_revision_node_output WHERE workflow_graph_revision_node_output_id=205;"),
+        "sp_probe_run");
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_workflow_graph_revision_node_argument WHERE workflow_graph_revision_node_id=203 AND argument_key='samples_per_axis' AND default_value='5';"),
+        1);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_battle_plan_turn WHERE plan_turn_id=102 AND default_predicate_bundle_revision_id IS NULL;"),
+        1);
+
+    ASSERT_TRUE(ExecSql(legacy_db.get(), adaptive->sql.c_str()));
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_workflow_graph_revision_node WHERE workflow_graph_revision_id=202 AND unit_kind='seed_probe';"),
+        4);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_workflow_graph_revision_node WHERE workflow_graph_revision_node_id IN (203,206,207,208);"),
+        4);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_workflow_graph_revision_edge WHERE workflow_graph_revision_edge_id=209 AND from_revision_node_id=203 AND to_revision_node_id=206;"),
+        1);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_workflow_graph_revision_node_argument WHERE workflow_graph_revision_node_id IN (203,206,207,208) AND argument_key='samples_per_axis';"),
+        4);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT active_revision_id FROM au_workflow_graph WHERE workflow_graph_id=201;"),
+        202);
+    EXPECT_EQ(ReadText(legacy_db.get(),
+        "SELECT graph_hash FROM au_workflow_graph_revision WHERE workflow_graph_revision_id=202;"),
+        "adaptive-seedprobe-v1:contract-graph-hash");
+
+    const auto direct_battle = std::ranges::find(
+        migrations,
+        "202608171500_authoring_direct_battle_workflow.sql",
+        &MigrationEntry::name);
+    ASSERT_NE(direct_battle, migrations.end());
+    ASSERT_LT(adaptive, direct_battle);
+    ASSERT_TRUE(ExecSql(legacy_db.get(), R"SQL(
+INSERT INTO au_workflow_graph_revision_node(
+    workflow_graph_revision_node_id,workflow_graph_revision_id,node_key,unit_kind,
+    display_name,authored_ref_kind,authored_ref_id,ordinal)
+VALUES(210,202,'battle','battle_chain','Battle Chain',
+       'authoring.battle_chain_spec',77,4);
+)SQL"));
+    for (auto migration = std::next(adaptive);
+         migration != std::next(direct_battle);
+         ++migration) {
+        ASSERT_TRUE(ExecSql(legacy_db.get(), migration->sql.c_str()))
+            << migration->name;
+    }
+    EXPECT_EQ(ReadText(legacy_db.get(),
+        "SELECT unit_kind FROM au_workflow_graph_revision_node WHERE workflow_graph_revision_node_id=210;"),
+        "battle");
+    EXPECT_EQ(ReadText(legacy_db.get(),
+        "SELECT authored_ref_kind FROM au_workflow_graph_revision_node WHERE workflow_graph_revision_node_id=210;"),
+        "authoring.battle_plan");
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT authored_ref_id IS NULL FROM au_workflow_graph_revision_node WHERE workflow_graph_revision_node_id=210;"),
+        1);
+    EXPECT_EQ(ReadText(legacy_db.get(),
+        "SELECT graph_hash FROM au_workflow_graph_revision WHERE workflow_graph_revision_id=202;"),
+        "direct-battle-plan-v1:adaptive-seedprobe-v1:contract-graph-hash");
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_workflow_graph_revision_node_argument WHERE workflow_graph_revision_node_id=210;"),
+        3);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_workflow_graph_revision_node_argument_choice c "
+        "JOIN au_workflow_graph_revision_node_argument a "
+        "ON a.workflow_graph_revision_node_argument_id=c.workflow_graph_revision_node_argument_id "
+        "WHERE a.workflow_graph_revision_node_id=210 AND a.argument_key='continuation_mode';"),
+        2);
+    EXPECT_EQ(ReadText(legacy_db.get(),
+        "SELECT choice_value FROM au_workflow_graph_revision_node_argument_choice c "
+        "JOIN au_workflow_graph_revision_node_argument a "
+        "ON a.workflow_graph_revision_node_argument_id=c.workflow_graph_revision_node_argument_id "
+        "WHERE a.workflow_graph_revision_node_id=210 AND c.ordinal=0;"),
+        "manual_selection");
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM sqlite_master WHERE type='table' "
+        "AND name IN ('au_battle_chain_spec','au_explorer_settings','au_battle_run_spec');"),
+        0);
+
+    sqlite3* raw_unknown_db = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &raw_unknown_db), SQLITE_OK);
+    const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> unknown_db(
+        raw_unknown_db, &sqlite3_close);
+    for (auto migration = migrations.begin(); migration != contract; ++migration) {
+        ASSERT_TRUE(ExecSql(unknown_db.get(), migration->sql.c_str()))
+            << migration->name;
+    }
+    ASSERT_TRUE(ExecSql(unknown_db.get(), R"SQL(
+INSERT INTO au_workflow_graph(workflow_graph_id,name,active_revision_id,created_at_utc)
+VALUES(301,'unknown-contract',NULL,1);
+INSERT INTO au_workflow_graph_revision(
+    workflow_graph_revision_id,workflow_graph_id,graph_version,graph_hash,status,created_at_utc)
+VALUES(302,301,1,'unknown-contract-hash','active',1);
+INSERT INTO au_workflow_graph_revision_node(
+    workflow_graph_revision_node_id,workflow_graph_revision_id,node_key,unit_kind,ordinal)
+VALUES(303,302,'unknown','seed_probe_chain',0);
+INSERT INTO au_workflow_graph_revision_node_input(
+    workflow_graph_revision_node_input_id,workflow_graph_revision_node_id,
+    input_key,data_kind,required,ordinal)
+VALUES(304,303,'unknown_input','unknown.data.kind',1,0);
+)SQL"));
+    EXPECT_FALSE(ExecSql(unknown_db.get(), contract->sql.c_str()));
+    (void)sqlite3_exec(unknown_db.get(), "ROLLBACK;", nullptr, nullptr, nullptr);
+}
+
+TEST_F(SqliteDbFixture, PredicateIdentityHardCutClearsInterimAuthoringAndRemovesBundleModel) {
+    using namespace savor::db::migrations;
+
+    const auto migrations = LoadContextMigrations(
+        MigrationContext::Authoring,
+        {.source_kind = MigrationSourceKind::Embedded});
+    const auto hard_cut = std::ranges::find(
+        migrations,
+        "202608161400_authoring_predicate_groups.sql",
+        &MigrationEntry::name);
+    ASSERT_NE(hard_cut, migrations.end());
+
+    sqlite3* raw_legacy_db = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &raw_legacy_db), SQLITE_OK);
+    const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> legacy_db(
+        raw_legacy_db, &sqlite3_close);
+    for (auto migration = migrations.begin(); migration != hard_cut; ++migration) {
+        ASSERT_TRUE(ExecSql(legacy_db.get(), migration->sql.c_str()))
+            << migration->name;
+    }
+
+    ASSERT_TRUE(ExecSql(legacy_db.get(), R"SQL(
+INSERT INTO au_predicate_definition_v2(
+    predicate_definition_id,stable_key,name,description,created_at_utc)
+VALUES(91,'predicate.kept','Kept Predicate','pure definition',1);
+INSERT INTO au_predicate_definition_revision_v2(
+    predicate_definition_revision_id,predicate_definition_id,revision_number,
+    revision_state,root_node_ordinal,content_sha256,created_at_utc,published_at_utc)
+VALUES(92,91,1,'DRAFT',0,
+    '1111111111111111111111111111111111111111111111111111111111111111',1,NULL);
+INSERT INTO au_predicate_expression_node_v2(
+    predicate_definition_revision_id,node_ordinal,node_kind,result_builtin_type,
+    literal_kind,literal_integer,source_label)
+VALUES(92,0,'LITERAL',1,'BOOL',1,'true');
+UPDATE au_predicate_definition_revision_v2
+SET revision_state='PUBLISHED',published_at_utc=1
+WHERE predicate_definition_revision_id=92;
+INSERT INTO au_predicate_bundle_v2(
+    predicate_bundle_id,stable_key,name,description,created_at_utc)
+VALUES(93,'predicate.bundle.removed','Removed bundle','obsolete',1);
+INSERT INTO au_predicate_bundle_revision_v2(
+    predicate_bundle_revision_id,predicate_bundle_id,revision_number,
+    revision_state,content_sha256,created_at_utc,published_at_utc)
+VALUES(94,93,1,'PUBLISHED',
+    '2222222222222222222222222222222222222222222222222222222222222222',1,1);
+INSERT INTO au_battle_plan(plan_id,name,fingerprint,created_at_utc)
+VALUES(95,'hard-cut-plan','hard-cut-plan',1);
+INSERT INTO au_battle_plan_turn(
+    plan_turn_id,plan_id,turn_index,default_predicate_bundle_revision_id)
+VALUES(96,95,1,94);
+)SQL"));
+
+    ASSERT_TRUE(ExecSql(legacy_db.get(), hard_cut->sql.c_str()));
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_predicate_definition_v2;"), 0);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_predicate_definition_revision_v2;"), 0);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM sqlite_master WHERE type='table' "
+        "AND name LIKE 'au_predicate_bundle%';"), 0);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM sqlite_master WHERE type='table' "
+        "AND name='au_predicate_check_use_v2';"), 0);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM pragma_table_info('au_battle_plan_turn') "
+        "WHERE name='default_predicate_bundle_revision_id';"), 0);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM au_battle_plan_turn WHERE plan_turn_id=96 "
+        "AND default_predicate_group_revision_id IS NULL;"), 1);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name IN ("
+        "'au_predicate_execution_binding','au_predicate_execution_binding_revision',"
+        "'au_predicate_group','au_predicate_group_revision','au_predicate_group_member',"
+        "'au_predicate_group_member_hook');"), 6);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM sqlite_master WHERE type='table' "
+        "AND name='au_predicate_authoring_request';"), 1);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM pragma_table_info('au_predicate_definition_v2') "
+        "WHERE name='updated_at_utc' AND [notnull]=1;"), 1);
+    EXPECT_EQ(ReadInt64(legacy_db.get(),
+        "SELECT COUNT(1) FROM pragma_table_info('au_predicate_definition_revision_v2') "
+        "WHERE name='semantic_sha256' AND [notnull]=1;"), 1);
+}
+
+TEST_F(SqliteDbFixture, PredicateIdentitySchemaRepairRebuildsStaleAppliedSchemaWithoutTouchingBattlePlans) {
+    using namespace savor::db::migrations;
+    const auto migrations = LoadContextMigrations(
+        MigrationContext::Authoring,
+        {.source_kind = MigrationSourceKind::Embedded});
+    const auto hard_cut = std::ranges::find(migrations,
+        "202608161400_authoring_predicate_groups.sql", &MigrationEntry::name);
+    const auto repair = std::ranges::find(migrations,
+        "202608162300_authoring_predicate_identity_schema_repair.sql", &MigrationEntry::name);
+    const auto observation_planning = std::ranges::find(migrations,
+        "202608171130_authoring_predicate_observation_planning.sql",
+        &MigrationEntry::name);
+    ASSERT_NE(hard_cut, migrations.end());
+    ASSERT_NE(repair, migrations.end());
+    ASSERT_NE(observation_planning, migrations.end());
+    ASSERT_LT(hard_cut, repair);
+    ASSERT_LT(repair, observation_planning);
+
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &raw), SQLITE_OK);
+    const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> stale(raw, &sqlite3_close);
+    for (auto migration = migrations.begin(); migration != repair; ++migration)
+        ASSERT_TRUE(ExecSql(stale.get(), migration->sql.c_str())) << migration->name;
+
+    ASSERT_TRUE(ExecSql(stale.get(), R"SQL(
+INSERT INTO au_battle_plan(plan_id,name,fingerprint,created_at_utc)
+VALUES(710,'preserved plan','preserved-plan',1);
+INSERT INTO au_battle_plan_turn(plan_turn_id,plan_id,turn_index,default_predicate_group_revision_id)
+VALUES(711,710,1,NULL);
+DROP TRIGGER IF EXISTS au_predicate_definition_published_immutable;
+DROP TRIGGER IF EXISTS au_predicate_definition_published_delete_immutable;
+DROP TRIGGER IF EXISTS au_predicate_definition_child_insert_immutable;
+DROP TRIGGER IF EXISTS au_predicate_definition_child_update_immutable;
+DROP TRIGGER IF EXISTS au_predicate_definition_child_delete_immutable;
+DROP TRIGGER IF EXISTS au_predicate_definition_node_insert_immutable;
+DROP TRIGGER IF EXISTS au_predicate_definition_node_update_immutable;
+DROP TRIGGER IF EXISTS au_predicate_definition_node_delete_immutable;
+DROP TRIGGER IF EXISTS au_predicate_definition_edge_insert_immutable;
+DROP TRIGGER IF EXISTS au_predicate_definition_edge_update_immutable;
+DROP TRIGGER IF EXISTS au_predicate_definition_edge_delete_immutable;
+DROP TRIGGER IF EXISTS au_predicate_execution_binding_published_immutable;
+DROP TRIGGER IF EXISTS au_predicate_execution_binding_published_delete_immutable;
+DROP TRIGGER IF EXISTS au_predicate_execution_binding_source_published_insert_immutable;
+DROP TRIGGER IF EXISTS au_predicate_execution_binding_source_published_update_immutable;
+DROP TRIGGER IF EXISTS au_predicate_execution_binding_source_published_delete_immutable;
+DROP TRIGGER IF EXISTS au_predicate_group_published_immutable;
+DROP TRIGGER IF EXISTS au_predicate_group_published_delete_immutable;
+DROP TRIGGER IF EXISTS au_predicate_group_member_published_insert_immutable;
+DROP TRIGGER IF EXISTS au_predicate_group_member_published_update_immutable;
+DROP TRIGGER IF EXISTS au_predicate_group_member_published_delete_immutable;
+DROP TRIGGER IF EXISTS au_predicate_group_hook_published_insert_immutable;
+DROP TRIGGER IF EXISTS au_predicate_group_hook_published_update_immutable;
+DROP TRIGGER IF EXISTS au_predicate_group_hook_published_delete_immutable;
+DROP TABLE au_predicate_group_member_hook;
+DROP TABLE au_predicate_group_member;
+DROP TABLE au_predicate_group_revision;
+DROP TABLE au_predicate_group;
+DROP TABLE au_predicate_execution_binding_witness_source;
+DROP TABLE au_predicate_execution_binding_revision;
+DROP TABLE au_predicate_execution_binding;
+DROP TABLE au_predicate_expression_edge_v2;
+DROP TABLE au_predicate_expression_node_v2;
+DROP TABLE au_predicate_witness_v2;
+DROP TABLE au_predicate_definition_revision_v2;
+DROP TABLE au_predicate_definition_v2;
+DROP TABLE au_predicate_authoring_request;
+CREATE TABLE au_predicate_definition_v2(
+ predicate_definition_id INTEGER PRIMARY KEY,stable_key TEXT NOT NULL UNIQUE,
+ name TEXT NOT NULL,description TEXT,created_at_utc INTEGER NOT NULL);
+CREATE TABLE au_predicate_definition_revision_v2(
+ predicate_definition_revision_id INTEGER PRIMARY KEY,predicate_definition_id INTEGER NOT NULL,
+ revision_number INTEGER NOT NULL,revision_state TEXT NOT NULL,root_node_ordinal INTEGER NOT NULL,
+ content_sha256 TEXT,created_at_utc INTEGER NOT NULL,published_at_utc INTEGER);
+CREATE TABLE au_predicate_group(
+ predicate_group_id INTEGER PRIMARY KEY,stable_key TEXT NOT NULL UNIQUE,
+ name TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',created_at_utc INTEGER NOT NULL);
+CREATE TABLE au_predicate_group_revision(
+ predicate_group_revision_id INTEGER PRIMARY KEY,predicate_group_id INTEGER NOT NULL,
+ revision_number INTEGER NOT NULL,revision_state TEXT NOT NULL,content_sha256 TEXT,
+ created_at_utc INTEGER NOT NULL,published_at_utc INTEGER,
+ FOREIGN KEY(predicate_group_id) REFERENCES au_predicate_group(predicate_group_id));
+INSERT INTO au_predicate_definition_v2 VALUES(720,'stale','discarded','stale row',1);
+INSERT INTO au_predicate_definition_revision_v2 VALUES(721,720,1,'DRAFT',0,NULL,1,NULL);
+)SQL"));
+
+    ASSERT_TRUE(ExecSql(stale.get(), repair->sql.c_str()))
+        << sqlite3_errmsg(stale.get());
+    ASSERT_TRUE(ExecSql(stale.get(), observation_planning->sql.c_str()))
+        << sqlite3_errmsg(stale.get());
+    EXPECT_EQ(ReadInt64(stale.get(), "SELECT COUNT(*) FROM au_battle_plan WHERE plan_id=710;"), 1);
+    EXPECT_EQ(ReadInt64(stale.get(), "SELECT COUNT(*) FROM au_battle_plan_turn WHERE plan_turn_id=711 AND default_predicate_group_revision_id IS NULL;"), 1);
+    EXPECT_EQ(ReadInt64(stale.get(), "SELECT COUNT(*) FROM au_predicate_definition_v2;"), 0);
+    EXPECT_EQ(ReadInt64(stale.get(), "SELECT COUNT(*) FROM pragma_table_info('au_predicate_definition_v2') WHERE name='updated_at_utc' AND [notnull]=1;"), 1);
+    EXPECT_EQ(ReadInt64(stale.get(), "SELECT COUNT(*) FROM pragma_table_info('au_predicate_definition_revision_v2') WHERE name='semantic_sha256' AND [notnull]=1;"), 1);
+    EXPECT_EQ(ReadInt64(stale.get(), "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='au_predicate_authoring_request';"), 1);
+    EXPECT_EQ(ReadInt64(stale.get(),
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+        "AND name='au_predicate_execution_binding_witness_source' "
+        "AND sql LIKE '%DERIVED_STATE_QUERY%' "
+        "AND sql NOT LIKE '%CURRENT_HOOK_QUERY%';"), 1);
+    EXPECT_EQ(ReadInt64(stale.get(),
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
+        "AND name LIKE 'au_predicate_execution_binding_source_published_%';"), 3);
+    EXPECT_EQ(ReadText(stale.get(), "PRAGMA integrity_check;"), "ok");
+
+    sqlite3* raw_fresh = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &raw_fresh), SQLITE_OK);
+    const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> fresh(raw_fresh, &sqlite3_close);
+    for (auto migration = migrations.begin(); migration != repair; ++migration)
+        ASSERT_TRUE(ExecSql(fresh.get(), migration->sql.c_str())) << migration->name;
+    ASSERT_TRUE(ExecSql(fresh.get(), repair->sql.c_str()))
+        << sqlite3_errmsg(fresh.get());
+    ASSERT_TRUE(ExecSql(fresh.get(), observation_planning->sql.c_str()))
+        << sqlite3_errmsg(fresh.get());
+    EXPECT_EQ(ReadText(fresh.get(), "PRAGMA integrity_check;"), "ok");
+    EXPECT_EQ(ReadInt64(fresh.get(), "SELECT COUNT(*) FROM pragma_table_info('au_predicate_group') WHERE name='updated_at_utc' AND [notnull]=1;"), 1);
+}
+
+TEST_F(SqliteDbFixture, SeedProbeEntryQualifiedFlavorMigrationPreservesExistingSets) {
+    using namespace savor::db::migrations;
+    const auto migrations = LoadContextMigrations(
+        MigrationContext::AnalysisSeedProbe,
+        {.source_kind = MigrationSourceKind::Embedded});
+    const auto entry_qualified = std::ranges::find(
+        migrations,
+        "202608161200_analysisseedprobe_entry_qualified_flavor.sql",
+        &MigrationEntry::name);
+    ASSERT_NE(entry_qualified, migrations.end());
+
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &raw), SQLITE_OK);
+    const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(
+        raw, &sqlite3_close);
+    for (auto migration = migrations.begin(); migration != entry_qualified; ++migration) {
+        ASSERT_TRUE(ExecSql(db.get(), migration->sql.c_str())) << migration->name;
+    }
+    ASSERT_TRUE(ExecSql(db.get(), R"SQL(
+INSERT INTO sp_probe_set(
+    probe_set_id,name,probe_flavor,breakpoint_policy_name,
+    segment_source_kind,created_at_utc)
+VALUES(1,'existing-battle','BATTLE_PRE','seedprobe.battle','test',1);
+)SQL"));
+
+    ASSERT_TRUE(ExecSql(db.get(), entry_qualified->sql.c_str()));
+    EXPECT_EQ(ReadInt64(db.get(),
+        "SELECT COUNT(1) FROM sp_probe_set WHERE probe_set_id=1 AND probe_flavor='BATTLE_PRE';"), 1);
+    ASSERT_TRUE(ExecSql(db.get(), R"SQL(
+INSERT INTO sp_probe_set(
+    probe_set_id,name,probe_flavor,breakpoint_policy_name,
+    segment_source_kind,created_at_utc)
+VALUES(2,'entry-qualified','ENTRY_QUALIFIED','seedprobe.entry_pc.v1','test',2);
+)SQL"));
+    EXPECT_EQ(ReadInt64(db.get(),
+        "SELECT COUNT(1) FROM sp_probe_set WHERE probe_set_id=2 AND probe_flavor='ENTRY_QUALIFIED';"), 1);
+}
+
 TEST_F(SqliteDbFixture, BattleCompletionArtifactMigrationPreservesExistingArtifacts) {
     using namespace savor::db::migrations;
 
@@ -527,6 +947,96 @@ TEST_F(SqliteDbFixture, DerivedWorksetMigrationBackfillsCanonicalEmptyBinding) {
     EXPECT_EQ(ReadText(legacy_db.get(),
         "SELECT lower(hex(derived_state_binding_payload)) FROM exec_workset WHERE workset_id=1;"),
         "0100000001000000000000004000000034626634643763386233643964323832333866343630323962393363343634396563373666646664643338376134393536356236333035363061623832343066");
+}
+
+TEST_F(
+    SqliteDbFixture,
+    CoordinatorRuntimeOpensCancellationAdmissionOnlyAfterAtomicStartup) {
+    using namespace savor::runner::parallel::savordb;
+
+    savor::db::execution::programdb::ProgramKindRegistry registry;
+    CoordinatorRuntime runtime;
+    CoordinatorRuntimeConfig config{
+        .worker = WorkerCoordinatorConfig{.desired_workers = 0},
+        .poll_interval = std::chrono::milliseconds(2),
+        .state_compatibility = {
+            .game_id = "TEST00",
+            .iso_sha256 = std::string(64, '0'),
+            .emulator_build = "test-emulator",
+            .runtime_revision = "coordinator-runtime-test",
+        },
+        .initially_paused = true,
+        .object_store_root = temp_root_ / "coordinator-object-store",
+    };
+
+    std::string error;
+    ASSERT_TRUE(runtime.Start(
+        db_service_->ExecutionDb(),
+        db_service_->AuthoringDb(),
+        &registry,
+        std::move(config),
+        &error)) << error;
+    EXPECT_TRUE(runtime.IsStarted());
+    EXPECT_TRUE(runtime.IsExecutionPaused());
+
+    auto telemetry = runtime.SnapshotTelemetry();
+    EXPECT_TRUE(telemetry.execution.blob_store_ready);
+    EXPECT_TRUE(telemetry.execution.cancellation_admission_open);
+    EXPECT_TRUE(telemetry.execution.user_admission_paused);
+    EXPECT_TRUE(telemetry.worker_admission_paused);
+
+    runtime.SetExecutionPaused(false);
+    EXPECT_FALSE(runtime.IsExecutionPaused());
+    telemetry = runtime.SnapshotTelemetry();
+    EXPECT_TRUE(telemetry.execution.cancellation_admission_open);
+    EXPECT_FALSE(telemetry.execution.user_admission_paused);
+    EXPECT_FALSE(telemetry.worker_admission_paused);
+
+    EXPECT_TRUE(runtime.Stop(&error)) << error;
+    EXPECT_FALSE(runtime.IsStarted());
+    EXPECT_TRUE(runtime.Stop(&error)) << error;
+}
+
+TEST_F(
+    SqliteDbFixture,
+    CoordinatorRuntimeStartupFailureUnwindsEarlierServices) {
+    using namespace savor::runner::parallel::savordb;
+
+    const auto object_store = temp_root_ / "blocked-object-store";
+    ASSERT_TRUE(std::filesystem::create_directories(object_store));
+    {
+        std::ofstream blocker(
+            object_store / "worker_results",
+            std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(blocker);
+        blocker << "not a directory";
+    }
+
+    savor::db::execution::programdb::ProgramKindRegistry registry;
+    CoordinatorRuntime runtime;
+    CoordinatorRuntimeConfig config{
+        .worker = WorkerCoordinatorConfig{.desired_workers = 0},
+        .poll_interval = std::chrono::milliseconds(2),
+        .state_compatibility = {
+            .game_id = "TEST00",
+            .iso_sha256 = std::string(64, '0'),
+            .emulator_build = "test-emulator",
+            .runtime_revision = "coordinator-runtime-test",
+        },
+        .object_store_root = object_store,
+    };
+
+    std::string error;
+    EXPECT_FALSE(runtime.Start(
+        db_service_->ExecutionDb(),
+        db_service_->AuthoringDb(),
+        &registry,
+        std::move(config),
+        &error));
+    EXPECT_NE(error.find("job execution coordinator startup failed"),
+              std::string::npos) << error;
+    EXPECT_FALSE(runtime.IsStarted());
+    EXPECT_TRUE(runtime.Stop(&error)) << error;
 }
 
 TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomicallyWithoutSideEffects) {
@@ -759,10 +1269,12 @@ TEST_F(SqliteDbFixture, BattleCompletionAndRecordingPersistExactIdempotentLineag
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
 INSERT INTO ab_battle_set(
-    battle_set_id,name,entry_savestate_id,battle_run_spec_id,
-    explorer_settings_id,status,created_at_utc,
+    battle_set_id,name,entry_savestate_id,battle_plan_id,
+    battle_plan_fingerprint,continuation_mode,status,created_at_utc,
     launch_fake_attack_min,launch_fake_attack_max)
-VALUES(8101,'completion-recording-fixture',7001,11,12,'VICTORY',1000,0,0);
+VALUES(8101,'completion-recording-fixture',7001,13,
+       'completion-recording-plan-v1','automatic_best_per_ending_rng',
+       'VICTORY',1000,0,0);
 INSERT INTO ab_seed_candidate(
     seed_candidate_id,battle_set_id,source_probe_result_id,
     source_input_frame_id,seed_value,source_kind,candidate_status,
@@ -1213,10 +1725,8 @@ TEST_F(SqliteDbFixture, WorkflowCatalogContainsCompletionRecordingAndReplayButNo
         }));
 }
 
-TEST_F(SqliteDbFixture, BattlePredicateBindingAndSingleTurnResultRoundTripExactly) {
+TEST_F(SqliteDbFixture, BattlePredicateExecutionPackageAndSingleTurnResultRoundTripExactly) {
     using namespace savor::db;
-    using savor::runtime::program::BuiltinType;
-
     auto* analysis = db_service_->AnalysisDb();
     ASSERT_NE(analysis, nullptr);
     const auto now = types::UtcNow();
@@ -1225,8 +1735,9 @@ TEST_F(SqliteDbFixture, BattlePredicateBindingAndSingleTurnResultRoundTripExactl
     ASSERT_TRUE(analysis->CreateBattleSet({
         .name = "battle-v2-persistence-fixture",
         .entry_savestate_id = 101,
-        .battle_run_spec_id = 201,
-        .explorer_settings_id = 301,
+        .battle_plan_id = 201,
+        .battle_plan_fingerprint = "battle-v2-plan",
+        .continuation_mode = BattleContinuationMode::AutomaticBestPerEndingRng,
         .status = BattleSetStatus::Active,
         .created_at_utc = now,
         .correlation_id = "battle-v2",
@@ -1253,42 +1764,33 @@ TEST_F(SqliteDbFixture, BattlePredicateBindingAndSingleTurnResultRoundTripExactl
         .causation_id = "test",
     }, &wave_id, &error)) << error;
 
-    const std::string bundle_sha(64, 'a');
-    const std::string binding_sha(64, 'b');
-    const std::string active_sha(64, 'c');
+    const auto package = savor::runtime::predicates::EmptyPredicateExecutionPackageV1();
+    std::vector<std::uint8_t> package_blob;
+    ASSERT_TRUE(savor::runtime::predicates::EncodePredicateExecutionPackageV1(
+        package, package_blob, &error)) << error;
     const std::string phase_sha(64, 'd');
-    const std::string hook_sha(64, 'e');
     std::int64_t binding_id = 0;
-    ASSERT_TRUE(analysis->BindBattlePredicateBundle({
+    ASSERT_TRUE(analysis->BindBattlePredicateExecutionPackage({
         .wave_id = wave_id,
-        .predicate_bundle_revision_id = 44,
-        .bundle_content_sha256 = bundle_sha,
-        .binding_content_sha256 = binding_sha,
-        .structural_active_check_sha256 = active_sha,
-        .parameter_values = {{
-            .ordinal = 0,
-            .value_kind = "INTEGER",
-            .builtin_type = static_cast<int>(BuiltinType::U32),
-            .integer_value = 17,
-        }},
-        .active_check_ordinals = {1, 3},
+        .predicate_group_revision_id = std::nullopt,
+        .predicate_group_sha256 = package.group.content_sha256,
+        .execution_package_sha256 = package.content_sha256,
+        .execution_package_blob = package_blob,
         .phase_program_kind = static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner),
         .phase_program_version = 1,
         .phase_canonical_id = "savor.full_phase.battle_single_turn",
         .phase_revision = 1,
         .phase_sha256 = phase_sha,
-        .hook_contract_canonical_id = "soa.battle.hooks.public",
-        .hook_contract_revision = 1,
-        .hook_contract_sha256 = hook_sha,
+        .hook_contract_canonical_id = package.hook_contract.canonical_id,
+        .hook_contract_revision = package.hook_contract.revision,
+        .hook_contract_sha256 = package.hook_contract.content_sha256,
         .created_at_utc = now,
     }, &binding_id, &error)) << error;
-    const auto binding = analysis->GetBattlePredicateBundleBindingForWave(wave_id);
+    const auto binding = analysis->GetBattlePredicateExecutionPackageForWave(wave_id);
     ASSERT_TRUE(binding.has_value());
-    EXPECT_EQ(binding->predicate_bundle_binding_id, binding_id);
-    EXPECT_EQ(binding->binding_content_sha256, binding_sha);
-    ASSERT_EQ(binding->parameter_values.size(), 1u);
-    EXPECT_EQ(binding->parameter_values.front().integer_value, 17);
-    EXPECT_EQ(binding->active_check_ordinals, (std::vector<std::uint32_t>{1, 3}));
+    EXPECT_EQ(binding->predicate_execution_package_id, binding_id);
+    EXPECT_EQ(binding->execution_package_sha256, package.content_sha256);
+    EXPECT_EQ(binding->execution_package_blob, package_blob);
 
     std::int64_t turn_job_id = 0;
     constexpr std::int64_t exec_job_id = 70001;
@@ -1318,9 +1820,9 @@ TEST_F(SqliteDbFixture, BattlePredicateBindingAndSingleTurnResultRoundTripExactl
         .pred_passed = 5,
         .pred_total = 6,
         .cumulative_fake_attacks = 5,
-        .predicate_bundle_revision_id = 44,
-        .predicate_bundle_sha256 = bundle_sha,
-        .predicate_binding_sha256 = binding_sha,
+        .predicate_group_revision_id = std::nullopt,
+        .predicate_group_sha256 = package.group.content_sha256,
+        .predicate_execution_package_sha256 = package.content_sha256,
         .predicate_evidence_blob = evidence,
         .recorded_at_utc = now,
     }, &result_id, &error)) << error;
@@ -1330,10 +1832,12 @@ TEST_F(SqliteDbFixture, BattlePredicateBindingAndSingleTurnResultRoundTripExactl
     EXPECT_EQ(result->domain_outcome, "PredicateRejected");
     EXPECT_EQ(result->pred_passed, 5u);
     EXPECT_EQ(result->pred_total, 6u);
+    EXPECT_EQ(result->predicate_execution_package_sha256,
+              package.content_sha256);
     EXPECT_EQ(result->predicate_evidence_blob, evidence);
 }
 
-TEST_F(SqliteDbFixture, PredicateV2PublishesImmutableRelationalRevisionsAndClonesDrafts) {
+TEST_F(SqliteDbFixture, PredicateAuthoringPublishesDefinitionBindingAndAtomicMultiHookGroup) {
     using namespace savor::db;
     using namespace savor::runtime::predicates;
     using namespace savor::runtime::program;
@@ -1344,10 +1848,471 @@ TEST_F(SqliteDbFixture, PredicateV2PublishesImmutableRelationalRevisionsAndClone
     const auto now = types::UtcNow();
     std::string error;
 
+    const auto u16 = TypeRef::Builtin(BuiltinType::U16);
+    const auto boolean = TypeRef::Builtin(BuiltinType::Bool);
     PredicateDefinition definition{
-        .canonical_id = "test.predicate.always_true",
+        .canonical_id = "test.predicate.item_is_273",
         .revision = 1,
         .source_name = "sqlite-fixture",
+        .witnesses = {{"item_id", u16}},
+        .expression = {
+            {.kind = PredicateExpressionKind::Witness,
+             .witness_index = 0, .result_type = u16,
+             .source_label = "item id"},
+            {.kind = PredicateExpressionKind::Literal,
+             .literal = LiteralValue{.type = u16,
+                                     .payload = std::uint16_t{273}},
+             .result_type = u16, .source_label = "Electri Box"},
+            {.kind = PredicateExpressionKind::Equal,
+             .operands = {0, 1}, .result_type = boolean,
+             .source_label = "selected item"},
+        },
+        .root_expression = 2,
+    };
+    PredicateAuthoringRevisionReceipt definition_receipt;
+    ASSERT_TRUE(authoring->CreatePredicateDefinitionDraft({
+        .creation_request_key = "00000000000000000000000000000001",
+        .name = "Item is Electri Box",
+        .body = {definition.witnesses, definition.expression,
+                 definition.root_expression},
+        .created_at_utc = now,
+    }, &definition_receipt, &error)) << error;
+    const auto definition_revision_id = definition_receipt.revision_id;
+    EXPECT_TRUE(definition_receipt.stable_key.starts_with(
+        "predicate.definition/"));
+    ASSERT_TRUE(authoring->PublishPredicateDefinitionRevisionV2(
+        definition_revision_id, now, nullptr, &error)) << error;
+    const auto published_definition =
+        authoring->GetPredicateDefinitionRevisionV2(definition_revision_id);
+    ASSERT_TRUE(published_definition.has_value());
+    EXPECT_EQ(published_definition->revision_state, "PUBLISHED");
+    EXPECT_EQ(published_definition->definition.expression, definition.expression);
+    EXPECT_EQ(published_definition->content_sha256.size(), 64u);
+
+    PredicateExecutionBindingV1 execution_binding{
+        .canonical_id = "test.predicate_binding.item_273",
+        .revision = 1,
+        .definition = {
+            definition_revision_id,
+            published_definition->content_sha256,
+            published_definition->definition,
+        },
+        .witnesses = {{
+            .witness_ordinal = 0,
+            .source_kind = PredicateWitnessSourceKindV1::ConcreteValue,
+            .value_type = u16,
+            .concrete_value = LiteralValue{
+                .type = u16, .payload = std::uint16_t{273}},
+        }},
+    };
+    PredicateAuthoringRevisionReceipt binding_receipt;
+    ASSERT_TRUE(authoring->CreatePredicateExecutionBindingDraft({
+        .creation_request_key = "00000000000000000000000000000002",
+        .name = "Electri Box binding",
+        .body = {definition_revision_id, execution_binding.witnesses},
+        .created_at_utc = now,
+    }, &binding_receipt, &error)) << error;
+    const auto binding_revision_id = binding_receipt.revision_id;
+    EXPECT_TRUE(binding_receipt.stable_key.starts_with("predicate.binding/"));
+    ASSERT_EQ(binding_receipt.stable_key.size(), 50u);
+    EXPECT_TRUE(std::ranges::all_of(
+        std::string_view(binding_receipt.stable_key).substr(18),
+        [](const char value) {
+            return (value >= '0' && value <= '9')
+                || (value >= 'a' && value <= 'f');
+        }));
+    PredicateAuthoringRevisionReceipt binding_replay;
+    ASSERT_TRUE(authoring->CreatePredicateExecutionBindingDraft({
+        .creation_request_key = "00000000000000000000000000000002",
+        .name = "Electri Box binding",
+        .body = {definition_revision_id, execution_binding.witnesses},
+        .created_at_utc = now,
+    }, &binding_replay, &error)) << error;
+    EXPECT_EQ(binding_replay.revision_id, binding_revision_id);
+    EXPECT_FALSE(binding_replay.identity_created);
+    auto conflicting_binding_create = CreatePredicateExecutionBindingDraftCommand{
+        .creation_request_key = "00000000000000000000000000000002",
+        .name = "Different binding request",
+        .body = {definition_revision_id, execution_binding.witnesses},
+        .created_at_utc = now,
+    };
+    error.clear();
+    EXPECT_FALSE(authoring->CreatePredicateExecutionBindingDraft(
+        conflicting_binding_create, nullptr, &error));
+    EXPECT_NE(error.find("reused with different content"), std::string::npos)
+        << error;
+    ASSERT_TRUE(authoring->PublishPredicateExecutionBindingRevision(
+        binding_revision_id, now, nullptr, &error)) << error;
+    PredicateAuthoringRevisionReceipt binding_republish;
+    ASSERT_TRUE(authoring->PublishPredicateExecutionBindingRevision(
+        binding_revision_id, now, &binding_republish, &error)) << error;
+    EXPECT_EQ(binding_republish.revision_id, binding_revision_id);
+    const auto published_binding =
+        authoring->GetPredicateExecutionBindingRevision(binding_revision_id);
+    ASSERT_TRUE(published_binding.has_value());
+    EXPECT_EQ(published_binding->revision_state, "PUBLISHED");
+    ASSERT_EQ(published_binding->binding.witnesses.size(), 1u);
+    EXPECT_EQ(std::get<std::uint16_t>(
+        published_binding->binding.witnesses.front().concrete_value->payload),
+        273u);
+    bool binding_metadata_changed = false;
+    ASSERT_TRUE(authoring->UpdatePredicateAuthoringMetadata({
+        .object_kind = PredicateAuthoringObjectKind::ExecutionBinding,
+        .parent_id = binding_receipt.parent_id,
+        .name = "Renamed Electri Box binding",
+        .description = "presentation metadata",
+        .updated_at_utc = now + std::chrono::milliseconds(1),
+    }, &binding_metadata_changed, &error)) << error;
+    EXPECT_TRUE(binding_metadata_changed);
+    const auto renamed_binding =
+        authoring->GetPredicateExecutionBindingRevision(binding_revision_id);
+    ASSERT_TRUE(renamed_binding.has_value());
+    EXPECT_EQ(renamed_binding->binding.execution_binding_revision_id,
+              binding_revision_id);
+    EXPECT_EQ(renamed_binding->semantic_sha256,
+              published_binding->semantic_sha256);
+    EXPECT_EQ(renamed_binding->binding.content_sha256,
+              published_binding->binding.content_sha256);
+    EXPECT_EQ(ReadInt64(db_,
+        ("SELECT COUNT(1) FROM au_predicate_execution_binding_revision "
+         "WHERE predicate_execution_binding_id="
+         + std::to_string(binding_receipt.parent_id) + ";").c_str()), 1);
+
+    PredicateAuthoringRevisionReceipt unchanged_binding;
+    ASSERT_TRUE(authoring->SavePredicateExecutionBindingDraft({
+        .predicate_execution_binding_id = binding_receipt.parent_id,
+        .body = {definition_revision_id, execution_binding.witnesses},
+        .saved_at_utc = now + std::chrono::milliseconds(2),
+    }, &unchanged_binding, &error)) << error;
+    EXPECT_EQ(unchanged_binding.revision_id, binding_revision_id);
+    EXPECT_FALSE(unchanged_binding.semantic_changed);
+
+    auto changed_binding_witnesses = execution_binding.witnesses;
+    changed_binding_witnesses.front().concrete_value->payload =
+        std::uint16_t{274};
+    PredicateAuthoringRevisionReceipt changed_binding;
+    ASSERT_TRUE(authoring->SavePredicateExecutionBindingDraft({
+        .predicate_execution_binding_id = binding_receipt.parent_id,
+        .body = {definition_revision_id, changed_binding_witnesses},
+        .saved_at_utc = now + std::chrono::milliseconds(3),
+    }, &changed_binding, &error)) << error;
+    EXPECT_EQ(changed_binding.parent_id, binding_receipt.parent_id);
+    EXPECT_EQ(changed_binding.stable_key, binding_receipt.stable_key);
+    EXPECT_EQ(changed_binding.revision_number, 2);
+    EXPECT_EQ(changed_binding.revision_state, "DRAFT");
+    EXPECT_TRUE(changed_binding.semantic_changed);
+    EXPECT_NE(changed_binding.semantic_sha256,
+              binding_receipt.semantic_sha256);
+
+    auto alternate_binding = execution_binding;
+    alternate_binding.canonical_id = "test.predicate_binding.item_274";
+    alternate_binding.witnesses.front().concrete_value->payload =
+        std::uint16_t{274};
+    PredicateAuthoringRevisionReceipt alternate_binding_receipt;
+    ASSERT_TRUE(authoring->CreatePredicateExecutionBindingDraft({
+        .creation_request_key = "00000000000000000000000000000003",
+        .name = "Alternate item binding",
+        .body = {definition_revision_id, alternate_binding.witnesses},
+        .created_at_utc = now,
+    }, &alternate_binding_receipt, &error)) << error;
+    const auto alternate_binding_revision_id =
+        alternate_binding_receipt.revision_id;
+    ASSERT_TRUE(authoring->PublishPredicateExecutionBindingRevision(
+        alternate_binding_revision_id, now, nullptr, &error)) << error;
+    const auto published_alternate =
+        authoring->GetPredicateExecutionBindingRevision(
+            alternate_binding_revision_id);
+    ASSERT_TRUE(published_alternate.has_value());
+    EXPECT_NE(published_binding->binding.content_sha256,
+              published_alternate->binding.content_sha256);
+    EXPECT_EQ(published_binding->binding.definition.revision_id,
+              published_alternate->binding.definition.revision_id);
+
+    const auto hooks = BattlePredicateHookContractV1();
+    std::vector<std::string> terminal_hooks;
+    for (const auto& hook : hooks.points) {
+        if (hook.canonical_id.ends_with(".EndTurn")
+            || hook.canonical_id.ends_with(".EndBattleVictory"))
+            terminal_hooks.push_back(hook.canonical_id);
+    }
+    std::ranges::sort(terminal_hooks);
+    ASSERT_EQ(terminal_hooks.size(), 2u);
+    ResolvedPredicateGroupV1 group{
+        .canonical_id = "test.predicate_group.terminal_item",
+        .revision = 1,
+        .members = {{
+            .ordinal = 0,
+            .execution_binding_revision_id = binding_revision_id,
+            .semantic_hook_ids = terminal_hooks,
+            .occurrence = PredicateOccurrencePolicyV1::First,
+            .reaction = PredicateReaction::AbortOnFail,
+            .participates_in_aggregation = true,
+            .emit_evidence = true,
+        }},
+    };
+    PredicateAuthoringRevisionReceipt group_receipt;
+    ASSERT_TRUE(authoring->CreatePredicateGroupDraft({
+        .creation_request_key = "00000000000000000000000000000004",
+        .name = "Terminal Electri Box predicate",
+        .body = {group.members},
+        .created_at_utc = now,
+    }, &group_receipt, &error)) << error;
+    const auto group_revision_id = group_receipt.revision_id;
+    EXPECT_TRUE(group_receipt.stable_key.starts_with("predicate.group/"));
+    ASSERT_EQ(group_receipt.stable_key.size(), 48u);
+    EXPECT_TRUE(std::ranges::all_of(
+        std::string_view(group_receipt.stable_key).substr(16),
+        [](const char value) {
+            return (value >= '0' && value <= '9')
+                || (value >= 'a' && value <= 'f');
+        }));
+    PredicateAuthoringRevisionReceipt group_replay;
+    ASSERT_TRUE(authoring->CreatePredicateGroupDraft({
+        .creation_request_key = "00000000000000000000000000000004",
+        .name = "Terminal Electri Box predicate",
+        .body = {group.members},
+        .created_at_utc = now,
+    }, &group_replay, &error)) << error;
+    EXPECT_EQ(group_replay.revision_id, group_revision_id);
+    EXPECT_FALSE(group_replay.identity_created);
+    error.clear();
+    EXPECT_FALSE(authoring->CreatePredicateGroupDraft({
+        .creation_request_key = "00000000000000000000000000000004",
+        .name = "Different group request",
+        .body = {group.members},
+        .created_at_utc = now,
+    }, nullptr, &error));
+    EXPECT_NE(error.find("reused with different content"), std::string::npos)
+        << error;
+    ASSERT_TRUE(authoring->PublishPredicateGroupRevision(
+        group_revision_id, now, nullptr, &error)) << error;
+    PredicateAuthoringRevisionReceipt group_republish;
+    ASSERT_TRUE(authoring->PublishPredicateGroupRevision(
+        group_revision_id, now, &group_republish, &error)) << error;
+    EXPECT_EQ(group_republish.revision_id, group_revision_id);
+    const auto published_group = authoring->GetPredicateGroupRevision(group_revision_id);
+    ASSERT_TRUE(published_group.has_value());
+    EXPECT_EQ(published_group->revision_state, "PUBLISHED");
+    ASSERT_EQ(published_group->group.members.size(), 1u);
+    EXPECT_EQ(published_group->group.members.front().semantic_hook_ids,
+              terminal_hooks);
+    EXPECT_EQ(published_group->group.content_sha256.size(), 64u);
+    bool group_metadata_changed = false;
+    ASSERT_TRUE(authoring->UpdatePredicateAuthoringMetadata({
+        .object_kind = PredicateAuthoringObjectKind::Group,
+        .parent_id = group_receipt.parent_id,
+        .name = "Renamed terminal predicate group",
+        .description = "presentation metadata",
+        .updated_at_utc = now + std::chrono::milliseconds(2),
+    }, &group_metadata_changed, &error)) << error;
+    EXPECT_TRUE(group_metadata_changed);
+    const auto renamed_group =
+        authoring->GetPredicateGroupRevision(group_revision_id);
+    ASSERT_TRUE(renamed_group.has_value());
+    EXPECT_EQ(renamed_group->semantic_sha256,
+              published_group->semantic_sha256);
+    EXPECT_EQ(renamed_group->group.content_sha256,
+              published_group->group.content_sha256);
+    EXPECT_EQ(ReadInt64(db_,
+        ("SELECT COUNT(1) FROM au_predicate_group_revision "
+         "WHERE predicate_group_id=" + std::to_string(group_receipt.parent_id)
+         + ";").c_str()), 1);
+
+    PredicateAuthoringRevisionReceipt unchanged_group;
+    ASSERT_TRUE(authoring->SavePredicateGroupDraft({
+        .predicate_group_id = group_receipt.parent_id,
+        .body = {group.members},
+        .saved_at_utc = now + std::chrono::milliseconds(4),
+    }, &unchanged_group, &error)) << error;
+    EXPECT_EQ(unchanged_group.revision_id, group_revision_id);
+    EXPECT_FALSE(unchanged_group.semantic_changed);
+
+    auto changed_group_members = group.members;
+    changed_group_members.front().emit_evidence = false;
+    PredicateAuthoringRevisionReceipt changed_group;
+    ASSERT_TRUE(authoring->SavePredicateGroupDraft({
+        .predicate_group_id = group_receipt.parent_id,
+        .body = {changed_group_members},
+        .saved_at_utc = now + std::chrono::milliseconds(5),
+    }, &changed_group, &error)) << error;
+    EXPECT_EQ(changed_group.parent_id, group_receipt.parent_id);
+    EXPECT_EQ(changed_group.stable_key, group_receipt.stable_key);
+    EXPECT_EQ(changed_group.revision_number, 2);
+    EXPECT_EQ(changed_group.revision_state, "DRAFT");
+    EXPECT_TRUE(changed_group.semantic_changed);
+    EXPECT_NE(changed_group.semantic_sha256, group_receipt.semantic_sha256);
+
+    EXPECT_EQ(SQLITE_CONSTRAINT, sqlite3_exec(db_,
+        ("UPDATE au_predicate_group_member SET emit_evidence=0 "
+         "WHERE predicate_group_revision_id="
+         + std::to_string(group_revision_id)).c_str(),
+        nullptr, nullptr, nullptr));
+
+    const auto published_page = authoring->ListPredicateGroupRevisions({
+        .revision_state = std::string("PUBLISHED"),
+        .search_text = "Renamed terminal",
+        .limit = 1,
+    });
+    ASSERT_EQ(published_page.items.size(), 1u);
+    EXPECT_EQ(published_page.items.front().predicate_group_revision_id,
+              group_revision_id);
+    EXPECT_EQ(published_page.items.front().member_count, 1);
+    EXPECT_EQ(published_page.items.front().hook_count, 2);
+    EXPECT_FALSE(published_page.next_before_revision_id.has_value());
+
+    const auto definition_page = authoring->ListPredicateDefinitionRevisionsV2({
+        .revision_state = std::string("PUBLISHED"),
+        .search_text = "Electri Box",
+        .limit = 50,
+    });
+    ASSERT_EQ(definition_page.items.size(), 1u);
+    EXPECT_EQ(
+        definition_page.items.front().predicate_definition_revision_id,
+        definition_revision_id);
+
+    PredicateAuthoringRevisionReceipt duplicated_binding;
+    ASSERT_TRUE(authoring->DuplicatePredicateExecutionBinding({
+        .source_revision_id = binding_revision_id,
+        .creation_request_key = "00000000000000000000000000000005",
+        .name = "Duplicated binding",
+        .description = "same semantics, separate identity",
+        .created_at_utc = now,
+    }, &duplicated_binding, &error)) << error;
+    EXPECT_NE(duplicated_binding.parent_id, binding_receipt.parent_id);
+    EXPECT_NE(duplicated_binding.stable_key, binding_receipt.stable_key);
+    EXPECT_EQ(duplicated_binding.semantic_sha256,
+              binding_receipt.semantic_sha256);
+    PredicateAuthoringRevisionReceipt duplicate_binding_replay;
+    ASSERT_TRUE(authoring->DuplicatePredicateExecutionBinding({
+        .source_revision_id = binding_revision_id,
+        .creation_request_key = "00000000000000000000000000000005",
+        .name = "Duplicated binding",
+        .description = "same semantics, separate identity",
+        .created_at_utc = now,
+    }, &duplicate_binding_replay, &error)) << error;
+    EXPECT_EQ(duplicate_binding_replay.revision_id,
+              duplicated_binding.revision_id);
+
+    PredicateAuthoringRevisionReceipt duplicated_group;
+    ASSERT_TRUE(authoring->DuplicatePredicateGroup({
+        .source_revision_id = group_revision_id,
+        .creation_request_key = "00000000000000000000000000000006",
+        .name = "Duplicated predicate group",
+        .description = "same semantics, separate identity",
+        .created_at_utc = now,
+    }, &duplicated_group, &error)) << error;
+    EXPECT_NE(duplicated_group.parent_id, group_receipt.parent_id);
+    EXPECT_NE(duplicated_group.stable_key, group_receipt.stable_key);
+    EXPECT_EQ(duplicated_group.semantic_sha256, group_receipt.semantic_sha256);
+    PredicateAuthoringRevisionReceipt duplicate_group_replay;
+    ASSERT_TRUE(authoring->DuplicatePredicateGroup({
+        .source_revision_id = group_revision_id,
+        .creation_request_key = "00000000000000000000000000000006",
+        .name = "Duplicated predicate group",
+        .description = "same semantics, separate identity",
+        .created_at_utc = now,
+    }, &duplicate_group_replay, &error)) << error;
+    EXPECT_EQ(duplicate_group_replay.revision_id,
+              duplicated_group.revision_id);
+}
+
+TEST_F(SqliteDbFixture, PredicateAuthoringCreatesListsReloadsAndPublishesFirstBattleTurnOrderRule) {
+    using namespace savor::db;
+    using namespace savor::runtime::predicates;
+    using namespace savor::runtime::program;
+    auto* authoring = db_service_->AuthoringDb();
+    ASSERT_NE(authoring, nullptr);
+    const auto catalog = BattlePredicateAuthoringCatalogV2();
+    const PredicateGuidedNodeV1 rule{
+        .kind = PredicateGuidedNodeKindV1::Less,
+        .children = {
+            {.kind = PredicateGuidedNodeKindV1::CatalogValue,
+             .key = "battle.turn_order.player_max_position"},
+            {.kind = PredicateGuidedNodeKindV1::CatalogValue,
+             .key = "battle.turn_order.enemy_min_position"},
+        },
+    };
+    const auto compiled = CompileGuidedPredicateDefinitionV1(rule, catalog);
+    ASSERT_TRUE(compiled);
+    std::string error;
+    PredicateAuthoringRevisionReceipt created;
+    ASSERT_TRUE(authoring->CreatePredicateDefinitionDraft({
+        .creation_request_key = "f1000000000000000000000000000001",
+        .name = "PCs before enemies",
+        .description = "All player characters act before enemies",
+        .body = {compiled.definition.witnesses, compiled.definition.expression,
+                 compiled.definition.root_expression},
+        .created_at_utc = types::UtcNow(),
+    }, &created, &error)) << error;
+    const auto drafts = authoring->ListPredicateDefinitionRevisionsV2({
+        .revision_state = std::string("DRAFT"), .search_text = "PCs before"});
+    ASSERT_EQ(drafts.items.size(), 1u);
+    EXPECT_EQ(drafts.items.front().predicate_definition_revision_id, created.revision_id);
+    const auto loaded = authoring->GetPredicateDefinitionRevisionV2(created.revision_id);
+    ASSERT_TRUE(loaded);
+    EXPECT_EQ(loaded->definition.expression.back().kind,
+              savor::runtime::program::composition::PredicateExpressionKind::Less);
+    ASSERT_TRUE(authoring->PublishPredicateDefinitionRevisionV2(
+        created.revision_id, types::UtcNow(), nullptr, &error)) << error;
+    const auto published = authoring->GetPredicateDefinitionRevisionV2(created.revision_id);
+    ASSERT_TRUE(published);
+    EXPECT_EQ(published->revision_state, "PUBLISHED");
+    EXPECT_EQ(published->definition.witnesses.size(), 1u);
+    EXPECT_EQ(published->definition.witnesses.front().name, "turn_order");
+
+    PredicateAuthoringRevisionReceipt binding;
+    ASSERT_TRUE(authoring->CreatePredicateExecutionBindingDraft({
+        .creation_request_key = "f1000000000000000000000000000011",
+        .name = "Automatic turn-order data",
+        .body = {created.revision_id, {}},
+        .created_at_utc = types::UtcNow(),
+    }, &binding, &error)) << error;
+    const auto loaded_binding =
+        authoring->GetPredicateExecutionBindingRevision(binding.revision_id);
+    ASSERT_TRUE(loaded_binding);
+    ASSERT_EQ(loaded_binding->binding.witnesses.size(), 1u);
+    EXPECT_EQ(loaded_binding->binding.witnesses.front().source_kind,
+              PredicateWitnessSourceKindV1::DerivedStateQuery);
+    EXPECT_EQ(loaded_binding->binding.witnesses.front().source,
+              capabilities::BattleDerivedTurnOrderActionIdentity());
+    ASSERT_TRUE(authoring->PublishPredicateExecutionBindingRevision(
+        binding.revision_id, types::UtcNow(), nullptr, &error)) << error;
+
+    const auto hooks = BattlePredicateHookContractV1();
+    std::vector<std::string> terminal_hooks;
+    for (const auto& hook : hooks.points) {
+        if (hook.canonical_id.ends_with(".EndTurn") ||
+            hook.canonical_id.ends_with(".EndBattleVictory"))
+            terminal_hooks.push_back(hook.canonical_id);
+    }
+    std::ranges::sort(terminal_hooks);
+    PredicateAuthoringRevisionReceipt group;
+    ASSERT_TRUE(authoring->CreatePredicateGroupDraft({
+        .creation_request_key = "f1000000000000000000000000000012",
+        .name = "Evaluate turn order at terminal",
+        .body = {{PredicateGroupMemberV1{
+            .ordinal = 0,
+            .execution_binding_revision_id = binding.revision_id,
+            .semantic_hook_ids = terminal_hooks,
+            .occurrence = PredicateOccurrencePolicyV1::First,
+        }}},
+        .created_at_utc = types::UtcNow(),
+    }, &group, &error)) << error;
+    ASSERT_TRUE(authoring->PublishPredicateGroupRevision(
+        group.revision_id, types::UtcNow(), nullptr, &error)) << error;
+}
+
+TEST_F(SqliteDbFixture, PredicateAuthoringSchemaFailureReportsItsExactStage) {
+    using namespace savor::db;
+    using namespace savor::runtime::program;
+    using namespace savor::runtime::program::composition;
+
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &raw), SQLITE_OK);
+    const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> missing_schema(
+        raw, &sqlite3_close);
+    SqliteAuthoringDb authoring(missing_schema.get());
+    PredicateDefinitionDraftBody body{
         .expression = {{
             .kind = PredicateExpressionKind::Literal,
             .literal = LiteralValue{
@@ -1359,83 +2324,214 @@ TEST_F(SqliteDbFixture, PredicateV2PublishesImmutableRelationalRevisionsAndClone
         }},
         .root_expression = 0,
     };
-    std::int64_t definition_revision_id = 0;
-    ASSERT_TRUE(authoring->SavePredicateDefinitionDraftV2({
-        .stable_key = definition.canonical_id,
-        .name = "Always true",
-        .definition = definition,
-        .created_at_utc = now,
-    }, &definition_revision_id, &error)) << error;
-    ASSERT_TRUE(authoring->PublishPredicateDefinitionRevisionV2(
-        definition_revision_id, now, &error)) << error;
-    const auto published_definition =
-        authoring->GetPredicateDefinitionRevisionV2(definition_revision_id);
-    ASSERT_TRUE(published_definition.has_value());
-    EXPECT_EQ(published_definition->revision_state, "PUBLISHED");
-    EXPECT_EQ(published_definition->definition.expression, definition.expression);
-    EXPECT_EQ(published_definition->content_sha256.size(), 64u);
-
-    const auto hooks = BattlePredicateHookContractV1();
-    const auto start_turn = std::ranges::find_if(hooks.points, [](const auto& point) {
-        return point.canonical_id.ends_with(".StartTurn");
-    });
-    ASSERT_NE(start_turn, hooks.points.end());
-    ResolvedPredicateBundleV1 bundle{
-        .canonical_id = "test.predicate_bundle.start_turn",
-        .revision = 1,
-        .definitions = {{definition_revision_id, definition}},
-        .checks = {{
-            .ordinal = 0,
-            .predicate_definition_revision_id = definition_revision_id,
-            .use = {
-                .canonical_id = "always-true-at-start-turn",
-                .semantic_point_id = start_turn->canonical_id,
-                .reaction = PredicateReaction::RecordAndContinue,
-                .participates_in_aggregation = true,
-            },
-            .occurrence = PredicateOccurrencePolicyV1::First,
-        }},
-    };
-    std::int64_t bundle_revision_id = 0;
-    ASSERT_TRUE(authoring->SavePredicateBundleDraftV2({
-        .stable_key = bundle.canonical_id,
-        .name = "Start-turn checks",
-        .bundle = bundle,
-        .created_at_utc = now,
-    }, &bundle_revision_id, &error)) << error;
-    ASSERT_TRUE(authoring->PublishPredicateBundleRevisionV2(
-        bundle_revision_id, now, &error)) << error;
-    const auto published_bundle =
-        authoring->GetPredicateBundleRevisionV2(bundle_revision_id);
-    ASSERT_TRUE(published_bundle.has_value());
-    EXPECT_EQ(published_bundle->revision_state, "PUBLISHED");
-    ASSERT_EQ(published_bundle->bundle.checks.size(), 1u);
-    EXPECT_EQ(published_bundle->bundle.checks.front().use.semantic_point_id,
-              start_turn->canonical_id);
-    EXPECT_EQ(published_bundle->bundle.content_sha256.size(), 64u);
-
-    EXPECT_EQ(SQLITE_CONSTRAINT, sqlite3_exec(
-        db_,
-        ("UPDATE au_predicate_check_use_v2 SET emit_evidence=1 "
-         "WHERE predicate_bundle_revision_id=" +
-         std::to_string(bundle_revision_id)).c_str(),
-        nullptr, nullptr, nullptr));
-
-    std::int64_t cloned_revision_id = 0;
-    ASSERT_TRUE(authoring->SavePredicateBundleDraftV2({
-        .stable_key = bundle.canonical_id,
-        .name = "Start-turn checks",
-        .bundle = bundle,
-        .created_at_utc = now,
-    }, &cloned_revision_id, &error)) << error;
-    EXPECT_NE(cloned_revision_id, bundle_revision_id);
-    const auto clone = authoring->GetPredicateBundleRevisionV2(cloned_revision_id);
-    ASSERT_TRUE(clone.has_value());
-    EXPECT_EQ(clone->revision_state, "DRAFT");
-    EXPECT_EQ(clone->bundle.revision, published_bundle->bundle.revision + 1);
+    std::string error;
+    EXPECT_FALSE(authoring.CreatePredicateDefinitionDraft({
+        .creation_request_key = "f1000000000000000000000000000002",
+        .name = "Schema diagnostic",
+        .body = body,
+        .created_at_utc = types::UtcNow(),
+    }, nullptr, &error));
+    EXPECT_NE(error.find("predicate authoring request lookup preparation failed"),
+              std::string::npos) << error;
+    EXPECT_EQ(error.find("not an error"), std::string::npos) << error;
 }
 
-TEST_F(SqliteDbFixture, PredicateV2RejectsUnavailableBattleHookAtPublication) {
+TEST_F(SqliteDbFixture, PredicateDefinitionIdentityMetadataAndAuthoringRequestsAreIdempotent) {
+    using namespace savor::db;
+    using namespace savor::runtime::program;
+    using namespace savor::runtime::program::composition;
+
+    auto* authoring = db_service_->AuthoringDb();
+    ASSERT_NE(authoring, nullptr);
+    const auto now = types::UtcNow();
+    std::string error;
+
+    PredicateDefinitionDraftBody body{
+        .expression = {{
+            .kind = PredicateExpressionKind::Literal,
+            .literal = LiteralValue{
+                .type = TypeRef::Builtin(BuiltinType::Bool),
+                .payload = true,
+            },
+            .result_type = TypeRef::Builtin(BuiltinType::Bool),
+            .source_label = "true",
+        }},
+        .root_expression = 0,
+    };
+    const CreatePredicateDefinitionDraftCommand create{
+        .creation_request_key = "10000000000000000000000000000001",
+        .name = "Idempotent definition",
+        .description = "initial presentation",
+        .body = body,
+        .created_at_utc = now,
+    };
+
+    PredicateAuthoringRevisionReceipt created;
+    ASSERT_TRUE(authoring->CreatePredicateDefinitionDraft(
+        create, &created, &error)) << error;
+    EXPECT_TRUE(created.identity_created);
+    EXPECT_TRUE(created.semantic_changed);
+    EXPECT_FALSE(created.metadata_changed);
+    EXPECT_TRUE(created.stable_key.starts_with("predicate.definition/"));
+    ASSERT_EQ(created.stable_key.size(), 53u);
+    EXPECT_TRUE(std::ranges::all_of(
+        std::string_view(created.stable_key).substr(21), [](const char value) {
+            return (value >= '0' && value <= '9')
+                || (value >= 'a' && value <= 'f');
+        }));
+
+    PredicateAuthoringRevisionReceipt replayed;
+    ASSERT_TRUE(authoring->CreatePredicateDefinitionDraft(
+        create, &replayed, &error)) << error;
+    EXPECT_EQ(replayed.parent_id, created.parent_id);
+    EXPECT_EQ(replayed.revision_id, created.revision_id);
+    EXPECT_EQ(replayed.stable_key, created.stable_key);
+    EXPECT_FALSE(replayed.identity_created);
+    EXPECT_FALSE(replayed.semantic_changed);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM au_predicate_definition_v2;"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM au_predicate_authoring_request;"), 1);
+
+    auto conflicting_create = create;
+    conflicting_create.description = "different payload";
+    error.clear();
+    EXPECT_FALSE(authoring->CreatePredicateDefinitionDraft(
+        conflicting_create, nullptr, &error));
+    EXPECT_NE(error.find("reused with different content"), std::string::npos)
+        << error;
+
+    bool metadata_changed = true;
+    ASSERT_TRUE(authoring->UpdatePredicateAuthoringMetadata({
+        .object_kind = PredicateAuthoringObjectKind::Definition,
+        .parent_id = created.parent_id,
+        .name = create.name,
+        .description = create.description,
+        .updated_at_utc = now + std::chrono::milliseconds(1),
+    }, &metadata_changed, &error)) << error;
+    EXPECT_FALSE(metadata_changed);
+    EXPECT_EQ(ReadInt64(db_,
+        "SELECT updated_at_utc FROM au_predicate_definition_v2;"),
+        now.time_since_epoch().count());
+
+    ASSERT_TRUE(authoring->UpdatePredicateAuthoringMetadata({
+        .object_kind = PredicateAuthoringObjectKind::Definition,
+        .parent_id = created.parent_id,
+        .name = "Renamed definition",
+        .description = "new presentation only",
+        .updated_at_utc = now + std::chrono::milliseconds(2),
+    }, &metadata_changed, &error)) << error;
+    EXPECT_TRUE(metadata_changed);
+    const auto renamed = authoring->GetPredicateDefinitionRevisionV2(
+        created.revision_id);
+    ASSERT_TRUE(renamed.has_value());
+    EXPECT_EQ(renamed->stable_key, created.stable_key);
+    EXPECT_EQ(renamed->semantic_sha256, created.semantic_sha256);
+    EXPECT_EQ(renamed->name, "Renamed definition");
+    EXPECT_EQ(ReadInt64(db_,
+        "SELECT COUNT(1) FROM au_predicate_definition_revision_v2;"), 1);
+
+    PredicateAuthoringRevisionReceipt published;
+    ASSERT_TRUE(authoring->PublishPredicateDefinitionRevisionV2(
+        created.revision_id, now, &published, &error)) << error;
+    PredicateAuthoringRevisionReceipt republished;
+    ASSERT_TRUE(authoring->PublishPredicateDefinitionRevisionV2(
+        created.revision_id, now + std::chrono::milliseconds(3),
+        &republished, &error)) << error;
+    EXPECT_EQ(republished.revision_id, published.revision_id);
+    EXPECT_EQ(republished.semantic_sha256, published.semantic_sha256);
+
+    const auto published_before_metadata =
+        authoring->GetPredicateDefinitionRevisionV2(created.revision_id);
+    ASSERT_TRUE(published_before_metadata.has_value());
+    ASSERT_TRUE(authoring->UpdatePredicateAuthoringMetadata({
+        .object_kind = PredicateAuthoringObjectKind::Definition,
+        .parent_id = created.parent_id,
+        .name = "Published renamed definition",
+        .description = "published presentation only",
+        .updated_at_utc = now + std::chrono::milliseconds(4),
+    }, &metadata_changed, &error)) << error;
+    EXPECT_TRUE(metadata_changed);
+    const auto published_after_metadata =
+        authoring->GetPredicateDefinitionRevisionV2(created.revision_id);
+    ASSERT_TRUE(published_after_metadata.has_value());
+    EXPECT_EQ(published_after_metadata->content_sha256,
+              published_before_metadata->content_sha256);
+    EXPECT_EQ(published_after_metadata->semantic_sha256,
+              published_before_metadata->semantic_sha256);
+    EXPECT_EQ(ReadInt64(db_,
+        "SELECT COUNT(1) FROM au_predicate_definition_revision_v2;"), 1);
+
+    PredicateAuthoringRevisionReceipt unchanged;
+    ASSERT_TRUE(authoring->SavePredicateDefinitionDraft({
+        .predicate_definition_id = created.parent_id,
+        .body = body,
+        .saved_at_utc = now + std::chrono::milliseconds(5),
+    }, &unchanged, &error)) << error;
+    EXPECT_EQ(unchanged.revision_id, created.revision_id);
+    EXPECT_FALSE(unchanged.semantic_changed);
+
+    auto changed_body = body;
+    changed_body.expression.front().literal->payload = false;
+    PredicateAuthoringRevisionReceipt draft;
+    ASSERT_TRUE(authoring->SavePredicateDefinitionDraft({
+        .predicate_definition_id = created.parent_id,
+        .body = changed_body,
+        .saved_at_utc = now + std::chrono::milliseconds(6),
+    }, &draft, &error)) << error;
+    EXPECT_EQ(draft.parent_id, created.parent_id);
+    EXPECT_EQ(draft.stable_key, created.stable_key);
+    EXPECT_EQ(draft.revision_number, 2);
+    EXPECT_EQ(draft.revision_state, "DRAFT");
+    EXPECT_TRUE(draft.semantic_changed);
+    EXPECT_NE(draft.semantic_sha256, created.semantic_sha256);
+    const auto draft_node_query =
+        "SELECT rowid FROM au_predicate_expression_node_v2 WHERE "
+        "predicate_definition_revision_id=" + std::to_string(draft.revision_id)
+        + " AND node_ordinal=0;";
+    const auto draft_node_rowid = ReadInt64(db_, draft_node_query.c_str());
+
+    PredicateAuthoringRevisionReceipt unchanged_draft;
+    ASSERT_TRUE(authoring->SavePredicateDefinitionDraft({
+        .predicate_definition_id = created.parent_id,
+        .body = changed_body,
+        .saved_at_utc = now + std::chrono::milliseconds(7),
+    }, &unchanged_draft, &error)) << error;
+    EXPECT_EQ(unchanged_draft.revision_id, draft.revision_id);
+    EXPECT_FALSE(unchanged_draft.semantic_changed);
+    EXPECT_EQ(ReadInt64(db_, draft_node_query.c_str()), draft_node_rowid);
+
+    const DuplicatePredicateDefinitionCommand duplicate{
+        .source_revision_id = created.revision_id,
+        .creation_request_key = "10000000000000000000000000000002",
+        .name = "Duplicated definition",
+        .description = "separate logical identity",
+        .created_at_utc = now,
+    };
+    PredicateAuthoringRevisionReceipt duplicated;
+    ASSERT_TRUE(authoring->DuplicatePredicateDefinition(
+        duplicate, &duplicated, &error)) << error;
+    EXPECT_NE(duplicated.parent_id, created.parent_id);
+    EXPECT_NE(duplicated.stable_key, created.stable_key);
+    EXPECT_EQ(duplicated.semantic_sha256, created.semantic_sha256);
+    EXPECT_EQ(duplicated.revision_number, 1);
+
+    PredicateAuthoringRevisionReceipt duplicate_replay;
+    ASSERT_TRUE(authoring->DuplicatePredicateDefinition(
+        duplicate, &duplicate_replay, &error)) << error;
+    EXPECT_EQ(duplicate_replay.parent_id, duplicated.parent_id);
+    EXPECT_EQ(duplicate_replay.revision_id, duplicated.revision_id);
+    EXPECT_FALSE(duplicate_replay.identity_created);
+
+    auto conflicting_duplicate = duplicate;
+    conflicting_duplicate.name = "Different duplicate request";
+    error.clear();
+    EXPECT_FALSE(authoring->DuplicatePredicateDefinition(
+        conflicting_duplicate, nullptr, &error));
+    EXPECT_NE(error.find("reused with different content"), std::string::npos)
+        << error;
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM au_predicate_definition_v2;"), 2);
+}
+
+TEST_F(SqliteDbFixture, PredicateGroupRejectsUnavailableBattleHookAtPublication) {
     using namespace savor::db;
     using namespace savor::runtime::predicates;
     using namespace savor::runtime::program;
@@ -1460,42 +2556,61 @@ TEST_F(SqliteDbFixture, PredicateV2RejectsUnavailableBattleHookAtPublication) {
         }},
         .root_expression = 0,
     };
-    std::int64_t definition_revision_id = 0;
-    ASSERT_TRUE(authoring->SavePredicateDefinitionDraftV2({
-        .stable_key = definition.canonical_id,
+    PredicateAuthoringRevisionReceipt definition_receipt;
+    ASSERT_TRUE(authoring->CreatePredicateDefinitionDraft({
+        .creation_request_key = "00000000000000000000000000000011",
         .name = "Unavailable hook predicate",
-        .definition = definition,
+        .body = {definition.witnesses, definition.expression,
+                 definition.root_expression},
         .created_at_utc = now,
-    }, &definition_revision_id, &error)) << error;
+    }, &definition_receipt, &error)) << error;
+    const auto definition_revision_id = definition_receipt.revision_id;
     ASSERT_TRUE(authoring->PublishPredicateDefinitionRevisionV2(
-        definition_revision_id, now, &error)) << error;
+        definition_revision_id, now, nullptr, &error)) << error;
 
-    ResolvedPredicateBundleV1 bundle{
-        .canonical_id = "test.predicate_bundle.unavailable_hook",
+    const auto published_definition =
+        authoring->GetPredicateDefinitionRevisionV2(definition_revision_id);
+    ASSERT_TRUE(published_definition.has_value());
+    PredicateExecutionBindingV1 binding{
+        .canonical_id = "test.predicate_binding.unavailable_hook",
         .revision = 1,
-        .definitions = {{definition_revision_id, definition}},
-        .checks = {{
+        .definition = {definition_revision_id,
+                       published_definition->content_sha256,
+                       published_definition->definition},
+    };
+    PredicateAuthoringRevisionReceipt binding_receipt;
+    ASSERT_TRUE(authoring->CreatePredicateExecutionBindingDraft({
+        .creation_request_key = "00000000000000000000000000000012",
+        .name = "Unavailable hook binding",
+        .body = {definition_revision_id, binding.witnesses},
+        .created_at_utc = now,
+    }, &binding_receipt, &error)) << error;
+    const auto binding_revision_id = binding_receipt.revision_id;
+    ASSERT_TRUE(authoring->PublishPredicateExecutionBindingRevision(
+        binding_revision_id, now, nullptr, &error)) << error;
+    ResolvedPredicateGroupV1 group{
+        .canonical_id = "test.predicate_group.unavailable_hook",
+        .revision = 1,
+        .members = {{
             .ordinal = 0,
-            .predicate_definition_revision_id = definition_revision_id,
-            .use = {
-                .canonical_id = "not-yet-supported",
-                .semantic_point_id = "soa.battle.point.StartAction",
-            },
+            .execution_binding_revision_id = binding_revision_id,
+            .semantic_hook_ids = {"soa.battle.point.StartAction"},
             .occurrence = PredicateOccurrencePolicyV1::First,
         }},
     };
-    std::int64_t bundle_revision_id = 0;
-    ASSERT_TRUE(authoring->SavePredicateBundleDraftV2({
-        .stable_key = bundle.canonical_id,
-        .name = "Unavailable hook bundle",
-        .bundle = bundle,
+    PredicateAuthoringRevisionReceipt group_receipt;
+    ASSERT_TRUE(authoring->CreatePredicateGroupDraft({
+        .creation_request_key = "00000000000000000000000000000013",
+        .name = "Unavailable hook group",
+        .body = {group.members},
         .created_at_utc = now,
-    }, &bundle_revision_id, &error)) << error;
-    EXPECT_FALSE(authoring->PublishPredicateBundleRevisionV2(
-        bundle_revision_id, now, &error));
+    }, &group_receipt, &error)) << error;
+    const auto group_revision_id = group_receipt.revision_id;
+    EXPECT_FALSE(authoring->PublishPredicateGroupRevision(
+        group_revision_id, now, nullptr, &error));
     EXPECT_NE(error.find("predicate.hook_unavailable"), std::string::npos)
         << error;
-    const auto rejected = authoring->GetPredicateBundleRevisionV2(bundle_revision_id);
+    const auto rejected = authoring->GetPredicateGroupRevision(group_revision_id);
     ASSERT_TRUE(rejected.has_value());
     EXPECT_EQ(rejected->revision_state, "DRAFT");
 }
@@ -1570,8 +2685,9 @@ TEST_F(SqliteDbFixture, BattleStartAtomicallyJoinsContextAndConfirmedSeedProbeFr
         .context_probe_id = context_probe_id,
         .battle_set_name = "battle.start.step.81003",
         .entry_savestate_id = entry_savestate_id,
-        .battle_run_spec_id = 81008,
-        .explorer_settings_id = 81009,
+        .battle_plan_id = 81008,
+        .battle_plan_fingerprint = "battle-start-plan",
+        .continuation_mode = BattleContinuationMode::AutomaticBestPerEndingRng,
         .launch_fake_attack_min = 0,
         .launch_fake_attack_max = 2,
         .created_at_utc = now,
@@ -1587,6 +2703,15 @@ TEST_F(SqliteDbFixture, BattleStartAtomicallyJoinsContextAndConfirmedSeedProbeFr
     ASSERT_TRUE(wave.has_value());
     EXPECT_EQ(wave->turn_index, 1);
     EXPECT_EQ(wave->context_probe_id, context_probe_id);
+    const auto frozen_set = analysis->GetBattleSet(created.battle_set_id);
+    ASSERT_TRUE(frozen_set.has_value());
+    EXPECT_EQ(frozen_set->battle_plan_id, 81008);
+    EXPECT_EQ(frozen_set->battle_plan_fingerprint, "battle-start-plan");
+    EXPECT_EQ(
+        frozen_set->continuation_mode,
+        BattleContinuationMode::AutomaticBestPerEndingRng);
+    EXPECT_EQ(frozen_set->launch_fake_attack_min, 0);
+    EXPECT_EQ(frozen_set->launch_fake_attack_max, 2);
 
     EnsureBattleStartReceipt replayed{};
     ASSERT_TRUE(analysis->EnsureBattleStart(command, &replayed, &error)) << error;
@@ -1594,6 +2719,9 @@ TEST_F(SqliteDbFixture, BattleStartAtomicallyJoinsContextAndConfirmedSeedProbeFr
     EXPECT_EQ(replayed.battle_start_id, created.battle_start_id);
     EXPECT_EQ(replayed.battle_set_id, created.battle_set_id);
     EXPECT_EQ(replayed.first_wave_ids, created.first_wave_ids);
+    auto drifted = command;
+    drifted.battle_plan_fingerprint = "drifted-plan";
+    EXPECT_FALSE(analysis->EnsureBattleStart(drifted, nullptr, &error));
     EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(*) FROM ab_battle_set WHERE name='battle.start.step.81003';"), 1);
     EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(*) FROM ab_seed_candidate WHERE battle_set_id=(SELECT battle_set_id FROM ab_battle_start WHERE workflow_step_id=81003);"), 1);
     EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(*) FROM ab_turn_wave WHERE battle_set_id=(SELECT battle_set_id FROM ab_battle_start WHERE workflow_step_id=81003);"), 1);
@@ -4957,8 +6085,9 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
         {
             .name = "stage3d-battle-set",
             .entry_savestate_id = 101,
-            .battle_run_spec_id = 202,
-            .explorer_settings_id = 303,
+            .battle_plan_id = 202,
+            .battle_plan_fingerprint = "stage3d-plan",
+            .continuation_mode = BattleContinuationMode::AutomaticBestPerEndingRng,
             .status = savor::db::BattleSetStatus::Active,
             .created_at_utc = now,
             .correlation_id = "ab-corr-1",
@@ -5139,21 +6268,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     SqliteAnalysisDb analysis_db(db_);
     const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
 
-    std::int64_t battle_run_spec_id = 0;
-    ASSERT_TRUE(authoring_db.SaveBattleRunSpec(
-        {
-            .name = "single-turn-run",
-            .priority = 7,
-            .progress_enable = true,
-            .use_single_turn_runner = true,
-            .auto_wave_trigger_enable = true,
-            .created_at_utc = now,
-            .correlation_id = "au-corr",
-            .causation_id = "au-cause-1",
-        },
-        &battle_run_spec_id,
-        &err)) << err;
-
     std::int64_t plan_id = 0;
     ASSERT_TRUE(authoring_db.SavePlan(
         {
@@ -5271,23 +6385,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
         &err)) << err;
     ASSERT_GT(plan_turn_id, 0);
 
-    std::int64_t explorer_settings_id = 0;
-    ASSERT_TRUE(authoring_db.SaveExplorerSettings(
-        {
-            .name = "battle-explorer",
-            .description = "fixture settings",
-            .default_plan_id = plan_id,
-            .created_at_utc = now,
-            .correlation_id = "au-corr",
-            .causation_id = "au-cause-5",
-        },
-        &explorer_settings_id,
-        &err)) << err;
-
-    const auto run_spec = authoring_db.GetBattleRunSpec(battle_run_spec_id);
-    ASSERT_TRUE(run_spec.has_value());
-    EXPECT_TRUE(run_spec->use_single_turn_runner);
-
     const auto plan = authoring_db.GetBattlePlan(plan_id);
     ASSERT_TRUE(plan.has_value());
     ASSERT_EQ(plan->turns.size(), 1);
@@ -5304,17 +6401,14 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     EXPECT_EQ(plan->turns[0].actions[1].action_preset.target_same_as_actor_slot.value_or(-1), 0);
     EXPECT_EQ(plan->turns[0].actions[1].action_preset.item_id.value_or(-1), 99);
 
-    const auto explorer_settings = authoring_db.GetExplorerSettings(explorer_settings_id);
-    ASSERT_TRUE(explorer_settings.has_value());
-    EXPECT_EQ(explorer_settings->default_plan_id.value_or(0), plan_id);
-
     std::int64_t battle_set_id = 0;
     ASSERT_TRUE(analysis_db.CreateBattleSet(
         {
             .name = "battle-set-roundtrip",
             .entry_savestate_id = 501,
-            .battle_run_spec_id = battle_run_spec_id,
-            .explorer_settings_id = explorer_settings_id,
+            .battle_plan_id = plan_id,
+            .battle_plan_fingerprint = "plan-fp-1",
+            .continuation_mode = BattleContinuationMode::AutomaticBestPerEndingRng,
             .status = savor::db::BattleSetStatus::Active,
             .created_at_utc = now,
             .correlation_id = "ab-corr",
@@ -5327,7 +6421,7 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
         &analysis_db,
         "stage3d-battle-roundtrip",
         501,
-        battle_run_spec_id,
+        plan_id,
         2001,
         7777,
         now,
@@ -5422,8 +6516,9 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
 
     const auto battle_set = analysis_db.GetBattleSet(battle_set_id);
     ASSERT_TRUE(battle_set.has_value());
-    EXPECT_EQ(battle_set->battle_run_spec_id, battle_run_spec_id);
-    EXPECT_EQ(battle_set->explorer_settings_id, explorer_settings_id);
+    EXPECT_EQ(battle_set->battle_plan_id, plan_id);
+    EXPECT_EQ(battle_set->battle_plan_fingerprint, "plan-fp-1");
+    EXPECT_EQ(battle_set->continuation_mode, BattleContinuationMode::AutomaticBestPerEndingRng);
 
     const auto candidates = analysis_db.ListBattleSeedCandidates(battle_set_id);
     ASSERT_EQ(candidates.size(), 1);
@@ -5552,7 +6647,7 @@ INSERT INTO exec_job(
     program_ref_id,fingerprint,priority,state,attempts,max_attempts,
     queued_at_utc,input_ini)
 VALUES(
-    77611,77610,1,3,'sp_probe_run',
+    77611,77610,1,4,'sp_probe_run',
     77605,'neutral-stage-filter-search',0,'SUCCEEDED',1,1,1000,
     '[SeedProbe.Request]
 desired_delta=1
@@ -5585,7 +6680,7 @@ INSERT INTO exec_job(
     program_ref_id,fingerprint,priority,state,attempts,max_attempts,
     queued_at_utc,input_ini)
 VALUES(
-    77612,77610,1,3,'sp_probe_run',
+    77612,77610,1,4,'sp_probe_run',
     77605,'neutral-stage-filter-survey',0,'SUCCEEDED',1,1,1000,
     '[SeedProbe.Request]
 input_frame_id=77606
@@ -6074,7 +7169,7 @@ VALUES(
     EXPECT_EQ(search_values[0].trigger_y, 1);
 }
 
-TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithoutExternalInputs) {
+TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresDirectBattlePlanWithoutExternalInputs) {
     using namespace savor::db;
     std::string err;
 
@@ -6086,7 +7181,7 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
     ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
         {
             .name = "canonical-start-to-battle",
-            .description = "TAS -> seed probe -> battle chain",
+            .description = "TAS -> seed probe -> battle",
             .graph_version = 1,
             .graph_hash = "graph-hash-canonical-start-to-battle",
             .nodes = {
@@ -6095,42 +7190,41 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
                     .unit_kind = "tas_movie",
                     .display_name = "TAS Movie",
                     .inputs = {
-                        { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
+                        { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .ref_kind = "state_artifact", .display_name = "DTM artifact" },
                     },
                     .possible_outputs = {
-                        { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                        { .output_key = "savestate", .data_kind = "state.savestate_id", .ref_kind = "state.savestate", .display_name = "Output savestate" },
                     },
                 },
                 {
                     .node_key = "probe_1",
-                    .unit_kind = "seed_probe_chain",
-                    .display_name = "Seed Probe Chain",
+                    .unit_kind = "seed_probe",
+                    .display_name = "Seed Probe",
                     .inputs = {
-                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .ref_kind = "state.savestate", .display_name = "Entry savestate" },
                     },
                     .possible_outputs = {
-                        { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
+                        { .output_key = "seed_probe_run", .data_kind = "analysis.seed_probe_run", .ref_kind = "sp_probe_run", .display_name = "SeedProbe run" },
                     },
                 },
                 {
                     .node_key = "battle_1",
-                    .unit_kind = "battle_chain",
-                    .display_name = "Battle Chain",
-                    .authored_ref_kind = std::string("authoring.battle_chain_spec"),
+                    .unit_kind = "battle",
+                    .display_name = "Battle",
+                    .authored_ref_kind = std::string("authoring.battle_plan"),
                     .authored_ref_id = 77,
                     .inputs = {
-                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
-                        { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
+                        { .input_key = "seed_probe_run", .data_kind = "analysis.seed_probe_run", .ref_kind = "sp_probe_run", .display_name = "Confirmed SeedProbe run" },
+                        { .input_key = "battle_context", .data_kind = "analysis_battle.battle_context_id", .ref_kind = "ab_battle_context", .display_name = "Battle context" },
                     },
                     .possible_outputs = {
-                        { .output_key = "battle_set", .data_kind = "analysis_battle.battle_set", .display_name = "Battle set" },
+                        { .output_key = "battle_set", .data_kind = "analysis_battle.battle_set", .ref_kind = "analysis_battle.battle_set", .display_name = "Battle set" },
                     },
                 },
             },
             .edges = {
                 { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
-                { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
-                { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+                { .from_node_key = "probe_1", .output_key = "seed_probe_run", .to_node_key = "battle_1", .input_key = "seed_probe_run" },
             },
             .created_at_utc = now,
             .correlation_id = "au-workflow-graph",
@@ -6145,12 +7239,12 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
     EXPECT_EQ(graph->name, "canonical-start-to-battle");
     EXPECT_EQ(graph->workflow_graph_revision_id, saved.workflow_graph_revision_id);
     ASSERT_EQ(graph->nodes.size(), 3u);
-    ASSERT_EQ(graph->edges.size(), 3u);
+    ASSERT_EQ(graph->edges.size(), 2u);
     EXPECT_EQ(graph->nodes[0].inputs[0].data_kind, "state_artifact.dtm_artifact_id");
-    EXPECT_EQ(graph->nodes[1].possible_outputs[0].data_kind, "analysis.input_frame_set_id");
-    EXPECT_EQ(graph->nodes[2].authored_ref_kind.value_or(""), "authoring.battle_chain_spec");
+    EXPECT_EQ(graph->nodes[1].possible_outputs[0].data_kind, "analysis.seed_probe_run");
+    EXPECT_EQ(graph->nodes[2].authored_ref_kind.value_or(""), "authoring.battle_plan");
     EXPECT_EQ(graph->nodes[2].authored_ref_id.value_or(0), 77);
-    EXPECT_EQ(graph->edges[2].from_node_key, "probe_1");
+    EXPECT_EQ(graph->edges[1].from_node_key, "probe_1");
 
     sqlite3_stmt* input_binding_column_count = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
@@ -6185,7 +7279,6 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
     ASSERT_TRUE(payload.has_value());
     EXPECT_EQ(payload->workflow_graph_id, saved.workflow_graph_id);
     EXPECT_EQ(payload->workflow_graph_revision_id, saved.workflow_graph_revision_id);
-    EXPECT_EQ(payload->battle_chain_spec_id, 0);
 
     SaveWorkflowGraphResult revised{};
     ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
@@ -6193,7 +7286,7 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
             .workflow_graph_id = saved.workflow_graph_id,
             .parent_revision_id = saved.workflow_graph_revision_id,
             .name = "canonical-start-to-battle",
-            .description = "TAS -> seed probe -> battle chain",
+            .description = "TAS -> seed probe -> battle",
             .graph_version = 2,
             .graph_hash = "graph-hash-canonical-start-to-battle-v2",
             .nodes = {
@@ -6202,42 +7295,41 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
                     .unit_kind = "tas_movie",
                     .display_name = "TAS Movie",
                     .inputs = {
-                        { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
+                        { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .ref_kind = "state_artifact", .display_name = "DTM artifact" },
                     },
                     .possible_outputs = {
-                        { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                        { .output_key = "savestate", .data_kind = "state.savestate_id", .ref_kind = "state.savestate", .display_name = "Output savestate" },
                     },
                 },
                 {
                     .node_key = "probe_1",
-                    .unit_kind = "seed_probe_chain",
-                    .display_name = "Seed Probe Chain",
+                    .unit_kind = "seed_probe",
+                    .display_name = "Seed Probe",
                     .inputs = {
-                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .ref_kind = "state.savestate", .display_name = "Entry savestate" },
                     },
                     .possible_outputs = {
-                        { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
+                        { .output_key = "seed_probe_run", .data_kind = "analysis.seed_probe_run", .ref_kind = "sp_probe_run", .display_name = "SeedProbe run" },
                     },
                 },
                 {
                     .node_key = "battle_1",
-                    .unit_kind = "battle_chain",
-                    .display_name = "Battle Chain",
-                    .authored_ref_kind = std::string("authoring.battle_chain_spec"),
+                    .unit_kind = "battle",
+                    .display_name = "Battle",
+                    .authored_ref_kind = std::string("authoring.battle_plan"),
                     .authored_ref_id = 88,
                     .inputs = {
-                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
-                        { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
+                        { .input_key = "seed_probe_run", .data_kind = "analysis.seed_probe_run", .ref_kind = "sp_probe_run", .display_name = "Confirmed SeedProbe run" },
+                        { .input_key = "battle_context", .data_kind = "analysis_battle.battle_context_id", .ref_kind = "ab_battle_context", .display_name = "Battle context" },
                     },
                     .possible_outputs = {
-                        { .output_key = "battle_set", .data_kind = "analysis_battle.battle_set", .display_name = "Battle set" },
+                        { .output_key = "battle_set", .data_kind = "analysis_battle.battle_set", .ref_kind = "analysis_battle.battle_set", .display_name = "Battle set" },
                     },
                 },
             },
             .edges = {
                 { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
-                { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
-                { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+                { .from_node_key = "probe_1", .output_key = "seed_probe_run", .to_node_key = "battle_1", .input_key = "seed_probe_run" },
             },
             .created_at_utc = now,
             .correlation_id = "au-workflow-graph",
@@ -6289,37 +7381,37 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
     ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
         {
             .name = "launchable-seedprobe-to-battle",
-            .description = "Seed probe can feed a battle chain",
+            .description = "Seed probe can feed a battle",
             .graph_version = 1,
             .graph_hash = "graph-hash-launchable-seedprobe-to-battle",
             .nodes = {
                 {
                     .node_key = "probe_1",
-                    .unit_kind = "seed_probe_chain",
-                    .display_name = "Seed Probe Chain",
+                    .unit_kind = "seed_probe",
+                    .display_name = "Seed Probe",
                     .inputs = {
-                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .ref_kind = "state.savestate", .display_name = "Entry savestate" },
                     },
                     .possible_outputs = {
-                        { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
+                        { .output_key = "seed_probe_run", .data_kind = "analysis.seed_probe_run", .ref_kind = "sp_probe_run", .display_name = "SeedProbe run" },
                     },
                 },
                 {
                     .node_key = "battle_1",
-                    .unit_kind = "battle_chain",
-                    .display_name = "Battle Chain",
-                    .authored_ref_kind = std::string("authoring.battle_chain_spec"),
+                    .unit_kind = "battle",
+                    .display_name = "Battle",
+                    .authored_ref_kind = std::string("authoring.battle_plan"),
                     .authored_ref_id = 901,
                     .inputs = {
-                        { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
+                        { .input_key = "seed_probe_run", .data_kind = "analysis.seed_probe_run", .ref_kind = "sp_probe_run", .display_name = "Confirmed SeedProbe run" },
                     },
                     .possible_outputs = {
-                        { .output_key = "battle_set", .data_kind = "analysis_battle.battle_set", .display_name = "Battle set" },
+                        { .output_key = "battle_set", .data_kind = "analysis_battle.battle_set", .ref_kind = "analysis_battle.battle_set", .display_name = "Battle set" },
                     },
                 },
             },
             .edges = {
-                { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+                { .from_node_key = "probe_1", .output_key = "seed_probe_run", .to_node_key = "battle_1", .input_key = "seed_probe_run" },
             },
             .created_at_utc = now,
             .correlation_id = "au-workflow-graph-launch",
@@ -6336,8 +7428,8 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "sqlite-fixture";
     command.created_at_utc = now.time_since_epoch().count();
-    command.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe_chain", "Seed Probe Chain", {}, 10, 1));
-    command.unit_activations.push_back(TestUnitActivation("battle_1", "battle_chain", "Battle Chain", { "probe_1" }, 5, 1));
+    command.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe", "Seed Probe", {}, 10, 1));
+    command.unit_activations.push_back(TestUnitActivation("battle_1", "battle", "Battle", { "probe_1" }, 5, 1));
     command.input_bindings.push_back({
         .node_key = "probe_1",
         .input_key = "entry_savestate",
@@ -6346,7 +7438,8 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
         .ref_id = 44001,
         .source_kind = "external",
     });
-    command.arguments.push_back({ .node_key = "probe_1", .argument_key = "rtc", .value_type = "integer", .integer_value = 4, .source_kind = "launcher" });
+    command.arguments.push_back({ .node_key = "probe_1", .argument_key = "samples_per_axis", .value_type = "integer", .integer_value = 4, .source_kind = "launcher" });
+    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "continuation_mode", .value_type = "choice", .text_value = std::string("automatic_best_per_ending_rng"), .source_kind = "launcher" });
     command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_min", .value_type = "integer", .integer_value = 22, .source_kind = "launcher" });
     command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_max", .value_type = "integer", .integer_value = 25, .source_kind = "launcher" });
     ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(command, &workflow_instance_id, &err)) << err;
@@ -6364,10 +7457,10 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
     EXPECT_EQ(graph->input_bindings[0].ref_kind, "state.savestate");
     EXPECT_EQ(graph->input_bindings[0].ref_id, 44001);
     EXPECT_EQ(graph->input_bindings[0].source_kind, "external");
-    ASSERT_EQ(graph->arguments.size(), 3u);
+    ASSERT_EQ(graph->arguments.size(), 4u);
     EXPECT_EQ(graph->arguments[0].workflow_instance_id, workflow_instance_id);
     EXPECT_EQ(graph->arguments[0].node_key, "probe_1");
-    EXPECT_EQ(graph->arguments[0].argument_key, "rtc");
+    EXPECT_EQ(graph->arguments[0].argument_key, "samples_per_axis");
     EXPECT_EQ(graph->arguments[0].value_type, "integer");
     ASSERT_TRUE(graph->arguments[0].integer_value.has_value());
     EXPECT_EQ(*graph->arguments[0].integer_value, 4);
@@ -6375,18 +7468,22 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
     EXPECT_EQ(graph->arguments[0].source_kind, "launcher");
     EXPECT_EQ(graph->arguments[1].workflow_instance_id, workflow_instance_id);
     EXPECT_EQ(graph->arguments[1].node_key, "battle_1");
-    EXPECT_EQ(graph->arguments[1].argument_key, "fake_attack_min");
-    EXPECT_EQ(graph->arguments[1].value_type, "integer");
-    ASSERT_TRUE(graph->arguments[1].integer_value.has_value());
-    EXPECT_EQ(*graph->arguments[1].integer_value, 22);
+    EXPECT_EQ(graph->arguments[1].argument_key, "continuation_mode");
+    EXPECT_EQ(graph->arguments[1].value_type, "choice");
+    EXPECT_EQ(graph->arguments[1].text_value.value_or(""), "automatic_best_per_ending_rng");
     EXPECT_EQ(graph->arguments[1].source_kind, "launcher");
     EXPECT_EQ(graph->arguments[2].workflow_instance_id, workflow_instance_id);
     EXPECT_EQ(graph->arguments[2].node_key, "battle_1");
-    EXPECT_EQ(graph->arguments[2].argument_key, "fake_attack_max");
+    EXPECT_EQ(graph->arguments[2].argument_key, "fake_attack_min");
     EXPECT_EQ(graph->arguments[2].value_type, "integer");
     ASSERT_TRUE(graph->arguments[2].integer_value.has_value());
-    EXPECT_EQ(*graph->arguments[2].integer_value, 25);
+    EXPECT_EQ(*graph->arguments[2].integer_value, 22);
     EXPECT_EQ(graph->arguments[2].source_kind, "launcher");
+    EXPECT_EQ(graph->arguments[3].argument_key, "fake_attack_max");
+    EXPECT_EQ(graph->arguments[3].value_type, "integer");
+    ASSERT_TRUE(graph->arguments[3].integer_value.has_value());
+    EXPECT_EQ(*graph->arguments[3].integer_value, 25);
+    EXPECT_EQ(graph->arguments[3].source_kind, "launcher");
 
     const auto instances = execution_db->WorkflowQueryService()->ListWorkflowInstances(
         WorkflowInstanceState::Running,
@@ -6406,7 +7503,7 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
     rejected.root_scope_kind = "manual";
     rejected.created_by = "sqlite-fixture";
     rejected.created_at_utc = now.time_since_epoch().count();
-    rejected.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe_chain", "Seed Probe Chain"));
+    rejected.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe", "Seed Probe"));
     rejected.input_bindings.push_back({
         .node_key = "probe_1",
         .input_key = "entry_savestate",
@@ -6425,7 +7522,7 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
     legacy.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     legacy.created_by = "sqlite-fixture";
     legacy.created_at_utc = now.time_since_epoch().count();
-    legacy.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe_chain", "Seed Probe Chain"));
+    legacy.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe", "Seed Probe"));
     EXPECT_FALSE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(legacy, &rejected_instance_id, &err));
     EXPECT_NE(err.find("workflow_kind must be workflow_graph"), std::string::npos);
 }
@@ -6459,8 +7556,8 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
                 },
                 {
                     .node_key = "probe_1",
-                    .unit_kind = "seed_probe_chain",
-                    .display_name = "Seed Probe Chain",
+                    .unit_kind = "seed_probe",
+                    .display_name = "Seed Probe",
                     .inputs = {
                         { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
                     },
@@ -6470,8 +7567,8 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
                 },
                 {
                     .node_key = "battle_1",
-                    .unit_kind = "battle_chain",
-                    .display_name = "Battle Chain",
+                    .unit_kind = "battle",
+                    .display_name = "Battle",
                     .inputs = {
                         { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
                         { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
@@ -6500,8 +7597,8 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
     create.created_by = "sqlite-fixture";
     create.created_at_utc = now.time_since_epoch().count();
     create.unit_activations.push_back(TestUnitActivation("tas_1", "tas_movie", "TAS Movie", {}, 10, 1));
-    create.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe_chain", "Seed Probe Chain", { "tas_1" }, 5, 1));
-    create.unit_activations.push_back(TestUnitActivation("battle_1", "battle_chain", "Battle Chain", { "tas_1", "probe_1" }, 1, 1));
+    create.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe", "Seed Probe", { "tas_1" }, 5, 1));
+    create.unit_activations.push_back(TestUnitActivation("battle_1", "battle", "Battle", { "tas_1", "probe_1" }, 1, 1));
     ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(create, &workflow_instance_id, &err)) << err;
 
     auto step_id = [&](const std::string& step_key) -> std::int64_t {
@@ -6691,7 +7788,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
             .workflow_graph_revision_id = saved.workflow_graph_revision_id,
             .step_key = "probe_1",
             .graph_node_key = "probe_1",
-            .step_kind = "seed_probe_chain",
+            .step_kind = "seed_probe",
             .priority = step_priority("probe_1"),
             .expected_total = 1,
             .discovered_total = 1,
@@ -6747,8 +7844,8 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
                 },
                 {
                     .node_key = "probe_1",
-                    .unit_kind = "seed_probe_chain",
-                    .display_name = "Seed Probe Chain",
+                    .unit_kind = "seed_probe",
+                    .display_name = "Seed Probe",
                     .inputs = {
                         { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
                     },
@@ -6778,7 +7875,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
     create.created_by = "sqlite-fixture";
     create.created_at_utc = now.time_since_epoch().count();
     create.unit_activations.push_back(TestUnitActivation("tas_1", "tas_movie", "TAS Movie", {}, 10, 1));
-    create.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe_chain", "Seed Probe Chain", { "tas_1" }, 5, 1));
+    create.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe", "Seed Probe", { "tas_1" }, 5, 1));
     create.input_bindings.push_back({
         .node_key = "probe_1",
         .input_key = "entry_savestate",
@@ -7949,14 +9046,34 @@ INSERT INTO exec_workflow_instance_argument(workflow_instance_argument_id,workfl
 VALUES(7204,7001,'battle','turn_index','integer',1,NULL,'manual',1000);
 INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
 VALUES(7001,'BATTLE_RUN','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
-INSERT INTO ab_battle_set(battle_set_id,name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,status,created_at_utc,completed_at_utc)
-VALUES(8000,'rehydrate battle',601,1,1,'COMPLETED',1000,2000);
+INSERT INTO ab_battle_set(
+    battle_set_id,name,entry_savestate_id,battle_plan_id,
+    battle_plan_fingerprint,continuation_mode,
+    launch_fake_attack_min,launch_fake_attack_max,
+    status,created_at_utc,completed_at_utc)
+VALUES(8000,'rehydrate battle',601,1,
+       'rehydrate-battle-plan-v1','automatic_best_per_ending_rng',
+       0,0,'COMPLETED',1000,2000);
 INSERT INTO ab_seed_candidate(seed_candidate_id,battle_set_id,seed_value,source_kind,candidate_status,created_at_utc)
 VALUES(8100,8000,123,'MANUAL','SELECTED',1000);
 INSERT INTO ab_battle_advancement_pool(battle_advancement_pool_id,battle_set_id,turn_index,pool_name,criterion_kind,created_at_utc)
 VALUES(8200,8000,1,'pool','best',1000);
 INSERT INTO ab_turn_wave(wave_id,battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,battle_advancement_pool_id,status,created_at_utc,completed_at_utc)
 VALUES(8250,8000,1,NULL,NULL,NULL,8100,8200,'COMPLETED',1000,2000);
+INSERT INTO ab_predicate_execution_package_v1(
+    predicate_execution_package_id,wave_id,predicate_group_revision_id,
+    predicate_group_sha256,execution_package_sha256,execution_package_blob,
+    phase_program_kind,phase_program_version,phase_canonical_id,phase_revision,
+    phase_sha256,hook_contract_canonical_id,hook_contract_revision,
+    hook_contract_sha256,created_at_utc)
+VALUES(
+    8260,8250,777,
+    '1111111111111111111111111111111111111111111111111111111111111111',
+    '2222222222222222222222222222222222222222222222222222222222222222',
+    X'50504531',7,1,'soa.battle.single_turn',1,
+    '3333333333333333333333333333333333333333333333333333333333333333',
+    'soa.battle.predicate_hooks',2,
+    '4444444444444444444444444444444444444444444444444444444444444444',1000);
 INSERT INTO ab_battle_context_probe(context_probe_id,wave_id,source_savestate_id,exec_job_id,probe_status,context_blob,context_version,recorded_at_utc,created_at_utc)
 VALUES(8275,8250,601,7101,'COMPLETED','{}',1,1500,1000);
 UPDATE ab_turn_wave SET context_probe_id=8275 WHERE wave_id=8250;
@@ -8027,6 +9144,9 @@ VALUES(
     EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
         + std::to_string(package.archive_package_id)
         + " AND item_kind='analysis_battle_replays';").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
+        + std::to_string(package.archive_package_id)
+        + " AND item_kind='analysis_predicate_execution_packages';").c_str()), 1);
 
     SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_, db_);
     ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
@@ -8068,6 +9188,7 @@ VALUES(
     const auto new_job_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='job' AND old_id='7101' ORDER BY rehydrate_map_id DESC LIMIT 1;");
     const auto new_battle_set_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_battle_set' AND old_id='8000' ORDER BY rehydrate_map_id DESC LIMIT 1;");
     const auto new_wave_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_turn_wave' AND old_id='8250' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_predicate_package_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_predicate_execution_package' AND old_id='8260' ORDER BY rehydrate_map_id DESC LIMIT 1;");
     const auto new_context_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_battle_context_probe' AND old_id='8275' ORDER BY rehydrate_map_id DESC LIMIT 1;");
     const auto new_turn_job_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_battle_turn_job' AND old_id='8300' ORDER BY rehydrate_map_id DESC LIMIT 1;");
     const auto new_completion_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_battle_completion' AND old_id='8600' ORDER BY rehydrate_map_id DESC LIMIT 1;");
@@ -8076,6 +9197,7 @@ VALUES(
     ASSERT_GT(new_job_id, 0);
     ASSERT_GT(new_battle_set_id, 0);
     ASSERT_GT(new_wave_id, 0);
+    ASSERT_GT(new_predicate_package_id, 0);
     ASSERT_GT(new_context_id, 0);
     ASSERT_GT(new_turn_job_id, 0);
     ASSERT_GT(new_completion_id, 0);
@@ -8087,6 +9209,9 @@ VALUES(
     EXPECT_EQ(ReadInt64(db_, ("SELECT entry_savestate_id FROM ab_battle_set WHERE battle_set_id=" + std::to_string(new_battle_set_id) + ";").c_str()), 601);
     EXPECT_EQ(ReadInt64(db_, ("SELECT exec_job_id FROM ab_turn_job WHERE turn_job_id=" + std::to_string(new_turn_job_id) + ";").c_str()), new_job_id);
     EXPECT_EQ(ReadInt64(db_, ("SELECT context_probe_id FROM ab_turn_wave WHERE wave_id=" + std::to_string(new_wave_id) + ";").c_str()), new_context_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT wave_id FROM ab_predicate_execution_package_v1 WHERE predicate_execution_package_id=" + std::to_string(new_predicate_package_id) + ";").c_str()), new_wave_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT predicate_group_revision_id FROM ab_predicate_execution_package_v1 WHERE predicate_execution_package_id=" + std::to_string(new_predicate_package_id) + ";").c_str()), 777);
+    EXPECT_EQ(ReadText(db_, ("SELECT lower(hex(execution_package_blob)) FROM ab_predicate_execution_package_v1 WHERE predicate_execution_package_id=" + std::to_string(new_predicate_package_id) + ";").c_str()), "50504531");
     EXPECT_EQ(ReadText(db_, ("SELECT note FROM ab_manual_followup WHERE turn_job_id=" + std::to_string(new_turn_job_id) + ";").c_str()), "restore me");
     EXPECT_EQ(ReadInt64(db_, ("SELECT battle_completion_id FROM ab_battle_replay WHERE battle_replay_id=" + std::to_string(new_replay_id) + ";").c_str()), new_completion_id);
     EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_instance_id FROM ab_battle_replay WHERE battle_replay_id=" + std::to_string(new_replay_id) + ";").c_str()), new_workflow_id);
@@ -9249,6 +10374,7 @@ TEST_F(SqliteDbFixture, StateDbMaterializesSavestateToExplicitPath) {
         &artifact_id,
         &err))
         << err;
+    ASSERT_TRUE(std::filesystem::remove(source_path));
 
     std::int64_t savestate_id = 0;
     ASSERT_TRUE(state_db->CreateSavestate(
@@ -9384,7 +10510,12 @@ TEST_F(SqliteDbFixture, StateDbAcceptsFirstClassBattleCompletionArtifact) {
     ASSERT_TRUE(artifact.has_value());
     EXPECT_EQ(artifact->artifact_kind, "BATTLE_COMPLETION");
     EXPECT_EQ(artifact->file_ext, ".bcmb");
-    EXPECT_EQ(artifact->filename, manifest_path.string());
+    EXPECT_EQ(artifact->display_filename, manifest_path.filename().string());
+    EXPECT_FALSE(std::filesystem::path(artifact->object_relpath).is_absolute());
+    EXPECT_EQ(
+        std::filesystem::path(artifact->filename).parent_path().parent_path().parent_path().parent_path(),
+        temp_root_ / "object_store");
+    EXPECT_TRUE(std::filesystem::is_regular_file(artifact->filename));
 
     std::int64_t rejected_id = 0;
     EXPECT_FALSE(state_db->StoreArtifact(
@@ -9401,6 +10532,131 @@ TEST_F(SqliteDbFixture, StateDbAcceptsFirstClassBattleCompletionArtifact) {
         },
         &rejected_id,
         &error));
+}
+
+TEST(SavorDbArtifactObjectStore, RelocatedWorkspaceReconcilesLegacyAbsoluteLocator) {
+    namespace migrations = savor::db::migrations;
+
+    const auto container = MakeTempPhase4Dir("state-artifact-relocation");
+    const auto source_root = container / "source";
+    const auto target_root = container / "target";
+    const auto source_paths = MakePhase4DbPaths(source_root);
+    ASSERT_TRUE(std::filesystem::create_directories(source_root));
+
+    std::int64_t artifact_id = 0;
+    std::string artifact_sha;
+    std::string error;
+    {
+        savor::db::core::DBService service(
+            source_paths,
+            migrations::MigrationSourceOptions{
+                .source_kind = migrations::MigrationSourceKind::Embedded});
+        ASSERT_TRUE(service.Start(&error)) << error;
+        const auto input = source_root / "portable-input.dtm";
+        const std::string bytes = "portable-artifact-bytes";
+        {
+            std::ofstream out(input, std::ios::binary);
+            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
+        artifact_sha = hash::sha256(bytes.data(), bytes.size());
+        ASSERT_TRUE(service.StateDb()->StoreArtifact({
+            .sha256 = artifact_sha,
+            .size_bytes = static_cast<std::int64_t>(bytes.size()),
+            .compression_kind = 0,
+            .filename = input.string(),
+            .display_filename = "portable-input.dtm",
+            .file_ext = ".dtm",
+            .artifact_kind = "DTM",
+            .created_at_utc = savor::db::types::UtcNow(),
+            .correlation_id = "test.state.relative-locator",
+            .causation_id = "test",
+        }, &artifact_id, &error)) << error;
+
+        const auto artifact = service.StateDb()->GetArtifact(artifact_id);
+        ASSERT_TRUE(artifact.has_value());
+        ASSERT_FALSE(artifact->object_relpath.empty());
+        EXPECT_FALSE(std::filesystem::path(artifact->object_relpath).is_absolute());
+
+        const auto legacy_relative =
+            std::filesystem::path("09") / "5a" / "portable-input.dtm";
+        const auto legacy_absolute =
+            source_paths.object_store_root / legacy_relative;
+        ASSERT_TRUE(std::filesystem::create_directories(
+            legacy_absolute.parent_path()));
+        ASSERT_TRUE(std::filesystem::copy_file(
+            artifact->filename, legacy_absolute,
+            std::filesystem::copy_options::overwrite_existing));
+
+        sqlite3_stmt* update = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+            service.RawStateSqlite(),
+            "UPDATE state_artifact SET filename=?1,object_relpath='' "
+            "WHERE artifact_id=?2;",
+            -1, &update, nullptr));
+        const auto legacy_text = legacy_absolute.string();
+        sqlite3_bind_text(update, 1, legacy_text.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(update, 2, artifact_id);
+        ASSERT_EQ(SQLITE_DONE, sqlite3_step(update));
+        sqlite3_finalize(update);
+        service.Stop();
+    }
+
+    std::error_code ec;
+    std::filesystem::copy(
+        source_root, target_root,
+        std::filesystem::copy_options::recursive |
+            std::filesystem::copy_options::overwrite_existing,
+        ec);
+    ASSERT_FALSE(ec) << ec.message();
+    std::filesystem::remove_all(source_root, ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    auto target_paths = MakePhase4DbPaths(target_root);
+    savor::db::core::DBService relocated(
+        target_paths,
+        migrations::MigrationSourceOptions{
+            .source_kind = migrations::MigrationSourceKind::Embedded});
+    ASSERT_TRUE(relocated.Start(&error)) << error;
+    const auto artifact = relocated.StateDb()->GetArtifact(artifact_id);
+    ASSERT_TRUE(artifact.has_value());
+    EXPECT_EQ(artifact->sha256, artifact_sha);
+    EXPECT_EQ(artifact->display_filename, "portable-input.dtm");
+    EXPECT_FALSE(std::filesystem::path(artifact->object_relpath).is_absolute());
+    EXPECT_TRUE(std::filesystem::is_regular_file(artifact->filename));
+    EXPECT_EQ(
+        std::filesystem::path(artifact->filename)
+            .lexically_relative(target_paths.object_store_root)
+            .generic_string(),
+        artifact->object_relpath);
+    EXPECT_TRUE(ReadText(
+        relocated.RawStateSqlite(),
+        "SELECT object_relpath FROM state_artifact WHERE artifact_id=1;")
+        .starts_with("state_artifacts/"));
+    relocated.Stop();
+    std::filesystem::remove_all(container, ec);
+}
+
+TEST(SavorDbArtifactObjectStore, RejectsAbsoluteAndTraversalLocators) {
+    namespace state = savor::db::state;
+
+    std::string error;
+    EXPECT_FALSE(state::IsValidArtifactObjectRelativePath(
+        std::filesystem::path("C:/outside/artifact.sav"), &error));
+    EXPECT_FALSE(error.empty());
+
+    error.clear();
+    EXPECT_FALSE(state::IsValidArtifactObjectRelativePath(
+        std::filesystem::path("state_artifacts") / ".." / "outside.sav",
+        &error));
+    EXPECT_FALSE(error.empty());
+
+    error.clear();
+    const auto canonical = state::MakeArtifactObjectRelativePath(
+        std::string(64, 'A'), ".sav", &error);
+    ASSERT_TRUE(canonical.has_value()) << error;
+    EXPECT_EQ(
+        canonical->generic_string(),
+        "state_artifacts/aa/aa/" + std::string(64, 'a') + ".sav");
 }
 
 TEST_F(SqliteDbFixture, UiReadProjectionStreamsSeparateStateDatabaseForArtifactSummary) {
@@ -9566,8 +10822,9 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleResultAndStatusEventsRefre
         {
             .name = "projection-battle-set",
             .entry_savestate_id = 101,
-            .battle_run_spec_id = 202,
-            .explorer_settings_id = 303,
+            .battle_plan_id = 202,
+            .battle_plan_fingerprint = "projection-plan",
+            .continuation_mode = BattleContinuationMode::AutomaticBestPerEndingRng,
             .status = BattleSetStatus::Active,
             .created_at_utc = now,
             .correlation_id = "projection-battle",
@@ -9699,8 +10956,9 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleSecondTurnSingleTurnJobsRe
         {
             .name = "projection-turn-two-set",
             .entry_savestate_id = 111,
-            .battle_run_spec_id = 222,
-            .explorer_settings_id = 333,
+            .battle_plan_id = 222,
+            .battle_plan_fingerprint = "projection-turn-two-plan",
+            .continuation_mode = BattleContinuationMode::AutomaticBestPerEndingRng,
             .status = BattleSetStatus::Active,
             .created_at_utc = now,
             .correlation_id = "projection-turn-two",
@@ -9809,8 +11067,9 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleRefreshesParentAggregateFo
         {
             .name = "projection-incremental-battle",
             .entry_savestate_id = 101,
-            .battle_run_spec_id = 202,
-            .explorer_settings_id = 303,
+            .battle_plan_id = 202,
+            .battle_plan_fingerprint = "projection-incremental-plan",
+            .continuation_mode = BattleContinuationMode::AutomaticBestPerEndingRng,
             .status = BattleSetStatus::Active,
             .created_at_utc = now,
             .correlation_id = "projection-incremental",
@@ -9922,8 +11181,9 @@ TEST_F(SqliteDbFixture, UiReadBattleQueriesListGroupsWavesJobsAndDetail) {
         {
             .name = "query-battle-run",
             .entry_savestate_id = 101,
-            .battle_run_spec_id = 202,
-            .explorer_settings_id = 303,
+            .battle_plan_id = 202,
+            .battle_plan_fingerprint = "query-battle-plan",
+            .continuation_mode = BattleContinuationMode::AutomaticBestPerEndingRng,
             .status = BattleSetStatus::Active,
             .created_at_utc = now,
             .correlation_id = "query-battle",
@@ -10171,7 +11431,8 @@ TEST_F(SqliteDbFixture, UiReadProjectionFailureDiagnosticsRecordPayloadRefsBefor
     ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.state_db_path.string().c_str(), &state_handle));
     ASSERT_NE(state_handle, nullptr);
     ASSERT_EQ(SQLITE_OK, sqlite3_busy_timeout(state_handle, 5000));
-    savor::db::state::SqliteStateDb state_db(state_handle);
+    savor::db::state::SqliteStateDb state_db(
+        state_handle, paths.object_store_root);
 
     sqlite3* ui_handle = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &ui_handle));
@@ -10251,7 +11512,8 @@ TEST_F(SqliteDbFixture, UiReadProjectionAdvancesStateCursorOncePerBatch) {
     ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.state_db_path.string().c_str(), &state_handle));
     ASSERT_NE(state_handle, nullptr);
     ASSERT_EQ(SQLITE_OK, sqlite3_busy_timeout(state_handle, 5000));
-    savor::db::state::SqliteStateDb state_db(state_handle);
+    savor::db::state::SqliteStateDb state_db(
+        state_handle, paths.object_store_root);
 
     std::string err;
     for (int i = 0; i < 3; ++i) {

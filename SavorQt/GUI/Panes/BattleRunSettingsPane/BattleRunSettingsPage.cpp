@@ -49,28 +49,16 @@ void BattleRunSettingsPage::createWidgets()
     toolbarLayout->setSpacing(10);
 
     newSeedProbeSpecButton_ = new QPushButton(QStringLiteral("New Seed Probe"), toolbar);
-    newTasSpecButton_ = new QPushButton(QStringLiteral("New TAS"), toolbar);
-    newBattleRunSpecButton_ = new QPushButton(QStringLiteral("New Battle Run"), toolbar);
-    newExplorerSettingsButton_ = new QPushButton(QStringLiteral("New Battle Explorer Settings"), toolbar);
-    newBattleChainSpecButton_ = new QPushButton(QStringLiteral("New Battle Chain Spec"), toolbar);
     newBattlePlanButton_ = new QPushButton(QStringLiteral("New Battle Plan"), toolbar);
     editBattlePlanButton_ = new QPushButton(QStringLiteral("Edit Battle Plan"), toolbar);
     duplicateBattlePlanButton_ = new QPushButton(QStringLiteral("Duplicate Battle Plan"), toolbar);
     refreshButton_ = new QPushButton(QStringLiteral("Refresh"), toolbar);
     newSeedProbeSpecButton_->setObjectName("jobsPrimaryButton");
-    newTasSpecButton_->setObjectName("jobsPrimaryButton");
-    newBattleRunSpecButton_->setObjectName("jobsPrimaryButton");
-    newExplorerSettingsButton_->setObjectName("jobsPrimaryButton");
-    newBattleChainSpecButton_->setObjectName("jobsPrimaryButton");
     newBattlePlanButton_->setObjectName("jobsPrimaryButton");
     editBattlePlanButton_->setObjectName("jobsSecondaryButton");
     duplicateBattlePlanButton_->setObjectName("jobsSecondaryButton");
     refreshButton_->setObjectName("jobsSecondaryButton");
     toolbarLayout->addWidget(newSeedProbeSpecButton_);
-    toolbarLayout->addWidget(newTasSpecButton_);
-    toolbarLayout->addWidget(newBattleRunSpecButton_);
-    toolbarLayout->addWidget(newExplorerSettingsButton_);
-    toolbarLayout->addWidget(newBattleChainSpecButton_);
     toolbarLayout->addWidget(newBattlePlanButton_);
     toolbarLayout->addWidget(editBattlePlanButton_);
     toolbarLayout->addWidget(duplicateBattlePlanButton_);
@@ -111,10 +99,6 @@ void BattleRunSettingsPage::createWidgets()
     rootLayout->addWidget(body, 1);
 
     connect(newSeedProbeSpecButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openSeedProbeSpecEditor);
-    connect(newTasSpecButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openTasSpecEditor);
-    connect(newBattleRunSpecButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openBattleRunSpecEditor);
-    connect(newExplorerSettingsButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openExplorerSettingsEditor);
-    connect(newBattleChainSpecButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openBattleChainSpecEditor);
     connect(newBattlePlanButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openBattlePlanEditor);
     connect(editBattlePlanButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::editSelectedBattlePlan);
     connect(duplicateBattlePlanButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::duplicateSelectedBattlePlan);
@@ -137,70 +121,6 @@ void BattleRunSettingsPage::openSeedProbeSpecEditor()
     editor->setStatusCallback([this](const QString& text, StatusToast::Severity severity) { postStatusMessage(text, severity); });
     editor->setSavedCallback([this]() { refreshAuthoringLists(); });
     connect(editor, &QObject::destroyed, this, [this]() { seedProbeSpecEditor_.clear(); });
-    editor->show();
-}
-
-void BattleRunSettingsPage::openTasSpecEditor()
-{
-    if (tasSpecEditor_) {
-        tasSpecEditor_->show();
-        tasSpecEditor_->raise();
-        tasSpecEditor_->activateWindow();
-        return;
-    }
-    auto* editor = new TasSpecEditorWindow(nullptr);
-    tasSpecEditor_ = editor;
-    editor->setStatusCallback([this](const QString& text, StatusToast::Severity severity) { postStatusMessage(text, severity); });
-    editor->setSavedCallback([this]() { refreshAuthoringLists(); });
-    connect(editor, &QObject::destroyed, this, [this]() { tasSpecEditor_.clear(); });
-    editor->show();
-}
-
-void BattleRunSettingsPage::openBattleRunSpecEditor()
-{
-    if (battleRunSpecEditor_) {
-        battleRunSpecEditor_->show();
-        battleRunSpecEditor_->raise();
-        battleRunSpecEditor_->activateWindow();
-        return;
-    }
-    auto* editor = new BattleRunSpecEditorWindow(nullptr);
-    battleRunSpecEditor_ = editor;
-    editor->setStatusCallback([this](const QString& text, StatusToast::Severity severity) { postStatusMessage(text, severity); });
-    editor->setSavedCallback([this]() { refreshAuthoringLists(); });
-    connect(editor, &QObject::destroyed, this, [this]() { battleRunSpecEditor_.clear(); });
-    editor->show();
-}
-
-void BattleRunSettingsPage::openExplorerSettingsEditor()
-{
-    if (explorerSettingsEditor_) {
-        explorerSettingsEditor_->show();
-        explorerSettingsEditor_->raise();
-        explorerSettingsEditor_->activateWindow();
-        return;
-    }
-    auto* editor = new ExplorerSettingsEditorWindow(nullptr);
-    explorerSettingsEditor_ = editor;
-    editor->setStatusCallback([this](const QString& text, StatusToast::Severity severity) { postStatusMessage(text, severity); });
-    editor->setSavedCallback([this]() { refreshAuthoringLists(); });
-    connect(editor, &QObject::destroyed, this, [this]() { explorerSettingsEditor_.clear(); });
-    editor->show();
-}
-
-void BattleRunSettingsPage::openBattleChainSpecEditor()
-{
-    if (battleChainSpecEditor_) {
-        battleChainSpecEditor_->show();
-        battleChainSpecEditor_->raise();
-        battleChainSpecEditor_->activateWindow();
-        return;
-    }
-    auto* editor = new BattleChainSpecEditorWindow(nullptr);
-    battleChainSpecEditor_ = editor;
-    editor->setStatusCallback([this](const QString& text, StatusToast::Severity severity) { postStatusMessage(text, severity); });
-    editor->setSavedCallback([this]() { refreshAuthoringLists(); });
-    connect(editor, &QObject::destroyed, this, [this]() { battleChainSpecEditor_.clear(); });
     editor->show();
 }
 

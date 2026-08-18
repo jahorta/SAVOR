@@ -35,7 +35,8 @@ enum PaneIndex {
     OverviewPane = 0,
     BattleRunsPane = 1,
     WorkflowPane = 2,
-    FuturePane = 3,
+    TasMoviesPane = 3,
+    FuturePane = 4,
 };
 
 struct AnalysisSnapshot {
@@ -52,6 +53,11 @@ struct AnalysisSnapshot {
     std::vector<savor::db::UiArtifactSummary> artifacts;
     std::vector<savor::db::UiWorkflowInstanceSummary> workflows;
     std::vector<savor::db::UiSeedProbeRunSummary> seedProbes;
+    std::vector<savor::db::UiTasMovieRootSummary> tasRoots;
+    std::vector<savor::db::UiTasMovieTreeSummary> tasTrees;
+    std::vector<savor::db::UiTasMovieValidationRequestSummary> tasValidationRequests;
+    std::vector<savor::db::UiTasMovieSterilizationRequestSummary> tasSterilizationRequests;
+    std::vector<savor::db::UiSavestateSummary> tasSavestates;
 
     int completedBattleGroups = 0;
     int battleGroupsWithIssues = 0;
@@ -92,6 +98,7 @@ struct ProvenanceRow {
     QString completed;
     QString outputs;
 };
+struct TasMovieRow { qint64 key=0; QString kind; qint64 refId=0; QString lineage; QString source; QString status; QString checkpoint; QString workflow; QString actionUnit; QString actionInput; };
 
 struct AnalysisRefreshData {
     QString outcomesValue;
@@ -105,6 +112,7 @@ struct AnalysisRefreshData {
     std::vector<OverviewRow> overviewRows;
     std::vector<OutcomeRow> outcomeRows;
     std::vector<ProvenanceRow> workflowRows;
+    std::vector<TasMovieRow> tasMovieRows;
 };
 
 QString qs(const std::string& value)
@@ -271,6 +279,11 @@ AnalysisSnapshot loadSnapshot()
         seedQuery.limit = 50;
         const auto seedPage = uiRead->ListSeedProbeRuns(seedQuery);
         snapshot.seedProbes = seedPage.items;
+        snapshot.tasRoots = uiRead->ListTasMovieRoots(200);
+        snapshot.tasTrees = uiRead->ListTasMovieTrees(200);
+        snapshot.tasValidationRequests = uiRead->ListTasMovieValidationRequests(300);
+        snapshot.tasSterilizationRequests = uiRead->ListTasMovieSterilizationRequests(300);
+        snapshot.tasSavestates = uiRead->ListSavestates("MOVIE_PAIRED",true,"",200);
         for (const auto& run : snapshot.seedProbes) {
             if (isSeedProbeComplete(run)) {
                 ++snapshot.completedSeedProbes;
@@ -359,6 +372,7 @@ bool provenanceRowsEqual(const ProvenanceRow& lhs, const ProvenanceRow& rhs)
         && lhs.completed == rhs.completed
         && lhs.outputs == rhs.outputs;
 }
+bool tasMovieRowsEqual(const TasMovieRow& a,const TasMovieRow& b){return a.key==b.key&&a.kind==b.kind&&a.refId==b.refId&&a.lineage==b.lineage&&a.source==b.source&&a.status==b.status&&a.checkpoint==b.checkpoint&&a.workflow==b.workflow&&a.actionUnit==b.actionUnit&&a.actionInput==b.actionInput;}
 
 void populateOverviewRow(QTableWidget* table, int row, const OverviewRow& item)
 {
@@ -389,6 +403,7 @@ void populateProvenanceRow(QTableWidget* table, int row, const ProvenanceRow& it
     table->setItem(row, 5, createTableItem(item.completed));
     table->setItem(row, 6, createTableItem(item.outputs));
 }
+void populateTasMovieRow(QTableWidget* table,int row,const TasMovieRow& item){auto* kind=createTableItem(item.kind);kind->setData(Qt::UserRole,item.actionUnit);kind->setData(Qt::UserRole+1,item.actionInput);kind->setData(Qt::UserRole+2,item.refId);table->setItem(row,0,kind);table->setItem(row,1,createTableItem(QStringLiteral("#%1").arg(item.refId)));table->setItem(row,2,createTableItem(item.lineage));table->setItem(row,3,createTableItem(item.source));table->setItem(row,4,createTableItem(item.status));table->setItem(row,5,createTableItem(item.checkpoint));table->setItem(row,6,createTableItem(item.workflow));}
 
 AnalysisRefreshData prepareAnalysisData(const AnalysisSnapshot& snapshot)
 {
@@ -492,6 +507,12 @@ AnalysisRefreshData prepareAnalysisData(const AnalysisSnapshot& snapshot)
             });
         }
     }
+    for(const auto& artifact:snapshot.artifacts)if(artifact.artifact_kind=="DTM")data.tasMovieRows.push_back({artifact.artifact_id,QStringLiteral("DTM"),artifact.artifact_id,QStringLiteral("--"),QStringLiteral("%1 · %2").arg(qs(artifact.filename),qs(artifact.sha256).left(12)),QStringLiteral("COMPLETE"),QStringLiteral("%1 bytes").arg(artifact.size_bytes),QStringLiteral("--"),QStringLiteral("tas_movie_establish_root_cursor"),QStringLiteral("root_dtm")});
+    for(const auto& root:snapshot.tasRoots)data.tasMovieRows.push_back({1000000000LL+root.tas_movie_root_id,QStringLiteral("Root"),root.tas_movie_root_id,QStringLiteral("RTC %1").arg(root.rtc_value),QStringLiteral("source DTM #%1 / effective #%2 / itinerary #%3").arg(root.source_dtm_artifact_id).arg(root.dtm_artifact_id).arg(root.itinerary_artifact_id),QStringLiteral("ESTABLISHED"),QStringLiteral("state #%1 · PC 0x%2").arg(root.checkpoint_savestate_id).arg(root.required_final_breakpoint_pc,8,16,QChar('0')),QStringLiteral("%1 #%2").arg(qs(root.source_context_kind)).arg(root.source_context_id),QString(),QString()});
+    for(const auto& tree:snapshot.tasTrees)data.tasMovieRows.push_back({2000000000LL+tree.tas_movie_tree_id,QStringLiteral("Recorded TAS Branch"),tree.tas_movie_tree_id,QStringLiteral("root #%1 / parent %2").arg(tree.tas_movie_root_id).arg(tree.parent_tas_movie_tree_id?QString::number(*tree.parent_tas_movie_tree_id):QStringLiteral("--")),QStringLiteral("DTM #%1 / itinerary #%2").arg(tree.dtm_artifact_id).arg(tree.itinerary_artifact_id),QStringLiteral("AVAILABLE"),QStringLiteral("state #%1 · PC 0x%2").arg(tree.checkpoint_savestate_id).arg(tree.required_final_breakpoint_pc,8,16,QChar('0')),QStringLiteral("%1 #%2").arg(qs(tree.source_context_kind)).arg(tree.source_context_id),QStringLiteral("tas_movie_validate_tree"),QStringLiteral("tas_movie_tree")});
+    for(const auto& state:snapshot.tasSavestates)data.tasMovieRows.push_back({2500000000LL+state.savestate_id,QStringLiteral("Paired checkpoint"),state.savestate_id,QStringLiteral("DTM #%1").arg(state.dtm_artifact_id.value_or(0)),QStringLiteral("%1 · %2").arg(qs(state.filename),qs(state.sha256).left(12)),qs(state.playback_state),QStringLiteral("%1 bytes").arg(state.size_bytes),QStringLiteral("--"),QStringLiteral("tas_movie_checkpoint_sterilize"),QStringLiteral("paired_checkpoint_savestate")});
+    for(const auto& request:snapshot.tasValidationRequests)data.tasMovieRows.push_back({3000000000LL+request.validation_request_id,QStringLiteral("Validation"),request.latest_validation_attempt_id.value_or(request.validation_request_id),QStringLiteral("%1 #%2").arg(qs(request.source_kind)).arg(request.source_ref_id),QStringLiteral("DTM #%1 · %2").arg(request.source_dtm_artifact_id).arg(qs(request.effective_dtm_sha256).left(12)),request.latest_outcome.empty()?QStringLiteral("REQUESTED"):qs(request.latest_outcome),QStringLiteral("PC 0x%1 · input %2 · root %3").arg(request.latest_actual_pc.value_or(request.required_final_breakpoint_pc),8,16,QChar('0')).arg(request.latest_actual_input_count?QString::number(*request.latest_actual_input_count):QStringLiteral("--")).arg(request.produced_tas_movie_root_id?QString::number(*request.produced_tas_movie_root_id):QStringLiteral("--")),QStringLiteral("workflow #%1 / step #%2").arg(request.workflow_instance_id).arg(request.workflow_step_id),request.latest_outcome=="ROOT_CURSOR_ESTABLISHED"?QStringLiteral("tas_movie_validate_root"):QString(),QStringLiteral("root_establishment")});
+    for(const auto& request:snapshot.tasSterilizationRequests)data.tasMovieRows.push_back({4000000000LL+request.sterilization_request_id,QStringLiteral("Sterilization"),request.sterilization_request_id,QStringLiteral("source state #%1").arg(request.source_savestate_id),QStringLiteral("SAV %1 / DTM %2").arg(qs(request.source_savestate_sha256).left(12),qs(request.source_dtm_sha256).left(12)),request.latest_sterilization_attempt_id?QStringLiteral("COMPLETED"):QStringLiteral("REQUESTED"),QStringLiteral("result state %1").arg(request.latest_produced_savestate_id?QString::number(*request.latest_produced_savestate_id):QStringLiteral("--")),QStringLiteral("workflow #%1 / step #%2").arg(request.workflow_instance_id).arg(request.workflow_step_id),QString(),QString()});
 
     return data;
 }
@@ -617,14 +638,17 @@ void AnalysisTab::build()
     auto* overviewButton = createSelectorButton(QStringLiteral("Overview"), selectorPanel);
     auto* explorerButton = createSelectorButton(QStringLiteral("Battle Runs"), selectorPanel);
     auto* workflowButton = createSelectorButton(QStringLiteral("Workflow Provenance"), selectorPanel);
+    auto* tasMoviesButton = createSelectorButton(QStringLiteral("TAS Movies"), selectorPanel);
     auto* futureButton = createSelectorButton(QStringLiteral("Future Analyses"), selectorPanel);
     selectorGroup_->addButton(overviewButton, OverviewPane);
     selectorGroup_->addButton(explorerButton, BattleRunsPane);
     selectorGroup_->addButton(workflowButton, WorkflowPane);
+    selectorGroup_->addButton(tasMoviesButton, TasMoviesPane);
     selectorGroup_->addButton(futureButton, FuturePane);
     selectorLayout->addWidget(overviewButton);
     selectorLayout->addWidget(explorerButton);
     selectorLayout->addWidget(workflowButton);
+    selectorLayout->addWidget(tasMoviesButton);
     selectorLayout->addWidget(futureButton);
     selectorLayout->addStretch();
     overviewButton->setChecked(true);
@@ -732,6 +756,10 @@ void AnalysisTab::build()
     workflowsLayout->addWidget(workflowsTable_, 1);
     paneStack_->addWidget(workflowsPanel);
 
+    auto* tasPanel=createSectionPanel(QStringLiteral("TAS Movies"),paneStack_);auto* tasLayout=qobject_cast<QVBoxLayout*>(tasPanel->layout());auto* tasSummary=createSummaryLabel(tasPanel);tasSummary->setText(QStringLiteral("Projected TAS roots, trees, validation attempts, paired checkpoints, and sterilization history."));tasLayout->addWidget(tasSummary);tasMoviesTable_=new QTableWidget(tasPanel);configureTable(tasMoviesTable_);tasMoviesTable_->setColumnCount(7);tasMoviesTable_->setHorizontalHeaderLabels({QStringLiteral("Kind"),QStringLiteral("ID"),QStringLiteral("Lineage"),QStringLiteral("Source / hashes"),QStringLiteral("Status"),QStringLiteral("Checkpoint"),QStringLiteral("Workflow")});tasMoviesTable_->horizontalHeader()->setSectionResizeMode(0,QHeaderView::ResizeToContents);tasMoviesTable_->horizontalHeader()->setSectionResizeMode(1,QHeaderView::ResizeToContents);tasMoviesTable_->horizontalHeader()->setSectionResizeMode(2,QHeaderView::ResizeToContents);tasMoviesTable_->horizontalHeader()->setSectionResizeMode(3,QHeaderView::Stretch);tasMoviesTable_->horizontalHeader()->setSectionResizeMode(4,QHeaderView::ResizeToContents);tasMoviesTable_->horizontalHeader()->setSectionResizeMode(5,QHeaderView::ResizeToContents);tasMoviesTable_->horizontalHeader()->setSectionResizeMode(6,QHeaderView::ResizeToContents);tasLayout->addWidget(tasMoviesTable_,1);
+    QObject::connect(tasMoviesTable_,&QTableWidget::cellDoubleClicked,tasMoviesTable_,[this](int row,int){const auto* item=tasMoviesTable_->item(row,0);if(item==nullptr)return;const auto unit=item->data(Qt::UserRole).toString();const auto input=item->data(Qt::UserRole+1).toString();const auto refId=item->data(Qt::UserRole+2).toLongLong();QString body=QStringLiteral("%1 %2\n%3\n%4\n%5").arg(tasMoviesTable_->item(row,0)->text(),tasMoviesTable_->item(row,1)->text(),tasMoviesTable_->item(row,2)->text(),tasMoviesTable_->item(row,3)->text(),tasMoviesTable_->item(row,5)->text());QVector<std::pair<QString,std::function<void()>>> actions;if(!unit.isEmpty()&&actions_.openWorkflowLauncher)actions.push_back({QStringLiteral("Open modular action"),[this,unit,input,refId](){actions_.openWorkflowLauncher(unit,input,refId);}});setContext({QStringLiteral("analysis"),QStringLiteral("tas_movie"),refId,item->text()},QStringLiteral("TAS Movie evidence"),body,actions,savorqt::gui::ContextDrawerMode::Expanded);});
+    paneStack_->addWidget(tasPanel);
+
     auto* futurePanel = createSectionPanel(QStringLiteral("Future Analyses"), paneStack_);
     futurePanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto* futureLayout = qobject_cast<QVBoxLayout*>(futurePanel->layout());
@@ -749,6 +777,7 @@ void AnalysisTab::build()
     auto* refreshPipeline = new savorqt::gui::AsyncRefreshPipeline<AnalysisRefreshRequest, AnalysisRefreshData>(this);
     auto overviewRows = std::make_shared<std::vector<OverviewRow>>();
     auto workflowRows = std::make_shared<std::vector<ProvenanceRow>>();
+    auto tasMovieRows = std::make_shared<std::vector<TasMovieRow>>();
     refreshPipeline->setRefreshIntervalMs(5000);
     refreshPipeline->setRequestBuilder([](savorqt::gui::RefreshReason) {
         return AnalysisRefreshRequest{};
@@ -780,6 +809,7 @@ void AnalysisTab::build()
             [](const ProvenanceRow& row) { return row.workflowId; },
             provenanceRowsEqual,
             populateProvenanceRow);
+        savorqt::gui::ApplyTableRowsByKey(tasMoviesTable_,*tasMovieRows,data.tasMovieRows,[](const TasMovieRow& row){return row.key;},tasMovieRowsEqual,populateTasMovieRow);
 
         setCurrentPane(currentPaneIndex_);
     });

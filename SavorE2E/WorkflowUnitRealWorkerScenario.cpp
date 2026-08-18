@@ -25,7 +25,7 @@
 #include "Execution/Workflow/WorkflowUnitActivationFactory.h"
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "ScenarioAssessment.h"
-#include "SplitCoordinatorRuntime.h"
+#include "Execution/CoordinatorRuntime.h"
 #include "Utils/Hash.h"
 #include "WorkerStartupBarrier.h"
 
@@ -131,6 +131,7 @@ bool SeedWorkflow(
     for (const auto& output : contract.unit.possible_outputs) {
         outputs.push_back({.output_key = output.key,
                            .data_kind = output.data_kind,
+                           .ref_kind = output.ref_kind,
                            .display_name = output.display_name});
     }
 
@@ -150,6 +151,7 @@ bool SeedWorkflow(
                 .inputs = {{
                     .input_key = contract.input.key,
                     .data_kind = contract.input.data_kind,
+                    .ref_kind = contract.input.ref_kind,
                     .display_name = contract.input.display_name,
                     .required = true,
                 }},
@@ -181,7 +183,6 @@ bool SeedWorkflow(
     savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
     command.workflow_kind = "workflow_graph";
     command.root_scope_kind = "manual";
-    command.root_scope_id = *options.source_ref_id;
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "savor-e2e";
     command.created_at_utc = now.time_since_epoch().count();
@@ -232,6 +233,11 @@ bool ValidateStaticGraphAndTerminalEvidence(
         db_service->ExecutionDb() == nullptr ||
         !graph.instance.workflow_graph_revision_id) {
         return Fail("workflow_unit graph evidence is unavailable", error_out);
+    }
+    if (graph.instance.root_scope_kind != "manual" ||
+        graph.instance.root_scope_id.has_value()) {
+        return Fail("workflow_unit graph does not use the canonical manual root scope",
+                    error_out);
     }
     const auto authored = db_service->AuthoringDb()->GetWorkflowGraphRevision(
         *graph.instance.workflow_graph_revision_id);
@@ -472,18 +478,24 @@ bool RunWorkflowUnitRealWorkerScenario(
         std::lock_guard lock(output_mutex);
         std::cout << line << '\n';
     };
-    SplitCoordinatorRuntime coordinators;
+    savor::runner::parallel::savordb::CoordinatorRuntime coordinators;
     ArmInitialWorkerPoolBarrier(
         options.wait_for_workers_ready,
         [&](bool paused) { coordinators.SetExecutionPaused(paused); },
         event_sink);
+    savor::runner::parallel::savordb::CoordinatorRuntimeConfig
+        coordinator_config{
+            .worker = std::move(worker_config),
+            .poll_interval = std::chrono::milliseconds(
+                std::max<std::int64_t>(1, options.poll_ms)),
+            .state_compatibility = std::move(compatibility),
+            .initially_paused = options.wait_for_workers_ready,
+            .object_store_root = workspace_root / "object_store",
+            .event_line_callback = event_sink,
+        };
     if (!coordinators.Start(
             db_service->ExecutionDb(), db_service->AuthoringDb(),
-            &program_registry, std::move(worker_config),
-            workspace_root / "object_store",
-            std::chrono::milliseconds(
-                std::max<std::int64_t>(1, options.poll_ms)),
-            std::move(compatibility), event_sink, &error)) {
+            &program_registry, std::move(coordinator_config), &error)) {
         return Fail("workflow_unit coordinator startup failed: " + error,
                     error_out);
     }

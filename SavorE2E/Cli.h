@@ -102,9 +102,10 @@ struct TasMovieRtcRange {
 enum class E2eScenarioKind {
     SeedProbe,
     Battle,
-    TasMovie,
-    TasMovieWithValidation,
+    TasMovieEstablish,
+    TasMovieValidation,
     TasMovieSeedProbe,
+    TasMovieSterile,
     WorkflowUnit,
 };
 

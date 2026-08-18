@@ -443,7 +443,7 @@ frontiers remain workflow concerns even when their already-ready scalar invocati
 | Teleport and settle | `soa.navigation` actions through `ExecutionEngine` | Survey, collision search |
 | Bounded interaction and input | `InputArbiter` plus game actions | Doors, replay, cutscenes, overworld |
 | Typed runtime observations | Game capability packs and capture/telemetry services | All designs |
-| Predicate/check composition | Module-building library lowering to IR, observation actions, scoped router qualifications, and `ConditionObservation` emissions | Survey, replay, collision search, cutscenes, and overworld |
+| Predicate Group composition | Module-building library lowering exact Execution Packages to IR, observation actions, scoped router qualifications, and `ConditionObservation` emissions | Survey, replay, collision search, cutscenes, and overworld |
 | Savestate load/save and epochs | `SavestateService` | Replay, cutscenes, overworld; Survey baseline reload only |
 | Route/control playback | Navigation subprograms/actions | Replay and validation |
 | Frontier scheduling | Separate future workflow/frontier project | Collision search and overworld DFS |
@@ -466,7 +466,7 @@ representation and interfaces unchanged.
 - Wrong door TBLID, missing open witness, failure to cross, or failed settle yields no successor anchor.
 - Replay divergence is a typed domain outcome; transport/emulator failure is an infrastructure outcome.
 - A collision probe with no anomaly is a successful negative observation.
-- Predicate policy decides whether `Unsatisfied` records progress, changes a domain outcome, branches, or
+- Predicate Group member reaction decides whether `Failed` records progress, changes a domain outcome, branches, or
   accumulates evidence; observation failure is not rewritten as false.
 - An unsupported cutscene tactic is a typed result that allows workflow fallback; it is not permission to
   bypass session ownership.

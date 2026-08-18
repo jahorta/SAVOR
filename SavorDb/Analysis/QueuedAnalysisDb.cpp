@@ -452,14 +452,14 @@ bool QueuedAnalysisDb::EnsureBattleStart(
         error_out);
 }
 
-bool QueuedAnalysisDb::BindBattlePredicateBundle(
-    const BindBattlePredicateBundleCommand& command,
+bool QueuedAnalysisDb::BindBattlePredicateExecutionPackage(
+    const BindBattlePredicateExecutionPackageCommand& command,
     std::int64_t* binding_id_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
         [this, command, binding_id_out, error_out]() {
             return inner_ != nullptr
-                ? inner_->BindBattlePredicateBundle(
+                ? inner_->BindBattlePredicateExecutionPackage(
                     command, binding_id_out, error_out)
                 : false;
         },
@@ -467,13 +467,13 @@ bool QueuedAnalysisDb::BindBattlePredicateBundle(
         error_out);
 }
 
-std::optional<BattlePredicateBundleBindingSnapshot>
-QueuedAnalysisDb::GetBattlePredicateBundleBindingForWave(
+std::optional<BattlePredicateExecutionPackageSnapshot>
+QueuedAnalysisDb::GetBattlePredicateExecutionPackageForWave(
     std::int64_t wave_id) const {
-    return ExecuteRead<std::optional<BattlePredicateBundleBindingSnapshot>>(
+    return ExecuteRead<std::optional<BattlePredicateExecutionPackageSnapshot>>(
         [this, wave_id]() {
             return inner_ != nullptr
-                ? inner_->GetBattlePredicateBundleBindingForWave(wave_id)
+                ? inner_->GetBattlePredicateExecutionPackageForWave(wave_id)
                 : std::nullopt;
         },
         std::nullopt);

@@ -6,13 +6,12 @@
 
 #include "Common/DbService.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
-#include "Execution/ProgramDB/ProgramResultProcessor.h"
-#include "Execution/ProgramDB/WorkerResultBlobCleanupService.h"
-#include "Execution/WorkerResultBlobStore.h"
-#include "Execution/Workflow/WorkflowCoordinatorService.h"
 
 namespace savorqt {
 
+// Owns durable database access and the immutable production descriptor
+// registry only. Workflow materialization, result processing, workers, and job
+// dispatch are authorized exclusively by CoordinatorRuntime.
 class SavorDbRuntime final {
 public:
     static SavorDbRuntime& instance();
@@ -35,32 +34,14 @@ public:
     savor::db::execution::workflow::IWorkflowOrchestrationQueryService* workflowQueryService();
     savor::db::execution::workflow::IWorkflowOrchestrationCommandService* workflowCommandService();
     savor::db::execution::programdb::ProgramKindRegistry* programKindRegistry();
-    savor::db::execution::WorkerResultBlobStore* workerResultBlobStore();
-    savor::db::execution::workflow::WorkflowCoordinatorTelemetry workflowCoordinatorTelemetry() const;
-    savor::db::execution::programdb::ProgramResultProcessorTelemetry
-        programResultProcessorTelemetry() const;
-    bool workflowCoordinatorRunning() const;
-    bool programResultProcessorRunning() const;
-    bool publishTerminalCommit(
-        const savor::db::execution::workflow::
-            TerminalWorkflowStepNotification& notification);
 
 private:
     SavorDbRuntime() = default;
 
     bool buildProgramRegistry(std::string* error_out);
-    static savor::db::execution::workflow::WorkflowCoordinatorConfig buildWorkflowConfig();
 
     std::unique_ptr<savor::db::core::DBService> service_;
     savor::db::execution::programdb::ProgramKindRegistry program_registry_;
-    std::unique_ptr<savor::db::execution::WorkerResultBlobStore>
-        worker_result_blob_store_;
-    std::unique_ptr<savor::db::execution::workflow::WorkflowCoordinatorService> workflow_coordinator_;
-    std::unique_ptr<savor::db::execution::programdb::ProgramResultProcessor>
-        program_result_processor_;
-    std::unique_ptr<
-        savor::db::execution::programdb::WorkerResultBlobCleanupService>
-        worker_result_blob_cleanup_;
     std::filesystem::path root_;
 };
 

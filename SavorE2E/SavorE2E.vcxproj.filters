@@ -44,9 +44,6 @@
     <ClCompile Include="MultiLineProgressRenderer.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
-    <ClCompile Include="SplitCoordinatorRuntime.cpp">
-      <Filter>Helpers</Filter>
-    </ClCompile>
     <ClCompile Include="WorkerStartupBarrier.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
@@ -80,9 +77,6 @@
       <Filter>Scenarios</Filter>
     </ClInclude>
     <ClInclude Include="MultiLineProgressRenderer.h">
-      <Filter>Helpers</Filter>
-    </ClInclude>
-    <ClInclude Include="SplitCoordinatorRuntime.h">
       <Filter>Helpers</Filter>
     </ClInclude>
     <ClInclude Include="WorkerStartupBarrier.h">

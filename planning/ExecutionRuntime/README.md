@@ -242,10 +242,11 @@ The names have precise meanings:
 - **Action** is a bounded registered capability transaction. It may suspend and later complete.
 - **Reducer** is a pure native state transition that requests effects through the executor. It owns no
   Dolphin, input, stop points, threads, or event loops.
-- **Predicate composition library** is a reusable builder/frontend facility. A pure typed predicate and
-  each explicit use of it lower before verification into ordinary IR, registered actions, scoped router
-  subscriptions, branches or returns, and declared emissions. The use site decides whether false records
-  progress, contributes to a result, branches, or returns a clean domain rejection.
+- **Predicate composition library** resolves authored Predicate Definitions through exact Execution
+  Bindings and ordered Predicate Group members. The resulting immutable Predicate Execution Package
+  lowers before verification into ordinary IR, registered actions, scoped router subscriptions,
+  branches or returns, and declared emissions. Group-member policy decides whether false records
+  progress, contributes to a result, or returns a clean domain rejection.
 - **Semantic-observation composition** is a reusable builder/frontend facility for naming logical game
   points, awaiting them, and acquiring typed evidence there. Semantic points, awaits, address
   expressions, observations, and use policies lower before verification into ordinary IR, exact imports,
@@ -311,9 +312,11 @@ The names have precise meanings:
 16. SavorDb migrations and physical schema remain separate work. Public authoring timing fields and all
     behavioral reads are removed now; only private neutral writes satisfy the six obsolete `NOT NULL`
     columns until the database refactor deletes them.
-17. Predicate composition introduces no predicate executor, runtime service, domain opcode, hidden effect
-    channel, or persistence model. Failure to obtain required evidence remains distinct from a predicate
-    evaluating false, and all generated effects and emissions remain visible to verification and tracing.
+17. Predicate composition introduces no predicate executor, runtime service, domain opcode, or hidden
+    effect channel. Definitions, Execution Bindings, and Groups have explicit immutable authoring
+    persistence, while the generated Execution Package remains ordinary verified module input. Failure
+    to obtain required evidence remains distinct from a predicate evaluating false, and all generated
+    effects and emissions remain visible to verification and tracing.
 18. Semantic-observation and interaction composition introduce no peer runtime, controller, scheduler,
     query VM, domain opcode family, hidden effect channel, filesystem access, database access, or
     persistence model. Their complete lowering is visible to verification, hashing, tracing, and unwind.

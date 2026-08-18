@@ -58,6 +58,7 @@ struct BattlePlanActionPresetDraft {
 
 struct BattlePlanTurnDraft {
     int turn_index = 0;
+    std::optional<std::int64_t> predicate_group_revision_id;
     std::vector<BattlePlanActionDraft> actions;
 };
 
@@ -65,27 +66,6 @@ struct BattlePlanDraft {
     std::string name;
     std::string fingerprint;
     std::vector<BattlePlanTurnDraft> turns;
-};
-
-struct BattleRunSpecDraft {
-    std::string name;
-    int priority = 0;
-    bool progress_enable = true;
-    bool use_single_turn_runner = false;
-    bool auto_wave_trigger_enable = false;
-};
-
-struct ExplorerSettingsDraft {
-    std::string name;
-    std::string description;
-    std::optional<std::int64_t> default_plan_id;
-};
-
-struct BattleChainSpecDraft {
-    std::string name;
-    std::string description;
-    std::int64_t battle_run_spec_id = 0;
-    std::int64_t explorer_settings_id = 0;
 };
 
 struct WorkflowGraphDraft {
@@ -102,6 +82,197 @@ struct WorkflowGraphDraft {
 
 class SavorDbAuthoringService {
 public:
+    static ServiceResult<savor::db::PredicateRevisionPageV2<savor::db::PredicateGroupRevisionSummary>>
+    ListPredicateGroupRevisions(
+        std::optional<std::string> revision_state = std::string("PUBLISHED"),
+        std::string search_text = {},
+        std::optional<std::int64_t> before_revision_id = std::nullopt,
+        int limit = 100) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<savor::db::PredicateRevisionPageV2<savor::db::PredicateGroupRevisionSummary>>(
+                kSavorDbRuntimeUnavailableMessage);
+        }
+        return ServiceResult<savor::db::PredicateRevisionPageV2<savor::db::PredicateGroupRevisionSummary>>::Ok(
+            db->ListPredicateGroupRevisions({
+                .revision_state = std::move(revision_state),
+                .search_text = std::move(search_text),
+                .before_revision_id = before_revision_id,
+                .limit = limit,
+            }));
+    }
+
+    static ServiceResult<savor::db::PredicateGroupRevisionSnapshot>
+    GetPredicateGroupRevision(std::int64_t revision_id) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) return Unavailable<savor::db::PredicateGroupRevisionSnapshot>(kSavorDbRuntimeUnavailableMessage);
+        const auto value = db->GetPredicateGroupRevision(revision_id);
+        if (!value) return NotFound<savor::db::PredicateGroupRevisionSnapshot>("predicate group revision not found");
+        return ServiceResult<savor::db::PredicateGroupRevisionSnapshot>::Ok(*value);
+    }
+
+    static ServiceResult<savor::runtime::predicates::PredicateAuthoringCatalogV2>
+    GetPredicateAuthoringCatalog() {
+        return ServiceResult<savor::runtime::predicates::PredicateAuthoringCatalogV2>::Ok(
+            savor::runtime::predicates::BattlePredicateAuthoringCatalogV2());
+    }
+
+    static ServiceResult<savor::db::PredicateRevisionPageV2<savor::db::PredicateDefinitionRevisionV2Summary>>
+    ListPredicateDefinitionRevisions(
+        std::optional<std::string> revision_state = std::nullopt,
+        std::string search_text = {}, int limit = 100) {
+        auto* db = AuthoringDb();
+        if (!db) return Unavailable<savor::db::PredicateRevisionPageV2<savor::db::PredicateDefinitionRevisionV2Summary>>(kSavorDbRuntimeUnavailableMessage);
+        return ServiceResult<savor::db::PredicateRevisionPageV2<savor::db::PredicateDefinitionRevisionV2Summary>>::Ok(
+            db->ListPredicateDefinitionRevisionsV2({
+                .revision_state = std::move(revision_state),
+                .search_text = std::move(search_text),
+                .limit = limit,
+            }));
+    }
+
+    static ServiceResult<savor::db::PredicateRevisionPageV2<savor::db::PredicateExecutionBindingRevisionSummary>>
+    ListPredicateExecutionBindingRevisions(
+        std::optional<std::string> revision_state = std::nullopt,
+        std::string search_text = {}, int limit = 100) {
+        auto* db = AuthoringDb();
+        if (!db) return Unavailable<savor::db::PredicateRevisionPageV2<savor::db::PredicateExecutionBindingRevisionSummary>>(kSavorDbRuntimeUnavailableMessage);
+        return ServiceResult<savor::db::PredicateRevisionPageV2<savor::db::PredicateExecutionBindingRevisionSummary>>::Ok(
+            db->ListPredicateExecutionBindingRevisions({
+                .revision_state = std::move(revision_state),
+                .search_text = std::move(search_text),
+                .limit = limit,
+            }));
+    }
+
+    static ServiceResult<savor::db::PredicateDefinitionRevisionV2Snapshot>
+    GetPredicateDefinitionRevision(std::int64_t revision_id) {
+        auto* db = AuthoringDb();
+        if (!db) return Unavailable<savor::db::PredicateDefinitionRevisionV2Snapshot>(kSavorDbRuntimeUnavailableMessage);
+        const auto value = db->GetPredicateDefinitionRevisionV2(revision_id);
+        if (!value) return NotFound<savor::db::PredicateDefinitionRevisionV2Snapshot>("predicate definition revision not found");
+        return ServiceResult<savor::db::PredicateDefinitionRevisionV2Snapshot>::Ok(*value);
+    }
+
+    static ServiceResult<savor::db::PredicateExecutionBindingRevisionSnapshot>
+    GetPredicateExecutionBindingRevision(std::int64_t revision_id) {
+        auto* db = AuthoringDb();
+        if (!db) return Unavailable<savor::db::PredicateExecutionBindingRevisionSnapshot>(kSavorDbRuntimeUnavailableMessage);
+        const auto value = db->GetPredicateExecutionBindingRevision(revision_id);
+        if (!value) return NotFound<savor::db::PredicateExecutionBindingRevisionSnapshot>("predicate execution binding revision not found");
+        return ServiceResult<savor::db::PredicateExecutionBindingRevisionSnapshot>::Ok(*value);
+    }
+
+    static ServiceResult<savor::db::PredicateAuthoringRevisionReceipt> CreatePredicateDefinitionDraft(
+        const savor::db::CreatePredicateDefinitionDraftCommand& command) {
+        auto* db = AuthoringDb();
+        if (!db) return Unavailable<savor::db::PredicateAuthoringRevisionReceipt>(kSavorDbRuntimeUnavailableMessage);
+        savor::db::PredicateAuthoringRevisionReceipt receipt{}; std::string error;
+        if (!db->CreatePredicateDefinitionDraft(command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
+        return ServiceResult<savor::db::PredicateAuthoringRevisionReceipt>::Ok(receipt);
+    }
+    static ServiceResult<savor::db::PredicateAuthoringRevisionReceipt> SavePredicateDefinitionDraft(
+        const savor::db::SavePredicateDefinitionDraftCommand& command) {
+        auto* db = AuthoringDb(); if (!db) return Unavailable<savor::db::PredicateAuthoringRevisionReceipt>(kSavorDbRuntimeUnavailableMessage);
+        savor::db::PredicateAuthoringRevisionReceipt receipt{}; std::string error;
+        if (!db->SavePredicateDefinitionDraft(command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
+        return ServiceResult<savor::db::PredicateAuthoringRevisionReceipt>::Ok(receipt);
+    }
+    static ServiceResult<savor::db::PredicateAuthoringRevisionReceipt> CreatePredicateExecutionBindingDraft(
+        const savor::db::CreatePredicateExecutionBindingDraftCommand& command) {
+        auto* db = AuthoringDb(); if (!db) return Unavailable<savor::db::PredicateAuthoringRevisionReceipt>(kSavorDbRuntimeUnavailableMessage);
+        savor::db::PredicateAuthoringRevisionReceipt receipt{}; std::string error;
+        if (!db->CreatePredicateExecutionBindingDraft(command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
+        return ServiceResult<savor::db::PredicateAuthoringRevisionReceipt>::Ok(receipt);
+    }
+    static ServiceResult<savor::db::PredicateAuthoringRevisionReceipt> SavePredicateExecutionBindingDraft(
+        const savor::db::SavePredicateExecutionBindingDraftCommand& command) {
+        auto* db = AuthoringDb();
+        if (!db) return Unavailable<savor::db::PredicateAuthoringRevisionReceipt>(kSavorDbRuntimeUnavailableMessage);
+        savor::db::PredicateAuthoringRevisionReceipt receipt{}; std::string error;
+        if (!db->SavePredicateExecutionBindingDraft(command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
+        return ServiceResult<savor::db::PredicateAuthoringRevisionReceipt>::Ok(receipt);
+    }
+    static ServiceResult<savor::db::PredicateAuthoringRevisionReceipt> CreatePredicateGroupDraft(
+        const savor::db::CreatePredicateGroupDraftCommand& command) {
+        auto* db = AuthoringDb(); if (!db) return Unavailable<savor::db::PredicateAuthoringRevisionReceipt>(kSavorDbRuntimeUnavailableMessage);
+        savor::db::PredicateAuthoringRevisionReceipt receipt{}; std::string error;
+        if (!db->CreatePredicateGroupDraft(command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
+        return ServiceResult<savor::db::PredicateAuthoringRevisionReceipt>::Ok(receipt);
+    }
+    static ServiceResult<savor::db::PredicateAuthoringRevisionReceipt> SavePredicateGroupDraft(
+        const savor::db::SavePredicateGroupDraftCommand& command) {
+        auto* db = AuthoringDb();
+        if (!db) return Unavailable<savor::db::PredicateAuthoringRevisionReceipt>(kSavorDbRuntimeUnavailableMessage);
+        savor::db::PredicateAuthoringRevisionReceipt receipt{}; std::string error;
+        if (!db->SavePredicateGroupDraft(command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
+        return ServiceResult<savor::db::PredicateAuthoringRevisionReceipt>::Ok(receipt);
+    }
+    static ServiceResult<savor::db::PredicateAuthoringRevisionReceipt> DuplicatePredicateDefinition(
+        const savor::db::DuplicatePredicateDefinitionCommand& command) {
+        auto* db = AuthoringDb(); if (!db) return Unavailable<savor::db::PredicateAuthoringRevisionReceipt>(kSavorDbRuntimeUnavailableMessage);
+        savor::db::PredicateAuthoringRevisionReceipt receipt{}; std::string error;
+        if (!db->DuplicatePredicateDefinition(command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
+        return ServiceResult<savor::db::PredicateAuthoringRevisionReceipt>::Ok(receipt);
+    }
+    static ServiceResult<savor::db::PredicateAuthoringRevisionReceipt> DuplicatePredicateExecutionBinding(
+        const savor::db::DuplicatePredicateExecutionBindingCommand& command) {
+        auto* db = AuthoringDb(); if (!db) return Unavailable<savor::db::PredicateAuthoringRevisionReceipt>(kSavorDbRuntimeUnavailableMessage);
+        savor::db::PredicateAuthoringRevisionReceipt receipt{}; std::string error;
+        if (!db->DuplicatePredicateExecutionBinding(command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
+        return ServiceResult<savor::db::PredicateAuthoringRevisionReceipt>::Ok(receipt);
+    }
+    static ServiceResult<savor::db::PredicateAuthoringRevisionReceipt> DuplicatePredicateGroup(
+        const savor::db::DuplicatePredicateGroupCommand& command) {
+        auto* db = AuthoringDb(); if (!db) return Unavailable<savor::db::PredicateAuthoringRevisionReceipt>(kSavorDbRuntimeUnavailableMessage);
+        savor::db::PredicateAuthoringRevisionReceipt receipt{}; std::string error;
+        if (!db->DuplicatePredicateGroup(command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
+        return ServiceResult<savor::db::PredicateAuthoringRevisionReceipt>::Ok(receipt);
+    }
+    static ServiceResult<bool> UpdatePredicateMetadata(
+        const savor::db::UpdatePredicateAuthoringMetadataCommand& command) {
+        auto* db = AuthoringDb(); if (!db) return Unavailable<bool>(kSavorDbRuntimeUnavailableMessage);
+        bool changed = false; std::string error;
+        if (!db->UpdatePredicateAuthoringMetadata(command, &changed, &error)) return Failed<bool>(error);
+        return ServiceResult<bool>::Ok(changed);
+    }
+
+    static ServiceResult<void> PublishPredicateDefinition(std::int64_t id) {
+        auto* db = AuthoringDb(); if (!db) return ServiceResult<void>::Err({ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage});
+        std::string error; if (!db->PublishPredicateDefinitionRevisionV2(id, savor::db::types::UtcNow(), nullptr, &error)) return ServiceResult<void>::Err({ServiceErrorKind::Failed, error});
+        return ServiceResult<void>::Ok();
+    }
+
+    static ServiceResult<void> PublishPredicateExecutionBinding(std::int64_t id) {
+        auto* db = AuthoringDb(); if (!db) return ServiceResult<void>::Err({ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage});
+        std::string error; if (!db->PublishPredicateExecutionBindingRevision(id, savor::db::types::UtcNow(), nullptr, &error)) return ServiceResult<void>::Err({ServiceErrorKind::Failed, error});
+        return ServiceResult<void>::Ok();
+    }
+
+    static ServiceResult<void> PublishPredicateGroup(std::int64_t id) {
+        auto* db = AuthoringDb(); if (!db) return ServiceResult<void>::Err({ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage});
+        std::string error; if (!db->PublishPredicateGroupRevision(id, savor::db::types::UtcNow(), nullptr, &error)) return ServiceResult<void>::Err({ServiceErrorKind::Failed, error});
+        return ServiceResult<void>::Ok();
+    }
+
+    static ServiceResult<void> AbandonPredicateDefinitionDraft(std::int64_t id) {
+        auto* db = AuthoringDb(); if (!db) return ServiceResult<void>::Err({ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage});
+        std::string error; if (!db->AbandonPredicateDefinitionDraftV2(id, &error)) return ServiceResult<void>::Err({ServiceErrorKind::Failed, error});
+        return ServiceResult<void>::Ok();
+    }
+
+    static ServiceResult<void> AbandonPredicateExecutionBindingDraft(std::int64_t id) {
+        auto* db = AuthoringDb(); if (!db) return ServiceResult<void>::Err({ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage});
+        std::string error; if (!db->AbandonPredicateExecutionBindingDraft(id, &error)) return ServiceResult<void>::Err({ServiceErrorKind::Failed, error});
+        return ServiceResult<void>::Ok();
+    }
+
+    static ServiceResult<void> AbandonPredicateGroupDraft(std::int64_t id) {
+        auto* db = AuthoringDb(); if (!db) return ServiceResult<void>::Err({ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage});
+        std::string error; if (!db->AbandonPredicateGroupDraft(id, &error)) return ServiceResult<void>::Err({ServiceErrorKind::Failed, error});
+        return ServiceResult<void>::Ok();
+    }
+
     static ServiceResult<std::int64_t> SaveSeedProbeSpec(const SeedProbeSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
@@ -198,53 +369,6 @@ public:
         return ServiceResult<std::vector<savor::db::TasSpecSnapshot>>::Ok(db->ListTasSpecs(max_count));
     }
 
-    static ServiceResult<std::int64_t> SaveBattleRunSpec(const BattleRunSpecDraft& draft) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
-        }
-        if (draft.name.empty()) {
-            return Invalid<std::int64_t>("battle run spec name is required");
-        }
-
-        const auto now = savor::db::types::UtcNow();
-        savor::db::SaveBattleRunSpecCommand command{};
-        command.name = draft.name;
-        command.priority = draft.priority;
-        command.progress_enable = draft.progress_enable;
-        command.use_single_turn_runner = draft.use_single_turn_runner;
-        command.auto_wave_trigger_enable = draft.auto_wave_trigger_enable;
-        command.created_at_utc = now;
-        command.correlation_id = NextEventId("Authoring.BattleRunSpecSaved");
-
-        std::int64_t id = 0;
-        std::string error;
-        if (!db->SaveBattleRunSpec(command, &id, &error)) {
-            return Failed<std::int64_t>(error);
-        }
-        return ServiceResult<std::int64_t>::Ok(id);
-    }
-
-    static ServiceResult<savor::db::BattleRunSpecSnapshot> GetBattleRunSpec(std::int64_t battle_run_spec_id) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<savor::db::BattleRunSpecSnapshot>(kSavorDbRuntimeUnavailableMessage);
-        }
-        const auto snapshot = db->GetBattleRunSpec(battle_run_spec_id);
-        if (!snapshot.has_value()) {
-            return NotFound<savor::db::BattleRunSpecSnapshot>("battle run spec not found");
-        }
-        return ServiceResult<savor::db::BattleRunSpecSnapshot>::Ok(*snapshot);
-    }
-
-    static ServiceResult<std::vector<savor::db::BattleRunSpecSnapshot>> ListBattleRunSpecs(int max_count = 100) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::BattleRunSpecSnapshot>>(kSavorDbRuntimeUnavailableMessage);
-        }
-        return ServiceResult<std::vector<savor::db::BattleRunSpecSnapshot>>::Ok(db->ListBattleRunSpecs(max_count));
-    }
-
     static ServiceResult<std::int64_t> SaveBattlePlan(const BattlePlanDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
@@ -271,6 +395,8 @@ public:
             savor::db::SaveBattlePlanTurnCommand turn_command{};
             turn_command.plan_id = plan_id;
             turn_command.turn_index = turn.turn_index;
+            turn_command.default_predicate_group_revision_id =
+                turn.predicate_group_revision_id;
             turn_command.created_at_utc = now;
             turn_command.correlation_id = plan.correlation_id;
             for (const auto& action : turn.actions) {
@@ -410,100 +536,6 @@ public:
             return Unavailable<std::vector<savor::db::BattlePlanSnapshot>>(kSavorDbRuntimeUnavailableMessage);
         }
         return ServiceResult<std::vector<savor::db::BattlePlanSnapshot>>::Ok(db->ListBattlePlans(max_count));
-    }
-
-    static ServiceResult<std::int64_t> SaveExplorerSettings(const ExplorerSettingsDraft& draft) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
-        }
-        if (draft.name.empty()) {
-            return Invalid<std::int64_t>("battle explorer settings name is required");
-        }
-
-        const auto now = savor::db::types::UtcNow();
-        savor::db::SaveExplorerSettingsCommand command{};
-        command.name = draft.name;
-        command.description = draft.description;
-        command.default_plan_id = draft.default_plan_id;
-        command.created_at_utc = now;
-        command.correlation_id = NextEventId("Authoring.ExplorerSettingsSaved");
-
-        std::int64_t id = 0;
-        std::string error;
-        if (!db->SaveExplorerSettings(command, &id, &error)) {
-            return Failed<std::int64_t>(error);
-        }
-        return ServiceResult<std::int64_t>::Ok(id);
-    }
-
-    static ServiceResult<savor::db::ExplorerSettingsSnapshot> GetExplorerSettings(std::int64_t explorer_settings_id) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<savor::db::ExplorerSettingsSnapshot>(kSavorDbRuntimeUnavailableMessage);
-        }
-        const auto snapshot = db->GetExplorerSettings(explorer_settings_id);
-        if (!snapshot.has_value()) {
-            return NotFound<savor::db::ExplorerSettingsSnapshot>("battle explorer settings not found");
-        }
-        return ServiceResult<savor::db::ExplorerSettingsSnapshot>::Ok(*snapshot);
-    }
-
-    static ServiceResult<std::vector<savor::db::ExplorerSettingsSnapshot>> ListExplorerSettings(int max_count = 100) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::ExplorerSettingsSnapshot>>(kSavorDbRuntimeUnavailableMessage);
-        }
-        return ServiceResult<std::vector<savor::db::ExplorerSettingsSnapshot>>::Ok(db->ListExplorerSettings(max_count));
-    }
-
-    static ServiceResult<std::int64_t> SaveBattleChainSpec(const BattleChainSpecDraft& draft) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
-        }
-        if (draft.name.empty()) {
-            return Invalid<std::int64_t>("battle chain spec name is required");
-        }
-        if (draft.battle_run_spec_id <= 0 || draft.explorer_settings_id <= 0) {
-            return Invalid<std::int64_t>("battle chain spec requires battle run spec and battle explorer settings");
-        }
-
-        const auto now = savor::db::types::UtcNow();
-        savor::db::SaveBattleChainSpecCommand command{};
-        command.name = draft.name;
-        command.description = draft.description;
-        command.battle_run_spec_id = draft.battle_run_spec_id;
-        command.explorer_settings_id = draft.explorer_settings_id;
-        command.created_at_utc = now;
-        command.correlation_id = NextEventId("Authoring.BattleChainSpecSaved");
-
-        std::int64_t id = 0;
-        std::string error;
-        if (!db->SaveBattleChainSpec(command, &id, &error)) {
-            return Failed<std::int64_t>(error);
-        }
-        return ServiceResult<std::int64_t>::Ok(id);
-    }
-
-    static ServiceResult<savor::db::BattleChainSpecSnapshot> GetBattleChainSpec(std::int64_t battle_chain_spec_id) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<savor::db::BattleChainSpecSnapshot>(kSavorDbRuntimeUnavailableMessage);
-        }
-        const auto snapshot = db->GetBattleChainSpec(battle_chain_spec_id);
-        if (!snapshot.has_value()) {
-            return NotFound<savor::db::BattleChainSpecSnapshot>("battle chain spec not found");
-        }
-        return ServiceResult<savor::db::BattleChainSpecSnapshot>::Ok(*snapshot);
-    }
-
-    static ServiceResult<std::vector<savor::db::BattleChainSpecSnapshot>> ListBattleChainSpecs(int max_count = 100) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::BattleChainSpecSnapshot>>(kSavorDbRuntimeUnavailableMessage);
-        }
-        return ServiceResult<std::vector<savor::db::BattleChainSpecSnapshot>>::Ok(db->ListBattleChainSpecs(max_count));
     }
 
     static ServiceResult<savor::db::SaveWorkflowGraphResult> SaveWorkflowGraph(const WorkflowGraphDraft& draft) {

@@ -29,7 +29,7 @@ SavorE2E \
   --poll-ms 100
 ```
 
-`--scenario` is optional and defaults to `seedprobe`. All three TAS Movie
+`--scenario` is optional and defaults to `seedprobe`. All four TAS Movie
 scenarios are intentionally excluded from `all` and must be requested alone.
 
 Optional workspace arguments include:
@@ -101,19 +101,26 @@ exit code.
 
 ## Current scenarios
 
-- `tasmovie`
+- `tasmovie_establish`
   - authors and runs one singleton root-cursor establishment workflow;
   - validates the durable shape and provenance of either
     `RootCursorEstablished` or `Invalid`;
   - verifies the one-entry `TMI1` artifact when establishment succeeds;
   - reports the observed terminal PC, input count, attempt, job, artifact, and
     progress evidence without judging the result.
-- `tasmovie_with_validation`
+- `tasmovie_validation`
   - performs root-cursor establishment and, only when established, creates a
     separate exact-RTC root-validation workflow;
   - validates the RTC-patched DTM hash and the durable shape of either `Valid`
     root/checkpoint/sidecar publication or `Invalid` quarantine;
   - reports validation as not activated when establishment is `Invalid`.
+- `tasmovie_sterile`
+  - composes one root-cursor establishment, one exact-RTC root-validation, and
+    one checkpoint-sterilization workflow;
+  - validates every realized phase, including the invariant outputs and exact
+    authored output-present guard edges;
+  - reports sterile checkpoint outcome and treats `Invalid` as a coherent domain
+    result that drive guard-skip expectations downstream.
 - `tasmovie_seedprobe`
   - authors one four-node graph whose guarded typed edges connect root-cursor
     establishment, root validation, checkpoint sterilization, and SeedProbe;
@@ -130,6 +137,11 @@ exit code.
 - `battle`
   - supports fresh approved TAS Movie validation/sterilization or an existing
     prepared sterilized checkpoint;
+  - authors one reusable Battle Plan and launches the public `battle` unit with
+    that exact `authoring.battle_plan` reference;
+  - explicitly selects
+    `continuation_mode=automatic_best_per_ending_rng` and preserves the CLI
+    fake-attack range as per-workflow execution policy;
   - validates the static SeedProbe/Battle Context join, exact Battle Context
     PCs and artifacts, BattleSet and realized wave lineage, predicate
     accounting, and outcome-dependent artifact contracts;
@@ -150,6 +162,7 @@ exit code.
     without requiring a particular domain trajectory;
   - does not invoke or synthesize the Battle Results Screen handler.
 
-All active workflow scenarios use the shared split coordinator composition.
+All active workflow scenarios use the production `CoordinatorRuntime`
+composition shared with SavorQt.
 Trajectory acceptance remains a human review activity; short synthetic tests
 cover only the invariant/reporting boundary.

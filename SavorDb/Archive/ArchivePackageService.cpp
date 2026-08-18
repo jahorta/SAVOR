@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "../Common/Migrations/MigrationRunner.h"
+#include "../State/ArtifactObjectStore.h"
 
 namespace savor::db::archive {
 
@@ -974,6 +975,18 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
     if (!wave_ids.empty() && IsTablePresent(analysis_db, "ab_turn_wave", nullptr)) {
         specs.push_back({"analysis_turn_waves", "SELECT * FROM ab_turn_wave WHERE wave_id IN (" + JoinIds(wave_ids) + ") ORDER BY wave_id ASC;"});
     }
+    if (!wave_ids.empty() && IsTablePresent(analysis_db, "ab_predicate_execution_package_v1", nullptr)) {
+        specs.push_back({
+            "analysis_predicate_execution_packages",
+            "SELECT predicate_execution_package_id,wave_id,predicate_group_revision_id,"
+            "predicate_group_sha256,execution_package_sha256,"
+            "hex(execution_package_blob) AS execution_package_blob_hex,"
+            "phase_program_kind,phase_program_version,phase_canonical_id,phase_revision,phase_sha256,"
+            "hook_contract_canonical_id,hook_contract_revision,hook_contract_sha256,created_at_utc "
+            "FROM ab_predicate_execution_package_v1 WHERE wave_id IN (" + JoinIds(wave_ids) + ") "
+            "ORDER BY predicate_execution_package_id ASC;"
+        });
+    }
     if (IsTablePresent(analysis_db, "ab_battle_context_probe", nullptr)) {
         specs.push_back({"analysis_battle_context_probes", "SELECT * FROM ab_battle_context_probe WHERE exec_job_id IN (" + job_id_list + ") ORDER BY context_probe_id ASC;"});
     }
@@ -1285,9 +1298,22 @@ struct SavestateArchiveRow {
     std::string sha256;
     std::int64_t size_bytes = 0;
     std::string filename;
+    std::string object_relpath;
     std::string file_ext;
     std::string artifact_kind;
 };
+
+std::optional<std::filesystem::path> ResolveArchiveArtifactPath(
+    const DbConfigPaths& config_paths,
+    const SavestateArchiveRow& row,
+    std::string* error_out) {
+    if (!row.object_relpath.empty()) {
+        return state::ResolveArtifactObjectPath(
+            config_paths.object_store_root, row.object_relpath, error_out);
+    }
+    return state::ResolveLegacyArtifactSource(
+        config_paths.object_store_root, row.filename, error_out);
+}
 
 std::vector<std::int64_t> CollectWorkflowSavestateIds(
     sqlite3* execution_db,
@@ -1785,7 +1811,7 @@ std::vector<SavestateArchiveRow> LoadSavestateRows(
     }
 
     const std::string query =
-        "SELECT s.savestate_id,s.artifact_id,a.sha256,a.size_bytes,a.filename,a.file_ext,a.artifact_kind,s.dtm_artifact_id "
+        "SELECT s.savestate_id,s.artifact_id,a.sha256,a.size_bytes,a.filename,a.object_relpath,a.file_ext,a.artifact_kind,s.dtm_artifact_id "
         "FROM state_savestate s JOIN state_artifact a ON a.artifact_id=s.artifact_id "
         "WHERE s.savestate_id IN (" + JoinIds(savestate_ids) + ") "
         "AND (UPPER(a.artifact_kind)='SAV' OR LOWER(a.file_ext)='.sav') "
@@ -1816,12 +1842,14 @@ std::vector<SavestateArchiveRow> LoadSavestateRows(
         row.size_bytes = sqlite3_column_int64(st.st, 3);
         const auto* filename = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 4));
         row.filename = filename == nullptr ? "" : filename;
-        const auto* file_ext = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 5));
+        const auto* object_relpath = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 5));
+        row.object_relpath = object_relpath == nullptr ? "" : object_relpath;
+        const auto* file_ext = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
         row.file_ext = file_ext == nullptr ? "" : file_ext;
-        const auto* artifact_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
+        const auto* artifact_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 7));
         row.artifact_kind = artifact_kind == nullptr ? "" : artifact_kind;
-        if (sqlite3_column_type(st.st, 7) != SQLITE_NULL)
-            row.dtm_artifact_id = sqlite3_column_int64(st.st, 7);
+        if (sqlite3_column_type(st.st, 8) != SQLITE_NULL)
+            row.dtm_artifact_id = sqlite3_column_int64(st.st, 8);
         rows.push_back(std::move(row));
     }
     return rows;
@@ -1834,7 +1862,7 @@ std::vector<SavestateArchiveRow> LoadStandaloneArtifactRows(
     std::vector<SavestateArchiveRow> rows;
     if (state_db == nullptr || artifact_ids.empty()) return rows;
     const std::string query =
-        "SELECT 0,a.artifact_id,a.sha256,a.size_bytes,a.filename,a.file_ext,a.artifact_kind "
+        "SELECT 0,a.artifact_id,a.sha256,a.size_bytes,a.filename,a.object_relpath,a.file_ext,a.artifact_kind "
         "FROM state_artifact a WHERE a.artifact_id IN (" + JoinIds(artifact_ids) + ") ORDER BY a.artifact_id ASC;";
     Statement st;
     if (sqlite3_prepare_v2(state_db, query.c_str(), -1, &st.st, nullptr) != SQLITE_OK) {
@@ -1849,9 +1877,11 @@ std::vector<SavestateArchiveRow> LoadStandaloneArtifactRows(
         row.size_bytes = sqlite3_column_int64(st.st, 3);
         const auto* filename = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 4));
         row.filename = filename == nullptr ? "" : filename;
-        const auto* file_ext = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 5));
+        const auto* object_relpath = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 5));
+        row.object_relpath = object_relpath == nullptr ? "" : object_relpath;
+        const auto* file_ext = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
         row.file_ext = file_ext == nullptr ? "" : file_ext;
-        const auto* artifact_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
+        const auto* artifact_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 7));
         row.artifact_kind = artifact_kind == nullptr ? "" : artifact_kind;
         rows.push_back(std::move(row));
     }
@@ -2908,7 +2938,14 @@ CreateArchivePackageResult SqliteArchivePackageService::CreateWorkflowPackage(
             emitted_sha.insert(row.sha256);
             ZipSourceEntry entry{};
             entry.entry_name = row.sha256 + SafeArchiveExtension(row.artifact_kind, row.file_ext);
-            entry.source_path = row.filename;
+            std::string locator_error;
+            const auto source_path = ResolveArchiveArtifactPath(
+                config_paths_, row, &locator_error);
+            if (!source_path) {
+                result.error = "invalid archived artifact locator: " + locator_error;
+                return result;
+            }
+            entry.source_path = *source_path;
             std::error_code ec;
             const auto bytes = std::filesystem::file_size(entry.source_path, ec);
             if (!ec) {
@@ -3456,7 +3493,14 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
         for (const auto& row : rows) {
             exclusive_artifact_ids.push_back(row.artifact_id);
             if (!row.filename.empty()) {
-                savestate_files_to_delete.emplace_back(row.filename);
+                const auto path = ResolveArchiveArtifactPath(
+                    config_paths_, row, &query_error);
+                if (!path) {
+                    result.error = query_error;
+                    if (error_out) *error_out = query_error;
+                    return result;
+                }
+                savestate_files_to_delete.emplace_back(*path);
             }
         }
         std::sort(exclusive_artifact_ids.begin(), exclusive_artifact_ids.end());
@@ -3473,7 +3517,16 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
         }
         for (const auto& row : rows) {
             exclusive_artifact_ids.push_back(row.artifact_id);
-            if (!row.filename.empty()) savestate_files_to_delete.emplace_back(row.filename);
+            if (!row.filename.empty()) {
+                const auto path = ResolveArchiveArtifactPath(
+                    config_paths_, row, &query_error);
+                if (!path) {
+                    result.error = query_error;
+                    if (error_out) *error_out = query_error;
+                    return result;
+                }
+                savestate_files_to_delete.emplace_back(*path);
+            }
         }
         std::sort(exclusive_artifact_ids.begin(), exclusive_artifact_ids.end());
         exclusive_artifact_ids.erase(
@@ -3544,6 +3597,12 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
         }
         if (!battle_set_ids.empty() && IsTablePresent(analysis_db_, "ab_turn_wave", nullptr)) {
             const auto battle_id_list = JoinIds(battle_set_ids);
+            if (IsTablePresent(analysis_db_, "ab_predicate_execution_package_v1", nullptr)) {
+                del("DELETE FROM ab_predicate_execution_package_v1 WHERE wave_id IN ("
+                    "SELECT wave_id FROM ab_turn_wave WHERE battle_set_id IN (" + battle_id_list + ") "
+                    "AND wave_id NOT IN (SELECT DISTINCT wave_id FROM ab_turn_job WHERE wave_id IS NOT NULL) "
+                    "AND wave_id NOT IN (SELECT DISTINCT wave_id FROM ab_battle_context_probe WHERE wave_id IS NOT NULL));");
+            }
             del("DELETE FROM ab_turn_wave WHERE battle_set_id IN (" + battle_id_list + ") "
                 "AND wave_id NOT IN (SELECT DISTINCT wave_id FROM ab_turn_job WHERE wave_id IS NOT NULL) "
                 "AND wave_id NOT IN (SELECT DISTINCT wave_id FROM ab_battle_context_probe WHERE wave_id IS NOT NULL);");
@@ -3818,10 +3877,17 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
         }
 
         for (const auto& file : savestate_files_to_delete) {
+            const auto relative_file = file.lexically_relative(
+                config_paths_.object_store_root);
+            const auto relative_locator =
+                state::IsValidArtifactObjectRelativePath(relative_file)
+                    ? relative_file.generic_string()
+                    : std::string{};
             Statement retained_artifact;
             if (sqlite3_prepare_v2(
                     state_db_,
-                    "SELECT COUNT(1) FROM state_artifact WHERE filename=?1;",
+                    "SELECT COUNT(1) FROM state_artifact "
+                    "WHERE object_relpath=?1 OR (object_relpath='' AND filename=?2);",
                     -1,
                     &retained_artifact.st,
                     nullptr) != SQLITE_OK) {
@@ -3830,8 +3896,13 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
                     + ": " + sqlite3_errmsg(state_db_));
                 continue;
             }
-            const auto filename = file.string();
-            sqlite3_bind_text(retained_artifact.st, 1, filename.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(
+                retained_artifact.st, 1, relative_locator.c_str(), -1,
+                SQLITE_TRANSIENT);
+            const auto legacy_filename = file.string();
+            sqlite3_bind_text(
+                retained_artifact.st, 2, legacy_filename.c_str(), -1,
+                SQLITE_TRANSIENT);
             if (sqlite3_step(retained_artifact.st) != SQLITE_ROW) {
                 result.blockers.push_back(
                     "failed checking retained artifact before file deletion " + file.string()

@@ -80,6 +80,52 @@ Completed, Failed, and Canceled records remain in the shared database. This is a
 a coordinator filter or persistence change. `battle_macro_probe` remains direct-worker-only and is not
 part of the production DB descriptor catalog.
 
+### Mandatory application coordinator composition
+
+`SavorWorkflow/Execution/CoordinatorRuntime` is the sole production
+application boundary for starting DB-backed coordination. It owns the workflow
+coordinator, blob cleanup, program-result processing, worker fleet, and job
+execution coordinator as one lifecycle. Startup installs both cancellation
+callbacks before result processing begins and opens job cancellation admission
+only after every component is ready. Pause and resume always affect both worker
+admission and job dispatch. Shutdown quiesces claims, stops workers, performs
+post-worker recovery, and then tears down execution, result processing, cleanup,
+and workflow coordination in the canonical order.
+
+`SavorDbRuntime` owns only database infrastructure and the immutable production
+program registry. Starting database access alone does not authorize workflow
+materialization or result processing. SavorQt and SavorE2E both construct the
+shared coordinator runtime explicitly; production applications must not compose
+or start its low-level services independently. Work authored while the runtime
+is stopped remains durable and is reconciled when the coordinator next starts.
+
+### Workflow-unit exposure and launch presentation
+
+Workflow-unit composition and standalone launching are separate catalog
+concerns. A public composable unit may appear in the graph editor independently
+of whether it is also advertised by the standalone launcher. The canonical
+`seed_probe` unit supports both forms: it accepts an exact savestate input and
+authored SeedProbe specification from either an upstream edge/graph binding or
+the standalone typed selectors.
+The retired `seed_probe_chain`, `battle_seed_probe`, `dungeon_seed_probe`, and
+`overworld_seed_probe` names are not current launch contracts.
+
+Standalone presentation families are a Qt/catalog projection over otherwise
+independent typed units. `tas_movie_validate_root` and
+`tas_movie_validate_tree` retain their distinct ports, arguments, program
+descriptors, and persistence, while both declare the
+`tas_movie_validation` presentation family. Qt renders one **TAS Movie
+Validation** launcher entry, records the exact selected member and typed source
+reference, and validates only that member's original workflow contract. No
+union reference kind or generic validation backend exists.
+
+Current workflow launches have no user-selected root scope. SavorQt always
+persists the historical storage field as `manual` with a null scope ID. The
+graph revision plus its exact node/port input bindings are the launch authority;
+a single scope ID cannot represent a modular multi-input graph. Historical
+Execution, UI-read, and archive rows retain their stored scope fields as
+evidence only.
+
 ## Core integration constraints
 
 ### Fixed persistence boundary
@@ -146,15 +192,23 @@ lease renewal, claim/start validation, and targeted terminal advancement. Determ
 transient credits, staging, ordered completions, and acknowledgements remain coordinator/worker
 bookkeeping rather than database-interface responsibilities.
 
-Existing battle predicate records and payload fields remain compatibility inputs. The program-kind
-handler translates them in memory into predicate-composition inputs; the shared library lowers each
-`Check` before module verification, and the resulting module hash covers the generated IR and exact
-dependencies. Completion adapters map typed condition summaries into the existing battle result
-representation.
+The public Battle workflow unit is `battle`, with one exact authored reference
+of kind `authoring.battle_plan`. Continuation is not an authored wrapper: each
+launch must supply the saved-contract Choice argument `continuation_mode` as
+either `manual_selection` or `automatic_best_per_ending_rng`. `battle.start`
+freezes that token, the exact plan ID/fingerprint, the fake-attack range, and
+workflow provenance into the BattleSet. Later coordination reads only the
+frozen BattleSet contract. Battle Chain Specs, Battle Run Specs, and
+Explorer/Plan Settings have no current workflow or authoring surface.
 
-Predicate composition is worker-program composition, not workflow composition. SavorDb does not store
-lowered predicate IR, router subscriptions, `ProgramInstance`, or `ConditionObservation` records as part
-of this refactor.
+Battle Plan turns reference only published Predicate Group revisions. Coordination resolves their exact
+Execution Bindings and Predicate Definitions into a canonical Predicate Execution Package; the shared
+library lowers every group member before module verification, and the resulting hashes cover generated
+IR and exact dependencies. There is no pre-cut predicate adapter or payload decoder.
+
+Predicate composition is worker-program composition, not workflow composition. SavorDb stores authored
+Definition, Execution Binding, and Group revisions plus exact package/result lineage; it does not store
+lowered predicate IR, router subscriptions, or `ProgramInstance` state.
 
 Existing macro plans/providers and address-program-bearing payloads are also compatibility inputs. The
 program-kind adapter translates them in memory into interaction and semantic-observation composition
@@ -380,7 +434,7 @@ claim priority, exact-key assembly, per-item attempts, and durable workflow beha
 |---|---|
 | SavorDb program-kind handler implementations | May translate existing records to `ProgramInvocation` and `ProgramResult` back to existing writes |
 | Predicate composition library | Pure module-building facility with no SavorDb, workflow, Dolphin, or session-service access |
-| Existing battle predicate storage and codecs | Unchanged; translated in memory at the program-kind boundary |
+| Predicate authoring and execution package | Definitions, Execution Bindings, and Groups resolve into one exact package; no pre-cut codec remains |
 | Semantic-observation and interaction composition libraries | Pure module-building facilities with no SavorDb, workflow, Dolphin, filesystem, or session-service access |
 | Existing macro and address-program representations | Unchanged; translated in memory at the program-kind boundary |
 | Existing `savor.capture.profile/1` inputs | Unchanged and consumed opaquely by passive `CaptureService`; no replacement capture language |
@@ -451,8 +505,8 @@ Migration must:
    and transition tests;
 7. keep only persisted payload/result codec fields that carry current semantic data, without linking
    those codecs to the legacy worker interpreter or recognizing obsolete timing keys as policy;
-8. translate current predicate records through the shared in-memory composition path without changing
-   their storage or interfaces;
+8. resolve current Predicate Groups, Execution Bindings, and Definitions through the shared composition
+   path and reject any missing or unpublished dependency before dispatch;
 9. translate current macro and address-program inputs through interaction and semantic-observation
    composition without changing their storage or interfaces;
 10. pass existing capture profiles to passive `CaptureService` unchanged and preserve their current

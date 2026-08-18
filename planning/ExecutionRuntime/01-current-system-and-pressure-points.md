@@ -27,7 +27,7 @@ The current DB-backed path is:
 3. `JobMaterializationService` resolves the descriptor by step kind, invokes
    `IRuntimeInitAdapter::BuildRuntimeInit`, materializes a `PSJob`, and derives savestate and bootstrap
    affinity strings.
-4. The split coordinator materializes each claimed job into an immutable workset with a complete exact
+4. The production coordinator runtime materializes each claimed job into an immutable workset with a complete exact
    artifact baseline. Worker placement carries no guest-state meaning.
 5. When any of those values differ, the coordinator sends `MSG_SET_PROGRAM`, `MSG_RUN_INIT_ONCE`, and
    `MSG_ACTIVATE_MAIN`. The worker constructs the fixed program locally from the numeric `ProgramKind`.
@@ -329,9 +329,9 @@ identity for source orientation; the authoritative implementation order is Slice
 
 | Family | Current worker identity | Current shape and outputs | DB/workflow exposure |
 |---|---|---|---|
-| SeedProbe | `PK_SeedProbe` (`1`) | Restores baseline, applies one input, reaches the pre-battle or field-return RNG checkpoint, reads RNG, optionally verifies and materializes a savestate, emits the seed | Registered as `seed_probe_chain`, `seedprobe.neutral`, `seedprobe.grid`, and `seedprobe.unique`; transition handlers create later chain steps |
+| SeedProbe | `PK_SeedProbe` (`1`) | Restores a paused baseline, classifies its authoritative entry PC, applies one input, reaches the one corresponding pre-battle or field-return RNG checkpoint, reads RNG, optionally verifies and materializes a savestate, and emits the seed | Registered as one composable and standalone-launchable `seed_probe` workflow unit backed by `seedprobe.run`; Survey/Search/Confirm remain descriptor-owned coordination beneath that unit |
 | TAS playback | `PK_TasMovie` (`2`) | Validates disc identity, starts DTM playback, runs to the configured stop, stops the movie, saves a savestate, and returns movie failure status | Registered as `tas_movie` and `tasmovie.play` |
-| Battle Context | `PK_BattleContextProbe` (`4`) | Restores a battle entry state, reaches `TurnInputs`, captures and emits `BattleContext` | Registered as `battle.context_probe` and the bootstrap step kind `battle_chain`; successful transitions spawn `battle.single_turn` children |
+| Battle Context | `PK_BattleContextProbe` (`4`) | Restores a battle entry state, reaches `TurnInputs`, captures and emits `BattleContext` | Registered as `battle.context_probe`; the public `battle` unit joins it with a confirmed SeedProbe run and one direct `authoring.battle_plan`, then `battle.start` spawns `battle.single_turn` children |
 | Battle Single Turn | `PK_BattleSingleTurnRunner` (`5`) | Optionally overrides starting RNG, reaches turn input, materializes an adaptive command macro, confirms input acceptance, evaluates predicates/watchpoints, records ending RNG/context, and conditionally saves successor state | Registered as `battle.single_turn`; transition code chooses survivors and appends subsequent turn-wave steps |
 | TAS input-stream detection | `PK_TasInputStreamDetector` (`6`) | Plays a DTM, samples input once per stepped frame until movie end, then stops and returns status | Compiled worker program and payload exist; no active `SavorDb` descriptor registration was found |
 | Battle Macro Probe | `PK_BattleMacroProbe` (`7`) | Materializes a battle macro plan, repeatedly executes adaptive macro segments, and performs an observation tail | Compiled worker program; exercised by direct-worker SavorE2E scenarios; no active `SavorDb` descriptor registration was found |
@@ -526,9 +526,10 @@ refactor removes them; only private insert shims write neutral `0,0` values requ
 `NOT NULL` constraints. Workset-specific coordinator scheduling, capacity bookkeeping, and startup may
 change. Other database interfaces may change only for ordered batch claim, exact-set lease renewal,
 claim/start validation, and targeted terminal reconciliation over existing rows and per-item semantics.
-Existing macro, predicate, address-program, and capture-profile representations are decoded, adapted,
-or consumed in memory rather than migrated. The refactor must not push workflow persistence into the
-worker or move emulator ownership into DB adapters.
+Existing macro, address-program, and capture-profile representations are decoded, adapted, or consumed
+in memory. Predicate authoring instead uses the hard-cut Definition, Execution Binding, and Group
+schema with no old-record adapter. The refactor must not push workflow persistence into the worker or
+move emulator ownership into DB adapters.
 
 ## Failure and cleanup behavior
 

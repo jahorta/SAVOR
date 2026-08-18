@@ -9,7 +9,7 @@
 #include "Common/DbService.h"
 #include "Runner/Runtime/IProgramRuntimePort.h"
 #include "ScenarioEntry.h"
-#include "SplitCoordinatorRuntime.h"
+#include "Execution/CoordinatorRuntime.h"
 
 namespace savor::e2e {
 
@@ -30,7 +30,7 @@ bool CheckSeedProbeInvariants(
     savor::db::IAnalysisDb* analysis_db,
     const std::optional<
         savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
-    const SplitCoordinatorTelemetry& telemetry,
+    const savor::runner::parallel::savordb::CoordinatorRuntimeTelemetry& telemetry,
     const std::vector<
         savor::runner::parallel::savordb::ReadyWorkerDispatchSnapshot>&
         ready_workers,

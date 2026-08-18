@@ -577,9 +577,10 @@ Each phase slice is vertical. It provides the native typed module, any action or
 that the phase proves necessary, the existing program-kind adapter input/result projection where
 applicable, and focused headless validation. Current PhaseScript builders, providers, opcodes, and tests
 are read as orientation and behavioral evidence only. They are not compiler inputs, executable
-references, or a required trace oracle. Existing stored macro, predicate, address-program, payload,
-result, and capture-profile representations are translated or consumed in memory without changing their
-storage contracts. Each existing program-kind adapter also declares whether its independently durable
+references, or a required trace oracle. Existing stored macro, address-program, payload, result, and
+capture-profile representations are translated or consumed in memory without changing their storage
+contracts. Predicate authoring uses only the current Definition, Execution Binding, Group, and
+Execution Package contracts. Each existing program-kind adapter also declares whether its independently durable
 jobs are eligible for multi-item dispatch and derives the exact `WorkerWorksetExecutionKey`; module
 inputs and results remain scalar regardless of the surrounding workset.
 
@@ -841,7 +842,7 @@ refactor. That project must not reopen the runtime ABI around the shape of the c
 | `PSContext` | Removed as the worker runtime ABI; a codec may remain behind SavorDb handlers where existing stored records require it |
 | Current stop/read/address-program/query/baseline helpers | Translate in memory through semantic-observation composition; generated behavior uses router subscriptions, execution actions, guest reads or registered coherent queries, ordinary values, and emissions |
 | `InputMacroRuntime` peer engine | Existing plans/providers translate in memory through interaction definitions, pure reducers, verifier-known segments, and common subprograms/actions |
-| `PhaseScriptVM` predicate table and evaluator | Existing records translate at the module-builder boundary; predicates consume semantic-observation results and generated execution uses ordinary IR, actions, branches, and emissions; the legacy evaluator is deleted with the VM |
+| `PhaseScriptVM` predicate table and evaluator | Deleted at the hard cut; current Groups resolve through exact Bindings and Definitions, and generated execution uses ordinary IR, actions, branches, and emissions |
 | `savor.capture.profile/1` | Representation and semantics remain unchanged behind passive `CaptureService`; router/engine retain wake and control authority |
 | SavorDb program-kind handler implementations | Adapt existing records to/from runtime contracts without changing their interfaces or storage |
 | Worker program transport | `Partial`/`CompleteExact` catalog negotiation plus one `SubmitWorkset` path for 1..N independently correlated invocation templates, host-only staging, globally ordered non-lossy per-item terminals, and exact acknowledgements |

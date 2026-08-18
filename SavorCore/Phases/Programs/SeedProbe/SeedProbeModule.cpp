@@ -36,6 +36,45 @@ constexpr std::string_view kPreBattlePointId =
 constexpr std::string_view kFieldReturnPointId =
     "soa.field.point.field_return.RandSeedCommitted";
 
+struct SeedProbeEntryRouteDefinition
+{
+    std::uint32_t entry_pc = 0;
+    SeedProbeEndpointV2 endpoint =
+        SeedProbeEndpointV2::AfterRandSeedSet;
+};
+
+constexpr std::array<SeedProbeEntryRouteDefinition, 3> kEntryRoutes{{
+    {PreBattleBeforeRandSeedSetPc,
+     SeedProbeEndpointV2::AfterRandSeedSet},
+    {FieldTransitionFastPreseedPc,
+     SeedProbeEndpointV2::RandSeedCommitted},
+    {FieldTransitionDeferredPreseedPc,
+     SeedProbeEndpointV2::RandSeedCommitted},
+}};
+
+consteval bool EntryRoutesAreValid()
+{
+    for (std::size_t left = 0; left < kEntryRoutes.size(); ++left)
+    {
+        if (kEntryRoutes[left].entry_pc == 0 ||
+            (kEntryRoutes[left].endpoint !=
+                 SeedProbeEndpointV2::AfterRandSeedSet &&
+             kEntryRoutes[left].endpoint !=
+                 SeedProbeEndpointV2::RandSeedCommitted))
+            return false;
+        for (std::size_t right = left + 1;
+             right < kEntryRoutes.size(); ++right)
+        {
+            if (kEntryRoutes[left].entry_pc ==
+                kEntryRoutes[right].entry_pc)
+                return false;
+        }
+    }
+    return true;
+}
+
+static_assert(EntryRoutesAreValid());
+
 constexpr std::string_view kEndpointSchemaContract =
     "enum SeedProbeEndpoint/2{"
     "AfterRandSeedSet=0,"
@@ -852,6 +891,18 @@ SeedProbeEndpointFromPc(std::uint32_t pc) noexcept
     return std::nullopt;
 }
 
+std::optional<SeedProbeEndpointV2>
+SeedProbeEndpointForEntryPc(std::uint32_t pc) noexcept
+{
+    const auto found = std::ranges::find(
+        kEntryRoutes,
+        pc,
+        &SeedProbeEntryRouteDefinition::entry_pc);
+    return found == kEntryRoutes.end()
+        ? std::nullopt
+        : std::optional<SeedProbeEndpointV2>(found->endpoint);
+}
+
 ProgramValueGraph EncodeSeedProbeRequestV2(
     const SeedProbeRequestV2& request)
 {
@@ -1199,6 +1250,7 @@ ProgramModule ConstructSeedProbeModuleV2()
 
     builder.AddTypeImport(frame_type);
     for (const CanonicalAction action : {
+             CanonicalAction::ExecutionObservePausedPc,
              CanonicalAction::InputAcquireLease,
              CanonicalAction::InputBeginDelivery,
              CanonicalAction::ExecutionContinueUntil,
@@ -1220,7 +1272,7 @@ ProgramModule ConstructSeedProbeModuleV2()
         result_type,
         TypeRef::Builtin(BuiltinType::Bool),
         true);
-    function.blocks.reserve(4);
+    function.blocks.reserve(16);
     auto& entry = builder.AddBlock(function);
 
     const ProgramValueId frame = Required(
@@ -1235,53 +1287,47 @@ ProgramModule ConstructSeedProbeModuleV2()
             std::nullopt,
             {}),
         "request frame projection");
-    const CapabilityPackIdentity field =
-        program::capabilities::FieldPackIdentity();
-    const std::array<composition::SemanticPointReference, 2> supported_points{{
-        {
-            .capability_pack = field,
-            .canonical_id = std::string(kPreBattlePointId),
-            .kind = program::SemanticPointKind::ProgramCounter,
-            .physical_pc = PreBattleAfterRandSeedSetPc,
-        },
-        {
-            .capability_pack = field,
-            .canonical_id = std::string(kFieldReturnPointId),
-            .kind = program::SemanticPointKind::ProgramCounter,
-            .physical_pc = FieldReturnRandSeedCommittedPc,
-        },
-    }};
-    const auto delivered = composition::LowerSynchronizedFrameDelivery(
+    const ProgramScopeId scope{};
+    const ProgramValueId observe_request = ConstructRequest(
         builder,
         function,
         entry,
-        frame,
-        supported_points,
-        "delivery");
-    if (!delivered)
-        throw std::logic_error(
-            "SeedProbe synchronized frame delivery could not be lowered");
-    const ProgramValueId stop = delivered->stop;
-    const ProgramValueId delivery = delivered->receipt;
-    const ProgramScopeId scope{};
-    const ProgramValueId stopped_pc = Required(
+        CanonicalAction::ExecutionObservePausedPc,
+        std::span<const ProgramValueId>{},
+        "entry/observe-paused-pc/request",
+        scope);
+    const ProgramValueId observed_entry = Required(
+        builder.AddInstruction(
+            function,
+            entry,
+            InstructionOpcode::AwaitAction,
+            CanonicalActionOutputType(
+                CanonicalAction::ExecutionObservePausedPc),
+            std::array{observe_request},
+            ActionTarget(CanonicalActionIdentity(
+                CanonicalAction::ExecutionObservePausedPc)),
+            "entry/observe-paused-pc",
+            std::nullopt,
+            scope),
+        "paused entry-PC observation");
+    const ProgramValueId entry_pc = Required(
         builder.AddInstruction(
             function,
             entry,
             InstructionOpcode::RecordProject,
             TypeRef::Builtin(BuiltinType::U32),
-            std::array{stop},
+            std::array{observed_entry},
             {},
             "pc",
             std::nullopt,
             scope),
-        "semantic stop pc projection");
-    const ProgramValueId prebattle_pc = ConstantU32(
+        "entry PC projection");
+    const ProgramValueId prebattle_entry_pc = ConstantU32(
         builder,
         function,
         entry,
-        PreBattleAfterRandSeedSetPc,
-        "endpoints/prebattle-pc",
+        kEntryRoutes[0].entry_pc,
+        "entry/prebattle-pc",
         scope);
     const ProgramValueId is_prebattle = Required(
         builder.AddInstruction(
@@ -1289,15 +1335,18 @@ ProgramModule ConstructSeedProbeModuleV2()
             entry,
             InstructionOpcode::Equal,
             TypeRef::Builtin(BuiltinType::Bool),
-            std::array{stopped_pc, prebattle_pc},
+            std::array{entry_pc, prebattle_entry_pc},
             {},
-            "endpoints/is-prebattle",
+            "entry/is-prebattle",
             std::nullopt,
             scope),
-        "semantic endpoint comparison");
+        "prebattle entry comparison");
 
     auto& prebattle = builder.AddBlock(function);
+    auto& check_fast_field = builder.AddBlock(function);
     auto& field_return = builder.AddBlock(function);
+    auto& check_deferred_field = builder.AddBlock(function);
+    auto& invalid_entry = builder.AddBlock(function);
     const ValueDefinition completed_result =
         builder.NewArgument(result_type);
     auto& complete = builder.AddBlock(
@@ -1312,31 +1361,145 @@ ProgramModule ConstructSeedProbeModuleV2()
             .condition_or_selector = is_prebattle,
             .edges = {
                 {.target = prebattle.id},
-                {.target = field_return.id},
+                {.target = check_fast_field.id},
             },
         },
-        "dispatch/factual-endpoint");
+        "entry/dispatch-prebattle");
+
+    const ProgramValueId fast_field_pc = ConstantU32(
+        builder,
+        function,
+        check_fast_field,
+        kEntryRoutes[1].entry_pc,
+        "entry/fast-field-pc",
+        scope);
+    const ProgramValueId is_fast_field = Required(
+        builder.AddInstruction(
+            function,
+            check_fast_field,
+            InstructionOpcode::Equal,
+            TypeRef::Builtin(BuiltinType::Bool),
+            std::array{entry_pc, fast_field_pc},
+            {},
+            "entry/is-fast-field",
+            std::nullopt,
+            scope),
+        "fast field entry comparison");
+    builder.SetTerminator(
+        function,
+        check_fast_field,
+        Terminator{
+            .kind = TerminatorKind::ConditionalBranch,
+            .condition_or_selector = is_fast_field,
+            .edges = {
+                {.target = field_return.id},
+                {.target = check_deferred_field.id},
+            },
+        },
+        "entry/dispatch-fast-field");
+
+    const ProgramValueId deferred_field_pc = ConstantU32(
+        builder,
+        function,
+        check_deferred_field,
+        kEntryRoutes[2].entry_pc,
+        "entry/deferred-field-pc",
+        scope);
+    const ProgramValueId is_deferred_field = Required(
+        builder.AddInstruction(
+            function,
+            check_deferred_field,
+            InstructionOpcode::Equal,
+            TypeRef::Builtin(BuiltinType::Bool),
+            std::array{entry_pc, deferred_field_pc},
+            {},
+            "entry/is-deferred-field",
+            std::nullopt,
+            scope),
+        "deferred field entry comparison");
+    builder.SetTerminator(
+        function,
+        check_deferred_field,
+        Terminator{
+            .kind = TerminatorKind::ConditionalBranch,
+            .condition_or_selector = is_deferred_field,
+            .edges = {
+                {.target = field_return.id},
+                {.target = invalid_entry.id},
+            },
+        },
+        "entry/dispatch-deferred-field");
+    builder.SetTerminator(
+        function,
+        invalid_entry,
+        Terminator{
+            .kind = TerminatorKind::StructuredFail,
+            .failure = StructuredFailure{
+                "seedprobe_entry_pc_unsupported",
+                "SeedProbe restored at an unsupported paused entry PC"},
+        },
+        "entry/unsupported");
+
+    const CapabilityPackIdentity field =
+        program::capabilities::FieldPackIdentity();
+    const std::array<composition::SemanticPointReference, 1>
+        prebattle_points{{{
+            .capability_pack = field,
+            .canonical_id = std::string(kPreBattlePointId),
+            .kind = program::SemanticPointKind::ProgramCounter,
+            .physical_pc = PreBattleAfterRandSeedSetPc,
+        }}};
+    const auto prebattle_delivery =
+        composition::LowerSynchronizedFrameDelivery(
+            builder,
+            function,
+            prebattle,
+            frame,
+            prebattle_points,
+            "delivery/prebattle");
+    if (!prebattle_delivery)
+        throw std::logic_error(
+            "SeedProbe prebattle delivery could not be lowered");
 
     LowerObservation(
         builder,
         function,
         prebattle,
         complete.id,
-        delivery,
-        stop,
+        prebattle_delivery->receipt,
+        prebattle_delivery->stop,
         scope,
         {
             .id = kPreBattlePointId,
             .pc = PreBattleAfterRandSeedSetPc,
         },
         SeedProbeEndpointV2::AfterRandSeedSet);
+
+    const std::array<composition::SemanticPointReference, 1>
+        field_return_points{{{
+            .capability_pack = field,
+            .canonical_id = std::string(kFieldReturnPointId),
+            .kind = program::SemanticPointKind::ProgramCounter,
+            .physical_pc = FieldReturnRandSeedCommittedPc,
+        }}};
+    const auto field_delivery =
+        composition::LowerSynchronizedFrameDelivery(
+            builder,
+            function,
+            field_return,
+            frame,
+            field_return_points,
+            "delivery/field-return");
+    if (!field_delivery)
+        throw std::logic_error(
+            "SeedProbe field-return delivery could not be lowered");
     LowerObservation(
         builder,
         function,
         field_return,
         complete.id,
-        delivery,
-        stop,
+        field_delivery->receipt,
+        field_delivery->stop,
         scope,
         {
             .id = kFieldReturnPointId,

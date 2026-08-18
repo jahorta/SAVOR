@@ -165,10 +165,9 @@ void MainWindow::createMenus()
     connect(specsMenu->addAction(QStringLiteral("Authoring Dialog")), &QAction::triggered, this, &MainWindow::openAuthoringLibraryLast);
     specsMenu->addSeparator();
     connect(specsMenu->addAction(QStringLiteral("Seed Probe Specs")), &QAction::triggered, this, &MainWindow::openSeedProbeSpecLibrary);
-    connect(specsMenu->addAction(QStringLiteral("TAS Specs")), &QAction::triggered, this, &MainWindow::openTasSpecLibrary);
-    connect(specsMenu->addAction(QStringLiteral("Battle Run Specs")), &QAction::triggered, this, &MainWindow::openBattleRunSpecLibrary);
+    connect(specsMenu->addAction(QStringLiteral("Predicates")), &QAction::triggered, this, &MainWindow::openPredicateLibrary);
+    connect(specsMenu->addAction(QStringLiteral("Predicate Groups")), &QAction::triggered, this, &MainWindow::openPredicateGroupLibrary);
     specsMenu->addSeparator();
-    connect(specsMenu->addAction(QStringLiteral("Battle Explorer Settings")), &QAction::triggered, this, &MainWindow::openExplorerSettingsSpecLibrary);
     connect(specsMenu->addAction(QStringLiteral("Battle Plans")), &QAction::triggered, this, &MainWindow::openBattlePlanSpecLibrary);
 
     auto* analysisMenu = menuBar()->addMenu(QStringLiteral("Analysis"));
@@ -214,10 +213,9 @@ void MainWindow::openAuthoringLibrary(AuthoringLibraryKey key)
 }
 
 void MainWindow::openSeedProbeSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::SeedProbe); }
-void MainWindow::openTasSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::Tas); }
-void MainWindow::openBattleRunSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::BattleRun); }
 void MainWindow::openBattlePlanSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::BattlePlan); }
-void MainWindow::openExplorerSettingsSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::ExplorerSettings); }
+void MainWindow::openPredicateLibrary() { openAuthoringLibrary(AuthoringLibraryKey::Predicates); }
+void MainWindow::openPredicateGroupLibrary() { openAuthoringLibrary(AuthoringLibraryKey::PredicateGroups); }
 
 void MainWindow::syncStatusBar()
 {
@@ -309,34 +307,38 @@ void MainWindow::createWidgets()
     statusBarWidget_ = createStatusBarWidget();
     workspaceStack_ = new QStackedWidget(root);
     workspaceStack_->setObjectName("workspaceStack");
-    workspaceStack_->addWidget(new SetupTab(coordinatorController_, SetupTab::Actions{
-        [this]() { openFocusedTool(FocusedTool::WorkflowLauncher); },
-        [this]() { openAuthoringLibraryLast(); },
-        [this]() { openWorkflowGraphEditor(); },
-        [this](const savor::db::WorkflowGraphSnapshot& snapshot, bool duplicate) {
-            openWorkflowGraphEditor(snapshot, duplicate);
-        },
-        [this]() { openSettingsTool(); },
-        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::IsoPath); },
-        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::DolphinBaseDir); },
-        [this]() { openFocusedTool(FocusedTool::Artifacts); },
-        [this]() { openFocusedTool(FocusedTool::DtmEditor); },
-        [this]() { openFocusedTool(FocusedTool::BattleRunSettings); }
-    }, root));
-    workspaceStack_->addWidget(new RunningTab(coordinatorController_, RunningTab::Actions{
-        [this]() { openFocusedTool(FocusedTool::Workflows); },
-        [this]() { openFocusedTool(FocusedTool::Jobs); },
-        [this]() { openFocusedTool(FocusedTool::Workers); },
-        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::Section); },
-        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::IsoPath); },
-        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::DolphinBaseDir); }
-    }, root));
+	setupTab_ = new SetupTab(coordinatorController_, SetupTab::Actions{
+		[this]() { openFocusedTool(FocusedTool::WorkflowLauncher); },
+		[this]() { openAuthoringLibraryLast(); },
+		[this]() { openWorkflowGraphEditor(); },
+		[this](const savor::db::WorkflowGraphSnapshot& snapshot, bool duplicate) {
+			openWorkflowGraphEditor(snapshot, duplicate);
+		},
+		[this]() { openSettingsTool(); },
+		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::IsoPath); },
+		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::DolphinBaseDir); },
+		[this]() { openFocusedTool(FocusedTool::Artifacts); },
+		[this]() { openFocusedTool(FocusedTool::DtmEditor); },
+		[this]() { openFocusedTool(FocusedTool::BattleRunSettings); }
+		}, root);
+	connect(setupTab_, &SetupTab::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+	workspaceStack_->addWidget(setupTab_);
+	runningTab_ = new RunningTab(coordinatorController_, RunningTab::Actions{
+		[this]() { openFocusedTool(FocusedTool::Workflows); },
+		[this]() { openFocusedTool(FocusedTool::Jobs); },
+		[this]() { openFocusedTool(FocusedTool::Workers); },
+		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::Section); },
+		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::IsoPath); },
+		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::DolphinBaseDir); }
+		}, root);
+	workspaceStack_->addWidget(runningTab_);
     analysisTab_ = new AnalysisTab(AnalysisTab::Actions{
         [this]() { openFocusedTool(FocusedTool::SeedProbe); },
         [this]() { showBattleRunsAnalysisPane(); },
         [this]() { openFocusedTool(FocusedTool::Artifacts); },
         [this]() { openFocusedTool(FocusedTool::Workflows); },
-        [this](qint64 jobId) { handleVisualReplayRequested(jobId); }
+        [this](qint64 jobId) { handleVisualReplayRequested(jobId); },
+        [this](const QString& unitKind,const QString& inputKey,qint64 refId){openWorkflowLauncherPreselected(unitKind,inputKey,refId);}
     }, root);
     workspaceStack_->addWidget(analysisTab_);
 
@@ -406,6 +408,13 @@ void MainWindow::showBattleRunsAnalysisPane()
     if (analysisTab_ != nullptr) {
         analysisTab_->showBattleRunsPane();
     }
+}
+
+void MainWindow::openWorkflowLauncherPreselected(const QString& unitKind,const QString& inputKey,qint64 refId)
+{
+    const QString key=focusedToolKey(FocusedTool::WorkflowLauncher);
+    if(QDialog* existing=focusedDialogs_.value(key);existing!=nullptr){if(auto* launcher=existing->findChild<WorkflowLauncherPage*>())launcher->preselectStandaloneInput(unitKind,inputKey,refId);existing->show();existing->raise();existing->activateWindow();return;}
+    QDialog* dialog=createFocusedDialog(key,focusedToolTitle(FocusedTool::WorkflowLauncher));if(dialog==nullptr)return;auto* launcher=new WorkflowLauncherPage(dialog);launcher->preselectStandaloneInput(unitKind,inputKey,refId);connect(launcher,&WorkflowLauncherPage::statusToastRequested,statusBarWidget_,qOverload<StatusToast>(&StatusBarWidget::postToast));dialog->layout()->addWidget(launcher);dialog->show();
 }
 
 void MainWindow::openFocusedTool(FocusedTool tool)
