@@ -52,8 +52,6 @@ struct ProgramResultProcessorTelemetry {
     std::size_t finalization_queue_high_water = 0;
     std::uint64_t finalization_max_collection_age_ms = 0;
     std::uint64_t startup_blob_resets = 0;
-    std::uint64_t startup_program_recoveries = 0;
-    std::uint64_t startup_lost_blob_requeues = 0;
     std::uint64_t startup_recovery_canaries = 0;
     std::string last_error;
 };
@@ -121,10 +119,6 @@ private:
     bool WaitForFinalization(const PendingFinalizationPtr& pending);
     bool FlushFinalizationBarrier();
     bool ReconcileInterruptedProcessing(std::string* error_out);
-    bool CommitRecoveredDecision(
-        const InterruptedResultProcessingJob& interrupted,
-        ProgramResultDecision decision,
-        std::string* error_out);
     CommitResultFinalizationCommand BuildFinalizationCommand(
         const ExecutionJobRecord& job,
         const ClaimedExecutionFinishedJob* claimed,
@@ -184,8 +178,6 @@ private:
     std::atomic<std::uint64_t> finalization_rollbacks_{0};
     std::atomic<std::uint64_t> finalization_max_collection_age_ms_{0};
     std::atomic<std::uint64_t> startup_blob_resets_{0};
-    std::atomic<std::uint64_t> startup_program_recoveries_{0};
-    std::atomic<std::uint64_t> startup_lost_blob_requeues_{0};
     std::atomic<std::uint64_t> startup_recovery_canaries_{0};
     mutable std::mutex error_mutex_;
     std::string last_error_;

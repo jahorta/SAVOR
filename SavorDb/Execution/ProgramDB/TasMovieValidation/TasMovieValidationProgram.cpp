@@ -633,7 +633,7 @@ public:
             return FinalDecision("FAILED", "TAS_MOVIE_VALIDATION_TERMINAL_INVALID", std::move(error));
         using TerminalStatus = savor::wrms::InvocationTerminalStatus;
         if (terminal.terminal.status == TerminalStatus::Cancelled)
-            return FinalDecision("CANCELED", "TAS_MOVIE_VALIDATION_CANCELED", terminal.terminal.message);
+            return FinalDecision("FAILED", "UNCLASSIFIED_CANCELLED_TERMINAL_REACHED_DESCRIPTOR", "cancelled worker terminal bypassed ProgramResultProcessor");
         if (terminal.terminal.status != TerminalStatus::Succeeded || terminal.terminal.unstarted
             || terminal.terminal.workset_id != static_cast<std::uint64_t>(context.terminal.dispatch_attempt_id)
             || terminal.terminal.item_id != static_cast<std::uint64_t>(context.job_id)
@@ -660,6 +660,7 @@ public:
         attempt.workset_epoch = terminal.terminal.workset_epoch;
         attempt.recorded_at_utc = types::UtcNow();
         std::optional<std::int64_t> produced_root;
+        std::optional<ProgramResultStagingFile> generated_itinerary;
 
         using Outcome = savor::runtime::tasmovie::TasMovieValidationOutcomeV1;
         if (outcome.outcome == Outcome::RootCursorEstablished) {
@@ -698,6 +699,11 @@ public:
             attempt.actual_input_count = outcome.candidate_checkpoint->input_count.value;
             attempt.candidate_itinerary_artifact_id = artifact_id;
             attempt.candidate_itinerary_sha256 = sha;
+            generated_itinerary = ProgramResultStagingFile{
+                .relative_path = path.lexically_relative(root_).generic_string(),
+                .sha256 = sha,
+                .size_bytes = static_cast<std::uint64_t>(bytes.size()),
+            };
         } else if (outcome.outcome == Outcome::Invalid) {
             if (!outcome.failure || !decoded.value->artifacts.empty())
                 return FinalDecision("FAILED", "TAS_MOVIE_INVALID_RESULT_SHAPE", "Invalid returned an illegal artifact/result shape");
@@ -748,6 +754,9 @@ public:
         std::int64_t attempt_id = 0;
         if (!analysis_db_->RecordTasMovieValidationAttempt(attempt, &attempt_id, &error)) throw std::runtime_error(error);
         ProgramResultDecision decision = FinalDecision("SUCCEEDED");
+        decision.cleanup_worker_staging = true;
+        if (generated_itinerary)
+            decision.staging_files.push_back(*generated_itinerary);
         decision.outputs.push_back({.output_key = "tas_movie_validation_attempt",
             .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .ref_id = attempt_id});
         if (attempt.outcome == TasMovieValidationOutcome::RootCursorEstablished) {
@@ -774,61 +783,7 @@ public:
         return decision;
     }
 
-    ProgramResultRecovery RecoverPersistedOutcome(const ProgramResultRecoveryContext& context) const override {
-        const auto attempt = analysis_db_ ? analysis_db_->FindTasMovieValidationAttempt(context.job_id, context.terminal_sha256) : std::nullopt;
-        if (!attempt) return {.disposition = ProgramResultRecoveryDisposition::NoPersistedOutcome,
-            .diagnostic = "no TAS Movie validation attempt exists for this terminal"};
-        if (attempt->validation_request_id != context.program_ref_id) return {.disposition = ProgramResultRecoveryDisposition::Inconsistent,
-            .diagnostic = "persisted TAS Movie attempt belongs to another immutable request"};
-        const auto request = analysis_db_->GetTasMovieValidationRequest(
-            attempt->validation_request_id);
-        if (!request) return {.disposition = ProgramResultRecoveryDisposition::Inconsistent,
-            .diagnostic = "persisted TAS Movie request is missing"};
-        std::string recovery_error;
-        if (!VerifyRecoverySideEffects(*request, *attempt, &recovery_error))
-            return {.disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                .diagnostic = std::move(recovery_error)};
-        ProgramResultDecision decision = FinalDecision("SUCCEEDED");
-        decision.outputs.push_back({.output_key = "tas_movie_validation_attempt",
-            .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt",
-            .ref_id = attempt->validation_attempt_id});
-        if (attempt->outcome == TasMovieValidationOutcome::RootCursorEstablished) {
-            decision.outputs.push_back({
-                .output_key = "established_root_cursor_attempt",
-                .data_kind = "analysis.tas_movie_validation_attempt_id",
-                .ref_kind = "tmv_validation_attempt",
-                .ref_id = attempt->validation_attempt_id,
-            });
-        }
-        if (attempt->outcome == TasMovieValidationOutcome::Valid) {
-            const auto checkpoint = ResolveValidatedCheckpoint(
-                *request,
-                *attempt,
-                &recovery_error);
-            if (!checkpoint) {
-                return {
-                    .disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                    .diagnostic = recovery_error.empty()
-                        ? "persisted Valid TAS Movie checkpoint is unavailable"
-                        : std::move(recovery_error),
-                };
-            }
-            decision.outputs.push_back({
-                .output_key = "validated_checkpoint_savestate",
-                .data_kind = "state.movie_paired_savestate_id",
-                .ref_kind = "state.savestate",
-                .ref_id = *checkpoint,
-            });
-        }
-        if (attempt->outcome == TasMovieValidationOutcome::Invalid) {
-            decision.error_code = "TAS_MOVIE_INVALID";
-            decision.error_text = "TAS movie validation reported a durable domain invalidity";
-        }
-        return {.disposition = ProgramResultRecoveryDisposition::Recovered, .decision = std::move(decision),
-            .diagnostic = "recovered exact TAS Movie validation attempt"};
-    }
-
-private:
+    private:
     std::optional<std::int64_t> ResolveValidatedCheckpoint(
         const TasMovieValidationRequestRecord& request,
         const RecordTasMovieValidationAttemptCommand& attempt,
@@ -1173,6 +1128,7 @@ ProgramKindDescriptor BuildTasMovieValidationProgramDescriptor(
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(savor::PK_TasMovie);
     descriptor.program_name = "TAS Movie Complete Validation";
+    descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity = savor::runtime::tasmovie::TasMovieValidationFullPhaseDefinitionV1()->identity();
     descriptor.default_progress_library_ids =
         ObservationDefaults().progress_library_ids;

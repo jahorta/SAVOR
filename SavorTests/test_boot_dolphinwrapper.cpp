@@ -28,26 +28,37 @@ static fs::path mktmpdir(const char* name) {
     return d;
 }
 
-TEST(Boot, BootDolphinWrapper_SyncsPortableBaseAndSavesConfig)
+TEST(Boot, BootDolphinWrapper_UsesFreshUserAndSavesConfig)
 {
     tests::SerialGuard guard;
     
     // 0) Fake a *portable* DolphinQt base
     const fs::path qt = mktmpdir("qt_portable_base");
     mkfile(qt / "portable.txt", "");
-    // Minimal Sys + User contents
+    // Minimal Sys plus deliberately contaminated base User contents.
     mkfile(qt / "Sys" / "GC" / "dsp_coef.bin", "dummy");
-    mkfile(qt / "User" / "Config" / "Dolphin.ini", "[Core]\nDummy=1\n");
+    mkfile(qt / "User" / "Config" / "import-me.ini", "contaminated");
 
     // 1) Our isolated user dir + config path
-    const fs::path user = mktmpdir("user_isolated");
+    const fs::path user_root = mktmpdir("user_isolated");
+    const fs::path user = user_root / "User";
     const fs::path cfg_path = mktmpdir("cfg") / "simulator.ini";
+
+    const auto prepared = simboot::SessionFilesystemPreparer::Prepare({
+        .worker_id = 0,
+        .process_generation = 1,
+        .preparation_id = "boot-test-1",
+        .dolphin_qt_base = qt,
+        .worker_root = user_root,
+    });
+    ASSERT_TRUE(prepared.ok) << prepared.error;
 
     // 2) Boot with options
     simboot::BootOptions opts;
     opts.user_dir = user;
     opts.dolphin_qt_base = qt;
-    opts.force_resync_from_base = true;     // make the copy explicit for the test
+    opts.session_filesystem_preparation_id = "boot-test-1";
+    opts.process_generation = 1;
     opts.save_config_on_success = true;
     opts.config_path = cfg_path;
 
@@ -56,8 +67,9 @@ TEST(Boot, BootDolphinWrapper_SyncsPortableBaseAndSavesConfig)
 
     ASSERT_TRUE(simboot::BootDolphinWrapper(dw, opts, &err)) << "Boot failed: " << err;
 
-    // 3) Validate the wrapper paths. Sys materialization is handled by the worker coordinator.
-    EXPECT_TRUE(fs::exists(dw.GetUserDirectory() / "Config" / "Dolphin.ini"));
+    // 3) Dolphin creates its own directory skeleton without importing base User.
+    EXPECT_TRUE(fs::is_directory(dw.GetUserDirectory() / "Config"));
+    EXPECT_FALSE(fs::exists(dw.GetUserDirectory() / "Config" / "import-me.ini"));
     EXPECT_EQ(fs::weakly_canonical(dw.GetDolphinQtBaseDir()),
         fs::weakly_canonical(qt));
 
@@ -82,9 +94,9 @@ TEST(Boot, BootDolphinWrapperFromSavedConfig_Reloads)
     const fs::path qt = mktmpdir("qt_portable_base2");
     mkfile(qt / "portable.txt", "");
     mkfile(qt / "Sys" / "GC" / "dsp_coef.bin", "dummy");
-    mkfile(qt / "User" / "Config" / "Dolphin.ini", "[Core]\nDummy=1\n");
+    mkfile(qt / "User" / "Config" / "import-me.ini", "contaminated\n");
 
-    const fs::path user = mktmpdir("user_isolated2");
+    const fs::path user = mktmpdir("user_isolated2") / "User";
     const fs::path cfg_path = mktmpdir("cfg2") / "simulator.ini";
 
     // Save a config
@@ -97,6 +109,7 @@ TEST(Boot, BootDolphinWrapperFromSavedConfig_Reloads)
     // 1) Boot from that saved config
     ASSERT_TRUE(simboot::BootDolphinWrapperFromSavedConfig(dw, &err, cfg_path)) << "Boot-from-config failed: " << err;
 
-    // 2) Validate copied User files exist in our user dir.
-    EXPECT_TRUE(fs::exists(dw.GetUserDirectory() / "Config" / "Dolphin.ini"));
+    // 2) The saved-config path also starts from a fresh Dolphin profile.
+    EXPECT_TRUE(fs::is_directory(dw.GetUserDirectory() / "Config"));
+    EXPECT_FALSE(fs::exists(dw.GetUserDirectory() / "Config" / "import-me.ini"));
 }

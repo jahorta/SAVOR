@@ -200,6 +200,7 @@
     <ClInclude Include="Execution\ProgramDB\WorksetDerivedStateBinding.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramResultProcessor.h" />
+    <ClInclude Include="Execution\ProgramDB\ResultStagingCleanupService.h" />
     <ClInclude Include="Execution\ProgramDB\ProductionProgramKindRegistry.h" />
     <ClInclude Include="Execution\ProgramDB\WorkerResultBlobCleanupService.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeExecutionAdapters.h" />
@@ -274,6 +275,7 @@
     
     <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnProgram.cpp" />
     <ClCompile Include="Execution\ProgramDB\ProgramResultProcessor.cpp" />
+    <ClCompile Include="Execution\ProgramDB\ResultStagingCleanupService.cpp" />
     <ClCompile Include="Execution\ProgramDB\ProductionProgramKindRegistry.cpp" />
     <ClCompile Include="Execution\ProgramDB\WorksetObservationBinding.cpp" />
     <ClCompile Include="Execution\ProgramDB\WorksetDerivedStateBinding.cpp" />
@@ -373,6 +375,8 @@
     <None Include="migration\Execution\202608011000_execution_work_availability.sql" />
     <None Include="migration\Execution\202608091000_execution_structured_job_progress.sql" />
     <None Include="migration\Execution\202608111000_execution_derived_state_binding.sql" />
+    <None Include="migration\Execution\202608191400_execution_failed_job_workset_retry.sql" />
+    <None Include="migration\Execution\202608211000_execution_result_staging_cleanup.sql" />
     <None Include="migration\State\202604051000_state_stage2_schema.sql" />
     <None Include="migration\State\202607231800_state_derivation_source_context_index.sql" />
     <None Include="migration\State\202608041000_state_tas_movie_roots_and_trees.sql" />

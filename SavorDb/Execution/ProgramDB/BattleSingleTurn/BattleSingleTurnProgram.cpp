@@ -1336,7 +1336,7 @@ public:
                     + std::to_string(item.reserved_attempt_id) + ".sav")).string();
             workset.items.push_back({
                 .item_id = WorkerWorksetItemId(static_cast<std::uint64_t>(item.job_id)),
-                .ordinal = item.logical_ordinal,
+                .ordinal = item.workset_item_ordinal,
                 .execution = {
                     .execution_id = ProgramExecutionId(static_cast<std::uint64_t>(item.job_id)),
                     .attempt_id = AttemptId(item.reserved_attempt_id),
@@ -1468,12 +1468,18 @@ public:
             || context.program_ref_kind != kTurnJobRefKind || context.program_ref_id <= 0)
             return FinalDecision("FAILED", "BATTLE_SINGLE_TURN_IDENTITY_INVALID",
                                  "job is not an exact battle.single_turn request");
+        std::optional<std::string> replace_failed_terminal_sha256;
         if (const auto existing = analysis_db_->GetBattleSingleTurnResultForExecJob(context.job_id)) {
-            if (existing->turn_job_id != context.program_ref_id
-                || existing->worker_terminal_sha256 != context.terminal.sha256)
+            if (existing->turn_job_id != context.program_ref_id)
                 return FinalDecision("FAILED", "BATTLE_SINGLE_TURN_RESULT_CONFLICT",
                                      "persisted result belongs to a different terminal");
-            return DecisionFromStored(context.job_set_id, *existing);
+            if (existing->worker_terminal_sha256 == context.terminal.sha256)
+                return DecisionFromStored(context.job_set_id, *existing);
+            if (existing->terminal_kind != "FAILED")
+                return FinalDecision("FAILED", "BATTLE_SINGLE_TURN_RESULT_CONFLICT",
+                                     "persisted result belongs to a different terminal");
+            replace_failed_terminal_sha256 =
+                existing->worker_terminal_sha256;
         }
         const auto turn_job = analysis_db_->GetBattleTurnJob(context.program_ref_id);
         if (!turn_job || turn_job->exec_job_id != context.job_id)
@@ -1491,13 +1497,15 @@ public:
         if (!source || !stored_binding || !package || !phase)
             return PersistFailure(context, *turn_job, nullptr,
                 "BATTLE_SINGLE_TURN_PACKAGE_DRIFT", error.empty()
-                    ? "prepared battle.single_turn package is unavailable" : error, false);
+                    ? "prepared battle.single_turn package is unavailable" : error, false,
+                "FAILED", replace_failed_terminal_sha256);
 
         runtime::DurableWorkerTerminalEnvelope terminal{};
         if (!runtime::DecodeDurableWorkerTerminalEnvelope(
                 context.terminal.envelope, &terminal, &error))
             return PersistFailure(context, *turn_job, nullptr,
-                "BATTLE_SINGLE_TURN_TERMINAL_INVALID", error, false);
+                "BATTLE_SINGLE_TURN_TERMINAL_INVALID", error, false,
+                "FAILED", replace_failed_terminal_sha256);
         using Status = savor::wrms::InvocationTerminalStatus;
         const bool terminal_identity =
             terminal.terminal.workset_id == static_cast<std::uint64_t>(context.terminal.dispatch_attempt_id)
@@ -1519,13 +1527,15 @@ public:
                 terminal.terminal.message.empty()
                     ? "battle.single_turn did not complete cleanly" : terminal.terminal.message,
                 command_failure,
-                terminal.terminal.status == Status::Cancelled ? "CANCELED" : "FAILED");
+                "FAILED",
+                replace_failed_terminal_sha256);
         }
 
         runtime::battlesingleturn::BattleSingleTurnResultV1 result{};
         if (!phase->DecodeProgramResult(terminal.terminal.result, result, &error))
             return PersistFailure(context, *turn_job, generic,
-                "BATTLE_SINGLE_TURN_RESULT_INVALID", error, false);
+                "BATTLE_SINGLE_TURN_RESULT_INVALID", error, false,
+                "FAILED", replace_failed_terminal_sha256);
         using Outcome = runtime::battlesingleturn::BattleSingleTurnOutcomeV1;
         const bool needs_successor = result.outcome == Outcome::ReachedNextTurn
             || result.outcome == Outcome::Victory;
@@ -1538,7 +1548,8 @@ public:
             || result.artifacts.size() != (needs_successor ? 1u : 0u))
             return PersistFailure(context, *turn_job, generic,
                 "BATTLE_SINGLE_TURN_RESULT_INVALID",
-                "battle.single_turn outcome evidence is inconsistent", false);
+                "battle.single_turn outcome evidence is inconsistent", false,
+                "FAILED", replace_failed_terminal_sha256);
 
         std::optional<std::int64_t> successor;
         if (needs_successor) {
@@ -1583,7 +1594,7 @@ public:
             const auto encoded = EncodeProgramResultV1(predicate_result);
             if (encoded) evidence = encoded.bytes;
         }
-        if (!analysis_db_->RecordBattleSingleTurnResult({
+        const RecordBattleSingleTurnResultCommand persisted_result{
                 .turn_job_id = turn_job->turn_job_id,
                 .exec_job_id = context.job_id,
                 .worker_terminal_sha256 = context.terminal.sha256,
@@ -1602,32 +1613,38 @@ public:
                 .predicate_execution_package_sha256 = result.predicate_execution_package_sha256,
                 .predicate_evidence_blob = std::move(evidence),
                 .recorded_at_utc = now,
-            }, nullptr, &error)) throw std::runtime_error(error);
+            };
+        if (!PersistResult(
+                persisted_result,
+                replace_failed_terminal_sha256,
+                nullptr,
+                &error)) throw std::runtime_error(error);
         auto decision = FinalDecision("SUCCEEDED");
+        decision.cleanup_worker_staging = true;
+        if (context_artifact) {
+            const auto context_path = root_ / "artifacts"
+                / ("turn-job-" + std::to_string(turn_job->turn_job_id) + "-"
+                    + context.terminal.sha256 + ".bctx");
+            std::error_code staging_error;
+            const auto staging_size = std::filesystem::file_size(
+                context_path, staging_error);
+            const auto staging_sha = HashFile(context_path);
+            if (staging_error || !staging_sha || staging_size == 0)
+                throw std::runtime_error(
+                    "Battle Context staging identity is unavailable");
+            decision.staging_files.push_back({
+                .relative_path = context_path.lexically_relative(root_).generic_string(),
+                .sha256 = *staging_sha,
+                .size_bytes = static_cast<std::uint64_t>(staging_size),
+            });
+        }
         decision.event_lines.push_back("[battle-single-turn-completed] turn_job="
             + std::to_string(turn_job->turn_job_id) + " outcome=" + OutcomeName(result.outcome)
             + " pred_passed=" + std::to_string(result.pred_passed));
         return decision;
     }
 
-    ProgramResultRecovery RecoverPersistedOutcome(
-        const ProgramResultRecoveryContext& context) const override {
-        const auto stored = analysis_db_
-            ? analysis_db_->GetBattleSingleTurnResultForExecJob(context.job_id)
-            : std::nullopt;
-        if (!stored)
-            return {.disposition = ProgramResultRecoveryDisposition::NoPersistedOutcome,
-                    .diagnostic = "no battle.single_turn result exists for this terminal"};
-        if (stored->turn_job_id != context.program_ref_id
-            || stored->worker_terminal_sha256 != context.terminal_sha256)
-            return {.disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                    .diagnostic = "persisted battle.single_turn result identity drifted"};
-        return {.disposition = ProgramResultRecoveryDisposition::Recovered,
-                .decision = DecisionFromStored(context.job_set_id, *stored),
-                .diagnostic = "recovered exact battle.single_turn result"};
-    }
-
-private:
+    private:
     ProgramResultDecision PersistFailure(
         const ProgramResultProcessingContext& context,
         const BattleTurnJobSnapshot& turn_job,
@@ -1635,7 +1652,9 @@ private:
         std::string code,
         std::string message,
         bool command_entry_failure,
-        std::string terminal_kind = "FAILED") const {
+        std::string terminal_kind = "FAILED",
+        std::optional<std::string> replace_failed_terminal_sha256 =
+            std::nullopt) const {
         std::string error;
         std::vector<std::uint8_t> semantic_evidence;
         if (generic) {
@@ -1653,7 +1672,7 @@ private:
                 .recorded_at_utc = now,
             }, &error)) throw std::runtime_error(error);
         const auto binding = analysis_db_->GetBattlePredicateExecutionPackageForWave(turn_job.wave_id);
-        if (!analysis_db_->RecordBattleSingleTurnResult({
+        const RecordBattleSingleTurnResultCommand persisted_result{
                 .turn_job_id = turn_job.turn_job_id,
                 .exec_job_id = context.job_id,
                 .worker_terminal_sha256 = context.terminal.sha256,
@@ -1668,9 +1687,14 @@ private:
                     ? std::optional<std::string>(binding->execution_package_sha256) : std::nullopt,
                 .predicate_evidence_blob = std::move(semantic_evidence),
                 .recorded_at_utc = now,
-            }, nullptr, &error)) throw std::runtime_error(error);
-        auto decision = FinalDecision(terminal_kind == "CANCELED" ? "CANCELED" : "FAILED",
-                                      code, message);
+            };
+        if (!PersistResult(
+                persisted_result,
+                replace_failed_terminal_sha256,
+                nullptr,
+                &error)) throw std::runtime_error(error);
+        auto decision = FinalDecision("FAILED", code, message);
+        decision.cleanup_worker_staging = true;
         if (command_entry_failure) AddWorksetCancellations(
             context.job_set_id, context.job_id, decision);
         decision.event_lines.push_back("[battle-single-turn-failed] turn_job="
@@ -1679,13 +1703,38 @@ private:
         return decision;
     }
 
+    bool PersistResult(
+        const RecordBattleSingleTurnResultCommand& result,
+        const std::optional<std::string>& replace_failed_terminal_sha256,
+        std::int64_t* result_id_out,
+        std::string* error_out) const {
+        if (replace_failed_terminal_sha256) {
+            return analysis_db_->ReplaceFailedBattleSingleTurnResult(
+                {
+                    .expected_worker_terminal_sha256 =
+                        *replace_failed_terminal_sha256,
+                    .replacement_worker_terminal_sha256 =
+                        result.worker_terminal_sha256,
+                    .result = result,
+                    .superseded_at_utc = result.recorded_at_utc,
+                },
+                result_id_out,
+                error_out);
+        }
+        return analysis_db_->RecordBattleSingleTurnResult(
+            result,
+            result_id_out,
+            error_out);
+    }
+
     ProgramResultDecision DecisionFromStored(
         std::int64_t job_set_id,
         const BattleSingleTurnResultSnapshot& stored) const {
         const bool succeeded = stored.terminal_kind == "SUCCEEDED";
-        auto decision = FinalDecision(succeeded ? "SUCCEEDED"
-            : stored.terminal_kind == "CANCELED" ? "CANCELED" : "FAILED",
-            stored.error_code, stored.error_text);
+        auto decision = FinalDecision(
+            succeeded ? "SUCCEEDED" : "FAILED",
+            stored.error_code,
+            stored.error_text);
         if (!succeeded && stored.error_code
             && IsCommandEntryFailure(ProgramResult{}, *stored.error_code,
                                      stored.error_text.value_or("")))
@@ -1700,7 +1749,9 @@ private:
         if (!execution_db_) return;
         for (const auto& job : execution_db_->ListJobsInJobSet(job_set_id)) {
             if (job.job_id == failed_job_id
-                || job.state == "SUCCEEDED" || job.state == "FAILED" || job.state == "CANCELED")
+                || job.state == "SUCCEEDED" || job.state == "FAILED"
+                || job.state == "INTERRUPTED" || job.state == "SUPERSEDED"
+                || job.state == "CANCELED")
                 continue;
             decision.cancellations.push_back({
                 .job_id = job.job_id,
@@ -1708,6 +1759,7 @@ private:
                     + std::to_string(failed_job_id) + ":" + std::to_string(job.job_id),
                 .reason_code = "BATTLE_COMMAND_ENTRY_WORKSET_ABORT",
                 .reason_text = "a command-entry canary failed; retry the complete workset after correction",
+                .terminal_disposition = "AUTOMATIC_FAILURE_CASCADE",
             });
         }
     }
@@ -2354,6 +2406,7 @@ ProgramKindDescriptor BuildBattleSingleTurnProgramDescriptor(
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner);
     descriptor.program_name = "Battle Single Turn";
+    descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity =
         runtime::battlesingleturn::BattleSingleTurnKindHandlerV1()->identity();
     descriptor.default_progress_library_ids =

@@ -52,7 +52,8 @@ struct RunningRefreshRequest {
     bool dolphinReady = true;
     bool isoMissing = false;
     bool dolphinMissing = false;
-    bool coordinatorRunning = false;
+    CoordinatorLifecycleState coordinatorState =
+        CoordinatorLifecycleState::Stopped;
     bool coordinatorPaused = false;
     int activeWorkers = 0;
     int targetWorkers = 1;
@@ -126,14 +127,15 @@ struct RunningRefreshData {
     QString workflowReadyText;
     QString workflowQueuedText;
     QString workflowWaitingText;
-    QString workflowTerminalText;
+    QString workflowFinalizedText;
     QString queueSummary;
     QString workerSummary;
     QString attentionSummary;
     bool controllerAvailable = false;
     bool hasValidation = false;
     QString validation;
-    bool coordinatorRunning = false;
+    CoordinatorLifecycleState coordinatorState =
+        CoordinatorLifecycleState::Stopped;
     bool coordinatorPaused = false;
     bool isoReady = true;
     bool dolphinReady = true;
@@ -279,6 +281,7 @@ bool isJobRunning(const savor::db::UiJobSummary& job)
 bool isJobTerminal(const savor::db::UiJobSummary& job)
 {
     return job.state == "SUCCEEDED"
+        || job.state == "INTERRUPTED"
         || job.state == "CANCELED"
         || job.state == "SUPERSEDED"
         || job.state == "SUCCEEDED_WINNER"
@@ -710,7 +713,7 @@ RunningWorkflowRow prepareWorkflowRow(
 RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& request)
 {
     savorqt::db::WorkflowListRequest workflowRequest{};
-    workflowRequest.display_state = "RUNNING";
+    workflowRequest.exclude_final = true;
     workflowRequest.limit = 100;
     const auto workflows = savorqt::db::SavorDbWorkflowService::ListWorkflowInstances(workflowRequest);
     const auto workflowCountsResult = savorqt::db::SavorDbWorkflowService::CountWorkflowDisplayStates();
@@ -752,7 +755,7 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     data.controllerAvailable = request.controllerAvailable;
     data.hasValidation = hasValidation;
     data.validation = request.validation;
-    data.coordinatorRunning = request.coordinatorRunning;
+    data.coordinatorState = request.coordinatorState;
     data.coordinatorPaused = request.coordinatorPaused;
     data.isoReady = request.isoReady;
     data.dolphinReady = request.dolphinReady;
@@ -763,11 +766,16 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     data.failedJobs = static_cast<int>(counts.failed);
 
     data.coordinatorText = QStringLiteral("Stopped");
-    if (hasValidation) {
+    if (request.coordinatorState == CoordinatorLifecycleState::Starting) {
+        data.coordinatorText = QStringLiteral("Starting");
+    } else if (request.coordinatorState == CoordinatorLifecycleState::Stopping) {
+        data.coordinatorText = QStringLiteral("Stopping");
+    } else if (hasValidation) {
         data.coordinatorText = QStringLiteral("Blocked");
-    } else if (request.coordinatorRunning && request.coordinatorPaused) {
+    } else if (request.coordinatorState == CoordinatorLifecycleState::Running
+        && request.coordinatorPaused) {
         data.coordinatorText = QStringLiteral("Paused");
-    } else if (request.coordinatorRunning) {
+    } else if (request.coordinatorState == CoordinatorLifecycleState::Running) {
         data.coordinatorText = QStringLiteral("Running");
     }
     data.workersText = request.controllerAvailable
@@ -783,9 +791,9 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     data.workflowReadyText = data.workflowsOk ? formatCount(workflowCounts.running) : QStringLiteral("--");
     data.workflowQueuedText = data.workflowsOk ? formatCount(workflowCounts.queued) : QStringLiteral("--");
     data.workflowWaitingText = data.workflowsOk ? formatCount(workflowCounts.waiting) : QStringLiteral("--");
-    data.workflowTerminalText = data.workflowsOk ? formatCount(workflowCounts.terminal) : QStringLiteral("--");
+    data.workflowFinalizedText = data.workflowsOk ? formatCount(workflowCounts.finalized) : QStringLiteral("--");
     data.workflowSummary = data.workflowsOk
-        ? QStringLiteral("%1 active workflow%2 shown in the main table.")
+        ? QStringLiteral("%1 open workflow%2 shown in the main table.")
             .arg(static_cast<int>(workflowItems.size()))
             .arg(workflowItems.size() == 1 ? QString() : QStringLiteral("s"))
         : QStringLiteral("Workflow list unavailable: %1").arg(data.workflowError);
@@ -844,7 +852,8 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
             AttentionRoute::CoordinatorSettings,
         });
     }
-    if (!request.coordinatorRunning && !hasValidation && counts.queued > 0) {
+    if (request.coordinatorState == CoordinatorLifecycleState::Stopped
+        && !hasValidation && counts.queued > 0) {
         data.attentionItems.push_back(AttentionItemData{
             QStringLiteral("Coordinator stopped with queued jobs"),
             QStringLiteral("%1 jobs are waiting for workers.").arg(formatCount(counts.queued)),
@@ -1054,7 +1063,7 @@ void RunningTab::build()
     workflowStateStrip->addWidget(createStatusPill(QStringLiteral("Ready"), workflowPanel, &workflowReadyValueLabel_));
     workflowStateStrip->addWidget(createStatusPill(QStringLiteral("Queued"), workflowPanel, &workflowQueuedValueLabel_));
     workflowStateStrip->addWidget(createStatusPill(QStringLiteral("Waiting"), workflowPanel, &workflowWaitingValueLabel_));
-    workflowStateStrip->addWidget(createStatusPill(QStringLiteral("Terminal"), workflowPanel, &workflowTerminalValueLabel_));
+    workflowStateStrip->addWidget(createStatusPill(QStringLiteral("Final"), workflowPanel, &workflowFinalValueLabel_));
     workflowStateStrip->addStretch();
     workflowLayout->addLayout(workflowStateStrip);
 
@@ -1195,7 +1204,7 @@ void RunningTab::build()
         request.dolphinReady = coordinatorDolphinBaseReady(coordinatorController_);
         request.isoMissing = coordinatorController_->isoPath().trimmed().isEmpty();
         request.dolphinMissing = coordinatorController_->dolphinBaseDir().trimmed().isEmpty();
-        request.coordinatorRunning = coordinatorController_->isRunning();
+        request.coordinatorState = coordinatorController_->lifecycleState();
         request.coordinatorPaused = coordinatorController_->isPaused();
         request.activeWorkers = coordinatorController_->activeWorkers();
         request.targetWorkers = coordinatorController_->targetWorkers();
@@ -1217,15 +1226,19 @@ void RunningTab::build()
         lastFailedJobs_ = data.failedJobs;
         lastAttentionItems_ = static_cast<int>(data.attentionItems.size());
 
-        startCoordinatorButton_->setVisible(data.controllerAvailable && !data.coordinatorRunning && !data.hasValidation);
+        const bool stopped = data.coordinatorState == CoordinatorLifecycleState::Stopped;
+        const bool starting = data.coordinatorState == CoordinatorLifecycleState::Starting;
+        const bool running = data.coordinatorState == CoordinatorLifecycleState::Running;
+        startCoordinatorButton_->setVisible(data.controllerAvailable && stopped && !data.hasValidation);
         pauseCoordinatorButton_->setText(data.coordinatorPaused ? QStringLiteral("Resume") : QStringLiteral("Pause"));
-        pauseCoordinatorButton_->setVisible(data.controllerAvailable && data.coordinatorRunning);
-        stopCoordinatorButton_->setVisible(data.controllerAvailable && data.coordinatorRunning);
+        pauseCoordinatorButton_->setVisible(data.controllerAvailable && running);
+        stopCoordinatorButton_->setText(starting ? QStringLiteral("Cancel startup") : QStringLiteral("Stop"));
+        stopCoordinatorButton_->setVisible(data.controllerAvailable && (running || starting));
         {
             const QSignalBlocker blocker(targetWorkersSpin_);
             targetWorkersSpin_->setValue(data.targetWorkers);
         }
-        targetWorkersSpin_->setVisible(data.controllerAvailable && data.coordinatorRunning);
+        targetWorkersSpin_->setVisible(data.controllerAvailable && running);
         isoSetupButton_->setText(data.isoMissing ? QStringLiteral("Set ISO") : QStringLiteral("Fix ISO"));
         isoSetupButton_->setVisible(!data.isoReady);
         dolphinSetupButton_->setText(data.dolphinMissing ? QStringLiteral("Set Dolphin base") : QStringLiteral("Fix Dolphin base"));
@@ -1242,7 +1255,7 @@ void RunningTab::build()
         workflowReadyValueLabel_->setText(data.workflowReadyText);
         workflowQueuedValueLabel_->setText(data.workflowQueuedText);
         workflowWaitingValueLabel_->setText(data.workflowWaitingText);
-        workflowTerminalValueLabel_->setText(data.workflowTerminalText);
+        workflowFinalValueLabel_->setText(data.workflowFinalizedText);
         savorqt::gui::ApplyTableRowsByKey(
             workflowTable_,
             *workflowRows,

@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
-#include "Core/DolphinWrapper.h"
+#include "Boot/Boot.h"
 
 namespace fs = std::filesystem;
 
@@ -20,7 +20,7 @@ static fs::path mktmp(const char* name) {
     return d;
 }
 
-TEST(Wrapper, ImportFromDolphinQtBase_CopiesSysAndUserIfPortable)
+TEST(SessionFilesystemPreparer, CreatesFreshEmptyUserIfPortable)
 {
     // Fake a DolphinQt base
     fs::path qt = mktmp("qtbase");
@@ -28,16 +28,20 @@ TEST(Wrapper, ImportFromDolphinQtBase_CopiesSysAndUserIfPortable)
     mkfile(qt / "Sys" / "GC" / "dsp_coef.bin", "dummy");
     mkfile(qt / "User" / "Config" / "Dolphin.ini", "[Core]\nDummy=1\n");
 
-    // Our isolated User dir
-    savor::DolphinWrapper w;
-    fs::path user = mktmp("user_isolated");
-    ASSERT_TRUE(w.SetUserDirectory(user));
+    const fs::path worker_root = mktmp("user_isolated");
+    const fs::path user = worker_root / "User";
+    const auto prepared = simboot::SessionFilesystemPreparer::Prepare({
+        .worker_id = 0,
+        .process_generation = 1,
+        .preparation_id = "import-test-1",
+        .dolphin_qt_base = qt,
+        .worker_root = worker_root,
+    });
+    ASSERT_TRUE(prepared.ok) << prepared.error;
 
-    // Import
-    std::string err;
-    ASSERT_TRUE(w.SetDolphinQtBaseDir(qt, &err)) << "Error at " << err;
-    ASSERT_TRUE(w.SyncFromDolphinQtBase(false, &err)) << "Error at " << err;
-
-    // Assert User files now exist under OUR user dir. Sys materialization is handled by the worker coordinator.
-    EXPECT_TRUE(fs::exists(user / "Config" / "Dolphin.ini"));
+    EXPECT_TRUE(fs::is_directory(user));
+    EXPECT_TRUE(fs::is_empty(user));
+    EXPECT_EQ(prepared.file_count, 0u);
+    EXPECT_EQ(prepared.directory_count, 1u);
+    EXPECT_EQ(prepared.byte_count, 0u);
 }

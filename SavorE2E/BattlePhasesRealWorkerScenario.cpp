@@ -849,6 +849,331 @@ bool SeedBattleWorkflow(
         command, workflow_instance_id_out, error_out);
 }
 
+bool SeedEstablishedBattleWorkflow(
+    savor::db::IAuthoringDb* authoring_db,
+    savor::db::IExecutionDb* execution_db,
+    const std::int64_t root_establishment_attempt_id,
+    const std::int64_t seed_probe_spec_id,
+    const std::int64_t battle_plan_id,
+    const std::int64_t rtc_value,
+    const int samples_per_axis,
+    const int fake_attack_min,
+    const int fake_attack_max,
+    const std::string_view run_identity,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out)
+{
+    if (authoring_db == nullptr || execution_db == nullptr ||
+        root_establishment_attempt_id <= 0 || seed_probe_spec_id <= 0 ||
+        battle_plan_id <= 0 || rtc_value < 0 ||
+        static_cast<std::uint64_t>(rtc_value) >
+            std::numeric_limits<std::uint32_t>::max() ||
+        workflow_instance_id_out == nullptr)
+        return Fail("Established-root Battle workflow seed input is incomplete",
+                    error_out);
+
+    const auto now = savor::db::types::UtcNow();
+    savor::db::SaveWorkflowGraphResult saved{};
+    if (!authoring_db->SaveWorkflowGraph({
+            .name = "SavorE2E established-root Battle phases workflow "
+                + std::string(run_identity),
+            .description = "Validate an established root cursor, sterilize its checkpoint, then run Battle Context and SeedProbe in parallel before battle.start",
+            .graph_version = 1,
+            .graph_hash = "savor-e2e.battle-phases.established-root-v1."
+                + std::string(run_identity),
+            .nodes = {
+                {
+                    .node_key = "tas_validate_1",
+                    .unit_kind = "tas_movie_validate_root",
+                    .display_name = "TAS Movie: Validate Root",
+                    .inputs = {{
+                        .input_key = "root_establishment",
+                        .data_kind = "analysis.tas_movie_validation_attempt_id",
+                        .ref_kind = "tmv_validation_attempt",
+                        .display_name = "Root cursor establishment",
+                    }},
+                    .possible_outputs = {
+                        {
+                            .output_key = "tas_movie_validation_attempt",
+                            .data_kind = "analysis.tas_movie_validation_attempt_id",
+                            .ref_kind = "tmv_validation_attempt",
+                            .display_name = "Validation attempt",
+                        },
+                        {
+                            .output_key = "validated_checkpoint_savestate",
+                            .data_kind = "state.movie_paired_savestate_id",
+                            .ref_kind = "state.savestate",
+                            .display_name = "Validated movie-paired checkpoint",
+                        },
+                    },
+                    .arguments = {{
+                        .argument_key = "rtc",
+                        .display_name = "RTC",
+                        .value_type = "integer",
+                        .required = true,
+                        .minimum_integer = 0,
+                        .maximum_integer = 4294967295ULL,
+                    }},
+                },
+                {
+                    .node_key = "tas_sterilize_1",
+                    .unit_kind = "tas_movie_checkpoint_sterilize",
+                    .display_name = "TAS Movie: Sterilize Checkpoint",
+                    .inputs = {{
+                        .input_key = "paired_checkpoint_savestate",
+                        .data_kind = "state.movie_paired_savestate_id",
+                        .ref_kind = "state.savestate",
+                        .display_name = "Validated movie-paired checkpoint",
+                    }},
+                    .possible_outputs = {{
+                        .output_key = "sterilized_checkpoint_savestate",
+                        .data_kind = "state.movie_inactive_savestate_id",
+                        .ref_kind = "state.savestate",
+                        .display_name = "Sterilized movie-inactive checkpoint",
+                    }},
+                },
+                {
+                    .node_key = "probe_1",
+                    .unit_kind = "seed_probe",
+                    .display_name = "SeedProbe",
+                    .authored_ref_kind = std::string("seed_probe_spec"),
+                    .authored_ref_id = seed_probe_spec_id,
+                    .inputs = {{
+                        .input_key = "entry_savestate",
+                        .data_kind = "state.movie_inactive_savestate_id",
+                        .ref_kind = "state.savestate",
+                        .display_name = "Sterilized entry savestate",
+                    }},
+                    .possible_outputs = {{
+                        .output_key = "seed_probe_run",
+                        .data_kind = "analysis.seed_probe_run",
+                        .ref_kind = "sp_probe_run",
+                        .display_name = "Confirmed SeedProbe run",
+                    }},
+                    .arguments = {{
+                        .argument_key = "samples_per_axis",
+                        .display_name = "Samples per axis",
+                        .value_type = "integer",
+                        .required = false,
+                        .default_value = std::string("5"),
+                        .minimum_integer = 1,
+                        .maximum_integer = 64,
+                    }},
+                },
+                {
+                    .node_key = "context_1",
+                    .unit_kind = "battle.context",
+                    .display_name = "Battle Context",
+                    .inputs = {{
+                        .input_key = "entry_savestate",
+                        .data_kind = "state.movie_inactive_savestate_id",
+                        .ref_kind = "state.savestate",
+                        .display_name = "Sterilized entry savestate",
+                    }},
+                    .possible_outputs = {{
+                        .output_key = "battle_context",
+                        .data_kind = "analysis_battle.battle_context_id",
+                        .ref_kind = "ab_battle_context",
+                        .display_name = "Battle context",
+                    }},
+                },
+                {
+                    .node_key = "battle_1",
+                    .unit_kind = "battle",
+                    .display_name = "Battle",
+                    .authored_ref_kind = std::string("authoring.battle_plan"),
+                    .authored_ref_id = battle_plan_id,
+                    .inputs = {
+                        {
+                            .input_key = "seed_probe_run",
+                            .data_kind = "analysis.seed_probe_run",
+                            .ref_kind = "sp_probe_run",
+                            .display_name = "Confirmed SeedProbe run",
+                        },
+                        {
+                            .input_key = "battle_context",
+                            .data_kind = "analysis_battle.battle_context_id",
+                            .ref_kind = "ab_battle_context",
+                            .display_name = "Battle context",
+                        },
+                    },
+                    .possible_outputs = {{
+                        .output_key = "battle_set",
+                        .data_kind = "analysis_battle.battle_set",
+                        .ref_kind = "analysis_battle.battle_set",
+                        .display_name = "Battle set",
+                    }},
+                    .arguments = {
+                        {
+                            .argument_key = "continuation_mode",
+                            .display_name = "Continuation",
+                            .value_type = "choice",
+                            .required = true,
+                            .choices = {
+                                {"manual_selection", "Manual selection after each wave"},
+                                {"automatic_best_per_ending_rng", "Automatically continue the best candidate for each ending RNG"},
+                            },
+                        },
+                        {
+                            .argument_key = "fake_attack_min",
+                            .display_name = "Minimum fake attacks",
+                            .value_type = "integer",
+                            .default_value = std::string("0"),
+                            .minimum_integer = 0,
+                            .maximum_integer = 2147483647,
+                        },
+                        {
+                            .argument_key = "fake_attack_max",
+                            .display_name = "Maximum fake attacks",
+                            .value_type = "integer",
+                            .default_value = std::string("0"),
+                            .minimum_integer = 0,
+                            .maximum_integer = 2147483647,
+                        },
+                    },
+                    .argument_constraints = {{
+                        .lesser_or_equal_key = "fake_attack_min",
+                        .greater_or_equal_key = "fake_attack_max",
+                        .message = "minimum fake attacks must not exceed maximum fake attacks",
+                    }},
+                },
+            },
+            .edges = {
+                {
+                    .from_node_key = "tas_validate_1",
+                    .output_key = "validated_checkpoint_savestate",
+                    .to_node_key = "tas_sterilize_1",
+                    .input_key = "paired_checkpoint_savestate",
+                    .guard_kind = std::string(
+                        savor::db::kWorkflowOutputPresentGuard),
+                },
+                {
+                    .from_node_key = "tas_sterilize_1",
+                    .output_key = "sterilized_checkpoint_savestate",
+                    .to_node_key = "probe_1",
+                    .input_key = "entry_savestate",
+                    .guard_kind = std::string(
+                        savor::db::kWorkflowOutputPresentGuard),
+                },
+                {
+                    .from_node_key = "tas_sterilize_1",
+                    .output_key = "sterilized_checkpoint_savestate",
+                    .to_node_key = "context_1",
+                    .input_key = "entry_savestate",
+                    .guard_kind = std::string(
+                        savor::db::kWorkflowOutputPresentGuard),
+                },
+                {
+                    .from_node_key = "probe_1",
+                    .output_key = "seed_probe_run",
+                    .to_node_key = "battle_1",
+                    .input_key = "seed_probe_run",
+                    .guard_kind = std::string(
+                        savor::db::kWorkflowOutputPresentGuard),
+                },
+                {
+                    .from_node_key = "context_1",
+                    .output_key = "battle_context",
+                    .to_node_key = "battle_1",
+                    .input_key = "battle_context",
+                    .guard_kind = std::string(
+                        savor::db::kWorkflowOutputPresentGuard),
+                },
+            },
+            .created_at_utc = now,
+            .correlation_id = std::string(kCorrelation),
+            .causation_id = "established-root-scenario",
+        }, &saved, error_out))
+        return false;
+
+    const auto unit_registry =
+        savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+    std::string activation_error;
+    auto validate = savor::db::execution::workflow::
+        BuildUnitActivationSpecFromDefinition(
+            unit_registry, "tas_validate_1", "tas_validate_1",
+            "tas_movie_validate_root", "TAS Movie: Validate Root",
+            std::nullopt, std::nullopt, {}, &activation_error);
+    auto sterilize = savor::db::execution::workflow::
+        BuildUnitActivationSpecFromDefinition(
+            unit_registry, "tas_sterilize_1", "tas_sterilize_1",
+            "tas_movie_checkpoint_sterilize",
+            "TAS Movie: Sterilize Checkpoint", std::nullopt, std::nullopt,
+            {"tas_validate_1"}, &activation_error);
+    auto probe = savor::db::execution::workflow::
+        BuildUnitActivationSpecFromDefinition(
+            unit_registry, "probe_1", "probe_1", "seed_probe",
+            "SeedProbe", std::optional<std::string>("seed_probe_spec"),
+            seed_probe_spec_id, {"tas_sterilize_1"}, &activation_error);
+    auto context = savor::db::execution::workflow::
+        BuildUnitActivationSpecFromDefinition(
+            unit_registry, "context_1", "context_1", "battle.context",
+            "Battle Context", std::nullopt, std::nullopt,
+            {"tas_sterilize_1"}, &activation_error);
+    auto battle = savor::db::execution::workflow::
+        BuildUnitActivationSpecFromDefinition(
+            unit_registry, "battle_1", "battle_1", "battle",
+            "Battle", std::optional<std::string>("authoring.battle_plan"),
+            battle_plan_id, {"probe_1", "context_1"}, &activation_error);
+    if (!validate || !sterilize || !probe || !context || !battle)
+        return Fail("Established-root Battle workflow activation failed: "
+                        + activation_error,
+                    error_out);
+    if (validate->steps.size() != 1 ||
+        validate->steps.front().step_kind != "tasmovie.validate_root" ||
+        sterilize->steps.size() != 1 ||
+        sterilize->steps.front().step_kind !=
+            "tasmovie.checkpoint_sterilize")
+        return Fail("Established-root Battle TAS provenance prefix did not resolve to exact singleton steps",
+                    error_out);
+
+    savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
+    command.workflow_kind = "workflow_graph";
+    command.root_scope_kind = "manual";
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "savor-e2e";
+    command.created_at_utc = now.time_since_epoch().count();
+    command.unit_activations = {
+        std::move(*validate), std::move(*sterilize), std::move(*probe),
+        std::move(*context), std::move(*battle)};
+    command.input_bindings.push_back({
+        .node_key = "tas_validate_1",
+        .input_key = "root_establishment",
+        .data_kind = "analysis.tas_movie_validation_attempt_id",
+        .ref_kind = "tmv_validation_attempt",
+        .ref_id = root_establishment_attempt_id,
+        .source_kind = "external",
+    });
+    command.arguments.push_back({
+        .node_key = "tas_validate_1", .argument_key = "rtc",
+        .value_type = "integer", .integer_value = rtc_value,
+        .source_kind = "scenario",
+    });
+    command.arguments.push_back({
+        .node_key = "probe_1", .argument_key = "samples_per_axis",
+        .value_type = "integer", .integer_value = samples_per_axis,
+        .source_kind = "scenario",
+    });
+    command.arguments.push_back({
+        .node_key = "battle_1", .argument_key = "fake_attack_min",
+        .value_type = "integer", .integer_value = fake_attack_min,
+        .source_kind = "scenario",
+    });
+    command.arguments.push_back({
+        .node_key = "battle_1", .argument_key = "fake_attack_max",
+        .value_type = "integer", .integer_value = fake_attack_max,
+        .source_kind = "scenario",
+    });
+    command.arguments.push_back({
+        .node_key = "battle_1", .argument_key = "continuation_mode",
+        .value_type = "choice",
+        .text_value = std::string("automatic_best_per_ending_rng"),
+        .source_kind = "scenario",
+    });
+    return execution_db->CreateWorkflowInstance(
+        command, workflow_instance_id_out, error_out);
+}
+
 bool SeedPreparedBattleWorkflow(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IExecutionDb* execution_db,
@@ -1128,6 +1453,13 @@ bool CheckBattleInvariantsAndReportTrajectory(
         ExpectedNode{"context_1", "battle.context"},
         ExpectedNode{"battle_1", "battle"},
     };
+    static constexpr std::array kEstablishedNodes{
+        ExpectedNode{"tas_validate_1", "tas_movie_validate_root"},
+        ExpectedNode{"tas_sterilize_1", "tas_movie_checkpoint_sterilize"},
+        ExpectedNode{"probe_1", "seed_probe"},
+        ExpectedNode{"context_1", "battle.context"},
+        ExpectedNode{"battle_1", "battle"},
+    };
     static constexpr std::array kPreparedEdges{
         ExpectedEdge{"probe_1", "seed_probe_run", "battle_1",
                      "seed_probe_run"},
@@ -1148,12 +1480,26 @@ bool CheckBattleInvariantsAndReportTrajectory(
         ExpectedEdge{"context_1", "battle_context", "battle_1",
                      "battle_context"},
     };
+    static constexpr std::array kEstablishedEdges{
+        ExpectedEdge{"tas_validate_1", "validated_checkpoint_savestate",
+                     "tas_sterilize_1", "paired_checkpoint_savestate"},
+        ExpectedEdge{"tas_sterilize_1", "sterilized_checkpoint_savestate",
+                     "probe_1", "entry_savestate"},
+        ExpectedEdge{"tas_sterilize_1", "sterilized_checkpoint_savestate",
+                     "context_1", "entry_savestate"},
+        ExpectedEdge{"probe_1", "seed_probe_run", "battle_1",
+                     "seed_probe_run"},
+        ExpectedEdge{"context_1", "battle_context", "battle_1",
+                     "battle_context"},
+    };
     const bool prepared = entry.source
         == E2eScenarioEntrySource::PreparedSterilizedCheckpoint;
-    const auto expected_node_count = prepared
-        ? kPreparedNodes.size() : kFreshNodes.size();
-    const auto expected_edge_count = prepared
-        ? kPreparedEdges.size() : kFreshEdges.size();
+    const bool established = entry.source
+        == E2eScenarioEntrySource::TasMovieEstablishmentAttempt;
+    const auto expected_node_count = prepared ? kPreparedNodes.size()
+        : established ? kEstablishedNodes.size() : kFreshNodes.size();
+    const auto expected_edge_count = prepared ? kPreparedEdges.size()
+        : established ? kEstablishedEdges.size() : kFreshEdges.size();
     if (authored->nodes.size() != expected_node_count
         || authored->edges.size() != expected_edge_count) {
         return Fail("Battle authored graph node or edge count drifted",
@@ -1184,11 +1530,13 @@ bool CheckBattleInvariantsAndReportTrajectory(
         });
     };
     if (prepared ? !check_nodes(kPreparedNodes)
-                 : !check_nodes(kFreshNodes)) {
+                 : established ? !check_nodes(kEstablishedNodes)
+                               : !check_nodes(kFreshNodes)) {
         return Fail("Battle authored graph node identities drifted", error_out);
     }
     if (prepared ? !check_edges(kPreparedEdges)
-                 : !check_edges(kFreshEdges)) {
+                 : established ? !check_edges(kEstablishedEdges)
+                               : !check_edges(kFreshEdges)) {
         return Fail("Battle authored graph guarded edges drifted", error_out);
     }
 
@@ -1212,7 +1560,7 @@ bool CheckBattleInvariantsAndReportTrajectory(
     const auto seed_spec = db_service->AuthoringDb()->GetSeedProbeSpec(
         *authored_probe->authored_ref_id);
     if (!seed_spec
-        || seed_spec->min_value != options.seedprobe_min_value.value_or(47)
+        || seed_spec->min_value != options.seedprobe_min_value.value_or(48)
         || seed_spec->max_value != options.seedprobe_max_value.value_or(207)
         || seed_spec->combo_attempts_per_target
             != options.seedprobe_combo_attempts_per_target.value_or(20)
@@ -1328,9 +1676,11 @@ bool CheckBattleInvariantsAndReportTrajectory(
         });
     };
     if ((prepared ? !check_runtime_nodes(kPreparedNodes)
-                  : !check_runtime_nodes(kFreshNodes))
+                  : established ? !check_runtime_nodes(kEstablishedNodes)
+                                : !check_runtime_nodes(kFreshNodes))
         || (prepared ? !check_runtime_edges(kPreparedEdges)
-                     : !check_runtime_edges(kFreshEdges))) {
+                     : established ? !check_runtime_edges(kEstablishedEdges)
+                                   : !check_runtime_edges(kFreshEdges))) {
         return Fail("Battle realized static graph topology drifted", error_out);
     }
 
@@ -1364,6 +1714,27 @@ bool CheckBattleInvariantsAndReportTrajectory(
                             "state.movie_inactive_savestate_id",
                             *entry.savestate_id)) {
             return Fail("Prepared Battle external entry bindings drifted",
+                        error_out);
+        }
+    } else if (established) {
+        if (!entry.tas_movie_establishment_attempt_id) {
+            return Fail("Established-root Battle entry is missing its establishment attempt",
+                        error_out);
+        }
+        const auto root_establishment_binding_count = std::ranges::count_if(
+            graph.input_bindings, [&](const auto& binding) {
+                return binding.node_key == "tas_validate_1"
+                    && binding.input_key == "root_establishment"
+                    && binding.data_kind
+                        == "analysis.tas_movie_validation_attempt_id"
+                    && binding.ref_kind == "tmv_validation_attempt"
+                    && binding.ref_id
+                        == *entry.tas_movie_establishment_attempt_id
+                    && binding.source_kind == "external";
+            });
+        if (external_binding_count != 1
+            || root_establishment_binding_count != 1) {
+            return Fail("Established-root Battle external entry binding drifted",
                         error_out);
         }
     } else {
@@ -1463,11 +1834,13 @@ bool CheckBattleInvariantsAndReportTrajectory(
         });
     };
     std::int64_t effective_entry_savestate_id = 0;
-    if (entry.source == E2eScenarioEntrySource::FreshTasMovieValidation) {
-        if (establish_step == graph.steps.end()
+    if (entry.source == E2eScenarioEntrySource::FreshTasMovieValidation
+        || established) {
+        if ((!established && establish_step == graph.steps.end())
+            || (established && establish_step != graph.steps.end())
             || validate_step == graph.steps.end()
             || sterilize_step == graph.steps.end()) {
-            return Fail("Battle workflow is missing its authored TAS preparation topology",
+            return Fail("Battle workflow is missing its validation and sterilization topology",
                         error_out);
         }
         if (sterilize_step->state == WorkflowStepState::Skipped) {
@@ -1485,10 +1858,11 @@ bool CheckBattleInvariantsAndReportTrajectory(
                        "guarded_tas_preparation_did_not_produce_an_entry"));
             return true;
         }
-        if (establish_step->state != WorkflowStepState::Completed
+        if ((!established
+                && establish_step->state != WorkflowStepState::Completed)
             || validate_step->state != WorkflowStepState::Completed
             || sterilize_step->state != WorkflowStepState::Completed) {
-            return Fail("Battle TAS preparation topology is not terminal-consistent",
+            return Fail("Battle validation and sterilization topology is not terminal-consistent",
                         error_out);
         }
         const auto validated_checkpoint = find_output(
@@ -1510,7 +1884,7 @@ bool CheckBattleInvariantsAndReportTrajectory(
                     db_service->StateDb(), db_service->AnalysisDb(),
                     effective_entry_savestate_id, &qualified,
                     &qualification_error)) {
-            return Fail("fresh Battle checkpoint qualification failed: "
+            return Fail("validation-backed Battle checkpoint qualification failed: "
                             + qualification_error,
                         error_out);
         }
@@ -1993,6 +2367,65 @@ bool CheckBattleInvariantsAndReportTrajectory(
     return true;
 }
 
+bool ResolveEstablishedBattleRootCursor(
+    savor::db::core::DBService* db_service,
+    const std::int64_t establishment_attempt_id,
+    const std::int64_t requested_rtc,
+    std::int64_t* validation_attempt_id_out,
+    std::int64_t* runtime_rtc_out,
+    std::string* error_out)
+{
+    if (db_service == nullptr || !db_service->IsRunning()
+        || db_service->AnalysisDb() == nullptr || db_service->StateDb() == nullptr
+        || establishment_attempt_id <= 0 || requested_rtc < 0
+        || static_cast<std::uint64_t>(requested_rtc)
+            > std::numeric_limits<std::uint32_t>::max()
+        || validation_attempt_id_out == nullptr || runtime_rtc_out == nullptr) {
+        return Fail("established-root Battle entry requires a running DB service, valid establishment attempt, and unsigned 32-bit RTC",
+                    error_out);
+    }
+
+    const auto attempt = db_service->AnalysisDb()
+        ->GetTasMovieValidationAttempt(establishment_attempt_id);
+    if (!attempt || attempt->outcome
+            != savor::db::TasMovieValidationOutcome::RootCursorEstablished
+        || !attempt->candidate_itinerary_artifact_id
+        || !attempt->candidate_itinerary_sha256
+        || attempt->candidate_itinerary_sha256->empty()) {
+        return Fail("provided establishment attempt is not a complete root-cursor establishment",
+                    error_out);
+    }
+    const auto request = db_service->AnalysisDb()->GetTasMovieValidationRequest(
+        attempt->validation_request_id);
+    if (!request || request->operation
+            != savor::db::TasMovieValidationOperation::EstablishRootCursor
+        || !request->source_dtm_artifact_id
+        || request->source_dtm_artifact_id <= 0) {
+        return Fail("provided establishment attempt lacks a valid establishment request",
+                    error_out);
+    }
+    const auto source_dtm = db_service->StateDb()->GetArtifact(
+        request->source_dtm_artifact_id);
+    if (!source_dtm || source_dtm->artifact_kind != "DTM"
+        || source_dtm->sha256 != request->source_dtm_sha256) {
+        return Fail("establishment attempt source DTM artifact is missing or stale",
+                    error_out);
+    }
+
+    auto runtime_rtc = requested_rtc;
+    while (db_service->StateDb()->FindTasMovieRootBySourceRtc(
+        request->source_dtm_artifact_id, runtime_rtc)) {
+        if (runtime_rtc == std::numeric_limits<std::uint32_t>::max()) {
+            return Fail("all possible RTCs are already used for the established root source DTM",
+                        error_out);
+        }
+        ++runtime_rtc;
+    }
+    *validation_attempt_id_out = attempt->validation_attempt_id;
+    *runtime_rtc_out = runtime_rtc;
+    return true;
+}
+
 } // namespace
 
 bool RunBattleWorkflowGraphRealWorkerScenario(
@@ -2016,6 +2449,8 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
 
     std::string error;
     std::int64_t dtm_artifact_id = 0;
+    std::int64_t establishment_validation_attempt_id = 0;
+    std::int64_t runtime_rtc = 0;
     if (entry.source == E2eScenarioEntrySource::FreshTasMovieValidation) {
         if (!options.tasmovie_rtc)
             return Fail("fresh Battle E2E requires an exact TAS Movie validation RTC",
@@ -2024,6 +2459,22 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
                                   &dtm_artifact_id, &error))
             return Fail("failed seeding approved Battle DTM artifact: " + error,
                         error_out);
+        runtime_rtc = *options.tasmovie_rtc;
+    } else if (entry.source
+        == E2eScenarioEntrySource::TasMovieEstablishmentAttempt) {
+        if (!options.tasmovie_rtc || !entry.tas_movie_establishment_attempt_id
+            || !ResolveEstablishedBattleRootCursor(
+                db_service, *entry.tas_movie_establishment_attempt_id,
+                *options.tasmovie_rtc, &establishment_validation_attempt_id,
+                &runtime_rtc, &error)) {
+            return Fail("failed resolving established-root Battle entry: " + error,
+                        error_out);
+        }
+        if (runtime_rtc != *options.tasmovie_rtc) {
+            std::cout << "[battle] requested RTC " << *options.tasmovie_rtc
+                      << " already had a persisted root; using RTC "
+                      << runtime_rtc << '\n';
+        }
     } else if (entry.source
         != E2eScenarioEntrySource::PreparedSterilizedCheckpoint
         || !entry.savestate_id) {
@@ -2041,23 +2492,35 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
                              &battle_plan_id, &error))
         return Fail("failed seeding Battle authoring: " + error, error_out);
     std::int64_t workflow_instance_id = 0;
-    const auto seeded = entry.source
-            == E2eScenarioEntrySource::FreshTasMovieValidation
-        ? SeedBattleWorkflow(
+    bool seeded = false;
+    if (entry.source == E2eScenarioEntrySource::FreshTasMovieValidation) {
+        seeded = SeedBattleWorkflow(
             db_service->AuthoringDb(), db_service->ExecutionDb(),
             dtm_artifact_id, seed_probe_spec_id, battle_plan_id,
-            *options.tasmovie_rtc,
+            runtime_rtc,
             options.seedprobe_samples_per_axis.value_or(1),
             options.battle_fake_attack_min.value_or(0),
             options.battle_fake_attack_max.value_or(0),
-            entry.run_identity, &workflow_instance_id, &error)
-        : SeedPreparedBattleWorkflow(
+            entry.run_identity, &workflow_instance_id, &error);
+    } else if (entry.source
+        == E2eScenarioEntrySource::TasMovieEstablishmentAttempt) {
+        seeded = SeedEstablishedBattleWorkflow(
+            db_service->AuthoringDb(), db_service->ExecutionDb(),
+            establishment_validation_attempt_id, seed_probe_spec_id,
+            battle_plan_id, runtime_rtc,
+            options.seedprobe_samples_per_axis.value_or(1),
+            options.battle_fake_attack_min.value_or(0),
+            options.battle_fake_attack_max.value_or(0),
+            entry.run_identity, &workflow_instance_id, &error);
+    } else {
+        seeded = SeedPreparedBattleWorkflow(
             db_service->AuthoringDb(), db_service->ExecutionDb(),
             *entry.savestate_id, seed_probe_spec_id, battle_plan_id,
             options.seedprobe_samples_per_axis.value_or(1),
             options.battle_fake_attack_min.value_or(0),
             options.battle_fake_attack_max.value_or(0),
             entry.run_identity, &workflow_instance_id, &error);
+    }
     if (!seeded)
         return Fail("failed seeding Battle workflow: " + error, error_out);
 

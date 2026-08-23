@@ -6,8 +6,7 @@
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
-
-class CoordinatorController;
+#include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 
 class QHBoxLayout;
 class QLabel;
@@ -21,7 +20,8 @@ struct StatusBarSnapshot
     QString envLabel = "prod";
     QDateTime lastRefresh;
     QString lastError;
-    bool coordinatorRunning = false;
+    CoordinatorLifecycleState coordinatorState =
+        CoordinatorLifecycleState::Stopped;
     int coordinatorWorkers = 0;
 };
 
@@ -39,7 +39,7 @@ public:
 public slots:
     void postToast(StatusToast toast);
     void postToast(StatusToast::Severity severity, const QString& message, const QString& details = QString(), int ttlMs = 4000);
-    void setCoordinatorState(bool running, bool paused, int targetWorkers, int activeWorkers, const QString& validationMessage);
+    void setCoordinatorState(CoordinatorLifecycleState state, bool paused, int targetWorkers, int activeWorkers, const QString& validationMessage);
 
 private:
     struct ToastHistoryEntry
@@ -54,8 +54,10 @@ private:
 
     enum class CoordinatorToastState {
         Stopped,
+        Starting,
         Running,
-        Paused
+        Paused,
+        Stopping,
     };
 
     QLabel* createBadge(const QString& text, const QString& variant);

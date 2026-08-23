@@ -74,7 +74,8 @@ struct BackendOpenOptions
     std::filesystem::path user_directory;
     std::filesystem::path dolphin_base_directory;
     std::filesystem::path iso_path;
-    bool force_resync_from_base = true;
+    std::string session_filesystem_preparation_id;
+    std::uint64_t process_generation = 0;
     bool visual = false;
     std::uintptr_t render_window_handle = 0;
 };

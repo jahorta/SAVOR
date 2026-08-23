@@ -34,7 +34,9 @@ const char* ToDb(WorkflowInstanceState state) {
     case WorkflowInstanceState::Running: return "RUNNING";
     case WorkflowInstanceState::Completed: return "COMPLETED";
     case WorkflowInstanceState::Failed: return "FAILED";
+    case WorkflowInstanceState::Cancelling: return "CANCELLING";
     case WorkflowInstanceState::Canceled: return "CANCELED";
+    case WorkflowInstanceState::Interrupted: return "INTERRUPTED";
     }
     return "PENDING";
 }
@@ -48,6 +50,8 @@ const char* ToDb(WorkflowStepState state) {
     case WorkflowStepState::Completed: return "COMPLETED";
     case WorkflowStepState::Failed: return "FAILED";
     case WorkflowStepState::Skipped: return "SKIPPED";
+    case WorkflowStepState::Canceled: return "CANCELED";
+    case WorkflowStepState::Interrupted: return "INTERRUPTED";
     }
     return "WAITING";
 }
@@ -61,6 +65,7 @@ const char* ToDb(WorkflowUnitActivationState state) {
     case WorkflowUnitActivationState::Failed: return "FAILED";
     case WorkflowUnitActivationState::Skipped: return "SKIPPED";
     case WorkflowUnitActivationState::Canceled: return "CANCELED";
+    case WorkflowUnitActivationState::Interrupted: return "INTERRUPTED";
     }
     return "WAITING";
 }
@@ -70,7 +75,9 @@ WorkflowInstanceState ParseInstanceState(const unsigned char* state_text) {
     if (value == "RUNNING") return WorkflowInstanceState::Running;
     if (value == "COMPLETED") return WorkflowInstanceState::Completed;
     if (value == "FAILED") return WorkflowInstanceState::Failed;
+    if (value == "CANCELLING") return WorkflowInstanceState::Cancelling;
     if (value == "CANCELED") return WorkflowInstanceState::Canceled;
+    if (value == "INTERRUPTED") return WorkflowInstanceState::Interrupted;
     return WorkflowInstanceState::Pending;
 }
 
@@ -82,6 +89,8 @@ WorkflowStepState ParseStepState(const unsigned char* state_text) {
     if (value == "COMPLETED") return WorkflowStepState::Completed;
     if (value == "FAILED") return WorkflowStepState::Failed;
     if (value == "SKIPPED") return WorkflowStepState::Skipped;
+    if (value == "CANCELED") return WorkflowStepState::Canceled;
+    if (value == "INTERRUPTED") return WorkflowStepState::Interrupted;
     return WorkflowStepState::Waiting;
 }
 
@@ -93,6 +102,7 @@ WorkflowUnitActivationState ParseUnitActivationState(const unsigned char* state_
     if (value == "FAILED") return WorkflowUnitActivationState::Failed;
     if (value == "SKIPPED") return WorkflowUnitActivationState::Skipped;
     if (value == "CANCELED") return WorkflowUnitActivationState::Canceled;
+    if (value == "INTERRUPTED") return WorkflowUnitActivationState::Interrupted;
     return WorkflowUnitActivationState::Waiting;
 }
 
@@ -436,8 +446,9 @@ std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServ
         " JOIN job_set_descendants d ON d.job_set_id=js.job_set_id), "
         "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id), "
         "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
-        "  WHERE j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
-        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='FAILED') "
+        "  WHERE j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','CANCELED')), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
+        " WHERE j.state IN ('FAILED','INTERRUPTED','CANCELED','SUPERSEDED')) "
         "FROM step_root r "
         "LEFT JOIN exec_job_set root_js ON root_js.job_set_id=r.job_set_id "
         "WHERE NOT EXISTS ("
@@ -453,7 +464,7 @@ std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServ
         "  JOIN exec_job j ON j.job_set_id=d.job_set_id "
         "  WHERE j.state NOT IN "
         "    ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED',"
-        "     'SUCCEEDED_DUPLICATE','FAILED','CANCELED')"
+        "     'SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','CANCELED')"
         ");",
         &st,
         nullptr)) {
@@ -510,8 +521,8 @@ std::vector<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServic
         "job_summary AS ("
         "  SELECT d.workflow_step_id, "
         "    COUNT(j.job_id) AS discovered_total, "
-        "    COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED') THEN 1 ELSE 0 END), 0) AS terminal_total, "
-        "    COALESCE(SUM(CASE WHEN j.state='FAILED' THEN 1 ELSE 0 END), 0) AS failed_total "
+        "    COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','CANCELED') THEN 1 ELSE 0 END), 0) AS terminal_total, "
+        "    COALESCE(SUM(CASE WHEN j.state IN ('FAILED','INTERRUPTED','CANCELED','SUPERSEDED') THEN 1 ELSE 0 END), 0) AS failed_total "
         "  FROM job_set_descendants d "
         "  LEFT JOIN exec_job j ON j.job_set_id=d.job_set_id "
         "  GROUP BY d.workflow_step_id "
@@ -1320,14 +1331,18 @@ bool SqliteWorkflowOrchestrationCommandService::SkipStep(const WorkflowSkipStepC
 bool SqliteWorkflowOrchestrationCommandService::CancelWorkflowInstance(
     const WorkflowCancelInstanceCommand& command,
     std::string* error_out) {
+    if (command.workflow_instance_id <= 0 || command.requested_by.empty()) {
+        if (error_out) *error_out = "workflow cancellation requires an instance id and requester";
+        return false;
+    }
     if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
         return false;
     }
 
     Statement st;
     if (!Prepare(db_,
-        "UPDATE exec_workflow_instance SET state='CANCELED', failure_text=?2, completed_at_utc=?3 "
-        "WHERE workflow_instance_id=?1 AND state IN ('PENDING','RUNNING','FAILED');",
+        "UPDATE exec_workflow_instance SET state='CANCELLING', failure_text=?2 "
+        "WHERE workflow_instance_id=?1 AND state IN ('PENDING','RUNNING','FAILED','INTERRUPTED','CANCELLING');",
         &st,
         error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
@@ -1335,7 +1350,6 @@ bool SqliteWorkflowOrchestrationCommandService::CancelWorkflowInstance(
     }
     sqlite3_bind_int64(st.st, 1, command.workflow_instance_id);
     sqlite3_bind_text(st.st, 2, command.reason.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 3, NowUtc());
 
     if (sqlite3_step(st.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -1348,7 +1362,161 @@ bool SqliteWorkflowOrchestrationCommandService::CancelWorkflowInstance(
         return false;
     }
 
-    if (!EmitLifecycleEvent(command.workflow_instance_id, std::nullopt, "Execution.WorkflowInstanceCompleted.v1", "cancel", error_out)) {
+    const auto now = NowUtc();
+    Statement cancel_unstarted;
+    if (!Prepare(db_,
+        "WITH RECURSIVE job_set_descendants(job_set_id, depth) AS ("
+        "  SELECT job_set_id, 0 FROM exec_workflow_step "
+        "  WHERE workflow_instance_id=?1 AND job_set_id IS NOT NULL "
+        "  UNION ALL "
+        "  SELECT child.job_set_id, d.depth + 1 FROM exec_job_set child "
+        "  JOIN job_set_descendants d ON child.parent_job_set_id=d.job_set_id "
+        "  WHERE d.depth < 64"
+        ") "
+        "UPDATE exec_job SET state='CANCELED',ended_at_utc=?2,"
+        "error_code='WORKFLOW_CANCELLED_BY_USER',error_text=?3,"
+        "cancellation_state='RESOLVED',cancellation_resolved_at_utc=?2,"
+        "cancellation_resolution_code='WORKFLOW_CANCELLED_BY_USER' "
+        "WHERE job_set_id IN (SELECT job_set_id FROM job_set_descendants) "
+        "AND state IN ('PENDING_MATERIALIZATION','PENDING_WORKSET','QUEUED');",
+        &cancel_unstarted,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(cancel_unstarted.st, 1, command.workflow_instance_id);
+    sqlite3_bind_int64(cancel_unstarted.st, 2, now);
+    sqlite3_bind_text(cancel_unstarted.st, 3, command.reason.c_str(), -1, SQLITE_TRANSIENT);
+    if (!StepDone(db_, cancel_unstarted.st, error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    Statement request_active;
+    if (!Prepare(db_,
+        "WITH RECURSIVE job_set_descendants(job_set_id, depth) AS ("
+        "  SELECT job_set_id, 0 FROM exec_workflow_step "
+        "  WHERE workflow_instance_id=?1 AND job_set_id IS NOT NULL "
+        "  UNION ALL "
+        "  SELECT child.job_set_id, d.depth + 1 FROM exec_job_set child "
+        "  JOIN job_set_descendants d ON child.parent_job_set_id=d.job_set_id "
+        "  WHERE d.depth < 64"
+        ") "
+        "INSERT OR IGNORE INTO exec_job_cancellation_request("
+        "job_id,request_key,reason_code,reason_text,requested_by,caused_by_job_id,"
+        "terminal_disposition,requested_at_utc,state) "
+        "SELECT j.job_id,?2 || ':' || j.job_id,'WORKFLOW_CANCELLED_BY_USER',?3,?4,"
+        "NULL,'USER_WORKFLOW_CANCEL',?5,'REQUESTED' "
+        "FROM exec_job j WHERE j.job_set_id IN (SELECT job_set_id FROM job_set_descendants) "
+        "AND j.state IN ('CLAIMED','RUNNING');",
+        &request_active,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    const auto request_prefix = "workflow-cancel:" + std::to_string(command.workflow_instance_id);
+    sqlite3_bind_int64(request_active.st, 1, command.workflow_instance_id);
+    sqlite3_bind_text(request_active.st, 2, request_prefix.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(request_active.st, 3, command.reason.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(request_active.st, 4, command.requested_by.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(request_active.st, 5, now);
+    if (!StepDone(db_, request_active.st, error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    Statement cancel_steps;
+    if (!Prepare(db_,
+        "UPDATE exec_workflow_step SET state='CANCELED',blocked_reason='WORKFLOW_CANCELLED_BY_USER',"
+        "completed_at_utc=?2 WHERE workflow_instance_id=?1 AND state IN ('WAITING','READY');",
+        &cancel_steps,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(cancel_steps.st, 1, command.workflow_instance_id);
+    sqlite3_bind_int64(cancel_steps.st, 2, now);
+    if (!StepDone(db_, cancel_steps.st, error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    Statement cancel_materialized_steps;
+    if (!Prepare(db_,
+        "WITH RECURSIVE step_job_sets(workflow_step_id,job_set_id,depth) AS ("
+        "  SELECT workflow_step_id,job_set_id,0 FROM exec_workflow_step "
+        "  WHERE workflow_instance_id=?1 AND job_set_id IS NOT NULL "
+        "  UNION ALL "
+        "  SELECT d.workflow_step_id,child.job_set_id,d.depth+1 "
+        "  FROM exec_job_set child JOIN step_job_sets d "
+        "  ON child.parent_job_set_id=d.job_set_id WHERE d.depth<64"
+        ") "
+        "UPDATE exec_workflow_step AS s SET state='CANCELED',"
+        "blocked_reason='WORKFLOW_CANCELLED_BY_USER',completed_at_utc=?2 "
+        "WHERE s.workflow_instance_id=?1 AND s.state IN ('MATERIALIZED','RUNNING') "
+        "AND NOT EXISTS("
+        " SELECT 1 FROM step_job_sets d JOIN exec_job j ON j.job_set_id=d.job_set_id "
+        " WHERE d.workflow_step_id=s.workflow_step_id "
+        " AND j.state NOT IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER',"
+        "'SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED')"
+        ");",
+        &cancel_materialized_steps,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(
+        cancel_materialized_steps.st, 1, command.workflow_instance_id);
+    sqlite3_bind_int64(cancel_materialized_steps.st, 2, now);
+    if (!StepDone(db_, cancel_materialized_steps.st, error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    Statement cancel_activations;
+    if (!Prepare(db_,
+        "UPDATE exec_workflow_unit_activation SET state='CANCELED',failure_code='WORKFLOW_CANCELLED_BY_USER',"
+        "failure_text=?2,completed_at_utc=?3 WHERE workflow_instance_id=?1 "
+        "AND state IN ('WAITING','READY');",
+        &cancel_activations,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(cancel_activations.st, 1, command.workflow_instance_id);
+    sqlite3_bind_text(cancel_activations.st, 2, command.reason.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(cancel_activations.st, 3, now);
+    if (!StepDone(db_, cancel_activations.st, error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    Statement finalize;
+    if (!Prepare(db_,
+        "UPDATE exec_workflow_instance SET state='CANCELED',completed_at_utc=?2 "
+        "WHERE workflow_instance_id=?1 AND state='CANCELLING' AND NOT EXISTS("
+        " SELECT 1 FROM exec_workflow_step WHERE workflow_instance_id=?1 "
+        " AND state NOT IN ('COMPLETED','FAILED','INTERRUPTED','SKIPPED','CANCELED')) "
+        ";",
+        &finalize,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(finalize.st, 1, command.workflow_instance_id);
+    sqlite3_bind_int64(finalize.st, 2, now);
+    if (!StepDone(db_, finalize.st, error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    const bool finalized = sqlite3_changes(db_) == 1;
+
+    if (finalized && !EmitLifecycleEvent(
+            command.workflow_instance_id,
+            std::nullopt,
+            "Execution.WorkflowInstanceCompleted.v1",
+            "canceled",
+            error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
     }
@@ -1370,7 +1538,7 @@ bool SqliteWorkflowOrchestrationCommandService::ResumeWorkflowInstance(
     Statement st;
     if (!Prepare(db_,
         "UPDATE exec_workflow_instance SET state='RUNNING', failure_text=NULL, started_at_utc=COALESCE(started_at_utc, ?2) "
-        "WHERE workflow_instance_id=?1 AND state IN ('FAILED','CANCELED');",
+        "WHERE workflow_instance_id=?1 AND state IN ('FAILED','INTERRUPTED');",
         &st,
         error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
@@ -1436,8 +1604,13 @@ bool SqliteWorkflowOrchestrationCommandService::CompleteWorkflowInstance(
         }
         return true;
     }
-    if (current_state == "FAILED" || current_state == "CANCELED") {
-        if (error_out) *error_out = "complete precondition failed (instance already terminal)";
+    if (current_state == "FAILED" || current_state == "INTERRUPTED") {
+        if (error_out) *error_out = "complete precondition failed (instance must be resumed)";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    if (current_state == "CANCELED") {
+        if (error_out) *error_out = "complete precondition failed (instance is final)";
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
     }
@@ -1451,7 +1624,7 @@ bool SqliteWorkflowOrchestrationCommandService::CompleteWorkflowInstance(
         "  AND NOT EXISTS ("
         "    SELECT 1 FROM exec_workflow_step "
         "    WHERE workflow_instance_id=?1 "
-        "      AND state NOT IN ('COMPLETED','FAILED','SKIPPED')"
+        "      AND state NOT IN ('COMPLETED','SKIPPED')"
         "  );",
         &st,
         error_out)) {
@@ -1550,8 +1723,8 @@ bool SqliteWorkflowOrchestrationCommandService::PauseWorkflowInstance(
     return true;
 }
 
-bool SqliteWorkflowOrchestrationCommandService::TerminalFailWorkflowInstance(
-    const WorkflowTerminalFailInstanceCommand& command,
+bool SqliteWorkflowOrchestrationCommandService::FailWorkflowInstance(
+    const WorkflowFailInstanceCommand& command,
     std::string* error_out) {
     if (command.workflow_instance_id <= 0) {
         if (error_out) *error_out = "workflow_instance_id must be > 0";
@@ -1679,7 +1852,7 @@ bool SqliteWorkflowOrchestrationCommandService::TerminalFailWorkflowInstance(
     Statement st;
     if (!Prepare(db_,
         "UPDATE exec_workflow_instance "
-        "SET state='FAILED', failure_code=?2, failure_text=?3, completed_at_utc=?4 "
+        "SET state='FAILED', failure_code=?2, failure_text=?3, completed_at_utc=NULL "
         "WHERE workflow_instance_id=?1 AND state IN ('PENDING','RUNNING','FAILED');",
         &st,
         error_out)) {
@@ -1689,7 +1862,6 @@ bool SqliteWorkflowOrchestrationCommandService::TerminalFailWorkflowInstance(
     sqlite3_bind_int64(st.st, 1, command.workflow_instance_id);
     sqlite3_bind_text(st.st, 2, command.failure_code.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(st.st, 3, command.failure_message.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 4, now);
 
     if (sqlite3_step(st.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -1705,7 +1877,7 @@ bool SqliteWorkflowOrchestrationCommandService::TerminalFailWorkflowInstance(
     if (!EmitLifecycleEvent(
             command.workflow_instance_id,
             std::nullopt,
-            "Execution.WorkflowRemediationTerminalFailed.v1",
+            "Execution.WorkflowInstanceFailed.v1",
             command.failure_message.c_str(),
             error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
@@ -1857,9 +2029,8 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepTerminal(
     }
 
     const bool completed = command.terminal_state == "COMPLETED";
-    const bool failed = command.terminal_state == "FAILED";
-    if (!completed && !failed) {
-        if (error_out) *error_out = "terminal_state must be COMPLETED or FAILED";
+    if (!completed) {
+        if (error_out) *error_out = "terminal_state must be COMPLETED";
         return false;
     }
 
@@ -1886,7 +2057,7 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepTerminal(
     const auto workflow_instance_id = sqlite3_column_int64(read.st, 0);
     const auto workflow_unit_activation_id = ColumnInt64Optional(read.st, 1);
     const std::string state = reinterpret_cast<const char*>(sqlite3_column_text(read.st, 2));
-    const std::string target_state = completed ? "COMPLETED" : "FAILED";
+    const std::string target_state = "COMPLETED";
 
     if (state == target_state) {
         if (!Exec(db_, "COMMIT;", error_out)) {
@@ -1905,8 +2076,7 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepTerminal(
     if (!Prepare(db_,
         "UPDATE exec_workflow_step "
         "SET state=?2, "
-        "completed_at_utc=CASE WHEN ?2='COMPLETED' THEN ?3 ELSE completed_at_utc END, "
-        "failed_at_utc=CASE WHEN ?2='FAILED' THEN ?3 ELSE failed_at_utc END, "
+        "completed_at_utc=?3, "
         "output_ref_kind=COALESCE(output_ref_kind, ?4), "
         "output_ref_id=COALESCE(output_ref_id, ?5) "
         "WHERE workflow_step_id=?1 AND state IN ('MATERIALIZED','RUNNING','READY');",
@@ -1934,8 +2104,8 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepTerminal(
         return false;
     }
 
-    const char* event_kind = completed ? "Execution.WorkflowStepCompleted.v1" : "Execution.WorkflowStepFailed.v1";
-    const char* message = completed ? "terminal_completed" : "terminal_failed";
+    const char* event_kind = "Execution.WorkflowStepCompleted.v1";
+    const char* message = "terminal_completed";
     if (!EmitLifecycleEvent(workflow_instance_id, command.workflow_step_id, event_kind, message, error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
@@ -2390,7 +2560,7 @@ bool SqliteWorkflowOrchestrationCommandService::ScheduleUnitActivation(
     }
     const std::string instance_state = reinterpret_cast<const char*>(sqlite3_column_text(instance.st, 0));
     if (instance_state != "RUNNING" && instance_state != "PENDING") {
-        if (error_out) *error_out = "schedule unit activation precondition failed (workflow instance is terminal)";
+        if (error_out) *error_out = "schedule unit activation precondition failed (workflow instance is not active)";
         rollback();
         return false;
     }
@@ -2572,7 +2742,7 @@ bool SqliteWorkflowOrchestrationCommandService::AppendDynamicSteps(
     }
     const std::string instance_state = reinterpret_cast<const char*>(sqlite3_column_text(instance.st, 0));
     if (instance_state != "RUNNING" && instance_state != "PENDING") {
-        if (error_out) *error_out = "append dynamic step precondition failed (workflow instance is terminal)";
+        if (error_out) *error_out = "append dynamic step precondition failed (workflow instance is not active)";
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
     }

@@ -8,14 +8,19 @@
 #include "GUI/Widgets/VisualReplay/VisualWorkerDashboardDialog.h"
 
 #include <QtCore/QDateTime>
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
+#include <QtCore/QUrl>
+#include <QtGui/QDesktopServices>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QStyle>
@@ -62,7 +67,8 @@ void CoordinatorPane::refreshUi()
         return;
     }
 
-    const bool running = controller_->isRunning();
+    const auto lifecycleState = controller_->lifecycleState();
+    const bool running = lifecycleState == CoordinatorLifecycleState::Running;
     const bool paused = controller_->isPaused();
     const QString validationMessage = controller_->validationMessage();
     const bool valid = validationMessage.isEmpty();
@@ -81,8 +87,23 @@ void CoordinatorPane::refreshUi()
     activeWorkersLabel_->setText(running
         ? QString::number(controller_->activeWorkers())
         : QStringLiteral("--"));
-    statusValueLabel_->setText(!running ? QStringLiteral("Stopped") : paused ? QStringLiteral("Paused") : QStringLiteral("Running"));
-    statusValueLabel_->setProperty("coordinatorState", !running ? QStringLiteral("stopped") : paused ? QStringLiteral("paused") : QStringLiteral("running"));
+    QString lifecycleText = QStringLiteral("Stopped");
+    QString lifecycleProperty = QStringLiteral("stopped");
+    if (lifecycleState == CoordinatorLifecycleState::Starting) {
+        lifecycleText = QStringLiteral("Starting");
+        lifecycleProperty = QStringLiteral("starting");
+    } else if (lifecycleState == CoordinatorLifecycleState::Stopping) {
+        lifecycleText = QStringLiteral("Stopping");
+        lifecycleProperty = QStringLiteral("stopping");
+    } else if (running && paused) {
+        lifecycleText = QStringLiteral("Paused");
+        lifecycleProperty = QStringLiteral("paused");
+    } else if (running) {
+        lifecycleText = QStringLiteral("Running");
+        lifecycleProperty = QStringLiteral("running");
+    }
+    statusValueLabel_->setText(lifecycleText);
+    statusValueLabel_->setProperty("coordinatorState", lifecycleProperty);
     statusValueLabel_->style()->unpolish(statusValueLabel_);
     statusValueLabel_->style()->polish(statusValueLabel_);
 
@@ -140,12 +161,29 @@ void CoordinatorPane::refreshUi()
         lastToastSignature_.clear();
     }
 
+    const QString cleanupError = controller_->resultStagingCleanupError();
+    if (!cleanupError.isEmpty()) {
+        const QString signature = QStringLiteral("result-staging|%1")
+            .arg(cleanupError);
+        if (signature != lastCleanupToastSignature_) {
+            lastCleanupToastSignature_ = signature;
+            emit statusToastRequested(StatusToast{
+                StatusToast::Severity::Error,
+                QStringLiteral("Result staging cleanup blocked."),
+                cleanupError,
+                1,
+                QDateTime::currentDateTimeUtc(),
+                6000,
+            });
+        }
+    }
+
     tableSummaryLabel_->setText(running
         ? QStringLiteral("DB workflow worker telemetry refreshes every %1 ms.").arg(kRefreshIntervalMs)
         : QStringLiteral("Start the coordinator to populate the live worker table."));
 
-    syncActionButtonStates(running, valid);
-    setControlsEnabledForRunningState(running);
+    syncActionButtonStates(lifecycleState, valid);
+    setControlsEnabledForLifecycleState(lifecycleState);
     stoppedLabel_->setVisible(!running);
     workerTableView_->setVisible(running);
 
@@ -184,6 +222,38 @@ void CoordinatorPane::configureTable(QTreeView* tableView)
     tableView->header()->setStretchLastSection(true);
     tableView->header()->setSectionResizeMode(QHeaderView::Interactive);
     tableView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    tableView->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(
+        tableView,
+        &QTreeView::customContextMenuRequested,
+        this,
+        &CoordinatorPane::showWorkerContextMenu);
+}
+
+void CoordinatorPane::showWorkerContextMenu(const QPoint& position)
+{
+    if (!workerTableView_ || !workerTableModel_)
+        return;
+    const QModelIndex index = workerTableView_->indexAt(position);
+    const auto snapshot = workerTableModel_->snapshotAt(index.row());
+    if (!snapshot || snapshot->log_path.empty())
+        return;
+
+    const QFileInfo logInfo(QString::fromStdString(snapshot->log_path));
+    QMenu menu(workerTableView_);
+    QAction* openLog = menu.addAction(QStringLiteral("Open current log"));
+    QAction* openFolder = menu.addAction(QStringLiteral("Open log folder"));
+    openLog->setEnabled(logInfo.exists() && logInfo.isFile());
+    openFolder->setEnabled(logInfo.dir().exists());
+    QAction* selected = menu.exec(
+        workerTableView_->viewport()->mapToGlobal(position));
+    if (selected == openLog) {
+        QDesktopServices::openUrl(
+            QUrl::fromLocalFile(logInfo.absoluteFilePath()));
+    } else if (selected == openFolder) {
+        QDesktopServices::openUrl(
+            QUrl::fromLocalFile(logInfo.absolutePath()));
+    }
 }
 
 QWidget* CoordinatorPane::createControlsCard()
@@ -323,18 +393,29 @@ QWidget* CoordinatorPane::createMetricCard(const QString& caption, QLabel** valu
     return frame;
 }
 
-void CoordinatorPane::setControlsEnabledForRunningState(bool running)
+void CoordinatorPane::setControlsEnabledForLifecycleState(
+    CoordinatorLifecycleState state)
 {
+    const bool running = state == CoordinatorLifecycleState::Running;
+    const bool starting = state == CoordinatorLifecycleState::Starting;
+    const bool stopped = state == CoordinatorLifecycleState::Stopped;
     pauseButton_->setEnabled(running);
-    stopButton_->setEnabled(running);
-    targetWorkersSpin_->setEnabled(true);
-    visualWorkersCheck_->setEnabled(!running);
-    visualDashboardButton_->setEnabled(controller_ != nullptr && controller_->visualWorkerPoolEnabled());
+    stopButton_->setText(starting ? QStringLiteral("Cancel startup") : QStringLiteral("Stop"));
+    stopButton_->setEnabled(running || starting);
+    targetWorkersSpin_->setEnabled(stopped || running);
+    visualWorkersCheck_->setEnabled(stopped);
+    visualDashboardButton_->setEnabled(
+        (stopped || running)
+        && controller_ != nullptr
+        && controller_->visualWorkerPoolEnabled());
 }
 
-void CoordinatorPane::syncActionButtonStates(bool running, bool valid)
+void CoordinatorPane::syncActionButtonStates(
+    CoordinatorLifecycleState state,
+    bool valid)
 {
-    startButton_->setEnabled(!running && valid);
+    startButton_->setEnabled(
+        state == CoordinatorLifecycleState::Stopped && valid);
 }
 
 void CoordinatorPane::handleValidationLinkActivated(const QString& link)

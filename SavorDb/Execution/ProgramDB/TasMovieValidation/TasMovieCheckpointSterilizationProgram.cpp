@@ -588,8 +588,8 @@ public:
         }
         using TerminalStatus = savor::wrms::InvocationTerminalStatus;
         if (terminal.terminal.status == TerminalStatus::Cancelled)
-            return FinalDecision("CANCELED", "TAS_MOVIE_STERILIZATION_CANCELED",
-                terminal.terminal.message);
+            return FinalDecision("FAILED", "UNCLASSIFIED_CANCELLED_TERMINAL_REACHED_DESCRIPTOR",
+                "cancelled worker terminal bypassed ProgramResultProcessor");
         if (terminal.terminal.status != TerminalStatus::Succeeded
             || terminal.terminal.unstarted
             || terminal.terminal.workset_id
@@ -689,6 +689,7 @@ public:
             throw std::runtime_error(error);
         }
         auto decision = FinalDecision("SUCCEEDED");
+        decision.cleanup_worker_staging = true;
         decision.outputs.push_back(Output(state_receipt.savestate_id));
         decision.event_lines.push_back(
             "[tasmovie-checkpoint-sterilized] attempt=" + std::to_string(attempt_id)
@@ -696,46 +697,7 @@ public:
         return decision;
     }
 
-    ProgramResultRecovery RecoverPersistedOutcome(
-        const ProgramResultRecoveryContext& context) const override {
-        const auto attempt = analysis_db_
-            ? analysis_db_->FindTasMovieCheckpointSterilizationAttempt(
-                  context.job_id, context.terminal_sha256)
-            : std::nullopt;
-        if (!attempt) {
-            return {
-                .disposition = ProgramResultRecoveryDisposition::NoPersistedOutcome,
-                .diagnostic = "no checkpoint sterilization attempt exists for this terminal",
-            };
-        }
-        if (attempt->sterilization_request_id != context.program_ref_id) {
-            return {
-                .disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                .diagnostic = "checkpoint sterilization attempt belongs to another request",
-            };
-        }
-        const auto request = analysis_db_->GetTasMovieCheckpointSterilizationRequest(
-            attempt->sterilization_request_id);
-        std::string error;
-        if (!request || request->reused_savestate_id
-            || !VerifySourceSnapshot(state_db_, *request, nullptr, &error)
-            || !VerifyCanonicalResult(state_db_, *request, attempt->produced_savestate_id,
-                attempt->candidate_savestate_sha256, &error)) {
-            return {
-                .disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                .diagnostic = error.empty() ? "persisted sterilization evidence drifted" : error,
-            };
-        }
-        auto decision = FinalDecision("SUCCEEDED");
-        decision.outputs.push_back(Output(attempt->produced_savestate_id));
-        return {
-            .disposition = ProgramResultRecoveryDisposition::Recovered,
-            .decision = std::move(decision),
-            .diagnostic = "recovered exact TAS Movie checkpoint sterilization attempt",
-        };
-    }
-
-private:
+    private:
     IStateDb* state_db_{};
     IAnalysisDb* analysis_db_{};
     std::shared_ptr<const savor::runtime::tasmovie::
@@ -831,6 +793,7 @@ ProgramKindDescriptor BuildTasMovieCheckpointSterilizationProgramDescriptor(
     descriptor.program_kind =
         static_cast<std::int32_t>(savor::PK_TasMovieCheckpointSterilize);
     descriptor.program_name = "TAS Movie Checkpoint Sterilization";
+    descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity = savor::runtime::tasmovie::
         TasMovieCheckpointSterilizationFullPhaseDefinitionV1()->identity();
     descriptor.default_progress_library_ids =

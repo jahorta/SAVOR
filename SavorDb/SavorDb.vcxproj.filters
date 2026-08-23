@@ -657,6 +657,9 @@
     <None Include="migration\Execution\202608111000_execution_derived_state_binding.sql">
       <Filter>Migrations\Execution</Filter>
     </None>
+    <None Include="migration\Execution\202608191400_execution_failed_job_workset_retry.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
     <None Include="migration\State\202604051000_state_stage2_schema.sql">
       <Filter>Migrations\State</Filter>
     </None>

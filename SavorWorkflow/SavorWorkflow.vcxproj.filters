@@ -21,6 +21,9 @@
     <ClInclude Include="Execution\JobExecutionCoordinator.h">
       <Filter>Execution</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\WorksetJobOrganizer.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
     
     <ClInclude Include="Execution\StepInputAggregationService.h">
       <Filter>Execution</Filter>
@@ -59,6 +62,9 @@
       <Filter>Execution</Filter>
     </ClCompile>
     <ClCompile Include="Execution\JobExecutionCoordinator.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\WorksetJobOrganizer.cpp">
       <Filter>Execution</Filter>
     </ClCompile>
     

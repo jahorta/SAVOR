@@ -96,6 +96,27 @@ const char* ToString(savor::db::TasMovieValidationFailureReason reason) {
     return "Unknown";
 }
 
+const char* ToString(savor::db::TasMovieValidationOperation reason) {
+    using savor::db::TasMovieValidationOperation;
+    switch (reason) {
+    case TasMovieValidationOperation::EstablishRootCursor: return "EstablishRootCursor";
+    case TasMovieValidationOperation::Validate: return "Validate";
+    case TasMovieValidationOperation::Unknown: return "Unknown";
+    }
+    return "Unknown";
+}
+
+const char* ToString(savor::db::TasMovieValidationSourceKind source) {
+    using savor::db::TasMovieValidationSourceKind;
+    switch (source) {
+    case TasMovieValidationSourceKind::DtmArtifact: return "DtmArtifact";
+    case TasMovieValidationSourceKind::RootEstablishment: return "RootEstablishment";
+    case TasMovieValidationSourceKind::Tree: return "Tree";
+    case TasMovieValidationSourceKind::Unknown: return "Unknown";
+    }
+    return "Unknown";
+}
+
 std::string HexPc(std::uint32_t pc) {
     std::ostringstream out;
     out << "0x" << std::hex << std::uppercase << std::setw(8)
@@ -606,6 +627,269 @@ bool VerifyComposedTasMovieSterileGraph(
     return true;
 }
 
+bool VerifyComposedTasMovieEstablishedSterileGraph(
+    savor::db::IAuthoringDb* authoring_db,
+    const std::optional<
+        savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
+    std::int64_t rtc_value,
+    bool require_initial_state,
+    std::string* error_out) {
+    using savor::db::execution::workflow::WorkflowStepState;
+    if (authoring_db == nullptr || !graph
+        || !graph->instance.workflow_graph_revision_id
+        || graph->instance.root_scope_kind != "manual"
+        || graph->instance.root_scope_id.has_value()
+        || graph->unit_activations.size() != 2
+        || graph->steps.size() != 2
+        || graph->unit_activation_edges.size() != 1
+        || graph->edges.size() != 1
+        || graph->arguments.size() != 1) {
+        if (error_out) {
+            *error_out = "tasmovie_sterile runtime graph is not the exact two-unit composition";
+        }
+        return false;
+    }
+
+    const auto find_activation = [&](std::string_view node_key) {
+        return std::find_if(
+            graph->unit_activations.begin(),
+            graph->unit_activations.end(),
+            [&](const auto& activation) {
+                return activation.graph_node_key == node_key;
+            });
+    };
+    const auto find_step = [&](std::string_view node_key) {
+        return std::find_if(
+            graph->steps.begin(), graph->steps.end(),
+            [&](const auto& step) {
+                return step.graph_node_key == node_key;
+            });
+    };
+    const auto validate_activation = find_activation("tas_validate_1");
+    const auto sterilize_activation = find_activation("tas_sterilize_1");
+    const auto validate_step = find_step("tas_validate_1");
+    const auto sterilize_step = find_step("tas_sterilize_1");
+    if (validate_activation == graph->unit_activations.end()
+        || sterilize_activation == graph->unit_activations.end()
+        || validate_step == graph->steps.end()
+        || sterilize_step == graph->steps.end()
+        || validate_activation->unit_kind != "tas_movie_validate_root"
+        || sterilize_activation->unit_kind != "tas_movie_checkpoint_sterilize"
+        || validate_step->step_kind != "tasmovie.validate_root"
+        || sterilize_step->step_kind != "tasmovie.checkpoint_sterilize"
+        || validate_step->max_attempts != 1
+        || sterilize_step->max_attempts != 1) {
+        if (error_out) {
+            *error_out = "tasmovie_sterile unit or singleton-step identities drifted";
+        }
+        return false;
+    }
+
+    const auto has_step_edge = [&](std::int64_t from, std::int64_t to) {
+        return std::any_of(
+            graph->edges.begin(), graph->edges.end(),
+            [&](const auto& edge) {
+                return edge.from_step_id == from
+                    && edge.to_step_id == to;
+            });
+    };
+    const auto has_activation_edge =
+        [&](std::int64_t from, std::int64_t to) {
+            return std::any_of(
+                graph->unit_activation_edges.begin(),
+                graph->unit_activation_edges.end(),
+                [&](const auto& edge) {
+                    return edge.from_workflow_unit_activation_id == from
+                        && edge.to_workflow_unit_activation_id == to;
+                });
+        };
+    if (!has_step_edge(validate_step->workflow_step_id,
+                      sterilize_step->workflow_step_id)
+        || !has_activation_edge(
+            validate_activation->workflow_unit_activation_id,
+            sterilize_activation->workflow_unit_activation_id)) {
+        if (error_out) {
+            *error_out = "tasmovie_sterile dependency edges drifted";
+        }
+        return false;
+    }
+    if (require_initial_state
+        && (validate_step->state != WorkflowStepState::Ready
+            || sterilize_step->state != WorkflowStepState::Waiting)) {
+        if (error_out) {
+            *error_out = "tasmovie_sterile did not begin with only validation READY";
+        }
+        return false;
+    }
+
+    const auto rtc_argument = std::find_if(
+        graph->arguments.begin(), graph->arguments.end(),
+        [&](const auto& argument) {
+            return argument.node_key == "tas_validate_1"
+                && argument.argument_key == "rtc"
+                && argument.value_type == "integer"
+                && argument.integer_value == rtc_value
+                && !argument.text_value
+                && argument.source_kind == "scenario";
+        });
+    if (rtc_argument == graph->arguments.end()) {
+        if (error_out) {
+            *error_out =
+                "tasmovie_sterile external DTM or RTC binding drifted";
+        }
+        return false;
+    }
+
+    const auto authored = authoring_db->GetWorkflowGraphRevision(
+        *graph->instance.workflow_graph_revision_id);
+    if (!authored || authored->graph_hash
+            != "savor-e2e.workflow_graph.tasmovie_validate_sterile.v1"
+        || authored->nodes.size() != 2 || authored->edges.size() != 1) {
+        if (error_out) {
+            *error_out =
+                "tasmovie_sterile immutable authored graph is unavailable or drifted";
+        }
+        return false;
+    }
+    const auto has_guarded_edge = [&](std::string_view from,
+                                      std::string_view output,
+                                      std::string_view to,
+                                      std::string_view input) {
+        return std::any_of(
+            authored->edges.begin(), authored->edges.end(),
+            [&](const auto& edge) {
+                return edge.from_node_key == from
+                    && edge.output_key == output
+                    && edge.to_node_key == to
+                    && edge.input_key == input
+                    && edge.guard_kind
+                        == std::optional<std::string>(
+                            savor::db::kWorkflowOutputPresentGuard)
+                    && !edge.guard_value;
+            });
+    };
+    if (!has_guarded_edge(
+            "tas_validate_1", "validated_checkpoint_savestate",
+            "tas_sterilize_1", "paired_checkpoint_savestate")) {
+        if (error_out) {
+            *error_out = "tasmovie_sterile authored output_present edges drifted";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool ResolveEstablishedRootCursorAttempt(
+    savor::db::core::DBService* db_service,
+    std::int64_t establishment_attempt_id,
+    VerifiedRootCursorAttempt* establishment_out,
+    std::int64_t* source_dtm_artifact_id_out,
+    std::string* error_out) {
+    if (db_service == nullptr || !db_service->IsRunning()
+        || !db_service->AnalysisDb() || !db_service->StateDb()
+        || establishment_attempt_id <= 0 || !establishment_out
+        || !source_dtm_artifact_id_out) {
+        if (error_out) {
+            *error_out = "established root cursor attempt lookup requires running DB service, valid attempt id";
+        }
+        return false;
+    }
+
+    const auto attempt = db_service->AnalysisDb()
+        ->GetTasMovieValidationAttempt(establishment_attempt_id);
+    if (!attempt
+        || attempt->outcome
+            != savor::db::TasMovieValidationOutcome::RootCursorEstablished) {
+        if (error_out) {
+            *error_out =
+                "provided establishment attempt does not exist or is not established";
+        }
+        return false;
+    }
+
+    auto request = db_service->AnalysisDb()
+        ->GetTasMovieValidationRequest(attempt->validation_request_id);
+    if (!request
+        || request->operation
+            != savor::db::TasMovieValidationOperation::EstablishRootCursor
+        || !request->source_dtm_artifact_id
+        || request->source_dtm_artifact_id <= 0) {
+        if (error_out) {
+            *error_out =
+                "provided establishment attempt lacks a valid establishment request";
+        }
+        return false;
+    }
+
+    const auto source_artifact = db_service->StateDb()
+        ->GetArtifact(request->source_dtm_artifact_id);
+    if (!source_artifact || source_artifact->artifact_kind != "DTM"
+        || source_artifact->sha256 != request->source_dtm_sha256) {
+        if (error_out) {
+            *error_out =
+                "establishment attempt source DTM artifact is missing or stale";
+        }
+        return false;
+    }
+
+    if (!attempt->candidate_itinerary_artifact_id
+        || !attempt->candidate_itinerary_sha256
+        || attempt->candidate_itinerary_sha256->empty()) {
+        if (error_out) {
+            *error_out =
+                "establishment attempt is missing a full candidate itinerary";
+        }
+        return false;
+    }
+
+    *establishment_out = {
+        .established = true,
+        .validation_attempt_id = attempt->validation_attempt_id,
+        .itinerary_artifact_id = *attempt->candidate_itinerary_artifact_id,
+        .itinerary_sha256 = *attempt->candidate_itinerary_sha256,
+        .pc = attempt->actual_pc,
+        .input_count = attempt->actual_input_count,
+        .worker_id = attempt->worker_id,
+        .worker_process_generation =
+            attempt->worker_process_generation,
+        .workset_epoch = attempt->workset_epoch,
+    };
+    *source_dtm_artifact_id_out = request->source_dtm_artifact_id;
+    return true;
+}
+
+bool ResolveUnusedSourceRtcForEstablishedRootCursor(
+    savor::db::IStateDb* state_db,
+    std::int64_t source_dtm_artifact_id,
+    std::int64_t requested_rtc,
+    std::int64_t* rtc_out,
+    std::string* error_out) {
+    if (!state_db || source_dtm_artifact_id <= 0 || !rtc_out
+        || requested_rtc < 0
+        || static_cast<std::uint64_t>(requested_rtc)
+            > std::numeric_limits<std::uint32_t>::max()) {
+        if (error_out) {
+            *error_out =
+                "RTC selection for established root cursor requires a valid source DTM and unsigned 32-bit RTC";
+        }
+        return false;
+    }
+
+    std::int64_t rtc = requested_rtc;
+    while (state_db->FindTasMovieRootBySourceRtc(source_dtm_artifact_id, rtc)) {
+        if (rtc == std::numeric_limits<std::uint32_t>::max()) {
+            if (error_out) {
+                *error_out = "all possible RTCs are already used for source DTM "
+                             "and established root-cursor validation";
+            }
+            return false;
+        }
+        ++rtc;
+    }
+    *rtc_out = rtc;
+    return true;
+}
+
 std::optional<std::vector<std::uint8_t>> ReadBytes(
     const std::filesystem::path& path,
     std::string* error_out) {
@@ -979,39 +1263,163 @@ bool VerifyRootValidationAttempt(
     const auto expected_dtm_sha256 = patched_dtm.compute_sha256();
     const auto phase = savor::runtime::tasmovie::
         TasMovieValidationFullPhaseDefinitionV1();
-    if (request->workflow_instance_id != workflow_instance_id
-        || request->operation != TasMovieValidationOperation::Validate
-        || request->source_kind
-            != TasMovieValidationSourceKind::RootEstablishment
-        || request->source_ref_id != establishment.validation_attempt_id
-        || request->source_dtm_artifact_id != source_dtm_artifact_id
-        || request->source_dtm_sha256 != source_artifact->sha256
-        || request->rtc_value != rtc_value
-        || request->effective_dtm_sha256 != expected_dtm_sha256
-        || request->itinerary_artifact_id
-            != establishment.itinerary_artifact_id
-        || request->itinerary_sha256 != establishment.itinerary_sha256
-        || request->required_final_breakpoint_pc != kRootTerminalPc
-        || !request->capture_root_checkpoint
-        || !phase
-        || request->full_phase_program_kind
-            != phase->identity().program_kind
-        || request->full_phase_program_version
-            != phase->identity().program_version
-        || request->full_phase_canonical_id
-            != phase->identity().canonical_id
-        || request->full_phase_contract_revision
-            != phase->identity().contract_revision
-        || request->full_phase_sha256
-            != phase->identity().canonical_sha256
-        || request->module_canonical_id
-            != phase->runtime_contract().module.canonical_id
-        || request->module_revision
-            != phase->runtime_contract().module.revision
-        || request->module_sha256
+    std::vector<std::string> request_drift_reasons;
+    if (request->workflow_instance_id != workflow_instance_id) {
+        std::ostringstream diff;
+        diff << "workflow_instance_id drifted: expected=" << workflow_instance_id
+             << " actual=" << request->workflow_instance_id;
+        request_drift_reasons.push_back(diff.str());
+    }
+    if (request->operation != TasMovieValidationOperation::Validate) {
+        std::ostringstream diff;
+        diff << "operation drifted: expected="
+             << ToString(TasMovieValidationOperation::Validate)
+             << " actual=" << ToString(request->operation);
+        request_drift_reasons.push_back(diff.str());
+    }
+    if (request->source_kind != TasMovieValidationSourceKind::RootEstablishment) {
+        std::ostringstream diff;
+        diff << "source_kind drifted: expected="
+             << ToString(TasMovieValidationSourceKind::RootEstablishment)
+             << " actual=" << ToString(request->source_kind);
+        request_drift_reasons.push_back(diff.str());
+    }
+    if (request->source_ref_id != establishment.validation_attempt_id) {
+        std::ostringstream diff;
+        diff << "source_ref_id drifted: expected="
+             << establishment.validation_attempt_id
+             << " actual=" << request->source_ref_id;
+        request_drift_reasons.push_back(diff.str());
+    }
+    if (request->source_dtm_artifact_id != source_dtm_artifact_id) {
+        std::ostringstream diff;
+        diff << "source_dtm_artifact_id drifted: expected="
+             << source_dtm_artifact_id
+             << " actual=" << request->source_dtm_artifact_id;
+        request_drift_reasons.push_back(diff.str());
+    }
+    if (request->source_dtm_sha256 != source_artifact->sha256) {
+        std::ostringstream diff;
+        diff << "source_dtm_sha256 drifted: expected=" << source_artifact->sha256
+             << " actual=" << request->source_dtm_sha256;
+        request_drift_reasons.push_back(diff.str());
+    }
+    if (request->rtc_value != rtc_value) {
+        std::ostringstream diff;
+        diff << "rtc_value drifted: expected=" << rtc_value
+             << " actual=" << *request->rtc_value;
+        request_drift_reasons.push_back(diff.str());
+    }
+    if (request->effective_dtm_sha256 != expected_dtm_sha256) {
+        std::ostringstream diff;
+        diff << "effective_dtm_sha256 drifted: expected=" << expected_dtm_sha256
+             << " actual=" << request->effective_dtm_sha256;
+        request_drift_reasons.push_back(diff.str());
+    }
+    if (request->itinerary_artifact_id != establishment.itinerary_artifact_id) {
+        std::ostringstream diff;
+        diff << "itinerary_artifact_id drifted: expected="
+             << establishment.itinerary_artifact_id
+             << " actual=" << *request->itinerary_artifact_id;
+        request_drift_reasons.push_back(diff.str());
+    }
+    if (request->itinerary_sha256 != establishment.itinerary_sha256) {
+        std::ostringstream diff;
+        diff << "itinerary_sha256 drifted: expected="
+             << establishment.itinerary_sha256
+             << " actual=" << *request->itinerary_sha256;
+        request_drift_reasons.push_back(diff.str());
+    }
+    if (request->required_final_breakpoint_pc != kRootTerminalPc) {
+        std::ostringstream diff;
+        diff << std::hex << std::showbase;
+        diff << "required_final_breakpoint_pc drifted: expected=0x"
+             << kRootTerminalPc
+             << " actual=0x" << request->required_final_breakpoint_pc;
+        request_drift_reasons.push_back(diff.str());
+    }
+    if (!request->capture_root_checkpoint) {
+        request_drift_reasons.push_back(
+            "capture_root_checkpoint drifted: expected=true actual=false");
+    }
+    if (!phase) {
+        request_drift_reasons.push_back("runtime phase definition was unavailable");
+    } else {
+        if (request->full_phase_program_kind
+            != phase->identity().program_kind) {
+            std::ostringstream diff;
+            diff << "full_phase_program_kind drifted: expected="
+                 << phase->identity().program_kind
+                 << " actual=" << request->full_phase_program_kind;
+            request_drift_reasons.push_back(diff.str());
+        }
+        if (request->full_phase_program_version
+            != phase->identity().program_version) {
+            std::ostringstream diff;
+            diff << "full_phase_program_version drifted: expected="
+                 << phase->identity().program_version
+                 << " actual=" << request->full_phase_program_version;
+            request_drift_reasons.push_back(diff.str());
+        }
+        if (request->full_phase_canonical_id
+            != phase->identity().canonical_id) {
+            std::ostringstream diff;
+            diff << "full_phase_canonical_id drifted: expected="
+                 << phase->identity().canonical_id
+                 << " actual=" << request->full_phase_canonical_id;
+            request_drift_reasons.push_back(diff.str());
+        }
+        if (request->full_phase_contract_revision
+            != phase->identity().contract_revision) {
+            std::ostringstream diff;
+            diff << "full_phase_contract_revision drifted: expected="
+                 << phase->identity().contract_revision
+                 << " actual=" << request->full_phase_contract_revision;
+            request_drift_reasons.push_back(diff.str());
+        }
+        if (request->full_phase_sha256
+            != phase->identity().canonical_sha256) {
+            std::ostringstream diff;
+            diff << "full_phase_sha256 drifted: expected="
+                 << phase->identity().canonical_sha256
+                 << " actual=" << request->full_phase_sha256;
+            request_drift_reasons.push_back(diff.str());
+        }
+        if (request->module_canonical_id
+            != phase->runtime_contract().module.canonical_id) {
+            std::ostringstream diff;
+            diff << "module_canonical_id drifted: expected="
+                 << phase->runtime_contract().module.canonical_id
+                 << " actual=" << request->module_canonical_id;
+            request_drift_reasons.push_back(diff.str());
+        }
+        if (request->module_revision
+            != phase->runtime_contract().module.revision) {
+            std::ostringstream diff;
+            diff << "module_revision drifted: expected="
+                 << phase->runtime_contract().module.revision
+                 << " actual=" << request->module_revision;
+            request_drift_reasons.push_back(diff.str());
+        }
+        if (request->module_sha256
             != phase->runtime_contract().module.canonical_hash) {
+            std::ostringstream diff;
+            diff << "module_sha256 drifted: expected="
+                 << phase->runtime_contract().module.canonical_hash
+                 << " actual=" << request->module_sha256;
+            request_drift_reasons.push_back(diff.str());
+        }
+    }
+    if (!request_drift_reasons.empty()) {
         if (error_out) {
-            *error_out = "persisted root-validation request drifted from its establishment, RTC, DTM, itinerary, or Full Phase identity";
+            std::ostringstream diff_report;
+            diff_report << "persisted root-validation request drifted from its "
+                           "establishment, RTC, DTM, itinerary, or Full Phase "
+                           "identity:";
+            for (const auto& reason : request_drift_reasons) {
+                diff_report << "\n- " << reason;
+            }
+            *error_out = diff_report.str();
         }
         return false;
     }
@@ -1310,6 +1718,862 @@ bool VerifyCheckpointSterilization(
     std::cout << "[tasmovie-checkpoint-sterilized] source="
         << source_savestate_id << " savestate=" << result->savestate_id
         << " attempt=" << attempt_id << " no_sidecar=true\n";
+    return true;
+}
+
+bool RunTasMovieValidationFromEstablishedRootCursorRealWorkerScenario(
+    const CliOptions& options,
+    const ResolvedE2eScenarioEntry& entry,
+    const char* argv0,
+    savor::db::core::DBService* db_service,
+    std::string* error_out) {
+    if (db_service == nullptr || !db_service->IsRunning()
+        || !options.tasmovie_rtc
+        || *options.tasmovie_rtc < 0
+        || static_cast<std::uint64_t>(*options.tasmovie_rtc)
+            > std::numeric_limits<std::uint32_t>::max()
+        || !entry.tas_movie_establishment_attempt_id) {
+        if (error_out) {
+            *error_out =
+                "tasmovie_validation from established attempt requires a "
+                "running DB service, one exact GameCube RTC, and "
+                "--tas-establishment-id";
+        }
+        return false;
+    }
+
+    const auto worker_exe = ResolveWorkerExePath(argv0);
+    if (!std::filesystem::exists(worker_exe)) {
+        if (error_out) {
+            *error_out = "SavorWorker.exe was not found next to SavorE2E: "
+                + worker_exe.string();
+        }
+        return false;
+    }
+
+    VerifiedRootCursorAttempt establishment{};
+    std::int64_t source_dtm_artifact_id = 0;
+    if (!ResolveEstablishedRootCursorAttempt(
+            db_service, *entry.tas_movie_establishment_attempt_id,
+            &establishment, &source_dtm_artifact_id, error_out)) {
+        return false;
+    }
+    const auto source_dtm_artifact = db_service->StateDb()->GetArtifact(
+        source_dtm_artifact_id);
+    if (!source_dtm_artifact) {
+        if (error_out) {
+            *error_out = "established attempt source DTM artifact is missing";
+        }
+        return false;
+    }
+
+    std::int64_t runtime_rtc = 0;
+    if (!ResolveUnusedSourceRtcForEstablishedRootCursor(
+            db_service->StateDb(), source_dtm_artifact_id,
+            *options.tasmovie_rtc, &runtime_rtc, error_out)) {
+        return false;
+    }
+    if (runtime_rtc != *options.tasmovie_rtc) {
+        std::cout << "[tasmovie-establishment-validation] requested RTC "
+            << *options.tasmovie_rtc
+            << " already had a persisted root for source DTM artifact "
+            << source_dtm_artifact_id << "; using RTC " << runtime_rtc << '\n';
+    }
+
+    std::string error;
+    std::int64_t validation_workflow_id = 0;
+    if (!SeedTasMovieRootValidationWorkflow(
+            db_service->AuthoringDb(),
+            db_service->ExecutionDb(),
+            establishment.validation_attempt_id,
+            runtime_rtc,
+            &validation_workflow_id,
+            &error)) {
+        if (error_out) {
+            *error_out = "failed seeding validation workflow from "
+                "established attempt: " + error;
+        }
+        return false;
+    }
+    const auto initial_graph = db_service->ExecutionDb()
+        ->WorkflowQueryService()->GetWorkflowGraph(validation_workflow_id);
+    if (!VerifySingletonRootValidationGraph(
+            initial_graph, establishment.validation_attempt_id,
+            runtime_rtc, error_out)) {
+        return false;
+    }
+
+    const auto scenario_workspace_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default");
+    auto registry_config =
+        savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
+            scenario_workspace_root / "workflow-runtime");
+    registry_config.tas_movie_validation.working_dir_root =
+        scenario_workspace_root / "tasmovie-validation";
+    savor::db::execution::programdb::ProgramKindRegistry registry;
+    if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
+            savor::db::execution::programdb::
+                ProductionProgramKindRegistryDependencies{
+                    .execution_db = db_service->ExecutionDb(),
+                    .state_db = db_service->StateDb(),
+                    .analysis_db = db_service->AnalysisDb(),
+                    .authoring_db = db_service->AuthoringDb(),
+                },
+            std::move(registry_config), &registry, &error)) {
+        if (error_out) {
+            *error_out = "failed building production program registry: "
+                + error;
+        }
+        return false;
+    }
+
+    std::string iso_sha256;
+    try {
+        iso_sha256 = hash::sha256_of_file(options.iso_path.string());
+    } catch (const std::exception& exception) {
+        if (error_out != nullptr) {
+            *error_out = "failed hashing TAS Movie E2E ISO: "
+                + std::string(exception.what());
+        }
+        return false;
+    }
+    if (iso_sha256.size() != 64) {
+        if (error_out != nullptr) {
+            *error_out = "TAS Movie E2E ISO hash is not a complete SHA-256";
+        }
+        return false;
+    }
+    savor::runtime::ArtifactCompatibilityToken state_compatibility{
+        .game_id = std::string(
+            savor::runtime::program::capabilities::kSupportedGameId),
+        .iso_sha256 = std::move(iso_sha256),
+        .emulator_build = "dolphin-2506a",
+        .runtime_revision = "worker-runtime-slice4",
+    };
+
+    savor::runner::parallel::savordb::WorkerCoordinatorConfig worker_config{
+        .desired_workers = 1,
+        .controller_sleep_ms = static_cast<std::uint32_t>(
+            std::max<std::int64_t>(1, options.poll_ms)),
+        .worker_start_timeout_ms = kWorkerStartupOperationTimeoutMs,
+        .worker_exe_path = worker_exe.string(),
+        .iso_path = options.iso_path.string(),
+        .dolphin_base_dir = options.dolphin_base_dir.string(),
+        .worker_dir_root = options.worker_dir_root.value_or(
+            std::filesystem::temp_directory_path() / "savor-e2e-workers").string(),
+        .worker_binary_runtime_root =
+            (scenario_workspace_root / "worker-runtime").string(),
+        .worker_mode = options.visual_worker
+            ? savor::runtime::WorkerMode::Visual
+            : savor::runtime::WorkerMode::Headless,
+        .runtime_artifact_root =
+            (scenario_workspace_root / "runtime-artifacts").string(),
+    };
+
+    DurableLogFile durable_log;
+    if (!durable_log.Open(options, options.scenario, error_out)) {
+        return false;
+    }
+    std::cout << "[durable-log] path=" << durable_log.path().string() << '\n';
+    std::mutex lines_mtx;
+    std::deque<std::string> pending_lines;
+    const auto push_line = [&](std::string line) {
+        durable_log.AppendLine(line);
+        std::lock_guard<std::mutex> lock(lines_mtx);
+        pending_lines.push_back(std::move(line));
+    };
+    const auto drain_lines = [&]() {
+        std::deque<std::string> lines;
+        std::lock_guard<std::mutex> lock(lines_mtx);
+        std::swap(lines, pending_lines);
+        return lines;
+    };
+
+    savor::runner::parallel::savordb::CoordinatorRuntime coordinators;
+    ArmInitialWorkerPoolBarrier(
+        options.wait_for_workers_ready,
+        [&](bool paused) { coordinators.SetExecutionPaused(paused); },
+        [&](const std::string& line) { push_line(line); });
+    savor::runner::parallel::savordb::CoordinatorRuntimeConfig
+        coordinator_config{
+            .worker = std::move(worker_config),
+            .poll_interval = std::chrono::milliseconds(
+                std::max<std::int64_t>(1, options.poll_ms)),
+            .state_compatibility = std::move(state_compatibility),
+            .initially_paused = options.wait_for_workers_ready,
+            .object_store_root =
+                scenario_workspace_root / "object_store",
+            .event_line_callback =
+                [&](const std::string& line) { push_line(line); },
+        };
+    if (!coordinators.Start(
+            db_service->ExecutionDb(), db_service->AuthoringDb(),
+            &registry, std::move(coordinator_config),
+            &error)) {
+        std::string terminal_error;
+        (void)TerminalFailInitialWorkerPoolWorkflows(
+            db_service->ExecutionDb(), validation_workflow_id,
+            coordinators.SnapshotFleetStartup(), &terminal_error);
+        if (error_out) {
+            *error_out = "split combined coordinator startup failed: "
+                + error;
+            if (!terminal_error.empty()) {
+                *error_out += "; workflow terminal failure: "
+                    + terminal_error;
+            }
+        }
+        return false;
+    }
+
+    const auto startup_barrier = WaitForInitialWorkerPool(
+        options.wait_for_workers_ready,
+        std::chrono::milliseconds(
+            std::max<std::int64_t>(1, options.poll_ms)),
+        [&]() { return coordinators.SnapshotFleetStartup(); },
+        [&](bool paused) { coordinators.SetExecutionPaused(paused); },
+        [&](const std::string& line) { push_line(line); });
+    if (!startup_barrier.satisfied) {
+        std::string stop_error;
+        (void)coordinators.Stop(&stop_error);
+        std::string terminal_error;
+        (void)TerminalFailInitialWorkerPoolWorkflows(
+            db_service->ExecutionDb(), validation_workflow_id,
+            startup_barrier.snapshot, &terminal_error);
+        if (error_out) {
+            *error_out = startup_barrier.diagnostic;
+            if (!stop_error.empty()) *error_out += "; shutdown: " + stop_error;
+            if (!terminal_error.empty()) {
+                *error_out += "; workflow terminal failure: "
+                    + terminal_error;
+            }
+        }
+        return false;
+    }
+
+    bool validation_completed = false;
+    bool validation_failed = false;
+    std::string terminal_job_error;
+    std::size_t poll_count = 0;
+    while (true) {
+        ++poll_count;
+        for (const auto& line : drain_lines()) {
+            std::cout << line << '\n';
+        }
+        const auto graph = db_service->ExecutionDb()
+            ->WorkflowQueryService()->GetWorkflowGraph(validation_workflow_id);
+        if (poll_count == 1 || poll_count % 10 == 0) {
+            const auto telemetry = coordinators.SnapshotTelemetry();
+            std::cout << "[tasmovie-validation] "
+                << (graph ? FormatWorkflowStateLine(*graph)
+                          : std::string("workflow=unavailable"))
+                << " ready_workers="
+                << coordinators.SnapshotReadyWorkers().size()
+                << " worksets_submitted="
+                << telemetry.execution.worksets_submitted
+                << " terminals="
+                << telemetry.execution.worker_terminals_observed
+                << '\n';
+        }
+        if (graph) {
+            if (FindTerminalInfrastructureJobFailure(
+                    db_service->ExecutionDb(), *graph,
+                    &terminal_job_error)) {
+                validation_failed = true;
+                break;
+            }
+            using savor::db::execution::workflow::WorkflowInstanceState;
+            if (graph->instance.state == WorkflowInstanceState::Completed) {
+                validation_completed = true;
+                break;
+            }
+            if (graph->instance.state == WorkflowInstanceState::Failed
+                || graph->instance.state == WorkflowInstanceState::Canceled) {
+                validation_failed = true;
+                break;
+            }
+        }
+        const auto worker_start = coordinators.SnapshotWorkerStartResult();
+        if (worker_start.status
+            == savor::runner::parallel::savordb::WorkerCoordinatorStartStatus::
+                StartupExhausted) {
+            terminal_job_error = worker_start.diagnostic.empty()
+                ? "all worker startup attempts were exhausted"
+                : worker_start.diagnostic;
+            validation_failed = true;
+            break;
+        }
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(options.poll_ms));
+    }
+    std::string pre_stop_error =
+        validation_completed
+            ? std::string{}
+            : (validation_failed
+                ? (terminal_job_error.empty()
+                    ? "validation workflow did not complete successfully"
+                    : terminal_job_error)
+                : "validation workflow stopped before reaching COMPLETED state");
+
+    if (validation_completed) {
+        std::size_t drain_polls = 0;
+        while (true) {
+            std::string quiescence;
+            const bool quiescent = CheckWorkflowQuiescence(
+                db_service->ExecutionDb(), &quiescence);
+            const auto telemetry = coordinators.SnapshotTelemetry();
+            const bool reconciled =
+                telemetry.execution.worksets_submitted > 0
+                && telemetry.execution.draining_transitions
+                    == telemetry.execution.worksets_submitted
+                && telemetry.execution.worker_terminal_acks
+                    == telemetry.execution.worker_terminals_staged
+                && telemetry.execution.worker_terminals_observed
+                    == telemetry.execution.worker_terminals_staged;
+            if (quiescent && reconciled) break;
+            ++drain_polls;
+            if (drain_polls % 10 == 0) {
+                std::cout << "[tasmovie-validation-draining] "
+                    << quiescence
+                    << " submitted="
+                    << telemetry.execution.worksets_submitted
+                    << " draining="
+                    << telemetry.execution.draining_transitions
+                    << " staged="
+                    << telemetry.execution.worker_terminals_staged
+                    << " acked="
+                    << telemetry.execution.worker_terminal_acks << '\n';
+            }
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(options.poll_ms));
+        }
+    }
+
+    const auto final_graph = db_service->ExecutionDb()
+        ->WorkflowQueryService()->GetWorkflowGraph(validation_workflow_id);
+    const auto final_telemetry = coordinators.SnapshotTelemetry();
+    const auto final_ready_workers = coordinators.SnapshotReadyWorkers();
+    const auto final_warnings = coordinators.SnapshotExecutionWarnings();
+    std::string stop_error;
+    const bool stopped = coordinators.Stop(&stop_error);
+    for (const auto& line : drain_lines()) {
+        std::cout << line << '\n';
+    }
+    const auto final_sink = [&](const std::string& line) {
+        durable_log.AppendLine(line);
+        std::cout << line << '\n';
+    };
+    ScenarioAssessment assessment;
+    assessment.Require(stopped, "coordinator shutdown failed: " + stop_error);
+    assessment.Require(
+        pre_stop_error.empty(),
+        pre_stop_error.empty()
+            ? "validation workflow stopped before completion"
+            : pre_stop_error);
+
+    std::string invariant_error;
+    const bool validation_graph_valid = VerifySingletonRootValidationGraph(
+        final_graph, establishment.validation_attempt_id,
+        runtime_rtc, &invariant_error);
+    assessment.Require(
+        validation_graph_valid,
+        invariant_error.empty()
+            ? "TAS Movie validation graph contract failed"
+            : invariant_error);
+    VerifiedRootValidationAttempt validation{};
+    invariant_error.clear();
+    const bool validation_attempt_valid =
+        VerifyRootValidationAttempt(
+            db_service, validation_workflow_id,
+            source_dtm_artifact_id,
+            source_dtm_artifact->filename, runtime_rtc,
+            establishment, "tas_validate_1",
+            &validation, &invariant_error);
+    assessment.Require(
+        validation_attempt_valid,
+        invariant_error.empty()
+            ? "TAS Movie validation attempt contract failed"
+            : invariant_error);
+    if (validation_attempt_valid) {
+        final_sink("[tasmovie-trajectory] phase=root_cursor outcome="
+            + std::string(establishment.established
+                ? "RootCursorEstablished" : "Invalid")
+            + " attempt="
+            + std::to_string(establishment.validation_attempt_id));
+        final_sink("[tasmovie-trajectory] phase=validation outcome="
+            + std::string(validation.valid ? "Valid" : "Invalid")
+            + " attempt="
+            + std::to_string(validation.validation_attempt_id));
+    }
+
+    std::vector<savor::db::execution::workflow::WorkflowGraphSnapshot>
+        workflow_snapshots;
+    if (final_graph) workflow_snapshots.push_back(*final_graph);
+    AssessCommonScenarioExecution(
+        db_service->ExecutionDb(), workflow_snapshots, final_telemetry,
+        final_ready_workers, &assessment);
+    for (const auto& warning : final_warnings) {
+        assessment.Warn("coordinator warning "
+            + std::to_string(warning.sequence) + ": " + warning.message
+            + (warning.detail.empty() ? "" : " (" + warning.detail + ")"));
+    }
+    ReportCommonScenarioTrajectory(
+        db_service, workflow_snapshots, "tasmovie_validation",
+        final_sink, &assessment);
+    EmitScenarioAssessment("tasmovie_validation", assessment, final_sink);
+    if (!assessment.Passed()) {
+        if (error_out) {
+            *error_out = assessment.FailureSummary(
+                "tasmovie_validation");
+        }
+        return false;
+    }
+    return true;
+}
+
+bool RunTasMovieSterileFromEstablishedRootCursorRealWorkerScenario(
+    const CliOptions& options,
+    const ResolvedE2eScenarioEntry& entry,
+    const char* argv0,
+    savor::db::core::DBService* db_service,
+    std::string* error_out) {
+    if (db_service == nullptr || !db_service->IsRunning()
+        || !options.tasmovie_rtc
+        || *options.tasmovie_rtc < 0
+        || static_cast<std::uint64_t>(*options.tasmovie_rtc)
+            > std::numeric_limits<std::uint32_t>::max()
+        || !entry.tas_movie_establishment_attempt_id) {
+        if (error_out) {
+            *error_out =
+                "tasmovie_sterile from established attempt requires a "
+                "running DB service, one exact GameCube RTC, and "
+                "--tas-establishment-id";
+        }
+        return false;
+    }
+
+    const auto worker_exe = ResolveWorkerExePath(argv0);
+    if (!std::filesystem::exists(worker_exe)) {
+        if (error_out) {
+            *error_out = "SavorWorker.exe was not found next to SavorE2E: "
+                + worker_exe.string();
+        }
+        return false;
+    }
+
+    VerifiedRootCursorAttempt establishment{};
+    std::int64_t source_dtm_artifact_id = 0;
+    if (!ResolveEstablishedRootCursorAttempt(
+            db_service, *entry.tas_movie_establishment_attempt_id,
+            &establishment, &source_dtm_artifact_id, error_out)) {
+        return false;
+    }
+    const auto source_dtm_artifact = db_service->StateDb()->GetArtifact(
+        source_dtm_artifact_id);
+    if (!source_dtm_artifact) {
+        if (error_out) {
+            *error_out = "established attempt source DTM artifact is missing";
+        }
+        return false;
+    }
+
+    std::int64_t runtime_rtc = 0;
+    if (!ResolveUnusedSourceRtcForEstablishedRootCursor(
+            db_service->StateDb(), source_dtm_artifact_id,
+            *options.tasmovie_rtc, &runtime_rtc, error_out)) {
+        return false;
+    }
+    if (runtime_rtc != *options.tasmovie_rtc) {
+        std::cout << "[tasmovie-sterile] requested RTC "
+            << *options.tasmovie_rtc
+            << " already had a persisted root for source DTM artifact "
+            << source_dtm_artifact_id << "; using RTC " << runtime_rtc << '\n';
+    }
+
+    std::string error;
+    std::int64_t workflow_instance_id = 0;
+    if (!SeedTasMovieEstablishedValidationWorkflow(
+            db_service->AuthoringDb(),
+            db_service->ExecutionDb(),
+            establishment.validation_attempt_id,
+            runtime_rtc,
+            &workflow_instance_id,
+            &error)) {
+        if (error_out) {
+            *error_out = "failed seeding established validation/sterile workflow: "
+                + error;
+        }
+        return false;
+    }
+    const auto initial_graph = db_service->ExecutionDb()
+        ->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    if (!VerifyComposedTasMovieEstablishedSterileGraph(
+            db_service->AuthoringDb(), initial_graph,
+            runtime_rtc, true, error_out)) {
+        return false;
+    }
+
+    const auto scenario_workspace_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default");
+    auto registry_config =
+        savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
+            scenario_workspace_root / "workflow-runtime");
+    registry_config.tas_movie_validation.working_dir_root =
+        scenario_workspace_root / "tasmovie-validation";
+    savor::db::execution::programdb::ProgramKindRegistry registry;
+    if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
+            savor::db::execution::programdb::ProductionProgramKindRegistryDependencies{
+                .execution_db = db_service->ExecutionDb(),
+                .state_db = db_service->StateDb(),
+                .analysis_db = db_service->AnalysisDb(),
+                .authoring_db = db_service->AuthoringDb(),
+            },
+            std::move(registry_config), &registry, &error)) {
+        if (error_out) {
+            *error_out = "failed building production program registry: "
+                + error;
+        }
+        return false;
+    }
+
+    DurableLogFile durable_log;
+    if (!durable_log.Open(options, options.scenario, error_out)) {
+        return false;
+    }
+    std::cout << "[durable-log] path=" << durable_log.path().string()
+              << '\n';
+    std::mutex lines_mtx;
+    std::deque<std::string> pending_lines;
+    const auto push_line = [&](std::string line) {
+        durable_log.AppendLine(line);
+        std::lock_guard<std::mutex> lock(lines_mtx);
+        pending_lines.push_back(std::move(line));
+    };
+    const auto drain_lines = [&]() {
+        std::deque<std::string> lines;
+        std::lock_guard<std::mutex> lock(lines_mtx);
+        std::swap(lines, pending_lines);
+        return lines;
+    };
+
+    std::string iso_sha256;
+    try {
+        iso_sha256 = hash::sha256_of_file(options.iso_path.string());
+    } catch (const std::exception& exception) {
+        if (error_out) {
+            *error_out = "failed hashing combined E2E ISO: "
+                + std::string(exception.what());
+        }
+        return false;
+    }
+    savor::runtime::ArtifactCompatibilityToken state_compatibility{
+        .game_id = std::string(
+            savor::runtime::program::capabilities::kSupportedGameId),
+        .iso_sha256 = std::move(iso_sha256),
+        .emulator_build = "dolphin-2506a",
+        .runtime_revision = "worker-runtime-slice4",
+    };
+    savor::runner::parallel::savordb::WorkerCoordinatorConfig worker_config{
+        .desired_workers = static_cast<std::size_t>(options.worker_count),
+        .controller_sleep_ms = static_cast<std::uint32_t>(
+            std::max<std::int64_t>(1, options.poll_ms)),
+        .worker_start_timeout_ms = kWorkerStartupOperationTimeoutMs,
+        .worker_exe_path = worker_exe.string(),
+        .iso_path = options.iso_path.string(),
+        .dolphin_base_dir = options.dolphin_base_dir.string(),
+        .worker_dir_root = options.worker_dir_root.value_or(
+            std::filesystem::temp_directory_path()
+                / "savor-e2e-workers").string(),
+        .worker_binary_runtime_root =
+            (scenario_workspace_root / "worker-runtime").string(),
+        .worker_mode = options.visual_worker
+            ? savor::runtime::WorkerMode::Visual
+            : savor::runtime::WorkerMode::Headless,
+        .runtime_artifact_root =
+            (scenario_workspace_root / "runtime-artifacts").string(),
+    };
+
+    savor::runner::parallel::savordb::CoordinatorRuntime coordinators;
+    ArmInitialWorkerPoolBarrier(
+        options.wait_for_workers_ready,
+        [&](bool paused) { coordinators.SetExecutionPaused(paused); },
+        [&](const std::string& line) { push_line(line); });
+    savor::runner::parallel::savordb::CoordinatorRuntimeConfig
+        coordinator_config{
+            .worker = std::move(worker_config),
+            .poll_interval = std::chrono::milliseconds(
+                std::max<std::int64_t>(1, options.poll_ms)),
+            .state_compatibility = std::move(state_compatibility),
+            .initially_paused = options.wait_for_workers_ready,
+            .object_store_root =
+                scenario_workspace_root / "object_store",
+            .event_line_callback =
+                [&](const std::string& line) { push_line(line); },
+        };
+    if (!coordinators.Start(
+            db_service->ExecutionDb(), db_service->AuthoringDb(),
+            &registry, std::move(coordinator_config),
+            &error)) {
+        std::string terminal_error;
+        (void)TerminalFailInitialWorkerPoolWorkflows(
+            db_service->ExecutionDb(), workflow_instance_id,
+            coordinators.SnapshotFleetStartup(), &terminal_error);
+        if (error_out) {
+            *error_out = "split combined coordinator startup failed: "
+                + error;
+            if (!terminal_error.empty()) {
+                *error_out += "; workflow terminal failure: " + terminal_error;
+            }
+        }
+        return false;
+    }
+    const auto startup_barrier = WaitForInitialWorkerPool(
+        options.wait_for_workers_ready,
+        std::chrono::milliseconds(
+            std::max<std::int64_t>(1, options.poll_ms)),
+        [&]() { return coordinators.SnapshotFleetStartup(); },
+        [&](bool paused) { coordinators.SetExecutionPaused(paused); },
+        [&](const std::string& line) { push_line(line); });
+    if (!startup_barrier.satisfied) {
+        std::string stop_error;
+        (void)coordinators.Stop(&stop_error);
+        std::string terminal_error;
+        (void)TerminalFailInitialWorkerPoolWorkflows(
+            db_service->ExecutionDb(), workflow_instance_id,
+            startup_barrier.snapshot, &terminal_error);
+        if (error_out) {
+            *error_out = startup_barrier.diagnostic;
+            if (!stop_error.empty()) *error_out += "; shutdown: " + stop_error;
+            if (!terminal_error.empty()) {
+                *error_out += "; workflow terminal failure: " + terminal_error;
+            }
+        }
+        return false;
+    }
+
+    bool workflow_completed = false;
+    std::string terminal_error;
+    std::size_t poll_count = 0;
+    while (true) {
+        ++poll_count;
+        for (const auto& line : drain_lines()) {
+            std::cout << line << '\n';
+        }
+        const auto graph = db_service->ExecutionDb()
+            ->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+        if (poll_count == 1 || poll_count % 10 == 0) {
+            const auto telemetry = coordinators.SnapshotTelemetry();
+            std::cout << "[tasmovie-sterile] "
+                << (graph ? FormatWorkflowStateLine(*graph)
+                          : std::string("workflow=unavailable"))
+                << " ready_workers="
+                << coordinators.SnapshotReadyWorkers().size()
+                << " worksets_submitted="
+                << telemetry.execution.worksets_submitted
+                << " terminals="
+                << telemetry.execution.worker_terminals_observed
+                << '\n';
+        }
+        if (graph) {
+            if (FindTerminalInfrastructureJobFailure(
+                    db_service->ExecutionDb(), *graph,
+                    &terminal_error)) {
+                break;
+            }
+            using savor::db::execution::workflow::WorkflowInstanceState;
+            if (graph->instance.state == WorkflowInstanceState::Completed) {
+                workflow_completed = true;
+                break;
+            }
+            if (graph->instance.state == WorkflowInstanceState::Failed
+                || graph->instance.state
+                    == WorkflowInstanceState::Canceled) {
+                terminal_error = "composed workflow reached "
+                    + std::string(ToString(graph->instance.state));
+                break;
+            }
+        }
+        const auto worker_start = coordinators.SnapshotWorkerStartResult();
+        if (worker_start.status
+            == savor::runner::parallel::savordb::WorkerCoordinatorStartStatus::
+                StartupExhausted) {
+            terminal_error = worker_start.diagnostic.empty()
+                ? "all worker startup attempts were exhausted"
+                : worker_start.diagnostic;
+            break;
+        }
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(options.poll_ms));
+    }
+
+    if (workflow_completed) {
+        std::size_t drain_polls = 0;
+        while (true) {
+            std::string quiescence;
+            const bool quiescent = CheckWorkflowQuiescence(
+                db_service->ExecutionDb(), &quiescence);
+            const auto telemetry = coordinators.SnapshotTelemetry();
+            const bool reconciled =
+                telemetry.execution.worksets_submitted > 0
+                && telemetry.execution.draining_transitions
+                    == telemetry.execution.worksets_submitted
+                && telemetry.execution.worker_terminal_acks
+                    == telemetry.execution.worker_terminals_staged
+                && telemetry.execution.worker_terminals_observed
+                    == telemetry.execution.worker_terminals_staged;
+            if (quiescent && reconciled) break;
+            ++drain_polls;
+            if (drain_polls % 10 == 0) {
+                std::cout << "[tasmovie-sterile-draining] "
+                    << quiescence
+                    << " submitted="
+                    << telemetry.execution.worksets_submitted
+                    << " draining="
+                    << telemetry.execution.draining_transitions
+                    << " staged="
+                    << telemetry.execution.worker_terminals_staged
+                    << " acked="
+                    << telemetry.execution.worker_terminal_acks << '\n';
+            }
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(options.poll_ms));
+        }
+    }
+
+    const auto final_graph = db_service->ExecutionDb()
+        ->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    const auto final_telemetry = coordinators.SnapshotTelemetry();
+    const auto final_ready_workers = coordinators.SnapshotReadyWorkers();
+    const auto final_warnings = coordinators.SnapshotExecutionWarnings();
+    std::string stop_error;
+    const bool stopped = coordinators.Stop(&stop_error);
+    for (const auto& line : drain_lines()) {
+        std::cout << line << '\n';
+    }
+    const auto final_sink = [&](const std::string& line) {
+        durable_log.AppendLine(line);
+        std::cout << line << '\n';
+    };
+    ScenarioAssessment assessment;
+    assessment.Require(
+        stopped,
+        "split combined coordinator shutdown failed: " + stop_error);
+    assessment.Require(
+        workflow_completed,
+        terminal_error.empty()
+            ? "composed workflow stopped before completion"
+            : terminal_error);
+    std::string invariant_error;
+    const bool graph_valid = VerifyComposedTasMovieEstablishedSterileGraph(
+        db_service->AuthoringDb(), final_graph,
+        runtime_rtc, false, &invariant_error);
+    assessment.Require(
+        graph_valid,
+        invariant_error.empty()
+            ? "composed TAS Movie/sterile established graph contract failed"
+            : invariant_error);
+
+    VerifiedRootValidationAttempt validation{};
+    bool validation_contract_valid = false;
+    VerifiedSterilizationAttempt sterilization{};
+    const auto find_step = [&](std::string_view node_key) {
+        if (!final_graph) {
+            return static_cast<const savor::db::execution::workflow::WorkflowStepRecord*>(nullptr);
+        }
+        const auto found = std::ranges::find_if(
+            final_graph->steps, [&](const auto& step) {
+                return step.graph_node_key == node_key;
+            });
+        return found == final_graph->steps.end()
+            ? static_cast<const savor::db::execution::workflow::WorkflowStepRecord*>(nullptr)
+            : &*found;
+    };
+    const auto require_skipped = [&](std::string_view node_key,
+                                     std::string_view reason) {
+        const auto* step = find_step(node_key);
+        assessment.Require(
+            step != nullptr
+                && step->state
+                    == savor::db::execution::workflow::WorkflowStepState::Skipped,
+            std::string(node_key)
+                + " was not guard-skipped after "
+                + std::string(reason));
+    };
+    if (graph_valid && workflow_completed) {
+        invariant_error.clear();
+        validation_contract_valid = VerifyRootValidationAttempt(
+            db_service, workflow_instance_id, source_dtm_artifact_id,
+            source_dtm_artifact->filename, runtime_rtc,
+            establishment, "tas_validate_1", &validation, &invariant_error);
+        assessment.Require(
+            validation_contract_valid,
+            invariant_error.empty()
+                ? "root-validation result contract failed"
+                : invariant_error);
+        if (validation_contract_valid) {
+            final_sink("[tasmovie-trajectory] phase=root_cursor outcome=RootCursorEstablished"
+                + std::string(" attempt=")
+                + std::to_string(establishment.validation_attempt_id));
+            final_sink("[tasmovie-trajectory] phase=validation outcome="
+                + std::string(validation.valid ? "Valid" : "Invalid")
+                + " attempt="
+                + std::to_string(validation.validation_attempt_id));
+            if (!validation.valid) {
+                require_skipped("tas_sterilize_1", "validation Invalid");
+                final_sink("[tasmovie-trajectory] phase=sterilization outcome=NOT_ACTIVATED reason=validation_invalid");
+            } else {
+                invariant_error.clear();
+                const bool sterilization_valid =
+                    VerifyCheckpointSterilization(
+                        db_service, workflow_instance_id, final_graph,
+                        validation.checkpoint_savestate_id,
+                        &sterilization, &invariant_error);
+                assessment.Require(
+                    sterilization_valid,
+                    invariant_error.empty()
+                        ? "checkpoint sterilization contract failed"
+                        : invariant_error);
+                if (sterilization_valid) {
+                    final_sink(
+                        "[tasmovie-trajectory] phase=sterilization outcome=Sterilized checkpoint="
+                        + std::to_string(sterilization.savestate_id)
+                        + " attempt="
+                        + std::to_string(sterilization.sterilization_attempt_id));
+                }
+            }
+        }
+    }
+
+    std::vector<savor::db::execution::workflow::WorkflowGraphSnapshot>
+        workflow_snapshots;
+    if (final_graph) workflow_snapshots.push_back(*final_graph);
+    AssessCommonScenarioExecution(
+        db_service->ExecutionDb(), workflow_snapshots, final_telemetry,
+        final_ready_workers, &assessment);
+    for (const auto& warning : final_warnings) {
+        assessment.Warn("coordinator warning "
+            + std::to_string(warning.sequence) + ": " + warning.message
+            + (warning.detail.empty() ? "" : " (" + warning.detail + ")"));
+    }
+    ReportCommonScenarioTrajectory(
+        db_service, workflow_snapshots, "tasmovie_sterile", final_sink,
+        &assessment);
+    EmitScenarioAssessment("tasmovie_sterile", assessment, final_sink);
+    final_sink("[tasmovie-sterile-summary] workflow="
+        + std::to_string(workflow_instance_id)
+        + " root=RootCursorEstablished validation="
+        + (validation_contract_valid ? (validation.valid ? "Valid" : "Invalid")
+           : "NOT_VERIFIED")
+        + " sterilized_checkpoint="
+        + (sterilization.savestate_id > 0
+               ? std::to_string(sterilization.savestate_id) : "none")
+        + " worksets="
+        + std::to_string(final_telemetry.execution.worksets_submitted));
+    if (!assessment.Passed()) {
+        if (error_out) {
+            *error_out = assessment.FailureSummary("tasmovie_sterile");
+        }
+        return false;
+    }
     return true;
 }
 
@@ -2818,10 +4082,15 @@ bool RunTasMovieEstablishRealWorkerSmoke(
 
 bool RunTasMovieValidationRealWorkerSmoke(
     const CliOptions& options,
-    const ResolvedE2eScenarioEntry&,
+    const ResolvedE2eScenarioEntry& entry,
     const char* argv0,
     savor::db::core::DBService* db_service,
     std::string* error_out) {
+    if (entry.source
+        == savor::e2e::E2eScenarioEntrySource::TasMovieEstablishmentAttempt) {
+        return RunTasMovieValidationFromEstablishedRootCursorRealWorkerScenario(
+            options, entry, argv0, db_service, error_out);
+    }
     return RunTasMovieScenario(
         options, argv0, db_service, true, error_out);
 }
@@ -2832,6 +4101,11 @@ bool RunTasMovieSterileRealWorkerSmoke(
     const char* argv0,
     savor::db::core::DBService* db_service,
     std::string* error_out) {
+    if (entry.source
+        == savor::e2e::E2eScenarioEntrySource::TasMovieEstablishmentAttempt) {
+        return RunTasMovieSterileFromEstablishedRootCursorRealWorkerScenario(
+            options, entry, argv0, db_service, error_out);
+    }
     return RunComposedTasMovieSterileScenario(
         options, entry, argv0, db_service, error_out);
 }

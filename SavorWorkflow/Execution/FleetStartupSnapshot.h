@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "../Worker/WorkerTelemetry.h"
+
 namespace savor::runner::parallel::savordb {
 
 struct FleetStartupSlotSnapshot {
@@ -13,6 +15,7 @@ struct FleetStartupSlotSnapshot {
     std::uint32_t maximum_attempts = 0;
     bool ready = false;
     bool starting = false;
+    WorkerStartupPhase startup_phase = WorkerStartupPhase::None;
     bool retry_pending = false;
     bool exhausted = false;
     std::string terminal_diagnostic;

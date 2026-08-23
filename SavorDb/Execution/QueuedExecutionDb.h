@@ -140,14 +140,6 @@ public:
         const ResetInterruptedResultProcessingCommand& command,
         ResultProcessingReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool RequeueLostResultProcessing(
-        const RequeueLostResultProcessingCommand& command,
-        ResultProcessingReceipt* receipt_out = nullptr,
-        std::string* error_out = nullptr) override;
-    bool RecordResultProcessingFailure(
-        const RecordResultProcessingFailureCommand& command,
-        ResultProcessingReceipt* receipt_out = nullptr,
-        std::string* error_out = nullptr) override;
     bool CommitResultFinalizationsBatch(
         const CommitResultFinalizationsBatchCommand& command,
         std::vector<ResultProcessingReceipt>* receipts_out = nullptr,
@@ -169,6 +161,20 @@ public:
     bool CompleteTempBlobCleanup(
         const CompleteTempBlobCleanupCommand& command,
         ExecutionDbOperationDisposition* disposition_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<ClaimedResultStagingCleanup>
+    ClaimNextResultStagingCleanup(
+        const ClaimResultStagingCleanupCommand& command,
+        std::string* error_out = nullptr) override;
+    bool CompleteResultStagingCleanup(
+        const CompleteResultStagingCleanupCommand& command,
+        ExecutionDbOperationDisposition* disposition_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool GetResultStagingCleanupCount(
+        std::int64_t* count_out,
+        std::string* error_out = nullptr) const override;
+    bool ClearResultStagingCleanupQueue(
+        std::int64_t* rows_deleted_out = nullptr,
         std::string* error_out = nullptr) override;
     bool RecoverInterruptedWorksetDispatches(
         RecoverInterruptedWorksetDispatchesReceipt* receipt_out = nullptr,
@@ -237,7 +243,12 @@ public:
     std::optional<std::string> GetJobInputIni(std::int64_t job_id, std::string* error_out = nullptr) const override;
     bool RequeueJob(std::int64_t job_id, std::string* error_out = nullptr) override;
     bool RestartFailedJob(std::int64_t job_id, std::optional<std::string> input_ini_override = std::nullopt, std::string* error_out = nullptr) override;
-    bool CancelQueuedOrClaimedJob(std::int64_t job_id, std::string* error_out = nullptr) override;
+    std::vector<FailedWorkflowWorksetJobRecord>
+    ListFailedWorkflowWorksetJobs(std::int64_t workflow_instance_id) const override;
+    bool ApplyWorksetJobReorganization(
+        const WorksetJobReorganizationPlan& plan,
+        WorksetJobReorganizationReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
     std::optional<ExecutionJobSetProgressDetails> GetJobSetProgress(std::int64_t job_set_id) const override;
     std::vector<ExecutionJobSetJobRecord> ListJobsInJobSet(
         std::int64_t job_set_id) const override;

@@ -558,6 +558,7 @@ bool ExplorerRunsPage::isFinishedState(const QString& state) const
 {
     return state == QStringLiteral("SUCCEEDED")
         || state == QStringLiteral("FAILED")
+        || state == QStringLiteral("INTERRUPTED")
         || state == QStringLiteral("CANCELED")
         || state == QStringLiteral("SUPERSEDED")
         || state == QStringLiteral("SUCCEEDED_WINNER")

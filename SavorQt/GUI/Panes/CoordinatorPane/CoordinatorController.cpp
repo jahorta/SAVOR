@@ -4,6 +4,7 @@
 #include "Phases/Programs/SeedProbe/SeedProbeModule.h"
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 
+#include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
@@ -13,10 +14,22 @@
 #include <QtCore/QStringList>
 
 #include <algorithm>
+#include <atomic>
 #include <exception>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <utility>
+
+struct CoordinatorStartupSharedState {
+    std::mutex mutex;
+    std::atomic_bool cancel_requested{false};
+    std::uint64_t generation = 0;
+    bool initially_paused = true;
+    std::unique_ptr<
+        savor::runner::parallel::savordb::CoordinatorRuntime>
+        runtime;
+};
 
 namespace {
 constexpr auto kSettingsGroup = "Coordinator";
@@ -38,7 +51,8 @@ bool dirExists(const QString& path)
 
 std::optional<std::string> sha256File(
     const QString& path,
-    QString* errorOut)
+    QString* errorOut,
+    const std::atomic_bool* cancelRequested)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -51,6 +65,13 @@ std::optional<std::string> sha256File(
     QCryptographicHash hash(QCryptographicHash::Sha256);
     constexpr qint64 kChunkBytes = 4 * 1024 * 1024;
     while (!file.atEnd()) {
+        if (cancelRequested != nullptr
+            && cancelRequested->load(std::memory_order_acquire)) {
+            if (errorOut != nullptr) {
+                errorOut->clear();
+            }
+            return std::nullopt;
+        }
         const QByteArray chunk = file.read(kChunkBytes);
         if (chunk.isEmpty() && file.error() != QFileDevice::NoError) {
             if (errorOut != nullptr) {
@@ -71,6 +92,16 @@ std::optional<std::string> sha256File(
 CoordinatorController::CoordinatorController(QObject* parent)
     : QObject(parent)
 {
+    connect(
+        &startup_watcher_,
+        &QFutureWatcher<CoordinatorStartupResult>::finished,
+        this,
+        &CoordinatorController::handleStartupFinished);
+    connect(
+        &startup_cleanup_watcher_,
+        &QFutureWatcher<void>::finished,
+        this,
+        &CoordinatorController::handleStartupCleanupFinished);
     loadSettings();
     updateValidationMessage();
     updateSnapshotCache();
@@ -78,12 +109,31 @@ CoordinatorController::CoordinatorController(QObject* parent)
 
 CoordinatorController::~CoordinatorController()
 {
+    stopCoordinator();
+    waitForShutdown();
     stopCoordinatorServices();
+}
+
+CoordinatorLifecycleState CoordinatorController::lifecycleState() const
+{
+    return lifecycle_state_;
+}
+
+bool CoordinatorController::isStopped() const
+{
+    return lifecycle_state_ == CoordinatorLifecycleState::Stopped;
+}
+
+bool CoordinatorController::isTransitioning() const
+{
+    return lifecycle_state_ == CoordinatorLifecycleState::Starting
+        || lifecycle_state_ == CoordinatorLifecycleState::Stopping;
 }
 
 bool CoordinatorController::isRunning() const
 {
-    return coordinator_runtime_ != nullptr
+    return lifecycle_state_ == CoordinatorLifecycleState::Running
+        && coordinator_runtime_ != nullptr
         && coordinator_runtime_->IsStarted();
 }
 bool CoordinatorController::isPaused() const
@@ -104,6 +154,7 @@ bool CoordinatorController::visualWorkerPoolEnabled() const { return visualWorke
 QString CoordinatorController::isoPath() const { return isoPath_; }
 QString CoordinatorController::dolphinBaseDir() const { return dolphinBaseDir_; }
 QString CoordinatorController::validationMessage() const { return validationMessage_; }
+QString CoordinatorController::resultStagingCleanupError() const { return resultStagingCleanupError_; }
 const std::vector<WorkerSnapshot>& CoordinatorController::snapshot() const { return snapshotCache_; }
 std::vector<WorkerSnapshot> CoordinatorController::freshSnapshot() const
 {
@@ -139,7 +190,7 @@ bool CoordinatorController::visualReplayControlsEnabled() const
 
 void CoordinatorController::startCoordinator()
 {
-    if (coordinator_runtime_) {
+    if (!isStopped() || coordinator_runtime_ || startup_state_) {
         return;
     }
 
@@ -166,17 +217,6 @@ void CoordinatorController::startCoordinator()
         return;
     }
 
-    QString isoHashError;
-    const auto isoSha256 =
-        sha256File(isoPath_.trimmed(), &isoHashError);
-    if (!isoSha256.has_value()) {
-        validationMessage_ =
-            QStringLiteral("Failed to hash the configured ISO: %1")
-                .arg(isoHashError);
-        emit stateChanged();
-        return;
-    }
-
     try {
         std::vector<savor::runner::parallel::savordb::
             CoordinatorWorkerVisualSurface> visualSurfaces;
@@ -199,67 +239,167 @@ void CoordinatorController::startCoordinator()
                 });
             }
         }
-        auto coordinatorRuntime = std::make_unique<
-            savor::runner::parallel::savordb::CoordinatorRuntime>();
-        savor::runner::parallel::savordb::CoordinatorRuntimeConfig
-            coordinatorConfig{
-                .worker = buildWorkerConfig(),
-                .state_compatibility = {
-                    .game_id = std::string(
-                        savor::runtime::program::capabilities::
-                            kSupportedGameId),
-                    .iso_sha256 = *isoSha256,
-                    .emulator_build = "dolphin-2506a",
-                    .runtime_revision = "worker-runtime-slice4",
-                },
-                .initially_paused = startPaused_,
-                .object_store_root = runtime.root() / "object_store",
-                .event_line_callback = [](const std::string&) {},
-                .visual_surfaces = std::move(visualSurfaces),
-            };
-        std::string startupError;
-        if (!coordinatorRuntime->Start(
-                executionDb,
-                authoringDb,
-                programRegistry,
-                std::move(coordinatorConfig),
-                &startupError)) {
-            validationMessage_ =
-                QStringLiteral(
-                    "Coordinator startup failed: %1")
-                    .arg(QString::fromStdString(
-                        startupError));
-            emit stateChanged();
-            return;
-        }
+        auto startupState =
+            std::make_shared<CoordinatorStartupSharedState>();
+        startupState->generation = ++startup_generation_;
+        startupState->initially_paused = startPaused_;
+        startup_state_ = startupState;
 
-        paused_ = startPaused_;
-        coordinator_runtime_ = std::move(coordinatorRuntime);
+        auto workerConfig = buildWorkerConfig();
+        const QString isoPath = isoPath_.trimmed();
+        const auto objectStoreRoot = runtime.root() / "object_store";
+        const bool initiallyPaused = startPaused_;
+        const std::uint64_t generation = startupState->generation;
+
+        lifecycle_state_ = CoordinatorLifecycleState::Starting;
+        validationMessage_.clear();
+        updateSnapshotCache();
+        emit stateChanged();
+        emit snapshotChanged();
+
+        startup_watcher_.setFuture(QtConcurrent::run(
+            [startupState,
+             generation,
+             isoPath,
+             executionDb,
+             authoringDb,
+             programRegistry,
+             workerConfig = std::move(workerConfig),
+             visualSurfaces = std::move(visualSurfaces),
+             objectStoreRoot,
+             initiallyPaused]() mutable -> CoordinatorStartupResult {
+                const auto canceled = [&startupState]() {
+                    return startupState->cancel_requested.load(
+                        std::memory_order_acquire);
+                };
+                if (canceled()) {
+                    return {generation, CoordinatorStartupDisposition::Canceled, {}};
+                }
+
+                QString isoHashError;
+                const auto isoSha256 = sha256File(
+                    isoPath,
+                    &isoHashError,
+                    &startupState->cancel_requested);
+                if (!isoSha256.has_value()) {
+                    if (canceled()) {
+                        return {generation, CoordinatorStartupDisposition::Canceled, {}};
+                    }
+                    return {
+                        generation,
+                        CoordinatorStartupDisposition::Failed,
+                        QStringLiteral("Failed to hash the configured ISO: %1")
+                            .arg(isoHashError),
+                    };
+                }
+                if (canceled()) {
+                    return {generation, CoordinatorStartupDisposition::Canceled, {}};
+                }
+
+                try {
+                    auto coordinatorRuntime = std::make_unique<
+                        savor::runner::parallel::savordb::CoordinatorRuntime>();
+                    savor::runner::parallel::savordb::CoordinatorRuntimeConfig
+                        coordinatorConfig{
+                            .worker = std::move(workerConfig),
+                            .state_compatibility = {
+                                .game_id = std::string(
+                                    savor::runtime::program::capabilities::
+                                        kSupportedGameId),
+                                .iso_sha256 = *isoSha256,
+                                .emulator_build = "dolphin-2506a",
+                                .runtime_revision = "worker-runtime-slice4",
+                            },
+                            .initially_paused = initiallyPaused,
+                            .object_store_root = objectStoreRoot,
+                            .event_line_callback = [](const std::string&) {},
+                            .visual_surfaces = std::move(visualSurfaces),
+                        };
+                    std::string startupError;
+                    if (!coordinatorRuntime->Start(
+                            executionDb,
+                            authoringDb,
+                            programRegistry,
+                            std::move(coordinatorConfig),
+                            &startupError)) {
+                        return {
+                            generation,
+                            CoordinatorStartupDisposition::Failed,
+                            QStringLiteral("Coordinator startup failed: %1")
+                                .arg(QString::fromStdString(startupError)),
+                        };
+                    }
+                    if (canceled()) {
+                        (void)coordinatorRuntime->Stop(nullptr);
+                        return {generation, CoordinatorStartupDisposition::Canceled, {}};
+                    }
+
+                    {
+                        std::lock_guard lock(startupState->mutex);
+                        if (!startupState->cancel_requested.load(
+                                std::memory_order_acquire)) {
+                            startupState->runtime =
+                                std::move(coordinatorRuntime);
+                        }
+                    }
+                    if (coordinatorRuntime) {
+                        (void)coordinatorRuntime->Stop(nullptr);
+                        return {generation, CoordinatorStartupDisposition::Canceled, {}};
+                    }
+                    return {generation, CoordinatorStartupDisposition::Started, {}};
+                } catch (const std::exception& ex) {
+                    return {
+                        generation,
+                        CoordinatorStartupDisposition::Failed,
+                        QStringLiteral("Coordinator startup failed: %1")
+                            .arg(QString::fromUtf8(ex.what())),
+                    };
+                } catch (...) {
+                    return {
+                        generation,
+                        CoordinatorStartupDisposition::Failed,
+                        QStringLiteral("Coordinator startup failed with an unknown exception."),
+                    };
+                }
+            }));
     } catch (const std::exception& ex) {
         validationMessage_ = QStringLiteral("Coordinator startup failed: %1").arg(QString::fromUtf8(ex.what()));
-        stopCoordinatorServices();
+        startup_state_.reset();
+        lifecycle_state_ = CoordinatorLifecycleState::Stopped;
         emit stateChanged();
         return;
     } catch (...) {
         validationMessage_ = QStringLiteral("Coordinator startup failed with an unknown exception.");
-        stopCoordinatorServices();
+        startup_state_.reset();
+        lifecycle_state_ = CoordinatorLifecycleState::Stopped;
         emit stateChanged();
         return;
     }
-
-    updateSnapshotCache();
-    emit stateChanged();
-    emit snapshotChanged();
 }
 
 void CoordinatorController::stopCoordinator()
 {
+    if (lifecycle_state_ == CoordinatorLifecycleState::Starting
+        && startup_state_) {
+        startup_state_->cancel_requested.store(
+            true,
+            std::memory_order_release);
+        lifecycle_state_ = CoordinatorLifecycleState::Stopping;
+        emit stateChanged();
+        return;
+    }
+    if (lifecycle_state_ == CoordinatorLifecycleState::Stopping) {
+        return;
+    }
     if (!coordinator_runtime_) {
+        lifecycle_state_ = CoordinatorLifecycleState::Stopped;
         return;
     }
 
+    lifecycle_state_ = CoordinatorLifecycleState::Stopping;
     stopCoordinatorServices();
     paused_ = false;
+    lifecycle_state_ = CoordinatorLifecycleState::Stopped;
     updateSnapshotCache();
     emit stateChanged();
     emit snapshotChanged();
@@ -267,6 +407,9 @@ void CoordinatorController::stopCoordinator()
 
 void CoordinatorController::setPaused(bool paused)
 {
+    if (!isRunning()) {
+        return;
+    }
     paused_ = paused;
     if (coordinator_runtime_) {
         coordinator_runtime_->SetExecutionPaused(paused_);
@@ -280,6 +423,9 @@ void CoordinatorController::togglePaused() { setPaused(!isPaused()); }
 
 void CoordinatorController::setTargetWorkers(int targetWorkers)
 {
+    if (isTransitioning()) {
+        return;
+    }
     const int clampedValue = (std::min)(kMaxTargetWorkers, (std::max)(kMinTargetWorkers, targetWorkers));
     if (targetWorkers_ == clampedValue) {
         return;
@@ -296,6 +442,9 @@ void CoordinatorController::setTargetWorkers(int targetWorkers)
 
 void CoordinatorController::setStartPaused(bool startPaused)
 {
+    if (!isStopped()) {
+        return;
+    }
     if (startPaused_ == startPaused) {
         return;
     }
@@ -309,7 +458,7 @@ void CoordinatorController::setVisualWorkerPoolEnabled(bool enabled)
     if (visualWorkerPoolEnabled_ == enabled) {
         return;
     }
-    if (coordinator_runtime_) {
+    if (!isStopped()) {
         return;
     }
     visualWorkerPoolEnabled_ = enabled;
@@ -319,7 +468,7 @@ void CoordinatorController::setVisualWorkerPoolEnabled(bool enabled)
 
 void CoordinatorController::setVisualWorkerSurface(int workerIndex, quintptr hwnd, const QString& hostEventsPipeName)
 {
-    if (workerIndex < 0) {
+    if (!isStopped() || workerIndex < 0) {
         return;
     }
     visualWorkerSurfaces_[workerIndex] = VisualWorkerSurface{
@@ -330,12 +479,15 @@ void CoordinatorController::setVisualWorkerSurface(int workerIndex, quintptr hwn
 
 void CoordinatorController::clearVisualWorkerSurfaces()
 {
+    if (!isStopped()) {
+        return;
+    }
     visualWorkerSurfaces_.clear();
 }
 
 void CoordinatorController::setIsoPath(const QString& isoPath)
 {
-    if (isoPath_ == isoPath) {
+    if (!isStopped() || isoPath_ == isoPath) {
         return;
     }
     isoPath_ = isoPath;
@@ -346,7 +498,7 @@ void CoordinatorController::setIsoPath(const QString& isoPath)
 
 void CoordinatorController::setDolphinBaseDir(const QString& dolphinBaseDir)
 {
-    if (dolphinBaseDir_ == dolphinBaseDir) {
+    if (!isStopped() || dolphinBaseDir_ == dolphinBaseDir) {
         return;
     }
     dolphinBaseDir_ = dolphinBaseDir;
@@ -357,11 +509,17 @@ void CoordinatorController::setDolphinBaseDir(const QString& dolphinBaseDir)
 
 void CoordinatorController::setVisualRenderWidgetHandle(quintptr hwnd)
 {
+    if (!isStopped()) {
+        return;
+    }
     visualRenderWidgetHandle_ = hwnd;
 }
 
 void CoordinatorController::setVisualHostEventsPipeName(const QString& pipeName)
 {
+    if (!isStopped()) {
+        return;
+    }
     visualHostEventsPipeName_ = pipeName;
 }
 
@@ -486,6 +644,7 @@ void CoordinatorController::updateSnapshotCache()
         snapshotCache_.clear();
         visualSnapshotCache_.clear();
         warningSnapshotCache_.clear();
+        resultStagingCleanupError_.clear();
         return;
     }
 
@@ -493,6 +652,147 @@ void CoordinatorController::updateSnapshotCache()
     visualSnapshotCache_.clear();
     warningSnapshotCache_ =
         coordinator_runtime_->SnapshotExecutionWarnings();
+    const auto telemetry = coordinator_runtime_->SnapshotTelemetry();
+    resultStagingCleanupError_ = QString::fromStdString(
+        telemetry.result_staging_cleanup.last_blocked_error);
+}
+
+void CoordinatorController::handleStartupFinished()
+{
+    CoordinatorStartupResult result;
+    try {
+        result = startup_watcher_.result();
+    } catch (const std::exception& ex) {
+        result = {
+            startup_generation_,
+            CoordinatorStartupDisposition::Failed,
+            QStringLiteral("Coordinator startup failed: %1")
+                .arg(QString::fromUtf8(ex.what())),
+        };
+    } catch (...) {
+        result = {
+            startup_generation_,
+            CoordinatorStartupDisposition::Failed,
+            QStringLiteral("Coordinator startup failed with an unknown exception."),
+        };
+    }
+
+    const bool currentGeneration = startup_state_
+        && result.generation == startup_generation_
+        && result.generation == startup_state_->generation;
+    const bool canceled = !currentGeneration
+        || startup_state_->cancel_requested.load(std::memory_order_acquire)
+        || lifecycle_state_ == CoordinatorLifecycleState::Stopping
+        || result.disposition == CoordinatorStartupDisposition::Canceled;
+
+    if (result.disposition == CoordinatorStartupDisposition::Started
+        && !canceled) {
+        std::unique_ptr<
+            savor::runner::parallel::savordb::CoordinatorRuntime>
+            startedRuntime;
+        {
+            std::lock_guard lock(startup_state_->mutex);
+            startedRuntime = std::move(startup_state_->runtime);
+        }
+        if (startedRuntime) {
+            paused_ = startup_state_->initially_paused;
+            coordinator_runtime_ = std::move(startedRuntime);
+            startup_state_.reset();
+            lifecycle_state_ = CoordinatorLifecycleState::Running;
+            updateSnapshotCache();
+            emit stateChanged();
+            emit snapshotChanged();
+            return;
+        }
+        result.disposition = CoordinatorStartupDisposition::Failed;
+        result.error = QStringLiteral(
+            "Coordinator startup completed without publishing its runtime.");
+    }
+
+    if (startup_state_) {
+        bool hasRuntime = false;
+        {
+            std::lock_guard lock(startup_state_->mutex);
+            hasRuntime = startup_state_->runtime != nullptr;
+        }
+        if (hasRuntime) {
+            lifecycle_state_ = CoordinatorLifecycleState::Stopping;
+            startStartupCleanup();
+            emit stateChanged();
+            return;
+        }
+    }
+
+    startup_state_.reset();
+    paused_ = false;
+    lifecycle_state_ = CoordinatorLifecycleState::Stopped;
+    if (!canceled && !result.error.isEmpty()) {
+        validationMessage_ = result.error;
+    }
+    updateSnapshotCache();
+    emit stateChanged();
+    emit snapshotChanged();
+}
+
+void CoordinatorController::startStartupCleanup()
+{
+    const auto state = startup_state_;
+    if (!state || startup_cleanup_watcher_.isRunning()) {
+        return;
+    }
+    startup_cleanup_watcher_.setFuture(QtConcurrent::run([state]() {
+        std::unique_ptr<
+            savor::runner::parallel::savordb::CoordinatorRuntime>
+            runtime;
+        {
+            std::lock_guard lock(state->mutex);
+            runtime = std::move(state->runtime);
+        }
+        if (runtime) {
+            (void)runtime->Stop(nullptr);
+        }
+    }));
+}
+
+void CoordinatorController::handleStartupCleanupFinished()
+{
+    startup_state_.reset();
+    paused_ = false;
+    lifecycle_state_ = CoordinatorLifecycleState::Stopped;
+    updateSnapshotCache();
+    emit stateChanged();
+    emit snapshotChanged();
+}
+
+void CoordinatorController::waitForShutdown()
+{
+    if (startup_state_) {
+        startup_state_->cancel_requested.store(
+            true,
+            std::memory_order_release);
+    }
+    if (startup_watcher_.isRunning()) {
+        startup_watcher_.waitForFinished();
+    }
+    if (startup_cleanup_watcher_.isRunning()) {
+        startup_cleanup_watcher_.waitForFinished();
+    }
+    if (startup_state_) {
+        std::unique_ptr<
+            savor::runner::parallel::savordb::CoordinatorRuntime>
+            runtime;
+        {
+            std::lock_guard lock(startup_state_->mutex);
+            runtime = std::move(startup_state_->runtime);
+        }
+        if (runtime) {
+            (void)runtime->Stop(nullptr);
+        }
+        startup_state_.reset();
+    }
+    stopCoordinatorServices();
+    paused_ = false;
+    lifecycle_state_ = CoordinatorLifecycleState::Stopped;
 }
 
 savor::runner::parallel::savordb::WorkerCoordinatorConfig

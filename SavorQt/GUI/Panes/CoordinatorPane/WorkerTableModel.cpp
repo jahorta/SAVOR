@@ -27,6 +27,20 @@ const char* workerStateLabel(WorkerStateKind state)
     }
 }
 
+const char* workerStartupPhaseLabel(WorkerStartupPhase phase)
+{
+    switch (phase) {
+    case WorkerStartupPhase::PendingFilesystem: return "Pending filesystem";
+    case WorkerStartupPhase::PreparingFilesystem: return "Preparing filesystem";
+    case WorkerStartupPhase::WaitingToOpen: return "Waiting to open";
+    case WorkerStartupPhase::Launching: return "Launching";
+    case WorkerStartupPhase::OpeningSession: return "Opening session";
+    case WorkerStartupPhase::Failed: return "Startup failed";
+    case WorkerStartupPhase::None:
+    default: return "";
+    }
+}
+
 QString formatOptionalInt64(const std::optional<int64_t>& value, const QString& fallback = QStringLiteral("--"))
 {
     return value.has_value() ? QString::number(*value) : fallback;
@@ -34,6 +48,11 @@ QString formatOptionalInt64(const std::optional<int64_t>& value, const QString& 
 
 QString workerStatusText(const WorkerSnapshot& row)
 {
+    if (row.startup_phase != WorkerStartupPhase::None
+        && row.startup_phase != WorkerStartupPhase::Failed) {
+        return QString::fromUtf8(
+            workerStartupPhaseLabel(row.startup_phase));
+    }
     const bool hasProgress = !row.last_progress.empty();
     const bool hasError = !row.last_error.empty();
     if (hasProgress && (!hasError || row.last_progress_mono_ns >= row.last_error_mono_ns)) {
@@ -186,10 +205,20 @@ void WorkerTableModel::setSnapshots(std::vector<WorkerSnapshot> snapshots)
     }
 }
 
+std::optional<WorkerSnapshot> WorkerTableModel::snapshotAt(int row) const
+{
+    if (row < 0 || row >= static_cast<int>(snapshots_.size()))
+        return std::nullopt;
+    return snapshots_[static_cast<std::size_t>(row)];
+}
+
 bool WorkerTableModel::rowsAffectDisplay(const WorkerSnapshot& lhs, const WorkerSnapshot& rhs)
 {
     return lhs.worker_id != rhs.worker_id
         || lhs.pid != rhs.pid
+        || lhs.process_generation != rhs.process_generation
+        || lhs.log_path != rhs.log_path
+        || lhs.startup_phase != rhs.startup_phase
         || lhs.state != rhs.state
         || lhs.job_id != rhs.job_id
         || lhs.program_kind != rhs.program_kind

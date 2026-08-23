@@ -70,6 +70,14 @@ bool SeedTasMovieRootValidationWorkflow(
     std::int64_t* workflow_instance_id_out,
     std::string* error_out);
 
+bool SeedTasMovieEstablishedValidationWorkflow(
+    savor::db::IAuthoringDb* authoring_db,
+    savor::db::IExecutionDb* execution_db,
+    std::int64_t establishment_attempt_id,
+    std::int64_t rtc_value,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out);
+
 bool SeedTasMovieSterileWorkflow(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IExecutionDb* execution_db,

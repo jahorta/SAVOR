@@ -108,7 +108,7 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
         "  SELECT s.workflow_step_id, s.workflow_instance_id, s.job_set_id, s.job_set_id, 0 "
         "  FROM exec_workflow_step s "
         "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
-        "  WHERE i.state IN ('PENDING','RUNNING') AND s.state IN ('MATERIALIZED','RUNNING') AND s.job_set_id IS NOT NULL "
+        "  WHERE i.state IN ('PENDING','RUNNING','CANCELLING') AND s.state IN ('MATERIALIZED','RUNNING') AND s.job_set_id IS NOT NULL "
         "  UNION ALL "
         "  SELECT d.workflow_step_id, d.workflow_instance_id, d.root_job_set_id, child.job_set_id, d.depth + 1 "
         "  FROM exec_job_set child "
@@ -117,7 +117,10 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
         ") "
         "SELECT d.workflow_step_id, d.workflow_instance_id, d.root_job_set_id, "
         "CASE "
-        "  WHEN COALESCE(SUM(CASE WHEN j.state IN ('FAILED','CANCELED') THEN 1 ELSE 0 END), 0) > 0 THEN 'FAILED' "
+        "  WHEN COALESCE(SUM(CASE WHEN j.state='FAILED' THEN 1 ELSE 0 END), 0) > 0 THEN 'FAILED' "
+        "  WHEN COALESCE(SUM(CASE WHEN j.state='SUPERSEDED' THEN 1 ELSE 0 END), 0) > 0 THEN 'FAILED' "
+        "  WHEN COALESCE(SUM(CASE WHEN j.state='INTERRUPTED' THEN 1 ELSE 0 END), 0) > 0 THEN 'INTERRUPTED' "
+        "  WHEN COALESCE(SUM(CASE WHEN j.state='CANCELED' THEN 1 ELSE 0 END), 0) > 0 THEN 'CANCELED' "
         "  WHEN COUNT(j.job_id) > 0 "
         "       AND COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END), 0) = COUNT(j.job_id) THEN 'COMPLETED' "
         "  ELSE NULL "
@@ -153,6 +156,16 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
             event_kind = "Execution.WorkflowStepFailed.v1";
             message = "recovery_reconciled_failed";
             ++local.failed_steps;
+        } else if (terminal_state == "INTERRUPTED") {
+            next_step_state = "INTERRUPTED";
+            event_kind = "Execution.WorkflowStepFailed.v1";
+            message = "recovery_reconciled_interrupted";
+            ++local.failed_steps;
+        } else if (terminal_state == "CANCELED") {
+            next_step_state = "CANCELED";
+            event_kind = "Execution.WorkflowStepFailed.v1";
+            message = "recovery_reconciled_canceled";
+            ++local.failed_steps;
         } else {
             continue;
         }
@@ -174,7 +187,7 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
         if (!inserted) {
             if (terminal_state == "COMPLETED") {
                 --local.completed_steps;
-            } else if (terminal_state == "FAILED") {
+            } else {
                 --local.failed_steps;
             }
             continue;
@@ -183,7 +196,7 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
         sqlite3_stmt* up = nullptr;
         constexpr const char* kUpdate =
             "UPDATE exec_workflow_step SET state=?2, completed_at_utc=CASE WHEN ?2='COMPLETED' THEN ?3 ELSE completed_at_utc END, "
-            "failed_at_utc=CASE WHEN ?2='FAILED' THEN ?3 ELSE failed_at_utc END WHERE workflow_step_id=?1;";
+            "failed_at_utc=CASE WHEN ?2 IN ('FAILED','INTERRUPTED','CANCELED') THEN ?3 ELSE failed_at_utc END WHERE workflow_step_id=?1;";
         if (sqlite3_prepare_v2(db_, kUpdate, -1, &up, nullptr) != SQLITE_OK) {
             if (error_out) *error_out = sqlite3_errmsg(db_);
             sqlite3_finalize(st);
@@ -201,6 +214,46 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
             return false;
         }
         sqlite3_finalize(up);
+
+        if (terminal_state == "FAILED" || terminal_state == "INTERRUPTED") {
+            sqlite3_stmt* park = nullptr;
+            constexpr const char* kParkWorkflow =
+                "UPDATE exec_workflow_instance "
+                "SET state=?2, completed_at_utc=NULL, "
+                "failure_code=COALESCE(failure_code, ?3), "
+                "failure_text=COALESCE(failure_text, ?4) "
+                "WHERE workflow_instance_id=?1 AND state IN ('PENDING','RUNNING');";
+            if (sqlite3_prepare_v2(db_, kParkWorkflow, -1, &park, nullptr) != SQLITE_OK) {
+                if (error_out) *error_out = sqlite3_errmsg(db_);
+                sqlite3_finalize(st);
+                Exec(db_, "ROLLBACK;", nullptr);
+                return false;
+            }
+            sqlite3_bind_int64(park, 1, workflow_instance_id);
+            sqlite3_bind_text(park, 2, next_step_state, -1, SQLITE_STATIC);
+            sqlite3_bind_text(
+                park,
+                3,
+                terminal_state == "INTERRUPTED" ? "WORKFLOW_INTERRUPTED" : "WORKFLOW_STEP_FAILED",
+                -1,
+                SQLITE_STATIC);
+            sqlite3_bind_text(
+                park,
+                4,
+                terminal_state == "INTERRUPTED"
+                    ? "workflow step was interrupted"
+                    : "workflow step failed",
+                -1,
+                SQLITE_STATIC);
+            if (sqlite3_step(park) != SQLITE_DONE) {
+                if (error_out) *error_out = sqlite3_errmsg(db_);
+                sqlite3_finalize(park);
+                sqlite3_finalize(st);
+                Exec(db_, "ROLLBACK;", nullptr);
+                return false;
+            }
+            sqlite3_finalize(park);
+        }
 
         sqlite3_stmt* ev = nullptr;
         constexpr const char* kEventInsert =
@@ -262,6 +315,19 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
     }
     sqlite3_finalize(st);
 
+    if (!Exec(db_,
+            "UPDATE exec_workflow_instance SET state='CANCELED',"
+            "completed_at_utc=COALESCE(completed_at_utc,"
+            "CAST(strftime('%s','now') AS INTEGER) * 1000) "
+            "WHERE state='CANCELLING' AND NOT EXISTS("
+            "  SELECT 1 FROM exec_workflow_step s "
+            "  WHERE s.workflow_instance_id=exec_workflow_instance.workflow_instance_id "
+            "  AND s.state NOT IN ('COMPLETED','FAILED','INTERRUPTED','SKIPPED','CANCELED'));",
+            error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
     if (!Exec(db_, "COMMIT;", error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
@@ -300,7 +366,7 @@ bool WorkflowRecoveryService::PlanInvariantRemediation(
         " JOIN job_set_descendants d ON d.job_set_id=js.job_set_id), "
         "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id), "
         "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
-        "  WHERE j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
+        "  WHERE j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','CANCELED')), "
         "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='FAILED');";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -450,7 +516,7 @@ bool WorkflowRecoveryService::ExecuteInvariantRemediation(
         return true;
     }
 
-    if (!command_service->TerminalFailWorkflowInstance(
+    if (!command_service->FailWorkflowInstance(
             {
                 .workflow_instance_id = command.workflow_instance_id,
                 .failure_code = decision.failure_code,

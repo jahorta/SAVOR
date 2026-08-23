@@ -11,6 +11,12 @@ namespace savor::logger {
 
 enum class Level : int { Debug = 0, Trace, Info, Warn, Error, Fatal, Off };
 
+enum class FileOpenMode : std::uint8_t {
+    Truncate,
+    Append,
+    CreateNew,
+};
+
 struct LoggerStatistics {
     std::uint64_t accepted = 0;
     std::uint64_t written = 0;
@@ -26,7 +32,14 @@ public:
     void set_stdout_level(Level);
     void set_file_level(Level);
     void set_levels(Level stdout_lv, Level file_lv);
-    bool open_file(const char* path, bool append = false);
+    bool open_file(
+        const char* path,
+        FileOpenMode mode = FileOpenMode::Truncate);
+    bool open_file(const char* path, bool append) {
+        return open_file(
+            path,
+            append ? FileOpenMode::Append : FileOpenMode::Truncate);
+    }
     void close_file();
     void Flush();
     void Shutdown() noexcept;

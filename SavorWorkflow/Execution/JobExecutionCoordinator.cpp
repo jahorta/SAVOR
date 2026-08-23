@@ -847,8 +847,7 @@ private:
     std::atomic<std::uint64_t> cancellations_already_applied_{0};
     std::atomic<std::uint64_t> worker_losses_{0};
     std::atomic<std::uint64_t> startup_recovered_dispatches_{0};
-    std::atomic<std::uint64_t> startup_requeued_jobs_{0};
-    std::atomic<std::uint64_t> startup_recovery_attempts_granted_{0};
+    std::atomic<std::uint64_t> startup_interrupted_jobs_{0};
     std::atomic<std::uint64_t> active_residence_probes_{0};
     std::atomic<std::uint64_t> active_residence_matches_{0};
     std::atomic<std::uint64_t> active_residence_failures_{0};
@@ -1060,11 +1059,8 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
     }
     startup_recovered_dispatches_.fetch_add(
         static_cast<std::uint64_t>(dispatch_recovery.dispatches_closed));
-    startup_requeued_jobs_.fetch_add(
-        static_cast<std::uint64_t>(dispatch_recovery.jobs_requeued));
-    startup_recovery_attempts_granted_.fetch_add(
-        static_cast<std::uint64_t>(
-            dispatch_recovery.recovery_attempts_granted));
+    startup_interrupted_jobs_.fetch_add(
+        static_cast<std::uint64_t>(dispatch_recovery.jobs_interrupted));
 
     std::string cancellation_recovery_error;
     const auto unresolved_cancellations =
@@ -1652,9 +1648,7 @@ JobExecutionCoordinator::Impl::SnapshotTelemetry() const {
     telemetry.worker_losses = worker_losses_.load();
     telemetry.startup_recovered_dispatches =
         startup_recovered_dispatches_.load();
-    telemetry.startup_requeued_jobs = startup_requeued_jobs_.load();
-    telemetry.startup_recovery_attempts_granted =
-        startup_recovery_attempts_granted_.load();
+    telemetry.startup_interrupted_jobs = startup_interrupted_jobs_.load();
     telemetry.active_residence_probes = active_residence_probes_.load();
     telemetry.active_residence_matches = active_residence_matches_.load();
     telemetry.active_residence_failures = active_residence_failures_.load();
@@ -2559,8 +2553,7 @@ bool JobExecutionCoordinator::Impl::Reconstruct(
             context.items.push_back(
                 {
                     .job_id = item.job_id,
-                    .logical_ordinal =
-                        static_cast<std::uint32_t>(item.item_ordinal),
+                    .workset_item_ordinal = item.workset_item_ordinal,
                     .reserved_attempt_id = item.reserved_attempt_id,
                     .claim_token = claimed.claim_token,
                     .program_kind = item.program_kind,
@@ -2736,14 +2729,10 @@ bool JobExecutionCoordinator::Impl::ValidateReconstruction(
         const auto& durable = claimed.items[index];
         const auto& runtime_item =
             reconstruction.workset.items[index];
-        if (durable.item_ordinal < 0
-            || (index > 0
-                && claimed.items[index - 1].item_ordinal
-                    >= durable.item_ordinal)
+        if (durable.workset_item_ordinal != index
             || reconstruction.ordered_job_ids[index]
                 != durable.job_id
             || runtime_item.ordinal != index
-            || durable.dispatch_item_ordinal != index
             || runtime_item.correlation.durable_job_id
                 != std::to_string(durable.job_id)
             || runtime_item.correlation.claim_token
@@ -3881,7 +3870,7 @@ bool JobExecutionCoordinator::Impl::HandleItemStarted(
                 .dispatch_attempt_id = dispatch_id,
                 .claim_token = claimed.claim_token,
                 .job_id = durable_item.job_id,
-                .dispatch_item_ordinal =
+                .workset_item_ordinal =
                     event.payload.item_ordinal,
                 .reserved_attempt_id =
                     durable_item.reserved_attempt_id,
@@ -4007,7 +3996,7 @@ bool JobExecutionCoordinator::Impl::HandleProgress(
             .dispatch_attempt_id = dispatch_id,
             .claim_token = claimed.claim_token,
             .job_id = durable_item.job_id,
-            .dispatch_item_ordinal = event.payload.item_ordinal,
+            .workset_item_ordinal = event.payload.item_ordinal,
             .reserved_attempt_id = durable_item.reserved_attempt_id,
             .workset_id = event.payload.workset_id,
             .item_id = event.payload.item_id,
@@ -4257,7 +4246,7 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
                 .dispatch_attempt_id = dispatch_id,
                 .claim_token = claimed.claim_token,
                 .job_id = durable_item.job_id,
-                .dispatch_item_ordinal = payload.item_ordinal,
+                .workset_item_ordinal = payload.item_ordinal,
                 .reserved_attempt_id = durable_item.reserved_attempt_id,
                 .terminal_status = TerminalStatusName(payload.status),
                 .terminal_fingerprint = prepared->blob.sha256,

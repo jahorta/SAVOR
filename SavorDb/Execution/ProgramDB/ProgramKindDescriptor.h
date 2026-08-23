@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -149,7 +150,7 @@ struct IProgramJobMaterializer {
 // ordered membership, but it may not regroup, omit, or add jobs here.
 struct WorksetReconstructionItem {
     std::int64_t job_id = 0;
-    std::uint32_t logical_ordinal = 0;
+    std::uint32_t workset_item_ordinal = 0;
     std::uint64_t reserved_attempt_id = 0;
     std::string claim_token;
     std::int32_t program_kind = 0;
@@ -211,6 +212,13 @@ struct ProgramResultCancellation {
     std::string request_key;
     std::string reason_code;
     std::string reason_text;
+    std::string terminal_disposition;
+};
+
+struct ProgramResultStagingFile {
+    std::string relative_path;
+    std::string sha256;
+    std::uint64_t size_bytes = 0;
 };
 
 enum class ProgramResultDisposition {
@@ -220,6 +228,9 @@ enum class ProgramResultDisposition {
 
 struct ProgramResultDecision {
     ProgramResultDisposition disposition = ProgramResultDisposition::Finalize;
+    // Set only after the handler has durably persisted the terminal's domain
+    // outcome. Malformed or otherwise unpersisted results must leave this off.
+    bool cleanup_worker_staging = false;
     // Used only for Finalize. Program kinds own the business outcome; the
     // generic result processor deliberately does not infer success/failure
     // from a worker terminal.
@@ -228,6 +239,7 @@ struct ProgramResultDecision {
     std::optional<std::string> error_text;
     std::vector<ProgramResultOutput> outputs;
     std::vector<ProgramResultCancellation> cancellations;
+    std::vector<ProgramResultStagingFile> staging_files;
     std::vector<std::string> event_lines;
 };
 
@@ -243,31 +255,6 @@ struct ProgramResultProcessingContext {
     WorkerTerminalObservation terminal;
 };
 
-struct ProgramResultRecoveryContext {
-    std::int64_t job_id = 0;
-    std::int64_t job_set_id = 0;
-    std::int32_t program_kind = 0;
-    std::int32_t program_version = 0;
-    std::string program_ref_kind;
-    std::int64_t program_ref_id = 0;
-    std::string fingerprint;
-    std::string input_ini;
-    std::string terminal_sha256;
-};
-
-enum class ProgramResultRecoveryDisposition {
-    Recovered = 0,
-    NoPersistedOutcome,
-    Inconsistent,
-};
-
-struct ProgramResultRecovery {
-    ProgramResultRecoveryDisposition disposition =
-        ProgramResultRecoveryDisposition::Inconsistent;
-    std::optional<ProgramResultDecision> decision;
-    std::string diagnostic;
-};
-
 struct IProgramResultHandler {
     virtual ~IProgramResultHandler() = default;
     // Domain writes performed here must be idempotent. Returning a decision
@@ -275,18 +262,6 @@ struct IProgramResultHandler {
     // job's final state only afterwards.
     virtual ProgramResultDecision Process(
         const ProgramResultProcessingContext& context) const = 0;
-
-    // Used only during coordinator startup when a prior PROCESSING owner did
-    // not finish. Implementations inspect their already-durable program data;
-    // they must never fabricate a second worker observation.
-    virtual ProgramResultRecovery RecoverPersistedOutcome(
-        const ProgramResultRecoveryContext& context) const {
-        (void)context;
-        return {
-            .disposition = ProgramResultRecoveryDisposition::Inconsistent,
-            .diagnostic = "program kind does not support persisted-outcome recovery",
-        };
-    }
 };
 
 struct WorkflowTransitionContext {
@@ -336,6 +311,7 @@ struct IWorkflowTransitionHandler {
 struct ProgramKindDescriptor {
     std::int32_t program_kind = 0;
     std::string program_name;
+    std::filesystem::path result_staging_root;
     std::optional<savor::runtime::fullphase::FullPhaseProgramIdentity>
         full_phase_identity;
     // Presence is mandatory, including when the explicit default is empty.

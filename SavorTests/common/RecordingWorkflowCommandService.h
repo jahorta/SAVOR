@@ -33,7 +33,7 @@ public:
         return true;
     }
     bool PauseWorkflowInstance(const savor::db::execution::workflow::WorkflowPauseInstanceCommand&, std::string*) override { return true; }
-    bool TerminalFailWorkflowInstance(const savor::db::execution::workflow::WorkflowTerminalFailInstanceCommand&, std::string*) override { return true; }
+    bool FailWorkflowInstance(const savor::db::execution::workflow::WorkflowFailInstanceCommand&, std::string*) override { return true; }
 
     bool MarkStepMaterialized(
         const savor::db::execution::workflow::WorkflowMarkStepMaterializedCommand& command,

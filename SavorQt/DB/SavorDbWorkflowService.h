@@ -16,6 +16,7 @@
 #include "Execution/Workflow/WorkflowLaunchContract.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Execution/Workflow/WorkflowUnitActivationFactory.h"
+#include "Execution/WorksetJobOrganizer.h"
 #include "UIRead/IUiReadDb.h"
 
 namespace savorqt::db {
@@ -24,6 +25,7 @@ struct WorkflowListRequest {
     std::string state;
     std::string display_state;
     std::string workflow_kind;
+    bool exclude_final = false;
     std::optional<savor::db::UiReadListCursor> before;
     std::optional<savor::db::UiReadListCursor> after;
     int limit = 50;
@@ -225,6 +227,7 @@ public:
         query.state = request.state;
         query.display_state = request.display_state;
         query.workflow_kind = request.workflow_kind;
+        query.exclude_final = request.exclude_final;
         query.before = request.before;
         query.after = request.after;
         query.limit = request.limit;
@@ -504,6 +507,36 @@ public:
             return ServiceResult<void>::Err({ ServiceErrorKind::Failed, std::move(error) });
         }
         return ServiceResult<void>::Ok();
+    }
+
+    static ServiceResult<savor::db::WorksetJobReorganizationReceipt>
+    RetryFailedJobs(std::int64_t workflow_instance_id) {
+        auto* execution_db = savorqt::SavorDbRuntime::instance().executionDb();
+        if (execution_db == nullptr) {
+            return Unavailable<savor::db::WorksetJobReorganizationReceipt>(
+                kSavorDbRuntimeUnavailableMessage);
+        }
+        auto candidates =
+            execution_db->ListFailedWorkflowWorksetJobs(workflow_instance_id);
+        savor::runner::parallel::savordb::WorksetJobOrganizer organizer;
+        savor::db::WorksetJobReorganizationPlan plan{};
+        std::string error;
+        if (!organizer.Organize(
+                workflow_instance_id,
+                std::move(candidates),
+                &plan,
+                &error)) {
+            return ServiceResult<savor::db::WorksetJobReorganizationReceipt>::Err(
+                { ServiceErrorKind::Failed, std::move(error) });
+        }
+        savor::db::WorksetJobReorganizationReceipt receipt{};
+        if (!execution_db->ApplyWorksetJobReorganization(
+                plan, &receipt, &error)) {
+            return ServiceResult<savor::db::WorksetJobReorganizationReceipt>::Err(
+                { ServiceErrorKind::Failed, std::move(error) });
+        }
+        return ServiceResult<savor::db::WorksetJobReorganizationReceipt>::Ok(
+            std::move(receipt));
     }
 
 private:

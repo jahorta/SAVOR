@@ -159,11 +159,9 @@ void ArchiveWorkbenchPage::createWidgets()
 
     displayStateFilter_ = new QComboBox(filterPanel);
     displayStateFilter_->setObjectName("jobSetsFilterCombo");
-    displayStateFilter_->addItem(QStringLiteral("All states"), QString());
+    displayStateFilter_->addItem(QStringLiteral("All final states"), QString());
     displayStateFilter_->addItem(QStringLiteral("Completed"), QStringLiteral("COMPLETED"));
-    displayStateFilter_->addItem(QStringLiteral("Failed"), QStringLiteral("FAILED"));
     displayStateFilter_->addItem(QStringLiteral("Canceled"), QStringLiteral("CANCELED"));
-    displayStateFilter_->addItem(QStringLiteral("Running"), QStringLiteral("RUNNING"));
 
     workflowKindFilter_ = new QLineEdit(filterPanel);
     workflowKindFilter_->setObjectName("jobSetsFilterCombo");

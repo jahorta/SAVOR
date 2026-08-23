@@ -4540,6 +4540,126 @@ bool SqliteAnalysisDb::RecordBattleSingleTurnResult(
     return true;
 }
 
+bool SqliteAnalysisDb::ReplaceFailedBattleSingleTurnResult(
+    const ReplaceFailedBattleSingleTurnResultCommand& command,
+    std::int64_t* result_id_out,
+    std::string* error_out) {
+    const auto& result = command.result;
+    if (db_ == nullptr || result.turn_job_id <= 0 || result.exec_job_id <= 0
+        || command.expected_worker_terminal_sha256.size() != 64
+        || command.replacement_worker_terminal_sha256.size() != 64
+        || result.worker_terminal_sha256 != command.replacement_worker_terminal_sha256
+        || result.worker_terminal_sha256.size() != 64 || result.terminal_kind.empty()) {
+        if (error_out) *error_out = "battle.single_turn failed-result replacement identity is incomplete";
+        return false;
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    const auto rollback = [&]() { (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr); };
+    const auto fail = [&](std::string message) {
+        rollback();
+        if (error_out) *error_out = std::move(message);
+        return false;
+    };
+
+    const auto existing = GetBattleSingleTurnResultForExecJob(result.exec_job_id);
+    if (!existing || existing->turn_job_id != result.turn_job_id
+        || existing->worker_terminal_sha256 != command.expected_worker_terminal_sha256
+        || existing->terminal_kind != "FAILED") {
+        return fail("battle.single_turn failed-result replacement precondition failed");
+    }
+
+    Statement archive;
+    constexpr const char* archive_sql =
+        "INSERT INTO ab_historical_failed_battle_single_turn_results("
+        "superseded_battle_single_turn_result_id,turn_job_id,exec_job_id,"
+        "prior_worker_terminal_sha256,replacement_worker_terminal_sha256,"
+        "prior_terminal_kind,prior_domain_outcome,prior_error_code,prior_error_text,"
+        "prior_recorded_at_utc,superseded_at_utc) VALUES(?,?,?,?,?,?,?,?,?,?,?);";
+    if (sqlite3_prepare_v2(db_, archive_sql, -1, &archive.st, nullptr) != SQLITE_OK) {
+        return fail(sqlite3_errmsg(db_));
+    }
+    sqlite3_bind_int64(archive.st, 1, existing->battle_single_turn_result_id);
+    sqlite3_bind_int64(archive.st, 2, existing->turn_job_id);
+    sqlite3_bind_int64(archive.st, 3, existing->exec_job_id);
+    sqlite3_bind_text(archive.st, 4, existing->worker_terminal_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(archive.st, 5, command.replacement_worker_terminal_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(archive.st, 6, existing->terminal_kind.c_str(), -1, SQLITE_TRANSIENT);
+    const auto bind_existing_text = [&](int index, const std::optional<std::string>& value) {
+        if (value) sqlite3_bind_text(archive.st, index, value->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(archive.st, index);
+    };
+    bind_existing_text(7, existing->domain_outcome);
+    bind_existing_text(8, existing->error_code);
+    bind_existing_text(9, existing->error_text);
+    sqlite3_bind_int64(archive.st, 10, existing->recorded_at_utc.time_since_epoch().count());
+    sqlite3_bind_int64(archive.st, 11, command.superseded_at_utc.time_since_epoch().count());
+    if (sqlite3_step(archive.st) != SQLITE_DONE) {
+        return fail(sqlite3_errmsg(db_));
+    }
+
+    Statement update;
+    constexpr const char* update_sql =
+        "UPDATE ab_battle_single_turn_result_v1 SET "
+        "worker_terminal_sha256=?1,terminal_kind=?2,domain_outcome=?3,"
+        "error_code=?4,error_text=?5,ending_rng=?6,vi_start=?7,vi_end=?8,"
+        "pred_passed=?9,pred_total=?10,cumulative_fake_attacks=?11,"
+        "successor_savestate_id=?12,battle_context_artifact_id=?13,"
+        "predicate_group_revision_id=?14,predicate_group_sha256=?15,"
+        "predicate_execution_package_sha256=?16,predicate_evidence_blob=?17,"
+        "applied_input_artifact_id=?18,input_trace_artifact_id=?19,recorded_at_utc=?20 "
+        "WHERE battle_single_turn_result_id=?21 AND worker_terminal_sha256=?22 "
+        "AND terminal_kind='FAILED';";
+    if (sqlite3_prepare_v2(db_, update_sql, -1, &update.st, nullptr) != SQLITE_OK) {
+        return fail(sqlite3_errmsg(db_));
+    }
+    const auto bind_text = [&](int index, const std::optional<std::string>& value) {
+        if (value) sqlite3_bind_text(update.st, index, value->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(update.st, index);
+    };
+    const auto bind_i64 = [&](int index, const auto& value) {
+        if (value) sqlite3_bind_int64(update.st, index, static_cast<sqlite3_int64>(*value));
+        else sqlite3_bind_null(update.st, index);
+    };
+    sqlite3_bind_text(update.st, 1, result.worker_terminal_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(update.st, 2, result.terminal_kind.c_str(), -1, SQLITE_TRANSIENT);
+    bind_text(3, result.domain_outcome);
+    bind_text(4, result.error_code);
+    bind_text(5, result.error_text);
+    bind_i64(6, result.ending_rng);
+    bind_i64(7, result.vi_start);
+    bind_i64(8, result.vi_end);
+    bind_i64(9, result.pred_passed);
+    bind_i64(10, result.pred_total);
+    bind_i64(11, result.cumulative_fake_attacks);
+    bind_i64(12, result.successor_savestate_id);
+    bind_i64(13, result.battle_context_artifact_id);
+    bind_i64(14, result.predicate_group_revision_id);
+    bind_text(15, result.predicate_group_sha256);
+    bind_text(16, result.predicate_execution_package_sha256);
+    if (!result.predicate_evidence_blob.empty()) {
+        sqlite3_bind_blob(update.st, 17, result.predicate_evidence_blob.data(),
+            static_cast<int>(result.predicate_evidence_blob.size()), SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(update.st, 17);
+    }
+    bind_i64(18, result.applied_input_artifact_id);
+    bind_i64(19, result.input_trace_artifact_id);
+    sqlite3_bind_int64(update.st, 20, result.recorded_at_utc.time_since_epoch().count());
+    sqlite3_bind_int64(update.st, 21, existing->battle_single_turn_result_id);
+    sqlite3_bind_text(update.st, 22, command.expected_worker_terminal_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(update.st) != SQLITE_DONE || sqlite3_changes(db_) != 1) {
+        return fail(sqlite3_errmsg(db_));
+    }
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        return fail(sqlite3_errmsg(db_));
+    }
+    if (result_id_out) *result_id_out = existing->battle_single_turn_result_id;
+    return true;
+}
+
 std::optional<BattleSingleTurnResultSnapshot>
 SqliteAnalysisDb::GetBattleSingleTurnResultForExecJob(std::int64_t exec_job_id) const {
     if (db_ == nullptr || exec_job_id <= 0) return std::nullopt;

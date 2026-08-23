@@ -222,6 +222,8 @@ TEST(WorkerProtocolV2, RoundTripsEveryTypedPayload)
         .worker_mode = WorkerModeCode::Visual,
         .render_window_handle = 0xfedcba9876543210ull,
         .runtime_artifact_root = "C:/artifacts",
+        .session_filesystem_preparation_id = "worker-17-generation-4",
+        .process_generation = 4,
     });
 
     ExpectPayloadRoundTrip(SubmitWorksetPayload{
@@ -455,7 +457,7 @@ TEST(WorkerProtocolV2, RoundTripsEveryTypedPayload)
 
 TEST(WorkerProtocolV2, KeepsExecutionControlAdditiveAndDirectional)
 {
-    EXPECT_EQ(ProtocolVersion, 2u);
+    EXPECT_EQ(ProtocolVersion, 4u);
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::ControlExecution));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::ExecutionResult));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::ExecutionState));
@@ -472,7 +474,7 @@ TEST(WorkerProtocolV2, KeepsExecutionControlAdditiveAndDirectional)
 
 TEST(WorkerProtocolV2, ExposesOnlyWorksetProgramTransport)
 {
-    EXPECT_EQ(ProtocolVersion, 2u);
+    EXPECT_EQ(ProtocolVersion, 4u);
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::SubmitWorkset));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::CancelWorksetItem));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::CancelWorkset));

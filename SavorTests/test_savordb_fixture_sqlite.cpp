@@ -55,6 +55,7 @@
 #include "Execution/WorkflowSchedulerAdapter.h"
 #include "Execution/StepInputAggregationService.h"
 #include "Execution/CoordinatorRuntime.h"
+#include "Runner/IPC/DurableWorkerTerminalEnvelope.h"
 #include "Utils/Hash.h"
 #include "Core/Memory/Soa/Battle/BattleContextCodec.h"
 #include "Phases/Programs/BattleRecord/BattleRecordModule.h"
@@ -1835,6 +1836,202 @@ TEST_F(SqliteDbFixture, BattlePredicateExecutionPackageAndSingleTurnResultRoundT
     EXPECT_EQ(result->predicate_execution_package_sha256,
               package.content_sha256);
     EXPECT_EQ(result->predicate_evidence_blob, evidence);
+
+    EXPECT_TRUE(analysis->RecordBattleSingleTurnResult({
+        .turn_job_id = turn_job_id,
+        .exec_job_id = exec_job_id,
+        .worker_terminal_sha256 = std::string(64, 'f'),
+        .terminal_kind = "SUCCEEDED",
+        .recorded_at_utc = now,
+    }, nullptr, &error)) << error;
+    EXPECT_FALSE(analysis->ReplaceFailedBattleSingleTurnResult({
+        .expected_worker_terminal_sha256 = std::string(64, 'f'),
+        .replacement_worker_terminal_sha256 = std::string(64, 'e'),
+        .result = {
+            .turn_job_id = turn_job_id,
+            .exec_job_id = exec_job_id,
+            .worker_terminal_sha256 = std::string(64, 'e'),
+            .terminal_kind = "SUCCEEDED",
+            .recorded_at_utc = now,
+        },
+        .superseded_at_utc = now,
+    }, nullptr, &error));
+
+    const auto record_failed_job = [&](std::int64_t exec_job_id_value) {
+        EXPECT_TRUE(analysis->RecordBattleTurnJob({
+            .wave_id = wave_id,
+            .exec_job_id = exec_job_id_value,
+            .plan_id = 501,
+            .fake_attacks_this_turn = 2,
+            .fake_attacks_used_before = 3,
+            .job_state = BattleTurnJobState::Failed,
+            .has_results = false,
+            .recorded_at_utc = now,
+            .correlation_id = "battle-v2-failed",
+            .causation_id = "test",
+        }, nullptr, &error)) << error;
+        const auto turn_job_sql =
+            "SELECT turn_job_id FROM ab_turn_job WHERE exec_job_id=" +
+            std::to_string(exec_job_id_value) + ";";
+        return ReadInt64(db_, turn_job_sql.c_str());
+    };
+    const auto replace_failed = [&](std::int64_t failed_turn_job_id,
+                                    std::int64_t failed_exec_job_id,
+                                    char expected_terminal,
+                                    char replacement_terminal,
+                                    std::string replacement_kind = "FAILED") {
+        ReplaceFailedBattleSingleTurnResultCommand replacement;
+        replacement.expected_worker_terminal_sha256 = std::string(64, expected_terminal);
+        replacement.replacement_worker_terminal_sha256 =
+            std::string(64, replacement_terminal);
+        replacement.result.turn_job_id = failed_turn_job_id;
+        replacement.result.exec_job_id = failed_exec_job_id;
+        replacement.result.worker_terminal_sha256 =
+            std::string(64, replacement_terminal);
+        replacement.result.terminal_kind = std::move(replacement_kind);
+        replacement.result.error_code = "RETRY_FAILURE";
+        replacement.result.error_text = "replacement terminal";
+        return analysis->ReplaceFailedBattleSingleTurnResult(
+            replacement, nullptr, &error);
+    };
+
+    constexpr std::int64_t failed_exec_job_id = 70002;
+    const auto failed_turn_job_id = record_failed_job(failed_exec_job_id);
+    ASSERT_GT(failed_turn_job_id, 0);
+    std::int64_t failed_result_id = 0;
+    RecordBattleSingleTurnResultCommand initial_failed_result;
+    initial_failed_result.turn_job_id = failed_turn_job_id;
+    initial_failed_result.exec_job_id = failed_exec_job_id;
+    initial_failed_result.worker_terminal_sha256 = std::string(64, 'a');
+    initial_failed_result.terminal_kind = "FAILED";
+    initial_failed_result.error_code = "INITIAL_FAILURE";
+    initial_failed_result.error_text = "initial terminal";
+    ASSERT_GT(initial_failed_result.turn_job_id, 0);
+    ASSERT_GT(initial_failed_result.exec_job_id, 0);
+    ASSERT_EQ(initial_failed_result.worker_terminal_sha256.size(), 64u);
+    ASSERT_FALSE(initial_failed_result.terminal_kind.empty());
+    ASSERT_TRUE(analysis->RecordBattleSingleTurnResult(
+        initial_failed_result, &failed_result_id, &error)) << error;
+    ASSERT_TRUE(replace_failed(failed_turn_job_id, failed_exec_job_id, 'a', 'b')) << error;
+    ASSERT_TRUE(replace_failed(failed_turn_job_id, failed_exec_job_id, 'b', 'c')) << error;
+    const auto retried = analysis->GetBattleSingleTurnResultForExecJob(failed_exec_job_id);
+    ASSERT_TRUE(retried.has_value());
+    EXPECT_EQ(retried->battle_single_turn_result_id, failed_result_id);
+    EXPECT_EQ(retried->worker_terminal_sha256, std::string(64, 'c'));
+    EXPECT_EQ(ReadInt64(db_,
+        "SELECT COUNT(1) FROM ab_historical_failed_battle_single_turn_results "
+        "WHERE exec_job_id=70002;"), 2);
+    EXPECT_EQ(ReadText(db_,
+        "SELECT prior_worker_terminal_sha256 FROM "
+        "ab_historical_failed_battle_single_turn_results WHERE exec_job_id=70002 "
+        "ORDER BY historical_failed_battle_single_turn_result_id ASC LIMIT 1;"),
+        std::string(64, 'a'));
+    ASSERT_TRUE(replace_failed(
+        failed_turn_job_id, failed_exec_job_id, 'c', 'd', "SUCCEEDED")) << error;
+    EXPECT_FALSE(replace_failed(failed_turn_job_id, failed_exec_job_id, 'd', 'e'));
+
+    constexpr std::int64_t handler_exec_job_id = 70004;
+    const auto handler_turn_job_id = record_failed_job(handler_exec_job_id);
+    ASSERT_GT(handler_turn_job_id, 0);
+    auto descriptor = savor::db::execution::programdb::battle::
+        BuildBattleSingleTurnProgramDescriptor(
+            db_service_->ExecutionDb(),
+            db_service_->StateDb(),
+            analysis,
+            db_service_->AuthoringDb(),
+            {.working_dir_root = temp_root_});
+    ASSERT_TRUE(descriptor.result_handler);
+    const auto handler_failure_context = [&](char terminal_sha) {
+        constexpr std::uint64_t dispatch_attempt_id = 970004;
+        savor::runtime::DurableWorkerTerminalEnvelope envelope{
+            .envelope_version = savor::runtime::
+                kDurableWorkerTerminalEnvelopeVersion,
+            .wrms_protocol_version = savor::wrms::ProtocolVersion,
+            .worker_id = 1,
+            .process_generation = 1,
+            .terminal = {
+                .outbound_sequence = 1,
+                .workset_id = dispatch_attempt_id,
+                .item_id = static_cast<std::uint64_t>(handler_exec_job_id),
+                .item_ordinal = 0,
+                .invocation_id = static_cast<std::uint64_t>(handler_exec_job_id),
+                .attempt_id = 1,
+                .terminal_id = 1,
+                .terminal_order = 1,
+                .status = savor::wrms::InvocationTerminalStatus::Failed,
+                .session_disposition = savor::wrms::SessionDispositionCode::Clean,
+                .workset_epoch = 1,
+                .unstarted = false,
+                .rejection_code = savor::wrms::RejectionCode::None,
+                .error_code = "TEST_FAILED_TERMINAL",
+                .message = "fixture failure",
+            },
+        };
+        std::vector<std::uint8_t> encoded_envelope;
+        std::string encode_error;
+        if (!savor::runtime::EncodeDurableWorkerTerminalEnvelope(
+                envelope, &encoded_envelope, &encode_error)) {
+            throw std::logic_error(encode_error);
+        }
+        return savor::db::execution::programdb::ProgramResultProcessingContext{
+            .job_id = handler_exec_job_id,
+            .job_set_id = 1,
+            .program_kind = static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner),
+            .program_version = savor::runtime::battlesingleturn::ProgramVersion,
+            .program_ref_kind = "analysis_battle.turn_job",
+            .program_ref_id = handler_turn_job_id,
+            .terminal = {
+                .job_id = handler_exec_job_id,
+                .workset_id = 1,
+                .dispatch_attempt_id = static_cast<std::int64_t>(dispatch_attempt_id),
+                .reserved_attempt_id = 1,
+                .format = "savor.worker-terminal-envelope.v1",
+                .sha256 = std::string(64, terminal_sha),
+                .envelope = std::move(encoded_envelope),
+            },
+        };
+    };
+    const auto first_handler_decision = descriptor.result_handler->Process(
+        handler_failure_context('h'));
+    EXPECT_EQ(first_handler_decision.final_job_state, "FAILED");
+    const auto retried_handler_decision = descriptor.result_handler->Process(
+        handler_failure_context('i'));
+    EXPECT_EQ(retried_handler_decision.final_job_state, "FAILED");
+    const auto handler_result =
+        analysis->GetBattleSingleTurnResultForExecJob(handler_exec_job_id);
+    ASSERT_TRUE(handler_result.has_value());
+    EXPECT_EQ(handler_result->worker_terminal_sha256, std::string(64, 'i'));
+    EXPECT_EQ(ReadInt64(db_,
+        "SELECT COUNT(1) FROM ab_historical_failed_battle_single_turn_results "
+        "WHERE exec_job_id=70004;"), 1);
+
+    constexpr std::int64_t rollback_exec_job_id = 70003;
+    const auto rollback_turn_job_id = record_failed_job(rollback_exec_job_id);
+    ASSERT_GT(rollback_turn_job_id, 0);
+    RecordBattleSingleTurnResultCommand rollback_failed_result;
+    rollback_failed_result.turn_job_id = rollback_turn_job_id;
+    rollback_failed_result.exec_job_id = rollback_exec_job_id;
+    rollback_failed_result.worker_terminal_sha256 = std::string(64, '1');
+    rollback_failed_result.terminal_kind = "FAILED";
+    ASSERT_TRUE(analysis->RecordBattleSingleTurnResult(
+        rollback_failed_result, nullptr, &error)) << error;
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+CREATE TRIGGER fail_battle_single_turn_result_retry
+BEFORE UPDATE ON ab_battle_single_turn_result_v1
+WHEN OLD.exec_job_id=70003
+BEGIN
+    SELECT RAISE(ABORT, 'injected retry update failure');
+END;
+)SQL"));
+    EXPECT_FALSE(replace_failed(
+        rollback_turn_job_id, rollback_exec_job_id, '1', '2'));
+    EXPECT_EQ(ReadInt64(db_,
+        "SELECT COUNT(1) FROM ab_historical_failed_battle_single_turn_results "
+        "WHERE exec_job_id=70003;"), 0);
+    const auto rolled_back =
+        analysis->GetBattleSingleTurnResultForExecJob(rollback_exec_job_id);
+    ASSERT_TRUE(rolled_back.has_value());
+    EXPECT_EQ(rolled_back->worker_terminal_sha256, std::string(64, '1'));
 }
 
 TEST_F(SqliteDbFixture, PredicateAuthoringPublishesDefinitionBindingAndAtomicMultiHookGroup) {
@@ -2821,7 +3018,7 @@ TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedAuthoringAndAnalysisWrites) 
                     .authored_ref_kind = std::string("seed_probe_spec"),
                     .authored_ref_id = spec_a,
                     .inputs = {
-                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .ref_kind = "state.savestate", .display_name = "Entry savestate" },
                     },
                 },
             },
@@ -2847,7 +3044,7 @@ TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedAuthoringAndAnalysisWrites) 
                     .authored_ref_kind = std::string("seed_probe_spec"),
                     .authored_ref_id = spec_a,
                     .inputs = {
-                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .ref_kind = "state.savestate", .display_name = "Entry savestate" },
                     },
                 },
             },
@@ -2905,13 +3102,24 @@ TEST_F(SqliteDbFixture, AllScenarioStyleRepeatedSeedWritesUseDbOwnedOutboxEventI
     std::string error;
     for (int i = 0; i < 2; ++i) {
         const auto now = i == 0 ? t1 : t2;
+        const std::string artifact_bytes(
+            static_cast<std::size_t>(99 + i), static_cast<char>('A' + i));
+        const auto artifact_path = temp_root_
+            / ("all-scenario-style-" + std::to_string(i) + ".sav");
+        {
+            std::ofstream out(artifact_path, std::ios::binary);
+            out.write(
+                artifact_bytes.data(),
+                static_cast<std::streamsize>(artifact_bytes.size()));
+        }
         std::int64_t artifact_id = 0;
         ASSERT_TRUE(state_db->StoreArtifact(
             {
-                .sha256 = "all-scenario-style-sav",
-                .size_bytes = 99 + i,
+                .sha256 = hash::sha256(
+                    artifact_bytes.data(), artifact_bytes.size()),
+                .size_bytes = static_cast<std::int64_t>(artifact_bytes.size()),
                 .compression_kind = 0,
-                .filename = "beginning_in_first_battle.sav",
+                .filename = artifact_path.string(),
                 .file_ext = ".sav",
                 .artifact_kind = "SAV",
                 .created_at_utc = now,
@@ -4175,7 +4383,7 @@ VALUES(4000, 40, 1, 1, 'seedprobe_spec', 44, 'fp-4', 0, 'FAILED', 0, 1, unixepoc
     sqlite3_stmt* st = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
         db_,
-        "SELECT i.state, source.state, source.blocked_reason, next.state "
+        "SELECT i.state, i.completed_at_utc, source.state, source.blocked_reason, next.state "
         "FROM exec_workflow_instance i "
         "JOIN exec_workflow_step source ON source.workflow_instance_id=i.workflow_instance_id AND source.workflow_step_id=400 "
         "JOIN exec_workflow_step next ON next.workflow_instance_id=i.workflow_instance_id AND next.step_key='next' "
@@ -4185,9 +4393,10 @@ VALUES(4000, 40, 1, 1, 'seedprobe_spec', 44, 'fp-4', 0, 'FAILED', 0, 1, unixepoc
         nullptr));
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "FAILED");
-    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)), "FAILED");
-    EXPECT_EQ(sqlite3_column_type(st, 2), SQLITE_NULL);
-    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 3)), "WAITING");
+    EXPECT_EQ(sqlite3_column_type(st, 1), SQLITE_NULL);
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 2)), "FAILED");
+    EXPECT_EQ(sqlite3_column_type(st, 3), SQLITE_NULL);
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 4)), "WAITING");
     sqlite3_finalize(st);
 }
 
@@ -4427,7 +4636,7 @@ INSERT INTO exec_outbox_message(
     outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,occurred_at_utc,payload_ref_kind,payload_ref_id
 )
 VALUES(
-    5001,'evt-workflow-relay-missing-handler','Execution.WorkflowStepBlocked.v1',1,'Execution','workflow_instance','999',unixepoch()*1000,'workflow_event',9001
+    5001,'evt-workflow-relay-missing-payload','Execution.WorkflowStepReady.v1',1,'Execution','workflow_instance','999',unixepoch()*1000,'workflow_event',0
 );
 )SQL"));
 
@@ -4446,7 +4655,7 @@ VALUES(
     EXPECT_EQ(sqlite3_column_int(st, 0), 1);
     ASSERT_NE(sqlite3_column_text(st, 1), nullptr);
     const std::string first_error(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)));
-    EXPECT_EQ(first_error.find("unsupported Execution event_type"), 0u);
+    EXPECT_NE(first_error.find("payload_ref_id"), std::string::npos);
     EXPECT_EQ(sqlite3_column_type(st, 2), SQLITE_NULL);
     sqlite3_finalize(st);
 
@@ -4461,7 +4670,8 @@ VALUES(
     EXPECT_EQ(sqlite3_column_int(st, 0), 2);
     ASSERT_NE(sqlite3_column_text(st, 1), nullptr);
     const std::string dead_letter_error(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)));
-    EXPECT_EQ(dead_letter_error.find("dead-letter: unsupported Execution event_type"), 0u);
+    EXPECT_EQ(dead_letter_error.find("dead-letter: "), 0u);
+    EXPECT_NE(dead_letter_error.find("payload_ref_id"), std::string::npos);
     sqlite3_finalize(st);
 
     ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 100, &err, 2)) << err;
@@ -4474,65 +4684,6 @@ VALUES(
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(sqlite3_column_int(st, 0), 2);
     sqlite3_finalize(st);
-}
-
-TEST_F(SqliteDbFixture, Stage3cNoWorkDoneStepCompletesWorkflowFromReadyState) {
-    using namespace savor::db::execution::workflow;
-    using namespace savor::db::execution::programdb;
-
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, root_scope_kind, state, created_by, created_at_utc)
-VALUES(15001, 'SEED_PROBE_CHAIN', 'manual', 'RUNNING', 'stage3c-done-test', unixepoch()*1000);
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, completed_at_utc, created_at_utc, ready_at_utc)
-VALUES
-  (15002, 15001, 'Neutral', 'seedprobe.neutral', 'COMPLETED', 10, 1, 2, unixepoch()*1000, unixepoch()*1000, unixepoch()*1000),
-  (15003, 15001, 'Grid', 'seedprobe.grid', 'COMPLETED', 8, 1, 2, unixepoch()*1000, unixepoch()*1000, unixepoch()*1000),
-  (15004, 15001, 'Unique', 'seedprobe.unique', 'COMPLETED', 7, 1, 2, unixepoch()*1000, unixepoch()*1000, unixepoch()*1000),
-  (15005, 15001, 'Done', 'seedprobe.done', 'READY', 1, 0, 1, NULL, unixepoch()*1000, unixepoch()*1000);
-)SQL"));
-
-    SqliteExecutionDb execution_db(db_);
-    ProgramKindRegistry registry;
-    WorkflowCoordinatorService coordinator(
-        &execution_db,
-        &registry,
-        WorkflowCoordinatorConfig{
-            .poll_interval = std::chrono::milliseconds(1),
-        });
-
-    auto read_text = [&](const std::string& sql) -> std::string {
-        sqlite3_stmt* st = nullptr;
-        EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr));
-        std::string value;
-        if (sqlite3_step(st) == SQLITE_ROW) {
-            const auto* text = sqlite3_column_text(st, 0);
-            value = text ? reinterpret_cast<const char*>(text) : "";
-        }
-        sqlite3_finalize(st);
-        return value;
-    };
-    auto read_int = [&](const std::string& sql) -> int {
-        sqlite3_stmt* st = nullptr;
-        EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr));
-        int value = 0;
-        if (sqlite3_step(st) == SQLITE_ROW) {
-            value = sqlite3_column_int(st, 0);
-        }
-        sqlite3_finalize(st);
-        return value;
-    };
-
-    coordinator.Start();
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
-    while (read_text("SELECT state FROM exec_workflow_instance WHERE workflow_instance_id=15001;") != "COMPLETED"
-        && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    coordinator.Stop();
-
-    EXPECT_EQ(read_text("SELECT state FROM exec_workflow_step WHERE workflow_step_id=15005;"), "COMPLETED");
-    EXPECT_EQ(read_text("SELECT state FROM exec_workflow_instance WHERE workflow_instance_id=15001;"), "COMPLETED");
-    EXPECT_GE(read_int("SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_instance_id=15001 AND event_kind='Execution.WorkflowInstanceCompleted.v1';"), 1);
 }
 
 TEST_F(SqliteDbFixture, Stage3dExecutionJobCommandServiceEmitsLifecycleEvents) {
@@ -4627,21 +4778,6 @@ TEST_F(SqliteDbFixture, Stage5ExecutionJobActionsUpdateExecutionAndEmitProjector
         &restart_job_id,
         &err))
         << err;
-    std::int64_t cancel_job_id = 0;
-    ASSERT_TRUE(execution_db->EnqueueJob(
-        {
-            .job_set_id = job_set_id,
-            .program_kind = 1,
-            .program_ref_kind = "seed_probe",
-            .program_ref_id = 11,
-            .fingerprint = "fp-job-action-cancel",
-            .priority = 5,
-            .max_attempts = 3,
-            .input_ini = "[Job]\nmode=cancel\n",
-        },
-        &cancel_job_id,
-        &err))
-        << err;
     std::int64_t requeue_job_id = 0;
     ASSERT_TRUE(execution_db->EnqueueJob(
         {
@@ -4664,19 +4800,15 @@ TEST_F(SqliteDbFixture, Stage5ExecutionJobActionsUpdateExecutionAndEmitProjector
     ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobCompleted, .job_id = requeue_job_id, .terminal_state = std::string("CANCELED") }, &err)) << err;
 
     ASSERT_TRUE(execution_db->RestartFailedJob(restart_job_id, std::string("[Job]\nmode=new\n"), &err)) << err;
-    ASSERT_TRUE(execution_db->CancelQueuedOrClaimedJob(cancel_job_id, &err)) << err;
     ASSERT_TRUE(execution_db->RequeueJob(requeue_job_id, &err)) << err;
 
     const auto restarted = execution_db->GetExecutionJob(restart_job_id);
-    const auto canceled = execution_db->GetExecutionJob(cancel_job_id);
     const auto requeued = execution_db->GetExecutionJob(requeue_job_id);
     ASSERT_TRUE(restarted.has_value());
-    ASSERT_TRUE(canceled.has_value());
     ASSERT_TRUE(requeued.has_value());
     EXPECT_EQ(restarted->state, "QUEUED");
     EXPECT_EQ(restarted->attempts, 0);
     EXPECT_EQ(restarted->input_ini, "[Job]\nmode=new\n");
-    EXPECT_EQ(canceled->state, "CANCELED");
     EXPECT_EQ(requeued->state, "QUEUED");
 
     const auto input_ini = execution_db->GetJobInputIni(restart_job_id, &err);
@@ -4698,12 +4830,9 @@ TEST_F(SqliteDbFixture, Stage5ExecutionJobActionsUpdateExecutionAndEmitProjector
         &st,
         nullptr));
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int(st, 0), 5);
+    EXPECT_EQ(sqlite3_column_int(st, 0), 4);
     sqlite3_finalize(st);
 
-    err.clear();
-    EXPECT_FALSE(execution_db->CancelQueuedOrClaimedJob(cancel_job_id, &err));
-    EXPECT_NE(err.find("job cannot be canceled from state CANCELED"), std::string::npos);
 }
 
 TEST_F(SqliteDbFixture, Stage3dClaimNextReadyExecutionJobCommitsAfterReturningClaimedRow) {
@@ -5480,12 +5609,12 @@ VALUES
         &err)) << err;
     EXPECT_EQ(
         receipt.disposition,
-        ExecutionJobWorkerLossRecoveryDisposition::Requeued);
+        ExecutionJobWorkerLossRecoveryDisposition::Interrupted);
     EXPECT_EQ(
         ReadText(
             db_,
             "SELECT state FROM exec_job WHERE job_id=19402;"),
-        "QUEUED");
+        "INTERRUPTED");
     EXPECT_EQ(
         ReadInt64(
             db_,
@@ -5501,12 +5630,12 @@ VALUES
         &err)) << err;
     EXPECT_EQ(
         receipt.disposition,
-        ExecutionJobWorkerLossRecoveryDisposition::Requeued);
+        ExecutionJobWorkerLossRecoveryDisposition::Interrupted);
     EXPECT_EQ(
         ReadText(
             db_,
             "SELECT state FROM exec_job WHERE job_id=19403;"),
-        "QUEUED");
+        "INTERRUPTED");
     EXPECT_EQ(
         ReadInt64(
             db_,
@@ -5522,13 +5651,12 @@ VALUES
         &err)) << err;
     EXPECT_EQ(
         receipt.disposition,
-        ExecutionJobWorkerLossRecoveryDisposition::
-            AttemptsExhaustedFailed);
+        ExecutionJobWorkerLossRecoveryDisposition::Interrupted);
     EXPECT_EQ(
         ReadText(
             db_,
             "SELECT state FROM exec_job WHERE job_id=19404;"),
-        "FAILED");
+        "INTERRUPTED");
     EXPECT_EQ(
         ReadText(
             db_,
@@ -5832,8 +5960,8 @@ TEST_F(SqliteDbFixture, Stage3dJobSetTreeProgressAndTerminalSnapshotIncludeChild
     ASSERT_TRUE(ExecSql(db_, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
 VALUES(1899, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, expected_total, created_at_utc)
-VALUES(1901, NULL, 7, 'stage3d-root', 2, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1901, NULL, 7, 'stage3d-root', unixepoch()*1000);
 INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, expected_total, meta_note, created_at_utc)
 VALUES(1902, 1901, 7, 'stage3d-child-a', 2, 'expected_delta=11', unixepoch()*1000);
 INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, expected_total, meta_note, created_at_utc)
@@ -5846,6 +5974,9 @@ INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_
 VALUES(1905, 1902, 7, 1, 'seed_probe', 33, 'fp-stage3d-tree-a2', 5, 'SUPERSEDED', 0, 3, unixepoch()*1000, unixepoch()*1000);
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
 VALUES(1906, 1903, 7, 1, 'seed_probe', 33, 'fp-stage3d-tree-b1', 5, 'QUEUED', 0, 3, unixepoch()*1000);
+UPDATE exec_job_set
+SET materialization_state='WORKSET_PUBLICATION_COMPLETE'
+WHERE job_set_id IN (1901, 1902, 1903);
 )SQL"));
 
     SqliteExecutionDb execution_db(db_);
@@ -5869,12 +6000,18 @@ VALUES(1906, 1903, 7, 1, 'seed_probe', 33, 'fp-stage3d-tree-b1', 5, 'QUEUED', 0,
     EXPECT_EQ(*children[1].expected_delta, 22);
     EXPECT_EQ(children[1].completed_jobs, 0);
 
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+UPDATE exec_job
+SET state='SUCCEEDED', ended_at_utc=unixepoch()*1000
+WHERE job_id=1906;
+)SQL"));
+
     const auto snapshot = execution_db.WorkflowQueryService()->GetStepTerminalSnapshotForJob(1904);
     ASSERT_TRUE(snapshot.has_value());
     EXPECT_EQ(snapshot->job_set_id, 1901);
     EXPECT_EQ(snapshot->expected_total, 3);
     EXPECT_EQ(snapshot->discovered_total, 3);
-    EXPECT_EQ(snapshot->terminal_total, 2);
+    EXPECT_EQ(snapshot->terminal_total, 3);
     EXPECT_EQ(snapshot->failed_total, 0);
 }
 
@@ -9358,7 +9495,7 @@ INSERT INTO exec_job(
     job_id,job_set_id,program_kind,program_version,program_ref_kind,
     program_ref_id,fingerprint,priority,state,attempts,max_attempts,
     queued_at_utc,ended_at_utc,input_ini,workset_id,workset_item_ordinal,
-    dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id,
+    dispatch_attempt_id,reserved_attempt_id,
     cancellation_group_key,cancellation_state,cancellation_request_key,
     cancellation_reason_code,cancellation_reason_text,
     cancellation_requested_by,cancellation_caused_by_job_id,
@@ -9373,7 +9510,7 @@ VALUES
  sample_ordinal=1
  stage=SEARCH
  version=1
- ',9110,0,NULL,NULL,NULL,
+ ',9110,0,NULL,NULL,
      'seedprobe.run.9010.search.delta.2','RESOLVED',
      'cancel-search-delta-2','SEED_PROBE_SEARCH_WINNER',
      'confirmed candidate already won','seedprobe-result-processor',9103,
@@ -9385,7 +9522,7 @@ input_frame_id=9005
 sample_ordinal=0
 stage=SURVEY
 version=1
-',9110,1,9120,0,1,
+',9110,1,9120,1,
      NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL),
     (9103,9100,1,2,'sp_probe_run',9010,'rehydrate-seed-confirm',0,
      'SUCCEEDED',1,1,1000,2000,
@@ -9395,10 +9532,10 @@ input_frame_id=9005
 sample_ordinal=0
 stage=CONFIRM
 version=1
-     ',9110,2,9120,1,1,
+     ',9110,2,9120,1,
      NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL);
 INSERT INTO exec_job_progress(
-    job_id,attempt_id,ordinal,dispatch_attempt_id,dispatch_item_ordinal,
+    job_id,attempt_id,ordinal,dispatch_attempt_id,workset_item_ordinal,
     workset_id,item_id,invocation_id,library_id,library_revision,
     progress_point_id,has_routed_provenance,routed_sequence,
     sample_snapshot_id,trigger_epoch,schema_id,schema_revision,
@@ -9511,10 +9648,10 @@ VALUES(9102,'SEED_PROBE','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
     EXPECT_EQ(ReadInt64(db_, ("SELECT confirmation_of_probe_result_id FROM sp_probe_result WHERE probe_result_id=" + std::to_string(new_confirmation_result_id) + ";").c_str()), new_probe_result_id);
     EXPECT_EQ(ReadInt64(db_, ("SELECT source_job_id FROM sp_probe_result WHERE probe_result_id=" + std::to_string(new_confirmation_result_id) + ";").c_str()), new_confirm_job_id);
     EXPECT_EQ(ReadInt64(db_, ("SELECT dispatch_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_observed_job_id) + ";").c_str()), new_dispatch_attempt_id);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT dispatch_item_ordinal FROM exec_job WHERE job_id=" + std::to_string(new_observed_job_id) + ";").c_str()), 0);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT workset_item_ordinal FROM exec_job WHERE job_id=" + std::to_string(new_observed_job_id) + ";").c_str()), 0);
     EXPECT_EQ(ReadInt64(db_, ("SELECT reserved_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_observed_job_id) + ";").c_str()), 1);
     EXPECT_EQ(ReadInt64(db_, ("SELECT dispatch_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), new_dispatch_attempt_id);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT dispatch_item_ordinal FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT workset_item_ordinal FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), 1);
     EXPECT_EQ(ReadInt64(db_, ("SELECT reserved_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), 1);
     EXPECT_EQ(
         ReadInt64(
@@ -10214,103 +10351,7 @@ VALUES(4010,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0),
     std::filesystem::remove_all(temp_root);
 }
 
-TEST_F(SqliteDbFixture, Stage4WorkflowArchivePurgeBlocksExternalBattleEndAggregateReference) {
-    using namespace savor::db;
-    using namespace savor::db::migrations;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisBattle, embedded_options, &err)) << err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
-VALUES(4510,'BATTLE_END','COMPLETED','manual','test',1000,2000),
-      (4520,'FOLLOWUP','COMPLETED','manual','test',1000,2000);
-INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
-VALUES(4511,4510,'completion','battle.completion','COMPLETED',0,0,1,'analysis_battle.battle_completion',7001,1000,2000);
-INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,input_ref_kind,input_ref_id,created_at_utc,completed_at_utc)
-VALUES(4521,4520,'consumer','future.phase','COMPLETED',0,0,1,'analysis_battle.battle_completion',7001,1000,2000);
-INSERT INTO ab_battle_completion(battle_completion_id,workflow_instance_id,workflow_step_id,entry_savestate_id,status,created_at_utc)
-VALUES(7001,4510,4511,9001,'QUEUED',1000);
-)SQL"));
-
-    execution::workflow::SqliteExecutionDb execution_db(db_);
-    archive::SqliteArchivePackageService package_service(
-        db_, &execution_db, nullptr, nullptr, DbConfigPaths{}, db_, db_, nullptr);
-    const auto purge = package_service.PurgeWorkflowArchiveSource(
-        {.workflow_instance_ids = {4510}, .explicit_exclusions = {4520}}, 1, &err);
-    EXPECT_FALSE(purge.success);
-    ASSERT_FALSE(purge.blockers.empty());
-    EXPECT_NE(purge.blockers.front().find("unselected workflow"), std::string::npos);
-    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM ab_battle_completion WHERE battle_completion_id=7001;"), 1);
-    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_instance WHERE workflow_instance_id=4510;"), 1);
-    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_step WHERE workflow_step_id=4521;"), 1);
-}
-
-TEST_F(SqliteDbFixture, Stage4WorkflowArchivePurgeRetainsSeedProbeAncestrySharedByUnselectedWorkflow) {
-    using namespace savor::db;
-    using namespace savor::db::migrations;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisSeedProbe, embedded_options, &err)) << err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
-VALUES(4610,'BATTLE_END','COMPLETED','manual','test',1000,2000),
-      (4620,'FOLLOWUP','COMPLETED','manual','test',1000,2000);
-INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,input_ref_kind,input_ref_id,created_at_utc,completed_at_utc)
-VALUES(4611,4610,'seed','battle.field_return_seed_probe','COMPLETED',0,0,1,'sp_probe_run',8101,1000,2000),
-      (4621,4620,'seed-consumer','future.seed.consumer','COMPLETED',0,0,1,'sp_probe_run',8101,1000,2000);
-INSERT INTO sp_probe_set(probe_set_id,name,probe_flavor,breakpoint_policy_name,segment_source_kind,created_at_utc)
-VALUES(8001,'shared-field-return','FIELD_RETURN','test','test',1000);
-INSERT INTO an_input_set(input_set_id,source_ref_kind,source_ref_id,created_at_utc)
-VALUES(8051,'sp_probe_run',8101,1000);
-INSERT INTO sp_axis_xy(axis_xy_id,x,y)
-VALUES(8061,128,128),(8062,0,0);
-INSERT INTO sp_input_frame(
-    input_frame_id,main_axis_xy_id,cstick_axis_xy_id,trigger_axis_xy_id)
-VALUES(8071,8061,8061,8062);
-INSERT INTO an_input_set_frame(input_set_id,ordinal,input_frame_id,added_at_utc)
-VALUES(8051,0,8071,2000);
-INSERT INTO sp_probe_run(
-    probe_run_id,materialization_key,probe_set_id,entry_savestate_id,
-    seed_probe_spec_id,launch_samples_per_axis,codec_version,status,
-    accepted_input_set_id,requested_at_utc,completed_at_utc)
-VALUES(
-    8101,'fixture.purge.shared-field-return',8001,9001,
-    1,1,2,'COMPLETED',8051,1000,2000);
-INSERT INTO sp_probe_result(
-    probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
-    origin_worker_id,origin_process_generation,origin_workset_epoch,
-    terminal_sha256,confirmation_of_probe_result_id,
-    evidence_state,recorded_at_utc)
-VALUES
-    (8201,8101,8071,8301,12345,1,1,1,
-     '1111111111111111111111111111111111111111111111111111111111111111',
-     NULL,'CONFIRMED',2000),
-    (8202,8101,8071,8302,12345,1,1,2,
-     '2222222222222222222222222222222222222222222222222222222222222222',
-     8201,'OBSERVED',2000);
-)SQL"));
-
-    execution::workflow::SqliteExecutionDb execution_db(db_);
-    archive::SqliteArchivePackageService package_service(
-        db_, &execution_db, nullptr, nullptr, DbConfigPaths{}, db_, db_, nullptr);
-    const auto purge = package_service.PurgeWorkflowArchiveSource(
-        {.workflow_instance_ids = {4610}, .explicit_exclusions = {4620}}, 1, &err);
-    ASSERT_TRUE(purge.success) << purge.error.value_or(err);
-    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_instance WHERE workflow_instance_id=4610;"), 0);
-    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_instance WHERE workflow_instance_id=4620;"), 1);
-    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM sp_probe_run WHERE probe_run_id=8101;"), 1);
-    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM sp_probe_result WHERE probe_run_id=8101;"), 2);
-    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM sp_probe_result WHERE probe_result_id=8201 AND evidence_state='CONFIRMED';"), 1);
-    EXPECT_EQ(ReadInt64(db_, "SELECT confirmation_of_probe_result_id FROM sp_probe_result WHERE probe_result_id=8202;"), 8201);
-}
-
-TEST_F(SqliteDbFixture, Stage3Phase1DbContracts_FailedStepReachesTerminalState) {
+TEST_F(SqliteDbFixture, Stage3Phase1DbContracts_FailedStepParksWorkflowRecoverably) {
     using namespace savor::db::execution::workflow;
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
@@ -10325,10 +10366,12 @@ VALUES(1402, 1401, 'Grid', 'seedprobe.grid', 'READY', 1, 0, 2, unixepoch()*1000,
     ASSERT_NE(commands, nullptr);
 
     std::string err;
-    ASSERT_TRUE(commands->MarkStepTerminal(
+    ASSERT_TRUE(commands->FailWorkflowInstance(
         {
+            .workflow_instance_id = 1401,
             .workflow_step_id = 1402,
-            .terminal_state = "FAILED",
+            .failure_code = "TEST_FAILURE",
+            .failure_message = "test failure",
             .requested_by = "SavorTests-failure",
         },
         &err))
@@ -11593,7 +11636,7 @@ TEST_F(SqliteDbFixture, UiReadProjectionCoalescesProgressFloodToOneDirtyJob) {
         "VALUES(17401,1,NULL,42,1,'test',1,'progress-flood-job',1,'RUNNING',1,1,'worker-1',NULL,1000,1100,NULL,NULL,NULL);"));
     ASSERT_TRUE(ExecSql(exec_handle,
         "INSERT INTO exec_job_progress("
-        "job_id,attempt_id,ordinal,dispatch_attempt_id,dispatch_item_ordinal,"
+        "job_id,attempt_id,ordinal,dispatch_attempt_id,workset_item_ordinal,"
         "workset_id,item_id,invocation_id,library_id,library_revision,"
         "progress_point_id,has_routed_provenance,routed_sequence,"
         "sample_snapshot_id,trigger_epoch,schema_id,schema_revision,"
@@ -11796,12 +11839,24 @@ TEST_F(SqliteDbFixture, UiReadProjectionProjectsWorkflowDisplayStateFromStepActi
     const auto queued_page = ui_read.ListWorkflowInstances(query);
     ASSERT_EQ(queued_page.items.size(), 1u);
     EXPECT_EQ(queued_page.items[0].workflow_instance_id, 26001);
+
+    savor::db::UiWorkflowInstanceListQuery open_query{};
+    open_query.exclude_final = true;
+    open_query.limit = 10;
+    const auto open_page = ui_read.ListWorkflowInstances(open_query);
+    EXPECT_NE(std::find_if(open_page.items.begin(), open_page.items.end(), [](const auto& row) {
+        return row.workflow_instance_id == 26003;
+    }), open_page.items.end());
+    EXPECT_EQ(std::find_if(open_page.items.begin(), open_page.items.end(), [](const auto& row) {
+        return row.workflow_instance_id == 26004;
+    }), open_page.items.end());
+
     const auto counts = ui_read.CountWorkflowDisplayStates();
     EXPECT_EQ(counts.running, 2);
     EXPECT_EQ(counts.queued, 1);
     EXPECT_EQ(counts.waiting, 1);
     EXPECT_EQ(counts.completed, 1);
-    EXPECT_EQ(counts.terminal, 1);
+    EXPECT_EQ(counts.finalized, 1);
     EXPECT_EQ(counts.total, 5);
     sqlite3_close(verify_handle);
 }
@@ -12198,7 +12253,7 @@ VALUES(
     35020,35010,35012,35010,'start-authority-workset',42,1,
     'start-authority-compatibility','test.module',1,printf('%064d',0),
     'test-entrypoint',printf('%064d',0),printf('%064d',0),
-    printf('%064d',0),1,0,1,1000);
+    printf('%064d',0),1,0,2,1000);
 
 INSERT INTO exec_workset_dispatch_attempt(
     dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
@@ -12211,10 +12266,10 @@ INSERT INTO exec_job(
     job_id,job_set_id,program_kind,program_version,program_ref_kind,
     program_ref_id,fingerprint,priority,state,attempts,max_attempts,
     claimed_by_token,queued_at_utc,workset_id,workset_item_ordinal,
-    dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id)
+    dispatch_attempt_id,reserved_attempt_id)
 VALUES(
     35040,35010,42,1,'test',1,'start-authority-job',0,
-    'CLAIMED',0,2,'start-authority-token',1000,35020,0,35030,0,1);
+    'CLAIMED',0,2,'start-authority-token',1000,35020,0,35030,1);
 )SQL"));
 
     SqliteExecutionDb execution_db(db_);
@@ -12222,7 +12277,7 @@ VALUES(
         .dispatch_attempt_id = 35030,
         .claim_token = "start-authority-token",
         .job_id = 35040,
-        .dispatch_item_ordinal = 0,
+        .workset_item_ordinal = 0,
         .reserved_attempt_id = 1,
         .worker_invocation_id = "start-authority-invocation",
         .requested_by = "test",
@@ -12262,7 +12317,7 @@ VALUES(
         ExecutionDbOperationDisposition::AttemptMismatch);
 
     command = valid_command;
-    command.dispatch_item_ordinal = 1;
+    command.workset_item_ordinal = 1;
     expect_disposition(
         command,
         ExecutionDbOperationDisposition::WrongState);
@@ -12330,10 +12385,10 @@ INSERT INTO exec_job(
     job_id,job_set_id,program_kind,program_version,program_ref_kind,
     program_ref_id,fingerprint,priority,state,attempts,max_attempts,
     claimed_by_token,queued_at_utc,workset_id,workset_item_ordinal,
-    dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id)
+    dispatch_attempt_id,reserved_attempt_id)
 VALUES(
     35540,35510,42,1,'test',1,'canonical-progress-job',0,
-    'RUNNING',1,2,'canonical-progress-token',1000,35520,0,35530,0,1);
+    'RUNNING',1,2,'canonical-progress-token',1000,35520,0,35530,1);
 )SQL"));
 
     SqliteExecutionDb execution_db(db_);
@@ -12341,7 +12396,7 @@ VALUES(
         .dispatch_attempt_id = 35530,
         .claim_token = "canonical-progress-token",
         .job_id = 35540,
-        .dispatch_item_ordinal = 0,
+        .workset_item_ordinal = 0,
         .reserved_attempt_id = 1,
         .workset_id = 35530,
         .item_id = 1,
@@ -12611,7 +12666,7 @@ TEST_F(
                 claimed_worksets.front().dispatch_attempt_id,
             .claim_token = claimed_worksets.front().claim_token,
             .job_id = item.job_id,
-            .dispatch_item_ordinal = item.dispatch_item_ordinal,
+            .workset_item_ordinal = item.workset_item_ordinal,
             .reserved_attempt_id = item.reserved_attempt_id,
             .terminal_status = "SUCCEEDED",
             .terminal_fingerprint = sha,
@@ -12634,7 +12689,7 @@ TEST_F(
         .dispatch_attempt_id = claimed_worksets.front().dispatch_attempt_id,
         .claim_token = claimed_worksets.front().claim_token,
         .job_id = first_item.job_id,
-        .dispatch_item_ordinal = first_item.dispatch_item_ordinal,
+        .workset_item_ordinal = first_item.workset_item_ordinal,
         .reserved_attempt_id = first_item.reserved_attempt_id,
         .worker_invocation_id = "batch-first-invocation",
         .requested_by = "test",
@@ -12775,6 +12830,7 @@ TEST_F(
                 .reason_text = "committed with result finalization",
                 .requested_by = "test",
                 .caused_by_job_id = result_claims[0].job.job_id,
+                .terminal_disposition = "AUTOMATIC_SUPERSESSION",
             });
         }
         finalizations.finalizations.push_back(std::move(finalization));
@@ -12842,52 +12898,27 @@ TEST_F(
     ASSERT_TRUE(no_results_remaining.has_value()) << error;
     EXPECT_FALSE(no_results_remaining->has_execution_finished_results);
 
-    ResultProcessingReceipt diagnostic_receipt{};
-    ASSERT_TRUE(execution_db.RecordResultProcessingFailure(
-        {
+    std::vector<ResultProcessingReceipt> failure_receipts;
+    ASSERT_TRUE(execution_db.CommitResultFinalizationsBatch(
+        {.finalizations = {{
             .job_id = result_claims[2].job.job_id,
+            .disposition = ExecutionResultFinalizationDisposition::Final,
+            .final_state = "FAILED",
             .error_code = "TEST_RESULT_CANARY",
-            .error_text = "visible interrupted result",
-        },
-        &diagnostic_receipt,
+            .error_text = "visible generic result failure",
+            .requested_by = "test",
+        }}},
+        &failure_receipts,
         &error)) << error;
-    EXPECT_EQ(diagnostic_receipt.processing_state, "PROCESSING");
+    ASSERT_EQ(failure_receipts.size(), 1u);
+    EXPECT_EQ(failure_receipts.front().processing_state, "PROCESSED");
     EXPECT_EQ(ReadText(
         db_,
-        ("SELECT result_processing_error_code FROM exec_job WHERE job_id="
+        ("SELECT state || ':' || error_code "
+            "FROM exec_job WHERE job_id="
             + std::to_string(result_claims[2].job.job_id) + ";").c_str()),
-        "TEST_RESULT_CANARY");
+        "FAILED:TEST_RESULT_CANARY");
 
-    const auto lost_job_id = final_claim.front().job.job_id;
-    const auto lost_attempts_sql = "SELECT attempts FROM exec_job WHERE job_id="
-        + std::to_string(lost_job_id) + ";";
-    const auto lost_ceiling_sql = "SELECT max_attempts FROM exec_job WHERE job_id="
-        + std::to_string(lost_job_id) + ";";
-    const auto attempts_before_requeue =
-        ReadInt64(db_, lost_attempts_sql.c_str());
-    const auto ceiling_before_requeue =
-        ReadInt64(db_, lost_ceiling_sql.c_str());
-    ResultProcessingReceipt requeue_receipt{};
-    ASSERT_TRUE(execution_db.RequeueLostResultProcessing(
-        {
-            .job_id = lost_job_id,
-            .requested_by = "test-startup-recovery",
-        },
-        &requeue_receipt,
-        &error)) << error;
-    EXPECT_EQ(requeue_receipt.job_id, lost_job_id);
-    EXPECT_EQ(requeue_receipt.durable_job_state, "QUEUED");
-    EXPECT_EQ(ReadInt64(db_, lost_attempts_sql.c_str()),
-        attempts_before_requeue);
-    EXPECT_EQ(ReadInt64(db_, lost_ceiling_sql.c_str()),
-        ceiling_before_requeue + 1);
-    EXPECT_EQ(ReadInt64(
-        db_,
-        ("SELECT COUNT(1) FROM exec_job WHERE job_id="
-            + std::to_string(lost_job_id)
-            + " AND worker_terminal_id IS NULL "
-              "AND worker_result_blob_id IS NULL;").c_str()),
-        1);
 }
 
 TEST_F(
@@ -12930,9 +12961,9 @@ TEST_F(
         "job_id,job_set_id,program_kind,program_version,program_ref_kind,"
         "program_ref_id,fingerprint,priority,state,attempts,max_attempts,"
         "queued_at_utc,workset_id,workset_item_ordinal,dispatch_attempt_id,"
-        "dispatch_item_ordinal,reserved_attempt_id) VALUES("
+        "reserved_attempt_id) VALUES("
         "37005,37000,42,1,'test',1,'delayed-draining-job',0,'SUCCEEDED',"
-        "1,1,1,37003,0,37004,0,1);"));
+        "1,1,1,37003,0,37004,1);"));
 
     SqliteExecutionDb execution_db(db_);
     WorksetDispatchMutationReceipt draining{};
@@ -13171,7 +13202,7 @@ VALUES(36302,36301,'probe','probe','test','MATERIALIZED',
                 "program_ref_kind,program_ref_id,fingerprint,priority,"
                 "state,attempts,max_attempts,queued_at_utc,workset_id,"
                 "workset_item_ordinal,dispatch_attempt_id,"
-                "dispatch_item_ordinal,reserved_attempt_id,"
+                "reserved_attempt_id,"
                 "claimed_by_token,cancellation_request_key,"
                 "cancellation_state,cancellation_requested_at_utc) VALUES("
                 + std::to_string(job_id)
@@ -13181,8 +13212,7 @@ VALUES(36302,36301,'probe','probe','test','MATERIALIZED',
                 + "',0,'CLAIMED',1,1,1,"
                 + std::to_string(workset_id) + ","
                 + std::to_string(item_index) + ","
-                + std::to_string(dispatch_id) + ","
-                + std::to_string(item_index) + ",1,'cancel-token-"
+                + std::to_string(dispatch_id) + ",1,'cancel-token-"
                 + std::to_string(workset_index) + "','" + request_key
                 + "','REQUESTED',1);"
                   "INSERT INTO exec_job_cancellation_request("
@@ -13300,11 +13330,16 @@ INSERT INTO exec_job(
     program_ref_id,fingerprint,priority,state,attempts,max_attempts,
     claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,
     workset_id,workset_item_ordinal,dispatch_attempt_id,
-    dispatch_item_ordinal,reserved_attempt_id)
-VALUES(
+    reserved_attempt_id)
+VALUES
+(
     35140,35110,42,1,'test',1,'expired-recovery-job',0,
     'RUNNING',1,1,'expired-recovery-token',1,1000,1000,
-    35120,0,35130,0,1);
+    35120,0,35130,1),
+(
+    35141,35110,42,1,'test',2,'expired-recovery-unstarted',0,
+    'CLAIMED',0,1,'expired-recovery-token',1,1000,NULL,
+    35120,1,35130,1);
 )SQL"));
 
     SqliteExecutionDb execution_db(db_);
@@ -13319,8 +13354,9 @@ VALUES(
         &error))
         << error;
     ASSERT_EQ(recovery.dispatches_closed, 1);
+    ASSERT_EQ(recovery.jobs_interrupted, 1);
     ASSERT_EQ(recovery.jobs_requeued, 1);
-    ASSERT_EQ(recovery.recovery_attempts_granted, 1);
+    ASSERT_EQ(recovery.created_worksets, 1);
     const auto after_recovery_signal =
         execution_db.GetExecutionWorkAvailability(&error);
     ASSERT_TRUE(after_recovery_signal.has_value()) << error;
@@ -13332,7 +13368,7 @@ VALUES(
         ReadText(
             db_,
             "SELECT state FROM exec_job WHERE job_id=35140;"),
-        "QUEUED");
+        "INTERRUPTED");
     EXPECT_EQ(
         ReadText(
             db_,
@@ -13344,75 +13380,33 @@ VALUES(
             db_,
             "SELECT COUNT(1) FROM exec_job WHERE job_id=35140 "
             "AND claimed_by_token IS NULL "
-            "AND dispatch_attempt_id IS NULL;"),
+            "AND dispatch_attempt_id IS NULL "
+            "AND workset_id=35120;"),
         1);
-
+    const auto replacement_workset_id = ReadInt64(
+        db_, "SELECT workset_id FROM exec_job WHERE job_id=35141;");
+    EXPECT_NE(replacement_workset_id, 35120);
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT COUNT(1) FROM exec_job WHERE job_id=35141 "
+            "AND state='QUEUED' AND attempts=0 "
+            "AND claimed_by_token IS NULL "
+            "AND dispatch_attempt_id IS NULL "
+            "AND workset_item_ordinal=0;"),
+        1);
     const auto claimed = execution_db.ClaimPublishedWorksetBatch(
-        ClaimPublishedWorksetBatchCommand{
-            .batch_nonce = "expired-recovery-reclaim",
+        {
+            .batch_nonce = "restart-replacement-claim",
             .requested_workset_count = 1,
         },
         &error);
-    ASSERT_EQ(claimed.size(), 1u) << error;
-    const auto after_claim_signal =
-        execution_db.GetExecutionWorkAvailability(&error);
-    ASSERT_TRUE(after_claim_signal.has_value()) << error;
-    EXPECT_FALSE(after_claim_signal->has_ready_worksets);
-    EXPECT_GT(
-        after_claim_signal->generation,
-        after_recovery_signal->generation);
-    savor::db::WorksetDispatchMutationReceipt active{};
-    ASSERT_TRUE(execution_db.MarkWorksetActive(
-        {
-            .dispatch_attempt_id = claimed.front().dispatch_attempt_id,
-            .claim_token = claimed.front().claim_token,
-            .lease_duration_ms = 180000,
-            .requested_by = "test",
-        },
-        &active,
-        &error)) << error;
-    ASSERT_EQ(
-        active.disposition,
-        savor::db::ExecutionDbOperationDisposition::Applied);
-    const auto lease_receipts =
-        execution_db.RenewActiveWorksetLeases(
-            {
-                .requests = {
-                    {
-                        .dispatch_attempt_id =
-                            claimed.front().dispatch_attempt_id,
-                        .claim_token = claimed.front().claim_token,
-                    },
-                    {
-                        .dispatch_attempt_id =
-                            claimed.front().dispatch_attempt_id,
-                        .claim_token = "wrong-token",
-                    },
-                    {
-                        .dispatch_attempt_id = 999999,
-                        .claim_token = "missing-token",
-                    },
-                },
-                .lease_duration_ms = 180000,
-            },
-            &error);
-    ASSERT_EQ(lease_receipts.size(), 3u) << error;
-    EXPECT_EQ(
-        lease_receipts[0].disposition,
-        savor::db::ExecutionDbOperationDisposition::Applied);
-    EXPECT_EQ(
-        lease_receipts[1].disposition,
-        savor::db::ExecutionDbOperationDisposition::TokenMismatch);
-    EXPECT_EQ(
-        lease_receipts[2].disposition,
-        savor::db::ExecutionDbOperationDisposition::Missing);
-    EXPECT_TRUE(lease_receipts[0].lease_expires_at_utc.has_value());
-    EXPECT_EQ(claimed.front().workset_id, 35120);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_EQ(claimed.size(), 1u);
+    ASSERT_EQ(claimed.front().workset_id, replacement_workset_id);
     ASSERT_EQ(claimed.front().items.size(), 1u);
-    EXPECT_EQ(claimed.front().items.front().job_id, 35140);
-    EXPECT_EQ(
-        claimed.front().items.front().reserved_attempt_id,
-        2u);
+    EXPECT_EQ(claimed.front().items.front().job_id, 35141);
+    EXPECT_EQ(claimed.front().items.front().workset_item_ordinal, 0u);
 }
 
 TEST_F(
@@ -13534,8 +13528,8 @@ UPDATE exec_job SET attempts=max_attempts WHERE job_id IN (35340,35341);
     EXPECT_EQ(claimed[1].claim_token, "ordered-batch-2");
     ASSERT_EQ(claimed[0].items.size(), 1u);
     ASSERT_EQ(claimed[1].items.size(), 1u);
-    EXPECT_EQ(claimed[0].items[0].dispatch_item_ordinal, 0u);
-    EXPECT_EQ(claimed[1].items[0].dispatch_item_ordinal, 0u);
+    EXPECT_EQ(claimed[0].items[0].workset_item_ordinal, 0u);
+    EXPECT_EQ(claimed[1].items[0].workset_item_ordinal, 0u);
     EXPECT_EQ(
         ReadInt64(
             db_,
@@ -13547,6 +13541,107 @@ UPDATE exec_job SET attempts=max_attempts WHERE job_id IN (35340,35341);
             db_,
             "SELECT state FROM exec_job WHERE job_id=35243;"),
         "QUEUED");
+}
+
+TEST_F(
+    SqliteDbFixture,
+    WorksetJobReorganizationReusesFailedJobIdsInFreshWorkset) {
+    using savor::db::ClaimPublishedWorksetBatchCommand;
+    using savor::db::ReorganizedWorksetPlanEntry;
+    using savor::db::WorksetJobReorganizationPlan;
+    using savor::db::WorksetJobReorganizationReceipt;
+    using savor::db::execution::workflow::SqliteExecutionDb;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_by,created_at_utc)
+VALUES(39010,42,'manual-retry','test',1);
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id,workflow_kind,state,root_scope_kind,
+    root_scope_id,created_by,created_at_utc)
+VALUES(39011,'TEST','FAILED','job_set',39010,'test',1);
+INSERT INTO exec_workflow_step(
+    workflow_step_id,workflow_instance_id,step_key,graph_node_key,
+    step_kind,state,priority,attempts,max_attempts,job_set_id,
+    created_at_utc)
+VALUES(39012,39011,'probe','probe','test','FAILED',0,1,1,39010,1);
+INSERT INTO exec_workset(
+    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_key,program_kind,program_version,contract_key,
+    module_canonical_id,module_version,module_sha256,entrypoint,
+    verified_dependency_sha256,runtime_profile_sha256,
+    program_package_sha256,estimated_payload_bytes,priority,item_count,
+    published_at_utc)
+VALUES
+    (39020,39010,39012,39010,'source-a',42,1,'retry-contract',
+     'test.module',1,printf('%064d',0),'test-entrypoint',
+     printf('%064d',0),printf('%064d',0),printf('%064d',0),2,3,1,1),
+    (39021,39010,39012,39010,'source-b',42,1,'retry-contract',
+     'test.module',1,printf('%064d',0),'test-entrypoint',
+     printf('%064d',0),printf('%064d',0),printf('%064d',0),2,5,1,1);
+INSERT INTO exec_job(
+    job_id,job_set_id,program_kind,program_version,program_ref_kind,
+    program_ref_id,fingerprint,priority,state,attempts,max_attempts,
+    queued_at_utc,workset_id,workset_item_ordinal,result_processing_state)
+VALUES
+    (39030,39010,42,1,'test',1,'retry-a',3,'FAILED',1,1,1,39020,0,'PROCESSED'),
+    (39031,39010,42,1,'test',2,'retry-b',5,'FAILED',1,1,1,39021,0,'PROCESSED');
+)SQL"));
+
+    ReorganizedWorksetPlanEntry entry{};
+    entry.workflow_step_id = 39012;
+    entry.job_set_id = 39010;
+    entry.root_job_set_id = 39010;
+    entry.program_kind = 42;
+    entry.program_version = 1;
+    entry.contract = {
+        .contract_key = "retry-contract",
+        .module_canonical_id = "test.module",
+        .module_version = 1,
+        .module_sha256 = std::string(64, '0'),
+        .entrypoint = "test-entrypoint",
+        .verified_dependency_sha256 = std::string(64, '0'),
+        .runtime_profile_sha256 = std::string(64, '0'),
+        .program_package_sha256 = std::string(64, '0'),
+    };
+    entry.derived_state.binding_payload = {1};
+    entry.derived_state.binding_sha256 = std::string(64, '1');
+    entry.priority = 5;
+    entry.estimated_payload_bytes = 4;
+    entry.ordered_job_ids = {39030, 39031};
+
+    SqliteExecutionDb execution_db(db_);
+    WorksetJobReorganizationReceipt receipt{};
+    std::string error;
+    ASSERT_TRUE(execution_db.ApplyWorksetJobReorganization(
+        WorksetJobReorganizationPlan{
+            .workflow_instance_id = 39011,
+            .worksets = {entry},
+            .requested_by = "test",
+        },
+        &receipt,
+        &error)) << error;
+    ASSERT_EQ(receipt.requeued_job_count, 2);
+    ASSERT_EQ(receipt.created_workset_count, 1);
+    ASSERT_EQ(receipt.workset_ids.size(), 1u);
+    EXPECT_EQ(ReadText(db_, "SELECT state FROM exec_job WHERE job_id=39030;"), "QUEUED");
+    EXPECT_EQ(ReadInt64(db_, "SELECT max_attempts FROM exec_job WHERE job_id=39030;"), 2);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_job WHERE job_id IN (39030,39031);"), 2);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_job WHERE workset_id IN (39020,39021);"), 0);
+    EXPECT_EQ(ReadText(db_, "SELECT state FROM exec_workflow_instance WHERE workflow_instance_id=39011;"), "RUNNING");
+    EXPECT_EQ(ReadText(db_, "SELECT state FROM exec_workflow_step WHERE workflow_step_id=39012;"), "MATERIALIZED");
+
+    const auto claimed = execution_db.ClaimPublishedWorksetBatch(
+        ClaimPublishedWorksetBatchCommand{
+            .batch_nonce = "manual-retry",
+            .requested_workset_count = 2,
+        },
+        &error);
+    ASSERT_EQ(claimed.size(), 1u) << error;
+    EXPECT_EQ(claimed.front().workset_id, receipt.workset_ids.front());
+    ASSERT_EQ(claimed.front().items.size(), 2u);
+    EXPECT_EQ(claimed.front().items[0].job_id, 39030);
+    EXPECT_EQ(claimed.front().items[1].job_id, 39031);
 }
 
 }

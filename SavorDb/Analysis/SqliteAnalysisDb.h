@@ -162,6 +162,10 @@ public:
         const RecordBattleSingleTurnResultCommand& command,
         std::int64_t* result_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    bool ReplaceFailedBattleSingleTurnResult(
+        const ReplaceFailedBattleSingleTurnResultCommand& command,
+        std::int64_t* result_id_out = nullptr,
+        std::string* error_out = nullptr) override;
     std::optional<BattleSingleTurnResultSnapshot>
     GetBattleSingleTurnResultForExecJob(std::int64_t exec_job_id) const override;
 

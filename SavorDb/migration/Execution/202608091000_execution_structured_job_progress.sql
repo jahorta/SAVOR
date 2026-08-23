@@ -14,7 +14,7 @@ CREATE TABLE exec_job_progress (
     attempt_id INTEGER NOT NULL CHECK(attempt_id > 0),
     ordinal INTEGER NOT NULL CHECK(ordinal > 0),
     dispatch_attempt_id INTEGER NOT NULL,
-    dispatch_item_ordinal INTEGER NOT NULL,
+    workset_item_ordinal INTEGER NOT NULL,
     workset_id INTEGER NOT NULL,
     item_id INTEGER NOT NULL,
     invocation_id INTEGER NOT NULL,

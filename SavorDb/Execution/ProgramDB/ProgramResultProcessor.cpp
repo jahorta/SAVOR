@@ -2,10 +2,15 @@
 
 #include <algorithm>
 #include <exception>
+#include <filesystem>
 #include <limits>
+#include <unordered_map>
 #include <utility>
 
 #include "../../../SavorCore/Runner/IPC/DurableWorkerTerminalEnvelope.h"
+#include "../../../SavorCore/Runner/Runtime/RuntimeTypes.h"
+#include "../../../SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
+#include "../../../SavorCore/Utils/Hash.h"
 
 namespace savor::db::execution::programdb {
 namespace {
@@ -51,6 +56,169 @@ void StoreMaximum(
 bool Applied(ExecutionDbOperationDisposition disposition) {
     return disposition == ExecutionDbOperationDisposition::Applied
         || disposition == ExecutionDbOperationDisposition::AlreadyApplied;
+}
+
+bool SafeRelativePath(const std::filesystem::path& path) {
+    if (path.empty() || path.is_absolute() || path.has_root_name()
+        || path.has_root_directory()) return false;
+    for (const auto& part : path) {
+        if (part.empty() || part == "." || part == "..") return false;
+    }
+    return true;
+}
+
+bool AddStagingFile(
+    const std::filesystem::path& root,
+    const std::filesystem::path& absolute_path,
+    std::string expected_sha,
+    std::optional<std::uint64_t> expected_size,
+    std::unordered_map<std::string, ProgramResultStagingFile>* files,
+    std::string* error_out) {
+    if (root.empty() || absolute_path.empty() || files == nullptr
+        || expected_sha.size() != 64) {
+        if (error_out) *error_out = "result staging identity is incomplete";
+        return false;
+    }
+    std::error_code ec;
+    const auto canonical_root = std::filesystem::weakly_canonical(root, ec);
+    if (ec) {
+        if (error_out) *error_out =
+            "result staging root is unavailable: " + ec.message();
+        return false;
+    }
+    const auto canonical_file =
+        std::filesystem::weakly_canonical(absolute_path, ec);
+    if (ec) {
+        if (error_out) *error_out =
+            "result staging path is unavailable: " + ec.message();
+        return false;
+    }
+    const auto relative = canonical_file.lexically_relative(canonical_root);
+    if (!SafeRelativePath(relative)) {
+        if (error_out) *error_out =
+            "result staging path escapes its registered root";
+        return false;
+    }
+    auto cursor = canonical_root;
+    for (const auto& part : relative) {
+        cursor /= part;
+        const auto status = std::filesystem::symlink_status(cursor, ec);
+        if (ec || std::filesystem::is_symlink(status)) {
+            if (error_out) *error_out =
+                "result staging path contains a reparse point";
+            return false;
+        }
+    }
+    const auto size = std::filesystem::file_size(canonical_file, ec);
+    if (ec || size == 0 || (expected_size && size != *expected_size)) {
+        if (error_out) *error_out =
+            "result staging file size disagrees with durable evidence";
+        return false;
+    }
+    std::string actual_sha;
+    try {
+        actual_sha = hash::sha256_of_file(canonical_file.string());
+    } catch (const std::exception& ex) {
+        if (error_out) *error_out = ex.what();
+        return false;
+    }
+    if (actual_sha != expected_sha) {
+        if (error_out) *error_out =
+            "result staging file hash disagrees with durable evidence";
+        return false;
+    }
+    const auto key = relative.generic_string();
+    ProgramResultStagingFile value{
+        .relative_path = key,
+        .sha256 = std::move(expected_sha),
+        .size_bytes = static_cast<std::uint64_t>(size),
+    };
+    const auto existing = files->find(key);
+    if (existing != files->end()) {
+        if (existing->second.sha256 != value.sha256
+            || existing->second.size_bytes != value.size_bytes) {
+            if (error_out) *error_out =
+                "result staging path has conflicting identities";
+            return false;
+        }
+        return true;
+    }
+    files->emplace(key, std::move(value));
+    return true;
+}
+
+bool CollectStagingFiles(
+    const ProgramKindDescriptor& descriptor,
+    const runtime::DurableWorkerTerminalEnvelope& durable,
+    const ProgramResultDecision& decision,
+    std::vector<ProgramResultStagingFile>* output,
+    std::string* error_out) {
+    std::unordered_map<std::string, ProgramResultStagingFile> files;
+    const auto add_artifact = [&](std::string_view path, std::string sha) {
+        if (path.empty()) return true;
+        const std::filesystem::path artifact_path(path);
+        if (!AddStagingFile(descriptor.result_staging_root, artifact_path,
+                std::move(sha), std::nullopt, &files, error_out)) return false;
+        const auto sidecar =
+            std::filesystem::path(artifact_path.string() + ".dtm");
+        std::error_code ec;
+        const bool sidecar_exists = artifact_path.extension() == ".sav"
+            && std::filesystem::exists(sidecar, ec);
+        if (ec) {
+            if (error_out) *error_out =
+                "result staging sidecar could not be inspected";
+            return false;
+        }
+        if (sidecar_exists) {
+            std::string sidecar_sha;
+            try {
+                sidecar_sha = hash::sha256_of_file(sidecar.string());
+            } catch (const std::exception& ex) {
+                if (error_out) *error_out = ex.what();
+                return false;
+            }
+            if (!AddStagingFile(descriptor.result_staging_root, sidecar,
+                    std::move(sidecar_sha), std::nullopt, &files, error_out))
+                return false;
+        }
+        return true;
+    };
+    if (decision.cleanup_worker_staging) {
+    if (decision.cleanup_worker_staging) {
+        for (const auto& artifact : durable.terminal.workset_artifacts) {
+            if (!add_artifact(
+                    artifact.storage_reference, artifact.content_sha256))
+                return false;
+        }
+        const auto decoded = runtime::program::DecodeProgramResultV1(
+            durable.terminal.result);
+        if (decoded && decoded.value) {
+            for (const auto& artifact : decoded.value->artifacts) {
+                if (!add_artifact(artifact.artifact.storage_reference,
+                        artifact.artifact.content_hash.ToHex())) return false;
+            }
+        }
+    }
+    }
+    for (const auto& declared : decision.staging_files) {
+        const std::filesystem::path relative(declared.relative_path);
+        if (!SafeRelativePath(relative)
+            || !AddStagingFile(descriptor.result_staging_root,
+                descriptor.result_staging_root / relative,
+                declared.sha256, declared.size_bytes, &files, error_out))
+            return false;
+    }
+    output->clear();
+    std::vector<std::string> paths;
+    paths.reserve(files.size());
+    for (const auto& [path, value] : files) {
+        (void)value;
+        paths.push_back(path);
+    }
+    std::sort(paths.begin(), paths.end());
+    output->reserve(paths.size());
+    for (const auto& path : paths) output->push_back(files.at(path));
+    return true;
 }
 
 } // namespace
@@ -214,8 +382,6 @@ ProgramResultProcessor::SnapshotTelemetry() const {
     result.finalization_max_collection_age_ms =
         finalization_max_collection_age_ms_.load();
     result.startup_blob_resets = startup_blob_resets_.load();
-    result.startup_program_recoveries = startup_program_recoveries_.load();
-    result.startup_lost_blob_requeues = startup_lost_blob_requeues_.load();
     result.startup_recovery_canaries = startup_recovery_canaries_.load();
     {
         std::lock_guard lock(finalization_mutex_);
@@ -327,6 +493,37 @@ ProgramResultProcessor::ProcessClaimed(
         return {};
     }
 
+    if (durable.terminal.status == wrms::InvocationTerminalStatus::Cancelled) {
+        ProgramResultDecision decision{};
+        const auto disposition =
+            claimed.cancellation_terminal_disposition.value_or("");
+        if (disposition == "USER_WORKFLOW_CANCEL") {
+            decision.final_job_state = "CANCELED";
+            decision.error_code = "WORKFLOW_CANCELLED_BY_USER";
+        } else if (disposition == "AUTOMATIC_SUPERSESSION") {
+            decision.final_job_state = "SUPERSEDED";
+            decision.error_code = "SEEDPROBE_PRUNED";
+        } else if (disposition == "AUTOMATIC_FAILURE_CASCADE") {
+            decision.final_job_state = "FAILED";
+            decision.error_code = "BATTLE_WAVE_ABORTED_BY_JOB";
+        } else if (durable.cancellation_reason == static_cast<std::uint8_t>(
+                       runtime::CancellationReason::Shutdown)) {
+            decision.final_job_state = "INTERRUPTED";
+            decision.error_code = "WORKER_SHUTDOWN";
+        } else {
+            decision.final_job_state = "INTERRUPTED";
+            decision.error_code = "WORKER_CANCELLATION_UNCLASSIFIED";
+        }
+        decision.error_text = durable.terminal.message.empty()
+            ? "worker invocation was cancelled without a terminal disposition"
+            : durable.terminal.message;
+        auto pending = std::make_shared<PendingFinalization>();
+        pending->command = BuildFinalizationCommand(claimed.job, &claimed, decision);
+        pending->event_lines = decision.event_lines;
+        pending->enqueued_at = Clock::now();
+        return pending;
+    }
+
     const auto* descriptor =
         program_kind_registry_->Find(claimed.job.program_kind);
     if (descriptor == nullptr || descriptor->result_handler == nullptr) {
@@ -391,6 +588,19 @@ ProgramResultProcessor::ProcessClaimed(
         return {};
     }
 
+    if (decision.disposition == ProgramResultDisposition::Finalize) {
+        std::vector<ProgramResultStagingFile> staging_files;
+        if (!CollectStagingFiles(
+                *descriptor, durable, decision, &staging_files, &error)) {
+            (void)RecordFailure(
+                claimed.job.job_id,
+                "RESULT_STAGING_MANIFEST_INVALID",
+                error.empty() ? "result staging manifest is invalid" : error);
+            return {};
+        }
+        decision.staging_files = std::move(staging_files);
+    }
+
     auto pending = std::make_shared<PendingFinalization>();
     pending->command =
         BuildFinalizationCommand(claimed.job, &claimed, decision);
@@ -441,6 +651,15 @@ ProgramResultProcessor::BuildFinalizationCommand(
                 : std::optional<std::string>(cancellation.reason_text),
             .requested_by = "program_result_processor",
             .caused_by_job_id = job.job_id,
+            .terminal_disposition = cancellation.terminal_disposition,
+        });
+    }
+    command.staging_files.reserve(decision.staging_files.size());
+    for (const auto& file : decision.staging_files) {
+        command.staging_files.push_back({
+            .relative_path = file.relative_path,
+            .sha256 = file.sha256,
+            .size_bytes = file.size_bytes,
         });
     }
     (void)claimed;
@@ -709,119 +928,13 @@ bool ProgramResultProcessor::ReconcileInterruptedProcessing(
             continue;
         }
 
-        const auto* descriptor = program_kind_registry_->Find(
-            item.claimed.job.program_kind);
-        if (descriptor == nullptr || descriptor->result_handler == nullptr) {
-            ++startup_recovery_canaries_;
-            (void)RecordFailure(
-                job_id,
-                "RESULT_RECOVERY_DESCRIPTOR_UNAVAILABLE",
-                "persisted-outcome recovery handler is unavailable");
-            continue;
-        }
-        const auto recovered =
-            descriptor->result_handler->RecoverPersistedOutcome({
-                .job_id = job_id,
-                .job_set_id = item.claimed.job.job_set_id,
-                .program_kind = item.claimed.job.program_kind,
-                .program_version = item.claimed.job.program_version,
-                .program_ref_kind = item.claimed.job.program_ref_kind,
-                .program_ref_id = item.claimed.job.program_ref_id,
-                .fingerprint = item.claimed.job.fingerprint,
-                .input_ini = item.claimed.job.input_ini,
-                .terminal_sha256 = item.claimed.worker_terminal_fingerprint,
-            });
-        if (recovered.disposition
-                == ProgramResultRecoveryDisposition::Recovered
-            && recovered.decision.has_value()) {
-            if (!CommitRecoveredDecision(
-                    item, std::move(*recovered.decision), &error)) {
-                if (error_out != nullptr) *error_out = std::move(error);
-                return false;
-            }
-            ++startup_program_recoveries_;
-            processing_canaries_.fetch_sub(1);
-        } else if (recovered.disposition
-                == ProgramResultRecoveryDisposition::NoPersistedOutcome) {
-            ResultProcessingReceipt receipt{};
-            if (!execution_db_->RequeueLostResultProcessing(
-                    {.job_id = job_id,
-                     .requested_by = "program_result_processor_startup"},
-                    &receipt,
-                    &error)
-                || !Applied(receipt.disposition)) {
-                if (error_out != nullptr) {
-                    *error_out = error.empty()
-                        ? "lost result requeue failed"
-                        : std::move(error);
-                }
-                return false;
-            }
-            ++startup_lost_blob_requeues_;
-            processing_canaries_.fetch_sub(1);
-        } else {
-            ++startup_recovery_canaries_;
-            (void)RecordFailure(
-                job_id,
-                "RESULT_RECOVERY_INCONSISTENT",
-                recovered.diagnostic.empty()
-                    ? "persisted program outcome is inconsistent"
-                    : recovered.diagnostic);
-        }
+        ++startup_recovery_canaries_;
+        (void)RecordFailure(
+            job_id,
+            "RESULT_RECOVERY_BLOB_MISSING",
+            "PROCESSING job result blob is unavailable for generic processing");
     }
     if (error_out != nullptr) error_out->clear();
-    return true;
-}
-
-bool ProgramResultProcessor::CommitRecoveredDecision(
-    const InterruptedResultProcessingJob& interrupted,
-    ProgramResultDecision decision,
-    std::string* error_out) {
-    if (decision.disposition == ProgramResultDisposition::RetryExecution
-        || decision.final_job_state.empty()
-        || IsSchedulerOwnedState(decision.final_job_state)) {
-        if (error_out != nullptr) {
-            *error_out = "persisted outcome returned an invalid recovery decision";
-        }
-        return false;
-    }
-    CommitResultFinalizationsBatchCommand batch;
-    batch.finalizations.push_back(BuildFinalizationCommand(
-        interrupted.claimed.job, nullptr, decision));
-    const auto hold_id = batch.finalizations.front()
-            .cancellation_requests.empty()
-        ? 0
-        : cancellation_hold_sequence_.fetch_add(1);
-    if (hold_id != 0 && cancellation_precommit_callback_) {
-        cancellation_precommit_callback_(
-            hold_id,
-            batch.finalizations.front().cancellation_requests);
-    }
-    std::vector<ResultProcessingReceipt> receipts;
-    if (!execution_db_->CommitResultFinalizationsBatch(
-            batch, &receipts, error_out)
-        || receipts.size() != 1
-        || !Applied(receipts.front().disposition)) {
-        return false;
-    }
-    if (hold_id != 0 && cancellation_committed_callback_) {
-        cancellation_committed_callback_(
-            hold_id,
-            receipts.front().committed_cancellations);
-    }
-    ++finalized_;
-    if (finalization_callback_ && receipts.front().commit_sequence != 0
-        && receipts.front().workflow_step_id > 0) {
-        finalization_callback_(
-            receipts.front().commit_sequence,
-            receipts.front().workflow_step_id,
-            interrupted.claimed.job.job_id);
-    }
-    if (event_line_callback_) {
-        for (const auto& line : decision.event_lines) {
-            event_line_callback_(line);
-        }
-    }
     return true;
 }
 
@@ -830,18 +943,37 @@ bool ProgramResultProcessor::RecordFailure(
     std::string error_code,
     std::string error_text) {
     ++processing_failures_;
-    ResultProcessingReceipt receipt{};
+    std::vector<ResultProcessingReceipt> receipts;
     std::string db_error;
-    const bool recorded = execution_db_->RecordResultProcessingFailure(
-        {
+    const bool recorded = execution_db_->CommitResultFinalizationsBatch(
+        {.finalizations = {{
             .job_id = job_id,
+            .disposition = ExecutionResultFinalizationDisposition::Final,
+            .final_state = "FAILED",
             .error_code = std::move(error_code),
-            .error_text = error_text,
-        },
-        &receipt,
+            .error_text = std::move(error_text),
+            .requested_by = "program_result_processor",
+        }}},
+        &receipts,
         &db_error);
-    RecordError(db_error.empty() ? std::move(error_text) : std::move(db_error));
-    return recorded && Applied(receipt.disposition);
+    if (!recorded || receipts.size() != 1
+        || !Applied(receipts.front().disposition)) {
+        RecordError(db_error.empty()
+            ? "generic result failure finalization was rejected"
+            : std::move(db_error));
+        return false;
+    }
+    ++finalized_;
+    processing_canaries_.fetch_sub(1);
+    if (finalization_callback_
+        && receipts.front().commit_sequence != 0
+        && receipts.front().workflow_step_id > 0) {
+        finalization_callback_(
+            receipts.front().commit_sequence,
+            receipts.front().workflow_step_id,
+            job_id);
+    }
+    return true;
 }
 
 void ProgramResultProcessor::RecordError(std::string error) {

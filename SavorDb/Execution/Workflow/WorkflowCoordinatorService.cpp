@@ -571,7 +571,7 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
         const auto failure_text =
             continuation.failure_text.value_or(
                 "program continuation rejected the completed work");
-        if (!commands->TerminalFailWorkflowInstance(
+        if (!commands->FailWorkflowInstance(
                 {
                     .workflow_instance_id =
                         snapshot.workflow_instance_id,
@@ -1010,7 +1010,7 @@ void WorkflowCoordinatorService::MaybeTerminalFailStepInStrictSmokeMode(
         failure_message += ": " + failure_reason;
     }
     std::string error;
-    if (!commands->TerminalFailWorkflowInstance(
+    if (!commands->FailWorkflowInstance(
         {
             .workflow_instance_id = step.workflow_instance_id,
             .workflow_step_id = step.workflow_step_id,
@@ -1021,7 +1021,7 @@ void WorkflowCoordinatorService::MaybeTerminalFailStepInStrictSmokeMode(
         &error)) {
         EmitWorkflowFailureEvent(
             step,
-            "StrictSmokeTerminalFailWorkflowInstance",
+            "StrictSmokeFailWorkflowInstance",
             error.empty() ? "unknown error" : error);
     }
 }

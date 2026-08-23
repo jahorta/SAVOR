@@ -166,6 +166,7 @@ struct UiJobStateCounts {
     std::int64_t running = 0;
     std::int64_t execution_finished = 0;
     std::int64_t failed = 0;
+    std::int64_t interrupted = 0;
     std::int64_t succeeded = 0;
     std::int64_t canceled = 0;
     std::int64_t superseded = 0;
@@ -391,6 +392,7 @@ struct UiWorkflowInstanceListQuery {
     std::string state;
     std::string display_state;
     std::string workflow_kind;
+    bool exclude_final = false;
     bool battle_final_victory_only = false;
     bool battle_final_victory_absent_only = false;
 };
@@ -423,8 +425,9 @@ struct UiWorkflowDisplayStateCounts {
     std::int64_t waiting = 0;
     std::int64_t completed = 0;
     std::int64_t failed = 0;
+    std::int64_t interrupted = 0;
     std::int64_t canceled = 0;
-    std::int64_t terminal = 0;
+    std::int64_t finalized = 0;
     std::int64_t other = 0;
 };
 

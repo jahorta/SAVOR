@@ -271,8 +271,8 @@ namespace savor {
         bool boot_to_pause,
         std::optional<std::string> startup_savestate)
     {
-        if (!m_imported_from_qt) {
-            SCLOGE("Must import sys folder from DolphinQT before loading a game. (Best to use Dolphin ver. 2506a");
+        if (!m_user_directory_initialized) {
+            SCLOGE("Prepared Dolphin profile must be initialized before loading a game");
             return false;
         }
         
@@ -298,7 +298,6 @@ namespace savor {
         m_wsi = wsi;
 
         SetUserDirectory(m_user_dir);
-        sterilizeConfigs();
 
         m_system_pad_is_inited = loadDolphinGUISettings(wsi, !m_visual_mode);
         // Production sessions begin at an authoritative CPU-idle boundary.
@@ -346,7 +345,7 @@ namespace savor {
                 *error_out = std::move(message);
             return false;
         };
-        if (!m_imported_from_qt || m_last_game_iso_path.empty())
+        if (!m_user_directory_initialized || m_last_game_iso_path.empty())
             return fail("Dolphin core stop requires an initialized wrapper and current game");
 
         if (Core::IsRunning(*m_system))
@@ -387,7 +386,7 @@ namespace savor {
                 *error_out = std::move(message);
             return false;
         };
-        if (!m_imported_from_qt || m_last_game_iso_path.empty())
+        if (!m_user_directory_initialized || m_last_game_iso_path.empty())
             return fail("Dolphin movie start requires an initialized wrapper and current game");
         if (dtm_path.empty())
             return fail("Dolphin movie start requires an exact DTM path");
@@ -1017,26 +1016,6 @@ namespace savor {
         return interlaced ? (fields / 2) : fields;
     }
 
-    static inline void write_all(const fs::path& p, const std::string& s) {
-        fs::create_directories(p.parent_path());
-        std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
-        ofs.write(s.data(), (std::streamsize)s.size());
-    }
-
-    static inline bool copy_tree(const fs::path& src, const fs::path& dst, std::string* err = nullptr) {
-        if (!fs::exists(src)) { if (err) *err = "Missing source: " + src.string(); return false; }
-        std::error_code ec;
-        fs::create_directories(dst, ec);
-        ec.clear();
-        fs::copy(src, dst,
-            fs::copy_options::recursive |
-            fs::copy_options::overwrite_existing |
-            fs::copy_options::copy_symlinks,
-            ec);
-        if (ec) { if (err) *err = "Copy failed: " + ec.message(); return false; }
-        return true;
-    }
-
     static inline bool require_exists_dir(const fs::path& p, const char* what, std::string* err) {
         if (!fs::exists(p) || !fs::is_directory(p)) {
             if (err) *err = std::string("Missing ") + what + ": " + p.string();
@@ -1050,6 +1029,7 @@ namespace savor {
     bool DolphinWrapper::SetUserDirectory(const fs::path& user_dir)
     {
         m_user_dir = user_dir;
+        m_user_directory_initialized = false;
         try {
             InstallHeadlessDolphinAlertHandler();
             fs::create_directories(m_user_dir / "Config");
@@ -1058,6 +1038,8 @@ namespace savor {
             UICommon::Init();
             SConfig::Init();
             SConfig::GetInstance().LoadSettings();
+            sterilizeConfigs();
+            m_user_directory_initialized = true;
             return true;
         }
         catch (...) { return false; }
@@ -1105,48 +1087,6 @@ namespace savor {
         if (!require_exists_dir(user, "User", &err)) { if (error_out) *error_out = err; return false; }
 
         m_qt_base_dir = dolphin_base_dir;
-        m_imported_from_qt = false;
-        return true;
-    }
-
-    bool DolphinWrapper::SyncFromDolphinQtBase(bool force, std::string* error_out)
-    {
-        if (m_qt_base_dir.empty()) {
-            if (error_out) *error_out = "DolphinQt base dir not set. Call SetDolphinQtBaseDir() first.";
-            return false;
-        }
-        if (m_imported_from_qt && !force) return true;
-
-        std::string err;
-        const fs::path base_user = m_qt_base_dir / "User";
-        if (!require_exists_dir(base_user, "User", &err)) { if (error_out) *error_out = err; return false; }
-        if (!copy_tree(base_user, m_user_dir, &err)) { if (error_out) *error_out = err; return false; }
-
-        SConfig::GetInstance().LoadSettings();
-        if (m_system_pad_is_inited)
-        {
-            Pad::Shutdown();
-            Pad::Initialize();
-        }
-
-        m_imported_from_qt = true;
-        return true;
-    }
-
-    bool DolphinWrapper::ApplyConfig(const savor::SimConfig& cfg, std::string* error_out) {
-        if (!SetUserDirectory(cfg.user_dir)) {
-            if (error_out) *error_out = "Failed to set user directory: " + cfg.user_dir.string();
-            return false;
-        }
-        std::string err;
-        if (!SetDolphinQtBaseDir(cfg.dolphin_base_dir, &err)) {
-            if (error_out) *error_out = "Invalid DolphinQt base: " + err;
-            return false;
-        }
-        if (!SyncFromDolphinQtBase(/*force=*/false, &err)) {
-            if (error_out) *error_out = "Failed to sync from base: " + err;
-            return false;
-        }
         return true;
     }
 

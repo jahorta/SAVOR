@@ -99,6 +99,8 @@ public:
     [[nodiscard]] bool RequestCancellation(
         CancellationReason reason) noexcept;
 
+    [[nodiscard]] CancellationReason cancellation_reason() const noexcept;
+
     [[nodiscard]] ProgramExecutorSnapshot snapshot() const noexcept;
     [[nodiscard]] std::optional<
         std::chrono::steady_clock::time_point>

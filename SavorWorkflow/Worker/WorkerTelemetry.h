@@ -8,6 +8,16 @@ enum class WorkerStateKind {
     Spawning, Idle, Leasing, Running, Renewing, Paused, Draining, Exiting, Stopping, Dead
 };
 
+enum class WorkerStartupPhase {
+    None,
+    PendingFilesystem,
+    PreparingFilesystem,
+    WaitingToOpen,
+    Launching,
+    OpeningSession,
+    Failed,
+};
+
 enum class WorkerEventKind {
     Spawned, Claimed, MarkRunning, RenewLease, Heartbeat, Progress, Finished,
     Draining, Exiting, Error, Crash
@@ -25,6 +35,9 @@ struct WorkerSnapshot {
     std::string host;
     int pid{};
     std::string boot_uuid;
+    std::uint64_t process_generation{};
+    std::string log_path;
+    WorkerStartupPhase startup_phase{ WorkerStartupPhase::None };
 
     WorkerStateKind state{ WorkerStateKind::Spawning };
     std::optional<int64_t> job_id{};

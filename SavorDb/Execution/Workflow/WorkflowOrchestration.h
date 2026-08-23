@@ -15,7 +15,9 @@ enum class WorkflowInstanceState {
     Running = 1,
     Completed = 2,
     Failed = 3,
-    Canceled = 4,
+    Cancelling = 4,
+    Canceled = 5,
+    Interrupted = 6,
 };
 
 enum class WorkflowStepState {
@@ -26,6 +28,8 @@ enum class WorkflowStepState {
     Completed = 4,
     Failed = 5,
     Skipped = 6,
+    Canceled = 7,
+    Interrupted = 8,
 };
 
 enum class WorkflowUnitActivationState {
@@ -36,6 +40,7 @@ enum class WorkflowUnitActivationState {
     Failed = 4,
     Skipped = 5,
     Canceled = 6,
+    Interrupted = 7,
 };
 
 struct WorkflowInstanceRecord {
@@ -215,7 +220,7 @@ struct WorkflowPauseInstanceCommand {
     std::string requested_by;
 };
 
-struct WorkflowTerminalFailInstanceCommand {
+struct WorkflowFailInstanceCommand {
     std::int64_t workflow_instance_id = 0;
     std::optional<std::int64_t> workflow_step_id;
     std::string failure_code;
@@ -233,7 +238,7 @@ struct WorkflowMarkStepMaterializedCommand {
 
 struct WorkflowMarkStepTerminalCommand {
     std::int64_t workflow_step_id = 0;
-    std::string terminal_state; // COMPLETED | FAILED
+    std::string terminal_state; // COMPLETED
     std::optional<std::string> output_ref_kind;
     std::optional<std::int64_t> output_ref_id;
     std::string requested_by;
@@ -403,7 +408,7 @@ struct IWorkflowOrchestrationCommandService {
     virtual bool ResumeWorkflowInstance(const WorkflowResumeInstanceCommand& command, std::string* error_out) = 0;
     virtual bool CompleteWorkflowInstance(const WorkflowCompleteInstanceCommand& command, std::string* error_out) = 0;
     virtual bool PauseWorkflowInstance(const WorkflowPauseInstanceCommand& command, std::string* error_out) = 0;
-    virtual bool TerminalFailWorkflowInstance(const WorkflowTerminalFailInstanceCommand& command, std::string* error_out) = 0;
+    virtual bool FailWorkflowInstance(const WorkflowFailInstanceCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepMaterialized(const WorkflowMarkStepMaterializedCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepTerminal(const WorkflowMarkStepTerminalCommand& command, std::string* error_out) = 0;
     virtual bool RecordStepOutput(const WorkflowRecordStepOutputCommand& command, std::string* error_out) = 0;

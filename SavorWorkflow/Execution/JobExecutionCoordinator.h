@@ -66,9 +66,10 @@ struct JobExecutionCoordinatorConfig {
     std::chrono::milliseconds worker_event_collection_delay{2};
     std::size_t cancellation_batch_size = 32;
     std::chrono::milliseconds cancellation_mutation_delay{2};
-    std::uint32_t maximum_items_per_workset = 16;
+    std::uint32_t maximum_items_per_workset =
+        savor::runtime::WorkerWorksetLimits{}.maximum_items_per_workset;
     std::uint64_t maximum_encoded_workset_bytes =
-        32ull * 1024ull * 1024ull;
+        savor::runtime::WorkerWorksetLimits{}.maximum_encoded_workset_bytes;
     savor::runtime::ArtifactCompatibilityToken state_compatibility;
 };
 
@@ -171,8 +172,7 @@ struct JobExecutionCoordinatorTelemetry {
     std::size_t cancellation_mutation_queue_high_water = 0;
     std::uint64_t worker_losses = 0;
     std::uint64_t startup_recovered_dispatches = 0;
-    std::uint64_t startup_requeued_jobs = 0;
-    std::uint64_t startup_recovery_attempts_granted = 0;
+    std::uint64_t startup_interrupted_jobs = 0;
     std::uint64_t active_residence_probes = 0;
     std::uint64_t active_residence_matches = 0;
     std::uint64_t active_residence_failures = 0;

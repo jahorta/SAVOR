@@ -16,10 +16,12 @@
 #include <utility>
 
 #include "Execution/JobExecutionCoordinator.h"
+#include "Execution/WorksetJobOrganizer.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
 #include "Execution/QueuedExecutionDb.h"
 #include "Execution/WorkerCoordinator.h"
 #include "Execution/WorkerResultBlobStore.h"
+#include "Boot/Boot.h"
 #include "Runner/Runtime/Worksets/WorksetWireCodec.h"
 #include "common/RecordingExecutionDb.h"
 
@@ -35,6 +37,7 @@ using savor::runner::parallel::savordb::
     WorkerCoordinatorStartStatus;
 using savor::runner::parallel::savordb::WorkerExecutionTarget;
 using savor::runner::parallel::savordb::WorkerSubmitDisposition;
+using savor::runner::parallel::savordb::WorksetJobOrganizer;
 
 bool WaitUntil(
     const std::function<bool()>& predicate,
@@ -47,6 +50,56 @@ bool WaitUntil(
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return predicate();
+}
+
+TEST(WorksetJobOrganizer, GroupsCompatibleFailedJobsAcrossSourceWorksets) {
+    const auto makeJob = [](std::int64_t job_id, std::int64_t source_workset_id,
+                            int priority) {
+        savor::db::FailedWorkflowWorksetJobRecord job{};
+        job.workflow_instance_id = 700;
+        job.workflow_step_id = 701;
+        job.job_id = job_id;
+        job.job_set_id = 702;
+        job.root_job_set_id = 702;
+        job.source_workset_id = source_workset_id;
+        job.priority = priority;
+        job.estimated_item_payload_bytes = 10;
+        job.source_workset.program_kind = 42;
+        job.source_workset.program_version = 1;
+        job.source_workset.contract = {
+            .contract_key = "test-contract",
+            .module_canonical_id = "test.program",
+            .module_version = 1,
+            .module_sha256 = std::string(64, 'a'),
+            .entrypoint = "test.entrypoint",
+            .verified_dependency_sha256 = std::string(64, 'b'),
+            .runtime_profile_sha256 = std::string(64, 'c'),
+            .program_package_sha256 = std::string(64, 'd'),
+        };
+        job.source_workset.derived_state.binding_sha256 = std::string(64, 'e');
+        job.source_workset.observation.capture_binding_sha256 = std::string(64, 'f');
+        job.source_workset.observation.progress_plan_sha256 = std::string(64, '0');
+        return job;
+    };
+
+    WorksetJobOrganizer organizer({
+        .maximum_items_per_workset = 2,
+        .maximum_encoded_workset_bytes = 100,
+    });
+    savor::db::WorksetJobReorganizationPlan plan{};
+    std::string error;
+    ASSERT_TRUE(organizer.Organize(
+        700,
+        {makeJob(12, 9002, 4), makeJob(10, 9001, 2), makeJob(11, 9002, 7)},
+        &plan,
+        &error)) << error;
+
+    ASSERT_EQ(plan.worksets.size(), 2u);
+    EXPECT_EQ(plan.worksets[0].ordered_job_ids,
+              (std::vector<std::int64_t>{10, 11}));
+    EXPECT_EQ(plan.worksets[0].priority, 7);
+    EXPECT_EQ(plan.worksets[1].ordered_job_ids,
+              (std::vector<std::int64_t>{12}));
 }
 
 savor::runtime::WorkerRuntimeContractV1 TestRuntimeContract(
@@ -204,6 +257,77 @@ public:
 private:
     std::filesystem::path root_;
 };
+
+TEST(
+    SessionFilesystemPreparer,
+    RecreatesEmptyUserTreeAndPublishesValidatedMarker) {
+    TemporaryCoordinatorDirectory temporary;
+    const auto base = temporary.root() / "base";
+    const auto worker_root = temporary.root() / "worker-7";
+    std::filesystem::create_directories(base / "Sys");
+    std::filesystem::create_directories(base / "User" / "Config");
+    std::filesystem::create_directories(worker_root / "User");
+    std::ofstream(base / "portable.txt") << "portable";
+    std::ofstream(base / "User" / "Config" / "Dolphin.ini")
+        << "canonical";
+    std::ofstream(worker_root / "User" / "stale.txt") << "stale";
+
+    const auto result = simboot::SessionFilesystemPreparer::Prepare({
+        .worker_id = 7,
+        .process_generation = 41,
+        .preparation_id = "prep-41",
+        .dolphin_qt_base = base,
+        .worker_root = worker_root,
+    });
+
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_FALSE(std::filesystem::exists(
+        worker_root / "User" / "stale.txt"));
+    EXPECT_TRUE(std::filesystem::is_empty(worker_root / "User"));
+    EXPECT_EQ(result.file_count, 0u);
+    EXPECT_EQ(result.directory_count, 1u);
+    EXPECT_EQ(result.byte_count, 0u);
+    std::string validation_error;
+    EXPECT_TRUE(simboot::SessionFilesystemPreparer::Validate(
+        worker_root / "User",
+        "prep-41",
+        41,
+        &validation_error)) << validation_error;
+    EXPECT_FALSE(simboot::SessionFilesystemPreparer::Validate(
+        worker_root / "User",
+        "prep-41",
+        42,
+        &validation_error));
+}
+
+TEST(
+    SessionFilesystemPreparer,
+    CancellationPreservesPreviouslyPublishedUserTree) {
+    TemporaryCoordinatorDirectory temporary;
+    const auto base = temporary.root() / "base";
+    const auto worker_root = temporary.root() / "worker-2";
+    std::filesystem::create_directories(base / "Sys");
+    std::filesystem::create_directories(base / "User");
+    std::filesystem::create_directories(worker_root / "User");
+    std::ofstream(base / "portable.txt") << "portable";
+    std::ofstream(base / "User" / "canonical.txt") << "canonical";
+    std::ofstream(worker_root / "User" / "keep.txt") << "keep";
+
+    const auto result = simboot::SessionFilesystemPreparer::Prepare({
+        .worker_id = 2,
+        .process_generation = 9,
+        .preparation_id = "prep-cancelled",
+        .dolphin_qt_base = base,
+        .worker_root = worker_root,
+        .cancelled = []() { return true; },
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(std::filesystem::is_regular_file(
+        worker_root / "User" / "keep.txt"));
+    EXPECT_FALSE(std::filesystem::exists(
+        worker_root / "User" / "canonical.txt"));
+}
 
 class TrackingExecutionDb : public RecordingExecutionDb {
 public:
@@ -450,8 +574,7 @@ public:
                         "scripted-job-" + std::to_string(index),
                     .attempts = 0,
                     .max_attempts = 2,
-                    .item_ordinal = 0,
-                    .dispatch_item_ordinal = 0,
+                    .workset_item_ordinal = 0,
                     .reserved_attempt_id = 1,
                 });
             result.push_back(std::move(claimed));
@@ -649,6 +772,88 @@ TEST(
 
 TEST(
     WorkerCoordinator,
+    FilesystemPreparationDoesNotConsumeOpenSessionTimeout) {
+    WorkerCoordinatorConfig config{
+        .desired_workers = 1,
+        .worker_start_timeout_ms = 1,
+    };
+    config.session_filesystem_preparer =
+        [](const simboot::SessionFilesystemPreparationRequest& request) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            return simboot::SessionFilesystemPreparationResult{
+                .ok = true,
+                .preparation_id = request.preparation_id,
+                .user_directory = request.worker_root / "User",
+                .marker_path = request.worker_root / "session.marker",
+                .elapsed_ms = 25,
+            };
+        };
+    config.worker_runtime_preflight =
+        [](
+            std::size_t,
+            const WorkerCoordinatorConfig&,
+            const std::shared_ptr<savor::ProcessWorker>&) {
+            return savor::runner::parallel::savordb::
+                WorkerCoordinatorRuntimePreflightResult{
+                    .process_ready = true,
+                    .runtime_contract = TestRuntimeContract(),
+                };
+        };
+    WorkerCoordinator coordinator(std::move(config));
+
+    const auto result = coordinator.Start();
+    EXPECT_TRUE(result.started()) << result.diagnostic;
+    EXPECT_EQ(result.ready_workers, 1u);
+    coordinator.Stop();
+}
+
+TEST(
+    WorkerCoordinator,
+    SerializesFilesystemPreparationAcrossWorkerSlots) {
+    std::atomic<int> active_preparations{0};
+    std::atomic<int> maximum_preparations{0};
+    WorkerCoordinatorConfig config{
+        .desired_workers = 3,
+        .controller_sleep_ms = 1,
+        .initially_paused = true,
+    };
+    config.session_filesystem_preparer =
+        [&](const simboot::SessionFilesystemPreparationRequest& request) {
+            const auto active = active_preparations.fetch_add(1) + 1;
+            UpdateMaximum(&maximum_preparations, active);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            --active_preparations;
+            return simboot::SessionFilesystemPreparationResult{
+                .ok = true,
+                .preparation_id = request.preparation_id,
+                .user_directory = request.worker_root / "User",
+                .marker_path = request.worker_root / "session.marker",
+                .elapsed_ms = 20,
+            };
+        };
+    config.worker_runtime_preflight =
+        [](
+            std::size_t,
+            const WorkerCoordinatorConfig&,
+            const std::shared_ptr<savor::ProcessWorker>&) {
+            return savor::runner::parallel::savordb::
+                WorkerCoordinatorRuntimePreflightResult{
+                    .process_ready = true,
+                    .runtime_contract = TestRuntimeContract(),
+                };
+        };
+    WorkerCoordinator coordinator(std::move(config));
+
+    ASSERT_TRUE(coordinator.Start().started());
+    EXPECT_TRUE(WaitUntil([&]() {
+        return coordinator.SnapshotFleetStartup().ready == 3;
+    }));
+    EXPECT_EQ(maximum_preparations.load(), 1);
+    coordinator.Stop();
+}
+
+TEST(
+    WorkerCoordinator,
     ReportsNonretryableWorkerStartupExhaustionWithoutElapsedWait) {
     WorkerCoordinatorConfig config{
         .desired_workers = 1,
@@ -727,7 +932,8 @@ TEST(
     WorkerCoordinatorConfig config{
         .desired_workers = 3,
         .controller_sleep_ms = 250,
-        .max_concurrent_worker_starts = 2,
+        .max_concurrent_worker_starts_when_paused = 2,
+        .initially_paused = true,
     };
         config.worker_runtime_preflight =
         [&](std::size_t worker_id,
@@ -784,7 +990,7 @@ TEST(
     WorkerCoordinatorConfig config{
         .desired_workers = 2,
         .controller_sleep_ms = 50,
-        .max_concurrent_worker_starts = 1,
+        .max_concurrent_worker_starts_when_paused = 1,
     };
         config.worker_runtime_preflight =
         [&](std::size_t worker_id,
@@ -825,7 +1031,7 @@ TEST(
         .desired_workers = 2,
         .controller_sleep_ms = 250,
         .max_worker_start_attempts = 3,
-        .max_concurrent_worker_starts = 1,
+        .max_concurrent_worker_starts_when_paused = 1,
     };
         config.worker_runtime_preflight =
         [](std::size_t worker_id,
@@ -1077,7 +1283,7 @@ TEST(
     WorkerCoordinatorConfig worker_config{
         .desired_workers = 2,
         .controller_sleep_ms = 250,
-        .max_concurrent_worker_starts = 1,
+        .max_concurrent_worker_starts_when_paused = 1,
     };
         worker_config.worker_runtime_preflight =
         [&](std::size_t worker_id,
@@ -1152,7 +1358,7 @@ TEST(
     WorkerCoordinatorConfig worker_config{
         .desired_workers = 2,
         .controller_sleep_ms = 250,
-        .max_concurrent_worker_starts = 1,
+        .max_concurrent_worker_starts_when_paused = 1,
     };
         worker_config.worker_runtime_preflight =
         [&](std::size_t worker_id,
@@ -1228,7 +1434,7 @@ TEST(
     WorkerCoordinatorConfig worker_config{
         .desired_workers = 3,
         .controller_sleep_ms = 250,
-        .max_concurrent_worker_starts = 3,
+        .max_concurrent_worker_starts_when_paused = 3,
     };
         worker_config.worker_runtime_preflight =
         [](
@@ -1358,7 +1564,7 @@ TEST(
     WorkerCoordinatorConfig worker_config{
         .desired_workers = 2,
         .controller_sleep_ms = 250,
-        .max_concurrent_worker_starts = 2,
+        .max_concurrent_worker_starts_when_paused = 2,
     };
         worker_config.worker_runtime_preflight =
         [](

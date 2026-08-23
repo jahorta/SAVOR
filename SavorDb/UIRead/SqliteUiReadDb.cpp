@@ -190,6 +190,8 @@ void AddJobStateCount(UiJobStateCounts& counts, const std::string& state, std::i
         counts.execution_finished += count;
     } else if (state == "FAILED") {
         counts.failed += count;
+    } else if (state == "INTERRUPTED") {
+        counts.interrupted += count;
     } else if (state == "CANCELED") {
         counts.canceled += count;
     } else if (state == "SUPERSEDED") {
@@ -216,15 +218,17 @@ void AddWorkflowDisplayStateCount(
         counts.waiting += count;
     } else if (display_state == "COMPLETED") {
         counts.completed += count;
-        counts.terminal += count;
     } else if (display_state == "FAILED") {
         counts.failed += count;
-        counts.terminal += count;
+    } else if (display_state == "INTERRUPTED") {
+        counts.interrupted += count;
     } else if (display_state == "CANCELED") {
         counts.canceled += count;
-        counts.terminal += count;
     } else {
         counts.other += count;
+    }
+    if (display_state == "COMPLETED" || display_state == "CANCELED") {
+        counts.finalized += count;
     }
 }
 
@@ -1122,7 +1126,8 @@ UiReadPage<UiWorkflowInstanceSummary> SqliteUiReadDb::ListWorkflowInstances(
         "AND (?10=0 OR created_at_utc > ?11 OR (created_at_utc=?11 AND workflow_instance_id > ?12)) "
         "AND (?13=0 OR battle_final_victory_count > 0) "
         "AND (?14=0 OR battle_final_victory_count = 0) "
-        "ORDER BY created_at_utc DESC, workflow_instance_id DESC LIMIT ?15;";
+        "AND (?15=0 OR state NOT IN ('COMPLETED','CANCELED')) "
+        "ORDER BY created_at_utc DESC, workflow_instance_id DESC LIMIT ?16;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
         return page;
     }
@@ -1141,7 +1146,8 @@ UiReadPage<UiWorkflowInstanceSummary> SqliteUiReadDb::ListWorkflowInstances(
     sqlite3_bind_int64(st, 12, query.after.value_or(UiReadListCursor{}).secondary);
     sqlite3_bind_int(st, 13, query.battle_final_victory_only ? 1 : 0);
     sqlite3_bind_int(st, 14, query.battle_final_victory_absent_only ? 1 : 0);
-    sqlite3_bind_int(st, 15, query.limit);
+    sqlite3_bind_int(st, 15, query.exclude_final ? 1 : 0);
+    sqlite3_bind_int(st, 16, query.limit);
 
     while (sqlite3_step(st) == SQLITE_ROW) {
         page.items.push_back(ReadWorkflowInstanceRow(st));

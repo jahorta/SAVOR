@@ -247,9 +247,9 @@ bool isWorkflowFailed(const savor::db::UiWorkflowInstanceSummary& workflow)
     return workflow.state == "FAILED" || workflow.failed_step_count > 0;
 }
 
-bool isWorkflowTerminal(const savor::db::UiWorkflowInstanceSummary& workflow)
+bool isWorkflowFinal(const savor::db::UiWorkflowInstanceSummary& workflow)
 {
-    return workflow.state == "COMPLETED" || workflow.state == "SKIPPED" || workflow.state == "CANCELED";
+    return workflow.state == "COMPLETED" || workflow.state == "CANCELED";
 }
 
 QString workflowProblemText(const savor::db::UiWorkflowInstanceSummary& workflow)
@@ -435,8 +435,8 @@ AnalysisRefreshData prepareAnalysisData(const AnalysisSnapshot& snapshot)
         .arg(artifactCount)
         .arg(seedProbeCount);
 
-    const int terminalWorkflows = snapshot.workflowsOk
-        ? static_cast<int>(std::count_if(snapshot.workflows.begin(), snapshot.workflows.end(), isWorkflowTerminal))
+    const int finalWorkflows = snapshot.workflowsOk
+        ? static_cast<int>(std::count_if(snapshot.workflows.begin(), snapshot.workflows.end(), isWorkflowFinal))
         : 0;
     data.overviewRows = {
         OverviewRow{
@@ -451,7 +451,7 @@ AnalysisRefreshData prepareAnalysisData(const AnalysisSnapshot& snapshot)
             1,
             QStringLiteral("Workflow Provenance"),
             snapshot.workflowsOk ? QString::number(static_cast<int>(snapshot.workflows.size())) : QStringLiteral("--"),
-            snapshot.workflowsOk ? QString::number(terminalWorkflows) : QStringLiteral("--"),
+            snapshot.workflowsOk ? QString::number(finalWorkflows) : QStringLiteral("--"),
             snapshot.workflowsOk
                 ? QStringLiteral("%1 failed / %2 blocked").arg(snapshot.failedWorkflows).arg(snapshot.blockedWorkflows)
                 : qs(snapshot.workflowsError),

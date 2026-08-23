@@ -134,18 +134,6 @@ public:
         return ServiceResult<void>::Ok();
     }
 
-    static ServiceResult<void> CancelJob(std::int64_t job_id) {
-        auto* db = ExecutionDb();
-        if (db == nullptr) {
-            return UnavailableVoid("SavorDb execution DB is unavailable");
-        }
-        std::string error;
-        if (!db->CancelQueuedOrClaimedJob(job_id, &error)) {
-            return FailedVoid(error.empty() ? "cancel failed" : std::move(error));
-        }
-        return ServiceResult<void>::Ok();
-    }
-
 private:
     static savor::db::IUiReadDb* UiReadDb() {
         return savorqt::SavorDbRuntime::instance().uiReadDb();

@@ -484,6 +484,9 @@ private:
     }
 
     static bool MatchesClientFilter(const savor::db::UiWorkflowInstanceSummary& item, const ArchiveWorkflowFilter& filter) {
+        if (item.state != "COMPLETED" && item.state != "CANCELED") {
+            return false;
+        }
         if (filter.problem_mode == ArchiveProblemMode::HasProblems
             && item.blocked_step_count == 0
             && item.failed_step_count == 0) {

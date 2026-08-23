@@ -553,7 +553,7 @@ public:
                 .recorded_at_utc = types::UtcNow(),
             }, nullptr);
             return FinalDecision(
-                terminal.terminal.status == Status::Cancelled ? "CANCELED" : "FAILED",
+                "FAILED",
                 terminal.terminal.error_code.empty() ? "BATTLE_CONTEXT_EXECUTION_FAILED" : terminal.terminal.error_code,
                 terminal.terminal.message.empty() ? "battle.context did not complete cleanly" : terminal.terminal.message);
         }
@@ -602,32 +602,19 @@ public:
                 .recorded_at_utc = types::UtcNow(),
             }, &error)) throw std::runtime_error(error);
         auto decision = FinalDecision("SUCCEEDED");
+        decision.cleanup_worker_staging = true;
+        decision.staging_files.push_back({
+            .relative_path = destination.lexically_relative(root_).generic_string(),
+            .sha256 = sha,
+            .size_bytes = static_cast<std::uint64_t>(bytes.size()),
+        });
         decision.outputs.push_back(ContextOutput(request->context_probe_id));
         decision.event_lines.push_back("[battle-context-captured] context="
             + std::to_string(request->context_probe_id) + " artifact=" + std::to_string(artifact_id));
         return decision;
     }
 
-    ProgramResultRecovery RecoverPersistedOutcome(
-        const ProgramResultRecoveryContext& context) const override {
-        const auto row = analysis_db_ ? analysis_db_->GetBattleContextProbeForExecJob(context.job_id)
-                                      : std::nullopt;
-        if (!row || !row->worker_terminal_sha256)
-            return {.disposition = ProgramResultRecoveryDisposition::NoPersistedOutcome,
-                    .diagnostic = "no battle.context result exists for this terminal"};
-        if (row->context_probe_id != context.program_ref_id
-            || *row->worker_terminal_sha256 != context.terminal_sha256
-            || row->probe_status != BattleContextProbeStatus::Succeeded)
-            return {.disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                    .diagnostic = "persisted battle.context result identity drifted"};
-        auto decision = FinalDecision("SUCCEEDED");
-        decision.outputs.push_back(ContextOutput(row->context_probe_id));
-        return {.disposition = ProgramResultRecoveryDisposition::Recovered,
-                .decision = std::move(decision),
-                .diagnostic = "recovered exact battle.context result"};
-    }
-
-private:
+    private:
     IStateDb* state_db_{};
     IAnalysisDb* analysis_db_{};
     std::filesystem::path root_;
@@ -642,6 +629,7 @@ ProgramKindDescriptor BuildBattleContextProgramDescriptor(
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(savor::PK_BattleContext);
     descriptor.program_name = "Battle Context";
+    descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity = savor::runtime::battlecontext::
         BattleContextFullPhaseDefinitionV1()->identity();
     descriptor.default_progress_library_ids =

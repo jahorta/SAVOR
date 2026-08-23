@@ -585,168 +585,6 @@ TEST_F(SqliteDbFixture, TasMovieCheckpointSterilizationIsTypedCanonicalAndRecove
     sqlite3_finalize(outbox);
 }
 
-TEST_F(SqliteDbFixture, PreparedSterilizedCheckpointRequiresCompletePhysicalEvidenceChain)
-{
-    auto* state = db_service_->StateDb();
-    auto* analysis = db_service_->AnalysisDb();
-    ASSERT_NE(state, nullptr);
-    ASSERT_NE(analysis, nullptr);
-    const auto root_dir = std::filesystem::temp_directory_path()
-        / ("savor-prepared-evidence-"
-            + std::to_string(std::chrono::steady_clock::now()
-                .time_since_epoch().count()));
-    ASSERT_TRUE(std::filesystem::create_directories(root_dir));
-    const auto dtm_path = root_dir / "validated.dtm";
-    const auto itinerary_path = root_dir / "validated.tmi";
-    const auto paired_path = root_dir / "paired.sav";
-    const auto sterile_path = root_dir / "sterilized.sav";
-    const auto dtm_id = StorePhysicalArtifact(
-        state, dtm_path, "validated-dtm-bytes", ".dtm", "DTM", 201);
-    const auto itinerary_id = StorePhysicalArtifact(
-        state, itinerary_path, "validated-itinerary-bytes", ".tmi",
-        "TAS_MOVIE_ITINERARY", 202);
-    const auto paired_artifact_id = StorePhysicalArtifact(
-        state, paired_path, "paired-state-bytes", ".sav", "SAV", 203);
-    const auto sterile_artifact_id = StorePhysicalArtifact(
-        state, sterile_path, "sterilized-state-bytes", ".sav", "SAV", 204);
-    const auto dtm = state->GetArtifact(dtm_id);
-    const auto itinerary = state->GetArtifact(itinerary_id);
-    const auto paired_artifact = state->GetArtifact(paired_artifact_id);
-    const auto sterile_artifact = state->GetArtifact(sterile_artifact_id);
-    ASSERT_TRUE(dtm && itinerary && paired_artifact && sterile_artifact);
-
-    auto validation_request = RootValidationRequest(201, 202, dtm->sha256);
-    validation_request.source_ref_id = 200;
-    validation_request.source_dtm_artifact_id = dtm_id;
-    validation_request.source_dtm_sha256 = dtm->sha256;
-    validation_request.itinerary_artifact_id = itinerary_id;
-    validation_request.itinerary_sha256 = itinerary->sha256;
-    std::int64_t validation_request_id = 0;
-    std::string error;
-    ASSERT_TRUE(analysis->CreateTasMovieValidationRequest(
-        validation_request, &validation_request_id, &error)) << error;
-
-    std::int64_t paired_state_id = 0;
-    ASSERT_TRUE(state->CreateSavestate({
-        .artifact_id = paired_artifact_id,
-        .playback_state = SavestatePlaybackState::MoviePaired,
-        .dtm_artifact_id = dtm_id,
-        // Physical MoviePaired evidence, not the domain-specific savestate
-        // label, is the sterilization source contract. Battle recording uses
-        // this label for its validated tree checkpoint.
-        .savestate_type = "BATTLE_RECORD_PRESEED_CHECKPOINT",
-        .note = "prepared source",
-        .is_complete = true,
-        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(205)),
-        .correlation_id = "prepared-evidence-test",
-        .causation_id = "test",
-    }, &paired_state_id, &error)) << error;
-    std::int64_t tas_root_id = 0;
-    ASSERT_TRUE(state->CreateTasMovieRoot({
-        .source_dtm_artifact_id = dtm_id,
-        .dtm_artifact_id = dtm_id,
-        .rtc_value = 7,
-        .itinerary_artifact_id = itinerary_id,
-        .required_final_breakpoint_pc = kRootPc,
-        .checkpoint_savestate_id = paired_state_id,
-        .source_context_kind = "tmv_validation_request",
-        .source_context_id = validation_request_id,
-        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(206)),
-        .correlation_id = "prepared-evidence-test",
-        .causation_id = "test",
-    }, &tas_root_id, &error)) << error;
-    std::int64_t validation_attempt_id = 0;
-    ASSERT_TRUE(analysis->RecordTasMovieValidationAttempt({
-        .validation_request_id = validation_request_id,
-        .source_job_id = 203,
-        .worker_terminal_sha256 = Sha('7'),
-        .outcome = TasMovieValidationOutcome::Valid,
-        .failure_reason = TasMovieValidationFailureReason::None,
-        .actual_pc = kRootPc,
-        .actual_input_count = 1,
-        .produced_tas_movie_root_id = tas_root_id,
-        .worker_id = "prepared-worker",
-        .worker_process_generation = 1,
-        .workset_epoch = 1,
-        .recorded_at_utc = types::UtcTimePoint(std::chrono::milliseconds(207)),
-    }, &validation_attempt_id, &error)) << error;
-
-    const auto phase = savor::runtime::tasmovie::
-        TasMovieCheckpointSterilizationFullPhaseDefinitionV1();
-    std::int64_t sterilization_request_id = 0;
-    ASSERT_TRUE(analysis->CreateTasMovieCheckpointSterilizationRequest({
-        .materialization_key = "prepared-sterilization-request",
-        .workflow_instance_id = 204,
-        .workflow_step_id = 205,
-        .source_savestate_id = paired_state_id,
-        .source_savestate_artifact_id = paired_artifact_id,
-        .source_savestate_sha256 = paired_artifact->sha256,
-        .source_dtm_artifact_id = dtm_id,
-        .source_dtm_sha256 = dtm->sha256,
-        .full_phase_program_kind = phase->identity().program_kind,
-        .full_phase_program_version = phase->identity().program_version,
-        .full_phase_canonical_id = "historical.full.phase",
-        .full_phase_contract_revision = 1,
-        .full_phase_sha256 = Sha('8'),
-        .module_canonical_id = "historical.module",
-        .module_revision = 1,
-        .module_sha256 = Sha('9'),
-        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(208)),
-    }, &sterilization_request_id, &error)) << error;
-    CreateOrGetSterilizedCheckpointReceipt receipt{};
-    ASSERT_TRUE(state->CreateOrGetSterilizedCheckpoint({
-        .from_savestate_id = paired_state_id,
-        .artifact = {
-            .sha256 = sterile_artifact->sha256,
-            .size_bytes = sterile_artifact->size_bytes,
-            .compression_kind = 0,
-            .filename = sterile_artifact->filename,
-            .file_ext = ".sav",
-            .artifact_kind = "SAV",
-            .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(209)),
-            .correlation_id = "prepared-evidence-test",
-            .causation_id = "test",
-        },
-        .source_context_kind = "tmv_checkpoint_sterilization_request",
-        .source_context_id = sterilization_request_id,
-        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(209)),
-        .correlation_id = "prepared-evidence-test",
-        .causation_id = "test",
-    }, &receipt, &error)) << error;
-    std::int64_t sterilization_attempt_id = 0;
-    ASSERT_TRUE(analysis->RecordTasMovieCheckpointSterilizationAttempt({
-        .sterilization_request_id = sterilization_request_id,
-        .source_job_id = 206,
-        .worker_terminal_sha256 = Sha('a'),
-        .candidate_savestate_sha256 = sterile_artifact->sha256,
-        .produced_savestate_id = receipt.savestate_id,
-        .worker_id = "prepared-worker",
-        .worker_process_generation = 1,
-        .workset_epoch = 2,
-        .recorded_at_utc = types::UtcTimePoint(std::chrono::milliseconds(210)),
-    }, &sterilization_attempt_id, &error)) << error;
-
-    savor::db::execution::programdb::tasmovieevidence::
-        PreparedSterilizedCheckpointEvidence evidence{};
-    ASSERT_TRUE(savor::db::execution::programdb::tasmovieevidence::
-        ResolvePreparedSterilizedCheckpointEvidence(
-            state, analysis, receipt.savestate_id, &evidence, &error)) << error;
-    EXPECT_EQ(evidence.validation_attempt.validation_attempt_id,
-              validation_attempt_id);
-    EXPECT_EQ(evidence.sterilization_attempt.sterilization_attempt_id,
-              sterilization_attempt_id);
-
-    std::ofstream(sterile_path, std::ios::binary | std::ios::app).put('x');
-    error.clear();
-    EXPECT_FALSE(savor::db::execution::programdb::tasmovieevidence::
-        ResolvePreparedSterilizedCheckpointEvidence(
-            state, analysis, receipt.savestate_id, &evidence, &error));
-    EXPECT_NE(error.find("size drifted"), std::string::npos);
-
-    std::error_code cleanup_error;
-    std::filesystem::remove_all(root_dir, cleanup_error);
-}
-
 TEST_F(SqliteDbFixture, TasMoviePersistenceAnalysisLedgerQuarantinesAndRestoresExactBytes)
 {
     auto* analysis = db_service_->AnalysisDb();
@@ -1167,7 +1005,7 @@ TEST_F(
                 },
                 .items = {{
                     .job_id = job->job_id,
-                    .logical_ordinal = 0,
+                    .workset_item_ordinal = 0,
                     .reserved_attempt_id = reserved_attempt_id,
                     .claim_token = "tas-movie-descriptor-test-claim",
                     .program_kind = job->program_kind,
@@ -1287,24 +1125,6 @@ TEST_F(
         *attempt->candidate_itinerary_artifact_id);
     ASSERT_TRUE(itinerary_artifact.has_value());
     EXPECT_EQ(itinerary_artifact->artifact_kind, "TAS_MOVIE_ITINERARY");
-
-    const auto recovered = descriptor.result_handler->RecoverPersistedOutcome({
-        .job_id = job->job_id,
-        .job_set_id = job->job_set_id,
-        .program_kind = job->program_kind,
-        .program_version = job->program_version,
-        .program_ref_kind = job->program_ref_kind,
-        .program_ref_id = job->program_ref_id,
-        .fingerprint = job->fingerprint,
-        .input_ini = job->input_ini,
-        .terminal_sha256 = terminal_sha,
-    });
-    EXPECT_EQ(
-        recovered.disposition,
-        ProgramResultRecoveryDisposition::Recovered);
-    ASSERT_TRUE(recovered.decision.has_value());
-    EXPECT_EQ(recovered.decision->final_job_state, "SUCCEEDED");
-    ASSERT_EQ(recovered.decision->outputs.size(), 2u);
 
     SaveWorkflowGraphResult root_graph{};
     ASSERT_TRUE(authoring->SaveWorkflowGraph(
@@ -1468,7 +1288,7 @@ TEST_F(
                 },
                 .items = {{
                     .job_id = root_job->job_id,
-                    .logical_ordinal = 0,
+                    .workset_item_ordinal = 0,
                     .reserved_attempt_id = root_attempt_id,
                     .claim_token = "tas-movie-root-validation-claim",
                     .program_kind = root_job->program_kind,
@@ -1660,38 +1480,6 @@ TEST_F(
         root_request->effective_dtm_sha256);
     ASSERT_TRUE(valid_status.has_value());
     EXPECT_EQ(valid_status->status, TasMovieValidationStatus::Valid);
-    const auto recovered_valid =
-        descriptor.result_handler->RecoverPersistedOutcome({
-            .job_id = root_job->job_id,
-            .job_set_id = root_job->job_set_id,
-            .program_kind = root_job->program_kind,
-            .program_version = root_job->program_version,
-            .program_ref_kind = root_job->program_ref_kind,
-            .program_ref_id = root_job->program_ref_id,
-            .fingerprint = root_job->fingerprint,
-            .input_ini = root_job->input_ini,
-            .terminal_sha256 = root_terminal_sha,
-        });
-    EXPECT_EQ(
-        recovered_valid.disposition,
-        ProgramResultRecoveryDisposition::Recovered);
-    ASSERT_TRUE(recovered_valid.decision.has_value());
-    ASSERT_EQ(recovered_valid.decision->outputs.size(), 2u);
-    const auto recovered_checkpoint_output = std::find_if(
-        recovered_valid.decision->outputs.begin(),
-        recovered_valid.decision->outputs.end(),
-        [](const auto& output) {
-            return output.output_key
-                == "validated_checkpoint_savestate";
-        });
-    ASSERT_NE(
-        recovered_checkpoint_output,
-        recovered_valid.decision->outputs.end());
-    EXPECT_EQ(
-        recovered_checkpoint_output->ref_id,
-        root->checkpoint_savestate_id);
-    EXPECT_EQ(recovered_valid.decision->final_job_state, "SUCCEEDED");
-
     const auto archive_root = temp_root_ / "tas-movie-archive";
     archive::SqliteArchivePackageService package_service(
         db_,
@@ -1891,25 +1679,6 @@ TEST_F(
     EXPECT_EQ(
         quarantined_status->status,
         TasMovieValidationStatus::Quarantined);
-    const auto recovered_invalid =
-        descriptor.result_handler->RecoverPersistedOutcome({
-            .job_id = root_job->job_id,
-            .job_set_id = root_job->job_set_id,
-            .program_kind = root_job->program_kind,
-            .program_version = root_job->program_version,
-            .program_ref_kind = root_job->program_ref_kind,
-            .program_ref_id = root_job->program_ref_id,
-            .fingerprint = root_job->fingerprint,
-            .input_ini = root_job->input_ini,
-            .terminal_sha256 = invalid_terminal_sha,
-        });
-    EXPECT_EQ(
-        recovered_invalid.disposition,
-        ProgramResultRecoveryDisposition::Recovered);
-    ASSERT_TRUE(recovered_invalid.decision.has_value());
-    EXPECT_EQ(recovered_invalid.decision->final_job_state, "SUCCEEDED");
-    EXPECT_EQ(recovered_invalid.decision->error_code, "TAS_MOVIE_INVALID");
-
     const auto ui_path = temp_root_ / "tas-movie-alerts.sqlite";
     DbConfigPaths ui_paths{};
     ui_paths.execution_db_path = ui_path;

@@ -73,7 +73,7 @@ inline constexpr EventDispatchBinding kPayloadDispatchBindingsV1[] = {
     { { "Execution.WorkflowInvariantViolation.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.WorkflowRemediationReopened.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.WorkflowRemediationRepairExecuted.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
-    { { "Execution.WorkflowRemediationTerminalFailed.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
+    { { "Execution.WorkflowInstanceFailed.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.WorkflowInstanceCompleted.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "AnalysisSpine.RunCreated.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },
     { { "AnalysisSpine.StateRefRegistered.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },

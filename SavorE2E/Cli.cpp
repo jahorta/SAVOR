@@ -32,7 +32,9 @@ constexpr auto kScenarioCatalog = std::to_array<E2eScenarioDescriptor>({
         .supported_entry_sources =
             EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation)
             | EntrySourceBit(
-                E2eScenarioEntrySource::PreparedSterilizedCheckpoint),
+                E2eScenarioEntrySource::PreparedSterilizedCheckpoint)
+            | EntrySourceBit(
+                E2eScenarioEntrySource::TasMovieEstablishmentAttempt),
         .default_entry_source =
             E2eScenarioEntrySource::FreshTasMovieValidation,
         .must_run_alone = true,
@@ -53,7 +55,9 @@ constexpr auto kScenarioCatalog = std::to_array<E2eScenarioDescriptor>({
         .name = "tasmovie_validation",
         .kind = E2eScenarioKind::TasMovieValidation,
         .supported_entry_sources =
-            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation),
+            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation)
+            | EntrySourceBit(
+                E2eScenarioEntrySource::TasMovieEstablishmentAttempt),
         .default_entry_source =
             E2eScenarioEntrySource::FreshTasMovieValidation,
         .must_run_alone = true,
@@ -64,7 +68,9 @@ constexpr auto kScenarioCatalog = std::to_array<E2eScenarioDescriptor>({
         .name = "tasmovie_sterile",
         .kind = E2eScenarioKind::TasMovieSterile,
         .supported_entry_sources =
-            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation),
+            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation)
+            | EntrySourceBit(
+                E2eScenarioEntrySource::TasMovieEstablishmentAttempt),
         .default_entry_source =
             E2eScenarioEntrySource::FreshTasMovieValidation,
         .must_run_alone = true,
@@ -312,9 +318,13 @@ const E2eScenarioDescriptor* FindE2eScenarioDescriptor(
 E2eScenarioEntrySource SelectE2eScenarioEntrySource(
     const E2eScenarioDescriptor& descriptor,
     const CliOptions& options) {
-    return options.source_savestate_id.has_value()
-        ? E2eScenarioEntrySource::PreparedSterilizedCheckpoint
-        : descriptor.default_entry_source;
+    if (options.source_savestate_id.has_value()) {
+        return E2eScenarioEntrySource::PreparedSterilizedCheckpoint;
+    }
+    if (options.tasmovie_establishment_id.has_value()) {
+        return E2eScenarioEntrySource::TasMovieEstablishmentAttempt;
+    }
+    return descriptor.default_entry_source;
 }
 
 std::string_view ToString(const E2eScenarioEntrySource source) {
@@ -325,6 +335,8 @@ std::string_view ToString(const E2eScenarioEntrySource source) {
         return "FreshTasMovieValidation";
     case E2eScenarioEntrySource::PreparedSterilizedCheckpoint:
         return "PreparedSterilizedCheckpoint";
+    case E2eScenarioEntrySource::TasMovieEstablishmentAttempt:
+        return "TasMovieEstablishmentAttempt";
     case E2eScenarioEntrySource::ExistingWorkspaceReference:
         return "ExistingWorkspaceReference";
     }
@@ -333,6 +345,7 @@ std::string_view ToString(const E2eScenarioEntrySource source) {
 
 bool EntrySourceRequiresFreshWorkspace(const E2eScenarioEntrySource source) {
     return source != E2eScenarioEntrySource::PreparedSterilizedCheckpoint
+        && source != E2eScenarioEntrySource::TasMovieEstablishmentAttempt
         && source != E2eScenarioEntrySource::ExistingWorkspaceReference;
 }
 
@@ -370,6 +383,7 @@ void PrintUsage() {
               << " --dolphin-base-dir <path>"
               << " [--savestate-file <path>]"
               << " [--source-savestate-id <id>]"
+              << " [--tas-establishment-id <id>]"
               << " [--workflow-unit <unit-kind>]"
               << " [--source-ref-kind <kind>]"
               << " [--source-ref-id <positive-id>]"
@@ -409,6 +423,7 @@ void PrintUsage() {
     std::cout << "The tasmovie_seedprobe scenario composes validation with SeedProbe, requires an exact RTC and no external savestate, and must run alone.\n";
     std::cout << "The battle scenario validates the approved DTM, sterilizes its checkpoint, and in Fresh mode requires one exact --tasmovie-rtc with no external savestate.\n";
     std::cout << "With --source-savestate-id, battle starts from a prepared sterilized checkpoint.\n";
+    std::cout << "With --tas-establishment-id, battle, tasmovie_validation, and tasmovie_sterile start from an existing root-cursor establishment attempt and do not reset the workspace.\n";
     std::cout << "Visual worker locks worker count to 1.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
     std::cout << "Scenarios: all";
@@ -423,6 +438,7 @@ void PrintUsage() {
                  E2eScenarioEntrySource::ImportedSavestateFile,
                  E2eScenarioEntrySource::FreshTasMovieValidation,
                  E2eScenarioEntrySource::PreparedSterilizedCheckpoint,
+                 E2eScenarioEntrySource::TasMovieEstablishmentAttempt,
                  E2eScenarioEntrySource::ExistingWorkspaceReference}) {
             if ((descriptor.supported_entry_sources & EntrySourceBit(source)) == 0) {
                 continue;
@@ -512,6 +528,15 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
                 options.source_savestate_id = std::stoll(v);
             } catch (const std::exception&) {
                 if (error_out) *error_out = "invalid integer for --source-savestate-id: " + v;
+                return false;
+            }
+        } else if (arg == "--tas-establishment-id") {
+            std::string v;
+            if (!require_value("--tas-establishment-id", &v)) return false;
+            try {
+                options.tasmovie_establishment_id = std::stoll(v);
+            } catch (const std::exception&) {
+                if (error_out) *error_out = "invalid integer for --tas-establishment-id: " + v;
                 return false;
             }
         } else if (arg == "--workflow-unit") {
@@ -712,6 +737,7 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     };
 
     bool prepared_checkpoint_mode = false;
+    bool tas_establishment_mode = false;
     for (const auto& scenario : options.scenarios) {
         const auto* descriptor = FindE2eScenarioDescriptor(scenario);
         if (descriptor == nullptr) {
@@ -755,6 +781,9 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         case E2eScenarioEntrySource::ImportedSavestateFile:
             needs_savestate = true;
             savestate_required_scenarios.push_back(scenario);
+            break;
+        case E2eScenarioEntrySource::TasMovieEstablishmentAttempt:
+            tas_establishment_mode = true;
             break;
         case E2eScenarioEntrySource::FreshTasMovieValidation:
             needs_dtm = true;
@@ -814,6 +843,39 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             || HasAnyRtcArgument(options)) {
             if (error_out) {
                 *error_out = "prepared-checkpoint mode rejects --savestate-file, --dtm-file, and all RTC arguments";
+            }
+            return false;
+        }
+    }
+    if (options.source_savestate_id.has_value()
+        && options.tasmovie_establishment_id.has_value()) {
+        if (error_out) {
+            *error_out = "cannot combine --source-savestate-id with --tas-establishment-id";
+        }
+        return false;
+    }
+    if (tas_establishment_mode) {
+        if (!options.tasmovie_establishment_id.has_value()
+            || *options.tasmovie_establishment_id <= 0) {
+            if (error_out) {
+                *error_out = "tasmovie-establishment-attempt mode requires a positive --tas-establishment-id";
+            }
+            return false;
+        }
+        if (!options.workspace_root.has_value()
+            || !IsCompleteExistingWorkspace(*options.workspace_root, error_out)) {
+            return false;
+        }
+        if (!options.savestate_file.empty()) {
+            if (error_out) {
+                *error_out = "tasmovie-establishment-attempt mode requires an existing --workspace-root and rejects --savestate-file";
+            }
+            return false;
+        }
+        if (!options.dtm_file.empty()) {
+            if (error_out) {
+                *error_out =
+                    "tasmovie-establishment-attempt mode rejects --dtm-file";
             }
             return false;
         }
@@ -931,7 +993,7 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "--seedprobe-samples-per-axis must be > 0";
         return false;
     }
-    const auto seedprobe_min = options.seedprobe_min_value.value_or(47);
+    const auto seedprobe_min = options.seedprobe_min_value.value_or(48);
     const auto seedprobe_max = options.seedprobe_max_value.value_or(207);
     if (seedprobe_min < 0 || seedprobe_min > 255) {
         if (error_out) *error_out = "--seedprobe-min-value must be between 0 and 255";

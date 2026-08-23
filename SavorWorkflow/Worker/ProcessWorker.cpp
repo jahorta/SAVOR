@@ -271,9 +271,11 @@ bool ProcessWorker::create_child(
     std::ostringstream command;
     command << '"' << options.exe_path << '"'
             << " --worker"
-            << " --id " << options.worker_id;
-    if (!options.log_directory.empty())
-        command << " --log-dir \"" << options.log_directory << '"';
+            << " --id " << options.worker_id
+            << " --process-generation " << options.process_generation
+            << " --utc-launch-ticks " << options.utc_launch_ticks;
+    if (!options.log_file_path.empty())
+        command << " --log-file \"" << options.log_file_path << '"';
 
     std::string command_line = command.str();
     command_line.push_back('\0');
@@ -440,6 +442,9 @@ bool ProcessWorker::open_session(
         .worker_mode = MapWorkerMode(options.worker_mode),
         .render_window_handle = options.render_widget_handle,
         .runtime_artifact_root = options.runtime_artifact_root,
+        .session_filesystem_preparation_id =
+            options.session_filesystem_preparation_id,
+        .process_generation = options.process_generation,
     };
     std::vector<std::uint8_t> payload;
     if (!EncodeTypedPayload(request, &payload))

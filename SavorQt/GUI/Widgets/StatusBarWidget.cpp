@@ -55,7 +55,9 @@ StatusBarSnapshot StatusBarWidget::buildSnapshot(const CoordinatorController* co
     snapshot.connected = true;
     snapshot.envLabel = QStringLiteral("prod");
     snapshot.lastRefresh = lastRefresh;
-    snapshot.coordinatorRunning = controller && controller->isRunning();
+    snapshot.coordinatorState = controller
+        ? controller->lifecycleState()
+        : CoordinatorLifecycleState::Stopped;
     snapshot.coordinatorWorkers = controller ? controller->activeWorkers() : 0;
 
     if (controller) {
@@ -192,7 +194,7 @@ void StatusBarWidget::clearToasts()
     rebuildToasts();
 }
 
-void StatusBarWidget::setCoordinatorState(bool running, bool paused, int targetWorkers, int activeWorkers, const QString& validationMessage)
+void StatusBarWidget::setCoordinatorState(CoordinatorLifecycleState state, bool paused, int targetWorkers, int activeWorkers, const QString& validationMessage)
 {
     if (!validationMessage.isEmpty() && validationMessage != lastValidationMessage_) {
         postToast(
@@ -204,7 +206,11 @@ void StatusBarWidget::setCoordinatorState(bool running, bool paused, int targetW
     lastValidationMessage_ = validationMessage;
 
     CoordinatorToastState coordinatorState = CoordinatorToastState::Stopped;
-    if (running) {
+    if (state == CoordinatorLifecycleState::Starting) {
+        coordinatorState = CoordinatorToastState::Starting;
+    } else if (state == CoordinatorLifecycleState::Stopping) {
+        coordinatorState = CoordinatorToastState::Stopping;
+    } else if (state == CoordinatorLifecycleState::Running) {
         coordinatorState = paused
             ? CoordinatorToastState::Paused
             : CoordinatorToastState::Running;
@@ -217,6 +223,12 @@ void StatusBarWidget::setCoordinatorState(bool running, bool paused, int targetW
                 StatusToast::Severity::Info,
                 QStringLiteral("Coordinator stopped"),
                 QStringLiteral("Workers are no longer processing jobs."));
+            break;
+        case CoordinatorToastState::Starting:
+            postToast(
+                StatusToast::Severity::Info,
+                QStringLiteral("Coordinator starting"),
+                QStringLiteral("Preparing the worker runtime and initial worker."));
             break;
         case CoordinatorToastState::Running:
             postToast(
@@ -234,6 +246,12 @@ void StatusBarWidget::setCoordinatorState(bool running, bool paused, int targetW
                     .arg(targetWorkers)
                     .arg(activeWorkers),
                 kValidationToastTtlMs);
+            break;
+        case CoordinatorToastState::Stopping:
+            postToast(
+                StatusToast::Severity::Info,
+                QStringLiteral("Coordinator stopping"),
+                QStringLiteral("Waiting for coordinator startup or worker cleanup to finish."));
             break;
         }
     }
@@ -304,11 +322,16 @@ void StatusBarWidget::updateRefreshLabel()
 
 void StatusBarWidget::updateCoordinatorBadge()
 {
-    const QString variant = snapshot_.coordinatorRunning ? QStringLiteral("coordinator-running") : QStringLiteral("coordinator-stopped");
+    const bool running = snapshot_.coordinatorState == CoordinatorLifecycleState::Running;
+    const QString variant = running ? QStringLiteral("coordinator-running") : QStringLiteral("coordinator-stopped");
     coordinatorBadge_->setProperty("variant", variant);
 
-    if (snapshot_.coordinatorRunning) {
+    if (running) {
         coordinatorBadge_->setText(QStringLiteral("Coordinator: %1").arg(snapshot_.coordinatorWorkers));
+    } else if (snapshot_.coordinatorState == CoordinatorLifecycleState::Starting) {
+        coordinatorBadge_->setText(QStringLiteral("Coordinator: Starting"));
+    } else if (snapshot_.coordinatorState == CoordinatorLifecycleState::Stopping) {
+        coordinatorBadge_->setText(QStringLiteral("Coordinator: Stopping"));
     } else {
         coordinatorBadge_->setText(QStringLiteral("Coordinator: Stopped"));
     }

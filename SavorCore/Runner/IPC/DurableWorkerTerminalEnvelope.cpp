@@ -124,12 +124,13 @@ bool EncodeDurableWorkerTerminalEnvelope(
 
     std::vector<std::uint8_t> bytes;
     bytes.reserve(
-        kMagic.size() + 2 + 2 + 8 + 8 + 4 + terminal_bytes.size());
+        kMagic.size() + 2 + 2 + 8 + 8 + 1 + 4 + terminal_bytes.size());
     bytes.insert(bytes.end(), kMagic.begin(), kMagic.end());
     AppendU16(bytes, envelope.envelope_version);
     AppendU16(bytes, envelope.wrms_protocol_version);
     AppendU64(bytes, envelope.worker_id);
     AppendU64(bytes, envelope.process_generation);
+    bytes.push_back(envelope.cancellation_reason);
     AppendU32(
         bytes,
         static_cast<std::uint32_t>(terminal_bytes.size()));
@@ -161,7 +162,11 @@ bool DecodeDurableWorkerTerminalEnvelope(
         || !ReadU16(bytes, &offset, &envelope.wrms_protocol_version)
         || !ReadU64(bytes, &offset, &envelope.worker_id)
         || !ReadU64(bytes, &offset, &envelope.process_generation)
-        || !ReadU32(bytes, &offset, &terminal_size)
+        || offset >= bytes.size()) {
+        return Fail("durable worker terminal header is invalid", error_out);
+    }
+    envelope.cancellation_reason = bytes[offset++];
+    if (!ReadU32(bytes, &offset, &terminal_size)
         || envelope.envelope_version
             != kDurableWorkerTerminalEnvelopeVersion
         || envelope.wrms_protocol_version != wrms::ProtocolVersion

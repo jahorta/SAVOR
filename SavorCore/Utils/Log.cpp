@@ -18,6 +18,8 @@
 #include <vector>
 
 #ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
 #include <share.h>
 #include <windows.h>
 #endif
@@ -461,7 +463,7 @@ void Logger::set_levels(Level stdout_level, Level file_level)
     set_file_level(file_level);
 }
 
-bool Logger::open_file(const char* path, bool append)
+bool Logger::open_file(const char* path, FileOpenMode mode)
 {
     if (path == nullptr || *path == '\0')
         return false;
@@ -475,9 +477,40 @@ bool Logger::open_file(const char* path, bool append)
         impl_->file = nullptr;
     }
 #if defined(_WIN32)
-    impl_->file = _fsopen(path, append ? "a" : "w", _SH_DENYWR);
+    if (mode == FileOpenMode::CreateNew)
+    {
+        HANDLE handle = CreateFileA(
+            path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle != INVALID_HANDLE_VALUE)
+        {
+            const int descriptor = _open_osfhandle(
+                reinterpret_cast<intptr_t>(handle), _O_WRONLY);
+            if (descriptor >= 0)
+            {
+                impl_->file = _fdopen(descriptor, "w");
+                if (impl_->file == nullptr)
+                    _close(descriptor);
+            }
+            else
+            {
+                CloseHandle(handle);
+            }
+        }
+    }
+    else
+    {
+        impl_->file = _fsopen(
+            path,
+            mode == FileOpenMode::Append ? "a" : "w",
+            _SH_DENYWR);
+    }
 #else
-    impl_->file = std::fopen(path, append ? "a" : "w");
+    impl_->file = std::fopen(
+        path,
+        mode == FileOpenMode::CreateNew
+            ? "wx"
+            : (mode == FileOpenMode::Append ? "a" : "w"));
 #endif
     return impl_->file != nullptr;
 }

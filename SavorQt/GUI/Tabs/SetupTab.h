@@ -20,18 +20,24 @@ public:
         std::function<void()> openGraphEditor;
         std::function<void(const savor::db::WorkflowGraphSnapshot&, bool)> openGraphEditorSnapshot;
         std::function<void()> openSettings;
-        std::function<void()> openIsoSettings;
-        std::function<void()> openDolphinSettings;
         std::function<void()> openArtifacts;
         std::function<void()> openDtmEditor;
-        std::function<void()> openBattleSettings;
-        std::function<void(const StatusToast&)> postStatusToast;
     };
 
-    explicit SetupTab(CoordinatorController* coordinatorController, Actions actions, QWidget* parent = nullptr);
+    explicit SetupTab(CoordinatorController* coordinatorController, QWidget* parent = nullptr);
 
 signals:
 	void statusToastRequested(StatusToast toast);
+	void openLauncherRequested();
+	void openAuthoringRequested();
+	void openGraphEditorRequested();
+	void openGraphEditorSnapshotRequested(const savor::db::WorkflowGraphSnapshot& snapshot, bool isReadOnly);
+	void openSettingsRequested();
+	void openIsoSettingsRequested();
+	void openDolphinSettingsRequested();
+	void openArtifactsRequested();
+	void openDtmEditorRequested();
+	void openBattleSettingsRequested();
 
 private:
     void build();

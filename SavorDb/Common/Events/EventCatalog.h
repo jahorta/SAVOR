@@ -32,7 +32,7 @@ inline constexpr std::array<std::string_view, 76> kEventCatalogV1{ {
     "Execution.WorkflowInvariantViolation.v1",
     "Execution.WorkflowRemediationRepairExecuted.v1",
     "Execution.WorkflowRemediationReopened.v1",
-    "Execution.WorkflowRemediationTerminalFailed.v1",
+    "Execution.WorkflowInstanceFailed.v1",
     "Execution.WorkflowInstanceCompleted.v1",
     "State.ArtifactStored.v1",
     "State.SavestateCreated.v1",
@@ -102,7 +102,7 @@ inline constexpr std::array<std::string_view, 19> kWorkflowExecutionEventsV1{ {
     "Execution.WorkflowInvariantViolation.v1",
     "Execution.WorkflowRemediationRepairExecuted.v1",
     "Execution.WorkflowRemediationReopened.v1",
-    "Execution.WorkflowRemediationTerminalFailed.v1",
+    "Execution.WorkflowInstanceFailed.v1",
     "Execution.WorkflowInstanceCompleted.v1",
 } };
 

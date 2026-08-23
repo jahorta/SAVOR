@@ -2793,6 +2793,13 @@ bool ProgramExecutor::RequestCancellation(
     return true;
 }
 
+CancellationReason ProgramExecutor::cancellation_reason() const noexcept
+{
+    return impl_->explicit_cancellation != CancellationReason::None
+        ? impl_->explicit_cancellation
+        : impl_->cancellation.reason();
+}
+
 ProgramExecutorSnapshot ProgramExecutor::snapshot() const noexcept
 {
     return {

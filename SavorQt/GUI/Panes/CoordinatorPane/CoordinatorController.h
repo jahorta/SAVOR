@@ -1,14 +1,38 @@
 #pragma once
 
+#include <QtCore/QFutureWatcher>
 #include <QtCore/QObject>
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 
+#include <cstdint>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 
 #include "Execution/CoordinatorRuntime.h"
+
+enum class CoordinatorLifecycleState {
+    Stopped,
+    Starting,
+    Running,
+    Stopping,
+};
+
+enum class CoordinatorStartupDisposition {
+    Started,
+    Failed,
+    Canceled,
+};
+
+struct CoordinatorStartupResult {
+    std::uint64_t generation = 0;
+    CoordinatorStartupDisposition disposition =
+        CoordinatorStartupDisposition::Failed;
+    QString error;
+};
+
+struct CoordinatorStartupSharedState;
 
 class CoordinatorController : public QObject
 {
@@ -18,6 +42,9 @@ public:
     explicit CoordinatorController(QObject* parent = nullptr);
     ~CoordinatorController() override;
 
+    CoordinatorLifecycleState lifecycleState() const;
+    bool isStopped() const;
+    bool isTransitioning() const;
     bool isRunning() const;
     bool isPaused() const;
     int targetWorkers() const;
@@ -27,6 +54,7 @@ public:
     QString isoPath() const;
     QString dolphinBaseDir() const;
     QString validationMessage() const;
+    QString resultStagingCleanupError() const;
     const std::vector<WorkerSnapshot>& snapshot() const;
     std::vector<WorkerSnapshot> freshSnapshot() const;
     const std::vector<WorkerSnapshot>& visualSnapshot() const;
@@ -36,6 +64,7 @@ public:
     QStringList takeVisualLiveLogLineUpdates();
     QString visualReplayRuntimeStateText() const;
     bool visualReplayControlsEnabled() const;
+    void waitForShutdown();
 
 public slots:
     void startCoordinator();
@@ -73,6 +102,9 @@ private:
     void persistInt(const char* key, int value);
     void updateValidationMessage();
     void updateSnapshotCache();
+    void handleStartupFinished();
+    void handleStartupCleanupFinished();
+    void startStartupCleanup();
     savor::runner::parallel::savordb::WorkerCoordinatorConfig buildWorkerConfig() const;
     void stopCoordinatorServices();
     QString workerExePath() const;
@@ -86,6 +118,12 @@ private:
     std::unique_ptr<
         savor::runner::parallel::savordb::CoordinatorRuntime>
         coordinator_runtime_;
+    std::shared_ptr<CoordinatorStartupSharedState> startup_state_;
+    QFutureWatcher<CoordinatorStartupResult> startup_watcher_;
+    QFutureWatcher<void> startup_cleanup_watcher_;
+    CoordinatorLifecycleState lifecycle_state_ =
+        CoordinatorLifecycleState::Stopped;
+    std::uint64_t startup_generation_ = 0;
     std::vector<WorkerSnapshot> snapshotCache_;
     std::vector<WorkerSnapshot> visualSnapshotCache_;
     std::vector<
@@ -102,4 +140,5 @@ private:
     QString isoPath_;
     QString dolphinBaseDir_;
     QString validationMessage_;
+    QString resultStagingCleanupError_;
 };

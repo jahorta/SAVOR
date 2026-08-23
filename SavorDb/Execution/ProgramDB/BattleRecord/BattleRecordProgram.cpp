@@ -1276,6 +1276,9 @@ struct PublishedRecordingArtifacts
     std::int64_t checkpoint_savestate_id = 0;
     std::int64_t tree_id = 0;
     std::string timing_anchor_blob;
+    std::filesystem::path itinerary_staging_path;
+    std::string itinerary_staging_sha256;
+    std::uint64_t itinerary_staging_size = 0;
 };
 
 class ResultHandler final : public IProgramResultHandler
@@ -1355,9 +1358,7 @@ public:
                 terminal.terminal.message.empty()
                     ? "battle.record did not complete cleanly"
                     : terminal.terminal.message,
-                terminal.terminal.status == Status::Cancelled
-                    ? "CANCELED"
-                    : "FAILED");
+                "FAILED");
 
         phase::BattleRecordResultV1 result{};
         if (!definition->DecodeProgramResult(
@@ -1440,6 +1441,13 @@ public:
             }, &error))
             throw std::runtime_error(error);
         auto decision = Decision("SUCCEEDED");
+        decision.cleanup_worker_staging = true;
+        decision.staging_files.push_back({
+            .relative_path = published->itinerary_staging_path
+                .lexically_relative(root_).generic_string(),
+            .sha256 = published->itinerary_staging_sha256,
+            .size_bytes = published->itinerary_staging_size,
+        });
         decision.outputs.push_back(Output(row->battle_recording_id));
         decision.event_lines.push_back(
             "[battle-recorded] recording=" +
@@ -1457,41 +1465,7 @@ public:
         return decision;
     }
 
-    ProgramResultRecovery RecoverPersistedOutcome(
-        const ProgramResultRecoveryContext& context) const override
-    {
-        const auto row = analysis_
-            ? analysis_->GetBattleRecordingForExecJob(context.job_id)
-            : std::nullopt;
-        if (!row || !row->worker_terminal_sha256)
-            return {
-                .disposition =
-                    ProgramResultRecoveryDisposition::NoPersistedOutcome,
-                .diagnostic = "no Battle Recording result exists",
-            };
-        if (row->battle_recording_id != context.program_ref_id ||
-            *row->worker_terminal_sha256 != context.terminal_sha256)
-            return {
-                .disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                .diagnostic = "persisted Battle Recording result drifted",
-            };
-        if (row->status != "COMPLETED" &&
-            row->status != "REPLAY_MISMATCH" && row->status != "FAILED")
-            return {
-                .disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                .diagnostic = "persisted Battle Recording state is not terminal",
-            };
-        auto decision = row->status == "FAILED"
-            ? Decision("FAILED", row->error_code, row->error_text)
-            : SuccessfulDecision(*row);
-        return {
-            .disposition = ProgramResultRecoveryDisposition::Recovered,
-            .decision = std::move(decision),
-            .diagnostic = "recovered exact Battle Recording result",
-        };
-    }
-
-private:
+    private:
     ProgramResultDecision SuccessfulDecision(
         const BattleRecordingRecord& row) const
     {
@@ -1520,7 +1494,10 @@ private:
                     std::to_string(context.job_id),
             }, &error))
             throw std::runtime_error(error);
-        return Decision(std::move(job_state), std::move(code), std::move(text));
+        auto decision = Decision(
+            std::move(job_state), std::move(code), std::move(text));
+        decision.cleanup_worker_staging = true;
+        return decision;
     }
 
     std::optional<PublishedRecordingArtifacts> PublishRecordedArtifacts(
@@ -1798,6 +1775,10 @@ private:
             .tree_id = tree_id,
             .timing_anchor_blob = std::string(
                 reinterpret_cast<const char*>(anchor.data()), anchor.size()),
+            .itinerary_staging_path = published_itinerary,
+            .itinerary_staging_sha256 = itinerary_sha,
+            .itinerary_staging_size =
+                static_cast<std::uint64_t>(new_itinerary.size()),
         };
     }
 
@@ -2277,8 +2258,7 @@ public:
                 terminal.terminal.message.empty()
                     ? "battle.replay did not complete cleanly"
                     : terminal.terminal.message,
-                terminal.terminal.status == Status::Cancelled
-                    ? "CANCELED" : "FAILED");
+                "FAILED");
         replayphase::BattleReplayResultV1 result{};
         if (!definition->DecodeProgramResult(
                 terminal.terminal.result, result, &error))
@@ -2353,34 +2333,7 @@ public:
         return decision;
     }
 
-    ProgramResultRecovery RecoverPersistedOutcome(
-        const ProgramResultRecoveryContext& context) const override
-    {
-        const auto row = analysis_
-            ? analysis_->GetBattleReplayForExecJob(context.job_id)
-            : std::nullopt;
-        if (!row || !row->worker_terminal_sha256)
-            return {.disposition =
-                ProgramResultRecoveryDisposition::NoPersistedOutcome,
-                .diagnostic = "no Battle Replay result exists"};
-        if (row->battle_replay_id != context.program_ref_id ||
-            *row->worker_terminal_sha256 != context.terminal_sha256)
-            return {.disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                .diagnostic = "persisted Battle Replay result drifted"};
-        if (row->status != "MATCHED" && row->status != "REPLAY_MISMATCH" &&
-            row->status != "FAILED")
-            return {.disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                .diagnostic = "persisted Battle Replay state is not terminal"};
-        auto decision = row->status == "FAILED"
-            ? Decision("FAILED", row->error_code, row->error_text)
-            : Decision("SUCCEEDED");
-        if (row->status != "FAILED")
-            decision.outputs.push_back(ReplayOutput(row->battle_replay_id));
-        return {.disposition = ProgramResultRecoveryDisposition::Recovered,
-                .decision = std::move(decision)};
-    }
-
-private:
+    private:
     ProgramResultDecision PersistFailure(
         const BattleReplayRecord& row,
         const ProgramResultProcessingContext& context,
@@ -2466,6 +2419,7 @@ ProgramKindDescriptor BuildBattleRecordProgramDescriptor(
     descriptor.program_kind =
         static_cast<std::int32_t>(savor::PK_BattleRecord);
     descriptor.program_name = "Battle Recording";
+    descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity =
         phase::BattleRecordKindHandlerV1()->identity();
     descriptor.default_progress_library_ids =
@@ -2509,6 +2463,7 @@ ProgramKindDescriptor BuildBattleReplayProgramDescriptor(
     descriptor.program_kind =
         static_cast<std::int32_t>(savor::PK_BattleReplay);
     descriptor.program_name = "Battle Replay";
+    descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity =
         savor::runtime::battlereplay::BattleReplayKindHandlerV1()->identity();
     descriptor.default_progress_library_ids =

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runner/IPC/WrmsProtocol.h"
+
 #include "../IProgramRuntimePort.h"
 #include "../DerivedState/DerivedStateTypes.h"
 #include "../FullPhase/FullPhaseProgram.h"
@@ -46,7 +48,7 @@ struct WorkerWorksetLimits
 struct WorkerRuntimeContractV1
 {
     std::uint32_t contract_version = 1;
-    std::uint16_t wrms_protocol_version = 2;
+    std::uint16_t wrms_protocol_version = wrms::ProtocolVersion;
     std::uint32_t workset_wire_version = 4;
     std::uint32_t program_module_format_version = 1;
     std::uint32_t program_invocation_format_version = 1;
@@ -62,7 +64,8 @@ struct WorkerRuntimeContractV1
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
-        return contract_version == 1 && wrms_protocol_version == 2 &&
+        return contract_version == 1 &&
+            wrms_protocol_version == wrms::ProtocolVersion &&
             workset_wire_version == 4 && !supported_game_id.empty() &&
             !executable_identity.empty() && !address_map_revision.empty() &&
             !emulator_bridge_revision.empty() && !build_identity.empty() &&

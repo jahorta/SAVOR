@@ -127,6 +127,7 @@ struct ProgramInvocationTerminalEvent
     RuntimeError error;
     std::vector<program::ArtifactReferenceValue> workset_artifacts;
     std::vector<std::string> diagnostics;
+    CancellationReason cancellation_reason = CancellationReason::None;
 };
 
 // Actor-consumed execution draft. It contains the canonical ProgramResult
@@ -141,6 +142,7 @@ struct ProgramExecutionFinished
     WorksetEpoch workset_epoch;
     std::vector<std::uint8_t> output_payload;
     RuntimeError error;
+    CancellationReason cancellation_reason = CancellationReason::None;
 };
 
 struct ProgramExecutionTakeResult

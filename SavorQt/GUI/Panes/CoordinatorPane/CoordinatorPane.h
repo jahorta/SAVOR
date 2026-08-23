@@ -7,7 +7,9 @@
 #include "GUI/Refresh/RefreshCoordinator.h"
 
 class CoordinatorController;
+enum class CoordinatorLifecycleState;
 class QCheckBox;
+class QPoint;
 class QLabel;
 class QPushButton;
 class QSpinBox;
@@ -44,6 +46,7 @@ private slots:
     void handleTargetWorkersChanged(int targetWorkers);
     void handleVisualWorkersToggled(bool enabled);
     void showVisualWorkerDashboard();
+    void showWorkerContextMenu(const QPoint& position);
 
 private:
     void createWidgets();
@@ -51,8 +54,8 @@ private:
     QWidget* createControlsCard();
     QWidget* createTableCard();
     QWidget* createMetricCard(const QString& caption, QLabel** valueLabel, const QString& objectName = QString());
-    void setControlsEnabledForRunningState(bool running);
-    void syncActionButtonStates(bool running, bool valid);
+    void setControlsEnabledForLifecycleState(CoordinatorLifecycleState state);
+    void syncActionButtonStates(CoordinatorLifecycleState state, bool valid);
     void syncVisualReplayDialog();
     void ensureVisualWorkerDashboardSurfaces(int workerCount, bool allowShrink);
     void syncVisualWorkerDashboard();
@@ -79,4 +82,5 @@ private:
     VisualWorkerDashboardDialog* visualWorkerDashboard_ = nullptr;
     bool visualReplayDoneShown_ = false;
     QString lastToastSignature_;
+    QString lastCleanupToastSignature_;
 };

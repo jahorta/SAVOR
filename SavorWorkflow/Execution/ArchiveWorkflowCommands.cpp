@@ -81,30 +81,6 @@ ArchiveCommandSummary ArchiveWorkflowCommands::ArchivePreview(const ArchiveComma
     return summary;
 }
 
-ArchiveCommandSummary ArchiveWorkflowCommands::ArchiveExecute(const ArchiveCommandRequest& request) const {
-    ArchiveCommandSummary summary{};
-    if (archive_package_service_ == nullptr) {
-        summary.errors.push_back("archive package service is null");
-        return summary;
-    }
-
-    const auto result = archive_package_service_->ExecuteArchiveBatch(
-        request.older_than_utc,
-        request.now_utc,
-        request.max_candidates,
-        request.max_outbox_purge_rows,
-        request.outbox_policy,
-        request.source_purge_policy);
-
-    summary.success = result.success;
-    summary.candidate_count = result.candidates_considered;
-    summary.package_count = result.packages_written;
-    summary.purged_outbox_rows = result.outbox_rows_purged;
-    summary.purged_source_roots = result.source_job_sets_purged;
-    summary.errors = result.errors;
-    return summary;
-}
-
 WorkflowArchiveCommandSummary ArchiveWorkflowCommands::WorkflowArchivePreview(const WorkflowArchiveCommandRequest& request) const {
     WorkflowArchiveCommandSummary summary{};
     if (archive_package_service_ == nullptr) {
@@ -207,7 +183,16 @@ WorkflowArchiveCommandSummary ArchiveWorkflowCommands::WorkflowArchiveExecute(co
             savor::db::archive::ArchiveOperationPhase::PurgingSource,
             "Purging archived source rows");
         std::string purge_error;
-        summary.purge = archive_package_service_->PurgeWorkflowArchiveSource(
+        auto* sqlite_archive_service =
+            dynamic_cast<savor::db::archive::SqliteArchivePackageService*>(
+                archive_package_service_);
+        if (sqlite_archive_service == nullptr) {
+            summary.success = false;
+            summary.errors.push_back(
+                "workflow source deletion requires the internal SQLite archive service");
+            return summary;
+        }
+        summary.purge = sqlite_archive_service->PurgeWorkflowArchiveSource(
             request.selection,
             package.archive_package_id,
             &purge_error);

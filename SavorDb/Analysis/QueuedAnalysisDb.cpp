@@ -564,6 +564,21 @@ bool QueuedAnalysisDb::RecordBattleSingleTurnResult(
         error_out);
 }
 
+bool QueuedAnalysisDb::ReplaceFailedBattleSingleTurnResult(
+    const ReplaceFailedBattleSingleTurnResultCommand& command,
+    std::int64_t* result_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, result_id_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ReplaceFailedBattleSingleTurnResult(
+                    command, result_id_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
 std::optional<BattleSingleTurnResultSnapshot>
 QueuedAnalysisDb::GetBattleSingleTurnResultForExecJob(
     std::int64_t exec_job_id) const {

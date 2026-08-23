@@ -517,8 +517,10 @@ namespace savordb {
         ASSERT_TRUE(ExecSql(db, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
 VALUES(2501, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, ready_at_utc)
-VALUES(2502, 2501, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, input_ref_kind, input_ref_id, attempts, max_attempts, created_at_utc, ready_at_utc)
+VALUES(2502, 2501, 'Neutral', 'seedprobe.neutral', 'READY', 'seedprobe.input', 2503, 0, 2, unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(8801, 7, 'phase-contract-materialized', unixepoch()*1000);
 )SQL"));
 
         SqliteExecutionDb execution_db(db);
@@ -569,17 +571,25 @@ VALUES(2502, 2501, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*10
         ASSERT_TRUE(ExecSql(db, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
 VALUES(2701, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, ready_at_utc)
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, input_ref_kind, input_ref_id, attempts, max_attempts, created_at_utc, ready_at_utc)
 VALUES
-    (2702, 2701, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*1000, unixepoch()*1000),
-    (2703, 2701, 'Grid', 'seedprobe.grid', 'WAITING', 0, 2, unixepoch()*1000, NULL);
+    (2702, 2701, 'Neutral', 'seedprobe.neutral', 'READY', 'seedprobe.input', 2704, 0, 2, unixepoch()*1000, unixepoch()*1000),
+    (2703, 2701, 'Grid', 'seedprobe.grid', 'WAITING', 'seedprobe.context', 2705, 0, 2, unixepoch()*1000, NULL);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(9101, 7, 'phase-contract-failed-source', unixepoch()*1000);
 )SQL"));
 
         SqliteExecutionDb execution_db(db);
         auto* commands = execution_db.WorkflowCommandService();
         ASSERT_NE(commands, nullptr);
         ASSERT_TRUE(commands->MarkStepMaterialized({ .workflow_step_id = 2702, .job_set_id = 9101, .requested_by = "SavorTests" }, &err)) << err;
-        ASSERT_TRUE(commands->MarkStepTerminal({ .workflow_step_id = 2702, .terminal_state = "FAILED", .requested_by = "SavorTests" }, &err)) << err;
+        ASSERT_TRUE(commands->FailWorkflowInstance({
+            .workflow_instance_id = 2701,
+            .workflow_step_id = 2702,
+            .failure_code = "TEST_FAILURE",
+            .failure_message = "test failure",
+            .requested_by = "SavorTests",
+        }, &err)) << err;
 
         EXPECT_FALSE(commands->MarkStepMaterialized({ .workflow_step_id = 2703, .job_set_id = 9102, .requested_by = "SavorTests" }, &err));
 
@@ -615,10 +625,12 @@ INSERT INTO exec_workflow_instance(
     workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc
 )
 VALUES(2601, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, input_ref_kind, created_at_utc, ready_at_utc)
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, input_ref_kind, input_ref_id, created_at_utc, ready_at_utc)
 VALUES
-    (2602, 2601, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, 'sp_probe_run.probe_run_id', unixepoch()*1000, unixepoch()*1000),
-    (2603, 2601, 'Grid', 'seedprobe.grid', 'WAITING', 0, 2, 'seedprobe.neutral.seed_context', unixepoch()*1000, NULL);
+    (2602, 2601, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, 'sp_probe_run.probe_run_id', 2605, unixepoch()*1000, unixepoch()*1000),
+    (2603, 2601, 'Grid', 'seedprobe.grid', 'WAITING', 0, 2, 'seedprobe.neutral.seed_context', 2606, unixepoch()*1000, NULL);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(9001, 7, 'phase-contract-two-step', unixepoch()*1000);
 INSERT INTO exec_workflow_edge(workflow_edge_id, workflow_instance_id, from_step_id, to_step_id, created_at_utc)
 VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
 )SQL"));

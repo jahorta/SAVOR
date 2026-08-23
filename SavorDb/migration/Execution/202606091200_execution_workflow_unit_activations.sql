@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS exec_workflow_unit_activation (
     graph_node_key TEXT NOT NULL,
     unit_kind TEXT NOT NULL,
     display_name TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('WAITING','READY','RUNNING','COMPLETED','FAILED','SKIPPED','CANCELED')),
+    state TEXT NOT NULL CHECK(state IN ('WAITING','READY','RUNNING','COMPLETED','FAILED','INTERRUPTED','SKIPPED','CANCELED')),
     activation_params_json TEXT NOT NULL DEFAULT '',
     authored_ref_kind TEXT NULL,
     authored_ref_id INTEGER NULL,

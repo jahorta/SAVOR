@@ -20,6 +20,7 @@
 #include "Runner/IPC/DurableWorkerTerminalEnvelope.h"
 #include "Runner/Runtime/RuntimeTypes.h"
 #include "Runner/Runtime/Worksets/WorksetTypes.h"
+#include "Boot/Boot.h"
 #include "../Worker/ProcessWorker.h"
 #include "../Worker/WorkerStatusRegistry.h"
 #include "FleetStartupSnapshot.h"
@@ -51,13 +52,17 @@ struct WorkerCoordinatorConfig {
             std::size_t,
             const WorkerCoordinatorConfig&,
             const std::shared_ptr<savor::ProcessWorker>&)>;
+    using SessionFilesystemPreparation =
+        std::function<simboot::SessionFilesystemPreparationResult(
+            const simboot::SessionFilesystemPreparationRequest&)>;
 
     std::size_t desired_workers = 0;
     std::uint32_t controller_sleep_ms = 5;
     std::uint32_t worker_start_timeout_ms = 20000;
     std::uint32_t worker_start_retry_backoff_ms = 5000;
     std::uint32_t max_worker_start_attempts = 3;
-    std::uint32_t max_concurrent_worker_starts = 2;
+    std::uint32_t max_concurrent_worker_starts_when_paused = 2;
+    bool initially_paused = false;
     std::uint32_t liveness_probe_interval_ms = 5000;
     std::uint32_t liveness_probe_timeout_ms = 2000;
     std::uint32_t liveness_probe_failure_threshold = 2;
@@ -76,6 +81,7 @@ struct WorkerCoordinatorConfig {
 
     RuntimeSlotPreparer runtime_slot_preparer;
     WorkerRuntimePreflight worker_runtime_preflight;
+    SessionFilesystemPreparation session_filesystem_preparer;
 
 };
 
@@ -329,15 +335,20 @@ private:
         mutable std::mutex submission_mutex;
         std::size_t id = 0;
         std::uint64_t process_generation = 0;
+        std::uint64_t utc_launch_ticks = 0;
+        std::string log_path;
         std::shared_ptr<savor::ProcessWorker> worker;
         bool ready = false;
-        bool startup_in_progress = false;
+        WorkerStartupPhase startup_phase =
+            WorkerStartupPhase::PendingFilesystem;
         std::thread startup_thread;
         bool start_retry_exhausted = false;
         std::uint32_t start_attempts = 0;
         std::uint32_t observed_start_attempts = 0;
         std::chrono::steady_clock::time_point next_start_after{};
         std::string last_start_error;
+        std::string preparation_id;
+        std::filesystem::path prepared_user_directory;
         std::chrono::steady_clock::time_point
             next_liveness_probe{};
         std::uint32_t consecutive_liveness_failures = 0;
@@ -382,6 +393,17 @@ private:
         std::size_t worker_id,
         std::filesystem::path* executable_out,
         std::string* error_out) const;
+    simboot::SessionFilesystemPreparationResult PrepareSessionFilesystem(
+        const WorkerSlotPtr& slot,
+        std::uint32_t attempt) const;
+    bool StartSessionFilesystemPreparation(const WorkerSlotPtr& slot);
+    bool StartSessionFilesystemPreparationAsync(const WorkerSlotPtr& slot);
+    bool BeginSessionFilesystemPreparation(
+        const WorkerSlotPtr& slot,
+        std::uint32_t* attempt_out);
+    void CompleteSessionFilesystemPreparation(
+        const WorkerSlotPtr& slot,
+        std::uint32_t attempt);
     bool StartWorkerSlot(const WorkerSlotPtr& slot);
     bool StartWorkerSlotAsync(const WorkerSlotPtr& slot);
     bool BeginWorkerSlotStart(

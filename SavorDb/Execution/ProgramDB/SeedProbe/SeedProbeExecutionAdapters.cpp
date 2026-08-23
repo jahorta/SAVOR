@@ -270,7 +270,7 @@ bool IsExecutionTerminalState(std::string_view state) {
         || state == "SUCCEEDED_WINNER"
         || state == "SUPERSEDED"
         || state == "SUCCEEDED_DUPLICATE"
-        || state == "FAILED" || state == "CANCELED";
+        || state == "FAILED" || state == "INTERRUPTED" || state == "CANCELED";
 }
 
 savor::db::SeedProbeEndpoint AnalysisEndpoint(
@@ -651,9 +651,9 @@ public:
             == savor::wrms::
                 InvocationTerminalStatus::Cancelled) {
             return FinalDecision(
-                "CANCELED",
-                "SEEDPROBE_EXECUTION_CANCELED",
-                terminal.terminal.message);
+                "FAILED",
+                "UNCLASSIFIED_CANCELLED_TERMINAL_REACHED_DESCRIPTOR",
+                "cancelled worker terminal bypassed ProgramResultProcessor");
         }
         if (IsRetryableTerminal(status)) {
             return RetryDecision(
@@ -805,76 +805,7 @@ public:
             context, *run, *spec, persisted, false, false);
     }
 
-    ProgramResultRecovery RecoverPersistedOutcome(
-        const ProgramResultRecoveryContext& context) const override {
-        if (execution_db_ == nullptr || analysis_db_ == nullptr
-            || context.job_id <= 0
-            || context.program_kind != static_cast<std::int32_t>(savor::PK_SeedProbe)
-            || context.program_version != savor::runtime::seedprobe::ProgramVersion
-            || context.program_ref_kind != kProgramRefKind
-            || context.program_ref_id <= 0
-            || context.terminal_sha256.empty()) {
-            return {
-                .disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                .diagnostic = "SeedProbe recovery identity is invalid",
-            };
-        }
-        const auto persisted =
-            analysis_db_->GetSeedProbeResultForSourceJob(context.job_id);
-        if (!persisted.has_value()) {
-            return {
-                .disposition = ProgramResultRecoveryDisposition::NoPersistedOutcome,
-            };
-        }
-        const auto spec = DecodeSeedProbeJobSpec(context.input_ini);
-        const auto run = analysis_db_->GetSeedProbeRun(context.program_ref_id);
-        if (!spec.has_value() || !run.has_value()
-            || persisted->probe_run_id != context.program_ref_id
-            || persisted->input_frame_id != spec->input_frame_id
-            || persisted->source_job_id != context.job_id
-            || persisted->terminal_sha256 != context.terminal_sha256
-            || persisted->confirmation_of_probe_result_id
-                != spec->confirmation_of_probe_result_id) {
-            return {
-                .disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                .diagnostic =
-                    "SeedProbe persisted observation conflicts with Execution provenance",
-            };
-        }
-        ProgramResultProcessingContext processing{
-            .job_id = context.job_id,
-            .job_set_id = context.job_set_id,
-            .program_kind = context.program_kind,
-            .program_version = context.program_version,
-            .program_ref_kind = context.program_ref_kind,
-            .program_ref_id = context.program_ref_id,
-            .fingerprint = context.fingerprint,
-            .input_ini = context.input_ini,
-            .terminal = {
-                .job_id = context.job_id,
-                .sha256 = context.terminal_sha256,
-            },
-        };
-        const bool caused_invalidation =
-            run->conflicting_endpoint_source_job_id == context.job_id;
-        const bool already_invalidated = run->invalidated_at_utc.has_value()
-            && !caused_invalidation;
-        try {
-            return {
-                .disposition = ProgramResultRecoveryDisposition::Recovered,
-                .decision = ProcessPersistedObservation(
-                    processing, *run, *spec, *persisted,
-                    caused_invalidation, already_invalidated),
-            };
-        } catch (const std::exception& exception) {
-            return {
-                .disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                .diagnostic = exception.what(),
-            };
-        }
-    }
-
-private:
+    private:
     ProgramResultDecision ProcessPersistedObservation(
         const ProgramResultProcessingContext& context,
         const savor::db::SeedProbeRunSnapshot& run,
@@ -902,6 +833,7 @@ private:
                     .reason_code = "SEEDPROBE_ENDPOINT_MISMATCH",
                     .reason_text =
                         "SeedProbe run was invalidated by a conflicting factual endpoint",
+                    .terminal_disposition = "AUTOMATIC_SUPERSESSION",
                 });
             }
             decision.event_lines.push_back(
@@ -1113,6 +1045,7 @@ private:
                         + " was observed by job "
                         + std::to_string(
                             context.job_id),
+                    .terminal_disposition = "AUTOMATIC_SUPERSESSION",
                 });
         }
         return decision;

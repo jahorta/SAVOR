@@ -381,6 +381,7 @@ bool isFinishedState(const QString& state)
 {
     return state == QStringLiteral("SUCCEEDED")
         || state == QStringLiteral("FAILED")
+        || state == QStringLiteral("INTERRUPTED")
         || state == QStringLiteral("CANCELED")
         || state == QStringLiteral("SUPERSEDED")
         || state == QStringLiteral("COMPLETED")

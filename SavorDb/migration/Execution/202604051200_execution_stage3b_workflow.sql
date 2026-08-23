@@ -5,7 +5,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS exec_workflow_instance (
     workflow_instance_id INTEGER PRIMARY KEY,
     workflow_kind TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('PENDING','RUNNING','COMPLETED','FAILED','CANCELED')),
+    state TEXT NOT NULL CHECK(state IN ('PENDING','RUNNING','CANCELLING','COMPLETED','FAILED','INTERRUPTED','CANCELED')),
     root_scope_kind TEXT NOT NULL CHECK(root_scope_kind IN ('job_set','run','manual')),
     root_scope_id INTEGER NULL,
     created_by TEXT NULL,
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS exec_workflow_step (
     workflow_instance_id INTEGER NOT NULL,
     step_key TEXT NOT NULL,
     step_kind TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('WAITING','READY','MATERIALIZED','RUNNING','COMPLETED','FAILED','SKIPPED')),
+    state TEXT NOT NULL CHECK(state IN ('WAITING','READY','MATERIALIZED','RUNNING','COMPLETED','FAILED','INTERRUPTED','SKIPPED','CANCELED')),
     guard_kind TEXT NULL,
     guard_value TEXT NULL,
     priority INTEGER NOT NULL DEFAULT 0,

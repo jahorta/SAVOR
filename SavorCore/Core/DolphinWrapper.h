@@ -123,15 +123,10 @@ namespace savor {
         void SetVisualMode(bool visual) { m_visual_mode = visual; }
         void SetRenderWidgetHandle(void* handle) { m_external_render_widget_handle = handle; }
         bool IsVisualMode() const { return m_visual_mode; }
-        bool SyncFromDolphinQtBase(bool force = false, std::string* error_out = nullptr);
-        bool EnsureReadyForSavestate(std::string* error_out = nullptr) {
-            return SyncFromDolphinQtBase(/*force=*/false, error_out);
-        }
 
         void ConfigurePortsStandardPadP1();
         bool QueryPadStatus(int port, GCPadStatus* out) const;
 
-        bool ApplyConfig(const savor::SimConfig& cfg, std::string* error_out = nullptr);
         savor::SimConfig ExportConfig() const {
             return savor::SimConfig{ m_user_dir, m_qt_base_dir };
         }
@@ -199,7 +194,7 @@ namespace savor {
 
         std::filesystem::path m_user_dir;
         std::filesystem::path m_qt_base_dir;
-        bool m_imported_from_qt = false;
+        bool m_user_directory_initialized = false;
         bool m_visual_mode = false;
         void* m_external_render_widget_handle = nullptr;
         void sterilizeConfigs();

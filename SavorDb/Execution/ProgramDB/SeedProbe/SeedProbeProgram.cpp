@@ -41,8 +41,6 @@ constexpr std::int32_t kJobSpecVersion = 1;
 constexpr std::string_view kRunRefKind = "sp_probe_run";
 constexpr std::string_view kRootPurpose = "SEEDPROBE_SURVEY";
 constexpr std::string_view kSearchPurpose = "SEEDPROBE_SEARCH";
-constexpr std::string_view kRecoverySearchPurpose =
-    "SEEDPROBE_SEARCH_RECOVERY";
 constexpr std::string_view kConfirmPurpose = "SEEDPROBE_CONFIRM";
 constexpr std::string_view kCreatedBy = "seedprobe_program_kind";
 
@@ -190,7 +188,7 @@ bool IsBusinessFinal(std::string_view state) {
         || state == "SUCCEEDED_WINNER"
         || state == "SUPERSEDED"
         || state == "SUCCEEDED_DUPLICATE"
-        || state == "FAILED" || state == "CANCELED";
+        || state == "FAILED" || state == "INTERRUPTED" || state == "CANCELED";
 }
 
 std::int32_t SignedDelta(
@@ -1698,171 +1696,6 @@ private:
                     candidate.result.input_frame_id);
             }
         }
-        std::set<std::int32_t> unresolved_deltas;
-        for (const auto& [delta, rejected] :
-             rejected_by_delta) {
-            (void)rejected;
-            if (delta != 0
-                && !confirmed_deltas.contains(delta)) {
-                unresolved_deltas.insert(delta);
-            }
-        }
-
-        struct RecoverySpec {
-            std::int64_t source_job_set_id = 0;
-            SeedProbeJobSpec spec;
-        };
-        std::vector<RecoverySpec> recovery_candidates;
-        std::set<std::pair<std::int32_t, std::int64_t>>
-            recovery_frames;
-        std::set<std::pair<std::int32_t, std::int64_t>>
-            observed_search_frames;
-        for (const auto& candidate : *candidates) {
-            if (candidate.spec.stage
-                    == SeedProbeJobStage::Search
-                && candidate.spec.desired_delta.has_value()) {
-                observed_search_frames.emplace(
-                    *candidate.spec.desired_delta,
-                    candidate.result.input_frame_id);
-            }
-        }
-        for (const auto& child :
-             execution_db_->GetChildJobSetProgress(
-                 context.root_job_set_id)) {
-            if (child.purpose != kSearchPurpose
-                && child.purpose
-                    != kRecoverySearchPurpose) {
-                continue;
-            }
-            for (const auto& row :
-                 execution_db_->ListJobsInJobSet(
-                     child.job_set_id)) {
-                if (row.state != "CANCELED"
-                    || analysis_db_
-                        ->GetSeedProbeResultForSourceJob(
-                            row.job_id)
-                        .has_value()) {
-                    continue;
-                }
-                const auto spec =
-                    DecodeSeedProbeJobSpec(row.input_ini);
-                if (!spec.has_value()
-                    || spec->stage
-                        != SeedProbeJobStage::Search
-                    || !spec->desired_delta.has_value()
-                    || !unresolved_deltas.contains(
-                        *spec->desired_delta)) {
-                    continue;
-                }
-                if (rejected_frames_by_delta[
-                        *spec->desired_delta]
-                        .contains(spec->input_frame_id)
-                    || observed_search_frames.contains(
-                        {
-                            *spec->desired_delta,
-                            spec->input_frame_id,
-                        })
-                    || !recovery_frames.emplace(
-                            *spec->desired_delta,
-                            spec->input_frame_id)
-                            .second) {
-                    continue;
-                }
-                recovery_candidates.push_back(
-                    {
-                        .source_job_set_id =
-                            child.job_set_id,
-                        .spec = *spec,
-                    });
-            }
-        }
-        std::sort(
-            recovery_candidates.begin(),
-            recovery_candidates.end(),
-            [](const auto& lhs, const auto& rhs) {
-                if (lhs.spec.desired_delta
-                    != rhs.spec.desired_delta) {
-                    return lhs.spec.desired_delta
-                        < rhs.spec.desired_delta;
-                }
-                if (lhs.source_job_set_id
-                    != rhs.source_job_set_id) {
-                    return lhs.source_job_set_id
-                        < rhs.source_job_set_id;
-                }
-                if (lhs.spec.sample_ordinal
-                    != rhs.spec.sample_ordinal) {
-                    return lhs.spec.sample_ordinal
-                        < rhs.spec.sample_ordinal;
-                }
-                return lhs.spec.input_frame_id
-                    < rhs.spec.input_frame_id;
-            });
-        std::vector<SeedProbeJobSpec> recovery_specs;
-        recovery_specs.reserve(recovery_candidates.size());
-        for (std::size_t i = 0;
-             i < recovery_candidates.size();
-             ++i) {
-            auto spec = recovery_candidates[i].spec;
-            spec.sample_ordinal =
-                static_cast<std::int32_t>(i);
-            recovery_specs.push_back(std::move(spec));
-        }
-
-        if (!recovery_specs.empty()) {
-            std::vector<std::int64_t> rejected_ids;
-            for (const auto& [delta, rejected] :
-                 rejected_by_delta) {
-                if (!unresolved_deltas.contains(delta)) {
-                    continue;
-                }
-                for (const auto& row : rejected) {
-                    rejected_ids.push_back(
-                        row.probe_result_id);
-                }
-            }
-            std::sort(
-                rejected_ids.begin(),
-                rejected_ids.end());
-            const auto joined = JoinIds(rejected_ids);
-            const auto key =
-                "seedprobe.run."
-                + std::to_string(run.probe_run_id)
-                + ".search.recovery."
-                + hash::sha256(
-                    joined.data(),
-                    joined.size());
-            if (!PublishJobSet(
-                    context.materialization,
-                    key,
-                    context.root_job_set_id,
-                    context.materialization.step.workflow_step_id,
-                    context.root_job_set_id,
-                    kRecoverySearchPurpose,
-                    "stage=SEARCH_RECOVERY;rejected=" + joined,
-                    run.probe_run_id,
-                    run.entry_savestate_id,
-                    context.materialization.step.step_priority,
-                    recovery_specs,
-                    error_out)
-                    .has_value()
-                || !SetRunStatus(
-                    run.probe_run_id,
-                    SeedProbeRunStatus::Confirm,
-                    SeedProbeRunStatus::Search,
-                    error_out)) {
-                return false;
-            }
-            result_out->disposition =
-                ProgramJobContinuationDisposition::AddedWork;
-            result_out->event_lines.push_back(
-                "[seedprobe-recovery] run="
-                + std::to_string(run.probe_run_id)
-                + " action=republish_canceled jobs="
-                + std::to_string(recovery_specs.size()));
-            return true;
-        }
-
         return CompleteRun(
             context,
             run,
@@ -2068,6 +1901,7 @@ ProgramKindDescriptor BuildSeedProbeProgramDescriptor(
     descriptor.program_kind =
         static_cast<std::int32_t>(savor::PK_SeedProbe);
     descriptor.program_name = "SeedProbe";
+    descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity =
         savor::runtime::seedprobe::
             SeedProbeFullPhaseDefinitionV2()->identity();

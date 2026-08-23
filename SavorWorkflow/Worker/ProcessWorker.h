@@ -88,7 +88,9 @@ struct ProcessWorkerStopSnapshot {
 struct ProcessLaunchOptions {
     std::size_t worker_id{ 0 };
     std::string exe_path;
-    std::string log_directory;
+    std::string log_file_path;
+    std::uint64_t process_generation{ 0 };
+    std::uint64_t utc_launch_ticks{ 0 };
     std::uint32_t hello_timeout_ms{ 10000 };
 };
 
@@ -99,6 +101,8 @@ struct ProcessOpenSessionOptions {
     runtime::WorkerMode worker_mode{ runtime::WorkerMode::Headless };
     std::uint64_t render_widget_handle{ 0 };
     std::string runtime_artifact_root;
+    std::string session_filesystem_preparation_id;
+    std::uint64_t process_generation{ 0 };
 };
 
 struct ProcessCommandCompletion {

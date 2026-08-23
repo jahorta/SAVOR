@@ -11,6 +11,7 @@
 
 #include "Execution/JobExecutionCoordinator.h"
 #include "Execution/ProgramDB/ProgramResultProcessor.h"
+#include "Execution/ProgramDB/ResultStagingCleanupService.h"
 #include "Execution/ProgramDB/WorkerResultBlobCleanupService.h"
 #include "Execution/QueuedExecutionDb.h"
 #include "Execution/WorkerCoordinator.h"
@@ -54,6 +55,8 @@ struct CoordinatorRuntimeTelemetry {
     WorkerCoordinatorTelemetry worker;
     savor::db::execution::programdb::ProgramResultProcessorTelemetry results;
     savor::db::execution::programdb::WorkerResultBlobCleanupTelemetry cleanup;
+    savor::db::execution::programdb::ResultStagingCleanupTelemetry
+        result_staging_cleanup;
     bool worker_admission_paused = false;
     std::vector<JobExecutionWorkerLaneSnapshot> lanes;
     std::optional<savor::db::execution::ExecutionQueueTelemetrySnapshot>
@@ -106,11 +109,15 @@ class CoordinatorRuntime final {
         blob_cleanup_;
     std::unique_ptr<savor::db::execution::programdb::ProgramResultProcessor>
         result_processor_;
+    std::unique_ptr<
+        savor::db::execution::programdb::ResultStagingCleanupService>
+        result_staging_cleanup_;
     std::unique_ptr<WorkerCoordinator> worker_coordinator_;
     std::unique_ptr<JobExecutionCoordinator> job_execution_coordinator_;
     bool workflow_started_ = false;
     bool cleanup_started_ = false;
     bool result_processor_started_ = false;
+    bool result_staging_cleanup_started_ = false;
     bool worker_started_ = false;
     bool job_execution_started_ = false;
     bool started_ = false;

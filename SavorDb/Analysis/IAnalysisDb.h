@@ -1131,6 +1131,13 @@ struct BattleSingleTurnResultSnapshot : RecordBattleSingleTurnResultCommand {
     std::int64_t battle_single_turn_result_id = 0;
 };
 
+struct ReplaceFailedBattleSingleTurnResultCommand {
+    std::string expected_worker_terminal_sha256;
+    std::string replacement_worker_terminal_sha256;
+    RecordBattleSingleTurnResultCommand result;
+    types::UtcTimePoint superseded_at_utc{};
+};
+
 struct BindBattlePredicateExecutionPackageCommand {
     std::optional<std::int64_t> wave_id;
     std::optional<std::int64_t> predicate_group_revision_id;
@@ -1461,6 +1468,10 @@ struct IAnalysisDb {
         std::string* error_out = nullptr) = 0;
     virtual bool RecordBattleSingleTurnResult(
         const RecordBattleSingleTurnResultCommand& command,
+        std::int64_t* result_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual bool ReplaceFailedBattleSingleTurnResult(
+        const ReplaceFailedBattleSingleTurnResultCommand& command,
         std::int64_t* result_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
     virtual std::optional<BattleSingleTurnResultSnapshot>

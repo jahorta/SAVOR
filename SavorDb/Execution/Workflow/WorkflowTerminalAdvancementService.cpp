@@ -172,22 +172,23 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         return false;
     }
 
-    const auto terminal_state = gate.terminal_fail ? "FAILED" : "COMPLETED";
-    if (!command_service_->MarkStepTerminal(
-        {
-            .workflow_step_id = snapshot.workflow_step_id,
-            .terminal_state = terminal_state,
-            .output_ref_kind = context.output_ref_kind,
-            .output_ref_id = context.output_ref_id,
-            .requested_by = "workflow_terminal_advancement",
-        },
-        &command_error)) {
-        if (error_out) *error_out = command_error;
-        return false;
+    if (!gate.terminal_fail) {
+        if (!command_service_->MarkStepTerminal(
+            {
+                .workflow_step_id = snapshot.workflow_step_id,
+                .terminal_state = "COMPLETED",
+                .output_ref_kind = context.output_ref_kind,
+                .output_ref_id = context.output_ref_id,
+                .requested_by = "workflow_terminal_advancement",
+            },
+            &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+        result.step_marked_terminal = true;
     }
-    result.step_marked_terminal = true;
 
-    if (snapshot.discovered_total == 0
+    if (!gate.terminal_fail && snapshot.discovered_total == 0
         && !command_service_->AppendLifecycleEvent(
             {
                 .workflow_instance_id = snapshot.workflow_instance_id,
@@ -204,23 +205,10 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
     if (gate.terminal_fail) {
         const auto failure_message = gate.blocked_reason.value_or(
             "workflow step completed with failed jobs");
-        if (!command_service_->AppendLifecycleEvent(
+        if (!command_service_->FailWorkflowInstance(
             {
                 .workflow_instance_id = snapshot.workflow_instance_id,
                 .workflow_step_id = snapshot.workflow_step_id,
-                .event_kind = "Execution.WorkflowTransitionEvaluated.v1",
-                .message = std::optional<std::string>("transition_terminal_failed"),
-                .requested_by = "workflow_terminal_advancement",
-            },
-            &command_error)) {
-            if (error_out) *error_out = command_error;
-            return false;
-        }
-        result.transition_evaluated = true;
-
-        if (!command_service_->TerminalFailWorkflowInstance(
-            {
-                .workflow_instance_id = snapshot.workflow_instance_id,
                 .failure_code = transition.has_value()
                         && transition->terminal_failure
                     ? "TRANSITION_REJECTED"
@@ -232,14 +220,29 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
             if (error_out) *error_out = command_error;
             return false;
         }
+        result.step_marked_terminal = true;
         result.workflow_failed = true;
 
         if (!command_service_->AppendLifecycleEvent(
             {
                 .workflow_instance_id = snapshot.workflow_instance_id,
                 .workflow_step_id = snapshot.workflow_step_id,
+                .event_kind = "Execution.WorkflowTransitionEvaluated.v1",
+                .message = std::optional<std::string>("transition_failed"),
+                .requested_by = "workflow_terminal_advancement",
+            },
+            &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+        result.transition_evaluated = true;
+
+        if (!command_service_->AppendLifecycleEvent(
+            {
+                .workflow_instance_id = snapshot.workflow_instance_id,
+                .workflow_step_id = snapshot.workflow_step_id,
                 .event_kind = "Execution.WorkflowTransitionBlocked.v1",
-                .message = std::optional<std::string>("transition_terminal_failed"),
+                .message = std::optional<std::string>("transition_failed"),
                 .requested_by = "workflow_terminal_advancement",
             },
             &command_error)) {

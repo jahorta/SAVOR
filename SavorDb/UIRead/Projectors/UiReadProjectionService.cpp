@@ -627,7 +627,8 @@ bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow
     constexpr const char* kInst =
         "SELECT i.workflow_instance_id,i.workflow_kind,i.state,"
         "CASE "
-        "WHEN i.state IN ('COMPLETED','FAILED','CANCELED') THEN i.state "
+        "WHEN i.state IN ('COMPLETED','FAILED','INTERRUPTED','CANCELED') THEN i.state "
+        "WHEN i.state='CANCELLING' THEN 'CANCELLING' "
         "WHEN EXISTS(SELECT 1 FROM exec_workflow_step s WHERE s.workflow_instance_id=i.workflow_instance_id AND s.state IN ('MATERIALIZED','RUNNING')) THEN 'RUNNING' "
         "WHEN EXISTS(SELECT 1 FROM exec_workflow_step s JOIN exec_job j ON j.job_set_id=s.job_set_id WHERE s.workflow_instance_id=i.workflow_instance_id AND j.state IN ('PENDING_MATERIALIZATION','QUEUED','CLAIMED','RUNNING','EXECUTION_FINISHED')) THEN 'RUNNING' "
         "WHEN EXISTS(SELECT 1 FROM exec_workflow_step s WHERE s.workflow_instance_id=i.workflow_instance_id AND s.state='READY') THEN 'QUEUED' "

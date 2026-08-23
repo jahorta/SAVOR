@@ -24,6 +24,10 @@ public:
     bool switchRoot(const std::filesystem::path& root, std::string* error_out = nullptr);
     bool resetRoot(std::string* error_out = nullptr);
     bool relocateRoot(const std::filesystem::path& root, bool cleanup_source, std::string* error_out = nullptr);
+    [[nodiscard]] std::filesystem::path resultStagingRoot() const;
+    bool resetResultStaging(
+        std::string* summary_out = nullptr,
+        std::string* error_out = nullptr);
 
     savor::db::core::DBService* service();
     savor::db::IUiReadDb* uiReadDb();

@@ -292,14 +292,13 @@ QString workflowDetailText(const savor::db::WorkflowGraphSnapshot& graph)
 
 } // namespace
 
-SetupTab::SetupTab(CoordinatorController* coordinatorController, Actions actions, QWidget* parent)
+SetupTab::SetupTab(CoordinatorController* coordinatorController, QWidget* parent)
     : WorkspacePageShell(
         QStringLiteral("setup"),
         QStringLiteral("Setup"),
         QStringLiteral("Create workflow definitions and instantiate launch-ready workflow groups."),
         parent)
     , coordinatorController_(coordinatorController)
-    , actions_(std::move(actions))
 {
     build();
 }
@@ -326,21 +325,13 @@ void SetupTab::build()
 
     auto* isoSetupButton = createSetupWarningButton(QStringLiteral("Set ISO"), statusStrip);
     QObject::connect(isoSetupButton, &QPushButton::clicked, statusStrip, [this]() {
-        if (actions_.openIsoSettings) {
-            actions_.openIsoSettings();
-        } else if (actions_.openSettings) {
-            actions_.openSettings();
-        }
+		emit openIsoSettingsRequested();
     });
     statusLayout->addWidget(isoSetupButton);
 
     auto* dolphinSetupButton = createSetupWarningButton(QStringLiteral("Set Dolphin base"), statusStrip);
     QObject::connect(dolphinSetupButton, &QPushButton::clicked, statusStrip, [this]() {
-        if (actions_.openDolphinSettings) {
-            actions_.openDolphinSettings();
-        } else if (actions_.openSettings) {
-            actions_.openSettings();
-        }
+		emit openDolphinSettingsRequested();
     });
     statusLayout->addWidget(dolphinSetupButton);
 
@@ -364,9 +355,7 @@ void SetupTab::build()
         auto* fixButton = new QPushButton(QStringLiteral("Fix storage"), statusStrip);
         fixButton->setObjectName("jobsPrimaryButton");
         QObject::connect(fixButton, &QPushButton::clicked, statusStrip, [this]() {
-            if (actions_.openSettings) {
-                actions_.openSettings();
-            }
+            emit openSettingsRequested();
         });
         statusLayout->addWidget(fixButton);
     }
@@ -394,9 +383,7 @@ void SetupTab::build()
     createButton->setIconSize(QSize(26, 26));
     createButton->setToolTip(QStringLiteral("Create workflow graph"));
     QObject::connect(createButton, &QToolButton::clicked, createWorkflowPanel, [this]() {
-        if (actions_.openGraphEditor) {
-            actions_.openGraphEditor();
-        }
+        emit openGraphEditorRequested();
     });
     createActions->addWidget(createButton);
     auto* showHiddenWorkflowsCheck = new QCheckBox(QStringLiteral("Show hidden"), createWorkflowPanel);
@@ -505,16 +492,14 @@ void SetupTab::build()
             workflowDetailText(graph),
             QVector<std::pair<QString, std::function<void()>>>{
                 { QStringLiteral("Edit"), [this, graph]() {
-                    if (actions_.openGraphEditorSnapshot) {
-                        actions_.openGraphEditorSnapshot(graph, false);
-                    }
+                    emit openGraphEditorSnapshotRequested(graph, false);
                 } },
                 { QStringLiteral("Duplicate"), [this, graph]() {
-                    if (actions_.openGraphEditorSnapshot) {
-                        actions_.openGraphEditorSnapshot(graph, true);
-                    }
+                    emit openGraphEditorSnapshotRequested(graph, true);
                 } },
-                { QStringLiteral("Open authoring library"), actions_.openAuthoring },
+                { QStringLiteral("Open authoring library"),[this]() {
+                    emit openAuthoringRequested(); 
+                } },
             },
             savorqt::gui::ContextDrawerMode::Expanded);
     });
@@ -537,14 +522,10 @@ void SetupTab::build()
         const auto graph = (*workflowGraphs)[static_cast<std::size_t>(graphIndex)];
         QMenu menu(workflowTable);
         menu.addAction(QStringLiteral("Edit"), workflowTable, [this, graph]() {
-            if (actions_.openGraphEditorSnapshot) {
-                actions_.openGraphEditorSnapshot(graph, false);
-            }
+            emit openGraphEditorSnapshotRequested(graph, false);
         });
         menu.addAction(QStringLiteral("Duplicate"), workflowTable, [this, graph]() {
-            if (actions_.openGraphEditorSnapshot) {
-                actions_.openGraphEditorSnapshot(graph, true);
-            }
+            emit openGraphEditorSnapshotRequested(graph, true);
         });
         menu.addSeparator();
         const bool hide = !graph.hidden;
@@ -578,11 +559,21 @@ void SetupTab::build()
     advancedLabel->setObjectName("sectionDescription");
     footerLayout->addWidget(advancedLabel);
     const QVector<std::pair<QString, std::function<void()>>> actions{
-        { QStringLiteral("Authoring Libraries"), actions_.openAuthoring },
-        { QStringLiteral("Artifacts"), actions_.openArtifacts },
-        { QStringLiteral("DTM Editor"), actions_.openDtmEditor },
-        { QStringLiteral("Environment"), actions_.openSettings },
-        { QStringLiteral("Battle Settings"), actions_.openBattleSettings },
+        { QStringLiteral("Authoring Libraries"), [this](){
+            emit openAuthoringRequested();
+        } },
+        { QStringLiteral("Artifacts"), [this]() {
+            emit openArtifactsRequested();
+        } },
+        { QStringLiteral("DTM Editor"), [this]() {
+            emit openDtmEditorRequested();
+        } },
+        { QStringLiteral("Environment"), [this]() {
+            emit openSettingsRequested();
+        } },
+        { QStringLiteral("Battle Settings"), [this]() {
+            emit openBattleSettingsRequested();
+        } },
     };
     for (const auto& action : actions) {
         auto* button = new QPushButton(action.first, footer);

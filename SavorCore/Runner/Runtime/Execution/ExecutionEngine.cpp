@@ -257,6 +257,7 @@ struct ExecutionEngine::Impl
         std::uint32_t completed_count = 0;
         bool observed_running = false;
         bool awaiting_advance = false;
+        bool no_progress_pause_logged = false;
         bool throttle_changed = false;
         bool original_throttle_disabled = false;
         std::optional<StopSubscriptionGroupHandle> wake_group;
@@ -432,9 +433,13 @@ struct ExecutionEngine::Impl
             observed.movie_input_count >= operation.start_movie_input_count
             ? observed.movie_input_count - operation.start_movie_input_count
             : 0;
+        const std::uint32_t target = operation.kind ==
+                ExecutionOperationKind::StepFrames
+            ? std::get<StepFramesRequest>(operation.request).count
+            : 0;
         SCLOGDX(
             SC_TAGS("execution.operation", "execution.heartbeat"),
-            "operation=%llu kind=%s epoch=%llu invocation=%llu attempt=%llu request=%llu selector=%s elapsed_ms=%lld awaited_pcs=%s input_relationship=%llu publication_epoch=%llu buttons=0x%04X callbacks=%u a_callbacks=%u poll_inspection=%s core_state=%u pc=0x%08X vi=%llu movie_state=%u recording_input_count=%llu recording_input_delta=%llu",
+            "operation=%llu kind=%s epoch=%llu invocation=%llu attempt=%llu request=%llu selector=%s elapsed_ms=%lld awaited_pcs=%s input_relationship=%llu publication_epoch=%llu buttons=0x%04X callbacks=%u a_callbacks=%u poll_inspection=%s core_state=%u pc=0x%08X vi=%llu movie_state=%u recording_input_count=%llu recording_input_delta=%llu completed=%u target=%u baseline_vi=%llu observed_running=%d",
             operation.id.value(), KindName(operation.kind), epoch.value(),
             policy ? policy->diagnostic_invocation : 0,
             policy ? policy->diagnostic_attempt : 0,
@@ -450,7 +455,10 @@ struct ExecutionEngine::Impl
                      : (relationship ? input.message.c_str() : "none"),
             static_cast<unsigned>(observed.core_state), observed.pc,
             observed.vi_count, static_cast<unsigned>(observed.movie_state),
-            observed.movie_input_count, recording_delta);
+            observed.movie_input_count, recording_delta,
+            operation.completed_count, target,
+            operation.advance_baseline_vi,
+            operation.observed_running ? 1 : 0);
     }
 
     [[nodiscard]] ExecutionOperationId NextOperationId()
@@ -1491,6 +1499,17 @@ struct ExecutionEngine::Impl
         if (ExecutionError departed = DepartRetainedPoint())
             return departed;
 
+        SCLOGDX(
+            SC_TAGS("execution.frame_step", "execution.transition"),
+            "operation=%llu epoch=%llu substep=%u target=%u baseline_vi=%llu pre_state=%u pause_confirmed=%d",
+            static_cast<unsigned long long>(operation.id.value()),
+            static_cast<unsigned long long>(epoch.value()),
+            operation.completed_count + 1,
+            std::get<StepFramesRequest>(operation.request).count,
+            static_cast<unsigned long long>(observed.vi_count),
+            static_cast<unsigned>(observed.core_state),
+            observed.pause_confirmed ? 1 : 0);
+
         BackendResult started;
         switch (operation.kind)
         {
@@ -1517,6 +1536,15 @@ struct ExecutionEngine::Impl
         operation.advance_baseline_vi = observed.vi_count;
         operation.awaiting_advance = true;
         operation.observed_running = false;
+        operation.no_progress_pause_logged = false;
+        SCLOGDX(
+            SC_TAGS("execution.frame_step", "execution.transition"),
+            "operation=%llu epoch=%llu substep=%u target=%u backend_result=accepted baseline_vi=%llu",
+            static_cast<unsigned long long>(operation.id.value()),
+            static_cast<unsigned long long>(epoch.value()),
+            operation.completed_count + 1,
+            std::get<StepFramesRequest>(operation.request).count,
+            static_cast<unsigned long long>(observed.vi_count));
         return {};
     }
 
@@ -1633,6 +1661,27 @@ struct ExecutionEngine::Impl
             !observed.pause_confirmed)
         {
             return false;
+        }
+        if (observed.vi_count == operation.advance_baseline_vi &&
+            !operation.no_progress_pause_logged)
+        {
+            operation.no_progress_pause_logged = true;
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now() - operation.started).count();
+            SCLOGWX(
+                SC_TAGS("execution.frame_step", "execution.no_progress"),
+                "operation=%llu epoch=%llu substep=%u target=%u baseline_vi=%llu observed_vi=%llu observed_running=%d core_state=%u pc=0x%08X elapsed_ms=%lld",
+                static_cast<unsigned long long>(operation.id.value()),
+                static_cast<unsigned long long>(epoch.value()),
+                operation.completed_count + 1,
+                std::get<StepFramesRequest>(operation.request).count,
+                static_cast<unsigned long long>(operation.advance_baseline_vi),
+                static_cast<unsigned long long>(observed.vi_count),
+                operation.observed_running ? 1 : 0,
+                static_cast<unsigned>(observed.core_state),
+                observed.pc,
+                static_cast<long long>(elapsed));
         }
         return observed.vi_count != operation.advance_baseline_vi;
     }

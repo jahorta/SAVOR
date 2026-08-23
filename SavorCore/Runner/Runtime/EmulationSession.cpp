@@ -1,4 +1,5 @@
 #include "EmulationSession.h"
+#include "../../Boot/Boot.h"
 
 #include "../../Utils/Hash.h"
 
@@ -179,6 +180,24 @@ SessionOperationReceipt EmulationSession::Open(const SessionOpenOptions& options
             SessionOperation::Open,
             BackendErrorCode::InvalidState,
             "EmulationSession is already open");
+    }
+
+    if (!options.backend.session_filesystem_preparation_id.empty())
+    {
+        std::string preparation_error;
+        if (!simboot::SessionFilesystemPreparer::Validate(
+                options.backend.user_directory,
+                options.backend.session_filesystem_preparation_id,
+                options.backend.process_generation,
+                &preparation_error))
+        {
+            return Reject(
+                SessionOperation::Open,
+                BackendErrorCode::InvalidArgument,
+                preparation_error.empty()
+                    ? "prepared session filesystem is invalid"
+                    : preparation_error);
+        }
     }
 
     open_options_ = options;

@@ -75,6 +75,14 @@ bool CoordinatorRuntime::Start(
                 .poll_interval = effective_poll,
             });
 
+        result_staging_cleanup_ = std::make_unique<
+            savor::db::execution::programdb::ResultStagingCleanupService>(
+            execution_db, program_kind_registry,
+            savor::db::execution::programdb::ResultStagingCleanupConfig{
+                .enabled = true,
+                .poll_interval = effective_poll,
+            });
+
         result_processor_ = std::make_unique<
             savor::db::execution::programdb::ProgramResultProcessor>(
             execution_db, program_kind_registry, blob_store_.get(),
@@ -91,9 +99,12 @@ bool CoordinatorRuntime::Start(
                 }
                 if (blob_cleanup_ != nullptr)
                     blob_cleanup_->Wake();
+                if (result_staging_cleanup_ != nullptr)
+                    result_staging_cleanup_->Wake();
             },
             std::move(config.event_line_callback));
 
+        config.worker.initially_paused = execution_paused_;
         worker_coordinator_ =
             std::make_unique<WorkerCoordinator>(std::move(config.worker));
         for (auto& surface : config.visual_surfaces) {
@@ -146,6 +157,11 @@ bool CoordinatorRuntime::Start(
                              error_out);
         }
         cleanup_started_ = true;
+        if (!result_staging_cleanup_->Start(&error)) {
+            return FailStart("result staging cleanup startup failed: " + error,
+                             error_out);
+        }
+        result_staging_cleanup_started_ = true;
         const auto worker_start = worker_coordinator_->Start();
         if (!worker_start.started()) {
             last_fleet_startup_snapshot_ =
@@ -155,9 +171,6 @@ bool CoordinatorRuntime::Start(
                              error_out);
         }
         worker_started_ = true;
-        // WorkerCoordinator::Start resets its local admission state, so apply
-        // the runtime's authoritative initial pause only after startup commits.
-        worker_coordinator_->SetPaused(execution_paused_);
         if (!job_execution_coordinator_->Start(&error)) {
             return FailStart("job execution coordinator startup failed: " +
                                  error,
@@ -222,6 +235,10 @@ bool CoordinatorRuntime::Stop(std::string* error_out) {
         result_processor_->Stop();
         result_processor_started_ = false;
     }
+    if (result_staging_cleanup_started_ && result_staging_cleanup_ != nullptr) {
+        result_staging_cleanup_->Stop();
+        result_staging_cleanup_started_ = false;
+    }
     if (cleanup_started_ && blob_cleanup_ != nullptr) {
         blob_cleanup_->Stop();
         cleanup_started_ = false;
@@ -235,6 +252,7 @@ bool CoordinatorRuntime::Stop(std::string* error_out) {
     job_execution_coordinator_.reset();
     worker_coordinator_.reset();
     result_processor_.reset();
+    result_staging_cleanup_.reset();
     blob_cleanup_.reset();
     workflow_coordinator_.reset();
     blob_store_.reset();
@@ -288,6 +306,10 @@ CoordinatorRuntimeTelemetry CoordinatorRuntime::SnapshotTelemetry() const {
                        ? blob_cleanup_->SnapshotTelemetry()
                        : savor::db::execution::programdb::
                              WorkerResultBlobCleanupTelemetry{},
+        .result_staging_cleanup = result_staging_cleanup_ != nullptr
+            ? result_staging_cleanup_->SnapshotTelemetry()
+            : savor::db::execution::programdb::
+                  ResultStagingCleanupTelemetry{},
         .worker_admission_paused =
             worker_coordinator_ != nullptr && worker_coordinator_->IsPaused(),
         .lanes = job_execution_coordinator_ != nullptr

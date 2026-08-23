@@ -384,6 +384,11 @@ struct ProgramRuntime::Impl
         finished.cleanup = MapCleanup(result.cleanup);
         finished.session_disposition = result.session_disposition;
         finished.workset_epoch = active->workset_epoch;
+        if (finished.status == InvocationTerminalStatus::Cancelled) {
+            finished.cancellation_reason = active->executor != nullptr
+                ? active->executor->cancellation_reason()
+                : active->pending_cancellation;
+        }
         if (encoded)
             finished.output_payload = encoded.bytes;
         else

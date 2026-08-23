@@ -40,7 +40,7 @@ std::string E2EPerfConfiguration(const savor::e2e::CliOptions& options) {
         << " wait_for_workers_ready="
         << (options.wait_for_workers_ready ? "true" : "false")
         << " repeat=" << options.repeat
-        << " seedprobe_min=" << options.seedprobe_min_value.value_or(47)
+        << " seedprobe_min=" << options.seedprobe_min_value.value_or(48)
         << " seedprobe_max=" << options.seedprobe_max_value.value_or(207)
         << " samples_per_axis=" << options.seedprobe_samples_per_axis.value_or(0)
         << " combo_attempts="

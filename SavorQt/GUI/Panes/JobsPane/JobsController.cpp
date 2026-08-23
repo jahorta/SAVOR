@@ -191,9 +191,6 @@ JobsController::JobsController(QObject* parent)
     connect(&requeueWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
         finishAction(requeueWatcher_, requeueInFlight_, Operation::Requeue, QStringLiteral("Requeued job %1.").arg(actionJobId_), "Requeue failed");
     });
-    connect(&cancelWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
-        finishAction(cancelWatcher_, cancelInFlight_, Operation::Cancel, QStringLiteral("Canceled job %1.").arg(actionJobId_), "Cancel failed");
-    });
     connect(&restartWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
         finishAction(restartWatcher_, restartInFlight_, Operation::Restart, QStringLiteral("Restarted job %1.").arg(actionJobId_), "Restart failed");
     });
@@ -310,16 +307,6 @@ void JobsController::requeueSelectedJob()
     requeueWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return SavorDbJobService::RequeueJob(jobId); }));
 }
 
-void JobsController::cancelSelectedJob()
-{
-    const savor::db::UiJobSummary* job = selectedJob();
-    if (!job || cancelInFlight_ || state_.actionsBusy) return;
-    actionJobId_ = job->job_id;
-    cancelInFlight_ = true;
-    setBusy(Operation::Cancel, true);
-    cancelWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return SavorDbJobService::CancelJob(jobId); }));
-}
-
 void JobsController::restartSelectedFailedJob()
 {
     const savor::db::UiJobSummary* job = selectedJob();
@@ -390,7 +377,7 @@ void JobsController::loadSelectedJobInputIni()
 
 void JobsController::setBusy(Operation, bool)
 {
-    state_.actionsBusy = requeueInFlight_ || cancelInFlight_ || restartInFlight_;
+    state_.actionsBusy = requeueInFlight_ || restartInFlight_;
     emitStateChanged();
 }
 
@@ -401,7 +388,7 @@ bool JobsController::canAutoRefresh() const
 
 bool JobsController::anyWorkInFlight() const
 {
-    return kindsInFlight_ || pageInFlight_ || detailInFlight_ || inputIniInFlight_ || requeueInFlight_ || cancelInFlight_ || restartInFlight_;
+    return kindsInFlight_ || pageInFlight_ || detailInFlight_ || inputIniInFlight_ || requeueInFlight_ || restartInFlight_;
 }
 
 const savor::db::UiJobSummary* JobsController::selectedJob() const
@@ -414,7 +401,7 @@ QString JobsController::programKindLabel(int id) const { return state_.programNa
 
 void JobsController::emitStateChanged()
 {
-    state_.actionsBusy = requeueInFlight_ || cancelInFlight_ || restartInFlight_;
+    state_.actionsBusy = requeueInFlight_ || restartInFlight_;
     state_.loading = pageInFlight_ || kindsInFlight_ || detailInFlight_ || inputIniInFlight_ || anyWorkInFlight();
     emit stateChanged();
 }

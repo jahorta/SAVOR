@@ -85,6 +85,7 @@ struct CliOptions {
     std::optional<std::int64_t> tasmovie_rtc;
     std::optional<std::int64_t> tasmovie_rtc_min;
     std::optional<std::int64_t> tasmovie_rtc_max;
+    std::optional<std::int64_t> tasmovie_establishment_id;
     std::optional<int> seedprobe_min_value;
     std::optional<int> seedprobe_max_value;
     std::optional<int> seedprobe_samples_per_axis;
@@ -113,7 +114,8 @@ enum class E2eScenarioEntrySource : std::uint32_t {
     ImportedSavestateFile = 1u << 0,
     FreshTasMovieValidation = 1u << 1,
     PreparedSterilizedCheckpoint = 1u << 2,
-    ExistingWorkspaceReference = 1u << 3,
+    TasMovieEstablishmentAttempt = 1u << 3,
+    ExistingWorkspaceReference = 1u << 4,
 };
 
 struct E2eScenarioDescriptor {

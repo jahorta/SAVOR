@@ -3,6 +3,7 @@
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QDateTime>
 #include <QtCore/QFutureWatcher>
+#include <QtCore/QPoint>
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 #include <QtWidgets/QWidget>
@@ -64,6 +65,9 @@ private:
     using WorkflowDetailResult = savorqt::db::ServiceResult<savor::db::UiWorkflowDetail>;
     using WorkflowJobSetsResult = savorqt::db::ServiceResult<
         std::vector<savorqt::db::WorkflowJobSetRow>>;
+    using WorksetReorganizationResult = savorqt::db::ServiceResult<
+        savor::db::WorksetJobReorganizationReceipt>;
+    using WorkflowCancelResult = savorqt::db::ServiceResult<void>;
 
     void createWidgets();
     void wireSignals();
@@ -74,6 +78,9 @@ private:
     void requestNextPage();
     void requestPreviousPage();
     void handleWorkflowSelectionChanged();
+    void showWorkflowContextMenu(const QPoint& position);
+    void retryFailedJobs(std::int64_t workflowInstanceId);
+    void cancelWorkflow(std::int64_t workflowInstanceId);
     void updateWorkflowTable();
     void updateWorkflowDetail();
     void updateWorkflowJobSets();
@@ -91,6 +98,8 @@ private:
     bool workflowFetchInFlight_ = false;
     bool detailFetchInFlight_ = false;
     bool jobSetsFetchInFlight_ = false;
+    bool retryFailedJobsInFlight_ = false;
+    bool workflowCancelInFlight_ = false;
     std::int64_t jobSetsFetchWorkflowInstanceId_ = 0;
     QDateTime lastRefresh_;
     QString errorMessage_;
@@ -107,6 +116,8 @@ private:
     savorqt::gui::AsyncRefreshPipeline<savorqt::db::WorkflowListRequest, WorkflowPageResult>* workflowRefreshPipeline_ = nullptr;
     QFutureWatcher<WorkflowDetailResult> detailWatcher_;
     QFutureWatcher<WorkflowJobSetsResult> jobSetsWatcher_;
+    QFutureWatcher<WorksetReorganizationResult> retryFailedJobsWatcher_;
+    QFutureWatcher<WorkflowCancelResult> workflowCancelWatcher_;
 
     QComboBox* stateFilter_ = nullptr;
     QLineEdit* kindFilter_ = nullptr;

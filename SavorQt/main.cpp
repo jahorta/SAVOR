@@ -45,8 +45,10 @@ int main(int argc, char *argv[])
     MainWindow window;
     QObject::connect(&app, &QCoreApplication::aboutToQuit, [&window]() {
         window.shutdownCoordinator();
-        savorqt::SavorDbRuntime::instance().stop();
     });
     window.show();
-    return app.exec();
+    const int exitCode = app.exec();
+    window.waitForCoordinatorShutdown();
+    savorqt::SavorDbRuntime::instance().stop();
+    return exitCode;
 }

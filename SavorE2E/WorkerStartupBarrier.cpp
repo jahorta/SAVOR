@@ -150,7 +150,7 @@ bool TerminalFailInitialWorkerPoolWorkflows(
         return false;
     }
     return execution_db->WorkflowCommandService()
-        ->TerminalFailWorkflowInstance(
+        ->FailWorkflowInstance(
             {
                 .workflow_instance_id = workflow_instance_id,
                 .failure_code =

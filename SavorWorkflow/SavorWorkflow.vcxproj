@@ -131,6 +131,7 @@
     <ClInclude Include="Execution\CoordinatorRuntime.h" />
     <ClInclude Include="Execution\FleetStartupSnapshot.h" />
     <ClInclude Include="Execution\JobExecutionCoordinator.h" />
+    <ClInclude Include="Execution\WorksetJobOrganizer.h" />
     
     <ClInclude Include="Execution\StepInputAggregationService.h" />
     <ClInclude Include="Execution\WorkflowCoordinatorBridge.h" />
@@ -147,6 +148,7 @@
     <ClCompile Include="Execution\ArchiveWorkflowCommands.cpp" />
     <ClCompile Include="Execution\CoordinatorRuntime.cpp" />
     <ClCompile Include="Execution\JobExecutionCoordinator.cpp" />
+    <ClCompile Include="Execution\WorksetJobOrganizer.cpp" />
     
     <ClCompile Include="Execution\StepInputAggregationService.cpp" />
     <ClCompile Include="Execution\WorkflowCoordinatorBridge.cpp" />

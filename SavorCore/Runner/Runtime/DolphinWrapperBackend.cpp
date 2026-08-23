@@ -4,6 +4,7 @@
 #include "../../Core/DolphinWrapper.h"
 #include "../../Tas/DtmFile.h"
 #include "../../Utils/Hash.h"
+#include "../../Utils/Log.h"
 
 #include "Common/Buffer.h"
 #include "Common/Config/Config.h"
@@ -23,6 +24,7 @@
 #include <cstring>
 #include <exception>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -34,6 +36,9 @@
 
 namespace savor::runtime {
 namespace {
+
+std::atomic<std::uint64_t> g_backend_transition_id{1};
+std::atomic<std::uint64_t> g_movie_snapshot_id{1};
 
 [[nodiscard]] std::uint32_t ClampUnsignedTimeout(std::chrono::milliseconds timeout) noexcept
 {
@@ -464,12 +469,33 @@ struct DolphinWrapperBackend::Impl
 
                 try
                 {
+                    const auto started = std::chrono::steady_clock::now();
+                    const auto state_before = Core::GetState(*target_system);
+                    SCLOGDX(
+                        SC_TAGS("dolphin.pause_sync", "dolphin.transition"),
+                        "pause_generation=%llu source=synchronizer state_before=%u thread=%llu",
+                        static_cast<unsigned long long>(generation),
+                        static_cast<unsigned>(state_before),
+                        static_cast<unsigned long long>(
+                            std::hash<std::thread::id>{}(std::this_thread::get_id())));
                     Core::SetState(
                         *target_system,
                         Core::State::Paused);
-                    if (Core::GetState(*target_system) !=
-                        Core::State::Paused)
+                    const auto state_after = Core::GetState(*target_system);
+                    const auto elapsed =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - started).count();
+                    if (state_after != Core::State::Paused)
                     {
+                        SCLOGWX(
+                            SC_TAGS("dolphin.pause_sync", "dolphin.invariant"),
+                            "pause_generation=%llu confirmation=failed state_before=%u state_after=%u elapsed_ms=%lld thread=%llu",
+                            static_cast<unsigned long long>(generation),
+                            static_cast<unsigned>(state_before),
+                            static_cast<unsigned>(state_after),
+                            static_cast<long long>(elapsed),
+                            static_cast<unsigned long long>(
+                                std::hash<std::thread::id>{}(std::this_thread::get_id())));
                         std::lock_guard lock(mutex);
                         failed = true;
                         failure =
@@ -480,6 +506,15 @@ struct DolphinWrapperBackend::Impl
                         // SetState(Paused) returns only after CPUManager has
                         // observed m_state_cpu_thread_active == false.
                         Acknowledge(target_confirmation, generation);
+                        SCLOGDX(
+                            SC_TAGS("dolphin.pause_sync", "dolphin.transition"),
+                            "pause_generation=%llu confirmation=acknowledged state_before=%u state_after=%u elapsed_ms=%lld thread=%llu",
+                            static_cast<unsigned long long>(generation),
+                            static_cast<unsigned>(state_before),
+                            static_cast<unsigned>(state_after),
+                            static_cast<long long>(elapsed),
+                            static_cast<unsigned long long>(
+                                std::hash<std::thread::id>{}(std::this_thread::get_id())));
                     }
                 }
                 catch (const std::exception& ex)
@@ -700,7 +735,9 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
     simboot::BootOptions boot_options;
     boot_options.user_dir = options.user_directory;
     boot_options.dolphin_qt_base = options.dolphin_base_directory;
-    boot_options.force_resync_from_base = options.force_resync_from_base;
+    boot_options.session_filesystem_preparation_id =
+        options.session_filesystem_preparation_id;
+    boot_options.process_generation = options.process_generation;
     boot_options.visual = options.visual;
     boot_options.render_widget_handle =
         reinterpret_cast<void*>(options.render_window_handle);
@@ -1187,6 +1224,15 @@ BackendResult DolphinWrapperBackend::RequestPause()
             1,
             std::memory_order_acq_rel) +
         1;
+    SCLOGDX(
+        SC_TAGS("dolphin.pause_sync", "dolphin.request"),
+        "pause_generation=%llu source=execution state_before=%u acknowledged=%llu thread=%llu",
+        static_cast<unsigned long long>(generation),
+        static_cast<unsigned>(QueryCoreState()),
+        static_cast<unsigned long long>(
+            confirmation->acknowledged.load(std::memory_order_acquire)),
+        static_cast<unsigned long long>(
+            std::hash<std::thread::id>{}(std::this_thread::get_id())));
     if (!impl_->pause_synchronizer.Request(generation))
     {
         return BackendResult::Failure(
@@ -1201,8 +1247,18 @@ BackendResult DolphinWrapperBackend::Resume()
 {
     if (BackendResult open = impl_->RequireOpen(); !open.ok)
         return open;
+    const auto transition_id = g_backend_transition_id.fetch_add(1);
+    const auto state_before = QueryCoreState();
     impl_->InvalidatePauseConfirmation();
     Core::SetState(*impl_->wrapper->system(), Core::State::Running);
+    SCLOGDX(
+        SC_TAGS("dolphin.resume", "dolphin.transition"),
+        "backend_transition=%llu state_before=%u state_after=%u thread=%llu",
+        static_cast<unsigned long long>(transition_id),
+        static_cast<unsigned>(state_before),
+        static_cast<unsigned>(QueryCoreState()),
+        static_cast<unsigned long long>(
+            std::hash<std::thread::id>{}(std::this_thread::get_id())));
     return Core::IsRunning(*impl_->wrapper->system())
         ? BackendResult::Success()
         : BackendResult::Failure(
@@ -1221,8 +1277,18 @@ BackendResult DolphinWrapperBackend::BeginFrameStep()
             BackendErrorCode::InvalidState,
             "Dolphin must be authoritatively paused before beginning a frame step");
     }
+    const auto transition_id = g_backend_transition_id.fetch_add(1);
+    const auto baseline_vi = impl_->wrapper->getViFieldCountApprox();
     impl_->InvalidatePauseConfirmation();
     Core::DoFrameStep(*impl_->wrapper->system());
+    SCLOGDX(
+        SC_TAGS("dolphin.frame_step", "dolphin.transition"),
+        "backend_transition=%llu baseline_vi=%llu state_after=%u thread=%llu",
+        static_cast<unsigned long long>(transition_id),
+        static_cast<unsigned long long>(baseline_vi),
+        static_cast<unsigned>(QueryCoreState()),
+        static_cast<unsigned long long>(
+            std::hash<std::thread::id>{}(std::this_thread::get_id())));
     return BackendResult::Success();
 }
 
@@ -1639,6 +1705,7 @@ MovieBackendResult DolphinWrapperBackend::CancelRecording() noexcept
 MovieBackendObservation
 DolphinWrapperBackend::ObserveMovieWhilePaused() const
 {
+    const auto snapshot_id = g_movie_snapshot_id.fetch_add(1);
     if (BackendResult open = impl_->RequireOpen(); !open.ok)
     {
         return {
@@ -1665,6 +1732,18 @@ DolphinWrapperBackend::ObserveMovieWhilePaused() const
         execution.core_state != BackendCoreState::Paused ||
         !execution.pause_confirmed)
     {
+        SCLOGWX(
+            SC_TAGS("dolphin.movie_snapshot", "dolphin.invariant"),
+            "snapshot_transaction=%llu operation=inspect_movie pre_state=%u pause_confirmed=%d pause_generation=%llu reason=%s post_state=%u failed_invariant=authoritative_pause",
+            static_cast<unsigned long long>(snapshot_id),
+            static_cast<unsigned>(execution.core_state),
+            execution.pause_confirmed ? 1 : 0,
+            static_cast<unsigned long long>(
+                impl_->pause_confirmation->acknowledged.load(std::memory_order_acquire)),
+            execution.result.message.empty()
+                ? "state"
+                : execution.result.message.c_str(),
+            static_cast<unsigned>(QueryCoreState()));
         return {
             .result = MovieFailure(
                 execution.result.message.empty()
@@ -1682,6 +1761,14 @@ DolphinWrapperBackend::ObserveMovieWhilePaused() const
         // ordinary MovieManager fields is therefore coherent without taking
         // CPUThreadGuard or otherwise changing guest execution.
         const auto& movie = system->GetMovie();
+        SCLOGDX(
+            SC_TAGS("dolphin.movie_snapshot", "dolphin.transition"),
+            "snapshot_transaction=%llu operation=inspect_movie pre_state=%u pause_generation=%llu inspection=movie_fields post_state=%u",
+            static_cast<unsigned long long>(snapshot_id),
+            static_cast<unsigned>(execution.core_state),
+            static_cast<unsigned long long>(
+                impl_->pause_confirmation->acknowledged.load(std::memory_order_acquire)),
+            static_cast<unsigned>(QueryCoreState()));
         return {
             .result = MovieBackendResult::Success(),
             .playing = movie.IsPlayingInput(),

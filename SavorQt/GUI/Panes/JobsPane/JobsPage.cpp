@@ -304,6 +304,7 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     const bool actionsEnabled = !controller_->viewState().actionsBusy;
     const bool isFinished = row->state == QStringLiteral("SUCCEEDED")
         || row->state == QStringLiteral("FAILED")
+        || row->state == QStringLiteral("INTERRUPTED")
         || row->state == QStringLiteral("CANCELED")
         || row->state == QStringLiteral("SUPERSEDED")
         || row->state == QStringLiteral("SUCCEEDED_WINNER")
@@ -315,10 +316,6 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
         && row->state != QStringLiteral("RUNNING")
         && row->state != QStringLiteral("FAILED");
     const bool canRestart = actionsEnabled && row->state == QStringLiteral("FAILED");
-    const bool canCancel = actionsEnabled
-        && (row->state == QStringLiteral("QUEUED")
-            || row->state == QStringLiteral("INTERRUPTED")
-            || row->state == QStringLiteral("CLAIMED"));
 
     QMenu menu(jobsTable_);
     QAction* refreshDetailAction = menu.addAction(QStringLiteral("Refresh detail"));
@@ -330,7 +327,6 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     QAction* requeueVisualAction = menu.addAction(QStringLiteral("Requeue + Visual Debug"));
     QAction* restartAction = menu.addAction(QStringLiteral("Restart"));
     QAction* restartVisualAction = menu.addAction(QStringLiteral("Restart + Visual Debug"));
-    QAction* cancelAction = menu.addAction(QStringLiteral("Cancel"));
 
     refreshDetailAction->setEnabled(actionsEnabled);
     loadInputIniAction->setEnabled(actionsEnabled);
@@ -339,7 +335,6 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     requeueVisualAction->setEnabled(canRequeue);
     restartAction->setEnabled(canRestart);
     restartVisualAction->setEnabled(canRestart);
-    cancelAction->setEnabled(canCancel);
 
     QAction* chosen = menu.exec(jobsTable_->viewport()->mapToGlobal(position));
     if (chosen == refreshDetailAction) {
@@ -357,8 +352,6 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
         handleRestartRequested(false);
     } else if (chosen == restartVisualAction) {
         handleRestartRequested(true);
-    } else if (chosen == cancelAction) {
-        controller_->cancelSelectedJob();
     }
 }
 

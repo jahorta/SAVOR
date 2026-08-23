@@ -17,6 +17,7 @@ struct ResolvedE2eScenarioEntry {
     E2eScenarioEntrySource source =
         E2eScenarioEntrySource::ImportedSavestateFile;
     std::optional<std::int64_t> savestate_id;
+    std::optional<std::int64_t> tas_movie_establishment_attempt_id;
     std::optional<savor::db::execution::programdb::tasmovieevidence::
         PreparedSterilizedCheckpointEvidence> prepared_checkpoint;
     std::string run_identity;

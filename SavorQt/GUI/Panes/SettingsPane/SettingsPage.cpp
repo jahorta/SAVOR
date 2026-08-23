@@ -109,6 +109,7 @@ SettingsPage::SettingsPage(CoordinatorController* coordinatorController, QWidget
 
     if (coordinatorController_) {
         connect(coordinatorController_, &CoordinatorController::stateChanged, this, &SettingsPage::refreshCoordinatorUi);
+        connect(coordinatorController_, &CoordinatorController::stateChanged, this, &SettingsPage::refreshStorageUi);
     }
 }
 
@@ -204,6 +205,23 @@ void SettingsPage::createWidgets()
     connect(resetDatabaseButton_, &QPushButton::clicked, this, &SettingsPage::handleResetDatabaseClicked);
     resetLayout->addWidget(resetDatabaseButton_);
     storageLayout->addLayout(resetLayout);
+
+    QHBoxLayout* stagingResetLayout = new QHBoxLayout();
+    QLabel* stagingResetDescription = new QLabel(
+        "Delete only program result-staging files. Worker profiles, logs, caches, databases, and object stores are preserved.",
+        storageSection.content);
+    stagingResetDescription->setObjectName("settingsSectionDescription");
+    stagingResetDescription->setWordWrap(true);
+    stagingResetLayout->addWidget(stagingResetDescription, 1);
+    stagingResetLayout->setSpacing(10);
+    stagingResetLayout->addStretch();
+    resetResultStagingButton_ = new QPushButton(
+        "Reset Result Staging...", storageSection.content);
+    resetResultStagingButton_->setObjectName("jobsSecondaryButton");
+    connect(resetResultStagingButton_, &QPushButton::clicked,
+        this, &SettingsPage::handleResetResultStagingClicked);
+    stagingResetLayout->addWidget(resetResultStagingButton_);
+    storageLayout->addLayout(stagingResetLayout);
 
     QHBoxLayout* snapshotLayout = new QHBoxLayout();
 
@@ -378,9 +396,13 @@ void SettingsPage::refreshActiveRoot()
 void SettingsPage::refreshStorageUi()
 {
     refreshActiveRoot();
-    const bool enabled = !storageBusy_;
+    const bool enabled = !storageBusy_
+        && (coordinatorController_ == nullptr
+            || coordinatorController_->isStopped());
     if (moveDatabaseButton_) moveDatabaseButton_->setEnabled(enabled);
     if (resetDatabaseButton_) resetDatabaseButton_->setEnabled(enabled);
+    if (resetResultStagingButton_)
+        resetResultStagingButton_->setEnabled(enabled);
     if (useExistingButton_) useExistingButton_->setEnabled(enabled);
     if (saveSnapshotButton_) saveSnapshotButton_->setEnabled(enabled);
     if (loadSnapshotButton_) loadSnapshotButton_->setEnabled(enabled);
@@ -521,6 +543,48 @@ void SettingsPage::handleUseExistingDatabaseClicked()
         });
 }
 
+void SettingsPage::handleResetResultStagingClicked()
+{
+    const QString stagingRoot = normalizePath(QString::fromStdWString(
+        savorqt::SavorDbRuntime::instance().resultStagingRoot().wstring()));
+    const auto answer = QMessageBox::warning(
+        this,
+        "Reset Result Staging",
+        QStringLiteral("Delete and recreate the result-staging root?\n\nResult staging root:\n%1\n\nThis discards pending and failed-persistence evidence. Databases, object stores, worker profiles, logs, and runtime caches are not changed.")
+            .arg(stagingRoot),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (answer != QMessageBox::Yes) return;
+    bool confirmed = false;
+    const QString confirmation = QInputDialog::getText(
+        this,
+        "Type reset to confirm",
+        QStringLiteral("Type reset to delete and recreate only this result-staging root:\n%1")
+            .arg(stagingRoot),
+        QLineEdit::Normal,
+        QString(),
+        &confirmed);
+    if (!confirmed) return;
+    if (confirmation.trimmed() != QStringLiteral("reset")) {
+        setStatus(StatusKind::Warning,
+            "Result staging reset cancelled because the confirmation text did not match \"reset\".");
+        return;
+    }
+    startStorageOperation(
+        StorageOperation::ResetResultStaging,
+        QStringLiteral("Resetting result staging at %1...").arg(stagingRoot),
+        []() {
+            std::string summary;
+            std::string error;
+            const bool ok = savorqt::SavorDbRuntime::instance()
+                .resetResultStaging(&summary, &error);
+            return StorageResult{
+                ok,
+                QString::fromStdString(ok ? summary : error),
+            };
+        });
+}
+
 void SettingsPage::handleSaveSnapshotClicked()
 {
     const QString defaultPath = QDir(activeRoot_.isEmpty() ? QDir::homePath() : activeRoot_)
@@ -617,12 +681,13 @@ void SettingsPage::startStorageOperation(StorageOperation op, const QString& wor
         return;
     }
 
-    // Storage operations may stop or replace the database runtime. Tear down
-    // both execution coordinators first so they cannot retain raw pointers
-    // into a stopped DB service, registry, or result-blob store.
     if (coordinatorController_ != nullptr
-        && coordinatorController_->isRunning()) {
-        coordinatorController_->stopCoordinator();
+        && !coordinatorController_->isStopped()) {
+        setStatus(
+            StatusKind::Warning,
+            QStringLiteral(
+                "Stop the coordinator before running a database storage operation."));
+        return;
     }
 
     storageBusy_ = true;
@@ -669,6 +734,7 @@ void SettingsPage::handleStorageOperationFinished()
         break;
     }
     case StorageOperation::SaveSnapshot:
+    case StorageOperation::ResetResultStaging:
     case StorageOperation::None:
         break;
     }
@@ -679,6 +745,12 @@ void SettingsPage::handleStorageOperationFinished()
         break;
     case StorageOperation::ResetDatabase:
         setStatus(StatusKind::Success, QStringLiteral("Database storage was deleted and recreated successfully. Active root: %1").arg(activeRoot_));
+        break;
+    case StorageOperation::ResetResultStaging:
+        setStatus(StatusKind::Success,
+            result.second.isEmpty()
+                ? QStringLiteral("Result staging reset successfully.")
+                : result.second);
         break;
     case StorageOperation::UseExistingDatabase:
         setStatus(StatusKind::Success, QStringLiteral("Switched to the selected existing database root: %1").arg(activeRoot_));
@@ -713,17 +785,21 @@ void SettingsPage::refreshCoordinatorUi()
         startPausedCheck_->setChecked(coordinatorController_->startPaused());
     }
 
-    const bool running = coordinatorController_->isRunning();
-    isoPathEdit_->setEnabled(!running);
-    isoBrowseButton_->setEnabled(!running);
-    dolphinBaseDirEdit_->setEnabled(!running);
-    dolphinBrowseButton_->setEnabled(!running);
-    startPausedCheck_->setEnabled(!running);
+    const bool stopped = coordinatorController_->isStopped();
+    isoPathEdit_->setEnabled(stopped);
+    isoBrowseButton_->setEnabled(stopped);
+    dolphinBaseDirEdit_->setEnabled(stopped);
+    dolphinBrowseButton_->setEnabled(stopped);
+    startPausedCheck_->setEnabled(stopped);
 
     coordinatorValidationLabel_->setText(
-        coordinatorController_->validationMessage().isEmpty()
-            ? QStringLiteral("Configuration looks good. You can start the coordinator from the Workers page when ready.")
-            : coordinatorController_->validationMessage());
+        coordinatorController_->lifecycleState() == CoordinatorLifecycleState::Starting
+            ? QStringLiteral("Coordinator startup is in progress.")
+            : coordinatorController_->lifecycleState() == CoordinatorLifecycleState::Stopping
+                ? QStringLiteral("Coordinator shutdown is in progress.")
+                : coordinatorController_->validationMessage().isEmpty()
+                    ? QStringLiteral("Configuration looks good. You can start the coordinator from the Workers page when ready.")
+                    : coordinatorController_->validationMessage());
     coordinatorValidationLabel_->setProperty(
         "validationState",
         coordinatorController_->validationMessage().isEmpty() ? QStringLiteral("ok") : QStringLiteral("warn"));

@@ -985,6 +985,8 @@ void PublishWorkerEvent(
                         .workset_epoch =
                             terminal.workset_epoch.value(),
                         .unstarted = item.unstarted,
+                        .cancellation_reason = static_cast<std::uint8_t>(
+                            terminal.cancellation_reason),
                         .rejection_code =
                             MapRejectionCode(terminal.error.code),
                         .error_code =
@@ -1242,7 +1244,9 @@ bool SubmitFrame(
         options.backend.user_directory = absolute_user_directory;
         options.backend.dolphin_base_directory = payload.runtime_root;
         options.backend.iso_path = payload.iso_path;
-        options.backend.force_resync_from_base = true;
+        options.backend.session_filesystem_preparation_id =
+            payload.session_filesystem_preparation_id;
+        options.backend.process_generation = payload.process_generation;
         options.worker_mode = MapWorkerMode(payload.worker_mode);
         options.backend.visual =
             options.worker_mode != savor::runtime::WorkerMode::Headless;
@@ -1519,37 +1523,65 @@ bool SubmitFrame(
 
 int main(int argc, char** argv) {
     std::uint64_t worker_id = 0;
-    std::filesystem::path log_directory;
+    std::uint64_t process_generation = 0;
+    std::uint64_t utc_launch_ticks = 0;
+    std::filesystem::path log_path;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if (argument == "--id")
             worker_id = ParseU64(NextArg(index, argc, argv));
-        else if (argument == "--log-dir")
-            log_directory = NextArg(index, argc, argv);
+        else if (argument == "--process-generation")
+            process_generation = ParseU64(NextArg(index, argc, argv));
+        else if (argument == "--utc-launch-ticks")
+            utc_launch_ticks = ParseU64(NextArg(index, argc, argv));
+        else if (argument == "--log-file")
+            log_path = NextArg(index, argc, argv);
     }
 
     set_this_thread_name_utf8(
         ("WorkerMainV1-" + std::to_string(worker_id)).c_str());
 
-    if (log_directory.empty()) {
+    if (utc_launch_ticks == 0) {
+        utc_launch_ticks = static_cast<std::uint64_t>(
+            std::chrono::system_clock::now().time_since_epoch().count());
+    }
+    if (log_path.empty()) {
         std::error_code temp_error;
-        log_directory = std::filesystem::temp_directory_path(temp_error);
+        auto log_directory = std::filesystem::temp_directory_path(temp_error);
         if (temp_error)
             log_directory = ExecutableDirectory();
         log_directory /= "SavorWorker";
+        log_path = log_directory /
+            ("worker-" + std::to_string(worker_id) + "-" +
+             std::to_string(utc_launch_ticks) + ".log");
     }
     std::error_code directory_error;
-    std::filesystem::create_directories(log_directory, directory_error);
-    const auto log_path =
-        log_directory /
-        ("worker-" + std::to_string(worker_id) + ".log");
+    std::filesystem::create_directories(log_path.parent_path(), directory_error);
+    if (directory_error)
+        return static_cast<int>(WorkerExitCode::LoggerFailure);
     auto& logger = savor::logger::Logger::get();
     logger.set_levels(
         savor::logger::Level::Off,
         savor::logger::Level::Debug);
     WorkerLoggerOwner logger_owner(logger);
-    if (!logger.open_file(log_path.string().c_str(), false))
+    if (!logger.open_file(
+            log_path.string().c_str(),
+            savor::logger::FileOpenMode::CreateNew))
         return static_cast<int>(WorkerExitCode::LoggerFailure);
+    std::error_code executable_error;
+    const auto executable_path = std::filesystem::absolute(
+        std::filesystem::path(argv[0]), executable_error);
+    logger.logf(
+        savor::logger::Level::Info,
+        __FILE__, __LINE__, __func__,
+        "tags=worker.identity worker_id=%llu process_generation=%llu pid=%lu utc_launch_ticks=%llu executable=%s log_path=%s",
+        static_cast<unsigned long long>(worker_id),
+        static_cast<unsigned long long>(process_generation),
+        static_cast<unsigned long>(GetCurrentProcessId()),
+        static_cast<unsigned long long>(utc_launch_ticks),
+        (executable_error ? std::filesystem::path(argv[0]) : executable_path)
+            .string().c_str(),
+        log_path.string().c_str());
 
     HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
     HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);

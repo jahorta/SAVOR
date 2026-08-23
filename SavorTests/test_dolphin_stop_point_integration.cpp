@@ -2,6 +2,9 @@
 
 #include "Runner/Runtime/DolphinWrapperBackend.h"
 #include "Runner/Runtime/EmulationSession.h"
+#include "Boot/Boot.h"
+#include "CaptureProfileJson.h"
+#include "LiveCaptureProfile.h"
 #include "../SavorProbe/NativeStopHooks.h"
 #include "../SavorProbe/ProbeProfile.h"
 #include "serial_guard.h"
@@ -15,6 +18,7 @@
 #include <iterator>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -176,20 +180,18 @@ private:
 
 [[nodiscard]] std::string MakeLiveCaptureProfile()
 {
-    savor::probe::Profile profile;
-    profile.name = "slice4-live-recurring-pc";
-    profile.revision = 1;
-    profile.expected_module_sha256 =
-        savor::probe::current_module_sha256();
-    profile.probes = {
-        savor::probe::ProbeDefinition{
-            .id = "game_mode_controller",
-            .kind = savor::probe::ProbeKind::Pc,
-            .subscriptions = savor::probe::Subscription::Capture,
-            .address = kGameModeControllerPc,
-        },
-    };
-    return savor::probe::serialize_profile_json(profile);
+    std::string module_error;
+    const std::string module_hash =
+        savor::probe::current_module_sha256(&module_error);
+    if (module_hash.empty())
+    {
+        throw std::runtime_error(
+            "Could not resolve the loaded module hash for the canonical "
+            "capture profile: " + module_error);
+    }
+    return savor::predict::pin_capture_profile_module_hash(
+        savor::predict::build_first_battle_capture_profile_ini(),
+        module_hash);
 }
 
 [[nodiscard]] std::optional<ExecutionTerminalResult> DriveUntilTerminal(
@@ -255,6 +257,14 @@ TEST(
     ASSERT_EQ(savor::probe::BoundNativeStopSink(), nullptr);
 
     ScopedTemporaryDirectory temporary("jit_router_guard");
+    const auto prepared = simboot::SessionFilesystemPreparer::Prepare({
+        .worker_id = 0,
+        .process_generation = 1,
+        .preparation_id = "stop-point-integration-1",
+        .dolphin_qt_base = kDolphinBase,
+        .worker_root = temporary.path(),
+    });
+    ASSERT_TRUE(prepared.ok) << prepared.error;
     std::atomic<std::uint64_t> notification_counter{0};
     IngressSignal ingress_signal;
     auto backend = std::make_unique<DolphinWrapperBackend>(
@@ -271,10 +281,12 @@ TEST(
     open_options.backend.runtime_root =
         temporary.path() / "runtime";
     open_options.backend.user_directory =
-        temporary.path() / "user";
+        temporary.path() / "User";
     open_options.backend.dolphin_base_directory = kDolphinBase;
     open_options.backend.iso_path = kIso;
-    open_options.backend.force_resync_from_base = true;
+    open_options.backend.session_filesystem_preparation_id =
+        "stop-point-integration-1";
+    open_options.backend.process_generation = 1;
     open_options.backend.visual = false;
     const SessionOperationReceipt opened = session.Open(open_options);
     ASSERT_TRUE(opened.ok) << opened.backend.message;
@@ -384,9 +396,15 @@ TEST(
     savor::probe::SessionOptions capture_options;
     capture_options.capture_path =
         temporary.path() / "recurring-pc.scap";
+    const std::string capture_profile_json = MakeLiveCaptureProfile();
+    const auto parsed_capture_profile =
+        savor::probe::parse_profile_json(capture_profile_json);
+    ASSERT_TRUE(parsed_capture_profile.profile.has_value())
+        << savor::probe::format_profile_errors(parsed_capture_profile);
     const CaptureServiceReceipt capture_attached =
         capture->Attach({
-            .profile_json = MakeLiveCaptureProfile(),
+            .profile_json = capture_profile_json,
+            .profile = *parsed_capture_profile.profile,
             .options = std::move(capture_options),
             .expected_epoch = WorksetEpoch(1),
         });
@@ -413,8 +431,11 @@ TEST(
 
     const PhysicalStopPointPlan armed_plan =
         router->DesiredPhysicalPlan();
-    ASSERT_EQ(armed_plan.pcs.size(), 1u);
-    EXPECT_EQ(armed_plan.pcs.front().pc, kGameModeControllerPc);
+    EXPECT_TRUE(std::ranges::any_of(
+        armed_plan.pcs,
+        [](const auto& point) {
+            return point.pc == kGameModeControllerPc;
+        }));
     EXPECT_TRUE(armed_plan.memory.empty());
 
     const auto first_terminal = DriveUntilTerminal(
@@ -446,7 +467,14 @@ TEST(
     EXPECT_FALSE(router->authoritative_overflowed());
     EXPECT_EQ(router->passive_drop_count(), 0u);
 
-    ASSERT_GE(first_wake.deliveries.size(), 3u);
+    ASSERT_GE(first_wake.deliveries.size(), 2u);
+    const auto observe_delivery = std::find_if(
+        first_wake.deliveries.begin(),
+        first_wake.deliveries.end(),
+        [](const StopDelivery& delivery) {
+            return delivery.subscription_id == kObserveSubscription;
+        });
+    ASSERT_NE(observe_delivery, first_wake.deliveries.end());
     const auto wake_delivery = std::find_if(
         first_wake.deliveries.begin(),
         first_wake.deliveries.end(),
@@ -515,6 +543,12 @@ TEST(
         observe_consumer.deliveries[2].event.identity,
         second_terminal->stop->identity);
 
+    const CaptureServiceReceipt capture_detached =
+        capture->Detach(capture_attached.attachment);
+    ASSERT_TRUE(capture_detached.ok)
+        << capture_detached.error.message;
+    EXPECT_TRUE(capture_detached.artifacts_finalized);
+
     const auto before_final_step =
         session.execution_snapshot()->evidence.vi_count;
     const ExecutionSubmissionReceipt final_step =
@@ -540,11 +574,6 @@ TEST(
         before_final_step);
 
     EXPECT_TRUE(observe_registration.handle.Release().ok);
-    const CaptureServiceReceipt capture_detached =
-        capture->Detach(capture_attached.attachment);
-    ASSERT_TRUE(capture_detached.ok)
-        << capture_detached.error.message;
-    EXPECT_TRUE(capture_detached.artifacts_finalized);
     EXPECT_TRUE(std::filesystem::is_regular_file(
         temporary.path() / "recurring-pc.scap"));
     EXPECT_TRUE(router->DesiredPhysicalPlan().pcs.empty());

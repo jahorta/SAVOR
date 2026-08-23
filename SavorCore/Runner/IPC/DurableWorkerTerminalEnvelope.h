@@ -10,7 +10,7 @@
 
 namespace savor::runtime {
 
-inline constexpr std::uint16_t kDurableWorkerTerminalEnvelopeVersion = 1;
+inline constexpr std::uint16_t kDurableWorkerTerminalEnvelopeVersion = 2;
 
 struct DurableWorkerTerminalEnvelope {
     std::uint16_t envelope_version =
@@ -18,6 +18,7 @@ struct DurableWorkerTerminalEnvelope {
     std::uint16_t wrms_protocol_version = 0;
     std::uint64_t worker_id = 0;
     std::uint64_t process_generation = 0;
+    std::uint8_t cancellation_reason = 0;
     wrms::WorksetItemTerminalPayload terminal;
 
     friend bool operator==(

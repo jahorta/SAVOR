@@ -33,7 +33,6 @@ struct ArchiveCommandRequest {
     int max_candidates = 100;
     int max_outbox_purge_rows = 0;
     savor::db::retention::OutboxRetentionPolicy outbox_policy{};
-    savor::db::archive::ArchiveSourcePurgePolicy source_purge_policy{};
 };
 
 struct WorkflowArchiveCommandRequest {
@@ -110,7 +109,6 @@ public:
         savor::db::archive::IRehydrateExecutor* rehydrate_executor);
 
     ArchiveCommandSummary ArchivePreview(const ArchiveCommandRequest& request) const;
-    ArchiveCommandSummary ArchiveExecute(const ArchiveCommandRequest& request) const;
     WorkflowArchiveCommandSummary WorkflowArchivePreview(const WorkflowArchiveCommandRequest& request) const;
     WorkflowArchiveCommandSummary WorkflowArchiveExecute(const WorkflowArchiveCommandRequest& request) const;
     PackageVerifySummary PackageVerify(const PackageVerifyRequest& request) const;

@@ -58,7 +58,7 @@ private:
     QLabel* workflowReadyValueLabel_ = nullptr;
     QLabel* workflowQueuedValueLabel_ = nullptr;
     QLabel* workflowWaitingValueLabel_ = nullptr;
-    QLabel* workflowTerminalValueLabel_ = nullptr;
+    QLabel* workflowFinalValueLabel_ = nullptr;
     QLabel* queueSummaryLabel_ = nullptr;
     QLabel* workerSummaryLabel_ = nullptr;
     QLabel* attentionSummaryLabel_ = nullptr;

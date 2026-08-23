@@ -18,6 +18,10 @@
 #include "../Execution/IExecutionDb.h"
 #include "../UIRead/IUiReadDb.h"
 
+namespace savor::runner::parallel::savordb {
+class ArchiveWorkflowCommands;
+}
+
 namespace savor::db::archive {
 
 struct ArchivePackageRetentionPolicy {
@@ -114,16 +118,6 @@ struct ArchiveCandidateRoot {
     types::UtcTimePoint terminal_at_utc{};
 };
 
-enum class ArchiveSourcePurgeAction {
-    None = 0,
-    MarkArchived = 1,
-    DeleteRows = 2,
-};
-
-struct ArchiveSourcePurgePolicy {
-    ArchiveSourcePurgeAction source_action = ArchiveSourcePurgeAction::None;
-};
-
 struct ArchiveBatchPreview {
     std::vector<ArchiveCandidateRoot> candidates;
     retention::OutboxRetentionPreview outbox_retention{};
@@ -150,10 +144,6 @@ struct IArchivePackageService {
         const ArchiveWorkflowSelection& selection,
         std::string* error_out = nullptr) const = 0;
     virtual CreateArchivePackageResult CreateWorkflowPackage(const CreateWorkflowArchivePackageRequest& request) = 0;
-    virtual WorkflowArchivePurgeResult PurgeWorkflowArchiveSource(
-        const ArchiveWorkflowSelection& selection,
-        std::int64_t archive_package_id,
-        std::string* error_out = nullptr) = 0;
     virtual std::vector<ArchiveCandidateRoot> ListArchiveCandidateRoots(
         types::UtcTimePoint older_than_utc,
         types::UtcTimePoint now_utc,
@@ -165,13 +155,6 @@ struct IArchivePackageService {
         int max_candidates,
         const retention::OutboxRetentionPolicy& outbox_policy,
         std::string* error_out = nullptr) const = 0;
-    virtual ArchiveBatchResult ExecuteArchiveBatch(
-        types::UtcTimePoint older_than_utc,
-        types::UtcTimePoint now_utc,
-        int max_candidates,
-        int max_outbox_purge_rows,
-        const retention::OutboxRetentionPolicy& outbox_policy,
-        const ArchiveSourcePurgePolicy& source_purge_policy) = 0;
 };
 
 class SqliteArchivePackageService final : public IArchivePackageService {
@@ -191,10 +174,6 @@ public:
         const ArchiveWorkflowSelection& selection,
         std::string* error_out = nullptr) const override;
     CreateArchivePackageResult CreateWorkflowPackage(const CreateWorkflowArchivePackageRequest& request) override;
-    WorkflowArchivePurgeResult PurgeWorkflowArchiveSource(
-        const ArchiveWorkflowSelection& selection,
-        std::int64_t archive_package_id,
-        std::string* error_out = nullptr) override;
     std::vector<ArchiveCandidateRoot> ListArchiveCandidateRoots(
         types::UtcTimePoint older_than_utc,
         types::UtcTimePoint now_utc,
@@ -206,27 +185,18 @@ public:
         int max_candidates,
         const retention::OutboxRetentionPolicy& outbox_policy,
         std::string* error_out = nullptr) const override;
-    ArchiveBatchResult ExecuteArchiveBatch(
-        types::UtcTimePoint older_than_utc,
-        types::UtcTimePoint now_utc,
-        int max_candidates,
-        int max_outbox_purge_rows,
-        const retention::OutboxRetentionPolicy& outbox_policy,
-        const ArchiveSourcePurgePolicy& source_purge_policy) override;
-
 private:
+    friend class ::savor::runner::parallel::savordb::ArchiveWorkflowCommands;
+
+    WorkflowArchivePurgeResult PurgeWorkflowArchiveSource(
+        const ArchiveWorkflowSelection& selection,
+        std::int64_t archive_package_id,
+        std::string* error_out = nullptr);
     bool PurgePublishedOutboxRowsBeforeFloor(
         std::int64_t safe_floor_outbox_id,
         int max_rows,
         int* rows_deleted_out,
         std::string* error_out) const;
-    bool ApplySourcePurgePolicyForRoot(
-        std::int64_t root_job_set_id,
-        ArchiveSourcePurgeAction action,
-        std::int64_t archive_package_id,
-        int* job_sets_affected_out,
-        std::string* error_out) const;
-
     sqlite3* execution_db_ = nullptr;
     sqlite3* state_db_ = nullptr;
     sqlite3* analysis_db_ = nullptr;

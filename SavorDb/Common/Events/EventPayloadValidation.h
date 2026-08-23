@@ -153,7 +153,7 @@ inline bool ValidateExecutionWorkflowJobPayloadV1(const EventEnvelope& envelope,
         || envelope.event_type
             == "Execution.WorkflowRemediationRepairExecuted.v1"
         || envelope.event_type
-            == "Execution.WorkflowRemediationTerminalFailed.v1"
+            == "Execution.WorkflowInstanceFailed.v1"
         || envelope.event_type == "Execution.WorkflowInstanceCompleted.v1") {
         if (envelope.payload_ref_kind != "workflow_event") {
             if (error_out) *error_out = "payload_ref_kind must be workflow_event for Execution.Workflow* event";

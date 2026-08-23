@@ -557,6 +557,8 @@ PayloadCodecResult EncodePayload(
         writer.u8(static_cast<std::uint8_t>(payload.worker_mode));
         writer.u64(payload.render_window_handle);
         writer.string(payload.runtime_artifact_root);
+        writer.string(payload.session_filesystem_preparation_id);
+        writer.u64(payload.process_generation);
     });
 }
 
@@ -576,6 +578,8 @@ PayloadCodecResult DecodePayload(
         }
         reader.u64(payload.render_window_handle);
         reader.string(payload.runtime_artifact_root);
+        reader.string(payload.session_filesystem_preparation_id);
+        reader.u64(payload.process_generation);
     });
 }
 
@@ -1306,6 +1310,7 @@ PayloadCodecResult EncodePayload(
         writer.u8(static_cast<std::uint8_t>(payload.session_disposition));
         writer.u64(payload.workset_epoch);
         writer.boolean(payload.unstarted);
+        writer.u8(payload.cancellation_reason);
         if (!IsKnownRejectionCode(
                 static_cast<std::uint16_t>(payload.rejection_code))) {
             writer.fail(PayloadError::InvalidEnumValue);
@@ -1361,6 +1366,7 @@ PayloadCodecResult DecodePayload(
         }
         reader.u64(payload.workset_epoch);
         reader.boolean(payload.unstarted);
+        reader.u8(payload.cancellation_reason);
         if (reader.u16(rejection)) {
             payload.rejection_code = static_cast<RejectionCode>(rejection);
             if (!IsKnownRejectionCode(rejection))

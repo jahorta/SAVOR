@@ -2,6 +2,7 @@
 
 #include <QtCore/QAbstractTableModel>
 
+#include <optional>
 #include <vector>
 
 #include "Worker/WorkerTelemetry.h"
@@ -18,6 +19,7 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
 
     void setSnapshots(std::vector<WorkerSnapshot> snapshots);
+    [[nodiscard]] std::optional<WorkerSnapshot> snapshotAt(int row) const;
 
 private:
     static bool rowsAffectDisplay(const WorkerSnapshot& lhs, const WorkerSnapshot& rhs);

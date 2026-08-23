@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "Utils/Hash.h"
+#include "Utils/Log.h"
 #include "Utils/ModulePath.h"
 
 namespace savor::runner::parallel::savordb {
@@ -29,6 +30,17 @@ std::uint64_t NextProcessGeneration() noexcept {
             + 1;
     }
     return generation;
+}
+
+bool IsActiveStartupPhase(WorkerStartupPhase phase) noexcept {
+    return phase == WorkerStartupPhase::PreparingFilesystem
+        || phase == WorkerStartupPhase::Launching
+        || phase == WorkerStartupPhase::OpeningSession;
+}
+
+bool IsStartupPhase(WorkerStartupPhase phase) noexcept {
+    return phase != WorkerStartupPhase::None
+        && phase != WorkerStartupPhase::Failed;
 }
 
 bool IsTerminalWorksetState(savor::wrms::WorksetStateCode state) noexcept {
@@ -847,7 +859,7 @@ WorkerCoordinatorStartResult WorkerCoordinator::Start() {
     }
 
     stopping_.store(false, std::memory_order_release);
-    paused_.store(false, std::memory_order_release);
+    paused_.store(config_.initially_paused, std::memory_order_release);
     {
         std::lock_guard<std::mutex> preparation_lock(
             runtime_preparation_mutex_);
@@ -996,7 +1008,22 @@ WorkerCoordinator::SnapshotReadyWorkers() const {
 }
 
 std::vector<WorkerSnapshot> WorkerCoordinator::SnapshotWorkers() const {
-    return worker_status_.GetClusterSnapshot();
+    auto snapshots = worker_status_.GetClusterSnapshot();
+    const auto slots = CopyWorkerSlots();
+    for (auto& snapshot : snapshots) {
+        if (snapshot.worker_id < 0)
+            continue;
+        const auto index = static_cast<std::size_t>(snapshot.worker_id);
+        if (index >= slots.size() || !slots[index])
+            continue;
+        std::lock_guard<std::mutex> slot_lock(slots[index]->mutex);
+        if (slots[index]->id != index)
+            continue;
+        snapshot.process_generation = slots[index]->process_generation;
+        snapshot.log_path = slots[index]->log_path;
+        snapshot.startup_phase = slots[index]->startup_phase;
+    }
+    return snapshots;
 }
 
 FleetStartupSnapshot WorkerCoordinator::SnapshotFleetStartup() const {
@@ -1022,7 +1049,8 @@ FleetStartupSnapshot WorkerCoordinator::SnapshotFleetStartup() const {
             slot_snapshot.maximum_attempts = maximum_attempts;
             slot_snapshot.ready =
                 slot->ready && !slot->runtime_contract_sha256.empty();
-            slot_snapshot.starting = slot->startup_in_progress;
+            slot_snapshot.startup_phase = slot->startup_phase;
+            slot_snapshot.starting = IsStartupPhase(slot->startup_phase);
             slot_snapshot.exhausted =
                 !slot_snapshot.ready
                 && !slot_snapshot.starting
@@ -1947,11 +1975,17 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
     std::size_t worker_id = 0;
     std::shared_ptr<savor::ProcessWorker> worker;
     std::uint64_t render_widget_handle = 0;
+    std::uint64_t process_generation = 0;
+    std::string preparation_id;
+    std::filesystem::path prepared_user_directory;
     {
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
         worker_id = slot->id;
         worker = slot->worker;
         render_widget_handle = slot->visual_render_widget_handle;
+        process_generation = slot->process_generation;
+        preparation_id = slot->preparation_id;
+        prepared_user_directory = slot->prepared_user_directory;
     }
     if (!worker) {
         return {
@@ -1959,6 +1993,13 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
         };
     }
     if (config_.worker_runtime_preflight) {
+        {
+            std::lock_guard<std::mutex> slot_lock(slot->mutex);
+            if (slot->process_generation == process_generation
+                && slot->startup_phase == WorkerStartupPhase::Launching) {
+                slot->startup_phase = WorkerStartupPhase::OpeningSession;
+            }
+        }
         try {
             return config_.worker_runtime_preflight(
                 worker_id,
@@ -1988,7 +2029,8 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
         std::filesystem::path(config_.worker_dir_root)
         / ("worker-" + std::to_string(worker_id));
     std::error_code filesystem_error;
-    std::filesystem::create_directories(worker_root, filesystem_error);
+    const auto log_directory = worker_root / "logs";
+    std::filesystem::create_directories(log_directory, filesystem_error);
     if (filesystem_error) {
         return {
             .error = JoinDiagnostic(
@@ -1996,11 +2038,27 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
                 filesystem_error.message()),
         };
     }
+    const auto utc_launch_ticks = static_cast<std::uint64_t>(
+        std::chrono::system_clock::now().time_since_epoch().count());
+    const auto log_path = log_directory /
+        ("worker-" + std::to_string(worker_id) + "-" +
+         std::to_string(utc_launch_ticks) + ".log");
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mutex);
+        if (slot->worker != worker ||
+            slot->process_generation != process_generation) {
+            return {.error = "worker slot changed before launch"};
+        }
+        slot->utc_launch_ticks = utc_launch_ticks;
+        slot->log_path = log_path.string();
+    }
     if (!worker->launch_and_negotiate(
             savor::ProcessLaunchOptions{
                 .worker_id = worker_id,
                 .exe_path = executable.string(),
-                .log_directory = worker_root.string(),
+                .log_file_path = log_path.string(),
+                .process_generation = process_generation,
+                .utc_launch_ticks = utc_launch_ticks,
                 .hello_timeout_ms = config_.worker_start_timeout_ms,
             },
             &error)) {
@@ -2019,30 +2077,45 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
         };
     }
 
-    const auto user_directory = worker_root / "User";
-    std::filesystem::create_directories(
-        user_directory,
-        filesystem_error);
-    if (filesystem_error) {
+    WorkerCoordinatorRuntimePreflightResult contract_preflight{
+        .process_ready = true,
+        .runtime_contract = runtime_contract,
+    };
+    std::string contract_error;
+    if (!ValidatePreflight(config_, contract_preflight, &contract_error)) {
         return {
             .process_ready = true,
             .runtime_contract = runtime_contract,
-            .error = JoinDiagnostic(
-                "worker user-directory creation failed",
-                filesystem_error.message()),
+            .retryable = false,
+            .error = contract_error,
         };
+    }
+
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mutex);
+        if (slot->process_generation != process_generation
+            || slot->startup_phase != WorkerStartupPhase::Launching) {
+            return {
+                .process_ready = true,
+                .runtime_contract = runtime_contract,
+                .error = "worker slot changed before OpenSession",
+            };
+        }
+        slot->startup_phase = WorkerStartupPhase::OpeningSession;
     }
 
     savor::wrms::OpenSessionResultPayload open_result;
     if (!worker->open_session(
             savor::ProcessOpenSessionOptions{
                 .runtime_root = executable.parent_path().string(),
-                .user_directory = user_directory.string(),
+                .user_directory = prepared_user_directory.string(),
                 .iso_path = config_.iso_path,
                 .worker_mode = config_.worker_mode,
                 .render_widget_handle = render_widget_handle,
                 .runtime_artifact_root =
                     config_.runtime_artifact_root,
+                .session_filesystem_preparation_id = preparation_id,
+                .process_generation = process_generation,
             },
             &open_result,
             &error,
@@ -2106,7 +2179,233 @@ bool WorkerCoordinator::PrepareRuntimeSlot(
     return true;
 }
 
+simboot::SessionFilesystemPreparationResult
+WorkerCoordinator::PrepareSessionFilesystem(
+    const WorkerSlotPtr& slot,
+    std::uint32_t attempt) const {
+    std::size_t worker_id = 0;
+    std::uint64_t process_generation = 0;
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mutex);
+        worker_id = slot->id;
+        process_generation = slot->process_generation;
+    }
+
+    const auto preparation_id =
+        "worker-" + std::to_string(worker_id)
+        + "-generation-" + std::to_string(process_generation)
+        + "-attempt-" + std::to_string(attempt);
+    const auto worker_root =
+        std::filesystem::path(config_.worker_dir_root)
+        / ("worker-" + std::to_string(worker_id));
+    const simboot::SessionFilesystemPreparationRequest request{
+        .worker_id = worker_id,
+        .process_generation = process_generation,
+        .preparation_id = preparation_id,
+        .dolphin_qt_base = config_.dolphin_base_dir,
+        .worker_root = worker_root,
+        .cancelled = [this, weak_slot = std::weak_ptr<WorkerSlot>(slot),
+                      process_generation]() {
+            if (stopping_.load(std::memory_order_acquire)) {
+                return true;
+            }
+            const auto current = weak_slot.lock();
+            if (!current) {
+                return true;
+            }
+            std::lock_guard<std::mutex> slot_lock(current->mutex);
+            return current->process_generation != process_generation;
+        },
+    };
+
+    simboot::SessionFilesystemPreparationResult result;
+    if (config_.session_filesystem_preparer) {
+        result = config_.session_filesystem_preparer(request);
+    } else if (config_.worker_runtime_preflight) {
+        // The injected preflight is a complete test seam and does not launch
+        // the production worker against a filesystem.
+        result = {
+            .ok = true,
+            .preparation_id = preparation_id,
+            .user_directory = worker_root / "User",
+            .marker_path = simboot::SessionFilesystemPreparer::MarkerPath(
+                worker_root / "User"),
+        };
+    } else {
+        result = simboot::SessionFilesystemPreparer::Prepare(request);
+    }
+
+    if (result.ok
+        && (result.preparation_id != preparation_id
+            || result.user_directory != worker_root / "User")) {
+        result.ok = false;
+        result.retryable = false;
+        result.error =
+            "session filesystem preparation returned mismatched identity";
+    }
+    return result;
+}
+
+bool WorkerCoordinator::StartSessionFilesystemPreparation(
+    const WorkerSlotPtr& slot) {
+    std::uint32_t attempt = 0;
+    if (!BeginSessionFilesystemPreparation(slot, &attempt)) {
+        return false;
+    }
+    CompleteSessionFilesystemPreparation(slot, attempt);
+    std::lock_guard<std::mutex> slot_lock(slot->mutex);
+    return slot->startup_phase == WorkerStartupPhase::WaitingToOpen;
+}
+
+bool WorkerCoordinator::StartSessionFilesystemPreparationAsync(
+    const WorkerSlotPtr& slot) {
+    std::uint32_t attempt = 0;
+    if (!BeginSessionFilesystemPreparation(slot, &attempt)) {
+        return false;
+    }
+    try {
+        std::lock_guard<std::mutex> slot_lock(slot->mutex);
+        slot->startup_thread = std::thread(
+            [this, slot, attempt]() {
+                CompleteSessionFilesystemPreparation(slot, attempt);
+            });
+    } catch (const std::exception& exception) {
+        {
+            std::lock_guard<std::mutex> slot_lock(slot->mutex);
+            slot->startup_phase = WorkerStartupPhase::Failed;
+            slot->last_start_error =
+                std::string("create filesystem preparation thread failed: ")
+                + exception.what();
+            slot->start_retry_exhausted =
+                slot->start_attempts
+                >= std::max<std::uint32_t>(
+                    1,
+                    config_.max_worker_start_attempts);
+        }
+        ++start_failures_;
+        RefreshStartResult();
+        NotifyAvailabilityChanged();
+        return false;
+    }
+    return true;
+}
+
+bool WorkerCoordinator::BeginSessionFilesystemPreparation(
+    const WorkerSlotPtr& slot,
+    std::uint32_t* attempt_out) {
+    if (!slot || attempt_out == nullptr
+        || stopping_.load(std::memory_order_acquire)) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mutex);
+        const auto maximum_attempts = std::max<std::uint32_t>(
+            1,
+            config_.max_worker_start_attempts);
+        if (slot->ready
+            || slot->startup_phase != WorkerStartupPhase::PendingFilesystem
+            || slot->startup_thread.joinable()
+            || slot->start_retry_exhausted
+            || slot->start_attempts >= maximum_attempts) {
+            return false;
+        }
+        slot->startup_phase = WorkerStartupPhase::PreparingFilesystem;
+        *attempt_out = ++slot->start_attempts;
+        ++slot->observed_start_attempts;
+        worker_status_.UpdateState(
+            ToTelemetryWorkerId(slot->id),
+            WorkerStateKind::Spawning);
+        worker_status_.RecordHeartbeat(ToTelemetryWorkerId(slot->id));
+    }
+    ++start_attempts_;
+    return true;
+}
+
+void WorkerCoordinator::CompleteSessionFilesystemPreparation(
+    const WorkerSlotPtr& slot,
+    std::uint32_t attempt) {
+    auto result = PrepareSessionFilesystem(slot, attempt);
+    const bool prepared = result.ok
+        && !stopping_.load(std::memory_order_acquire);
+    std::size_t worker_id = 0;
+    std::uint64_t generation = 0;
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mutex);
+        worker_id = slot->id;
+        generation = slot->process_generation;
+        if (slot->start_attempts != attempt
+            || slot->startup_phase
+                != WorkerStartupPhase::PreparingFilesystem) {
+            return;
+        }
+        if (prepared) {
+            slot->preparation_id = result.preparation_id;
+            slot->prepared_user_directory = result.user_directory;
+            slot->startup_phase = WorkerStartupPhase::WaitingToOpen;
+            slot->last_start_error.clear();
+        } else {
+            ++start_failures_;
+            slot->startup_phase = WorkerStartupPhase::Failed;
+            slot->preparation_id.clear();
+            slot->prepared_user_directory.clear();
+            slot->last_start_error = result.error.empty()
+                ? "session filesystem preparation failed"
+                : result.error;
+            if (stopping_.load(std::memory_order_acquire)
+                && result.error.empty()) {
+                slot->last_start_error =
+                    "session filesystem preparation canceled";
+            }
+            slot->start_retry_exhausted =
+                !result.retryable
+                || attempt >= std::max<std::uint32_t>(
+                    1,
+                    config_.max_worker_start_attempts);
+            if (!slot->start_retry_exhausted) {
+                slot->next_start_after =
+                    std::chrono::steady_clock::now()
+                    + std::chrono::milliseconds(
+                        config_.worker_start_retry_backoff_ms);
+            }
+            worker_status_.UpdateState(
+                ToTelemetryWorkerId(slot->id),
+                WorkerStateKind::Dead);
+            worker_status_.RecordError(
+                ToTelemetryWorkerId(slot->id),
+                slot->last_start_error);
+        }
+    }
+
+    if (prepared) {
+        SCLOGIX(
+            SC_TAGS("worker.startup.filesystem"),
+            "prepared worker=%zu generation=%llu files=%llu directories=%llu bytes=%llu duration_ms=%llu source=%s target=%s preparation_id=%s",
+            worker_id,
+            static_cast<unsigned long long>(generation),
+            static_cast<unsigned long long>(result.file_count),
+            static_cast<unsigned long long>(result.directory_count),
+            static_cast<unsigned long long>(result.byte_count),
+            static_cast<unsigned long long>(result.elapsed_ms),
+            config_.dolphin_base_dir.c_str(),
+            result.user_directory.string().c_str(),
+            result.preparation_id.c_str());
+    } else {
+        SCLOGWX(
+            SC_TAGS("worker.startup.filesystem"),
+            "preparation failed worker=%zu generation=%llu duration_ms=%llu error=%s",
+            worker_id,
+            static_cast<unsigned long long>(generation),
+            static_cast<unsigned long long>(result.elapsed_ms),
+            result.error.c_str());
+    }
+    RefreshStartResult(prepared ? std::string{} : result.error);
+    NotifyAvailabilityChanged();
+}
+
 bool WorkerCoordinator::StartWorkerSlot(const WorkerSlotPtr& slot) {
+    if (!StartSessionFilesystemPreparation(slot)) {
+        return false;
+    }
     std::uint32_t attempt = 0;
     if (!BeginWorkerSlotStart(slot, &attempt)) {
         return false;
@@ -2131,7 +2430,7 @@ bool WorkerCoordinator::StartWorkerSlotAsync(
     } catch (const std::exception& exception) {
         {
             std::lock_guard<std::mutex> slot_lock(slot->mutex);
-            slot->startup_in_progress = false;
+            slot->startup_phase = WorkerStartupPhase::Failed;
             slot->last_start_error =
                 std::string("create worker startup thread failed: ")
                 + exception.what();
@@ -2170,22 +2469,20 @@ bool WorkerCoordinator::BeginWorkerSlotStart(
                 1,
                 config_.max_worker_start_attempts);
         if (slot->ready
-            || slot->startup_in_progress
+            || slot->startup_phase != WorkerStartupPhase::WaitingToOpen
             || slot->startup_thread.joinable()
             || slot->start_retry_exhausted
             || slot->start_attempts >= maximum_attempts) {
             return false;
         }
-        slot->startup_in_progress = true;
-        *attempt_out = ++slot->start_attempts;
-        ++slot->observed_start_attempts;
+        slot->startup_phase = WorkerStartupPhase::Launching;
+        *attempt_out = slot->start_attempts;
         worker_status_.UpdateState(
             ToTelemetryWorkerId(slot->id),
             WorkerStateKind::Spawning);
         worker_status_.RecordHeartbeat(
             ToTelemetryWorkerId(slot->id));
     }
-    ++start_attempts_;
     return true;
 }
 
@@ -2209,11 +2506,13 @@ void WorkerCoordinator::CompleteWorkerSlotStart(
     {
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
         if (slot->start_attempts != attempt
-            || !slot->startup_in_progress) {
+            || (slot->startup_phase != WorkerStartupPhase::Launching
+                && slot->startup_phase
+                    != WorkerStartupPhase::OpeningSession)) {
             return;
         }
-        slot->startup_in_progress = false;
         if (ready) {
+            slot->startup_phase = WorkerStartupPhase::None;
             slot->ready = true;
             slot->mode = config_.worker_mode;
             slot->runtime_contract_sha256 =
@@ -2254,6 +2553,7 @@ void WorkerCoordinator::CompleteWorkerSlotStart(
                 ToTelemetryWorkerId(slot->id));
         } else {
             ++start_failures_;
+            slot->startup_phase = WorkerStartupPhase::Failed;
             slot->ready = false;
             slot->runtime_contract_sha256.clear();
             slot->available_item_credits = 0;
@@ -2308,7 +2608,9 @@ void WorkerCoordinator::StopWorkerSlot(const WorkerSlotPtr& slot) {
         worker_id = slot->id;
         generation = slot->process_generation;
         slot->ready = false;
-        slot->startup_in_progress = false;
+        slot->startup_phase = WorkerStartupPhase::None;
+        slot->preparation_id.clear();
+        slot->prepared_user_directory.clear();
         slot->submission_in_progress = false;
         slot->quarantine_requested = false;
         slot->quarantine_diagnostic.clear();
@@ -2371,7 +2673,9 @@ void WorkerCoordinator::ResetWorkerSlot(const WorkerSlotPtr& slot) {
         slot->process_generation = NextProcessGeneration();
         slot->worker = std::make_shared<savor::ProcessWorker>();
         slot->ready = false;
-        slot->startup_in_progress = false;
+        slot->startup_phase = WorkerStartupPhase::PendingFilesystem;
+        slot->preparation_id.clear();
+        slot->prepared_user_directory.clear();
         slot->submission_in_progress = false;
         slot->quarantine_requested = false;
         slot->quarantine_diagnostic.clear();
@@ -2500,7 +2804,7 @@ void WorkerCoordinator::ReconcileWorkerPool() {
             bool removable = false;
             if (slot) {
                 std::lock_guard<std::mutex> slot_lock(slot->mutex);
-                removable = !slot->startup_in_progress
+                removable = !IsActiveStartupPhase(slot->startup_phase)
                     && !slot->startup_thread.joinable()
                     && !slot->submission_in_progress
                     && !slot->active_workset_id.has_value();
@@ -2539,60 +2843,110 @@ void WorkerCoordinator::ReconcileWorkerPool() {
 
     const auto slots = CopyWorkerSlots();
     std::vector<std::thread> completed_startup_threads;
-    std::uint32_t active_startups = 0;
     for (const auto& slot : slots) {
         if (!slot) {
             continue;
         }
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
-        if (!slot->startup_in_progress
+        if (!IsActiveStartupPhase(slot->startup_phase)
             && slot->startup_thread.joinable()) {
             completed_startup_threads.push_back(
                 std::move(slot->startup_thread));
         }
-        if (slot->startup_in_progress) {
-            ++active_startups;
+    }
+    for (auto& startup_thread : completed_startup_threads) {
+        if (startup_thread.joinable()) {
+            startup_thread.join();
         }
     }
 
-    const auto maximum_starts =
-        std::max<std::uint32_t>(
+    const auto maximum_open_sessions = paused_.load(std::memory_order_acquire)
+        ? std::max<std::uint32_t>(
             1,
-            config_.max_concurrent_worker_starts);
+            config_.max_concurrent_worker_starts_when_paused)
+        : 1u;
     const auto now = std::chrono::steady_clock::now();
+
     for (const auto& slot : slots) {
-        if (active_startups >= maximum_starts
-            || stopping_.load(std::memory_order_acquire)) {
+        if (!slot || stopping_.load(std::memory_order_acquire)) {
             break;
         }
-        bool should_start = false;
         bool requires_reset = false;
         {
             std::lock_guard<std::mutex> slot_lock(slot->mutex);
-            should_start = !slot->ready
-                && !slot->startup_in_progress
+            requires_reset =
+                slot->startup_phase == WorkerStartupPhase::Failed
+                && !slot->startup_thread.joinable()
                 && !slot->start_retry_exhausted
                 && now >= slot->next_start_after
                 && slot->start_attempts
                     < std::max<std::uint32_t>(
                         1,
                         config_.max_worker_start_attempts);
-            requires_reset = should_start
-                && slot->start_attempts != 0;
-        }
-        if (!should_start) {
-            continue;
         }
         if (requires_reset) {
             ResetWorkerSlot(slot);
         }
-        if (StartWorkerSlotAsync(slot)) {
-            ++active_startups;
+    }
+
+    std::uint32_t active_open_sessions = 0;
+    bool preparation_active = false;
+    for (const auto& slot : slots) {
+        if (!slot) {
+            continue;
+        }
+        std::lock_guard<std::mutex> slot_lock(slot->mutex);
+        preparation_active = preparation_active
+            || slot->startup_phase
+                == WorkerStartupPhase::PreparingFilesystem;
+        if (slot->startup_phase == WorkerStartupPhase::Launching
+            || slot->startup_phase
+                == WorkerStartupPhase::OpeningSession) {
+            ++active_open_sessions;
         }
     }
-    for (auto& startup_thread : completed_startup_threads) {
-        if (startup_thread.joinable()) {
-            startup_thread.join();
+
+    for (const auto& slot : slots) {
+        if (active_open_sessions >= maximum_open_sessions
+            || stopping_.load(std::memory_order_acquire)) {
+            break;
+        }
+        bool waiting_to_open = false;
+        {
+            std::lock_guard<std::mutex> slot_lock(slot->mutex);
+            waiting_to_open =
+                slot->startup_phase == WorkerStartupPhase::WaitingToOpen
+                && !slot->startup_thread.joinable();
+        }
+        if (waiting_to_open && StartWorkerSlotAsync(slot)) {
+            ++active_open_sessions;
+        }
+    }
+
+    if (!preparation_active
+        && !stopping_.load(std::memory_order_acquire)) {
+        for (const auto& slot : slots) {
+            if (!slot) {
+                continue;
+            }
+            bool pending_preparation = false;
+            {
+                std::lock_guard<std::mutex> slot_lock(slot->mutex);
+                pending_preparation =
+                    slot->startup_phase
+                        == WorkerStartupPhase::PendingFilesystem
+                    && !slot->startup_thread.joinable()
+                    && !slot->start_retry_exhausted
+                    && now >= slot->next_start_after
+                    && slot->start_attempts
+                        < std::max<std::uint32_t>(
+                            1,
+                            config_.max_worker_start_attempts);
+            }
+            if (pending_preparation) {
+                (void)StartSessionFilesystemPreparationAsync(slot);
+                break;
+            }
         }
     }
 }
@@ -2875,6 +3229,7 @@ void WorkerCoordinator::HandleItemTerminal(
                 static_cast<std::uint64_t>(context->worker_id),
             .process_generation =
                 context->process_generation,
+            .cancellation_reason = payload.cancellation_reason,
             .terminal = payload,
         });
     }

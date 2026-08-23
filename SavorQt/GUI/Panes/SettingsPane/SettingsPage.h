@@ -51,6 +51,7 @@ private slots:
     void browseForDolphinBaseDir();
     void handleMoveDatabaseClicked();
     void handleResetDatabaseClicked();
+    void handleResetResultStagingClicked();
     void handleUseExistingDatabaseClicked();
     void handleSaveSnapshotClicked();
     void handleLoadSnapshotClicked();
@@ -67,6 +68,7 @@ private:
         None,
         MoveDatabase,
         ResetDatabase,
+        ResetResultStaging,
         UseExistingDatabase,
         SaveSnapshot,
         LoadSnapshot,
@@ -90,6 +92,7 @@ private:
     QLabel* statusLabel_ = nullptr;
     QPushButton* moveDatabaseButton_ = nullptr;
     QPushButton* resetDatabaseButton_ = nullptr;
+    QPushButton* resetResultStagingButton_ = nullptr;
     QPushButton* useExistingButton_ = nullptr;
     QPushButton* saveSnapshotButton_ = nullptr;
     QPushButton* loadSnapshotButton_ = nullptr;

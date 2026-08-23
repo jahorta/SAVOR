@@ -64,7 +64,6 @@ public:
     void refreshSelectedJobDetail();
     void loadSelectedJobInputIni();
     void requeueSelectedJob();
-    void cancelSelectedJob();
     void restartSelectedFailedJob();
 
 signals:
@@ -87,7 +86,7 @@ private:
         int limit = 100;
     };
 
-    enum class Operation { FetchKinds, FetchPage, FetchDetail, FetchInputIni, Requeue, Cancel, Restart };
+    enum class Operation { FetchKinds, FetchPage, FetchDetail, FetchInputIni, Requeue, Restart };
 
     void kickKindsFetch();
     void kickPageFetch();
@@ -113,7 +112,6 @@ private:
     bool detailInFlight_ = false;
     bool inputIniInFlight_ = false;
     bool requeueInFlight_ = false;
-    bool cancelInFlight_ = false;
     bool restartInFlight_ = false;
     qint64 detailRequestJobId_ = 0;
     qint64 inputIniRequestJobId_ = 0;
@@ -123,7 +121,6 @@ private:
     QFutureWatcher<JobDetailResult> detailWatcher_;
     QFutureWatcher<InputIniResult> inputIniWatcher_;
     QFutureWatcher<VoidResult> requeueWatcher_;
-    QFutureWatcher<VoidResult> cancelWatcher_;
     QFutureWatcher<VoidResult> restartWatcher_;
     bool pageActive_ = false;
 };

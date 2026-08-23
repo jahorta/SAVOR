@@ -13,6 +13,7 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
@@ -480,6 +481,8 @@ void WorkflowsPage::createWidgets()
     stateFilter_->addItem(QStringLiteral("Waiting"), QStringLiteral("WAITING"));
     stateFilter_->addItem(QStringLiteral("Completed"), QStringLiteral("COMPLETED"));
     stateFilter_->addItem(QStringLiteral("Failed"), QStringLiteral("FAILED"));
+    stateFilter_->addItem(QStringLiteral("Interrupted"), QStringLiteral("INTERRUPTED"));
+    stateFilter_->addItem(QStringLiteral("Cancelling"), QStringLiteral("CANCELLING"));
     stateFilter_->addItem(QStringLiteral("Canceled"), QStringLiteral("CANCELED"));
 
     kindFilter_ = new QLineEdit(toolbarPanel);
@@ -571,6 +574,7 @@ void WorkflowsPage::createWidgets()
     });
     workflowTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     workflowTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    workflowTable_->setContextMenuPolicy(Qt::CustomContextMenu);
     workflowTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     workflowTable_->setAlternatingRowColors(true);
     workflowTable_->verticalHeader()->hide();
@@ -672,6 +676,65 @@ void WorkflowsPage::wireSignals()
         }
     });
     connect(workflowTable_, &QTableWidget::itemSelectionChanged, this, &WorkflowsPage::handleWorkflowSelectionChanged);
+    connect(workflowTable_, &QWidget::customContextMenuRequested, this, &WorkflowsPage::showWorkflowContextMenu);
+    connect(&retryFailedJobsWatcher_, &QFutureWatcher<WorksetReorganizationResult>::finished, this, [this]() {
+        retryFailedJobsInFlight_ = false;
+        try {
+            const auto result = retryFailedJobsWatcher_.result();
+            if (!result.ok) {
+                postStatusMessage(
+                    QStringLiteral("Retry failed jobs failed: %1")
+                        .arg(qstr(result.error.message)),
+                    StatusToast::Severity::Error);
+                return;
+            }
+            postStatusMessage(
+                QStringLiteral("Requeued %1 failed or interrupted job(s) into %2 workset(s).")
+                    .arg(result.value.requeued_job_count)
+                    .arg(result.value.created_workset_count),
+                StatusToast::Severity::Success);
+            if (workflowRefreshPipeline_ != nullptr) {
+                workflowRefreshPipeline_->requestRefresh(
+                    savorqt::gui::RefreshReason::Manual);
+            }
+            if (selectedWorkflowInstanceId_ > 0) {
+                fetchWorkflowDetail(selectedWorkflowInstanceId_);
+            }
+        } catch (const std::exception& exception) {
+            postStatusMessage(
+                QStringLiteral("Retry failed jobs failed: %1")
+                    .arg(QString::fromUtf8(exception.what())),
+                StatusToast::Severity::Error);
+        }
+    });
+    connect(&workflowCancelWatcher_, &QFutureWatcher<WorkflowCancelResult>::finished, this, [this]() {
+        workflowCancelInFlight_ = false;
+        try {
+            const auto result = workflowCancelWatcher_.result();
+            if (!result.ok) {
+                postStatusMessage(
+                    QStringLiteral("Cancel workflow failed: %1")
+                        .arg(qstr(result.error.message)),
+                    StatusToast::Severity::Error);
+                return;
+            }
+            postStatusMessage(
+                QStringLiteral("Workflow cancellation requested."),
+                StatusToast::Severity::Success);
+            if (workflowRefreshPipeline_ != nullptr) {
+                workflowRefreshPipeline_->requestRefresh(
+                    savorqt::gui::RefreshReason::Manual);
+            }
+            if (selectedWorkflowInstanceId_ > 0) {
+                fetchWorkflowDetail(selectedWorkflowInstanceId_);
+            }
+        } catch (const std::exception& exception) {
+            postStatusMessage(
+                QStringLiteral("Cancel workflow failed: %1")
+                    .arg(QString::fromUtf8(exception.what())),
+                StatusToast::Severity::Error);
+        }
+    });
 
     workflowRefreshPipeline_->setRefreshIntervalMs(refreshSecondsSpin_->value() * 1000);
     workflowRefreshPipeline_->setAutoRefreshEnabled(autoRefreshCheck_->isChecked());
@@ -838,6 +901,58 @@ void WorkflowsPage::handleWorkflowSelectionChanged()
     workflowJobSets_.clear();
     clearWorkflowDetail(QStringLiteral("Loading workflow detail..."));
     fetchWorkflowDetail(workflowId);
+}
+
+void WorkflowsPage::showWorkflowContextMenu(const QPoint& position)
+{
+    const auto index = workflowTable_->indexAt(position);
+    if (!index.isValid()) {
+        return;
+    }
+    const auto* idItem = workflowTable_->item(index.row(), 0);
+    const auto workflowInstanceId = idItem != nullptr
+        ? idItem->data(kWorkflowIdRole).toLongLong()
+        : 0;
+    if (workflowInstanceId <= 0) {
+        return;
+    }
+    QMenu menu(workflowTable_);
+    auto* retryAction = menu.addAction(QStringLiteral("Retry failed or interrupted jobs"));
+    retryAction->setEnabled(!retryFailedJobsInFlight_);
+    connect(retryAction, &QAction::triggered, this, [this, workflowInstanceId]() {
+        retryFailedJobs(workflowInstanceId);
+    });
+    auto* cancelAction = menu.addAction(QStringLiteral("Cancel workflow"));
+    cancelAction->setEnabled(!workflowCancelInFlight_);
+    connect(cancelAction, &QAction::triggered, this, [this, workflowInstanceId]() {
+        cancelWorkflow(workflowInstanceId);
+    });
+    menu.exec(workflowTable_->viewport()->mapToGlobal(position));
+}
+
+void WorkflowsPage::retryFailedJobs(std::int64_t workflowInstanceId)
+{
+    if (retryFailedJobsInFlight_ || workflowInstanceId <= 0) {
+        return;
+    }
+    retryFailedJobsInFlight_ = true;
+    retryFailedJobsWatcher_.setFuture(QtConcurrent::run([workflowInstanceId]() {
+        return savorqt::db::SavorDbWorkflowService::RetryFailedJobs(
+            workflowInstanceId);
+    }));
+}
+
+void WorkflowsPage::cancelWorkflow(std::int64_t workflowInstanceId)
+{
+    if (workflowCancelInFlight_ || workflowInstanceId <= 0) {
+        return;
+    }
+    workflowCancelInFlight_ = true;
+    workflowCancelWatcher_.setFuture(QtConcurrent::run([workflowInstanceId]() {
+        return savorqt::db::SavorDbWorkflowService::CancelWorkflow(
+            workflowInstanceId,
+            "cancelled by user from SavorQt");
+    }));
 }
 
 void WorkflowsPage::updateWorkflowTable()

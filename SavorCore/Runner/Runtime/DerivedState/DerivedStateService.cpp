@@ -1,4 +1,5 @@
 #include "DerivedStateService.h"
+#include "../../../Utils/Log.h"
 
 #include "../../../Core/Memory/Soa/SoaAddrRegistry.h"
 #include "../../../Core/Memory/Soa/SoaStructs.h"
@@ -602,6 +603,24 @@ DerivedStateReceipt DerivedStateService::ActivateItem(
                 "Derived-state trigger exceeds the fixed CPU evidence capacity");
         }
     }
+    SCLOGDX(
+        SC_TAGS("derived_state.refresh_plan", "derived_state.transition"),
+        "epoch=%llu item=%llu entries=%zu",
+        static_cast<unsigned long long>(epoch_.value()),
+        static_cast<unsigned long long>(item_id_.value()),
+        cpu_plan->entry_count);
+    for (std::size_t index = 0; index < cpu_plan->entry_count; ++index)
+    {
+        const auto& entry = cpu_plan->entries[index];
+        SCLOGDX(
+            SC_TAGS("derived_state.refresh_plan", "derived_state.subscription"),
+            "epoch=%llu item=%llu ordinal=%zu group=%s trigger_pc=0x%08X",
+            static_cast<unsigned long long>(epoch_.value()),
+            static_cast<unsigned long long>(item_id_.value()),
+            index,
+            entry.group ? entry.group->group_id.c_str() : "<missing>",
+            entry.trigger_pc);
+    }
     cpu_->plan = std::move(cpu_plan);
     cpu_->overflowed.store(false, std::memory_order_release);
     cpu_->queue.Clear();
@@ -800,8 +819,20 @@ DerivedStateQueryResult<snapshot_type> DerivedStateService::method_name( \
 { \
     const auto receipt = ValidateQuery( \
         query, member_name ? &member_name->provenance : nullptr); \
-    if (!receipt.ok) \
+    if (!receipt.ok) { \
+        SCLOGWX( \
+            SC_TAGS("derived_state.query", "derived_state.invariant"), \
+            "query=%s epoch=%llu item=%llu freshness=%u available_turn_entry=%llu available_turn_order=%llu available_rewards=%llu reason=%s", \
+            #method_name, \
+            static_cast<unsigned long long>(query.workset_epoch.value()), \
+            static_cast<unsigned long long>(query.item_id.value()), \
+            static_cast<unsigned>(query.freshness), \
+            static_cast<unsigned long long>(turn_entry_generation_), \
+            static_cast<unsigned long long>(turn_order_generation_), \
+            static_cast<unsigned long long>(rewards_generation_), \
+            receipt.message.c_str()); \
         return {.receipt = receipt}; \
+    } \
     return {.receipt = receipt, .snapshot = *member_name}; \
 }
 
@@ -964,6 +995,13 @@ void DerivedStateService::CommitNativeEvidence(const RoutedStopEvent& event)
     DerivedEventEvidenceRecord record;
     if (!cpu_->queue.TryPop(record))
     {
+        SCLOGWX(
+            SC_TAGS("derived_state.capture", "derived_state.invariant"),
+            "epoch=%llu item=%llu trigger_pc=0x%08X queue=empty overflowed=%d",
+            static_cast<unsigned long long>(epoch_.value()),
+            static_cast<unsigned long long>(item_id_.value()),
+            event.evidence.hit_pc,
+            cpu_->overflowed.load(std::memory_order_acquire) ? 1 : 0);
         if (cpu_->overflowed.exchange(false, std::memory_order_acq_rel))
         {
             throw std::runtime_error(
@@ -985,6 +1023,14 @@ void DerivedStateService::CommitNativeEvidence(const RoutedStopEvent& event)
         throw std::runtime_error(
             "Battle derived-state CPU evidence has an invalid group count");
     }
+
+    SCLOGDX(
+        SC_TAGS("derived_state.capture", "derived_state.transition"),
+        "epoch=%llu item=%llu trigger_pc=0x%08X captured_groups=%zu queue=committing",
+        static_cast<unsigned long long>(epoch_.value()),
+        static_cast<unsigned long long>(item_id_.value()),
+        event.evidence.hit_pc,
+        record.group_count);
 
     std::optional<BattleTurnEntrySnapshotV1> turn_entry_replacement;
     std::optional<BattleTurnOrderSnapshotV1> turn_order_replacement;
@@ -1014,6 +1060,17 @@ void DerivedStateService::CommitNativeEvidence(const RoutedStopEvent& event)
         }
         if (evidence.failure != BattleEvidenceFailure::None)
         {
+            SCLOGWX(
+                SC_TAGS("derived_state.capture", "derived_state.invariant"),
+                "epoch=%llu item=%llu trigger_pc=0x%08X group=%s failure=%s address=0x%08X size=%zu backend=%s",
+                static_cast<unsigned long long>(epoch_.value()),
+                static_cast<unsigned long long>(item_id_.value()),
+                record.trigger_pc,
+                evidence.group ? evidence.group->group_id.c_str() : "<missing>",
+                FailureName(evidence.failure),
+                evidence.failure_address,
+                evidence.failure_size,
+                HitTimeErrorName(evidence.backend_error));
             throw std::runtime_error(std::format(
                 "Derived-state CPU acquisition failed for block '{}' group '{}' "
                 "at trigger PC 0x{:08X}: {}; address 0x{:08X}, size {}, read result {}",

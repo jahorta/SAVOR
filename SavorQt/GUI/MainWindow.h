@@ -52,9 +52,10 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
     void shutdownCoordinator();
+    void waitForCoordinatorShutdown();
 
 signals:
-    void coordinatorStateChanged(bool running, bool paused, int targetWorkers, int activeWorkers, const QString& validationMessage);
+    void coordinatorStateChanged(CoordinatorLifecycleState state, bool paused, int targetWorkers, int activeWorkers, const QString& validationMessage);
 
 private slots:
     void handleWorkspaceChanged(int currentIndex);
@@ -77,8 +78,8 @@ private:
     void openFocusedTool(FocusedTool tool);
     void showBattleRunsAnalysisPane();
     void openWorkflowGraphEditor();
-    void openWorkflowLauncherPreselected(const QString& unitKind,const QString& inputKey,qint64 refId);
     void openWorkflowGraphEditor(const savor::db::WorkflowGraphSnapshot& snapshot, bool duplicate);
+    void openWorkflowLauncherPreselected(const QString& unitKind,const QString& inputKey,qint64 refId);
     void openSettingsTool(SettingsPage::CoordinatorFocusTarget focusTarget = SettingsPage::CoordinatorFocusTarget::Section);
     QDialog* createFocusedDialog(const QString& key, const QString& title);
     void setWorkspaceIndex(int index);

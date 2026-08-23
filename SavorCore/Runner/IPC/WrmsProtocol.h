@@ -10,7 +10,7 @@
 namespace savor::wrms {
 
 inline constexpr std::array<std::uint8_t, 4> Magic{ 'W', 'R', 'M', 'S' };
-inline constexpr std::uint16_t ProtocolVersion = 2;
+inline constexpr std::uint16_t ProtocolVersion = 4;
 inline constexpr std::size_t HeaderSize = 20;
 inline constexpr std::size_t MaximumPayloadSize = 64u * 1024u * 1024u;
 
@@ -255,6 +255,8 @@ struct OpenSessionPayload {
     WorkerModeCode worker_mode = WorkerModeCode::Headless;
     std::uint64_t render_window_handle = 0;
     std::string runtime_artifact_root;
+    std::string session_filesystem_preparation_id;
+    std::uint64_t process_generation = 0;
 
     friend bool operator==(const OpenSessionPayload&, const OpenSessionPayload&) = default;
 };
@@ -521,6 +523,7 @@ struct WorksetItemTerminalPayload {
         SessionDispositionCode::Closed;
     std::uint64_t workset_epoch = 0;
     bool unstarted = false;
+    std::uint8_t cancellation_reason = 0;
     RejectionCode rejection_code = RejectionCode::None;
     std::string error_code;
     std::string message;

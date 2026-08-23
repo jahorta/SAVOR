@@ -466,10 +466,8 @@ std::string FormatCoordinatorTelemetryLine(
                 : 0)
         << " startup_recovered_dispatches="
         << telemetry.execution.startup_recovered_dispatches
-        << " startup_requeued_jobs="
-        << telemetry.execution.startup_requeued_jobs
-        << " startup_recovery_attempts_granted="
-        << telemetry.execution.startup_recovery_attempts_granted
+        << " startup_interrupted_jobs="
+        << telemetry.execution.startup_interrupted_jobs
         << " active_residence_probes="
         << telemetry.execution.active_residence_probes
         << " active_residence_matches="
@@ -2281,10 +2279,8 @@ bool RunSeedProbeRealWorkerSmokeImpl(
                     : 0)
             << " startup_recovered_dispatches="
             << final_telemetry.execution.startup_recovered_dispatches
-            << " startup_requeued_jobs="
-            << final_telemetry.execution.startup_requeued_jobs
-            << " startup_recovery_attempts_granted="
-            << final_telemetry.execution.startup_recovery_attempts_granted
+            << " startup_interrupted_jobs="
+            << final_telemetry.execution.startup_interrupted_jobs
             << " active_residence_probes="
             << final_telemetry.execution.active_residence_probes
             << " active_residence_matches="

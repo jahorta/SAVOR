@@ -4999,7 +4999,10 @@ struct WorkerRuntime::Impl
             finished.session_disposition,
             finished.workset_epoch,
             finished.output_payload,
-            finished.error};
+            finished.error,
+            {},
+            {},
+            finished.cancellation_reason};
         HandleInvocationTerminal(std::move(terminal));
     }
 

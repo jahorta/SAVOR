@@ -73,7 +73,6 @@ struct ExecutionJobRecord {
     std::optional<std::int64_t> workset_id;
     std::optional<int> workset_item_ordinal;
     std::optional<std::int64_t> dispatch_attempt_id;
-    std::optional<std::uint32_t> dispatch_item_ordinal;
     std::optional<std::uint64_t> reserved_attempt_id;
     std::optional<std::int64_t> execution_finished_at_utc;
     std::optional<std::string> worker_terminal_status;
@@ -254,8 +253,7 @@ struct ExecutionJobTerminalAuthorityReceipt {
 };
 
 enum class ExecutionJobWorkerLossRecoveryDisposition {
-    Requeued = 0,
-    AttemptsExhaustedFailed,
+    Interrupted = 0,
     AlreadyDurable,
     Missing,
     TokenMismatch,
@@ -428,6 +426,48 @@ struct PublishWorksetWaveReceipt {
     bool ready_workset_availability_changed = false;
 };
 
+// A terminal workset-backed job together with the immutable workset envelope
+// required to reconstruct it again. The organizer reads these records, then
+// returns a plan that reassigns the same job identities to fresh worksets.
+struct FailedWorkflowWorksetJobRecord {
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t job_id = 0;
+    std::int64_t job_set_id = 0;
+    std::int64_t root_job_set_id = 0;
+    std::int64_t source_workset_id = 0;
+    int attempts = 0;
+    int priority = 0;
+    std::uint64_t estimated_item_payload_bytes = 0;
+    PublishWorksetCommand source_workset;
+};
+
+struct ReorganizedWorksetPlanEntry {
+    std::int64_t workflow_step_id = 0;
+    std::int64_t job_set_id = 0;
+    std::int64_t root_job_set_id = 0;
+    std::int32_t program_kind = 0;
+    std::int32_t program_version = 0;
+    ExecutionWorksetContract contract;
+    ExecutionWorksetDerivedStateBindingV1 derived_state;
+    ExecutionWorksetObservationBindingV1 observation;
+    int priority = 0;
+    std::uint64_t estimated_payload_bytes = 0;
+    std::vector<std::int64_t> ordered_job_ids;
+};
+
+struct WorksetJobReorganizationPlan {
+    std::int64_t workflow_instance_id = 0;
+    std::vector<ReorganizedWorksetPlanEntry> worksets;
+    std::string requested_by;
+};
+
+struct WorksetJobReorganizationReceipt {
+    int requeued_job_count = 0;
+    int created_workset_count = 0;
+    std::vector<std::int64_t> workset_ids;
+};
+
 struct ClaimPublishedWorksetBatchCommand {
     std::string batch_nonce;
     std::size_t requested_workset_count = 0;
@@ -460,8 +500,7 @@ struct ClaimedPublishedWorksetItem {
     int max_attempts = 1;
     std::int64_t queued_at_utc = 0;
     std::string input_ini;
-    int item_ordinal = 0;
-    std::uint32_t dispatch_item_ordinal = 0;
+    std::uint32_t workset_item_ordinal = 0;
     std::uint64_t reserved_attempt_id = 0;
 };
 
@@ -514,8 +553,9 @@ struct MarkWorksetDrainingCommand {
 
 struct RecoverInterruptedWorksetDispatchesReceipt {
     int dispatches_closed = 0;
+    int jobs_interrupted = 0;
     int jobs_requeued = 0;
-    int recovery_attempts_granted = 0;
+    int created_worksets = 0;
 };
 
 struct ReleaseWorksetDispatchCommand {
@@ -532,6 +572,8 @@ struct WorksetDispatchMutationReceipt {
     std::int64_t dispatch_attempt_id = 0;
     int jobs_requeued = 0;
     int jobs_failed = 0;
+    int jobs_interrupted = 0;
+    int created_worksets = 0;
     bool dispatch_closed = false;
     std::optional<std::int64_t> lease_expires_at_utc;
 };
@@ -540,7 +582,7 @@ struct MarkWorksetJobStartedCommand {
     std::int64_t dispatch_attempt_id = 0;
     std::string claim_token;
     std::int64_t job_id = 0;
-    std::uint32_t dispatch_item_ordinal = 0;
+    std::uint32_t workset_item_ordinal = 0;
     std::uint64_t reserved_attempt_id = 0;
     std::string worker_invocation_id;
     std::string requested_by;
@@ -557,7 +599,7 @@ struct RecordCanonicalJobProgressCommand {
     std::int64_t dispatch_attempt_id = 0;
     std::string claim_token;
     std::int64_t job_id = 0;
-    std::uint32_t dispatch_item_ordinal = 0;
+    std::uint32_t workset_item_ordinal = 0;
     std::uint64_t reserved_attempt_id = 0;
     std::uint64_t workset_id = 0;
     std::uint64_t item_id = 0;
@@ -597,7 +639,7 @@ struct StageWorkerTerminalCommand {
     std::int64_t dispatch_attempt_id = 0;
     std::string claim_token;
     std::int64_t job_id = 0;
-    std::uint32_t dispatch_item_ordinal = 0;
+    std::uint32_t workset_item_ordinal = 0;
     std::uint64_t reserved_attempt_id = 0;
     std::string terminal_status;
     std::string terminal_fingerprint;
@@ -663,6 +705,7 @@ struct ClaimedExecutionFinishedJob {
     std::optional<std::string> worker_terminal_error_code;
     std::optional<std::string> worker_terminal_error_text;
     bool worker_terminal_unstarted = false;
+    std::optional<std::string> cancellation_terminal_disposition;
     ExecutionTempBlobRecord result_blob;
     int processing_attempts = 0;
     int processing_failures = 0;
@@ -680,17 +723,6 @@ struct ResetInterruptedResultProcessingCommand {
     std::string requested_by;
 };
 
-struct RequeueLostResultProcessingCommand {
-    std::int64_t job_id = 0;
-    std::string requested_by;
-};
-
-struct RecordResultProcessingFailureCommand {
-    std::int64_t job_id = 0;
-    std::string error_code;
-    std::string error_text;
-};
-
 enum class ExecutionResultFinalizationDisposition {
     Final = 0,
     Retry,
@@ -703,6 +735,12 @@ struct ExecutionFinalizationOutput {
     std::int64_t ref_id = 0;
 };
 
+struct ExecutionResultStagingFileSpec {
+    std::string relative_path;
+    std::string sha256;
+    std::uint64_t size_bytes = 0;
+};
+
 struct ExecutionCancellationRequestSpec {
     std::int64_t job_id = 0;
     std::string request_key;
@@ -710,6 +748,7 @@ struct ExecutionCancellationRequestSpec {
     std::optional<std::string> reason_text;
     std::string requested_by;
     std::optional<std::int64_t> caused_by_job_id;
+    std::string terminal_disposition;
 };
 
 struct CommitResultFinalizationCommand {
@@ -721,6 +760,7 @@ struct CommitResultFinalizationCommand {
     std::optional<std::string> error_text;
     std::vector<ExecutionFinalizationOutput> outputs;
     std::vector<ExecutionCancellationRequestSpec> cancellation_requests;
+    std::vector<ExecutionResultStagingFileSpec> staging_files;
     std::vector<std::string> event_lines;
     std::string requested_by;
 };
@@ -807,6 +847,39 @@ struct CompleteTempBlobCleanupCommand {
     std::int64_t temp_blob_id = 0;
     std::string cleanup_token;
     bool deleted = false;
+    std::optional<std::string> cleanup_error;
+};
+
+struct ResultStagingCleanupRecord {
+    std::int64_t cleanup_id = 0;
+    std::int64_t job_id = 0;
+    std::string terminal_sha256;
+    std::int32_t program_kind = 0;
+    std::string relative_path;
+    std::string expected_sha256;
+    std::uint64_t expected_size_bytes = 0;
+    std::string cleanup_state;
+    int cleanup_attempts = 0;
+};
+
+struct ClaimResultStagingCleanupCommand {
+    std::string cleanup_token;
+    std::int64_t lease_duration_ms = 0;
+};
+
+struct ClaimedResultStagingCleanup {
+    ResultStagingCleanupRecord cleanup;
+    std::string cleanup_token;
+    std::int64_t cleanup_lease_expires_at_utc = 0;
+};
+
+enum class ResultStagingCleanupCompletion { Deleted = 0, Retry, Blocked };
+
+struct CompleteResultStagingCleanupCommand {
+    std::int64_t cleanup_id = 0;
+    std::string cleanup_token;
+    ResultStagingCleanupCompletion completion =
+        ResultStagingCleanupCompletion::Retry;
     std::optional<std::string> cleanup_error;
 };
 
@@ -994,32 +1067,6 @@ struct IExecutionDb {
         }
         return false;
     }
-    virtual bool RequeueLostResultProcessing(
-        const RequeueLostResultProcessingCommand& command,
-        ResultProcessingReceipt* receipt_out = nullptr,
-        std::string* error_out = nullptr) {
-        (void)command;
-        if (receipt_out != nullptr) {
-            *receipt_out = {};
-        }
-        if (error_out != nullptr) {
-            *error_out = "lost result requeue is not supported";
-        }
-        return false;
-    }
-    virtual bool RecordResultProcessingFailure(
-        const RecordResultProcessingFailureCommand& command,
-        ResultProcessingReceipt* receipt_out = nullptr,
-        std::string* error_out = nullptr) {
-        (void)command;
-        if (receipt_out != nullptr) {
-            *receipt_out = {};
-        }
-        if (error_out != nullptr) {
-            *error_out = "result processing failure recording is not supported";
-        }
-        return false;
-    }
     virtual bool CommitResultFinalizationsBatch(
         const CommitResultFinalizationsBatchCommand& command,
         std::vector<ResultProcessingReceipt>* receipts_out = nullptr,
@@ -1087,6 +1134,41 @@ struct IExecutionDb {
         if (error_out != nullptr) {
             *error_out = "temporary-blob cleanup is not supported";
         }
+        return false;
+    }
+    virtual std::optional<ClaimedResultStagingCleanup>
+    ClaimNextResultStagingCleanup(
+        const ClaimResultStagingCleanupCommand& command,
+        std::string* error_out = nullptr) {
+        (void)command;
+        if (error_out != nullptr) error_out->clear();
+        return std::nullopt;
+    }
+    virtual bool CompleteResultStagingCleanup(
+        const CompleteResultStagingCleanupCommand& command,
+        ExecutionDbOperationDisposition* disposition_out = nullptr,
+        std::string* error_out = nullptr) {
+        (void)command;
+        if (disposition_out != nullptr)
+            *disposition_out = ExecutionDbOperationDisposition::BackendError;
+        if (error_out != nullptr)
+            *error_out = "result-staging cleanup is not supported";
+        return false;
+    }
+    virtual bool GetResultStagingCleanupCount(
+        std::int64_t* count_out,
+        std::string* error_out = nullptr) const {
+        if (count_out != nullptr) *count_out = 0;
+        if (error_out != nullptr)
+            *error_out = "result-staging cleanup count is not supported";
+        return false;
+    }
+    virtual bool ClearResultStagingCleanupQueue(
+        std::int64_t* rows_deleted_out = nullptr,
+        std::string* error_out = nullptr) {
+        if (rows_deleted_out != nullptr) *rows_deleted_out = 0;
+        if (error_out != nullptr)
+            *error_out = "result-staging cleanup reset is not supported";
         return false;
     }
     virtual bool RecoverInterruptedWorksetDispatches(
@@ -1357,10 +1439,18 @@ struct IExecutionDb {
         }
         return false;
     }
-    virtual bool CancelQueuedOrClaimedJob(std::int64_t job_id, std::string* error_out = nullptr) {
-        (void)job_id;
+    virtual std::vector<FailedWorkflowWorksetJobRecord>
+    ListFailedWorkflowWorksetJobs(std::int64_t workflow_instance_id) const {
+        (void)workflow_instance_id;
+        return {};
+    }
+    virtual bool ApplyWorksetJobReorganization(
+        const WorksetJobReorganizationPlan& plan,
+        WorksetJobReorganizationReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) {
+        (void)plan;
         if (error_out) {
-            *error_out = "cancel job is not supported by this execution db";
+            *error_out = "workset job reorganization is not supported by this execution db";
         }
         return false;
     }

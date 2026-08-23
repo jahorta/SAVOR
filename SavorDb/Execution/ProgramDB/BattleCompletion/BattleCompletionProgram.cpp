@@ -531,7 +531,7 @@ public:
                 terminal.terminal.message.empty()
                     ? "battle.completion did not complete cleanly"
                     : terminal.terminal.message,
-                terminal.terminal.status == Status::Cancelled ? "CANCELED" : "FAILED");
+                "FAILED");
         phase::BattleCompletionResultV1 result{};
         if (!phase_->DecodeProgramResult(terminal.terminal.result, result, &error) ||
             result.artifacts.size() != 1 ||
@@ -588,6 +588,12 @@ public:
                 .causation_id = "execution-job-" + std::to_string(context.job_id)},
                 &error)) throw std::runtime_error(error);
         auto decision = Decision("SUCCEEDED");
+        decision.cleanup_worker_staging = true;
+        decision.staging_files.push_back({
+            .relative_path = path.lexically_relative(root_).generic_string(),
+            .sha256 = sha,
+            .size_bytes = static_cast<std::uint64_t>(manifest.size()),
+        });
         decision.outputs.push_back(Output(row->battle_completion_id));
         decision.event_lines.push_back("[battle-completion] completion=" +
             std::to_string(row->battle_completion_id) + " route=" + RouteName(*route) +
@@ -595,28 +601,7 @@ public:
         return decision;
     }
 
-    ProgramResultRecovery RecoverPersistedOutcome(
-        const ProgramResultRecoveryContext& context) const override {
-        const auto row = analysis_
-            ? analysis_->GetBattleCompletionForExecJob(context.job_id)
-            : std::nullopt;
-        if (!row || !row->worker_terminal_sha256)
-            return {.disposition = ProgramResultRecoveryDisposition::NoPersistedOutcome,
-                .diagnostic = "no Battle Completion result exists"};
-        if (row->battle_completion_id != context.program_ref_id ||
-            *row->worker_terminal_sha256 != context.terminal_sha256)
-            return {.disposition = ProgramResultRecoveryDisposition::Inconsistent,
-                .diagnostic = "persisted Battle Completion result drifted"};
-        auto decision = Decision(row->status == "COMPLETED" ? "SUCCEEDED" : "FAILED",
-            row->error_code, row->error_text);
-        if (row->status == "COMPLETED")
-            decision.outputs.push_back(Output(row->battle_completion_id));
-        return {.disposition = ProgramResultRecoveryDisposition::Recovered,
-            .decision = std::move(decision),
-            .diagnostic = "recovered exact Battle Completion result"};
-    }
-
-private:
+    private:
     ProgramResultDecision PersistFailure(const BattleCompletionRecord& row,
         const ProgramResultProcessingContext& context,
         std::string code, std::string text,
@@ -631,7 +616,10 @@ private:
                     std::to_string(row.battle_completion_id),
                 .causation_id = "execution-job-" + std::to_string(context.job_id)},
                 &error)) throw std::runtime_error(error);
-        return Decision(std::move(job_state), std::move(code), std::move(text));
+        auto decision = Decision(
+            std::move(job_state), std::move(code), std::move(text));
+        decision.cleanup_worker_staging = true;
+        return decision;
     }
 
     IStateDb* state_{};
@@ -648,6 +636,7 @@ ProgramKindDescriptor BuildBattleCompletionProgramDescriptor(
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(savor::PK_BattleCompletion);
     descriptor.program_name = "Battle Completion";
+    descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity = phase::BattleCompletionFullPhaseDefinitionV1()->identity();
     descriptor.default_progress_library_ids = ObservationDefaults().progress_library_ids;
     descriptor.default_derived_state_block_ids = std::vector<std::string>{};

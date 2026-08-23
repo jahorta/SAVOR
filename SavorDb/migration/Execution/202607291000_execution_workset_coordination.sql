@@ -210,13 +210,6 @@ ALTER TABLE exec_job
         REFERENCES exec_workset_dispatch_attempt(dispatch_attempt_id);
 
 ALTER TABLE exec_job
-    ADD COLUMN dispatch_item_ordinal INTEGER NULL
-        CHECK(
-            dispatch_item_ordinal IS NULL
-            OR dispatch_item_ordinal BETWEEN 0 AND 4294967295
-        );
-
-ALTER TABLE exec_job
     ADD COLUMN reserved_attempt_id INTEGER NULL
         CHECK(reserved_attempt_id IS NULL OR reserved_attempt_id > 0);
 
@@ -385,10 +378,6 @@ CREATE INDEX IF NOT EXISTS ix_exec_job_workset_state
 CREATE INDEX IF NOT EXISTS ix_exec_job_dispatch_attempt
     ON exec_job(dispatch_attempt_id, state, workset_item_ordinal);
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_exec_job_dispatch_item_ordinal
-    ON exec_job(dispatch_attempt_id, dispatch_item_ordinal)
-    WHERE dispatch_attempt_id IS NOT NULL;
-
 CREATE INDEX IF NOT EXISTS ix_exec_job_execution_finished
     ON exec_job(state, result_processing_state, execution_finished_at_utc);
 
@@ -436,53 +425,6 @@ WHEN
     )
 BEGIN
     SELECT RAISE(ABORT, 'immutable or invalid exec_job workset membership');
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_exec_job_dispatch_identity_insert
-BEFORE INSERT ON exec_job
-WHEN
-    ((NEW.dispatch_attempt_id IS NULL)
-        <> (NEW.dispatch_item_ordinal IS NULL))
-    OR
-    ((NEW.dispatch_attempt_id IS NULL)
-        <> (NEW.reserved_attempt_id IS NULL))
-    OR (
-        NEW.dispatch_attempt_id IS NOT NULL
-        AND NOT EXISTS (
-            SELECT 1
-            FROM exec_workset_dispatch_attempt d
-            WHERE d.dispatch_attempt_id = NEW.dispatch_attempt_id
-              AND d.workset_id = NEW.workset_id
-        )
-    )
-BEGIN
-    SELECT RAISE(ABORT, 'invalid exec_job dispatch identity');
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_exec_job_dispatch_identity_update
-BEFORE UPDATE OF
-    workset_id,
-    dispatch_attempt_id,
-    dispatch_item_ordinal,
-    reserved_attempt_id
-ON exec_job
-WHEN
-    ((NEW.dispatch_attempt_id IS NULL)
-        <> (NEW.dispatch_item_ordinal IS NULL))
-    OR
-    ((NEW.dispatch_attempt_id IS NULL)
-        <> (NEW.reserved_attempt_id IS NULL))
-    OR (
-        NEW.dispatch_attempt_id IS NOT NULL
-        AND NOT EXISTS (
-            SELECT 1
-            FROM exec_workset_dispatch_attempt d
-            WHERE d.dispatch_attempt_id = NEW.dispatch_attempt_id
-              AND d.workset_id = NEW.workset_id
-        )
-    )
-BEGIN
-    SELECT RAISE(ABORT, 'invalid exec_job dispatch identity');
 END;
 
 COMMIT;

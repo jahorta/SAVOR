@@ -169,9 +169,9 @@ public:
         });
     }
 
-    bool TerminalFailWorkflowInstance(const workflow::WorkflowTerminalFailInstanceCommand& command, std::string* error_out) override {
+    bool FailWorkflowInstance(const workflow::WorkflowFailInstanceCommand& command, std::string* error_out) override {
         return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
-            return service->TerminalFailWorkflowInstance(cmd, err);
+            return service->FailWorkflowInstance(cmd, err);
         });
     }
 
@@ -668,34 +668,6 @@ bool QueuedExecutionDb::ResetInterruptedResultProcessing(
     return applied;
 }
 
-bool QueuedExecutionDb::RequeueLostResultProcessing(
-    const RequeueLostResultProcessingCommand& command,
-    ResultProcessingReceipt* receipt_out,
-    std::string* error_out) {
-    const bool applied = ExecuteWrite<bool>(
-        [this, command, receipt_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->RequeueLostResultProcessing(
-                    command, receipt_out, error_out)
-                : false;
-        }, false, error_out);
-    if (applied) RefreshExecutionWorkAvailability();
-    return applied;
-}
-
-bool QueuedExecutionDb::RecordResultProcessingFailure(
-    const RecordResultProcessingFailureCommand& command,
-    ResultProcessingReceipt* receipt_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, receipt_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->RecordResultProcessingFailure(
-                    command, receipt_out, error_out)
-                : false;
-        }, false, error_out);
-}
-
 bool QueuedExecutionDb::CommitResultFinalizationsBatch(
     const CommitResultFinalizationsBatchCommand& command,
     std::vector<ResultProcessingReceipt>* receipts_out,
@@ -790,6 +762,52 @@ bool QueuedExecutionDb::CompleteTempBlobCleanup(
         },
         false,
         error_out);
+}
+
+std::optional<ClaimedResultStagingCleanup>
+QueuedExecutionDb::ClaimNextResultStagingCleanup(
+    const ClaimResultStagingCleanupCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<std::optional<ClaimedResultStagingCleanup>>(
+        [this, command, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ClaimNextResultStagingCleanup(command, error_out)
+                : std::nullopt;
+        }, std::nullopt, error_out);
+}
+
+bool QueuedExecutionDb::CompleteResultStagingCleanup(
+    const CompleteResultStagingCleanupCommand& command,
+    ExecutionDbOperationDisposition* disposition_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, disposition_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->CompleteResultStagingCleanup(
+                    command, disposition_out, error_out)
+                : false;
+        }, false, error_out);
+}
+
+bool QueuedExecutionDb::GetResultStagingCleanupCount(
+    std::int64_t* count_out,
+    std::string* error_out) const {
+    return ExecuteRead<bool>(
+        [this, count_out, error_out]() {
+            return inner_ != nullptr
+                && inner_->GetResultStagingCleanupCount(count_out, error_out);
+        }, false, error_out);
+}
+
+bool QueuedExecutionDb::ClearResultStagingCleanupQueue(
+    std::int64_t* rows_deleted_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, rows_deleted_out, error_out]() {
+            return inner_ != nullptr
+                && inner_->ClearResultStagingCleanupQueue(
+                    rows_deleted_out, error_out);
+        }, false, error_out);
 }
 
 bool QueuedExecutionDb::RecoverInterruptedWorksetDispatches(
@@ -1089,21 +1107,38 @@ bool QueuedExecutionDb::RestartFailedJob(std::int64_t job_id, std::optional<std:
         error_out);
 }
 
-bool QueuedExecutionDb::CancelQueuedOrClaimedJob(std::int64_t job_id, std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, job_id, error_out]() {
-            return inner_ != nullptr ? inner_->CancelQueuedOrClaimedJob(job_id, error_out) : false;
-        },
-        false,
-        error_out);
-}
-
 std::optional<ExecutionJobSetProgressDetails> QueuedExecutionDb::GetJobSetProgress(std::int64_t job_set_id) const {
     return ExecuteRead<std::optional<ExecutionJobSetProgressDetails>>(
         [this, job_set_id]() {
             return inner_ != nullptr ? inner_->GetJobSetProgress(job_set_id) : std::nullopt;
         },
         std::nullopt);
+}
+
+std::vector<FailedWorkflowWorksetJobRecord>
+QueuedExecutionDb::ListFailedWorkflowWorksetJobs(
+    std::int64_t workflow_instance_id) const {
+    return ExecuteRead<std::vector<FailedWorkflowWorksetJobRecord>>(
+        [this, workflow_instance_id]() {
+            return inner_ != nullptr
+                ? inner_->ListFailedWorkflowWorksetJobs(workflow_instance_id)
+                : std::vector<FailedWorkflowWorksetJobRecord>{};
+        },
+        {});
+}
+
+bool QueuedExecutionDb::ApplyWorksetJobReorganization(
+    const WorksetJobReorganizationPlan& plan,
+    WorksetJobReorganizationReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, &plan, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ApplyWorksetJobReorganization(plan, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
 }
 
 std::vector<ExecutionJobSetJobRecord> QueuedExecutionDb::ListJobsInJobSet(

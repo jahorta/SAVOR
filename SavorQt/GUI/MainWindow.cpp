@@ -307,21 +307,17 @@ void MainWindow::createWidgets()
     statusBarWidget_ = createStatusBarWidget();
     workspaceStack_ = new QStackedWidget(root);
     workspaceStack_->setObjectName("workspaceStack");
-	setupTab_ = new SetupTab(coordinatorController_, SetupTab::Actions{
-		[this]() { openFocusedTool(FocusedTool::WorkflowLauncher); },
-		[this]() { openAuthoringLibraryLast(); },
-		[this]() { openWorkflowGraphEditor(); },
-		[this](const savor::db::WorkflowGraphSnapshot& snapshot, bool duplicate) {
-			openWorkflowGraphEditor(snapshot, duplicate);
-		},
-		[this]() { openSettingsTool(); },
-		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::IsoPath); },
-		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::DolphinBaseDir); },
-		[this]() { openFocusedTool(FocusedTool::Artifacts); },
-		[this]() { openFocusedTool(FocusedTool::DtmEditor); },
-		[this]() { openFocusedTool(FocusedTool::BattleRunSettings); }
-		}, root);
+	setupTab_ = new SetupTab(coordinatorController_, root);
 	connect(setupTab_, &SetupTab::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    connect(setupTab_, &SetupTab::openLauncherRequested, this, [this]() {this->openFocusedTool(FocusedTool::WorkflowLauncher); });
+    connect(setupTab_, &SetupTab::openAuthoringRequested, this, &MainWindow::openAuthoringLibraryLast);
+    connect(setupTab_, &SetupTab::openGraphEditorRequested, this, [this]() {this->openWorkflowGraphEditor(); });
+    connect(setupTab_, &SetupTab::openGraphEditorSnapshotRequested, this, [this](const savor::db::WorkflowGraphSnapshot snapshot, bool duplicate) {this->openWorkflowGraphEditor(snapshot, duplicate); });
+    connect(setupTab_, &SetupTab::openSettingsRequested, this, [this]() { this->openSettingsTool(); });
+    connect(setupTab_, &SetupTab::openIsoSettingsRequested, this, [this]() {this->openSettingsTool(SettingsPage::CoordinatorFocusTarget::IsoPath); });
+    connect(setupTab_, &SetupTab::openDolphinSettingsRequested, this, [this]() {this->openSettingsTool(SettingsPage::CoordinatorFocusTarget::DolphinBaseDir); });
+    connect(setupTab_, &SetupTab::openArtifactsRequested, this, [this]() {this->openFocusedTool(FocusedTool::Artifacts); });
+    connect(setupTab_, &SetupTab::openDtmEditorRequested, this, [this]() {this->openFocusedTool(FocusedTool::DtmEditor); });
 	workspaceStack_->addWidget(setupTab_);
 	runningTab_ = new RunningTab(coordinatorController_, RunningTab::Actions{
 		[this]() { openFocusedTool(FocusedTool::Workflows); },
@@ -407,6 +403,13 @@ void MainWindow::showBattleRunsAnalysisPane()
     setWorkspaceIndex(2);
     if (analysisTab_ != nullptr) {
         analysisTab_->showBattleRunsPane();
+    }
+}
+
+void MainWindow::waitForCoordinatorShutdown()
+{
+    if (coordinatorController_) {
+        coordinatorController_->waitForShutdown();
     }
 }
 
@@ -633,7 +636,7 @@ void MainWindow::emitCoordinatorStateChanged()
         return;
     }
     emit coordinatorStateChanged(
-        coordinatorController_->isRunning(),
+        coordinatorController_->lifecycleState(),
         coordinatorController_->isPaused(),
         coordinatorController_->targetWorkers(),
         coordinatorController_->activeWorkers(),

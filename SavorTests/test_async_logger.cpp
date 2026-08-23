@@ -17,6 +17,7 @@ namespace {
 using savor::logger::Level;
 using savor::logger::Logger;
 using savor::logger::LoggerStatistics;
+using savor::logger::FileOpenMode;
 
 [[nodiscard]] std::filesystem::path LogPath(std::string_view name)
 {
@@ -117,6 +118,32 @@ TEST(AsyncLogger, ContendedProducersNeverWaitForSinkAndLossIsAccounted)
     EXPECT_GT(dropped, 0u);
     EXPECT_LT(producer_elapsed, std::chrono::seconds(10));
     EXPECT_GE(after.written, after.accepted);
+
+    logger.Shutdown();
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+}
+
+TEST(AsyncLogger, ExclusiveCreateNeverModifiesExistingFile)
+{
+    Logger& logger = Logger::get();
+    logger.Shutdown();
+    logger.set_levels(Level::Off, Level::Debug);
+    const auto path = LogPath("exclusive");
+    {
+        std::ofstream output(path, std::ios::binary);
+        output << "original";
+    }
+
+    EXPECT_FALSE(logger.open_file(
+        path.string().c_str(),
+        FileOpenMode::CreateNew));
+
+    std::ifstream input(path, std::ios::binary);
+    const std::string content{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+    EXPECT_EQ(content, "original");
 
     logger.Shutdown();
     std::error_code ignored;

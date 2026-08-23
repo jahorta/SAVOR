@@ -227,7 +227,7 @@ void AssessCommonScenarioExecution(
     if (telemetry.execution.active_lease_renewal_retries != 0)
         assessment->Warn("active workset lease renewal required retries");
     if (telemetry.execution.startup_recovered_dispatches != 0
-        || telemetry.execution.startup_requeued_jobs != 0) {
+        || telemetry.execution.startup_interrupted_jobs != 0) {
         assessment->Warn("execution coordination used startup recovery");
     }
     if (!telemetry.execution.last_error.empty())
