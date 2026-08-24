@@ -44,8 +44,8 @@
 #include "Execution/Workflow/WorkflowCoordinatorService.h"
 #include "Execution/Workflow/WorkflowComposition.h"
 #include "Execution/Workflow/WorkflowGraphRoutingService.h"
-#include "Execution/Workflow/WorkflowStepCompletionGate.h"
-#include "Execution/Workflow/WorkflowTerminalAdvancementService.h"
+#include "Execution/Workflow/WorkflowStepSettlementGate.h"
+#include "Execution/Workflow/WorkflowSettlementAdvancementService.h"
 #include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnProgram.h"
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeExecutionAdapters.h"
@@ -1151,7 +1151,7 @@ TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomic
         {"tasmovie.validate_root", static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
         {"tasmovie.validate_tree", static_cast<std::int32_t>(savor::PK_TasMovie), "TAS Movie Complete Validation"},
         {"tasmovie.checkpoint_sterilize", static_cast<std::int32_t>(savor::PK_TasMovieCheckpointSterilize), "TAS Movie Checkpoint Sterilization"},
-        {"seedprobe.run", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
+        {"seedprobe.survey", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
         {"battle.context", static_cast<std::int32_t>(savor::PK_BattleContext), "Battle Context"},
         {"battle.start", static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner), "Battle Single Turn"},
         {"battle.single_turn", static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner), "Battle Single Turn"},
@@ -3442,13 +3442,13 @@ VALUES (3001,1001,2001,2002,unixepoch()),(3002,1001,2002,2003,unixepoch()),(3003
         { .workflow_step_id = 2001, .job_set_id = 9501, .requested_by = "test" },
         &command_error))
         << command_error;
-    EXPECT_TRUE(execution_db.WorkflowCommandService()->MarkStepTerminal(
-        { .workflow_step_id = 2001, .terminal_state = "COMPLETED", .requested_by = "test" },
+    EXPECT_TRUE(execution_db.WorkflowCommandService()->CompleteWorkflowStep(
+        { .workflow_step_id = 2001, .completion_state = "COMPLETED", .requested_by = "test" },
         &command_error))
         << command_error;
     // Idempotent duplicate terminal callback.
-    EXPECT_TRUE(execution_db.WorkflowCommandService()->MarkStepTerminal(
-        { .workflow_step_id = 2001, .terminal_state = "COMPLETED", .requested_by = "test" },
+    EXPECT_TRUE(execution_db.WorkflowCommandService()->CompleteWorkflowStep(
+        { .workflow_step_id = 2001, .completion_state = "COMPLETED", .requested_by = "test" },
         &command_error))
         << command_error;
 
@@ -3600,6 +3600,19 @@ INSERT INTO ui_workflow_instance(
 VALUES
   (7001, 'workflow_graph', 'COMPLETED', 'manual', 'test', 0, 0, 2000, 2, 2, 1, 1),
   (7002, 'workflow_graph', 'COMPLETED', 'manual', 'test', 0, 0, 1000, 1, 1, 0, 0);
+INSERT INTO ui_workflow_step(
+    workflow_step_id, workflow_instance_id, step_key, step_kind, state,
+    job_set_id, job_count, priority, attempts, max_attempts, created_at_utc)
+VALUES
+  (7101, 7001, 'retryable', 'test', 'FAILED', 7201, 4, 1, 1, 2, 2000),
+  (7102, 7002, 'complete', 'test', 'COMPLETED', 7202, 1, 1, 1, 1, 1000);
+INSERT INTO ui_job_summary(job_id, job_set_id, program_kind, state, priority, queued_at_utc)
+VALUES
+  (7301, 7201, 1, 'FAILED', 1, 2000),
+  (7302, 7201, 1, 'INTERRUPTED', 1, 2000),
+  (7303, 7201, 1, 'CANCELED', 1, 2000),
+  (7304, 7201, 1, 'SUPERSEDED', 1, 2000),
+  (7305, 7202, 1, 'SUCCEEDED', 1, 1000);
 )SQL"));
 
     SqliteUiReadDb ui_read_db(db_);
@@ -3616,6 +3629,14 @@ VALUES
     ASSERT_EQ(victory_only.items.size(), 1u);
     EXPECT_EQ(victory_only.items.front().workflow_instance_id, 7001);
     EXPECT_EQ(victory_only.items.front().battle_final_victory_count, 1);
+
+    UiWorkflowInstanceListQuery focused_query{};
+    focused_query.workflow_instance_id = 7001;
+    focused_query.limit = 10;
+    const auto focused = ui_read_db.ListWorkflowInstances(focused_query);
+    ASSERT_EQ(focused.items.size(), 1u);
+    EXPECT_EQ(focused.items.front().workflow_instance_id, 7001);
+    EXPECT_EQ(focused.items.front().retryable_job_count, 2);
 }
 
 TEST_F(SqliteDbFixture, Stage3cWorkflowProjectorProjectsAndClearsUiAlerts) {
@@ -3803,8 +3824,8 @@ VALUES(7401, 7201, 999999, 7302, unixepoch());
     ASSERT_TRUE(RunWorkflowIntegrityChecks(db_, &report, &err)) << err;
     EXPECT_GT(report.dangling_edge_count, 0);
     EXPECT_GT(report.missing_job_set_link_count, 0);
-    EXPECT_GT(report.non_terminal_step_in_completed_instance_count, 0);
-    EXPECT_GT(report.non_terminal_step_in_terminal_instance_count, 0);
+    EXPECT_GT(report.non_settled_step_in_completed_instance_count, 0);
+    EXPECT_GT(report.non_settled_step_in_terminal_instance_count, 0);
     EXPECT_FALSE(report.IsClean());
 }
 
@@ -3833,7 +3854,7 @@ VALUES(8501, 8201, 8401, 8402, unixepoch());
     WorkflowIntegrityReport report{};
     ASSERT_TRUE(RunWorkflowIntegrityChecks(db_, &report, &err)) << err;
     EXPECT_TRUE(report.IsClean());
-    EXPECT_EQ(report.non_terminal_step_in_terminal_instance_count, 0);
+    EXPECT_EQ(report.non_settled_step_in_terminal_instance_count, 0);
     EXPECT_EQ(report.completed_step_missing_completion_ts_count, 0);
 }
 
@@ -3867,24 +3888,24 @@ VALUES(2000, 20, 1, 1, 'seedprobe_spec', 44, 'fp-2', 0, 'SUCCEEDED', 0, 1, unixe
     descriptor.default_derived_state_block_ids = std::vector<std::string>{};
     descriptor.workflow_transition = std::make_shared<AlwaysAdvanceTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.neutral", descriptor));
-    StepCompletionGateService gate;
+    StepSettlementGateService gate;
     SqliteWorkflowOrchestrationQueryService query_service(db_);
     SqliteWorkflowOrchestrationCommandService command_service(db_);
-    WorkflowTerminalAdvancementService advancement(
+    WorkflowSettlementAdvancementService advancement(
         &registry,
         &gate,
         &query_service,
         &command_service);
 
-    const auto terminal_ready = query_service.ListTerminalReadyStepSnapshots(10);
+    const auto terminal_ready = query_service.ListSettlementReadyStepSnapshots(10);
     ASSERT_EQ(terminal_ready.size(), 1u);
     EXPECT_EQ(terminal_ready.front().workflow_step_id, 200);
     EXPECT_EQ(terminal_ready.front().expected_total, 1);
     EXPECT_EQ(terminal_ready.front().discovered_total, 1);
-    EXPECT_EQ(terminal_ready.front().terminal_total, 1);
+    EXPECT_EQ(terminal_ready.front().settled_total, 1);
 
-    WorkflowTerminalAdvancementResult result{};
-    ASSERT_TRUE(advancement.AdvanceForTerminalJob(2000, &result, &err)) << err;
+    WorkflowSettlementAdvancementResult result{};
+    ASSERT_TRUE(advancement.AdvanceForSettledJob(2000, &result, &err)) << err;
     EXPECT_TRUE(result.snapshot_found);
     EXPECT_TRUE(result.gate_can_transition);
     EXPECT_TRUE(result.step_marked_terminal);
@@ -3988,22 +4009,22 @@ VALUES(
         &registry,
         WorkflowCoordinatorConfig{
             .poll_interval = std::chrono::seconds(5),
-            .terminal_repair_interval = std::chrono::seconds(5),
+            .settlement_repair_interval = std::chrono::seconds(5),
         });
     ASSERT_TRUE(coordinator.Start(&err)) << err;
 
     const auto initial_scan_deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    while (coordinator.SnapshotTelemetry().terminal_scan_count == 0
+    while (coordinator.SnapshotTelemetry().settlement_scan_count == 0
         && std::chrono::steady_clock::now() < initial_scan_deadline) {
         std::this_thread::yield();
     }
-    ASSERT_GE(coordinator.SnapshotTelemetry().terminal_scan_count, 1);
+    ASSERT_GE(coordinator.SnapshotTelemetry().settlement_scan_count, 1);
     ASSERT_TRUE(ExecSql(
         db_,
         "UPDATE exec_job SET state='SUCCEEDED', ended_at_utc=2 "
         "WHERE job_id=20204;"));
-    ASSERT_TRUE(coordinator.PublishTerminalCommit(
+    ASSERT_TRUE(coordinator.PublishSettlementCommit(
         {
             .commit_sequence = 7,
             .workflow_step_id = 20202,
@@ -4013,7 +4034,7 @@ VALUES(
     const auto targeted_deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(1);
     while (coordinator.SnapshotTelemetry()
-               .targeted_terminal_advancement_count
+               .targeted_settlement_advancement_count
                == 0
         && std::chrono::steady_clock::now() < targeted_deadline) {
         std::this_thread::yield();
@@ -4021,8 +4042,8 @@ VALUES(
     coordinator.Stop();
 
     const auto telemetry = coordinator.SnapshotTelemetry();
-    EXPECT_EQ(telemetry.targeted_terminal_notification_count, 1);
-    EXPECT_EQ(telemetry.targeted_terminal_advancement_count, 1);
+    EXPECT_EQ(telemetry.targeted_settlement_notification_count, 1);
+    EXPECT_EQ(telemetry.targeted_settlement_advancement_count, 1);
     EXPECT_EQ(
         ReadText(
             db_,
@@ -4064,21 +4085,21 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
     descriptor.default_derived_state_block_ids = std::vector<std::string>{};
     descriptor.workflow_transition = std::make_shared<SpawnStepTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("mock.spawn", descriptor));
-    StepCompletionGateService gate;
+    StepSettlementGateService gate;
     RecordingWorkflowCommandService command_service;
-    WorkflowTerminalAdvancementService advancement(
+    WorkflowSettlementAdvancementService advancement(
         &registry,
         &gate,
         nullptr,
         &command_service);
 
-    WorkflowStepTerminalSnapshot snapshot{};
+    WorkflowStepSettlementSnapshot snapshot{};
     snapshot.workflow_instance_id = 77;
     snapshot.workflow_step_id = 88;
     snapshot.job_set_id = 99;
     snapshot.expected_total = 1;
     snapshot.discovered_total = 1;
-    snapshot.terminal_total = 1;
+    snapshot.settled_total = 1;
     snapshot.failed_total = 0;
     snapshot.priority = 20;
     snapshot.workflow_kind = "mock";
@@ -4086,7 +4107,7 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
     snapshot.step_kind = "mock.spawn";
 
     std::string err;
-    WorkflowTerminalAdvancementResult result{};
+    WorkflowSettlementAdvancementResult result{};
     ASSERT_TRUE(advancement.AdvanceSnapshot(snapshot, &result, &err)) << err;
     EXPECT_TRUE(result.advanced_next_step);
     EXPECT_EQ(result.spawned_step_count, 1);
@@ -4156,15 +4177,15 @@ VALUES(22000, 220, 1, 1, 'mock_spec', 44, 'fp-22', 0, 'SUCCEEDED', 0, 1, unixepo
     descriptor.default_derived_state_block_ids = std::vector<std::string>{};
     descriptor.workflow_transition = std::make_shared<OutputAdvanceTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("mock.source", descriptor));
-    StepCompletionGateService gate;
-    WorkflowTerminalAdvancementService advancement(
+    StepSettlementGateService gate;
+    WorkflowSettlementAdvancementService advancement(
         &registry,
         &gate,
         &query_service,
         &command_service);
 
-    WorkflowTerminalAdvancementResult result{};
-    ASSERT_TRUE(advancement.AdvanceForTerminalJob(22000, &result, &err)) << err;
+    WorkflowSettlementAdvancementResult result{};
+    ASSERT_TRUE(advancement.AdvanceForSettledJob(22000, &result, &err)) << err;
     EXPECT_TRUE(result.snapshot_found);
     EXPECT_TRUE(result.gate_can_transition);
     EXPECT_TRUE(result.step_marked_terminal);
@@ -4297,17 +4318,17 @@ VALUES(3000, 30, 1, 1, 'seedprobe_spec', 44, 'fp-3', 0, 'SUCCEEDED', 0, 1, unixe
     descriptor.default_derived_state_block_ids = std::vector<std::string>{};
     descriptor.workflow_transition = std::make_shared<FinalStepTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.unique", descriptor));
-    StepCompletionGateService gate;
+    StepSettlementGateService gate;
     SqliteWorkflowOrchestrationQueryService query_service(db_);
     SqliteWorkflowOrchestrationCommandService command_service(db_);
-    WorkflowTerminalAdvancementService advancement(
+    WorkflowSettlementAdvancementService advancement(
         &registry,
         &gate,
         &query_service,
         &command_service);
 
-    WorkflowTerminalAdvancementResult result{};
-    ASSERT_TRUE(advancement.AdvanceForTerminalJob(3000, &result, &err)) << err;
+    WorkflowSettlementAdvancementResult result{};
+    ASSERT_TRUE(advancement.AdvanceForSettledJob(3000, &result, &err)) << err;
     EXPECT_TRUE(result.snapshot_found);
     EXPECT_TRUE(result.gate_can_transition);
     EXPECT_TRUE(result.step_marked_terminal);
@@ -4331,7 +4352,7 @@ VALUES(3000, 30, 1, 1, 'seedprobe_spec', 44, 'fp-3', 0, 'SUCCEEDED', 0, 1, unixe
     sqlite3_finalize(st);
 }
 
-TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceFailsWorkflowWhenTerminalJobSetHasFailures) {
+TEST_F(SqliteDbFixture, Stage3cSettlementAdvancementParksMixedSuccessAndFailureBeforeTransition) {
     using namespace savor::db::execution::workflow;
 
     const savor::db::migrations::MigrationSourceOptions embedded_options{ .source_kind = savor::db::migrations::MigrationSourceKind::Embedded };
@@ -4344,13 +4365,15 @@ VALUES(4, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
 INSERT INTO exec_job_set(
     job_set_id, program_kind, purpose, created_at_utc, expected_total,
     materialization_state)
-VALUES(40, 1, 'workflow', unixepoch()*1000, 1, 'WORKSET_PUBLICATION_COMPLETE');
+VALUES(40, 1, 'workflow', unixepoch()*1000, 2, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
 VALUES(400, 4, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 40, 0, 0, 1, unixepoch()*1000);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
 VALUES(401, 4, 'next', 'seedprobe.next', 'WAITING', 0, 0, 1, unixepoch()*1000);
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
-VALUES(4000, 40, 1, 1, 'seedprobe_spec', 44, 'fp-4', 0, 'FAILED', 0, 1, unixepoch()*1000);
+VALUES
+(3999, 40, 1, 1, 'seedprobe_spec', 43, 'fp-3', 0, 'SUCCEEDED', 0, 1, unixepoch()*1000),
+(4000, 40, 1, 1, 'seedprobe_spec', 44, 'fp-4', 0, 'FAILED', 0, 1, unixepoch()*1000);
 )SQL"));
 
     savor::db::execution::programdb::ProgramKindRegistry registry;
@@ -4361,21 +4384,21 @@ VALUES(4000, 40, 1, 1, 'seedprobe_spec', 44, 'fp-4', 0, 'FAILED', 0, 1, unixepoc
     descriptor.default_derived_state_block_ids = std::vector<std::string>{};
     descriptor.workflow_transition = std::make_shared<AlwaysAdvanceTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.neutral", descriptor));
-    StepCompletionGateService gate;
+    StepSettlementGateService gate;
     SqliteWorkflowOrchestrationQueryService query_service(db_);
     SqliteWorkflowOrchestrationCommandService command_service(db_);
-    WorkflowTerminalAdvancementService advancement(
+    WorkflowSettlementAdvancementService advancement(
         &registry,
         &gate,
         &query_service,
         &command_service);
 
-    WorkflowTerminalAdvancementResult result{};
-    ASSERT_TRUE(advancement.AdvanceForTerminalJob(4000, &result, &err)) << err;
+    WorkflowSettlementAdvancementResult result{};
+    ASSERT_TRUE(advancement.AdvanceForSettledJob(4000, &result, &err)) << err;
     EXPECT_TRUE(result.snapshot_found);
     EXPECT_TRUE(result.gate_can_transition);
     EXPECT_TRUE(result.step_marked_terminal);
-    EXPECT_TRUE(result.transition_evaluated);
+    EXPECT_FALSE(result.transition_evaluated);
     EXPECT_FALSE(result.advanced_next_step);
     EXPECT_FALSE(result.workflow_completed);
     EXPECT_TRUE(result.workflow_failed);
@@ -4420,8 +4443,8 @@ VALUES(9401, 9201, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 9301, 10, 1, 
 
     savor::db::execution::workflow::SqliteExecutionDb execution_db(db_);
     std::string cmd_error;
-    ASSERT_TRUE(execution_db.WorkflowCommandService()->MarkStepTerminal(
-        { .workflow_step_id = 9401, .terminal_state = "COMPLETED", .requested_by = "projector-replay-test" },
+    ASSERT_TRUE(execution_db.WorkflowCommandService()->CompleteWorkflowStep(
+        { .workflow_step_id = 9401, .completion_state = "COMPLETED", .requested_by = "projector-replay-test" },
         &cmd_error))
         << cmd_error;
 
@@ -5904,117 +5927,6 @@ VALUES
     sqlite3_finalize(st);
 }
 
-TEST_F(SqliteDbFixture, Stage3dClaimNextReadyExecutionJobResolvesWorkflowStepThroughJobSetAncestry) {
-    using namespace savor::db::execution::workflow;
-    using namespace savor::db::migrations;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
-
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
-VALUES(1799, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
-VALUES(1801, NULL, 7, 'stage3d-root', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
-VALUES(1802, 1801, 7, 'stage3d-child', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
-VALUES(1803, 1802, 7, 'stage3d-grandchild', unixepoch()*1000);
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
-VALUES(1800, 1799, 'Unique', 'seedprobe.unique', 'MATERIALIZED', 1801, 9, 0, 2, unixepoch()*1000);
-INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
-VALUES(1804, 1803, 7, 1, 'seed_probe', 33, 'fp-stage3d-claim-ancestry', 5, 'QUEUED', 0, 3, unixepoch()*1000);
-)SQL"));
-
-    SqliteExecutionDb execution_db(db_);
-    std::string claim_error;
-    const auto claimed = execution_db.ClaimNextReadyExecutionJob("worker-claim-ancestry", 30000, &claim_error);
-    EXPECT_TRUE(claim_error.empty()) << claim_error;
-    ASSERT_TRUE(claimed.has_value());
-    EXPECT_EQ(claimed->job_id, 1804);
-    EXPECT_EQ(claimed->job_set_id, 1803);
-    EXPECT_EQ(claimed->workflow_instance_id, 1799);
-    EXPECT_EQ(claimed->workflow_step_id, 1800);
-    EXPECT_EQ(claimed->workflow_step_key, "Unique");
-    EXPECT_EQ(claimed->workflow_step_kind, "seedprobe.unique");
-    EXPECT_EQ(claimed->workflow_step_priority, 9);
-
-    const auto snapshot = execution_db.WorkflowQueryService()->GetStepTerminalSnapshotForJob(1804);
-    ASSERT_TRUE(snapshot.has_value());
-    EXPECT_EQ(snapshot->workflow_instance_id, 1799);
-    EXPECT_EQ(snapshot->workflow_step_id, 1800);
-    EXPECT_EQ(snapshot->job_set_id, 1801);
-    EXPECT_EQ(snapshot->step_key, "Unique");
-    EXPECT_EQ(snapshot->step_kind, "seedprobe.unique");
-}
-
-TEST_F(SqliteDbFixture, Stage3dJobSetTreeProgressAndTerminalSnapshotIncludeChildJobSets) {
-    using namespace savor::db::execution::workflow;
-    using namespace savor::db::migrations;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
-
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
-VALUES(1899, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
-VALUES(1901, NULL, 7, 'stage3d-root', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, expected_total, meta_note, created_at_utc)
-VALUES(1902, 1901, 7, 'stage3d-child-a', 2, 'expected_delta=11', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, expected_total, meta_note, created_at_utc)
-VALUES(1903, 1901, 7, 'stage3d-child-b', 1, 'expected_delta=22', unixepoch()*1000);
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
-VALUES(1900, 1899, 'Unique', 'seedprobe.unique', 'MATERIALIZED', 1901, 9, 0, 2, unixepoch()*1000);
-INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
-VALUES(1904, 1902, 7, 1, 'seed_probe', 33, 'fp-stage3d-tree-a1', 5, 'SUCCEEDED_WINNER', 0, 3, unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
-VALUES(1905, 1902, 7, 1, 'seed_probe', 33, 'fp-stage3d-tree-a2', 5, 'SUPERSEDED', 0, 3, unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
-VALUES(1906, 1903, 7, 1, 'seed_probe', 33, 'fp-stage3d-tree-b1', 5, 'QUEUED', 0, 3, unixepoch()*1000);
-UPDATE exec_job_set
-SET materialization_state='WORKSET_PUBLICATION_COMPLETE'
-WHERE job_set_id IN (1901, 1902, 1903);
-)SQL"));
-
-    SqliteExecutionDb execution_db(db_);
-    const auto progress = execution_db.GetJobSetProgress(1901);
-    ASSERT_TRUE(progress.has_value());
-    EXPECT_EQ(progress->job_set_id, 1901);
-    EXPECT_EQ(progress->expected_total, 3);
-    EXPECT_EQ(progress->total_jobs, 3);
-    EXPECT_EQ(progress->completed_jobs, 2);
-    EXPECT_EQ(progress->succeeded_jobs, 2);
-    EXPECT_EQ(progress->failed_jobs, 0);
-
-    const auto children = execution_db.GetChildJobSetProgress(1901);
-    ASSERT_EQ(children.size(), 2u);
-    EXPECT_EQ(children[0].job_set_id, 1902);
-    ASSERT_TRUE(children[0].expected_delta.has_value());
-    EXPECT_EQ(*children[0].expected_delta, 11);
-    EXPECT_EQ(children[0].completed_jobs, 2);
-    EXPECT_EQ(children[1].job_set_id, 1903);
-    ASSERT_TRUE(children[1].expected_delta.has_value());
-    EXPECT_EQ(*children[1].expected_delta, 22);
-    EXPECT_EQ(children[1].completed_jobs, 0);
-
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-UPDATE exec_job
-SET state='SUCCEEDED', ended_at_utc=unixepoch()*1000
-WHERE job_id=1906;
-)SQL"));
-
-    const auto snapshot = execution_db.WorkflowQueryService()->GetStepTerminalSnapshotForJob(1904);
-    ASSERT_TRUE(snapshot.has_value());
-    EXPECT_EQ(snapshot->job_set_id, 1901);
-    EXPECT_EQ(snapshot->expected_total, 3);
-    EXPECT_EQ(snapshot->discovered_total, 3);
-    EXPECT_EQ(snapshot->terminal_total, 3);
-    EXPECT_EQ(snapshot->failed_total, 0);
-}
-
 TEST_F(SqliteDbFixture, Stage3dMarkQueuedJobsSupersededEmitsJobCompletedOutbox) {
     using namespace savor::db::execution::workflow;
     using namespace savor::db::migrations;
@@ -6409,6 +6321,7 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     ASSERT_TRUE(authoring_db.SavePlan(
         {
             .name = "single-turn-plan",
+            .description = "Single-turn persistence fixture",
             .fingerprint = "plan-fp-1",
             .created_at_utc = now,
             .correlation_id = "au-corr",
@@ -6524,6 +6437,7 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
 
     const auto plan = authoring_db.GetBattlePlan(plan_id);
     ASSERT_TRUE(plan.has_value());
+    EXPECT_EQ(plan->description, "Single-turn persistence fixture");
     ASSERT_EQ(plan->turns.size(), 1);
     EXPECT_EQ(plan->turns[0].turn_index, 1);
     ASSERT_EQ(plan->turns[0].actions.size(), 2);
@@ -7798,7 +7712,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
             .job_set_id = tas_job_set_id,
             .program_kind = 10,
             .program_version = 1,
-            .program_ref_kind = "authoring.tas_spec",
+            .program_ref_kind = "state.dtm_artifact",
             .program_ref_id = 111,
             .fingerprint = "tas-route-job",
             .priority = 0,
@@ -7819,8 +7733,8 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
             .requested_by = "worker_result_drain",
         },
         &err)) << err;
-    ASSERT_TRUE(execution_db->WorkflowCommandService()->MarkStepTerminal(
-        { .workflow_step_id = tas_step_id, .terminal_state = "COMPLETED", .requested_by = "test" },
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->CompleteWorkflowStep(
+        { .workflow_step_id = tas_step_id, .completion_state = "COMPLETED", .requested_by = "test" },
         &err)) << err;
 
     WorkflowGraphRoutingService router(
@@ -7842,7 +7756,8 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
             .priority = step_priority("tas_1"),
             .expected_total = 1,
             .discovered_total = 1,
-            .terminal_total = 1,
+            .settled_total = 1,
+            .succeeded_total = 1,
             .failed_total = 0,
         },
         &route_result,
@@ -7911,8 +7826,8 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
             .requested_by = "worker_result_drain",
         },
         &err)) << err;
-    ASSERT_TRUE(execution_db->WorkflowCommandService()->MarkStepTerminal(
-        { .workflow_step_id = probe_step_id, .terminal_state = "COMPLETED", .requested_by = "test" },
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->CompleteWorkflowStep(
+        { .workflow_step_id = probe_step_id, .completion_state = "COMPLETED", .requested_by = "test" },
         &err)) << err;
 
     route_result = {};
@@ -7929,7 +7844,8 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
             .priority = step_priority("probe_1"),
             .expected_total = 1,
             .discovered_total = 1,
-            .terminal_total = 1,
+            .settled_total = 1,
+            .succeeded_total = 1,
             .failed_total = 0,
         },
         &route_result,
@@ -8044,8 +7960,8 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
     ASSERT_TRUE(execution_db->WorkflowCommandService()->MarkStepMaterialized(
         { .workflow_step_id = tas_step_it->workflow_step_id, .job_set_id = tas_job_set_id, .requested_by = "test" },
         &err)) << err;
-    ASSERT_TRUE(execution_db->WorkflowCommandService()->MarkStepTerminal(
-        { .workflow_step_id = tas_step_it->workflow_step_id, .terminal_state = "COMPLETED", .requested_by = "test" },
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->CompleteWorkflowStep(
+        { .workflow_step_id = tas_step_it->workflow_step_id, .completion_state = "COMPLETED", .requested_by = "test" },
         &err)) << err;
 
     WorkflowGraphRoutingService router(
@@ -8066,7 +7982,8 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
             .step_kind = "tas_movie",
             .expected_total = 1,
             .discovered_total = 1,
-            .terminal_total = 1,
+            .settled_total = 1,
+            .succeeded_total = 1,
             .failed_total = 0,
         },
         &route_result,
@@ -8257,14 +8174,14 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentWaitsForAlternateProvider
                 },
                 &err)) << err;
         }
-        EXPECT_TRUE(execution_db->WorkflowCommandService()->MarkStepTerminal(
+        EXPECT_TRUE(execution_db->WorkflowCommandService()->CompleteWorkflowStep(
             {
                 .workflow_step_id = step.workflow_step_id,
-                .terminal_state = "COMPLETED",
+                .completion_state = "COMPLETED",
                 .requested_by = "test",
             },
             &err)) << err;
-        return WorkflowStepTerminalSnapshot{
+        return WorkflowStepSettlementSnapshot{
             .workflow_instance_id = workflow_instance_id,
             .workflow_step_id = step.workflow_step_id,
             .job_set_id = job_set_id,
@@ -8276,7 +8193,8 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentWaitsForAlternateProvider
             .priority = 10,
             .expected_total = 1,
             .discovered_total = 1,
-            .terminal_total = 1,
+            .settled_total = 1,
+            .succeeded_total = 1,
             .failed_total = 0,
         };
     };
@@ -8423,10 +8341,10 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentSkipsImpossibleDescendant
                 .requested_by = "test",
             },
             &err)) << err;
-    ASSERT_TRUE(execution_db->WorkflowCommandService()->MarkStepTerminal(
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->CompleteWorkflowStep(
         {
             .workflow_step_id = root_step->workflow_step_id,
-            .terminal_state = "COMPLETED",
+            .completion_state = "COMPLETED",
             .requested_by = "test",
         },
         &err)) << err;
@@ -8435,7 +8353,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentSkipsImpossibleDescendant
         execution_db, authoring_db,
         execution_db->WorkflowQueryService(),
         execution_db->WorkflowCommandService());
-    const WorkflowStepTerminalSnapshot terminal{
+    const WorkflowStepSettlementSnapshot terminal{
         .workflow_instance_id = workflow_instance_id,
         .workflow_step_id = root_step->workflow_step_id,
         .job_set_id = root_job_set_id,
@@ -8447,7 +8365,8 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentSkipsImpossibleDescendant
         .priority = 10,
         .expected_total = 1,
         .discovered_total = 1,
-        .terminal_total = 1,
+        .settled_total = 1,
+        .succeeded_total = 1,
         .failed_total = 0,
     };
     WorkflowGraphRoutingResult result{};
@@ -8545,7 +8464,7 @@ TEST_F(SqliteDbFixture, Stage3dArchiveCommandsEmitEventsFortyFourThroughFortyEig
     ASSERT_TRUE(archive_db.CreateArchivePackage(
         {
             .source_context = "Execution",
-            .source_root_job_set_id = 9001,
+            .source_job_set_id = 9001,
             .archive_name = "manual archive event test",
             .archive_notes = std::string("event notes"),
             .created_at_utc = now,
@@ -8683,7 +8602,7 @@ INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, messa
 
     const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
     const auto package = package_service.CreatePackage({
-        .source_root_job_set_id = 100,
+        .source_job_set_id = 100,
         .created_at_utc = now,
         .correlation_id = "stage4-corr",
         .causation_id = "stage4-cause",
@@ -8750,7 +8669,7 @@ INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, messa
 
     const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
     const auto package = package_service.CreatePackage({
-        .source_root_job_set_id = 100,
+        .source_job_set_id = 100,
         .created_at_utc = now,
         .correlation_id = "stage4-roundtrip",
         .causation_id = "stage4-roundtrip",
@@ -10015,7 +9934,7 @@ TEST_F(SqliteDbFixture, UiReadArchiveCatalogProjectsArchiveNameAndNotes) {
     ASSERT_TRUE(archive_db.CreateArchivePackage(
         {
             .source_context = "Workflow",
-            .source_root_job_set_id = 0,
+            .source_job_set_id = 0,
             .source_scope_kind = "workflow_selection",
             .source_workflow_count = 2,
             .selection_summary = std::string("{\"workflow_count\":2}"),
@@ -10069,7 +9988,7 @@ TEST_F(SqliteDbFixture, UiReadArchiveCatalogAndRehydrateRequestsListForWorkbench
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
 INSERT INTO ui_archive_catalog(
-    archive_package_id,source_context,source_root_job_set_id,source_scope_kind,source_workflow_count,
+    archive_package_id,source_context,source_job_set_id,source_scope_kind,source_workflow_count,
     selection_summary,archive_name,archive_notes,created_at_utc,schema_version,event_catalog_version,
     time_range_start_utc,time_range_end_utc,checksum_status)
 VALUES
@@ -11749,7 +11668,7 @@ TEST_F(SqliteDbFixture, UiReadProjectionTerminalJobEventRefreshesWorkflowLaneCou
     EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=25004;"), "COMPLETED");
     EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_workflow_instance WHERE workflow_instance_id=25001;"), "RUNNING");
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT job_count FROM ui_workflow_step WHERE workflow_step_id=25003;"), 2);
-    EXPECT_EQ(ReadInt64(verify_handle, "SELECT job_completed_count FROM ui_workflow_step WHERE workflow_step_id=25003;"), 1);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT job_settled_count FROM ui_workflow_step WHERE workflow_step_id=25003;"), 1);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT job_failed_count FROM ui_workflow_step WHERE workflow_step_id=25003;"), 0);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution';"), 0);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT last_outbox_id FROM ui_projection_subscription WHERE stream_id='execution';"), 1);
@@ -12551,7 +12470,6 @@ TEST_F(
     PublishWorksetCommand workset{
         .job_set_id = job_set.job_set_id,
         .workflow_step_id = 36001,
-        .root_job_set_id = job_set.job_set_id,
         .workset_key = "batch-persistence-workset",
         .program_kind = 42,
         .program_version = 1,
@@ -13049,11 +12967,11 @@ VALUES(36100,42,'cancellation-batch','test',1);
     for (std::size_t index = 0; index < 32; ++index) {
         const auto& cancellation = claimed[index];
         mutations.mutations.push_back({
-            .kind = JobCancellationOutcomeKind::CancelWithoutWorker,
+            .kind = JobCancellationOutcomeKind::ResolveWithoutWorker,
             .cancellation_request_id =
                 cancellation.cancellation_request_id,
             .job_id = cancellation.job_id,
-            .resolution_code = "CANCELED_BEFORE_WORKER",
+            .resolution_code = "WORKFLOW_CANCELED_BEFORE_WORKER",
             .requested_by = "test",
         });
     }
@@ -13591,7 +13509,7 @@ VALUES
     ReorganizedWorksetPlanEntry entry{};
     entry.workflow_step_id = 39012;
     entry.job_set_id = 39010;
-    entry.root_job_set_id = 39010;
+    entry.job_set_id = 39010;
     entry.program_kind = 42;
     entry.program_version = 1;
     entry.contract = {

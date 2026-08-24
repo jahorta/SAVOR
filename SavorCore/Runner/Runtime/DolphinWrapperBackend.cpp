@@ -641,10 +641,10 @@ struct DolphinWrapperBackend::Impl
             [confirmation, system](Core::State state) {
                 if (state != Core::State::Paused)
                     return;
-                auto acknowledge = [confirmation] {
-                    const std::uint64_t generation =
-                        confirmation->requested.load(
-                            std::memory_order_acquire);
+                const std::uint64_t generation =
+                    confirmation->requested.load(
+                        std::memory_order_acquire);
+                auto acknowledge = [confirmation, generation] {
                     std::uint64_t acknowledged =
                         confirmation->acknowledged.load(
                             std::memory_order_acquire);
@@ -766,6 +766,8 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
             "Dolphin failed to load the requested game",
             BackendIntegrity::Unknown);
     }
+
+    Core::SetIsThrottlerTempDisabled(true);
 
     wrapper->ConfigurePortsStandardPadP1();
 

@@ -119,11 +119,6 @@ void AssessCommonScenarioExecution(
     while (!pending_job_sets.empty()) {
         const auto job_set_id = pending_job_sets.front();
         pending_job_sets.pop_front();
-        for (const auto& child :
-             execution_db->GetChildJobSetProgress(job_set_id)) {
-            if (visited_job_sets.insert(child.job_set_id).second)
-                pending_job_sets.push_back(child.job_set_id);
-        }
         for (const auto& listed : execution_db->ListJobsInJobSet(job_set_id)) {
             const auto job = execution_db->GetExecutionJob(listed.job_id);
             assessment->Require(
@@ -346,7 +341,7 @@ void ReportCommonScenarioTrajectory(
             line << "[job-set-trajectory] scenario=" << scenario
                  << " job_set=" << job_set_id
                  << " total=" << progress->total_jobs
-                 << " completed=" << progress->completed_jobs
+                 << " completed=" << progress->settled_jobs
                  << " succeeded=" << progress->succeeded_jobs
                  << " failed=" << progress->failed_jobs
                  << " canceled=" << progress->canceled_jobs
@@ -354,16 +349,6 @@ void ReportCommonScenarioTrajectory(
             if (progress->expected_total) line << *progress->expected_total;
             else line << "none";
             sink(line.str());
-        }
-        for (const auto& child :
-             execution_db->GetChildJobSetProgress(job_set_id)) {
-            sink("[job-set-child-trajectory] scenario="
-                 + std::string(scenario) + " parent="
-                 + std::to_string(job_set_id) + " child="
-                 + std::to_string(child.job_set_id) + " purpose="
-                 + Quoted(child.purpose));
-            if (visited_job_sets.insert(child.job_set_id).second)
-                pending_job_sets.push_back(child.job_set_id);
         }
         for (const auto& listed : execution_db->ListJobsInJobSet(job_set_id)) {
             const auto job = execution_db->GetExecutionJob(listed.job_id);

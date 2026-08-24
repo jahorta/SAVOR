@@ -236,10 +236,10 @@ bool SqliteArchiveDb::CreateArchivePackage(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    const auto source_scope_kind = command.source_scope_kind.empty() ? std::string("root_job_set") : command.source_scope_kind;
+    const auto source_scope_kind = command.source_scope_kind.empty() ? std::string("job_set") : command.source_scope_kind;
     const bool is_workflow_selection = source_scope_kind == "workflow_selection";
     if (command.source_context.empty()
-        || (!is_workflow_selection && command.source_root_job_set_id <= 0)
+        || (!is_workflow_selection && command.source_job_set_id <= 0)
         || (is_workflow_selection && command.source_workflow_count <= 0)
         || command.manifest_path.empty()
         || command.checksum_status.empty()) {
@@ -257,7 +257,7 @@ bool SqliteArchiveDb::CreateArchivePackage(
     Statement insert_package;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ar_archive_package(source_context,source_root_job_set_id,source_scope_kind,source_workflow_count,selection_summary,archive_name,archive_notes,created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,manifest_path,checksum_status) "
+            "INSERT INTO ar_archive_package(source_context,source_job_set_id,source_scope_kind,source_workflow_count,selection_summary,archive_name,archive_notes,created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,manifest_path,checksum_status) "
             "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14);",
             -1,
             &insert_package.st,
@@ -269,7 +269,7 @@ bool SqliteArchiveDb::CreateArchivePackage(
     }
 
     sqlite3_bind_text(insert_package.st, 1, command.source_context.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_package.st, 2, command.source_root_job_set_id);
+    sqlite3_bind_int64(insert_package.st, 2, command.source_job_set_id);
     sqlite3_bind_text(insert_package.st, 3, source_scope_kind.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_package.st, 4, command.source_workflow_count);
     if (command.selection_summary.has_value()) sqlite3_bind_text(insert_package.st, 5, command.selection_summary->c_str(), -1, SQLITE_TRANSIENT);

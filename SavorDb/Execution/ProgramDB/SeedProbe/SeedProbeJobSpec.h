@@ -63,7 +63,7 @@ inline std::optional<std::string> SeedProbeCancellationGroupKey(
     if (probe_run_id <= 0) {
         return std::nullopt;
     }
-    return "seedprobe.run."
+    return "seedprobe."
         + std::to_string(probe_run_id)
         + ".search.delta."
         + std::to_string(desired_delta);

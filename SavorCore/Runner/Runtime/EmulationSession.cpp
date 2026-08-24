@@ -2000,6 +2000,28 @@ BackendResult EmulationSession::ActivateDerivedStateForItem(
             BackendErrorCode::InvalidState,
             "Derived state requires committed workset execution evidence");
     }
+    const ExecutionSnapshot execution = execution_engine_->snapshot();
+    if (!binding.blocks.empty())
+    {
+        if (execution.activity != ExecutionActivity::IdlePaused ||
+            execution.evidence.core_state != BackendCoreState::Paused ||
+            !execution.evidence.pause_confirmed || execution.evidence.pc == 0)
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::InvalidState,
+                "Derived state requires an authoritative paused item-start point");
+        }
+        if (StopPointError error =
+                stop_router_->EstablishPausedCurrentPoint(execution.evidence.pc))
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                error.message.empty()
+                    ? "Derived state could not establish the paused item-start point"
+                    : std::move(error.message),
+                BackendIntegrity::Preserved);
+        }
+    }
     const auto receipt = derived_state_->ActivateItem(
         binding,
         workset_epoch_,

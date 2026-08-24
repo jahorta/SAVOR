@@ -115,15 +115,6 @@ public:
         std::string* error_out = nullptr) override;
     std::vector<AuthoringInputSetFrameSnapshot> ListAuthoringInputSetFrames(
         std::int64_t input_set_id) const override;
-    bool SaveTasSpec(
-        const SaveTasSpecCommand& command,
-        std::int64_t* tas_spec_id_out = nullptr,
-        std::int64_t* tas_spec_base_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-    std::optional<TasSpecSnapshot> GetTasSpec(
-        std::int64_t tas_spec_id) const override;
-    std::vector<TasSpecSnapshot> ListTasSpecs(
-        int max_count) const override;
     bool SavePlan(
         const SavePlanCommand& command,
         std::int64_t* plan_id_out = nullptr,

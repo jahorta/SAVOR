@@ -152,7 +152,7 @@ struct JobExecutionCoordinatorTelemetry {
     std::uint64_t committed_cancellations_indexed = 0;
     std::size_t unresolved_requested_cancellation_canaries = 0;
     std::uint64_t waiting_jobs_suppressed_by_sidecar = 0;
-    std::uint64_t fully_canceled_worksets_avoided = 0;
+    std::uint64_t fully_suppressed_worksets_avoided = 0;
     std::uint64_t sidecar_items_submitted = 0;
     std::uint64_t sidecar_submit_receipts_accepted = 0;
     std::uint64_t sidecar_submit_receipts_repeated = 0;

@@ -31,17 +31,15 @@ private:
     value_type value_ = 0;
 };
 
-// One logical Full Phase activation. The workflow step names the orchestration
-// scope while the root job set names the durable execution aggregate that owns
-// every child wave.
+// One materialized workflow step and its flat execution job set.
 struct ProgramInvocationId
 {
     std::uint64_t workflow_step_id = 0;
-    std::uint64_t root_job_set_id = 0;
+    std::uint64_t job_set_id = 0;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
-        return workflow_step_id != 0 && root_job_set_id != 0;
+        return workflow_step_id != 0 && job_set_id != 0;
     }
 
     auto operator<=>(const ProgramInvocationId&) const noexcept = default;

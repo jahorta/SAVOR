@@ -21,11 +21,15 @@ QString battlePlanText(const savor::db::BattlePlanSnapshot& plan)
     for (const auto& turn : plan.turns) {
         actionCount += static_cast<int>(turn.actions.size());
     }
-    return QStringLiteral("#%1  %2\n%3 turns, %4 actions")
+    auto text = QStringLiteral("#%1  %2\n%3 turns, %4 actions")
         .arg(static_cast<qint64>(plan.plan_id))
         .arg(QString::fromStdString(plan.name))
         .arg(static_cast<qint64>(plan.turns.size()))
         .arg(actionCount);
+    if (!plan.description.empty()) {
+        text += QStringLiteral("\n%1").arg(QString::fromStdString(plan.description));
+    }
+    return text;
 }
 
 } // namespace

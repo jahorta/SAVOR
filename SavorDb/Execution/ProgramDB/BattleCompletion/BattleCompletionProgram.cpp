@@ -321,7 +321,6 @@ public:
                 .expected_job_count = 1, .worksets = {{
                     .job_set_id = ensured.job_set_id,
                     .workflow_step_id = context.step.workflow_step_id,
-                    .root_job_set_id = ensured.job_set_id,
                     .workset_key = materialization_key + ".workset.0",
                     .program_kind = static_cast<std::int32_t>(savor::PK_BattleCompletion),
                     .program_version = phase::ProgramVersion,
@@ -348,7 +347,7 @@ public:
                     .requested_by = std::string(kCreatedBy)}},
                 .requested_by = std::string(kCreatedBy)}, &published, error_out))
             return false;
-        result_out->root_job_set_id = ensured.job_set_id;
+        result_out->job_set_id = ensured.job_set_id;
         result_out->persistence = {.program_ref_kind = std::string(kProgramRefKind),
             .program_ref_id = completion_id, .fingerprint = Fingerprint(*row, *phase_),
             .program_version = phase::ProgramVersion};
@@ -360,7 +359,7 @@ public:
         std::string* error_out) const override {
         if (!result_out || !analysis_ || !execution_)
             return Fail("Battle Completion continuation is incomplete", error_out);
-        const auto jobs = execution_->ListJobsInJobSet(context.root_job_set_id);
+        const auto jobs = execution_->ListJobsInJobSet(context.job_set_id);
         if (jobs.size() != 1) return Fail("Battle Completion lost singleton shape", error_out);
         const auto job = execution_->GetExecutionJob(jobs.front().job_id);
         const auto row = job ? analysis_->GetBattleCompletion(job->program_ref_id)
@@ -419,7 +418,7 @@ public:
             static_cast<std::uint64_t>(context.dispatch_attempt_id));
         workset.phase_invocation = {.invocation_id = {
                 .workflow_step_id = static_cast<std::uint64_t>(context.workflow_step_id),
-                .root_job_set_id = static_cast<std::uint64_t>(context.root_job_set_id)},
+                .job_set_id = static_cast<std::uint64_t>(context.job_set_id)},
             .program_package = savor::runtime::fullphase::
                 BuildFullPhaseProgramPackage(*phase_),
             .common_input = savor::runtime::fullphase::MakeFullPhaseCommonInput(
@@ -649,7 +648,6 @@ ProgramKindDescriptor BuildBattleCompletionProgramDescriptor(
     descriptor.result_handler = std::make_shared<ResultHandler>(
         state_db, analysis_db, config.working_dir_root);
     descriptor.supports_workflow_orchestration = true;
-    descriptor.allow_mixed_success_failed_transition = false;
     return descriptor;
 }
 

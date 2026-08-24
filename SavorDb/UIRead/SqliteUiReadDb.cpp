@@ -238,10 +238,12 @@ UiJobSetSummary ReadJobSetSummaryRow(sqlite3_stmt* st) {
     row.program_kind = sqlite3_column_int(st, 1);
     row.created_at_utc = sqlite3_column_int64(st, 2);
     row.total_jobs = sqlite3_column_int64(st, 3);
-    row.completed_jobs = sqlite3_column_int64(st, 4);
+    row.settled_jobs = sqlite3_column_int64(st, 4);
     row.succeeded_jobs = sqlite3_column_int64(st, 5);
     row.failed_jobs = sqlite3_column_int64(st, 6);
-    row.canceled_jobs = sqlite3_column_int64(st, 7);
+    row.interrupted_jobs = sqlite3_column_int64(st, 7);
+    row.superseded_jobs = sqlite3_column_int64(st, 8);
+    row.canceled_jobs = sqlite3_column_int64(st, 9);
     return row;
 }
 
@@ -265,6 +267,7 @@ UiWorkflowInstanceSummary ReadWorkflowInstanceRow(sqlite3_stmt* st) {
     row.battle_desired_outcome_count = sqlite3_column_int64(st, 15);
     row.battle_final_victory_count = sqlite3_column_int64(st, 16);
     row.battle_selected_count = sqlite3_column_int64(st, 17);
+    row.retryable_job_count = sqlite3_column_int64(st, 18);
     return row;
 }
 
@@ -279,7 +282,7 @@ UiWorkflowStepSummary ReadWorkflowStepRow(sqlite3_stmt* st) {
     row.blocked_reason = ColumnText(st, 6);
     row.job_set_id = ColumnInt64Optional(st, 7);
     row.job_count = sqlite3_column_int64(st, 8);
-    row.job_completed_count = sqlite3_column_int64(st, 9);
+    row.job_settled_count = sqlite3_column_int64(st, 9);
     row.job_failed_count = sqlite3_column_int64(st, 10);
     row.priority = sqlite3_column_int(st, 11);
     row.attempts = sqlite3_column_int(st, 12);
@@ -529,7 +532,8 @@ UiReadPage<UiJobSummary> SqliteUiReadDb::ListJobs(
         "AND (?5=1 OR s.state IN (?6,?7,?8,?9,?10)) "
         "AND (?11=0 OR s.queued_at_utc < ?12 OR (s.queued_at_utc=?12 AND s.job_id < ?13)) "
         "AND (?14=0 OR s.queued_at_utc > ?15 OR (s.queued_at_utc=?15 AND s.job_id > ?16)) "
-        "ORDER BY s.queued_at_utc DESC, s.job_id DESC LIMIT ?17;";
+        "AND (?17=0 OR s.job_id=?18) "
+        "ORDER BY s.queued_at_utc DESC, s.job_id DESC LIMIT ?19;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
         return page;
     }
@@ -549,7 +553,9 @@ UiReadPage<UiJobSummary> SqliteUiReadDb::ListJobs(
     sqlite3_bind_int(st, 14, query.after.has_value() ? 1 : 0);
     sqlite3_bind_int64(st, 15, query.after.value_or(UiReadListCursor{}).primary);
     sqlite3_bind_int64(st, 16, query.after.value_or(UiReadListCursor{}).secondary);
-    sqlite3_bind_int(st, 17, query.limit);
+    sqlite3_bind_int(st, 17, query.job_id.has_value() ? 1 : 0);
+    sqlite3_bind_int64(st, 18, query.job_id.value_or(0));
+    sqlite3_bind_int(st, 19, query.limit);
 
     while (sqlite3_step(st) == SQLITE_ROW) {
         page.items.push_back(ReadJobSummaryRow(st));
@@ -579,6 +585,7 @@ UiJobStateCounts SqliteUiReadDb::CountJobsByState(
         "WHERE (?1=0 OR s.program_kind=?2) "
         "AND (?3=0 OR s.job_set_id=?4) "
         "AND (?5=1 OR s.state IN (?6,?7,?8,?9,?10)) "
+        "AND (?11=0 OR s.job_id=?12) "
         "GROUP BY s.state;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
         return counts;
@@ -593,6 +600,8 @@ UiJobStateCounts SqliteUiReadDb::CountJobsByState(
         const std::string value = i < static_cast<int>(query.states.size()) ? query.states[static_cast<std::size_t>(i)] : std::string{};
         sqlite3_bind_text(st, 6 + i, value.c_str(), -1, SQLITE_TRANSIENT);
     }
+    sqlite3_bind_int(st, 11, query.job_id.has_value() ? 1 : 0);
+    sqlite3_bind_int64(st, 12, query.job_id.value_or(0));
 
     while (sqlite3_step(st) == SQLITE_ROW) {
         AddJobStateCount(counts, ColumnText(st, 0), sqlite3_column_int64(st, 1));
@@ -751,9 +760,11 @@ UiReadPage<UiJobSetSummary> SqliteUiReadDb::ListJobSets(
     sqlite3_stmt* st = nullptr;
     constexpr const char* kSql =
         "SELECT job_set_id,MIN(program_kind),MIN(queued_at_utc),COUNT(*),"
-        "SUM(CASE WHEN state IN ('COMPLETED','DONE','SUCCEEDED') THEN 1 ELSE 0 END),"
-        "SUM(CASE WHEN state='SUCCEEDED' THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED') THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END),"
         "SUM(CASE WHEN state='FAILED' THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN state='INTERRUPTED' THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN state='SUPERSEDED' THEN 1 ELSE 0 END),"
         "SUM(CASE WHEN state='CANCELED' THEN 1 ELSE 0 END) "
         "FROM ui_job_summary "
         "WHERE (?1=0 OR program_kind=?2) "
@@ -799,9 +810,11 @@ std::optional<UiJobSetDetail> SqliteUiReadDb::GetJobSetDetail(
     sqlite3_stmt* st = nullptr;
     constexpr const char* kSql =
         "SELECT job_set_id,MIN(program_kind),MIN(queued_at_utc),COUNT(*),"
-        "SUM(CASE WHEN state IN ('COMPLETED','DONE','SUCCEEDED') THEN 1 ELSE 0 END),"
-        "SUM(CASE WHEN state='SUCCEEDED' THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED') THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END),"
         "SUM(CASE WHEN state='FAILED' THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN state='INTERRUPTED' THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN state='SUPERSEDED' THEN 1 ELSE 0 END),"
         "SUM(CASE WHEN state='CANCELED' THEN 1 ELSE 0 END) "
         "FROM ui_job_summary WHERE job_set_id=?1 GROUP BY job_set_id;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
@@ -982,8 +995,8 @@ std::vector<UiArchiveCatalogRow> SqliteUiReadDb::ListArchiveCatalog(
 
     sqlite3_stmt* st = nullptr;
     constexpr const char* kSql =
-        "SELECT archive_package_id,source_context,source_root_job_set_id,"
-        "COALESCE(source_scope_kind,'root_job_set'),COALESCE(source_workflow_count,0),"
+        "SELECT archive_package_id,source_context,source_job_set_id,"
+        "COALESCE(source_scope_kind,'job_set'),COALESCE(source_workflow_count,0),"
         "COALESCE(selection_summary,''),COALESCE(archive_name,''),COALESCE(archive_notes,''),"
         "created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,checksum_status "
         "FROM ui_archive_catalog "
@@ -1016,7 +1029,7 @@ std::vector<UiArchiveCatalogRow> SqliteUiReadDb::ListArchiveCatalog(
         UiArchiveCatalogRow row{};
         row.archive_package_id = sqlite3_column_int64(st, 0);
         row.source_context = ColumnText(st, 1);
-        row.source_root_job_set_id = sqlite3_column_int64(st, 2);
+        row.source_job_set_id = sqlite3_column_int64(st, 2);
         row.source_scope_kind = ColumnText(st, 3);
         row.source_workflow_count = sqlite3_column_int64(st, 4);
         row.selection_summary = ColumnText(st, 5);
@@ -1117,7 +1130,10 @@ UiReadPage<UiWorkflowInstanceSummary> SqliteUiReadDb::ListWorkflowInstances(
         "SELECT i.workflow_instance_id,i.workflow_kind,i.state,i.display_state,i.root_scope_kind,i.root_scope_id,COALESCE(i.created_by,''),"
         "i.blocked_step_count,i.failed_step_count,i.created_at_utc,i.started_at_utc,i.completed_at_utc,"
         "COALESCE(i.failure_code,''),COALESCE(i.failure_text,''),"
-        "i.battle_advancement_rank,i.battle_desired_outcome_count,i.battle_final_victory_count,i.battle_selected_count "
+        "i.battle_advancement_rank,i.battle_desired_outcome_count,i.battle_final_victory_count,i.battle_selected_count,"
+        "(SELECT COUNT(DISTINCT j.job_id) FROM ui_workflow_step ws "
+        "JOIN ui_job_summary j ON j.job_set_id=ws.job_set_id "
+        "WHERE ws.workflow_instance_id=i.workflow_instance_id AND j.state IN ('FAILED','INTERRUPTED')) "
         "FROM ui_workflow_instance i "
         "WHERE (?1=1 OR state=?2) "
         "AND (?3=1 OR display_state=?4) "
@@ -1127,7 +1143,8 @@ UiReadPage<UiWorkflowInstanceSummary> SqliteUiReadDb::ListWorkflowInstances(
         "AND (?13=0 OR battle_final_victory_count > 0) "
         "AND (?14=0 OR battle_final_victory_count = 0) "
         "AND (?15=0 OR state NOT IN ('COMPLETED','CANCELED')) "
-        "ORDER BY created_at_utc DESC, workflow_instance_id DESC LIMIT ?16;";
+        "AND (?16=0 OR i.workflow_instance_id=?17) "
+        "ORDER BY created_at_utc DESC, workflow_instance_id DESC LIMIT ?18;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
         return page;
     }
@@ -1147,7 +1164,9 @@ UiReadPage<UiWorkflowInstanceSummary> SqliteUiReadDb::ListWorkflowInstances(
     sqlite3_bind_int(st, 13, query.battle_final_victory_only ? 1 : 0);
     sqlite3_bind_int(st, 14, query.battle_final_victory_absent_only ? 1 : 0);
     sqlite3_bind_int(st, 15, query.exclude_final ? 1 : 0);
-    sqlite3_bind_int(st, 16, query.limit);
+    sqlite3_bind_int(st, 16, query.workflow_instance_id.has_value() ? 1 : 0);
+    sqlite3_bind_int64(st, 17, query.workflow_instance_id.value_or(0));
+    sqlite3_bind_int(st, 18, query.limit);
 
     while (sqlite3_step(st) == SQLITE_ROW) {
         page.items.push_back(ReadWorkflowInstanceRow(st));
@@ -1196,7 +1215,10 @@ std::optional<UiWorkflowDetail> SqliteUiReadDb::GetWorkflowDetail(
         "SELECT i.workflow_instance_id,i.workflow_kind,i.state,i.display_state,i.root_scope_kind,i.root_scope_id,COALESCE(i.created_by,''),"
         "i.blocked_step_count,i.failed_step_count,i.created_at_utc,i.started_at_utc,i.completed_at_utc,"
         "COALESCE(i.failure_code,''),COALESCE(i.failure_text,''),"
-        "i.battle_advancement_rank,i.battle_desired_outcome_count,i.battle_final_victory_count,i.battle_selected_count "
+        "i.battle_advancement_rank,i.battle_desired_outcome_count,i.battle_final_victory_count,i.battle_selected_count,"
+        "(SELECT COUNT(DISTINCT j.job_id) FROM ui_workflow_step ws "
+        "JOIN ui_job_summary j ON j.job_set_id=ws.job_set_id "
+        "WHERE ws.workflow_instance_id=i.workflow_instance_id AND j.state IN ('FAILED','INTERRUPTED')) "
         "FROM ui_workflow_instance i WHERE i.workflow_instance_id=?1;";
     if (sqlite3_prepare_v2(db_, kInstanceSql, -1, &inst, nullptr) != SQLITE_OK) {
         return std::nullopt;
@@ -1242,7 +1264,7 @@ std::optional<UiWorkflowDetail> SqliteUiReadDb::GetWorkflowDetail(
     sqlite3_stmt* steps = nullptr;
     constexpr const char* kStepsSql =
         "SELECT s.workflow_step_id,s.workflow_instance_id,s.workflow_unit_activation_id,s.step_key,s.step_kind,s.state,COALESCE(s.blocked_reason,''),s.job_set_id,"
-        "s.job_count,s.job_completed_count,s.job_failed_count,s.priority,s.attempts,s.max_attempts,"
+        "s.job_count,s.job_settled_count,s.job_failed_count,s.priority,s.attempts,s.max_attempts,"
         "s.ready_at_utc,s.started_at_utc,s.completed_at_utc,s.failed_at_utc,s.created_at_utc,s.battle_advancement_rank,"
         "s.battle_desired_outcome_count,s.battle_final_victory_count,s.battle_selected_count "
         "FROM ui_workflow_step s WHERE s.workflow_instance_id=?1 ORDER BY s.created_at_utc ASC, s.workflow_step_id ASC;";

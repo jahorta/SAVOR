@@ -315,37 +315,6 @@ std::vector<AuthoringInputSetFrameSnapshot> QueuedAuthoringDb::ListAuthoringInpu
         {});
 }
 
-bool QueuedAuthoringDb::SaveTasSpec(
-    const SaveTasSpecCommand& command,
-    std::int64_t* tas_spec_id_out,
-    std::int64_t* tas_spec_base_id_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, tas_spec_id_out, tas_spec_base_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->SaveTasSpec(command, tas_spec_id_out, tas_spec_base_id_out, error_out) : false;
-        },
-        false,
-        error_out);
-}
-
-std::optional<TasSpecSnapshot> QueuedAuthoringDb::GetTasSpec(
-    std::int64_t tas_spec_id) const {
-    return ExecuteRead<std::optional<TasSpecSnapshot>>(
-        [this, tas_spec_id]() {
-            return inner_ != nullptr ? inner_->GetTasSpec(tas_spec_id) : std::nullopt;
-        },
-        std::nullopt);
-}
-
-std::vector<TasSpecSnapshot> QueuedAuthoringDb::ListTasSpecs(
-    int max_count) const {
-    return ExecuteRead<std::vector<TasSpecSnapshot>>(
-        [this, max_count]() {
-            return inner_ != nullptr ? inner_->ListTasSpecs(max_count) : std::vector<TasSpecSnapshot>{};
-        },
-        {});
-}
-
 bool QueuedAuthoringDb::SavePlan(
     const SavePlanCommand& command,
     std::int64_t* plan_id_out,

@@ -1,7 +1,9 @@
 #include "WorkflowsPage.h"
 
 #include "GUI/Refresh/RowUpdate.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
+#include <QtCore/QSet>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
 #include <QtCore/QTimeZone>
@@ -30,6 +32,7 @@
 
 namespace {
 constexpr int kWorkflowIdRole = Qt::UserRole + 1;
+constexpr int kTreeKeyRole = Qt::UserRole + 2;
 constexpr int kDefaultPageSize = 50;
 
 QString qstr(const std::string& value)
@@ -98,20 +101,20 @@ QString progressText(std::int64_t completed, std::int64_t total, std::int64_t fa
     return QStringLiteral("%1/%2 (%3%)").arg(completed).arg(total).arg(pct);
 }
 
-std::int64_t effectiveCompletedJobCount(const savor::db::UiWorkflowStepSummary& step)
+std::int64_t effectiveSettledJobCount(const savor::db::UiWorkflowStepSummary& step)
 {
-    if (step.job_completed_count == 0
+    if (step.job_settled_count == 0
         && step.job_failed_count == 0
         && step.job_count > 0
         && step.state == "COMPLETED") {
         return step.job_count;
     }
-    return step.job_completed_count;
+    return step.job_settled_count;
 }
 
 QString stepProgressText(const savor::db::UiWorkflowStepSummary& step)
 {
-    return progressText(effectiveCompletedJobCount(step), step.job_count, step.job_failed_count);
+    return progressText(effectiveSettledJobCount(step), step.job_count, step.job_failed_count);
 }
 
 QString activeStepText(const savor::db::UiWorkflowDetail& detail)
@@ -243,7 +246,8 @@ bool workflowTableRowsEqual(const WorkflowsPage::WorkflowTableRow& lhs, const Wo
         && lhs.jobs == rhs.jobs
         && lhs.problems == rhs.problems
         && lhs.created == rhs.created
-        && lhs.completed == rhs.completed;
+        && lhs.completed == rhs.completed
+        && lhs.retryableJobs == rhs.retryableJobs;
 }
 
 void populateWorkflowTableRow(QTableWidget* table, int row, const WorkflowsPage::WorkflowTableRow& workflow)
@@ -281,6 +285,7 @@ void populateTreeDisplayRow(QTreeWidget* tree, QTreeWidgetItem* item, const Work
         item->setText(column, column < row.columns.size() ? row.columns[column] : QString());
     }
     item->setFirstColumnSpanned(row.firstColumnSpanned);
+    item->setData(0, kTreeKeyRole, row.key);
 
     const auto oldChildren = item->takeChildren();
     for (QTreeWidgetItem* child : oldChildren) {
@@ -332,7 +337,7 @@ WorkflowsPage::TreeDisplayRow makeActivationDisplayRow(
             continue;
         }
         total += step.job_count;
-        completed += effectiveCompletedJobCount(step);
+        completed += effectiveSettledJobCount(step);
         failed += step.job_failed_count;
     }
 
@@ -349,7 +354,6 @@ WorkflowsPage::TreeDisplayRow makeActivationDisplayRow(
         qstr(activation.failure_text),
         formatOptionalTime(activation.started_at_utc),
     };
-    row.expanded = true;
     for (const auto& step : detail.steps) {
         if (step.workflow_unit_activation_id.has_value()
             && *step.workflow_unit_activation_id == activation.workflow_unit_activation_id) {
@@ -418,7 +422,16 @@ WorkflowsPage::TreeDisplayRow makeWorkflowJobSetDisplayRow(const savorqt::db::Wo
 
     const auto& detail = *workflowJobSet.detail;
     row.columns[4] = qstr(savorqt::db::SavorDbJobSetService::ProgramKindLabel(detail.summary.program_kind));
-    row.columns[5] = progressText(detail.summary.completed_jobs, detail.summary.total_jobs, detail.summary.failed_jobs);
+    row.columns[5] = QStringLiteral(
+        "%1/%2 settled; %3 succeeded, %4 failed, %5 interrupted, "
+        "%6 superseded, %7 canceled")
+        .arg(detail.summary.settled_jobs)
+        .arg(detail.summary.total_jobs)
+        .arg(detail.summary.succeeded_jobs)
+        .arg(detail.summary.failed_jobs)
+        .arg(detail.summary.interrupted_jobs)
+        .arg(detail.summary.superseded_jobs)
+        .arg(detail.summary.canceled_jobs);
     row.columns[6] = QStringLiteral("%1 shown / %2 total")
         .arg(detail.jobs.size())
         .arg(static_cast<qint64>(detail.summary.total_jobs));
@@ -431,8 +444,103 @@ WorkflowsPage::TreeDisplayRow makeWorkflowJobSetDisplayRow(const savorqt::db::Wo
             row.children.push_back(makeJobSetDetailDisplayRow(job));
         }
     }
-    row.expanded = true;
     return row;
+}
+
+QString treeItemPath(const QTreeWidgetItem* item)
+{
+    if (item == nullptr) {
+        return {};
+    }
+    const QString key = item->data(0, kTreeKeyRole).toString();
+    return item->parent() == nullptr
+        ? key
+        : treeItemPath(item->parent()) + QStringLiteral("/") + key;
+}
+
+struct TreeViewState {
+    QSet<QString> expandedPaths;
+    QString currentPath;
+    ItemViewScrollSnapshot scroll;
+};
+
+void collectTreeState(const QTreeWidgetItem* item, TreeViewState* state)
+{
+    if (item == nullptr || state == nullptr) {
+        return;
+    }
+    if (item->isExpanded()) {
+        state->expandedPaths.insert(treeItemPath(item));
+    }
+    for (int index = 0; index < item->childCount(); ++index) {
+        collectTreeState(item->child(index), state);
+    }
+}
+
+TreeViewState captureTreeState(QTreeWidget* tree)
+{
+    TreeViewState state{};
+    state.scroll = captureItemViewScrollSnapshot(tree);
+    state.currentPath = treeItemPath(tree->currentItem());
+    for (int index = 0; index < tree->topLevelItemCount(); ++index) {
+        collectTreeState(tree->topLevelItem(index), &state);
+    }
+    return state;
+}
+
+void restoreTreeItemState(QTreeWidget* tree, QTreeWidgetItem* item, const TreeViewState& state)
+{
+    if (item == nullptr) {
+        return;
+    }
+    const QString path = treeItemPath(item);
+    item->setExpanded(state.expandedPaths.contains(path));
+    if (!state.currentPath.isEmpty() && state.currentPath == path) {
+        tree->setCurrentItem(item);
+    }
+    for (int index = 0; index < item->childCount(); ++index) {
+        restoreTreeItemState(tree, item->child(index), state);
+    }
+}
+
+void applyTreeRows(
+    QTreeWidget* tree,
+    std::vector<WorkflowsPage::TreeDisplayRow>& currentRows,
+    const std::vector<WorkflowsPage::TreeDisplayRow>& rows,
+    bool preserveState)
+{
+    const auto state = preserveState
+        ? std::optional<TreeViewState>{ captureTreeState(tree) }
+        : std::nullopt;
+    savorqt::gui::ApplyTreeRowsByKey(
+        tree,
+        currentRows,
+        rows,
+        [](const WorkflowsPage::TreeDisplayRow& row) { return row.key; },
+        treeDisplayRowsEqual,
+        populateTreeDisplayRow);
+    if (state.has_value()) {
+        for (int index = 0; index < tree->topLevelItemCount(); ++index) {
+            restoreTreeItemState(tree, tree->topLevelItem(index), *state);
+        }
+        restoreItemViewScrollSnapshot(tree, state->scroll);
+    } else {
+        tree->collapseAll();
+    }
+}
+
+std::optional<qint64> jobIdForTreeItem(const QTreeWidgetItem* item)
+{
+    if (item == nullptr) {
+        return std::nullopt;
+    }
+    const QString key = item->data(0, kTreeKeyRole).toString();
+    if (!key.startsWith(QStringLiteral("j:"))) {
+        return std::nullopt;
+    }
+    bool ok = false;
+    const qint64 jobId = key.mid(2).toLongLong(&ok);
+    return ok && jobId > 0 ? std::optional<qint64>{ jobId } : std::nullopt;
 }
 }
 
@@ -458,6 +566,35 @@ void WorkflowsPage::setPageActive(bool active)
         return;
     }
     refreshWorkflows();
+}
+
+void WorkflowsPage::showWorkflow(std::int64_t workflowInstanceId)
+{
+    if (workflowInstanceId <= 0) {
+        return;
+    }
+    focusedWorkflowInstanceId_ = workflowInstanceId;
+    selectedWorkflowInstanceId_ = workflowInstanceId;
+    selectedWorkflowDetail_.reset();
+    workflowJobSets_.clear();
+    before_.reset();
+    after_.reset();
+    clearWorkflowDetail(QStringLiteral("Loading workflow detail..."));
+    fetchWorkflowDetail(workflowInstanceId);
+    refreshWorkflows();
+}
+
+void WorkflowsPage::setWorkflowRetryInFlight(bool inFlight)
+{
+    retryFailedJobsInFlight_ = inFlight;
+}
+
+void WorkflowsPage::refreshAfterRetry(std::int64_t workflowInstanceId)
+{
+    refreshWorkflows();
+    if (workflowInstanceId == selectedWorkflowInstanceId_) {
+        fetchWorkflowDetail(workflowInstanceId);
+    }
 }
 
 void WorkflowsPage::createWidgets()
@@ -604,9 +741,13 @@ void WorkflowsPage::createWidgets()
     detailLayout->addWidget(detailMetaLabel_);
 
     auto* detailTabs = new QTabWidget(detailPanel);
-    currentStepsTree_ = new QTreeWidget(detailTabs);
-    futureStepsTree_ = new QTreeWidget(detailTabs);
-    pastStepsTree_ = new QTreeWidget(detailTabs);
+    auto* statusTab = new QWidget(detailTabs);
+    auto* statusTabLayout = new QVBoxLayout(statusTab);
+    statusTabLayout->setContentsMargins(4, 4, 4, 4);
+    auto* statusSplitter = new QSplitter(Qt::Vertical, statusTab);
+    currentStepsTree_ = new QTreeWidget(statusTab);
+    futureStepsTree_ = new QTreeWidget(statusTab);
+    pastStepsTree_ = new QTreeWidget(statusTab);
     jobSetsTree_ = new QTreeWidget(detailTabs);
     alertsTree_ = new QTreeWidget(detailTabs);
     configureStepTree(currentStepsTree_);
@@ -631,9 +772,29 @@ void WorkflowsPage::createWidgets()
     alertsTree_->header()->setSectionResizeMode(3, QHeaderView::Interactive);
     alertsTree_->header()->setSectionResizeMode(4, QHeaderView::Stretch);
     alertsTree_->header()->setSectionResizeMode(5, QHeaderView::Interactive);
-    detailTabs->addTab(currentStepsTree_, QStringLiteral("Current"));
-    detailTabs->addTab(futureStepsTree_, QStringLiteral("Future"));
-    detailTabs->addTab(pastStepsTree_, QStringLiteral("Past"));
+    const auto addStatusSection = [statusSplitter](const QString& title, QTreeWidget* tree, QLabel** countLabel) {
+        auto* section = new QFrame(statusSplitter);
+        auto* sectionLayout = new QVBoxLayout(section);
+        sectionLayout->setContentsMargins(4, 4, 4, 4);
+        sectionLayout->setSpacing(4);
+        auto* header = new QHBoxLayout();
+        auto* titleLabel = new QLabel(title, section);
+        titleLabel->setObjectName(QStringLiteral("panelTitle"));
+        *countLabel = new QLabel(QStringLiteral("0"), section);
+        (*countLabel)->setObjectName(QStringLiteral("jobSetsMetaText"));
+        header->addWidget(titleLabel);
+        header->addStretch();
+        header->addWidget(*countLabel);
+        sectionLayout->addLayout(header);
+        sectionLayout->addWidget(tree, 1);
+        statusSplitter->addWidget(section);
+    };
+    addStatusSection(QStringLiteral("Past"), pastStepsTree_, &pastCountLabel_);
+    addStatusSection(QStringLiteral("Current"), currentStepsTree_, &currentCountLabel_);
+    addStatusSection(QStringLiteral("Future"), futureStepsTree_, &futureCountLabel_);
+    statusSplitter->setSizes(QList<int>{ 180, 180, 180 });
+    statusTabLayout->addWidget(statusSplitter, 1);
+    detailTabs->addTab(statusTab, QStringLiteral("Status"));
     detailTabs->addTab(jobSetsTree_, QStringLiteral("Job Sets"));
     detailTabs->addTab(alertsTree_, QStringLiteral("Alerts"));
     detailLayout->addWidget(detailTabs, 1);
@@ -649,6 +810,7 @@ void WorkflowsPage::wireSignals()
 {
     connect(applyButton_, &QPushButton::clicked, this, &WorkflowsPage::applyFilters);
     connect(resetButton_, &QPushButton::clicked, this, [this]() {
+        focusedWorkflowInstanceId_ = 0;
         stateFilter_->setCurrentIndex(0);
         kindFilter_->clear();
         victoryOnlyCheck_->setChecked(false);
@@ -677,34 +839,11 @@ void WorkflowsPage::wireSignals()
     });
     connect(workflowTable_, &QTableWidget::itemSelectionChanged, this, &WorkflowsPage::handleWorkflowSelectionChanged);
     connect(workflowTable_, &QWidget::customContextMenuRequested, this, &WorkflowsPage::showWorkflowContextMenu);
-    connect(&retryFailedJobsWatcher_, &QFutureWatcher<WorksetReorganizationResult>::finished, this, [this]() {
-        retryFailedJobsInFlight_ = false;
-        try {
-            const auto result = retryFailedJobsWatcher_.result();
-            if (!result.ok) {
-                postStatusMessage(
-                    QStringLiteral("Retry failed jobs failed: %1")
-                        .arg(qstr(result.error.message)),
-                    StatusToast::Severity::Error);
-                return;
-            }
-            postStatusMessage(
-                QStringLiteral("Requeued %1 failed or interrupted job(s) into %2 workset(s).")
-                    .arg(result.value.requeued_job_count)
-                    .arg(result.value.created_workset_count),
-                StatusToast::Severity::Success);
-            if (workflowRefreshPipeline_ != nullptr) {
-                workflowRefreshPipeline_->requestRefresh(
-                    savorqt::gui::RefreshReason::Manual);
-            }
-            if (selectedWorkflowInstanceId_ > 0) {
-                fetchWorkflowDetail(selectedWorkflowInstanceId_);
-            }
-        } catch (const std::exception& exception) {
-            postStatusMessage(
-                QStringLiteral("Retry failed jobs failed: %1")
-                    .arg(QString::fromUtf8(exception.what())),
-                StatusToast::Severity::Error);
+    jobSetsTree_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(jobSetsTree_, &QWidget::customContextMenuRequested, this, &WorkflowsPage::showJobSetContextMenu);
+    connect(jobSetsTree_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int) {
+        if (const auto jobId = jobIdForTreeItem(item); jobId.has_value()) {
+            emit openJobRequested(*jobId);
         }
     });
     connect(&workflowCancelWatcher_, &QFutureWatcher<WorkflowCancelResult>::finished, this, [this]() {
@@ -748,12 +887,17 @@ void WorkflowsPage::wireSignals()
         errorMessage_.clear();
 
         savorqt::db::WorkflowListRequest request{};
-        request.display_state = stateFilter_->currentData().toString().trimmed().toStdString();
-        request.workflow_kind = kindFilter_->text().trimmed().toStdString();
+        if (focusedWorkflowInstanceId_ > 0) {
+            request.workflow_instance_id = focusedWorkflowInstanceId_;
+            request.limit = 1;
+        } else {
+            request.display_state = stateFilter_->currentData().toString().trimmed().toStdString();
+            request.workflow_kind = kindFilter_->text().trimmed().toStdString();
+            request.limit = pageSizeSpin_->value();
+            request.battle_final_victory_only = victoryOnlyCheck_->isChecked();
+        }
         request.before = before_;
         request.after = after_;
-        request.limit = pageSizeSpin_->value();
-        request.battle_final_victory_only = victoryOnlyCheck_->isChecked();
         updateStatusWidgets();
         return request;
     });
@@ -844,9 +988,12 @@ void WorkflowsPage::fetchWorkflowDetail(std::int64_t workflowInstanceId)
 
 void WorkflowsPage::fetchWorkflowJobSets(const savor::db::UiWorkflowDetail& detail)
 {
+    const bool workflowChanged = renderedJobSetsWorkflowInstanceId_ != detail.instance.workflow_instance_id;
     jobSetsFetchWorkflowInstanceId_ = detail.instance.workflow_instance_id;
     jobSetsFetchInFlight_ = true;
-    clearWorkflowJobSets(QStringLiteral("Loading workflow job sets..."));
+    if (workflowChanged) {
+        clearWorkflowJobSets(QStringLiteral("Loading workflow job sets..."));
+    }
 
     jobSetsWatcher_.setFuture(QtConcurrent::run([detail]() {
         return savorqt::db::SavorDbJobSetService::ListWorkflowJobSets(detail, 25);
@@ -856,6 +1003,7 @@ void WorkflowsPage::fetchWorkflowJobSets(const savor::db::UiWorkflowDetail& deta
 
 void WorkflowsPage::applyFilters()
 {
+    focusedWorkflowInstanceId_ = 0;
     before_.reset();
     after_.reset();
     refreshWorkflows();
@@ -916,11 +1064,19 @@ void WorkflowsPage::showWorkflowContextMenu(const QPoint& position)
     if (workflowInstanceId <= 0) {
         return;
     }
+    workflowTable_->selectRow(index.row());
+    const auto workflow = std::find_if(workflowPage_.items.begin(), workflowPage_.items.end(), [workflowInstanceId](const auto& row) {
+        return row.workflow_instance_id == workflowInstanceId;
+    });
+    const std::int64_t retryableJobs = workflow != workflowPage_.items.end()
+        ? workflow->retryable_job_count
+        : 0;
     QMenu menu(workflowTable_);
-    auto* retryAction = menu.addAction(QStringLiteral("Retry failed or interrupted jobs"));
-    retryAction->setEnabled(!retryFailedJobsInFlight_);
+    auto* retryAction = menu.addAction(
+        QStringLiteral("Retry failed or interrupted jobs (%1)").arg(retryableJobs));
+    retryAction->setEnabled(retryableJobs > 0 && !retryFailedJobsInFlight_);
     connect(retryAction, &QAction::triggered, this, [this, workflowInstanceId]() {
-        retryFailedJobs(workflowInstanceId);
+        emit retryFailedJobsRequested(workflowInstanceId);
     });
     auto* cancelAction = menu.addAction(QStringLiteral("Cancel workflow"));
     cancelAction->setEnabled(!workflowCancelInFlight_);
@@ -930,16 +1086,24 @@ void WorkflowsPage::showWorkflowContextMenu(const QPoint& position)
     menu.exec(workflowTable_->viewport()->mapToGlobal(position));
 }
 
-void WorkflowsPage::retryFailedJobs(std::int64_t workflowInstanceId)
+void WorkflowsPage::showJobSetContextMenu(const QPoint& position)
 {
-    if (retryFailedJobsInFlight_ || workflowInstanceId <= 0) {
+    const QModelIndex index = jobSetsTree_->indexAt(position);
+    if (!index.isValid()) {
         return;
     }
-    retryFailedJobsInFlight_ = true;
-    retryFailedJobsWatcher_.setFuture(QtConcurrent::run([workflowInstanceId]() {
-        return savorqt::db::SavorDbWorkflowService::RetryFailedJobs(
-            workflowInstanceId);
-    }));
+    QTreeWidgetItem* item = jobSetsTree_->itemAt(position);
+    const auto jobId = jobIdForTreeItem(item);
+    if (!jobId.has_value()) {
+        return;
+    }
+    jobSetsTree_->setCurrentItem(item);
+    QMenu menu(jobSetsTree_);
+    auto* openAction = menu.addAction(QStringLiteral("Open job details"));
+    connect(openAction, &QAction::triggered, this, [this, jobId]() {
+        emit openJobRequested(*jobId);
+    });
+    menu.exec(jobSetsTree_->viewport()->mapToGlobal(position));
 }
 
 void WorkflowsPage::cancelWorkflow(std::int64_t workflowInstanceId)
@@ -972,6 +1136,7 @@ void WorkflowsPage::updateWorkflowTable()
                 .arg(workflow.failed_step_count),
             formatTime(workflow.created_at_utc),
             formatOptionalTime(workflow.completed_at_utc),
+            workflow.retryable_job_count,
         });
     }
 
@@ -1007,8 +1172,8 @@ void WorkflowsPage::updateWorkflowTable()
         }
     }
 
-    prevButton_->setEnabled(workflowPage_.prev.has_value() && !workflowFetchInFlight_);
-    nextButton_->setEnabled(workflowPage_.next.has_value() && !workflowFetchInFlight_);
+    prevButton_->setEnabled(focusedWorkflowInstanceId_ == 0 && workflowPage_.prev.has_value() && !workflowFetchInFlight_);
+    nextButton_->setEnabled(focusedWorkflowInstanceId_ == 0 && workflowPage_.next.has_value() && !workflowFetchInFlight_);
 
     if (targetSelection > 0) {
         const bool needsDetail = !selectedWorkflowDetail_.has_value()
@@ -1059,7 +1224,7 @@ void WorkflowsPage::updateWorkflowDetail()
 
     for (const auto& step : detail.steps) {
         totalJobs += step.job_count;
-        completedJobs += effectiveCompletedJobCount(step);
+        completedJobs += effectiveSettledJobCount(step);
         failedJobs += step.job_failed_count;
     }
 
@@ -1109,34 +1274,15 @@ void WorkflowsPage::updateWorkflowDetail()
         }
     }
 
-    savorqt::gui::ApplyTreeRowsByKey(
-        currentStepsTree_,
-        currentCurrentStepRows_,
-        currentRows,
-        [](const TreeDisplayRow& row) { return row.key; },
-        treeDisplayRowsEqual,
-        populateTreeDisplayRow);
-    savorqt::gui::ApplyTreeRowsByKey(
-        futureStepsTree_,
-        currentFutureStepRows_,
-        futureRows,
-        [](const TreeDisplayRow& row) { return row.key; },
-        treeDisplayRowsEqual,
-        populateTreeDisplayRow);
-    savorqt::gui::ApplyTreeRowsByKey(
-        pastStepsTree_,
-        currentPastStepRows_,
-        pastRows,
-        [](const TreeDisplayRow& row) { return row.key; },
-        treeDisplayRowsEqual,
-        populateTreeDisplayRow);
-    savorqt::gui::ApplyTreeRowsByKey(
-        alertsTree_,
-        currentAlertRows_,
-        alertRows,
-        [](const TreeDisplayRow& row) { return row.key; },
-        treeDisplayRowsEqual,
-        populateTreeDisplayRow);
+    const bool preserveTreeState = renderedWorkflowInstanceId_ == detail.instance.workflow_instance_id;
+    applyTreeRows(currentStepsTree_, currentCurrentStepRows_, currentRows, preserveTreeState);
+    applyTreeRows(futureStepsTree_, currentFutureStepRows_, futureRows, preserveTreeState);
+    applyTreeRows(pastStepsTree_, currentPastStepRows_, pastRows, preserveTreeState);
+    applyTreeRows(alertsTree_, currentAlertRows_, alertRows, preserveTreeState);
+    renderedWorkflowInstanceId_ = detail.instance.workflow_instance_id;
+    pastCountLabel_->setText(QString::number(pastCount));
+    currentCountLabel_->setText(QString::number(currentCount));
+    futureCountLabel_->setText(QString::number(futureCount));
 
     for (int row = 0; row < workflowTable_->rowCount(); ++row) {
         const auto* idItem = workflowTable_->item(row, 0);
@@ -1169,7 +1315,6 @@ void WorkflowsPage::updateWorkflowJobSets()
                 qstr(activation.unit_kind),
                 qstr(activation.state),
             };
-            activationRow.expanded = true;
             for (const auto& row : workflowJobSets_) {
                 if (!row.step.workflow_unit_activation_id.has_value()
                     || *row.step.workflow_unit_activation_id != activation.workflow_unit_activation_id) {
@@ -1185,17 +1330,18 @@ void WorkflowsPage::updateWorkflowJobSets()
         }
     }
 
-    savorqt::gui::ApplyTreeRowsByKey(
-        jobSetsTree_,
-        currentJobSetRows_,
-        rows,
-        [](const TreeDisplayRow& row) { return row.key; },
-        treeDisplayRowsEqual,
-        populateTreeDisplayRow);
+    const std::int64_t workflowInstanceId = selectedWorkflowDetail_.has_value()
+        ? selectedWorkflowDetail_->instance.workflow_instance_id
+        : 0;
+    const bool preserveTreeState = workflowInstanceId > 0
+        && renderedJobSetsWorkflowInstanceId_ == workflowInstanceId;
+    applyTreeRows(jobSetsTree_, currentJobSetRows_, rows, preserveTreeState);
+    renderedJobSetsWorkflowInstanceId_ = workflowInstanceId;
 }
 
 void WorkflowsPage::clearWorkflowDetail(const QString& message)
 {
+    renderedWorkflowInstanceId_ = 0;
     detailHeaderLabel_->setText(message);
     detailMetaLabel_->clear();
     const std::vector<TreeDisplayRow> currentRows{ makeEmptyDisplayRow(QStringLiteral("clear-current"), message) };
@@ -1231,10 +1377,18 @@ void WorkflowsPage::clearWorkflowDetail(const QString& message)
         treeDisplayRowsEqual,
         populateTreeDisplayRow);
     clearWorkflowJobSets(QStringLiteral("-"));
+    currentStepsTree_->collapseAll();
+    futureStepsTree_->collapseAll();
+    pastStepsTree_->collapseAll();
+    alertsTree_->collapseAll();
+    pastCountLabel_->setText(QStringLiteral("0"));
+    currentCountLabel_->setText(QStringLiteral("0"));
+    futureCountLabel_->setText(QStringLiteral("0"));
 }
 
 void WorkflowsPage::clearWorkflowJobSets(const QString& message)
 {
+    renderedJobSetsWorkflowInstanceId_ = 0;
     workflowJobSets_.clear();
     const std::vector<TreeDisplayRow> rows{ makeEmptyDisplayRow(QStringLiteral("clear-job-sets"), message) };
     savorqt::gui::ApplyTreeRowsByKey(
@@ -1244,15 +1398,18 @@ void WorkflowsPage::clearWorkflowJobSets(const QString& message)
         [](const TreeDisplayRow& row) { return row.key; },
         treeDisplayRowsEqual,
         populateTreeDisplayRow);
+    jobSetsTree_->collapseAll();
 }
 
 void WorkflowsPage::updateStatusWidgets()
 {
     const bool busy = workflowFetchInFlight_ || detailFetchInFlight_ || jobSetsFetchInFlight_;
-    summaryLabel_->setText(QStringLiteral("Workflows: %1 - page size: %2%3")
-        .arg(workflowPage_.items.size())
-        .arg(pageSizeSpin_->value())
-        .arg(busy ? QStringLiteral(" - loading") : QString()));
+    const QString scopeText = focusedWorkflowInstanceId_ > 0
+        ? QStringLiteral("Focused workflow #%1").arg(focusedWorkflowInstanceId_)
+        : QStringLiteral("Workflows: %1 - page size: %2")
+            .arg(workflowPage_.items.size())
+            .arg(pageSizeSpin_->value());
+    summaryLabel_->setText(scopeText + (busy ? QStringLiteral(" - loading") : QString()));
     lastRefreshLabel_->setText(lastRefresh_.isValid()
         ? QStringLiteral("Last refresh: %1").arg(lastRefresh_.toString(QStringLiteral("hh:mm:ss AP")))
         : QStringLiteral("Last refresh: --"));

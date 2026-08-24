@@ -67,20 +67,20 @@ public:
             std::nullopt);
     }
 
-    std::optional<workflow::WorkflowStepTerminalSnapshot> GetStepTerminalSnapshotForJob(std::int64_t job_id) const override {
-        return owner_->ExecuteRead<std::optional<workflow::WorkflowStepTerminalSnapshot>>(
+    std::optional<workflow::WorkflowStepSettlementSnapshot> GetStepSettlementSnapshotForJob(std::int64_t job_id) const override {
+        return owner_->ExecuteRead<std::optional<workflow::WorkflowStepSettlementSnapshot>>(
             [this, job_id]() {
                 auto* service = owner_->inner_ != nullptr ? owner_->inner_->WorkflowQueryService() : nullptr;
-                return service != nullptr ? service->GetStepTerminalSnapshotForJob(job_id) : std::nullopt;
+                return service != nullptr ? service->GetStepSettlementSnapshotForJob(job_id) : std::nullopt;
             },
             std::nullopt);
     }
 
-    std::vector<workflow::WorkflowStepTerminalSnapshot> ListTerminalReadyStepSnapshots(std::size_t limit) const override {
-        return owner_->ExecuteRead<std::vector<workflow::WorkflowStepTerminalSnapshot>>(
+    std::vector<workflow::WorkflowStepSettlementSnapshot> ListSettlementReadyStepSnapshots(std::size_t limit) const override {
+        return owner_->ExecuteRead<std::vector<workflow::WorkflowStepSettlementSnapshot>>(
             [this, limit]() {
                 auto* service = owner_->inner_ != nullptr ? owner_->inner_->WorkflowQueryService() : nullptr;
-                return service != nullptr ? service->ListTerminalReadyStepSnapshots(limit) : std::vector<workflow::WorkflowStepTerminalSnapshot>{};
+                return service != nullptr ? service->ListSettlementReadyStepSnapshots(limit) : std::vector<workflow::WorkflowStepSettlementSnapshot>{};
             },
             {});
     }
@@ -175,15 +175,21 @@ public:
         });
     }
 
+    bool InterruptWorkflowInstance(const workflow::WorkflowInterruptInstanceCommand& command, std::string* error_out) override {
+        return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
+            return service->InterruptWorkflowInstance(cmd, err);
+        });
+    }
+
     bool MarkStepMaterialized(const workflow::WorkflowMarkStepMaterializedCommand& command, std::string* error_out) override {
         return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
             return service->MarkStepMaterialized(cmd, err);
         });
     }
 
-    bool MarkStepTerminal(const workflow::WorkflowMarkStepTerminalCommand& command, std::string* error_out) override {
+    bool CompleteWorkflowStep(const workflow::WorkflowCompleteStepCommand& command, std::string* error_out) override {
         return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
-            return service->MarkStepTerminal(cmd, err);
+            return service->CompleteWorkflowStep(cmd, err);
         });
     }
 
@@ -1181,14 +1187,6 @@ QueuedExecutionDb::GetJobSetByMaterializationKey(
                 : std::nullopt;
         },
         std::nullopt);
-}
-
-std::vector<ExecutionChildJobSetProgressDetails> QueuedExecutionDb::GetChildJobSetProgress(std::int64_t parent_job_set_id) const {
-    return ExecuteRead<std::vector<ExecutionChildJobSetProgressDetails>>(
-        [this, parent_job_set_id]() {
-            return inner_ != nullptr ? inner_->GetChildJobSetProgress(parent_job_set_id) : std::vector<ExecutionChildJobSetProgressDetails>{};
-        },
-        {});
 }
 
 bool QueuedExecutionDb::MarkQueuedJobsSuperseded(

@@ -11,7 +11,6 @@ namespace {
 struct CompatibilityKey {
     std::int64_t workflow_step_id = 0;
     std::int64_t job_set_id = 0;
-    std::int64_t root_job_set_id = 0;
     std::int32_t program_kind = 0;
     std::string module_canonical_id;
     std::string entrypoint;
@@ -29,7 +28,6 @@ CompatibilityKey MakeKey(const savor::db::FailedWorkflowWorksetJobRecord& job)
     return {
         .workflow_step_id = job.workflow_step_id,
         .job_set_id = job.job_set_id,
-        .root_job_set_id = job.root_job_set_id,
         .program_kind = source.program_kind,
         .module_canonical_id = source.contract.module_canonical_id,
         .entrypoint = source.contract.entrypoint,
@@ -109,7 +107,7 @@ bool WorksetJobOrganizer::Organize(
             savor::db::ReorganizedWorksetPlanEntry entry{};
             entry.workflow_step_id = representative.workflow_step_id;
             entry.job_set_id = representative.job_set_id;
-            entry.root_job_set_id = representative.root_job_set_id;
+            entry.job_set_id = representative.job_set_id;
             entry.program_kind = representative.source_workset.program_kind;
             entry.program_version = representative.source_workset.program_version;
             entry.contract = representative.source_workset.contract;

@@ -8,21 +8,13 @@
 #include <utility>
 
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
+#include "Common/DatabaseBootstrap.h"
 
 namespace savorqt {
 namespace {
 
 savor::db::DbConfigPaths BuildPaths(const std::filesystem::path& root) {
-    return savor::db::DbConfigPaths{
-        .execution_db_path = root / "execution.db",
-        .state_db_path = root / "state.db",
-        .analysis_db_path = root / "analysis.db",
-        .authoring_db_path = root / "authoring.db",
-        .ui_read_db_path = root / "ui_read.db",
-        .archive_db_path = root / "archive.db",
-        .object_store_root = root / "object_store",
-        .archive_store_root = root / "archive_store",
-    };
+    return savor::db::bootstrap::MakeDatabaseRootConfigPaths(root);
 }
 
 bool EnsureStorageRoot(const std::filesystem::path& root, std::string* error_out) {
@@ -108,24 +100,38 @@ bool SavorDbRuntime::switchRoot(const std::filesystem::path& root, std::string* 
     return start(root, error_out);
 }
 
-bool SavorDbRuntime::resetRoot(std::string* error_out) {
+bool SavorDbRuntime::resetRoot(
+    savor::db::bootstrap::DatabaseBootstrapProfileId profile_id,
+    savor::db::bootstrap::DatabaseRootBootstrapResult* result_out,
+    std::string* error_out) {
     if (root_.empty()) {
         if (error_out != nullptr) {
             *error_out = "SavorDb root is empty";
         }
         return false;
     }
-    const auto target = root_;
-    stop();
-    std::error_code ec;
-    std::filesystem::remove_all(target, ec);
-    if (ec) {
+    if (service_ == nullptr || !service_->IsRunning()) {
+        if (error_out != nullptr) *error_out = "SavorDb service is not running";
+        return false;
+    }
+
+    program_registry_ = savor::db::execution::programdb::ProgramKindRegistry{};
+    const savor::db::bootstrap::DatabaseRootBootstrapService bootstrap;
+    const bool recreated = bootstrap.RecreateRoot(
+        *service_,
+        {.target_root = root_, .profile_id = profile_id},
+        result_out,
+        error_out);
+
+    std::string registry_error;
+    if (service_->IsRunning() && !buildProgramRegistry(&registry_error)) {
         if (error_out != nullptr) {
-            *error_out = "failed deleting SavorDb root: " + ec.message();
+            if (!error_out->empty()) *error_out += "; ";
+            *error_out += "failed rebuilding program registry: " + registry_error;
         }
         return false;
     }
-    return start(target, error_out);
+    return recreated;
 }
 
 bool SavorDbRuntime::relocateRoot(const std::filesystem::path& root, bool cleanup_source, std::string* error_out) {

@@ -5,7 +5,7 @@
 
 namespace savor::db::events {
 
-inline constexpr std::array<std::string_view, 76> kEventCatalogV1{ {
+inline constexpr std::array<std::string_view, 81> kEventCatalogV1{ {
     "Execution.JobSetCreated.v1",
     "Execution.JobQueued.v1",
     "Execution.JobClaimed.v1",
@@ -20,6 +20,8 @@ inline constexpr std::array<std::string_view, 76> kEventCatalogV1{ {
     "Execution.WorkflowStepMaterialized.v1",
     "Execution.WorkflowStepCompleted.v1",
     "Execution.WorkflowStepFailed.v1",
+    "Execution.WorkflowStepInterrupted.v1",
+    "Execution.WorkflowStepCanceled.v1",
     "Execution.WorkflowStepBlocked.v1",
     "Execution.WorkflowTransitionEvaluated.v1",
     "Execution.WorkflowTransitionAdvanced.v1",
@@ -34,6 +36,9 @@ inline constexpr std::array<std::string_view, 76> kEventCatalogV1{ {
     "Execution.WorkflowRemediationReopened.v1",
     "Execution.WorkflowInstanceFailed.v1",
     "Execution.WorkflowInstanceCompleted.v1",
+    "Execution.WorkflowInstanceInterrupted.v1",
+    "Execution.WorkflowInstanceCanceled.v1",
+    "Execution.WorkflowInstanceResumed.v1",
     "State.ArtifactStored.v1",
     "State.SavestateCreated.v1",
     "State.SavestateDerived.v1",
@@ -72,7 +77,6 @@ inline constexpr std::array<std::string_view, 76> kEventCatalogV1{ {
     "AnalysisBattle.BattleReplayCompleted.v1",
     "AnalysisBattle.BattleReplayFailed.v1",
     "Authoring.SeedProbeSpecSaved.v1",
-    "Authoring.TasSpecSaved.v1",
     "Authoring.PlanSaved.v1",
     "Authoring.BattlePlanActionPresetSaved.v1",
     "Authoring.BattlePlanActionPresetRenamed.v1",
@@ -84,12 +88,14 @@ inline constexpr std::array<std::string_view, 76> kEventCatalogV1{ {
     "Archive.RehydrateFailed.v1",
 } };
 
-inline constexpr std::array<std::string_view, 19> kWorkflowExecutionEventsV1{ {
+inline constexpr std::array<std::string_view, 24> kWorkflowExecutionEventsV1{ {
     "Execution.WorkflowInstanceCreated.v1",
     "Execution.WorkflowStepReady.v1",
     "Execution.WorkflowStepMaterialized.v1",
     "Execution.WorkflowStepCompleted.v1",
     "Execution.WorkflowStepFailed.v1",
+    "Execution.WorkflowStepInterrupted.v1",
+    "Execution.WorkflowStepCanceled.v1",
     "Execution.WorkflowStepBlocked.v1",
     "Execution.WorkflowTransitionEvaluated.v1",
     "Execution.WorkflowTransitionAdvanced.v1",
@@ -104,6 +110,9 @@ inline constexpr std::array<std::string_view, 19> kWorkflowExecutionEventsV1{ {
     "Execution.WorkflowRemediationReopened.v1",
     "Execution.WorkflowInstanceFailed.v1",
     "Execution.WorkflowInstanceCompleted.v1",
+    "Execution.WorkflowInstanceInterrupted.v1",
+    "Execution.WorkflowInstanceCanceled.v1",
+    "Execution.WorkflowInstanceResumed.v1",
 } };
 
 } // namespace savor::db::events

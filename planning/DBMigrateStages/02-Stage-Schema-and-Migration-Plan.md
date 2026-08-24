@@ -496,26 +496,7 @@ Versioned, user-selectable input specs and composition rows used to build worker
 
 Target cleanup: `auto_schedule_battle_run` should be removed or ignored by new graph-style execution. Downstream scheduling belongs to authored graph edges plus descriptor-produced actual refs.
 
-#### 2) `au_tas_spec_base`
-- `tas_spec_base_id` (PK)
-- `name` (text UNIQUE NOT NULL)
-- `priority` (int)
-- `run_ms` (int)
-- `vi_stall_ms` (int)
-- `headroom_x10` (int)
-- `progress_enable` (bool)
-- `auto_queue_seeds` (bool)
-- `created_at_utc` (int)
-
-#### 3) `au_tas_spec`
-- `tas_spec_id` (PK)
-- `tas_spec_base_id` (FK -> `au_tas_spec_base.tas_spec_base_id`)
-- `base_dtm_artifact_id` (int cross-context reference)
-- `created_at_utc` (int)
-
-Target cleanup: selected DTM artifacts are workflow instance input bindings, and RTC values/ranges are launcher input that fan out to per-instance arguments. Authored TAS specs should retain reusable TAS behavior only.
-
-#### 4) `au_battle_run_spec`
+#### 2) `au_battle_run_spec`
 - `battle_run_spec_id` (PK)
 - `name` (text UNIQUE NOT NULL)
 - `priority` (int)
@@ -530,22 +511,23 @@ Target cleanup: selected DTM artifacts are workflow instance input bindings, and
 
 Target cleanup: fake-attack min/max bounds are launch-time exploration arguments when they vary per run. Authored battle specs should keep reusable runner settings.
 
-#### 5) `au_battle_plan`
+#### 3) `au_battle_plan`
 - `plan_id` (PK)
 - `name` (text UNIQUE NOT NULL)
+- `description` (text NOT NULL)
 - `fingerprint` (text UNIQUE NOT NULL)
 - `created_at_utc` (int)
 
 Current authority: positive, one-based, contiguous `au_battle_plan_turn` rows
 define both plan length and content; no redundant turn count is stored.
 
-#### 6) `au_battle_plan_turn`
+#### 4) `au_battle_plan_turn`
 - `plan_turn_id` (PK)
 - `plan_id` (FK -> `au_battle_plan.plan_id`)
 - `turn_index` (int)
 - UNIQUE(`plan_id`, `turn_index`)
 
-#### 7) `au_battle_plan_action`
+#### 5) `au_battle_plan_action`
 - `plan_action_id` (PK)
 - `plan_turn_id` (FK -> `au_battle_plan_turn.plan_turn_id`)
 - `actor_slot` (int)
@@ -555,24 +537,24 @@ define both plan length and content; no redundant turn count is stored.
 - `item_id` (int nullable)
 - `ordinal` (int)
 
-#### 8) `au_predicate_spec`
+#### 6) `au_predicate_spec`
 - `predicate_spec_id` (PK)
 - `name` (text UNIQUE NOT NULL)
 - typed predicate columns (required breakpoint(s), lhs/rhs, cmp op, flags, masks)
 - `abort_on_fail` (bool)
 - `created_at_utc` (int)
 
-#### 9) `au_predicate_set`
+#### 7) `au_predicate_set`
 - `predicate_set_id` (PK)
 - `created_at_utc` (int)
 
-#### 10) `au_predicate_set_item`
+#### 8) `au_predicate_set_item`
 - `predicate_set_id` (FK -> `au_predicate_set.predicate_set_id`)
 - `predicate_spec_id` (FK -> `au_predicate_spec.predicate_spec_id`)
 - `ordinal` (int)
 - PRIMARY KEY(`predicate_set_id`, `ordinal`)
 
-#### 11) `au_explorer_settings`
+#### 9) `au_explorer_settings`
 - `explorer_settings_id` (PK)
 - `name` (text UNIQUE NOT NULL)
 - `description` (text nullable)
@@ -580,17 +562,16 @@ define both plan length and content; no redundant turn count is stored.
 - `default_predicate_set_id` (nullable FK -> `au_predicate_set.predicate_set_id`)
 - `created_at_utc` (int)
 
-#### 12) `au_template`
+#### 10) `au_template`
 - `template_id` (PK)
 - `name` (text UNIQUE NOT NULL)
 - `description` (text nullable)
 - `seed_probe_spec_id` (nullable FK -> `au_seed_probe_spec.seed_probe_spec_id`)
-- `tas_spec_id` (nullable FK -> `au_tas_spec.tas_spec_id`)
 - `battle_run_spec_id` (nullable FK -> `au_battle_run_spec.battle_run_spec_id`)
 - `explorer_settings_id` (nullable FK -> `au_explorer_settings.explorer_settings_id`)
 - `created_at_utc` (int)
 
-#### 13) `au_outbox_message`
+#### 11) `au_outbox_message`
 - same envelope fields as `exec_outbox_message`
 
 #### 14) `au_workflow_graph`

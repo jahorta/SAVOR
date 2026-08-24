@@ -34,6 +34,7 @@ public:
     }
     bool PauseWorkflowInstance(const savor::db::execution::workflow::WorkflowPauseInstanceCommand&, std::string*) override { return true; }
     bool FailWorkflowInstance(const savor::db::execution::workflow::WorkflowFailInstanceCommand&, std::string*) override { return true; }
+    bool InterruptWorkflowInstance(const savor::db::execution::workflow::WorkflowInterruptInstanceCommand&, std::string*) override { return true; }
 
     bool MarkStepMaterialized(
         const savor::db::execution::workflow::WorkflowMarkStepMaterializedCommand& command,
@@ -42,10 +43,10 @@ public:
         return true;
     }
 
-    bool MarkStepTerminal(
-        const savor::db::execution::workflow::WorkflowMarkStepTerminalCommand& command,
+    bool CompleteWorkflowStep(
+        const savor::db::execution::workflow::WorkflowCompleteStepCommand& command,
         std::string*) override {
-        terminal_calls.push_back(command);
+        completion_calls.push_back(command);
         return true;
     }
     bool RecordStepOutput(
@@ -92,7 +93,7 @@ public:
     }
 
     std::vector<savor::db::execution::workflow::WorkflowMarkStepMaterializedCommand> materialized_calls;
-    std::vector<savor::db::execution::workflow::WorkflowMarkStepTerminalCommand> terminal_calls;
+    std::vector<savor::db::execution::workflow::WorkflowCompleteStepCommand> completion_calls;
     std::vector<savor::db::execution::workflow::WorkflowRecordStepOutputCommand> step_output_calls;
     std::vector<savor::db::execution::workflow::WorkflowRecordInputBindingCommand> input_binding_calls;
     std::vector<savor::db::execution::workflow::WorkflowMarkStepBlockedCommand> blocked_calls;

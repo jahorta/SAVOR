@@ -107,6 +107,7 @@ struct UiReadJobListQuery {
     std::vector<std::string> states;
     std::optional<int> program_kind;
     std::optional<std::int64_t> job_set_id;
+    std::optional<std::int64_t> job_id;
 };
 
 struct UiProgramKind {
@@ -194,9 +195,11 @@ struct UiJobSetSummary {
     int program_kind = 0;
     std::int64_t created_at_utc = 0;
     std::int64_t total_jobs = 0;
-    std::int64_t completed_jobs = 0;
+    std::int64_t settled_jobs = 0;
     std::int64_t succeeded_jobs = 0;
     std::int64_t failed_jobs = 0;
+    std::int64_t interrupted_jobs = 0;
+    std::int64_t superseded_jobs = 0;
     std::int64_t canceled_jobs = 0;
 };
 
@@ -361,7 +364,7 @@ struct UiArchiveCatalogListQuery {
 struct UiArchiveCatalogRow {
     std::int64_t archive_package_id = 0;
     std::string source_context;
-    std::int64_t source_root_job_set_id = 0;
+    std::int64_t source_job_set_id = 0;
     std::string source_scope_kind;
     std::int64_t source_workflow_count = 0;
     std::string selection_summary;
@@ -395,6 +398,7 @@ struct UiWorkflowInstanceListQuery {
     bool exclude_final = false;
     bool battle_final_victory_only = false;
     bool battle_final_victory_absent_only = false;
+    std::optional<std::int64_t> workflow_instance_id;
 };
 
 struct UiWorkflowInstanceSummary {
@@ -416,6 +420,7 @@ struct UiWorkflowInstanceSummary {
     std::int64_t battle_desired_outcome_count = 0;
     std::int64_t battle_final_victory_count = 0;
     std::int64_t battle_selected_count = 0;
+    std::int64_t retryable_job_count = 0;
 };
 
 struct UiWorkflowDisplayStateCounts {
@@ -441,7 +446,7 @@ struct UiWorkflowStepSummary {
     std::string blocked_reason;
     std::optional<std::int64_t> job_set_id;
     std::int64_t job_count = 0;
-    std::int64_t job_completed_count = 0;
+    std::int64_t job_settled_count = 0;
     std::int64_t job_failed_count = 0;
     int priority = 0;
     int attempts = 0;

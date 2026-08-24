@@ -3,6 +3,7 @@
 #include "DB/DBCore/DbSnapshotService.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 #include "SavorDbRuntime.h"
+#include "Common/DatabaseBootstrap.h"
 
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QCoreApplication>
@@ -14,8 +15,12 @@
 #include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
 #include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFrame>
+#include <QtWidgets/QFormLayout>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QInputDialog>
@@ -461,40 +466,78 @@ void SettingsPage::handleResetDatabaseClicked()
         return;
     }
 
-    const auto answer = QMessageBox::warning(
-        this,
-        "Delete and Remake Database",
-        QStringLiteral("Delete and remake the active database root?\n\nActive root:\n%1\n\nThis permanently deletes the SQLite database, stored artifacts, and temporary files in this root. SavorQt will then recreate a fresh empty database in the same location.")
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Delete and Remake Database"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* warning = new QLabel(
+        QStringLiteral("Delete and remake the active database root?\n\nActive root:\n%1\n\nThis permanently replaces the SQLite databases, stored artifacts, and temporary files in this root.")
             .arg(activeRoot_),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::No);
-    if (answer != QMessageBox::Yes) {
+        &dialog);
+    warning->setWordWrap(true);
+    layout->addWidget(warning);
+
+    auto* form = new QFormLayout();
+    auto* profileCombo = new QComboBox(&dialog);
+    for (const auto& profile : savor::db::bootstrap::DatabaseBootstrapProfiles()) {
+        profileCombo->addItem(QString::fromStdString(profile.display_name),
+            static_cast<int>(profile.id));
+        profileCombo->setItemData(profileCombo->count() - 1,
+            QString::fromStdString(profile.description), Qt::ToolTipRole);
+    }
+    const int standardIndex = profileCombo->findData(static_cast<int>(
+        savor::db::bootstrap::DatabaseBootstrapProfileId::Standard));
+    if (standardIndex >= 0) profileCombo->setCurrentIndex(standardIndex);
+    form->addRow(QStringLiteral("Bootstrap profile"), profileCombo);
+
+    auto* confirmationEdit = new QLineEdit(&dialog);
+    confirmationEdit->setPlaceholderText(QStringLiteral("Type delete"));
+    form->addRow(QStringLiteral("Confirmation"), confirmationEdit);
+    layout->addLayout(form);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto* acceptButton = buttons->button(QDialogButtonBox::Ok);
+    acceptButton->setText(QStringLiteral("Delete and Remake"));
+    acceptButton->setEnabled(false);
+    connect(confirmationEdit, &QLineEdit::textChanged, &dialog,
+        [acceptButton](const QString& text) {
+            acceptButton->setEnabled(
+                text.trimmed() == QStringLiteral("delete"));
+        });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted) {
         return;
     }
 
-    bool confirmed = false;
-    const QString confirmationText = QInputDialog::getText(
-        this,
-        "Type delete to confirm",
-        QStringLiteral("Type delete to permanently remove and recreate this database root:\n%1").arg(activeRoot_),
-        QLineEdit::Normal,
-        QString(),
-        &confirmed);
-    if (!confirmed) {
-        return;
-    }
-    if (confirmationText.trimmed() != QStringLiteral("delete")) {
-        setStatus(StatusKind::Warning, "Database reset cancelled because the confirmation text did not match \"delete\".");
-        return;
-    }
+    const auto profileId = static_cast<savor::db::bootstrap::DatabaseBootstrapProfileId>(
+        profileCombo->currentData().toInt());
+    const auto* profile = savor::db::bootstrap::FindDatabaseBootstrapProfile(profileId);
+    const QString profileName = profile != nullptr
+        ? QString::fromStdString(profile->display_name)
+        : QStringLiteral("Unknown");
 
     startStorageOperation(
         StorageOperation::ResetDatabase,
-        QStringLiteral("Deleting and remaking database storage at %1…").arg(activeRoot_),
-        []() {
+        QStringLiteral("Recreating database storage at %1 with the %2 profile…")
+            .arg(activeRoot_, profileName),
+        [profileId, profileName]() {
+            savor::db::bootstrap::DatabaseRootBootstrapResult bootstrapResult{};
             std::string error;
-            const bool ok = savorqt::SavorDbRuntime::instance().resetRoot(&error);
-            return StorageResult{ ok, ok ? QString() : QString::fromStdString(error) };
+            const bool ok = savorqt::SavorDbRuntime::instance().resetRoot(
+                profileId, &bootstrapResult, &error);
+            if (!ok) {
+                return StorageResult{false, QString::fromStdString(error)};
+            }
+            QString summary = QStringLiteral("Database storage was recreated with the %1 profile (%2 records created).")
+                .arg(profileName)
+                .arg(bootstrapResult.created.Total());
+            if (!bootstrapResult.diagnostic.empty()) {
+                summary += QStringLiteral(" %1")
+                    .arg(QString::fromStdString(bootstrapResult.diagnostic));
+            }
+            return StorageResult{true, std::move(summary)};
         });
 }
 
@@ -744,7 +787,10 @@ void SettingsPage::handleStorageOperationFinished()
         setStatus(StatusKind::Success, QStringLiteral("Database storage moved successfully. Active root: %1").arg(activeRoot_));
         break;
     case StorageOperation::ResetDatabase:
-        setStatus(StatusKind::Success, QStringLiteral("Database storage was deleted and recreated successfully. Active root: %1").arg(activeRoot_));
+        setStatus(StatusKind::Success,
+            result.second.isEmpty()
+                ? QStringLiteral("Database storage was recreated successfully. Active root: %1").arg(activeRoot_)
+                : result.second);
         break;
     case StorageOperation::ResetResultStaging:
         setStatus(StatusKind::Success,

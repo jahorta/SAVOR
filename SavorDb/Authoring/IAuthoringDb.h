@@ -28,7 +28,6 @@ using BattlePlanActionMacro = soa::battle::actions::BattleAction;
 
 struct AuthoringPayloadRecord {
     std::int64_t seed_probe_spec_id = 0;
-    std::int64_t tas_spec_id = 0;
     std::int64_t battle_plan_action_preset_id = 0;
     std::int64_t workflow_graph_id = 0;
     std::int64_t workflow_graph_revision_id = 0;
@@ -87,29 +86,9 @@ struct AuthoringInputSetFrameSnapshot {
     std::int32_t trigger_y = 0;
 };
 
-struct SaveTasSpecCommand {
-    std::string base_name;
-    int priority = 0;
-    bool progress_enable = true;
-    bool auto_queue_seeds = false;
-    std::int64_t base_dtm_artifact_id = 0;
-    types::UtcTimePoint created_at_utc{};
-    std::string correlation_id;
-    std::string causation_id;
-};
-
-struct TasSpecSnapshot {
-    std::int64_t tas_spec_id = 0;
-    std::int64_t tas_spec_base_id = 0;
-    std::string base_name;
-    int priority = 0;
-    bool progress_enable = true;
-    bool auto_queue_seeds = false;
-    std::int64_t base_dtm_artifact_id = 0;
-};
-
 struct SavePlanCommand {
     std::string name;
+    std::string description;
     std::string fingerprint;
     types::UtcTimePoint created_at_utc{};
     std::string correlation_id;
@@ -267,6 +246,7 @@ struct BattlePlanTurnSnapshot {
 struct BattlePlanSnapshot {
     std::int64_t plan_id = 0;
     std::string name;
+    std::string description;
     std::string fingerprint;
     std::vector<BattlePlanTurnSnapshot> turns;
 };
@@ -683,18 +663,6 @@ struct IAuthoringDb {
 
     virtual std::vector<AuthoringInputSetFrameSnapshot> ListAuthoringInputSetFrames(
         std::int64_t input_set_id) const = 0;
-
-    virtual bool SaveTasSpec(
-        const SaveTasSpecCommand& command,
-        std::int64_t* tas_spec_id_out = nullptr,
-        std::int64_t* tas_spec_base_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-
-    virtual std::optional<TasSpecSnapshot> GetTasSpec(
-        std::int64_t tas_spec_id) const = 0;
-
-    virtual std::vector<TasSpecSnapshot> ListTasSpecs(
-        int max_count) const = 0;
 
     virtual bool SavePlan(
         const SavePlanCommand& command,

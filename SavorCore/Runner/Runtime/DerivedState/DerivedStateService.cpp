@@ -686,11 +686,20 @@ DerivedStateReceipt DerivedStateService::ActivateItem(
         if (!registered.receipt.ok ||
             (registered.current_point &&
              registered.current_point->terminal ==
-                 StopRouteTerminal::RoutingFailure))
+                 StopRouteTerminal::RoutingFailure) ||
+            (registered.current_point &&
+             (!turn_entry_ || turn_entry_generation_ == 0 ||
+              turn_entry_->provenance.routed_stop !=
+                  registered.current_point->identity)))
         {
             std::string message = registered.receipt.error.message;
             if (message.empty() && registered.current_point)
                 message = registered.current_point->error.message;
+            if (message.empty() && registered.current_point)
+            {
+                message =
+                    "Battle derived-state current-point initialization did not commit the required turn-entry snapshot";
+            }
             initialization_subscriptions_ = std::move(registered.handle);
             (void)CloseItem();
             return DerivedStateReceipt::Failure(

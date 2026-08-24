@@ -40,7 +40,7 @@
 #include "Execution/Workflow/WorkflowIntegrityChecks.h"
 #include "Execution/Workflow/WorkflowProjector.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
-#include "Execution/Workflow/WorkflowStepCompletionGate.h"
+#include "Execution/Workflow/WorkflowStepSettlementGate.h"
 #include "UIRead/Projectors/ProjectorContract.h"
 #include "Execution/WorkflowCoordinatorBridge.h"
 #include "Execution/WorkflowSchedulerAdapter.h"
@@ -448,46 +448,94 @@ TEST(Stage3cCoordinatorBridge, DeduplicatesTerminalSignalsAndSchedulesReadySteps
 }
 
 
-TEST(WorkflowStepCompletionGate, MismatchThenTerminalFail) {
+TEST(WorkflowStepSettlementGate, MismatchThenTerminalFail) {
     using namespace savor::db::execution::workflow;
 
-    StepCompletionGateService gate;
-    const StepCompletionSnapshot snapshot{
+    StepSettlementGateService gate;
+    const StepSettlementSnapshot snapshot{
         .workflow_step_id = 500,
         .job_set_id = 900,
         .expected_total = 10,
         .discovered_total = 9,
-        .terminal_total = 9,
+        .settled_total = 9,
     };
 
     const auto first = gate.Evaluate(snapshot);
     EXPECT_FALSE(first.can_transition);
-    EXPECT_FALSE(first.terminal_fail);
+    EXPECT_FALSE(first.workflow_fail);
     EXPECT_EQ(first.blocked_reason.value_or(""), "STEP_BLOCKED_COUNT_MISMATCH");
 
     const auto second = gate.Evaluate(snapshot);
     EXPECT_FALSE(second.can_transition);
-    EXPECT_TRUE(second.terminal_fail);
+    EXPECT_TRUE(second.workflow_fail);
     EXPECT_EQ(second.blocked_reason.value_or(""), "STEP_BLOCKED_COUNT_MISMATCH_TERMINAL_FAIL");
 }
 
-TEST(WorkflowStepCompletionGate, AllowsTerminalFailureWhenAllJobsFinished) {
+TEST(WorkflowStepSettlementGate, ParksFailureWhenAllJobsSettle) {
     using namespace savor::db::execution::workflow;
 
-    StepCompletionGateService gate;
-    const StepCompletionSnapshot snapshot{
+    StepSettlementGateService gate;
+    const StepSettlementSnapshot snapshot{
         .workflow_step_id = 501,
         .job_set_id = 901,
         .expected_total = 10,
         .discovered_total = 10,
-        .terminal_total = 10,
+        .settled_total = 10,
+        .succeeded_total = 9,
         .failed_total = 1,
     };
 
     const auto decision = gate.Evaluate(snapshot);
     EXPECT_TRUE(decision.can_transition);
-    EXPECT_TRUE(decision.terminal_fail);
+    EXPECT_TRUE(decision.workflow_fail);
     EXPECT_FALSE(decision.blocked_reason.has_value());
+}
+
+TEST(WorkflowStepSettlementGate, SeparatesSupersessionFromFailureAndSuccess) {
+    using namespace savor::db::execution::workflow;
+
+    StepSettlementGateService gate;
+    const auto mixed = gate.Evaluate({
+        .workflow_step_id = 502,
+        .job_set_id = 902,
+        .expected_total = 4,
+        .discovered_total = 4,
+        .settled_total = 4,
+        .succeeded_total = 1,
+        .superseded_total = 3,
+    });
+    EXPECT_TRUE(mixed.can_transition);
+    EXPECT_FALSE(mixed.workflow_fail);
+
+    const auto all_superseded = gate.Evaluate({
+        .workflow_step_id = 503,
+        .job_set_id = 903,
+        .expected_total = 4,
+        .discovered_total = 4,
+        .settled_total = 4,
+        .superseded_total = 4,
+    });
+    EXPECT_TRUE(all_superseded.can_transition);
+    EXPECT_TRUE(all_superseded.workflow_fail);
+    EXPECT_EQ(all_superseded.blocked_reason.value_or(""),
+        "STEP_NO_SUCCESSFUL_JOBS");
+}
+
+TEST(WorkflowStepSettlementGate, ParksInterruptedWorkSeparately) {
+    using namespace savor::db::execution::workflow;
+
+    StepSettlementGateService gate;
+    const auto decision = gate.Evaluate({
+        .workflow_step_id = 504,
+        .job_set_id = 904,
+        .expected_total = 2,
+        .discovered_total = 2,
+        .settled_total = 2,
+        .succeeded_total = 1,
+        .interrupted_total = 1,
+    });
+    EXPECT_TRUE(decision.can_transition);
+    EXPECT_TRUE(decision.workflow_fail);
 }
 
 TEST(Stage1StepInputAggregation, AllInputsRequiredGatingAndEventSequence) {
@@ -570,12 +618,12 @@ TEST(Stage1StepInputAggregation, TimeoutRetriesOnceThenMarksTerminalFailureReady
     const auto after_first_timeout = svc.Evaluate(step, t0 + std::chrono::milliseconds(11), false);
     EXPECT_FALSE(after_first_timeout.input_complete);
     EXPECT_TRUE(after_first_timeout.timed_out);
-    EXPECT_FALSE(after_first_timeout.terminal_failure_ready);
+    EXPECT_FALSE(after_first_timeout.failure_ready);
 
     const auto after_second_timeout = svc.Evaluate(step, t0 + std::chrono::milliseconds(22), false);
     EXPECT_FALSE(after_second_timeout.input_complete);
     EXPECT_TRUE(after_second_timeout.timed_out);
-    EXPECT_TRUE(after_second_timeout.terminal_failure_ready);
+    EXPECT_TRUE(after_second_timeout.failure_ready);
     EXPECT_GE(requested_count, 4); // initial (2) + retry (2)
 }
 
@@ -711,9 +759,8 @@ TEST(Stage3cEventContracts, AnalysisSpineFamilyDispatchRoutesToSpineContractV1) 
 TEST(Stage3cEventContracts, AuthoringFamilyDispatchRoutesToAuthoringContractV1) {
     using namespace savor::db::events;
 
-    constexpr std::array<std::string_view, 6> kAuthoringEventTypes{ {
+    constexpr std::array<std::string_view, 5> kAuthoringEventTypes{ {
         "Authoring.SeedProbeSpecSaved.v1",
-        "Authoring.TasSpecSaved.v1",
         "Authoring.PlanSaved.v1",
         "Authoring.BattlePlanActionPresetSaved.v1",
         "Authoring.BattlePlanActionPresetRenamed.v1",

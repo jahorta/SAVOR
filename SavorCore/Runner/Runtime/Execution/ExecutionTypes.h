@@ -99,7 +99,7 @@ struct ExecutionRequestPolicy
 {
     WorksetEpoch expected_epoch;
     MovieEndedPolicy movie_ended = MovieEndedPolicy::Ignore;
-    ExecutionThrottlePolicy throttle = ExecutionThrottlePolicy::Preserve;
+    ExecutionThrottlePolicy throttle = ExecutionThrottlePolicy::RequireDisabled;
     ExecutionCurrentPointPolicy current_point =
         ExecutionCurrentPointPolicy::Ignore;
     ExecutionInterruptionPolicy interruptions =
@@ -151,7 +151,7 @@ struct SafePauseRequest
 struct InteractiveResumeRequest
 {
     WorksetEpoch expected_epoch;
-    ExecutionThrottlePolicy throttle = ExecutionThrottlePolicy::Preserve;
+    ExecutionThrottlePolicy throttle = ExecutionThrottlePolicy::RequireDisabled;
     ExecutionInterruptionPolicy interruptions =
         ExecutionInterruptionPolicy::Reject;
     std::optional<InputExecutionRelationshipId> input_relationship;

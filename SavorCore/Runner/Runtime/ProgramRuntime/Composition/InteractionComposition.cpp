@@ -1,5 +1,6 @@
 #include "InteractionComposition.h"
 
+#include "Runner/Runtime/Execution/ExecutionTypes.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
 
 #include <algorithm>
@@ -162,7 +163,8 @@ std::vector<Byte> ContinueConfig(
     writer.U8(1); // FutureOnly; suppress exact retained source re-entry.
     writer.Bool(true);
     writer.Bool(segment.fail_on_movie_end);
-    writer.U8(0); // preserve throttle
+    writer.U8(static_cast<std::uint8_t>(
+        ExecutionThrottlePolicy::RequireDisabled));
     writer.U8(0); // reject unknown interruption
     return std::move(writer).Finish();
 }
@@ -173,7 +175,8 @@ std::vector<Byte> AdvanceConfig(
     StaticConfigWriter writer({'E', 'A', 'C', '1'});
     writer.U8(2u);
     writer.Bool(segment.fail_on_movie_end);
-    writer.U8(0);
+    writer.U8(static_cast<std::uint8_t>(
+        ExecutionThrottlePolicy::RequireDisabled));
     writer.U8(0);
     return std::move(writer).Finish();
 }

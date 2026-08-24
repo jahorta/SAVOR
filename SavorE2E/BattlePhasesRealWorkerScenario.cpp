@@ -18,6 +18,7 @@
 
 #include "Analysis/IAnalysisDb.h"
 #include "Authoring/IAuthoringDb.h"
+#include "Authoring/AuthoringRecipeMaterializer.h"
 #include "Common/DbService.h"
 #include "Common/Types/UtcTimestamp.h"
 #include "Core/Input/SoaBattle/ActionTypes.h"
@@ -186,7 +187,7 @@ bool SeedBattlePredicateGroup(
         .root_expression = 3,
     };
     savor::db::PredicateAuthoringRevisionReceipt turn_order_receipt{};
-    if (!authoring_db->CreatePredicateDefinitionDraft({
+    if (!savor::db::authoring::MaterializePredicateDefinitionDraft(authoring_db, {
             .creation_request_key = PredicateCreationRequestKey(run_identity, "definition.turn_order"),
             .name = "Players act before enemies " + suffix,
             .description =
@@ -248,7 +249,7 @@ bool SeedBattlePredicateGroup(
         .root_expression = 4,
     };
     savor::db::PredicateAuthoringRevisionReceipt drop_receipt{};
-    if (!authoring_db->CreatePredicateDefinitionDraft({
+    if (!savor::db::authoring::MaterializePredicateDefinitionDraft(authoring_db, {
             .creation_request_key = PredicateCreationRequestKey(run_identity, "definition.drop_count"),
             .name = "Cumulative drop count by turn " + suffix,
             .description =
@@ -289,7 +290,7 @@ bool SeedBattlePredicateGroup(
         }},
     };
     savor::db::PredicateAuthoringRevisionReceipt turn_order_binding_receipt{};
-    if (!authoring_db->CreatePredicateExecutionBindingDraft({
+    if (!savor::db::authoring::MaterializePredicateExecutionBindingDraft(authoring_db, {
             .creation_request_key = PredicateCreationRequestKey(run_identity, "binding.turn_order"),
             .name = "Current turn order " + suffix,
             .description = "Reads the Battle turn-order snapshot at evaluation time.",
@@ -329,7 +330,7 @@ bool SeedBattlePredicateGroup(
         },
     };
     savor::db::PredicateAuthoringRevisionReceipt drop_binding_receipt{};
-    if (!authoring_db->CreatePredicateExecutionBindingDraft({
+    if (!savor::db::authoring::MaterializePredicateExecutionBindingDraft(authoring_db, {
             .creation_request_key = PredicateCreationRequestKey(run_identity, "binding.drop_count.273"),
             .name = "Electri Box cumulative drops " + suffix,
             .description = "Specializes the reusable drop predicate with item_id=273.",
@@ -369,7 +370,7 @@ bool SeedBattlePredicateGroup(
         },
     };
     savor::db::PredicateAuthoringRevisionReceipt group_receipt{};
-    if (!authoring_db->CreatePredicateGroupDraft({
+    if (!savor::db::authoring::MaterializePredicateGroupDraft(authoring_db, {
             .creation_request_key = PredicateCreationRequestKey(run_identity, "group.first_battle"),
             .name = "First Battle predicates " + suffix,
             .description =
@@ -403,7 +404,7 @@ bool SeedBattleAuthoring(
         return false;
     }
     std::int64_t plan_id = 0;
-    if (!authoring_db->SavePlan({
+    if (!savor::db::authoring::MaterializeBattlePlanHeader(authoring_db, {
             .name = "SavorE2E two-turn Battle plan " + suffix,
             .fingerprint = "savor-e2e-battle-phases-" + suffix,
             .created_at_utc = now,
@@ -413,7 +414,7 @@ bool SeedBattleAuthoring(
         return false;
 
     std::int64_t attack_any_enemy_id = 0;
-    if (!authoring_db->SaveBattlePlanActionPreset({
+    if (!savor::db::authoring::MaterializeBattleActionPreset(authoring_db, {
             .name = "Attack any enemy " + suffix,
             .macro = soa::battle::actions::BattleAction::Attack,
             .target_kind = savor::db::BattlePlanTargetKind::AnyEnemy,
@@ -424,7 +425,7 @@ bool SeedBattleAuthoring(
         return false;
 
     std::int64_t attack_same_as_actor_zero_id = 0;
-    if (!authoring_db->SaveBattlePlanActionPreset({
+    if (!savor::db::authoring::MaterializeBattleActionPreset(authoring_db, {
             .name = "Attack same target as actor 0 " + suffix,
             .macro = soa::battle::actions::BattleAction::Attack,
             .target_kind = savor::db::BattlePlanTargetKind::SameAsOtherPC,
@@ -436,7 +437,7 @@ bool SeedBattleAuthoring(
         return false;
 
     std::int64_t turn_id = 0;
-    if (!authoring_db->SaveBattlePlanTurn({
+    if (!savor::db::authoring::MaterializeBattlePlanTurn(authoring_db, {
             .plan_id = plan_id,
             .turn_index = 1,
             .default_predicate_group_revision_id =
@@ -451,7 +452,7 @@ bool SeedBattleAuthoring(
         }, &turn_id, error_out))
         return false;
 
-    if (!authoring_db->SaveBattlePlanTurn({
+    if (!savor::db::authoring::MaterializeBattlePlanTurn(authoring_db, {
             .plan_id = plan_id,
             .turn_index = 2,
             .default_predicate_group_revision_id =
@@ -494,7 +495,7 @@ bool SeedBattleWorkflow(
 
     const auto now = savor::db::types::UtcNow();
     savor::db::SaveWorkflowGraphResult saved{};
-    if (!authoring_db->SaveWorkflowGraph({
+    if (!savor::db::authoring::MaterializeWorkflowGraph(authoring_db, {
             .name = "SavorE2E Battle phases workflow "
                 + std::string(run_identity),
             .description = "Validate the approved DTM, sterilize its checkpoint, then run Battle Context and SeedProbe in parallel before battle.start",
@@ -874,7 +875,7 @@ bool SeedEstablishedBattleWorkflow(
 
     const auto now = savor::db::types::UtcNow();
     savor::db::SaveWorkflowGraphResult saved{};
-    if (!authoring_db->SaveWorkflowGraph({
+    if (!savor::db::authoring::MaterializeWorkflowGraph(authoring_db, {
             .name = "SavorE2E established-root Battle phases workflow "
                 + std::string(run_identity),
             .description = "Validate an established root cursor, sterilize its checkpoint, then run Battle Context and SeedProbe in parallel before battle.start",
@@ -1195,7 +1196,7 @@ bool SeedPreparedBattleWorkflow(
 
     const auto now = savor::db::types::UtcNow();
     savor::db::SaveWorkflowGraphResult saved{};
-    if (!authoring_db->SaveWorkflowGraph({
+    if (!savor::db::authoring::MaterializeWorkflowGraph(authoring_db, {
             .name = "SavorE2E prepared Battle phases workflow "
                 + std::string(run_identity),
             .description = "Run Battle Context and SeedProbe in parallel from a qualified prepared checkpoint before battle.start",
@@ -1817,7 +1818,7 @@ bool CheckBattleInvariantsAndReportTrajectory(
     const auto establish_step = find_step("tasmovie.establish_root_cursor");
     const auto validate_step = find_step("tasmovie.validate_root");
     const auto sterilize_step = find_step("tasmovie.checkpoint_sterilize");
-    const auto seedprobe_step = find_step("seedprobe.run");
+    const auto seedprobe_step = find_step("seedprobe.survey");
     const auto context_step = find_step("battle.context");
     const auto start_step = find_step("battle.start");
     const auto outputs = db_service->ExecutionDb()->WorkflowQueryService()->

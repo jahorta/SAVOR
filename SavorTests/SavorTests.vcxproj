@@ -249,6 +249,8 @@
     <ClCompile Include="test_savordb_utils_minimal_copy.cpp" />
     <ClCompile Include="test_simconfig.cpp" />
     <ClCompile Include="test_savordb.cpp" />
+    <ClCompile Include="test_database_bootstrap.cpp" />
+    <ClCompile Include="test_authoring_recipe.cpp" />
     <ClCompile Include="test_savordb_fixture_sqlite.cpp" />
     <ClCompile Include="test_savordb_phase3_nonfixture.cpp" />
     <ClCompile Include="test_result_staging_cleanup.cpp" />

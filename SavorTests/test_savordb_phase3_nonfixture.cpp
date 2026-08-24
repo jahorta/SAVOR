@@ -184,7 +184,7 @@ namespace savordb {
                     materialization_key + ".job";
                 const auto set_result =
                     [&](std::int64_t job_set_id) {
-                        result_out->root_job_set_id =
+                        result_out->job_set_id =
                             job_set_id;
                         result_out->persistence = {
                             .program_ref_kind = "unit.input",
@@ -201,7 +201,6 @@ namespace savordb {
                     {
                         .materialization_key =
                             materialization_key,
-                        .parent_job_set_id = std::nullopt,
                         .program_kind = 1,
                         .purpose = "workflow-test",
                         .created_by =
@@ -296,8 +295,6 @@ namespace savordb {
                             .job_set_id = job_set.job_set_id,
                             .workflow_step_id =
                                 context.step.workflow_step_id,
-                            .root_job_set_id =
-                                job_set.job_set_id,
                             .workset_key = materialization_key + ".workset",
                             .program_kind = 1,
                             .program_version = 1,
@@ -469,7 +466,7 @@ namespace savordb {
                 .strict_smoke_terminal_on_failure = false,
                 .poll_interval = std::chrono::milliseconds{ 5 },
                 .ready_scan_limit = 16,
-                .terminal_scan_limit = 16,
+                .settlement_scan_limit = 16,
             };
         }
 
@@ -528,7 +525,7 @@ VALUES(8801, 7, 'phase-contract-materialized', unixepoch()*1000);
         ASSERT_NE(commands, nullptr);
 
         ASSERT_TRUE(commands->MarkStepMaterialized({ .workflow_step_id = 2502, .job_set_id = 8801, .requested_by = "SavorTests" }, &err)) << err;
-        ASSERT_TRUE(commands->MarkStepTerminal({ .workflow_step_id = 2502, .terminal_state = "COMPLETED", .requested_by = "SavorTests" }, &err)) << err;
+        ASSERT_TRUE(commands->CompleteWorkflowStep({ .workflow_step_id = 2502, .completion_state = "COMPLETED", .requested_by = "SavorTests" }, &err)) << err;
 
         sqlite3_stmt* st = nullptr;
         ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db,
@@ -642,7 +639,7 @@ VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
         ASSERT_NE(queries, nullptr);
 
         ASSERT_TRUE(commands->MarkStepMaterialized({ .workflow_step_id = 2602, .job_set_id = 9001, .requested_by = "SavorTests" }, &err)) << err;
-        ASSERT_TRUE(commands->MarkStepTerminal({ .workflow_step_id = 2602, .terminal_state = "COMPLETED", .requested_by = "SavorTests" }, &err)) << err;
+        ASSERT_TRUE(commands->CompleteWorkflowStep({ .workflow_step_id = 2602, .completion_state = "COMPLETED", .requested_by = "SavorTests" }, &err)) << err;
         ASSERT_TRUE(ExecSql(db, "UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch()*1000 WHERE workflow_step_id=2603 AND state='WAITING';"));
 
         const auto graph = queries->GetWorkflowGraph(2601);
@@ -849,7 +846,7 @@ VALUES(7403, 7401, 'Current', 'unit.step', 'MATERIALIZED', 7402, 0, 1, unixepoch
         service.Stop();
 
         const auto telemetry = service.SnapshotTelemetry();
-        EXPECT_GE(telemetry.terminal_empty_step_count, 1);
+        EXPECT_GE(telemetry.settled_empty_step_count, 1);
         sqlite3_close(db);
     }
 
@@ -889,7 +886,7 @@ VALUES(6205, 6201, 'Next', 'unit.ready', 'WAITING', 0, 1, unixepoch()*1000);
         service.Stop();
 
         const auto telemetry = service.SnapshotTelemetry();
-        EXPECT_GE(telemetry.terminal_completed_step_count, 1);
+        EXPECT_GE(telemetry.completed_step_count, 1);
         EXPECT_GE(telemetry.transition_advanced_count, 1);
         sqlite3_close(db);
     }
@@ -927,7 +924,7 @@ VALUES(7506, 7501, 'Current', 'unit.step', 'MATERIALIZED', 7502, 0, 1, unixepoch
         auto* queries = execution_db.WorkflowQueryService();
         ASSERT_NE(queries, nullptr);
         EXPECT_FALSE(
-            queries->GetStepTerminalSnapshotForJob(7503)
+            queries->GetStepSettlementSnapshotForJob(7503)
                 .has_value());
 
         auto continuation_count =
@@ -937,7 +934,7 @@ VALUES(7506, 7501, 'Current', 'unit.step', 'MATERIALIZED', 7502, 0, 1, unixepoch
             false,
             continuation_count);
         auto config = FastWorkflowCoordinatorConfig();
-        config.terminal_repair_interval =
+        config.settlement_repair_interval =
             std::chrono::hours(1);
         WorkflowCoordinatorService service(
             &execution_db,
@@ -952,7 +949,7 @@ VALUES(7506, 7501, 'Current', 'unit.step', 'MATERIALIZED', 7502, 0, 1, unixepoch
         const auto ready_scans_before_notification =
             service.SnapshotTelemetry().ready_scan_count;
 
-        ASSERT_TRUE(service.PublishTerminalCommit({
+        ASSERT_TRUE(service.PublishSettlementCommit({
             .commit_sequence = 1,
             .workflow_step_id = 7506,
             .job_id = 7503,
@@ -980,9 +977,9 @@ SET state='COMPLETED', attempts=1, ended_at_utc=unixepoch()*1000
 WHERE job_id IN (7505,7507);
 )SQL"));
         ASSERT_TRUE(
-            queries->GetStepTerminalSnapshotForJob(7507)
+            queries->GetStepSettlementSnapshotForJob(7507)
                 .has_value());
-        ASSERT_TRUE(service.PublishTerminalCommit({
+        ASSERT_TRUE(service.PublishSettlementCommit({
             .commit_sequence = 2,
             .workflow_step_id = 7506,
             .job_id = 7507,
@@ -1007,10 +1004,10 @@ WHERE job_id IN (7505,7507);
             1);
         const auto telemetry = service.SnapshotTelemetry();
         EXPECT_EQ(
-            telemetry.targeted_terminal_notification_count,
+            telemetry.targeted_settlement_notification_count,
             2);
         EXPECT_EQ(
-            telemetry.targeted_terminal_advancement_count,
+            telemetry.targeted_settlement_advancement_count,
             1);
         sqlite3_close(db);
     }
@@ -1040,8 +1037,8 @@ VALUES
     (7612, 1, 'workflow-test', 1, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
 VALUES
-    (7603, 7602, 1, 1, 'unit.input', 7603, 'workflow-continuation-failed', 0, 'COMPLETED', 1, 1, unixepoch()*1000, unixepoch()*1000),
-    (7613, 7612, 1, 1, 'unit.input', 7613, 'workflow-continuation-rollback', 0, 'COMPLETED', 1, 1, unixepoch()*1000, unixepoch()*1000);
+    (7603, 7602, 1, 1, 'unit.input', 7603, 'workflow-continuation-failed', 0, 'SUCCEEDED', 1, 1, unixepoch()*1000, unixepoch()*1000),
+    (7613, 7612, 1, 1, 'unit.input', 7613, 'workflow-continuation-rollback', 0, 'SUCCEEDED', 1, 1, unixepoch()*1000, unixepoch()*1000);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
 VALUES
     (7604, 7601, 'Current', 'unit.step', 'MATERIALIZED', 7602, 0, 1, unixepoch()*1000, unixepoch()*1000),
@@ -1176,7 +1173,7 @@ VALUES(6305, 6301, 'Current', 'unit.step', 'MATERIALIZED', 6302, 0, 1, unixepoch
         service.Stop();
 
         const auto telemetry = service.SnapshotTelemetry();
-        EXPECT_GE(telemetry.terminal_failed_step_count, 1);
+        EXPECT_GE(telemetry.failed_step_count, 1);
         EXPECT_GE(telemetry.workflow_failed_count, 1);
         sqlite3_close(db);
     }
@@ -1200,7 +1197,7 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
 
         SqliteExecutionDb execution_db(db);
         auto registry = BuildWorkflowCoordinatorTestRegistry(&execution_db);
-        const auto snapshots = execution_db.WorkflowQueryService()->ListTerminalReadyStepSnapshots(16);
+        const auto snapshots = execution_db.WorkflowQueryService()->ListSettlementReadyStepSnapshots(16);
         ASSERT_EQ(snapshots.size(), 1u);
         EXPECT_EQ(snapshots.front().workflow_step_id, 6403);
         EXPECT_EQ(snapshots.front().discovered_total, 0);
@@ -1233,10 +1230,10 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         EXPECT_TRUE(completed_empty_step)
             << "state=" << final_step_state
             << " empty_events=" << final_empty_events
-            << " terminal_scans=" << telemetry.terminal_scan_count
-            << " terminal_steps=" << telemetry.terminal_step_count
+            << " settlement_scans=" << telemetry.settlement_scan_count
+            << " settled_steps=" << telemetry.settled_step_count
             << " failure=" << failure_message;
-        EXPECT_GE(telemetry.terminal_empty_step_count, 1);
+        EXPECT_GE(telemetry.settled_empty_step_count, 1);
         sqlite3_close(db);
     }
 
@@ -1884,11 +1881,11 @@ VALUES(4303, 4301, 'Unique', 'seedprobe.unique', 'MATERIALIZED', 4302, 1, 2, uni
 )SQL", &err))
             << err;
 
-        ASSERT_TRUE(execution_db->WorkflowCommandService()->MarkStepTerminal(
-            { .workflow_step_id = 4303, .terminal_state = "COMPLETED", .requested_by = "phase4-test" }, &err))
+        ASSERT_TRUE(execution_db->WorkflowCommandService()->CompleteWorkflowStep(
+            { .workflow_step_id = 4303, .completion_state = "COMPLETED", .requested_by = "phase4-test" }, &err))
             << err;
-        ASSERT_TRUE(execution_db->WorkflowCommandService()->MarkStepTerminal(
-            { .workflow_step_id = 4303, .terminal_state = "COMPLETED", .requested_by = "phase4-test-replay" }, &err))
+        ASSERT_TRUE(execution_db->WorkflowCommandService()->CompleteWorkflowStep(
+            { .workflow_step_id = 4303, .completion_state = "COMPLETED", .requested_by = "phase4-test-replay" }, &err))
             << err;
 
         std::int64_t completed_events = 0;
@@ -2206,10 +2203,10 @@ VALUES
         ASSERT_EQ(graph->unit_activations.size(), 1u);
         EXPECT_EQ(graph->unit_activations.front().state, WorkflowUnitActivationState::Running);
 
-        ASSERT_TRUE(commands->MarkStepTerminal(
+        ASSERT_TRUE(commands->CompleteWorkflowStep(
             {
                 .workflow_step_id = graph->steps.front().workflow_step_id,
-                .terminal_state = "COMPLETED",
+                .completion_state = "COMPLETED",
                 .requested_by = "SavorTests",
             },
             &err))

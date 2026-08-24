@@ -5,6 +5,7 @@
 #include <string>
 
 #include "Common/DbService.h"
+#include "Common/DatabaseBootstrap.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
 
 namespace savorqt {
@@ -22,7 +23,10 @@ public:
     [[nodiscard]] std::filesystem::path root() const;
 
     bool switchRoot(const std::filesystem::path& root, std::string* error_out = nullptr);
-    bool resetRoot(std::string* error_out = nullptr);
+    bool resetRoot(
+        savor::db::bootstrap::DatabaseBootstrapProfileId profile_id,
+        savor::db::bootstrap::DatabaseRootBootstrapResult* result_out = nullptr,
+        std::string* error_out = nullptr);
     bool relocateRoot(const std::filesystem::path& root, bool cleanup_source, std::string* error_out = nullptr);
     [[nodiscard]] std::filesystem::path resultStagingRoot() const;
     bool resetResultStaging(

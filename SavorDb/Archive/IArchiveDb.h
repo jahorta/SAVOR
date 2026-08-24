@@ -17,8 +17,8 @@ using ArchivePayloadRecord = events::ArchivePackagePayloadView;
 
 struct CreateArchivePackageCommand {
     std::string source_context;
-    std::int64_t source_root_job_set_id = 0;
-    std::string source_scope_kind = "root_job_set";
+    std::int64_t source_job_set_id = 0;
+    std::string source_scope_kind = "job_set";
     std::int64_t source_workflow_count = 0;
     std::optional<std::string> selection_summary;
     std::string archive_name;

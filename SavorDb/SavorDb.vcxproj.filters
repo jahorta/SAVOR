@@ -91,6 +91,12 @@
     <ClInclude Include="Common\DbService.h">
       <Filter>Common</Filter>
     </ClInclude>
+    <ClInclude Include="Common\DatabaseBootstrap.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\DatabaseBootstrapProfiles.h">
+      <Filter>Common</Filter>
+    </ClInclude>
     <ClInclude Include="Common\Performance\DbPerfReport.h">
       <Filter>Common</Filter>
     </ClInclude>
@@ -101,7 +107,7 @@
       <Filter>Common</Filter>
     </ClInclude>
     
-    <ClInclude Include="Execution\Workflow\WorkflowTerminalAdvancementService.h">
+    <ClInclude Include="Execution\Workflow\WorkflowSettlementAdvancementService.h">
       <Filter>Workflows</Filter>
     </ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowCoordinatorService.h">
@@ -147,6 +153,18 @@
       <Filter>Archive</Filter>
     </ClInclude>
     <ClInclude Include="Authoring\IAuthoringDb.h">
+      <Filter>Authoring</Filter>
+    </ClInclude>
+    <ClInclude Include="Authoring\AuthoringContentHash.h">
+      <Filter>Authoring</Filter>
+    </ClInclude>
+    <ClInclude Include="Authoring\AuthoringCatalog.h">
+      <Filter>Authoring</Filter>
+    </ClInclude>
+    <ClInclude Include="Authoring\AuthoringRecipe.h">
+      <Filter>Authoring</Filter>
+    </ClInclude>
+    <ClInclude Include="Authoring\AuthoringRecipeMaterializer.h">
       <Filter>Authoring</Filter>
     </ClInclude>
     <ClInclude Include="Authoring\SqliteAuthoringDb.h">
@@ -315,6 +333,12 @@
     <ClCompile Include="Common\DbService.cpp">
       <Filter>Common</Filter>
     </ClCompile>
+    <ClCompile Include="Common\DatabaseBootstrap.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\DatabaseBootstrapProfiles.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
     <ClCompile Include="Common\Performance\DbPerfReport.cpp">
       <Filter>Common</Filter>
     </ClCompile>
@@ -322,7 +346,7 @@
       <Filter>Common</Filter>
     </ClCompile>
     
-    <ClCompile Include="Execution\Workflow\WorkflowTerminalAdvancementService.cpp">
+    <ClCompile Include="Execution\Workflow\WorkflowSettlementAdvancementService.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowCoordinatorService.cpp">
@@ -368,6 +392,15 @@
       <Filter>Authoring</Filter>
     </ClCompile>
     <ClCompile Include="Authoring\QueuedAuthoringDb.cpp">
+      <Filter>Authoring</Filter>
+    </ClCompile>
+    <ClCompile Include="Authoring\AuthoringContentHash.cpp">
+      <Filter>Authoring</Filter>
+    </ClCompile>
+    <ClCompile Include="Authoring\AuthoringRecipe.cpp">
+      <Filter>Authoring</Filter>
+    </ClCompile>
+    <ClCompile Include="Authoring\AuthoringRecipeMaterializer.cpp">
       <Filter>Authoring</Filter>
     </ClCompile>
     <ClCompile Include="Authoring\RuntimeSymbolAuthoringService.cpp">

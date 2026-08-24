@@ -1,5 +1,6 @@
 #include "SemanticObservationComposition.h"
 
+#include "Runner/Runtime/Execution/ExecutionTypes.h"
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
 #include "Runner/Runtime/StopPoints/StopPointTypes.h"
@@ -354,7 +355,8 @@ std::vector<Byte> ContinueConfig(
         definition.movie_policy));
     // Default Slice 5 execution policies: preserve throttle and fail closed
     // on an unregistered interruption.
-    writer.U8(0);
+    writer.U8(static_cast<std::uint8_t>(
+        ExecutionThrottlePolicy::RequireDisabled));
     writer.U8(0);
     return std::move(writer).Finish();
 }
@@ -367,7 +369,8 @@ std::vector<Byte> AdvanceConfig(
     // Fail if a previously active movie ends; preserve throttle; reject
     // interruptions.
     writer.U8(1);
-    writer.U8(0);
+    writer.U8(static_cast<std::uint8_t>(
+        ExecutionThrottlePolicy::RequireDisabled));
     writer.U8(0);
     return std::move(writer).Finish();
 }

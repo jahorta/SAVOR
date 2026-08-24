@@ -297,9 +297,13 @@ void ExplorerRunsPage::refreshGroupsTable()
         rows.push_back(GroupRow{
             group.job_set_id,
             formatTimestamp(group.created_at_utc),
-            QStringLiteral("%1/%2").arg(group.completed_jobs).arg(group.total_jobs),
-            QStringLiteral("%1 succeeded, %2 failed, %3 canceled").arg(group.succeeded_jobs).arg(group.failed_jobs).arg(group.canceled_jobs),
-            groupStatusText(group.completed_jobs, group.total_jobs, group.failed_jobs, group.canceled_jobs),
+            QStringLiteral("%1/%2").arg(group.settled_jobs).arg(group.total_jobs),
+            QStringLiteral("%1 succeeded, %2 failed, %3 interrupted, %4 superseded, %5 canceled")
+                .arg(group.succeeded_jobs).arg(group.failed_jobs)
+                .arg(group.interrupted_jobs).arg(group.superseded_jobs)
+                .arg(group.canceled_jobs),
+            groupStatusText(group.settled_jobs, group.total_jobs, group.failed_jobs,
+                group.interrupted_jobs, group.canceled_jobs),
         });
     }
 
@@ -344,7 +348,9 @@ void ExplorerRunsPage::refreshWaveTree()
             QStringLiteral("Job set %1").arg(summary.job_set_id),
             QString::number(summary.total_jobs),
             state.selectedGroup->hierarchy_projection_available
-                ? groupStatusText(summary.completed_jobs, summary.total_jobs, summary.failed_jobs, summary.canceled_jobs)
+                ? groupStatusText(summary.settled_jobs, summary.total_jobs,
+                    summary.failed_jobs, summary.interrupted_jobs,
+                    summary.canceled_jobs)
                 : QStringLiteral("Wave hierarchy projection pending"),
         });
     }
@@ -573,12 +579,17 @@ QString ExplorerRunsPage::formatTimestamp(qint64 epochMillis) const
     return QDateTime::fromMSecsSinceEpoch(epochMillis, QTimeZone::UTC).toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
 }
 
-QString ExplorerRunsPage::groupStatusText(std::int64_t completed, std::int64_t total, std::int64_t failed, std::int64_t canceled) const
+QString ExplorerRunsPage::groupStatusText(std::int64_t settled, std::int64_t total,
+    std::int64_t failed, std::int64_t interrupted,
+    std::int64_t canceled) const
 {
     if (total <= 0) {
         return QStringLiteral("Empty");
     }
-    if (completed >= total) {
+    if (settled >= total) {
+        if (interrupted > 0) {
+            return QStringLiteral("Interrupted");
+        }
         return failed > 0 || canceled > 0 ? QStringLiteral("Terminal with issues") : QStringLiteral("Completed");
     }
     return QStringLiteral("Running or queued");

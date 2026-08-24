@@ -20,7 +20,7 @@ struct StepInputAggregationConfig {
 
 struct StepInputAggregationStatus {
     bool input_complete = false;
-    bool terminal_failure_ready = false;
+    bool failure_ready = false;
     bool timed_out = false;
     std::optional<std::int64_t> input_latency_ms;
 };
@@ -61,7 +61,7 @@ private:
         std::chrono::steady_clock::time_point deadline{};
         int timeout_retries = 0;
         bool input_complete_emitted = false;
-        bool terminal_failure_ready = false;
+        bool failure_ready = false;
         bool async_fragment_simulated = false;
     };
 

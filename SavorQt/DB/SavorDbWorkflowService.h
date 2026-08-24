@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "SavorDbRuntime.h"
+#include "Authoring/AuthoringContentHash.h"
 #include "DB/SavorDbAuthoringService.h"
 #include "Execution/Workflow/WorkflowComposition.h"
 #include "Execution/Workflow/WorkflowLaunchContract.h"
@@ -31,6 +32,7 @@ struct WorkflowListRequest {
     int limit = 50;
     bool battle_final_victory_only = false;
     bool battle_final_victory_absent_only = false;
+    std::optional<std::int64_t> workflow_instance_id;
 };
 
 struct WorkflowGraphInputBindingDraft {
@@ -233,6 +235,7 @@ public:
         query.limit = request.limit;
         query.battle_final_victory_only = request.battle_final_victory_only;
         query.battle_final_victory_absent_only = request.battle_final_victory_absent_only;
+        query.workflow_instance_id = request.workflow_instance_id;
         return ServiceResult<savor::db::UiReadPage<savor::db::UiWorkflowInstanceSummary>>::Ok(
             db->ListWorkflowInstances(query));
     }
@@ -573,18 +576,8 @@ private:
         const WorkflowUnitDefinition& unit,
         const std::optional<std::string>& authored_ref_kind,
         const std::optional<std::int64_t>& authored_ref_id) {
-        std::string content = "standalone-unit:" + unit.unit_kind + "\n";
-        if (authored_ref_kind.has_value() && authored_ref_id.has_value()) {
-            content += "authored:" + *authored_ref_kind + ":" + std::to_string(*authored_ref_id) + "\n";
-        }
-        std::uint64_t hash = 1469598103934665603ull;
-        for (const auto ch : content) {
-            hash ^= static_cast<unsigned char>(ch);
-            hash *= 1099511628211ull;
-        }
-        std::ostringstream out;
-        out << "standalone-fnv1a64-" << std::hex << hash;
-        return out.str();
+        return savor::db::authoring::ComputeStandaloneWorkflowGraphHash(
+            unit.unit_kind, authored_ref_kind, authored_ref_id);
     }
 
     static savor::db::IUiReadDb* UiReadDb() {

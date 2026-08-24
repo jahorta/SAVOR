@@ -67,6 +67,11 @@ void JobsPage::setPageActive(bool active)
     controller_->setPageActive(active);
 }
 
+void JobsPage::showJob(qint64 jobId)
+{
+    controller_->showJob(jobId);
+}
+
 void JobsPage::createWidgets()
 {
     QVBoxLayout* rootLayout = new QVBoxLayout(this);

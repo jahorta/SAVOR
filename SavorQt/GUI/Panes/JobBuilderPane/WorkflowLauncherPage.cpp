@@ -1216,22 +1216,7 @@ void WorkflowLauncherPage::refreshAuthoredRefsForStandaloneUnit(const WorkflowUn
     authoredRefLabel_->show();
     authoredRefCombo_->show();
 
-    if (requirement.ref_kind == "tas_spec") {
-        const auto result = savorqt::db::SavorDbAuthoringService::ListTasSpecs();
-        if (!result.ok) {
-            postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
-            return;
-        }
-        for (const auto& spec : result.value) {
-            authoredRefOptions_.push_back(AuthoredRefOption{
-                .label = QStringLiteral("#%1 %2")
-                    .arg(static_cast<qint64>(spec.tas_spec_id))
-                    .arg(QString::fromStdString(spec.base_name)),
-                .ref_kind = "tas_spec",
-                .ref_id = spec.tas_spec_id,
-            });
-        }
-    } else if (requirement.ref_kind == "seed_probe_spec") {
+    if (requirement.ref_kind == "seed_probe_spec") {
         const auto result = savorqt::db::SavorDbAuthoringService::ListSeedProbeSpecs();
         if (!result.ok) {
             postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
@@ -1264,6 +1249,7 @@ void WorkflowLauncherPage::refreshAuthoredRefsForStandaloneUnit(const WorkflowUn
                     .arg(static_cast<int>(plan.turns.size()))
                     .arg(static_cast<qulonglong>(actionCount))
                     .arg(QString::fromStdString(plan.fingerprint)),
+                .description = QString::fromStdString(plan.description),
                 .ref_kind = "authoring.battle_plan",
                 .ref_id = plan.plan_id,
             });
@@ -1272,6 +1258,8 @@ void WorkflowLauncherPage::refreshAuthoredRefsForStandaloneUnit(const WorkflowUn
 
     for (const auto& option : authoredRefOptions_) {
         authoredRefCombo_->addItem(option.label, static_cast<qint64>(option.ref_id));
+        authoredRefCombo_->setItemData(
+            authoredRefCombo_->count() - 1, option.description, Qt::ToolTipRole);
     }
     if (authoredRefOptions_.empty()) {
         authoredRefCombo_->addItem(QStringLiteral("(no authored settings available)"), 0);

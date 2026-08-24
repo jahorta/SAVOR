@@ -1,4 +1,5 @@
 #include "WorkflowGraphEditorWindow.h"
+#include "Authoring/AuthoringContentHash.h"
 
 #include "DB/SavorDbAuthoringService.h"
 #include "DB/SavorDbWorkflowService.h"
@@ -74,23 +75,19 @@ std::string workflowGraphHash(
     const std::vector<savor::db::execution::workflow::WorkflowCompositionNode>& nodes,
     const std::vector<savor::db::execution::workflow::WorkflowUnitOutputBinding>& bindings)
 {
-    std::string content = "name:" + name.toStdString() + "\ndescription:" + description.toStdString() + "\n";
+    std::vector<savor::db::authoring::WorkflowGraphHashNode> hashNodes;
+    hashNodes.reserve(nodes.size());
     for (const auto& node : nodes) {
-        content += "node:" + node.node_key + ":" + node.unit_kind + "\n";
+        hashNodes.push_back({node.node_key, node.unit_kind});
     }
+    std::vector<savor::db::authoring::WorkflowGraphHashEdge> hashEdges;
+    hashEdges.reserve(bindings.size());
     for (const auto& binding : bindings) {
-        content += "edge:" + binding.from_node_key + "." + binding.output_key
-            + ">" + binding.to_node_key + "." + binding.input_key + "\n";
+        hashEdges.push_back({binding.from_node_key, binding.output_key,
+            binding.to_node_key, binding.input_key});
     }
-
-    std::uint64_t hash = 1469598103934665603ull;
-    for (const auto ch : content) {
-        hash ^= static_cast<unsigned char>(ch);
-        hash *= 1099511628211ull;
-    }
-    std::ostringstream out;
-    out << "fnv1a64-" << std::hex << hash;
-    return out.str();
+    return savor::db::authoring::ComputeWorkflowGraphHash(
+        name.toStdString(), description.toStdString(), hashNodes, hashEdges);
 }
 
 } // namespace
@@ -721,22 +718,7 @@ void WorkflowGraphEditorWindow::loadAuthoredRefOptionsForSelectedNode()
         return;
     }
 
-    if (*requiredKind == "tas_spec") {
-        const auto result = savorqt::db::SavorDbAuthoringService::ListTasSpecs();
-        if (!result.ok) {
-            postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
-            return;
-        }
-        for (const auto& spec : result.value) {
-            authoredRefOptions_.push_back(AuthoredRefOption{
-                .label = QStringLiteral("#%1 %2")
-                    .arg(static_cast<qint64>(spec.tas_spec_id))
-                    .arg(QString::fromStdString(spec.base_name)),
-                .ref_kind = "tas_spec",
-                .ref_id = spec.tas_spec_id,
-            });
-        }
-    } else if (*requiredKind == "seed_probe_spec") {
+    if (*requiredKind == "seed_probe_spec") {
         const auto result = savorqt::db::SavorDbAuthoringService::ListSeedProbeSpecs();
         if (!result.ok) {
             postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
@@ -769,6 +751,7 @@ void WorkflowGraphEditorWindow::loadAuthoredRefOptionsForSelectedNode()
                     .arg(static_cast<int>(plan.turns.size()))
                     .arg(static_cast<qulonglong>(actionCount))
                     .arg(QString::fromStdString(plan.fingerprint)),
+                .description = QString::fromStdString(plan.description),
                 .ref_kind = "authoring.battle_plan",
                 .ref_id = plan.plan_id,
             });
@@ -778,6 +761,7 @@ void WorkflowGraphEditorWindow::loadAuthoredRefOptionsForSelectedNode()
     for (const auto& option : authoredRefOptions_) {
         auto* item = new QListWidgetItem(option.label, authoredRefList_);
         item->setData(Qt::UserRole, static_cast<qint64>(option.ref_id));
+        item->setToolTip(option.description);
     }
     if (authoredRefList_->count() > 0) {
         authoredRefList_->setCurrentRow(0);

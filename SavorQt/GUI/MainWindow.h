@@ -7,6 +7,8 @@
 #include <QtCore/QTimer>
 #include <QtWidgets/QMainWindow>
 
+#include <cstdint>
+
 #include "GUI/Widgets/StatusBarWidget.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorPane.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
@@ -76,6 +78,9 @@ private:
     void emitCoordinatorStateChanged();
     void refreshWorkspaceBadges();
     void openFocusedTool(FocusedTool tool);
+    void openWorkflow(std::int64_t workflowInstanceId);
+    void openJob(std::int64_t jobId);
+    void retryWorkflowJobs(std::int64_t workflowInstanceId);
     void showBattleRunsAnalysisPane();
     void openWorkflowGraphEditor();
     void openWorkflowGraphEditor(const savor::db::WorkflowGraphSnapshot& snapshot, bool duplicate);
@@ -98,8 +103,9 @@ private:
     QDateTime lastCoordinatorRefresh_;
     QPointer<AuthoringLibraryDialog> authoringLibraryDialog_;
     QPointer<WorkflowGraphEditorWindow> workflowGraphEditor_;
-    AuthoringLibraryKey lastAuthoringLibrary_ = AuthoringLibraryKey::Tas;
+    AuthoringLibraryKey lastAuthoringLibrary_ = AuthoringLibraryKey::SeedProbe;
     QHash<QString, QPointer<QDialog>> focusedDialogs_;
     QString lastCoordinatorWarningToastSignature_;
     bool shutdownCoordinatorStarted_ = false;
+    bool workflowRetryInFlight_ = false;
 };

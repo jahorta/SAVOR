@@ -18,10 +18,10 @@ public:
     std::optional<savor::db::execution::workflow::WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t) const override {
         return std::nullopt;
     }
-    std::optional<savor::db::execution::workflow::WorkflowStepTerminalSnapshot> GetStepTerminalSnapshotForJob(std::int64_t) const override {
+    std::optional<savor::db::execution::workflow::WorkflowStepSettlementSnapshot> GetStepSettlementSnapshotForJob(std::int64_t) const override {
         return std::nullopt;
     }
-    std::vector<savor::db::execution::workflow::WorkflowStepTerminalSnapshot> ListTerminalReadyStepSnapshots(std::size_t) const override {
+    std::vector<savor::db::execution::workflow::WorkflowStepSettlementSnapshot> ListSettlementReadyStepSnapshots(std::size_t) const override {
         return {};
     }
     std::vector<savor::db::execution::workflow::WorkflowReadyStepRecord> ListReadySteps(std::size_t) const override {

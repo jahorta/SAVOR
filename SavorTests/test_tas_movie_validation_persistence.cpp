@@ -963,7 +963,7 @@ TEST_F(
         materialization,
         &repeated,
         &error)) << error;
-    EXPECT_EQ(repeated.root_job_set_id, scheduled.root_job_set_id);
+    EXPECT_EQ(repeated.job_set_id, scheduled.job_set_id);
     EXPECT_EQ(
         repeated.persistence.program_ref_id,
         scheduled.persistence.program_ref_id);
@@ -980,7 +980,7 @@ TEST_F(
     EXPECT_FALSE(request->capture_root_checkpoint);
 
     const auto job_rows =
-        execution->ListJobsInJobSet(scheduled.root_job_set_id);
+        execution->ListJobsInJobSet(scheduled.job_set_id);
     ASSERT_EQ(job_rows.size(), 1u);
     const auto job = execution->GetExecutionJob(job_rows.front().job_id);
     ASSERT_TRUE(job.has_value());
@@ -994,7 +994,7 @@ TEST_F(
                 .workset_id = 6001,
                 .dispatch_attempt_id = dispatch_attempt_id,
                 .workflow_step_id = workflow_step_id,
-                .root_job_set_id = scheduled.root_job_set_id,
+                .job_set_id = scheduled.job_set_id,
                 .dispatch_token = "tas-movie-descriptor-test-dispatch",
                 .contract_key = "tas-movie-validation-test",
                 .state_compatibility = {
@@ -1252,7 +1252,7 @@ TEST_F(
         &attach_root_job_set,
         nullptr));
     sqlite3_bind_int64(
-        attach_root_job_set, 1, root_scheduled.root_job_set_id);
+        attach_root_job_set, 1, root_scheduled.job_set_id);
     sqlite3_bind_int64(attach_root_job_set, 2, root_step_id);
     ASSERT_EQ(SQLITE_DONE, sqlite3_step(attach_root_job_set));
     sqlite3_finalize(attach_root_job_set);
@@ -1267,7 +1267,7 @@ TEST_F(
         root_request->source_dtm_sha256);
 
     const auto root_jobs =
-        execution->ListJobsInJobSet(root_scheduled.root_job_set_id);
+        execution->ListJobsInJobSet(root_scheduled.job_set_id);
     ASSERT_EQ(root_jobs.size(), 1u);
     const auto root_job = execution->GetExecutionJob(root_jobs.front().job_id);
     ASSERT_TRUE(root_job.has_value());
@@ -1277,7 +1277,7 @@ TEST_F(
                 .workset_id = 8000,
                 .dispatch_attempt_id = root_dispatch_id,
                 .workflow_step_id = root_step_id,
-                .root_job_set_id = root_scheduled.root_job_set_id,
+                .job_set_id = root_scheduled.job_set_id,
                 .dispatch_token = "tas-movie-root-validation-dispatch",
                 .contract_key = "tas-movie-root-validation",
                 .state_compatibility = {

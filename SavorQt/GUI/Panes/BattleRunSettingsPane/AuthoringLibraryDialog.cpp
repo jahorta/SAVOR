@@ -85,54 +85,6 @@ private:
     std::vector<savor::db::SeedProbeSpecSnapshot> rows_;
 };
 
-class TasSpecLibraryAdapter final : public ISpecLibraryAdapter {
-public:
-    AuthoringLibraryKey key() const override { return AuthoringLibraryKey::Tas; }
-    QString title() const override { return QStringLiteral("TAS Specs"); }
-    QString placeholderText() const override { return QStringLiteral("Create a new TAS spec, or select one from the library to edit a copy."); }
-
-    std::vector<SpecLibraryRow> refreshRows(QString* errorText) override
-    {
-        const auto result = savorqt::db::SavorDbAuthoringService::ListTasSpecs();
-        if (!result.ok) {
-            if (errorText != nullptr) *errorText = QString::fromStdString(result.error.message);
-            return {};
-        }
-        rows_ = result.value;
-        std::vector<SpecLibraryRow> rows;
-        rows.reserve(rows_.size());
-        for (const auto& row : rows_) {
-            rows.push_back(SpecLibraryRow{
-                static_cast<qint64>(row.tas_spec_id),
-                QStringLiteral("#%1  %2")
-                    .arg(static_cast<qint64>(row.tas_spec_id))
-                    .arg(QString::fromStdString(row.base_name))
-            });
-        }
-        return rows;
-    }
-
-    QWidget* createNewEditor(QWidget* parent, SpecLibraryCallbacks callbacks) override
-    {
-        auto* editor = new TasSpecEditorWindow(parent, true);
-        attachCallbacks(editor, callbacks);
-        return editor;
-    }
-
-    QWidget* createEditorForRow(int row, bool duplicate, QWidget* parent, SpecLibraryCallbacks callbacks) override
-    {
-        if (row < 0 || row >= static_cast<int>(rows_.size())) return nullptr;
-        auto* editor = new TasSpecEditorWindow(parent, true);
-        attachCallbacks(editor, callbacks);
-        editor->loadSnapshot(rows_[static_cast<std::size_t>(row)], duplicate);
-        return editor;
-    }
-
-private:
-    std::vector<savor::db::TasSpecSnapshot> rows_;
-};
-
-
 class BattlePlanSpecLibraryAdapter final : public ISpecLibraryAdapter {
 public:
     AuthoringLibraryKey key() const override { return AuthoringLibraryKey::BattlePlan; }
@@ -154,7 +106,8 @@ public:
                 static_cast<qint64>(row.plan_id),
                 QStringLiteral("#%1  %2")
                     .arg(static_cast<qint64>(row.plan_id))
-                    .arg(QString::fromStdString(row.name))
+                    .arg(QString::fromStdString(row.name)),
+                QString::fromStdString(row.description)
             });
         }
         return rows;

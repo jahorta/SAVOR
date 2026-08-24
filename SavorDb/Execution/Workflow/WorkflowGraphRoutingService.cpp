@@ -14,17 +14,30 @@
 namespace savor::db::execution::workflow {
 namespace {
 
-bool IsTerminal(WorkflowStepState state) {
+bool IsSettled(WorkflowStepState state) {
     return state == WorkflowStepState::Completed
         || state == WorkflowStepState::Failed
-        || state == WorkflowStepState::Skipped;
+        || state == WorkflowStepState::Skipped
+        || state == WorkflowStepState::Canceled
+        || state == WorkflowStepState::Interrupted;
 }
 
-bool IsTerminalActivation(WorkflowUnitActivationState state) {
+bool IsSettledActivation(WorkflowUnitActivationState state) {
     return state == WorkflowUnitActivationState::Completed
         || state == WorkflowUnitActivationState::Failed
         || state == WorkflowUnitActivationState::Skipped
-        || state == WorkflowUnitActivationState::Canceled;
+        || state == WorkflowUnitActivationState::Canceled
+        || state == WorkflowUnitActivationState::Interrupted;
+}
+
+bool IsSuccessful(WorkflowStepState state) {
+    return state == WorkflowStepState::Completed
+        || state == WorkflowStepState::Skipped;
+}
+
+bool IsSuccessfulActivation(WorkflowUnitActivationState state) {
+    return state == WorkflowUnitActivationState::Completed
+        || state == WorkflowUnitActivationState::Skipped;
 }
 
 std::string BindingKey(const std::string& node_key, const std::string& input_key) {
@@ -69,7 +82,7 @@ bool HasActiveWorkForGraphNode(
     const WorkflowGraphSnapshot& execution_graph,
     const std::string& graph_node_key) {
     for (const auto& activation : execution_graph.unit_activations) {
-        if (activation.graph_node_key == graph_node_key && !IsTerminalActivation(activation.state)) {
+        if (activation.graph_node_key == graph_node_key && !IsSettledActivation(activation.state)) {
             return true;
         }
     }
@@ -78,24 +91,24 @@ bool HasActiveWorkForGraphNode(
         execution_graph.steps.end(),
         [&](const auto& step) {
             const auto step_graph_node_key = step.graph_node_key.empty() ? step.step_key : step.graph_node_key;
-            return step_graph_node_key == graph_node_key && !IsTerminal(step.state);
+            return step_graph_node_key == graph_node_key && !IsSettled(step.state);
         });
 }
 
-bool AllExecutionStepsTerminal(const WorkflowGraphSnapshot& execution_graph) {
+bool AllExecutionStepsSuccessful(const WorkflowGraphSnapshot& execution_graph) {
     if (!execution_graph.unit_activations.empty()) {
         return std::all_of(
             execution_graph.unit_activations.begin(),
             execution_graph.unit_activations.end(),
             [](const auto& activation) {
                 return activation.parent_workflow_unit_activation_id.has_value()
-                    || IsTerminalActivation(activation.state);
+                    || IsSuccessfulActivation(activation.state);
             });
     }
     return std::all_of(
         execution_graph.steps.begin(),
         execution_graph.steps.end(),
-        [](const auto& step) { return IsTerminal(step.state); });
+        [](const auto& step) { return IsSuccessful(step.state); });
 }
 
 } // namespace
@@ -114,7 +127,7 @@ WorkflowGraphRoutingService::WorkflowGraphRoutingService(
 }
 
 bool WorkflowGraphRoutingService::RouteTerminalStep(
-    const WorkflowStepTerminalSnapshot& snapshot,
+    const WorkflowStepSettlementSnapshot& snapshot,
     WorkflowGraphRoutingResult* result_out,
     std::string* error_out) const {
     WorkflowGraphRoutingResult result{};
@@ -159,7 +172,7 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
             if (!activation_it->graph_node_key.empty()) {
                 graph_node_key = activation_it->graph_node_key;
             }
-            if (!IsTerminalActivation(activation_it->state)) {
+            if (!IsSettledActivation(activation_it->state)) {
                 if (result_out) {
                     *result_out = result;
                 }
@@ -363,7 +376,7 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                         : step.graph_node_key;
                     if (step_node_key != target_node_key
                         || step.state == WorkflowStepState::Skipped
-                        || IsTerminal(step.state)) {
+                        || IsSettled(step.state)) {
                         continue;
                     }
                     if (step.state != WorkflowStepState::Waiting
@@ -430,7 +443,7 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
 
     execution_graph = query_service_->GetWorkflowGraph(snapshot.workflow_instance_id);
     if (execution_graph.has_value()
-        && AllExecutionStepsTerminal(*execution_graph)
+        && AllExecutionStepsSuccessful(*execution_graph)
         && !result.advanced_ready_step) {
         std::string command_error;
         if (!command_service_->CompleteWorkflowInstance(

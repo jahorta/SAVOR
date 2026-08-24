@@ -64,7 +64,9 @@ private:
     qint64 selectedJobId() const;
     bool isFinishedState(const QString& state) const;
     QString formatTimestamp(qint64 epochMillis) const;
-    QString groupStatusText(std::int64_t completed, std::int64_t total, std::int64_t failed, std::int64_t canceled) const;
+    QString groupStatusText(std::int64_t settled, std::int64_t total,
+        std::int64_t failed, std::int64_t interrupted,
+        std::int64_t canceled) const;
     bool updatePlainText(QTextEdit* edit, const QString& text);
 
     ExplorerRunsController* controller_ = nullptr;

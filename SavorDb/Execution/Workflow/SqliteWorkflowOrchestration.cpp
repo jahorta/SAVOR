@@ -177,13 +177,6 @@ bool ReleasePendingJobsForMaterializedJobSet(
     std::string* error_out) {
     Statement release;
     if (!Prepare(db,
-            "WITH RECURSIVE job_set_descendants(job_set_id) AS ("
-            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
-            "  UNION ALL "
-            "  SELECT child.job_set_id "
-            "  FROM exec_job_set child "
-            "  JOIN job_set_descendants parent ON parent.job_set_id=child.parent_job_set_id"
-            ") "
             "UPDATE exec_job "
             "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL "
             "WHERE state='PENDING_MATERIALIZATION' "
@@ -276,8 +269,8 @@ bool RecomputeUnitActivationState(
     return true;
 }
 
-std::optional<WorkflowStepTerminalSnapshot> ReadStepTerminalSnapshot(sqlite3_stmt* st) {
-    WorkflowStepTerminalSnapshot snapshot{};
+std::optional<WorkflowStepSettlementSnapshot> ReadStepTerminalSnapshot(sqlite3_stmt* st) {
+    WorkflowStepSettlementSnapshot snapshot{};
     snapshot.workflow_instance_id = sqlite3_column_int64(st, 0);
     snapshot.workflow_step_id = sqlite3_column_int64(st, 1);
     snapshot.workflow_unit_activation_id = ColumnInt64Optional(st, 2);
@@ -300,8 +293,16 @@ std::optional<WorkflowStepTerminalSnapshot> ReadStepTerminalSnapshot(sqlite3_stm
     snapshot.priority = sqlite3_column_int(st, 13);
     snapshot.expected_total = sqlite3_column_int(st, 14);
     snapshot.discovered_total = sqlite3_column_int(st, 15);
-    snapshot.terminal_total = sqlite3_column_int(st, 16);
-    snapshot.failed_total = sqlite3_column_int(st, 17);
+    snapshot.settled_total = sqlite3_column_int(st, 16);
+    snapshot.succeeded_total = sqlite3_column_int(st, 17);
+    snapshot.failed_total = sqlite3_column_int(st, 18);
+    snapshot.interrupted_total = sqlite3_column_int(st, 19);
+    snapshot.superseded_total = sqlite3_column_int(st, 20);
+    snapshot.canceled_total = sqlite3_column_int(st, 21);
+    const auto* workflow_state = sqlite3_column_text(st, 22);
+    snapshot.workflow_state = workflow_state
+        ? reinterpret_cast<const char*>(workflow_state)
+        : "";
     return snapshot;
 }
 
@@ -401,7 +402,7 @@ std::int64_t SqliteWorkflowOrchestrationQueryService::CountActiveMaterializedWor
     return sqlite3_column_int64(st.st, 0);
 }
 
-std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryService::GetStepTerminalSnapshotForJob(
+std::optional<WorkflowStepSettlementSnapshot> SqliteWorkflowOrchestrationQueryService::GetStepSettlementSnapshotForJob(
     std::int64_t job_id) const {
     if (job_id <= 0) {
         return std::nullopt;
@@ -409,22 +410,16 @@ std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServ
 
     Statement st;
     if (!Prepare(db_,
-        "WITH RECURSIVE job_set_ancestry(job_set_id, parent_job_set_id, depth) AS ("
-        "  SELECT js.job_set_id, js.parent_job_set_id, 0 "
+        "WITH job_set_ancestry(job_set_id, depth) AS ("
+        "  SELECT js.job_set_id, 0 "
         "  FROM exec_job source "
         "  JOIN exec_job_set js ON js.job_set_id=source.job_set_id "
         "  WHERE source.job_id=?1 "
-        "  UNION ALL "
-        "  SELECT parent.job_set_id, parent.parent_job_set_id, job_set_ancestry.depth + 1 "
-        "  FROM exec_job_set parent "
-        "  JOIN job_set_ancestry ON parent.job_set_id=job_set_ancestry.parent_job_set_id "
-        "  WHERE job_set_ancestry.parent_job_set_id IS NOT NULL "
-        "    AND job_set_ancestry.depth < 64"
         "), "
         "step_root AS ("
         "  SELECT i.workflow_instance_id, s.workflow_step_id, s.workflow_unit_activation_id, s.job_set_id, i.workflow_kind, i.workflow_graph_revision_id, "
         "s.step_key, COALESCE(s.graph_node_key, s.step_key) AS graph_node_key, s.step_kind, "
-        "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id, s.priority "
+        "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id, s.priority, i.state AS workflow_state "
         "  FROM job_set_ancestry a "
         "  JOIN exec_workflow_step s ON s.job_set_id=a.job_set_id "
         "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
@@ -432,11 +427,6 @@ std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServ
         "), "
         "job_set_descendants(job_set_id, depth) AS ("
         "  SELECT job_set_id, 0 FROM step_root "
-        "  UNION ALL "
-        "  SELECT child.job_set_id, job_set_descendants.depth + 1 "
-        "  FROM exec_job_set child "
-        "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
-        "  WHERE job_set_descendants.depth < 64"
         ") "
         "SELECT r.workflow_instance_id, r.workflow_step_id, r.workflow_unit_activation_id, r.job_set_id, r.workflow_kind, r.workflow_graph_revision_id, "
         "r.step_key, r.graph_node_key, r.step_kind, "
@@ -446,9 +436,14 @@ std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServ
         " JOIN job_set_descendants d ON d.job_set_id=js.job_set_id), "
         "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id), "
         "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
-        "  WHERE j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','CANCELED')), "
+        "  WHERE j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED')), "
         "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
-        " WHERE j.state IN ('FAILED','INTERRUPTED','CANCELED','SUPERSEDED')) "
+        " WHERE j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE')), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='FAILED'), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='INTERRUPTED'), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='SUPERSEDED'), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='CANCELED'), "
+        "r.workflow_state "
         "FROM step_root r "
         "LEFT JOIN exec_job_set root_js ON root_js.job_set_id=r.job_set_id "
         "WHERE NOT EXISTS ("
@@ -463,8 +458,8 @@ std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServ
         "  FROM job_set_descendants d "
         "  JOIN exec_job j ON j.job_set_id=d.job_set_id "
         "  WHERE j.state NOT IN "
-        "    ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED',"
-        "     'SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','CANCELED')"
+        "    ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED',"
+        "     'INTERRUPTED','SUPERSEDED','CANCELED')"
         ");",
         &st,
         nullptr)) {
@@ -478,9 +473,9 @@ std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServ
     return ReadStepTerminalSnapshot(st.st);
 }
 
-std::vector<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryService::ListTerminalReadyStepSnapshots(
+std::vector<WorkflowStepSettlementSnapshot> SqliteWorkflowOrchestrationQueryService::ListSettlementReadyStepSnapshots(
     std::size_t limit) const {
-    std::vector<WorkflowStepTerminalSnapshot> rows;
+    std::vector<WorkflowStepSettlementSnapshot> rows;
     if (limit == 0) {
         return rows;
     }
@@ -490,51 +485,50 @@ std::vector<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServic
         "WITH RECURSIVE step_root AS ("
         "  SELECT i.workflow_instance_id, s.workflow_step_id, s.workflow_unit_activation_id, s.job_set_id, i.workflow_kind, i.workflow_graph_revision_id, "
         "s.step_key, COALESCE(s.graph_node_key, s.step_key) AS graph_node_key, s.step_kind, "
-        "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id, s.priority "
+        "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id, s.priority, i.state AS workflow_state "
         "  FROM exec_workflow_step s "
         "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
         "  WHERE i.state IN ('PENDING','RUNNING') "
         "    AND s.state IN ('MATERIALIZED','RUNNING') "
         "    AND s.job_set_id IS NOT NULL "
         "), "
-        "job_set_descendants(workflow_instance_id, workflow_step_id, workflow_unit_activation_id, root_job_set_id, workflow_kind, workflow_graph_revision_id, step_key, graph_node_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, priority, job_set_id, depth) AS ("
-        "  SELECT workflow_instance_id, workflow_step_id, workflow_unit_activation_id, job_set_id, workflow_kind, workflow_graph_revision_id, step_key, graph_node_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, priority, job_set_id, 0 "
+        "workflow_step_job_sets(workflow_instance_id, workflow_step_id, workflow_unit_activation_id, workflow_kind, workflow_graph_revision_id, step_key, graph_node_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, priority, workflow_state, job_set_id) AS ("
+        "  SELECT workflow_instance_id, workflow_step_id, workflow_unit_activation_id, workflow_kind, workflow_graph_revision_id, step_key, graph_node_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, priority, workflow_state, job_set_id "
         "  FROM step_root "
-        "  UNION ALL "
-        "  SELECT d.workflow_instance_id, d.workflow_step_id, d.workflow_unit_activation_id, d.root_job_set_id, d.workflow_kind, d.workflow_graph_revision_id, "
-        "d.step_key, d.graph_node_key, d.step_kind, d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, d.priority, child.job_set_id, d.depth + 1 "
-        "  FROM exec_job_set child "
-        "  JOIN job_set_descendants d ON child.parent_job_set_id=d.job_set_id "
-        "  WHERE d.depth < 64"
         "), "
         "expected_summary AS ("
-        "  SELECT d.workflow_instance_id, d.workflow_step_id, d.workflow_unit_activation_id, d.root_job_set_id, d.workflow_kind, d.workflow_graph_revision_id, d.step_key, d.graph_node_key, d.step_kind, "
-        "d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, d.priority, "
+        "  SELECT d.workflow_instance_id, d.workflow_step_id, d.workflow_unit_activation_id, d.job_set_id, d.workflow_kind, d.workflow_graph_revision_id, d.step_key, d.graph_node_key, d.step_kind, "
+        "d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, d.priority, d.workflow_state, "
         "    COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) "
         "      AS expected_total, "
         "    MIN(CASE WHEN js.materialization_state='WORKSET_PUBLICATION_COMPLETE' THEN 1 ELSE 0 END) AS publication_complete "
-        "  FROM job_set_descendants d "
+        "  FROM workflow_step_job_sets d "
         "  LEFT JOIN exec_job_set js ON js.job_set_id=d.job_set_id "
-        "  GROUP BY d.workflow_instance_id, d.workflow_step_id, d.workflow_unit_activation_id, d.root_job_set_id, d.workflow_kind, d.workflow_graph_revision_id, d.step_key, d.graph_node_key, d.step_kind, "
-        "d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, d.priority "
+        "  GROUP BY d.workflow_instance_id, d.workflow_step_id, d.workflow_unit_activation_id, d.job_set_id, d.workflow_kind, d.workflow_graph_revision_id, d.step_key, d.graph_node_key, d.step_kind, "
+        "d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, d.priority, d.workflow_state "
         "), "
         "job_summary AS ("
         "  SELECT d.workflow_step_id, "
         "    COUNT(j.job_id) AS discovered_total, "
-        "    COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','CANCELED') THEN 1 ELSE 0 END), 0) AS terminal_total, "
-        "    COALESCE(SUM(CASE WHEN j.state IN ('FAILED','INTERRUPTED','CANCELED','SUPERSEDED') THEN 1 ELSE 0 END), 0) AS failed_total "
-        "  FROM job_set_descendants d "
+        "    COALESCE(SUM(CASE WHEN j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED') THEN 1 ELSE 0 END), 0) AS settled_total, "
+        "    COALESCE(SUM(CASE WHEN j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END), 0) AS succeeded_total, "
+        "    COALESCE(SUM(CASE WHEN j.state='FAILED' THEN 1 ELSE 0 END), 0) AS failed_total, "
+        "    COALESCE(SUM(CASE WHEN j.state='INTERRUPTED' THEN 1 ELSE 0 END), 0) AS interrupted_total, "
+        "    COALESCE(SUM(CASE WHEN j.state='SUPERSEDED' THEN 1 ELSE 0 END), 0) AS superseded_total, "
+        "    COALESCE(SUM(CASE WHEN j.state='CANCELED' THEN 1 ELSE 0 END), 0) AS canceled_total "
+        "  FROM workflow_step_job_sets d "
         "  LEFT JOIN exec_job j ON j.job_set_id=d.job_set_id "
         "  GROUP BY d.workflow_step_id "
         ") "
-        "SELECT e.workflow_instance_id, e.workflow_step_id, e.workflow_unit_activation_id, e.root_job_set_id, e.workflow_kind, e.workflow_graph_revision_id, "
+        "SELECT e.workflow_instance_id, e.workflow_step_id, e.workflow_unit_activation_id, e.job_set_id, e.workflow_kind, e.workflow_graph_revision_id, "
         "e.step_key, e.graph_node_key, e.step_kind, "
         "e.input_ref_kind, e.input_ref_id, e.output_ref_kind, e.output_ref_id, e.priority, "
-        "e.expected_total, j.discovered_total, j.terminal_total, j.failed_total "
+        "e.expected_total, j.discovered_total, j.settled_total, j.succeeded_total, j.failed_total, "
+        "j.interrupted_total, j.superseded_total, j.canceled_total, e.workflow_state "
         "FROM expected_summary e "
         "JOIN job_summary j ON j.workflow_step_id=e.workflow_step_id "
         "WHERE e.publication_complete=1 "
-        "  AND (j.discovered_total = 0 OR j.terminal_total >= j.discovered_total) "
+        "  AND (j.discovered_total = 0 OR j.settled_total >= j.discovered_total) "
         "ORDER BY e.workflow_step_id ASC "
         "LIMIT ?1;",
         &st,
@@ -1365,19 +1359,11 @@ bool SqliteWorkflowOrchestrationCommandService::CancelWorkflowInstance(
     const auto now = NowUtc();
     Statement cancel_unstarted;
     if (!Prepare(db_,
-        "WITH RECURSIVE job_set_descendants(job_set_id, depth) AS ("
-        "  SELECT job_set_id, 0 FROM exec_workflow_step "
-        "  WHERE workflow_instance_id=?1 AND job_set_id IS NOT NULL "
-        "  UNION ALL "
-        "  SELECT child.job_set_id, d.depth + 1 FROM exec_job_set child "
-        "  JOIN job_set_descendants d ON child.parent_job_set_id=d.job_set_id "
-        "  WHERE d.depth < 64"
-        ") "
         "UPDATE exec_job SET state='CANCELED',ended_at_utc=?2,"
         "error_code='WORKFLOW_CANCELLED_BY_USER',error_text=?3,"
         "cancellation_state='RESOLVED',cancellation_resolved_at_utc=?2,"
         "cancellation_resolution_code='WORKFLOW_CANCELLED_BY_USER' "
-        "WHERE job_set_id IN (SELECT job_set_id FROM job_set_descendants) "
+            "WHERE job_set_id=?1 "
         "AND state IN ('PENDING_MATERIALIZATION','PENDING_WORKSET','QUEUED');",
         &cancel_unstarted,
         error_out)) {
@@ -1394,20 +1380,12 @@ bool SqliteWorkflowOrchestrationCommandService::CancelWorkflowInstance(
 
     Statement request_active;
     if (!Prepare(db_,
-        "WITH RECURSIVE job_set_descendants(job_set_id, depth) AS ("
-        "  SELECT job_set_id, 0 FROM exec_workflow_step "
-        "  WHERE workflow_instance_id=?1 AND job_set_id IS NOT NULL "
-        "  UNION ALL "
-        "  SELECT child.job_set_id, d.depth + 1 FROM exec_job_set child "
-        "  JOIN job_set_descendants d ON child.parent_job_set_id=d.job_set_id "
-        "  WHERE d.depth < 64"
-        ") "
         "INSERT OR IGNORE INTO exec_job_cancellation_request("
         "job_id,request_key,reason_code,reason_text,requested_by,caused_by_job_id,"
         "terminal_disposition,requested_at_utc,state) "
         "SELECT j.job_id,?2 || ':' || j.job_id,'WORKFLOW_CANCELLED_BY_USER',?3,?4,"
         "NULL,'USER_WORKFLOW_CANCEL',?5,'REQUESTED' "
-        "FROM exec_job j WHERE j.job_set_id IN (SELECT job_set_id FROM job_set_descendants) "
+        "FROM exec_job j WHERE j.job_set_id IN (SELECT job_set_id FROM exec_workflow_step WHERE workflow_instance_id=?1) "
         "AND j.state IN ('CLAIMED','RUNNING');",
         &request_active,
         error_out)) {
@@ -1443,21 +1421,13 @@ bool SqliteWorkflowOrchestrationCommandService::CancelWorkflowInstance(
 
     Statement cancel_materialized_steps;
     if (!Prepare(db_,
-        "WITH RECURSIVE step_job_sets(workflow_step_id,job_set_id,depth) AS ("
-        "  SELECT workflow_step_id,job_set_id,0 FROM exec_workflow_step "
-        "  WHERE workflow_instance_id=?1 AND job_set_id IS NOT NULL "
-        "  UNION ALL "
-        "  SELECT d.workflow_step_id,child.job_set_id,d.depth+1 "
-        "  FROM exec_job_set child JOIN step_job_sets d "
-        "  ON child.parent_job_set_id=d.job_set_id WHERE d.depth<64"
-        ") "
         "UPDATE exec_workflow_step AS s SET state='CANCELED',"
         "blocked_reason='WORKFLOW_CANCELLED_BY_USER',completed_at_utc=?2 "
         "WHERE s.workflow_instance_id=?1 AND s.state IN ('MATERIALIZED','RUNNING') "
         "AND NOT EXISTS("
-        " SELECT 1 FROM step_job_sets d JOIN exec_job j ON j.job_set_id=d.job_set_id "
-        " WHERE d.workflow_step_id=s.workflow_step_id "
-        " AND j.state NOT IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER',"
+        " SELECT 1 FROM exec_job j WHERE j.job_set_id=s.job_set_id "
+        
+        " AND j.state NOT IN ('SUCCEEDED','SUCCEEDED_WINNER',"
         "'SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED')"
         ");",
         &cancel_materialized_steps,
@@ -1514,7 +1484,7 @@ bool SqliteWorkflowOrchestrationCommandService::CancelWorkflowInstance(
     if (finalized && !EmitLifecycleEvent(
             command.workflow_instance_id,
             std::nullopt,
-            "Execution.WorkflowInstanceCompleted.v1",
+            "Execution.WorkflowInstanceCanceled.v1",
             "canceled",
             error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
@@ -1558,7 +1528,7 @@ bool SqliteWorkflowOrchestrationCommandService::ResumeWorkflowInstance(
         return false;
     }
 
-    if (!EmitLifecycleEvent(command.workflow_instance_id, std::nullopt, "Execution.WorkflowInstanceCreated.v1", "resume", error_out)) {
+    if (!EmitLifecycleEvent(command.workflow_instance_id, std::nullopt, "Execution.WorkflowInstanceResumed.v1", "resumed", error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
     }
@@ -1625,6 +1595,16 @@ bool SqliteWorkflowOrchestrationCommandService::CompleteWorkflowInstance(
         "    SELECT 1 FROM exec_workflow_step "
         "    WHERE workflow_instance_id=?1 "
         "      AND state NOT IN ('COMPLETED','SKIPPED')"
+        "  ) "
+        "  AND NOT EXISTS ("
+        "    SELECT 1 FROM exec_workflow_unit_activation "
+        "    WHERE workflow_instance_id=?1 "
+        "      AND state IN ('FAILED','INTERRUPTED','CANCELED')"
+        "  ) "
+        "  AND NOT EXISTS ("
+        "    SELECT 1 FROM exec_job j "
+        "    JOIN exec_workflow_step s ON s.job_set_id=j.job_set_id "
+        "    WHERE s.workflow_instance_id=?1 AND j.state IN ('FAILED','INTERRUPTED','CANCELED')"
         "  );",
         &st,
         error_out)) {
@@ -1832,7 +1812,7 @@ bool SqliteWorkflowOrchestrationCommandService::FailWorkflowInstance(
                     command.workflow_instance_id,
                     command.workflow_step_id,
                     "Execution.WorkflowStepFailed.v1",
-                    "terminal_failed",
+                    "workflow_failed",
                     error_out)) {
                 Exec(db_, "ROLLBACK;", nullptr);
                 return false;
@@ -1884,17 +1864,93 @@ bool SqliteWorkflowOrchestrationCommandService::FailWorkflowInstance(
         return false;
     }
 
-    if (!EmitLifecycleEvent(
-            command.workflow_instance_id,
-            std::nullopt,
-            "Execution.WorkflowInstanceCompleted.v1",
-            "terminal_failed",
-            error_out)) {
+    if (!Exec(db_, "COMMIT;", error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
     }
+    return true;
+}
 
-    if (!Exec(db_, "COMMIT;", error_out)) {
+bool SqliteWorkflowOrchestrationCommandService::InterruptWorkflowInstance(
+    const WorkflowInterruptInstanceCommand& command,
+    std::string* error_out) {
+    if (command.workflow_instance_id <= 0
+        || command.interruption_code.empty()) {
+        if (error_out) *error_out = "workflow interruption identity is required";
+        return false;
+    }
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) return false;
+    const auto now = NowUtc();
+
+    if (command.workflow_step_id.has_value()) {
+        Statement step;
+        if (!Prepare(db_,
+                "UPDATE exec_workflow_step SET state='INTERRUPTED',"
+                "failed_at_utc=COALESCE(failed_at_utc,?3) "
+                "WHERE workflow_step_id=?1 AND workflow_instance_id=?2 "
+                "AND state IN ('READY','MATERIALIZED','RUNNING','INTERRUPTED');",
+                &step, error_out)) {
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+        sqlite3_bind_int64(step.st, 1, *command.workflow_step_id);
+        sqlite3_bind_int64(step.st, 2, command.workflow_instance_id);
+        sqlite3_bind_int64(step.st, 3, now);
+        if (!StepDone(db_, step.st, error_out) || sqlite3_changes(db_) == 0
+            || !EmitLifecycleEvent(
+                command.workflow_instance_id,
+                command.workflow_step_id,
+                "Execution.WorkflowStepInterrupted.v1",
+                command.interruption_message.c_str(),
+                error_out)) {
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+
+        Statement activation;
+        if (!Prepare(db_,
+                "UPDATE exec_workflow_unit_activation "
+                "SET state='INTERRUPTED',failure_code=?3,failure_text=?4,"
+                "completed_at_utc=NULL "
+                "WHERE workflow_unit_activation_id=("
+                "SELECT workflow_unit_activation_id FROM exec_workflow_step "
+                "WHERE workflow_step_id=?1 AND workflow_instance_id=?2) "
+                "AND state IN ('WAITING','READY','RUNNING','INTERRUPTED');",
+                &activation, error_out)) {
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+        sqlite3_bind_int64(activation.st, 1, *command.workflow_step_id);
+        sqlite3_bind_int64(activation.st, 2, command.workflow_instance_id);
+        sqlite3_bind_text(activation.st, 3, command.interruption_code.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(activation.st, 4, command.interruption_message.c_str(), -1, SQLITE_TRANSIENT);
+        if (!StepDone(db_, activation.st, error_out)) {
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+    }
+
+    Statement workflow;
+    if (!Prepare(db_,
+            "UPDATE exec_workflow_instance SET state='INTERRUPTED',"
+            "failure_code=?2,failure_text=?3,completed_at_utc=NULL "
+            "WHERE workflow_instance_id=?1 "
+            "AND state IN ('PENDING','RUNNING','INTERRUPTED');",
+            &workflow, error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(workflow.st, 1, command.workflow_instance_id);
+    sqlite3_bind_text(workflow.st, 2, command.interruption_code.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(workflow.st, 3, command.interruption_message.c_str(), -1, SQLITE_TRANSIENT);
+    if (!StepDone(db_, workflow.st, error_out) || sqlite3_changes(db_) == 0
+        || !EmitLifecycleEvent(
+            command.workflow_instance_id,
+            std::nullopt,
+            "Execution.WorkflowInstanceInterrupted.v1",
+            command.interruption_message.c_str(),
+            error_out)
+        || !Exec(db_, "COMMIT;", error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
     }
@@ -2020,17 +2076,17 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepMaterialized(
     return true;
 }
 
-bool SqliteWorkflowOrchestrationCommandService::MarkStepTerminal(
-    const WorkflowMarkStepTerminalCommand& command,
+bool SqliteWorkflowOrchestrationCommandService::CompleteWorkflowStep(
+    const WorkflowCompleteStepCommand& command,
     std::string* error_out) {
     if (command.workflow_step_id <= 0) {
         if (error_out) *error_out = "workflow_step_id must be > 0";
         return false;
     }
 
-    const bool completed = command.terminal_state == "COMPLETED";
+    const bool completed = command.completion_state == "COMPLETED";
     if (!completed) {
-        if (error_out) *error_out = "terminal_state must be COMPLETED";
+        if (error_out) *error_out = "completion_state must be COMPLETED";
         return false;
     }
 

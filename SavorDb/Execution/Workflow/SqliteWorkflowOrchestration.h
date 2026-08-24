@@ -23,8 +23,8 @@ public:
     std::vector<WorkflowReadyStepRecord> ListReadySteps(std::size_t limit) const override;
     std::int64_t CountActiveMaterializedWorkflows() const override;
     std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t workflow_instance_id) const override;
-    std::optional<WorkflowStepTerminalSnapshot> GetStepTerminalSnapshotForJob(std::int64_t job_id) const override;
-    std::vector<WorkflowStepTerminalSnapshot> ListTerminalReadyStepSnapshots(std::size_t limit) const override;
+    std::optional<WorkflowStepSettlementSnapshot> GetStepSettlementSnapshotForJob(std::int64_t job_id) const override;
+    std::vector<WorkflowStepSettlementSnapshot> ListSettlementReadyStepSnapshots(std::size_t limit) const override;
     std::vector<WorkflowStepRecord> ListBlockedSteps(std::int64_t workflow_instance_id) const override;
     std::vector<std::pair<std::int64_t, std::int64_t>> GetStepToJobSetMap(std::int64_t workflow_instance_id) const override;
     std::vector<WorkflowStepOutputRecord> ListStepOutputs(std::int64_t workflow_instance_id) const override;
@@ -48,8 +48,9 @@ public:
     bool CompleteWorkflowInstance(const WorkflowCompleteInstanceCommand& command, std::string* error_out) override;
     bool PauseWorkflowInstance(const WorkflowPauseInstanceCommand& command, std::string* error_out) override;
     bool FailWorkflowInstance(const WorkflowFailInstanceCommand& command, std::string* error_out) override;
+    bool InterruptWorkflowInstance(const WorkflowInterruptInstanceCommand& command, std::string* error_out) override;
     bool MarkStepMaterialized(const WorkflowMarkStepMaterializedCommand& command, std::string* error_out) override;
-    bool MarkStepTerminal(const WorkflowMarkStepTerminalCommand& command, std::string* error_out) override;
+    bool CompleteWorkflowStep(const WorkflowCompleteStepCommand& command, std::string* error_out) override;
     bool RecordStepOutput(const WorkflowRecordStepOutputCommand& command, std::string* error_out) override;
     bool RecordInputBinding(const WorkflowRecordInputBindingCommand& command, std::string* error_out) override;
     bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) override;

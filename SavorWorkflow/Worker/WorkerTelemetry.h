@@ -10,6 +10,7 @@ enum class WorkerStateKind {
 
 enum class WorkerStartupPhase {
     None,
+    WaitingForProcessExit,
     PendingFilesystem,
     PreparingFilesystem,
     WaitingToOpen,

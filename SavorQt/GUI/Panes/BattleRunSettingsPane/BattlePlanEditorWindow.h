@@ -20,6 +20,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QPlainTextEdit;
 class QPoint;
 class QPushButton;
 class QSpinBox;
@@ -113,6 +114,7 @@ private:
     bool dirty_ = false;
     bool rebuildingTree_ = false;
     QLineEdit* nameEdit_ = nullptr;
+    QPlainTextEdit* descriptionEdit_ = nullptr;
     QSpinBox* turnCountSpin_ = nullptr;
     QListWidget* actionLibraryList_ = nullptr;
     QTreeWidget* planTree_ = nullptr;

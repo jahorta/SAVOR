@@ -1,7 +1,7 @@
 BEGIN IMMEDIATE;
 
 ALTER TABLE ar_archive_package
-    ADD COLUMN source_scope_kind TEXT NOT NULL DEFAULT 'root_job_set';
+    ADD COLUMN source_scope_kind TEXT NOT NULL DEFAULT 'job_set';
 
 ALTER TABLE ar_archive_package
     ADD COLUMN source_workflow_count INTEGER NOT NULL DEFAULT 0;

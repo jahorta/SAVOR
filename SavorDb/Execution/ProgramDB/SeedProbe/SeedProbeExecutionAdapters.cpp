@@ -266,7 +266,7 @@ bool IsRetryableTerminal(
 }
 
 bool IsExecutionTerminalState(std::string_view state) {
-    return state == "COMPLETED" || state == "SUCCEEDED"
+    return state == "SUCCEEDED"
         || state == "SUCCEEDED_WINNER"
         || state == "SUPERSEDED"
         || state == "SUCCEEDED_DUPLICATE"
@@ -338,7 +338,7 @@ public:
         if (context.workset_id <= 0
             || context.dispatch_attempt_id <= 0
             || context.workflow_step_id <= 0
-            || context.root_job_set_id <= 0
+            || context.job_set_id <= 0
             || context.dispatch_token.empty()
             || context.items.empty()
             || !context.state_compatibility.Complete()) {
@@ -360,7 +360,7 @@ public:
         {
             const auto cache_key = std::to_string(
                 context.workflow_step_id) + ":" +
-                std::to_string(context.root_job_set_id);
+                std::to_string(context.job_set_id);
             std::scoped_lock lock(invocation_cache_mutex_);
             const auto cached = invocation_cache_.find(cache_key);
             if (cached != invocation_cache_.end()) {
@@ -412,8 +412,8 @@ public:
             .invocation_id = {
                 .workflow_step_id = static_cast<std::uint64_t>(
                     context.workflow_step_id),
-                .root_job_set_id = static_cast<std::uint64_t>(
-                    context.root_job_set_id),
+                .job_set_id = static_cast<std::uint64_t>(
+                    context.job_set_id),
             },
             .program_package =
                 savor::runtime::fullphase::

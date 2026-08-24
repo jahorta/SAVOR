@@ -358,15 +358,10 @@ types::UtcTimePoint FromEpochMillis(std::int64_t value) {
 }
 
 std::vector<ExportSpec> BuildExportSpecs(const CreateArchivePackageRequest& request, bool has_workflow_event, bool has_trigger, bool has_outbox) {
-    const auto root = std::to_string(request.source_root_job_set_id);
+    const auto root = std::to_string(request.source_job_set_id);
     const std::string scoped_job_sets =
-        "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
-        "SELECT job_set_id FROM exec_job_set WHERE job_set_id="
-        + root
-        + " UNION ALL "
-          "SELECT child.job_set_id FROM exec_job_set child "
-          "JOIN scoped_job_sets parent ON child.parent_job_set_id=parent.job_set_id"
-          ") ";
+        "WITH scoped_job_sets(job_set_id) AS ("
+        "SELECT job_set_id FROM exec_job_set WHERE job_set_id=" + root + ") ";
 
     std::vector<ExportSpec> specs;
     specs.push_back(ExportSpec{
@@ -378,7 +373,7 @@ std::vector<ExportSpec> BuildExportSpecs(const CreateArchivePackageRequest& requ
     specs.push_back(ExportSpec{
         "worksets",
         scoped_job_sets
-            + "SELECT workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,program_kind,program_version,"
+            + "SELECT workset_id,job_set_id,workflow_step_id,workset_key,program_kind,program_version,"
               "contract_key,module_canonical_id,module_version,module_sha256,entrypoint,verified_dependency_sha256,"
               "runtime_profile_sha256,program_package_sha256,execution_affinity_key,estimated_payload_bytes,priority,"
               "item_count,published_at_utc,derived_state_binding_sha256,"
@@ -559,28 +554,21 @@ std::string JoinIds(const std::vector<std::int64_t>& ids) {
 
 std::string WorkflowJobSetCte(
     const std::string& workflow_ids,
-    const std::vector<std::int64_t>& additional_root_job_set_ids = {}) {
-    const auto additional_roots = additional_root_job_set_ids.empty()
+    const std::vector<std::int64_t>& additional_job_set_ids = {}) {
+    const auto additional_job_sets = additional_job_set_ids.empty()
         ? std::string{}
         : " UNION SELECT job_set_id FROM exec_job_set WHERE job_set_id IN ("
-            + JoinIds(additional_root_job_set_ids) + ")";
-    return "WITH RECURSIVE seed_job_sets(job_set_id) AS ("
+            + JoinIds(additional_job_set_ids) + ")";
+    return "WITH scoped_job_sets(job_set_id) AS ("
            "SELECT job_set_id FROM exec_workflow_step WHERE workflow_instance_id IN (" + workflow_ids + ") AND job_set_id IS NOT NULL"
-           + additional_roots + "), "
-           "scoped_job_sets(job_set_id) AS ("
-           "SELECT job_set_id FROM seed_job_sets "
-           "UNION "
-           "SELECT child.job_set_id FROM exec_job_set child JOIN scoped_job_sets parent ON child.parent_job_set_id=parent.job_set_id), "
+           + additional_job_sets + "), "
            "scoped_jobs(job_id) AS ("
            "SELECT job_id FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)) ";
 }
 
-std::string RootJobSetCte(std::int64_t root_job_set_id) {
-    return "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
-           "SELECT job_set_id FROM exec_job_set WHERE job_set_id=" + std::to_string(root_job_set_id) + " "
-           "UNION "
-           "SELECT child.job_set_id FROM exec_job_set child "
-           "JOIN scoped_job_sets parent ON child.parent_job_set_id=parent.job_set_id), "
+std::string JobSetCte(std::int64_t job_set_id) {
+    return "WITH scoped_job_sets(job_set_id) AS ("
+           "SELECT job_set_id FROM exec_job_set WHERE job_set_id=" + std::to_string(job_set_id) + "), "
            "scoped_jobs(job_id) AS ("
            "SELECT job_id FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)) ";
 }
@@ -805,10 +793,10 @@ std::vector<ExportSpec> BuildWorkflowExecutionSpecs(
     const std::vector<std::int64_t>& workflow_ids,
     const ArchivePackageRetentionPolicy& policy,
     sqlite3* execution_db,
-    const std::vector<std::int64_t>& additional_root_job_set_ids = {}) {
+    const std::vector<std::int64_t>& additional_job_set_ids = {}) {
     const auto ids = JoinIds(workflow_ids);
     const auto scoped =
-        WorkflowJobSetCte(ids, additional_root_job_set_ids);
+        WorkflowJobSetCte(ids, additional_job_set_ids);
     std::vector<ExportSpec> specs;
     specs.push_back({"workflow_instances", "SELECT * FROM exec_workflow_instance WHERE workflow_instance_id IN (" + ids + ") ORDER BY workflow_instance_id ASC;"});
     specs.push_back({"workflow_steps", "SELECT * FROM exec_workflow_step WHERE workflow_instance_id IN (" + ids + ") ORDER BY workflow_step_id ASC;"});
@@ -833,7 +821,7 @@ std::vector<ExportSpec> BuildWorkflowExecutionSpecs(
     }
     specs.push_back({"job_sets", scoped + "SELECT * FROM exec_job_set WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY job_set_id ASC;"});
     specs.push_back({"worksets", scoped
-        + "SELECT workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,program_kind,program_version,"
+        + "SELECT workset_id,job_set_id,workflow_step_id,workset_key,program_kind,program_version,"
           "contract_key,module_canonical_id,module_version,module_sha256,entrypoint,verified_dependency_sha256,"
           "runtime_profile_sha256,program_package_sha256,execution_affinity_key,estimated_payload_bytes,priority,"
           "item_count,published_at_utc,derived_state_binding_sha256,"
@@ -1606,7 +1594,7 @@ std::vector<std::int64_t> CollectWorkflowSeedProbeRunIds(
     return ids;
 }
 
-std::vector<std::int64_t> CollectSeedProbeExecutionRootJobSetIds(
+std::vector<std::int64_t> CollectSeedProbeExecutionJobSetIds(
     sqlite3* execution_db,
     sqlite3* analysis_db,
     const std::vector<std::int64_t>& workflow_ids,
@@ -1615,11 +1603,11 @@ std::vector<std::int64_t> CollectSeedProbeExecutionRootJobSetIds(
     std::string* error_out) {
     // SeedProbe result facts live in Analysis, while their durable stage,
     // ordinal, and desired-delta intent lives on the source Execution jobs.
-    // Export each producer root so workset membership and dispatch history
+    // Export each producer job set so workset membership and dispatch history
     // remain internally complete without importing the producer workflow.
-    std::vector<std::int64_t> root_job_set_ids;
+    std::vector<std::int64_t> execution_job_set_ids;
     if (execution_db == nullptr || analysis_db == nullptr) {
-        return root_job_set_ids;
+        return execution_job_set_ids;
     }
 
     const auto probe_run_ids = CollectWorkflowSeedProbeRunIds(
@@ -1630,7 +1618,7 @@ std::vector<std::int64_t> CollectSeedProbeExecutionRootJobSetIds(
         job_set_ids);
     if (probe_run_ids.empty()
         || !IsTablePresent(analysis_db, "sp_probe_result", nullptr)) {
-        return root_job_set_ids;
+        return execution_job_set_ids;
     }
 
     std::string query_error;
@@ -1647,7 +1635,7 @@ std::vector<std::int64_t> CollectSeedProbeExecutionRootJobSetIds(
         return {};
     }
     if (source_job_ids.empty()) {
-        return root_job_set_ids;
+        return execution_job_set_ids;
     }
 
     const auto source_jobs = JoinIds(source_job_ids);
@@ -1671,20 +1659,10 @@ std::vector<std::int64_t> CollectSeedProbeExecutionRootJobSetIds(
         return {};
     }
 
-    root_job_set_ids = QueryInt64Column(
+    execution_job_set_ids = QueryInt64Column(
         execution_db,
-        "WITH RECURSIVE source_ancestry(job_set_id,parent_job_set_id) AS ("
-        " SELECT js.job_set_id,js.parent_job_set_id "
-        " FROM exec_job j JOIN exec_job_set js ON js.job_set_id=j.job_set_id "
-        " WHERE j.job_id IN (" + source_jobs + ") "
-        " UNION "
-        " SELECT parent.job_set_id,parent.parent_job_set_id "
-        " FROM exec_job_set parent "
-        " JOIN source_ancestry child "
-        " ON child.parent_job_set_id=parent.job_set_id"
-        ") "
-        "SELECT DISTINCT job_set_id FROM source_ancestry "
-        "WHERE parent_job_set_id IS NULL ORDER BY job_set_id ASC;",
+        "SELECT DISTINCT job_set_id FROM exec_job WHERE job_id IN (" + source_jobs
+            + ") ORDER BY job_set_id ASC;",
         &query_error);
     if (!query_error.empty()) {
         if (error_out != nullptr) {
@@ -1692,14 +1670,14 @@ std::vector<std::int64_t> CollectSeedProbeExecutionRootJobSetIds(
         }
         return {};
     }
-    if (root_job_set_ids.empty()) {
+    if (execution_job_set_ids.empty()) {
         if (error_out != nullptr) {
             *error_out =
-                "SeedProbe archive evidence source jobs have no root job set";
+                "SeedProbe archive evidence source jobs have no job set";
         }
         return {};
     }
-    return root_job_set_ids;
+    return execution_job_set_ids;
 }
 
 std::vector<std::int64_t> FilterExclusiveWorkflowSeedProbeRunIds(
@@ -2365,8 +2343,8 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
         result.error = "null db dependency";
         return result;
     }
-    if (request.source_root_job_set_id <= 0) {
-        result.error = "source_root_job_set_id must be positive";
+    if (request.source_job_set_id <= 0) {
+        result.error = "source_job_set_id must be positive";
         return result;
     }
 
@@ -2374,7 +2352,7 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
     std::string readiness_error;
     if (!CollectArchiveReadinessBlockers(
             execution_db_,
-            RootJobSetCte(request.source_root_job_set_id),
+            JobSetCte(request.source_job_set_id),
             &readiness_blockers,
             &readiness_error)) {
         result.error = readiness_error;
@@ -2401,8 +2379,8 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
 
     const auto epoch = request.created_at_utc.time_since_epoch().count();
     const auto package_name = request.archive_name.empty()
-        ? "package-" + std::to_string(request.source_root_job_set_id) + "-" + std::to_string(epoch)
-        : "package-" + SlugForPackageName(request.archive_name) + "-" + std::to_string(request.source_root_job_set_id) + "-" + std::to_string(epoch);
+        ? "package-" + std::to_string(request.source_job_set_id) + "-" + std::to_string(epoch)
+        : "package-" + SlugForPackageName(request.archive_name) + "-" + std::to_string(request.source_job_set_id) + "-" + std::to_string(epoch);
 
     ExportContext context{};
     context.package_root = config_paths_.archive_store_root / package_name;
@@ -2495,7 +2473,7 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
              << "  \"source_context\": " << EscapeJson(request.source_context) << ",\n"
              << "  \"archive_name\": " << EscapeJson(request.archive_name) << ",\n"
              << "  \"archive_notes\": " << (request.archive_notes.has_value() ? EscapeJson(*request.archive_notes) : std::string("null")) << ",\n"
-             << "  \"source_root_job_set_id\": " << request.source_root_job_set_id << ",\n"
+             << "  \"source_job_set_id\": " << request.source_job_set_id << ",\n"
              << "  \"created_at_utc\": " << request.created_at_utc.time_since_epoch().count() << ",\n"
              << "  \"time_range_start_utc\": " << min_time.time_since_epoch().count() << ",\n"
              << "  \"time_range_end_utc\": " << max_time.time_since_epoch().count() << ",\n"
@@ -2531,7 +2509,7 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
 
     CreateArchivePackageCommand create_command{};
     create_command.source_context = request.source_context;
-    create_command.source_root_job_set_id = request.source_root_job_set_id;
+    create_command.source_job_set_id = request.source_job_set_id;
     create_command.archive_name = request.archive_name;
     create_command.archive_notes = request.archive_notes;
     create_command.created_at_utc = request.created_at_utc;
@@ -2613,8 +2591,8 @@ WorkflowArchivePreview SqliteArchivePackageService::PreviewWorkflowArchive(
             + "SELECT job_set_id FROM scoped_job_sets "
               "ORDER BY job_set_id ASC;",
         &query_error);
-    const auto seed_probe_root_job_set_ids =
-        CollectSeedProbeExecutionRootJobSetIds(
+    const auto seed_probe_execution_job_set_ids =
+        CollectSeedProbeExecutionJobSetIds(
             execution_db_,
             analysis_db_,
             workflow_ids,
@@ -2628,7 +2606,7 @@ WorkflowArchivePreview SqliteArchivePackageService::PreviewWorkflowArchive(
     }
     const auto scoped = WorkflowJobSetCte(
         workflow_id_list,
-        seed_probe_root_job_set_ids);
+        seed_probe_execution_job_set_ids);
     if (!CollectArchiveReadinessBlockers(
             execution_db_,
             scoped,
@@ -2662,7 +2640,7 @@ WorkflowArchivePreview SqliteArchivePackageService::PreviewWorkflowArchive(
              workflow_ids,
              execution_policy,
              execution_db_,
-             seed_probe_root_job_set_ids)) {
+             seed_probe_execution_job_set_ids)) {
         preview.execution_row_count += static_cast<int>(count_rows(execution_db_, spec, &query_error));
     }
 
@@ -2736,8 +2714,8 @@ CreateArchivePackageResult SqliteArchivePackageService::CreateWorkflowPackage(
             + "SELECT job_set_id FROM scoped_job_sets "
               "ORDER BY job_set_id ASC;",
         &query_error);
-    const auto seed_probe_root_job_set_ids = request.include_analysis
-        ? CollectSeedProbeExecutionRootJobSetIds(
+    const auto seed_probe_execution_job_set_ids = request.include_analysis
+        ? CollectSeedProbeExecutionJobSetIds(
               execution_db_,
               analysis_db_,
               workflow_ids,
@@ -2749,7 +2727,7 @@ CreateArchivePackageResult SqliteArchivePackageService::CreateWorkflowPackage(
         result.error = query_error;
         return result;
     }
-    if (!seed_probe_root_job_set_ids.empty()
+    if (!seed_probe_execution_job_set_ids.empty()
         && !request.include_execution) {
         result.error =
             "SeedProbe analysis archive requires execution context because "
@@ -2759,7 +2737,7 @@ CreateArchivePackageResult SqliteArchivePackageService::CreateWorkflowPackage(
 
     const auto scoped = WorkflowJobSetCte(
         workflow_id_list,
-        seed_probe_root_job_set_ids);
+        seed_probe_execution_job_set_ids);
     std::vector<std::string> readiness_blockers;
     std::string readiness_error;
     if (!CollectArchiveReadinessBlockers(
@@ -2827,7 +2805,7 @@ CreateArchivePackageResult SqliteArchivePackageService::CreateWorkflowPackage(
               workflow_ids,
               package_policy,
               execution_db_,
-              seed_probe_root_job_set_ids)
+              seed_probe_execution_job_set_ids)
         : std::vector<ExportSpec>{};
     std::vector<std::int64_t> battle_set_ids;
     const auto analysis_specs = (request.include_analysis && analysis_db_ != nullptr)
@@ -3119,7 +3097,7 @@ CreateArchivePackageResult SqliteArchivePackageService::CreateWorkflowPackage(
 
     CreateArchivePackageCommand create_command{};
     create_command.source_context = request.source_context;
-    create_command.source_root_job_set_id = 0;
+    create_command.source_job_set_id = 0;
     create_command.source_scope_kind = "workflow_selection";
     create_command.source_workflow_count = static_cast<std::int64_t>(workflow_ids.size());
     create_command.selection_summary = selection_summary;
@@ -4006,70 +3984,57 @@ std::vector<ArchiveCandidateRoot> SqliteArchivePackageService::ListArchiveCandid
 
     Statement st;
     constexpr const char* kSql =
-        "WITH RECURSIVE run_tree(root_job_set_id, job_set_id) AS ("
-        "  SELECT job_set_id, job_set_id "
-        "  FROM exec_job_set "
-        "  WHERE parent_job_set_id IS NULL "
-        "  UNION ALL "
-        "  SELECT t.root_job_set_id, c.job_set_id "
-        "  FROM exec_job_set c "
-        "  JOIN run_tree t ON c.parent_job_set_id=t.job_set_id"
-        "), run_jobs AS ("
-        "  SELECT t.root_job_set_id, j.job_id, j.state, j.claimed_by_token, j.lease_expires_at_utc, "
+        "WITH run_jobs AS ("
+        "  SELECT j.job_set_id, j.job_id, j.state, j.claimed_by_token, j.lease_expires_at_utc, "
         "         COALESCE(j.ended_at_utc, j.started_at_utc, j.queued_at_utc, 0) AS terminal_or_activity_utc, "
         "         j.ended_at_utc "
-        "  FROM run_tree t "
-        "  JOIN exec_job j ON j.job_set_id=t.job_set_id"
+        "  FROM exec_job j"
         "), run_stats AS ("
-        "  SELECT root_job_set_id, "
+        "  SELECT job_set_id, "
         "         COUNT(job_id) AS total_jobs, "
         "         SUM(CASE WHEN state='EXECUTION_FINISHED' "
         "                   OR (ended_at_utc IS NULL "
-        "                   AND state NOT IN ('COMPLETED','FAILED','INTERRUPTED','CANCELED','SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','SUPERSEDED') "
+        "                   AND state NOT IN ('FAILED','INTERRUPTED','CANCELED','SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','SUPERSEDED') "
         "                  ) THEN 1 ELSE 0 END) AS non_terminal_jobs, "
         "         SUM(CASE WHEN claimed_by_token IS NOT NULL AND claimed_by_token<>'' "
         "                   AND COALESCE(lease_expires_at_utc, 0) > ?1 "
         "                  THEN 1 ELSE 0 END) AS active_leases, "
         "         MAX(terminal_or_activity_utc) AS terminal_at_utc "
         "  FROM run_jobs "
-        "  GROUP BY root_job_set_id"
+        "  GROUP BY job_set_id"
         ") "
-        "SELECT root_job_set_id, terminal_at_utc "
+        "SELECT job_set_id, terminal_at_utc "
         "FROM run_stats "
         "WHERE total_jobs > 0 "
         "  AND non_terminal_jobs = 0 "
         "  AND active_leases = 0 "
         "  AND NOT EXISTS ("
-        "    SELECT 1 FROM run_tree t "
-        "    JOIN exec_job_set s ON s.job_set_id=t.job_set_id "
-        "    WHERE t.root_job_set_id=run_stats.root_job_set_id "
+        "    SELECT 1 FROM exec_job_set s "
+        "    WHERE s.job_set_id=run_stats.job_set_id "
         "      AND COALESCE(s.materialization_state,'')<>'WORKSET_PUBLICATION_COMPLETE'"
         "  ) "
         "  AND NOT EXISTS ("
-        "    SELECT 1 FROM run_tree t "
-        "    JOIN exec_workset w ON w.job_set_id=t.job_set_id "
+        "    SELECT 1 FROM exec_workset w "
         "    JOIN exec_workset_dispatch_attempt a ON a.workset_id=w.workset_id "
-        "    WHERE t.root_job_set_id=run_stats.root_job_set_id "
+        "    WHERE w.job_set_id=run_stats.job_set_id "
         "      AND a.state IN ('CLAIMED','ACTIVE','DRAINING')"
         "  ) "
         "  AND NOT EXISTS ("
-        "    SELECT 1 FROM run_tree t "
-        "    JOIN exec_job j ON j.job_set_id=t.job_set_id "
+        "    SELECT 1 FROM exec_job j "
         "    LEFT JOIN exec_job_cancellation_request c ON c.job_id=j.job_id "
-        "    WHERE t.root_job_set_id=run_stats.root_job_set_id "
+        "    WHERE j.job_set_id=run_stats.job_set_id "
         "      AND ((j.cancellation_state IS NOT NULL AND j.cancellation_state<>'RESOLVED') "
         "        OR (c.cancellation_request_id IS NOT NULL AND c.state<>'RESOLVED'))"
         "  ) "
         "  AND NOT EXISTS ("
-        "    SELECT 1 FROM run_tree t "
-        "    JOIN exec_job j ON j.job_set_id=t.job_set_id "
+        "    SELECT 1 FROM exec_job j "
         "    JOIN exec_temp_blob b ON b.temp_blob_id=j.worker_result_blob_id "
-        "    WHERE t.root_job_set_id=run_stats.root_job_set_id "
+        "    WHERE j.job_set_id=run_stats.job_set_id "
         "      AND b.cleanup_state<>'DELETED'"
         "  ) "
         "  AND terminal_at_utc > 0 "
         "  AND terminal_at_utc < ?2 "
-        "ORDER BY terminal_at_utc ASC, root_job_set_id ASC "
+        "ORDER BY terminal_at_utc ASC, job_set_id ASC "
         "LIMIT ?3;";
     if (sqlite3_prepare_v2(execution_db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         if (error_out != nullptr) *error_out = sqlite3_errmsg(execution_db_);
@@ -4089,7 +4054,7 @@ std::vector<ArchiveCandidateRoot> SqliteArchivePackageService::ListArchiveCandid
         }
 
         ArchiveCandidateRoot candidate{};
-        candidate.root_job_set_id = sqlite3_column_int64(st.st, 0);
+        candidate.job_set_id = sqlite3_column_int64(st.st, 0);
         candidate.terminal_at_utc = FromEpochMillis(sqlite3_column_int64(st.st, 1));
         candidates.push_back(candidate);
     }

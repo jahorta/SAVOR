@@ -32,7 +32,7 @@ struct ArchivePackageRetentionPolicy {
 };
 
 struct CreateArchivePackageRequest {
-    std::int64_t source_root_job_set_id = 0;
+    std::int64_t source_job_set_id = 0;
     ArchivePackageRetentionPolicy retention_policy{};
     types::UtcTimePoint created_at_utc = types::UtcNow();
     std::string source_context = "Execution";
@@ -114,7 +114,7 @@ struct WorkflowArchivePurgeResult {
 };
 
 struct ArchiveCandidateRoot {
-    std::int64_t root_job_set_id = 0;
+    std::int64_t job_set_id = 0;
     types::UtcTimePoint terminal_at_utc{};
 };
 
@@ -132,7 +132,7 @@ struct ArchiveBatchResult {
     int packages_written = 0;
     int source_job_sets_purged = 0;
     int outbox_rows_purged = 0;
-    std::vector<std::int64_t> archived_root_job_set_ids;
+    std::vector<std::int64_t> archived_job_set_ids;
     std::vector<std::string> errors;
 };
 

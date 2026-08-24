@@ -20,7 +20,6 @@ class QSplitter;
 class QVBoxLayout;
 
 enum class AuthoringLibraryKey {
-    Tas,
     SeedProbe,
     BattlePlan,
     Predicates,

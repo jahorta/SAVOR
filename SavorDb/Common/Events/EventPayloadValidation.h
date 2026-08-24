@@ -129,6 +129,8 @@ inline bool ValidateExecutionWorkflowJobPayloadV1(const EventEnvelope& envelope,
         || envelope.event_type == "Execution.WorkflowStepMaterialized.v1"
         || envelope.event_type == "Execution.WorkflowStepCompleted.v1"
         || envelope.event_type == "Execution.WorkflowStepFailed.v1"
+        || envelope.event_type == "Execution.WorkflowStepInterrupted.v1"
+        || envelope.event_type == "Execution.WorkflowStepCanceled.v1"
         || envelope.event_type == "Execution.WorkflowStepEmpty.v1"
         || envelope.event_type
             == "Execution.WorkflowStepCoordinatorFailure.v1"
@@ -154,7 +156,10 @@ inline bool ValidateExecutionWorkflowJobPayloadV1(const EventEnvelope& envelope,
             == "Execution.WorkflowRemediationRepairExecuted.v1"
         || envelope.event_type
             == "Execution.WorkflowInstanceFailed.v1"
-        || envelope.event_type == "Execution.WorkflowInstanceCompleted.v1") {
+        || envelope.event_type == "Execution.WorkflowInstanceCompleted.v1"
+        || envelope.event_type == "Execution.WorkflowInstanceInterrupted.v1"
+        || envelope.event_type == "Execution.WorkflowInstanceCanceled.v1"
+        || envelope.event_type == "Execution.WorkflowInstanceResumed.v1") {
         if (envelope.payload_ref_kind != "workflow_event") {
             if (error_out) *error_out = "payload_ref_kind must be workflow_event for Execution.Workflow* event";
             return false;

@@ -2702,7 +2702,7 @@ struct SessionProgramActionHost::Impl
                 payload,
                 Field::ThrottlePolicy,
                 static_cast<std::uint64_t>(
-                    ExecutionThrottlePolicy::Preserve)));
+                    ExecutionThrottlePolicy::RequireDisabled)));
         policy.current_point =
             static_cast<ExecutionCurrentPointPolicy>(UnsignedOr(
                 payload,
@@ -5377,7 +5377,7 @@ bool SessionProgramActionHost::Impl::SubmitCleanupAdvance(
     ExecutionRequestPolicy policy;
     policy.expected_epoch = current.workset_epoch;
     policy.movie_ended = MovieEndedPolicy::Ignore;
-    policy.throttle = ExecutionThrottlePolicy::Preserve;
+    policy.throttle = ExecutionThrottlePolicy::RequireDisabled;
     policy.current_point =
         ExecutionCurrentPointPolicy::Ignore;
     policy.interruptions =

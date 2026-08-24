@@ -1,4 +1,5 @@
 #include "DbSetup.h"
+#include "Authoring/AuthoringRecipeMaterializer.h"
 
 #include <algorithm>
 #include <array>
@@ -179,7 +180,7 @@ bool CheckWorkflowQuiescence(
     const auto ready_steps = queries->ListReadySteps(kWorkflowBoundaryDiagnosticLimit);
     const auto active_materialized_workflows = queries->CountActiveMaterializedWorkflows();
     const auto terminal_ready_steps =
-        queries->ListTerminalReadyStepSnapshots(kWorkflowBoundaryDiagnosticLimit);
+        queries->ListSettlementReadyStepSnapshots(kWorkflowBoundaryDiagnosticLimit);
 
     if (pending_instances.empty()
         && running_instances.empty()
@@ -382,23 +383,21 @@ bool SeedAuthoringSpec(
         return false;
     }
 
-    return authoring_db->SaveSeedProbeSpec(
-        {
-            .name = "SavorE2E seedprobe " + std::string(run_identity),
-            .priority = 1,
-            .min_value = options.seedprobe_min_value.value_or(48),
-            .max_value = options.seedprobe_max_value.value_or(207),
-            .cap_trigger_top = true,
-            .ignore_trigger_minmax = true,
-            .combo_attempts_per_target = options.seedprobe_combo_attempts_per_target.value_or(20),
-            .combo_sampler_tries = options.seedprobe_combo_sampler_tries.value_or(4),
-            .auto_schedule_battle_run = false,
-            .created_at_utc = UtcNow(),
-            .correlation_id = "savor-e2e.seedprobe",
-            .causation_id = "savor-e2e.seed",
-        },
-        seed_probe_spec_id_out,
-        error_out);
+    const savor::db::authoring::AuthoringRecipeMaterializer materializer(
+        authoring_db);
+    return materializer.SaveSeedProbeSpec({
+        .name = "SavorE2E seedprobe " + std::string(run_identity),
+        .priority = 1,
+        .min_value = options.seedprobe_min_value.value_or(48),
+        .max_value = options.seedprobe_max_value.value_or(207),
+        .cap_trigger_top = true,
+        .ignore_trigger_minmax = true,
+        .combo_attempts_per_target =
+            options.seedprobe_combo_attempts_per_target.value_or(20),
+        .combo_sampler_tries =
+            options.seedprobe_combo_sampler_tries.value_or(4),
+        .auto_schedule_battle_run = false,
+    }, seed_probe_spec_id_out, error_out);
 }
 
 bool SeedWorkflowGraphExecution(
@@ -420,7 +419,7 @@ bool SeedWorkflowGraphExecution(
     }
 
     savor::db::SaveWorkflowGraphResult saved{};
-    if (!authoring_db->SaveWorkflowGraph(
+    if (!savor::db::authoring::MaterializeWorkflowGraph(authoring_db, 
             {
                 .name = "SavorE2E workflow graph seedprobe "
                     + std::string(run_identity),
@@ -476,11 +475,11 @@ bool SeedWorkflowGraphExecution(
     }
     if (probe_activation->steps.size() != 1
         || probe_activation->steps.front().step_kind
-            != "seedprobe.run") {
+            != "seedprobe.survey") {
         if (error_out) {
             *error_out =
                 "seed_probe must resolve to exactly one "
-                "seedprobe.run workflow step";
+                "seedprobe.survey workflow step";
         }
         return false;
     }
@@ -515,7 +514,7 @@ bool SeedTasMovieWorkflow(
     }
 
     savor::db::SaveWorkflowGraphResult saved{};
-    if (!authoring_db->SaveWorkflowGraph(
+    if (!savor::db::authoring::MaterializeWorkflowGraph(authoring_db, 
             {
                 .name = "SavorE2E TAS Movie root cursor establishment",
                 .description = "Singleton handcrafted-DTM root cursor establishment",
@@ -609,7 +608,7 @@ bool SeedTasMovieRootValidationWorkflow(
     }
 
     savor::db::SaveWorkflowGraphResult saved{};
-    if (!authoring_db->SaveWorkflowGraph(
+    if (!savor::db::authoring::MaterializeWorkflowGraph(authoring_db, 
             {
                 .name = "SavorE2E TAS Movie root validation",
                 .description = "Singleton RTC-specific TAS Movie root validation",
@@ -714,7 +713,7 @@ bool SeedTasMovieEstablishedValidationWorkflow(
     }
 
     savor::db::SaveWorkflowGraphResult saved{};
-    if (!authoring_db->SaveWorkflowGraph(
+    if (!savor::db::authoring::MaterializeWorkflowGraph(authoring_db, 
             {
                 .name = "SavorE2E TAS Movie established validation sterlize",
                 .description = "Validate an established root-cursor then sterilize the resulting checkpoint",
@@ -858,7 +857,7 @@ bool SeedTasMovieSterileWorkflow(
     }
 
     savor::db::SaveWorkflowGraphResult saved{};
-    if (!authoring_db->SaveWorkflowGraph(
+    if (!savor::db::authoring::MaterializeWorkflowGraph(authoring_db, 
             {
                 .name = "SavorE2E TAS Movie to Sterilization",
                 .description = "Establish and validate a root DTM, then sterilize the resulting checkpoint",
@@ -1043,7 +1042,7 @@ bool SeedTasMovieSeedProbeWorkflow(
     }
 
     savor::db::SaveWorkflowGraphResult saved{};
-    if (!authoring_db->SaveWorkflowGraph(
+    if (!savor::db::authoring::MaterializeWorkflowGraph(authoring_db, 
             {
                 .name = "SavorE2E TAS Movie to SeedProbe",
                 .description = "Establish and validate a root DTM, sterilize its checkpoint, then probe the movie-inactive state",
@@ -1210,7 +1209,7 @@ bool SeedTasMovieSeedProbeWorkflow(
         || sterilize->steps.size() != 1
         || sterilize->steps.front().step_kind != "tasmovie.checkpoint_sterilize"
         || probe->steps.size() != 1
-        || probe->steps.front().step_kind != "seedprobe.run") {
+        || probe->steps.front().step_kind != "seedprobe.survey") {
         if (error_out) {
             *error_out = "composed TAS Movie/SeedProbe units did not resolve to their exact singleton steps";
         }

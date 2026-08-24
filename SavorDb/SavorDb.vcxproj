@@ -171,11 +171,17 @@
     <ClInclude Include="Analysis\QueuedAnalysisDb.h" />
     <ClInclude Include="Analysis\SqliteAnalysisPayloadResolvers.h" />
     <ClInclude Include="Analysis\SqliteAnalysisDb.h" />
+    <ClInclude Include="Authoring\AuthoringCatalog.h" />
+    <ClInclude Include="Authoring\AuthoringContentHash.h" />
+    <ClInclude Include="Authoring\AuthoringRecipe.h" />
+    <ClInclude Include="Authoring\AuthoringRecipeMaterializer.h" />
     <ClInclude Include="Authoring\IAuthoringDb.h" />
     <ClInclude Include="Authoring\QueuedAuthoringDb.h" />
     <ClInclude Include="Authoring\RuntimeSymbolAuthoringService.h" />
     <ClInclude Include="Authoring\SqliteAuthoringDb.h" />
     <ClInclude Include="Common\DbConfigPaths.h" />
+    <ClInclude Include="Common\DatabaseBootstrap.h" />
+    <ClInclude Include="Common\DatabaseBootstrapProfiles.h" />
     <ClInclude Include="Common\DbService.h" />
     <ClInclude Include="Common\Performance\DbPerfReport.h" />
     <ClInclude Include="Common\Events\EventEnvelope.h" />
@@ -228,8 +234,8 @@
     <ClInclude Include="Execution\Workflow\WorkflowProjector.h" />
     <ClInclude Include="Execution\Workflow\WorkflowCoordinatorService.h" />
     <ClInclude Include="Execution\Workflow\WorkflowGraphRoutingService.h" />
-    <ClInclude Include="Execution\Workflow\WorkflowTerminalAdvancementService.h" />
-    <ClInclude Include="Execution\Workflow\WorkflowStepCompletionGate.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowSettlementAdvancementService.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowStepSettlementGate.h" />
     
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h" />
     <ClInclude Include="SavorDb.h" />
@@ -252,6 +258,8 @@
     <ClCompile Include="Common\Migrations\MigrationContext.cpp" />
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp" />
     <ClCompile Include="Common\Events\OutboxRelay.cpp" />
+    <ClCompile Include="Common\DatabaseBootstrap.cpp" />
+    <ClCompile Include="Common\DatabaseBootstrapProfiles.cpp" />
     <ClCompile Include="Common\DbService.cpp" />
     <ClCompile Include="Common\Performance\DbPerfReport.cpp" />
     <ClCompile Include="Common\QueuedDb.cpp" />
@@ -259,6 +267,9 @@
     <ClCompile Include="Analysis\BattleCompletionRecordingDb.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisDb.cpp" />
+    <ClCompile Include="Authoring\AuthoringContentHash.cpp" />
+    <ClCompile Include="Authoring\AuthoringRecipe.cpp" />
+    <ClCompile Include="Authoring\AuthoringRecipeMaterializer.cpp" />
     <ClCompile Include="Authoring\QueuedAuthoringDb.cpp" />
     <ClCompile Include="Authoring\RuntimeSymbolAuthoringService.cpp" />
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp" />
@@ -294,8 +305,8 @@
     <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowCoordinatorService.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowGraphRoutingService.cpp" />
-    <ClCompile Include="Execution\Workflow\WorkflowTerminalAdvancementService.cpp" />
-    <ClCompile Include="Execution\Workflow\WorkflowStepCompletionGate.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowSettlementAdvancementService.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowStepSettlementGate.cpp" />
     
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp" />
     <ClCompile Include="Execution\WorkerResultBlobStore.cpp" />

@@ -30,6 +30,7 @@ const char* workerStateLabel(WorkerStateKind state)
 const char* workerStartupPhaseLabel(WorkerStartupPhase phase)
 {
     switch (phase) {
+    case WorkerStartupPhase::WaitingForProcessExit: return "Waiting for process exit";
     case WorkerStartupPhase::PendingFilesystem: return "Pending filesystem";
     case WorkerStartupPhase::PreparingFilesystem: return "Preparing filesystem";
     case WorkerStartupPhase::WaitingToOpen: return "Waiting to open";

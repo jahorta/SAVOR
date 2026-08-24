@@ -39,6 +39,7 @@ public:
         query.states = scope.states;
         query.program_kind = scope.program_kind;
         query.job_set_id = scope.job_set_id;
+        query.job_id = scope.job_id;
         if (after.has_value()) {
             query.after = after;
         }

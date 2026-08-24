@@ -301,7 +301,7 @@ bool VerifyComposedTasMovieSeedProbeGraph(
             != "tasmovie.establish_root_cursor"
         || validate_step->step_kind != "tasmovie.validate_root"
         || sterilize_step->step_kind != "tasmovie.checkpoint_sterilize"
-        || probe_step->step_kind != "seedprobe.run"
+        || probe_step->step_kind != "seedprobe.survey"
         || establish_step->max_attempts != 1
         || validate_step->max_attempts != 1
         || sterilize_step->max_attempts != 1

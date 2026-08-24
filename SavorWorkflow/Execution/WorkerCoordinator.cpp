@@ -2665,17 +2665,15 @@ void WorkerCoordinator::ResetWorkerSlot(const WorkerSlotPtr& slot) {
     }
 
     std::shared_ptr<savor::ProcessWorker> old_worker;
+    std::size_t worker_id = 0;
     {
         std::lock_guard<std::mutex> submission_lock(
             slot->submission_mutex);
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
-        old_worker = std::move(slot->worker);
-        slot->process_generation = NextProcessGeneration();
-        slot->worker = std::make_shared<savor::ProcessWorker>();
+        worker_id = slot->id;
+        old_worker = slot->worker;
         slot->ready = false;
-        slot->startup_phase = WorkerStartupPhase::PendingFilesystem;
-        slot->preparation_id.clear();
-        slot->prepared_user_directory.clear();
+        slot->startup_phase = WorkerStartupPhase::WaitingForProcessExit;
         slot->submission_in_progress = false;
         slot->quarantine_requested = false;
         slot->quarantine_diagnostic.clear();
@@ -2683,15 +2681,40 @@ void WorkerCoordinator::ResetWorkerSlot(const WorkerSlotPtr& slot) {
         slot->active_workset_id.reset();
         slot->runtime_contract_sha256.clear();
         slot->available_item_credits = 0;
+    }
+
+    if (old_worker) {
+        old_worker->stop();
+        if (!old_worker->confirm_process_exit()) {
+            worker_status_.UpdateState(
+                ToTelemetryWorkerId(worker_id),
+                WorkerStateKind::Stopping);
+            worker_status_.RecordHeartbeat(
+                ToTelemetryWorkerId(worker_id));
+            return;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> submission_lock(
+            slot->submission_mutex);
+        std::lock_guard<std::mutex> slot_lock(slot->mutex);
+        if (slot->worker != old_worker
+            || slot->startup_phase
+                != WorkerStartupPhase::WaitingForProcessExit) {
+            return;
+        }
+        slot->process_generation = NextProcessGeneration();
+        slot->worker = std::make_shared<savor::ProcessWorker>();
+        slot->startup_phase = WorkerStartupPhase::PendingFilesystem;
+        slot->preparation_id.clear();
+        slot->prepared_user_directory.clear();
         slot->next_liveness_probe = {};
         slot->consecutive_liveness_failures = 0;
         slot->warm_execution_key_sha256.reset();
         slot->warm_program_package_sha256.reset();
     }
     ConfigureWorkerCallbacks(slot);
-    if (old_worker) {
-        old_worker->stop();
-    }
 }
 
 void WorkerCoordinator::LifecycleLoop() {
@@ -2871,9 +2894,13 @@ void WorkerCoordinator::ReconcileWorkerPool() {
         if (!slot || stopping_.load(std::memory_order_acquire)) {
             break;
         }
+        bool waiting_for_process_exit = false;
         bool requires_reset = false;
         {
             std::lock_guard<std::mutex> slot_lock(slot->mutex);
+            waiting_for_process_exit =
+                slot->startup_phase
+                    == WorkerStartupPhase::WaitingForProcessExit;
             requires_reset =
                 slot->startup_phase == WorkerStartupPhase::Failed
                 && !slot->startup_thread.joinable()
@@ -2884,7 +2911,7 @@ void WorkerCoordinator::ReconcileWorkerPool() {
                         1,
                         config_.max_worker_start_attempts);
         }
-        if (requires_reset) {
+        if (waiting_for_process_exit || requires_reset) {
             ResetWorkerSlot(slot);
         }
     }

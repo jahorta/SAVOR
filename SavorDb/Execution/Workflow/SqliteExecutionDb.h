@@ -215,7 +215,6 @@ public:
     std::optional<ExecutionJobSetMaterializationRecord>
     GetJobSetByMaterializationKey(
         std::string_view materialization_key) const override;
-    std::vector<ExecutionChildJobSetProgressDetails> GetChildJobSetProgress(std::int64_t parent_job_set_id) const override;
     bool MarkQueuedJobsSuperseded(
         std::int64_t job_set_id,
         std::int64_t except_job_id,

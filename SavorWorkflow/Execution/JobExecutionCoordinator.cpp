@@ -827,7 +827,7 @@ private:
         cancellation_precommit_holds_promoted_{0};
     std::atomic<std::uint64_t> committed_cancellations_indexed_{0};
     std::atomic<std::uint64_t> waiting_jobs_suppressed_by_sidecar_{0};
-    std::atomic<std::uint64_t> fully_canceled_worksets_avoided_{0};
+    std::atomic<std::uint64_t> fully_suppressed_worksets_avoided_{0};
     std::atomic<std::uint64_t> sidecar_items_submitted_{0};
     std::atomic<std::uint64_t> sidecar_submit_receipts_accepted_{0};
     std::atomic<std::uint64_t> sidecar_submit_receipts_repeated_{0};
@@ -1603,8 +1603,8 @@ JobExecutionCoordinator::Impl::SnapshotTelemetry() const {
         committed_cancellations_indexed_.load();
     telemetry.waiting_jobs_suppressed_by_sidecar =
         waiting_jobs_suppressed_by_sidecar_.load();
-    telemetry.fully_canceled_worksets_avoided =
-        fully_canceled_worksets_avoided_.load();
+    telemetry.fully_suppressed_worksets_avoided =
+        fully_suppressed_worksets_avoided_.load();
     telemetry.sidecar_items_submitted =
         sidecar_items_submitted_.load();
     telemetry.sidecar_submit_receipts_accepted =
@@ -2541,7 +2541,7 @@ bool JobExecutionCoordinator::Impl::Reconstruct(
         context.workset_id = claimed.workset_id;
         context.dispatch_attempt_id = claimed.dispatch_attempt_id;
         context.workflow_step_id = claimed.workflow_step_id;
-        context.root_job_set_id = claimed.root_job_set_id;
+        context.job_set_id = claimed.job_set_id;
         context.dispatch_token = claimed.claim_token;
         context.contract_key = claimed.contract.contract_key;
         context.state_compatibility = config_.state_compatibility;
@@ -2985,18 +2985,24 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
         WakeScheduler("worker-queue-capacity", false);
 
         if (sidecar.item_ids.size() == definition.items.size()) {
-            ++fully_canceled_worksets_avoided_;
+            ++fully_suppressed_worksets_avoided_;
             {
                 std::lock_guard lane_lock(lane->mutex);
                 lane->submitting.reset();
             }
             for (const auto& cancellation : sidecar_cancellations) {
+                const std::string resolution_code =
+                    cancellation.terminal_disposition == "SUPERSEDED"
+                    ? "SUPERSEDED_BEFORE_WORKER"
+                    : cancellation.terminal_disposition == "FAILED"
+                    ? "FAILURE_CASCADE_BEFORE_WORKER"
+                    : "WORKFLOW_CANCELED_BEFORE_WORKER";
                 QueueCancellationMutation({
                     .mutation = savor::db::
                         JobCancellationOutcomeCommand{
                             .kind = savor::db::
                                 JobCancellationOutcomeKind::
-                                    CancelWithoutWorker,
+                                    ResolveWithoutWorker,
                             .cancellation_request_id =
                                 cancellation.cancellation_request_id,
                             .job_id = cancellation.job_id,
@@ -3004,13 +3010,11 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
                                 dispatch->claimed.dispatch_attempt_id,
                             .claim_token =
                                 dispatch->claimed.claim_token,
-                            .resolution_code =
-                                "CANCELED_BEFORE_WORKER",
+                            .resolution_code = resolution_code,
                             .requested_by =
                                 "job_execution_coordinator",
                         },
-                    .requested_resolution_code =
-                        "CANCELED_BEFORE_WORKER",
+                    .requested_resolution_code = resolution_code,
                     .dispatch = dispatch,
                     .initial_suppression = true,
                 });
@@ -4522,7 +4526,7 @@ bool JobExecutionCoordinator::Impl::ResolveClaimedCancellation(
                         ? savor::db::JobCancellationOutcomeKind::
                             InitialSidecarApplied
                         : savor::db::JobCancellationOutcomeKind::
-                            CancelWithoutWorker
+                            ResolveWithoutWorker
                     : savor::db::JobCancellationOutcomeKind::
                         WorkerTerminalResolved,
                 .cancellation_request_id =

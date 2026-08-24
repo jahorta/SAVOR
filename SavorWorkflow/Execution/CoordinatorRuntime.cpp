@@ -91,7 +91,7 @@ bool CoordinatorRuntime::Start(
             [this](std::uint64_t commit_sequence, std::int64_t workflow_step_id,
                    std::int64_t job_id) {
                 if (workflow_coordinator_ != nullptr) {
-                    (void)workflow_coordinator_->PublishTerminalCommit({
+                    (void)workflow_coordinator_->PublishSettlementCommit({
                         .commit_sequence = commit_sequence,
                         .workflow_step_id = workflow_step_id,
                         .job_id = job_id,

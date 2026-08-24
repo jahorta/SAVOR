@@ -779,7 +779,7 @@ WorksetWireCodecResult EncodeWorkerWorksetV4(
     writer.U32(kWorksetWireVersionV4);
     writer.U64(definition.workset_id.value());
     writer.U64(definition.phase_invocation.invocation_id.workflow_step_id);
-    writer.U64(definition.phase_invocation.invocation_id.root_job_set_id);
+    writer.U64(definition.phase_invocation.invocation_id.job_set_id);
     WriteProgramPackage(
         writer, definition.phase_invocation.program_package);
     WriteCommonInput(
@@ -829,12 +829,12 @@ WorksetWireCodecResult DecodeWorkerWorksetV4(
     std::uint32_t version = 0;
     std::uint64_t workset_id = 0;
     std::uint64_t workflow_step_id = 0;
-    std::uint64_t root_job_set_id = 0;
+    std::uint64_t job_set_id = 0;
     WorkerWorksetExecutionKey& key = candidate.execution_key;
     if (!reader.U32(version) || version != kWorksetWireVersionV4 ||
         !reader.U64(workset_id) ||
         !reader.U64(workflow_step_id) ||
-        !reader.U64(root_job_set_id) ||
+        !reader.U64(job_set_id) ||
         !ReadProgramPackage(
             reader, candidate.phase_invocation.program_package) ||
         !ReadCommonInput(
@@ -862,7 +862,7 @@ WorksetWireCodecResult DecodeWorkerWorksetV4(
     candidate.workset_id = WorkerWorksetId(workset_id);
     candidate.phase_invocation.invocation_id = {
         .workflow_step_id = workflow_step_id,
-        .root_job_set_id = root_job_set_id,
+        .job_set_id = job_set_id,
     };
     std::uint32_t item_count = 0;
     if (!reader.Count(item_count, 16))

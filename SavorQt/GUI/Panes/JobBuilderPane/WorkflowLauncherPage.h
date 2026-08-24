@@ -54,6 +54,7 @@ private:
     };
     struct AuthoredRefOption {
         QString label;
+        QString description;
         std::string ref_kind;
         std::int64_t ref_id = 0;
     };

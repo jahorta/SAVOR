@@ -83,6 +83,26 @@ std::string Fingerprint(
         + hash::sha256(canonical.data(), canonical.size());
 }
 
+std::string PlanSha256(const std::vector<SeedProbeJobSpec>& specs) {
+    std::string canonical;
+    for (const auto& spec : specs) {
+        const auto encoded = EncodeSeedProbeJobSpec(spec);
+        canonical.append(std::to_string(encoded.size()));
+        canonical.push_back(':');
+        canonical.append(encoded);
+        canonical.push_back('\n');
+    }
+    return hash::sha256(canonical.data(), canonical.size());
+}
+
+std::string DynamicStepKey(
+    std::string_view graph_node_key,
+    std::string_view stage,
+    const std::vector<SeedProbeJobSpec>& specs) {
+    return std::string(graph_node_key) + "/" + std::string(stage) + "/"
+        + PlanSha256(specs);
+}
+
 GCInputFrame NeutralFrame() {
     GCInputFrame frame{};
     frame.buttons = 0;
@@ -184,7 +204,7 @@ int ResolveSamplesPerAxis(
 }
 
 bool IsBusinessFinal(std::string_view state) {
-    return state == "COMPLETED" || state == "SUCCEEDED"
+    return state == "SUCCEEDED"
         || state == "SUCCEEDED_WINNER"
         || state == "SUPERSEDED"
         || state == "SUCCEEDED_DUPLICATE"
@@ -221,7 +241,8 @@ std::string JoinIds(
     return out.str();
 }
 
-class SeedProbeMaterializer final : public IProgramJobMaterializer {
+class SeedProbeMaterializer final : public IProgramJobMaterializer,
+                                    public IWorkflowTransitionHandler {
 public:
     SeedProbeMaterializer(
         IExecutionDb* execution_db,
@@ -254,6 +275,13 @@ public:
         *result_out = {};
         if (!DependenciesReady(error_out)) {
             return false;
+        }
+        if (context.step.step_kind == "seedprobe.search"
+            || context.step.step_kind == "seedprobe.confirm") {
+            return MaterializeContinuationStage(context, result_out, error_out);
+        }
+        if (context.step.step_kind != "seedprobe.survey") {
+            return Fail("unsupported SeedProbe workflow step kind", error_out);
         }
         const auto entry_savestate =
             ResolveEntrySavestate(context);
@@ -291,12 +319,9 @@ public:
                 error_out);
         }
 
-        const auto root_key =
-            "seedprobe.step."
-            + std::to_string(context.step.workflow_step_id)
-            + ".survey";
+        const auto root_key = context.step.step_key;
         std::int64_t probe_run_id = 0;
-        std::int64_t root_job_set_id = 0;
+        std::int64_t job_set_id = 0;
         const auto existing =
             execution_db_->GetJobSetByMaterializationKey(
                 root_key);
@@ -311,7 +336,7 @@ public:
                     "with a different job set",
                     error_out);
             }
-            root_job_set_id = existing->job_set_id;
+            job_set_id = existing->job_set_id;
             probe_run_id = *existing->domain_ref_id;
         } else {
             constexpr std::string_view flavor = "ENTRY_QUALIFIED";
@@ -412,9 +437,7 @@ public:
         const auto published = PublishJobSet(
             context,
             root_key,
-            std::nullopt,
             context.step.workflow_step_id,
-            0,
             kRootPurpose,
             "stage=SURVEY",
             probe_run_id,
@@ -425,8 +448,8 @@ public:
         if (!published.has_value()) {
             return false;
         }
-        root_job_set_id = published->job_set_id;
-        result_out->root_job_set_id = root_job_set_id;
+        job_set_id = published->job_set_id;
+        result_out->job_set_id = job_set_id;
         result_out->persistence = {
             .program_ref_kind = std::string(kRunRefKind),
             .program_ref_id = probe_run_id,
@@ -437,8 +460,8 @@ public:
             "[seedprobe-materialized] run="
             + std::to_string(probe_run_id)
             + " survey_jobs=" + std::to_string(jobs.size())
-            + " root_job_set="
-            + std::to_string(root_job_set_id));
+            + " job_set="
+            + std::to_string(job_set_id));
         if (error_out != nullptr) {
             error_out->clear();
         }
@@ -463,66 +486,189 @@ public:
         const auto run =
             analysis_db_->GetSeedProbeRun(probe_run_id);
         if (!run.has_value()
-            || context.root_job_set_id <= 0) {
+            || context.job_set_id <= 0) {
             return Fail(
                 "SeedProbe continuation cannot resolve its run",
                 error_out);
         }
+        if (run->status == SeedProbeRunStatus::Invalidated) {
+            result_out->disposition = ProgramJobContinuationDisposition::Failed;
+            result_out->failure_code = "SEEDPROBE_RUN_ENDPOINT_INVALIDATED";
+            result_out->failure_text = run->invalidation_diagnostic.value_or(
+                "SeedProbe run was invalidated by conflicting endpoint evidence");
+            return true;
+        }
+        if (run->status == SeedProbeRunStatus::Failed) {
+            result_out->disposition = ProgramJobContinuationDisposition::Failed;
+            result_out->failure_code = "SEEDPROBE_RUN_FAILED";
+            result_out->failure_text = run->invalidation_diagnostic.value_or(
+                "SeedProbe run is durably failed");
+            return true;
+        }
 
-        switch (run->status) {
-        case SeedProbeRunStatus::Survey:
+        if (context.materialization.step.step_kind == "seedprobe.survey") {
             return ContinueSurvey(
                 context,
                 *run,
                 result_out,
                 error_out);
-        case SeedProbeRunStatus::Search:
+        }
+        if (context.materialization.step.step_kind == "seedprobe.search") {
             return ContinueSearch(
                 context,
                 *run,
                 result_out,
                 error_out);
-        case SeedProbeRunStatus::Confirm:
+        }
+        if (context.materialization.step.step_kind == "seedprobe.confirm") {
             return ContinueConfirm(
                 context,
                 *run,
                 result_out,
                 error_out);
-        case SeedProbeRunStatus::Completed:
-        case SeedProbeRunStatus::CompletedPartial:
-            result_out->disposition =
-                ProgramJobContinuationDisposition::Complete;
-            result_out->output = ProgramJobContinuationOutput{
-                .output_key = "seed_probe_run",
-                .data_kind = "analysis.seed_probe_run",
-                .ref_kind = "sp_probe_run",
-                .ref_id = run->probe_run_id,
-            };
-            return true;
-        case SeedProbeRunStatus::Failed:
-            result_out->disposition =
-                ProgramJobContinuationDisposition::Failed;
-            result_out->failure_code = "SEEDPROBE_RUN_FAILED";
-            result_out->failure_text =
-                "SeedProbe run is durably failed";
-            return true;
-        case SeedProbeRunStatus::Invalidated:
-            result_out->disposition =
-                ProgramJobContinuationDisposition::Failed;
-            result_out->failure_code =
-                "SEEDPROBE_RUN_ENDPOINT_INVALIDATED";
-            result_out->failure_text = run->invalidation_diagnostic
-                .value_or(
-                    "SeedProbe run was invalidated by a factual endpoint mismatch");
-            return true;
-        default:
-            return Fail(
-                "SeedProbe run has an unknown status",
-                error_out);
         }
+        return Fail("unsupported SeedProbe continuation step kind", error_out);
+    }
+
+    WorkflowTransitionDecision EvaluateTransition(
+        const WorkflowTransitionContext& context) const override {
+        WorkflowTransitionDecision decision{};
+        decision.should_advance = true;
+        const auto jobs = execution_db_->ListJobsInJobSet(context.job_set_id);
+        const auto source_job = jobs.empty()
+            ? std::optional<ExecutionJobRecord>{}
+            : execution_db_->GetExecutionJob(jobs.front().job_id);
+        if (!source_job.has_value()
+            || source_job->program_ref_kind != kRunRefKind) {
+            decision.workflow_failure = true;
+            decision.blocked_reason = "SeedProbe transition cannot resolve its run";
+            return decision;
+        }
+        const auto run = analysis_db_->GetSeedProbeRun(source_job->program_ref_id);
+        if (!run.has_value()) {
+            decision.workflow_failure = true;
+            decision.blocked_reason = "SeedProbe transition run is missing";
+            return decision;
+        }
+        if (run->status == SeedProbeRunStatus::Failed
+            || run->status == SeedProbeRunStatus::Invalidated) {
+            decision.workflow_failure = true;
+            decision.blocked_reason = run->invalidation_diagnostic.value_or(
+                "SeedProbe run is durably failed");
+            return decision;
+        }
+
+        std::vector<SeedProbeJobSpec> specs;
+        std::string stage;
+        std::string step_kind;
+        std::string error;
+        if (context.step_kind == "seedprobe.survey") {
+            if (run->status == SeedProbeRunStatus::Search) {
+                auto planned = BuildSearchSpecs(*run, &error);
+                if (!planned.has_value()) {
+                    decision.workflow_failure = true;
+                    decision.blocked_reason = error;
+                    return decision;
+                }
+                specs = std::move(*planned);
+                stage = "Search";
+                step_kind = "seedprobe.search";
+            } else if (run->status == SeedProbeRunStatus::Confirm) {
+                specs = BuildConfirmSpecs(run->probe_run_id);
+                stage = "Confirm";
+                step_kind = "seedprobe.confirm";
+            }
+        } else if (context.step_kind == "seedprobe.search") {
+            specs = BuildConfirmSpecs(run->probe_run_id);
+            stage = "Confirm";
+            step_kind = "seedprobe.confirm";
+        } else if (context.step_kind == "seedprobe.confirm"
+                   && run->status == SeedProbeRunStatus::Confirm) {
+            specs = BuildConfirmSpecs(run->probe_run_id);
+            if (!specs.empty()) {
+                stage = "Confirm";
+                step_kind = "seedprobe.confirm";
+            }
+        }
+        if (stage.empty()) {
+            return decision;
+        }
+        if (specs.empty()) {
+            decision.workflow_failure = true;
+            decision.blocked_reason = "SeedProbe next stage has no jobs";
+            return decision;
+        }
+        decision.spawn_steps.push_back({
+            .step_key = DynamicStepKey(context.graph_node_key, stage, specs),
+            .step_kind = std::move(step_kind),
+            .input_ref_kind = std::string(kRunRefKind),
+            .input_ref_id = run->probe_run_id,
+            .priority = 0,
+            .max_attempts = 1,
+        });
+        return decision;
     }
 
 private:
+    bool MaterializeContinuationStage(
+        const ProgramJobMaterializationContext& context,
+        WorkflowStepScheduleResult* result_out,
+        std::string* error_out) const {
+        const auto run = analysis_db_->GetSeedProbeRun(context.step.domain_ref_id);
+        if (!run.has_value()) {
+            return Fail("SeedProbe continuation stage run is missing", error_out);
+        }
+        std::vector<SeedProbeJobSpec> specs;
+        std::string_view purpose;
+        std::string_view stage;
+        if (context.step.step_kind == "seedprobe.search") {
+            auto planned = BuildSearchSpecs(*run, error_out);
+            if (!planned.has_value()) return false;
+            specs = std::move(*planned);
+            purpose = kSearchPurpose;
+            stage = "Search";
+        } else {
+            specs = BuildConfirmSpecs(run->probe_run_id);
+            purpose = kConfirmPurpose;
+            stage = "Confirm";
+        }
+        if (specs.empty()) {
+            return Fail("SeedProbe continuation stage has no jobs", error_out);
+        }
+        const auto graph_node_key = context.graph.has_value()
+            ? context.graph->activation_graph_node_key
+            : context.step.step_key.substr(0, context.step.step_key.find('/'));
+        const auto expected_key = DynamicStepKey(graph_node_key, stage, specs);
+        if (context.step.step_key != expected_key) {
+            return Fail("SeedProbe stage plan hash does not match its workflow step key", error_out);
+        }
+        const auto published = PublishJobSet(
+            context,
+            context.step.step_key,
+            context.step.workflow_step_id,
+            purpose,
+            "stage=" + std::string(stage) + ";plan_sha256=" + PlanSha256(specs),
+            run->probe_run_id,
+            run->entry_savestate_id,
+            context.step.step_priority,
+            specs,
+            error_out);
+        if (!published.has_value()) return false;
+        result_out->job_set_id = published->job_set_id;
+        result_out->persistence = {
+            .program_ref_kind = std::string(kRunRefKind),
+            .program_ref_id = run->probe_run_id,
+            .fingerprint = context.step.step_key,
+            .program_version = kProgramVersion,
+        };
+        result_out->event_lines.push_back(
+            "[seedprobe-materialized] run=" + std::to_string(run->probe_run_id)
+            + " stage=" + std::string(stage)
+            + " jobs=" + std::to_string(specs.size())
+            + " job_set=" + std::to_string(published->job_set_id));
+        return true;
+    }
+
     bool Fail(
         std::string message,
         std::string* error_out) const {
@@ -553,9 +699,7 @@ private:
     std::optional<PublishedJobSet> PublishJobSet(
         const ProgramJobMaterializationContext& materialization,
         std::string materialization_key,
-        std::optional<std::int64_t> parent_job_set_id,
         std::int64_t workflow_step_id,
-        std::int64_t root_job_set_id,
         std::string_view purpose,
         std::string meta_note,
         std::int64_t probe_run_id,
@@ -588,8 +732,6 @@ private:
                 {
                     .materialization_key =
                         materialization_key,
-                    .parent_job_set_id =
-                        parent_job_set_id,
                     .program_kind =
                         static_cast<std::int32_t>(
                             savor::PK_SeedProbe),
@@ -712,10 +854,6 @@ private:
             + std::to_string(savestate_id)
             + ":phase:"
             + phase_->identity().canonical_sha256;
-        const auto invocation_root_job_set_id =
-            root_job_set_id > 0
-            ? root_job_set_id
-            : ensured.job_set_id;
         for (std::size_t chunk = 0;
              chunk < workset_count;
              ++chunk) {
@@ -733,8 +871,6 @@ private:
                         .job_set_id =
                             ensured.job_set_id,
                         .workflow_step_id = workflow_step_id,
-                        .root_job_set_id =
-                            invocation_root_job_set_id,
                         .workset_key =
                             materialization_key
                             + ".workset."
@@ -874,41 +1010,26 @@ private:
     std::optional<std::vector<SurveyObservation>>
     LoadSurveyObservations(
         const SeedProbeRunSnapshot& run,
-        std::int64_t root_job_set_id,
         std::string* error_out) const {
-        const auto jobs =
-            execution_db_->ListJobsInJobSet(
-                root_job_set_id);
         const auto results =
             analysis_db_->ListSeedProbeResults(
                 run.probe_run_id);
-        std::unordered_map<std::int64_t, SeedProbeResultRow>
-            by_job;
-        for (const auto& result : results) {
-            by_job.emplace(result.source_job_id, result);
-        }
         std::vector<SurveyObservation> observations;
-        observations.reserve(jobs.size());
-        for (const auto& job : jobs) {
-            if (!IsBusinessFinal(job.state)) {
+        observations.reserve(results.size());
+        for (const auto& result : results) {
+            const auto job = execution_db_->GetExecutionJob(result.source_job_id);
+            if (!job.has_value()) {
+                return Fail("SeedProbe Survey source job is missing", error_out), std::nullopt;
+            }
+            const auto spec = DecodeSeedProbeJobSpec(job->input_ini);
+            if (!spec.has_value() || spec->stage != SeedProbeJobStage::Survey) {
+                continue;
+            }
+            if (!IsBusinessFinal(job->state)) {
                 if (error_out != nullptr) {
                     *error_out =
                         "SeedProbe Survey continuation ran before "
                         "all Survey jobs became business-final";
-                }
-                return std::nullopt;
-            }
-            const auto spec =
-                DecodeSeedProbeJobSpec(job.input_ini);
-            const auto result_it = by_job.find(job.job_id);
-            if (!spec.has_value()
-                || spec->stage
-                    != SeedProbeJobStage::Survey
-                || result_it == by_job.end()) {
-                if (error_out != nullptr) {
-                    *error_out =
-                        "SeedProbe Survey is missing a successful "
-                        "scalar observation";
                 }
                 return std::nullopt;
             }
@@ -935,12 +1056,93 @@ private:
             observations.push_back(
                 {
                     .job = *spec,
-                    .result = result_it->second,
+                    .result = result,
                     .frame = *frame,
                     .family = *family,
                 });
         }
+        std::sort(
+            observations.begin(), observations.end(),
+            [](const auto& lhs, const auto& rhs) {
+                return lhs.job.sample_ordinal < rhs.job.sample_ordinal;
+            });
+        if (observations.empty()) {
+            return Fail("SeedProbe Survey produced no observations", error_out), std::nullopt;
+        }
         return observations;
+    }
+
+    std::optional<std::vector<SeedProbeJobSpec>> BuildSearchSpecs(
+        const SeedProbeRunSnapshot& run,
+        std::string* error_out) const {
+        const auto observations = LoadSurveyObservations(run, error_out);
+        if (!observations.has_value()) {
+            return std::nullopt;
+        }
+        const SurveyObservation* neutral = nullptr;
+        RandSeedProbeResult grid{};
+        for (const auto& observation : *observations) {
+            if (observation.family == SeedFamily::Neutral) {
+                if (neutral != nullptr) {
+                    return Fail("SeedProbe Survey has multiple neutral frames", error_out), std::nullopt;
+                }
+                neutral = &observation;
+            }
+        }
+        if (neutral == nullptr) {
+            return Fail("SeedProbe Survey has no neutral frame", error_out), std::nullopt;
+        }
+        grid.base_seed = neutral->result.seed_value;
+        for (const auto& observation : *observations) {
+            if (observation.family == SeedFamily::Neutral) continue;
+            RandSeedProbeEntry entry{};
+            entry.grid_n = observation.job.sample_ordinal;
+            entry.family = observation.family;
+            entry.seed = observation.result.seed_value;
+            entry.delta = SignedDelta(observation.result.seed_value, neutral->result.seed_value);
+            entry.ok = true;
+            if (observation.family == SeedFamily::Main) {
+                entry.x = static_cast<std::uint8_t>(observation.frame.main_x);
+                entry.y = static_cast<std::uint8_t>(observation.frame.main_y);
+            } else if (observation.family == SeedFamily::CStick) {
+                entry.x = static_cast<std::uint8_t>(observation.frame.cstick_x);
+                entry.y = static_cast<std::uint8_t>(observation.frame.cstick_y);
+            } else {
+                entry.x = static_cast<std::uint8_t>(observation.frame.trigger_x);
+                entry.y = static_cast<std::uint8_t>(observation.frame.trigger_y);
+            }
+            grid.entries.push_back(std::move(entry));
+        }
+        const auto authored = authoring_db_->GetSeedProbeSpec(run.seed_probe_spec_id);
+        if (!authored.has_value()) {
+            return Fail("SeedProbe authored specification is missing", error_out), std::nullopt;
+        }
+        const auto planned = phase_->PlanSearch(
+            grid,
+            static_cast<std::uint32_t>(std::max(0, authored->combo_attempts_per_target)),
+            static_cast<std::uint32_t>(std::max(0, authored->combo_sampler_tries)));
+        std::vector<SeedProbeJobSpec> specs;
+        std::int32_t ordinal = 0;
+        for (const auto& target : planned.samples) {
+            for (const auto& frame : target.frames) {
+                std::int64_t input_frame_id = 0;
+                if (!analysis_db_->EnsureSeedProbeInputFrame(
+                        AxisId(frame.main_x, frame.main_y),
+                        AxisId(frame.c_x, frame.c_y),
+                        AxisId(frame.trig_l, frame.trig_r),
+                        &input_frame_id, error_out)) {
+                    return std::nullopt;
+                }
+                specs.push_back({
+                    .version = kJobSpecVersion,
+                    .stage = SeedProbeJobStage::Search,
+                    .input_frame_id = input_frame_id,
+                    .sample_ordinal = ordinal++,
+                    .desired_delta = target.target_delta,
+                });
+            }
+        }
+        return specs;
     }
 
     std::optional<SeedProbeResultRow> NeutralResult(
@@ -1012,44 +1214,6 @@ private:
         return specs;
     }
 
-    bool PublishConfirmation(
-        const ProgramJobMaterializationContext& materialization,
-        const SeedProbeRunSnapshot& run,
-        std::int64_t workflow_step_id,
-        std::int64_t root_job_set_id,
-        const std::vector<SeedProbeJobSpec>& specs,
-        std::string* error_out) const {
-        if (specs.empty()) {
-            return true;
-        }
-        std::vector<std::int64_t> candidate_ids;
-        candidate_ids.reserve(specs.size());
-        for (const auto& spec : specs) {
-            candidate_ids.push_back(
-                *spec.confirmation_of_probe_result_id);
-        }
-        const auto joined = JoinIds(candidate_ids);
-        const auto key =
-            "seedprobe.run."
-            + std::to_string(run.probe_run_id)
-            + ".confirm."
-            + hash::sha256(joined.data(), joined.size());
-        return PublishJobSet(
-                   materialization,
-                   key,
-                   root_job_set_id,
-                   workflow_step_id,
-                   root_job_set_id,
-                   kConfirmPurpose,
-                   "stage=CONFIRM;candidates=" + joined,
-                   run.probe_run_id,
-                   run.entry_savestate_id,
-                   0,
-                   specs,
-                   error_out)
-            .has_value();
-    }
-
     bool ContinueSurvey(
         const ProgramJobContinuationContext& context,
         const SeedProbeRunSnapshot& run,
@@ -1057,7 +1221,6 @@ private:
         std::string* error_out) const {
         auto observations = LoadSurveyObservations(
             run,
-            context.root_job_set_id,
             error_out);
         if (!observations.has_value()) {
             const auto detail =
@@ -1234,26 +1397,7 @@ private:
         }
 
         if (!search_specs.empty()) {
-            const auto key =
-                "seedprobe.run."
-                + std::to_string(run.probe_run_id)
-                + ".search.initial";
-            if (!PublishJobSet(
-                    context.materialization,
-                    key,
-                    context.root_job_set_id,
-                    context.materialization.step.workflow_step_id,
-                    context.root_job_set_id,
-                    kSearchPurpose,
-                    "stage=SEARCH",
-                    run.probe_run_id,
-                    run.entry_savestate_id,
-                    context.materialization.step.step_priority
-                        + authored->priority,
-                    search_specs,
-                    error_out)
-                    .has_value()
-                || !SetRunStatus(
+            if (!SetRunStatus(
                     run.probe_run_id,
                     SeedProbeRunStatus::Survey,
                     SeedProbeRunStatus::Search,
@@ -1261,7 +1405,7 @@ private:
                 return false;
             }
             result_out->disposition =
-                ProgramJobContinuationDisposition::AddedWork;
+                ProgramJobContinuationDisposition::Complete;
             result_out->event_lines.push_back(
                 "[seedprobe-stage] run="
                 + std::to_string(run.probe_run_id)
@@ -1273,13 +1417,6 @@ private:
         const auto confirm_specs =
             BuildConfirmSpecs(run.probe_run_id);
         if (confirm_specs.empty()
-            || !PublishConfirmation(
-                context.materialization,
-                run,
-                context.materialization.step.workflow_step_id,
-                context.root_job_set_id,
-                confirm_specs,
-                error_out)
             || !SetRunStatus(
                 run.probe_run_id,
                 SeedProbeRunStatus::Survey,
@@ -1292,7 +1429,7 @@ private:
                 : false;
         }
         result_out->disposition =
-            ProgramJobContinuationDisposition::AddedWork;
+            ProgramJobContinuationDisposition::Complete;
         result_out->event_lines.push_back(
             "[seedprobe-stage] run="
             + std::to_string(run.probe_run_id)
@@ -1309,37 +1446,14 @@ private:
         const auto confirm_specs =
             BuildConfirmSpecs(run.probe_run_id);
         if (confirm_specs.empty()) {
-            if (!SetRunStatus(
-                    run.probe_run_id,
-                    SeedProbeRunStatus::Search,
-                    SeedProbeRunStatus::Confirm,
-                    error_out)) {
-                return false;
-            }
-            const auto confirm_run =
-                analysis_db_->GetSeedProbeRun(
-                    run.probe_run_id);
-            if (!confirm_run.has_value()
-                || confirm_run->status
-                    != SeedProbeRunStatus::Confirm) {
-                return Fail(
-                    "SeedProbe Search could not enter Confirm",
-                    error_out);
-            }
-            return ContinueConfirm(
-                context,
-                *confirm_run,
+            return FailRun(
+                run,
+                "SEEDPROBE_CONFIRM_PLAN_EMPTY",
+                "SeedProbe Search selected no evidence to confirm",
                 result_out,
                 error_out);
         }
-        if (!PublishConfirmation(
-                context.materialization,
-                run,
-                context.materialization.step.workflow_step_id,
-                context.root_job_set_id,
-                confirm_specs,
-                error_out)
-            || !SetRunStatus(
+        if (!SetRunStatus(
                 run.probe_run_id,
                 SeedProbeRunStatus::Search,
                 SeedProbeRunStatus::Confirm,
@@ -1347,7 +1461,7 @@ private:
             return false;
         }
         result_out->disposition =
-            ProgramJobContinuationDisposition::AddedWork;
+            ProgramJobContinuationDisposition::Complete;
         result_out->event_lines.push_back(
             "[seedprobe-stage] run="
             + std::to_string(run.probe_run_id)
@@ -1358,17 +1472,9 @@ private:
 
     bool RejectUnobservedConfirmations(
         const SeedProbeRunSnapshot& run,
-        std::int64_t root_job_set_id,
+        std::int64_t job_set_id,
         std::string* error_out) const {
-        for (const auto& child :
-             execution_db_->GetChildJobSetProgress(
-                 root_job_set_id)) {
-            if (child.purpose != kConfirmPurpose) {
-                continue;
-            }
-            for (const auto& job :
-                 execution_db_->ListJobsInJobSet(
-                     child.job_set_id)) {
+        for (const auto& job : execution_db_->ListJobsInJobSet(job_set_id)) {
                 if (!IsBusinessFinal(job.state)) {
                     return Fail(
                         "SeedProbe Confirm continuation ran before "
@@ -1430,7 +1536,6 @@ private:
                         error_out)) {
                     return false;
                 }
-            }
         }
         return true;
     }
@@ -1551,7 +1656,7 @@ private:
         std::string* error_out) const {
         if (!RejectUnobservedConfirmations(
                 run,
-                context.root_job_set_id,
+                context.job_set_id,
                 error_out)) {
             return false;
         }
@@ -1654,17 +1759,8 @@ private:
         auto confirm_specs =
             BuildConfirmSpecs(run.probe_run_id);
         if (!confirm_specs.empty()) {
-            if (!PublishConfirmation(
-                    context.materialization,
-                    run,
-                    context.materialization.step.workflow_step_id,
-                    context.root_job_set_id,
-                    confirm_specs,
-                    error_out)) {
-                return false;
-            }
             result_out->disposition =
-                ProgramJobContinuationDisposition::AddedWork;
+                ProgramJobContinuationDisposition::Complete;
             result_out->event_lines.push_back(
                 "[seedprobe-recovery] run="
                 + std::to_string(run.probe_run_id)
@@ -1911,13 +2007,13 @@ ProgramKindDescriptor BuildSeedProbeProgramDescriptor(
         std::vector<std::string>{};
     descriptor.default_progress_runtime_trigger_pcs =
         ObservationDefaults().runtime_sample_trigger_pcs;
-    descriptor.job_materializer = std::move(materializer);
+    descriptor.job_materializer = materializer;
+    descriptor.workflow_transition = materializer;
     descriptor.workset_reconstruction =
         std::move(execution.reconstruction);
     descriptor.result_handler =
         std::move(execution.result_handler);
     descriptor.supports_workflow_orchestration = true;
-    descriptor.allow_mixed_success_failed_transition = true;
     return descriptor;
 }
 

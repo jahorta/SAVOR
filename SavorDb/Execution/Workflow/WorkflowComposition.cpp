@@ -100,8 +100,19 @@ WorkflowUnitDefinition SeedProbeUnit() {
         .launch_arguments = {
             IntegerArgument("samples_per_axis", "Samples per axis", false, "5", 1, 64),
         },
-        .internal_step_kinds = { "seedprobe.run" },
-        .step_templates = SingleStep("seedprobe.run"),
+        .internal_step_kinds = {
+            "seedprobe.survey",
+            "seedprobe.search",
+            "seedprobe.confirm",
+        },
+        .step_templates = {
+            WorkflowUnitStepTemplate{
+                .step_key_suffix = "Survey",
+                .step_kind = "seedprobe.survey",
+                .priority = 1,
+                .max_attempts = 1,
+            },
+        },
     };
 }
 

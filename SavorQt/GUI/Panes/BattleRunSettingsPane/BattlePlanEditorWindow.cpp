@@ -1,4 +1,5 @@
 #include "BattlePlanEditorWindow.h"
+#include "Authoring/AuthoringContentHash.h"
 
 #include "DB/SavorDbAuthoringService.h"
 #include "BattlePlanActionPresetEditorWindow.h"
@@ -25,6 +26,7 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QMessageBox>
+#include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QSpinBox>
@@ -53,26 +55,21 @@ constexpr int kMaxPlayerCombatants = 4;
 
 std::string fingerprintForDraft(const savorqt::db::BattlePlanDraft& draft)
 {
-    std::string content = draft.name + "\n";
+    std::vector<std::vector<savor::db::authoring::BattlePlanFingerprintAction>> actionStorage;
+    actionStorage.reserve(draft.turns.size());
+    std::vector<savor::db::authoring::BattlePlanFingerprintTurn> turns;
+    turns.reserve(draft.turns.size());
     for (const auto& turn : draft.turns) {
-        content += "turn:" + std::to_string(turn.turn_index) + "\n";
-        content += "predicate_group:"
-            + std::to_string(turn.predicate_group_revision_id.value_or(0)) + "\n";
+        auto& actions = actionStorage.emplace_back();
+        actions.reserve(turn.actions.size());
         for (const auto& action : turn.actions) {
-            content += "action:" + std::to_string(action.actor_slot)
-                + ":" + std::to_string(action.action_preset_id.value_or(0))
-                + ":" + std::to_string(action.ordinal) + "\n";
+            actions.push_back({action.actor_slot,
+                action.action_preset_id.value_or(0), action.ordinal});
         }
+        turns.push_back({turn.turn_index,
+            turn.predicate_group_revision_id, actions});
     }
-
-    std::uint64_t hash = 1469598103934665603ull;
-    for (const auto ch : content) {
-        hash ^= static_cast<unsigned char>(ch);
-        hash *= 1099511628211ull;
-    }
-    std::ostringstream out;
-    out << "battle-plan-fnv1a64-" << std::hex << hash;
-    return out.str();
+    return savor::db::authoring::ComputeBattlePlanFingerprint(draft.name, turns);
 }
 
 QString macroLabel(savor::db::BattlePlanActionMacro macro)
@@ -248,6 +245,7 @@ void BattlePlanEditorWindow::loadSnapshot(const savor::db::BattlePlanSnapshot& s
         ? QStringLiteral("Battle Plan Editor - Duplicate")
         : QStringLiteral("Battle Plan Editor - Edit Copy"));
     nameEdit_->setText(QString::fromStdString(snapshot.name) + (duplicate ? QStringLiteral(" copy") : QString()));
+    descriptionEdit_->setPlainText(QString::fromStdString(snapshot.description));
 
     turns_.clear();
     int turnCount = 1;
@@ -320,6 +318,9 @@ void BattlePlanEditorWindow::createWidgets()
     auto* topLayout = new QFormLayout(topPanel);
     topLayout->setContentsMargins(14, 12, 14, 12);
     nameEdit_ = new QLineEdit(topPanel);
+    descriptionEdit_ = new QPlainTextEdit(topPanel);
+    descriptionEdit_->setPlaceholderText(QStringLiteral("Describe the purpose and strategy of this Battle Plan."));
+    descriptionEdit_->setFixedHeight(72);
     turnCountSpin_ = new QSpinBox(topPanel);
     turnCountSpin_->setRange(1, 20);
     turnCountSpin_->setValue(1);
@@ -327,6 +328,7 @@ void BattlePlanEditorWindow::createWidgets()
     combatantCountSpin_->setRange(kMinPlayerCombatants, kMaxPlayerCombatants);
     combatantCountSpin_->setValue(kMinPlayerCombatants);
     topLayout->addRow(QStringLiteral("Name"), nameEdit_);
+    topLayout->addRow(QStringLiteral("Description"), descriptionEdit_);
     topLayout->addRow(QStringLiteral("Turns"), turnCountSpin_);
     topLayout->addRow(QStringLiteral("Combatants"), combatantCountSpin_);
     predicateGroupCombo_ = new QComboBox(topPanel);
@@ -428,6 +430,7 @@ void BattlePlanEditorWindow::createWidgets()
         showPredicateGroupDetail(current ? current->data(Qt::UserRole).toLongLong() : 0);
     });
     connect(nameEdit_, &QLineEdit::textChanged, this, [this]() { markDirty(); });
+    connect(descriptionEdit_, &QPlainTextEdit::textChanged, this, [this]() { markDirty(); });
     connect(turnCountSpin_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
         ensureTurnCount(value);
         markDirty();
@@ -1127,6 +1130,7 @@ void BattlePlanEditorWindow::saveBattlePlan()
 
     savorqt::db::BattlePlanDraft draft{};
     draft.name = nameEdit_->text().trimmed().toStdString();
+    draft.description = descriptionEdit_->toPlainText().trimmed().toStdString();
     draft.turns.resize(turns_.size());
 
     for (int turnIndex = 0; turnIndex < static_cast<int>(turns_.size()); ++turnIndex) {

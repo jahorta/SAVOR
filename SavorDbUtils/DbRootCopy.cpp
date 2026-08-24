@@ -449,7 +449,6 @@ bool copy_exec_job_without_coordinator_lineage(
         "workset_id",
         "workset_item_ordinal",
         "dispatch_attempt_id",
-        "dispatch_item_ordinal",
         "reserved_attempt_id",
         "worker_result_blob_id",
         "cancellation_caused_by_job_id",
@@ -1186,8 +1185,7 @@ int hydrate_battle_single_turn_job_subset_into_existing(
                         err)) {
                     return false;
                 }
-                return exec(db, "UPDATE exec_job_set SET parent_job_set_id=NULL WHERE job_set_id=" + std::to_string(exec_job->job_set_id) + ";", err)
-                    && exec(
+                return exec(
                         db,
                         "UPDATE exec_job SET parent_job_id=NULL WHERE job_id="
                             + std::to_string(exec_job->job_id)

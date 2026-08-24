@@ -10,6 +10,7 @@
 #include "SavorDbRuntime.h"
 #include "DB/SavorDbServiceResult.h"
 #include "Authoring/IAuthoringDb.h"
+#include "Authoring/AuthoringRecipeMaterializer.h"
 #include "Common/Types/UtcTimestamp.h"
 
 namespace savorqt::db {
@@ -23,13 +24,6 @@ struct SeedProbeSpecDraft {
     bool ignore_trigger_minmax = false;
     int combo_attempts_per_target = 3;
     int combo_sampler_tries = 32;
-};
-
-struct TasSpecDraft {
-    std::string base_name;
-    int priority = 0;
-    bool progress_enable = true;
-    std::int64_t base_dtm_artifact_id = 0;
 };
 
 struct BattlePlanActionDraft {
@@ -64,6 +58,7 @@ struct BattlePlanTurnDraft {
 
 struct BattlePlanDraft {
     std::string name;
+    std::string description;
     std::string fingerprint;
     std::vector<BattlePlanTurnDraft> turns;
 };
@@ -168,7 +163,7 @@ public:
         auto* db = AuthoringDb();
         if (!db) return Unavailable<savor::db::PredicateAuthoringRevisionReceipt>(kSavorDbRuntimeUnavailableMessage);
         savor::db::PredicateAuthoringRevisionReceipt receipt{}; std::string error;
-        if (!db->CreatePredicateDefinitionDraft(command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
+        if (!savor::db::authoring::MaterializePredicateDefinitionDraft(db, command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
         return ServiceResult<savor::db::PredicateAuthoringRevisionReceipt>::Ok(receipt);
     }
     static ServiceResult<savor::db::PredicateAuthoringRevisionReceipt> SavePredicateDefinitionDraft(
@@ -182,7 +177,7 @@ public:
         const savor::db::CreatePredicateExecutionBindingDraftCommand& command) {
         auto* db = AuthoringDb(); if (!db) return Unavailable<savor::db::PredicateAuthoringRevisionReceipt>(kSavorDbRuntimeUnavailableMessage);
         savor::db::PredicateAuthoringRevisionReceipt receipt{}; std::string error;
-        if (!db->CreatePredicateExecutionBindingDraft(command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
+        if (!savor::db::authoring::MaterializePredicateExecutionBindingDraft(db, command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
         return ServiceResult<savor::db::PredicateAuthoringRevisionReceipt>::Ok(receipt);
     }
     static ServiceResult<savor::db::PredicateAuthoringRevisionReceipt> SavePredicateExecutionBindingDraft(
@@ -197,7 +192,7 @@ public:
         const savor::db::CreatePredicateGroupDraftCommand& command) {
         auto* db = AuthoringDb(); if (!db) return Unavailable<savor::db::PredicateAuthoringRevisionReceipt>(kSavorDbRuntimeUnavailableMessage);
         savor::db::PredicateAuthoringRevisionReceipt receipt{}; std::string error;
-        if (!db->CreatePredicateGroupDraft(command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
+        if (!savor::db::authoring::MaterializePredicateGroupDraft(db, command, &receipt, &error)) return Failed<savor::db::PredicateAuthoringRevisionReceipt>(error);
         return ServiceResult<savor::db::PredicateAuthoringRevisionReceipt>::Ok(receipt);
     }
     static ServiceResult<savor::db::PredicateAuthoringRevisionReceipt> SavePredicateGroupDraft(
@@ -281,22 +276,19 @@ public:
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("seed probe spec name is required");
         }
-        const auto now = savor::db::types::UtcNow();
-        savor::db::SaveSeedProbeSpecCommand command{};
-        command.name = draft.name;
-        command.priority = draft.priority;
-        command.min_value = draft.min_value;
-        command.max_value = draft.max_value;
-        command.cap_trigger_top = draft.cap_trigger_top;
-        command.ignore_trigger_minmax = draft.ignore_trigger_minmax;
-        command.combo_attempts_per_target = draft.combo_attempts_per_target;
-        command.combo_sampler_tries = draft.combo_sampler_tries;
-        command.created_at_utc = now;
-        command.correlation_id = NextEventId("Authoring.SeedProbeSpecSaved");
-
         std::int64_t id = 0;
         std::string error;
-        if (!db->SaveSeedProbeSpec(command, &id, &error)) {
+        const savor::db::authoring::AuthoringRecipeMaterializer materializer(db);
+        if (!materializer.SaveSeedProbeSpec({
+                .name = draft.name,
+                .priority = draft.priority,
+                .min_value = draft.min_value,
+                .max_value = draft.max_value,
+                .cap_trigger_top = draft.cap_trigger_top,
+                .ignore_trigger_minmax = draft.ignore_trigger_minmax,
+                .combo_attempts_per_target = draft.combo_attempts_per_target,
+                .combo_sampler_tries = draft.combo_sampler_tries,
+            }, &id, &error)) {
             return Failed<std::int64_t>(error);
         }
         return ServiceResult<std::int64_t>::Ok(id);
@@ -322,157 +314,63 @@ public:
         return ServiceResult<std::vector<savor::db::SeedProbeSpecSnapshot>>::Ok(db->ListSeedProbeSpecs(max_count));
     }
 
-    static ServiceResult<std::int64_t> SaveTasSpec(const TasSpecDraft& draft) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
-        }
-        if (draft.base_name.empty()) {
-            return Invalid<std::int64_t>("TAS spec name is required");
-        }
-
-        const auto now = savor::db::types::UtcNow();
-        savor::db::SaveTasSpecCommand command{};
-        command.base_name = draft.base_name;
-        command.priority = draft.priority;
-        command.progress_enable = draft.progress_enable;
-        command.base_dtm_artifact_id = draft.base_dtm_artifact_id;
-        command.created_at_utc = now;
-        command.correlation_id = NextEventId("Authoring.TasSpecSaved");
-
-        std::int64_t id = 0;
-        std::int64_t base_id = 0;
-        std::string error;
-        if (!db->SaveTasSpec(command, &id, &base_id, &error)) {
-            return Failed<std::int64_t>(error);
-        }
-        return ServiceResult<std::int64_t>::Ok(id);
-    }
-
-    static ServiceResult<savor::db::TasSpecSnapshot> GetTasSpec(std::int64_t tas_spec_id) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<savor::db::TasSpecSnapshot>(kSavorDbRuntimeUnavailableMessage);
-        }
-        const auto snapshot = db->GetTasSpec(tas_spec_id);
-        if (!snapshot.has_value()) {
-            return NotFound<savor::db::TasSpecSnapshot>("TAS spec not found");
-        }
-        return ServiceResult<savor::db::TasSpecSnapshot>::Ok(*snapshot);
-    }
-
-    static ServiceResult<std::vector<savor::db::TasSpecSnapshot>> ListTasSpecs(int max_count = 100) {
-        auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::TasSpecSnapshot>>(kSavorDbRuntimeUnavailableMessage);
-        }
-        return ServiceResult<std::vector<savor::db::TasSpecSnapshot>>::Ok(db->ListTasSpecs(max_count));
-    }
-
     static ServiceResult<std::int64_t> SaveBattlePlan(const BattlePlanDraft& draft) {
         auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
-        }
-        if (draft.name.empty() || draft.fingerprint.empty()) {
-            return Invalid<std::int64_t>("battle plan name and fingerprint are required");
-        }
-
-        const auto now = savor::db::types::UtcNow();
-        savor::db::SavePlanCommand plan{};
-        plan.name = draft.name;
-        plan.fingerprint = draft.fingerprint;
-        plan.created_at_utc = now;
-        plan.correlation_id = NextEventId("Authoring.BattlePlanSaved");
-
-        std::int64_t plan_id = 0;
-        std::string error;
-        if (!db->SavePlan(plan, &plan_id, &error)) {
-            return Failed<std::int64_t>(error);
-        }
-
+        if (db == nullptr) return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
+        if (draft.name.empty()) return Invalid<std::int64_t>("battle plan name is required");
+        savor::db::authoring::AuthoringRecipeBuilder builder(NextEventId("Authoring.BattlePlanSaved"));
+        std::vector<savor::db::authoring::BattlePlanTurnDefinition> turns;
         for (const auto& turn : draft.turns) {
-            savor::db::SaveBattlePlanTurnCommand turn_command{};
-            turn_command.plan_id = plan_id;
-            turn_command.turn_index = turn.turn_index;
-            turn_command.default_predicate_group_revision_id =
-                turn.predicate_group_revision_id;
-            turn_command.created_at_utc = now;
-            turn_command.correlation_id = plan.correlation_id;
+            savor::db::authoring::BattlePlanTurnDefinition authored_turn{.turn_index = turn.turn_index};
+            if (turn.predicate_group_revision_id.has_value())
+                authored_turn.predicate_group = savor::db::authoring::ExistingRef<savor::db::authoring::PredicateGroupTag>{*turn.predicate_group_revision_id};
             for (const auto& action : turn.actions) {
-                if (action.action_preset_id.has_value() && action.action_preset_id.value() > 0) {
-                    turn_command.actions.push_back(savor::db::SaveBattlePlanActionCommand{
-                        .actor_slot = action.actor_slot,
-                        .action_preset_id = action.action_preset_id.value(),
-                        .ordinal = action.ordinal,
-                    });
+                savor::db::authoring::AuthoringRef<savor::db::authoring::BattleActionPresetTag> preset;
+                if (action.action_preset_id.has_value() && *action.action_preset_id > 0) {
+                    preset = savor::db::authoring::ExistingRef<savor::db::authoring::BattleActionPresetTag>{*action.action_preset_id};
                 } else {
-                    savor::db::SaveBattlePlanActionPresetCommand preset_command{};
-                    preset_command.name = BuildGeneratedActionPresetName(draft.name, turn.turn_index, action.ordinal);
-                    preset_command.macro = action.macro;
-                    preset_command.target_kind = action.target_kind;
-                    preset_command.target_mask_bits = action.target_mask_bits;
-                    preset_command.target_single_slot = action.target_single_slot.has_value()
-                        ? action.target_single_slot
-                        : action.target_slot;
-                    preset_command.target_same_as_actor_slot = action.target_same_as_actor_slot;
-                    preset_command.item_id = action.item_id;
-                    preset_command.created_at_utc = now;
-                    preset_command.correlation_id = plan.correlation_id;
-
-                    std::int64_t action_preset_id = 0;
-                    if (!db->SaveBattlePlanActionPreset(preset_command, &action_preset_id, &error)) {
-                        return Failed<std::int64_t>(error);
-                    }
-
-                    turn_command.actions.push_back(savor::db::SaveBattlePlanActionCommand{
-                        .actor_slot = action.actor_slot,
-                        .action_preset_id = action_preset_id,
-                        .ordinal = action.ordinal,
+                    preset = builder.ActionPreset({
+                        .symbol = "generated." + std::to_string(turn.turn_index) + "." + std::to_string(action.ordinal),
+                        .name = BuildGeneratedActionPresetName(draft.name, turn.turn_index, action.ordinal),
+                        .macro = action.macro, .target_kind = action.target_kind,
+                        .target_mask_bits = action.target_mask_bits,
+                        .target_single_slot = action.target_single_slot.has_value() ? action.target_single_slot : action.target_slot,
+                        .target_same_as_actor_slot = action.target_same_as_actor_slot,
+                        .item_id = action.item_id,
                     });
                 }
-
+                authored_turn.actions.push_back({.actor_slot = action.actor_slot, .preset = std::move(preset), .ordinal = action.ordinal});
             }
-
-            std::int64_t turn_id = 0;
-            if (!db->SaveBattlePlanTurn(turn_command, &turn_id, &error)) {
-                return Failed<std::int64_t>(error);
-            }
+            turns.push_back(std::move(authored_turn));
         }
-
-        return ServiceResult<std::int64_t>::Ok(plan_id);
+        const auto plan = builder.BattlePlan({
+            .symbol = "plan", .name = draft.name,
+            .description = draft.description, .turns = std::move(turns)});
+        savor::db::authoring::AuthoringRecipeResult result{};
+        std::string error;
+        const savor::db::authoring::AuthoringRecipeMaterializer materializer(db);
+        if (!materializer.Apply(std::move(builder).Build(), &result, &error)) return Failed<std::int64_t>(error);
+        return ServiceResult<std::int64_t>::Ok(result.battle_plan_ids.at(plan.symbol));
     }
-
     static ServiceResult<std::int64_t> SaveBattlePlanActionPreset(const BattlePlanActionPresetDraft& draft) {
         auto* db = AuthoringDb();
-        if (db == nullptr) {
-            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
-        }
-        if (draft.name.empty()) {
-            return Invalid<std::int64_t>("battle plan action preset name is required");
-        }
-
-        const auto now = savor::db::types::UtcNow();
-        savor::db::SaveBattlePlanActionPresetCommand command{};
-        command.name = draft.name;
-        command.macro = draft.macro;
-        command.target_kind = draft.target_kind;
-        command.target_mask_bits = draft.target_mask_bits;
-        command.target_single_slot = draft.target_single_slot;
-        command.target_same_as_actor_slot = draft.target_same_as_actor_slot;
-        command.item_id = draft.item_id;
-        command.flags = draft.flags;
-        command.created_at_utc = now;
-        command.correlation_id = NextEventId("Authoring.BattlePlanActionPresetSaved");
-
-        std::int64_t id = 0;
+        if (db == nullptr) return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
+        if (draft.name.empty()) return Invalid<std::int64_t>("battle plan action preset name is required");
+        savor::db::authoring::AuthoringRecipeBuilder builder(NextEventId("Authoring.BattlePlanActionPresetSaved"));
+        const auto preset = builder.ActionPreset({
+            .symbol = "preset", .name = draft.name, .macro = draft.macro,
+            .target_kind = draft.target_kind,
+            .target_mask_bits = draft.target_mask_bits,
+            .target_single_slot = draft.target_single_slot,
+            .target_same_as_actor_slot = draft.target_same_as_actor_slot,
+            .item_id = draft.item_id, .flags = draft.flags,
+        });
+        savor::db::authoring::AuthoringRecipeResult result{};
         std::string error;
-        if (!db->SaveBattlePlanActionPreset(command, &id, &error)) {
-            return Failed<std::int64_t>(error);
-        }
-        return ServiceResult<std::int64_t>::Ok(id);
+        const savor::db::authoring::AuthoringRecipeMaterializer materializer(db);
+        if (!materializer.Apply(std::move(builder).Build(), &result, &error)) return Failed<std::int64_t>(error);
+        return ServiceResult<std::int64_t>::Ok(result.battle_action_preset_ids.at(preset.symbol));
     }
-
     static ServiceResult<void> RenameBattlePlanActionPreset(std::int64_t action_preset_id, const std::string& name) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
@@ -566,7 +464,7 @@ public:
 
         savor::db::SaveWorkflowGraphResult result{};
         std::string error;
-        if (!db->SaveWorkflowGraph(command, &result, &error)) {
+        if (!savor::db::authoring::MaterializeWorkflowGraph(db, command, &result, &error)) {
             return Failed<savor::db::SaveWorkflowGraphResult>(error);
         }
         return ServiceResult<savor::db::SaveWorkflowGraphResult>::Ok(result);

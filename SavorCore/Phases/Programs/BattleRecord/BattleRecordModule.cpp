@@ -151,7 +151,10 @@ private:
 std::vector<Byte> ContinueConfig()
 {
     StaticWriter writer({'C','U','C','1'});
-    writer.U8(1); writer.Bool(true); writer.Bool(true); writer.U8(0); writer.U8(0);
+    writer.U8(1); writer.Bool(true); writer.Bool(true);
+    writer.U8(static_cast<std::uint8_t>(
+        ExecutionThrottlePolicy::RequireDisabled));
+    writer.U8(0);
     return writer.Finish();
 }
 
@@ -180,7 +183,10 @@ std::vector<Byte> LeaseConfig()
 std::vector<Byte> AdvanceConfig()
 {
     StaticWriter writer({'E','A','C','1'});
-    writer.U8(2); writer.Bool(false); writer.U8(0); writer.U8(0);
+    writer.U8(2); writer.Bool(false);
+    writer.U8(static_cast<std::uint8_t>(
+        ExecutionThrottlePolicy::RequireDisabled));
+    writer.U8(0);
     return writer.Finish();
 }
 

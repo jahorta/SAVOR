@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS ui_workflow_step (
     blocked_reason TEXT NULL,
     job_set_id INTEGER NULL,
     job_count INTEGER NOT NULL DEFAULT 0,
-    job_completed_count INTEGER NOT NULL DEFAULT 0,
+    job_settled_count INTEGER NOT NULL DEFAULT 0,
     job_failed_count INTEGER NOT NULL DEFAULT 0,
     priority INTEGER NOT NULL,
     attempts INTEGER NOT NULL,

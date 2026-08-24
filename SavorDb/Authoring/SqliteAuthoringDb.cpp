@@ -125,7 +125,6 @@ std::string HashAuthoringInputSetFrames(const std::vector<AuthoringInputSetFrame
 
 std::string_view AuthoringAggregateKindForEvent(std::string_view event_type) {
     if (event_type == "Authoring.SeedProbeSpecSaved.v1") return "seed_probe_spec";
-    if (event_type == "Authoring.TasSpecSaved.v1") return "tas_spec";
     if (event_type == "Authoring.PlanSaved.v1") return "battle_plan";
     if (event_type == "Authoring.BattlePlanActionPresetSaved.v1"
         || event_type == "Authoring.BattlePlanActionPresetRenamed.v1") {
@@ -809,180 +808,6 @@ std::vector<AuthoringInputSetFrameSnapshot> SqliteAuthoringDb::ListAuthoringInpu
     return out;
 }
 
-bool SqliteAuthoringDb::SaveTasSpec(
-    const SaveTasSpecCommand& command,
-    std::int64_t* tas_spec_id_out,
-    std::int64_t* tas_spec_base_id_out,
-    std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (command.base_name.empty()) {
-        if (error_out) *error_out = "required command fields are missing";
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        return false;
-    }
-
-    Statement insert_base;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO au_tas_spec_base("
-            "name,priority,run_ms,vi_stall_ms,progress_enable,auto_queue_seeds,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7);",
-            -1,
-            &insert_base.st,
-            nullptr)
-        != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    sqlite3_bind_text(insert_base.st, 1, command.base_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(insert_base.st, 2, command.priority);
-    // Schema compatibility shim: these NOT NULL legacy columns are otherwise
-    // excluded from the authoring contract until the separate DB migration.
-    sqlite3_bind_int64(insert_base.st, 3, 0);
-    sqlite3_bind_int64(insert_base.st, 4, 0);
-    sqlite3_bind_int(insert_base.st, 5, command.progress_enable ? 1 : 0);
-    sqlite3_bind_int(insert_base.st, 6, command.auto_queue_seeds ? 1 : 0);
-    sqlite3_bind_int64(insert_base.st, 7, ToEpochMillis(command.created_at_utc));
-
-    if (sqlite3_step(insert_base.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    const auto tas_spec_base_id = sqlite3_last_insert_rowid(db_);
-
-    Statement insert_spec;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO au_tas_spec(tas_spec_base_id,base_dtm_artifact_id,created_at_utc) "
-            "VALUES(?1,?2,?3);",
-            -1,
-            &insert_spec.st,
-            nullptr)
-        != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    sqlite3_bind_int64(insert_spec.st, 1, tas_spec_base_id);
-    sqlite3_bind_int64(insert_spec.st, 2, command.base_dtm_artifact_id);
-    sqlite3_bind_int64(insert_spec.st, 3, ToEpochMillis(command.created_at_utc));
-
-    if (sqlite3_step(insert_spec.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    const auto tas_spec_id = sqlite3_last_insert_rowid(db_);
-    if (!InsertAuthoringOutboxEvent(
-            db_,
-            "Authoring.TasSpecSaved.v1",
-            std::to_string(tas_spec_id),
-            command.correlation_id,
-            command.causation_id,
-            ToEpochMillis(command.created_at_utc),
-            tas_spec_id,
-            error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (tas_spec_id_out) {
-        *tas_spec_id_out = tas_spec_id;
-    }
-    if (tas_spec_base_id_out) {
-        *tas_spec_base_id_out = tas_spec_base_id;
-    }
-
-    return true;
-}
-
-std::optional<TasSpecSnapshot> SqliteAuthoringDb::GetTasSpec(
-    std::int64_t tas_spec_id) const {
-    if (db_ == nullptr || tas_spec_id <= 0) {
-        return std::nullopt;
-    }
-
-    Statement st;
-    constexpr const char* kSql =
-        "SELECT s.tas_spec_id, b.tas_spec_base_id, b.name, b.priority, "
-        "b.progress_enable, b.auto_queue_seeds, "
-        "s.base_dtm_artifact_id "
-        "FROM au_tas_spec s "
-        "JOIN au_tas_spec_base b ON b.tas_spec_base_id=s.tas_spec_base_id "
-        "WHERE s.tas_spec_id=?1;";
-    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
-        return std::nullopt;
-    }
-    sqlite3_bind_int64(st.st, 1, tas_spec_id);
-
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-
-    TasSpecSnapshot snapshot{};
-    snapshot.tas_spec_id = sqlite3_column_int64(st.st, 0);
-    snapshot.tas_spec_base_id = sqlite3_column_int64(st.st, 1);
-    snapshot.base_name = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 2));
-    snapshot.priority = sqlite3_column_int(st.st, 3);
-    snapshot.progress_enable = sqlite3_column_int(st.st, 4) != 0;
-    snapshot.auto_queue_seeds = sqlite3_column_int(st.st, 5) != 0;
-    snapshot.base_dtm_artifact_id = sqlite3_column_int64(st.st, 6);
-    return snapshot;
-}
-
-std::vector<TasSpecSnapshot> SqliteAuthoringDb::ListTasSpecs(
-    int max_count) const {
-    std::vector<TasSpecSnapshot> out;
-    if (db_ == nullptr) {
-        return out;
-    }
-
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT tas_spec_id FROM au_tas_spec ORDER BY tas_spec_id DESC LIMIT ?1;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return out;
-    }
-    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
-    while (sqlite3_step(st.st) == SQLITE_ROW) {
-        if (auto snapshot = GetTasSpec(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
-            out.push_back(std::move(*snapshot));
-        }
-    }
-    return out;
-}
-
 bool SqliteAuthoringDb::SavePlan(
     const SavePlanCommand& command,
     std::int64_t* plan_id_out,
@@ -1006,7 +831,7 @@ bool SqliteAuthoringDb::SavePlan(
     Statement insert_plan;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO au_battle_plan(name,fingerprint,created_at_utc) VALUES(?1,?2,?3);",
+            "INSERT INTO au_battle_plan(name,description,fingerprint,created_at_utc) VALUES(?1,?2,?3,?4);",
             -1,
             &insert_plan.st,
             nullptr)
@@ -1017,8 +842,9 @@ bool SqliteAuthoringDb::SavePlan(
     }
 
     sqlite3_bind_text(insert_plan.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert_plan.st, 2, command.fingerprint.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_plan.st, 3, ToEpochMillis(command.created_at_utc));
+    sqlite3_bind_text(insert_plan.st, 2, command.description.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_plan.st, 3, command.fingerprint.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_plan.st, 4, ToEpochMillis(command.created_at_utc));
 
     if (sqlite3_step(insert_plan.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
@@ -1413,7 +1239,7 @@ std::optional<BattlePlanSnapshot> SqliteAuthoringDb::GetBattlePlan(
     Statement plan_st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT plan_id,name,fingerprint FROM au_battle_plan WHERE plan_id=?1;",
+            "SELECT plan_id,name,COALESCE(description,''),fingerprint FROM au_battle_plan WHERE plan_id=?1;",
             -1,
             &plan_st.st,
             nullptr)
@@ -1428,7 +1254,8 @@ std::optional<BattlePlanSnapshot> SqliteAuthoringDb::GetBattlePlan(
     BattlePlanSnapshot out{};
     out.plan_id = sqlite3_column_int64(plan_st.st, 0);
     out.name = ColumnText(plan_st.st, 1);
-    out.fingerprint = ColumnText(plan_st.st, 2);
+    out.description = ColumnText(plan_st.st, 2);
+    out.fingerprint = ColumnText(plan_st.st, 3);
 
     Statement turn_st;
     if (sqlite3_prepare_v2(

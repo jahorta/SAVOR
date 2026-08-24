@@ -34,9 +34,14 @@ class WorkflowsPage final : public QWidget
 public:
     explicit WorkflowsPage(QWidget* parent = nullptr);
     void setPageActive(bool active);
+    void showWorkflow(std::int64_t workflowInstanceId);
+    void setWorkflowRetryInFlight(bool inFlight);
+    void refreshAfterRetry(std::int64_t workflowInstanceId);
 
 signals:
     void statusToastRequested(StatusToast toast);
+    void retryFailedJobsRequested(qint64 workflowInstanceId);
+    void openJobRequested(qint64 jobId);
 
 public:
     struct WorkflowTableRow {
@@ -49,6 +54,7 @@ public:
         QString problems;
         QString created;
         QString completed;
+        std::int64_t retryableJobs = 0;
     };
 
     struct TreeDisplayRow {
@@ -65,8 +71,6 @@ private:
     using WorkflowDetailResult = savorqt::db::ServiceResult<savor::db::UiWorkflowDetail>;
     using WorkflowJobSetsResult = savorqt::db::ServiceResult<
         std::vector<savorqt::db::WorkflowJobSetRow>>;
-    using WorksetReorganizationResult = savorqt::db::ServiceResult<
-        savor::db::WorksetJobReorganizationReceipt>;
     using WorkflowCancelResult = savorqt::db::ServiceResult<void>;
 
     void createWidgets();
@@ -79,7 +83,7 @@ private:
     void requestPreviousPage();
     void handleWorkflowSelectionChanged();
     void showWorkflowContextMenu(const QPoint& position);
-    void retryFailedJobs(std::int64_t workflowInstanceId);
+    void showJobSetContextMenu(const QPoint& position);
     void cancelWorkflow(std::int64_t workflowInstanceId);
     void updateWorkflowTable();
     void updateWorkflowDetail();
@@ -101,6 +105,9 @@ private:
     bool retryFailedJobsInFlight_ = false;
     bool workflowCancelInFlight_ = false;
     std::int64_t jobSetsFetchWorkflowInstanceId_ = 0;
+    std::int64_t focusedWorkflowInstanceId_ = 0;
+    std::int64_t renderedWorkflowInstanceId_ = 0;
+    std::int64_t renderedJobSetsWorkflowInstanceId_ = 0;
     QDateTime lastRefresh_;
     QString errorMessage_;
     QString infoMessage_;
@@ -116,7 +123,6 @@ private:
     savorqt::gui::AsyncRefreshPipeline<savorqt::db::WorkflowListRequest, WorkflowPageResult>* workflowRefreshPipeline_ = nullptr;
     QFutureWatcher<WorkflowDetailResult> detailWatcher_;
     QFutureWatcher<WorkflowJobSetsResult> jobSetsWatcher_;
-    QFutureWatcher<WorksetReorganizationResult> retryFailedJobsWatcher_;
     QFutureWatcher<WorkflowCancelResult> workflowCancelWatcher_;
 
     QComboBox* stateFilter_ = nullptr;
@@ -135,6 +141,9 @@ private:
     QLabel* inlineMessageLabel_ = nullptr;
     QLabel* detailHeaderLabel_ = nullptr;
     QLabel* detailMetaLabel_ = nullptr;
+    QLabel* pastCountLabel_ = nullptr;
+    QLabel* currentCountLabel_ = nullptr;
+    QLabel* futureCountLabel_ = nullptr;
     QTableWidget* workflowTable_ = nullptr;
     QTreeWidget* currentStepsTree_ = nullptr;
     QTreeWidget* futureStepsTree_ = nullptr;

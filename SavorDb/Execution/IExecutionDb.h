@@ -26,7 +26,6 @@ struct IJobEventCommandService;
 namespace savor::db {
 
 struct CreateJobSetCommand {
-    std::optional<std::int64_t> parent_job_set_id;
     std::int32_t program_kind = 0;
     std::string purpose;
     std::optional<std::string> created_by;
@@ -96,7 +95,6 @@ struct ExecutionJobSetMaterializationRecord {
     std::int64_t job_set_id = 0;
     std::string materialization_key;
     std::string materialization_state;
-    std::optional<std::int64_t> parent_job_set_id;
     std::optional<std::string> domain_ref_kind;
     std::optional<std::int64_t> domain_ref_id;
     std::string purpose;
@@ -134,17 +132,13 @@ struct RecordExecutionJobOutputCommand {
 struct ExecutionJobSetProgressDetails {
     std::int64_t job_set_id = 0;
     std::int64_t total_jobs = 0;
-    std::int64_t completed_jobs = 0;
+    std::int64_t settled_jobs = 0;
     std::int64_t succeeded_jobs = 0;
     std::int64_t failed_jobs = 0;
+    std::int64_t interrupted_jobs = 0;
+    std::int64_t superseded_jobs = 0;
     std::int64_t canceled_jobs = 0;
     std::optional<std::int64_t> expected_total;
-};
-
-struct ExecutionChildJobSetProgressDetails : ExecutionJobSetProgressDetails {
-    std::optional<std::int64_t> expected_delta;
-    std::string purpose;
-    std::string meta_note;
 };
 
 struct ClaimedExecutionJob {
@@ -286,7 +280,6 @@ enum class ExecutionDbOperationDisposition {
 
 struct EnsureMaterializingJobSetCommand {
     std::string materialization_key;
-    std::optional<std::int64_t> parent_job_set_id;
     std::int32_t program_kind = 0;
     std::string purpose;
     std::optional<std::string> created_by;
@@ -371,11 +364,9 @@ struct ExecutionWorksetDerivedStateBindingV1 {
 
 struct PublishWorksetCommand {
     std::int64_t job_set_id = 0;
-    // Full Phase invocation anchor. It may be supplied before the workflow
-    // coordinator marks the step MATERIALIZED; the execution DB verifies the
-    // root against job-set ancestry and the step against its durable row.
+    // Full Phase invocation anchor. The workset's job_set_id must be the flat
+    // job set owned by workflow_step_id.
     std::int64_t workflow_step_id = 0;
-    std::int64_t root_job_set_id = 0;
     std::string workset_key;
     std::int32_t program_kind = 0;
     std::int32_t program_version = 1;
@@ -434,7 +425,6 @@ struct FailedWorkflowWorksetJobRecord {
     std::int64_t workflow_step_id = 0;
     std::int64_t job_id = 0;
     std::int64_t job_set_id = 0;
-    std::int64_t root_job_set_id = 0;
     std::int64_t source_workset_id = 0;
     int attempts = 0;
     int priority = 0;
@@ -445,7 +435,6 @@ struct FailedWorkflowWorksetJobRecord {
 struct ReorganizedWorksetPlanEntry {
     std::int64_t workflow_step_id = 0;
     std::int64_t job_set_id = 0;
-    std::int64_t root_job_set_id = 0;
     std::int32_t program_kind = 0;
     std::int32_t program_version = 0;
     ExecutionWorksetContract contract;
@@ -509,7 +498,6 @@ struct ClaimedPublishedWorkset {
     std::int64_t dispatch_attempt_id = 0;
     std::int64_t job_set_id = 0;
     std::int64_t workflow_step_id = 0;
-    std::int64_t root_job_set_id = 0;
     std::string workset_key;
     std::int32_t program_kind = 0;
     std::int32_t program_version = 0;
@@ -772,6 +760,7 @@ struct CommittedJobCancellation {
     std::string reason_code;
     std::optional<std::string> reason_text;
     std::optional<std::int64_t> caused_by_job_id;
+    std::string terminal_disposition;
     std::string state;
     std::string durable_job_state;
     std::optional<std::int64_t> workset_id;
@@ -807,7 +796,7 @@ struct JobCancellationReceipt {
 };
 
 enum class JobCancellationOutcomeKind {
-    CancelWithoutWorker = 0,
+    ResolveWithoutWorker = 0,
     InitialSidecarApplied,
     WorkerDeliveryAccepted,
     WorkerTerminalResolved,
@@ -816,7 +805,7 @@ enum class JobCancellationOutcomeKind {
 
 struct JobCancellationOutcomeCommand {
     JobCancellationOutcomeKind kind =
-        JobCancellationOutcomeKind::CancelWithoutWorker;
+        JobCancellationOutcomeKind::ResolveWithoutWorker;
     std::int64_t cancellation_request_id = 0;
     std::int64_t job_id = 0;
     std::optional<std::int64_t> dispatch_attempt_id;
@@ -1478,10 +1467,6 @@ struct IExecutionDb {
         std::string_view materialization_key) const {
         (void)materialization_key;
         return std::nullopt;
-    }
-    virtual std::vector<ExecutionChildJobSetProgressDetails> GetChildJobSetProgress(std::int64_t parent_job_set_id) const {
-        (void)parent_job_set_id;
-        return {};
     }
     virtual bool MarkQueuedJobsSuperseded(
         std::int64_t job_set_id,

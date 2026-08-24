@@ -466,7 +466,7 @@ std::optional<events::ExecutionWorkflowJobPayloadView> ResolveJobPayload(sqlite3
     return view;
 }
 
-bool ResolveWorkflowStepForJobSetAncestry(
+bool ResolveWorkflowStepForJobSet(
     sqlite3* db,
     std::int64_t job_set_id,
     ClaimedExecutionJob* claimed,
@@ -478,22 +478,8 @@ bool ResolveWorkflowStepForJobSetAncestry(
 
     Statement st;
     if (sqlite3_prepare_v2(db,
-        "WITH RECURSIVE job_set_ancestry(job_set_id, parent_job_set_id, depth) AS ("
-        "  SELECT js.job_set_id, js.parent_job_set_id, 0 "
-        "  FROM exec_job_set js "
-        "  WHERE js.job_set_id=?1 "
-        "  UNION ALL "
-        "  SELECT parent.job_set_id, parent.parent_job_set_id, job_set_ancestry.depth + 1 "
-        "  FROM exec_job_set parent "
-        "  JOIN job_set_ancestry ON parent.job_set_id=job_set_ancestry.parent_job_set_id "
-        "  WHERE job_set_ancestry.parent_job_set_id IS NOT NULL "
-        "    AND job_set_ancestry.depth < 64"
-        ") "
         "SELECT s.workflow_instance_id, s.workflow_step_id, s.step_key, s.step_kind, s.priority "
-        "FROM job_set_ancestry a "
-        "JOIN exec_workflow_step s ON s.job_set_id=a.job_set_id "
-        "ORDER BY a.depth ASC "
-        "LIMIT 1;",
+        "FROM exec_workflow_step s WHERE s.job_set_id=?1;",
         -1,
         &st.st,
         nullptr)
@@ -520,7 +506,7 @@ bool ResolveWorkflowStepForJobSetAncestry(
     }
 
     if (error_out) {
-        *error_out = "workflow step not found for job_set ancestry job_set_id=" + std::to_string(job_set_id);
+        *error_out = "workflow step not found for job_set_id=" + std::to_string(job_set_id);
     }
     return false;
 }
@@ -1145,21 +1131,11 @@ std::vector<ExecutionJobOutputRecord> SqliteExecutionDb::ListJobOutputsForWorkfl
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "WITH RECURSIVE step_root(job_set_id) AS ("
-            "  SELECT job_set_id FROM exec_workflow_step WHERE workflow_step_id=?1 AND job_set_id IS NOT NULL"
-            "), "
-            "job_set_descendants(job_set_id, depth) AS ("
-            "  SELECT job_set_id, 0 FROM step_root "
-            "  UNION ALL "
-            "  SELECT child.job_set_id, job_set_descendants.depth + 1 "
-            "  FROM exec_job_set child "
-            "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
-            "  WHERE job_set_descendants.depth < 64"
-            ") "
             "SELECT o.job_output_id, o.job_id, o.output_key, o.data_kind, o.ref_kind, o.ref_id, o.created_at_utc "
             "FROM exec_job_output o "
             "JOIN exec_job j ON j.job_id=o.job_id "
-            "JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
+            "JOIN exec_workflow_step s ON s.job_set_id=j.job_set_id "
+            "WHERE s.workflow_step_id=?1 "
             "ORDER BY o.job_output_id;",
             -1,
             &st.st,
@@ -1331,7 +1307,7 @@ SqliteExecutionDb::ListFailedWorkflowWorksetJobs(
     if (sqlite3_prepare_v2(
             db_,
             "SELECT j.job_id,j.job_set_id,j.attempts,j.priority,"
-            "w.workset_id,w.workflow_step_id,w.root_job_set_id,w.workset_key,"
+            "w.workset_id,w.workflow_step_id,w.workset_key,"
             "w.program_kind,w.program_version,w.contract_key,"
             "w.module_canonical_id,w.module_version,w.module_sha256,w.entrypoint,"
             "w.verified_dependency_sha256,w.runtime_profile_sha256,"
@@ -1362,32 +1338,30 @@ SqliteExecutionDb::ListFailedWorkflowWorksetJobs(
         row.priority = sqlite3_column_int(query.st, 3);
         row.source_workset_id = sqlite3_column_int64(query.st, 4);
         row.workflow_step_id = sqlite3_column_int64(query.st, 5);
-        row.root_job_set_id = sqlite3_column_int64(query.st, 6);
         auto& source = row.source_workset;
         source.job_set_id = row.job_set_id;
         source.workflow_step_id = row.workflow_step_id;
-        source.root_job_set_id = row.root_job_set_id;
-        source.workset_key = Text(query.st, 7);
-        source.program_kind = sqlite3_column_int(query.st, 8);
-        source.program_version = sqlite3_column_int(query.st, 9);
-        source.contract.contract_key = Text(query.st, 10);
-        source.contract.module_canonical_id = Text(query.st, 11);
-        source.contract.module_version = sqlite3_column_int(query.st, 12);
-        source.contract.module_sha256 = Text(query.st, 13);
-        source.contract.entrypoint = Text(query.st, 14);
-        source.contract.verified_dependency_sha256 = Text(query.st, 15);
-        source.contract.runtime_profile_sha256 = Text(query.st, 16);
-        source.contract.program_package_sha256 = Text(query.st, 17);
-        source.derived_state.binding_payload = Blob(query.st, 18);
-        source.derived_state.binding_sha256 = Text(query.st, 19);
-        source.observation.capture_binding_payload = Blob(query.st, 20);
-        source.observation.capture_binding_sha256 = Text(query.st, 21);
-        source.observation.progress_plan_payload = Blob(query.st, 22);
-        source.observation.progress_plan_sha256 = Text(query.st, 23);
-        source.contract.execution_affinity_key = OptionalText(query.st, 24);
+        source.workset_key = Text(query.st, 6);
+        source.program_kind = sqlite3_column_int(query.st, 7);
+        source.program_version = sqlite3_column_int(query.st, 8);
+        source.contract.contract_key = Text(query.st, 9);
+        source.contract.module_canonical_id = Text(query.st, 10);
+        source.contract.module_version = sqlite3_column_int(query.st, 11);
+        source.contract.module_sha256 = Text(query.st, 12);
+        source.contract.entrypoint = Text(query.st, 13);
+        source.contract.verified_dependency_sha256 = Text(query.st, 14);
+        source.contract.runtime_profile_sha256 = Text(query.st, 15);
+        source.contract.program_package_sha256 = Text(query.st, 16);
+        source.derived_state.binding_payload = Blob(query.st, 17);
+        source.derived_state.binding_sha256 = Text(query.st, 18);
+        source.observation.capture_binding_payload = Blob(query.st, 19);
+        source.observation.capture_binding_sha256 = Text(query.st, 20);
+        source.observation.progress_plan_payload = Blob(query.st, 21);
+        source.observation.progress_plan_sha256 = Text(query.st, 22);
+        source.contract.execution_affinity_key = OptionalText(query.st, 23);
         source.contract.estimated_payload_bytes = static_cast<std::uint64_t>(
-            sqlite3_column_int64(query.st, 25));
-        const auto item_count = std::max(1, sqlite3_column_int(query.st, 26));
+            sqlite3_column_int64(query.st, 24));
+        const auto item_count = std::max(1, sqlite3_column_int(query.st, 25));
         row.estimated_item_payload_bytes =
             source.contract.estimated_payload_bytes
             / static_cast<std::uint64_t>(item_count);
@@ -1412,7 +1386,7 @@ std::optional<std::int64_t> CloneReplacementWorkset(
     if (sqlite3_prepare_v2(
             db,
             "INSERT INTO exec_workset("
-            "job_set_id,workflow_step_id,root_job_set_id,workset_key,"
+            "job_set_id,workflow_step_id,workset_key,"
             "program_kind,program_version,contract_key,module_canonical_id,"
             "module_version,module_sha256,entrypoint,verified_dependency_sha256,"
             "runtime_profile_sha256,program_package_sha256,"
@@ -1420,7 +1394,7 @@ std::optional<std::int64_t> CloneReplacementWorkset(
             "capture_binding_payload,capture_binding_sha256,"
             "progress_plan_payload,progress_plan_sha256,execution_affinity_key,"
             "estimated_payload_bytes,priority,item_count,published_at_utc) "
-            "SELECT job_set_id,workflow_step_id,root_job_set_id,?1,"
+            "SELECT job_set_id,workflow_step_id,?1,"
             "program_kind,program_version,contract_key,module_canonical_id,"
             "module_version,module_sha256,entrypoint,verified_dependency_sha256,"
             "runtime_profile_sha256,program_package_sha256,"
@@ -1474,7 +1448,7 @@ bool SqliteExecutionDb::ApplyWorksetJobReorganization(
          ++workset_index) {
         const auto& workset = plan.worksets[workset_index];
         if (workset.workflow_step_id <= 0 || workset.job_set_id <= 0
-            || workset.root_job_set_id <= 0 || workset.program_kind <= 0
+            || workset.job_set_id <= 0 || workset.program_kind <= 0
             || workset.ordered_job_ids.empty()
             || workset.contract.contract_key.empty()) {
             return fail("workset job reorganization entry is incomplete");
@@ -1489,7 +1463,7 @@ bool SqliteExecutionDb::ApplyWorksetJobReorganization(
         if (sqlite3_prepare_v2(
                 db_,
                 "INSERT INTO exec_workset("
-                "job_set_id,workflow_step_id,root_job_set_id,workset_key,"
+                "job_set_id,workflow_step_id,workset_key,"
                 "program_kind,program_version,contract_key,module_canonical_id,"
                 "module_version,module_sha256,entrypoint,verified_dependency_sha256,"
                 "runtime_profile_sha256,program_package_sha256,"
@@ -1497,8 +1471,8 @@ bool SqliteExecutionDb::ApplyWorksetJobReorganization(
                 "capture_binding_payload,capture_binding_sha256,"
                 "progress_plan_payload,progress_plan_sha256,execution_affinity_key,"
                 "estimated_payload_bytes,priority,item_count,published_at_utc) "
-                "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,"
-                "?17,?18,?19,?20,?21,?22,?23,?24,?25);",
+                "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,"
+                "?16,?17,?18,?19,?20,?21,?22,?23,?24);",
                 -1,
                 &insert_workset.st,
                 nullptr)
@@ -1511,29 +1485,28 @@ bool SqliteExecutionDb::ApplyWorksetJobReorganization(
             + std::to_string(workset_index);
         sqlite3_bind_int64(insert_workset.st, 1, workset.job_set_id);
         sqlite3_bind_int64(insert_workset.st, 2, workset.workflow_step_id);
-        sqlite3_bind_int64(insert_workset.st, 3, workset.root_job_set_id);
-        sqlite3_bind_text(insert_workset.st, 4, workset_key.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(insert_workset.st, 5, workset.program_kind);
-        sqlite3_bind_int(insert_workset.st, 6, workset.program_version);
-        sqlite3_bind_text(insert_workset.st, 7, workset.contract.contract_key.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(insert_workset.st, 8, workset.contract.module_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(insert_workset.st, 9, workset.contract.module_version);
-        sqlite3_bind_text(insert_workset.st, 10, workset.contract.module_sha256.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(insert_workset.st, 11, workset.contract.entrypoint.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(insert_workset.st, 12, workset.contract.verified_dependency_sha256.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(insert_workset.st, 13, workset.contract.runtime_profile_sha256.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(insert_workset.st, 14, workset.contract.program_package_sha256.c_str(), -1, SQLITE_TRANSIENT);
-        BindBlob(insert_workset.st, 15, workset.derived_state.binding_payload);
-        sqlite3_bind_text(insert_workset.st, 16, workset.derived_state.binding_sha256.c_str(), -1, SQLITE_TRANSIENT);
-        BindBlob(insert_workset.st, 17, workset.observation.capture_binding_payload);
-        if (workset.observation.capture_binding_sha256.empty()) sqlite3_bind_null(insert_workset.st, 18); else sqlite3_bind_text(insert_workset.st, 18, workset.observation.capture_binding_sha256.c_str(), -1, SQLITE_TRANSIENT);
-        BindBlob(insert_workset.st, 19, workset.observation.progress_plan_payload);
-        if (workset.observation.progress_plan_sha256.empty()) sqlite3_bind_null(insert_workset.st, 20); else sqlite3_bind_text(insert_workset.st, 20, workset.observation.progress_plan_sha256.c_str(), -1, SQLITE_TRANSIENT);
-        BindOptionalText(insert_workset.st, 21, workset.contract.execution_affinity_key);
-        sqlite3_bind_int64(insert_workset.st, 22, static_cast<std::int64_t>(workset.estimated_payload_bytes));
-        sqlite3_bind_int(insert_workset.st, 23, workset.priority);
-        sqlite3_bind_int(insert_workset.st, 24, static_cast<int>(workset.ordered_job_ids.size()));
-        sqlite3_bind_int64(insert_workset.st, 25, now);
+        sqlite3_bind_text(insert_workset.st, 3, workset_key.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(insert_workset.st, 4, workset.program_kind);
+        sqlite3_bind_int(insert_workset.st, 5, workset.program_version);
+        sqlite3_bind_text(insert_workset.st, 6, workset.contract.contract_key.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert_workset.st, 7, workset.contract.module_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(insert_workset.st, 8, workset.contract.module_version);
+        sqlite3_bind_text(insert_workset.st, 9, workset.contract.module_sha256.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert_workset.st, 10, workset.contract.entrypoint.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert_workset.st, 11, workset.contract.verified_dependency_sha256.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert_workset.st, 12, workset.contract.runtime_profile_sha256.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert_workset.st, 13, workset.contract.program_package_sha256.c_str(), -1, SQLITE_TRANSIENT);
+        BindBlob(insert_workset.st, 14, workset.derived_state.binding_payload);
+        sqlite3_bind_text(insert_workset.st, 15, workset.derived_state.binding_sha256.c_str(), -1, SQLITE_TRANSIENT);
+        BindBlob(insert_workset.st, 16, workset.observation.capture_binding_payload);
+        if (workset.observation.capture_binding_sha256.empty()) sqlite3_bind_null(insert_workset.st, 18); else sqlite3_bind_text(insert_workset.st, 17, workset.observation.capture_binding_sha256.c_str(), -1, SQLITE_TRANSIENT);
+        BindBlob(insert_workset.st, 18, workset.observation.progress_plan_payload);
+        if (workset.observation.progress_plan_sha256.empty()) sqlite3_bind_null(insert_workset.st, 20); else sqlite3_bind_text(insert_workset.st, 19, workset.observation.progress_plan_sha256.c_str(), -1, SQLITE_TRANSIENT);
+        BindOptionalText(insert_workset.st, 20, workset.contract.execution_affinity_key);
+        sqlite3_bind_int64(insert_workset.st, 21, static_cast<std::int64_t>(workset.estimated_payload_bytes));
+        sqlite3_bind_int(insert_workset.st, 22, workset.priority);
+        sqlite3_bind_int(insert_workset.st, 23, static_cast<int>(workset.ordered_job_ids.size()));
+        sqlite3_bind_int64(insert_workset.st, 24, now);
         if (sqlite3_step(insert_workset.st) != SQLITE_DONE) {
             return fail(sqlite3_errmsg(db_));
         }
@@ -1646,20 +1619,17 @@ std::optional<ExecutionJobSetProgressDetails> SqliteExecutionDb::GetJobSetProgre
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "WITH RECURSIVE job_set_descendants(job_set_id, depth) AS ("
+            "WITH job_set_descendants(job_set_id, depth) AS ("
             "  SELECT js.job_set_id, 0 FROM exec_job_set js WHERE js.job_set_id=?1 "
-            "  UNION ALL "
-            "  SELECT child.job_set_id, job_set_descendants.depth + 1 "
-            "  FROM exec_job_set child "
-            "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
-            "  WHERE job_set_descendants.depth < 64"
             "), "
             "summary AS ("
             "  SELECT "
             "    COUNT(j.job_id) AS total_jobs, "
-            "    COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','CANCELED') THEN 1 ELSE 0 END), 0) AS completed_jobs, "
-            "    COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END), 0) AS succeeded_jobs, "
+            "    COALESCE(SUM(CASE WHEN j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED') THEN 1 ELSE 0 END), 0) AS settled_jobs, "
+            "    COALESCE(SUM(CASE WHEN j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END), 0) AS succeeded_jobs, "
             "    COALESCE(SUM(CASE WHEN j.state='FAILED' THEN 1 ELSE 0 END), 0) AS failed_jobs, "
+            "    COALESCE(SUM(CASE WHEN j.state='INTERRUPTED' THEN 1 ELSE 0 END), 0) AS interrupted_jobs, "
+            "    COALESCE(SUM(CASE WHEN j.state='SUPERSEDED' THEN 1 ELSE 0 END), 0) AS superseded_jobs, "
             "    COALESCE(SUM(CASE WHEN j.state='CANCELED' THEN 1 ELSE 0 END), 0) AS canceled_jobs "
             "  FROM job_set_descendants d "
             "  LEFT JOIN exec_job j ON j.job_set_id=d.job_set_id"
@@ -1670,8 +1640,9 @@ std::optional<ExecutionJobSetProgressDetails> SqliteExecutionDb::GetJobSetProgre
             "  FROM exec_job_set js "
             "  JOIN job_set_descendants d ON d.job_set_id=js.job_set_id"
             ") "
-            "SELECT ?1, summary.total_jobs, summary.completed_jobs, summary.succeeded_jobs, "
-            "summary.failed_jobs, summary.canceled_jobs, expected.expected_total "
+            "SELECT ?1, summary.total_jobs, summary.settled_jobs, summary.succeeded_jobs, "
+            "summary.failed_jobs, summary.interrupted_jobs, summary.superseded_jobs, "
+            "summary.canceled_jobs, expected.expected_total "
             "FROM summary, expected;",
             -1,
             &st.st,
@@ -1688,12 +1659,14 @@ std::optional<ExecutionJobSetProgressDetails> SqliteExecutionDb::GetJobSetProgre
     ExecutionJobSetProgressDetails details{};
     details.job_set_id = sqlite3_column_int64(st.st, 0);
     details.total_jobs = sqlite3_column_int64(st.st, 1);
-    details.completed_jobs = sqlite3_column_int64(st.st, 2);
+    details.settled_jobs = sqlite3_column_int64(st.st, 2);
     details.succeeded_jobs = sqlite3_column_int64(st.st, 3);
     details.failed_jobs = sqlite3_column_int64(st.st, 4);
-    details.canceled_jobs = sqlite3_column_int64(st.st, 5);
-    if (sqlite3_column_type(st.st, 6) != SQLITE_NULL) {
-        details.expected_total = sqlite3_column_int64(st.st, 6);
+    details.interrupted_jobs = sqlite3_column_int64(st.st, 5);
+    details.superseded_jobs = sqlite3_column_int64(st.st, 6);
+    details.canceled_jobs = sqlite3_column_int64(st.st, 7);
+    if (sqlite3_column_type(st.st, 8) != SQLITE_NULL) {
+        details.expected_total = sqlite3_column_int64(st.st, 8);
     }
     return details;
 }
@@ -1781,7 +1754,7 @@ SqliteExecutionDb::GetJobSetByMaterializationKey(
     if (sqlite3_prepare_v2(
             db_,
             "SELECT job_set_id,materialization_key,"
-            "COALESCE(materialization_state,''),parent_job_set_id,"
+            "COALESCE(materialization_state,''),"
             "domain_ref_kind,domain_ref_id,purpose,expected_total "
             "FROM exec_job_set WHERE materialization_key=?1;",
             -1,
@@ -1804,79 +1777,15 @@ SqliteExecutionDb::GetJobSetByMaterializationKey(
     row.job_set_id = sqlite3_column_int64(st.st, 0);
     row.materialization_key = Text(st.st, 1);
     row.materialization_state = Text(st.st, 2);
-    if (sqlite3_column_type(st.st, 3) != SQLITE_NULL) {
-        row.parent_job_set_id = sqlite3_column_int64(st.st, 3);
+    row.domain_ref_kind = OptionalText(st.st, 3);
+    if (sqlite3_column_type(st.st, 4) != SQLITE_NULL) {
+        row.domain_ref_id = sqlite3_column_int64(st.st, 4);
     }
-    row.domain_ref_kind = OptionalText(st.st, 4);
-    if (sqlite3_column_type(st.st, 5) != SQLITE_NULL) {
-        row.domain_ref_id = sqlite3_column_int64(st.st, 5);
-    }
-    row.purpose = Text(st.st, 6);
-    if (sqlite3_column_type(st.st, 7) != SQLITE_NULL) {
-        row.expected_total = sqlite3_column_int(st.st, 7);
+    row.purpose = Text(st.st, 5);
+    if (sqlite3_column_type(st.st, 6) != SQLITE_NULL) {
+        row.expected_total = sqlite3_column_int(st.st, 6);
     }
     return row;
-}
-
-std::vector<ExecutionChildJobSetProgressDetails> SqliteExecutionDb::GetChildJobSetProgress(std::int64_t parent_job_set_id) const {
-    std::vector<ExecutionChildJobSetProgressDetails> rows;
-    if (db_ == nullptr || parent_job_set_id <= 0) {
-        return rows;
-    }
-
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT js.job_set_id, js.purpose, COALESCE(js.meta_note, ''), "
-            "COALESCE((SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=js.job_set_id), 0) AS total_jobs, "
-            "COALESCE((SELECT COUNT(1) FROM exec_job j "
-            "         WHERE j.job_set_id=js.job_set_id "
-            "           AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','CANCELED')), 0) AS completed_jobs, "
-            "COALESCE((SELECT COUNT(1) FROM exec_job j "
-            "         WHERE j.job_set_id=js.job_set_id "
-            "           AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE')), 0) AS succeeded_jobs, "
-            "COALESCE((SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=js.job_set_id AND j.state='FAILED'), 0) AS failed_jobs, "
-            "COALESCE((SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=js.job_set_id AND j.state='CANCELED'), 0) AS canceled_jobs, "
-            "js.expected_total "
-            "FROM exec_job_set js "
-            "WHERE js.parent_job_set_id=?1 "
-            "ORDER BY js.job_set_id ASC;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return rows;
-    }
-
-    sqlite3_bind_int64(st.st, 1, parent_job_set_id);
-    while (sqlite3_step(st.st) == SQLITE_ROW) {
-        ExecutionChildJobSetProgressDetails row{};
-        row.job_set_id = sqlite3_column_int64(st.st, 0);
-        const auto* purpose = sqlite3_column_text(st.st, 1);
-        const auto* meta_note = sqlite3_column_text(st.st, 2);
-        row.purpose = purpose ? reinterpret_cast<const char*>(purpose) : "";
-        row.meta_note = meta_note ? reinterpret_cast<const char*>(meta_note) : "";
-        row.total_jobs = sqlite3_column_int64(st.st, 3);
-        row.completed_jobs = sqlite3_column_int64(st.st, 4);
-        row.succeeded_jobs = sqlite3_column_int64(st.st, 5);
-        row.failed_jobs = sqlite3_column_int64(st.st, 6);
-        row.canceled_jobs = sqlite3_column_int64(st.st, 7);
-        if (sqlite3_column_type(st.st, 8) != SQLITE_NULL) {
-            row.expected_total = sqlite3_column_int64(st.st, 8);
-        }
-        constexpr std::string_view token = "expected_delta=";
-        const auto pos = row.meta_note.find(token);
-        if (pos != std::string::npos) {
-            const auto start = pos + token.size();
-            try {
-                row.expected_delta = std::stoll(row.meta_note.substr(start));
-            } catch (...) {
-                row.expected_delta = std::nullopt;
-            }
-        }
-        rows.push_back(std::move(row));
-    }
-    return rows;
 }
 
 bool SqliteExecutionDb::CreateJobSet(
@@ -1905,8 +1814,8 @@ bool SqliteExecutionDb::CreateJobSet(
     const auto now = command.created_at_utc > 0 ? command.created_at_utc : NowUtcMillis();
     Statement insert_set;
     if (sqlite3_prepare_v2(db_,
-        "INSERT INTO exec_job_set(parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
-        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);",
+        "INSERT INTO exec_job_set(program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);",
         -1,
         &insert_set.st,
         nullptr)
@@ -1915,16 +1824,15 @@ bool SqliteExecutionDb::CreateJobSet(
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
-    if (command.parent_job_set_id.has_value()) sqlite3_bind_int64(insert_set.st, 1, *command.parent_job_set_id); else sqlite3_bind_null(insert_set.st, 1);
-    sqlite3_bind_int(insert_set.st, 2, command.program_kind);
-    sqlite3_bind_text(insert_set.st, 3, command.purpose.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert_set.st, 4, command.created_by.value().c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_set.st, 5, now);
-    sqlite3_bind_int(insert_set.st, 6, command.priority_boost);
-    if (command.expected_total.has_value()) sqlite3_bind_int(insert_set.st, 7, *command.expected_total); else sqlite3_bind_null(insert_set.st, 7);
-    if (command.domain_ref_kind.has_value()) sqlite3_bind_text(insert_set.st, 8, command.domain_ref_kind->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(insert_set.st, 8);
-    if (command.domain_ref_id.has_value()) sqlite3_bind_int64(insert_set.st, 9, *command.domain_ref_id); else sqlite3_bind_null(insert_set.st, 9);
-    if (command.meta_note.has_value()) sqlite3_bind_text(insert_set.st, 10, command.meta_note->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(insert_set.st, 10);
+    sqlite3_bind_int(insert_set.st, 1, command.program_kind);
+    sqlite3_bind_text(insert_set.st, 2, command.purpose.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.created_by.has_value()) sqlite3_bind_text(insert_set.st, 3, command.created_by->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(insert_set.st, 3);
+    sqlite3_bind_int64(insert_set.st, 4, now);
+    sqlite3_bind_int(insert_set.st, 5, command.priority_boost);
+    if (command.expected_total.has_value()) sqlite3_bind_int(insert_set.st, 6, *command.expected_total); else sqlite3_bind_null(insert_set.st, 6);
+    if (command.domain_ref_kind.has_value()) sqlite3_bind_text(insert_set.st, 7, command.domain_ref_kind->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(insert_set.st, 7);
+    if (command.domain_ref_id.has_value()) sqlite3_bind_int64(insert_set.st, 8, *command.domain_ref_id); else sqlite3_bind_null(insert_set.st, 8);
+    if (command.meta_note.has_value()) sqlite3_bind_text(insert_set.st, 9, command.meta_note->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(insert_set.st, 9);
     if (sqlite3_step(insert_set.st) != SQLITE_DONE) {
         rollback();
         if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -2027,8 +1935,6 @@ bool SqliteExecutionDb::EnsureMaterializingJobSet(
         || command.program_kind <= 0
         || command.purpose.empty()
         || command.created_at_utc < 0
-        || (command.parent_job_set_id.has_value()
-            && *command.parent_job_set_id <= 0)
         || (command.expected_total.has_value()
             && *command.expected_total < 0)
         || command.domain_ref_kind.has_value()
@@ -2054,7 +1960,7 @@ bool SqliteExecutionDb::EnsureMaterializingJobSet(
     Statement existing;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT job_set_id,parent_job_set_id,program_kind,purpose,"
+            "SELECT job_set_id,program_kind,purpose,"
             "created_by,priority_boost,expected_total,domain_ref_kind,"
             "domain_ref_id,meta_note,COALESCE(materialization_state,'') "
             "FROM exec_job_set WHERE materialization_key=?1;",
@@ -2074,34 +1980,28 @@ bool SqliteExecutionDb::EnsureMaterializingJobSet(
     const auto existing_rc = sqlite3_step(existing.st);
     if (existing_rc == SQLITE_ROW) {
         receipt.job_set_id = sqlite3_column_int64(existing.st, 0);
-        receipt.materialization_state = Text(existing.st, 10);
-        const auto parent_job_set_id =
-            sqlite3_column_type(existing.st, 1) == SQLITE_NULL
-            ? std::optional<std::int64_t>{}
-            : std::optional<std::int64_t>{
-                sqlite3_column_int64(existing.st, 1)};
+        receipt.materialization_state = Text(existing.st, 9);
         const auto expected_total =
-            sqlite3_column_type(existing.st, 6) == SQLITE_NULL
+            sqlite3_column_type(existing.st, 5) == SQLITE_NULL
             ? std::optional<int>{}
             : std::optional<int>{
-                sqlite3_column_int(existing.st, 6)};
+                sqlite3_column_int(existing.st, 5)};
         const auto domain_ref_id =
-            sqlite3_column_type(existing.st, 8) == SQLITE_NULL
+            sqlite3_column_type(existing.st, 7) == SQLITE_NULL
             ? std::optional<std::int64_t>{}
             : std::optional<std::int64_t>{
-                sqlite3_column_int64(existing.st, 8)};
-        if (parent_job_set_id != command.parent_job_set_id
-            || sqlite3_column_int(existing.st, 2)
+                sqlite3_column_int64(existing.st, 7)};
+        if (sqlite3_column_int(existing.st, 1)
                 != command.program_kind
-            || Text(existing.st, 3) != command.purpose
-            || OptionalText(existing.st, 4) != command.created_by
-            || sqlite3_column_int(existing.st, 5)
+            || Text(existing.st, 2) != command.purpose
+            || OptionalText(existing.st, 3) != command.created_by
+            || sqlite3_column_int(existing.st, 4)
                 != command.priority_boost
             || expected_total != command.expected_total
-            || OptionalText(existing.st, 7)
+            || OptionalText(existing.st, 6)
                 != command.domain_ref_kind
             || domain_ref_id != command.domain_ref_id
-            || OptionalText(existing.st, 9) != command.meta_note) {
+            || OptionalText(existing.st, 8) != command.meta_note) {
             Rollback(db_);
             receipt.disposition =
                 ExecutionDbOperationDisposition::Conflict;
@@ -2133,11 +2033,11 @@ bool SqliteExecutionDb::EnsureMaterializingJobSet(
     if (sqlite3_prepare_v2(
             db_,
             "INSERT INTO exec_job_set("
-            "parent_job_set_id,program_kind,purpose,created_by,"
+            "program_kind,purpose,created_by,"
             "created_at_utc,priority_boost,expected_total,"
             "domain_ref_kind,domain_ref_id,meta_note,"
             "materialization_key,materialization_state) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,"
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,"
             "'MATERIALIZING');",
             -1,
             &insert.st,
@@ -2146,39 +2046,31 @@ bool SqliteExecutionDb::EnsureMaterializingJobSet(
         fail(sqlite3_errmsg(db_));
         return false;
     }
-    if (command.parent_job_set_id.has_value()) {
-        sqlite3_bind_int64(
-            insert.st,
-            1,
-            *command.parent_job_set_id);
-    } else {
-        sqlite3_bind_null(insert.st, 1);
-    }
-    sqlite3_bind_int(insert.st, 2, command.program_kind);
+    sqlite3_bind_int(insert.st, 1, command.program_kind);
     sqlite3_bind_text(
         insert.st,
-        3,
+        2,
         command.purpose.c_str(),
         -1,
         SQLITE_TRANSIENT);
-    BindOptionalText(insert.st, 4, command.created_by);
-    sqlite3_bind_int64(insert.st, 5, now);
-    sqlite3_bind_int(insert.st, 6, command.priority_boost);
+    BindOptionalText(insert.st, 3, command.created_by);
+    sqlite3_bind_int64(insert.st, 4, now);
+    sqlite3_bind_int(insert.st, 5, command.priority_boost);
     if (command.expected_total.has_value()) {
-        sqlite3_bind_int(insert.st, 7, *command.expected_total);
+        sqlite3_bind_int(insert.st, 6, *command.expected_total);
     } else {
-        sqlite3_bind_null(insert.st, 7);
+        sqlite3_bind_null(insert.st, 6);
     }
-    BindOptionalText(insert.st, 8, command.domain_ref_kind);
+    BindOptionalText(insert.st, 7, command.domain_ref_kind);
     if (command.domain_ref_id.has_value()) {
-        sqlite3_bind_int64(insert.st, 9, *command.domain_ref_id);
+        sqlite3_bind_int64(insert.st, 8, *command.domain_ref_id);
     } else {
-        sqlite3_bind_null(insert.st, 9);
+        sqlite3_bind_null(insert.st, 8);
     }
-    BindOptionalText(insert.st, 10, command.meta_note);
+    BindOptionalText(insert.st, 9, command.meta_note);
     sqlite3_bind_text(
         insert.st,
-        11,
+        10,
         command.materialization_key.c_str(),
         -1,
         SQLITE_TRANSIENT);
@@ -2655,7 +2547,7 @@ bool SqliteExecutionDb::PublishWorkset(
         || command.program_kind <= 0
         || command.program_version <= 0
         || ((command.workflow_step_id > 0)
-            != (command.root_job_set_id > 0))
+            != (command.job_set_id > 0))
         || command.ordered_job_ids.empty()
         || command.ordered_job_ids.size()
             > static_cast<std::size_t>(
@@ -2740,105 +2632,26 @@ bool SqliteExecutionDb::PublishWorkset(
         return true;
     }
 
-    std::int64_t root_job_set_id = command.root_job_set_id;
     std::int64_t workflow_step_id = command.workflow_step_id;
-    if (workflow_step_id > 0) {
-        Statement root;
-        if (sqlite3_prepare_v2(
-                db_,
-                "WITH RECURSIVE ancestors(job_set_id,parent_job_set_id) AS ("
-                "  SELECT job_set_id,parent_job_set_id FROM exec_job_set "
-                "  WHERE job_set_id=?1 "
-                "  UNION ALL "
-                "  SELECT parent.job_set_id,parent.parent_job_set_id "
-                "  FROM exec_job_set parent "
-                "  JOIN ancestors child "
-                "    ON child.parent_job_set_id=parent.job_set_id"
-                ") "
-                "SELECT job_set_id FROM ancestors "
-                "WHERE parent_job_set_id IS NULL;",
-                -1,
-                &root.st,
-                nullptr)
-            != SQLITE_OK) {
-            fail(sqlite3_errmsg(db_));
-            return false;
-        }
-        sqlite3_bind_int64(root.st, 1, command.job_set_id);
-        if (sqlite3_step(root.st) != SQLITE_ROW ||
-            sqlite3_column_int64(root.st, 0) != root_job_set_id ||
-            sqlite3_step(root.st) != SQLITE_DONE) {
-            fail("published workset root invocation anchor disagrees with job-set ancestry");
-            return false;
-        }
-
-        Statement step;
-        if (sqlite3_prepare_v2(
-                db_,
-                "SELECT job_set_id FROM exec_workflow_step "
-                "WHERE workflow_step_id=?1;",
-                -1,
-                &step.st,
-                nullptr)
-            != SQLITE_OK) {
-            fail(sqlite3_errmsg(db_));
-            return false;
-        }
-        sqlite3_bind_int64(step.st, 1, workflow_step_id);
-        if (sqlite3_step(step.st) != SQLITE_ROW) {
-            fail("published workset workflow-step invocation anchor does not exist");
-            return false;
-        }
-        const auto existing_root =
-            sqlite3_column_type(step.st, 0) == SQLITE_NULL
-            ? std::optional<std::int64_t>{}
-            : std::optional<std::int64_t>{
-                  sqlite3_column_int64(step.st, 0)};
-        if ((existing_root.has_value() &&
-             *existing_root != root_job_set_id) ||
-            sqlite3_step(step.st) != SQLITE_DONE) {
-            fail("published workset workflow-step invocation anchor conflicts with its durable root");
-            return false;
-        }
-    } else {
-        Statement invocation_anchor;
-        if (sqlite3_prepare_v2(
-                db_,
-                "WITH RECURSIVE ancestors(job_set_id,parent_job_set_id) AS ("
-                "  SELECT job_set_id,parent_job_set_id FROM exec_job_set "
-                "  WHERE job_set_id=?1 "
-                "  UNION ALL "
-                "  SELECT parent.job_set_id,parent.parent_job_set_id "
-                "  FROM exec_job_set parent "
-                "  JOIN ancestors child "
-                "    ON child.parent_job_set_id=parent.job_set_id"
-                ") "
-                "SELECT a.job_set_id,s.workflow_step_id "
-                "FROM ancestors a "
-                "JOIN exec_workflow_step s ON s.job_set_id=a.job_set_id "
-                "WHERE a.parent_job_set_id IS NULL;",
-                -1,
-                &invocation_anchor.st,
-                nullptr)
-            != SQLITE_OK) {
-            fail(sqlite3_errmsg(db_));
-            return false;
-        }
-        sqlite3_bind_int64(
-            invocation_anchor.st, 1, command.job_set_id);
-        if (sqlite3_step(invocation_anchor.st) != SQLITE_ROW) {
-            fail("workset job set has no workflow-step root invocation anchor");
-            return false;
-        }
-        root_job_set_id =
-            sqlite3_column_int64(invocation_anchor.st, 0);
-        workflow_step_id =
-            sqlite3_column_int64(invocation_anchor.st, 1);
-        if (root_job_set_id <= 0 || workflow_step_id <= 0 ||
-            sqlite3_step(invocation_anchor.st) != SQLITE_DONE) {
-            fail("workset job set has an ambiguous workflow-step root invocation anchor");
-            return false;
-        }
+    if (workflow_step_id <= 0) {
+        fail("published workset requires a workflow step");
+        return false;
+    }
+    Statement step;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT job_set_id FROM exec_workflow_step WHERE workflow_step_id=?1;",
+            -1, &step.st, nullptr) != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(step.st, 1, workflow_step_id);
+    if (sqlite3_step(step.st) != SQLITE_ROW
+        || (sqlite3_column_type(step.st, 0) != SQLITE_NULL
+            && sqlite3_column_int64(step.st, 0) != command.job_set_id)
+        || sqlite3_step(step.st) != SQLITE_DONE) {
+        fail("published workset job set conflicts with its workflow step");
+        return false;
     }
 
     Statement existing;
@@ -2852,8 +2665,7 @@ bool SqliteExecutionDb::PublishWorkset(
             "capture_binding_payload,capture_binding_sha256,"
             "progress_plan_payload,progress_plan_sha256,"
             "execution_affinity_key,"
-            "estimated_payload_bytes,priority,workflow_step_id,"
-            "root_job_set_id "
+            "estimated_payload_bytes,priority,workflow_step_id "
             "FROM exec_workset "
             "WHERE job_set_id=?1 AND workset_key=?2;",
             -1,
@@ -2915,9 +2727,7 @@ bool SqliteExecutionDb::PublishWorkset(
             && sqlite3_column_int(existing.st, 20)
                 == command.priority
             && sqlite3_column_int64(existing.st, 21)
-                == workflow_step_id
-            && sqlite3_column_int64(existing.st, 22)
-                == root_job_set_id;
+                == workflow_step_id;
         bool membership_matches = metadata_matches;
         if (membership_matches) {
             Statement members;
@@ -3014,7 +2824,7 @@ bool SqliteExecutionDb::PublishWorkset(
     if (sqlite3_prepare_v2(
             db_,
             "INSERT INTO exec_workset("
-            "job_set_id,workflow_step_id,root_job_set_id,workset_key,"
+            "job_set_id,workflow_step_id,workset_key,"
             "program_kind,program_version,"
             "contract_key,module_canonical_id,module_version,"
             "module_sha256,entrypoint,verified_dependency_sha256,"
@@ -3024,8 +2834,8 @@ bool SqliteExecutionDb::PublishWorkset(
             "progress_plan_payload,progress_plan_sha256,"
             "execution_affinity_key,"
             "estimated_payload_bytes,priority,item_count,published_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,"
-            "?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25);",
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,"
+            "?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24);",
             -1,
             &insert_workset.st,
             nullptr)
@@ -3035,106 +2845,107 @@ bool SqliteExecutionDb::PublishWorkset(
     }
     sqlite3_bind_int64(insert_workset.st, 1, command.job_set_id);
     sqlite3_bind_int64(insert_workset.st, 2, workflow_step_id);
-    sqlite3_bind_int64(insert_workset.st, 3, root_job_set_id);
     sqlite3_bind_text(
         insert_workset.st,
-        4,
+        3,
         command.workset_key.c_str(),
         -1,
         SQLITE_TRANSIENT);
-    sqlite3_bind_int(insert_workset.st, 5, command.program_kind);
-    sqlite3_bind_int(insert_workset.st, 6, command.program_version);
+    sqlite3_bind_int(insert_workset.st, 4, command.program_kind);
+    sqlite3_bind_int(insert_workset.st, 5, command.program_version);
     sqlite3_bind_text(
         insert_workset.st,
-        7,
+        6,
         contract.contract_key.c_str(),
         -1,
         SQLITE_TRANSIENT);
     sqlite3_bind_text(
         insert_workset.st,
-        8,
+        7,
         contract.module_canonical_id.c_str(),
         -1,
         SQLITE_TRANSIENT);
     sqlite3_bind_int(
         insert_workset.st,
-        9,
+        8,
         contract.module_version);
     sqlite3_bind_text(
         insert_workset.st,
-        10,
+        9,
         contract.module_sha256.c_str(),
         -1,
         SQLITE_TRANSIENT);
     sqlite3_bind_text(
         insert_workset.st,
-        11,
+        10,
         contract.entrypoint.c_str(),
         -1,
         SQLITE_TRANSIENT);
     sqlite3_bind_text(
         insert_workset.st,
-        12,
+        11,
         contract.verified_dependency_sha256.c_str(),
         -1,
         SQLITE_TRANSIENT);
     sqlite3_bind_text(
         insert_workset.st,
-        13,
+        12,
         contract.runtime_profile_sha256.c_str(),
         -1,
         SQLITE_TRANSIENT);
     sqlite3_bind_text(
         insert_workset.st,
-        14,
+        13,
         contract.program_package_sha256.c_str(),
         -1,
         SQLITE_TRANSIENT);
     BindBlob(
         insert_workset.st,
-        15,
+        14,
         command.derived_state.binding_payload);
     sqlite3_bind_text(
         insert_workset.st,
-        16,
+        15,
         command.derived_state.binding_sha256.c_str(),
         -1,
         SQLITE_TRANSIENT);
     BindBlob(
         insert_workset.st,
-        17,
+        16,
         observation.capture_binding_payload);
     sqlite3_bind_text(
         insert_workset.st,
-        18,
+        17,
         observation.capture_binding_sha256.c_str(),
         -1,
         SQLITE_TRANSIENT);
     BindBlob(
         insert_workset.st,
-        19,
+        18,
         observation.progress_plan_payload);
     sqlite3_bind_text(
         insert_workset.st,
-        20,
+        19,
         observation.progress_plan_sha256.c_str(),
         -1,
         SQLITE_TRANSIENT);
     BindOptionalText(
         insert_workset.st,
-        21,
+        20,
         contract.execution_affinity_key);
     sqlite3_bind_int64(
         insert_workset.st,
-        22,
+        21,
         static_cast<std::int64_t>(
             contract.estimated_payload_bytes));
-    sqlite3_bind_int(insert_workset.st, 23, command.priority);
+    sqlite3_bind_int(insert_workset.st,
+        22, command.priority);
     sqlite3_bind_int(
         insert_workset.st,
-        24,
+        23,
         static_cast<int>(command.ordered_job_ids.size()));
-    sqlite3_bind_int64(insert_workset.st, 25, now);
+    sqlite3_bind_int64(insert_workset.st,
+        24, now);
     if (sqlite3_step(insert_workset.st) != SQLITE_DONE) {
         fail(sqlite3_errmsg(db_));
         return false;
@@ -3396,7 +3207,7 @@ SqliteExecutionDb::ClaimPublishedWorksetBatch(
             db_,
             "SELECT "
             "w.workset_id,w.job_set_id,w.workflow_step_id,"
-            "w.root_job_set_id,w.workset_key,w.program_kind,"
+            "w.job_set_id,w.workset_key,w.program_kind,"
             "w.program_version,w.contract_key,"
             "w.module_canonical_id,w.module_version,w.module_sha256,"
             "w.entrypoint,w.verified_dependency_sha256,"
@@ -3456,7 +3267,7 @@ SqliteExecutionDb::ClaimPublishedWorksetBatch(
         row.workset_id = sqlite3_column_int64(candidates.st, 0);
         row.job_set_id = sqlite3_column_int64(candidates.st, 1);
         row.workflow_step_id = sqlite3_column_int64(candidates.st, 2);
-        row.root_job_set_id = sqlite3_column_int64(candidates.st, 3);
+        row.job_set_id = sqlite3_column_int64(candidates.st, 3);
         row.workset_key = Text(candidates.st, 4);
         row.program_kind = sqlite3_column_int(candidates.st, 5);
         row.program_version = sqlite3_column_int(candidates.st, 6);
@@ -5971,7 +5782,7 @@ bool SqliteExecutionDb::CommitResultFinalization(
         receipt.processing_state = processing_state;
         if (final || durable_state == "FAILED") {
             ClaimedExecutionJob workflow_identity{};
-            if (!ResolveWorkflowStepForJobSetAncestry(
+            if (!ResolveWorkflowStepForJobSet(
                     db_,
                     job_set_id,
                     &workflow_identity,
@@ -6039,7 +5850,7 @@ bool SqliteExecutionDb::CommitResultFinalization(
     const bool becomes_terminal =
         final || attempts >= max_attempts;
     if (becomes_terminal
-        && !ResolveWorkflowStepForJobSetAncestry(
+        && !ResolveWorkflowStepForJobSet(
             db_,
             job_set_id,
             &workflow_identity,
@@ -6411,7 +6222,7 @@ SqliteExecutionDb::ListUnresolvedJobCancellations(
     if (sqlite3_prepare_v2(
             db_,
             "SELECT c.cancellation_request_id,c.job_id,c.request_key,"
-            "c.reason_code,c.reason_text,c.caused_by_job_id,c.state,"
+            "c.reason_code,c.reason_text,c.caused_by_job_id,c.terminal_disposition,c.state,"
             "j.state,j.workset_id,j.dispatch_attempt_id,d.claim_token "
             "FROM exec_job_cancellation_request c "
             "JOIN exec_job j ON j.job_id=c.job_id "
@@ -6443,18 +6254,19 @@ SqliteExecutionDb::ListUnresolvedJobCancellations(
                 ? std::optional<std::int64_t>{}
                 : std::optional<std::int64_t>{
                     sqlite3_column_int64(query.st, 5)},
-            .state = Text(query.st, 6),
-            .durable_job_state = Text(query.st, 7),
-            .workset_id = sqlite3_column_type(query.st, 8) == SQLITE_NULL
-                ? std::optional<std::int64_t>{}
-                : std::optional<std::int64_t>{
-                    sqlite3_column_int64(query.st, 8)},
-            .dispatch_attempt_id = sqlite3_column_type(query.st, 9)
-                    == SQLITE_NULL
+            .terminal_disposition = Text(query.st, 6),
+            .state = Text(query.st, 7),
+            .durable_job_state = Text(query.st, 8),
+            .workset_id = sqlite3_column_type(query.st, 9) == SQLITE_NULL
                 ? std::optional<std::int64_t>{}
                 : std::optional<std::int64_t>{
                     sqlite3_column_int64(query.st, 9)},
-            .claim_token = OptionalText(query.st, 10),
+            .dispatch_attempt_id = sqlite3_column_type(query.st, 10)
+                    == SQLITE_NULL
+                ? std::optional<std::int64_t>{}
+                : std::optional<std::int64_t>{
+                    sqlite3_column_int64(query.st, 10)},
+            .claim_token = OptionalText(query.st, 11),
             .disposition = ExecutionDbOperationDisposition::Applied,
         });
     }
@@ -6470,7 +6282,7 @@ bool SqliteExecutionDb::ApplyJobCancellationOutcomeInTransaction(
     receipt.job_id = command.job_id;
     if (receipt_out != nullptr) *receipt_out = receipt;
     const bool resolves_without_worker =
-        command.kind == JobCancellationOutcomeKind::CancelWithoutWorker
+        command.kind == JobCancellationOutcomeKind::ResolveWithoutWorker
         || command.kind
             == JobCancellationOutcomeKind::InitialSidecarApplied;
     const bool resolves = resolves_without_worker
@@ -7742,7 +7554,7 @@ std::optional<ClaimedExecutionJob> SqliteExecutionDb::ClaimNextReadyExecutionJob
                 static_cast<std::uint64_t>(attempts) + 1;
 
             std::string step_error;
-            if (!ResolveWorkflowStepForJobSetAncestry(db_, claimed.job_set_id, &claimed, &step_error)) {
+            if (!ResolveWorkflowStepForJobSet(db_, claimed.job_set_id, &claimed, &step_error)) {
                 rollback();
                 if (error_out) *error_out = step_error;
                 return std::nullopt;
@@ -7894,7 +7706,7 @@ std::vector<ClaimedExecutionJob> SqliteExecutionDb::ClaimBatchReadyExecutionJobs
         row.lease_expires_at_utc = lease_expires_at_utc;
 
         std::string step_error;
-        if (!ResolveWorkflowStepForJobSetAncestry(
+        if (!ResolveWorkflowStepForJobSet(
                 db_,
                 row.job_set_id,
                 &row,

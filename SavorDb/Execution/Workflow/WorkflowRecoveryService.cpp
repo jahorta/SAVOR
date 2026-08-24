@@ -104,30 +104,27 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
 
     sqlite3_stmt* st = nullptr;
     constexpr const char* kSelect =
-        "WITH RECURSIVE job_set_descendants(workflow_step_id, workflow_instance_id, root_job_set_id, job_set_id, depth) AS ("
-        "  SELECT s.workflow_step_id, s.workflow_instance_id, s.job_set_id, s.job_set_id, 0 "
+        "WITH workflow_step_job_sets(workflow_step_id, workflow_instance_id, job_set_id) AS ("
+        "  SELECT s.workflow_step_id, s.workflow_instance_id, s.job_set_id "
         "  FROM exec_workflow_step s "
         "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
         "  WHERE i.state IN ('PENDING','RUNNING','CANCELLING') AND s.state IN ('MATERIALIZED','RUNNING') AND s.job_set_id IS NOT NULL "
-        "  UNION ALL "
-        "  SELECT d.workflow_step_id, d.workflow_instance_id, d.root_job_set_id, child.job_set_id, d.depth + 1 "
-        "  FROM exec_job_set child "
-        "  JOIN job_set_descendants d ON child.parent_job_set_id=d.job_set_id "
-        "  WHERE d.depth < 64"
         ") "
-        "SELECT d.workflow_step_id, d.workflow_instance_id, d.root_job_set_id, "
+        "SELECT d.workflow_step_id, d.workflow_instance_id, d.job_set_id, "
         "CASE "
         "  WHEN COALESCE(SUM(CASE WHEN j.state='FAILED' THEN 1 ELSE 0 END), 0) > 0 THEN 'FAILED' "
-        "  WHEN COALESCE(SUM(CASE WHEN j.state='SUPERSEDED' THEN 1 ELSE 0 END), 0) > 0 THEN 'FAILED' "
         "  WHEN COALESCE(SUM(CASE WHEN j.state='INTERRUPTED' THEN 1 ELSE 0 END), 0) > 0 THEN 'INTERRUPTED' "
         "  WHEN COALESCE(SUM(CASE WHEN j.state='CANCELED' THEN 1 ELSE 0 END), 0) > 0 THEN 'CANCELED' "
         "  WHEN COUNT(j.job_id) > 0 "
-        "       AND COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END), 0) = COUNT(j.job_id) THEN 'COMPLETED' "
+        "       AND COALESCE(SUM(CASE WHEN j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END), 0) = COUNT(j.job_id) "
+        "       AND COALESCE(SUM(CASE WHEN j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END), 0) > 0 THEN 'COMPLETED' "
+        "  WHEN COUNT(j.job_id) > 0 "
+        "       AND COALESCE(SUM(CASE WHEN j.state='SUPERSEDED' THEN 1 ELSE 0 END), 0) = COUNT(j.job_id) THEN 'FAILED' "
         "  ELSE NULL "
         "END AS terminal_state "
-        "FROM job_set_descendants d "
+        "FROM workflow_step_job_sets d "
         "LEFT JOIN exec_job j ON j.job_set_id=d.job_set_id "
-        "GROUP BY d.workflow_step_id, d.workflow_instance_id, d.root_job_set_id;";
+        "GROUP BY d.workflow_step_id, d.workflow_instance_id, d.job_set_id;";
 
     if (sqlite3_prepare_v2(db_, kSelect, -1, &st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -158,14 +155,14 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
             ++local.failed_steps;
         } else if (terminal_state == "INTERRUPTED") {
             next_step_state = "INTERRUPTED";
-            event_kind = "Execution.WorkflowStepFailed.v1";
+            event_kind = "Execution.WorkflowStepInterrupted.v1";
             message = "recovery_reconciled_interrupted";
-            ++local.failed_steps;
+            ++local.interrupted_steps;
         } else if (terminal_state == "CANCELED") {
             next_step_state = "CANCELED";
-            event_kind = "Execution.WorkflowStepFailed.v1";
+            event_kind = "Execution.WorkflowStepCanceled.v1";
             message = "recovery_reconciled_canceled";
-            ++local.failed_steps;
+            ++local.canceled_steps;
         } else {
             continue;
         }
@@ -187,8 +184,12 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
         if (!inserted) {
             if (terminal_state == "COMPLETED") {
                 --local.completed_steps;
-            } else {
+            } else if (terminal_state == "FAILED") {
                 --local.failed_steps;
+            } else if (terminal_state == "INTERRUPTED") {
+                --local.interrupted_steps;
+            } else {
+                --local.canceled_steps;
             }
             continue;
         }
@@ -352,21 +353,14 @@ bool WorkflowRecoveryService::PlanInvariantRemediation(
         "  SELECT s.job_set_id FROM exec_workflow_step s "
         "  WHERE s.workflow_instance_id=?1 AND s.workflow_step_id=?2 LIMIT 1"
         "), "
-        "job_set_descendants(job_set_id, depth) AS ("
-        "  SELECT job_set_id, 0 FROM step_root "
-        "  UNION ALL "
-        "  SELECT child.job_set_id, job_set_descendants.depth + 1 "
-        "  FROM exec_job_set child "
-        "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
-        "  WHERE job_set_descendants.depth < 64"
-        ") "
+        "job_set_descendants(job_set_id, depth) AS (SELECT job_set_id, 0 FROM step_root) "
         "SELECT "
         "(SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) "
         " FROM exec_job_set js "
         " JOIN job_set_descendants d ON d.job_set_id=js.job_set_id), "
         "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id), "
         "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
-        "  WHERE j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','CANCELED')), "
+        "  WHERE j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED')), "
         "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='FAILED');";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -383,26 +377,26 @@ bool WorkflowRecoveryService::PlanInvariantRemediation(
 
     const int expected_total = sqlite3_column_int(st, 0);
     const int discovered_total = sqlite3_column_int(st, 1);
-    const int terminal_total = sqlite3_column_int(st, 2);
+    const int settled_total = sqlite3_column_int(st, 2);
     const int failed_total = sqlite3_column_int(st, 3);
     sqlite3_finalize(st);
 
     WorkflowInvariantRemediationDecision decision{};
     if (discovered_total > 0
-        && terminal_total == discovered_total
+        && settled_total == discovered_total
         && (expected_total == 0 || discovered_total == expected_total)) {
         std::ostringstream reason;
         reason << "repair_reopen expected=" << expected_total
                << " discovered=" << discovered_total
-               << " terminal=" << terminal_total
+               << " terminal=" << settled_total
                << " failed=" << failed_total;
         decision.can_reopen = true;
         decision.reason = reason.str();
     } else {
         std::ostringstream detail;
-        detail << "repair_terminal_fail expected=" << expected_total
+        detail << "repair_workflow_fail expected=" << expected_total
                << " discovered=" << discovered_total
-               << " terminal=" << terminal_total
+               << " terminal=" << settled_total
                << " failed=" << failed_total;
         decision.can_reopen = false;
         decision.failure_code = "WORKFLOW_INVARIANT_UNRECOVERABLE";

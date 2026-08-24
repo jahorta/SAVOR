@@ -188,7 +188,13 @@ bool BuildProductionProgramKindRegistry(
         }
         if (!registry.Register(seed_probe)
             || !registry.RegisterForStepKind(
-                "seedprobe.run",
+                "seedprobe.survey",
+                seed_probe)
+            || !registry.RegisterForStepKind(
+                "seedprobe.search",
+                seed_probe)
+            || !registry.RegisterForStepKind(
+                "seedprobe.confirm",
                 seed_probe)) {
             return Fail(
                 "SeedProbe production descriptor registration failed",

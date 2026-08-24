@@ -25,25 +25,6 @@ CREATE TABLE au_seed_probe_spec (
     FOREIGN KEY(unique_spec_id) REFERENCES au_seed_probe_unique_spec(seed_probe_unique_spec_id),
     CONSTRAINT uq_au_seed_probe_spec_name UNIQUE (name)
 );
-CREATE TABLE au_tas_spec_base (
-    tas_spec_base_id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    priority INTEGER NOT NULL,
-    run_ms INTEGER NOT NULL,
-    vi_stall_ms INTEGER NOT NULL,
-    headroom_x10 INTEGER NOT NULL,
-    progress_enable INTEGER NOT NULL CHECK(progress_enable IN (0, 1)),
-    auto_queue_seeds INTEGER NOT NULL CHECK(auto_queue_seeds IN (0, 1)),
-    created_at_utc INTEGER NOT NULL,
-    CONSTRAINT uq_au_tas_spec_base_name UNIQUE (name)
-);
-CREATE TABLE au_tas_spec (
-    tas_spec_id INTEGER PRIMARY KEY,
-    tas_spec_base_id INTEGER NOT NULL,
-    base_dtm_artifact_id INTEGER NOT NULL,
-    created_at_utc INTEGER NOT NULL,
-    FOREIGN KEY(tas_spec_base_id) REFERENCES au_tas_spec_base(tas_spec_base_id)
-);
 CREATE TABLE au_battle_run_spec (
     battle_run_spec_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -61,6 +42,7 @@ CREATE TABLE au_battle_run_spec (
 CREATE TABLE au_battle_plan (
     plan_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
     fingerprint TEXT NOT NULL,
     created_at_utc INTEGER NOT NULL,
     CONSTRAINT uq_au_battle_plan_name UNIQUE (name),
@@ -127,12 +109,10 @@ CREATE TABLE au_template (
     name TEXT NOT NULL,
     description TEXT NULL,
     seed_probe_spec_id INTEGER NULL,
-    tas_spec_id INTEGER NULL,
     battle_run_spec_id INTEGER NULL,
     explorer_settings_id INTEGER NULL,
     created_at_utc INTEGER NOT NULL,
     FOREIGN KEY(seed_probe_spec_id) REFERENCES au_seed_probe_spec(seed_probe_spec_id),
-    FOREIGN KEY(tas_spec_id) REFERENCES au_tas_spec(tas_spec_id),
     FOREIGN KEY(battle_run_spec_id) REFERENCES au_battle_run_spec(battle_run_spec_id),
     FOREIGN KEY(explorer_settings_id) REFERENCES au_explorer_settings(explorer_settings_id),
     CONSTRAINT uq_au_template_name UNIQUE (name)

@@ -20,7 +20,7 @@
 #include "../IExecutionDb.h"
 #include "../ProgramDB/ProgramKindRegistry.h"
 #include "WorkflowOrchestration.h"
-#include "WorkflowStepCompletionGate.h"
+#include "WorkflowStepSettlementGate.h"
 
 namespace savor::db {
 struct IAuthoringDb;
@@ -53,10 +53,10 @@ struct WorkflowCoordinatorConfig {
     // Targeted commit notifications are the normal advancement path. This
     // slower scan remains the crash-recovery authority for notifications lost
     // across process boundaries or restarts.
-    std::chrono::milliseconds terminal_repair_interval{ 250 };
+    std::chrono::milliseconds settlement_repair_interval{ 250 };
     std::chrono::milliseconds descriptor_repair_interval{ 1000 };
     std::size_t ready_scan_limit = 2048;
-    std::size_t terminal_scan_limit = 64;
+    std::size_t settlement_scan_limit = 64;
     std::size_t max_active_materialized_workflows = 30;
     int successor_step_priority_boost = 10;
     std::shared_ptr<CoordinatorItemCreditSource> item_credit_source;
@@ -64,7 +64,7 @@ struct WorkflowCoordinatorConfig {
     // claim scheduler retains its external-writer fallback poll.
 };
 
-struct TerminalWorkflowStepNotification {
+struct SettledWorkflowStepNotification {
     std::uint64_t commit_sequence = 0;
     std::int64_t workflow_step_id = 0;
     std::int64_t job_id = 0;
@@ -84,16 +84,16 @@ struct WorkflowCoordinatorTelemetry {
     std::int64_t continuation_count = 0;
     std::int64_t continuation_added_work_count = 0;
     std::int64_t continuation_failure_count = 0;
-    std::int64_t terminal_scan_count = 0;
-    std::int64_t terminal_step_count = 0;
-    std::int64_t terminal_empty_step_count = 0;
-    std::int64_t terminal_failed_step_count = 0;
-    std::int64_t terminal_completed_step_count = 0;
+    std::int64_t settlement_scan_count = 0;
+    std::int64_t settled_step_count = 0;
+    std::int64_t settled_empty_step_count = 0;
+    std::int64_t failed_step_count = 0;
+    std::int64_t completed_step_count = 0;
     std::int64_t transition_advanced_count = 0;
     std::int64_t workflow_completed_count = 0;
     std::int64_t workflow_failed_count = 0;
-    std::int64_t targeted_terminal_notification_count = 0;
-    std::int64_t targeted_terminal_advancement_count = 0;
+    std::int64_t targeted_settlement_notification_count = 0;
+    std::int64_t targeted_settlement_advancement_count = 0;
     std::int64_t descriptor_unavailable_count = 0;
     std::int64_t descriptor_resumed_count = 0;
 };
@@ -107,7 +107,7 @@ public:
         const savor::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
         WorkflowCoordinatorConfig config = {},
         EventLineCallback event_line_callback = {},
-        StepCompletionGateService* step_completion_gate = nullptr,
+        StepSettlementGateService* step_completion_gate = nullptr,
         savor::db::IAuthoringDb* authoring_db = nullptr);
     ~WorkflowCoordinatorService();
 
@@ -118,18 +118,18 @@ public:
     void Stop();
     [[nodiscard]] bool IsRunning() const;
     [[nodiscard]] WorkflowCoordinatorTelemetry SnapshotTelemetry() const;
-    bool PublishTerminalCommit(
-        const TerminalWorkflowStepNotification& notification);
+    bool PublishSettlementCommit(
+        const SettledWorkflowStepNotification& notification);
 
 private:
     void Loop();
     bool AdvanceAvailableWork();
     bool PollReadyStepsFromDb();
     bool ReconcileTargetedTerminalNotifications();
-    bool ReconcileTerminalWorkflowSteps();
+    bool ReconcileSettledWorkflowSteps();
     bool ReconcileDescriptorAvailability();
-    bool AdvanceTerminalSnapshot(
-        const WorkflowStepTerminalSnapshot& snapshot,
+    bool AdvanceSettlementSnapshot(
+        const WorkflowStepSettlementSnapshot& snapshot,
         const char* failure_stage);
     bool ProcessReadyWorkflowStep(const WorkflowReadyStepRecord& step);
     std::optional<programdb::ProgramJobMaterializationContext>
@@ -155,12 +155,12 @@ private:
     const savor::db::execution::programdb::ProgramKindRegistry* program_kind_registry_ = nullptr;
     WorkflowCoordinatorConfig config_{};
     EventLineCallback event_line_callback_;
-    std::unique_ptr<StepCompletionGateService> owned_step_completion_gate_;
-    StepCompletionGateService* step_completion_gate_ = nullptr;
+    std::unique_ptr<StepSettlementGateService> owned_step_completion_gate_;
+    StepSettlementGateService* step_completion_gate_ = nullptr;
     std::atomic<bool> stop_{ false };
     std::atomic<bool> running_{ false };
     std::thread worker_thread_;
-    std::chrono::steady_clock::time_point next_terminal_repair_at_{};
+    std::chrono::steady_clock::time_point next_settlement_repair_at_{};
     std::chrono::steady_clock::time_point next_descriptor_repair_at_{};
     std::uint64_t observed_registry_generation_ = 0;
     mutable std::mutex wait_mtx_;
@@ -168,7 +168,7 @@ private:
     mutable std::mutex terminal_notification_mtx_;
     std::map<
         std::tuple<std::uint64_t, std::int64_t, std::int64_t>,
-        TerminalWorkflowStepNotification>
+        SettledWorkflowStepNotification>
         terminal_notifications_;
     std::atomic<std::uint64_t> terminal_notification_generation_{ 0 };
     std::unordered_set<std::int64_t> seen_workflow_instance_ids_;
@@ -186,16 +186,16 @@ private:
     std::atomic<std::int64_t> continuation_count_{ 0 };
     std::atomic<std::int64_t> continuation_added_work_count_{ 0 };
     std::atomic<std::int64_t> continuation_failure_count_{ 0 };
-    std::atomic<std::int64_t> terminal_scan_count_{ 0 };
-    std::atomic<std::int64_t> terminal_step_count_{ 0 };
-    std::atomic<std::int64_t> terminal_empty_step_count_{ 0 };
-    std::atomic<std::int64_t> terminal_failed_step_count_{ 0 };
-    std::atomic<std::int64_t> terminal_completed_step_count_{ 0 };
+    std::atomic<std::int64_t> settlement_scan_count_{ 0 };
+    std::atomic<std::int64_t> settled_step_count_{ 0 };
+    std::atomic<std::int64_t> settled_empty_step_count_{ 0 };
+    std::atomic<std::int64_t> failed_step_count_{ 0 };
+    std::atomic<std::int64_t> completed_step_count_{ 0 };
     std::atomic<std::int64_t> transition_advanced_count_{ 0 };
     std::atomic<std::int64_t> workflow_completed_count_{ 0 };
     std::atomic<std::int64_t> workflow_failed_count_{ 0 };
-    std::atomic<std::int64_t> targeted_terminal_notification_count_{ 0 };
-    std::atomic<std::int64_t> targeted_terminal_advancement_count_{ 0 };
+    std::atomic<std::int64_t> targeted_settlement_notification_count_{ 0 };
+    std::atomic<std::int64_t> targeted_settlement_advancement_count_{ 0 };
     std::atomic<std::int64_t> descriptor_unavailable_count_{ 0 };
     std::atomic<std::int64_t> descriptor_resumed_count_{ 0 };
 };

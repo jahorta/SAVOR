@@ -1006,7 +1006,6 @@ public:
                 .worksets = {{
                     .job_set_id = ensured.job_set_id,
                     .workflow_step_id = context.step.workflow_step_id,
-                    .root_job_set_id = ensured.job_set_id,
                     .workset_key = materialization_key + ".workset.0",
                     .program_kind = static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner),
                     .program_version = runtime::battlesingleturn::ProgramVersion,
@@ -1047,7 +1046,7 @@ public:
             }, &published, error_out)) return false;
         (void)analysis_db_->UpdateBattleTurnWaveStatus(
             source->wave.wave_id, BattleTurnWaveStatus::Running, std::nullopt, nullptr);
-        result_out->root_job_set_id = ensured.job_set_id;
+        result_out->job_set_id = ensured.job_set_id;
         result_out->persistence = {
             .program_ref_kind = std::string(kWaveRefKind),
             .program_ref_id = source->wave.wave_id,
@@ -1172,7 +1171,7 @@ private:
                 .worksets = {},
                 .requested_by = std::string(kCreatedBy),
             }, &completed, error_out)) return false;
-        result_out->root_job_set_id = ensured.job_set_id;
+        result_out->job_set_id = ensured.job_set_id;
         result_out->persistence = {
             .program_ref_kind = std::string(kBattleSetRefKind),
             .program_ref_id = joined.battle_set_id,
@@ -1207,7 +1206,7 @@ public:
         };
         if (!state_db_ || !analysis_db_ || !authoring_db_ || context.items.empty()
             || context.workset_id <= 0 || context.dispatch_attempt_id <= 0
-            || context.workflow_step_id <= 0 || context.root_job_set_id <= 0
+            || context.workflow_step_id <= 0 || context.job_set_id <= 0
             || context.dispatch_token.empty() || !context.state_compatibility.Complete())
             return fail("battle.single_turn reconstruction context is incomplete");
         std::optional<std::int64_t> wave_id;
@@ -1271,7 +1270,7 @@ public:
         workset.phase_invocation = {
             .invocation_id = {
                 .workflow_step_id = static_cast<std::uint64_t>(context.workflow_step_id),
-                .root_job_set_id = static_cast<std::uint64_t>(context.root_job_set_id),
+                .job_set_id = static_cast<std::uint64_t>(context.job_set_id),
             },
             .program_package = fullphase::BuildFullPhaseProgramPackage(*phase),
             .common_input = fullphase::MakeFullPhaseCommonInput(
@@ -2424,7 +2423,6 @@ ProgramKindDescriptor BuildBattleSingleTurnProgramDescriptor(
         execution_db, state_db, analysis_db, authoring_db, config.working_dir_root);
     descriptor.workflow_transition = std::make_shared<Transition>(analysis_db);
     descriptor.supports_workflow_orchestration = true;
-    descriptor.allow_mixed_success_failed_transition = true;
     return descriptor;
 }
 

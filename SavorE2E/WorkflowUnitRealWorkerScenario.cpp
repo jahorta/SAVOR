@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "Authoring/IAuthoringDb.h"
+#include "Authoring/AuthoringRecipeMaterializer.h"
 #include "Common/DbService.h"
 #include "Common/Types/UtcTimestamp.h"
 #include "DurableLogFile.h"
@@ -126,42 +127,24 @@ bool SeedWorkflow(
         return Fail("workflow_unit source binding is incomplete", error_out);
     }
 
-    std::vector<savor::db::SaveWorkflowGraphNodeOutputCommand> outputs;
-    outputs.reserve(contract.unit.possible_outputs.size());
-    for (const auto& output : contract.unit.possible_outputs) {
-        outputs.push_back({.output_key = output.key,
-                           .data_kind = output.data_kind,
-                           .ref_kind = output.ref_kind,
-                           .display_name = output.display_name});
-    }
-
     const auto now = savor::db::types::UtcNow();
     savor::db::SaveWorkflowGraphResult saved{};
-    if (!authoring_db->SaveWorkflowGraph({
+    const savor::db::authoring::AuthoringRecipeMaterializer materializer(
+        authoring_db);
+    if (!materializer.SaveWorkflowGraph({
+            .symbol = "workflow_unit",
             .name = "SavorE2E workflow unit " + std::string(run_identity),
             .description = "One exact registered workflow unit launched from an existing durable reference",
             .hidden = true,
-            .graph_version = 1,
-            .graph_hash = "savor-e2e.workflow-unit-v1." +
-                std::string(run_identity),
             .nodes = {{
                 .node_key = std::string(kNodeKey),
-                .unit_kind = contract.unit.unit_kind,
+                .unit = {contract.unit.unit_kind},
                 .display_name = contract.unit.display_name,
-                .inputs = {{
-                    .input_key = contract.input.key,
-                    .data_kind = contract.input.data_kind,
-                    .ref_kind = contract.input.ref_kind,
-                    .display_name = contract.input.display_name,
-                    .required = true,
-                }},
-                .possible_outputs = std::move(outputs),
             }},
-            .edges = {},
-            .created_at_utc = now,
-            .correlation_id = std::string(kCorrelation),
-            .causation_id = "explicit-workflow-unit-request",
-        }, &saved, error_out)) {
+            .external_inputs = {{
+                std::string(kNodeKey), {contract.input.key},
+            }},
+        }, {}, &saved, error_out)) {
         return false;
     }
 

@@ -32,7 +32,7 @@ public:
         int successor_step_priority_boost = 10);
 
     bool RouteTerminalStep(
-        const WorkflowStepTerminalSnapshot& snapshot,
+        const WorkflowStepSettlementSnapshot& snapshot,
         WorkflowGraphRoutingResult* result_out,
         std::string* error_out) const;
 

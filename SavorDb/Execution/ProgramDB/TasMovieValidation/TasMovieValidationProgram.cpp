@@ -433,7 +433,7 @@ public:
         PublishWorksetWaveReceipt published{};
         PublishWorksetCommand workset{
             .job_set_id = ensured.job_set_id, .workflow_step_id = context.step.workflow_step_id,
-            .root_job_set_id = ensured.job_set_id, .workset_key = command.materialization_key + ".workset.0",
+            .workset_key = command.materialization_key + ".workset.0",
             .program_kind = static_cast<std::int32_t>(savor::PK_TasMovie), .program_version = 1,
             .contract = {
                 .contract_key = "tasmovie-validation:v1:request:" + std::to_string(request_id) + ":phase:" + request->full_phase_sha256,
@@ -465,7 +465,7 @@ public:
         };
         if (!execution_db_->PublishWorksetWave({.job_set_id = ensured.job_set_id, .expected_job_count = 1,
                 .worksets = {std::move(workset)}, .requested_by = std::string(kCreatedBy)}, &published, error_out)) return false;
-        result_out->root_job_set_id = ensured.job_set_id;
+        result_out->job_set_id = ensured.job_set_id;
         result_out->persistence = {.program_ref_kind = std::string(kProgramRefKind), .program_ref_id = request_id,
             .fingerprint = Fingerprint(*request), .program_version = 1};
         result_out->event_lines.push_back("[tasmovie-validation-materialized] request=" + std::to_string(request_id));
@@ -474,8 +474,8 @@ public:
 
     bool Continue(const ProgramJobContinuationContext& context,
         ProgramJobContinuationResult* result_out, std::string* error_out) const override {
-        if (!result_out || context.root_job_set_id <= 0) return Fail("TAS Movie validation continuation is invalid", error_out);
-        const auto jobs = execution_db_->ListJobsInJobSet(context.root_job_set_id);
+        if (!result_out || context.job_set_id <= 0) return Fail("TAS Movie validation continuation is invalid", error_out);
+        const auto jobs = execution_db_->ListJobsInJobSet(context.job_set_id);
         if (jobs.size() != 1) return Fail("TAS Movie validation workflow lost singleton shape", error_out);
         const auto job = execution_db_->GetExecutionJob(jobs.front().job_id);
         if (!job || !job->worker_terminal_fingerprint) return Fail("TAS Movie validation terminal identity is unavailable", error_out);
@@ -514,7 +514,7 @@ public:
         };
         if (!state_db_ || !analysis_db_ || !phase_ || context.items.size() != 1
             || context.workset_id <= 0 || context.dispatch_attempt_id <= 0
-            || context.workflow_step_id <= 0 || context.root_job_set_id <= 0
+            || context.workflow_step_id <= 0 || context.job_set_id <= 0
             || context.dispatch_token.empty() || !context.state_compatibility.Complete()) return fail("TAS Movie validation reconstruction requires one exact item");
         const auto& item = context.items.front();
         if (item.program_kind != static_cast<std::int32_t>(savor::PK_TasMovie)
@@ -552,7 +552,7 @@ public:
         savor::runtime::WorkerWorksetDefinition workset{};
         workset.workset_id = savor::runtime::WorkerWorksetId(static_cast<std::uint64_t>(context.dispatch_attempt_id));
         workset.phase_invocation = {.invocation_id = {.workflow_step_id = static_cast<std::uint64_t>(context.workflow_step_id),
-            .root_job_set_id = static_cast<std::uint64_t>(context.root_job_set_id)},
+            .job_set_id = static_cast<std::uint64_t>(context.job_set_id)},
             .program_package = savor::runtime::fullphase::BuildFullPhaseProgramPackage(*phase_),
             .common_input = savor::runtime::fullphase::MakeFullPhaseCommonInput(
                 "soa.tas_movie_validation.CommonInput", 1)};
@@ -1061,7 +1061,7 @@ public:
             : std::nullopt;
         if (!attempt || !request) {
             decision.should_advance = false;
-            decision.terminal_failure = true;
+            decision.workflow_failure = true;
             decision.blocked_reason =
                 "battle_recording_validation_evidence_missing";
             return decision;
@@ -1081,7 +1081,7 @@ public:
             recording->paired_checkpoint_savestate_id !=
                 tree->checkpoint_savestate_id) {
             decision.should_advance = false;
-            decision.terminal_failure = true;
+            decision.workflow_failure = true;
             decision.blocked_reason = "battle_recording_tree_identity_drifted";
             return decision;
         }
@@ -1092,7 +1092,7 @@ public:
                 .validation_request_id = request->validation_request_id},
                 &error)) {
             decision.should_advance = false;
-            decision.terminal_failure = true;
+            decision.workflow_failure = true;
             decision.blocked_reason = error.empty()
                 ? std::optional<std::string>(
                     "battle_recording_validation_binding_failed")
@@ -1143,7 +1143,6 @@ ProgramKindDescriptor BuildTasMovieValidationProgramDescriptor(
         std::make_shared<BattleRecordingValidationTransition>(
             state_db, analysis_db);
     descriptor.supports_workflow_orchestration = true;
-    descriptor.allow_mixed_success_failed_transition = false;
     return descriptor;
 }
 

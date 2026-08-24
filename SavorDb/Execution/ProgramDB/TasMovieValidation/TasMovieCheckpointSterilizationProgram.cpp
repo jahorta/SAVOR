@@ -283,7 +283,6 @@ public:
             worksets.push_back({
                 .job_set_id = ensured.job_set_id,
                 .workflow_step_id = context.step.workflow_step_id,
-                .root_job_set_id = ensured.job_set_id,
                 .workset_key = command.materialization_key + ".workset.0",
                 .program_kind = static_cast<std::int32_t>(savor::PK_TasMovieCheckpointSterilize),
                 .program_version = 1,
@@ -327,7 +326,7 @@ public:
                 .requested_by = std::string(kCreatedBy)}, &published, error_out)) {
             return false;
         }
-        result_out->root_job_set_id = ensured.job_set_id;
+        result_out->job_set_id = ensured.job_set_id;
         result_out->persistence = {
             .program_ref_kind = std::string(kProgramRefKind),
             .program_ref_id = request_id,
@@ -356,7 +355,7 @@ public:
         if (request->reused_savestate_id) {
             output_id = *request->reused_savestate_id;
         } else {
-            const auto jobs = execution_db_->ListJobsInJobSet(context.root_job_set_id);
+            const auto jobs = execution_db_->ListJobsInJobSet(context.job_set_id);
             if (jobs.size() != 1) return Fail("sterilization continuation lost singleton shape", error_out);
             const auto job = execution_db_->GetExecutionJob(jobs.front().job_id);
             if (!job || !job->worker_terminal_fingerprint)
@@ -409,7 +408,7 @@ public:
         };
         if (!state_db_ || !analysis_db_ || !phase_ || context.items.size() != 1
             || context.workset_id <= 0 || context.dispatch_attempt_id <= 0
-            || context.workflow_step_id <= 0 || context.root_job_set_id <= 0
+            || context.workflow_step_id <= 0 || context.job_set_id <= 0
             || context.dispatch_token.empty() || !context.state_compatibility.Complete()) {
             return fail("sterilization reconstruction requires one exact item");
         }
@@ -466,7 +465,7 @@ public:
         workset.phase_invocation = {
             .invocation_id = {
                 .workflow_step_id = static_cast<std::uint64_t>(context.workflow_step_id),
-                .root_job_set_id = static_cast<std::uint64_t>(context.root_job_set_id),
+                .job_set_id = static_cast<std::uint64_t>(context.job_set_id),
             },
             .program_package =
                 savor::runtime::fullphase::
@@ -739,7 +738,7 @@ public:
             recording->paired_checkpoint_savestate_id !=
                 request->source_savestate_id) {
             decision.should_advance = false;
-            decision.terminal_failure = true;
+            decision.workflow_failure = true;
             decision.blocked_reason =
                 "battle_recording_sterilization_source_drifted";
             return decision;
@@ -755,7 +754,7 @@ public:
             });
         if (!exact_attempt) {
             decision.should_advance = false;
-            decision.terminal_failure = true;
+            decision.workflow_failure = true;
             decision.blocked_reason =
                 "battle_recording_sterilization_attempt_missing";
             return decision;
@@ -769,7 +768,7 @@ public:
                     request->sterilization_request_id},
                 &error)) {
             decision.should_advance = false;
-            decision.terminal_failure = true;
+            decision.workflow_failure = true;
             decision.blocked_reason = error.empty()
                 ? std::optional<std::string>(
                     "battle_recording_sterilization_binding_failed")
@@ -810,7 +809,6 @@ ProgramKindDescriptor BuildTasMovieCheckpointSterilizationProgramDescriptor(
     descriptor.workflow_transition =
         std::make_shared<BattleRecordingSterilizationTransition>(analysis_db);
     descriptor.supports_workflow_orchestration = true;
-    descriptor.allow_mixed_success_failed_transition = false;
     return descriptor;
 }
 

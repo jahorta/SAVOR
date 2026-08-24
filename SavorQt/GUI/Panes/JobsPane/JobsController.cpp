@@ -295,6 +295,25 @@ void JobsController::selectJob(qint64 jobId)
     emitStateChanged();
 }
 
+void JobsController::showJob(qint64 jobId)
+{
+    if (jobId <= 0) {
+        return;
+    }
+    state_.scope = {};
+    state_.scope.job_id = jobId;
+    state_.pageLimit = 1;
+    before_.reset();
+    after_.reset();
+    state_.selectedJobId = jobId;
+    state_.detail = {};
+    state_.errorMessage.clear();
+    state_.infoMessage = QStringLiteral("Focused job #%1").arg(jobId);
+    syncFetchStateFromView();
+    kickPageFetch();
+    emitStateChanged();
+}
+
 void JobsController::refreshSelectedJobDetail() { if (state_.selectedJobId > 0) kickDetailFetch(state_.selectedJobId, true); }
 
 void JobsController::requeueSelectedJob()

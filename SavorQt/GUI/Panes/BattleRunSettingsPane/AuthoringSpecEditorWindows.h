@@ -43,22 +43,3 @@ private:
     QPushButton* saveButton_ = nullptr;
 };
 
-class TasSpecEditorWindow final : public QWidget
-{
-public:
-    explicit TasSpecEditorWindow(QWidget* parent = nullptr, bool embeddedInContainer = false);
-    void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
-    void setSavedCallback(std::function<void()> callback);
-    void loadSnapshot(const savor::db::TasSpecSnapshot& snapshot, bool duplicate);
-
-private:
-    void createWidgets();
-    void saveSpec();
-    void postStatusMessage(const QString& text, StatusToast::Severity severity);
-
-    std::function<void(const QString&, StatusToast::Severity)> statusCallback_;
-    std::function<void()> savedCallback_;
-    QLineEdit* nameEdit_ = nullptr;
-    QSpinBox* prioritySpin_ = nullptr;
-    QPushButton* saveButton_ = nullptr;
-};

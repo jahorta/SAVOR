@@ -11,7 +11,7 @@ CREATE TABLE migration_schema_version (
 CREATE TABLE ar_archive_package (
     archive_package_id INTEGER PRIMARY KEY,
     source_context TEXT NOT NULL,
-    source_root_job_set_id INTEGER NOT NULL,
+    source_job_set_id INTEGER NOT NULL,
     created_at_utc INTEGER NOT NULL,
     schema_version INTEGER NOT NULL,
     event_catalog_version INTEGER NOT NULL,

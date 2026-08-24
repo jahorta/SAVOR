@@ -3403,6 +3403,69 @@ PhysicalStopPointPlan StopPointRouter::DesiredPhysicalPlan() const
     return snapshot ? snapshot->physical_plan : PhysicalStopPointPlan{};
 }
 
+StopPointError StopPointRouter::EstablishPausedCurrentPoint(std::uint32_t pc)
+{
+    if (StopPointError error =
+            CheckControlThread(*this, owner_thread_, initialized_, stopping_))
+    {
+        return error;
+    }
+    if (pc == 0)
+    {
+        return Error(
+            StopPointErrorCode::InvalidArgument,
+            "A paused current point requires a nonzero PC");
+    }
+    if (impl_->current_point)
+    {
+        if (impl_->current_point->identity.workset_epoch == workset_epoch_ &&
+            impl_->current_point->evidence.hit_pc == pc)
+        {
+            return {};
+        }
+        return Error(
+            StopPointErrorCode::CurrentPointUnavailable,
+            "A different current stop point is already retained");
+    }
+
+    const DispatchSnapshot* const snapshot =
+        impl_->dispatch.load(std::memory_order_acquire);
+    if (!snapshot || snapshot->workset_epoch != workset_epoch_)
+    {
+        return Error(
+            StopPointErrorCode::CurrentPointUnavailable,
+            "A paused current point requires the active workset dispatch");
+    }
+    const std::uint64_t sequence = NextNonzero(impl_->next_stop_sequence);
+    const std::uint64_t sample_snapshot =
+        NextNonzero(impl_->next_sample_snapshot);
+    if (sequence == 0 || sample_snapshot == 0)
+    {
+        authoritative_overflow_.store(true, std::memory_order_release);
+        ingress_enabled_.store(false, std::memory_order_release);
+        return Error(
+            StopPointErrorCode::PhysicalIntegrityUnknown,
+            "Paused current-point identity space is exhausted");
+    }
+
+    impl_->current_point = RoutedStopEvent{
+        .identity = {
+            RoutedStopSequence(sequence),
+            StopSampleSnapshotId(sample_snapshot),
+            snapshot->workset_epoch,
+            snapshot->generation,
+            snapshot->physical_generation,
+        },
+        .evidence = {
+            .path = NativeStopPath::Synthetic,
+            .point = PcStopPointSpec{pc},
+            .hit_pc = pc,
+        },
+        .authoritative = true,
+    };
+    return {};
+}
+
 StopRouteReceipt StopPointRouter::InjectSyntheticStop(
     SyntheticStopPointSpec point,
     bool authoritative)

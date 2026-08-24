@@ -369,7 +369,7 @@ void ArchiveWorkbenchPage::createRehydrateWidgets(QWidget* tab)
     rehydrateScopeFilter_->setObjectName("jobSetsFilterCombo");
     rehydrateScopeFilter_->addItem(QStringLiteral("Any scope"), QString());
     rehydrateScopeFilter_->addItem(QStringLiteral("Workflow selection"), QStringLiteral("workflow_selection"));
-    rehydrateScopeFilter_->addItem(QStringLiteral("Root job set"), QStringLiteral("root_job_set"));
+    rehydrateScopeFilter_->addItem(QStringLiteral("Job set"), QStringLiteral("job_set"));
 
     rehydrateChecksumFilter_ = new QComboBox(filterPanel);
     rehydrateChecksumFilter_->setObjectName("jobSetsFilterCombo");

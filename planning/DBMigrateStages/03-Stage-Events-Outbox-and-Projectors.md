@@ -89,7 +89,6 @@ Field usage expectations:
 
 ## Authoring events
 37. `Authoring.SeedProbeSpecSaved.v1`
-38. `Authoring.TasSpecSaved.v1`
 39. `Authoring.BattleRunSpecSaved.v1`
 40. `Authoring.PlanSaved.v1`
 41. `Authoring.PredicateSpecSaved.v1`

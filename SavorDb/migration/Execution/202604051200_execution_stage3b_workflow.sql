@@ -77,8 +77,9 @@ CREATE INDEX IF NOT EXISTS ix_exec_workflow_instance_state_created
 CREATE INDEX IF NOT EXISTS ix_exec_workflow_step_instance_state_priority_ready
     ON exec_workflow_step(workflow_instance_id, state, priority DESC, ready_at_utc ASC);
 
-CREATE INDEX IF NOT EXISTS ix_exec_workflow_step_job_set
-    ON exec_workflow_step(job_set_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_exec_workflow_step_job_set
+    ON exec_workflow_step(job_set_id)
+    WHERE job_set_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS ix_exec_workflow_edge_instance_to
     ON exec_workflow_edge(workflow_instance_id, to_step_id);

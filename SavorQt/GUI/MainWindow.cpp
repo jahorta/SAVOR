@@ -19,6 +19,8 @@
 #include "SavorDbRuntime.h"
 
 #include <QtCore/QStringList>
+#include <QtConcurrent/QtConcurrentRun>
+#include <QtCore/QFutureWatcher>
 #include <QtGui/QAction>
 #include <QtGui/QCursor>
 #include <QtGui/QGuiApplication>
@@ -36,6 +38,7 @@
 #include <QtWidgets/QWidget>
 
 #include <optional>
+#include <exception>
 
 namespace {
 constexpr int kTopBarHeight = 24;
@@ -321,6 +324,8 @@ void MainWindow::createWidgets()
 	workspaceStack_->addWidget(setupTab_);
 	runningTab_ = new RunningTab(coordinatorController_, RunningTab::Actions{
 		[this]() { openFocusedTool(FocusedTool::Workflows); },
+		[this](qint64 workflowId) { openWorkflow(workflowId); },
+		[this](qint64 workflowId) { retryWorkflowJobs(workflowId); },
 		[this]() { openFocusedTool(FocusedTool::Jobs); },
 		[this]() { openFocusedTool(FocusedTool::Workers); },
 		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::Section); },
@@ -444,6 +449,8 @@ void MainWindow::openFocusedTool(FocusedTool tool)
         workflows->setPageActive(true);
         connect(dialog, &QDialog::finished, workflows, [workflows]() { workflows->setPageActive(false); });
         connect(workflows, &WorkflowsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+        connect(workflows, &WorkflowsPage::retryFailedJobsRequested, this, &MainWindow::retryWorkflowJobs);
+        connect(workflows, &WorkflowsPage::openJobRequested, this, &MainWindow::openJob);
         page = workflows;
         break;
     }
@@ -517,6 +524,93 @@ void MainWindow::openFocusedTool(FocusedTool tool)
         dialog->layout()->addWidget(page);
     }
     dialog->show();
+}
+
+void MainWindow::openWorkflow(std::int64_t workflowInstanceId)
+{
+    const QString key = focusedToolKey(FocusedTool::Workflows);
+    if (focusedDialogs_.value(key) == nullptr) {
+        openFocusedTool(FocusedTool::Workflows);
+    }
+    if (QDialog* dialog = focusedDialogs_.value(key); dialog != nullptr) {
+        if (auto* workflows = dialog->findChild<WorkflowsPage*>()) {
+            workflows->showWorkflow(workflowInstanceId);
+        }
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
+    }
+}
+
+void MainWindow::openJob(std::int64_t jobId)
+{
+    const QString key = focusedToolKey(FocusedTool::Jobs);
+    if (focusedDialogs_.value(key) == nullptr) {
+        openFocusedTool(FocusedTool::Jobs);
+    }
+    if (QDialog* dialog = focusedDialogs_.value(key); dialog != nullptr) {
+        if (auto* jobs = dialog->findChild<JobsPage*>()) {
+            jobs->showJob(jobId);
+        }
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
+    }
+}
+
+void MainWindow::retryWorkflowJobs(std::int64_t workflowInstanceId)
+{
+    if (workflowRetryInFlight_ || workflowInstanceId <= 0) {
+        return;
+    }
+    workflowRetryInFlight_ = true;
+    const QString workflowsKey = focusedToolKey(FocusedTool::Workflows);
+    if (QDialog* dialog = focusedDialogs_.value(workflowsKey); dialog != nullptr) {
+        if (auto* workflows = dialog->findChild<WorkflowsPage*>()) {
+            workflows->setWorkflowRetryInFlight(true);
+        }
+    }
+
+    using RetryResult = savorqt::db::ServiceResult<savor::db::WorksetJobReorganizationReceipt>;
+    auto* watcher = new QFutureWatcher<RetryResult>(this);
+    connect(watcher, &QFutureWatcher<RetryResult>::finished, this, [this, watcher, workflowInstanceId, workflowsKey]() {
+        workflowRetryInFlight_ = false;
+        QString message;
+        StatusToast::Severity severity = StatusToast::Severity::Error;
+        try {
+            const RetryResult result = watcher->result();
+            if (result.ok) {
+                message = QStringLiteral("Requeued %1 failed or interrupted job(s) into %2 workset(s).")
+                    .arg(result.value.requeued_job_count)
+                    .arg(result.value.created_workset_count);
+                severity = StatusToast::Severity::Success;
+            } else {
+                message = QStringLiteral("Retry failed jobs failed: %1")
+                    .arg(QString::fromStdString(result.error.message));
+            }
+        } catch (const std::exception& exception) {
+            message = QStringLiteral("Retry failed jobs failed: %1")
+                .arg(QString::fromUtf8(exception.what()));
+        } catch (...) {
+            message = QStringLiteral("Retry failed jobs failed: unknown exception");
+        }
+        watcher->deleteLater();
+        if (statusBarWidget_ != nullptr) {
+            statusBarWidget_->postToast(StatusToast{ severity, message });
+        }
+        if (runningTab_ != nullptr) {
+            runningTab_->requestRefresh();
+        }
+        if (QDialog* dialog = focusedDialogs_.value(workflowsKey); dialog != nullptr) {
+            if (auto* workflows = dialog->findChild<WorkflowsPage*>()) {
+                workflows->setWorkflowRetryInFlight(false);
+                workflows->refreshAfterRetry(workflowInstanceId);
+            }
+        }
+    });
+    watcher->setFuture(QtConcurrent::run([workflowInstanceId]() {
+        return savorqt::db::SavorDbWorkflowService::RetryFailedJobs(workflowInstanceId);
+    }));
 }
 
 void MainWindow::openWorkflowGraphEditor()

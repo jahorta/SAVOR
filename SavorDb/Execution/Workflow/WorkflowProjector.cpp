@@ -116,17 +116,17 @@ bool WorkflowProjector::ProjectInstance(std::int64_t workflow_instance_id, std::
     sqlite3_stmt* steps = nullptr;
     constexpr const char* kSteps =
         "INSERT INTO ui_workflow_step("
-        "workflow_step_id,workflow_instance_id,workflow_unit_activation_id,step_key,step_kind,state,blocked_reason,job_set_id,job_count,job_completed_count,job_failed_count,priority,attempts,max_attempts,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc,created_at_utc) "
+        "workflow_step_id,workflow_instance_id,workflow_unit_activation_id,step_key,step_kind,state,blocked_reason,job_set_id,job_count,job_settled_count,job_failed_count,priority,attempts,max_attempts,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc,created_at_utc) "
         "SELECT s.workflow_step_id,s.workflow_instance_id,s.workflow_unit_activation_id,s.step_key,s.step_kind,s.state,s.blocked_reason,s.job_set_id,"
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id),"
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE')),"
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED')),"
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED'),"
         "s.priority,s.attempts,s.max_attempts,s.ready_at_utc,s.started_at_utc,s.completed_at_utc,s.failed_at_utc,s.created_at_utc "
         "FROM exec_workflow_step s WHERE s.workflow_instance_id=?1 "
         "ON CONFLICT(workflow_step_id) DO UPDATE SET "
         "workflow_unit_activation_id=excluded.workflow_unit_activation_id,"
         "state=excluded.state,blocked_reason=excluded.blocked_reason,job_set_id=excluded.job_set_id,"
-        "job_count=excluded.job_count,job_completed_count=excluded.job_completed_count,job_failed_count=excluded.job_failed_count,"
+        "job_count=excluded.job_count,job_settled_count=excluded.job_settled_count,job_failed_count=excluded.job_failed_count,"
         "attempts=excluded.attempts,max_attempts=excluded.max_attempts,ready_at_utc=excluded.ready_at_utc,"
         "started_at_utc=excluded.started_at_utc,completed_at_utc=excluded.completed_at_utc,failed_at_utc=excluded.failed_at_utc;";
     if (sqlite3_prepare_v2(db_, kSteps, -1, &steps, nullptr) != SQLITE_OK) {
@@ -313,7 +313,12 @@ bool WorkflowProjector::ProjectFromOutbox(
         { { "Execution.WorkflowStepMaterialized.v1", 1 }, project_workflow_instance },
         { { "Execution.WorkflowStepCompleted.v1", 1 }, project_workflow_instance },
         { { "Execution.WorkflowStepFailed.v1", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowStepInterrupted.v1", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowStepCanceled.v1", 1 }, project_workflow_instance },
         { { "Execution.WorkflowInstanceCompleted.v1", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowInstanceInterrupted.v1", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowInstanceCanceled.v1", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowInstanceResumed.v1", 1 }, project_workflow_instance },
     };
 
     events::OutboxRelayResult relay_result{};

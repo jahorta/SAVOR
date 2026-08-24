@@ -322,7 +322,6 @@ public:
                 .worksets = {{
                     .job_set_id = ensured.job_set_id,
                     .workflow_step_id = context.step.workflow_step_id,
-                    .root_job_set_id = ensured.job_set_id,
                     .workset_key = materialization_key + ".workset.0",
                     .program_kind = static_cast<std::int32_t>(savor::PK_BattleContext),
                     .program_version = savor::runtime::battlecontext::ProgramVersion,
@@ -359,7 +358,7 @@ public:
                 }},
                 .requested_by = std::string(kCreatedBy),
             }, &published, error_out)) return false;
-        result_out->root_job_set_id = ensured.job_set_id;
+        result_out->job_set_id = ensured.job_set_id;
         result_out->persistence = {
             .program_ref_kind = std::string(kProgramRefKind),
             .program_ref_id = context_id,
@@ -376,7 +375,7 @@ public:
                   std::string* error_out) const override {
         if (!result_out || !analysis_db_ || !execution_db_)
             return Fail("Battle Context continuation is incomplete", error_out);
-        const auto jobs = execution_db_->ListJobsInJobSet(context.root_job_set_id);
+        const auto jobs = execution_db_->ListJobsInJobSet(context.job_set_id);
         if (jobs.size() != 1) return Fail("Battle Context continuation lost singleton shape", error_out);
         const auto job = execution_db_->GetExecutionJob(jobs.front().job_id);
         if (!job || job->program_ref_kind != kProgramRefKind)
@@ -416,7 +415,7 @@ public:
         };
         if (!state_db_ || !analysis_db_ || !phase_ || context.items.size() != 1
             || context.workset_id <= 0 || context.dispatch_attempt_id <= 0
-            || context.workflow_step_id <= 0 || context.root_job_set_id <= 0
+            || context.workflow_step_id <= 0 || context.job_set_id <= 0
             || context.dispatch_token.empty() || !context.state_compatibility.Complete())
             return fail("Battle Context reconstruction requires one exact item");
         const auto& item = context.items.front();
@@ -444,7 +443,7 @@ public:
         workset.phase_invocation = {
             .invocation_id = {
                 .workflow_step_id = static_cast<std::uint64_t>(context.workflow_step_id),
-                .root_job_set_id = static_cast<std::uint64_t>(context.root_job_set_id),
+                .job_set_id = static_cast<std::uint64_t>(context.job_set_id),
             },
             .program_package = savor::runtime::fullphase::BuildFullPhaseProgramPackage(*phase_),
             .common_input = savor::runtime::fullphase::MakeFullPhaseCommonInput(
@@ -645,7 +644,6 @@ ProgramKindDescriptor BuildBattleContextProgramDescriptor(
     descriptor.result_handler = std::make_shared<ResultHandler>(
         state_db, analysis_db, config.working_dir_root);
     descriptor.supports_workflow_orchestration = true;
-    descriptor.allow_mixed_success_failed_transition = false;
     return descriptor;
 }
 

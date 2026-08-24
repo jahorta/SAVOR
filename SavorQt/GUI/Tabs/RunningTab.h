@@ -5,6 +5,7 @@
 #include <functional>
 
 class CoordinatorController;
+class QEvent;
 class QFrame;
 class QLabel;
 class QPushButton;
@@ -12,12 +13,15 @@ class QSpinBox;
 class QTabWidget;
 class QTableWidget;
 class QVBoxLayout;
+class QPoint;
 
 class RunningTab final : public savorqt::gui::WorkspacePageShell
 {
 public:
     struct Actions {
         std::function<void()> openWorkflows;
+        std::function<void(qint64)> openWorkflow;
+        std::function<void(qint64)> retryWorkflowJobs;
         std::function<void()> openJobs;
         std::function<void()> openWorkers;
         std::function<void()> openCoordinatorSettings;
@@ -26,12 +30,16 @@ public:
     };
 
     explicit RunningTab(CoordinatorController* coordinatorController, Actions actions, QWidget* parent = nullptr);
+    void requestRefresh();
 
 private:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void build();
     void refreshCockpit();
     void showOperationalDetails();
     void refreshDetailsButton();
+    void openSelectedWorkflow();
+    void showWorkflowContextMenu(const QPoint& position);
 
     CoordinatorController* coordinatorController_ = nullptr;
     Actions actions_;

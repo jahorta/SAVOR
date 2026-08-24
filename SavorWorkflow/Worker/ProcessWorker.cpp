@@ -187,6 +187,11 @@ std::uint32_t RemainingMilliseconds(
 ProcessWorker::~ProcessWorker()
 {
     stop();
+    if (!confirm_process_exit())
+    {
+        std::lock_guard<std::mutex> lock(stop_mutex_);
+        close_process_handles(&last_stop_snapshot_);
+    }
     const auto callback_deadline =
         std::chrono::steady_clock::now() +
         kProcessWorkerDefaultCallbackCleanupGrace;
@@ -2938,7 +2943,17 @@ void ProcessWorker::stop()
         shutdown_reported_graceful &&
         snapshot.process_wait_result == WAIT_OBJECT_0;
 
-    close_process_handles(&snapshot);
+    const bool process_exit_confirmed =
+        !process_handle_ || snapshot.process_wait_result == WAIT_OBJECT_0;
+    if (process_exit_confirmed)
+    {
+        close_process_handles(&snapshot);
+    }
+    else if (child_stdout_read_)
+    {
+        CloseHandle(child_stdout_read_);
+        child_stdout_read_ = nullptr;
+    }
     {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         snapshot_.running = false;
@@ -2956,6 +2971,35 @@ void ProcessWorker::stop()
         stop_completed_ = true;
     }
     stop_completion_cv_.notify_all();
+}
+
+bool ProcessWorker::confirm_process_exit()
+{
+    {
+        std::lock_guard<std::mutex> completion_lock(stop_completion_mutex_);
+        if (stop_started_.load(std::memory_order_acquire) && !stop_completed_)
+            return false;
+    }
+
+    std::lock_guard<std::mutex> lock(stop_mutex_);
+    if (!process_handle_)
+        return true;
+
+    const DWORD wait_result = WaitForSingleObject(process_handle_, 0);
+    last_stop_snapshot_.process_wait_result = wait_result;
+    if (wait_result == WAIT_FAILED)
+    {
+        last_stop_snapshot_.process_wait_error = GetLastError();
+        return false;
+    }
+    if (wait_result != WAIT_OBJECT_0)
+        return false;
+
+    DWORD exit_code = 0;
+    if (GetExitCodeProcess(process_handle_, &exit_code))
+        last_stop_snapshot_.process_exit_code = exit_code;
+    close_process_handles(&last_stop_snapshot_);
+    return true;
 }
 
 void ProcessWorker::close_process_handles(

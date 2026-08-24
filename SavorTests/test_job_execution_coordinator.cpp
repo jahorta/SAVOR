@@ -60,7 +60,7 @@ TEST(WorksetJobOrganizer, GroupsCompatibleFailedJobsAcrossSourceWorksets) {
         job.workflow_step_id = 701;
         job.job_id = job_id;
         job.job_set_id = 702;
-        job.root_job_set_id = 702;
+        job.job_set_id = 702;
         job.source_workset_id = source_workset_id;
         job.priority = priority;
         job.estimated_item_payload_bytes = 10;
@@ -537,7 +537,7 @@ public:
                 static_cast<std::int64_t>(2000 + index);
             claimed.job_set_id = 10;
             claimed.workflow_step_id = 11;
-            claimed.root_job_set_id = 10;
+            claimed.job_set_id = 10;
             claimed.workset_key =
                 "scripted-" + std::to_string(index);
             claimed.program_kind = 1;

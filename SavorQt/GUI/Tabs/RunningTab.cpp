@@ -14,12 +14,14 @@
 #include <QtCore/QFileInfo>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTimeZone>
+#include <QtGui/QKeyEvent>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSizePolicy>
@@ -37,6 +39,8 @@
 #include <vector>
 
 namespace {
+constexpr int kWorkflowIdRole = Qt::UserRole + 1;
+constexpr int kRetryableJobsRole = Qt::UserRole + 2;
 
 struct JobBuckets {
     std::vector<savor::db::UiJobSummary> queued;
@@ -65,6 +69,7 @@ struct RunningWorkflowRow {
     QString workflow;
     QString kind;
     QString state;
+    qint64 retryable = 0;
     QString progress;
     QString current;
     qint64 done = 0;
@@ -535,6 +540,7 @@ bool runningWorkflowRowsEqual(const RunningWorkflowRow& lhs, const RunningWorkfl
         && lhs.workflow == rhs.workflow
         && lhs.kind == rhs.kind
         && lhs.state == rhs.state
+        && lhs.retryable == rhs.retryable
         && lhs.progress == rhs.progress
         && lhs.current == rhs.current
         && lhs.done == rhs.done
@@ -555,16 +561,31 @@ bool runningWorkerRowsEqual(const RunningWorkerRow& lhs, const RunningWorkerRow&
 void populateRunningWorkflowRow(QTableWidget* table, int row, const RunningWorkflowRow& workflow)
 {
     table->setItem(row, 0, createTableItem(workflow.workflow));
+    table->item(row, 0)->setData(kWorkflowIdRole, workflow.workflowInstanceId);
     table->setItem(row, 1, createTableItem(workflow.kind));
-    table->setItem(row, 2, createTableItem(workflow.state));
+    auto* stateItem = createTableItem(workflow.state);
+    auto* retryableItem = createTableItem(QString::number(workflow.retryable));
+    retryableItem->setData(kRetryableJobsRole, workflow.retryable);
+    if (workflow.state == QStringLiteral("FAILED") || workflow.state == QStringLiteral("INTERRUPTED")) {
+        QFont attentionFont = stateItem->font();
+        attentionFont.setBold(true);
+        stateItem->setFont(attentionFont);
+        retryableItem->setFont(attentionFont);
+        const QString tooltip = QStringLiteral("This workflow needs attention and has %1 retryable job(s).")
+            .arg(workflow.retryable);
+        stateItem->setToolTip(tooltip);
+        retryableItem->setToolTip(tooltip);
+    }
+    table->setItem(row, 2, stateItem);
+    table->setItem(row, 3, retryableItem);
     auto* progressItem = createTableItem(workflow.progress);
     progressItem->setData(savorqt::gui::SegmentedProgressRoles::Text, workflow.progress);
     progressItem->setData(savorqt::gui::SegmentedProgressRoles::Done, workflow.done);
     progressItem->setData(savorqt::gui::SegmentedProgressRoles::Remaining, workflow.remaining);
     progressItem->setData(savorqt::gui::SegmentedProgressRoles::Failed, workflow.failed);
     progressItem->setData(savorqt::gui::SegmentedProgressRoles::Canceled, workflow.canceled);
-    table->setItem(row, 3, progressItem);
-    table->setItem(row, 4, createTableItem(workflow.current));
+    table->setItem(row, 4, progressItem);
+    table->setItem(row, 5, createTableItem(workflow.current));
 }
 
 void populateRunningWorkerRow(QTableWidget* table, int row, const RunningWorkerRow& worker)
@@ -649,9 +670,7 @@ QString workflowCurrentText(
     return QStringLiteral("--");
 }
 
-RunningWorkflowRow prepareWorkflowRow(
-    const savor::db::UiWorkflowInstanceSummary& workflow,
-    const std::unordered_map<std::int64_t, qint64>& failedJobsByJobSet)
+RunningWorkflowRow prepareWorkflowRow(const savor::db::UiWorkflowInstanceSummary& workflow)
 {
     const auto detailResult = savorqt::db::SavorDbWorkflowService::GetWorkflowDetail(workflow.workflow_instance_id);
     const std::optional<savor::db::UiWorkflowDetail> detail =
@@ -666,21 +685,15 @@ RunningWorkflowRow prepareWorkflowRow(
         for (const auto& step : detail->steps) {
             total += static_cast<qint64>(step.job_count);
             qint64 stepFailed = static_cast<qint64>(step.job_failed_count);
-            if (step.job_set_id.has_value()) {
-                const auto failedIt = failedJobsByJobSet.find(*step.job_set_id);
-                if (failedIt != failedJobsByJobSet.end()) {
-                    stepFailed = (std::max)(stepFailed, failedIt->second);
-                }
-            }
-            qint64 stepCompleted = static_cast<qint64>(step.job_completed_count);
-            if (stepCompleted == 0
+            qint64 stepSettled = static_cast<qint64>(step.job_settled_count);
+            if (stepSettled == 0
                 && stepFailed == 0
                 && step.job_count > 0
                 && step.state == "COMPLETED") {
-                stepCompleted = static_cast<qint64>(step.job_count);
+                stepSettled = static_cast<qint64>(step.job_count);
             }
             failed += stepFailed;
-            done += (std::max<qint64>)(0, stepCompleted - stepFailed);
+            done += (std::max<qint64>)(0, stepSettled - stepFailed);
         }
     }
     const qint64 canceled = 0;
@@ -701,6 +714,7 @@ RunningWorkflowRow prepareWorkflowRow(
         QStringLiteral("#%1").arg(workflow.workflow_instance_id),
         qs(workflow.workflow_kind),
         qs(workflow.display_state.empty() ? workflow.state : workflow.display_state),
+        workflow.retryable_job_count,
         progress,
         workflowCurrentText(workflow, detail),
         done,
@@ -721,20 +735,11 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     savor::db::UiReadJobListQuery jobQuery{};
     const auto jobs = savorqt::db::SavorDbJobService::FetchJobsPage(jobQuery, std::nullopt, std::nullopt, 100);
     const auto jobCounts = savorqt::db::SavorDbJobService::CountJobsByState(jobQuery);
-    savor::db::UiReadJobListQuery failedJobQuery{};
-    failedJobQuery.states = { "FAILED" };
-    const auto failedJobs = savorqt::db::SavorDbJobService::FetchJobsPage(failedJobQuery, std::nullopt, std::nullopt, 100);
 
     std::vector<savor::db::UiWorkflowInstanceSummary> workflowItems =
         workflows.ok ? workflows.value.items : std::vector<savor::db::UiWorkflowInstanceSummary>{};
     const std::vector<savor::db::UiJobSummary> jobItems =
         jobs.ok ? jobs.value.items : std::vector<savor::db::UiJobSummary>{};
-    std::unordered_map<std::int64_t, qint64> failedJobsByJobSet;
-    if (failedJobs.ok) {
-        for (const auto& failedJob : failedJobs.value.items) {
-            ++failedJobsByJobSet[failedJob.job_set_id];
-        }
-    }
     const savor::db::UiJobStateCounts counts = jobCounts.ok ? jobCounts.value : savor::db::UiJobStateCounts{};
 
     std::stable_sort(workflowItems.begin(), workflowItems.end(), [](const auto& lhs, const auto& rhs) {
@@ -808,7 +813,7 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
 
     data.workflowRows.reserve(workflowItems.size());
     for (const auto& workflow : workflowItems) {
-        data.workflowRows.push_back(prepareWorkflowRow(workflow, failedJobsByJobSet));
+        data.workflowRows.push_back(prepareWorkflowRow(workflow));
     }
 
     data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Queued"), jobBuckets.queued));
@@ -817,7 +822,7 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     data.queueBuckets.back().totalCount = static_cast<int>((std::min<std::int64_t>)(counts.claimed + counts.running, std::numeric_limits<int>::max()));
     data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Failed"), jobBuckets.failed));
     data.queueBuckets.back().totalCount = static_cast<int>((std::min<std::int64_t>)(counts.failed, std::numeric_limits<int>::max()));
-    data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Recently terminal"), jobBuckets.terminal));
+    data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Recently settled"), jobBuckets.terminal));
     data.queueBuckets.back().totalCount = static_cast<int>((std::min<std::int64_t>)(terminalJobCount(counts), std::numeric_limits<int>::max()));
 
     const int workerAttentionCount = static_cast<int>(std::count_if(request.workers.begin(), request.workers.end(), workerNeedsAttention));
@@ -922,6 +927,74 @@ RunningTab::RunningTab(CoordinatorController* coordinatorController, Actions act
     , actions_(std::move(actions))
 {
     build();
+}
+
+void RunningTab::requestRefresh()
+{
+    refreshCockpit();
+}
+
+bool RunningTab::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == workflowTable_ && event != nullptr && event->type() == QEvent::KeyPress) {
+        auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
+            openSelectedWorkflow();
+            return true;
+        }
+        if (keyEvent->key() == Qt::Key_Menu
+            || (keyEvent->key() == Qt::Key_F10 && keyEvent->modifiers().testFlag(Qt::ShiftModifier))) {
+            const QModelIndex index = workflowTable_->currentIndex();
+            if (index.isValid()) {
+                showWorkflowContextMenu(workflowTable_->visualRect(index).center());
+            }
+            return true;
+        }
+    }
+    return WorkspacePageShell::eventFilter(watched, event);
+}
+
+void RunningTab::openSelectedWorkflow()
+{
+    if (workflowTable_ == nullptr || workflowTable_->currentRow() < 0 || !actions_.openWorkflow) {
+        return;
+    }
+    const auto* item = workflowTable_->item(workflowTable_->currentRow(), 0);
+    const qint64 workflowId = item != nullptr ? item->data(kWorkflowIdRole).toLongLong() : 0;
+    if (workflowId > 0) {
+        actions_.openWorkflow(workflowId);
+    }
+}
+
+void RunningTab::showWorkflowContextMenu(const QPoint& position)
+{
+    if (workflowTable_ == nullptr) {
+        return;
+    }
+    const QModelIndex index = workflowTable_->indexAt(position);
+    if (!index.isValid()) {
+        return;
+    }
+    workflowTable_->selectRow(index.row());
+    const auto* idItem = workflowTable_->item(index.row(), 0);
+    const auto* retryableItem = workflowTable_->item(index.row(), 3);
+    const qint64 workflowId = idItem != nullptr ? idItem->data(kWorkflowIdRole).toLongLong() : 0;
+    const qint64 retryable = retryableItem != nullptr ? retryableItem->data(kRetryableJobsRole).toLongLong() : 0;
+    if (workflowId <= 0) {
+        return;
+    }
+
+    QMenu menu(workflowTable_);
+    auto* openAction = menu.addAction(QStringLiteral("Open workflow"));
+    QObject::connect(openAction, &QAction::triggered, workflowTable_, [this]() { openSelectedWorkflow(); });
+    if (retryable > 0 && actions_.retryWorkflowJobs) {
+        auto* retryAction = menu.addAction(
+            QStringLiteral("Retry failed or interrupted jobs (%1)").arg(retryable));
+        QObject::connect(retryAction, &QAction::triggered, workflowTable_, [this, workflowId]() {
+            actions_.retryWorkflowJobs(workflowId);
+        });
+    }
+    menu.exec(workflowTable_->viewport()->mapToGlobal(position));
 }
 
 void RunningTab::build()
@@ -1070,24 +1143,27 @@ void RunningTab::build()
     workflowTable_ = new QTableWidget(workflowPanel);
     configureTable(workflowTable_);
     workflowTable_->verticalHeader()->setDefaultSectionSize(34);
-    workflowTable_->setColumnCount(5);
+    workflowTable_->setColumnCount(6);
     workflowTable_->setHorizontalHeaderLabels(QStringList{
         QStringLiteral("Workflow"),
         QStringLiteral("Kind"),
         QStringLiteral("State"),
+        QStringLiteral("Retryable"),
         QStringLiteral("Progress"),
         QStringLiteral("Current / Problems"),
     });
     workflowTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     workflowTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     workflowTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    workflowTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    workflowTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     workflowTable_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
-    workflowTable_->setItemDelegateForColumn(3, new savorqt::gui::SegmentedProgressDelegate(workflowTable_));
-    QObject::connect(workflowTable_, &QTableWidget::cellDoubleClicked, workflowTable_, [this](int, int) {
-        if (actions_.openWorkflows) {
-            actions_.openWorkflows();
-        }
+    workflowTable_->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+    workflowTable_->setItemDelegateForColumn(4, new savorqt::gui::SegmentedProgressDelegate(workflowTable_));
+    workflowTable_->setContextMenuPolicy(Qt::CustomContextMenu);
+    workflowTable_->installEventFilter(this);
+    QObject::connect(workflowTable_, &QTableWidget::cellDoubleClicked, workflowTable_, [this](int, int) { openSelectedWorkflow(); });
+    QObject::connect(workflowTable_, &QWidget::customContextMenuRequested, workflowTable_, [this](const QPoint& position) {
+        showWorkflowContextMenu(position);
     });
     workflowLayout->addWidget(workflowTable_, 1);
     cockpitLayout->addWidget(workflowPanel, 1);

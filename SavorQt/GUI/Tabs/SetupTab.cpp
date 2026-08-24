@@ -191,16 +191,6 @@ QString describeSpecRef(const std::optional<std::string>& refKind, const std::op
 
     const QString kind = qs(*refKind);
     const auto id = *refId;
-    if (*refKind == "tas_spec") {
-        const auto spec = savorqt::db::SavorDbAuthoringService::GetTasSpec(id);
-        if (!spec.ok) {
-            return QStringLiteral("TAS spec #%1 unavailable: %2").arg(id).arg(qs(spec.error.message));
-        }
-        return QStringLiteral("TAS spec: %1 (#%2)\n  base DTM artifact: %3")
-            .arg(qs(spec.value.base_name))
-            .arg(id)
-            .arg(spec.value.base_dtm_artifact_id);
-    }
     if (*refKind == "seed_probe_spec") {
         const auto spec = savorqt::db::SavorDbAuthoringService::GetSeedProbeSpec(id);
         if (!spec.ok) {
@@ -220,9 +210,10 @@ QString describeSpecRef(const std::optional<std::string>& refKind, const std::op
         }
         std::size_t actionCount = 0;
         for (const auto& turn : plan.value.turns) actionCount += turn.actions.size();
-        return QStringLiteral("Battle Plan: %1 (#%2)\n  turns: %3\n  actions: %4\n  fingerprint: %5")
+        return QStringLiteral("Battle Plan: %1 (#%2)\n  description: %3\n  turns: %4\n  actions: %5\n  fingerprint: %6")
             .arg(qs(plan.value.name))
             .arg(id)
+            .arg(qs(plan.value.description))
             .arg(static_cast<int>(plan.value.turns.size()))
             .arg(static_cast<qulonglong>(actionCount))
             .arg(qs(plan.value.fingerprint));

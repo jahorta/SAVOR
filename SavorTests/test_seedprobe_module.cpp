@@ -592,8 +592,8 @@ ProgramJobMaterializationContext TestMaterializationContext(
             WorkflowStepScheduleContext{
                 .workflow_instance_id = workflow_step_id - 1,
                 .workflow_step_id = workflow_step_id,
-                .step_key = "seedprobe.run",
-                .step_kind = "seedprobe.run",
+                .step_key = "seedprobe.survey",
+                .step_kind = "seedprobe.survey",
                 .domain_ref_id = 0,
                 .step_priority = 0,
             },
@@ -602,10 +602,10 @@ ProgramJobMaterializationContext TestMaterializationContext(
                 .workflow_instance_id = workflow_step_id - 1,
                 .workflow_step_id = workflow_step_id,
                 .workflow_graph_revision_id = 1,
-                .step_key = "seedprobe.run",
-                .step_kind = "seedprobe.run",
-                .activation_key = "seedprobe.run",
-                .activation_graph_node_key = "seedprobe.run",
+                .step_key = "seedprobe.survey",
+                .step_kind = "seedprobe.survey",
+                .activation_key = "seedprobe.survey",
+                .activation_graph_node_key = "seedprobe.survey",
                 .unit_kind = "seed_probe",
                 .activation_params_json = "{}",
                 .authored_ref_kind =
@@ -615,7 +615,7 @@ ProgramJobMaterializationContext TestMaterializationContext(
                 .input_bindings =
                     {
                         WorkflowGraphInputBinding{
-                            .node_key = "seedprobe.run",
+                            .node_key = "seedprobe.survey",
                             .input_key = "entry_savestate",
                             .data_kind = "state.movie_inactive_savestate_id",
                             .ref_kind = "state.savestate",
@@ -626,7 +626,7 @@ ProgramJobMaterializationContext TestMaterializationContext(
                 .arguments =
                     {
                         WorkflowGraphArgument{
-                            .node_key = "seedprobe.run",
+                            .node_key = "seedprobe.survey",
                             .argument_key = "samples_per_axis",
                             .value_type = "INTEGER",
                             .integer_value = 1,
@@ -786,7 +786,6 @@ std::optional<CreatedJobSet> CreateTestJobSet(
             {
                 .materialization_key =
                     std::move(materialization_key),
-                .parent_job_set_id = parent_job_set_id,
                 .program_kind =
                     static_cast<std::int32_t>(
                         savor::PK_SeedProbe),
@@ -853,10 +852,30 @@ std::optional<CreatedJobSet> CreateTestJobSet(
     return created;
 }
 
+std::optional<CreatedJobSet> CreateTestJobSet(
+    savor::db::IExecutionDb* execution_db,
+    std::string materialization_key,
+    std::string purpose,
+    std::string meta_note,
+    std::int64_t probe_run_id,
+    const std::vector<SeedProbeJobSpec>& specs,
+    std::string* error_out)
+{
+    return CreateTestJobSet(
+        execution_db,
+        std::move(materialization_key),
+        std::nullopt,
+        std::move(purpose),
+        std::move(meta_note),
+        probe_run_id,
+        specs,
+        error_out);
+}
+
 struct ManualRun
 {
     std::int64_t probe_run_id = 0;
-    std::int64_t root_job_set_id = 0;
+    std::int64_t job_set_id = 0;
     std::int64_t neutral_input_frame_id = 0;
     std::int64_t neutral_job_id = 0;
     std::int64_t neutral_result_id = 0;
@@ -1047,7 +1066,7 @@ std::optional<ManualRun> CreateManualRun(
     }
     return ManualRun{
         .probe_run_id = run_id,
-        .root_job_set_id = root->job_set_id,
+        .job_set_id = root->job_set_id,
         .neutral_input_frame_id = neutral_frame_id,
         .neutral_job_id = root->job_ids.front(),
         .neutral_result_id = *neutral_result,
@@ -1191,7 +1210,7 @@ std::optional<SeedProbeRequestV2> ReconstructSeedProbeRequest(
                 .dispatch_attempt_id =
                     dispatch_attempt_id,
                 .workflow_step_id = workflow_step_id,
-                .root_job_set_id = root_job_set_id,
+                .job_set_id = root_job_set_id,
                 .dispatch_token =
                     "seedprobe-descriptor-test-claim",
                 .contract_key =
@@ -1861,706 +1880,6 @@ TEST(SeedProbeModule, RejectsFramePcDeliveryAndEpochMismatches)
 
 TEST_F(
     SqliteDbFixture,
-    SeedProbeConfirmRecoveryReusesActualDeltaSiblingAndOmitsExhaustedDelta)
-{
-    auto* execution_db = db_service_->ExecutionDb();
-    auto* state_db = db_service_->StateDb();
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* authoring_db = db_service_->AuthoringDb();
-    ASSERT_NE(execution_db, nullptr);
-    ASSERT_NE(state_db, nullptr);
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(authoring_db, nullptr);
-    ASSERT_TRUE(EnsureTestSavestate(db_, temp_root_));
-    ASSERT_TRUE(EnsureTestWorkflowStep(db_, 63002));
-
-    std::string error;
-    const auto spec_id = SaveTestSeedProbeSpec(
-        authoring_db,
-        1,
-        1,
-        "seedprobe-descriptor-recovery",
-        &error);
-    ASSERT_TRUE(spec_id.has_value()) << error;
-    const auto run = CreateManualRun(
-        execution_db,
-        analysis_db,
-        *spec_id,
-        SeedProbeRunStatus::Confirm,
-        SeedProbeEvidenceState::Confirmed,
-        "seedprobe-search-recovery",
-        &error);
-    ASSERT_TRUE(run.has_value()) << error;
-    ASSERT_TRUE(SetJobState(
-        db_,
-        run->neutral_job_id,
-        "SUCCEEDED"));
-
-    std::array<std::int64_t, 3> frame_ids{};
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeInputFrame(
-        0x8180,
-        0x8080,
-        0x0000,
-        &frame_ids[0],
-        &error)) << error;
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeInputFrame(
-        0x8280,
-        0x8080,
-        0x0000,
-        &frame_ids[1],
-        &error)) << error;
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeInputFrame(
-        0x8380,
-        0x8080,
-        0x0000,
-        &frame_ids[2],
-        &error)) << error;
-    const std::vector<SeedProbeJobSpec> search_specs{
-        {
-            .version = 1,
-            .stage = SeedProbeJobStage::Search,
-            .input_frame_id = frame_ids[0],
-            .sample_ordinal = 0,
-            .desired_delta = 5,
-        },
-        {
-            .version = 1,
-            .stage = SeedProbeJobStage::Search,
-            .input_frame_id = frame_ids[1],
-            .sample_ordinal = 1,
-            .desired_delta = 5,
-        },
-        {
-            .version = 1,
-            .stage = SeedProbeJobStage::Search,
-            .input_frame_id = frame_ids[2],
-            .sample_ordinal = 2,
-            .desired_delta = 7,
-        },
-    };
-    const auto search = CreateTestJobSet(
-        execution_db,
-        "seedprobe-search-recovery.search",
-        run->root_job_set_id,
-        "SEEDPROBE_SEARCH",
-        "stage=SEARCH",
-        run->probe_run_id,
-        search_specs,
-        &error);
-    ASSERT_TRUE(search.has_value()) << error;
-    ASSERT_EQ(search->job_ids.size(), 3u);
-    for (const auto job_id : search->job_ids)
-        ASSERT_TRUE(SetJobState(db_, job_id, "SUCCEEDED"));
-
-    const auto rejected_five = RecordObservation(
-        analysis_db,
-        run->probe_run_id,
-        frame_ids[0],
-        search->job_ids[0],
-        105,
-        1,
-        1,
-        50,
-        std::nullopt,
-        'b',
-        &error);
-    ASSERT_TRUE(rejected_five.has_value()) << error;
-    ASSERT_TRUE(TransitionEvidence(
-        analysis_db,
-        *rejected_five,
-        SeedProbeEvidenceState::Observed,
-        SeedProbeEvidenceState::Provisional,
-        &error)) << error;
-    ASSERT_TRUE(TransitionEvidence(
-        analysis_db,
-        *rejected_five,
-        SeedProbeEvidenceState::Provisional,
-        SeedProbeEvidenceState::Rejected,
-        &error)) << error;
-
-    const auto matching_sibling = RecordObservation(
-        analysis_db,
-        run->probe_run_id,
-        frame_ids[1],
-        search->job_ids[1],
-        105,
-        1,
-        1,
-        51,
-        std::nullopt,
-        'c',
-        &error);
-    ASSERT_TRUE(matching_sibling.has_value()) << error;
-
-    const auto rejected_seven = RecordObservation(
-        analysis_db,
-        run->probe_run_id,
-        frame_ids[2],
-        search->job_ids[2],
-        107,
-        1,
-        1,
-        52,
-        std::nullopt,
-        'e',
-        &error);
-    ASSERT_TRUE(rejected_seven.has_value()) << error;
-    ASSERT_TRUE(TransitionEvidence(
-        analysis_db,
-        *rejected_seven,
-        SeedProbeEvidenceState::Observed,
-        SeedProbeEvidenceState::Provisional,
-        &error)) << error;
-    ASSERT_TRUE(TransitionEvidence(
-        analysis_db,
-        *rejected_seven,
-        SeedProbeEvidenceState::Provisional,
-        SeedProbeEvidenceState::Rejected,
-        &error)) << error;
-
-    const auto descriptor = BuildSeedProbeProgramDescriptor(
-        execution_db,
-        state_db,
-        analysis_db,
-        authoring_db,
-        SeedProbeProgramConfig{
-            .working_dir_root = temp_root_,
-            .maximum_items_per_workset = 16,
-        });
-    auto materialization =
-        TestMaterializationContext(*spec_id, 63002);
-    materialization.step.domain_ref_id =
-        run->probe_run_id;
-    ProgramJobContinuationContext continuation_context{
-        .materialization = materialization,
-        .root_job_set_id = run->root_job_set_id,
-        .expected_total = 4,
-        .discovered_total = 4,
-        .terminal_total = 4,
-        .failed_total = 0,
-    };
-    ProgramJobContinuationResult recovered{};
-    ASSERT_TRUE(descriptor.job_materializer->Continue(
-        continuation_context,
-        &recovered,
-        &error)) << error;
-    EXPECT_EQ(
-        recovered.disposition,
-        ProgramJobContinuationDisposition::AddedWork);
-    const auto recovered_sibling =
-        analysis_db->GetSeedProbeResult(
-            *matching_sibling);
-    ASSERT_TRUE(recovered_sibling.has_value());
-    EXPECT_EQ(
-        recovered_sibling->evidence_state,
-        SeedProbeEvidenceState::Provisional);
-    EXPECT_EQ(
-        analysis_db
-            ->GetSeedProbeResult(*rejected_five)
-            ->evidence_state,
-        SeedProbeEvidenceState::Rejected);
-    EXPECT_EQ(
-        analysis_db
-            ->GetSeedProbeResult(*rejected_seven)
-            ->evidence_state,
-        SeedProbeEvidenceState::Rejected);
-
-    const auto children =
-        execution_db->GetChildJobSetProgress(
-            run->root_job_set_id);
-    const auto confirm_child = std::ranges::find(
-        children,
-        std::string("SEEDPROBE_CONFIRM"),
-        &savor::db::ExecutionChildJobSetProgressDetails::
-            purpose);
-    ASSERT_NE(confirm_child, children.end());
-    const auto confirm_jobs =
-        execution_db->ListJobsInJobSet(
-            confirm_child->job_set_id);
-    ASSERT_EQ(confirm_jobs.size(), 1u);
-    const auto confirm_job =
-        execution_db->GetExecutionJob(
-            confirm_jobs.front().job_id);
-    ASSERT_TRUE(confirm_job.has_value());
-    const auto confirm_spec =
-        DecodeSeedProbeJobSpec(confirm_job->input_ini);
-    ASSERT_TRUE(confirm_spec.has_value());
-    EXPECT_EQ(
-        confirm_spec->confirmation_of_probe_result_id,
-        *matching_sibling);
-
-    const auto confirm_decision =
-        descriptor.result_handler->Process(
-            SuccessfulResultContext(
-                analysis_db,
-                *confirm_job,
-                105,
-                2,
-                1,
-                51));
-    EXPECT_EQ(
-        confirm_decision.final_job_state,
-        "SUCCEEDED");
-    ASSERT_TRUE(SetJobState(
-        db_,
-        confirm_job->job_id,
-        "SUCCEEDED"));
-
-    ProgramJobContinuationResult partial{};
-    ASSERT_TRUE(descriptor.job_materializer->Continue(
-        continuation_context,
-        &partial,
-        &error)) << error;
-    ASSERT_EQ(
-        partial.disposition,
-        ProgramJobContinuationDisposition::Complete);
-    ASSERT_TRUE(partial.output.has_value());
-    const auto completed_run =
-        analysis_db->GetSeedProbeRun(
-            run->probe_run_id);
-    ASSERT_TRUE(completed_run.has_value());
-    EXPECT_EQ(
-        completed_run->status,
-        SeedProbeRunStatus::CompletedPartial);
-    const auto accepted =
-        analysis_db->ListAnalysisInputSetFrames(
-            completed_run->accepted_input_set_id);
-    ASSERT_EQ(accepted.size(), 2u);
-    EXPECT_EQ(
-        accepted[0].input_frame_id,
-        run->neutral_input_frame_id);
-    EXPECT_EQ(
-        accepted[1].input_frame_id,
-        frame_ids[1]);
-    EXPECT_EQ(
-        analysis_db
-            ->GetSeedProbeResult(*matching_sibling)
-            ->evidence_state,
-        SeedProbeEvidenceState::Confirmed);
-}
-
-TEST_F(
-    SqliteDbFixture,
-    SeedProbeConfirmRecoveryPrefersLaterGridCandidateOverSearchCandidate)
-{
-    auto* execution_db = db_service_->ExecutionDb();
-    auto* state_db = db_service_->StateDb();
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* authoring_db = db_service_->AuthoringDb();
-    ASSERT_NE(execution_db, nullptr);
-    ASSERT_NE(state_db, nullptr);
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(authoring_db, nullptr);
-    ASSERT_TRUE(EnsureTestSavestate(db_, temp_root_));
-    ASSERT_TRUE(EnsureTestWorkflowStep(db_, 64002));
-
-    std::string error;
-    const auto spec_id = SaveTestSeedProbeSpec(
-        authoring_db,
-        1,
-        1,
-        "seedprobe-grid-candidate-recovery",
-        &error);
-    ASSERT_TRUE(spec_id.has_value()) << error;
-    const auto run = CreateManualRun(
-        execution_db,
-        analysis_db,
-        *spec_id,
-        SeedProbeRunStatus::Confirm,
-        SeedProbeEvidenceState::Confirmed,
-        "seedprobe-grid-candidate-recovery",
-        &error);
-    ASSERT_TRUE(run.has_value()) << error;
-    ASSERT_TRUE(SetJobState(
-        db_,
-        run->neutral_job_id,
-        "SUCCEEDED"));
-
-    std::array<std::int64_t, 3> frame_ids{};
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeInputFrame(
-        0x8180,
-        0x8080,
-        0x0000,
-        &frame_ids[0],
-        &error)) << error;
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeInputFrame(
-        0x8280,
-        0x8080,
-        0x0000,
-        &frame_ids[1],
-        &error)) << error;
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeInputFrame(
-        0x8181,
-        0x8180,
-        0x0000,
-        &frame_ids[2],
-        &error)) << error;
-
-    const std::vector<SeedProbeJobSpec> survey_specs{
-        {
-            .version = 1,
-            .stage = SeedProbeJobStage::Survey,
-            .input_frame_id = frame_ids[0],
-            .sample_ordinal = 1,
-        },
-        {
-            .version = 1,
-            .stage = SeedProbeJobStage::Survey,
-            .input_frame_id = frame_ids[1],
-            .sample_ordinal = 2,
-        },
-    };
-    const auto survey = CreateTestJobSet(
-        execution_db,
-        "seedprobe-grid-candidate-recovery.survey",
-        run->root_job_set_id,
-        "SEEDPROBE_SURVEY_FIXTURE",
-        "stage=SURVEY",
-        run->probe_run_id,
-        survey_specs,
-        &error);
-    ASSERT_TRUE(survey.has_value()) << error;
-    ASSERT_EQ(survey->job_ids.size(), 2u);
-    const std::vector<SeedProbeJobSpec> search_specs{
-        {
-            .version = 1,
-            .stage = SeedProbeJobStage::Search,
-            .input_frame_id = frame_ids[2],
-            .sample_ordinal = 0,
-            .desired_delta = 5,
-        },
-    };
-    const auto search = CreateTestJobSet(
-        execution_db,
-        "seedprobe-grid-candidate-recovery.search",
-        run->root_job_set_id,
-        "SEEDPROBE_SEARCH",
-        "stage=SEARCH",
-        run->probe_run_id,
-        search_specs,
-        &error);
-    ASSERT_TRUE(search.has_value()) << error;
-    ASSERT_EQ(search->job_ids.size(), 1u);
-    for (const auto job_id : survey->job_ids)
-        ASSERT_TRUE(SetJobState(db_, job_id, "SUCCEEDED"));
-    ASSERT_TRUE(SetJobState(
-        db_,
-        search->job_ids.front(),
-        "SUCCEEDED"));
-
-    const auto rejected_grid = RecordObservation(
-        analysis_db,
-        run->probe_run_id,
-        frame_ids[0],
-        survey->job_ids[0],
-        105,
-        1,
-        1,
-        50,
-        std::nullopt,
-        'b',
-        &error);
-    ASSERT_TRUE(rejected_grid.has_value()) << error;
-    ASSERT_TRUE(TransitionEvidence(
-        analysis_db,
-        *rejected_grid,
-        SeedProbeEvidenceState::Observed,
-        SeedProbeEvidenceState::Provisional,
-        &error)) << error;
-    ASSERT_TRUE(TransitionEvidence(
-        analysis_db,
-        *rejected_grid,
-        SeedProbeEvidenceState::Provisional,
-        SeedProbeEvidenceState::Rejected,
-        &error)) << error;
-
-    const auto replacement_grid = RecordObservation(
-        analysis_db,
-        run->probe_run_id,
-        frame_ids[1],
-        survey->job_ids[1],
-        105,
-        1,
-        1,
-        51,
-        std::nullopt,
-        'c',
-        &error);
-    ASSERT_TRUE(replacement_grid.has_value()) << error;
-    const auto search_candidate = RecordObservation(
-        analysis_db,
-        run->probe_run_id,
-        frame_ids[2],
-        search->job_ids.front(),
-        105,
-        1,
-        1,
-        52,
-        std::nullopt,
-        'd',
-        &error);
-    ASSERT_TRUE(search_candidate.has_value()) << error;
-
-    const auto descriptor = BuildSeedProbeProgramDescriptor(
-        execution_db,
-        state_db,
-        analysis_db,
-        authoring_db,
-        SeedProbeProgramConfig{
-            .working_dir_root = temp_root_,
-            .maximum_items_per_workset = 16,
-        });
-    auto materialization =
-        TestMaterializationContext(*spec_id, 64002);
-    materialization.step.domain_ref_id =
-        run->probe_run_id;
-    ProgramJobContinuationContext continuation_context{
-        .materialization = materialization,
-        .root_job_set_id = run->root_job_set_id,
-        .expected_total = 4,
-        .discovered_total = 4,
-        .terminal_total = 4,
-        .failed_total = 0,
-    };
-    ProgramJobContinuationResult recovered{};
-    ASSERT_TRUE(descriptor.job_materializer->Continue(
-        continuation_context,
-        &recovered,
-        &error)) << error;
-    EXPECT_EQ(
-        recovered.disposition,
-        ProgramJobContinuationDisposition::AddedWork);
-    EXPECT_EQ(
-        analysis_db
-            ->GetSeedProbeResult(*replacement_grid)
-            ->evidence_state,
-        SeedProbeEvidenceState::Provisional);
-    EXPECT_EQ(
-        analysis_db
-            ->GetSeedProbeResult(*search_candidate)
-            ->evidence_state,
-        SeedProbeEvidenceState::Observed);
-
-    const auto children =
-        execution_db->GetChildJobSetProgress(
-            run->root_job_set_id);
-    const auto confirm_child = std::ranges::find(
-        children,
-        std::string("SEEDPROBE_CONFIRM"),
-        &savor::db::ExecutionChildJobSetProgressDetails::
-            purpose);
-    ASSERT_NE(confirm_child, children.end());
-    const auto confirm_jobs =
-        execution_db->ListJobsInJobSet(
-            confirm_child->job_set_id);
-    ASSERT_EQ(confirm_jobs.size(), 1u);
-    const auto confirm_job = execution_db->GetExecutionJob(
-        confirm_jobs.front().job_id);
-    ASSERT_TRUE(confirm_job.has_value());
-    const auto confirm_spec =
-        DecodeSeedProbeJobSpec(confirm_job->input_ini);
-    ASSERT_TRUE(confirm_spec.has_value());
-    EXPECT_EQ(
-        confirm_spec->confirmation_of_probe_result_id,
-        *replacement_grid);
-
-    const auto decision =
-        descriptor.result_handler->Process(
-            SuccessfulResultContext(
-                analysis_db,
-                *confirm_job,
-                105,
-                2,
-                1,
-                51));
-    EXPECT_EQ(decision.final_job_state, "SUCCEEDED");
-    ASSERT_TRUE(SetJobState(
-        db_,
-        confirm_job->job_id,
-        "SUCCEEDED"));
-
-    ProgramJobContinuationResult completed{};
-    ASSERT_TRUE(descriptor.job_materializer->Continue(
-        continuation_context,
-        &completed,
-        &error)) << error;
-    EXPECT_EQ(
-        completed.disposition,
-        ProgramJobContinuationDisposition::Complete);
-    const auto completed_run =
-        analysis_db->GetSeedProbeRun(run->probe_run_id);
-    ASSERT_TRUE(completed_run.has_value());
-    EXPECT_EQ(
-        completed_run->status,
-        SeedProbeRunStatus::Completed);
-    const auto accepted =
-        analysis_db->ListAnalysisInputSetFrames(
-            completed_run->accepted_input_set_id);
-    ASSERT_EQ(accepted.size(), 2u);
-    EXPECT_EQ(
-        accepted[0].input_frame_id,
-        run->neutral_input_frame_id);
-    EXPECT_EQ(
-        accepted[1].input_frame_id,
-        frame_ids[1]);
-}
-
-TEST_F(
-    SqliteDbFixture,
-    SeedProbeAllGridCandidatesRejectedOmitsDeltaAndCompletesPartial)
-{
-    auto* execution_db = db_service_->ExecutionDb();
-    auto* state_db = db_service_->StateDb();
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* authoring_db = db_service_->AuthoringDb();
-    ASSERT_NE(execution_db, nullptr);
-    ASSERT_NE(state_db, nullptr);
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(authoring_db, nullptr);
-    ASSERT_TRUE(EnsureTestSavestate(db_, temp_root_));
-    ASSERT_TRUE(EnsureTestWorkflowStep(db_, 65002));
-
-    std::string error;
-    const auto spec_id = SaveTestSeedProbeSpec(
-        authoring_db,
-        1,
-        1,
-        "seedprobe-grid-exhaustion",
-        &error);
-    ASSERT_TRUE(spec_id.has_value()) << error;
-    const auto run = CreateManualRun(
-        execution_db,
-        analysis_db,
-        *spec_id,
-        SeedProbeRunStatus::Confirm,
-        SeedProbeEvidenceState::Confirmed,
-        "seedprobe-grid-exhaustion",
-        &error);
-    ASSERT_TRUE(run.has_value()) << error;
-    ASSERT_TRUE(SetJobState(
-        db_,
-        run->neutral_job_id,
-        "SUCCEEDED"));
-
-    std::array<std::int64_t, 2> frame_ids{};
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeInputFrame(
-        0x8180,
-        0x8080,
-        0x0000,
-        &frame_ids[0],
-        &error)) << error;
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeInputFrame(
-        0x8280,
-        0x8080,
-        0x0000,
-        &frame_ids[1],
-        &error)) << error;
-    const std::vector<SeedProbeJobSpec> survey_specs{
-        {
-            .version = 1,
-            .stage = SeedProbeJobStage::Survey,
-            .input_frame_id = frame_ids[0],
-            .sample_ordinal = 1,
-        },
-        {
-            .version = 1,
-            .stage = SeedProbeJobStage::Survey,
-            .input_frame_id = frame_ids[1],
-            .sample_ordinal = 2,
-        },
-    };
-    const auto survey = CreateTestJobSet(
-        execution_db,
-        "seedprobe-grid-exhaustion.survey",
-        run->root_job_set_id,
-        "SEEDPROBE_SURVEY_FIXTURE",
-        "stage=SURVEY",
-        run->probe_run_id,
-        survey_specs,
-        &error);
-    ASSERT_TRUE(survey.has_value()) << error;
-    ASSERT_EQ(survey->job_ids.size(), 2u);
-    for (std::size_t index = 0;
-         index < survey->job_ids.size();
-         ++index)
-    {
-        ASSERT_TRUE(SetJobState(
-            db_,
-            survey->job_ids[index],
-            "SUCCEEDED"));
-        const auto result_id = RecordObservation(
-            analysis_db,
-            run->probe_run_id,
-            frame_ids[index],
-            survey->job_ids[index],
-            105,
-            1,
-            1,
-            60 + index,
-            std::nullopt,
-            static_cast<char>('b' + index),
-            &error);
-        ASSERT_TRUE(result_id.has_value()) << error;
-        ASSERT_TRUE(TransitionEvidence(
-            analysis_db,
-            *result_id,
-            SeedProbeEvidenceState::Observed,
-            SeedProbeEvidenceState::Provisional,
-            &error)) << error;
-        ASSERT_TRUE(TransitionEvidence(
-            analysis_db,
-            *result_id,
-            SeedProbeEvidenceState::Provisional,
-            SeedProbeEvidenceState::Rejected,
-            &error)) << error;
-    }
-
-    const auto descriptor = BuildSeedProbeProgramDescriptor(
-        execution_db,
-        state_db,
-        analysis_db,
-        authoring_db,
-        SeedProbeProgramConfig{
-            .working_dir_root = temp_root_,
-            .maximum_items_per_workset = 16,
-        });
-    auto materialization =
-        TestMaterializationContext(*spec_id, 65002);
-    materialization.step.domain_ref_id =
-        run->probe_run_id;
-    ProgramJobContinuationContext continuation_context{
-        .materialization = materialization,
-        .root_job_set_id = run->root_job_set_id,
-        .expected_total = 3,
-        .discovered_total = 3,
-        .terminal_total = 3,
-        .failed_total = 0,
-    };
-    ProgramJobContinuationResult partial{};
-    ASSERT_TRUE(descriptor.job_materializer->Continue(
-        continuation_context,
-        &partial,
-        &error)) << error;
-    EXPECT_EQ(
-        partial.disposition,
-        ProgramJobContinuationDisposition::Complete);
-    const auto completed_run =
-        analysis_db->GetSeedProbeRun(run->probe_run_id);
-    ASSERT_TRUE(completed_run.has_value());
-    EXPECT_EQ(
-        completed_run->status,
-        SeedProbeRunStatus::CompletedPartial);
-    const auto accepted =
-        analysis_db->ListAnalysisInputSetFrames(
-            completed_run->accepted_input_set_id);
-    ASSERT_EQ(accepted.size(), 1u);
-    EXPECT_EQ(
-        accepted.front().input_frame_id,
-        run->neutral_input_frame_id);
-}
-
-TEST_F(
-    SqliteDbFixture,
     SeedProbeNeutralConfirmationRejectionFailsRun)
 {
     auto* execution_db = db_service_->ExecutionDb();
@@ -2617,10 +1936,11 @@ TEST_F(
         run->probe_run_id;
     ProgramJobContinuationContext continuation_context{
         .materialization = materialization,
-        .root_job_set_id = run->root_job_set_id,
+        .job_set_id = run->job_set_id,
         .expected_total = 1,
         .discovered_total = 1,
-        .terminal_total = 1,
+        .settled_total = 1,
+        .succeeded_total = 1,
         .failed_total = 0,
     };
     ProgramJobContinuationResult failed{};
@@ -2637,185 +1957,6 @@ TEST_F(
     EXPECT_EQ(
         failed_run->status,
         SeedProbeRunStatus::Failed);
-}
-
-TEST_F(
-    SqliteDbFixture,
-    SeedProbeIncidentalSearchDeltaIsAcceptedAndMissingDesiredDeltaIsNotPartial)
-{
-    auto* execution_db = db_service_->ExecutionDb();
-    auto* state_db = db_service_->StateDb();
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* authoring_db = db_service_->AuthoringDb();
-    ASSERT_NE(execution_db, nullptr);
-    ASSERT_NE(state_db, nullptr);
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(authoring_db, nullptr);
-    ASSERT_TRUE(EnsureTestSavestate(db_, temp_root_));
-    ASSERT_TRUE(EnsureTestWorkflowStep(db_, 67002));
-
-    std::string error;
-    const auto spec_id = SaveTestSeedProbeSpec(
-        authoring_db,
-        1,
-        1,
-        "seedprobe-incidental-search-delta",
-        &error);
-    ASSERT_TRUE(spec_id.has_value()) << error;
-    const auto run = CreateManualRun(
-        execution_db,
-        analysis_db,
-        *spec_id,
-        SeedProbeRunStatus::Search,
-        SeedProbeEvidenceState::Confirmed,
-        "seedprobe-incidental-search-delta",
-        &error);
-    ASSERT_TRUE(run.has_value()) << error;
-    ASSERT_TRUE(SetJobState(
-        db_,
-        run->neutral_job_id,
-        "SUCCEEDED"));
-
-    std::int64_t frame_id = 0;
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeInputFrame(
-        0x8181,
-        0x8180,
-        0x0000,
-        &frame_id,
-        &error)) << error;
-    const std::vector<SeedProbeJobSpec> search_specs{
-        {
-            .version = 1,
-            .stage = SeedProbeJobStage::Search,
-            .input_frame_id = frame_id,
-            .sample_ordinal = 0,
-            .desired_delta = 5,
-        },
-    };
-    const auto search = CreateTestJobSet(
-        execution_db,
-        "seedprobe-incidental-search-delta.search",
-        run->root_job_set_id,
-        "SEEDPROBE_SEARCH",
-        "stage=SEARCH",
-        run->probe_run_id,
-        search_specs,
-        &error);
-    ASSERT_TRUE(search.has_value()) << error;
-    ASSERT_EQ(search->job_ids.size(), 1u);
-    ASSERT_TRUE(SetJobState(
-        db_,
-        search->job_ids.front(),
-        "EXECUTION_FINISHED"));
-    const auto search_job =
-        execution_db->GetExecutionJob(search->job_ids.front());
-    ASSERT_TRUE(search_job.has_value());
-
-    const auto descriptor = BuildSeedProbeProgramDescriptor(
-        execution_db,
-        state_db,
-        analysis_db,
-        authoring_db,
-        SeedProbeProgramConfig{
-            .working_dir_root = temp_root_,
-            .maximum_items_per_workset = 16,
-        });
-    const auto search_decision =
-        descriptor.result_handler->Process(
-            SuccessfulResultContext(
-                analysis_db,
-                *search_job,
-                106,
-                1,
-                1,
-                70));
-    EXPECT_EQ(
-        search_decision.final_job_state,
-        "SUCCEEDED_WINNER");
-    EXPECT_TRUE(search_decision.cancellations.empty());
-    ASSERT_TRUE(SetJobState(
-        db_,
-        search_job->job_id,
-        "SUCCEEDED_WINNER"));
-
-    auto materialization =
-        TestMaterializationContext(*spec_id, 67002);
-    materialization.step.domain_ref_id =
-        run->probe_run_id;
-    ProgramJobContinuationContext continuation_context{
-        .materialization = materialization,
-        .root_job_set_id = run->root_job_set_id,
-        .expected_total = 2,
-        .discovered_total = 2,
-        .terminal_total = 2,
-        .failed_total = 0,
-    };
-    ProgramJobContinuationResult confirming{};
-    ASSERT_TRUE(descriptor.job_materializer->Continue(
-        continuation_context,
-        &confirming,
-        &error)) << error;
-    EXPECT_EQ(
-        confirming.disposition,
-        ProgramJobContinuationDisposition::AddedWork);
-
-    const auto children =
-        execution_db->GetChildJobSetProgress(
-            run->root_job_set_id);
-    const auto confirm_child = std::ranges::find(
-        children,
-        std::string("SEEDPROBE_CONFIRM"),
-        &savor::db::ExecutionChildJobSetProgressDetails::
-            purpose);
-    ASSERT_NE(confirm_child, children.end());
-    const auto confirm_jobs =
-        execution_db->ListJobsInJobSet(
-            confirm_child->job_set_id);
-    ASSERT_EQ(confirm_jobs.size(), 1u);
-    const auto confirm_job =
-        execution_db->GetExecutionJob(confirm_jobs.front().job_id);
-    ASSERT_TRUE(confirm_job.has_value());
-    const auto confirm_decision =
-        descriptor.result_handler->Process(
-            SuccessfulResultContext(
-                analysis_db,
-                *confirm_job,
-                106,
-                2,
-                1,
-                70));
-    EXPECT_EQ(
-        confirm_decision.final_job_state,
-        "SUCCEEDED");
-    ASSERT_TRUE(SetJobState(
-        db_,
-        confirm_job->job_id,
-        "SUCCEEDED"));
-
-    ProgramJobContinuationResult completed{};
-    ASSERT_TRUE(descriptor.job_materializer->Continue(
-        continuation_context,
-        &completed,
-        &error)) << error;
-    EXPECT_EQ(
-        completed.disposition,
-        ProgramJobContinuationDisposition::Complete);
-    const auto completed_run =
-        analysis_db->GetSeedProbeRun(run->probe_run_id);
-    ASSERT_TRUE(completed_run.has_value());
-    EXPECT_EQ(
-        completed_run->status,
-        SeedProbeRunStatus::Completed);
-    const auto accepted =
-        analysis_db->ListAnalysisInputSetFrames(
-            completed_run->accepted_input_set_id);
-    ASSERT_EQ(accepted.size(), 2u);
-    EXPECT_EQ(
-        accepted[0].input_frame_id,
-        run->neutral_input_frame_id);
-    EXPECT_EQ(
-        accepted[1].input_frame_id,
-        frame_id);
 }
 
 TEST_F(
@@ -2872,7 +2013,7 @@ TEST_F(
     const auto observations = CreateTestJobSet(
         execution_db,
         "seedprobe-endpoint-mismatch.observations",
-        run->root_job_set_id,
+        run->job_set_id,
         "SEEDPROBE_TEST_ENDPOINTS",
         "stage=SURVEY;fixture=endpoints",
         run->probe_run_id,
@@ -3003,7 +2144,7 @@ TEST_F(
     ASSERT_TRUE(descriptor.job_materializer->Continue(
         {
             .materialization = materialization,
-            .root_job_set_id = run->root_job_set_id,
+            .job_set_id = run->job_set_id,
         },
         &continuation,
         &error)) << error;

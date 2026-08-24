@@ -1144,50 +1144,6 @@ TEST_F(
 
 TEST_F(
     ExecutionEngineFixture,
-    IntermittentHostActivityRebaselinesHealthWithThrottleDisabled)
-{
-    CreateEngine();
-    ExecutionRequestPolicy policy = Policy();
-    policy.throttle = ExecutionThrottlePolicy::RequireDisabled;
-    const ExecutionSubmissionReceipt submission =
-        engine->Submit(ContinueUntilRequest{
-            .policy = std::move(policy),
-            .wake_group = WakeGroup(),
-        });
-    ASSERT_TRUE(submission.accepted) << submission.error.message;
-    engine->Pump();
-    (void)engine->DrainEvents();
-    EXPECT_TRUE(execution_control->Snapshot().throttle_disabled);
-
-    for (int cycle = 0; cycle < 4; ++cycle)
-    {
-        now += 9s;
-        engine->Pump();
-        EXPECT_TRUE(engine->has_active_operation());
-        EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
-
-        {
-            auto activity = host_activity.Track();
-            engine->Pump();
-            now += 2s;
-            engine->Pump();
-            EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
-        }
-        engine->Pump();
-        EXPECT_TRUE(engine->has_active_operation());
-        EXPECT_FALSE(TakeTerminal(*engine).has_value());
-    }
-
-    ASSERT_TRUE(
-        engine->Cancel(CancellationReason::ExternalRequest).accepted);
-    const auto terminal = DrainTerminal(*engine);
-    ASSERT_TRUE(terminal.has_value());
-    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::Cancelled);
-    EXPECT_FALSE(execution_control->Snapshot().throttle_disabled);
-}
-
-TEST_F(
-    ExecutionEngineFixture,
     BackgroundArtifactFinalizationNeitherMasksNorCreatesCoreStalls)
 {
     CreateEngine();
@@ -1725,44 +1681,6 @@ TEST_F(
     ASSERT_TRUE(
         engine->Cancel(CancellationReason::ExternalRequest).accepted);
     ASSERT_TRUE(DrainTerminal(*engine).has_value());
-}
-
-TEST_F(ExecutionEngineFixture, RestoresThePriorThrottleStateOnCompletion)
-{
-    CreateEngine();
-    ExecutionRequestPolicy policy = Policy();
-    policy.throttle = ExecutionThrottlePolicy::RequireDisabled;
-
-    const ExecutionSubmissionReceipt submission =
-        engine->Submit(
-            StepFramesRequest{.policy = std::move(policy), .count = 1});
-    ASSERT_TRUE(submission.accepted) << submission.error.message;
-    const auto terminal = DrainTerminal(*engine);
-    ASSERT_TRUE(terminal.has_value());
-    EXPECT_EQ(
-        terminal->status,
-        ExecutionTerminalStatus::StepsCompleted);
-
-    const auto calls = execution_control->Calls();
-    const auto disabled = std::find(
-        calls.begin(),
-        calls.end(),
-        "throttle_disable");
-    const auto step = std::find(calls.begin(), calls.end(), "frame_step");
-    const auto restored = std::find(
-        calls.begin(),
-        calls.end(),
-        "throttle_enable");
-    ASSERT_NE(disabled, calls.end());
-    ASSERT_NE(step, calls.end());
-    ASSERT_NE(restored, calls.end());
-    EXPECT_LT(
-        std::distance(calls.begin(), disabled),
-        std::distance(calls.begin(), step));
-    EXPECT_LT(
-        std::distance(calls.begin(), step),
-        std::distance(calls.begin(), restored));
-    EXPECT_FALSE(execution_control->Snapshot().throttle_disabled);
 }
 
 TEST_F(ExecutionEngineFixture, MovieEndCompletesAccordingToPolicy)

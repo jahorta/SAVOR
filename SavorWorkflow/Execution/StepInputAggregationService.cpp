@@ -108,8 +108,8 @@ StepInputAggregationStatus StepInputAggregationService::Evaluate(
                 }
             }
         } else {
-            ctx.terminal_failure_ready = true;
-            status.terminal_failure_ready = true;
+            ctx.failure_ready = true;
+            status.failure_ready = true;
             status.input_latency_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - ctx.started_at).count();
         }
     }

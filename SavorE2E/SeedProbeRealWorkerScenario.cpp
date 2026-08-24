@@ -194,7 +194,7 @@ std::string FormatProgressDetails(
     std::int64_t job_set_id,
     const savor::db::ExecutionJobSetProgressDetails& row) {
     const std::int64_t total = row.total_jobs;
-    const std::int64_t done = row.completed_jobs;
+    const std::int64_t done = row.settled_jobs;
     const std::int64_t ok = row.succeeded_jobs;
     const std::int64_t fail = row.failed_jobs;
     const std::int64_t can = row.canceled_jobs;
@@ -276,7 +276,7 @@ std::vector<std::string> BuildNewMaterializedStepEventLines(
             << " job_set=" << job_set_id;
         if (details.has_value()) {
             oss << " total=" << details->total_jobs
-                << " done=" << details->completed_jobs
+                << " done=" << details->settled_jobs
                 << " ok=" << details->succeeded_jobs
                 << " fail=" << details->failed_jobs
                 << " can=" << details->canceled_jobs;
@@ -287,18 +287,6 @@ std::vector<std::string> BuildNewMaterializedStepEventLines(
             oss << " progress=unavailable";
         }
 
-        const auto child_rows = execution_db->GetChildJobSetProgress(job_set_id);
-        if (!child_rows.empty()) {
-            std::int64_t child_total = 0;
-            std::int64_t child_expected = 0;
-            for (const auto& child : child_rows) {
-                child_total += child.total_jobs;
-                child_expected += child.expected_total.value_or(0);
-            }
-            oss << " child_job_sets=" << child_rows.size()
-                << " child_total=" << child_total
-                << " child_expected_total=" << child_expected;
-        }
         lines.push_back(oss.str());
     }
     return lines;
@@ -428,8 +416,8 @@ std::string FormatCoordinatorTelemetryLine(
         << telemetry.execution.unresolved_requested_cancellation_canaries
         << " sidecar_suppressed_jobs="
         << telemetry.execution.waiting_jobs_suppressed_by_sidecar
-        << " fully_canceled_worksets_avoided="
-        << telemetry.execution.fully_canceled_worksets_avoided
+        << " fully_suppressed_worksets_avoided="
+        << telemetry.execution.fully_suppressed_worksets_avoided
         << " sidecar_items_submitted="
         << telemetry.execution.sidecar_items_submitted
         << " sidecar_receipts_accepted="
@@ -524,7 +512,7 @@ std::string FormatCoordinatorTelemetryLine(
         << " workflow_materialized="
         << telemetry.workflow.materialization_count
         << " workflow_advanced="
-        << telemetry.workflow.targeted_terminal_advancement_count;
+        << telemetry.workflow.targeted_settlement_advancement_count;
     return oss.str();
 }
 
@@ -741,36 +729,6 @@ std::vector<std::string> FormatActiveJobSetLines(
     }
 
     std::vector<std::string> lines{ step_label.str(), FormatProgressDetails(job_set_id, *details) };
-    const auto child_rows = execution_db->GetChildJobSetProgress(job_set_id);
-    if (!child_rows.empty()) {
-        std::size_t active_children = 0;
-        const savor::db::ExecutionChildJobSetProgressDetails* selected_child = nullptr;
-        for (const auto& child : child_rows) {
-            if (child.completed_jobs < child.total_jobs) {
-                ++active_children;
-                if (selected_child == nullptr) {
-                    selected_child = &child;
-                }
-            }
-        }
-
-        std::ostringstream child_rollup;
-        child_rollup << "child_job_sets=" << child_rows.size()
-                     << " active=" << active_children;
-        lines.push_back(child_rollup.str());
-
-        if (selected_child != nullptr) {
-            const auto child_remaining = std::max<std::int64_t>(0, selected_child->total_jobs - selected_child->completed_jobs);
-            std::ostringstream child;
-            child << "active_child_job_set=" << selected_child->job_set_id;
-            child << " done=" << selected_child->completed_jobs << "/" << selected_child->total_jobs
-                  << " ok=" << selected_child->succeeded_jobs
-                  << " fail=" << selected_child->failed_jobs
-                  << " can=" << selected_child->canceled_jobs
-                  << " remaining=" << child_remaining;
-            lines.push_back(child.str());
-        }
-    }
     return lines;
 }
 
@@ -861,7 +819,7 @@ bool ValidateSplitCoordinatorExecution(
                 const auto node_key = step.graph_node_key.empty()
                     ? step.step_key
                     : step.graph_node_key;
-                return step.step_kind == "seedprobe.run"
+                return step.step_kind == "seedprobe.survey"
                     && node_key == options.graph_node_key;
             });
         require(
@@ -870,8 +828,12 @@ bool ValidateSplitCoordinatorExecution(
                 + options.graph_node_key);
         if (options.require_single_seedprobe_step) {
             require(
-                graph->steps.size() == 1,
-                "standalone SeedProbe E2E must contain exactly one workflow step");
+                std::count_if(graph->steps.begin(), graph->steps.end(), [&](const auto& step) {
+                    const auto node_key = step.graph_node_key.empty() ? step.step_key : step.graph_node_key;
+                    return node_key == options.graph_node_key
+                        && step.step_kind.rfind("seedprobe.", 0) == 0;
+                }) == graph->steps.size(),
+                "standalone SeedProbe E2E must contain only SeedProbe workflow steps");
         }
         if (seed_step != graph->steps.end()) {
             require(
@@ -921,54 +883,26 @@ bool ValidateSplitCoordinatorExecution(
         if (seed_step != graph->steps.end()
             && seed_step->job_set_id.has_value()
             && execution_db != nullptr) {
-            const auto root_job_set_id =
-                *seed_step->job_set_id;
-            const auto root =
-                execution_db->GetJobSetProgress(root_job_set_id);
-            require(
-                root.has_value(),
-                "SeedProbe Survey root job-set progress is unavailable");
-            if (root.has_value()) {
-                require(
-                    root->completed_jobs == root->total_jobs,
-                    "SeedProbe job-set hierarchy did not become "
-                    "business-final");
-                require(
-                    root->expected_total.has_value()
-                        && *root->expected_total
-                            == root->total_jobs,
-                    "SeedProbe recursive expected_total does not match "
-                    "the complete job-set hierarchy");
-            }
-
-            std::vector<savor::db::ExecutionChildJobSetProgressDetails>
-                children;
-            std::vector<std::int64_t> all_job_set_ids{
-                root_job_set_id,
-            };
-            std::deque<std::int64_t> job_sets_to_visit{
-                root_job_set_id,
-            };
-            while (!job_sets_to_visit.empty()) {
-                const auto parent = job_sets_to_visit.front();
-                job_sets_to_visit.pop_front();
-                auto direct_children =
-                    execution_db->GetChildJobSetProgress(parent);
-                for (const auto& child : direct_children) {
-                    job_sets_to_visit.push_back(child.job_set_id);
-                    all_job_set_ids.push_back(child.job_set_id);
+            std::vector<std::int64_t> all_job_set_ids;
+            for (const auto& step : graph->steps) {
+                const auto node_key = step.graph_node_key.empty() ? step.step_key : step.graph_node_key;
+                if (node_key != options.graph_node_key
+                    || step.step_kind.rfind("seedprobe.", 0) != 0
+                    || !step.job_set_id.has_value()) {
+                    continue;
                 }
-                children.insert(
-                    children.end(),
-                    std::make_move_iterator(direct_children.begin()),
-                    std::make_move_iterator(direct_children.end()));
-            }
-            for (const auto& child : children) {
-                require(
-                    child.completed_jobs == child.total_jobs,
-                    "SeedProbe child job set "
-                        + std::to_string(child.job_set_id)
-                        + " did not become business-final");
+                all_job_set_ids.push_back(*step.job_set_id);
+                const auto progress = execution_db->GetJobSetProgress(*step.job_set_id);
+                require(progress.has_value(), "SeedProbe job-set progress is unavailable for step " + step.step_key);
+                if (progress.has_value()) {
+                    require(
+                        progress->settled_jobs == progress->total_jobs,
+                        "SeedProbe workflow step " + step.step_key + " did not become business-final");
+                    require(
+                        progress->expected_total.has_value()
+                            && *progress->expected_total == progress->total_jobs,
+                        "SeedProbe workflow step expected_total does not match its flat job set: " + step.step_key);
+                }
             }
 
             for (const auto job_set_id : all_job_set_ids) {
@@ -1018,26 +952,15 @@ bool ValidateSplitCoordinatorExecution(
             }
         } else {
             failures.push_back(
-                "SeedProbe workflow step has no root job set");
+                "SeedProbe Survey workflow step has no job set");
         }
 
         if (execution_db != nullptr) {
             std::unordered_set<std::int64_t> workflow_job_set_ids;
-            std::deque<std::int64_t> job_sets_to_visit;
             for (const auto& step : graph->steps) {
                 if (step.job_set_id.has_value()
                     && workflow_job_set_ids.insert(*step.job_set_id).second) {
-                    job_sets_to_visit.push_back(*step.job_set_id);
-                }
-            }
-            while (!job_sets_to_visit.empty()) {
-                const auto parent = job_sets_to_visit.front();
-                job_sets_to_visit.pop_front();
-                for (const auto& child :
-                     execution_db->GetChildJobSetProgress(parent)) {
-                    if (workflow_job_set_ids.insert(child.job_set_id).second) {
-                        job_sets_to_visit.push_back(child.job_set_id);
-                    }
+                    continue;
                 }
             }
 
@@ -1068,11 +991,11 @@ bool ValidateSplitCoordinatorExecution(
         telemetry.workflow.materialization_count > 0,
         "WorkflowCoordinatorService did not materialize the SeedProbe step");
     require_clean(
-        telemetry.workflow.targeted_terminal_notification_count > 0,
+        telemetry.workflow.targeted_settlement_notification_count > 0,
         "WorkflowCoordinatorService received no result-finalization "
         "notifications");
     require_clean(
-        telemetry.workflow.targeted_terminal_advancement_count > 0,
+        telemetry.workflow.targeted_settlement_advancement_count > 0,
         "WorkflowCoordinatorService did not advance from a targeted "
         "terminal notification");
     require_clean(
@@ -1092,7 +1015,7 @@ bool ValidateSplitCoordinatorExecution(
             == telemetry.execution.worksets_reconstructed
             && telemetry.execution.worksets_reconstructed
                 == telemetry.execution.worksets_submitted
-                    + telemetry.execution.fully_canceled_worksets_avoided,
+                    + telemetry.execution.fully_suppressed_worksets_avoided,
         "JobExecutionCoordinator claim/reconstruct/submit-or-suppress counts differ");
     const auto execution_submission_outcomes =
         telemetry.execution.submission_accepted
@@ -1298,7 +1221,7 @@ bool ValidateSeedProbeAcceptedEvidence(
                 const auto node_key = step.graph_node_key.empty()
                     ? step.step_key
                     : step.graph_node_key;
-                return step.step_kind == "seedprobe.run"
+                return step.step_kind == "seedprobe.survey"
                     && node_key == options.graph_node_key;
             });
         if (found != graph->steps.end()) {
@@ -1669,7 +1592,7 @@ void ReportSeedProbeTrajectory(
         graph->steps, [&](const auto& candidate) {
             const auto node_key = candidate.graph_node_key.empty()
                 ? candidate.step_key : candidate.graph_node_key;
-            return candidate.step_kind == "seedprobe.run"
+            return candidate.step_kind == "seedprobe.survey"
                 && node_key == options.graph_node_key;
         });
     if (step == graph->steps.end() || !step->input_ref_id) return;
@@ -1726,8 +1649,17 @@ void ReportSeedProbeTrajectory(
         sink(line.str());
     }
 
-    if (!step->job_set_id) return;
-    std::deque<std::int64_t> pending{*step->job_set_id};
+    std::deque<std::int64_t> pending;
+    for (const auto& candidate : graph->steps) {
+        const auto node_key = candidate.graph_node_key.empty()
+            ? candidate.step_key : candidate.graph_node_key;
+        if (node_key == options.graph_node_key
+            && candidate.step_kind.rfind("seedprobe.", 0) == 0
+            && candidate.job_set_id.has_value()) {
+            pending.push_back(*candidate.job_set_id);
+        }
+    }
+    if (pending.empty()) return;
     std::unordered_set<std::int64_t> visited;
     std::unordered_set<std::int64_t> worksets;
     std::size_t job_count = 0;
@@ -1743,7 +1675,7 @@ void ReportSeedProbeTrajectory(
             std::ostringstream line;
             line << "[seedprobe-job-set] id=" << job_set_id
                  << " total=" << progress->total_jobs
-                 << " completed=" << progress->completed_jobs
+                 << " completed=" << progress->settled_jobs
                  << " expected_total="
                  << (progress->expected_total
                         ? std::to_string(*progress->expected_total) : "none");
@@ -1765,17 +1697,6 @@ void ReportSeedProbeTrajectory(
             case SeedProbeJobStage::Confirm: ++confirm_count; break;
             case SeedProbeJobStage::Unknown: break;
             }
-        }
-        for (const auto& child :
-             execution_db->GetChildJobSetProgress(job_set_id)) {
-            std::ostringstream line;
-            line << "[seedprobe-stage] parent=" << job_set_id
-                 << " job_set=" << child.job_set_id
-                 << " purpose=" << child.purpose
-                 << " total=" << child.total_jobs
-                 << " completed=" << child.completed_jobs;
-            sink(line.str());
-            pending.push_back(child.job_set_id);
         }
     }
     std::ostringstream participation;
@@ -2075,7 +1996,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     std::size_t poll_count = 0;
     std::size_t ticks_since_snapshot = 0;
     bool reached_completed = false;
-    bool saw_terminal_failure = false;
+    bool saw_workflow_failure = false;
     std::string coordinator_failure;
     std::unordered_set<std::int64_t> emitted_failed_step_ids;
     std::unordered_set<std::int64_t> emitted_materialized_step_ids;
@@ -2171,7 +2092,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         }
 
         if (telemetry.execution.invariant_paused) {
-            saw_terminal_failure = true;
+            saw_workflow_failure = true;
             coordinator_failure =
                 telemetry.execution.last_error.empty()
                 ? "JobExecutionCoordinator entered an invariant pause"
@@ -2190,12 +2111,12 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             }
             if (graph->instance.state == WorkflowInstanceState::Failed
                 || graph->instance.state == WorkflowInstanceState::Canceled) {
-                saw_terminal_failure = true;
+                saw_workflow_failure = true;
                 break;
             }
             if (AreSeedProbeWorkflowStepsTerminal(*graph)) {
                 if (HasFailedSeedProbeWorkflowStep(*graph)) {
-                    saw_terminal_failure = true;
+                    saw_workflow_failure = true;
                     break;
                 }
             }
@@ -2205,7 +2126,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         if (worker_start.status
             == savor::runner::parallel::savordb::
                 WorkerCoordinatorStartStatus::StartupExhausted) {
-            saw_terminal_failure = true;
+            saw_workflow_failure = true;
             coordinator_failure =
                 worker_start.diagnostic.empty()
                 ? "all worker startup attempts were exhausted"
@@ -2318,16 +2239,16 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             << " sidecar_suppressed_jobs="
             << final_telemetry.execution
                    .waiting_jobs_suppressed_by_sidecar
-            << " fully_canceled_worksets_avoided="
+            << " fully_suppressed_worksets_avoided="
             << final_telemetry.execution
-                   .fully_canceled_worksets_avoided
+                   .fully_suppressed_worksets_avoided
             << " cancellation_mutation_batches="
             << final_telemetry.execution.cancellation_mutation_batches
             << " workflow_materializations="
             << final_telemetry.workflow.materialization_count
             << " workflow_advancements="
             << final_telemetry.workflow
-                   .targeted_terminal_advancement_count;
+                   .targeted_settlement_advancement_count;
         enqueue_event_line(split.str());
     }
     if (final_graph.has_value()) {
@@ -2388,7 +2309,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     }
 
     std::string final_status = "success";
-    if (saw_terminal_failure) {
+    if (saw_workflow_failure) {
         final_status = "failure";
     } else if (!final_graph.has_value()
         || final_graph->instance.state != savor::db::execution::workflow::WorkflowInstanceState::Completed) {
@@ -2437,7 +2358,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             == savor::db::execution::workflow::WorkflowInstanceState::Completed;
     assessment.Require(
         workflow_completed,
-        saw_terminal_failure
+        saw_workflow_failure
             ? "SeedProbe workflow reached a failed or canceled execution state"
             : "SeedProbe workflow stopped before reaching COMPLETED state");
 

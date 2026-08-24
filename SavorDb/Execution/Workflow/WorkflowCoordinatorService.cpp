@@ -2,7 +2,7 @@
 
 #include "WorkflowComposition.h"
 #include "WorkflowGraphRoutingService.h"
-#include "WorkflowTerminalAdvancementService.h"
+#include "WorkflowSettlementAdvancementService.h"
 
 #include <algorithm>
 #include <chrono>
@@ -110,7 +110,7 @@ WorkflowCoordinatorService::WorkflowCoordinatorService(
     const savor::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
     WorkflowCoordinatorConfig config,
     EventLineCallback event_line_callback,
-    StepCompletionGateService* step_completion_gate,
+    StepSettlementGateService* step_completion_gate,
     savor::db::IAuthoringDb* authoring_db)
     : execution_db_(execution_db)
     , authoring_db_(authoring_db)
@@ -120,7 +120,7 @@ WorkflowCoordinatorService::WorkflowCoordinatorService(
     if (step_completion_gate != nullptr) {
         step_completion_gate_ = step_completion_gate;
     } else {
-        owned_step_completion_gate_ = std::make_unique<StepCompletionGateService>();
+        owned_step_completion_gate_ = std::make_unique<StepSettlementGateService>();
         step_completion_gate_ = owned_step_completion_gate_.get();
     }
 }
@@ -158,7 +158,7 @@ bool WorkflowCoordinatorService::Start(std::string* error_out) {
         std::lock_guard<std::mutex> lock(terminal_notification_mtx_);
         terminal_notifications_.clear();
     }
-    next_terminal_repair_at_ = std::chrono::steady_clock::now();
+    next_settlement_repair_at_ = std::chrono::steady_clock::now();
     next_descriptor_repair_at_ = std::chrono::steady_clock::now();
     observed_registry_generation_ = program_kind_registry_->Generation();
     stop_.store(false);
@@ -200,26 +200,26 @@ WorkflowCoordinatorTelemetry WorkflowCoordinatorService::SnapshotTelemetry() con
         continuation_added_work_count_.load();
     telemetry.continuation_failure_count =
         continuation_failure_count_.load();
-    telemetry.terminal_scan_count = terminal_scan_count_.load();
-    telemetry.terminal_step_count = terminal_step_count_.load();
-    telemetry.terminal_empty_step_count = terminal_empty_step_count_.load();
-    telemetry.terminal_failed_step_count = terminal_failed_step_count_.load();
-    telemetry.terminal_completed_step_count = terminal_completed_step_count_.load();
+    telemetry.settlement_scan_count = settlement_scan_count_.load();
+    telemetry.settled_step_count = settled_step_count_.load();
+    telemetry.settled_empty_step_count = settled_empty_step_count_.load();
+    telemetry.failed_step_count = failed_step_count_.load();
+    telemetry.completed_step_count = completed_step_count_.load();
     telemetry.transition_advanced_count = transition_advanced_count_.load();
     telemetry.workflow_completed_count = workflow_completed_count_.load();
     telemetry.workflow_failed_count = workflow_failed_count_.load();
-    telemetry.targeted_terminal_notification_count =
-        targeted_terminal_notification_count_.load();
-    telemetry.targeted_terminal_advancement_count =
-        targeted_terminal_advancement_count_.load();
+    telemetry.targeted_settlement_notification_count =
+        targeted_settlement_notification_count_.load();
+    telemetry.targeted_settlement_advancement_count =
+        targeted_settlement_advancement_count_.load();
     telemetry.descriptor_unavailable_count =
         descriptor_unavailable_count_.load();
     telemetry.descriptor_resumed_count = descriptor_resumed_count_.load();
     return telemetry;
 }
 
-bool WorkflowCoordinatorService::PublishTerminalCommit(
-    const TerminalWorkflowStepNotification& notification) {
+bool WorkflowCoordinatorService::PublishSettlementCommit(
+    const SettledWorkflowStepNotification& notification) {
     if (notification.commit_sequence == 0
         || notification.workflow_step_id <= 0
         || notification.job_id <= 0) {
@@ -234,7 +234,7 @@ bool WorkflowCoordinatorService::PublishTerminalCommit(
                 notification.job_id),
             notification);
     }
-    ++targeted_terminal_notification_count_;
+    ++targeted_settlement_notification_count_;
     terminal_notification_generation_.fetch_add(
         1,
         std::memory_order_release);
@@ -279,12 +279,12 @@ bool WorkflowCoordinatorService::AdvanceAvailableWork() {
                 config_.descriptor_repair_interval,
                 std::chrono::milliseconds(1));
     }
-    if (now >= next_terminal_repair_at_) {
-        advanced = ReconcileTerminalWorkflowSteps() || advanced;
+    if (now >= next_settlement_repair_at_) {
+        advanced = ReconcileSettledWorkflowSteps() || advanced;
         const auto repair_interval =
-            std::max(config_.terminal_repair_interval,
+            std::max(config_.settlement_repair_interval,
                      std::chrono::milliseconds(1));
-        next_terminal_repair_at_ = now + repair_interval;
+        next_settlement_repair_at_ = now + repair_interval;
     }
     advanced = PollReadyStepsFromDb() || advanced;
     return advanced;
@@ -389,12 +389,12 @@ bool WorkflowCoordinatorService::ReconcileDescriptorAvailability() {
 }
 
 bool WorkflowCoordinatorService::ReconcileTargetedTerminalNotifications() {
-    std::vector<TerminalWorkflowStepNotification> notifications;
+    std::vector<SettledWorkflowStepNotification> notifications;
     {
         std::lock_guard<std::mutex> lock(terminal_notification_mtx_);
         const auto limit = std::max<std::size_t>(
             1,
-            config_.terminal_scan_limit);
+            config_.settlement_scan_limit);
         notifications.reserve(std::min(limit, terminal_notifications_.size()));
         auto it = terminal_notifications_.begin();
         while (it != terminal_notifications_.end()
@@ -416,7 +416,7 @@ bool WorkflowCoordinatorService::ReconcileTargetedTerminalNotifications() {
     bool advanced_any = false;
     for (const auto& notification : notifications) {
         const auto snapshot =
-            queries->GetStepTerminalSnapshotForJob(notification.job_id);
+            queries->GetStepSettlementSnapshotForJob(notification.job_id);
         if (!snapshot.has_value()) {
             continue;
         }
@@ -432,41 +432,41 @@ bool WorkflowCoordinatorService::ReconcileTargetedTerminalNotifications() {
                 "terminal notification workflow_step_id mismatch");
             continue;
         }
-        const bool advanced = AdvanceTerminalSnapshot(
+        const bool advanced = AdvanceSettlementSnapshot(
             *snapshot,
             "AdvanceTargetedTerminalStep");
         if (advanced) {
-            ++targeted_terminal_advancement_count_;
+            ++targeted_settlement_advancement_count_;
         }
         advanced_any = advanced || advanced_any;
     }
     return advanced_any;
 }
 
-bool WorkflowCoordinatorService::ReconcileTerminalWorkflowSteps() {
+bool WorkflowCoordinatorService::ReconcileSettledWorkflowSteps() {
     auto* queries = execution_db_ != nullptr ? execution_db_->WorkflowQueryService() : nullptr;
     auto* commands = execution_db_ != nullptr ? execution_db_->WorkflowCommandService() : nullptr;
     if (queries == nullptr || commands == nullptr) {
         return false;
     }
 
-    const auto snapshots = queries->ListTerminalReadyStepSnapshots(config_.terminal_scan_limit);
-    ++terminal_scan_count_;
+    const auto snapshots = queries->ListSettlementReadyStepSnapshots(config_.settlement_scan_limit);
+    ++settlement_scan_count_;
     if (snapshots.empty()) {
         return false;
     }
 
     bool advanced_any = false;
     for (const auto& snapshot : snapshots) {
-        advanced_any = AdvanceTerminalSnapshot(
+        advanced_any = AdvanceSettlementSnapshot(
             snapshot,
             "AdvanceTerminalStep") || advanced_any;
     }
     return advanced_any;
 }
 
-bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
-    const WorkflowStepTerminalSnapshot& snapshot,
+bool WorkflowCoordinatorService::AdvanceSettlementSnapshot(
+    const WorkflowStepSettlementSnapshot& snapshot,
     const char* failure_stage) {
     auto* queries = execution_db_ != nullptr
         ? execution_db_->WorkflowQueryService()
@@ -476,6 +476,94 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
         : nullptr;
     if (queries == nullptr || commands == nullptr) {
         return false;
+    }
+
+    WorkflowReadyStepRecord blocked_step{};
+    blocked_step.workflow_instance_id = snapshot.workflow_instance_id;
+    blocked_step.workflow_step_id = snapshot.workflow_step_id;
+    blocked_step.workflow_unit_activation_id =
+        snapshot.workflow_unit_activation_id;
+    blocked_step.step_key = snapshot.step_key;
+    blocked_step.graph_node_key = snapshot.graph_node_key;
+    blocked_step.step_kind = snapshot.step_kind;
+
+    std::string blocking_error;
+    if (snapshot.failed_total > 0) {
+        if (!commands->FailWorkflowInstance(
+                {
+                    .workflow_instance_id = snapshot.workflow_instance_id,
+                    .workflow_step_id = snapshot.workflow_step_id,
+                    .failure_code = "STEP_FAILED",
+                    .failure_message = "workflow step contains failed jobs",
+                    .requested_by = "workflow_coordinator_settlement",
+                },
+                &blocking_error)) {
+            EmitWorkflowFailureEvent(blocked_step, failure_stage,
+                blocking_error.empty() ? "failed parking failed workflow" : blocking_error);
+            return false;
+        }
+        ++settled_step_count_;
+        ++failed_step_count_;
+        ++workflow_failed_count_;
+        return true;
+    }
+    if (snapshot.interrupted_total > 0) {
+        if (!commands->InterruptWorkflowInstance(
+                {
+                    .workflow_instance_id = snapshot.workflow_instance_id,
+                    .workflow_step_id = snapshot.workflow_step_id,
+                    .interruption_code = "WORKFLOW_INTERRUPTED",
+                    .interruption_message = "workflow step contains interrupted jobs",
+                    .requested_by = "workflow_coordinator_settlement",
+                },
+                &blocking_error)) {
+            EmitWorkflowFailureEvent(blocked_step, failure_stage,
+                blocking_error.empty() ? "failed parking interrupted workflow" : blocking_error);
+            return false;
+        }
+        ++settled_step_count_;
+        return true;
+    }
+    if (snapshot.canceled_total > 0) {
+        if (snapshot.workflow_state == "CANCELLING") {
+            return true;
+        }
+        if (!commands->FailWorkflowInstance(
+                {
+                    .workflow_instance_id = snapshot.workflow_instance_id,
+                    .workflow_step_id = snapshot.workflow_step_id,
+                    .failure_code = "JOB_CANCELED_OUTSIDE_WORKFLOW_CANCELLATION",
+                    .failure_message = "canceled job found outside workflow cancellation",
+                    .requested_by = "workflow_coordinator_settlement",
+                },
+                &blocking_error)) {
+            EmitWorkflowFailureEvent(blocked_step, failure_stage,
+                blocking_error.empty() ? "failed parking invalid canceled workflow" : blocking_error);
+            return false;
+        }
+        ++settled_step_count_;
+        ++failed_step_count_;
+        ++workflow_failed_count_;
+        return true;
+    }
+    if (snapshot.discovered_total > 0 && snapshot.succeeded_total == 0) {
+        if (!commands->FailWorkflowInstance(
+                {
+                    .workflow_instance_id = snapshot.workflow_instance_id,
+                    .workflow_step_id = snapshot.workflow_step_id,
+                    .failure_code = "STEP_NO_SUCCESSFUL_JOBS",
+                    .failure_message = "settled workflow step has no successful jobs",
+                    .requested_by = "workflow_coordinator_settlement",
+                },
+                &blocking_error)) {
+            EmitWorkflowFailureEvent(blocked_step, failure_stage,
+                blocking_error.empty() ? "failed parking all-superseded workflow" : blocking_error);
+            return false;
+        }
+        ++settled_step_count_;
+        ++failed_step_count_;
+        ++workflow_failed_count_;
+        return true;
     }
 
     const auto* descriptor = program_kind_registry_ != nullptr
@@ -522,11 +610,15 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
         if (!descriptor->job_materializer->Continue(
                 programdb::ProgramJobContinuationContext{
                     .materialization = std::move(*materialization_context),
-                    .root_job_set_id = snapshot.job_set_id,
+                    .job_set_id = snapshot.job_set_id,
                     .expected_total = snapshot.expected_total,
                     .discovered_total = snapshot.discovered_total,
-                    .terminal_total = snapshot.terminal_total,
+                    .settled_total = snapshot.settled_total,
+                    .succeeded_total = snapshot.succeeded_total,
                     .failed_total = snapshot.failed_total,
+                    .interrupted_total = snapshot.interrupted_total,
+                    .superseded_total = snapshot.superseded_total,
+                    .canceled_total = snapshot.canceled_total,
                 },
                 &continuation,
                 &error)) {
@@ -558,12 +650,6 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
     }
 
     if (continuation.disposition
-        == programdb::ProgramJobContinuationDisposition::AddedWork) {
-        ++continuation_added_work_count_;
-        return true;
-    }
-
-    if (continuation.disposition
         == programdb::ProgramJobContinuationDisposition::Failed) {
         const auto failure_code =
             continuation.failure_code.value_or(
@@ -591,8 +677,8 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
             return false;
         }
         ++continuation_failure_count_;
-        ++terminal_step_count_;
-        ++terminal_failed_step_count_;
+        ++settled_step_count_;
+        ++failed_step_count_;
         ++workflow_failed_count_;
         return true;
     }
@@ -638,7 +724,7 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
         queries,
         commands,
         config_.successor_step_priority_boost);
-    WorkflowTerminalAdvancementService terminal_advancement(
+    WorkflowSettlementAdvancementService terminal_advancement(
         program_kind_registry_,
         step_completion_gate_,
         execution_db_,
@@ -646,7 +732,7 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
         commands,
         authoring_db_ != nullptr ? &graph_routing : nullptr,
         config_.successor_step_priority_boost);
-    WorkflowTerminalAdvancementResult advancement{};
+    WorkflowSettlementAdvancementResult advancement{};
     if (!terminal_advancement.AdvanceSnapshot(
             snapshot,
             &advancement,
@@ -666,13 +752,13 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
         return false;
     }
 
-    ++terminal_step_count_;
+    ++settled_step_count_;
     if (snapshot.discovered_total == 0) {
-        ++terminal_empty_step_count_;
+        ++settled_empty_step_count_;
     } else if (snapshot.failed_total > 0) {
-        ++terminal_failed_step_count_;
+        ++failed_step_count_;
     } else {
-        ++terminal_completed_step_count_;
+        ++completed_step_count_;
     }
     if (advancement.advanced_next_step
         || advancement.spawned_step_count > 0) {
@@ -893,7 +979,7 @@ bool WorkflowCoordinatorService::MaterializeWorkflowStep(const WorkflowReadyStep
     const auto started = std::chrono::steady_clock::now();
     std::string schedule_error;
     const auto scheduled = ScheduleReadyStep(step, &schedule_error);
-    if (!scheduled.has_value() || scheduled->root_job_set_id <= 0) {
+    if (!scheduled.has_value() || scheduled->job_set_id <= 0) {
         ++materialization_failure_count_;
         if (scheduled.has_value()) {
             for (const auto& line : scheduled->event_lines) {
@@ -922,7 +1008,7 @@ bool WorkflowCoordinatorService::MaterializeWorkflowStep(const WorkflowReadyStep
     if (!commands->MarkStepMaterialized(
         {
             .workflow_step_id = step.workflow_step_id,
-            .job_set_id = scheduled->root_job_set_id,
+            .job_set_id = scheduled->job_set_id,
             .input_ref_kind = scheduled->persistence.program_ref_kind.empty()
                 ? std::nullopt
                 : std::optional<std::string>(scheduled->persistence.program_ref_kind),
@@ -947,16 +1033,16 @@ bool WorkflowCoordinatorService::MaterializeWorkflowStep(const WorkflowReadyStep
     }
 
     if (execution_db_ != nullptr) {
-        const auto details = execution_db_->GetJobSetProgress(scheduled->root_job_set_id);
+        const auto details = execution_db_->GetJobSetProgress(scheduled->job_set_id);
         if (details.has_value()) {
             std::ostringstream line;
             line << "[workflow-materialization-counts]"
                  << " step=" << step.step_key
                  << " kind=" << step.step_kind
                  << " workflow_step_id=" << step.workflow_step_id
-                 << " job_set=" << scheduled->root_job_set_id
+                 << " job_set=" << scheduled->job_set_id
                  << " total=" << details->total_jobs
-                 << " done=" << details->completed_jobs;
+                 << " done=" << details->settled_jobs;
             if (details->expected_total.has_value()) {
                 line << " expected_total=" << *details->expected_total;
             }

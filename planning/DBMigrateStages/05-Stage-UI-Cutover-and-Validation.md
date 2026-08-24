@@ -39,7 +39,7 @@ This order supersedes any older implication that all Stage 5 UI surfaces must cu
 - Qt2 must not store external input values in authored workflow graphs. Source artifacts, savestates, prior analysis output refs, and other run-specific bindings are instance-specific submission data.
 - Qt2 must not launch workflows from authoring editors or the workflow builder. A separate Workflow Launcher owns instance creation, external input selection, and scalar instance arguments.
 - Scalar launch choices that vary per run belong to Execution workflow instance arguments. Current examples are TAS RTC value and battle fake-attack min/max overrides.
-- TAS RTC ranges are launcher input, not authored TAS spec state. Launching a range creates one workflow instance per RTC value, each with one concrete RTC argument.
+- TAS RTC ranges are launcher input. Launching a range creates one workflow instance per RTC value, each with one concrete RTC argument.
 - Qt2 may bind authored plans, predicates, and specs in the authored graph, but it must not pre-create Analysis DB rows for downstream steps.
 - Workflow composition contracts expose required inputs and possible outputs. Possible outputs are only compatibility hints until a running step produces an actual typed reference.
 - Program descriptors/adapters own lazy Analysis DB row creation during step materialization/result mapping. Downstream dependent steps should be readied only when their required actual refs exist; otherwise they remain blocked, skipped, or failed according to the transition policy.

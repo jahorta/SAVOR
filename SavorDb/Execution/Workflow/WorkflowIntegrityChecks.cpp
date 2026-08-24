@@ -55,7 +55,7 @@ bool RunWorkflowIntegrityChecks(sqlite3* db, WorkflowIntegrityReport* report_out
         "FROM exec_workflow_step s "
         "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
         "WHERE i.state='COMPLETED' AND s.state NOT IN ('COMPLETED','SKIPPED');";
-    if (!QueryScalarInt(db, kNonTerminalInCompletedInstanceSql, &report.non_terminal_step_in_completed_instance_count, error_out)) {
+    if (!QueryScalarInt(db, kNonTerminalInCompletedInstanceSql, &report.non_settled_step_in_completed_instance_count, error_out)) {
         return false;
     }
 
@@ -64,7 +64,7 @@ bool RunWorkflowIntegrityChecks(sqlite3* db, WorkflowIntegrityReport* report_out
         "FROM exec_workflow_step s "
         "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
         "WHERE i.state IN ('FAILED','INTERRUPTED','CANCELED') AND s.state NOT IN ('COMPLETED','FAILED','INTERRUPTED','SKIPPED','CANCELED');";
-    if (!QueryScalarInt(db, kNonTerminalInTerminalInstanceSql, &report.non_terminal_step_in_terminal_instance_count, error_out)) {
+    if (!QueryScalarInt(db, kNonTerminalInTerminalInstanceSql, &report.non_settled_step_in_terminal_instance_count, error_out)) {
         return false;
     }
 

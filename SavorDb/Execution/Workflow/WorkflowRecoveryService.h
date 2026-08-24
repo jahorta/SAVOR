@@ -12,6 +12,8 @@ struct IWorkflowOrchestrationCommandService;
 struct WorkflowRecoveryResult {
     int completed_steps = 0;
     int failed_steps = 0;
+    int interrupted_steps = 0;
+    int canceled_steps = 0;
 };
 
 struct WorkflowInvariantRemediationCommand {

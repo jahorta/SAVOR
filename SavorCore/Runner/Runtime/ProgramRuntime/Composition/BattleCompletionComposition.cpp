@@ -1,5 +1,6 @@
 #include "BattleCompletionComposition.h"
 
+#include "Runner/Runtime/Execution/ExecutionTypes.h"
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "Runner/Runtime/ProgramRuntime/Composition/CompositionSupport.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
@@ -57,7 +58,8 @@ std::vector<Byte> ContinueConfig()
     writer.U8(1); // FutureOnly
     writer.Bool(true);
     writer.Bool(true);
-    writer.U8(0);
+    writer.U8(static_cast<std::uint8_t>(
+        ExecutionThrottlePolicy::RequireDisabled));
     writer.U8(0);
     return std::move(writer).Finish();
 }

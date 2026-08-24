@@ -949,7 +949,6 @@ public:
                 .worksets = {{
                     .job_set_id = ensured.job_set_id,
                     .workflow_step_id = context.step.workflow_step_id,
-                    .root_job_set_id = ensured.job_set_id,
                     .workset_key = materialization_key + ".workset.0",
                     .program_kind =
                         static_cast<std::int32_t>(savor::PK_BattleRecord),
@@ -992,7 +991,7 @@ public:
                 .requested_by = std::string(kCreatedBy),
             }, &published, error_out))
             return false;
-        result_out->root_job_set_id = ensured.job_set_id;
+        result_out->job_set_id = ensured.job_set_id;
         result_out->persistence = {
             .program_ref_kind = std::string(kProgramRefKind),
             .program_ref_id = recording_id,
@@ -1015,7 +1014,7 @@ public:
         if (!result_out || !execution_ || !analysis_)
             return Fail("Battle Recording continuation is incomplete",
                         error_out);
-        const auto jobs = execution_->ListJobsInJobSet(context.root_job_set_id);
+        const auto jobs = execution_->ListJobsInJobSet(context.job_set_id);
         if (jobs.size() != 1)
             return Fail("Battle Recording lost its singleton job shape",
                         error_out);
@@ -1058,7 +1057,7 @@ public:
         };
         if (!state_ || !analysis_ || context.items.size() != 1 ||
             context.workset_id <= 0 || context.dispatch_attempt_id <= 0 ||
-            context.workflow_step_id <= 0 || context.root_job_set_id <= 0 ||
+            context.workflow_step_id <= 0 || context.job_set_id <= 0 ||
             context.dispatch_token.empty() ||
             !context.state_compatibility.Complete())
             return fail("Battle Recording reconstruction requires one exact item");
@@ -1166,8 +1165,8 @@ public:
             .invocation_id = {
                 .workflow_step_id =
                     static_cast<std::uint64_t>(context.workflow_step_id),
-                .root_job_set_id =
-                    static_cast<std::uint64_t>(context.root_job_set_id),
+                .job_set_id =
+                    static_cast<std::uint64_t>(context.job_set_id),
             },
             .program_package = package,
             .common_input = savor::runtime::fullphase::MakeFullPhaseCommonInput(
@@ -1940,7 +1939,6 @@ public:
                 .worksets = {{
                     .job_set_id = ensured.job_set_id,
                     .workflow_step_id = context.step.workflow_step_id,
-                    .root_job_set_id = ensured.job_set_id,
                     .workset_key = key + ".workset.0",
                     .program_kind = static_cast<std::int32_t>(savor::PK_BattleReplay),
                     .program_version = replayphase::ProgramVersion,
@@ -1974,7 +1972,7 @@ public:
                     .requested_by = std::string(kReplayCreatedBy),
                 }}, .requested_by = std::string(kReplayCreatedBy),
             }, &published, error_out)) return false;
-        result_out->root_job_set_id = ensured.job_set_id;
+        result_out->job_set_id = ensured.job_set_id;
         result_out->persistence = {
             .program_ref_kind = std::string(kReplayProgramRefKind),
             .program_ref_id = replay_id,
@@ -1995,7 +1993,7 @@ public:
     {
         if (!result_out || !execution_ || !analysis_)
             return Fail("Battle Replay continuation is incomplete", error_out);
-        const auto jobs = execution_->ListJobsInJobSet(context.root_job_set_id);
+        const auto jobs = execution_->ListJobsInJobSet(context.job_set_id);
         if (jobs.size() != 1)
             return Fail("Battle Replay lost its singleton job shape", error_out);
         const auto job = execution_->GetExecutionJob(jobs.front().job_id);
@@ -2033,7 +2031,7 @@ public:
         };
         if (!state_ || !analysis_ || context.items.size() != 1 ||
             context.workset_id <= 0 || context.dispatch_attempt_id <= 0 ||
-            context.workflow_step_id <= 0 || context.root_job_set_id <= 0 ||
+            context.workflow_step_id <= 0 || context.job_set_id <= 0 ||
             context.dispatch_token.empty() ||
             !context.state_compatibility.Complete())
             return fail("Battle Replay reconstruction requires one exact item");
@@ -2130,7 +2128,7 @@ public:
         workset.phase_invocation = {
             .invocation_id = {
                 .workflow_step_id = static_cast<std::uint64_t>(context.workflow_step_id),
-                .root_job_set_id = static_cast<std::uint64_t>(context.root_job_set_id)},
+                .job_set_id = static_cast<std::uint64_t>(context.job_set_id)},
             .program_package = package,
             .common_input = savor::runtime::fullphase::MakeFullPhaseCommonInput(
                 "soa.battle.replay.CommonInput", 1, common_bytes),
@@ -2377,7 +2375,7 @@ public:
              row->status != "REPLAY_MISMATCH"))
         {
             decision.should_advance = false;
-            decision.terminal_failure = true;
+            decision.workflow_failure = true;
             decision.blocked_reason = "battle_recording_result_missing";
             return decision;
         }
@@ -2387,7 +2385,7 @@ public:
             !row->tas_movie_tree_id)
         {
             decision.should_advance = false;
-            decision.terminal_failure = true;
+            decision.workflow_failure = true;
             decision.blocked_reason = "battle_recording_tree_missing";
             return decision;
         }
@@ -2436,7 +2434,6 @@ ProgramKindDescriptor BuildBattleRecordProgramDescriptor(
     descriptor.workflow_transition =
         std::make_shared<Transition>(analysis_db);
     descriptor.supports_workflow_orchestration = true;
-    descriptor.allow_mixed_success_failed_transition = false;
     return descriptor;
 }
 
@@ -2480,7 +2477,6 @@ ProgramKindDescriptor BuildBattleReplayProgramDescriptor(
     descriptor.result_handler =
         std::make_shared<battlerecord::ReplayResultHandler>(analysis_db);
     descriptor.supports_workflow_orchestration = true;
-    descriptor.allow_mixed_success_failed_transition = false;
     return descriptor;
 }
 

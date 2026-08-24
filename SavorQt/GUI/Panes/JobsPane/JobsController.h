@@ -61,6 +61,7 @@ public:
     void requestNextPage();
     void requestPreviousPage();
     void selectJob(qint64 jobId);
+    void showJob(qint64 jobId);
     void refreshSelectedJobDetail();
     void loadSelectedJobInputIni();
     void requeueSelectedJob();

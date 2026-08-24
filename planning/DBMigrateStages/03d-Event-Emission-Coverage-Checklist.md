@@ -50,7 +50,6 @@ Implemented write points emitting outbox rows inside the same DB transaction:
 ### Authoring
 Implemented write points emitting outbox rows inside the same DB transaction:
 - `SqliteAuthoringDb::SaveSeedProbeSpec` -> `Authoring.SeedProbeSpecSaved.v1`
-- `SqliteAuthoringDb::SaveTasSpec` -> `Authoring.TasSpecSaved.v1`
 - `SqliteAuthoringDb::SaveBattleRunSpec` -> `Authoring.BattleRunSpecSaved.v1`
 - `SqliteAuthoringDb::SavePlan` -> `Authoring.PlanSaved.v1`
 - `SqliteAuthoringDb::SavePredicateSpec` -> `Authoring.PredicateSpecSaved.v1`
@@ -106,7 +105,6 @@ Implemented write points emitting outbox rows inside the same DB transaction:
 | 35 | `AnalysisBattle.SelectionDecisionRecorded.v1` | Implemented | `SqliteAnalysisDb::RecordBattleSelectionDecision` inserts `ab_selection_decision` + outbox row atomically (`payload_ref_kind=selection_decision`). |
 | 36 | `AnalysisBattle.TerminalFollowupUpdated.v1` | Implemented | `SqliteAnalysisDb::UpsertBattleTerminalFollowup` upserts `ab_terminal_followup` + outbox row atomically (`payload_ref_kind=terminal_followup`). |
 | 37 | `Authoring.SeedProbeSpecSaved.v1` | Implemented | `SqliteAuthoringDb::SaveSeedProbeSpec` inserts `au_seed_probe_spec` + outbox row atomically (`payload_ref_kind=authoring_event`). |
-| 38 | `Authoring.TasSpecSaved.v1` | Implemented | `SqliteAuthoringDb::SaveTasSpec` inserts `au_tas_spec_base` + `au_tas_spec` and appends outbox atomically (`payload_ref_kind=authoring_event`). |
 | 39 | `Authoring.BattleRunSpecSaved.v1` | Implemented | `SqliteAuthoringDb::SaveBattleRunSpec` inserts `au_battle_run_spec` + outbox row atomically (`payload_ref_kind=authoring_event`). |
 | 40 | `Authoring.PlanSaved.v1` | Implemented | `SqliteAuthoringDb::SavePlan` inserts `au_battle_plan` + outbox row atomically (`payload_ref_kind=authoring_event`). |
 | 41 | `Authoring.PredicateSpecSaved.v1` | Implemented | `SqliteAuthoringDb::SavePredicateSpec` inserts `au_predicate_spec` + outbox row atomically (`payload_ref_kind=authoring_event`). |

@@ -256,6 +256,8 @@ public:
         const StopRouteReceipt& receipt,
         const StopInterruptionHandlerRequest& request);
     [[nodiscard]] StopPointError DepartCurrentPoint();
+    [[nodiscard]] StopPointError EstablishPausedCurrentPoint(
+        std::uint32_t pc);
 
     [[nodiscard]] std::vector<StopRouteReceipt> DrainIngress();
     [[nodiscard]] std::vector<StopRouteReceipt> RoutingHistory() const;

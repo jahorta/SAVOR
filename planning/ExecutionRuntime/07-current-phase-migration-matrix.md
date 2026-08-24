@@ -422,8 +422,8 @@ unit without changing historical Execution DB instances.
 
 **Legacy removal condition**
 
-The `seedprobe.run` workflow step constructs `soa.seed_probe::probe` at the runtime boundary; the result
-handler consumes typed output and writes through the existing SeedProbe persistence contract; the E2E
+The `seedprobe.survey`, `seedprobe.search`, and `seedprobe.confirm` workflow steps construct
+`soa.seed_probe::probe` at the runtime boundary; the result handler consumes typed output and writes through the existing SeedProbe persistence contract; the E2E
 scenario uses `ProgramInvocation`; and no worker-side caller uses `SeedProbeKeys`, `PK_SeedProbe`, or the
 SeedProbe branches in `ProgramRegistry`. `SeedProbePayload` may remain only where an existing SavorDb
 handler needs it to preserve stored data.

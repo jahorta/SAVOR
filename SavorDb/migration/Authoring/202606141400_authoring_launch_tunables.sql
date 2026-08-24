@@ -29,43 +29,6 @@ DROP TABLE au_seed_probe_grid_spec;
 
 ALTER TABLE au_seed_probe_grid_spec_new RENAME TO au_seed_probe_grid_spec;
 
-CREATE TABLE au_tas_spec_base_new (
-    tas_spec_base_id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    priority INTEGER NOT NULL,
-    run_ms INTEGER NOT NULL,
-    vi_stall_ms INTEGER NOT NULL,
-    progress_enable INTEGER NOT NULL CHECK(progress_enable IN (0, 1)),
-    auto_queue_seeds INTEGER NOT NULL CHECK(auto_queue_seeds IN (0, 1)),
-    created_at_utc INTEGER NOT NULL,
-    CONSTRAINT uq_au_tas_spec_base_name UNIQUE (name)
-);
-
-INSERT INTO au_tas_spec_base_new(
-    tas_spec_base_id,
-    name,
-    priority,
-    run_ms,
-    vi_stall_ms,
-    progress_enable,
-    auto_queue_seeds,
-    created_at_utc
-)
-SELECT
-    tas_spec_base_id,
-    name,
-    priority,
-    run_ms,
-    vi_stall_ms,
-    progress_enable,
-    auto_queue_seeds,
-    created_at_utc
-FROM au_tas_spec_base;
-
-DROP TABLE au_tas_spec_base;
-
-ALTER TABLE au_tas_spec_base_new RENAME TO au_tas_spec_base;
-
 CREATE TABLE au_battle_run_spec_new (
     battle_run_spec_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,

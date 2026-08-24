@@ -319,6 +319,7 @@ public:
     void set_session_event_callback(SessionEventCallback callback);
 
     void stop();
+    [[nodiscard]] bool confirm_process_exit();
     ProcessWorkerStopSnapshot last_stop_snapshot() const;
 
     bool is_ready() const;

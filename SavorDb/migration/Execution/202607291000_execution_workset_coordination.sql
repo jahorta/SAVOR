@@ -32,7 +32,6 @@ CREATE TABLE IF NOT EXISTS exec_workset (
     workset_id INTEGER PRIMARY KEY,
     job_set_id INTEGER NOT NULL,
     workflow_step_id INTEGER NOT NULL,
-    root_job_set_id INTEGER NOT NULL,
     workset_key TEXT NOT NULL,
     program_kind INTEGER NOT NULL CHECK(program_kind > 0),
     program_version INTEGER NOT NULL CHECK(program_version > 0),
@@ -65,8 +64,6 @@ CREATE TABLE IF NOT EXISTS exec_workset (
     FOREIGN KEY(job_set_id) REFERENCES exec_job_set(job_set_id),
     FOREIGN KEY(workflow_step_id)
         REFERENCES exec_workflow_step(workflow_step_id),
-    FOREIGN KEY(root_job_set_id)
-        REFERENCES exec_job_set(job_set_id),
     CONSTRAINT uq_exec_workset_job_set_key
         UNIQUE(job_set_id, workset_key)
 );

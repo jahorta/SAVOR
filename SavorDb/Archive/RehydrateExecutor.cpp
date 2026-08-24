@@ -1432,13 +1432,10 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
 
                 if (kind == "job_sets") {
                     bool ok_id = false;
-                    bool ok_parent = false;
                     const auto old_id = JsonExtractInt(execution_db_, line, "$.job_set_id", &ok_id);
-                    const auto old_parent = JsonExtractInt(execution_db_, line, "$.parent_job_set_id", &ok_parent);
                     if (!ok_id) continue;
                     const auto new_id = map_id("job_set", old_id);
-                    const auto new_parent = ok_parent ? map_id("job_set", old_parent) : 0;
-                    if (new_id == 0 || (ok_parent && new_parent == 0)) break;
+                    if (new_id == 0) break;
 
                     bool ok_materialization_key = false;
                     const auto old_materialization_key = JsonExtractText(
@@ -1450,26 +1447,25 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                         : std::string{};
                     Statement st;
                     if (!Prepare(execution_db_,
-                            "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note,"
+                            "INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note,"
                             "materialization_key,materialization_state,population_sealed_at_utc,workset_publication_completed_at_utc) "
-                            "VALUES(?1,?2,json_extract(?3,'$.program_kind'),json_extract(?3,'$.purpose'),?4,json_extract(?3,'$.created_at_utc'),json_extract(?3,'$.priority_boost'),json_extract(?3,'$.expected_total'),"
-                            "json_extract(?3,'$.domain_ref_kind'),json_extract(?3,'$.domain_ref_id'),?5,?6,json_extract(?3,'$.materialization_state'),json_extract(?3,'$.population_sealed_at_utc'),"
-                            "json_extract(?3,'$.workset_publication_completed_at_utc'));",
+                            "VALUES(?1,json_extract(?2,'$.program_kind'),json_extract(?2,'$.purpose'),?3,json_extract(?2,'$.created_at_utc'),json_extract(?2,'$.priority_boost'),json_extract(?2,'$.expected_total'),"
+                            "json_extract(?2,'$.domain_ref_kind'),json_extract(?2,'$.domain_ref_id'),?4,?5,json_extract(?2,'$.materialization_state'),json_extract(?2,'$.population_sealed_at_utc'),"
+                            "json_extract(?2,'$.workset_publication_completed_at_utc'));",
                             &st,
                             &db_error)) {
                         break;
                     }
                     sqlite3_bind_int64(st.st, 1, new_id);
-                    if (ok_parent) sqlite3_bind_int64(st.st, 2, new_parent); else sqlite3_bind_null(st.st, 2);
-                    sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(st.st, 2, line.c_str(), -1, SQLITE_TRANSIENT);
                     const auto created_by = spec.target_namespace + ":rehydrate";
                     const auto note = "rehydrated:" + spec.target_namespace;
-                    sqlite3_bind_text(st.st, 4, created_by.c_str(), -1, SQLITE_TRANSIENT);
-                    sqlite3_bind_text(st.st, 5, note.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(st.st, 3, created_by.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(st.st, 4, note.c_str(), -1, SQLITE_TRANSIENT);
                     if (ok_materialization_key) {
-                        sqlite3_bind_text(st.st, 6, materialization_key.c_str(), -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(st.st, 5, materialization_key.c_str(), -1, SQLITE_TRANSIENT);
                     } else {
-                        sqlite3_bind_null(st.st, 6);
+                        sqlite3_bind_null(st.st, 5);
                     }
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
                     ++restored_execution_counts[kind];
@@ -1477,21 +1473,18 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     bool ok_id = false;
                     bool ok_set = false;
                     bool ok_step = false;
-                    bool ok_root_set = false;
                     const auto old_id = JsonExtractInt(execution_db_, line, "$.workset_id", &ok_id);
                     const auto old_set = JsonExtractInt(execution_db_, line, "$.job_set_id", &ok_set);
                     const auto old_step = JsonExtractInt(execution_db_, line, "$.workflow_step_id", &ok_step);
-                    const auto old_root_set = JsonExtractInt(execution_db_, line, "$.root_job_set_id", &ok_root_set);
-                    if (!ok_id || !ok_set || !ok_step || !ok_root_set) {
-                        db_error = "archived workset is missing its Full Phase invocation anchor";
+                    if (!ok_id || !ok_set || !ok_step) {
+                        db_error = "archived workset is missing its workflow-step job-set anchor";
                         break;
                     }
                     const auto new_id = map_id("workset", old_id);
                     const auto new_set = map_id("job_set", old_set);
                     const auto new_step = map_id("workflow_step", old_step);
-                    const auto new_root_set = map_id("job_set", old_root_set);
-                    if (new_id == 0 || new_set == 0 || new_step == 0 || new_root_set == 0) {
-                        db_error = "archived workset Full Phase invocation anchor could not be remapped";
+                    if (new_id == 0 || new_set == 0 || new_step == 0) {
+                        db_error = "archived workset workflow-step job-set anchor could not be remapped";
                         break;
                     }
 
@@ -1538,49 +1531,48 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
 
                     Statement st;
                     if (!Prepare(execution_db_,
-                            "INSERT INTO exec_workset(workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,program_kind,program_version,contract_key,"
+                            "INSERT INTO exec_workset(workset_id,job_set_id,workflow_step_id,workset_key,program_kind,program_version,contract_key,"
                             "module_canonical_id,module_version,module_sha256,entrypoint,verified_dependency_sha256,runtime_profile_sha256,"
                             "program_package_sha256,execution_affinity_key,estimated_payload_bytes,priority,item_count,published_at_utc,"
                             "derived_state_binding_payload,derived_state_binding_sha256,"
                             "capture_binding_payload,capture_binding_sha256,progress_plan_payload,progress_plan_sha256) "
-                            "VALUES(?1,?2,?3,?4,json_extract(?5,'$.workset_key'),json_extract(?5,'$.program_kind'),json_extract(?5,'$.program_version'),"
-                            "json_extract(?5,'$.contract_key'),json_extract(?5,'$.module_canonical_id'),json_extract(?5,'$.module_version'),"
-                            "json_extract(?5,'$.module_sha256'),json_extract(?5,'$.entrypoint'),json_extract(?5,'$.verified_dependency_sha256'),"
-                            "json_extract(?5,'$.runtime_profile_sha256'),json_extract(?5,'$.program_package_sha256'),"
-                            "json_extract(?5,'$.execution_affinity_key'),"
-                            "json_extract(?5,'$.estimated_payload_bytes'),json_extract(?5,'$.priority'),json_extract(?5,'$.item_count'),"
-                            "json_extract(?5,'$.published_at_utc'),?6,json_extract(?5,'$.derived_state_binding_sha256'),"
-                            "?7,json_extract(?5,'$.capture_binding_sha256'),"
-                            "?8,json_extract(?5,'$.progress_plan_sha256'));",
+                            "VALUES(?1,?2,?3,json_extract(?4,'$.workset_key'),json_extract(?4,'$.program_kind'),json_extract(?4,'$.program_version'),"
+                            "json_extract(?4,'$.contract_key'),json_extract(?4,'$.module_canonical_id'),json_extract(?4,'$.module_version'),"
+                            "json_extract(?4,'$.module_sha256'),json_extract(?4,'$.entrypoint'),json_extract(?4,'$.verified_dependency_sha256'),"
+                            "json_extract(?4,'$.runtime_profile_sha256'),json_extract(?4,'$.program_package_sha256'),"
+                            "json_extract(?4,'$.execution_affinity_key'),"
+                            "json_extract(?4,'$.estimated_payload_bytes'),json_extract(?4,'$.priority'),json_extract(?4,'$.item_count'),"
+                            "json_extract(?4,'$.published_at_utc'),?5,json_extract(?4,'$.derived_state_binding_sha256'),"
+                            "?6,json_extract(?4,'$.capture_binding_sha256'),"
+                            "?7,json_extract(?4,'$.progress_plan_sha256'));",
                             &st,
                             &db_error)) break;
                     sqlite3_bind_int64(st.st, 1, new_id);
                     sqlite3_bind_int64(st.st, 2, new_set);
                     sqlite3_bind_int64(st.st, 3, new_step);
-                    sqlite3_bind_int64(st.st, 4, new_root_set);
-                    sqlite3_bind_text(st.st, 5, line.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
                     if (derived_payload->empty()) {
-                        sqlite3_bind_zeroblob(st.st, 6, 0);
+                        sqlite3_bind_zeroblob(st.st, 5, 0);
                     } else {
-                        sqlite3_bind_blob(st.st, 6, derived_payload->data(),
+                        sqlite3_bind_blob(st.st, 5, derived_payload->data(),
                             static_cast<int>(derived_payload->size()), SQLITE_TRANSIENT);
                     }
                     if (has_observation) {
                         if (capture_payload->empty()) {
-                            sqlite3_bind_zeroblob(st.st, 7, 0);
+                            sqlite3_bind_zeroblob(st.st, 6, 0);
                         } else {
-                            sqlite3_bind_blob(st.st, 7, capture_payload->data(),
+                            sqlite3_bind_blob(st.st, 6, capture_payload->data(),
                                 static_cast<int>(capture_payload->size()), SQLITE_TRANSIENT);
                         }
                         if (progress_payload->empty()) {
-                            sqlite3_bind_zeroblob(st.st, 8, 0);
+                            sqlite3_bind_zeroblob(st.st, 7, 0);
                         } else {
-                            sqlite3_bind_blob(st.st, 8, progress_payload->data(),
+                            sqlite3_bind_blob(st.st, 7, progress_payload->data(),
                                 static_cast<int>(progress_payload->size()), SQLITE_TRANSIENT);
                         }
                     } else {
+                        sqlite3_bind_null(st.st, 6);
                         sqlite3_bind_null(st.st, 7);
-                        sqlite3_bind_null(st.st, 8);
                     }
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
                     ++restored_execution_counts[kind];

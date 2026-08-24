@@ -21,7 +21,7 @@ struct JobPersistenceRecord {
 
 struct WorkflowStepScheduleResult {
     JobPersistenceRecord persistence;
-    std::int64_t root_job_set_id = 0;
+    std::int64_t job_set_id = 0;
     std::vector<std::string> event_lines;
 };
 
@@ -79,8 +79,7 @@ struct ProgramJobMaterializationContext {
 };
 
 enum class ProgramJobContinuationDisposition {
-    AddedWork = 0,
-    Complete,
+    Complete = 0,
     Failed,
 };
 
@@ -93,11 +92,15 @@ struct ProgramJobContinuationOutput {
 
 struct ProgramJobContinuationContext {
     ProgramJobMaterializationContext materialization;
-    std::int64_t root_job_set_id = 0;
+    std::int64_t job_set_id = 0;
     int expected_total = 0;
     int discovered_total = 0;
-    int terminal_total = 0;
+    int settled_total = 0;
+    int succeeded_total = 0;
     int failed_total = 0;
+    int interrupted_total = 0;
+    int superseded_total = 0;
+    int canceled_total = 0;
 };
 
 struct ProgramJobContinuationResult {
@@ -126,10 +129,9 @@ struct IProgramJobMaterializer {
         WorkflowStepScheduleResult* result_out,
         std::string* error_out) const = 0;
 
-    // Called after every currently published descendant job is business-final.
-    // A descriptor may idempotently publish another child job set, finish the
-    // workflow step, or fail it. Other program kinds need no special handling
-    // and therefore complete by default.
+    // Called after every job in this step's flat job set is business-final.
+    // Dynamic follow-up work is represented by a new workflow step. A job set
+    // is always the flat execution membership of exactly one workflow step.
     virtual bool Continue(
         const ProgramJobContinuationContext& context,
         ProgramJobContinuationResult* result_out,
@@ -166,7 +168,7 @@ struct WorksetReconstructionContext {
     std::int64_t workset_id = 0;
     std::int64_t dispatch_attempt_id = 0;
     std::int64_t workflow_step_id = 0;
-    std::int64_t root_job_set_id = 0;
+    std::int64_t job_set_id = 0;
     std::string dispatch_token;
     std::string contract_key;
     savor::runtime::ArtifactCompatibilityToken state_compatibility;
@@ -270,12 +272,18 @@ struct WorkflowTransitionContext {
     std::int64_t job_set_id = 0;
     int expected_total = 0;
     int discovered_total = 0;
-    int terminal_total = 0;
+    int settled_total = 0;
+    int succeeded_total = 0;
     int failed_total = 0;
+    int interrupted_total = 0;
+    int superseded_total = 0;
+    int canceled_total = 0;
     int priority = 0;
     std::string workflow_kind;
     std::optional<std::int64_t> workflow_graph_revision_id;
     std::string step_key;
+    std::string graph_node_key;
+    std::string step_kind;
     std::optional<std::string> input_ref_kind;
     std::optional<std::int64_t> input_ref_id;
     std::optional<std::string> output_ref_kind;
@@ -284,10 +292,10 @@ struct WorkflowTransitionContext {
 
 struct WorkflowTransitionDecision {
     bool should_advance = false;
-    // A handler-level validation failure is terminal. This is distinct from a
+    // A handler-level validation failure parks the workflow. This is distinct from a
     // temporarily blocked transition: the coordinator must fail the step and
     // workflow instead of polling the same terminal job set forever.
-    bool terminal_failure = false;
+    bool workflow_failure = false;
     std::optional<std::string> blocked_reason;
     std::optional<std::string> next_step_key;
     struct DynamicStep {
@@ -332,7 +340,6 @@ struct ProgramKindDescriptor {
     std::shared_ptr<IProgramResultHandler> result_handler;
 
     bool supports_workflow_orchestration = false;
-    bool allow_mixed_success_failed_transition = false;
 };
 
 } // namespace savor::db::execution::programdb

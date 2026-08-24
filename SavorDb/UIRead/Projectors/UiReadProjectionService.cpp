@@ -295,7 +295,12 @@ bool IsExecutionWorkflowEvent(const std::string& event_type) {
         || event_type == "Execution.WorkflowStepBlocked.v1"
         || event_type == "Execution.WorkflowStepCompleted.v1"
         || event_type == "Execution.WorkflowStepFailed.v1"
-        || event_type == "Execution.WorkflowInstanceCompleted.v1";
+        || event_type == "Execution.WorkflowStepInterrupted.v1"
+        || event_type == "Execution.WorkflowStepCanceled.v1"
+        || event_type == "Execution.WorkflowInstanceCompleted.v1"
+        || event_type == "Execution.WorkflowInstanceInterrupted.v1"
+        || event_type == "Execution.WorkflowInstanceCanceled.v1"
+        || event_type == "Execution.WorkflowInstanceResumed.v1";
 }
 
 bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow_instance_id, std::string* error_out);
@@ -714,7 +719,7 @@ bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow
     constexpr const char* kSteps =
         "SELECT s.workflow_step_id,s.workflow_instance_id,s.workflow_unit_activation_id,s.step_key,s.step_kind,s.state,s.blocked_reason,s.job_set_id,"
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id),"
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE')),"
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED')),"
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED'),"
         "s.priority,s.attempts,s.max_attempts,s.ready_at_utc,s.started_at_utc,s.completed_at_utc,s.failed_at_utc,s.created_at_utc "
         "FROM exec_workflow_step s WHERE s.workflow_instance_id=?1;";
@@ -727,11 +732,11 @@ bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow
         constexpr const char* kUpsert =
             "INSERT INTO ui_workflow_step("
             "workflow_step_id,workflow_instance_id,workflow_unit_activation_id,step_key,step_kind,state,blocked_reason,job_set_id,"
-            "job_count,job_completed_count,job_failed_count,priority,attempts,max_attempts,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc,created_at_utc) "
+            "job_count,job_settled_count,job_failed_count,priority,attempts,max_attempts,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc,created_at_utc) "
             "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19) "
             "ON CONFLICT(workflow_step_id) DO UPDATE SET "
             "workflow_unit_activation_id=excluded.workflow_unit_activation_id,state=excluded.state,blocked_reason=excluded.blocked_reason,job_set_id=excluded.job_set_id,"
-            "job_count=excluded.job_count,job_completed_count=excluded.job_completed_count,job_failed_count=excluded.job_failed_count,"
+            "job_count=excluded.job_count,job_settled_count=excluded.job_settled_count,job_failed_count=excluded.job_failed_count,"
             "attempts=excluded.attempts,max_attempts=excluded.max_attempts,ready_at_utc=excluded.ready_at_utc,started_at_utc=excluded.started_at_utc,"
             "completed_at_utc=excluded.completed_at_utc,failed_at_utc=excluded.failed_at_utc;";
         if (!Prepare(ui, kUpsert, &upsert, error_out)) return false;
@@ -1437,16 +1442,16 @@ bool ProjectArchive(sqlite3* source, sqlite3* ui, const OutboxEvent& event, std:
     if (package_id > 0) {
         Statement pkg;
         constexpr const char* kPkg =
-            "SELECT archive_package_id,source_context,source_root_job_set_id,source_scope_kind,source_workflow_count,selection_summary,archive_name,archive_notes,created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,checksum_status "
+            "SELECT archive_package_id,source_context,source_job_set_id,source_scope_kind,source_workflow_count,selection_summary,archive_name,archive_notes,created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,checksum_status "
             "FROM ar_archive_package WHERE archive_package_id=?1;";
         if (!Prepare(source, kPkg, &pkg, error_out)) return false;
         sqlite3_bind_int64(pkg.st, 1, package_id);
         if (sqlite3_step(pkg.st) == SQLITE_ROW) {
             Statement upsert;
             constexpr const char* kSql =
-                "INSERT INTO ui_archive_catalog(archive_package_id,source_context,source_root_job_set_id,source_scope_kind,source_workflow_count,selection_summary,archive_name,archive_notes,created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,checksum_status) "
+                "INSERT INTO ui_archive_catalog(archive_package_id,source_context,source_job_set_id,source_scope_kind,source_workflow_count,selection_summary,archive_name,archive_notes,created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,checksum_status) "
                 "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) "
-                "ON CONFLICT(archive_package_id) DO UPDATE SET source_context=excluded.source_context,source_root_job_set_id=excluded.source_root_job_set_id,source_scope_kind=excluded.source_scope_kind,source_workflow_count=excluded.source_workflow_count,selection_summary=excluded.selection_summary,archive_name=excluded.archive_name,archive_notes=excluded.archive_notes,created_at_utc=excluded.created_at_utc,"
+                "ON CONFLICT(archive_package_id) DO UPDATE SET source_context=excluded.source_context,source_job_set_id=excluded.source_job_set_id,source_scope_kind=excluded.source_scope_kind,source_workflow_count=excluded.source_workflow_count,selection_summary=excluded.selection_summary,archive_name=excluded.archive_name,archive_notes=excluded.archive_notes,created_at_utc=excluded.created_at_utc,"
                 "schema_version=excluded.schema_version,event_catalog_version=excluded.event_catalog_version,time_range_start_utc=excluded.time_range_start_utc,time_range_end_utc=excluded.time_range_end_utc,checksum_status=excluded.checksum_status;";
             if (!Prepare(ui, kSql, &upsert, error_out)) return false;
             for (int i = 0; i < 14; ++i) BindColumn(upsert.st, i + 1, pkg.st, i);
