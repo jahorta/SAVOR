@@ -1,6 +1,5 @@
 CREATE TABLE exec_job_set (
     job_set_id INTEGER PRIMARY KEY,
-    parent_job_set_id INTEGER NULL,
     program_kind INTEGER NOT NULL,
     purpose TEXT NOT NULL,
     created_by TEXT NULL,
@@ -9,8 +8,7 @@ CREATE TABLE exec_job_set (
     expected_total INTEGER NULL,
     domain_ref_kind TEXT NULL,
     domain_ref_id INTEGER NULL,
-    meta_note TEXT NULL,
-    FOREIGN KEY(parent_job_set_id) REFERENCES exec_job_set(job_set_id)
+    meta_note TEXT NULL
 );
 CREATE TABLE exec_job (
     job_id INTEGER PRIMARY KEY,
@@ -82,8 +80,6 @@ CREATE TABLE exec_archive_cursor (
 );
 CREATE INDEX ix_exec_job_parent_job_id
     ON exec_job(parent_job_id);
-CREATE INDEX ix_exec_job_set_parent_job_set_id
-    ON exec_job_set(parent_job_set_id);
 CREATE INDEX ix_exec_job_claim_queue
     ON exec_job(state, priority DESC, queued_at_utc ASC);
 CREATE INDEX ix_exec_job_job_set_state_queue_desc

@@ -1619,10 +1619,7 @@ std::optional<ExecutionJobSetProgressDetails> SqliteExecutionDb::GetJobSetProgre
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "WITH job_set_descendants(job_set_id, depth) AS ("
-            "  SELECT js.job_set_id, 0 FROM exec_job_set js WHERE js.job_set_id=?1 "
-            "), "
-            "summary AS ("
+            "WITH summary AS ("
             "  SELECT "
             "    COUNT(j.job_id) AS total_jobs, "
             "    COALESCE(SUM(CASE WHEN j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED') THEN 1 ELSE 0 END), 0) AS settled_jobs, "
@@ -1631,14 +1628,12 @@ std::optional<ExecutionJobSetProgressDetails> SqliteExecutionDb::GetJobSetProgre
             "    COALESCE(SUM(CASE WHEN j.state='INTERRUPTED' THEN 1 ELSE 0 END), 0) AS interrupted_jobs, "
             "    COALESCE(SUM(CASE WHEN j.state='SUPERSEDED' THEN 1 ELSE 0 END), 0) AS superseded_jobs, "
             "    COALESCE(SUM(CASE WHEN j.state='CANCELED' THEN 1 ELSE 0 END), 0) AS canceled_jobs "
-            "  FROM job_set_descendants d "
-            "  LEFT JOIN exec_job j ON j.job_set_id=d.job_set_id"
+            "  FROM exec_job j WHERE j.job_set_id=?1"
             "), "
             "expected AS ("
-            "  SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) "
+            "  SELECT COALESCE(js.expected_total, 0) "
             "    AS expected_total "
-            "  FROM exec_job_set js "
-            "  JOIN job_set_descendants d ON d.job_set_id=js.job_set_id"
+            "  FROM exec_job_set js WHERE js.job_set_id=?1"
             ") "
             "SELECT ?1, summary.total_jobs, summary.settled_jobs, summary.succeeded_jobs, "
             "summary.failed_jobs, summary.interrupted_jobs, summary.superseded_jobs, "
@@ -1900,8 +1895,7 @@ bool SqliteExecutionDb::EnqueueJob(
     if (command.savestate_id.has_value()) sqlite3_bind_int64(insert_job.st, 7, *command.savestate_id); else sqlite3_bind_null(insert_job.st, 7);
     sqlite3_bind_text(insert_job.st, 8, command.fingerprint.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(insert_job.st, 9, command.priority);
-    const char* initial_state = command.pending_until_workflow_materialized ? "PENDING_MATERIALIZATION" : "QUEUED";
-    sqlite3_bind_text(insert_job.st, 10, initial_state, -1, SQLITE_STATIC);
+    sqlite3_bind_text(insert_job.st, 10, "QUEUED", -1, SQLITE_STATIC);
     sqlite3_bind_int(insert_job.st, 11, 0);
     sqlite3_bind_int(insert_job.st, 12, command.max_attempts);
     sqlite3_bind_int64(insert_job.st, 13, queued_at_utc);
@@ -3219,7 +3213,11 @@ SqliteExecutionDb::ClaimPublishedWorksetBatch(
             "w.estimated_payload_bytes,w.priority,w.published_at_utc,"
             "w.item_count "
             "FROM exec_workset w "
+            "JOIN exec_workflow_step s "
+            "  ON s.workflow_step_id=w.workflow_step_id "
             "WHERE w.item_count>0 "
+            "AND s.job_set_id=w.job_set_id "
+            "AND s.state IN ('MATERIALIZED','RUNNING') "
             "AND (SELECT COUNT(1) FROM exec_job j "
             "     WHERE j.workset_id=w.workset_id)=w.item_count "
             "AND NOT EXISTS("

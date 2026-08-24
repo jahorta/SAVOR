@@ -772,7 +772,6 @@ struct CreatedJobSet
 std::optional<CreatedJobSet> CreateTestJobSet(
     savor::db::IExecutionDb* execution_db,
     std::string materialization_key,
-    std::optional<std::int64_t> parent_job_set_id,
     std::string purpose,
     std::string meta_note,
     std::int64_t probe_run_id,
@@ -850,26 +849,6 @@ std::optional<CreatedJobSet> CreateTestJobSet(
         created.job_ids.push_back(job.job_id);
     }
     return created;
-}
-
-std::optional<CreatedJobSet> CreateTestJobSet(
-    savor::db::IExecutionDb* execution_db,
-    std::string materialization_key,
-    std::string purpose,
-    std::string meta_note,
-    std::int64_t probe_run_id,
-    const std::vector<SeedProbeJobSpec>& specs,
-    std::string* error_out)
-{
-    return CreateTestJobSet(
-        execution_db,
-        std::move(materialization_key),
-        std::nullopt,
-        std::move(purpose),
-        std::move(meta_note),
-        probe_run_id,
-        specs,
-        error_out);
 }
 
 struct ManualRun
@@ -984,7 +963,6 @@ std::optional<ManualRun> CreateManualRun(
     const auto root = CreateTestJobSet(
         execution_db,
         std::string(key) + ".root",
-        std::nullopt,
         "SEEDPROBE_SURVEY",
         "stage=SURVEY",
         run_id,
@@ -1030,7 +1008,6 @@ std::optional<ManualRun> CreateManualRun(
         const auto confirmation_jobs = CreateTestJobSet(
             execution_db,
             std::string(key) + ".neutral-confirmation",
-            root->job_set_id,
             "SEEDPROBE_TEST_CONFIRMATION",
             "stage=CONFIRM;fixture=neutral",
             run_id,
@@ -2013,7 +1990,6 @@ TEST_F(
     const auto observations = CreateTestJobSet(
         execution_db,
         "seedprobe-endpoint-mismatch.observations",
-        run->job_set_id,
         "SEEDPROBE_TEST_ENDPOINTS",
         "stage=SURVEY;fixture=endpoints",
         run->probe_run_id,

@@ -891,7 +891,7 @@ VALUES(6205, 6201, 'Next', 'unit.ready', 'WAITING', 0, 1, unixepoch()*1000);
         sqlite3_close(db);
     }
 
-    TEST(WorkflowCoordinatorService, TargetedTerminalNotificationWaitsForEveryDescendantJob) {
+    TEST(WorkflowCoordinatorService, TargetedSettlementNotificationWaitsForEveryJobInStepJobSet) {
         using namespace savor::db::execution::workflow;
         using namespace savor::db::migrations;
 
@@ -907,15 +907,13 @@ VALUES(6205, 6201, 'Next', 'unit.ready', 'WAITING', 0, 1, unixepoch()*1000);
         ASSERT_TRUE(ExecSql(db, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
 VALUES(7501, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, expected_total, created_at_utc, materialization_state)
-VALUES
-    (7502, NULL, 1, 'workflow-test-root', 2, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE'),
-    (7504, 7502, 1, 'workflow-test-child', 1, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE');
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc, materialization_state)
+VALUES(7502, 1, 'workflow-test', 3, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
 VALUES
-    (7503, 7502, 1, 1, 'unit.input', 7503, 'workflow-targeted-terminal', 0, 'COMPLETED', 1, 1, unixepoch()*1000, unixepoch()*1000),
+    (7503, 7502, 1, 1, 'unit.input', 7503, 'workflow-targeted-terminal', 0, 'SUCCEEDED', 1, 1, unixepoch()*1000, unixepoch()*1000),
     (7507, 7502, 1, 1, 'unit.input', 7507, 'workflow-root-still-running', 0, 'QUEUED', 0, 1, unixepoch()*1000, NULL),
-    (7505, 7504, 1, 1, 'unit.input', 7505, 'workflow-child-still-running', 0, 'QUEUED', 0, 1, unixepoch()*1000, NULL);
+    (7505, 7502, 1, 1, 'unit.input', 7505, 'workflow-peer-still-running', 0, 'QUEUED', 0, 1, unixepoch()*1000, NULL);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
 VALUES(7506, 7501, 'Current', 'unit.step', 'MATERIALIZED', 7502, 0, 1, unixepoch()*1000, unixepoch()*1000);
 )SQL"));

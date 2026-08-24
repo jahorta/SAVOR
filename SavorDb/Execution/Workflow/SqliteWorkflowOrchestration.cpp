@@ -171,24 +171,6 @@ bool EffectiveUnitActivations(
     return true;
 }
 
-bool ReleasePendingJobsForMaterializedJobSet(
-    sqlite3* db,
-    std::int64_t job_set_id,
-    std::string* error_out) {
-    Statement release;
-    if (!Prepare(db,
-            "UPDATE exec_job "
-            "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL "
-            "WHERE state='PENDING_MATERIALIZATION' "
-            "AND job_set_id IN (SELECT job_set_id FROM job_set_descendants);",
-            &release,
-            error_out)) {
-        return false;
-    }
-    sqlite3_bind_int64(release.st, 1, job_set_id);
-    return StepDone(db, release.st, error_out);
-}
-
 bool RecomputeUnitActivationState(
     sqlite3* db,
     std::int64_t workflow_unit_activation_id,
@@ -410,54 +392,37 @@ std::optional<WorkflowStepSettlementSnapshot> SqliteWorkflowOrchestrationQuerySe
 
     Statement st;
     if (!Prepare(db_,
-        "WITH job_set_ancestry(job_set_id, depth) AS ("
-        "  SELECT js.job_set_id, 0 "
-        "  FROM exec_job source "
-        "  JOIN exec_job_set js ON js.job_set_id=source.job_set_id "
-        "  WHERE source.job_id=?1 "
-        "), "
-        "step_root AS ("
+        "WITH step_root AS ("
         "  SELECT i.workflow_instance_id, s.workflow_step_id, s.workflow_unit_activation_id, s.job_set_id, i.workflow_kind, i.workflow_graph_revision_id, "
         "s.step_key, COALESCE(s.graph_node_key, s.step_key) AS graph_node_key, s.step_kind, "
         "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id, s.priority, i.state AS workflow_state "
-        "  FROM job_set_ancestry a "
-        "  JOIN exec_workflow_step s ON s.job_set_id=a.job_set_id "
+        "  FROM exec_job source "
+        "  JOIN exec_workflow_step s ON s.job_set_id=source.job_set_id "
         "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
-        "  ORDER BY a.depth ASC LIMIT 1"
-        "), "
-        "job_set_descendants(job_set_id, depth) AS ("
-        "  SELECT job_set_id, 0 FROM step_root "
+        "  WHERE source.job_id=?1 "
         ") "
         "SELECT r.workflow_instance_id, r.workflow_step_id, r.workflow_unit_activation_id, r.job_set_id, r.workflow_kind, r.workflow_graph_revision_id, "
         "r.step_key, r.graph_node_key, r.step_kind, "
         "r.input_ref_kind, r.input_ref_id, r.output_ref_kind, r.output_ref_id, r.priority, "
-        "(SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) "
-        " FROM exec_job_set js "
-        " JOIN job_set_descendants d ON d.job_set_id=js.job_set_id), "
-        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id), "
-        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
-        "  WHERE j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED')), "
-        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
-        " WHERE j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE')), "
-        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='FAILED'), "
-        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='INTERRUPTED'), "
-        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='SUPERSEDED'), "
-        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='CANCELED'), "
+        "COALESCE(root_js.expected_total, 0), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=r.job_set_id), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=r.job_set_id "
+        "  AND j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED')), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=r.job_set_id "
+        " AND j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE')), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=r.job_set_id AND j.state='FAILED'), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=r.job_set_id AND j.state='INTERRUPTED'), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=r.job_set_id AND j.state='SUPERSEDED'), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=r.job_set_id AND j.state='CANCELED'), "
         "r.workflow_state "
         "FROM step_root r "
-        "LEFT JOIN exec_job_set root_js ON root_js.job_set_id=r.job_set_id "
-        "WHERE NOT EXISTS ("
-        "  SELECT 1 "
-        "  FROM job_set_descendants d "
-        "  JOIN exec_job_set js ON js.job_set_id=d.job_set_id "
-        "  WHERE js.materialization_state IS NULL "
-        "     OR js.materialization_state <> 'WORKSET_PUBLICATION_COMPLETE'"
-        ") "
+        "JOIN exec_job_set root_js ON root_js.job_set_id=r.job_set_id "
+        "WHERE root_js.materialization_state='WORKSET_PUBLICATION_COMPLETE' "
         "AND NOT EXISTS ("
         "  SELECT 1 "
-        "  FROM job_set_descendants d "
-        "  JOIN exec_job j ON j.job_set_id=d.job_set_id "
-        "  WHERE j.state NOT IN "
+        "  FROM exec_job j "
+        "  WHERE j.job_set_id=r.job_set_id "
+        "    AND j.state NOT IN "
         "    ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED',"
         "     'INTERRUPTED','SUPERSEDED','CANCELED')"
         ");",
@@ -1364,7 +1329,7 @@ bool SqliteWorkflowOrchestrationCommandService::CancelWorkflowInstance(
         "cancellation_state='RESOLVED',cancellation_resolved_at_utc=?2,"
         "cancellation_resolution_code='WORKFLOW_CANCELLED_BY_USER' "
             "WHERE job_set_id=?1 "
-        "AND state IN ('PENDING_MATERIALIZATION','PENDING_WORKSET','QUEUED');",
+        "AND state IN ('PENDING_WORKSET','QUEUED');",
         &cancel_unstarted,
         error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
@@ -2056,11 +2021,6 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepMaterialized(
             Exec(db_, "ROLLBACK;", nullptr);
             return false;
         }
-    }
-
-    if (!ReleasePendingJobsForMaterializedJobSet(db_, command.job_set_id, error_out)) {
-        Exec(db_, "ROLLBACK;", nullptr);
-        return false;
     }
 
     if (should_emit

@@ -349,19 +349,17 @@ bool WorkflowRecoveryService::PlanInvariantRemediation(
 
     sqlite3_stmt* st = nullptr;
     constexpr const char* kSql =
-        "WITH RECURSIVE step_root AS ("
+        "WITH step_root AS ("
         "  SELECT s.job_set_id FROM exec_workflow_step s "
         "  WHERE s.workflow_instance_id=?1 AND s.workflow_step_id=?2 LIMIT 1"
-        "), "
-        "job_set_descendants(job_set_id, depth) AS (SELECT job_set_id, 0 FROM step_root) "
+        ") "
         "SELECT "
-        "(SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) "
-        " FROM exec_job_set js "
-        " JOIN job_set_descendants d ON d.job_set_id=js.job_set_id), "
-        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id), "
-        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
+        "(SELECT COALESCE(js.expected_total, 0) FROM exec_job_set js "
+        " JOIN step_root r ON r.job_set_id=js.job_set_id), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN step_root r ON r.job_set_id=j.job_set_id), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN step_root r ON r.job_set_id=j.job_set_id "
         "  WHERE j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','FAILED','INTERRUPTED','SUPERSEDED','CANCELED')), "
-        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='FAILED');";
+        "(SELECT COUNT(1) FROM exec_job j JOIN step_root r ON r.job_set_id=j.job_set_id WHERE j.state='FAILED');";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;

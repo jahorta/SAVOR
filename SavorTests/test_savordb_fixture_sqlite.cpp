@@ -4994,134 +4994,6 @@ VALUES(1830, 1829, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 1831, 8, 0, 2
     EXPECT_EQ(claimed->workflow_step_id, 1830);
 }
 
-TEST_F(SqliteDbFixture, Stage3dPendingMaterializationJobIsReleasedWhenStepMaterialized) {
-    using namespace savor::db::execution::workflow;
-    using namespace savor::db::migrations;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
-
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
-VALUES(1849, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
-VALUES(1851, 7, 'stage3d-pending-root', unixepoch()*1000);
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
-VALUES(1850, 1849, 'Neutral', 'seedprobe.neutral', 'READY', 8, 0, 2, unixepoch()*1000);
-)SQL"));
-
-    SqliteExecutionDb execution_db(db_);
-    std::int64_t job_id = 0;
-    ASSERT_TRUE(execution_db.EnqueueJob(
-        {
-            .job_set_id = 1851,
-            .program_kind = 7,
-            .program_ref_kind = "seed_probe",
-            .program_ref_id = 33,
-            .fingerprint = "fp-stage3d-pending-root",
-            .priority = 5,
-            .max_attempts = 3,
-            .pending_until_workflow_materialized = true,
-        },
-        &job_id,
-        &err))
-        << err;
-
-    auto record = execution_db.GetExecutionJob(job_id);
-    ASSERT_TRUE(record.has_value());
-    EXPECT_EQ(record->state, "PENDING_MATERIALIZATION");
-
-    std::string claim_error;
-    auto claimed = execution_db.ClaimNextReadyExecutionJob("worker-pending-before", 30000, &claim_error);
-    EXPECT_TRUE(claim_error.empty()) << claim_error;
-    EXPECT_FALSE(claimed.has_value());
-
-    ASSERT_TRUE(execution_db.WorkflowCommandService()->MarkStepMaterialized(
-        {
-            .workflow_step_id = 1850,
-            .job_set_id = 1851,
-            .requested_by = "SavorTests",
-        },
-        &err))
-        << err;
-
-    record = execution_db.GetExecutionJob(job_id);
-    ASSERT_TRUE(record.has_value());
-    EXPECT_EQ(record->state, "QUEUED");
-
-    claim_error.clear();
-    claimed = execution_db.ClaimNextReadyExecutionJob("worker-pending-after", 30000, &claim_error);
-    EXPECT_TRUE(claim_error.empty()) << claim_error;
-    ASSERT_TRUE(claimed.has_value());
-    EXPECT_EQ(claimed->job_id, job_id);
-    EXPECT_EQ(claimed->workflow_instance_id, 1849);
-    EXPECT_EQ(claimed->workflow_step_id, 1850);
-}
-
-TEST_F(SqliteDbFixture, Stage3dMarkStepMaterializedReleasesDescendantPendingJobs) {
-    using namespace savor::db::execution::workflow;
-    using namespace savor::db::migrations;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
-
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
-VALUES(1869, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
-VALUES(1871, NULL, 7, 'stage3d-pending-root', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
-VALUES(1872, 1871, 7, 'stage3d-pending-child', unixepoch()*1000);
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
-VALUES(1870, 1869, 'Unique', 'seedprobe.unique', 'READY', 9, 0, 2, unixepoch()*1000);
-)SQL"));
-
-    SqliteExecutionDb execution_db(db_);
-    std::int64_t child_job_id = 0;
-    ASSERT_TRUE(execution_db.EnqueueJob(
-        {
-            .job_set_id = 1872,
-            .program_kind = 7,
-            .program_ref_kind = "seed_probe",
-            .program_ref_id = 33,
-            .fingerprint = "fp-stage3d-pending-child",
-            .priority = 5,
-            .max_attempts = 3,
-            .pending_until_workflow_materialized = true,
-        },
-        &child_job_id,
-        &err))
-        << err;
-
-    std::string claim_error;
-    auto claimed = execution_db.ClaimNextReadyExecutionJob("worker-descendant-before", 30000, &claim_error);
-    EXPECT_TRUE(claim_error.empty()) << claim_error;
-    EXPECT_FALSE(claimed.has_value());
-
-    ASSERT_TRUE(execution_db.WorkflowCommandService()->MarkStepMaterialized(
-        {
-            .workflow_step_id = 1870,
-            .job_set_id = 1871,
-            .requested_by = "SavorTests",
-        },
-        &err))
-        << err;
-
-    const auto record = execution_db.GetExecutionJob(child_job_id);
-    ASSERT_TRUE(record.has_value());
-    EXPECT_EQ(record->state, "QUEUED");
-
-    claim_error.clear();
-    claimed = execution_db.ClaimNextReadyExecutionJob("worker-descendant-after", 30000, &claim_error);
-    EXPECT_TRUE(claim_error.empty()) << claim_error;
-    ASSERT_TRUE(claimed.has_value());
-    EXPECT_EQ(claimed->job_id, child_job_id);
-    EXPECT_EQ(claimed->job_set_id, 1872);
-    EXPECT_EQ(claimed->workflow_step_id, 1870);
-}
-
 TEST_F(SqliteDbFixture, Stage3dRunningExecutionJobLeasesRenewAndExpireBackToQueued) {
     using namespace savor::db::execution::jobs;
     using namespace savor::db::execution::workflow;
@@ -5936,8 +5808,8 @@ TEST_F(SqliteDbFixture, Stage3dMarkQueuedJobsSupersededEmitsJobCompletedOutbox) 
     ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, expected_total, created_at_utc)
-VALUES(1910, NULL, 7, 'supersede-event-root', 4, 1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
+VALUES(1910, 7, 'supersede-event-root', 4, 1000);
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
 VALUES
 (1911, 1910, 7, 1, 'seed_probe', 33, 'fp-supersede-keep', 5, 'QUEUED', 0, 3, 1000),
@@ -5961,42 +5833,6 @@ VALUES
     ASSERT_TRUE(execution_db.MarkQueuedJobsSuperseded(1910, 1911, &err, &rows_superseded)) << err;
     EXPECT_EQ(rows_superseded, 0);
     EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_outbox_message WHERE event_type='Execution.JobCompleted.v1' AND payload_ref_kind='job' AND payload_ref_id IN (1912,1913);"), 2);
-}
-
-TEST_F(SqliteDbFixture, Stage3dClaimNextReadyExecutionJobFailsAndRollsBackWhenJobSetAncestryHasNoWorkflowStep) {
-    using namespace savor::db::execution::workflow;
-    using namespace savor::db::migrations;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
-
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
-VALUES(1811, NULL, 7, 'stage3d-orphan-root', unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
-VALUES(1812, 1811, 7, 'stage3d-orphan-child', unixepoch()*1000);
-INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
-VALUES(1813, 1812, 7, 1, 'seed_probe', 33, 'fp-stage3d-claim-orphan', 5, 'QUEUED', 0, 3, unixepoch()*1000);
-)SQL"));
-
-    SqliteExecutionDb execution_db(db_);
-    std::string claim_error;
-    const auto claimed = execution_db.ClaimNextReadyExecutionJob("worker-claim-orphan", 30000, &claim_error);
-    EXPECT_FALSE(claimed.has_value());
-    EXPECT_NE(claim_error.find("workflow step not found for job_set ancestry"), std::string::npos) << claim_error;
-
-    sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        "SELECT claimed_by_token, lease_expires_at_utc FROM exec_job WHERE job_id=1813;",
-        -1,
-        &st,
-        nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_type(st, 0), SQLITE_NULL);
-    EXPECT_EQ(sqlite3_column_type(st, 1), SQLITE_NULL);
-    sqlite3_finalize(st);
 }
 
 TEST_F(SqliteDbFixture, Stage3dExecutionJobCommandServiceRejectsJobCompletedWithoutTerminalState) {
@@ -11548,8 +11384,8 @@ TEST_F(SqliteDbFixture, UiReadProjectionCoalescesProgressFloodToOneDirtyJob) {
     ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.execution_db_path.string().c_str(), &exec_handle));
     ASSERT_NE(exec_handle, nullptr);
     ASSERT_TRUE(ExecSql(exec_handle,
-        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
-        "VALUES(1,NULL,42,'progress-flood','test',1000,0,1,NULL,NULL,NULL);"));
+        "INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(1,42,'progress-flood','test',1000,0,1,NULL,NULL,NULL);"));
     ASSERT_TRUE(ExecSql(exec_handle,
         "INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
         "VALUES(17401,1,NULL,42,1,'test',1,'progress-flood-job',1,'RUNNING',1,1,'worker-1',NULL,1000,1100,NULL,NULL,NULL);"));
@@ -11628,8 +11464,8 @@ TEST_F(SqliteDbFixture, UiReadProjectionTerminalJobEventRefreshesWorkflowLaneCou
         "INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc) "
         "VALUES(25001,'terminal-job-test','RUNNING','job_set',25002,'test',1000,1100);"));
     ASSERT_TRUE(ExecSql(exec_handle,
-        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
-        "VALUES(25002,NULL,42,'terminal-job-test','test',1000,0,2,NULL,NULL,NULL);"));
+        "INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(25002,42,'terminal-job-test','test',1000,0,2,NULL,NULL,NULL);"));
     ASSERT_TRUE(ExecSql(exec_handle,
         "INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,job_set_id,created_at_utc,started_at_utc) "
         "VALUES(25003,25001,'terminal-step','job_set','RUNNING',5,1,1,25002,1000,1100);"));
@@ -11704,8 +11540,8 @@ TEST_F(SqliteDbFixture, UiReadProjectionProjectsWorkflowDisplayStateFromStepActi
         "(26004,'display-test','COMPLETED','manual',NULL,'test',1003,1103,1203),"
         "(26005,'display-test','RUNNING','manual',NULL,'test',1004,1104,NULL);"));
     ASSERT_TRUE(ExecSql(exec_handle,
-        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
-        "VALUES(26050,NULL,42,'display-active-job','test',1000,0,1,NULL,NULL,NULL);"));
+        "INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(26050,42,'display-active-job','test',1000,0,1,NULL,NULL,NULL);"));
     ASSERT_TRUE(ExecSql(exec_handle,
         "INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,job_set_id,ready_at_utc,created_at_utc) "
         "VALUES"
@@ -11803,8 +11639,8 @@ TEST_F(SqliteDbFixture, UiReadProjectionRefreshesJobsSupersededByBatchUpdate) {
     ASSERT_TRUE(ExecSql(exec_handle, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc)
 VALUES(27001,'supersede-projection','RUNNING','manual',NULL,'test',1000,1100);
-INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note)
-VALUES(27010,NULL,7,'supersede-projection','test',1000,0,3,NULL,NULL,NULL);
+INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note)
+VALUES(27010,7,'supersede-projection','test',1000,0,3,NULL,NULL,NULL);
 INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,job_set_id,ready_at_utc,created_at_utc)
 VALUES(27011,27001,'Unique','seedprobe.unique','MATERIALIZED',1,0,1,27010,1100,1000);
 INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,queued_at_utc)
@@ -11863,7 +11699,7 @@ VALUES
     EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=27021;"), "QUEUED");
     EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=27022;"), "SUPERSEDED");
     EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=27023;"), "SUPERSEDED");
-    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_job_summary WHERE job_set_id=27010 AND state IN ('QUEUED','PENDING_MATERIALIZATION');"), 1);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_job_summary WHERE job_set_id=27010 AND state='QUEUED';"), 1);
     sqlite3_close(verify_handle);
 }
 
@@ -11888,8 +11724,8 @@ TEST_F(SqliteDbFixture, UiReadProjectionPrioritizesWorkflowDirtyRowsOverOlderJob
     ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.execution_db_path.string().c_str(), &exec_handle));
     ASSERT_NE(exec_handle, nullptr);
     ASSERT_TRUE(ExecSql(exec_handle,
-        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
-        "VALUES(32001,NULL,42,'priority-old-jobs','test',1000,0,5,NULL,NULL,NULL);"));
+        "INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(32001,42,'priority-old-jobs','test',1000,0,5,NULL,NULL,NULL);"));
     for (int i = 0; i < 5; ++i) {
         const auto job_id = 32010 + i;
         ASSERT_TRUE(ExecSql(exec_handle,
@@ -11962,11 +11798,11 @@ TEST_F(SqliteDbFixture, UiReadProjectionExecutionDirtyPriorityPreservesWorkflowF
         "INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc) "
         "VALUES(33101,'priority-order','RUNNING','manual',NULL,'test',2001,2101);"));
     ASSERT_TRUE(ExecSql(exec_handle,
-        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
-        "VALUES(33110,NULL,42,'priority-job-set','test',1000,0,1,NULL,NULL,NULL);"));
+        "INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(33110,42,'priority-job-set','test',1000,0,1,NULL,NULL,NULL);"));
     ASSERT_TRUE(ExecSql(exec_handle,
-        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
-        "VALUES(33120,NULL,42,'priority-plain-job','test',1000,0,1,NULL,NULL,NULL);"));
+        "INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(33120,42,'priority-plain-job','test',1000,0,1,NULL,NULL,NULL);"));
     ASSERT_TRUE(ExecSql(exec_handle,
         "INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
         "VALUES(33111,33110,NULL,42,1,'test',1,'priority-job-set-job',5,'RUNNING',1,1,'worker-1',NULL,1000,1100,NULL,NULL,NULL);"));
@@ -12092,8 +11928,8 @@ TEST_F(SqliteDbFixture, UiReadProjectionDirtyJobSetRefreshesWorkflowBattleRollup
     ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.execution_db_path.string().c_str(), &exec_handle));
     ASSERT_NE(exec_handle, nullptr);
     ASSERT_TRUE(ExecSql(exec_handle,
-        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
-        "VALUES(34110,NULL,42,'rollup-job-set','test',1000,0,24,NULL,NULL,NULL);"));
+        "INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(34110,42,'rollup-job-set','test',1000,0,24,NULL,NULL,NULL);"));
     for (int i = 0; i < 24; ++i) {
         const auto job_id = 34120 + i;
         ASSERT_TRUE(ExecSql(exec_handle,

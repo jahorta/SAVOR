@@ -30,7 +30,6 @@ Queueing, claiming, retries, parent/child orchestration, and event/outbox mechan
 
 #### 1) `exec_job_set`
 - `job_set_id` (PK)
-- `parent_job_set_id` (nullable FK -> `exec_job_set.job_set_id`)
 - `program_kind` (int)
 - `purpose` (text)
 - `created_by` (text nullable)
@@ -161,7 +160,7 @@ This table is the target home for scalar launch values that vary by instance, su
 ### Key Constraints / Indexes
 - Unique job fingerprint (`exec_job.fingerprint`).
 - `exec_job_set.domain_ref_kind/domain_ref_id` are lightweight links only; source-of-truth domain facts remain in domain context tables.
-- Parent pointers indexed (`exec_job.parent_job_id`, `exec_job_set.parent_job_set_id`).
+- Parent job pointers indexed (`exec_job.parent_job_id`).
 - Claim queue index on `(state, priority DESC, queued_at_utc ASC)`.
 - Traversal index on `exec_job(job_set_id, state, queued_at_utc DESC)`.
 

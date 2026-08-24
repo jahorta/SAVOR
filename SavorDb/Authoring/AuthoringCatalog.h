@@ -122,15 +122,39 @@ inline Node Value(const PredicateValueToken token, std::vector<Node> arguments =
             .children = std::move(arguments)};
 }
 
-inline Node GreaterEqual(Node left, Node right)
+inline Node Equal(Node left, Node right)
 {
-    return {.kind = Kind::GreaterEqual,
+    return {.kind = Kind::Equal,
+            .children = {std::move(left), std::move(right)}};
+}
+
+inline Node NotEqual(Node left, Node right)
+{
+    return {.kind = Kind::NotEqual,
             .children = {std::move(left), std::move(right)}};
 }
 
 inline Node Less(Node left, Node right)
 {
     return {.kind = Kind::Less,
+            .children = {std::move(left), std::move(right)}};
+}
+
+inline Node LessEqual(Node left, Node right)
+{
+    return {.kind = Kind::LessEqual,
+            .children = {std::move(left), std::move(right)}};
+}
+
+inline Node Greater(Node left, Node right)
+{
+    return {.kind = Kind::Greater,
+            .children = {std::move(left), std::move(right)}};
+}
+
+inline Node GreaterEqual(Node left, Node right)
+{
+    return {.kind = Kind::GreaterEqual,
             .children = {std::move(left), std::move(right)}};
 }
 }

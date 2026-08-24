@@ -319,7 +319,10 @@ public:
                 error_out);
         }
 
-        const auto root_key = context.step.step_key;
+        const auto root_key =
+            "seedprobe.step."
+            + std::to_string(context.step.workflow_step_id)
+            + "." + context.step.step_key;
         std::int64_t probe_run_id = 0;
         std::int64_t job_set_id = 0;
         const auto existing =
@@ -642,9 +645,13 @@ private:
         if (context.step.step_key != expected_key) {
             return Fail("SeedProbe stage plan hash does not match its workflow step key", error_out);
         }
+        const auto materialization_key =
+            "seedprobe.step."
+            + std::to_string(context.step.workflow_step_id)
+            + "." + context.step.step_key;
         const auto published = PublishJobSet(
             context,
-            context.step.step_key,
+            materialization_key,
             context.step.workflow_step_id,
             purpose,
             "stage=" + std::string(stage) + ";plan_sha256=" + PlanSha256(specs),
@@ -658,7 +665,7 @@ private:
         result_out->persistence = {
             .program_ref_kind = std::string(kRunRefKind),
             .program_ref_id = run->probe_run_id,
-            .fingerprint = context.step.step_key,
+            .fingerprint = materialization_key,
             .program_version = kProgramVersion,
         };
         result_out->event_lines.push_back(

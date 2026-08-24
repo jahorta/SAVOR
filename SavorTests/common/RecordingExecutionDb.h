@@ -52,7 +52,7 @@ public:
         record.program_ref_id = command.program_ref_id;
         record.savestate_id = command.savestate_id;
         record.fingerprint = command.fingerprint;
-        record.state = command.pending_until_workflow_materialized ? "PENDING_MATERIALIZATION" : "QUEUED";
+        record.state = "QUEUED";
         record.priority = command.priority;
         record.attempts = 0;
         record.max_attempts = command.max_attempts;
