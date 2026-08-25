@@ -1,16 +1,15 @@
-#include "BattlePlanEditorWindow.h"
+#include "BattlePlanEditor.h"
 #include "Authoring/AuthoringContentHash.h"
 
 #include "DB/SavorDbAuthoringService.h"
 #include "BattlePlanActionPresetEditorWindow.h"
-#include "BattleRunSettingsDragDrop.h"
+#include "BattlePlanDragDrop.h"
 #include "GUI/Refresh/RowUpdate.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QMimeData>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
-#include <QtGui/QCloseEvent>
 #include <QtGui/QDragEnterEvent>
 #include <QtGui/QDragMoveEvent>
 #include <QtGui/QDropEvent>
@@ -25,7 +24,6 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
-#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSplitter>
@@ -95,7 +93,7 @@ QString targetKindLabel(savor::db::BattlePlanTargetKind kind)
     return QStringLiteral("Any Enemy");
 }
 
-QString actionSummary(const BattlePlanEditorWindow::ActionDraft& action, const savor::db::BattlePlanActionPresetSnapshot* preset)
+QString actionSummary(const BattlePlanEditor::ActionDraft& action, const savor::db::BattlePlanActionPresetSnapshot* preset)
 {
     if (preset == nullptr) {
         if (action.action_preset_id > 0) {
@@ -219,31 +217,24 @@ protected:
 
 } // namespace
 
-BattlePlanEditorWindow::BattlePlanEditorWindow(QWidget* parent, bool embeddedInContainer)
+BattlePlanEditor::BattlePlanEditor(QWidget* parent)
     : QWidget(parent)
 {
-    setAttribute(Qt::WA_DeleteOnClose);
-    setWindowFlag(Qt::Window, !embeddedInContainer);
-    setWindowTitle(QStringLiteral("Battle Plan Editor"));
-    resize(1180, 720);
     createWidgets();
 }
 
-void BattlePlanEditorWindow::setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback)
+void BattlePlanEditor::setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback)
 {
     statusCallback_ = std::move(callback);
 }
 
-void BattlePlanEditorWindow::setSavedCallback(std::function<void()> callback)
+void BattlePlanEditor::setSavedCallback(std::function<void()> callback)
 {
     savedCallback_ = std::move(callback);
 }
 
-void BattlePlanEditorWindow::loadSnapshot(const savor::db::BattlePlanSnapshot& snapshot, bool duplicate)
+void BattlePlanEditor::loadSnapshot(const savor::db::BattlePlanSnapshot& snapshot, bool duplicate)
 {
-    setWindowTitle(duplicate
-        ? QStringLiteral("Battle Plan Editor - Duplicate")
-        : QStringLiteral("Battle Plan Editor - Edit Copy"));
     nameEdit_->setText(QString::fromStdString(snapshot.name) + (duplicate ? QStringLiteral(" copy") : QString()));
     descriptionEdit_->setPlainText(QString::fromStdString(snapshot.description));
 
@@ -298,16 +289,7 @@ void BattlePlanEditorWindow::loadSnapshot(const savor::db::BattlePlanSnapshot& s
     dirty_ = false;
 }
 
-void BattlePlanEditorWindow::closeEvent(QCloseEvent* event)
-{
-    if (confirmDiscardIfDirty()) {
-        event->accept();
-    } else {
-        event->ignore();
-    }
-}
-
-void BattlePlanEditorWindow::createWidgets()
+void BattlePlanEditor::createWidgets()
 {
     auto* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(12, 12, 12, 12);
@@ -409,11 +391,11 @@ void BattlePlanEditorWindow::createWidgets()
     turns_.push_back(TurnDraft{});
     rebuildPlanTree();
 
-    connect(saveButton_, &QPushButton::clicked, this, &BattlePlanEditorWindow::saveBattlePlan);
-    connect(actionLibraryList_, &QListWidget::itemDoubleClicked, this, &BattlePlanEditorWindow::addActionFromLibrarySelection);
-    connect(newPresetButton, &QPushButton::clicked, this, &BattlePlanEditorWindow::openNewActionPresetEditor);
-    connect(editPresetButton, &QPushButton::clicked, this, &BattlePlanEditorWindow::openActionPresetEditorForSelection);
-    connect(planTree_, &QWidget::customContextMenuRequested, this, &BattlePlanEditorWindow::showPlanContextMenu);
+    connect(saveButton_, &QPushButton::clicked, this, &BattlePlanEditor::saveBattlePlan);
+    connect(actionLibraryList_, &QListWidget::itemDoubleClicked, this, &BattlePlanEditor::addActionFromLibrarySelection);
+    connect(newPresetButton, &QPushButton::clicked, this, &BattlePlanEditor::openNewActionPresetEditor);
+    connect(editPresetButton, &QPushButton::clicked, this, &BattlePlanEditor::openActionPresetEditorForSelection);
+    connect(planTree_, &QWidget::customContextMenuRequested, this, &BattlePlanEditor::showPlanContextMenu);
     connect(planTree_, &QTreeWidget::currentItemChanged, this, [this]() {
         syncPredicateSelectorToTurn();
     });
@@ -443,7 +425,7 @@ void BattlePlanEditorWindow::createWidgets()
     requestPredicateLibraryRefresh();
 }
 
-void BattlePlanEditorWindow::populateActionLibrary()
+void BattlePlanEditor::populateActionLibrary()
 {
     actionLibraryList_->clear();
     const auto result = savorqt::db::SavorDbAuthoringService::ListBattlePlanActionPresets();
@@ -468,7 +450,7 @@ void BattlePlanEditorWindow::populateActionLibrary()
     }
 }
 
-void BattlePlanEditorWindow::configurePredicateLibraryRefresh()
+void BattlePlanEditor::configurePredicateLibraryRefresh()
 {
     predicateRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<PredicateRefreshRequest, PredicateRefreshData>(this);
     predicateRefreshPipeline_->setAutoRefreshEnabled(false);
@@ -578,12 +560,12 @@ void BattlePlanEditorWindow::configurePredicateLibraryRefresh()
     predicateDetailPipeline_->setActive(true);
 }
 
-void BattlePlanEditorWindow::requestPredicateLibraryRefresh()
+void BattlePlanEditor::requestPredicateLibraryRefresh()
 {
     if (predicateRefreshPipeline_) predicateRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
 }
 
-void BattlePlanEditorWindow::applyPredicateGroupSelection()
+void BattlePlanEditor::applyPredicateGroupSelection()
 {
     auto* turn = selectedTurn();
     if (turn == nullptr || predicateGroupCombo_ == nullptr) return;
@@ -595,7 +577,7 @@ void BattlePlanEditorWindow::applyPredicateGroupSelection()
     rebuildPlanTree();
 }
 
-void BattlePlanEditorWindow::syncPredicateSelectorToTurn()
+void BattlePlanEditor::syncPredicateSelectorToTurn()
 {
     if (!predicateGroupCombo_) return;
     const auto id = selectedTurn() ? selectedTurn()->predicate_group_revision_id.value_or(0) : 0;
@@ -608,7 +590,7 @@ void BattlePlanEditorWindow::syncPredicateSelectorToTurn()
     }
 }
 
-void BattlePlanEditorWindow::showPredicateGroupDetail(std::int64_t revisionId)
+void BattlePlanEditor::showPredicateGroupDetail(std::int64_t revisionId)
 {
     if (revisionId <= 0 || predicateDetailPipeline_ == nullptr) {
         predicateDetailLabel_->setText(QStringLiteral("Select a Predicate Group to inspect its contract."));
@@ -620,7 +602,7 @@ void BattlePlanEditorWindow::showPredicateGroupDetail(std::int64_t revisionId)
     predicateDetailPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
 }
 
-void BattlePlanEditorWindow::rebuildPlanTree()
+void BattlePlanEditor::rebuildPlanTree()
 {
     if (planTree_ == nullptr) {
         return;
@@ -717,7 +699,7 @@ void BattlePlanEditorWindow::rebuildPlanTree()
     rebuildingTree_ = false;
 }
 
-void BattlePlanEditorWindow::applyCombatantCountToAllTurns(int combatantCount)
+void BattlePlanEditor::applyCombatantCountToAllTurns(int combatantCount)
 {
     combatantCount = std::clamp(combatantCount, kMinPlayerCombatants, kMaxPlayerCombatants);
     for (auto& turn : turns_) {
@@ -726,7 +708,7 @@ void BattlePlanEditorWindow::applyCombatantCountToAllTurns(int combatantCount)
     }
 }
 
-void BattlePlanEditorWindow::addActionFromLibrarySelection()
+void BattlePlanEditor::addActionFromLibrarySelection()
 {
     auto presetId = std::int64_t{0};
     if (auto* item = actionLibraryList_->currentItem(); item != nullptr) {
@@ -735,7 +717,7 @@ void BattlePlanEditorWindow::addActionFromLibrarySelection()
     assignPresetToSelection(presetId);
 }
 
-void BattlePlanEditorWindow::openNewActionPresetEditor()
+void BattlePlanEditor::openNewActionPresetEditor()
 {
     if (presetEditor_ != nullptr) {
         presetEditor_->close();
@@ -754,7 +736,7 @@ void BattlePlanEditorWindow::openNewActionPresetEditor()
     editor->activateWindow();
 }
 
-void BattlePlanEditorWindow::openActionPresetEditorForSelection()
+void BattlePlanEditor::openActionPresetEditorForSelection()
 {
     auto presetId = selectedPresetIdFromAction();
     if (presetId <= 0) {
@@ -767,12 +749,12 @@ void BattlePlanEditorWindow::openActionPresetEditorForSelection()
     openPresetEditor(presetId, false);
 }
 
-void BattlePlanEditorWindow::openActionPresetEditorForAction()
+void BattlePlanEditor::openActionPresetEditorForAction()
 {
     openPresetEditor(selectedPresetIdFromAction(), false);
 }
 
-std::int64_t BattlePlanEditorWindow::selectedPresetIdFromLibrary() const
+std::int64_t BattlePlanEditor::selectedPresetIdFromLibrary() const
 {
     const auto* item = actionLibraryList_->currentItem();
     if (item == nullptr) {
@@ -781,13 +763,13 @@ std::int64_t BattlePlanEditorWindow::selectedPresetIdFromLibrary() const
     return item->data(kActionPresetIdRole).toLongLong();
 }
 
-std::int64_t BattlePlanEditorWindow::selectedPresetIdFromAction() const
+std::int64_t BattlePlanEditor::selectedPresetIdFromAction() const
 {
     const auto* action = selectedAction();
     return action != nullptr ? action->action_preset_id : 0;
 }
 
-void BattlePlanEditorWindow::openPresetEditor(std::int64_t presetId, bool duplicate)
+void BattlePlanEditor::openPresetEditor(std::int64_t presetId, bool duplicate)
 {
     if (presetId <= 0) {
         openNewActionPresetEditor();
@@ -817,7 +799,7 @@ void BattlePlanEditorWindow::openPresetEditor(std::int64_t presetId, bool duplic
     editor->activateWindow();
 }
 
-void BattlePlanEditorWindow::clearSelectedSlot()
+void BattlePlanEditor::clearSelectedSlot()
 {
     const int turnIndex = selectedTurnIndex();
     const int slotIndex = selectedSlotIndex();
@@ -835,7 +817,7 @@ void BattlePlanEditorWindow::clearSelectedSlot()
     postStatusMessage(QStringLiteral("Slot cleared. Assign a preset to keep this plan valid."), StatusToast::Severity::Warn);
 }
 
-void BattlePlanEditorWindow::showPlanContextMenu(const QPoint& position)
+void BattlePlanEditor::showPlanContextMenu(const QPoint& position)
 {
     auto* hit = planTree_->itemAt(position);
     if (hit == nullptr) {
@@ -908,7 +890,7 @@ void BattlePlanEditorWindow::showPlanContextMenu(const QPoint& position)
     }
 }
 
-void BattlePlanEditorWindow::assignPresetToSelection(std::int64_t presetId)
+void BattlePlanEditor::assignPresetToSelection(std::int64_t presetId)
 {
     const int turnIndex = selectedTurnIndex();
     const int actionIndex = selectedActionIndex();
@@ -924,7 +906,7 @@ void BattlePlanEditorWindow::assignPresetToSelection(std::int64_t presetId)
     }
 }
 
-void BattlePlanEditorWindow::assignActionPreset(std::int64_t presetId, int turnIndex, int actionIndex, int slotIndex)
+void BattlePlanEditor::assignActionPreset(std::int64_t presetId, int turnIndex, int actionIndex, int slotIndex)
 {
     if (presetId <= 0) {
         postStatusMessage(QStringLiteral("Select a valid action preset before adding."), StatusToast::Severity::Warn);
@@ -969,7 +951,7 @@ void BattlePlanEditorWindow::assignActionPreset(std::int64_t presetId, int turnI
     rebuildPlanTree();
 }
 
-void BattlePlanEditorWindow::addActionToSelectedTurn(std::int64_t presetId, int turnIndex, int slotIndex)
+void BattlePlanEditor::addActionToSelectedTurn(std::int64_t presetId, int turnIndex, int slotIndex)
 {
     TurnDraft* turn = nullptr;
     if (turnIndex >= 0 && turnIndex < static_cast<int>(turns_.size())) {
@@ -1009,7 +991,7 @@ void BattlePlanEditorWindow::addActionToSelectedTurn(std::int64_t presetId, int 
     rebuildPlanTree();
 }
 
-void BattlePlanEditorWindow::duplicateSelectedAction()
+void BattlePlanEditor::duplicateSelectedAction()
 {
     auto* turn = selectedTurn();
     const int sourceActionIndex = selectedActionIndex();
@@ -1044,7 +1026,7 @@ void BattlePlanEditorWindow::duplicateSelectedAction()
     rebuildPlanTree();
 }
 
-void BattlePlanEditorWindow::removeSelectedNode()
+void BattlePlanEditor::removeSelectedNode()
 {
     const int turnIndex = selectedTurnIndex();
     const int actionIndex = selectedActionIndex();
@@ -1077,7 +1059,7 @@ void BattlePlanEditorWindow::removeSelectedNode()
     rebuildPlanTree();
 }
 
-void BattlePlanEditorWindow::moveSelectedAction(int delta)
+void BattlePlanEditor::moveSelectedAction(int delta)
 {
     auto* turn = selectedTurn();
     const int actionIndex = selectedActionIndex();
@@ -1101,7 +1083,7 @@ void BattlePlanEditorWindow::moveSelectedAction(int delta)
     rebuildPlanTree();
 }
 
-void BattlePlanEditorWindow::ensureTurnCount(int count)
+void BattlePlanEditor::ensureTurnCount(int count)
 {
     count = std::clamp(count, 1, 20);
     const int previous = static_cast<int>(turns_.size());
@@ -1121,7 +1103,7 @@ void BattlePlanEditorWindow::ensureTurnCount(int count)
     rebuildPlanTree();
 }
 
-void BattlePlanEditorWindow::saveBattlePlan()
+void BattlePlanEditor::saveBattlePlan()
 {
     if (nameEdit_->text().trimmed().isEmpty()) {
         postStatusMessage(QStringLiteral("Battle plan name is required."), StatusToast::Severity::Warn);
@@ -1189,26 +1171,12 @@ void BattlePlanEditorWindow::saveBattlePlan()
     postStatusMessage(QStringLiteral("Saved battle plan %1.").arg(static_cast<qint64>(result.value)), StatusToast::Severity::Info);
 }
 
-void BattlePlanEditorWindow::markDirty()
+void BattlePlanEditor::markDirty()
 {
     dirty_ = true;
 }
 
-bool BattlePlanEditorWindow::confirmDiscardIfDirty()
-{
-    if (!dirty_) {
-        return true;
-    }
-    const auto result = QMessageBox::warning(
-        this,
-        QStringLiteral("Discard battle plan changes?"),
-        QStringLiteral("This battle plan has unsaved changes."),
-        QMessageBox::Discard | QMessageBox::Cancel,
-        QMessageBox::Cancel);
-    return result == QMessageBox::Discard;
-}
-
-void BattlePlanEditorWindow::postStatusMessage(const QString& text, StatusToast::Severity severity)
+void BattlePlanEditor::postStatusMessage(const QString& text, StatusToast::Severity severity)
 {
     if (text.isEmpty()) {
         return;
@@ -1218,7 +1186,7 @@ void BattlePlanEditorWindow::postStatusMessage(const QString& text, StatusToast:
     }
 }
 
-BattlePlanEditorWindow::TurnDraft* BattlePlanEditorWindow::selectedTurn()
+BattlePlanEditor::TurnDraft* BattlePlanEditor::selectedTurn()
 {
     const int turnIndex = selectedTurnIndex();
     if (turnIndex < 0 || turnIndex >= static_cast<int>(turns_.size())) {
@@ -1227,7 +1195,7 @@ BattlePlanEditorWindow::TurnDraft* BattlePlanEditorWindow::selectedTurn()
     return &turns_[static_cast<std::size_t>(turnIndex)];
 }
 
-BattlePlanEditorWindow::ActionDraft* BattlePlanEditorWindow::selectedAction()
+BattlePlanEditor::ActionDraft* BattlePlanEditor::selectedAction()
 {
     auto* turn = selectedTurn();
     const int actionIndex = selectedActionIndex();
@@ -1237,7 +1205,7 @@ BattlePlanEditorWindow::ActionDraft* BattlePlanEditorWindow::selectedAction()
     return &turn->actions[static_cast<std::size_t>(actionIndex)];
 }
 
-const BattlePlanEditorWindow::TurnDraft* BattlePlanEditorWindow::selectedTurn() const
+const BattlePlanEditor::TurnDraft* BattlePlanEditor::selectedTurn() const
 {
     const int turnIndex = selectedTurnIndex();
     if (turnIndex < 0 || turnIndex >= static_cast<int>(turns_.size())) {
@@ -1246,7 +1214,7 @@ const BattlePlanEditorWindow::TurnDraft* BattlePlanEditorWindow::selectedTurn() 
     return &turns_[static_cast<std::size_t>(turnIndex)];
 }
 
-const BattlePlanEditorWindow::ActionDraft* BattlePlanEditorWindow::selectedAction() const
+const BattlePlanEditor::ActionDraft* BattlePlanEditor::selectedAction() const
 {
     const auto* turn = selectedTurn();
     const int actionIndex = selectedActionIndex();
@@ -1256,13 +1224,13 @@ const BattlePlanEditorWindow::ActionDraft* BattlePlanEditorWindow::selectedActio
     return &turn->actions[static_cast<std::size_t>(actionIndex)];
 }
 
-int BattlePlanEditorWindow::selectedSlotIndex() const
+int BattlePlanEditor::selectedSlotIndex() const
 {
     const auto* item = selectedTreeItem();
     return item != nullptr && isActionItem(item) ? item->data(0, kSlotIndexRole).toInt() : -1;
 }
 
-int BattlePlanEditorWindow::findActionIndexBySlot(const TurnDraft& turn, int slotIndex) const
+int BattlePlanEditor::findActionIndexBySlot(const TurnDraft& turn, int slotIndex) const
 {
     if (slotIndex < 0) {
         return -1;
@@ -1275,7 +1243,7 @@ int BattlePlanEditorWindow::findActionIndexBySlot(const TurnDraft& turn, int slo
     return -1;
 }
 
-void BattlePlanEditorWindow::normalizeTurnSlots(TurnDraft& turn) const
+void BattlePlanEditor::normalizeTurnSlots(TurnDraft& turn) const
 {
     const int maxSlots = std::clamp(turn.player_combatants, kMinPlayerCombatants, kMaxPlayerCombatants);
     turn.player_combatants = maxSlots;
@@ -1309,7 +1277,7 @@ void BattlePlanEditorWindow::normalizeTurnSlots(TurnDraft& turn) const
     turn.actions = std::move(normalized);
 }
 
-bool BattlePlanEditorWindow::hasValidSlotAssignments(const TurnDraft& turn) const
+bool BattlePlanEditor::hasValidSlotAssignments(const TurnDraft& turn) const
 {
     const int maxSlots = std::clamp(turn.player_combatants, kMinPlayerCombatants, kMaxPlayerCombatants);
     for (int slotIndex = 0; slotIndex < maxSlots; ++slotIndex) {
@@ -1333,7 +1301,7 @@ bool BattlePlanEditorWindow::hasValidSlotAssignments(const TurnDraft& turn) cons
     return true;
 }
 
-const savor::db::BattlePlanActionPresetSnapshot* BattlePlanEditorWindow::actionPresetById(std::int64_t presetId) const
+const savor::db::BattlePlanActionPresetSnapshot* BattlePlanEditor::actionPresetById(std::int64_t presetId) const
 {
     if (presetId <= 0) {
         return nullptr;
@@ -1346,12 +1314,12 @@ const savor::db::BattlePlanActionPresetSnapshot* BattlePlanEditorWindow::actionP
     return nullptr;
 }
 
-QTreeWidgetItem* BattlePlanEditorWindow::selectedTreeItem() const
+QTreeWidgetItem* BattlePlanEditor::selectedTreeItem() const
 {
     return planTree_ != nullptr ? planTree_->currentItem() : nullptr;
 }
 
-int BattlePlanEditorWindow::selectedTurnIndex() const
+int BattlePlanEditor::selectedTurnIndex() const
 {
     auto* item = selectedTreeItem();
     if (item == nullptr) {
@@ -1363,18 +1331,18 @@ int BattlePlanEditorWindow::selectedTurnIndex() const
     return item != nullptr && isTurnItem(item) ? item->data(0, kTurnIndexRole).toInt() : -1;
 }
 
-int BattlePlanEditorWindow::selectedActionIndex() const
+int BattlePlanEditor::selectedActionIndex() const
 {
     const auto* item = selectedTreeItem();
     return item != nullptr && isActionItem(item) ? item->data(0, kActionIndexRole).toInt() : -1;
 }
 
-bool BattlePlanEditorWindow::isActionItem(const QTreeWidgetItem* item)
+bool BattlePlanEditor::isActionItem(const QTreeWidgetItem* item)
 {
     return item != nullptr && item->data(0, kNodeKindRole).toInt() == kNodeAction;
 }
 
-bool BattlePlanEditorWindow::isTurnItem(const QTreeWidgetItem* item)
+bool BattlePlanEditor::isTurnItem(const QTreeWidgetItem* item)
 {
     return item != nullptr && item->data(0, kNodeKindRole).toInt() == kNodeTurn;
 }

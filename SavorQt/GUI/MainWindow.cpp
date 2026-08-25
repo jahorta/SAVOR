@@ -2,7 +2,6 @@
 
 #include "GUI/Panes/ArtifactsPane/ArtifactsPage.h"
 #include "GUI/Panes/ArchivePane/ArchiveWorkbenchPage.h"
-#include "GUI/Panes/BattleRunSettingsPane/BattleRunSettingsPage.h"
 #include "GUI/Panes/JobBuilderPane/WorkflowGraphEditorWindow.h"
 #include "GUI/Panes/JobsPane/JobsPage.h"
 #include "GUI/Panes/JobSetsPane/WorkflowsPage.h"
@@ -48,7 +47,6 @@ QString focusedToolKey(MainWindow::FocusedTool tool)
     case MainWindow::FocusedTool::Workflows: return QStringLiteral("workflows");
     case MainWindow::FocusedTool::Jobs: return QStringLiteral("jobs");
     case MainWindow::FocusedTool::Workers: return QStringLiteral("workers");
-    case MainWindow::FocusedTool::BattleRunSettings: return QStringLiteral("battle_run_settings");
     case MainWindow::FocusedTool::Artifacts: return QStringLiteral("artifacts");
     case MainWindow::FocusedTool::SeedProbe: return QStringLiteral("seed_probe");
     case MainWindow::FocusedTool::BattleRuns: return QStringLiteral("battle_runs");
@@ -65,7 +63,6 @@ QString focusedToolTitle(MainWindow::FocusedTool tool)
     case MainWindow::FocusedTool::Workflows: return QStringLiteral("Workflows");
     case MainWindow::FocusedTool::Jobs: return QStringLiteral("Jobs");
     case MainWindow::FocusedTool::Workers: return QStringLiteral("Workers");
-    case MainWindow::FocusedTool::BattleRunSettings: return QStringLiteral("Battle Run Settings");
     case MainWindow::FocusedTool::Artifacts: return QStringLiteral("Artifacts");
     case MainWindow::FocusedTool::SeedProbe: return QStringLiteral("Seed Probe");
     case MainWindow::FocusedTool::BattleRuns: return QStringLiteral("Battle Runs");
@@ -162,7 +159,7 @@ void MainWindow::handleVisualReplayRequested(qint64 jobId)
 void MainWindow::createMenus()
 {
     auto* specsMenu = menuBar()->addMenu(QStringLiteral("Spec Authoring"));
-    connect(specsMenu->addAction(QStringLiteral("Authoring Dialog")), &QAction::triggered, this, &MainWindow::openAuthoringLibraryLast);
+    connect(specsMenu->addAction(QStringLiteral("Authoring Libraries")), &QAction::triggered, this, &MainWindow::openAuthoringLibraryLast);
     specsMenu->addSeparator();
     connect(specsMenu->addAction(QStringLiteral("Seed Probe Specs")), &QAction::triggered, this, &MainWindow::openSeedProbeSpecLibrary);
     connect(specsMenu->addAction(QStringLiteral("Predicates")), &QAction::triggered, this, &MainWindow::openPredicateLibrary);
@@ -468,12 +465,6 @@ void MainWindow::openFocusedTool(FocusedTool tool)
         connect(workers, &CoordinatorPane::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
         connect(workers, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
         page = workers;
-        break;
-    }
-    case FocusedTool::BattleRunSettings: {
-        auto* battle = new BattleRunSettingsPage(window);
-        connect(battle, &BattleRunSettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-        page = battle;
         break;
     }
     case FocusedTool::Artifacts: {

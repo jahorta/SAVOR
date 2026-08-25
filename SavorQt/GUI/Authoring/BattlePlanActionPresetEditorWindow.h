@@ -4,7 +4,7 @@
 #include <functional>
 #include <optional>
 
-#include <QtWidgets/QWidget>
+#include "GUI/Widgets/PersistentToolWindow.h"
 
 #include "GUI/Common/StatusToast.h"
 #include "DB/SavorDbAuthoringService.h"
@@ -15,10 +15,10 @@ class QLineEdit;
 class QPushButton;
 class QSpinBox;
 
-class BattlePlanActionPresetEditorWindow final : public QWidget
+class BattlePlanActionPresetEditorWindow final : public PersistentToolWindow
 {
 public:
-    explicit BattlePlanActionPresetEditorWindow(QWidget* parent = nullptr, bool embeddedInContainer = false);
+    explicit BattlePlanActionPresetEditorWindow(QWidget* parent = nullptr);
 
     void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
     void setSavedCallback(std::function<void()> callback);

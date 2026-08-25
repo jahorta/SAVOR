@@ -14,7 +14,6 @@
 #include "DB/SavorDbServiceResult.h"
 #include "GUI/Refresh/AsyncRefreshPipeline.h"
 
-class QCloseEvent;
 class QCheckBox;
 class QComboBox;
 class QLabel;
@@ -29,10 +28,10 @@ class QTreeWidgetItem;
 class QVBoxLayout;
 class BattlePlanActionPresetEditorWindow;
 
-class BattlePlanEditorWindow final : public QWidget
+class BattlePlanEditor final : public QWidget
 {
 public:
-    explicit BattlePlanEditorWindow(QWidget* parent = nullptr, bool embeddedInContainer = false);
+    explicit BattlePlanEditor(QWidget* parent = nullptr);
 
     void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
     void setSavedCallback(std::function<void()> callback);
@@ -64,7 +63,6 @@ public:
     };
 
 private:
-    void closeEvent(QCloseEvent* event) override;
     void createWidgets();
     void populateActionLibrary();
     void configurePredicateLibraryRefresh();
@@ -89,7 +87,6 @@ private:
     void ensureTurnCount(int count);
     void saveBattlePlan();
     void markDirty();
-    bool confirmDiscardIfDirty();
     void postStatusMessage(const QString& text, StatusToast::Severity severity);
     TurnDraft* selectedTurn();
     ActionDraft* selectedAction();

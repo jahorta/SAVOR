@@ -1,4 +1,4 @@
-#include "AuthoringSpecEditorWindows.h"
+#include "SeedProbeSpecEditor.h"
 
 #include "DB/SavorDbAuthoringService.h"
 
@@ -63,33 +63,25 @@ void notifySaved(const std::function<void()>& callback)
 
 } // namespace
 
-SeedProbeSpecEditorWindow::SeedProbeSpecEditorWindow(QWidget* parent, bool embeddedInContainer)
+SeedProbeSpecEditor::SeedProbeSpecEditor(QWidget* parent)
     : QWidget(parent)
 {
-    setAttribute(Qt::WA_DeleteOnClose);
-    if (!embeddedInContainer) {
-        setWindowFlag(Qt::Window, true);
-    }
-    setWindowTitle(QStringLiteral("Seed Probe Spec Editor"));
     resize(620, 480);
     createWidgets();
 }
 
-void SeedProbeSpecEditorWindow::setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback)
+void SeedProbeSpecEditor::setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback)
 {
     statusCallback_ = std::move(callback);
 }
 
-void SeedProbeSpecEditorWindow::setSavedCallback(std::function<void()> callback)
+void SeedProbeSpecEditor::setSavedCallback(std::function<void()> callback)
 {
     savedCallback_ = std::move(callback);
 }
 
-void SeedProbeSpecEditorWindow::loadSnapshot(const savor::db::SeedProbeSpecSnapshot& snapshot, bool duplicate)
+void SeedProbeSpecEditor::loadSnapshot(const savor::db::SeedProbeSpecSnapshot& snapshot, bool duplicate)
 {
-    setWindowTitle(duplicate
-        ? QStringLiteral("Seed Probe Spec Editor - Duplicate")
-        : QStringLiteral("Seed Probe Spec Editor - Edit Copy"));
     nameEdit_->setText(QString::fromStdString(snapshot.name) + (duplicate ? QStringLiteral(" copy") : QString()));
     prioritySpin_->setValue(snapshot.priority);
     minValueEdit_->setText(QString::number(snapshot.min_value));
@@ -100,7 +92,7 @@ void SeedProbeSpecEditorWindow::loadSnapshot(const savor::db::SeedProbeSpecSnaps
     comboSamplerTriesSpin_->setValue(snapshot.combo_sampler_tries);
 }
 
-void SeedProbeSpecEditorWindow::createWidgets()
+void SeedProbeSpecEditor::createWidgets()
 {
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(12, 12, 12, 12);
@@ -142,10 +134,10 @@ void SeedProbeSpecEditorWindow::createWidgets()
     saveButton_->setObjectName("jobsPrimaryButton");
     buttons->addWidget(saveButton_);
     root->addLayout(buttons);
-    connect(saveButton_, &QPushButton::clicked, this, &SeedProbeSpecEditorWindow::saveSpec);
+    connect(saveButton_, &QPushButton::clicked, this, &SeedProbeSpecEditor::saveSpec);
 }
 
-void SeedProbeSpecEditorWindow::saveSpec()
+void SeedProbeSpecEditor::saveSpec()
 {
     if (nameEdit_->text().trimmed().isEmpty()) {
         postStatusMessage(QStringLiteral("Seed probe spec name is required."), StatusToast::Severity::Warn);
@@ -178,7 +170,7 @@ void SeedProbeSpecEditorWindow::saveSpec()
     postStatusMessage(QStringLiteral("Saved seed probe spec %1.").arg(static_cast<qint64>(result.value)), StatusToast::Severity::Info);
 }
 
-void SeedProbeSpecEditorWindow::postStatusMessage(const QString& text, StatusToast::Severity severity)
+void SeedProbeSpecEditor::postStatusMessage(const QString& text, StatusToast::Severity severity)
 {
     if (statusCallback_ && !text.isEmpty()) statusCallback_(text, severity);
 }

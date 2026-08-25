@@ -43,7 +43,7 @@
     <Filter Include="GUI\Panes\JobBuilder">
       <UniqueIdentifier>{17d08e24-b230-4462-aad2-f682ce9200ba}</UniqueIdentifier>
     </Filter>
-    <Filter Include="GUI\Panes\BattleRunSettings">
+    <Filter Include="GUI\Authoring">
       <UniqueIdentifier>{4f52d3dc-7345-4dbb-a9de-df4dedde2911}</UniqueIdentifier>
     </Filter>
     <Filter Include="GUI\Panes\ExplorerRuns">
@@ -116,23 +116,20 @@
     <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.cpp">
       <Filter>GUI\Panes\JobBuilder</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.cpp">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    <ClCompile Include="GUI\Authoring\BattlePlanEditor.cpp">
+      <Filter>GUI\Authoring</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateAuthoringEditors.cpp">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    <ClCompile Include="GUI\Authoring\PredicateAuthoringEditors.cpp">
+      <Filter>GUI\Authoring</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\GuidedPredicateRuleEditor.cpp">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    <ClCompile Include="GUI\Authoring\GuidedPredicateRuleEditor.cpp">
+      <Filter>GUI\Authoring</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryWindow.cpp">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    <ClCompile Include="GUI\Authoring\AuthoringLibraryWindow.cpp">
+      <Filter>GUI\Authoring</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.cpp">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    <ClCompile Include="GUI\Authoring\SeedProbeSpecEditor.cpp">
+      <Filter>GUI\Authoring</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\BattleRunsPane\BattleRunsWidget.cpp">
       <Filter>GUI\Panes\BattleRuns</Filter>
@@ -216,7 +213,7 @@
       <Filter>DB</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.cpp" />
+    <ClCompile Include="GUI\Authoring\BattlePlanActionPresetEditorWindow.cpp" />
     <ClCompile Include="GUI\Tabs\AnalysisTab.cpp">
       <Filter>GUI\Tabs</Filter>
     </ClCompile>
@@ -267,11 +264,8 @@
     <QtMoc Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.h">
       <Filter>GUI\Panes\JobBuilder</Filter>
     </QtMoc>
-    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </QtMoc>
-    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryWindow.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    <QtMoc Include="GUI\Authoring\AuthoringLibraryWindow.h">
+      <Filter>GUI\Authoring</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
@@ -300,17 +294,17 @@
     <ClInclude Include="SavorDbRuntime.h">
       <Filter>Main</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    <ClInclude Include="GUI\Authoring\BattlePlanEditor.h">
+      <Filter>GUI\Authoring</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateAuthoringEditors.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    <ClInclude Include="GUI\Authoring\PredicateAuthoringEditors.h">
+      <Filter>GUI\Authoring</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\GuidedPredicateRuleEditor.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    <ClInclude Include="GUI\Authoring\GuidedPredicateRuleEditor.h">
+      <Filter>GUI\Authoring</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    <ClInclude Include="GUI\Authoring\SeedProbeSpecEditor.h">
+      <Filter>GUI\Authoring</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunsPane\BattleRunsWidget.h">
       <Filter>GUI\Panes\BattleRuns</Filter>
@@ -405,7 +399,7 @@
     <ClInclude Include="DB\DBCore\DbSnapshotService.h">
       <Filter>DB</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.h" />
+    <ClInclude Include="GUI\Authoring\BattlePlanActionPresetEditorWindow.h" />
     <ClInclude Include="GUI\Tabs\AnalysisTab.h">
       <Filter>GUI\Tabs</Filter>
     </ClInclude>

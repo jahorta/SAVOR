@@ -1,6 +1,6 @@
 #include "ActionPresetDragTableModel.h"
 
-#include "BattleRunSettingsDragDrop.h"
+#include "BattlePlanDragDrop.h"
 
 #include <QtCore/QMimeData>
 

@@ -14,7 +14,7 @@
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 #include "GUI/Panes/SettingsPane/SettingsPage.h"
 #include "GUI/Panes/DtmEditorPane/DtmEditorPage.h"
-#include "GUI/Panes/BattleRunSettingsPane/AuthoringLibraryWindow.h"
+#include "GUI/Authoring/AuthoringLibraryWindow.h"
 #include "GUI/Refresh/AsyncRefreshPipeline.h"
 #include "GUI/Workspace/WorkspaceWidgets.h"
 
@@ -41,7 +41,6 @@ public:
         Workflows,
         Jobs,
         Workers,
-        BattleRunSettings,
         Artifacts,
         SeedProbe,
         BattleRuns,

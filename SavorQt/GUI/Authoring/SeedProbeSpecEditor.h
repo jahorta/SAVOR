@@ -17,10 +17,10 @@ class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
 
-class SeedProbeSpecEditorWindow final : public QWidget
+class SeedProbeSpecEditor final : public QWidget
 {
 public:
-    explicit SeedProbeSpecEditorWindow(QWidget* parent = nullptr, bool embeddedInContainer = false);
+    explicit SeedProbeSpecEditor(QWidget* parent = nullptr);
     void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
     void setSavedCallback(std::function<void()> callback);
     void loadSnapshot(const savor::db::SeedProbeSpecSnapshot& snapshot, bool duplicate);

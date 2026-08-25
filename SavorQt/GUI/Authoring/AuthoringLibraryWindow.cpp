@@ -1,7 +1,7 @@
 #include "AuthoringLibraryWindow.h"
 
-#include "AuthoringSpecEditorWindows.h"
-#include "BattlePlanEditorWindow.h"
+#include "SeedProbeSpecEditor.h"
+#include "BattlePlanEditor.h"
 #include "PredicateAuthoringEditors.h"
 #include "DB/SavorDbAuthoringService.h"
 
@@ -67,7 +67,7 @@ public:
 
     QWidget* createNewEditor(QWidget* parent, SpecLibraryCallbacks callbacks) override
     {
-        auto* editor = new SeedProbeSpecEditorWindow(parent, true);
+        auto* editor = new SeedProbeSpecEditor(parent);
         attachCallbacks(editor, callbacks);
         return editor;
     }
@@ -75,7 +75,7 @@ public:
     QWidget* createEditorForRow(int row, bool duplicate, QWidget* parent, SpecLibraryCallbacks callbacks) override
     {
         if (row < 0 || row >= static_cast<int>(rows_.size())) return nullptr;
-        auto* editor = new SeedProbeSpecEditorWindow(parent, true);
+        auto* editor = new SeedProbeSpecEditor(parent);
         attachCallbacks(editor, callbacks);
         editor->loadSnapshot(rows_[static_cast<std::size_t>(row)], duplicate);
         return editor;
@@ -115,7 +115,7 @@ public:
 
     QWidget* createNewEditor(QWidget* parent, SpecLibraryCallbacks callbacks) override
     {
-        auto* editor = new BattlePlanEditorWindow(parent, true);
+        auto* editor = new BattlePlanEditor(parent);
         attachCallbacks(editor, callbacks);
         return editor;
     }
@@ -123,7 +123,7 @@ public:
     QWidget* createEditorForRow(int row, bool duplicate, QWidget* parent, SpecLibraryCallbacks callbacks) override
     {
         if (row < 0 || row >= static_cast<int>(rows_.size())) return nullptr;
-        auto* editor = new BattlePlanEditorWindow(parent, true);
+        auto* editor = new BattlePlanEditor(parent);
         attachCallbacks(editor, callbacks);
         editor->loadSnapshot(rows_[static_cast<std::size_t>(row)], duplicate);
         return editor;

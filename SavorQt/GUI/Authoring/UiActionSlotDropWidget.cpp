@@ -1,6 +1,6 @@
 #include "UiActionSlotDropWidget.h"
 
-#include "BattleRunSettingsDragDrop.h"
+#include "BattlePlanDragDrop.h"
 
 #include <QtCore/QMimeData>
 #include <QtGui/QDragEnterEvent>

@@ -49,12 +49,10 @@ constexpr int kMaxTargetSingleSlot = 11;
 
 } // namespace
 
-BattlePlanActionPresetEditorWindow::BattlePlanActionPresetEditorWindow(QWidget* parent, bool embeddedInContainer)
+BattlePlanActionPresetEditorWindow::BattlePlanActionPresetEditorWindow(QWidget* parent)
+    : PersistentToolWindow(parent)
 {
     setAttribute(Qt::WA_DeleteOnClose);
-    if (!embeddedInContainer) {
-        setWindowFlag(Qt::Window, true);
-    }
     setWindowTitle(QStringLiteral("Battle Plan Action Preset Editor"));
     resize(640, 420);
     createWidgets();
