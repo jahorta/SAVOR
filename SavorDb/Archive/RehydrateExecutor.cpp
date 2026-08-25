@@ -1888,8 +1888,8 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     if (new_id == 0 || (ok_root && scope_kind == "job_set" && new_root == 0)) break;
                     Statement st;
                     if (!Prepare(execution_db_,
-                            "INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc,completed_at_utc,failure_code,failure_text) "
-                            "VALUES(?1,json_extract(?2,'$.workflow_kind'),json_extract(?2,'$.state'),json_extract(?2,'$.root_scope_kind'),?3,?4,json_extract(?2,'$.created_at_utc'),json_extract(?2,'$.started_at_utc'),json_extract(?2,'$.completed_at_utc'),json_extract(?2,'$.failure_code'),json_extract(?2,'$.failure_text'));",
+                            "INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc,completed_at_utc,failure_code,failure_text,launch_key) "
+                            "VALUES(?1,json_extract(?2,'$.workflow_kind'),json_extract(?2,'$.state'),json_extract(?2,'$.root_scope_kind'),?3,?4,json_extract(?2,'$.created_at_utc'),json_extract(?2,'$.started_at_utc'),json_extract(?2,'$.completed_at_utc'),json_extract(?2,'$.failure_code'),json_extract(?2,'$.failure_text'),CASE WHEN json_extract(?2,'$.launch_key') IS NULL THEN NULL ELSE ?4 || ':' || json_extract(?2,'$.launch_key') END);",
                             &st,
                             &db_error)) break;
                     sqlite3_bind_int64(st.st, 1, new_id);
@@ -2603,8 +2603,8 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 const auto name = spec.target_namespace + ":rehydrate:" + JsonExtractText(analysis_db_, line, "$.name", &ok_id);
                 Statement st;
                 if (!Prepare(analysis_db_,
-                        "INSERT INTO ab_battle_set(battle_set_id,name,entry_savestate_id,battle_plan_id,battle_plan_fingerprint,continuation_mode,launch_fake_attack_min,launch_fake_attack_max,status,created_at_utc,completed_at_utc) "
-                        "VALUES(?1,?2,?3,json_extract(?4,'$.battle_plan_id'),json_extract(?4,'$.battle_plan_fingerprint'),json_extract(?4,'$.continuation_mode'),json_extract(?4,'$.launch_fake_attack_min'),json_extract(?4,'$.launch_fake_attack_max'),json_extract(?4,'$.status'),json_extract(?4,'$.created_at_utc'),json_extract(?4,'$.completed_at_utc'));",
+                        "INSERT INTO ab_battle_set(battle_set_id,name,entry_savestate_id,battle_plan_id,battle_plan_fingerprint,continuation_mode,continue_automatic_exploration_after_victory,launch_fake_attack_min,launch_fake_attack_max,status,created_at_utc,completed_at_utc) "
+                        "VALUES(?1,?2,?3,json_extract(?4,'$.battle_plan_id'),json_extract(?4,'$.battle_plan_fingerprint'),json_extract(?4,'$.continuation_mode'),COALESCE(json_extract(?4,'$.continue_automatic_exploration_after_victory'),0),json_extract(?4,'$.launch_fake_attack_min'),json_extract(?4,'$.launch_fake_attack_max'),json_extract(?4,'$.status'),json_extract(?4,'$.created_at_utc'),json_extract(?4,'$.completed_at_utc'));",
                         &st,
                         &db_error)) return;
                 sqlite3_bind_int64(st.st, 1, new_id);

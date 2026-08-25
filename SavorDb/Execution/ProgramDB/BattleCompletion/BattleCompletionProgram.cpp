@@ -242,11 +242,18 @@ public:
         const auto terminal = selected && selected->exec_job_id
             ? analysis_->GetBattleSingleTurnResultForExecJob(*selected->exec_job_id)
             : std::nullopt;
+        const auto execution = selected && selected->exec_job_id
+            ? execution_->GetExecutionJob(*selected->exec_job_id)
+            : std::nullopt;
         const auto source = selected && selected->output_savestate_id
             ? state_->GetSavestate(*selected->output_savestate_id) : std::nullopt;
-        if (!selected || !selected->exec_job_id || !wave || !terminal ||
+        if (!selected || !selected->exec_job_id || !wave || !terminal || !execution ||
+            execution->state != "SUCCEEDED" ||
+            !execution->worker_terminal_fingerprint ||
+            *execution->worker_terminal_fingerprint != terminal->worker_terminal_sha256 ||
             terminal->terminal_kind != "SUCCEEDED" ||
             terminal->domain_outcome != std::optional<std::string>("Victory") ||
+            !terminal->ending_rng ||
             terminal->successor_savestate_id != selected->output_savestate_id ||
             !source || !source->is_complete ||
             source->playback_state != SavestatePlaybackState::MovieInactive ||
@@ -266,7 +273,7 @@ public:
                 .entry_savestate_id = source->savestate_id,
                 .status = "QUEUED", .created_at_utc = types::UtcNow(),
                 .correlation_id = materialization_key,
-                .causation_id = "explicit-victory-selection"},
+                .causation_id = "victory-completion-selection"},
                 &completion_id, error_out)) return false;
         const auto row = analysis_->GetBattleCompletion(completion_id);
         if (!row) return Fail("Battle Completion request could not be reloaded", error_out);

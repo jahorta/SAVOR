@@ -34,6 +34,7 @@ public:
         std::function<void(std::int64_t)> showReplicationDetails;
         std::function<void(std::int64_t)> viewTurnInputs;
         std::function<void(std::int64_t)> replayVisual;
+        std::function<void(std::int64_t)> recordVictory;
         std::function<void(StatusToast)> statusToast;
     };
 

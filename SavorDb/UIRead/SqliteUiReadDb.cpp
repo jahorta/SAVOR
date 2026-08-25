@@ -378,6 +378,8 @@ UiBattleGroupSummary ReadBattleGroupRow(sqlite3_stmt* st) {
     row.failed_count = sqlite3_column_int64(st, 10);
     row.manual_followup_count = sqlite3_column_int64(st, 11);
     row.advancement_rank = sqlite3_column_int(st, 12);
+    row.continue_automatic_exploration_after_victory =
+        sqlite3_column_int(st, 13) != 0;
     return row;
 }
 
@@ -1316,7 +1318,8 @@ UiReadPage<UiBattleGroupSummary> SqliteUiReadDb::ListBattleGroups(
     constexpr const char* kSql =
         "SELECT g.battle_set_id,g.name,g.status,g.created_at_utc,g.completed_at_utc,"
         "g.wave_count,g.turn_job_count,g.selected_count,g.desired_outcome_count,g.final_victory_count,"
-        "g.failed_count,g.manual_followup_count,g.advancement_rank "
+        "g.failed_count,g.manual_followup_count,g.advancement_rank,"
+        "g.continue_automatic_exploration_after_victory "
         "FROM ui_battle_group g "
         "WHERE (?1=0 OR g.created_at_utc < ?2 OR (g.created_at_utc=?2 AND g.battle_set_id < ?3)) "
         "AND (?4=0 OR g.created_at_utc > ?5 OR (g.created_at_utc=?5 AND g.battle_set_id > ?6)) "

@@ -430,6 +430,9 @@
     <ClCompile Include="Analysis\BattleCompletionRecordingDb.cpp">
       <Filter>Analysis</Filter>
     </ClCompile>
+    <ClCompile Include="Analysis\TasRouteDb.cpp">
+      <Filter>Analysis</Filter>
+    </ClCompile>
     <ClCompile Include="Execution\Workflow\SqliteExecutionDb.cpp">
       <Filter>Execution</Filter>
     </ClCompile>
@@ -548,6 +551,15 @@
     </None>
     <None Include="migration\AnalysisBattle\202608171500_analysisbattle_direct_plan_hard_cut.sql">
       <Filter>Migrations\Analysis</Filter>
+    </None>
+    <None Include="migration\AnalysisBattle\202608251000_analysisbattle_victory_completion.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
+    <None Include="migration\Execution\202608251000_execution_workflow_launch_key.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
+    <None Include="migration\UIRead\202608251000_uiread_battle_victory_policy.sql">
+      <Filter>Migrations\UIRead</Filter>
     </None>
     <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql">
       <Filter>Migrations\Analysis</Filter>

@@ -661,6 +661,12 @@ bool SeedBattleWorkflow(
                             },
                         },
                         {
+                            .argument_key = "continue_automatic_exploration_after_victory",
+                            .display_name = "Continue automatic exploration after Victory",
+                            .value_type = "boolean",
+                            .default_value = std::string("false"),
+                        },
+                        {
                             .argument_key = "fake_attack_min",
                             .display_name = "Minimum fake attacks",
                             .value_type = "integer",
@@ -846,6 +852,27 @@ bool SeedBattleWorkflow(
         .text_value = std::string("automatic_best_per_ending_rng"),
         .source_kind = "scenario",
     });
+    command.arguments.push_back({
+        .node_key = "battle_1",
+        .argument_key = "continue_automatic_exploration_after_victory",
+        .value_type = "boolean",
+        .integer_value = 0,
+        .source_kind = "scenario",
+    });
+    command.arguments.push_back({
+        .node_key = "battle_1",
+        .argument_key = "continue_automatic_exploration_after_victory",
+        .value_type = "boolean",
+        .integer_value = 0,
+        .source_kind = "scenario",
+    });
+    command.arguments.push_back({
+        .node_key = "battle_1",
+        .argument_key = "continue_automatic_exploration_after_victory",
+        .value_type = "boolean",
+        .integer_value = 0,
+        .source_kind = "scenario",
+    });
     return execution_db->CreateWorkflowInstance(
         command, workflow_instance_id_out, error_out);
 }
@@ -1014,6 +1041,12 @@ bool SeedEstablishedBattleWorkflow(
                                 {"manual_selection", "Manual selection after each wave"},
                                 {"automatic_best_per_ending_rng", "Automatically continue the best candidate for each ending RNG"},
                             },
+                        },
+                        {
+                            .argument_key = "continue_automatic_exploration_after_victory",
+                            .display_name = "Continue automatic exploration after Victory",
+                            .value_type = "boolean",
+                            .default_value = std::string("false"),
                         },
                         {
                             .argument_key = "fake_attack_min",
@@ -1285,6 +1318,12 @@ bool SeedPreparedBattleWorkflow(
                                 {"manual_selection", "Manual selection after each wave"},
                                 {"automatic_best_per_ending_rng", "Automatically continue the best candidate for each ending RNG"},
                             },
+                        },
+                        {
+                            .argument_key = "continue_automatic_exploration_after_victory",
+                            .display_name = "Continue automatic exploration after Victory",
+                            .value_type = "boolean",
+                            .default_value = std::string("false"),
                         },
                         {
                             .argument_key = "fake_attack_min",
@@ -1780,7 +1819,7 @@ bool CheckBattleInvariantsAndReportTrajectory(
                     && argument.source_kind == "scenario";
             }) == 1;
     };
-    const auto expected_argument_count = prepared ? 4u : 5u;
+    const auto expected_argument_count = prepared ? 5u : 6u;
     if (graph.arguments.size() != expected_argument_count
         || !has_integer_argument(
             "probe_1", "samples_per_axis",
@@ -1800,6 +1839,13 @@ bool CheckBattleInvariantsAndReportTrajectory(
         || !has_choice_argument(
             "battle_1", "continuation_mode",
             "automatic_best_per_ending_rng")
+        || !std::ranges::any_of(graph.arguments, [](const auto& argument) {
+            return argument.node_key == "battle_1"
+                && argument.argument_key
+                    == "continue_automatic_exploration_after_victory"
+                && argument.value_type == "boolean"
+                && argument.integer_value == std::optional<std::int64_t>(0);
+        })
         || (!prepared && !has_integer_argument(
             "tas_validate_1", "rtc",
             [](std::int64_t value) {
@@ -1959,6 +2005,7 @@ bool CheckBattleInvariantsAndReportTrajectory(
         || battle_set->battle_plan_fingerprint != plan->fingerprint
         || battle_set->continuation_mode !=
             savor::db::BattleContinuationMode::AutomaticBestPerEndingRng
+        || battle_set->continue_automatic_exploration_after_victory
         || battle_set->launch_fake_attack_min !=
             options.battle_fake_attack_min.value_or(0)
         || battle_set->launch_fake_attack_max !=

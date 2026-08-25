@@ -494,6 +494,20 @@ std::optional<std::string> TextArgument(
     return std::nullopt;
 }
 
+bool BooleanArgument(
+    const WorkflowGraphStepScheduleContext* graph,
+    std::string_view key,
+    bool fallback = false) {
+    if (!graph) return fallback;
+    for (const auto& argument : graph->arguments) {
+        if (argument.argument_key != key) continue;
+        if (argument.value_type != "boolean")
+            throw std::runtime_error("battle argument '" + std::string(key) + "' must be boolean");
+        return argument.integer_value.value_or(0) != 0;
+    }
+    return fallback;
+}
+
 template <typename T>
 std::optional<T> CheckedInteger(std::int64_t value) {
     if constexpr (std::is_unsigned_v<T>) {
@@ -1116,6 +1130,8 @@ private:
             : BattleContinuationMode::Unknown;
         if (continuation_mode == BattleContinuationMode::Unknown)
             return Fail("battle.start continuation mode is missing or invalid", error_out);
+        const auto continue_after_victory = BooleanArgument(
+            &*context.graph, "continue_automatic_exploration_after_victory", false);
         const auto minimum_value = IntegerArgument(
             &*context.graph, "fake_attack_min").value_or(0);
         const auto maximum_value = IntegerArgument(
@@ -1138,6 +1154,7 @@ private:
                 .battle_plan_id = plan->plan_id,
                 .battle_plan_fingerprint = plan->fingerprint,
                 .continuation_mode = continuation_mode,
+                .continue_automatic_exploration_after_victory = continue_after_victory,
                 .launch_fake_attack_min = *minimum,
                 .launch_fake_attack_max = *maximum,
                 .created_at_utc = types::UtcNow(),
@@ -1146,6 +1163,16 @@ private:
             }, &joined, error_out)) return false;
         if (joined.battle_set_id <= 0 || joined.first_wave_ids.empty())
             return Fail("battle.start join produced no first-turn waves", error_out);
+        EnsureBattleRouteActivityReceipt route{};
+        if (!analysis_db_->EnsureBattleRouteActivity({
+                .battle_set_id = joined.battle_set_id,
+                .entry_savestate_id = run->entry_savestate_id,
+                .battle_plan_id = plan->plan_id,
+                .activity_key = "battle-plan:" + plan->fingerprint,
+                .default_label = "Battle plan " + std::to_string(plan->plan_id),
+                .default_description = "Battle activity grouped across equivalent RTC inputs.",
+                .created_at_utc = types::UtcNow(),
+            }, &route, error_out)) return false;
 
         EnsureMaterializingJobSetReceipt ensured{};
         if (!execution_db_->EnsureMaterializingJobSet({
@@ -1981,19 +2008,75 @@ bool Materializer::Continue(
     bool any_children = false;
     bool any_awaiting = false;
     bool any_plan_complete = false;
+    std::map<std::int64_t, std::vector<RankedCandidate>> victories_by_ending_rng;
     for (const auto& [wave_id_key, candidates] : cohort) {
-        if (std::ranges::any_of(candidates, [](const RankedCandidate& candidate) {
-                return candidate.result.domain_outcome == "Victory"
-                    && candidate.result.successor_savestate_id.has_value();
-            })) victory = true;
+        (void)wave_id_key;
+        for (const auto& candidate : candidates) {
+            if (candidate.result.domain_outcome != "Victory") continue;
+            if (!candidate.result.ending_rng || !candidate.result.successor_savestate_id)
+                return Fail("Victory result is missing ending RNG or successor savestate", error_out);
+            victory = true;
+            victories_by_ending_rng[*candidate.result.ending_rng].push_back(candidate);
+        }
+    }
+
+    std::vector<RankedCandidate> completion_representatives;
+    for (const auto& [ending_rng, candidates] : victories_by_ending_rng) {
+        auto representative = candidates.front();
+        for (const auto& candidate : candidates)
+            if (BetterCandidate(candidate, representative)) representative = candidate;
+        const auto pool_name = "victory-completion-rng-" + std::to_string(ending_rng);
+        BattleTurnAdvancementPoolPlan pool{
+            .pool_name = pool_name,
+            .criterion_kind = BattleAdvancementCriterionKind::BestFakeAttacksByRngSeed,
+        };
+        for (const auto& candidate : candidates) {
+            const bool selected =
+                candidate.job.turn_job_id == representative.job.turn_job_id;
+            pool.decisions.push_back({
+                .turn_job_id = candidate.job.turn_job_id,
+                .decision_kind = selected
+                    ? BattleAdvancementDecisionKind::SelectedForCompletion
+                    : BattleAdvancementDecisionKind::DuplicateEndingRng,
+                .decision_reason = selected
+                    ? std::optional<std::string>(
+                        "ending_rng completion representative: cumulative_fake_attacks, delta_vi, pred_passed, stable_job_id")
+                    : std::optional<std::string>("same ending_rng completion duplicate"),
+            });
+        }
+        advancement.pools.push_back(std::move(pool));
+        completion_representatives.push_back(std::move(representative));
+    }
+    if (!completion_representatives.empty()) {
+        auto recommended = completion_representatives.front();
+        for (const auto& candidate : completion_representatives)
+            if (BetterCandidate(candidate, recommended)) recommended = candidate;
+        BattleTurnAdvancementPoolPlan pool{
+            .pool_name = "victory-recommendation",
+            .criterion_kind = BattleAdvancementCriterionKind::BestFakeAttacksByRngSeed,
+        };
+        for (const auto& candidate : completion_representatives) {
+            const bool selected = candidate.job.turn_job_id == recommended.job.turn_job_id;
+            pool.decisions.push_back({
+                .turn_job_id = candidate.job.turn_job_id,
+                .decision_kind = selected
+                    ? BattleAdvancementDecisionKind::Recommended
+                    : BattleAdvancementDecisionKind::NotRecommended,
+                .decision_reason = selected
+                    ? std::optional<std::string>(
+                        "turn-wide Victory recommendation: cumulative_fake_attacks, delta_vi, pred_passed, stable_job_id")
+                    : std::optional<std::string>("not the turn-wide recommended Victory"),
+            });
+        }
+        advancement.pools.push_back(std::move(pool));
     }
 
     for (const auto& turn_wave : turn_waves) {
         const auto& candidates = cohort.at(turn_wave.wave_id);
-        if (victory) {
-            advancement.wave_statuses.push_back({turn_wave.wave_id, BattleTurnWaveStatus::Completed, now});
-            continue;
-        }
+        const bool wave_has_victory = std::ranges::any_of(
+            candidates, [](const RankedCandidate& candidate) {
+                return candidate.result.domain_outcome == "Victory";
+            });
         std::vector<RankedCandidate> reached;
         for (const auto& candidate : candidates) {
             if (candidate.result.domain_outcome == "ReachedNextTurn"
@@ -2001,7 +2084,11 @@ bool Materializer::Continue(
                 reached.push_back(candidate);
         }
         if (reached.empty()) {
-            advancement.wave_statuses.push_back({turn_wave.wave_id, BattleTurnWaveStatus::NoSurvivors, now});
+            advancement.wave_statuses.push_back({
+                turn_wave.wave_id,
+                wave_has_victory ? BattleTurnWaveStatus::Completed
+                                 : BattleTurnWaveStatus::NoSurvivors,
+                now});
             continue;
         }
         if (!next_turn) {
@@ -2012,6 +2099,11 @@ bool Materializer::Continue(
         if (battle_set->continuation_mode == BattleContinuationMode::ManualSelection) {
             advancement.wave_statuses.push_back({turn_wave.wave_id, BattleTurnWaveStatus::AwaitingSelection, std::nullopt});
             any_awaiting = true;
+            continue;
+        }
+        if (victory && !battle_set->continue_automatic_exploration_after_victory) {
+            advancement.wave_statuses.push_back({
+                turn_wave.wave_id, BattleTurnWaveStatus::Completed, now});
             continue;
         }
         std::vector<RankedCandidate> eligible;
@@ -2061,8 +2153,8 @@ bool Materializer::Continue(
         advancement.wave_statuses.push_back({turn_wave.wave_id, BattleTurnWaveStatus::Completed, now});
     }
 
-    advancement.battle_set_status = victory ? BattleSetStatus::Victory
-        : (any_children || any_awaiting) ? BattleSetStatus::Active
+    advancement.battle_set_status = (any_children || any_awaiting) ? BattleSetStatus::Active
+        : victory ? BattleSetStatus::Victory
         : any_plan_complete ? BattleSetStatus::Completed
         : BattleSetStatus::NoSurvivors;
     advancement.battle_set_completed_at_utc = IsTerminalBattleSetStatus(advancement.battle_set_status)
@@ -2130,12 +2222,50 @@ public:
             return decision;
         }
         decision.should_advance = true;
-        if (set->status == BattleSetStatus::Victory) return decision;
         auto waves = analysis_db_->ListBattleTurnWaves(set->battle_set_id);
         std::ranges::sort(waves, {}, &BattleTurnWaveSnapshot::wave_id);
         const auto graph = execution_db_ && execution_db_->WorkflowQueryService()
             ? execution_db_->WorkflowQueryService()->GetWorkflowGraph(context.workflow_instance_id)
             : std::nullopt;
+        const auto pools = analysis_db_->ListBattleAdvancementPoolsForBattleTurn(
+            set->battle_set_id, wave->turn_index);
+        for (const auto& pool : pools) {
+            if (!pool.pool_name.starts_with("victory-completion-rng-")) continue;
+            for (const auto& completion :
+                 analysis_db_->ListBattleAdvancementDecisionsForPool(
+                     pool.battle_advancement_pool_id)) {
+                if (completion.decision_kind
+                    != BattleAdvancementDecisionKind::SelectedForCompletion) continue;
+                const auto turn_job = analysis_db_->GetBattleTurnJob(completion.turn_job_id);
+                if (!turn_job || !graph) {
+                    decision.workflow_failure = true;
+                    decision.blocked_reason = "battle_victory_parent_step_missing";
+                    return decision;
+                }
+                const auto parent_step = std::ranges::find_if(
+                    graph->steps, [&](const auto& step) {
+                        return step.input_ref_kind
+                                == std::optional<std::string>(kWaveRefKind)
+                            && step.input_ref_id
+                                == std::optional<std::int64_t>(turn_job->wave_id);
+                    });
+                if (parent_step == graph->steps.end()) {
+                    decision.workflow_failure = true;
+                    decision.blocked_reason = "battle_victory_parent_step_missing";
+                    return decision;
+                }
+                decision.spawn_steps.push_back({
+                    .parent_workflow_step_id = parent_step->workflow_step_id,
+                    .step_key = "BattleCompletion/t" + std::to_string(wave->turn_index)
+                        + "/j" + std::to_string(turn_job->turn_job_id),
+                    .step_kind = "battle.completion",
+                    .input_ref_kind = "analysis_battle.turn_job",
+                    .input_ref_id = turn_job->turn_job_id,
+                    .priority = context.priority,
+                    .max_attempts = 1,
+                });
+            }
+        }
         for (const auto& child : waves) {
             if (!child.parent_wave_id
                 || child.turn_index != wave->turn_index + 1
@@ -2236,17 +2366,8 @@ bool RequestBattleWaveContinuation(
         return Fail("the authored Battle Plan has no next turn", error_out);
     if (!CompileBattleTurnVariants(*next_turn, nullptr, error_out)) return false;
 
-    const auto parent_jobs = analysis_db->ListBattleTurnJobsForWave(parent->wave_id);
-    for (const auto& job : parent_jobs) {
-        if (!job.exec_job_id) continue;
-        const auto result = analysis_db->GetBattleSingleTurnResultForExecJob(
-            *job.exec_job_id);
-        if (result && result->terminal_kind == "SUCCEEDED"
-            && result->domain_outcome == std::optional<std::string>("Victory")) {
-            return Fail("Victory suppresses Battle wave continuation", error_out);
-        }
-    }
-
+    const auto parent_jobs =
+        analysis_db->ListBattleTurnJobsForWave(parent->wave_id);
     const auto turn_waves = analysis_db->ListBattleTurnWaves(parent->battle_set_id);
     ApplyBattleTurnAdvancementCommand advancement{
         .battle_set_id = parent->battle_set_id,

@@ -541,6 +541,7 @@ struct UiBattleGroupSummary {
     std::string status;
     std::int64_t created_at_utc = 0;
     std::optional<std::int64_t> completed_at_utc;
+    bool continue_automatic_exploration_after_victory = false;
     std::int64_t wave_count = 0;
     std::int64_t job_count = 0;
     std::int64_t selected_count = 0;

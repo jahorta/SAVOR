@@ -1231,15 +1231,21 @@ bool RefreshWorkflowBattleRollupsForExecJob(sqlite3* ui, std::int64_t exec_job_i
 bool ProjectBattleGroup(sqlite3* source, sqlite3* ui, std::int64_t battle_set_id, std::string* error_out) {
     if (battle_set_id <= 0) return true;
     Statement group_src;
-    if (!Prepare(source, "SELECT battle_set_id,name,status,created_at_utc,completed_at_utc FROM ab_battle_set WHERE battle_set_id=?1;", &group_src, error_out)) return false;
+    if (!Prepare(source, "SELECT battle_set_id,name,status,created_at_utc,completed_at_utc,"
+            "continue_automatic_exploration_after_victory FROM ab_battle_set WHERE battle_set_id=?1;",
+            &group_src, error_out)) return false;
     sqlite3_bind_int64(group_src.st, 1, battle_set_id);
     if (sqlite3_step(group_src.st) == SQLITE_ROW) {
         Statement upsert;
         constexpr const char* kSql =
-            "INSERT INTO ui_battle_group(battle_set_id,name,status,created_at_utc,completed_at_utc) VALUES(?1,?2,?3,?4,?5) "
-            "ON CONFLICT(battle_set_id) DO UPDATE SET name=excluded.name,status=excluded.status,created_at_utc=excluded.created_at_utc,completed_at_utc=excluded.completed_at_utc;";
+            "INSERT INTO ui_battle_group(battle_set_id,name,status,created_at_utc,completed_at_utc,"
+            "continue_automatic_exploration_after_victory) VALUES(?1,?2,?3,?4,?5,?6) "
+            "ON CONFLICT(battle_set_id) DO UPDATE SET name=excluded.name,status=excluded.status,"
+            "created_at_utc=excluded.created_at_utc,completed_at_utc=excluded.completed_at_utc,"
+            "continue_automatic_exploration_after_victory="
+            "excluded.continue_automatic_exploration_after_victory;";
         if (!Prepare(ui, kSql, &upsert, error_out)) return false;
-        for (int i = 0; i < 5; ++i) BindColumn(upsert.st, i + 1, group_src.st, i);
+        for (int i = 0; i < 6; ++i) BindColumn(upsert.st, i + 1, group_src.st, i);
         if (!StepDone(ui, upsert.st, error_out)) return false;
     }
     return RefreshBattleGroupRollup(ui, battle_set_id, error_out);
@@ -1273,7 +1279,7 @@ bool ProjectBattleTurnJob(sqlite3* source, sqlite3* ui, std::int64_t turn_job_id
         "CASE WHEN j.battle_outcome IN (0,6) THEN 1 ELSE 0 END,"
         "CASE WHEN j.battle_outcome=0 THEN 1 ELSE 0 END,"
         "CASE WHEN EXISTS (SELECT 1 FROM ab_battle_advancement_decision d WHERE d.turn_job_id=j.turn_job_id AND d.decision_kind='SELECTED') THEN 1 ELSE 0 END,"
-        "(SELECT d.decision_kind FROM ab_battle_advancement_decision d WHERE d.turn_job_id=j.turn_job_id ORDER BY CASE d.decision_kind WHEN 'SELECTED' THEN 0 WHEN 'NOT_SELECTED' THEN 1 ELSE 2 END,d.battle_advancement_decision_id DESC LIMIT 1),"
+        "(SELECT d.decision_kind FROM ab_battle_advancement_decision d WHERE d.turn_job_id=j.turn_job_id AND d.decision_kind IN ('SELECTED','NOT_SELECTED','REJECTED') ORDER BY CASE d.decision_kind WHEN 'SELECTED' THEN 0 WHEN 'NOT_SELECTED' THEN 1 ELSE 2 END,d.battle_advancement_decision_id DESC LIMIT 1),"
         "CASE WHEN EXISTS (SELECT 1 FROM ab_battle_advancement_decision d WHERE d.turn_job_id=j.turn_job_id AND d.decision_kind='SELECTED') THEN 2 WHEN j.battle_outcome IN (0,6) THEN 1 ELSE 0 END,"
         "j.started_at_utc,j.ended_at_utc,w.battle_set_id,w.parent_wave_id,w.parent_turn_job_id,"
         "j.source_savestate_id,j.seed_candidate_id,j.authored_plan_id,j.authored_turn_index,j.resolved_turn_commands_blob,j.resolved_turn_variant_key,j.output_savestate_id,j.input_trace_artifact_id "

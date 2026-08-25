@@ -9,6 +9,8 @@
 #include "GUI/Tabs/AnalysisTab.h"
 #include "GUI/Tabs/RunningTab.h"
 #include "GUI/Tabs/SetupTab.h"
+#include "GUI/Tabs/TasRoutesTab.h"
+#include "GUI/Panes/BattleRunsPane/VictoryResultsWidget.h"
 #include "GUI/Widgets/PersistentToolWindow.h"
 #include "DB/SavorDbArtifactService.h"
 #include "DB/SavorDbAuthoringService.h"
@@ -332,9 +334,15 @@ void MainWindow::createWidgets()
         [this]() { openFocusedTool(FocusedTool::Artifacts); },
         [this]() { openFocusedTool(FocusedTool::Workflows); },
         [this](qint64 jobId) { handleVisualReplayRequested(jobId); },
+        [this](qint64 turnJobId) { recordBattleVictory(turnJobId); },
         [this](const QString& unitKind,const QString& inputKey,qint64 refId){showSetupLauncherPreselected(unitKind,inputKey,refId);}
     }, root);
     workspaceStack_->addWidget(analysisTab_);
+    tasRoutesTab_ = new TasRoutesTab(TasRoutesTab::Actions{
+        [this](qint64 routeNodeId) { openVictoryResults(routeNodeId); },
+        [this](qint64 workflowId) { openWorkflow(workflowId); }
+    }, root);
+    workspaceStack_->addWidget(tasRoutesTab_);
 
     workspaceSelector_ = new savorqt::gui::WorkspaceSelectorBar(root);
     workspaceSelector_->setSelectionChangedCallback([this](int index) {
@@ -541,6 +549,27 @@ void MainWindow::openJob(std::int64_t jobId)
     }
 }
 
+void MainWindow::openVictoryResults(std::int64_t routeNodeId)
+{
+    const QString key = QStringLiteral("victory_results");
+    if (focusedWindows_.value(key) == nullptr) {
+        PersistentToolWindow* window = createFocusedWindow(key, QStringLiteral("Victory Results"));
+        if (window != nullptr) {
+            auto* page = new VictoryResultsWidget(VictoryResultsWidget::Actions{
+                [this](qint64 turnJobId) { recordBattleVictory(turnJobId); },
+                [this](qint64 workflowId) { openWorkflow(workflowId); },
+                [this](qint64 jobId) { openJob(jobId); },
+                [this]() { openFocusedTool(FocusedTool::Artifacts); }
+            }, window);
+            window->layout()->addWidget(page);
+        }
+    }
+    if (PersistentToolWindow* window = focusedWindows_.value(key); window != nullptr) {
+        if (auto* page = window->findChild<VictoryResultsWidget*>()) page->showRoute(routeNodeId);
+        window->show(); window->raise(); window->activateWindow();
+    }
+}
+
 void MainWindow::retryWorkflowJobs(std::int64_t workflowInstanceId)
 {
     if (workflowRetryInFlight_ || workflowInstanceId <= 0) {
@@ -593,6 +622,37 @@ void MainWindow::retryWorkflowJobs(std::int64_t workflowInstanceId)
     });
     watcher->setFuture(QtConcurrent::run([workflowInstanceId]() {
         return savorqt::db::SavorDbWorkflowService::RetryFailedJobs(workflowInstanceId);
+    }));
+}
+
+void MainWindow::recordBattleVictory(std::int64_t turnJobId)
+{
+    if (battleVictoryRecordingInFlight_ || turnJobId <= 0) return;
+    battleVictoryRecordingInFlight_ = true;
+    auto* watcher = new QFutureWatcher<
+        savorqt::db::ServiceResult<savorqt::db::RecordBattleVictoryResult>>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher]() {
+        const auto result = watcher->result();
+        watcher->deleteLater();
+        battleVictoryRecordingInFlight_ = false;
+        if (!result.ok) {
+            statusBarWidget_->postToast(StatusToast{
+                StatusToast::Severity::Error,
+                QStringLiteral("Record Victory failed: %1")
+                    .arg(QString::fromStdString(result.error.message))});
+            return;
+        }
+        statusBarWidget_->postToast(StatusToast{
+            StatusToast::Severity::Info,
+            result.value.focused_existing_completion
+                ? QStringLiteral("Focused the existing Victory completion workflow.")
+                : QStringLiteral("Battle recording workflow started.")});
+        if (analysisTab_) analysisTab_->requestBattleRunsRefresh();
+        openWorkflow(result.value.workflow_instance_id);
+    });
+    watcher->setFuture(QtConcurrent::run([turnJobId]() {
+        return savorqt::db::SavorDbWorkflowService::RecordBattleVictory(
+            turnJobId);
     }));
 }
 
@@ -688,6 +748,9 @@ void MainWindow::setWorkspaceIndex(int index)
     }
     if (analysisTab_ != nullptr) {
         analysisTab_->setPageActive(index == 2);
+    }
+    if (tasRoutesTab_ != nullptr) {
+        tasRoutesTab_->setPageActive(index == 3);
     }
 }
 

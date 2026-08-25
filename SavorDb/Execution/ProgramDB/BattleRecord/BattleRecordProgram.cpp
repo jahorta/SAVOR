@@ -1734,9 +1734,12 @@ public:
             }, nullptr, error_out))
             return std::nullopt;
 
-        const auto source_root = state_->FindTasMovieRootByDtmArtifactId(
-            static_cast<std::int64_t>(
-                *source_binding.source_dtm_artifact_id));
+        const auto source_tree = state_->FindTasMovieTreeByDtmArtifactId(
+            static_cast<std::int64_t>(*source_binding.source_dtm_artifact_id));
+        const auto source_root = source_tree
+            ? state_->GetTasMovieRoot(source_tree->tas_movie_root_id)
+            : state_->FindTasMovieRootByDtmArtifactId(
+                static_cast<std::int64_t>(*source_binding.source_dtm_artifact_id));
         if (!source_root)
         {
             Fail("Battle Recording source TAS Movie root is missing",
@@ -1746,7 +1749,9 @@ public:
         std::int64_t tree_id = 0;
         if (!state_->CreateTasMovieTree({
                 .tas_movie_root_id = source_root->tas_movie_root_id,
-                .parent_tas_movie_tree_id = std::nullopt,
+                .parent_tas_movie_tree_id = source_tree
+                    ? std::optional<std::int64_t>(source_tree->tas_movie_tree_id)
+                    : std::nullopt,
                 .dtm_artifact_id = dtm_artifact_id,
                 .itinerary_artifact_id = itinerary_artifact_id,
                 .required_final_breakpoint_pc =

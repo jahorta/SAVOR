@@ -134,6 +134,9 @@
     <ClCompile Include="GUI\Panes\BattleRunsPane\BattleRunsWidget.cpp">
       <Filter>GUI\Panes\BattleRuns</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunsPane\VictoryResultsWidget.cpp">
+      <Filter>GUI\Panes\BattleRuns</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableModel.cpp">
       <Filter>GUI\Panes\Jobs</Filter>
     </ClCompile>
@@ -215,6 +218,9 @@
     <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
     <ClCompile Include="GUI\Authoring\BattlePlanActionPresetEditorWindow.cpp" />
     <ClCompile Include="GUI\Tabs\AnalysisTab.cpp">
+      <Filter>GUI\Tabs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Tabs\TasRoutesTab.cpp">
       <Filter>GUI\Tabs</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Tabs\RunningTab.cpp">

@@ -1004,6 +1004,12 @@ void BattleRunsWidget::showJobContextMenu(const QPoint& position)
     QAction* replicationAction = menu.addAction(QStringLiteral("Replication Details"));
     QAction* battlePlanAction = menu.addAction(QStringLiteral("Battle Plan"));
     menu.addSeparator();
+    QAction* recordVictoryAction = menu.addAction(QStringLiteral("Record Victory"));
+    const auto row = std::ranges::find(
+        currentJobs_, jobId, &JobRow::jobId);
+    recordVictoryAction->setEnabled(
+        row != currentJobs_.end() && row->state == QStringLiteral("SUCCEEDED")
+        && row->finalVictoryOutcome);
     QAction* replayAction = menu.addAction(QStringLiteral("Replay Visually"));
     replayAction->setEnabled(execJobId > 0 && isFinishedState(state));
 
@@ -1016,6 +1022,8 @@ void BattleRunsWidget::showJobContextMenu(const QPoint& position)
         actions_.showReplicationDetails(jobId);
     } else if (chosen == battlePlanAction && actions_.showBattlePlan) {
         actions_.showBattlePlan(jobId);
+    } else if (chosen == recordVictoryAction && actions_.recordVictory) {
+        actions_.recordVictory(jobId);
     } else if (chosen == replayAction && actions_.replayVisual) {
         actions_.replayVisual(execJobId);
     }

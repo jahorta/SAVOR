@@ -62,6 +62,20 @@ WorkflowLaunchArgumentDefinition ChoiceArgument(
     };
 }
 
+WorkflowLaunchArgumentDefinition BooleanArgument(
+    std::string key,
+    std::string display_name,
+    bool default_value) {
+    return WorkflowLaunchArgumentDefinition{
+        .key = std::move(key),
+        .display_name = std::move(display_name),
+        .value_type = WorkflowLaunchArgumentValueType::Boolean,
+        .required = false,
+        .default_value = default_value ? std::optional<std::string>("true")
+                                       : std::optional<std::string>("false"),
+    };
+}
+
 std::string BindingLabel(std::string_view node_key, std::string_view port_key) {
     return std::string(node_key) + "." + std::string(port_key);
 }
@@ -471,13 +485,17 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                         { .value = "manual_selection", .display_name = "Manual selection after each wave" },
                         { .value = "automatic_best_per_ending_rng", .display_name = "Automatically continue the best candidate for each ending RNG" },
                     }),
+                BooleanArgument(
+                    "continue_automatic_exploration_after_victory",
+                    "Continue automatic exploration after Victory",
+                    false),
                 IntegerArgument("fake_attack_min", "Minimum fake attacks", false, "0", 0, std::numeric_limits<std::int32_t>::max()),
                 IntegerArgument("fake_attack_max", "Maximum fake attacks", false, "0", 0, std::numeric_limits<std::int32_t>::max()),
             },
             .launch_argument_constraints = {
                 { .lesser_or_equal_key = "fake_attack_min", .greater_or_equal_key = "fake_attack_max", .message = "minimum fake attacks must not exceed maximum fake attacks" },
             },
-            .internal_step_kinds = { "battle.start", "battle.single_turn" },
+            .internal_step_kinds = { "battle.start", "battle.single_turn", "battle.completion" },
             .step_templates = SingleStep("battle.start"),
         },
         &ignored);

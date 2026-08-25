@@ -265,6 +265,7 @@
     <ClCompile Include="Common\QueuedDb.cpp" />
     <ClCompile Include="Analysis\QueuedAnalysisDb.cpp" />
     <ClCompile Include="Analysis\BattleCompletionRecordingDb.cpp" />
+    <ClCompile Include="Analysis\TasRouteDb.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisDb.cpp" />
     <ClCompile Include="Authoring\AuthoringContentHash.cpp" />
@@ -336,6 +337,10 @@
     <None Include="migration\AnalysisBattle\202608151000_analysisbattle_replay_source_binding_hard_cut.sql" />
     <None Include="migration\AnalysisBattle\202608161400_analysisbattle_predicate_execution_package.sql" />
     <None Include="migration\AnalysisBattle\202608171500_analysisbattle_direct_plan_hard_cut.sql" />
+    <None Include="migration\AnalysisBattle\202608251000_analysisbattle_victory_completion.sql" />
+    <None Include="migration\AnalysisBattle\202608251300_analysisbattle_tas_routes.sql" />
+    <None Include="migration\Execution\202608251000_execution_workflow_launch_key.sql" />
+    <None Include="migration\UIRead\202608251000_uiread_battle_victory_policy.sql" />
     <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql" />
     <None Include="migration\AnalysisSeedProbe\202607211100_analysisseedprobe_field_return_flavor.sql" />
     <None Include="migration\AnalysisSeedProbe\202608161200_analysisseedprobe_entry_qualified_flavor.sql" />

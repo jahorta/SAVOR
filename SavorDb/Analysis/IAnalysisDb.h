@@ -115,6 +115,10 @@ enum class BattleAdvancementDecisionKind {
     Selected,
     NotSelected,
     Rejected,
+    SelectedForCompletion,
+    DuplicateEndingRng,
+    Recommended,
+    NotRecommended,
 };
 
 enum class BattleManualFollowupStatus {
@@ -375,6 +379,10 @@ inline std::string_view ToDbString(BattleAdvancementDecisionKind value) {
     case BattleAdvancementDecisionKind::Selected: return "SELECTED";
     case BattleAdvancementDecisionKind::NotSelected: return "NOT_SELECTED";
     case BattleAdvancementDecisionKind::Rejected: return "REJECTED";
+    case BattleAdvancementDecisionKind::SelectedForCompletion: return "SELECTED_FOR_COMPLETION";
+    case BattleAdvancementDecisionKind::DuplicateEndingRng: return "DUPLICATE_ENDING_RNG";
+    case BattleAdvancementDecisionKind::Recommended: return "RECOMMENDED";
+    case BattleAdvancementDecisionKind::NotRecommended: return "NOT_RECOMMENDED";
     default: return "";
     }
 }
@@ -383,6 +391,10 @@ inline BattleAdvancementDecisionKind ParseBattleAdvancementDecisionKind(std::str
     if (value == "SELECTED" || value == "WINNER") return BattleAdvancementDecisionKind::Selected;
     if (value == "NOT_SELECTED" || value == "DUPLICATE") return BattleAdvancementDecisionKind::NotSelected;
     if (value == "REJECTED") return BattleAdvancementDecisionKind::Rejected;
+    if (value == "SELECTED_FOR_COMPLETION") return BattleAdvancementDecisionKind::SelectedForCompletion;
+    if (value == "DUPLICATE_ENDING_RNG") return BattleAdvancementDecisionKind::DuplicateEndingRng;
+    if (value == "RECOMMENDED") return BattleAdvancementDecisionKind::Recommended;
+    if (value == "NOT_RECOMMENDED") return BattleAdvancementDecisionKind::NotRecommended;
     return BattleAdvancementDecisionKind::Unknown;
 }
 
@@ -562,6 +574,7 @@ struct CreateBattleSetCommand {
     std::int64_t battle_plan_id = 0;
     std::string battle_plan_fingerprint;
     BattleContinuationMode continuation_mode = BattleContinuationMode::Unknown;
+    bool continue_automatic_exploration_after_victory = false;
     int launch_fake_attack_min = 0;
     int launch_fake_attack_max = 0;
     BattleSetStatus status = BattleSetStatus::Unknown;
@@ -671,6 +684,7 @@ struct BattleSetSnapshot {
     std::int64_t battle_plan_id = 0;
     std::string battle_plan_fingerprint;
     BattleContinuationMode continuation_mode = BattleContinuationMode::Unknown;
+    bool continue_automatic_exploration_after_victory = false;
     int launch_fake_attack_min = 0;
     int launch_fake_attack_max = 0;
     BattleSetStatus status = BattleSetStatus::Unknown;
@@ -977,6 +991,78 @@ struct BattleRecordingRecord {
     std::optional<types::UtcTimePoint> completed_at_utc;
 };
 
+enum class TasRouteNodeKind {
+    Checkpoint = 0,
+    Activity = 1,
+};
+
+struct EnsureBattleRouteActivityCommand {
+    std::int64_t battle_set_id = 0;
+    std::int64_t entry_savestate_id = 0;
+    std::int64_t battle_plan_id = 0;
+    std::string activity_key;
+    std::string default_label;
+    std::string default_description;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct EnsureBattleRouteActivityReceipt {
+    std::int64_t root_route_node_id = 0;
+    std::int64_t activity_route_node_id = 0;
+};
+
+struct EnsurePendingVictoryRouteBranchCommand {
+    std::int64_t battle_set_id = 0;
+    std::int64_t selected_turn_job_id = 0;
+    std::string default_label;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct EnsurePendingVictoryRouteBranchReceipt {
+    std::int64_t victory_branch_id = 0;
+    std::int64_t source_route_node_id = 0;
+    std::int64_t checkpoint_route_node_id = 0;
+};
+
+struct BindVictoryRouteBranchWorkflowCommand {
+    std::int64_t selected_turn_job_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::string status;
+    types::UtcTimePoint updated_at_utc{};
+};
+
+struct TasRouteNodeSnapshot {
+    std::int64_t route_node_id = 0;
+    std::optional<std::int64_t> parent_route_node_id;
+    TasRouteNodeKind node_kind = TasRouteNodeKind::Checkpoint;
+    std::string activity_kind;
+    std::string activity_key;
+    std::string label;
+    std::string description;
+    std::optional<std::int64_t> source_dtm_artifact_id;
+    std::optional<std::int64_t> source_savestate_id;
+    std::optional<std::int64_t> battle_plan_id;
+    std::optional<std::int64_t> tas_movie_tree_id;
+    std::string status;
+    types::UtcTimePoint created_at_utc{};
+    types::UtcTimePoint updated_at_utc{};
+};
+
+struct VictoryRouteBranchSnapshot {
+    std::int64_t victory_branch_id = 0;
+    std::int64_t source_route_node_id = 0;
+    std::int64_t checkpoint_route_node_id = 0;
+    std::int64_t selected_turn_job_id = 0;
+    std::optional<std::int64_t> workflow_instance_id;
+    std::optional<std::int64_t> battle_recording_id;
+    std::optional<std::int64_t> tas_movie_tree_id;
+    std::optional<std::int64_t> checkpoint_savestate_id;
+    std::optional<std::int64_t> validation_request_id;
+    std::string status;
+    types::UtcTimePoint created_at_utc{};
+    types::UtcTimePoint updated_at_utc{};
+};
+
 struct BattleTurnAdvancementExpectedResult {
     std::int64_t wave_id = 0;
     std::int64_t turn_job_id = 0;
@@ -1145,6 +1231,7 @@ struct EnsureBattleStartCommand {
     std::int64_t battle_plan_id = 0;
     std::string battle_plan_fingerprint;
     BattleContinuationMode continuation_mode = BattleContinuationMode::Unknown;
+    bool continue_automatic_exploration_after_victory = false;
     int launch_fake_attack_min = 0;
     int launch_fake_attack_max = 0;
     types::UtcTimePoint created_at_utc{};
@@ -1209,6 +1296,15 @@ struct BindBattlePredicateExecutionPackageCommand {
     std::string hook_contract_canonical_id;
     std::uint32_t hook_contract_revision = 0;
     std::string hook_contract_sha256;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct BattleAdvancementPoolRow {
+    std::int64_t battle_advancement_pool_id = 0;
+    std::int64_t battle_set_id = 0;
+    int turn_index = 0;
+    std::string pool_name;
+    BattleAdvancementCriterionKind criterion_kind = BattleAdvancementCriterionKind::Unknown;
     types::UtcTimePoint created_at_utc{};
 };
 
@@ -1572,6 +1668,35 @@ struct IAnalysisDb {
         std::string* error_out = nullptr) = 0;
 
     virtual std::optional<BattleSetSnapshot> GetBattleSet(std::int64_t battle_set_id) const = 0;
+    virtual bool EnsureBattleRouteActivity(
+        const EnsureBattleRouteActivityCommand&,
+        EnsureBattleRouteActivityReceipt* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "TAS route persistence is unavailable";
+        return false;
+    }
+    virtual bool EnsurePendingVictoryRouteBranch(
+        const EnsurePendingVictoryRouteBranchCommand&,
+        EnsurePendingVictoryRouteBranchReceipt* = nullptr,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "TAS route persistence is unavailable";
+        return false;
+    }
+    virtual bool BindVictoryRouteBranchWorkflow(
+        const BindVictoryRouteBranchWorkflowCommand&,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "TAS route persistence is unavailable";
+        return false;
+    }
+    virtual bool RenameTasRouteNode(
+        std::int64_t, std::string_view, types::UtcTimePoint,
+        std::string* error_out = nullptr) {
+        if (error_out) *error_out = "TAS route persistence is unavailable";
+        return false;
+    }
+    virtual std::vector<TasRouteNodeSnapshot> ListTasRouteNodes() const { return {}; }
+    virtual std::vector<VictoryRouteBranchSnapshot> ListVictoryRouteBranches() const { return {}; }
+    virtual std::vector<std::int64_t> ListBattleSetIdsForRouteNode(std::int64_t) const { return {}; }
     virtual std::vector<BattleSeedCandidateRow> ListBattleSeedCandidates(std::int64_t battle_set_id) const = 0;
     virtual std::optional<BattleSeedCandidateRow> GetBattleSeedCandidate(std::int64_t seed_candidate_id) const = 0;
     virtual std::optional<BattleTurnWaveSnapshot> GetBattleTurnWave(std::int64_t wave_id) const = 0;
@@ -1587,6 +1712,10 @@ struct IAnalysisDb {
     virtual std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForWave(std::int64_t wave_id) const = 0;
     virtual std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForBattleTurn(std::int64_t battle_set_id, int turn_index) const = 0;
     virtual std::vector<BattleAdvancementDecisionRow> ListBattleAdvancementDecisionsForPool(std::int64_t battle_advancement_pool_id) const = 0;
+    virtual std::vector<BattleAdvancementPoolRow> ListBattleAdvancementPoolsForBattleTurn(
+        std::int64_t battle_set_id, int turn_index) const = 0;
+    virtual std::optional<std::int64_t> GetBattleWorkflowInstanceId(
+        std::int64_t battle_set_id) const = 0;
 
     virtual bool CreateBattleCompletion(
         const CreateBattleCompletionCommand& command,
@@ -1605,6 +1734,8 @@ struct IAnalysisDb {
         std::int64_t battle_completion_id) const = 0;
     virtual std::optional<BattleCompletionRecord> GetBattleCompletionForExecJob(
         std::int64_t exec_job_id) const = 0;
+    virtual std::optional<BattleCompletionRecord> GetBattleCompletionForSelectedTurnJob(
+        std::int64_t turn_job_id) const = 0;
 
     virtual bool CreateBattleRecording(
         const CreateBattleRecordingCommand& command,

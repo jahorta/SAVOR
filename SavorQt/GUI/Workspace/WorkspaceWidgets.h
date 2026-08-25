@@ -66,7 +66,7 @@ class WorkspaceSelectorBar final : public QFrame
 public:
     explicit WorkspaceSelectorBar(QWidget* parent = nullptr)
         : QFrame(parent)
-        , labels_{ QStringLiteral("Setup"), QStringLiteral("Running"), QStringLiteral("Analysis") }
+        , labels_{ QStringLiteral("Setup"), QStringLiteral("Running"), QStringLiteral("Analysis"), QStringLiteral("TAS Routes") }
     {
         setObjectName("workspaceSelectorBar");
         auto* layout = new QHBoxLayout(this);

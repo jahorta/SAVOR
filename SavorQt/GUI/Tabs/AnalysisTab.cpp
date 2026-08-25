@@ -715,6 +715,10 @@ void AnalysisTab::build()
                 actions_.replayVisual(static_cast<qint64>(jobId));
             }
         },
+        [this](std::int64_t jobId) {
+            if (actions_.recordBattleVictory)
+                actions_.recordBattleVictory(static_cast<qint64>(jobId));
+        },
         {}
     }, paneStack_);
     battleRunsWidget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -868,6 +872,11 @@ void AnalysisTab::setPageActive(bool active)
     if (battleRunsWidget_ != nullptr) {
         battleRunsWidget_->setPageActive(pageActive_ && currentPaneIndex_ == BattleRunsPane);
     }
+}
+
+void AnalysisTab::requestBattleRunsRefresh()
+{
+    if (battleRunsWidget_ != nullptr) battleRunsWidget_->requestRefresh();
 }
 
 void AnalysisTab::showBattleJobDetails(qint64 jobId)

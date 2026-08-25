@@ -302,7 +302,7 @@ std::vector<WorkflowInstanceRecord> SqliteWorkflowOrchestrationQueryService::Lis
 
     Statement st;
     if (!Prepare(db_,
-        "SELECT workflow_instance_id, workflow_kind, state, root_scope_kind, root_scope_id, workflow_graph_revision_id "
+        "SELECT workflow_instance_id, workflow_kind, state, root_scope_kind, root_scope_id, workflow_graph_revision_id, launch_key "
         "FROM exec_workflow_instance WHERE state=?1 AND created_at_utc BETWEEN ?2 AND ?3 "
         "ORDER BY created_at_utc DESC, workflow_instance_id DESC;",
         &st,
@@ -322,6 +322,8 @@ std::vector<WorkflowInstanceRecord> SqliteWorkflowOrchestrationQueryService::Lis
         row.root_scope_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 3));
         row.root_scope_id = ColumnInt64Optional(st.st, 4);
         row.workflow_graph_revision_id = ColumnInt64Optional(st.st, 5);
+        if (const auto* value = sqlite3_column_text(st.st, 6))
+            row.launch_key = reinterpret_cast<const char*>(value);
         rows.push_back(std::move(row));
     }
 
@@ -855,10 +857,37 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
     const auto rollback = [&]() { (void)Exec(db_, "ROLLBACK;", nullptr); };
 
     const auto now = command.created_at_utc > 0 ? command.created_at_utc : NowUtc();
+    if (command.launch_key) {
+        Statement existing;
+        if (!Prepare(db_,
+                "SELECT workflow_instance_id,workflow_graph_revision_id,root_scope_kind,root_scope_id "
+                "FROM exec_workflow_instance WHERE launch_key=?1;",
+                &existing, error_out)) {
+            rollback();
+            return false;
+        }
+        sqlite3_bind_text(existing.st, 1, command.launch_key->c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(existing.st) == SQLITE_ROW) {
+            const bool exact =
+                ColumnInt64Optional(existing.st, 1) == command.workflow_graph_revision_id
+                && std::string(reinterpret_cast<const char*>(
+                    sqlite3_column_text(existing.st, 2))) == command.root_scope_kind
+                && ColumnInt64Optional(existing.st, 3) == command.root_scope_id;
+            if (!exact) {
+                if (error_out) *error_out =
+                    "workflow launch key identifies a different immutable launch";
+                rollback();
+                return false;
+            }
+            if (workflow_instance_id_out)
+                *workflow_instance_id_out = sqlite3_column_int64(existing.st, 0);
+            return Exec(db_, "COMMIT;", error_out);
+        }
+    }
     Statement insert_instance;
     if (!Prepare(db_,
-        "INSERT INTO exec_workflow_instance(workflow_kind, state, root_scope_kind, root_scope_id, created_by, created_at_utc, started_at_utc, workflow_graph_revision_id) "
-        "VALUES(?1, 'RUNNING', ?2, ?3, ?4, ?5, ?6, ?7);",
+        "INSERT INTO exec_workflow_instance(workflow_kind, state, root_scope_kind, root_scope_id, created_by, created_at_utc, started_at_utc, workflow_graph_revision_id,launch_key) "
+        "VALUES(?1, 'RUNNING', ?2, ?3, ?4, ?5, ?6, ?7,?8);",
         &insert_instance,
         error_out)) {
         rollback();
@@ -871,6 +900,7 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
     sqlite3_bind_int64(insert_instance.st, 5, now);
     sqlite3_bind_int64(insert_instance.st, 6, now);
     if (command.workflow_graph_revision_id.has_value()) sqlite3_bind_int64(insert_instance.st, 7, *command.workflow_graph_revision_id); else sqlite3_bind_null(insert_instance.st, 7);
+    if (command.launch_key) sqlite3_bind_text(insert_instance.st, 8, command.launch_key->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(insert_instance.st, 8);
     if (sqlite3_step(insert_instance.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         rollback();

@@ -20,12 +20,14 @@ public:
         std::function<void()> openArtifacts;
         std::function<void()> openWorkflows;
         std::function<void(qint64)> replayVisual;
+        std::function<void(qint64)> recordBattleVictory;
         std::function<void(const QString&, const QString&, qint64)> openSetupLauncher;
     };
 
     explicit AnalysisTab(Actions actions, QWidget* parent = nullptr);
     void showBattleRunsPane();
     void setPageActive(bool active);
+    void requestBattleRunsRefresh();
 
 private:
     void build();

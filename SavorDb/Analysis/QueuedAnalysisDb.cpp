@@ -855,6 +855,85 @@ std::optional<BattleCompletionRecord> QueuedAnalysisDb::GetBattleCompletion(
         std::nullopt);
 }
 
+bool QueuedAnalysisDb::EnsureBattleRouteActivity(
+    const EnsureBattleRouteActivityCommand& command,
+    EnsureBattleRouteActivityReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, receipt_out, error_out]() {
+        return inner_ && inner_->EnsureBattleRouteActivity(command, receipt_out, error_out);
+    }, false, error_out);
+}
+
+bool QueuedAnalysisDb::EnsurePendingVictoryRouteBranch(
+    const EnsurePendingVictoryRouteBranchCommand& command,
+    EnsurePendingVictoryRouteBranchReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, receipt_out, error_out]() {
+        return inner_ && inner_->EnsurePendingVictoryRouteBranch(command, receipt_out, error_out);
+    }, false, error_out);
+}
+
+bool QueuedAnalysisDb::BindVictoryRouteBranchWorkflow(
+    const BindVictoryRouteBranchWorkflowCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, error_out]() {
+        return inner_ && inner_->BindVictoryRouteBranchWorkflow(command, error_out);
+    }, false, error_out);
+}
+
+bool QueuedAnalysisDb::RenameTasRouteNode(
+    std::int64_t route_node_id, std::string_view label,
+    types::UtcTimePoint updated_at_utc, std::string* error_out) {
+    const std::string owned(label);
+    return ExecuteWrite<bool>([this, route_node_id, owned, updated_at_utc, error_out]() {
+        return inner_ && inner_->RenameTasRouteNode(
+            route_node_id, owned, updated_at_utc, error_out);
+    }, false, error_out);
+}
+
+std::vector<TasRouteNodeSnapshot> QueuedAnalysisDb::ListTasRouteNodes() const {
+    return ExecuteRead<std::vector<TasRouteNodeSnapshot>>([this]() {
+        return inner_ ? inner_->ListTasRouteNodes() : std::vector<TasRouteNodeSnapshot>{};
+    }, {});
+}
+
+std::vector<VictoryRouteBranchSnapshot> QueuedAnalysisDb::ListVictoryRouteBranches() const {
+    return ExecuteRead<std::vector<VictoryRouteBranchSnapshot>>([this]() {
+        return inner_ ? inner_->ListVictoryRouteBranches() : std::vector<VictoryRouteBranchSnapshot>{};
+    }, {});
+}
+
+std::vector<std::int64_t> QueuedAnalysisDb::ListBattleSetIdsForRouteNode(
+    std::int64_t route_node_id) const {
+    return ExecuteRead<std::vector<std::int64_t>>([this, route_node_id]() {
+        return inner_ ? inner_->ListBattleSetIdsForRouteNode(route_node_id)
+                      : std::vector<std::int64_t>{};
+    }, {});
+}
+
+std::vector<BattleAdvancementPoolRow> QueuedAnalysisDb::ListBattleAdvancementPoolsForBattleTurn(
+    std::int64_t battle_set_id,
+    int turn_index) const {
+    return ExecuteRead<std::vector<BattleAdvancementPoolRow>>(
+        [this, battle_set_id, turn_index]() {
+            return inner_ != nullptr
+                ? inner_->ListBattleAdvancementPoolsForBattleTurn(battle_set_id, turn_index)
+                : std::vector<BattleAdvancementPoolRow>{};
+        },
+        {});
+}
+
+std::optional<std::int64_t> QueuedAnalysisDb::GetBattleWorkflowInstanceId(
+    std::int64_t battle_set_id) const {
+    return ExecuteRead<std::optional<std::int64_t>>(
+        [this, battle_set_id]() {
+            return inner_ != nullptr
+                ? inner_->GetBattleWorkflowInstanceId(battle_set_id)
+                : std::nullopt;
+        },
+        std::nullopt);
+}
+
 bool QueuedAnalysisDb::ApplyBattleTurnAdvancement(
     const ApplyBattleTurnAdvancementCommand& command,
     ApplyBattleTurnAdvancementReceipt* receipt_out,
@@ -876,6 +955,17 @@ QueuedAnalysisDb::GetBattleCompletionForExecJob(
         [this, exec_job_id]() {
             return inner_ != nullptr
                 ? inner_->GetBattleCompletionForExecJob(exec_job_id)
+                : std::nullopt;
+        }, std::nullopt);
+}
+
+std::optional<BattleCompletionRecord>
+QueuedAnalysisDb::GetBattleCompletionForSelectedTurnJob(
+    std::int64_t turn_job_id) const {
+    return ExecuteRead<std::optional<BattleCompletionRecord>>(
+        [this, turn_job_id]() {
+            return inner_ != nullptr
+                ? inner_->GetBattleCompletionForSelectedTurnJob(turn_job_id)
                 : std::nullopt;
         }, std::nullopt);
 }

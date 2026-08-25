@@ -18,6 +18,7 @@
 #include "DB/SavorDbWorkflowService.h"
 
 class QComboBox;
+class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -70,6 +71,7 @@ private:
         int battleFakeMin = 0;
         int battleFakeMax = 0;
         QString continuationMode;
+        bool continueAfterVictory = false;
         qint64 authoredRefId = 0;
         std::map<QString, ExternalInputDraft> externalInputs;
     };
@@ -135,6 +137,7 @@ private:
     QSpinBox* battleFakeMaxSpin_ = nullptr;
     QLabel* continuationLabel_ = nullptr;
     QComboBox* continuationCombo_ = nullptr;
+    QCheckBox* continueAfterVictoryCheck_ = nullptr;
     QTableWidget* externalInputsTable_ = nullptr;
     QLabel* graphDetailLabel_ = nullptr;
     QLabel* launchStatusLabel_ = nullptr;

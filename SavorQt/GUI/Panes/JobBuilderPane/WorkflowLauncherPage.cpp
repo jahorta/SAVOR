@@ -12,6 +12,7 @@
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QCompleter>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
@@ -298,11 +299,15 @@ void WorkflowLauncherPage::createWidgets()
     continuationLabel_ = new QLabel(QStringLiteral("Continuation"), formPanel);
     continuationCombo_ = new QComboBox(formPanel);
     continuationCombo_->setEditable(false);
+    continueAfterVictoryCheck_ = new QCheckBox(
+        QStringLiteral("Continue automatic exploration after Victory"),
+        formPanel);
     form->addRow(authoredRefLabel_, authoredRefCombo_);
     form->addRow(rtcRangeLabel_, rtcRangePanel_);
     form->addRow(seedSamplesLabel_, seedSamplesSpin_);
     form->addRow(battleFakeRangeLabel_, battleFakeRangePanel_);
     form->addRow(continuationLabel_, continuationCombo_);
+    form->addRow(QString(), continueAfterVictoryCheck_);
     bodyLayout->addWidget(formPanel, 1, 1);
 
     graphDetailLabel_ = new QLabel(body);
@@ -423,6 +428,7 @@ void WorkflowLauncherPage::renderCurrentGraphIfNeeded(bool forceRebuild)
         battleFakeRangePanel_->hide();
         continuationLabel_->hide();
         continuationCombo_->hide();
+        continueAfterVictoryCheck_->hide();
         return;
     }
 
@@ -433,6 +439,8 @@ void WorkflowLauncherPage::renderCurrentGraphIfNeeded(bool forceRebuild)
     const bool hasSeedProbe = !argumentNodeKeys(*graph,"samples_per_axis").empty();
     const bool hasBattle = !argumentNodeKeys(*graph,"fake_attack_min").empty();
     const auto continuationNodes = argumentNodeKeys(*graph, "continuation_mode");
+    const auto continueAfterVictoryNodes = argumentNodeKeys(
+        *graph, "continue_automatic_exploration_after_victory");
     rtcRangeLabel_->setVisible(hasTasMovie);
     rtcRangePanel_->setVisible(hasTasMovie);
     seedSamplesLabel_->setVisible(hasSeedProbe);
@@ -441,6 +449,7 @@ void WorkflowLauncherPage::renderCurrentGraphIfNeeded(bool forceRebuild)
     battleFakeRangePanel_->setVisible(hasBattle);
     continuationLabel_->setVisible(!continuationNodes.empty());
     continuationCombo_->setVisible(!continuationNodes.empty());
+    continueAfterVictoryCheck_->setVisible(!continueAfterVictoryNodes.empty());
     continuationCombo_->clear();
     if (!continuationNodes.empty()) {
         const auto node = std::find_if(graph->nodes.begin(), graph->nodes.end(),
@@ -526,6 +535,7 @@ void WorkflowLauncherPage::renderCurrentUnitIfNeeded(bool forceRebuild)
         battleFakeRangePanel_->hide();
         continuationLabel_->hide();
         continuationCombo_->hide();
+        continueAfterVictoryCheck_->hide();
         return;
     }
 
@@ -558,6 +568,8 @@ void WorkflowLauncherPage::captureLauncherDraft()
     draft.battleFakeMax = battleFakeMaxSpin_ == nullptr ? 0 : battleFakeMaxSpin_->value();
     draft.continuationMode = continuationCombo_ == nullptr
         ? QString() : continuationCombo_->currentData().toString();
+    draft.continueAfterVictory = continueAfterVictoryCheck_ != nullptr
+        && continueAfterVictoryCheck_->isChecked();
     draft.authoredRefId = authoredRefCombo_ == nullptr ? 0 : authoredRefCombo_->currentData().toLongLong();
 
     for (int row = 0; row < static_cast<int>(externalInputs_.size()) && row < externalInputsTable_->rowCount(); ++row) {
@@ -601,6 +613,8 @@ void WorkflowLauncherPage::restoreLauncherDraft()
         const int continuationIndex = continuationCombo_->findData(draft.continuationMode);
         if (continuationIndex >= 0) continuationCombo_->setCurrentIndex(continuationIndex);
     }
+    if (continueAfterVictoryCheck_ != nullptr)
+        continueAfterVictoryCheck_->setChecked(draft.continueAfterVictory);
     if (authoredRefCombo_ != nullptr && draft.authoredRefId > 0) {
         const int authoredIndex = authoredRefCombo_->findData(draft.authoredRefId);
         if (authoredIndex >= 0) {
@@ -651,6 +665,8 @@ void WorkflowLauncherPage::launchSelectedGraph()
     const auto seedNodes = argumentNodeKeys(*graph,"samples_per_axis");
     const auto battleNodes = argumentNodeKeys(*graph,"fake_attack_min");
     const auto continuationNodes = argumentNodeKeys(*graph,"continuation_mode");
+    const auto continueAfterVictoryNodes = argumentNodeKeys(
+        *graph, "continue_automatic_exploration_after_victory");
     std::int64_t rtcLow = 0;
     std::int64_t rtcHigh = 0;
     if (!tasNodes.empty()) {
@@ -765,6 +781,16 @@ void WorkflowLauncherPage::launchSelectedGraph()
                 .argument_key = "continuation_mode",
                 .value_type = "choice",
                 .text_value = continuationMode.toStdString(),
+                .source_kind = "launcher",
+            });
+        }
+        for (const auto& nodeKey : continueAfterVictoryNodes) {
+            request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
+                .node_key = nodeKey.toStdString(),
+                .argument_key =
+                    "continue_automatic_exploration_after_victory",
+                .value_type = "boolean",
+                .integer_value = continueAfterVictoryCheck_->isChecked() ? 1 : 0,
                 .source_kind = "launcher",
             });
         }
@@ -941,6 +967,16 @@ void WorkflowLauncherPage::launchStandaloneUnit()
                 .source_kind = "launcher",
             });
         }
+        if (hasArgument("continue_automatic_exploration_after_victory")) {
+            request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
+                .node_key = nodeKey,
+                .argument_key =
+                    "continue_automatic_exploration_after_victory",
+                .value_type = "boolean",
+                .integer_value = continueAfterVictoryCheck_->isChecked() ? 1 : 0,
+                .source_kind = "launcher",
+            });
+        }
 
         const auto result = savorqt::db::SavorDbWorkflowService::StartWorkflowGraphRevision(request);
         if (!result.ok) {
@@ -1091,6 +1127,8 @@ void WorkflowLauncherPage::updateStandaloneArgumentControls()
     const bool hasSeedProbe = hasArgument("samples_per_axis");
     const bool hasBattle = hasArgument("fake_attack_min");
     const bool hasContinuation = hasArgument("continuation_mode");
+    const bool hasContinueAfterVictory =
+        hasArgument("continue_automatic_exploration_after_victory");
     rtcRangeLabel_->setVisible(hasTasMovie);
     rtcRangePanel_->setVisible(hasTasMovie);
     seedSamplesLabel_->setVisible(hasSeedProbe);
@@ -1099,6 +1137,7 @@ void WorkflowLauncherPage::updateStandaloneArgumentControls()
     battleFakeRangePanel_->setVisible(hasBattle);
     continuationLabel_->setVisible(hasContinuation);
     continuationCombo_->setVisible(hasContinuation);
+    continueAfterVictoryCheck_->setVisible(hasContinueAfterVictory);
     continuationCombo_->clear();
     if (hasContinuation) {
         continuationCombo_->addItem(QStringLiteral("Select continuation…"), QString());

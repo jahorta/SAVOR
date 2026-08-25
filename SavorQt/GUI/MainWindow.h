@@ -23,6 +23,8 @@ class CoordinatorPane;
 class SetupTab;
 class RunningTab;
 class AnalysisTab;
+class TasRoutesTab;
+class VictoryResultsWidget;
 class JobsPage;
 class QLabel;
 class PersistentToolWindow;
@@ -79,6 +81,8 @@ private:
     void openWorkflow(std::int64_t workflowInstanceId);
     void openJob(std::int64_t jobId);
     void retryWorkflowJobs(std::int64_t workflowInstanceId);
+    void recordBattleVictory(std::int64_t turnJobId);
+    void openVictoryResults(std::int64_t routeNodeId);
     void showBattleRunsAnalysisPane();
     void openWorkflowGraphEditor();
     void openWorkflowGraphEditor(const savor::db::WorkflowGraphSnapshot& snapshot, bool duplicate);
@@ -93,6 +97,7 @@ private:
 	SetupTab* setupTab_ = nullptr;
 	RunningTab* runningTab_ = nullptr;
     AnalysisTab* analysisTab_ = nullptr;
+    TasRoutesTab* tasRoutesTab_ = nullptr;
     CoordinatorController* coordinatorController_ = nullptr;
     CoordinatorPane* visualReplayHost_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;
@@ -106,4 +111,5 @@ private:
     QString lastCoordinatorWarningToastSignature_;
     bool shutdownCoordinatorStarted_ = false;
     bool workflowRetryInFlight_ = false;
+    bool battleVictoryRecordingInFlight_ = false;
 };

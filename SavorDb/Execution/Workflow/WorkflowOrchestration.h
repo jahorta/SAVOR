@@ -50,6 +50,7 @@ struct WorkflowInstanceRecord {
     std::string root_scope_kind;
     std::optional<std::int64_t> root_scope_id;
     std::optional<std::int64_t> workflow_graph_revision_id;
+    std::optional<std::string> launch_key;
 };
 
 struct WorkflowUnitActivationRecord {
@@ -383,6 +384,7 @@ struct WorkflowCreateInstanceCommand {
     std::string root_scope_kind;
     std::optional<std::int64_t> root_scope_id;
     std::optional<std::int64_t> workflow_graph_revision_id;
+    std::optional<std::string> launch_key;
     std::string created_by;
     std::int64_t created_at_utc = 0;
     std::vector<WorkflowCreateUnitActivationSpec> unit_activations;

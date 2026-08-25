@@ -530,6 +530,12 @@ SqliteAnalysisDb::GetBattleCompletionForExecJob(std::int64_t id) const {
                          : std::nullopt;
 }
 
+std::optional<BattleCompletionRecord>
+SqliteAnalysisDb::GetBattleCompletionForSelectedTurnJob(std::int64_t id) const {
+    return db_ && id > 0 ? ReadCompletion(db_, "selected_turn_job_id", id)
+                         : std::nullopt;
+}
+
 bool SqliteAnalysisDb::CreateBattleRecording(
     const CreateBattleRecordingCommand& command,
     std::int64_t* id_out, std::string* error_out) {
@@ -646,6 +652,7 @@ bool SqliteAnalysisDb::BindBattleRecordingValidation(
         if (error_out) *error_out = "invalid Battle Recording validation binding";
         return false;
     }
+    if (!Begin(db_, error_out)) return false;
     Statement update;
     constexpr auto sql =
         "UPDATE ab_battle_recording SET validation_request_id=?3 WHERE "
@@ -653,18 +660,29 @@ bool SqliteAnalysisDb::BindBattleRecordingValidation(
         "status='COMPLETED' AND outcome='RECORDED' AND "
         "(validation_request_id IS NULL OR validation_request_id=?3);";
     if (sqlite3_prepare_v2(db_, sql, -1, &update.value, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
+        return Rollback(db_, sqlite3_errmsg(db_), error_out);
     }
     sqlite3_bind_int64(update.value, 1, command.battle_recording_id);
     sqlite3_bind_int64(update.value, 2, command.tas_movie_tree_id);
     sqlite3_bind_int64(update.value, 3, command.validation_request_id);
     if (sqlite3_step(update.value) != SQLITE_DONE || sqlite3_changes(db_) != 1) {
-        if (error_out) *error_out =
-            "Battle Recording validation binding lost its exact tree precondition";
-        return false;
+        return Rollback(db_,
+            "Battle Recording validation binding lost its exact tree precondition",
+            error_out);
     }
-    return true;
+    Statement route;
+    constexpr auto route_sql =
+        "UPDATE atr_victory_branch SET validation_request_id=?2,status='READY',updated_at_utc="
+        "(SELECT completed_at_utc FROM ab_battle_recording WHERE battle_recording_id=?1) "
+        "WHERE battle_recording_id=?1 AND tas_movie_tree_id=?3;";
+    if (sqlite3_prepare_v2(db_, route_sql, -1, &route.value, nullptr) != SQLITE_OK)
+        return Rollback(db_, sqlite3_errmsg(db_), error_out);
+    sqlite3_bind_int64(route.value, 1, command.battle_recording_id);
+    sqlite3_bind_int64(route.value, 2, command.validation_request_id);
+    sqlite3_bind_int64(route.value, 3, command.tas_movie_tree_id);
+    if (sqlite3_step(route.value) != SQLITE_DONE)
+        return Rollback(db_, sqlite3_errmsg(db_), error_out);
+    return Commit(db_, error_out);
 }
 
 bool SqliteAnalysisDb::BindBattleRecordingSterilization(
@@ -763,6 +781,36 @@ bool SqliteAnalysisDb::CompleteBattleRecording(
         command.completed_at_utc.time_since_epoch().count());
     if (sqlite3_step(update.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
         return Rollback(db_, "battle recording terminal transition failed", error_out);
+    if (recorded) {
+        Statement route;
+        constexpr auto route_sql =
+            "UPDATE atr_victory_branch SET battle_recording_id=?1,tas_movie_tree_id=?2,"
+            "checkpoint_savestate_id=?3,status='VALIDATING',updated_at_utc=?4 "
+            "WHERE selected_turn_job_id=(SELECT c.selected_turn_job_id FROM ab_battle_recording r "
+            "JOIN ab_battle_completion c ON c.battle_completion_id=r.battle_completion_id "
+            "WHERE r.battle_recording_id=?1);";
+        if (sqlite3_prepare_v2(db_, route_sql, -1, &route.value, nullptr) != SQLITE_OK)
+            return Rollback(db_, sqlite3_errmsg(db_), error_out);
+        sqlite3_bind_int64(route.value, 1, command.battle_recording_id);
+        sqlite3_bind_int64(route.value, 2, *command.tas_movie_tree_id);
+        sqlite3_bind_int64(route.value, 3, *command.paired_checkpoint_savestate_id);
+        sqlite3_bind_int64(route.value, 4, command.completed_at_utc.time_since_epoch().count());
+        if (sqlite3_step(route.value) != SQLITE_DONE)
+            return Rollback(db_, sqlite3_errmsg(db_), error_out);
+        Statement node;
+        constexpr auto node_sql =
+            "UPDATE atr_route_node SET tas_movie_tree_id=?2,source_savestate_id=?3,status='ACTIVE',updated_at_utc=?4 "
+            "WHERE route_node_id=(SELECT checkpoint_route_node_id FROM atr_victory_branch "
+            "WHERE battle_recording_id=?1);";
+        if (sqlite3_prepare_v2(db_, node_sql, -1, &node.value, nullptr) != SQLITE_OK)
+            return Rollback(db_, sqlite3_errmsg(db_), error_out);
+        sqlite3_bind_int64(node.value, 1, command.battle_recording_id);
+        sqlite3_bind_int64(node.value, 2, *command.tas_movie_tree_id);
+        sqlite3_bind_int64(node.value, 3, *command.paired_checkpoint_savestate_id);
+        sqlite3_bind_int64(node.value, 4, command.completed_at_utc.time_since_epoch().count());
+        if (sqlite3_step(node.value) != SQLITE_DONE)
+            return Rollback(db_, sqlite3_errmsg(db_), error_out);
+    }
     if (!InsertBattleEvent(db_,
             "AnalysisBattle.BattleRecordingCompleted.v1",
             "battle_recording", command.battle_recording_id,
@@ -815,6 +863,18 @@ bool SqliteAnalysisDb::FailBattleRecording(
         return Rollback(db_,
             "battle recording failure transition failed", error_out);
     }
+    Statement route;
+    if (sqlite3_prepare_v2(db_,
+            "UPDATE atr_victory_branch SET battle_recording_id=?1,status='FAILED',updated_at_utc=?2 "
+            "WHERE selected_turn_job_id=(SELECT c.selected_turn_job_id FROM ab_battle_recording r "
+            "JOIN ab_battle_completion c ON c.battle_completion_id=r.battle_completion_id "
+            "WHERE r.battle_recording_id=?1);",
+            -1, &route.value, nullptr) != SQLITE_OK)
+        return Rollback(db_, sqlite3_errmsg(db_), error_out);
+    sqlite3_bind_int64(route.value, 1, command.battle_recording_id);
+    sqlite3_bind_int64(route.value, 2, command.completed_at_utc.time_since_epoch().count());
+    if (sqlite3_step(route.value) != SQLITE_DONE)
+        return Rollback(db_, sqlite3_errmsg(db_), error_out);
     if (!InsertBattleEvent(db_,
             "AnalysisBattle.BattleRecordingFailed.v1",
             "battle_recording", command.battle_recording_id,

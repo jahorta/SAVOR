@@ -1099,17 +1099,6 @@ public:
                 : std::optional<std::string>(std::move(error));
             return decision;
         }
-        if (attempt->outcome == TasMovieValidationOutcome::Valid) {
-            decision.spawn_steps.push_back({
-                .step_key = "BattleRecording/" +
-                    std::to_string(recording->battle_recording_id) +
-                    "/sterilize",
-                .step_kind = "tasmovie.checkpoint_sterilize",
-                .input_ref_kind = "state.savestate",
-                .input_ref_id = tree->checkpoint_savestate_id,
-                .priority = context.priority,
-                .max_attempts = 1});
-        }
         return decision;
     }
 

@@ -203,6 +203,26 @@ public:
         std::string* error_out = nullptr) override;
 
     std::optional<BattleSetSnapshot> GetBattleSet(std::int64_t battle_set_id) const override;
+    bool EnsureBattleRouteActivity(
+        const EnsureBattleRouteActivityCommand& command,
+        EnsureBattleRouteActivityReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool EnsurePendingVictoryRouteBranch(
+        const EnsurePendingVictoryRouteBranchCommand& command,
+        EnsurePendingVictoryRouteBranchReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool BindVictoryRouteBranchWorkflow(
+        const BindVictoryRouteBranchWorkflowCommand& command,
+        std::string* error_out = nullptr) override;
+    bool RenameTasRouteNode(
+        std::int64_t route_node_id,
+        std::string_view label,
+        types::UtcTimePoint updated_at_utc,
+        std::string* error_out = nullptr) override;
+    std::vector<TasRouteNodeSnapshot> ListTasRouteNodes() const override;
+    std::vector<VictoryRouteBranchSnapshot> ListVictoryRouteBranches() const override;
+    std::vector<std::int64_t> ListBattleSetIdsForRouteNode(
+        std::int64_t route_node_id) const override;
     std::vector<BattleSeedCandidateRow> ListBattleSeedCandidates(std::int64_t battle_set_id) const override;
     std::optional<BattleSeedCandidateRow> GetBattleSeedCandidate(std::int64_t seed_candidate_id) const override;
     std::optional<BattleTurnWaveSnapshot> GetBattleTurnWave(std::int64_t wave_id) const override;
@@ -218,6 +238,10 @@ public:
     std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForWave(std::int64_t wave_id) const override;
     std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForBattleTurn(std::int64_t battle_set_id, int turn_index) const override;
     std::vector<BattleAdvancementDecisionRow> ListBattleAdvancementDecisionsForPool(std::int64_t battle_advancement_pool_id) const override;
+    std::vector<BattleAdvancementPoolRow> ListBattleAdvancementPoolsForBattleTurn(
+        std::int64_t battle_set_id, int turn_index) const override;
+    std::optional<std::int64_t> GetBattleWorkflowInstanceId(
+        std::int64_t battle_set_id) const override;
     bool CreateBattleCompletion(
         const CreateBattleCompletionCommand& command,
         std::int64_t* battle_completion_id_out = nullptr,
@@ -233,6 +257,8 @@ public:
         std::string* error_out = nullptr) override;
     std::optional<BattleCompletionRecord> GetBattleCompletion(std::int64_t battle_completion_id) const override;
     std::optional<BattleCompletionRecord> GetBattleCompletionForExecJob(std::int64_t exec_job_id) const override;
+    std::optional<BattleCompletionRecord> GetBattleCompletionForSelectedTurnJob(
+        std::int64_t turn_job_id) const override;
     bool CreateBattleRecording(
         const CreateBattleRecordingCommand& command,
         std::int64_t* battle_recording_id_out = nullptr,
