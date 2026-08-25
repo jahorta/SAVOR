@@ -1144,12 +1144,6 @@ TEST(
     harness.control->pc = target.point.pc;
     harness.control->SetCoreState(
         BackendCoreState::Paused);
-    std::vector<StopRouteReceipt> receipts =
-        harness.session.DrainStopPointEvents();
-    ASSERT_FALSE(receipts.empty());
-    for (StopRouteReceipt& receipt : receipts)
-        harness.session.HandleStopPointReceipt(
-            std::move(receipt));
     PumpHostExecution(harness);
 
     std::vector<ActorActionResult> completions =
@@ -1215,7 +1209,7 @@ TEST(
             evidence_bytes->begin(),
             evidence_bytes->begin() + 4),
         "RSE1");
-    // ExecutionEngine owns and releases the foreground registration with the
+    // ExecutionControlCore owns and releases the foreground registration with the
     // completed operation.
     EXPECT_TRUE(
         harness.session.stop_points()

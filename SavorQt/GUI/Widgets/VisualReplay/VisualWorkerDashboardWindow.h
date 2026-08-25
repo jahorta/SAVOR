@@ -2,10 +2,9 @@
 
 #include <QtCore/QVector>
 #include <QtCore/QString>
-#include <QtWidgets/QDialog>
-
 #include <vector>
 
+#include "GUI/Widgets/PersistentToolWindow.h"
 #include "Worker/WorkerTelemetry.h"
 
 struct VisualWorkerSurfaceBinding {
@@ -18,10 +17,10 @@ class QGridLayout;
 class QLabel;
 class QScrollArea;
 
-class VisualWorkerDashboardDialog final : public QDialog
+class VisualWorkerDashboardWindow final : public PersistentToolWindow
 {
 public:
-    explicit VisualWorkerDashboardDialog(QWidget* parent = nullptr);
+    explicit VisualWorkerDashboardWindow(QWidget* parent = nullptr);
 
     void setWorkerCount(int count, bool allowShrink);
     void updateWorkerSnapshots(const std::vector<WorkerSnapshot>& snapshots);

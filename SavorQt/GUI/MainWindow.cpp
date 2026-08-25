@@ -4,13 +4,13 @@
 #include "GUI/Panes/ArchivePane/ArchiveWorkbenchPage.h"
 #include "GUI/Panes/BattleRunSettingsPane/BattleRunSettingsPage.h"
 #include "GUI/Panes/JobBuilderPane/WorkflowGraphEditorWindow.h"
-#include "GUI/Panes/JobBuilderPane/WorkflowLauncherPage.h"
 #include "GUI/Panes/JobsPane/JobsPage.h"
 #include "GUI/Panes/JobSetsPane/WorkflowsPage.h"
 #include "GUI/Panes/SeedProbePane/SeedProbePage.h"
 #include "GUI/Tabs/AnalysisTab.h"
 #include "GUI/Tabs/RunningTab.h"
 #include "GUI/Tabs/SetupTab.h"
+#include "GUI/Widgets/PersistentToolWindow.h"
 #include "DB/SavorDbArtifactService.h"
 #include "DB/SavorDbAuthoringService.h"
 #include "DB/SavorDbExplorerRunService.h"
@@ -25,7 +25,6 @@
 #include <QtGui/QCursor>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
-#include <QtWidgets/QDialog>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHBoxLayout>
@@ -49,7 +48,6 @@ QString focusedToolKey(MainWindow::FocusedTool tool)
     case MainWindow::FocusedTool::Workflows: return QStringLiteral("workflows");
     case MainWindow::FocusedTool::Jobs: return QStringLiteral("jobs");
     case MainWindow::FocusedTool::Workers: return QStringLiteral("workers");
-    case MainWindow::FocusedTool::WorkflowLauncher: return QStringLiteral("workflow_launcher");
     case MainWindow::FocusedTool::BattleRunSettings: return QStringLiteral("battle_run_settings");
     case MainWindow::FocusedTool::Artifacts: return QStringLiteral("artifacts");
     case MainWindow::FocusedTool::SeedProbe: return QStringLiteral("seed_probe");
@@ -67,7 +65,6 @@ QString focusedToolTitle(MainWindow::FocusedTool tool)
     case MainWindow::FocusedTool::Workflows: return QStringLiteral("Workflows");
     case MainWindow::FocusedTool::Jobs: return QStringLiteral("Jobs");
     case MainWindow::FocusedTool::Workers: return QStringLiteral("Workers");
-    case MainWindow::FocusedTool::WorkflowLauncher: return QStringLiteral("Workflow Launcher");
     case MainWindow::FocusedTool::BattleRunSettings: return QStringLiteral("Battle Run Settings");
     case MainWindow::FocusedTool::Artifacts: return QStringLiteral("Artifacts");
     case MainWindow::FocusedTool::SeedProbe: return QStringLiteral("Seed Probe");
@@ -201,18 +198,18 @@ void MainWindow::openAuthoringLibraryLast()
 void MainWindow::openAuthoringLibrary(AuthoringLibraryKey key)
 {
     lastAuthoringLibrary_ = key;
-    if (authoringLibraryDialog_) {
-        authoringLibraryDialog_->show();
-        authoringLibraryDialog_->selectLibrary(key);
-        authoringLibraryDialog_->raise();
-        authoringLibraryDialog_->activateWindow();
+    if (authoringLibraryWindow_) {
+        authoringLibraryWindow_->show();
+        authoringLibraryWindow_->selectLibrary(key);
+        authoringLibraryWindow_->raise();
+        authoringLibraryWindow_->activateWindow();
         return;
     }
 
-    authoringLibraryDialog_ = new AuthoringLibraryDialog(this);
-    connect(authoringLibraryDialog_.data(), &AuthoringLibraryDialog::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    authoringLibraryDialog_->selectLibrary(key);
-    authoringLibraryDialog_->show();
+    authoringLibraryWindow_ = new AuthoringLibraryWindow(this);
+    connect(authoringLibraryWindow_.data(), &AuthoringLibraryWindow::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    authoringLibraryWindow_->selectLibrary(key);
+    authoringLibraryWindow_->show();
 }
 
 void MainWindow::openSeedProbeSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::SeedProbe); }
@@ -312,7 +309,6 @@ void MainWindow::createWidgets()
     workspaceStack_->setObjectName("workspaceStack");
 	setupTab_ = new SetupTab(coordinatorController_, root);
 	connect(setupTab_, &SetupTab::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    connect(setupTab_, &SetupTab::openLauncherRequested, this, [this]() {this->openFocusedTool(FocusedTool::WorkflowLauncher); });
     connect(setupTab_, &SetupTab::openAuthoringRequested, this, &MainWindow::openAuthoringLibraryLast);
     connect(setupTab_, &SetupTab::openGraphEditorRequested, this, [this]() {this->openWorkflowGraphEditor(); });
     connect(setupTab_, &SetupTab::openGraphEditorSnapshotRequested, this, [this](const savor::db::WorkflowGraphSnapshot snapshot, bool duplicate) {this->openWorkflowGraphEditor(snapshot, duplicate); });
@@ -339,7 +335,7 @@ void MainWindow::createWidgets()
         [this]() { openFocusedTool(FocusedTool::Artifacts); },
         [this]() { openFocusedTool(FocusedTool::Workflows); },
         [this](qint64 jobId) { handleVisualReplayRequested(jobId); },
-        [this](const QString& unitKind,const QString& inputKey,qint64 refId){openWorkflowLauncherPreselected(unitKind,inputKey,refId);}
+        [this](const QString& unitKind,const QString& inputKey,qint64 refId){showSetupLauncherPreselected(unitKind,inputKey,refId);}
     }, root);
     workspaceStack_->addWidget(analysisTab_);
 
@@ -418,11 +414,13 @@ void MainWindow::waitForCoordinatorShutdown()
     }
 }
 
-void MainWindow::openWorkflowLauncherPreselected(const QString& unitKind,const QString& inputKey,qint64 refId)
+void MainWindow::showSetupLauncherPreselected(const QString& unitKind,const QString& inputKey,qint64 refId)
 {
-    const QString key=focusedToolKey(FocusedTool::WorkflowLauncher);
-    if(QDialog* existing=focusedDialogs_.value(key);existing!=nullptr){if(auto* launcher=existing->findChild<WorkflowLauncherPage*>())launcher->preselectStandaloneInput(unitKind,inputKey,refId);existing->show();existing->raise();existing->activateWindow();return;}
-    QDialog* dialog=createFocusedDialog(key,focusedToolTitle(FocusedTool::WorkflowLauncher));if(dialog==nullptr)return;auto* launcher=new WorkflowLauncherPage(dialog);launcher->preselectStandaloneInput(unitKind,inputKey,refId);connect(launcher,&WorkflowLauncherPage::statusToastRequested,statusBarWidget_,qOverload<StatusToast>(&StatusBarWidget::postToast));dialog->layout()->addWidget(launcher);dialog->show();
+    if (setupTab_ == nullptr || workspaceStack_ == nullptr) {
+        return;
+    }
+    setWorkspaceIndex(workspaceStack_->indexOf(setupTab_));
+    setupTab_->showWorkflowLauncher(unitKind, inputKey, refId);
 }
 
 void MainWindow::openFocusedTool(FocusedTool tool)
@@ -437,17 +435,17 @@ void MainWindow::openFocusedTool(FocusedTool tool)
     }
 
     const QString key = focusedToolKey(tool);
-    QDialog* dialog = createFocusedDialog(key, focusedToolTitle(tool));
-    if (dialog == nullptr) {
+    PersistentToolWindow* window = createFocusedWindow(key, focusedToolTitle(tool));
+    if (window == nullptr) {
         return;
     }
 
     QWidget* page = nullptr;
     switch (tool) {
     case FocusedTool::Workflows: {
-        auto* workflows = new WorkflowsPage(dialog);
+        auto* workflows = new WorkflowsPage(window);
         workflows->setPageActive(true);
-        connect(dialog, &QDialog::finished, workflows, [workflows]() { workflows->setPageActive(false); });
+        connect(window, &PersistentToolWindow::aboutToClose, workflows, [workflows]() { workflows->setPageActive(false); });
         connect(workflows, &WorkflowsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
         connect(workflows, &WorkflowsPage::retryFailedJobsRequested, this, &MainWindow::retryWorkflowJobs);
         connect(workflows, &WorkflowsPage::openJobRequested, this, &MainWindow::openJob);
@@ -455,45 +453,39 @@ void MainWindow::openFocusedTool(FocusedTool tool)
         break;
     }
     case FocusedTool::Jobs: {
-        auto* jobs = new JobsPage(dialog);
+        auto* jobs = new JobsPage(window);
         jobs->setPageActive(true);
-        connect(dialog, &QDialog::finished, jobs, [jobs]() { jobs->setPageActive(false); });
+        connect(window, &PersistentToolWindow::aboutToClose, jobs, [jobs]() { jobs->setPageActive(false); });
         connect(jobs, &JobsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
         connect(jobs, &JobsPage::visualReplayRequested, this, &MainWindow::handleVisualReplayRequested);
         page = jobs;
         break;
     }
     case FocusedTool::Workers: {
-        auto* workers = new CoordinatorPane(coordinatorController_, dialog);
+        auto* workers = new CoordinatorPane(coordinatorController_, window);
         workers->setPageActive(true);
-        connect(dialog, &QDialog::finished, workers, [workers]() { workers->setPageActive(false); });
+        connect(window, &PersistentToolWindow::aboutToClose, workers, [workers]() { workers->setPageActive(false); });
         connect(workers, &CoordinatorPane::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
         connect(workers, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
         page = workers;
         break;
     }
-    case FocusedTool::WorkflowLauncher: {
-        auto* launcher = new WorkflowLauncherPage(dialog);
-        connect(launcher, &WorkflowLauncherPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-        page = launcher;
-        break;
-    }
     case FocusedTool::BattleRunSettings: {
-        auto* battle = new BattleRunSettingsPage(dialog);
+        auto* battle = new BattleRunSettingsPage(window);
         connect(battle, &BattleRunSettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
         page = battle;
         break;
     }
     case FocusedTool::Artifacts: {
-        auto* artifacts = new ArtifactsPage(dialog);
+        auto* artifacts = new ArtifactsPage(window);
         connect(artifacts, &ArtifactsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
         page = artifacts;
         break;
     }
     case FocusedTool::SeedProbe: {
-        auto* seedProbe = new SeedProbePage(dialog);
+        auto* seedProbe = new SeedProbePage(window);
         seedProbe->setPageActive(true);
-        connect(dialog, &QDialog::finished, seedProbe, [seedProbe]() { seedProbe->setPageActive(false); });
+        connect(window, &PersistentToolWindow::aboutToClose, seedProbe, [seedProbe]() { seedProbe->setPageActive(false); });
         connect(seedProbe, &SeedProbePage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
         page = seedProbe;
         break;
@@ -501,17 +493,17 @@ void MainWindow::openFocusedTool(FocusedTool tool)
     case FocusedTool::BattleRuns:
         break;
     case FocusedTool::ArchiveWorkbench: {
-        auto* archive = new ArchiveWorkbenchPage(dialog);
+        auto* archive = new ArchiveWorkbenchPage(window);
         archive->setPageActive(true);
-        connect(dialog, &QDialog::finished, archive, [archive]() { archive->setPageActive(false); });
+        connect(window, &PersistentToolWindow::aboutToClose, archive, [archive]() { archive->setPageActive(false); });
         connect(archive, &ArchiveWorkbenchPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
         page = archive;
         break;
     }
     case FocusedTool::DtmEditor: {
-        auto* dtm = new DtmEditorPage(dialog);
+        auto* dtm = new DtmEditorPage(window);
         dtm->setPageActive(true);
-        connect(dialog, &QDialog::finished, dtm, [dtm]() { dtm->setPageActive(false); });
+        connect(window, &PersistentToolWindow::aboutToClose, dtm, [dtm]() { dtm->setPageActive(false); });
         connect(dtm, &DtmEditorPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
         page = dtm;
         break;
@@ -521,40 +513,40 @@ void MainWindow::openFocusedTool(FocusedTool tool)
     }
 
     if (page != nullptr) {
-        dialog->layout()->addWidget(page);
+        window->layout()->addWidget(page);
     }
-    dialog->show();
+    window->show();
 }
 
 void MainWindow::openWorkflow(std::int64_t workflowInstanceId)
 {
     const QString key = focusedToolKey(FocusedTool::Workflows);
-    if (focusedDialogs_.value(key) == nullptr) {
+    if (focusedWindows_.value(key) == nullptr) {
         openFocusedTool(FocusedTool::Workflows);
     }
-    if (QDialog* dialog = focusedDialogs_.value(key); dialog != nullptr) {
-        if (auto* workflows = dialog->findChild<WorkflowsPage*>()) {
+    if (PersistentToolWindow* window = focusedWindows_.value(key); window != nullptr) {
+        if (auto* workflows = window->findChild<WorkflowsPage*>()) {
             workflows->showWorkflow(workflowInstanceId);
         }
-        dialog->show();
-        dialog->raise();
-        dialog->activateWindow();
+        window->show();
+        window->raise();
+        window->activateWindow();
     }
 }
 
 void MainWindow::openJob(std::int64_t jobId)
 {
     const QString key = focusedToolKey(FocusedTool::Jobs);
-    if (focusedDialogs_.value(key) == nullptr) {
+    if (focusedWindows_.value(key) == nullptr) {
         openFocusedTool(FocusedTool::Jobs);
     }
-    if (QDialog* dialog = focusedDialogs_.value(key); dialog != nullptr) {
-        if (auto* jobs = dialog->findChild<JobsPage*>()) {
+    if (PersistentToolWindow* window = focusedWindows_.value(key); window != nullptr) {
+        if (auto* jobs = window->findChild<JobsPage*>()) {
             jobs->showJob(jobId);
         }
-        dialog->show();
-        dialog->raise();
-        dialog->activateWindow();
+        window->show();
+        window->raise();
+        window->activateWindow();
     }
 }
 
@@ -565,8 +557,8 @@ void MainWindow::retryWorkflowJobs(std::int64_t workflowInstanceId)
     }
     workflowRetryInFlight_ = true;
     const QString workflowsKey = focusedToolKey(FocusedTool::Workflows);
-    if (QDialog* dialog = focusedDialogs_.value(workflowsKey); dialog != nullptr) {
-        if (auto* workflows = dialog->findChild<WorkflowsPage*>()) {
+    if (PersistentToolWindow* window = focusedWindows_.value(workflowsKey); window != nullptr) {
+        if (auto* workflows = window->findChild<WorkflowsPage*>()) {
             workflows->setWorkflowRetryInFlight(true);
         }
     }
@@ -601,8 +593,8 @@ void MainWindow::retryWorkflowJobs(std::int64_t workflowInstanceId)
         if (runningTab_ != nullptr) {
             runningTab_->requestRefresh();
         }
-        if (QDialog* dialog = focusedDialogs_.value(workflowsKey); dialog != nullptr) {
-            if (auto* workflows = dialog->findChild<WorkflowsPage*>()) {
+        if (PersistentToolWindow* window = focusedWindows_.value(workflowsKey); window != nullptr) {
+            if (auto* workflows = window->findChild<WorkflowsPage*>()) {
                 workflows->setWorkflowRetryInFlight(false);
                 workflows->refreshAfterRetry(workflowInstanceId);
             }
@@ -648,7 +640,7 @@ void MainWindow::openWorkflowGraphEditor(const savor::db::WorkflowGraphSnapshot&
 void MainWindow::openSettingsTool(SettingsPage::CoordinatorFocusTarget focusTarget)
 {
     const QString key = focusedToolKey(FocusedTool::Settings);
-    if (QDialog* existing = focusedDialogs_.value(key); existing != nullptr) {
+    if (PersistentToolWindow* existing = focusedWindows_.value(key); existing != nullptr) {
         existing->show();
         existing->raise();
         existing->activateWindow();
@@ -658,40 +650,40 @@ void MainWindow::openSettingsTool(SettingsPage::CoordinatorFocusTarget focusTarg
         return;
     }
 
-    QDialog* dialog = createFocusedDialog(key, focusedToolTitle(FocusedTool::Settings));
-    if (dialog == nullptr) {
+    PersistentToolWindow* window = createFocusedWindow(key, focusedToolTitle(FocusedTool::Settings));
+    if (window == nullptr) {
         return;
     }
-    auto* settings = new SettingsPage(coordinatorController_, dialog);
+    auto* settings = new SettingsPage(coordinatorController_, window);
     settings->setObjectName("focusedSettingsPage");
     connect(settings, &SettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    dialog->layout()->addWidget(settings);
+    window->layout()->addWidget(settings);
     settings->focusCoordinatorSettings(focusTarget);
-    dialog->show();
+    window->show();
 }
 
-QDialog* MainWindow::createFocusedDialog(const QString& key, const QString& title)
+PersistentToolWindow* MainWindow::createFocusedWindow(const QString& key, const QString& title)
 {
-    if (QDialog* existing = focusedDialogs_.value(key); existing != nullptr) {
+    if (PersistentToolWindow* existing = focusedWindows_.value(key); existing != nullptr) {
         existing->show();
         existing->raise();
         existing->activateWindow();
         return nullptr;
     }
 
-    auto* dialog = new QDialog(this);
-    dialog->setObjectName("focusedToolDialog");
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->setWindowTitle(title);
-    dialog->resize(1240, 780);
-    auto* layout = new QVBoxLayout(dialog);
+    auto* window = new PersistentToolWindow(this);
+    window->setObjectName("focusedToolDialog");
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->setWindowTitle(title);
+    window->resize(1240, 780);
+    auto* layout = new QVBoxLayout(window);
     layout->setContentsMargins(10, 10, 10, 10);
     layout->setSpacing(10);
-    focusedDialogs_.insert(key, dialog);
-    connect(dialog, &QObject::destroyed, this, [this, key]() {
-        focusedDialogs_.remove(key);
+    focusedWindows_.insert(key, window);
+    connect(window, &QObject::destroyed, this, [this, key]() {
+        focusedWindows_.remove(key);
     });
-    return dialog;
+    return window;
 }
 
 void MainWindow::setWorkspaceIndex(int index)

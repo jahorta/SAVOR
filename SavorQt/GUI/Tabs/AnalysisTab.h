@@ -20,7 +20,7 @@ public:
         std::function<void()> openArtifacts;
         std::function<void()> openWorkflows;
         std::function<void(qint64)> replayVisual;
-        std::function<void(const QString&, const QString&, qint64)> openWorkflowLauncher;
+        std::function<void(const QString&, const QString&, qint64)> openSetupLauncher;
     };
 
     explicit AnalysisTab(Actions actions, QWidget* parent = nullptr);

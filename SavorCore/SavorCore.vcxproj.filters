@@ -309,7 +309,7 @@
     <ClInclude Include="Runner\Runtime\EmulationSession.h">
       <Filter>Runner\Runtime</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Runtime\Execution\ExecutionEngine.h">
+    <ClInclude Include="Runner\Runtime\Execution\ExecutionControlCore.h">
       <Filter>Runner\Runtime\Execution</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Runtime\Execution\ExecutionTypes.h">
@@ -806,7 +806,7 @@
     <ClCompile Include="Runner\Runtime\Progress\ProgressTypes.cpp">
       <Filter>Runner\Runtime</Filter>
     </ClCompile>
-    <ClCompile Include="Runner\Runtime\Execution\ExecutionEngine.cpp">
+    <ClCompile Include="Runner\Runtime\Execution\ExecutionControlCore.cpp">
       <Filter>Runner\Runtime\Execution</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Runtime\Services\Capture\CaptureService.cpp">

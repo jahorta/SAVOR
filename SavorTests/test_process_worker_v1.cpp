@@ -792,6 +792,25 @@ TEST(ProcessWorkerV1, StopIsIdempotentWithoutAStartedProcess)
     EXPECT_FALSE(worker.is_running());
 }
 
+TEST(ProcessWorkerV1, StopAdmissionIsSeparateAndIdempotent)
+{
+    std::atomic<std::uint32_t> admissions{0};
+    auto hooks = std::make_shared<savor::ProcessWorkerTestHooks>();
+    hooks->stop_acceptance_closed = [&]() {
+        admissions.fetch_add(1, std::memory_order_relaxed);
+    };
+    savor::ProcessWorker worker{hooks};
+
+    worker.begin_stop();
+    worker.begin_stop();
+    EXPECT_EQ(admissions.load(std::memory_order_relaxed), 1u);
+
+    worker.finish_stop();
+    const auto stopped = worker.last_stop_snapshot();
+    EXPECT_TRUE(stopped.already_stopping);
+    EXPECT_FALSE(stopped.was_running);
+}
+
 TEST(ProcessWorkerV1, ConcurrentStopWaitsForTheOwningStopToComplete)
 {
     std::latch first_stop_entered{1};

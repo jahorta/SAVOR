@@ -13,7 +13,7 @@ struct InputExecutionRelationshipOperationReceipt
 };
 
 // Read-only view of the backend evidence for a live relationship. This never
-// completes, retires, or otherwise mutates the relationship. ExecutionEngine
+// completes, retires, or otherwise mutates the relationship. ExecutionControlCore
 // may use exact_publication_observed to decide when an observation-owned
 // operation should request its authoritative terminal pause.
 struct InputExecutionRelationshipInspection

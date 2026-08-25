@@ -16,6 +16,8 @@
 namespace savor::runtime {
 
 struct ExecutionOperationIdTag;
+struct ExecutionControlGenerationTag;
+struct StopTransitionIdTag;
 struct InterruptionFrameIdTag;
 struct InputExecutionRelationshipIdTag;
 struct InputExecutionBindingIdTag;
@@ -24,6 +26,8 @@ struct InputPublicationTokenTag;
 struct InputDeliveryIdTag;
 
 using ExecutionOperationId = StrongId<ExecutionOperationIdTag>;
+using ExecutionControlGeneration = StrongId<ExecutionControlGenerationTag>;
+using StopTransitionId = StrongId<StopTransitionIdTag>;
 using InterruptionFrameId = StrongId<InterruptionFrameIdTag>;
 using InputExecutionRelationshipId = StrongId<InputExecutionRelationshipIdTag>;
 using InputExecutionBindingId = StrongId<InputExecutionBindingIdTag>;
@@ -32,6 +36,23 @@ using InputPublicationToken = StrongId<InputPublicationTokenTag>;
 using InputDeliveryId = StrongId<InputDeliveryIdTag>;
 
 static_assert(!std::is_convertible_v<ExecutionOperationId, InvocationId>);
+static_assert(!std::is_convertible_v<ExecutionControlGeneration, ExecutionOperationId>);
+static_assert(!std::is_convertible_v<StopTransitionId, ExecutionControlGeneration>);
+
+enum class ExecutionControlState : std::uint8_t
+{
+    PausedReady,
+    PublishingRoute,
+    Resuming,
+    Running,
+    StopObserved,
+    ConfirmingPause,
+    Completing,
+    FrameStepping,
+    Interrupting,
+    Stopping,
+    Failed,
+};
 static_assert(!std::is_convertible_v<InterruptionFrameId, ExecutionOperationId>);
 static_assert(!std::is_convertible_v<InputExecutionRelationshipId, InputExecutionBindingId>);
 static_assert(!std::is_convertible_v<InputExecutionBindingId, InputPublicationToken>);
@@ -240,6 +261,8 @@ struct ExecutionTerminalResult
     std::optional<StopRouteReceipt> stop;
     ExecutionError error;
     BackendIntegrity integrity = BackendIntegrity::Preserved;
+    ExecutionControlGeneration control_generation;
+    StopTransitionId stop_transition;
 };
 
 struct ExecutionSnapshot
@@ -252,6 +275,9 @@ struct ExecutionSnapshot
     std::optional<InterruptionFrameId> active_interruption_frame;
     bool input_bound = false;
     ExecutionEnvironmentEvidence evidence;
+    ExecutionControlState control_state = ExecutionControlState::Failed;
+    ExecutionControlGeneration control_generation;
+    StopTransitionId stop_transition;
 };
 
 struct ExecutionProgress

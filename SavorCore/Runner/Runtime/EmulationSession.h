@@ -2,7 +2,7 @@
 
 #include "IDolphinBackend.h"
 #include "RuntimeTypes.h"
-#include "Execution/ExecutionEngine.h"
+#include "Execution/ExecutionControlCore.h"
 #include "Execution/HostActivityTracker.h"
 #include "DerivedState/DerivedStateService.h"
 #include "Services/Capture/CaptureService.h"
@@ -81,7 +81,7 @@ public:
     EmulationSession(
         SessionId session_id,
         std::unique_ptr<IDolphinBackend> backend,
-        ExecutionEngineConfig execution_engine_config = {});
+        ExecutionControlCoreConfig execution_control_core_config = {});
     ~EmulationSession();
 
     EmulationSession(const EmulationSession&) = delete;
@@ -132,7 +132,6 @@ public:
         InterruptionFrameId frame_id,
         InterruptionHandlerOutcome outcome,
         std::string diagnostic = {});
-    void HandleStopPointReceipt(StopRouteReceipt receipt);
     void PumpExecution();
     [[nodiscard]] std::vector<ExecutionEvent> DrainExecutionEvents();
     [[nodiscard]] std::optional<ExecutionSnapshot> execution_snapshot() const;
@@ -271,7 +270,7 @@ private:
     [[nodiscard]] BackendResult InitializeServices(WorksetEpoch first_epoch);
     [[nodiscard]] BackendResult InitializeServiceComposition();
     [[nodiscard]] BackendResult InitializeExecution(WorksetEpoch first_epoch);
-    [[nodiscard]] BackendResult RemoveExecutionEngine() noexcept;
+    [[nodiscard]] BackendResult RemoveExecutionControlCore() noexcept;
     [[nodiscard]] BackendResult CleanupServices() noexcept;
     [[nodiscard]] BackendResult CleanupStopPoints();
     [[nodiscard]] BackendResult TaintAndRetireSessionAfterStopPointFailure(
@@ -306,8 +305,8 @@ private:
     std::unique_ptr<program::SessionResourceBindingTable>
         resource_relationships_;
     HostActivityTracker host_activity_;
-    ExecutionEngineConfig execution_engine_config_;
-    std::unique_ptr<ExecutionEngine> execution_engine_;
+    ExecutionControlCoreConfig execution_control_core_config_;
+    std::unique_ptr<ExecutionControlCore> execution_control_core_;
     std::vector<ExecutionEvent> retained_execution_events_;
     SessionOpenOptions open_options_;
     SessionDisposition disposition_ = SessionDisposition::Closed;

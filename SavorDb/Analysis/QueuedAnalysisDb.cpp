@@ -855,6 +855,20 @@ std::optional<BattleCompletionRecord> QueuedAnalysisDb::GetBattleCompletion(
         std::nullopt);
 }
 
+bool QueuedAnalysisDb::ApplyBattleTurnAdvancement(
+    const ApplyBattleTurnAdvancementCommand& command,
+    ApplyBattleTurnAdvancementReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ApplyBattleTurnAdvancement(command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
 std::optional<BattleCompletionRecord>
 QueuedAnalysisDb::GetBattleCompletionForExecJob(
     std::int64_t exec_job_id) const {

@@ -898,6 +898,7 @@ WorkerCoordinatorStartResult WorkerCoordinator::Start() {
 }
 
 void WorkerCoordinator::Stop() {
+    const auto fleet_stop_started = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_);
     if (!started_.exchange(false, std::memory_order_acq_rel)
         && !lifecycle_thread_.joinable()) {
@@ -912,6 +913,22 @@ void WorkerCoordinator::Stop() {
 
     const auto slots = CopyWorkerSlots();
     std::vector<std::thread> startup_threads;
+    std::vector<std::shared_ptr<savor::ProcessWorker>> broadcast_workers;
+    std::unordered_set<savor::ProcessWorker*> broadcast_worker_identities;
+    const auto capture_worker = [&](const WorkerSlotPtr& slot) {
+        if (!slot) {
+            return;
+        }
+        std::shared_ptr<savor::ProcessWorker> worker;
+        {
+            std::lock_guard<std::mutex> slot_lock(slot->mutex);
+            worker = slot->worker;
+        }
+        if (worker
+            && broadcast_worker_identities.insert(worker.get()).second) {
+            broadcast_workers.push_back(std::move(worker));
+        }
+    };
     for (const auto& slot : slots) {
         if (!slot) {
             continue;
@@ -923,12 +940,42 @@ void WorkerCoordinator::Stop() {
         }
     }
     for (const auto& slot : slots) {
-        StopWorkerSlot(slot);
+        capture_worker(slot);
     }
+    const auto broadcast_started = std::chrono::steady_clock::now();
+    for (const auto& worker : broadcast_workers) {
+        worker->begin_stop();
+    }
+    const auto initial_broadcast_count = broadcast_workers.size();
+    const auto broadcast_elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - broadcast_started);
+    SCLOGIX(
+        SC_TAGS("worker.shutdown.broadcast"),
+        "shutdown broadcast workers=%zu duration_ms=%lld",
+        initial_broadcast_count,
+        static_cast<long long>(broadcast_elapsed.count()));
     for (auto& startup_thread : startup_threads) {
         if (startup_thread.joinable()) {
             startup_thread.join();
         }
+    }
+    for (const auto& slot : slots) {
+        const auto before = broadcast_workers.size();
+        capture_worker(slot);
+        if (broadcast_workers.size() != before) {
+            broadcast_workers.back()->begin_stop();
+        }
+    }
+    for (const auto& slot : slots) {
+        StopWorkerSlot(slot);
+    }
+    std::size_t graceful_workers = 0;
+    std::size_t forced_workers = 0;
+    for (const auto& worker : broadcast_workers) {
+        const auto stopped = worker->last_stop_snapshot();
+        graceful_workers += stopped.graceful ? 1u : 0u;
+        forced_workers += stopped.forced ? 1u : 0u;
     }
     {
         std::lock_guard<std::mutex> routes_lock(routes_mutex_);
@@ -943,6 +990,18 @@ void WorkerCoordinator::Stop() {
         start_result_ = {};
     }
     NotifyAvailabilityChanged();
+
+    const auto fleet_stop_elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - fleet_stop_started);
+    SCLOGIX(
+        SC_TAGS("worker.shutdown.complete"),
+        "shutdown complete workers=%zu late_workers=%zu graceful=%zu forced=%zu duration_ms=%lld",
+        broadcast_workers.size(),
+        broadcast_workers.size() - initial_broadcast_count,
+        graceful_workers,
+        forced_workers,
+        static_cast<long long>(fleet_stop_elapsed.count()));
 
     lifecycle_lock.lock();
     stopping_.store(false, std::memory_order_release);
@@ -2587,7 +2646,11 @@ void WorkerCoordinator::CompleteWorkerSlotStart(
         }
     }
     if (rejected_worker) {
-        rejected_worker->stop();
+        if (stopping_.load(std::memory_order_acquire)) {
+            rejected_worker->begin_stop();
+        } else {
+            rejected_worker->stop();
+        }
     }
     RefreshStartResult(
         ready ? std::string{} : validation_error);

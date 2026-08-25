@@ -1,4 +1,4 @@
-#include "VisualReplayDialog.h"
+#include "VisualReplayWindow.h"
 
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 #include "GUI/Widgets/VisualReplay/LiveLogFilterController.h"
@@ -61,8 +61,8 @@ void runWithStabilizedScroll(QListView* view, Fn&& fn)
 }
 }
 
-VisualReplayDialog::VisualReplayDialog(QWidget* parent)
-    : QDialog(parent)
+VisualReplayWindow::VisualReplayWindow(QWidget* parent)
+    : PersistentToolWindow(parent)
 {
     setWindowTitle(QStringLiteral("Visual Worker"));
     resize(960, 640);
@@ -143,10 +143,10 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     pauseButton_ = buttons->addButton(QStringLiteral("Pause Emulation"), QDialogButtonBox::ActionRole);
     stepVmButton_ = buttons->addButton(QStringLiteral("Step VM"), QDialogButtonBox::ActionRole);
     resumeButton_ = buttons->addButton(QStringLiteral("Resume Emulation"), QDialogButtonBox::ActionRole);
-    connect(pauseButton_, &QPushButton::clicked, this, &VisualReplayDialog::pauseRequested);
-    connect(stepVmButton_, &QPushButton::clicked, this, &VisualReplayDialog::vmStepRequested);
-    connect(resumeButton_, &QPushButton::clicked, this, &VisualReplayDialog::resumeRequested);
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    connect(pauseButton_, &QPushButton::clicked, this, &VisualReplayWindow::pauseRequested);
+    connect(stepVmButton_, &QPushButton::clicked, this, &VisualReplayWindow::vmStepRequested);
+    connect(resumeButton_, &QPushButton::clicked, this, &VisualReplayWindow::resumeRequested);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QWidget::close);
     layout->addWidget(buttons);
 
     setReplayControlsEnabled(false);
@@ -178,20 +178,20 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     refreshSourceMenu();
 
     visualReplayCoordinator_ = new VisualReplayCoordinator(this);
-    connect(visualReplayCoordinator_, &VisualReplayCoordinator::liveLogLinesRequested, this, &VisualReplayDialog::visualLiveLogLinesRequested);
-    connect(visualReplayCoordinator_, &VisualReplayCoordinator::liveLogLinesReady, this, &VisualReplayDialog::appendLiveLogLines);
-    connect(visualReplayCoordinator_, &VisualReplayCoordinator::hostEventReceived, this, &VisualReplayDialog::appendHostEventLine);
-    connect(visualReplayCoordinator_, &VisualReplayCoordinator::renderSurfaceResizeRequested, this, &VisualReplayDialog::setRenderSurfaceSize);
+    connect(visualReplayCoordinator_, &VisualReplayCoordinator::liveLogLinesRequested, this, &VisualReplayWindow::visualLiveLogLinesRequested);
+    connect(visualReplayCoordinator_, &VisualReplayCoordinator::liveLogLinesReady, this, &VisualReplayWindow::appendLiveLogLines);
+    connect(visualReplayCoordinator_, &VisualReplayCoordinator::hostEventReceived, this, &VisualReplayWindow::appendHostEventLine);
+    connect(visualReplayCoordinator_, &VisualReplayCoordinator::renderSurfaceResizeRequested, this, &VisualReplayWindow::setRenderSurfaceSize);
 }
 
-VisualReplayDialog::~VisualReplayDialog() = default;
+VisualReplayWindow::~VisualReplayWindow() = default;
 
-quintptr VisualReplayDialog::renderWidgetHandle() const
+quintptr VisualReplayWindow::renderWidgetHandle() const
 {
     return renderWidget_ ? renderWidget_->winId() : 0;
 }
 
-void VisualReplayDialog::showRenderSurface()
+void VisualReplayWindow::showRenderSurface()
 {
     if (renderWidget_) {
         renderWidget_->setVisible(true);
@@ -201,7 +201,7 @@ void VisualReplayDialog::showRenderSurface()
     }
 }
 
-void VisualReplayDialog::showReplayDoneLabel()
+void VisualReplayWindow::showReplayDoneLabel()
 {
     if (renderWidget_) {
         renderWidget_->setVisible(false);
@@ -211,7 +211,7 @@ void VisualReplayDialog::showReplayDoneLabel()
     }
 }
 
-void VisualReplayDialog::resetLiveLog()
+void VisualReplayWindow::resetLiveLog()
 {
     if (liveLogModel_) {
         runWithStabilizedScroll(liveLogView_, [this]() {
@@ -225,7 +225,7 @@ void VisualReplayDialog::resetLiveLog()
     refreshSourceMenu();
 }
 
-void VisualReplayDialog::updateLiveLogLines(const QStringList& lines)
+void VisualReplayWindow::updateLiveLogLines(const QStringList& lines)
 {
     if (!liveLogModel_) {
         return;
@@ -237,7 +237,7 @@ void VisualReplayDialog::updateLiveLogLines(const QStringList& lines)
     });
 }
 
-void VisualReplayDialog::appendLiveLogLines(const QStringList& lines)
+void VisualReplayWindow::appendLiveLogLines(const QStringList& lines)
 {
     if (!liveLogModel_ || lines.isEmpty()) {
         return;
@@ -248,7 +248,7 @@ void VisualReplayDialog::appendLiveLogLines(const QStringList& lines)
     });
 }
 
-void VisualReplayDialog::appendHostEventLine(const QString& eventName, const QString& argsJson)
+void VisualReplayWindow::appendHostEventLine(const QString& eventName, const QString& argsJson)
 {
     const QString eventLine = argsJson.isEmpty()
         ? QStringLiteral("[host] %1").arg(eventName)
@@ -256,7 +256,7 @@ void VisualReplayDialog::appendHostEventLine(const QString& eventName, const QSt
     appendLiveLogLines(QStringList{ eventLine });
 }
 
-void VisualReplayDialog::setReplayRuntimeStateText(const QString& text)
+void VisualReplayWindow::setReplayRuntimeStateText(const QString& text)
 {
     if (!replayStateLabel_) {
         return;
@@ -264,14 +264,14 @@ void VisualReplayDialog::setReplayRuntimeStateText(const QString& text)
     replayStateLabel_->setText(QStringLiteral("Replay state: %1").arg(text.isEmpty() ? QStringLiteral("idle") : text));
 }
 
-void VisualReplayDialog::setReplayControlsEnabled(bool enabled)
+void VisualReplayWindow::setReplayControlsEnabled(bool enabled)
 {
     if (pauseButton_) pauseButton_->setEnabled(enabled);
     if (stepVmButton_) stepVmButton_->setEnabled(enabled);
     if (resumeButton_) resumeButton_->setEnabled(enabled);
 }
 
-void VisualReplayDialog::setRenderSurfaceSize(int widthPx, int heightPx)
+void VisualReplayWindow::setRenderSurfaceSize(int widthPx, int heightPx)
 {
     if (!renderWidget_) {
         return;
@@ -282,45 +282,45 @@ void VisualReplayDialog::setRenderSurfaceSize(int widthPx, int heightPx)
     }
 }
 
-void VisualReplayDialog::startLiveLogStreaming()
+void VisualReplayWindow::startLiveLogStreaming()
 {
     if (visualReplayCoordinator_) {
         visualReplayCoordinator_->startLiveLogStreaming();
     }
 }
 
-void VisualReplayDialog::stopLiveLogStreaming()
+void VisualReplayWindow::stopLiveLogStreaming()
 {
     if (visualReplayCoordinator_) {
         visualReplayCoordinator_->stopLiveLogStreaming();
     }
 }
 
-void VisualReplayDialog::startHostEventsListener()
+void VisualReplayWindow::startHostEventsListener()
 {
     if (visualReplayCoordinator_) {
         visualReplayCoordinator_->startHostEventsListener();
     }
 }
 
-void VisualReplayDialog::stopHostEventsListener()
+void VisualReplayWindow::stopHostEventsListener()
 {
     if (visualReplayCoordinator_) {
         visualReplayCoordinator_->stopHostEventsListener();
     }
 }
 
-QString VisualReplayDialog::hostEventsPipeName() const
+QString VisualReplayWindow::hostEventsPipeName() const
 {
     return visualReplayCoordinator_ ? visualReplayCoordinator_->hostEventsPipeName() : QString{};
 }
 
-VisualReplayCoordinator* VisualReplayDialog::visualReplayCoordinator() const
+VisualReplayCoordinator* VisualReplayWindow::visualReplayCoordinator() const
 {
     return visualReplayCoordinator_;
 }
 
-void VisualReplayDialog::refreshSourceMenu()
+void VisualReplayWindow::refreshSourceMenu()
 {
     if (!sourceFilterButton_ || !liveLogModel_ || !liveLogController_) {
         return;
@@ -392,7 +392,7 @@ void VisualReplayDialog::refreshSourceMenu()
     sourceFilterButton_->setMenu(menu);
 }
 
-void VisualReplayDialog::updateLiveLogGridSize()
+void VisualReplayWindow::updateLiveLogGridSize()
 {
     if (!liveLogView_ || !liveLogModel_) {
         return;

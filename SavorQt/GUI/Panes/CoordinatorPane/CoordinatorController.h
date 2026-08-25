@@ -33,6 +33,12 @@ struct CoordinatorStartupResult {
 };
 
 struct CoordinatorStartupSharedState;
+struct CoordinatorShutdownSharedState;
+
+struct CoordinatorShutdownResult {
+    std::uint64_t generation = 0;
+    QString warning;
+};
 
 class CoordinatorController : public QObject
 {
@@ -104,7 +110,9 @@ private:
     void updateSnapshotCache();
     void handleStartupFinished();
     void handleStartupCleanupFinished();
+    void handleShutdownFinished();
     void startStartupCleanup();
+    void startRuntimeShutdown();
     savor::runner::parallel::savordb::WorkerCoordinatorConfig buildWorkerConfig() const;
     void stopCoordinatorServices();
     QString workerExePath() const;
@@ -121,9 +129,12 @@ private:
     std::shared_ptr<CoordinatorStartupSharedState> startup_state_;
     QFutureWatcher<CoordinatorStartupResult> startup_watcher_;
     QFutureWatcher<void> startup_cleanup_watcher_;
+    std::shared_ptr<CoordinatorShutdownSharedState> shutdown_state_;
+    QFutureWatcher<CoordinatorShutdownResult> shutdown_watcher_;
     CoordinatorLifecycleState lifecycle_state_ =
         CoordinatorLifecycleState::Stopped;
     std::uint64_t startup_generation_ = 0;
+    std::uint64_t shutdown_generation_ = 0;
     std::vector<WorkerSnapshot> snapshotCache_;
     std::vector<WorkerSnapshot> visualSnapshotCache_;
     std::vector<

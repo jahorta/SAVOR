@@ -298,6 +298,22 @@ void populateTreeDisplayRow(QTreeWidget* tree, QTreeWidgetItem* item, const Work
     item->setExpanded(row.expanded);
 }
 
+void applyDefaultTreeExpansion(
+    QTreeWidgetItem* item,
+    const WorkflowsPage::TreeDisplayRow& row)
+{
+    if (item == nullptr) {
+        return;
+    }
+    item->setExpanded(row.expanded);
+    const int childCount = (std::min)(
+        item->childCount(),
+        static_cast<int>(row.children.size()));
+    for (int index = 0; index < childCount; ++index) {
+        applyDefaultTreeExpansion(item->child(index), row.children[index]);
+    }
+}
+
 WorkflowsPage::TreeDisplayRow makeEmptyDisplayRow(const QString& key, const QString& text)
 {
     WorkflowsPage::TreeDisplayRow row{};
@@ -447,6 +463,43 @@ WorkflowsPage::TreeDisplayRow makeWorkflowJobSetDisplayRow(const savorqt::db::Wo
     return row;
 }
 
+WorkflowsPage::TreeDisplayRow makeStatusSectionDisplayRow(
+    const QString& key,
+    const QString& title,
+    std::vector<WorkflowsPage::TreeDisplayRow> children)
+{
+    WorkflowsPage::TreeDisplayRow row{};
+    row.key = key;
+    row.columns = QStringList{
+        QStringLiteral("%1 (%2)").arg(title).arg(children.size()) };
+    row.firstColumnSpanned = true;
+    row.expanded = true;
+    row.children = std::move(children);
+    return row;
+}
+
+std::vector<WorkflowsPage::TreeDisplayRow> makeStatusDisplayRows(
+    std::vector<WorkflowsPage::TreeDisplayRow> past,
+    std::vector<WorkflowsPage::TreeDisplayRow> current,
+    std::vector<WorkflowsPage::TreeDisplayRow> future)
+{
+    std::vector<WorkflowsPage::TreeDisplayRow> rows;
+    rows.reserve(3);
+    rows.push_back(makeStatusSectionDisplayRow(
+        QStringLiteral("section:past"),
+        QStringLiteral("Past"),
+        std::move(past)));
+    rows.push_back(makeStatusSectionDisplayRow(
+        QStringLiteral("section:current"),
+        QStringLiteral("Current"),
+        std::move(current)));
+    rows.push_back(makeStatusSectionDisplayRow(
+        QStringLiteral("section:future"),
+        QStringLiteral("Future"),
+        std::move(future)));
+    return rows;
+}
+
 QString treeItemPath(const QTreeWidgetItem* item)
 {
     if (item == nullptr) {
@@ -525,7 +578,12 @@ void applyTreeRows(
         }
         restoreItemViewScrollSnapshot(tree, state->scroll);
     } else {
-        tree->collapseAll();
+        const int rowCount = (std::min)(
+            tree->topLevelItemCount(),
+            static_cast<int>(rows.size()));
+        for (int index = 0; index < rowCount; ++index) {
+            applyDefaultTreeExpansion(tree->topLevelItem(index), rows[index]);
+        }
     }
 }
 
@@ -744,15 +802,10 @@ void WorkflowsPage::createWidgets()
     auto* statusTab = new QWidget(detailTabs);
     auto* statusTabLayout = new QVBoxLayout(statusTab);
     statusTabLayout->setContentsMargins(4, 4, 4, 4);
-    auto* statusSplitter = new QSplitter(Qt::Vertical, statusTab);
-    currentStepsTree_ = new QTreeWidget(statusTab);
-    futureStepsTree_ = new QTreeWidget(statusTab);
-    pastStepsTree_ = new QTreeWidget(statusTab);
+    statusStepsTree_ = new QTreeWidget(statusTab);
     jobSetsTree_ = new QTreeWidget(detailTabs);
     alertsTree_ = new QTreeWidget(detailTabs);
-    configureStepTree(currentStepsTree_);
-    configureStepTree(futureStepsTree_);
-    configureStepTree(pastStepsTree_);
+    configureStepTree(statusStepsTree_);
     configureJobSetsTree(jobSetsTree_);
     alertsTree_->setColumnCount(6);
     alertsTree_->setHeaderLabels(QStringList{
@@ -772,28 +825,7 @@ void WorkflowsPage::createWidgets()
     alertsTree_->header()->setSectionResizeMode(3, QHeaderView::Interactive);
     alertsTree_->header()->setSectionResizeMode(4, QHeaderView::Stretch);
     alertsTree_->header()->setSectionResizeMode(5, QHeaderView::Interactive);
-    const auto addStatusSection = [statusSplitter](const QString& title, QTreeWidget* tree, QLabel** countLabel) {
-        auto* section = new QFrame(statusSplitter);
-        auto* sectionLayout = new QVBoxLayout(section);
-        sectionLayout->setContentsMargins(4, 4, 4, 4);
-        sectionLayout->setSpacing(4);
-        auto* header = new QHBoxLayout();
-        auto* titleLabel = new QLabel(title, section);
-        titleLabel->setObjectName(QStringLiteral("panelTitle"));
-        *countLabel = new QLabel(QStringLiteral("0"), section);
-        (*countLabel)->setObjectName(QStringLiteral("jobSetsMetaText"));
-        header->addWidget(titleLabel);
-        header->addStretch();
-        header->addWidget(*countLabel);
-        sectionLayout->addLayout(header);
-        sectionLayout->addWidget(tree, 1);
-        statusSplitter->addWidget(section);
-    };
-    addStatusSection(QStringLiteral("Past"), pastStepsTree_, &pastCountLabel_);
-    addStatusSection(QStringLiteral("Current"), currentStepsTree_, &currentCountLabel_);
-    addStatusSection(QStringLiteral("Future"), futureStepsTree_, &futureCountLabel_);
-    statusSplitter->setSizes(QList<int>{ 180, 180, 180 });
-    statusTabLayout->addWidget(statusSplitter, 1);
+    statusTabLayout->addWidget(statusStepsTree_, 1);
     detailTabs->addTab(statusTab, QStringLiteral("Status"));
     detailTabs->addTab(jobSetsTree_, QStringLiteral("Job Sets"));
     detailTabs->addTab(alertsTree_, QStringLiteral("Alerts"));
@@ -1275,14 +1307,13 @@ void WorkflowsPage::updateWorkflowDetail()
     }
 
     const bool preserveTreeState = renderedWorkflowInstanceId_ == detail.instance.workflow_instance_id;
-    applyTreeRows(currentStepsTree_, currentCurrentStepRows_, currentRows, preserveTreeState);
-    applyTreeRows(futureStepsTree_, currentFutureStepRows_, futureRows, preserveTreeState);
-    applyTreeRows(pastStepsTree_, currentPastStepRows_, pastRows, preserveTreeState);
+    applyTreeRows(
+        statusStepsTree_,
+        currentStatusStepRows_,
+        makeStatusDisplayRows(pastRows, currentRows, futureRows),
+        preserveTreeState);
     applyTreeRows(alertsTree_, currentAlertRows_, alertRows, preserveTreeState);
     renderedWorkflowInstanceId_ = detail.instance.workflow_instance_id;
-    pastCountLabel_->setText(QString::number(pastCount));
-    currentCountLabel_->setText(QString::number(currentCount));
-    futureCountLabel_->setText(QString::number(futureCount));
 
     for (int row = 0; row < workflowTable_->rowCount(); ++row) {
         const auto* idItem = workflowTable_->item(row, 0);
@@ -1344,28 +1375,15 @@ void WorkflowsPage::clearWorkflowDetail(const QString& message)
     renderedWorkflowInstanceId_ = 0;
     detailHeaderLabel_->setText(message);
     detailMetaLabel_->clear();
-    const std::vector<TreeDisplayRow> currentRows{ makeEmptyDisplayRow(QStringLiteral("clear-current"), message) };
-    const std::vector<TreeDisplayRow> futureRows{ makeEmptyDisplayRow(QStringLiteral("clear-future"), QStringLiteral("-")) };
-    const std::vector<TreeDisplayRow> pastRows{ makeEmptyDisplayRow(QStringLiteral("clear-past"), QStringLiteral("-")) };
+    const auto statusRows = makeStatusDisplayRows(
+        { makeEmptyDisplayRow(QStringLiteral("clear-past"), QStringLiteral("-")) },
+        { makeEmptyDisplayRow(QStringLiteral("clear-current"), message) },
+        { makeEmptyDisplayRow(QStringLiteral("clear-future"), QStringLiteral("-")) });
     const std::vector<TreeDisplayRow> alertRows{ makeEmptyDisplayRow(QStringLiteral("clear-alerts"), QStringLiteral("-")) };
     savorqt::gui::ApplyTreeRowsByKey(
-        currentStepsTree_,
-        currentCurrentStepRows_,
-        currentRows,
-        [](const TreeDisplayRow& row) { return row.key; },
-        treeDisplayRowsEqual,
-        populateTreeDisplayRow);
-    savorqt::gui::ApplyTreeRowsByKey(
-        futureStepsTree_,
-        currentFutureStepRows_,
-        futureRows,
-        [](const TreeDisplayRow& row) { return row.key; },
-        treeDisplayRowsEqual,
-        populateTreeDisplayRow);
-    savorqt::gui::ApplyTreeRowsByKey(
-        pastStepsTree_,
-        currentPastStepRows_,
-        pastRows,
+        statusStepsTree_,
+        currentStatusStepRows_,
+        statusRows,
         [](const TreeDisplayRow& row) { return row.key; },
         treeDisplayRowsEqual,
         populateTreeDisplayRow);
@@ -1377,13 +1395,11 @@ void WorkflowsPage::clearWorkflowDetail(const QString& message)
         treeDisplayRowsEqual,
         populateTreeDisplayRow);
     clearWorkflowJobSets(QStringLiteral("-"));
-    currentStepsTree_->collapseAll();
-    futureStepsTree_->collapseAll();
-    pastStepsTree_->collapseAll();
+    statusStepsTree_->collapseAll();
+    for (int index = 0; index < statusStepsTree_->topLevelItemCount(); ++index) {
+        statusStepsTree_->topLevelItem(index)->setExpanded(true);
+    }
     alertsTree_->collapseAll();
-    pastCountLabel_->setText(QStringLiteral("0"));
-    currentCountLabel_->setText(QStringLiteral("0"));
-    futureCountLabel_->setText(QStringLiteral("0"));
 }
 
 void WorkflowsPage::clearWorkflowJobSets(const QString& message)

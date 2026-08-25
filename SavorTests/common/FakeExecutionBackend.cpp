@@ -156,43 +156,44 @@ runtime::BackendHealthReport FakeExecutionBackend::CheckHealth() const
     return control_->health;
 }
 
-runtime::BackendResult FakeExecutionBackend::RequestPause()
+runtime::BackendResult FakeExecutionBackend::SubmitControlCommand(
+    runtime::BackendControlCommand command)
 {
     std::lock_guard lock(control_->mutex);
-    control_->RecordLocked("pause");
-    const runtime::BackendResult result = control_->pause_result;
-    if (result.ok && control_->pause_changes_state)
+    runtime::BackendResult result;
+    switch (command.kind)
     {
-        control_->snapshot.core_state = runtime::BackendCoreState::Paused;
-        control_->snapshot.pause_confirmed = true;
+    case runtime::BackendControlCommandKind::Pause:
+        control_->RecordLocked("pause");
+        result = control_->pause_result;
+        if (result.ok && control_->pause_changes_state)
+        {
+            control_->snapshot.core_state = runtime::BackendCoreState::Paused;
+            control_->snapshot.pause_confirmed = true;
+        }
+        break;
+    case runtime::BackendControlCommandKind::Resume:
+        control_->RecordLocked("resume");
+        result = control_->resume_result;
+        if (result.ok)
+        {
+            control_->snapshot.core_state = runtime::BackendCoreState::Running;
+            control_->snapshot.pause_confirmed = false;
+        }
+        break;
+    case runtime::BackendControlCommandKind::FrameStep:
+        control_->RecordLocked("frame_step");
+        result = control_->frame_step_result;
+        if (result.ok)
+        {
+            control_->snapshot.core_state = runtime::BackendCoreState::Paused;
+            control_->snapshot.pause_confirmed = true;
+            ++control_->snapshot.vi_count;
+        }
+        break;
     }
-    return result;
-}
-
-runtime::BackendResult FakeExecutionBackend::Resume()
-{
-    std::lock_guard lock(control_->mutex);
-    control_->RecordLocked("resume");
-    const runtime::BackendResult result = control_->resume_result;
     if (result.ok)
-    {
-        control_->snapshot.core_state = runtime::BackendCoreState::Running;
-        control_->snapshot.pause_confirmed = false;
-    }
-    return result;
-}
-
-runtime::BackendResult FakeExecutionBackend::BeginFrameStep()
-{
-    std::lock_guard lock(control_->mutex);
-    control_->RecordLocked("frame_step");
-    const runtime::BackendResult result = control_->frame_step_result;
-    if (result.ok)
-    {
-        control_->snapshot.core_state = runtime::BackendCoreState::Paused;
-        control_->snapshot.pause_confirmed = true;
-        ++control_->snapshot.vi_count;
-    }
+        control_->snapshot.applied_control_generation = command.generation;
     return result;
 }
 

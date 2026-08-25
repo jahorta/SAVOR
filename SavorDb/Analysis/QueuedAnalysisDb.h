@@ -185,6 +185,10 @@ public:
         const RecordBattleAdvancementDecisionCommand& command,
         std::int64_t* battle_advancement_decision_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    bool ApplyBattleTurnAdvancement(
+        const ApplyBattleTurnAdvancementCommand& command,
+        ApplyBattleTurnAdvancementReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
     bool UpsertBattleManualFollowup(
         const UpsertBattleManualFollowupCommand& command,
         std::int64_t* manual_followup_id_out = nullptr,

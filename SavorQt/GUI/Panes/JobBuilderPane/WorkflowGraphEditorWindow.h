@@ -6,11 +6,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include <QtWidgets/QWidget>
-
 #include "Authoring/IAuthoringDb.h"
 #include "Execution/Workflow/WorkflowComposition.h"
 #include "GUI/Common/StatusToast.h"
+#include "GUI/Widgets/PersistentToolWindow.h"
 
 class QCloseEvent;
 class QLabel;
@@ -20,7 +19,7 @@ class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 
-class WorkflowGraphEditorWindow final : public QWidget
+class WorkflowGraphEditorWindow final : public PersistentToolWindow
 {
 public:
     explicit WorkflowGraphEditorWindow(QWidget* parent = nullptr);

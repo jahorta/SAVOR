@@ -1,4 +1,4 @@
-#include "AuthoringLibraryDialog.h"
+#include "AuthoringLibraryWindow.h"
 
 #include "AuthoringSpecEditorWindows.h"
 #include "BattlePlanEditorWindow.h"
@@ -727,8 +727,8 @@ ISpecLibraryAdapter* AuthoringLibraryWidget::currentAdapter() const
     return adapters_[static_cast<std::size_t>(currentAdapterIndex_)].get();
 }
 
-AuthoringLibraryDialog::AuthoringLibraryDialog(QWidget* parent)
-    : QDialog(parent)
+AuthoringLibraryWindow::AuthoringLibraryWindow(QWidget* parent)
+    : PersistentToolWindow(parent)
 {
     setWindowTitle(QStringLiteral("Authoring Libraries"));
     resize(1280, 720);
@@ -737,18 +737,18 @@ AuthoringLibraryDialog::AuthoringLibraryDialog(QWidget* parent)
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     widget_ = new AuthoringLibraryWidget(this);
-    connect(widget_, &AuthoringLibraryWidget::statusToastRequested, this, &AuthoringLibraryDialog::statusToastRequested);
+    connect(widget_, &AuthoringLibraryWidget::statusToastRequested, this, &AuthoringLibraryWindow::statusToastRequested);
     root->addWidget(widget_, 1);
 }
 
-void AuthoringLibraryDialog::selectLibrary(AuthoringLibraryKey key)
+void AuthoringLibraryWindow::selectLibrary(AuthoringLibraryKey key)
 {
     if (widget_ != nullptr) {
         widget_->selectLibrary(key);
     }
 }
 
-AuthoringLibraryKey AuthoringLibraryDialog::currentLibrary() const
+AuthoringLibraryKey AuthoringLibraryWindow::currentLibrary() const
 {
     return widget_ != nullptr ? widget_->currentLibrary() : AuthoringLibraryKey::SeedProbe;
 }

@@ -3081,6 +3081,31 @@ namespace {
     }
 
     receipt.terminal = packet.terminal;
+    if (packet.terminal_entry >= 0 &&
+        static_cast<std::size_t>(packet.terminal_entry) <
+            packet.snapshot->entries.size())
+    {
+        const DispatchEntry& terminal_entry =
+            packet.snapshot->entries[
+                static_cast<std::size_t>(packet.terminal_entry)];
+        if (const auto* foreground =
+                std::get_if<ForegroundStopWait>(&terminal_entry.route))
+        {
+            receipt.execution_control_generation =
+                foreground->execution_control_generation;
+            receipt.execution_operation_id =
+                foreground->execution_operation_id;
+        }
+        else if (const auto* interruption =
+                     std::get_if<TrustedStopInterruptionRequest>(
+                         &terminal_entry.route))
+        {
+            receipt.execution_control_generation =
+                interruption->execution_control_generation;
+            receipt.execution_operation_id =
+                interruption->execution_operation_id;
+        }
+    }
     if (receipt.terminal == StopRouteTerminal::Overflow)
     {
         impl.overflow_reported = true;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ExecutionTypes.h"
 #include "../IDolphinBackend.h"
 
 #include <cstdint>
@@ -56,6 +57,21 @@ struct BackendExecutionSnapshot
     std::uint32_t pc = 0;
     std::uint64_t vi_count = 0;
     bool throttle_disabled = false;
+    ExecutionControlGeneration applied_control_generation;
+    bool control_transition_in_flight = false;
+};
+
+enum class BackendControlCommandKind : std::uint8_t
+{
+    Pause,
+    Resume,
+    FrameStep,
+};
+
+struct BackendControlCommand
+{
+    ExecutionControlGeneration generation;
+    BackendControlCommandKind kind = BackendControlCommandKind::Pause;
 };
 
 class IExecutionBackendPort
@@ -72,9 +88,8 @@ public:
     QueryExecutionSnapshot() const = 0;
     [[nodiscard]] virtual BackendHealthReport CheckHealth() const = 0;
 
-    virtual BackendResult RequestPause() = 0;
-    virtual BackendResult Resume() = 0;
-    virtual BackendResult BeginFrameStep() = 0;
+    virtual BackendResult SubmitControlCommand(
+        BackendControlCommand command) = 0;
     virtual BackendResult SetThrottleDisabled(bool disabled) = 0;
 
 protected:

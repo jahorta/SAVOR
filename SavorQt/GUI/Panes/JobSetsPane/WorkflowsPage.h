@@ -113,9 +113,7 @@ private:
     QString infoMessage_;
     QString lastToastSignature_;
     std::vector<WorkflowTableRow> currentWorkflowRows_;
-    std::vector<TreeDisplayRow> currentCurrentStepRows_;
-    std::vector<TreeDisplayRow> currentFutureStepRows_;
-    std::vector<TreeDisplayRow> currentPastStepRows_;
+    std::vector<TreeDisplayRow> currentStatusStepRows_;
     std::vector<TreeDisplayRow> currentAlertRows_;
     std::vector<TreeDisplayRow> currentJobSetRows_;
     std::vector<savorqt::db::WorkflowJobSetRow> workflowJobSets_;
@@ -141,13 +139,8 @@ private:
     QLabel* inlineMessageLabel_ = nullptr;
     QLabel* detailHeaderLabel_ = nullptr;
     QLabel* detailMetaLabel_ = nullptr;
-    QLabel* pastCountLabel_ = nullptr;
-    QLabel* currentCountLabel_ = nullptr;
-    QLabel* futureCountLabel_ = nullptr;
     QTableWidget* workflowTable_ = nullptr;
-    QTreeWidget* currentStepsTree_ = nullptr;
-    QTreeWidget* futureStepsTree_ = nullptr;
-    QTreeWidget* pastStepsTree_ = nullptr;
+    QTreeWidget* statusStepsTree_ = nullptr;
     QTreeWidget* jobSetsTree_ = nullptr;
     QTreeWidget* alertsTree_ = nullptr;
 };

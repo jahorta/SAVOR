@@ -125,7 +125,7 @@
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\GuidedPredicateRuleEditor.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.cpp">
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryWindow.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.cpp">
@@ -185,6 +185,9 @@
     <ClCompile Include="GUI\Widgets\ToastHistoryDialog.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Widgets\PersistentToolWindow.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogFilterController.cpp">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClCompile>
@@ -194,10 +197,10 @@
     <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.cpp">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayDialog.cpp">
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayWindow.cpp">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardDialog.cpp">
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardWindow.cpp">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClCompile>
     <ClCompile Include="main.cpp">
@@ -252,6 +255,9 @@
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h">
       <Filter>GUI\Widgets</Filter>
     </QtMoc>
+    <QtMoc Include="GUI\Widgets\PersistentToolWindow.h">
+      <Filter>GUI\Widgets</Filter>
+    </QtMoc>
     <QtMoc Include="GUI\Panes\SettingsPane\SettingsPage.h">
       <Filter>GUI\Panes\Settings</Filter>
     </QtMoc>
@@ -264,7 +270,7 @@
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </QtMoc>
-    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.h">
+    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryWindow.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
@@ -360,13 +366,13 @@
     <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardDialog.h">
+    <ClInclude Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardWindow.h">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClInclude>
     <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </QtMoc>
-    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h">
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayWindow.h">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </QtMoc>
     <ClInclude Include="DB\SavorDbAuthoringService.h">

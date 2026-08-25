@@ -4073,6 +4073,13 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
                 .priority = 4,
                 .max_attempts = 2,
             });
+            decision.spawn_steps.push_back({
+                .parent_workflow_step_id = 89,
+                .step_key = "spawned-sibling-next",
+                .step_kind = "mock.spawned",
+                .priority = 4,
+                .max_attempts = 2,
+            });
             return decision;
         }
     };
@@ -4110,11 +4117,15 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
     WorkflowSettlementAdvancementResult result{};
     ASSERT_TRUE(advancement.AdvanceSnapshot(snapshot, &result, &err)) << err;
     EXPECT_TRUE(result.advanced_next_step);
-    EXPECT_EQ(result.spawned_step_count, 1);
-    ASSERT_EQ(command_service.dynamic_step_calls.size(), 1u);
+    EXPECT_EQ(result.spawned_step_count, 2);
+    ASSERT_EQ(command_service.dynamic_step_calls.size(), 2u);
     ASSERT_EQ(command_service.dynamic_step_calls[0].steps.size(), 1u);
     EXPECT_EQ(command_service.dynamic_step_calls[0].steps[0].step_key, "spawned-next");
     EXPECT_EQ(command_service.dynamic_step_calls[0].steps[0].priority, 34);
+    EXPECT_EQ(command_service.dynamic_step_calls[0].parent_workflow_step_id, 88);
+    ASSERT_EQ(command_service.dynamic_step_calls[1].steps.size(), 1u);
+    EXPECT_EQ(command_service.dynamic_step_calls[1].steps[0].step_key, "spawned-sibling-next");
+    EXPECT_EQ(command_service.dynamic_step_calls[1].parent_workflow_step_id, 89);
 }
 
 TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceUsesRecordedStepOutputFromSnapshot) {

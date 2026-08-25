@@ -127,7 +127,7 @@ public:
     // runtime layers never receive Dolphin's physical debugging surface.
     [[nodiscard]] virtual IPhysicalStopPointBackendPort*
     PhysicalStopPoints() noexcept = 0;
-    // The session gives this facet only to its ExecutionEngine. Session
+    // The session gives this facet only to its ExecutionControlCore. Session
     // callers and program layers never receive primitive advancement access.
     [[nodiscard]] virtual IExecutionBackendPort* Execution() noexcept = 0;
     // The session gives these facets only to their corresponding Slice 4

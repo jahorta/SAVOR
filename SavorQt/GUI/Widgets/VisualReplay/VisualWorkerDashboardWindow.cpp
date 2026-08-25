@@ -1,4 +1,4 @@
-#include "GUI/Widgets/VisualReplay/VisualWorkerDashboardDialog.h"
+#include "GUI/Widgets/VisualReplay/VisualWorkerDashboardWindow.h"
 
 #include <QtCore/QtMath>
 #include <QtWidgets/QFrame>
@@ -12,8 +12,8 @@
 
 #include <algorithm>
 
-VisualWorkerDashboardDialog::VisualWorkerDashboardDialog(QWidget* parent)
-    : QDialog(parent)
+VisualWorkerDashboardWindow::VisualWorkerDashboardWindow(QWidget* parent)
+    : PersistentToolWindow(parent)
 {
     setWindowTitle(QStringLiteral("Visual Workers"));
     resize(1180, 760);
@@ -40,7 +40,7 @@ VisualWorkerDashboardDialog::VisualWorkerDashboardDialog(QWidget* parent)
     rootLayout->addWidget(scrollArea_, 1);
 }
 
-void VisualWorkerDashboardDialog::setWorkerCount(int count, bool allowShrink)
+void VisualWorkerDashboardWindow::setWorkerCount(int count, bool allowShrink)
 {
     const int clampedCount = std::max(0, count);
     if (allowShrink) {
@@ -59,7 +59,7 @@ void VisualWorkerDashboardDialog::setWorkerCount(int count, bool allowShrink)
     rebuildGrid();
 }
 
-void VisualWorkerDashboardDialog::updateWorkerSnapshots(const std::vector<WorkerSnapshot>& snapshots)
+void VisualWorkerDashboardWindow::updateWorkerSnapshots(const std::vector<WorkerSnapshot>& snapshots)
 {
     for (int i = 0; i < tiles_.size(); ++i) {
         Tile& tile = tiles_[i];
@@ -82,7 +82,7 @@ void VisualWorkerDashboardDialog::updateWorkerSnapshots(const std::vector<Worker
     }
 }
 
-QVector<VisualWorkerSurfaceBinding> VisualWorkerDashboardDialog::surfaceBindings() const
+QVector<VisualWorkerSurfaceBinding> VisualWorkerDashboardWindow::surfaceBindings() const
 {
     QVector<VisualWorkerSurfaceBinding> bindings;
     bindings.reserve(tiles_.size());
@@ -97,7 +97,7 @@ QVector<VisualWorkerSurfaceBinding> VisualWorkerDashboardDialog::surfaceBindings
     return bindings;
 }
 
-QString VisualWorkerDashboardDialog::stateText(WorkerStateKind state)
+QString VisualWorkerDashboardWindow::stateText(WorkerStateKind state)
 {
     switch (state) {
     case WorkerStateKind::Spawning: return QStringLiteral("Spawning");
@@ -114,7 +114,7 @@ QString VisualWorkerDashboardDialog::stateText(WorkerStateKind state)
     }
 }
 
-VisualWorkerDashboardDialog::Tile VisualWorkerDashboardDialog::createTile(int workerIndex)
+VisualWorkerDashboardWindow::Tile VisualWorkerDashboardWindow::createTile(int workerIndex)
 {
     Tile tile{};
 
@@ -161,7 +161,7 @@ VisualWorkerDashboardDialog::Tile VisualWorkerDashboardDialog::createTile(int wo
     return tile;
 }
 
-void VisualWorkerDashboardDialog::rebuildGrid()
+void VisualWorkerDashboardWindow::rebuildGrid()
 {
     while (QLayoutItem* item = gridLayout_->takeAt(0)) {
         delete item;

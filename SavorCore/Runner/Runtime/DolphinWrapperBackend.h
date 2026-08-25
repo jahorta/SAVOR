@@ -72,9 +72,8 @@ private:
     Capabilities() const noexcept override;
     [[nodiscard]] BackendExecutionSnapshot
     QueryExecutionSnapshot() const override;
-    BackendResult RequestPause() override;
-    BackendResult Resume() override;
-    BackendResult BeginFrameStep() override;
+    BackendResult SubmitControlCommand(
+        BackendControlCommand command) override;
     BackendResult SetThrottleDisabled(bool disabled) override;
 
     [[nodiscard]] bool IsAvailable(std::uint8_t port) const noexcept override;

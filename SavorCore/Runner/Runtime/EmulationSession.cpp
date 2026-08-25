@@ -88,10 +88,10 @@ ProductionCaptureAdapterConfig()
 EmulationSession::EmulationSession(
     SessionId session_id,
     std::unique_ptr<IDolphinBackend> backend,
-    ExecutionEngineConfig execution_engine_config)
+    ExecutionControlCoreConfig execution_control_core_config)
     : session_id_(session_id),
       backend_(std::move(backend)),
-      execution_engine_config_(std::move(execution_engine_config))
+      execution_control_core_config_(std::move(execution_control_core_config))
 {
 }
 
@@ -241,7 +241,7 @@ SessionOperationReceipt EmulationSession::OpenWorksetInitialization(
             "EmulationSession cannot open workset initialization in its current state");
     }
     if (!workset_id || active_workset_id_ || workset_epoch_ ||
-        execution_engine_ || stop_router_ || savestate_service_)
+        execution_control_core_ || stop_router_ || savestate_service_)
     {
         return Reject(
             SessionOperation::OpenWorksetInitialization,
@@ -311,7 +311,7 @@ SessionOperationReceipt EmulationSession::CommitWorksetInitialization(
 {
     if (!BindOrCheckOwner() || !active_workset_id_ ||
         workset_id != active_workset_id_ || !workset_epoch_ ||
-        execution_engine_ || guest_state_transaction_ !=
+        execution_control_core_ || guest_state_transaction_ !=
             GuestStateTransaction::Initializing)
     {
         return Reject(
@@ -363,7 +363,7 @@ SessionOperationReceipt EmulationSession::BeginWorksetItemReset(
 {
     if (!BindOrCheckOwner() || !active_workset_id_ ||
         workset_id != active_workset_id_ || !workset_epoch_ ||
-        !execution_engine_ || guest_state_transaction_ !=
+        !execution_control_core_ || guest_state_transaction_ !=
             GuestStateTransaction::None)
     {
         return Reject(
@@ -371,7 +371,7 @@ SessionOperationReceipt EmulationSession::BeginWorksetItemReset(
             BackendErrorCode::InvalidState,
             "EmulationSession cannot begin an item reset in its current state");
     }
-    BackendResult result = RemoveExecutionEngine();
+    BackendResult result = RemoveExecutionControlCore();
     if (result.ok)
         guest_state_transaction_ = GuestStateTransaction::ResettingItem;
     if (!result.ok)
@@ -389,7 +389,7 @@ SessionOperationReceipt EmulationSession::CommitWorksetItemReset(
 {
     if (!BindOrCheckOwner() || !active_workset_id_ ||
         workset_id != active_workset_id_ || !workset_epoch_ ||
-        execution_engine_ || guest_state_transaction_ !=
+        execution_control_core_ || guest_state_transaction_ !=
             GuestStateTransaction::ResettingItem)
     {
         return Reject(
@@ -451,11 +451,11 @@ EmulationSession::CaptureImmutableSavestateArtifact(
             "Immutable state capture requires a clean open session");
         return receipt;
     }
-    if (!execution_engine_ ||
-        execution_engine_->has_active_operation() ||
-        execution_engine_->snapshot().activity !=
+    if (!execution_control_core_ ||
+        execution_control_core_->has_active_operation() ||
+        execution_control_core_->snapshot().activity !=
             ExecutionActivity::IdlePaused ||
-        !execution_engine_->snapshot().evidence.pause_confirmed)
+        !execution_control_core_->snapshot().evidence.pause_confirmed)
     {
         receipt.result = SavestateServiceResult::Failure(
             SavestateServiceErrorCode::InvalidState,
@@ -675,7 +675,7 @@ SavestateRestoreReceipt EmulationSession::RestoreWorksetBaselineTransaction(
             }
             restored.result.integrity = GuestIntegrity::Unknown;
         };
-    if (!stop_router_ || execution_engine_ ||
+    if (!stop_router_ || execution_control_core_ ||
         guest_state_transaction_ == GuestStateTransaction::None)
     {
         restored.result = SavestateServiceResult::Failure(
@@ -986,7 +986,7 @@ std::vector<StopRouteReceipt> EmulationSession::DrainStopPointEvents()
 ExecutionSubmissionReceipt EmulationSession::SubmitExecution(
     ExecutionRequest request)
 {
-    if (!BindOrCheckOwner() || !CanOperate() || !execution_engine_)
+    if (!BindOrCheckOwner() || !CanOperate() || !execution_control_core_)
     {
         return {
             false,
@@ -996,7 +996,7 @@ ExecutionSubmissionReceipt EmulationSession::SubmitExecution(
                 "EmulationSession execution engine is unavailable")};
     }
     ExecutionSubmissionReceipt receipt =
-        execution_engine_->Submit(std::move(request));
+        execution_control_core_->Submit(std::move(request));
     if (!receipt.accepted &&
         receipt.error.integrity == BackendIntegrity::Unknown)
     {
@@ -1012,7 +1012,7 @@ ExecutionSubmissionReceipt EmulationSession::SubmitInterruptionChild(
     InterruptionFrameId frame_id,
     ExecutionRequest request)
 {
-    if (!BindOrCheckOwner() || !CanOperate() || !execution_engine_)
+    if (!BindOrCheckOwner() || !CanOperate() || !execution_control_core_)
     {
         return {
             false,
@@ -1022,7 +1022,7 @@ ExecutionSubmissionReceipt EmulationSession::SubmitInterruptionChild(
                 "EmulationSession execution engine is unavailable")};
     }
     ExecutionSubmissionReceipt receipt =
-        execution_engine_->SubmitInterruptionChild(
+        execution_control_core_->SubmitInterruptionChild(
         frame_id,
         std::move(request));
     if (!receipt.accepted &&
@@ -1039,7 +1039,7 @@ ExecutionSubmissionReceipt EmulationSession::SubmitInterruptionChild(
 ExecutionControlReceipt EmulationSession::CancelExecution(
     CancellationReason reason)
 {
-    if (!BindOrCheckOwner() || !CanOperate() || !execution_engine_)
+    if (!BindOrCheckOwner() || !CanOperate() || !execution_control_core_)
     {
         return {
             false,
@@ -1048,7 +1048,7 @@ ExecutionControlReceipt EmulationSession::CancelExecution(
                 ExecutionErrorCode::InvalidState,
                 "EmulationSession execution engine is unavailable")};
     }
-    return execution_engine_->Cancel(reason);
+    return execution_control_core_->Cancel(reason);
 }
 
 ExecutionControlReceipt EmulationSession::CompleteInterruptionHandler(
@@ -1056,7 +1056,7 @@ ExecutionControlReceipt EmulationSession::CompleteInterruptionHandler(
     InterruptionHandlerOutcome outcome,
     std::string diagnostic)
 {
-    if (!BindOrCheckOwner() || !CanOperate() || !execution_engine_)
+    if (!BindOrCheckOwner() || !CanOperate() || !execution_control_core_)
     {
         return {
             false,
@@ -1065,24 +1065,17 @@ ExecutionControlReceipt EmulationSession::CompleteInterruptionHandler(
                 ExecutionErrorCode::InvalidState,
                 "EmulationSession execution engine is unavailable")};
     }
-    return execution_engine_->CompleteInterruptionHandler(
+    return execution_control_core_->CompleteInterruptionHandler(
         frame_id,
         outcome,
         std::move(diagnostic));
 }
 
-void EmulationSession::HandleStopPointReceipt(StopRouteReceipt receipt)
-{
-    if (!BindOrCheckOwner() || !execution_engine_)
-        return;
-    execution_engine_->HandleStopPointReceipt(std::move(receipt));
-}
-
 void EmulationSession::PumpExecution()
 {
-    if (!BindOrCheckOwner() || !execution_engine_)
+    if (!BindOrCheckOwner() || !execution_control_core_)
         return;
-    execution_engine_->Pump();
+    execution_control_core_->Pump();
     RefreshCoreState();
 }
 
@@ -1092,10 +1085,10 @@ std::vector<ExecutionEvent> EmulationSession::DrainExecutionEvents()
         return {};
     std::vector<ExecutionEvent> events;
     events.swap(retained_execution_events_);
-    if (execution_engine_)
+    if (execution_control_core_)
     {
         std::vector<ExecutionEvent> current =
-            execution_engine_->DrainEvents();
+            execution_control_core_->DrainEvents();
         events.insert(
             events.end(),
             std::make_move_iterator(current.begin()),
@@ -1110,7 +1103,7 @@ std::vector<ExecutionEvent> EmulationSession::DrainExecutionEvents()
                 ExecutionTerminalStatus::CleanupFailure)
         {
             MarkTainted(event.terminal->error.message.empty()
-                ? "ExecutionEngine could not prove session integrity"
+                ? "ExecutionControlCore could not prove session integrity"
                 : event.terminal->error.message);
             break;
         }
@@ -1128,17 +1121,17 @@ std::vector<ExecutionEvent> EmulationSession::DrainExecutionEvents()
 
 std::optional<ExecutionSnapshot> EmulationSession::execution_snapshot() const
 {
-    if (!execution_engine_)
+    if (!execution_control_core_)
         return std::nullopt;
-    return execution_engine_->snapshot();
+    return execution_control_core_->snapshot();
 }
 
 std::optional<std::chrono::steady_clock::time_point>
 EmulationSession::next_execution_wake() const
 {
-    if (!execution_engine_)
+    if (!execution_control_core_)
         return std::nullopt;
-    return execution_engine_->next_wake();
+    return execution_control_core_->next_wake();
 }
 
 BackendExecutionCapabilityMask
@@ -1231,11 +1224,11 @@ SessionOperationReceipt EmulationSession::Shutdown()
 
     shutdown_ = true;
     BackendResult result = BackendResult::Success();
-    if (execution_engine_)
+    if (execution_control_core_)
     {
-        result = execution_engine_->Shutdown();
+        result = execution_control_core_->Shutdown();
         std::vector<ExecutionEvent> final_events =
-            execution_engine_->DrainEvents();
+            execution_control_core_->DrainEvents();
         retained_execution_events_.insert(
             retained_execution_events_.end(),
             std::make_move_iterator(final_events.begin()),
@@ -1353,7 +1346,7 @@ MovieOperationReceipt EmulationSession::StartPreparedReadOnlyPlayback(
     receipt.operation = MovieOperation::StartPlayback;
     receipt.workset_epoch = workset_epoch_;
     if (!BindOrCheckOwner() || !CanOperate() || !movie_service_ ||
-        !execution_engine_ || !preparation)
+        !execution_control_core_ || !preparation)
     {
         receipt.result = MovieServiceResult::Failure(
             MovieServiceErrorCode::InvalidState,
@@ -1763,11 +1756,11 @@ BackendResult EmulationSession::InitializeExecution(WorksetEpoch first_epoch)
     }
     try
     {
-        ExecutionEngineConfig config = execution_engine_config_;
+        ExecutionControlCoreConfig config = execution_control_core_config_;
         config.input_relationships = input_arbiter_.get();
         config.host_activity = &host_activity_;
-        execution_engine_ =
-            std::make_unique<ExecutionEngine>(
+        execution_control_core_ =
+            std::make_unique<ExecutionControlCore>(
                 *port,
                 *movie_service_,
                 *stop_router_,
@@ -1777,27 +1770,27 @@ BackendResult EmulationSession::InitializeExecution(WorksetEpoch first_epoch)
     {
         return BackendResult::Failure(
             BackendErrorCode::OperationFailed,
-            std::string("failed constructing session ExecutionEngine: ") +
+            std::string("failed constructing session ExecutionControlCore: ") +
                 ex.what());
     }
     catch (...)
     {
         return BackendResult::Failure(
             BackendErrorCode::OperationFailed,
-            "failed constructing session ExecutionEngine");
+            "failed constructing session ExecutionControlCore");
     }
-    BackendResult initialized = execution_engine_->Initialize(first_epoch);
+    BackendResult initialized = execution_control_core_->Initialize(first_epoch);
     if (!initialized.ok)
-        execution_engine_.reset();
+        execution_control_core_.reset();
     return initialized;
 }
 
-BackendResult EmulationSession::RemoveExecutionEngine() noexcept
+BackendResult EmulationSession::RemoveExecutionControlCore() noexcept
 {
-    if (!execution_engine_)
+    if (!execution_control_core_)
         return BackendResult::Success();
-    BackendResult result = execution_engine_->Shutdown();
-    execution_engine_.reset();
+    BackendResult result = execution_control_core_->Shutdown();
+    execution_control_core_.reset();
     retained_execution_events_.clear();
     return result;
 }
@@ -1993,14 +1986,14 @@ BackendResult EmulationSession::ActivateDerivedStateForItem(
     const derived::WorksetDerivedStateBindingV1& binding,
     WorkerWorksetItemId item_id)
 {
-    if (!derived_state_ || !execution_engine_ || guest_state_transaction_ !=
+    if (!derived_state_ || !execution_control_core_ || guest_state_transaction_ !=
             GuestStateTransaction::None || !workset_epoch_)
     {
         return BackendResult::Failure(
             BackendErrorCode::InvalidState,
             "Derived state requires committed workset execution evidence");
     }
-    const ExecutionSnapshot execution = execution_engine_->snapshot();
+    const ExecutionSnapshot execution = execution_control_core_->snapshot();
     if (!binding.blocks.empty())
     {
         if (execution.activity != ExecutionActivity::IdlePaused ||
@@ -2125,7 +2118,7 @@ BackendResult EmulationSession::TaintAndRetireSessionAfterStopPointFailure(
 BackendResult EmulationSession::CleanupRuntimeComposition() noexcept
 {
     BackendResult result = BackendResult::Success();
-    BackendResult execution = RemoveExecutionEngine();
+    BackendResult execution = RemoveExecutionControlCore();
     if (!execution.ok)
         result = std::move(execution);
 

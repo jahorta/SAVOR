@@ -31,6 +31,14 @@ struct CoordinatorStartupSharedState {
         runtime;
 };
 
+struct CoordinatorShutdownSharedState {
+    std::mutex mutex;
+    std::uint64_t generation = 0;
+    std::unique_ptr<
+        savor::runner::parallel::savordb::CoordinatorRuntime>
+        runtime;
+};
+
 namespace {
 constexpr auto kSettingsGroup = "Coordinator";
 constexpr auto kIsoPathKey = "iso_path";
@@ -102,6 +110,11 @@ CoordinatorController::CoordinatorController(QObject* parent)
         &QFutureWatcher<void>::finished,
         this,
         &CoordinatorController::handleStartupCleanupFinished);
+    connect(
+        &shutdown_watcher_,
+        &QFutureWatcher<CoordinatorShutdownResult>::finished,
+        this,
+        &CoordinatorController::handleShutdownFinished);
     loadSettings();
     updateValidationMessage();
     updateSnapshotCache();
@@ -111,7 +124,6 @@ CoordinatorController::~CoordinatorController()
 {
     stopCoordinator();
     waitForShutdown();
-    stopCoordinatorServices();
 }
 
 CoordinatorLifecycleState CoordinatorController::lifecycleState() const
@@ -147,7 +159,7 @@ int CoordinatorController::activeWorkers() const
 {
     return coordinator_runtime_
         ? static_cast<int>(coordinator_runtime_->SnapshotWorkers().size())
-        : 0;
+        : static_cast<int>(snapshotCache_.size());
 }
 bool CoordinatorController::startPaused() const { return startPaused_; }
 bool CoordinatorController::visualWorkerPoolEnabled() const { return visualWorkerPoolEnabled_; }
@@ -160,7 +172,7 @@ std::vector<WorkerSnapshot> CoordinatorController::freshSnapshot() const
 {
     return coordinator_runtime_
         ? coordinator_runtime_->SnapshotWorkers()
-        : std::vector<WorkerSnapshot>{};
+        : snapshotCache_;
 }
 const std::vector<WorkerSnapshot>& CoordinatorController::visualSnapshot() const { return visualSnapshotCache_; }
 const std::vector<
@@ -190,7 +202,8 @@ bool CoordinatorController::visualReplayControlsEnabled() const
 
 void CoordinatorController::startCoordinator()
 {
-    if (!isStopped() || coordinator_runtime_ || startup_state_) {
+    if (!isStopped() || coordinator_runtime_ || startup_state_
+        || shutdown_state_ || shutdown_watcher_.isRunning()) {
         return;
     }
 
@@ -396,13 +409,17 @@ void CoordinatorController::stopCoordinator()
         return;
     }
 
-    lifecycle_state_ = CoordinatorLifecycleState::Stopping;
-    stopCoordinatorServices();
-    paused_ = false;
-    lifecycle_state_ = CoordinatorLifecycleState::Stopped;
+    paused_ = coordinator_runtime_->IsExecutionPaused();
     updateSnapshotCache();
+    auto shutdownState =
+        std::make_shared<CoordinatorShutdownSharedState>();
+    shutdownState->generation = ++shutdown_generation_;
+    shutdownState->runtime = std::move(coordinator_runtime_);
+    shutdown_state_ = shutdownState;
+    lifecycle_state_ = CoordinatorLifecycleState::Stopping;
     emit stateChanged();
     emit snapshotChanged();
+    startRuntimeShutdown();
 }
 
 void CoordinatorController::setPaused(bool paused)
@@ -641,6 +658,10 @@ void CoordinatorController::updateValidationMessage()
 void CoordinatorController::updateSnapshotCache()
 {
     if (!coordinator_runtime_) {
+        if (lifecycle_state_ == CoordinatorLifecycleState::Stopping
+            && shutdown_state_) {
+            return;
+        }
         snapshotCache_.clear();
         visualSnapshotCache_.clear();
         warningSnapshotCache_.clear();
@@ -764,6 +785,77 @@ void CoordinatorController::handleStartupCleanupFinished()
     emit snapshotChanged();
 }
 
+void CoordinatorController::startRuntimeShutdown()
+{
+    const auto state = shutdown_state_;
+    if (!state || shutdown_watcher_.isRunning()) {
+        return;
+    }
+    shutdown_watcher_.setFuture(QtConcurrent::run(
+        [state]() -> CoordinatorShutdownResult {
+            std::unique_ptr<
+                savor::runner::parallel::savordb::CoordinatorRuntime>
+                runtime;
+            {
+                std::lock_guard lock(state->mutex);
+                runtime = std::move(state->runtime);
+            }
+            std::string shutdownError;
+            try {
+                if (runtime) {
+                    (void)runtime->Stop(&shutdownError);
+                }
+            } catch (const std::exception& ex) {
+                shutdownError = ex.what();
+            } catch (...) {
+                shutdownError =
+                    "coordinator shutdown failed with an unknown exception";
+            }
+            runtime.reset();
+            return {
+                state->generation,
+                QString::fromStdString(shutdownError),
+            };
+        }));
+}
+
+void CoordinatorController::handleShutdownFinished()
+{
+    CoordinatorShutdownResult result;
+    try {
+        result = shutdown_watcher_.result();
+    } catch (const std::exception& ex) {
+        result = {
+            shutdown_generation_,
+            QString::fromUtf8(ex.what()),
+        };
+    } catch (...) {
+        result = {
+            shutdown_generation_,
+            QStringLiteral(
+                "coordinator shutdown failed with an unknown exception"),
+        };
+    }
+
+    if (!shutdown_state_
+        || result.generation != shutdown_generation_
+        || result.generation != shutdown_state_->generation) {
+        return;
+    }
+
+    shutdown_state_.reset();
+    paused_ = false;
+    lifecycle_state_ = CoordinatorLifecycleState::Stopped;
+    if (!result.warning.isEmpty()) {
+        validationMessage_ =
+            QStringLiteral("Coordinator shutdown warning: %1")
+                .arg(result.warning);
+    }
+    updateSnapshotCache();
+    emit stateChanged();
+    emit snapshotChanged();
+}
+
 void CoordinatorController::waitForShutdown()
 {
     if (startup_state_) {
@@ -777,6 +869,9 @@ void CoordinatorController::waitForShutdown()
     if (startup_cleanup_watcher_.isRunning()) {
         startup_cleanup_watcher_.waitForFinished();
     }
+    if (shutdown_watcher_.isRunning()) {
+        shutdown_watcher_.waitForFinished();
+    }
     if (startup_state_) {
         std::unique_ptr<
             savor::runner::parallel::savordb::CoordinatorRuntime>
@@ -789,6 +884,19 @@ void CoordinatorController::waitForShutdown()
             (void)runtime->Stop(nullptr);
         }
         startup_state_.reset();
+    }
+    if (shutdown_state_) {
+        std::unique_ptr<
+            savor::runner::parallel::savordb::CoordinatorRuntime>
+            runtime;
+        {
+            std::lock_guard lock(shutdown_state_->mutex);
+            runtime = std::move(shutdown_state_->runtime);
+        }
+        if (runtime) {
+            (void)runtime->Stop(nullptr);
+        }
+        shutdown_state_.reset();
     }
     stopCoordinatorServices();
     paused_ = false;

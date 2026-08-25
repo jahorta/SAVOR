@@ -2,7 +2,64 @@
 
 #include "../IExecutionDb.h"
 
+#include <map>
+
 namespace savor::db::execution::workflow {
+
+WorkflowTransitionApplicationService::WorkflowTransitionApplicationService(
+    IWorkflowOrchestrationCommandService* command_service,
+    int successor_step_priority_boost)
+    : command_service_(command_service)
+    , successor_step_priority_boost_(successor_step_priority_boost) {
+}
+
+bool WorkflowTransitionApplicationService::ApplyDynamicSteps(
+    std::int64_t workflow_instance_id,
+    std::int64_t default_parent_workflow_step_id,
+    int source_priority,
+    const programdb::WorkflowTransitionDecision& transition,
+    std::string_view requested_by,
+    int* spawned_step_count_out,
+    std::string* error_out) const {
+    if (spawned_step_count_out) *spawned_step_count_out = 0;
+    if (command_service_ == nullptr || workflow_instance_id <= 0
+        || default_parent_workflow_step_id <= 0 || requested_by.empty()) {
+        if (error_out) *error_out = "workflow transition application is incomplete";
+        return false;
+    }
+    std::map<std::int64_t, std::vector<WorkflowAppendDynamicStepSpec>> grouped;
+    for (const auto& step : transition.spawn_steps) {
+        const auto parent = step.parent_workflow_step_id.value_or(
+            default_parent_workflow_step_id);
+        if (parent <= 0) {
+            if (error_out) *error_out = "dynamic workflow step has no valid parent";
+            return false;
+        }
+        grouped[parent].push_back({
+            .step_key = step.step_key,
+            .step_kind = step.step_kind,
+            .input_ref_kind = step.input_ref_kind,
+            .input_ref_id = step.input_ref_id,
+            .guard_kind = step.guard_kind,
+            .guard_value = step.guard_value,
+            .priority = source_priority + successor_step_priority_boost_ + step.priority,
+            .max_attempts = step.max_attempts,
+        });
+    }
+    int spawned = 0;
+    for (auto& [parent, steps] : grouped) {
+        WorkflowAppendDynamicStepsCommand append{
+            .workflow_instance_id = workflow_instance_id,
+            .parent_workflow_step_id = parent,
+            .steps = std::move(steps),
+            .requested_by = std::string(requested_by),
+        };
+        if (!command_service_->AppendDynamicSteps(append, error_out)) return false;
+        spawned += static_cast<int>(append.steps.size());
+    }
+    if (spawned_step_count_out) *spawned_step_count_out = spawned;
+    return true;
+}
 
 WorkflowSettlementAdvancementService::WorkflowSettlementAdvancementService(
     const programdb::ProgramKindRegistry* program_kind_registry,
@@ -354,28 +411,19 @@ bool WorkflowSettlementAdvancementService::AdvanceSnapshot(
     if (advanced) {
         const int successor_priority = snapshot.priority + successor_step_priority_boost_;
         if (!transition->spawn_steps.empty()) {
-            WorkflowAppendDynamicStepsCommand append{};
-            append.workflow_instance_id = snapshot.workflow_instance_id;
-            append.parent_workflow_step_id = snapshot.workflow_step_id;
-            append.requested_by = "workflow_settlement_advancement";
-            append.steps.reserve(transition->spawn_steps.size());
-            for (const auto& step : transition->spawn_steps) {
-                append.steps.push_back(WorkflowAppendDynamicStepSpec{
-                    .step_key = step.step_key,
-                    .step_kind = step.step_kind,
-                    .input_ref_kind = step.input_ref_kind,
-                    .input_ref_id = step.input_ref_id,
-                    .guard_kind = step.guard_kind,
-                    .guard_value = step.guard_value,
-                    .priority = successor_priority + step.priority,
-                    .max_attempts = step.max_attempts,
-                });
-            }
-            if (!command_service_->AppendDynamicSteps(append, &command_error)) {
+            WorkflowTransitionApplicationService applicator(
+                command_service_, successor_step_priority_boost_);
+            if (!applicator.ApplyDynamicSteps(
+                    snapshot.workflow_instance_id,
+                    snapshot.workflow_step_id,
+                    snapshot.priority,
+                    *transition,
+                    "workflow_settlement_advancement",
+                    &result.spawned_step_count,
+                    &command_error)) {
                 if (error_out) *error_out = command_error;
                 return false;
             }
-            result.spawned_step_count = static_cast<int>(append.steps.size());
             result.advanced_next_step = result.spawned_step_count > 0;
         } else if (transition->next_step_key.has_value()
             && snapshot.workflow_kind != "workflow_graph") {

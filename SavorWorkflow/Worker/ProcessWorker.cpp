@@ -351,6 +351,12 @@ bool ProcessWorker::launch_and_negotiate(
     stop_repeated_.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(stop_completion_mutex_);
+        stop_deadline_ = {};
+        stop_in_progress_snapshot_ = {};
+        stop_shutdown_pending_.reset();
+        stop_shutdown_write_.reset();
+        stop_begin_completed_ = true;
+        stop_finishing_ = false;
         stop_completed_ = false;
     }
     accepting_writes_.store(false, std::memory_order_release);
@@ -2681,7 +2687,7 @@ bool ProcessWorker::wait_ready(std::uint32_t timeout_ms)
     return is_ready();
 }
 
-void ProcessWorker::stop()
+void ProcessWorker::begin_stop()
 {
     bool already_stopping = false;
     {
@@ -2689,35 +2695,15 @@ void ProcessWorker::stop()
         already_stopping =
             stop_started_.exchange(true, std::memory_order_acq_rel);
         if (!already_stopping)
+        {
+            stop_begin_completed_ = false;
+            stop_finishing_ = false;
             stop_completed_ = false;
+        }
     }
     if (already_stopping)
     {
         stop_repeated_.store(true, std::memory_order_release);
-        if (on_callback_dispatcher_thread())
-        {
-            const auto callback_deadline =
-                std::chrono::steady_clock::now();
-            (void)stop_callback_dispatch(callback_deadline);
-            return;
-        }
-        {
-            std::unique_lock<std::mutex> lock(
-                stop_completion_mutex_);
-            stop_completion_cv_.wait(
-                lock,
-                [&]() { return stop_completed_; });
-        }
-        const auto callback_deadline =
-            std::chrono::steady_clock::now() +
-            kProcessWorkerDefaultCallbackCleanupGrace;
-        (void)stop_callback_dispatch(callback_deadline);
-        {
-            std::lock_guard<std::mutex> lock(stop_mutex_);
-            last_stop_snapshot_.already_stopping = true;
-            last_stop_snapshot_.callback_dispatcher_joined =
-                !callback_dispatcher_.joinable();
-        }
         return;
     }
 
@@ -2774,6 +2760,76 @@ void ProcessWorker::stop()
             }
         }
     }
+
+    {
+        std::lock_guard<std::mutex> lock(stop_completion_mutex_);
+        stop_deadline_ = deadline;
+        stop_in_progress_snapshot_ = snapshot;
+        stop_shutdown_pending_ = std::move(shutdown_pending);
+        stop_shutdown_write_ = std::move(shutdown_write);
+        stop_begin_completed_ = true;
+    }
+    stop_completion_cv_.notify_all();
+}
+
+void ProcessWorker::finish_stop()
+{
+    begin_stop();
+
+    std::chrono::steady_clock::time_point deadline;
+    ProcessWorkerStopSnapshot snapshot;
+    std::shared_ptr<PendingResponse> shutdown_pending;
+    std::shared_ptr<OutboundWrite> shutdown_write;
+    {
+        std::unique_lock<std::mutex> lock(stop_completion_mutex_);
+        stop_completion_cv_.wait(
+            lock,
+            [&]() { return stop_begin_completed_; });
+        if (stop_completed_)
+        {
+            lock.unlock();
+            const auto callback_deadline =
+                std::chrono::steady_clock::now() +
+                kProcessWorkerDefaultCallbackCleanupGrace;
+            (void)stop_callback_dispatch(callback_deadline);
+            std::lock_guard<std::mutex> snapshot_lock(stop_mutex_);
+            last_stop_snapshot_.already_stopping = true;
+            last_stop_snapshot_.callback_dispatcher_joined =
+                !callback_dispatcher_.joinable();
+            return;
+        }
+        if (stop_finishing_)
+        {
+            if (on_callback_dispatcher_thread())
+            {
+                lock.unlock();
+                const auto callback_deadline =
+                    std::chrono::steady_clock::now();
+                (void)stop_callback_dispatch(callback_deadline);
+                return;
+            }
+            stop_completion_cv_.wait(
+                lock,
+                [&]() { return stop_completed_; });
+            lock.unlock();
+            const auto callback_deadline =
+                std::chrono::steady_clock::now() +
+                kProcessWorkerDefaultCallbackCleanupGrace;
+            (void)stop_callback_dispatch(callback_deadline);
+            std::lock_guard<std::mutex> snapshot_lock(stop_mutex_);
+            last_stop_snapshot_.already_stopping = true;
+            last_stop_snapshot_.callback_dispatcher_joined =
+                !callback_dispatcher_.joinable();
+            return;
+        }
+        stop_finishing_ = true;
+        deadline = stop_deadline_;
+        snapshot = stop_in_progress_snapshot_;
+        shutdown_pending = stop_shutdown_pending_;
+        shutdown_write = stop_shutdown_write_;
+    }
+
+    bool shutdown_reported_graceful = false;
 
     if (shutdown_write)
     {
@@ -2968,9 +3024,18 @@ void ProcessWorker::stop()
     }
     {
         std::lock_guard<std::mutex> lock(stop_completion_mutex_);
+        stop_shutdown_pending_.reset();
+        stop_shutdown_write_.reset();
+        stop_finishing_ = false;
         stop_completed_ = true;
     }
     stop_completion_cv_.notify_all();
+}
+
+void ProcessWorker::stop()
+{
+    begin_stop();
+    finish_stop();
 }
 
 bool ProcessWorker::confirm_process_exit()

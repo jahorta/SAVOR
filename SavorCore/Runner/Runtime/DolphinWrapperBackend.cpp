@@ -326,10 +326,14 @@ void ReplacePhysicalPlan(
 
 struct DolphinWrapperBackend::Impl
 {
-    struct PauseConfirmation
+    struct ControlConfirmation
     {
-        std::atomic<std::uint64_t> requested{0};
-        std::atomic<std::uint64_t> acknowledged{0};
+        std::atomic<std::uint64_t> requested_generation{0};
+        std::atomic<std::uint64_t> applied_generation{0};
+        std::atomic<BackendControlCommandKind> requested_kind{
+            BackendControlCommandKind::Pause};
+        std::atomic<BackendControlCommandKind> applied_kind{
+            BackendControlCommandKind::Pause};
     };
 
     // Core::SetState(Paused) is Dolphin's host-side synchronization primitive:
@@ -337,20 +341,20 @@ struct DolphinWrapperBackend::Impl
     // actor because that would turn RequestPause into a blocking operation.
     // Keep one backend-owned helper alive for the open session instead. The
     // helper is always joined before its Core::System is destroyed.
-    struct PauseSynchronizer
+    struct ControlActuator
     {
-        ~PauseSynchronizer()
+        ~ControlActuator()
         {
             StopAndJoin();
         }
 
-        PauseSynchronizer() = default;
-        PauseSynchronizer(const PauseSynchronizer&) = delete;
-        PauseSynchronizer& operator=(const PauseSynchronizer&) = delete;
+        ControlActuator() = default;
+        ControlActuator(const ControlActuator&) = delete;
+        ControlActuator& operator=(const ControlActuator&) = delete;
 
         [[nodiscard]] bool Start(
             Core::System& next_system,
-            std::shared_ptr<PauseConfirmation> next_confirmation,
+            std::shared_ptr<ControlConfirmation> next_confirmation,
             std::string* error)
         {
             StopAndJoin();
@@ -390,7 +394,7 @@ struct DolphinWrapperBackend::Impl
             }
         }
 
-        [[nodiscard]] bool Request(std::uint64_t generation) noexcept
+        [[nodiscard]] bool RequestPause(std::uint64_t generation) noexcept
         {
             {
                 std::lock_guard lock(mutex);
@@ -404,6 +408,72 @@ struct DolphinWrapperBackend::Impl
             }
             wake.notify_one();
             return true;
+        }
+
+        [[nodiscard]] BackendResult ApplySynchronous(
+            BackendControlCommand command) noexcept
+        {
+            Core::System* target_system = nullptr;
+            std::shared_ptr<ControlConfirmation> target_confirmation;
+            {
+                std::lock_guard lock(mutex);
+                if (!worker.joinable() || stopping || !system ||
+                    !confirmation || failed)
+                {
+                    return BackendResult::Failure(
+                        BackendErrorCode::OperationFailed,
+                        "Dolphin control actuator is unavailable");
+                }
+                target_system = system;
+                target_confirmation = confirmation;
+                if (pending_generation < command.generation.value())
+                    pending_generation = 0;
+            }
+
+            std::lock_guard transition_lock(transition_mutex);
+            if (target_confirmation->requested_generation.load(
+                    std::memory_order_acquire) != command.generation.value() ||
+                target_confirmation->requested_kind.load(
+                    std::memory_order_acquire) != command.kind)
+            {
+                return BackendResult::Failure(
+                    BackendErrorCode::InvalidState,
+                    "Dolphin control command was superseded before application");
+            }
+
+            try
+            {
+                switch (command.kind)
+                {
+                case BackendControlCommandKind::Resume:
+                    Core::SetState(*target_system, Core::State::Running);
+                    break;
+                case BackendControlCommandKind::FrameStep:
+                    Core::DoFrameStep(*target_system);
+                    break;
+                case BackendControlCommandKind::Pause:
+                    return BackendResult::Failure(
+                        BackendErrorCode::InvalidArgument,
+                        "Pause commands require asynchronous admission");
+                }
+                Acknowledge(
+                    target_confirmation,
+                    command.generation.value(),
+                    command.kind);
+                return BackendResult::Success();
+            }
+            catch (const std::exception& ex)
+            {
+                return BackendResult::Failure(
+                    BackendErrorCode::OperationFailed,
+                    ex.what());
+            }
+            catch (...)
+            {
+                return BackendResult::Failure(
+                    BackendErrorCode::OperationFailed,
+                    "Dolphin control actuator raised an unknown exception");
+            }
         }
 
         [[nodiscard]] bool Failure(std::string* diagnostic) const
@@ -431,19 +501,13 @@ struct DolphinWrapperBackend::Impl
 
     private:
         static void Acknowledge(
-            const std::shared_ptr<PauseConfirmation>& target,
-            std::uint64_t generation) noexcept
+            const std::shared_ptr<ControlConfirmation>& target,
+            std::uint64_t generation,
+            BackendControlCommandKind kind) noexcept
         {
-            std::uint64_t acknowledged =
-                target->acknowledged.load(std::memory_order_acquire);
-            while (acknowledged < generation &&
-                !target->acknowledged.compare_exchange_weak(
-                    acknowledged,
-                    generation,
-                    std::memory_order_release,
-                    std::memory_order_acquire))
-            {
-            }
+            target->applied_kind.store(kind, std::memory_order_release);
+            target->applied_generation.store(
+                generation, std::memory_order_release);
         }
 
         void Run() noexcept
@@ -451,7 +515,7 @@ struct DolphinWrapperBackend::Impl
             for (;;)
             {
                 Core::System* target_system = nullptr;
-                std::shared_ptr<PauseConfirmation> target_confirmation;
+                std::shared_ptr<ControlConfirmation> target_confirmation;
                 std::uint64_t generation = 0;
                 {
                     std::unique_lock lock(mutex);
@@ -467,6 +531,15 @@ struct DolphinWrapperBackend::Impl
                     generation = std::exchange(pending_generation, 0);
                 }
 
+                std::lock_guard transition_lock(transition_mutex);
+                if (target_confirmation->requested_generation.load(
+                        std::memory_order_acquire) != generation ||
+                    target_confirmation->requested_kind.load(
+                        std::memory_order_acquire) !=
+                        BackendControlCommandKind::Pause)
+                {
+                    continue;
+                }
                 try
                 {
                     const auto started = std::chrono::steady_clock::now();
@@ -505,7 +578,10 @@ struct DolphinWrapperBackend::Impl
                     {
                         // SetState(Paused) returns only after CPUManager has
                         // observed m_state_cpu_thread_active == false.
-                        Acknowledge(target_confirmation, generation);
+                        Acknowledge(
+                            target_confirmation,
+                            generation,
+                            BackendControlCommandKind::Pause);
                         SCLOGDX(
                             SC_TAGS("dolphin.pause_sync", "dolphin.transition"),
                             "pause_generation=%llu confirmation=acknowledged state_before=%u state_after=%u elapsed_ms=%lld thread=%llu",
@@ -545,9 +621,10 @@ struct DolphinWrapperBackend::Impl
 
         mutable std::mutex mutex;
         std::condition_variable wake;
+        std::mutex transition_mutex;
         std::thread worker;
         Core::System* system = nullptr;
-        std::shared_ptr<PauseConfirmation> confirmation;
+        std::shared_ptr<ControlConfirmation> confirmation;
         std::uint64_t pending_generation = 0;
         bool stopping = true;
         bool failed = false;
@@ -563,11 +640,10 @@ struct DolphinWrapperBackend::Impl
     PhysicalPlanGeneration physical_generation;
     DolphinBackendCpuCore cpu_core =
         DolphinBackendCpuCore::ProductionDefault;
-    std::shared_ptr<PauseConfirmation> pause_confirmation =
-        std::make_shared<PauseConfirmation>();
-    PauseSynchronizer pause_synchronizer;
+    std::shared_ptr<ControlConfirmation> control_confirmation =
+        std::make_shared<ControlConfirmation>();
+    ControlActuator control_actuator;
     mutable std::uint32_t last_confirmed_pc = 0;
-    int state_callback_handle = -1;
     std::optional<std::filesystem::path> prepared_movie_path;
     std::optional<std::filesystem::path> prepared_movie_savestate;
     std::optional<std::string> prepared_movie_sha256;
@@ -584,49 +660,55 @@ struct DolphinWrapperBackend::Impl
     std::uint64_t movie_checkpoint_sequence = 1;
     std::uint64_t savestate_file_capture_sequence = 1;
 
-    void DetachStateCallback() noexcept
+    void ResetControlConfirmation(bool confirmed)
     {
-        if (state_callback_handle >= 0)
-            (void)Core::RemoveOnStateChangedCallback(
-                &state_callback_handle);
-    }
-
-    void ResetPauseConfirmation(bool confirmed)
-    {
-        pause_confirmation = std::make_shared<PauseConfirmation>();
+        control_confirmation = std::make_shared<ControlConfirmation>();
         if (!confirmed)
-            pause_confirmation->requested.store(1);
+            control_confirmation->requested_generation.store(1);
         last_confirmed_pc = 0;
     }
 
-    void InvalidatePauseConfirmation()
+    void SetRequestedControl(BackendControlCommand command)
     {
-        const std::uint64_t generation =
-            pause_confirmation->requested.fetch_add(
-                1,
-                std::memory_order_acq_rel) +
-            1;
-        if (generation == 0)
-            pause_confirmation->requested.store(1, std::memory_order_release);
+        control_confirmation->requested_kind.store(
+            command.kind, std::memory_order_release);
+        control_confirmation->requested_generation.store(
+            command.generation.value(), std::memory_order_release);
     }
 
-    [[nodiscard]] bool PauseConfirmed() const noexcept
+    void InvalidateControlConfirmation() noexcept
     {
-        return pause_confirmation->acknowledged.load(
-                   std::memory_order_acquire) >=
-            pause_confirmation->requested.load(
-                std::memory_order_acquire);
+        control_confirmation->applied_kind.store(
+            BackendControlCommandKind::Resume,
+            std::memory_order_release);
+    }
+
+    [[nodiscard]] bool PauseConfirmedForCurrentControl() const noexcept
+    {
+        return control_confirmation->requested_kind.load(
+                   std::memory_order_acquire) ==
+                BackendControlCommandKind::Pause &&
+            control_confirmation->applied_kind.load(
+                   std::memory_order_acquire) ==
+                BackendControlCommandKind::Pause &&
+            control_confirmation->applied_generation.load(
+                   std::memory_order_acquire) ==
+                control_confirmation->requested_generation.load(
+                   std::memory_order_acquire);
     }
 
     void ConfirmPause() noexcept
     {
-        pause_confirmation->acknowledged.store(
-            pause_confirmation->requested.load(
+        control_confirmation->applied_kind.store(
+            BackendControlCommandKind::Pause,
+            std::memory_order_release);
+        control_confirmation->applied_generation.store(
+            control_confirmation->requested_generation.load(
                 std::memory_order_acquire),
             std::memory_order_release);
     }
 
-    [[nodiscard]] BackendResult StartPauseInfrastructure()
+    [[nodiscard]] BackendResult StartControlInfrastructure()
     {
         if (!wrapper || !wrapper->system())
         {
@@ -634,41 +716,14 @@ struct DolphinWrapperBackend::Impl
                 BackendErrorCode::InvalidState,
                 "Dolphin pause infrastructure requires a live wrapper");
         }
-        ResetPauseConfirmation(true);
-        const auto confirmation = pause_confirmation;
+        ResetControlConfirmation(true);
+        const auto confirmation = control_confirmation;
         Core::System* const system = wrapper->system();
-        state_callback_handle = Core::AddOnStateChangedCallback(
-            [confirmation, system](Core::State state) {
-                if (state != Core::State::Paused)
-                    return;
-                const std::uint64_t generation =
-                    confirmation->requested.load(
-                        std::memory_order_acquire);
-                auto acknowledge = [confirmation, generation] {
-                    std::uint64_t acknowledged =
-                        confirmation->acknowledged.load(
-                            std::memory_order_acquire);
-                    while (acknowledged < generation &&
-                        !confirmation->acknowledged.compare_exchange_weak(
-                            acknowledged,
-                            generation,
-                            std::memory_order_release,
-                            std::memory_order_acquire))
-                    {
-                    }
-                };
-                if (Core::IsCPUThread())
-                    system->GetCPU().AddCPUThreadJob(std::move(acknowledge));
-                else
-                    acknowledge();
-            });
-
         std::string error;
-        if (!pause_synchronizer.Start(
+        if (!control_actuator.Start(
                 *system, confirmation, &error))
         {
-            DetachStateCallback();
-            ResetPauseConfirmation(false);
+            ResetControlConfirmation(false);
             return BackendResult::Failure(
                 BackendErrorCode::OperationFailed,
                 error.empty()
@@ -772,7 +827,7 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
     wrapper->ConfigurePortsStandardPadP1();
 
     impl_->wrapper = std::move(wrapper);
-    if (BackendResult pause = impl_->StartPauseInfrastructure(); !pause.ok)
+    if (BackendResult pause = impl_->StartControlInfrastructure(); !pause.ok)
     {
         impl_->wrapper.reset();
         return pause;
@@ -848,8 +903,7 @@ MovieBackendResult DolphinWrapperBackend::StopCoreForPreparedReadOnlyMovie()
             GuestIntegrity::Unknown);
     }
 
-    impl_->pause_synchronizer.StopAndJoin();
-    impl_->DetachStateCallback();
+    impl_->control_actuator.StopAndJoin();
     impl_->active_movie_sha256.reset();
     std::string error;
     bool stopped = false;
@@ -869,14 +923,14 @@ MovieBackendResult DolphinWrapperBackend::StopCoreForPreparedReadOnlyMovie()
     }
     if (!stopped)
     {
-        impl_->ResetPauseConfirmation(false);
+        impl_->ResetControlConfirmation(false);
         return MovieBackendResult::Failure(
             error.empty()
                 ? "Dolphin failed to stop its guest core for movie playback"
                 : std::move(error),
             GuestIntegrity::Unknown);
     }
-    impl_->ResetPauseConfirmation(false);
+    impl_->ResetControlConfirmation(false);
     return MovieBackendResult::Success();
 }
 
@@ -921,7 +975,7 @@ DolphinWrapperBackend::StartPreparedReadOnlyMovieCorePaused()
     }
     if (!started)
     {
-        impl_->ResetPauseConfirmation(false);
+        impl_->ResetControlConfirmation(false);
         return MovieBackendResult::Failure(
             error.empty()
                 ? "Dolphin failed to start the prepared read-only movie"
@@ -937,12 +991,12 @@ DolphinWrapperBackend::StartPreparedReadOnlyMovieCorePaused()
     if (!startup_matches)
     {
         (void)StopMovie();
-        impl_->ResetPauseConfirmation(false);
+        impl_->ResetControlConfirmation(false);
         return MovieBackendResult::Failure(
             "Dolphin movie startup-state discovery disagreed with the prepared artifact baseline",
             GuestIntegrity::Unknown);
     }
-    if (BackendResult pause = impl_->StartPauseInfrastructure(); !pause.ok)
+    if (BackendResult pause = impl_->StartControlInfrastructure(); !pause.ok)
     {
         return MovieBackendResult::Failure(
             pause.message.empty()
@@ -1012,10 +1066,9 @@ BackendResult DolphinWrapperBackend::Close()
 {
     const MovieBackendResult pause_at_end =
         ReleasePauseAtPlaybackEnd();
-    impl_->pause_synchronizer.StopAndJoin();
+    impl_->control_actuator.StopAndJoin();
     if (!impl_->wrapper)
     {
-        impl_->DetachStateCallback();
         if (impl_->native_sink)
         {
             (void)savor::probe::UnbindNativeStopSink(*impl_->native_sink);
@@ -1042,7 +1095,7 @@ BackendResult DolphinWrapperBackend::Close()
                 ignored);
         }
         impl_->owned_movie_restore_paths.clear();
-        impl_->ResetPauseConfirmation(false);
+        impl_->ResetControlConfirmation(false);
         if (!pause_at_end.ok)
         {
             return BackendResult::Failure(
@@ -1083,7 +1136,6 @@ BackendResult DolphinWrapperBackend::Close()
             impl_->native_sink = nullptr;
         }
         savor::probe::UninstallNativeStopHooks();
-        impl_->DetachStateCallback();
         impl_->wrapper.reset();
         impl_->open = false;
         impl_->active_movie_sha256.reset();
@@ -1103,7 +1155,7 @@ BackendResult DolphinWrapperBackend::Close()
                 ignored);
         }
         impl_->owned_movie_restore_paths.clear();
-        impl_->ResetPauseConfirmation(false);
+        impl_->ResetControlConfirmation(false);
         impl_->owned_physical_plan = {};
         impl_->physical_generation = {};
         if (!cleanup_ok)
@@ -1184,7 +1236,7 @@ DolphinWrapperBackend::QueryExecutionSnapshot() const
         return snapshot;
     }
     std::string pause_failure;
-    if (impl_->pause_synchronizer.Failure(&pause_failure))
+    if (impl_->control_actuator.Failure(&pause_failure))
     {
         snapshot.result = BackendResult::Failure(
             BackendErrorCode::OperationFailed,
@@ -1199,7 +1251,15 @@ DolphinWrapperBackend::QueryExecutionSnapshot() const
     snapshot.vi_count = impl_->wrapper->getViFieldCountApprox();
     snapshot.pause_confirmed =
         snapshot.core_state == BackendCoreState::Paused &&
-        impl_->PauseConfirmed();
+        impl_->PauseConfirmedForCurrentControl();
+    snapshot.applied_control_generation = ExecutionControlGeneration(
+        impl_->control_confirmation->applied_generation.load(
+            std::memory_order_acquire));
+    snapshot.control_transition_in_flight =
+        impl_->control_confirmation->requested_generation.load(
+            std::memory_order_acquire) !=
+        impl_->control_confirmation->applied_generation.load(
+            std::memory_order_acquire);
     if (snapshot.pause_confirmed)
     {
         impl_->last_confirmed_pc = impl_->wrapper->getPC();
@@ -1210,88 +1270,61 @@ DolphinWrapperBackend::QueryExecutionSnapshot() const
     return snapshot;
 }
 
-BackendResult DolphinWrapperBackend::RequestPause()
+BackendResult DolphinWrapperBackend::SubmitControlCommand(
+    BackendControlCommand command)
 {
     if (BackendResult open = impl_->RequireOpen(); !open.ok)
         return open;
-    if (QueryCoreState() == BackendCoreState::Paused &&
-        impl_->PauseConfirmed())
-    {
-        return BackendResult::Success();
-    }
-
-    const auto confirmation = impl_->pause_confirmation;
-    const std::uint64_t generation =
-        confirmation->requested.fetch_add(
-            1,
-            std::memory_order_acq_rel) +
-        1;
-    SCLOGDX(
-        SC_TAGS("dolphin.pause_sync", "dolphin.request"),
-        "pause_generation=%llu source=execution state_before=%u acknowledged=%llu thread=%llu",
-        static_cast<unsigned long long>(generation),
-        static_cast<unsigned>(QueryCoreState()),
-        static_cast<unsigned long long>(
-            confirmation->acknowledged.load(std::memory_order_acquire)),
-        static_cast<unsigned long long>(
-            std::hash<std::thread::id>{}(std::this_thread::get_id())));
-    if (!impl_->pause_synchronizer.Request(generation))
+    if (!command.generation)
     {
         return BackendResult::Failure(
-            BackendErrorCode::OperationFailed,
-            "Dolphin pause synchronizer is unavailable",
-            BackendIntegrity::Unknown);
+            BackendErrorCode::InvalidArgument,
+            "Dolphin control commands require a nonzero generation");
     }
-    return BackendResult::Success();
-}
 
-BackendResult DolphinWrapperBackend::Resume()
-{
-    if (BackendResult open = impl_->RequireOpen(); !open.ok)
-        return open;
-    const auto transition_id = g_backend_transition_id.fetch_add(1);
+    const auto confirmation = impl_->control_confirmation;
+    const auto previous_generation =
+        confirmation->requested_generation.load(std::memory_order_acquire);
+    if (command.generation.value() <= previous_generation)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "Dolphin control command generation is not newer than the active generation");
+    }
+    impl_->SetRequestedControl(command);
     const auto state_before = QueryCoreState();
-    impl_->InvalidatePauseConfirmation();
-    Core::SetState(*impl_->wrapper->system(), Core::State::Running);
     SCLOGDX(
-        SC_TAGS("dolphin.resume", "dolphin.transition"),
-        "backend_transition=%llu state_before=%u state_after=%u thread=%llu",
-        static_cast<unsigned long long>(transition_id),
+        SC_TAGS("dolphin.control", "dolphin.request"),
+        "control_generation=%llu kind=%u state_before=%u applied_generation=%llu thread=%llu",
+        static_cast<unsigned long long>(command.generation.value()),
+        static_cast<unsigned>(command.kind),
         static_cast<unsigned>(state_before),
-        static_cast<unsigned>(QueryCoreState()),
+        static_cast<unsigned long long>(
+            confirmation->applied_generation.load(std::memory_order_acquire)),
         static_cast<unsigned long long>(
             std::hash<std::thread::id>{}(std::this_thread::get_id())));
-    return Core::IsRunning(*impl_->wrapper->system())
-        ? BackendResult::Success()
-        : BackendResult::Failure(
-              BackendErrorCode::OperationFailed,
-              "Dolphin failed to resume emulation");
-}
 
-BackendResult DolphinWrapperBackend::BeginFrameStep()
-{
-    if (BackendResult open = impl_->RequireOpen(); !open.ok)
-        return open;
-    if (QueryCoreState() != BackendCoreState::Paused ||
-        !impl_->PauseConfirmed())
+    if (command.kind == BackendControlCommandKind::Pause)
+    {
+        if (!impl_->control_actuator.RequestPause(command.generation.value()))
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "Dolphin control actuator is unavailable",
+                BackendIntegrity::Unknown);
+        }
+        return BackendResult::Success();
+    }
+    if (command.kind == BackendControlCommandKind::FrameStep &&
+        (state_before != BackendCoreState::Paused ||
+         confirmation->applied_kind.load(std::memory_order_acquire) !=
+             BackendControlCommandKind::Pause))
     {
         return BackendResult::Failure(
             BackendErrorCode::InvalidState,
             "Dolphin must be authoritatively paused before beginning a frame step");
     }
-    const auto transition_id = g_backend_transition_id.fetch_add(1);
-    const auto baseline_vi = impl_->wrapper->getViFieldCountApprox();
-    impl_->InvalidatePauseConfirmation();
-    Core::DoFrameStep(*impl_->wrapper->system());
-    SCLOGDX(
-        SC_TAGS("dolphin.frame_step", "dolphin.transition"),
-        "backend_transition=%llu baseline_vi=%llu state_after=%u thread=%llu",
-        static_cast<unsigned long long>(transition_id),
-        static_cast<unsigned long long>(baseline_vi),
-        static_cast<unsigned>(QueryCoreState()),
-        static_cast<unsigned long long>(
-            std::hash<std::thread::id>{}(std::this_thread::get_id())));
-    return BackendResult::Success();
+    return impl_->control_actuator.ApplySynchronous(command);
 }
 
 BackendResult DolphinWrapperBackend::SetThrottleDisabled(bool disabled)
@@ -1317,7 +1350,7 @@ BackendResult DolphinWrapperBackend::RestoreStateFile(const std::filesystem::pat
         if (QueryCoreState() == BackendCoreState::Paused)
             impl_->ConfirmPause();
         else
-            impl_->InvalidatePauseConfirmation();
+            impl_->InvalidateControlConfirmation();
         return BackendResult::Success();
     }
     return BackendResult::Failure(
@@ -1481,7 +1514,7 @@ BackendResult DolphinWrapperBackend::RestoreStateBuffer(
         if (QueryCoreState() == BackendCoreState::Paused)
             impl_->ConfirmPause();
         else
-            impl_->InvalidatePauseConfirmation();
+            impl_->InvalidateControlConfirmation();
         return BackendResult::Success();
     }
     return BackendResult::Failure(
@@ -1741,7 +1774,7 @@ DolphinWrapperBackend::ObserveMovieWhilePaused() const
             static_cast<unsigned>(execution.core_state),
             execution.pause_confirmed ? 1 : 0,
             static_cast<unsigned long long>(
-                impl_->pause_confirmation->acknowledged.load(std::memory_order_acquire)),
+                impl_->control_confirmation->applied_generation.load(std::memory_order_acquire)),
             execution.result.message.empty()
                 ? "state"
                 : execution.result.message.c_str(),
@@ -1769,7 +1802,7 @@ DolphinWrapperBackend::ObserveMovieWhilePaused() const
             static_cast<unsigned long long>(snapshot_id),
             static_cast<unsigned>(execution.core_state),
             static_cast<unsigned long long>(
-                impl_->pause_confirmation->acknowledged.load(std::memory_order_acquire)),
+                impl_->control_confirmation->applied_generation.load(std::memory_order_acquire)),
             static_cast<unsigned>(QueryCoreState()));
         return {
             .result = MovieBackendResult::Success(),

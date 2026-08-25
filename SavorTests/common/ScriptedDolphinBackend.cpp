@@ -887,23 +887,32 @@ ScriptedDolphinBackend::QueryExecutionSnapshot() const
         control_->throttle_disabled};
 }
 
-runtime::BackendResult ScriptedDolphinBackend::RequestPause()
+runtime::BackendResult ScriptedDolphinBackend::SubmitControlCommand(
+    runtime::BackendControlCommand command)
 {
-    return Pause(std::chrono::milliseconds(0));
-}
-
-runtime::BackendResult ScriptedDolphinBackend::BeginFrameStep()
-{
-    std::lock_guard lock(control_->mutex);
-    control_->RecordLocked("begin_frame_step");
-    runtime::BackendResult result = control_->step_frame_result;
-    if (result.ok)
+    switch (command.kind)
     {
-        ++control_->vi_count;
-        control_->core_state = runtime::BackendCoreState::Paused;
+    case runtime::BackendControlCommandKind::Pause:
+        return Pause(std::chrono::milliseconds(0));
+    case runtime::BackendControlCommandKind::Resume:
+        return Resume();
+    case runtime::BackendControlCommandKind::FrameStep:
+    {
+        std::lock_guard lock(control_->mutex);
+        control_->RecordLocked("begin_frame_step");
+        runtime::BackendResult result = control_->step_frame_result;
+        if (result.ok)
+        {
+            ++control_->vi_count;
+            control_->core_state = runtime::BackendCoreState::Paused;
+        }
+        control_->changed.notify_all();
+        return result;
     }
-    control_->changed.notify_all();
-    return result;
+    }
+    return runtime::BackendResult::Failure(
+        runtime::BackendErrorCode::InvalidArgument,
+        "unknown scripted control command");
 }
 
 runtime::BackendResult ScriptedDolphinBackend::SetThrottleDisabled(

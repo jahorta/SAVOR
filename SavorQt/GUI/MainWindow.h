@@ -14,7 +14,7 @@
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 #include "GUI/Panes/SettingsPane/SettingsPage.h"
 #include "GUI/Panes/DtmEditorPane/DtmEditorPage.h"
-#include "GUI/Panes/BattleRunSettingsPane/AuthoringLibraryDialog.h"
+#include "GUI/Panes/BattleRunSettingsPane/AuthoringLibraryWindow.h"
 #include "GUI/Refresh/AsyncRefreshPipeline.h"
 #include "GUI/Workspace/WorkspaceWidgets.h"
 
@@ -25,7 +25,7 @@ class RunningTab;
 class AnalysisTab;
 class JobsPage;
 class QLabel;
-class QDialog;
+class PersistentToolWindow;
 class QStackedWidget;
 class QWidget;
 class WorkflowGraphEditorWindow;
@@ -41,7 +41,6 @@ public:
         Workflows,
         Jobs,
         Workers,
-        WorkflowLauncher,
         BattleRunSettings,
         Artifacts,
         SeedProbe,
@@ -84,9 +83,9 @@ private:
     void showBattleRunsAnalysisPane();
     void openWorkflowGraphEditor();
     void openWorkflowGraphEditor(const savor::db::WorkflowGraphSnapshot& snapshot, bool duplicate);
-    void openWorkflowLauncherPreselected(const QString& unitKind,const QString& inputKey,qint64 refId);
+    void showSetupLauncherPreselected(const QString& unitKind,const QString& inputKey,qint64 refId);
     void openSettingsTool(SettingsPage::CoordinatorFocusTarget focusTarget = SettingsPage::CoordinatorFocusTarget::Section);
-    QDialog* createFocusedDialog(const QString& key, const QString& title);
+    PersistentToolWindow* createFocusedWindow(const QString& key, const QString& title);
     void setWorkspaceIndex(int index);
     void ensureVisualReplayHost();
 
@@ -101,10 +100,10 @@ private:
     QTimer statusBarRefreshTimer_;
     savorqt::gui::AsyncRefreshPipeline<int, QPair<int, int>>* workspaceBadgeRefreshPipeline_ = nullptr;
     QDateTime lastCoordinatorRefresh_;
-    QPointer<AuthoringLibraryDialog> authoringLibraryDialog_;
+    QPointer<AuthoringLibraryWindow> authoringLibraryWindow_;
     QPointer<WorkflowGraphEditorWindow> workflowGraphEditor_;
     AuthoringLibraryKey lastAuthoringLibrary_ = AuthoringLibraryKey::SeedProbe;
-    QHash<QString, QPointer<QDialog>> focusedDialogs_;
+    QHash<QString, QPointer<PersistentToolWindow>> focusedWindows_;
     QString lastCoordinatorWarningToastSignature_;
     bool shutdownCoordinatorStarted_ = false;
     bool workflowRetryInFlight_ = false;

@@ -150,7 +150,7 @@ public:
     SavestateCompatibility() const override;
 
     runtime::BackendResult Pause(std::chrono::milliseconds timeout);
-    runtime::BackendResult Resume() override;
+    runtime::BackendResult Resume();
     runtime::BackendResult StepFrame(std::chrono::milliseconds timeout);
 
     runtime::BackendResult RestoreStateFile(
@@ -181,8 +181,8 @@ private:
     Capabilities() const noexcept override;
     [[nodiscard]] runtime::BackendExecutionSnapshot
     QueryExecutionSnapshot() const override;
-    runtime::BackendResult RequestPause() override;
-    runtime::BackendResult BeginFrameStep() override;
+    runtime::BackendResult SubmitControlCommand(
+        runtime::BackendControlCommand command) override;
     runtime::BackendResult SetThrottleDisabled(bool disabled) override;
 
     [[nodiscard]] bool IsAvailable(std::uint8_t port) const noexcept override;

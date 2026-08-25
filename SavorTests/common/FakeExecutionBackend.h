@@ -73,9 +73,8 @@ public:
     [[nodiscard]] runtime::BackendExecutionSnapshot
     QueryExecutionSnapshot() const override;
     [[nodiscard]] runtime::BackendHealthReport CheckHealth() const override;
-    runtime::BackendResult RequestPause() override;
-    runtime::BackendResult Resume() override;
-    runtime::BackendResult BeginFrameStep() override;
+    runtime::BackendResult SubmitControlCommand(
+        runtime::BackendControlCommand command) override;
     runtime::BackendResult SetThrottleDisabled(bool disabled) override;
 
 private:

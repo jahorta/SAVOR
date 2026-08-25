@@ -167,7 +167,7 @@ private:
         .source = {
             .id = kWakeSource,
             .stable_name = "integration.game_mode_controller.engine_wake",
-            .diagnostic_label = "headless JIT ExecutionEngine wake guard",
+            .diagnostic_label = "headless JIT ExecutionControlCore wake guard",
         },
         .subscriptions = {{
             .id = kWakeSubscription,
@@ -203,9 +203,6 @@ private:
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     for (;;)
     {
-        auto drained = session.DrainStopPointEvents();
-        for (StopRouteReceipt& receipt : drained)
-            session.HandleStopPointReceipt(std::move(receipt));
         session.PumpExecution();
         for (ExecutionEvent& event : session.DrainExecutionEvents())
         {

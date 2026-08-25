@@ -299,6 +299,7 @@ struct WorkflowTransitionDecision {
     std::optional<std::string> blocked_reason;
     std::optional<std::string> next_step_key;
     struct DynamicStep {
+        std::optional<std::int64_t> parent_workflow_step_id;
         std::string step_key;
         std::string step_kind;
         std::optional<std::string> input_ref_kind;

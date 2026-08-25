@@ -318,6 +318,8 @@ public:
     void set_workset_summary_callback(WorksetSummaryCallback callback);
     void set_session_event_callback(SessionEventCallback callback);
 
+    void begin_stop();
+    void finish_stop();
     void stop();
     [[nodiscard]] bool confirm_process_exit();
     ProcessWorkerStopSnapshot last_stop_snapshot() const;
@@ -519,6 +521,12 @@ private:
     ProcessWorkerStopSnapshot last_stop_snapshot_;
     mutable std::mutex stop_completion_mutex_;
     std::condition_variable stop_completion_cv_;
+    std::chrono::steady_clock::time_point stop_deadline_{};
+    ProcessWorkerStopSnapshot stop_in_progress_snapshot_;
+    std::shared_ptr<PendingResponse> stop_shutdown_pending_;
+    std::shared_ptr<OutboundWrite> stop_shutdown_write_;
+    bool stop_begin_completed_{ true };
+    bool stop_finishing_{ false };
     bool stop_completed_{ true };
     std::shared_ptr<const ProcessWorkerTestHooks> test_hooks_;
 };

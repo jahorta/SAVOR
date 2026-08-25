@@ -2744,7 +2744,7 @@ struct SessionProgramActionHost::Impl
                 request,
                 ProgramActionResolutionStatus::Rejected,
                 "execution_busy",
-                "Another program action owns ExecutionEngine");
+                "Another program action owns ExecutionControlCore");
         }
         const ExecutionSubmissionReceipt submitted =
             session.SubmitExecution(std::move(execution));
@@ -2783,7 +2783,7 @@ struct SessionProgramActionHost::Impl
                 status,
                 "execution_rejected",
                 submitted.error.message.empty()
-                    ? "ExecutionEngine rejected the action"
+                    ? "ExecutionControlCore rejected the action"
                     : submitted.error.message);
         }
         pending = PendingExecution{

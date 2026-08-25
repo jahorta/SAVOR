@@ -293,7 +293,7 @@
     <ClCompile Include="test_job_execution_coordinator.cpp" />
     <ClCompile Include="test_worker_startup_barrier.cpp" />
     <ClCompile Include="test_worker_result_blob_store.cpp" />
-    <ClCompile Include="test_execution_engine.cpp" />
+    <ClCompile Include="test_execution_control_core.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />
     <ClCompile Include="test_workset_completion.cpp" />
     <ClCompile Include="test_workset_stager.cpp" />

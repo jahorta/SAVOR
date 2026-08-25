@@ -93,10 +93,9 @@ std::string workflowGraphHash(
 } // namespace
 
 WorkflowGraphEditorWindow::WorkflowGraphEditorWindow(QWidget* parent)
-    : QWidget(parent)
+    : PersistentToolWindow(parent)
 {
     setAttribute(Qt::WA_DeleteOnClose);
-    setWindowFlag(Qt::Window, true);
     setWindowTitle(QStringLiteral("Workflow Graph Editor"));
     resize(1120, 760);
 

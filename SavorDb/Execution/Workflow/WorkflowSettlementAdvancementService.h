@@ -27,6 +27,26 @@ struct WorkflowSettlementAdvancementResult {
     std::optional<std::string> blocked_reason;
 };
 
+class WorkflowTransitionApplicationService {
+public:
+    WorkflowTransitionApplicationService(
+        IWorkflowOrchestrationCommandService* command_service,
+        int successor_step_priority_boost = 10);
+
+    bool ApplyDynamicSteps(
+        std::int64_t workflow_instance_id,
+        std::int64_t default_parent_workflow_step_id,
+        int source_priority,
+        const programdb::WorkflowTransitionDecision& transition,
+        std::string_view requested_by,
+        int* spawned_step_count_out,
+        std::string* error_out) const;
+
+private:
+    IWorkflowOrchestrationCommandService* command_service_ = nullptr;
+    int successor_step_priority_boost_ = 10;
+};
+
 class WorkflowSettlementAdvancementService {
 public:
     WorkflowSettlementAdvancementService(

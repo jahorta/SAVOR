@@ -7,11 +7,11 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 #include <QtCore/QtTypes>
-#include <QtWidgets/QDialog>
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
 #include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Widgets/PersistentToolWindow.h"
 
 class QLabel;
 class QListWidget;
@@ -124,12 +124,12 @@ private:
     savorqt::gui::AsyncRefreshPipeline<LibraryRefreshRequest, LibraryRefreshData>* refreshPipeline_ = nullptr;
 };
 
-class AuthoringLibraryDialog : public QDialog
+class AuthoringLibraryWindow : public PersistentToolWindow
 {
     Q_OBJECT
 
 public:
-    explicit AuthoringLibraryDialog(QWidget* parent = nullptr);
+    explicit AuthoringLibraryWindow(QWidget* parent = nullptr);
 
     void selectLibrary(AuthoringLibraryKey key);
     AuthoringLibraryKey currentLibrary() const;

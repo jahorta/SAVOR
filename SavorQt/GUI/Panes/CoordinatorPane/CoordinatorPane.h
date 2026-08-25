@@ -15,8 +15,8 @@ class QPushButton;
 class QSpinBox;
 class QTreeView;
 class WorkerTableModel;
-class VisualReplayDialog;
-class VisualWorkerDashboardDialog;
+class VisualReplayWindow;
+class VisualWorkerDashboardWindow;
 
 class CoordinatorPane : public QWidget
 {
@@ -56,7 +56,7 @@ private:
     QWidget* createMetricCard(const QString& caption, QLabel** valueLabel, const QString& objectName = QString());
     void setControlsEnabledForLifecycleState(CoordinatorLifecycleState state);
     void syncActionButtonStates(CoordinatorLifecycleState state, bool valid);
-    void syncVisualReplayDialog();
+    void syncVisualReplayWindow();
     void ensureVisualWorkerDashboardSurfaces(int workerCount, bool allowShrink);
     void syncVisualWorkerDashboard();
 
@@ -78,8 +78,8 @@ private:
     QLabel* stoppedLabel_ = nullptr;
     QLabel* tableSummaryLabel_ = nullptr;
     QTreeView* workerTableView_ = nullptr;
-    VisualReplayDialog* visualReplayDialog_ = nullptr;
-    VisualWorkerDashboardDialog* visualWorkerDashboard_ = nullptr;
+    VisualReplayWindow* visualReplayWindow_ = nullptr;
+    VisualWorkerDashboardWindow* visualWorkerDashboard_ = nullptr;
     bool visualReplayDoneShown_ = false;
     QString lastToastSignature_;
     QString lastCleanupToastSignature_;

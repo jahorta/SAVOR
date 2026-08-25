@@ -1,7 +1,8 @@
 #pragma once
 
-#include <QtWidgets/QDialog>
 #include <QtCore/QStringList>
+
+#include "GUI/Widgets/PersistentToolWindow.h"
 
 class QWidget;
 class QLabel;
@@ -14,13 +15,13 @@ class VisualReplayCoordinator;
 class LiveLogListModel;
 class LiveLogFilterController;
 
-class VisualReplayDialog final : public QDialog
+class VisualReplayWindow final : public PersistentToolWindow
 {
     Q_OBJECT
 
 public:
-    explicit VisualReplayDialog(QWidget* parent = nullptr);
-    ~VisualReplayDialog() override;
+    explicit VisualReplayWindow(QWidget* parent = nullptr);
+    ~VisualReplayWindow() override;
 
     quintptr renderWidgetHandle() const;
     void showRenderSurface();

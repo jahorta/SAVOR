@@ -1,4 +1,6 @@
-#include "ExecutionEngine.h"
+#include "ExecutionControlCore.h"
+
+#include <atomic>
 
 #include "../Services/Movie/MovieService.h"
 #include "../../../Utils/Log.h"
@@ -12,6 +14,21 @@
 #include <utility>
 
 namespace savor::runtime {
+
+namespace {
+
+std::atomic<std::uint64_t> g_control_generation{1};
+
+[[nodiscard]] BackendResult SubmitControl(
+    IExecutionBackendPort& backend,
+    BackendControlCommandKind kind)
+{
+    const auto generation = ExecutionControlGeneration(
+        g_control_generation.fetch_add(1, std::memory_order_relaxed));
+    return backend.SubmitControlCommand({generation, kind});
+}
+
+} // namespace
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -236,7 +253,7 @@ struct ExecutionObservation : BackendExecutionSnapshot
 
 } // namespace
 
-struct ExecutionEngine::Impl
+struct ExecutionControlCore::Impl
 {
     struct ActiveOperation
     {
@@ -292,7 +309,7 @@ struct ExecutionEngine::Impl
     IExecutionBackendPort& backend;
     MovieService& movies;
     StopPointRouter& stop_points;
-    ExecutionEngineConfig config;
+    ExecutionControlCoreConfig config;
     HostActivityTracker owned_host_activity;
     HostActivityTracker* host_activity = nullptr;
     std::function<Clock::time_point()> now;
@@ -314,7 +331,7 @@ struct ExecutionEngine::Impl
         IExecutionBackendPort& backend_value,
         MovieService& movies_value,
         StopPointRouter& stop_points_value,
-        ExecutionEngineConfig config_value)
+        ExecutionControlCoreConfig config_value)
         : backend(backend_value),
           movies(movies_value),
           stop_points(stop_points_value),
@@ -502,32 +519,56 @@ struct ExecutionEngine::Impl
         snapshot.input_bound =
             active && InputRelationshipOf(active->request).has_value();
         if (backend_snapshot)
+        {
             snapshot.evidence = ConvertEvidence(*backend_snapshot);
+            snapshot.control_generation =
+                backend_snapshot->applied_control_generation;
+        }
 
         if (stopping)
+        {
             snapshot.activity = ExecutionActivity::Closed;
+            snapshot.control_state = ExecutionControlState::Stopping;
+        }
         else if (!active)
+        {
             snapshot.activity = handlers.empty()
                 ? ExecutionActivity::IdlePaused
                 : ExecutionActivity::HandlingInterruption;
+            snapshot.control_state = handlers.empty()
+                ? ExecutionControlState::PausedReady
+                : ExecutionControlState::Interrupting;
+        }
         else
         {
+            if (active->pending_terminal)
+                snapshot.control_state = ExecutionControlState::Completing;
             switch (active->kind)
             {
             case ExecutionOperationKind::ContinueUntil:
                 snapshot.activity = ExecutionActivity::Continuing;
+                if (!active->pending_terminal)
+                    snapshot.control_state = ExecutionControlState::Running;
                 break;
             case ExecutionOperationKind::StepFrames:
                 snapshot.activity = ExecutionActivity::SteppingFrame;
+                if (!active->pending_terminal)
+                    snapshot.control_state = ExecutionControlState::FrameStepping;
                 break;
             case ExecutionOperationKind::ContinueUntilInputObserved:
                 snapshot.activity = ExecutionActivity::Continuing;
+                if (!active->pending_terminal)
+                    snapshot.control_state = ExecutionControlState::Running;
                 break;
             case ExecutionOperationKind::SafePause:
                 snapshot.activity = ExecutionActivity::Pausing;
+                if (!active->pending_terminal)
+                    snapshot.control_state = ExecutionControlState::ConfirmingPause;
                 break;
             case ExecutionOperationKind::InteractiveResume:
                 snapshot.activity = ExecutionActivity::InteractiveRunning;
+                if (!active->pending_terminal)
+                    snapshot.control_state = ExecutionControlState::Running;
                 break;
             }
         }
@@ -1034,6 +1075,12 @@ struct ExecutionEngine::Impl
         terminal.integrity = terminal.error
             ? terminal.error.integrity
             : observed.result.integrity;
+        terminal.control_generation = observed.applied_control_generation;
+        if (terminal.stop)
+        {
+            terminal.stop_transition = StopTransitionId(
+                terminal.stop->stop_transition_id);
+        }
 
         if (operation.kind == ExecutionOperationKind::ContinueUntil ||
             operation.kind == ExecutionOperationKind::StepFrames ||
@@ -1155,7 +1202,7 @@ struct ExecutionEngine::Impl
             active.reset();
             (void)CallBackend(
                 "execution emergency pause after snapshot failure",
-                [&] { return backend.RequestPause(); });
+                [&] { return SubmitControl(backend, BackendControlCommandKind::Pause); });
             EmitTerminal(
                 std::move(finished),
                 ExecutionTerminalStatus::CleanupFailure,
@@ -1195,7 +1242,7 @@ struct ExecutionEngine::Impl
         }
         BackendResult pause = CallBackend(
             "execution terminal pause",
-            [&] { return backend.RequestPause(); });
+            [&] { return SubmitControl(backend, BackendControlCommandKind::Pause); });
         if (!pause.ok)
         {
             ActiveOperation finished = std::move(*active);
@@ -1217,7 +1264,7 @@ struct ExecutionEngine::Impl
         {
             return Error(
                 ExecutionErrorCode::RuntimeStopping,
-                "ExecutionEngine is not available");
+                "ExecutionControlCore is not available");
         }
         if (!EpochOf(request) || EpochOf(request) != epoch)
         {
@@ -1383,6 +1430,9 @@ struct ExecutionEngine::Impl
                 request.policy.current_point ==
                     ExecutionCurrentPointPolicy::Ignore ||
                 restoring;
+            foreground->execution_control_generation =
+                g_control_generation.load(std::memory_order_acquire) - 1;
+            foreground->execution_operation_id = operation.id.value();
         }
         if (operation.wake_group)
         {
@@ -1478,7 +1528,7 @@ struct ExecutionEngine::Impl
             return departed;
         BackendResult resumed = CallBackend(
             "execution resume",
-            [&] { return backend.Resume(); });
+            [&] { return SubmitControl(backend, BackendControlCommandKind::Resume); });
         if (!resumed.ok)
             return BackendError("execution resume failed", resumed);
         return {};
@@ -1524,7 +1574,7 @@ struct ExecutionEngine::Impl
             }
             started = CallBackend(
                 "frame step",
-                [&] { return backend.BeginFrameStep(); });
+                [&] { return SubmitControl(backend, BackendControlCommandKind::FrameStep); });
             break;
         default:
             return Error(
@@ -1638,7 +1688,7 @@ struct ExecutionEngine::Impl
                     .confirmation_timeout;
             if (BackendResult pause = CallBackend(
                     "safe pause",
-                    [&] { return backend.RequestPause(); });
+                    [&] { return SubmitControl(backend, BackendControlCommandKind::Pause); });
                 !pause.ok)
             {
                 return BackendError("safe pause request failed", pause);
@@ -1725,14 +1775,14 @@ struct ExecutionEngine::Impl
         }
     }
 
-    ExecutionEngine* owner = nullptr;
+    ExecutionControlCore* owner = nullptr;
 };
 
-ExecutionEngine::ExecutionEngine(
+ExecutionControlCore::ExecutionControlCore(
     IExecutionBackendPort& backend,
     MovieService& movies,
     StopPointRouter& stop_points,
-    ExecutionEngineConfig config)
+    ExecutionControlCoreConfig config)
     : impl_(std::make_unique<Impl>(
           backend,
           movies,
@@ -1742,7 +1792,7 @@ ExecutionEngine::ExecutionEngine(
     impl_->owner = this;
 }
 
-ExecutionEngine::~ExecutionEngine()
+ExecutionControlCore::~ExecutionControlCore()
 {
     if (impl_ && impl_->initialized &&
         impl_->owner_thread == std::this_thread::get_id())
@@ -1751,19 +1801,19 @@ ExecutionEngine::~ExecutionEngine()
     }
 }
 
-BackendResult ExecutionEngine::Initialize(WorksetEpoch epoch)
+BackendResult ExecutionControlCore::Initialize(WorksetEpoch epoch)
 {
     if (!impl_->OnOwnerThread())
     {
         return BackendResult::Failure(
             BackendErrorCode::InvalidState,
-            "ExecutionEngine initialized outside its owner thread");
+            "ExecutionControlCore initialized outside its owner thread");
     }
     if (impl_->initialized || impl_->stopping || !epoch)
     {
         return BackendResult::Failure(
             BackendErrorCode::InvalidState,
-            "ExecutionEngine initialization state is invalid");
+            "ExecutionControlCore initialization state is invalid");
     }
     const BackendExecutionCapabilityMask capabilities =
         impl_->backend.Capabilities();
@@ -1801,14 +1851,14 @@ BackendResult ExecutionEngine::Initialize(WorksetEpoch epoch)
     return BackendResult::Success();
 }
 
-ExecutionSubmissionReceipt ExecutionEngine::Submit(ExecutionRequest request)
+ExecutionSubmissionReceipt ExecutionControlCore::Submit(ExecutionRequest request)
 {
     ExecutionSubmissionReceipt receipt;
     if (!impl_->OnOwnerThread())
     {
         receipt.error = Error(
             ExecutionErrorCode::WrongThread,
-            "ExecutionEngine submitted outside its owner thread");
+            "ExecutionControlCore submitted outside its owner thread");
         return receipt;
     }
     if (ExecutionError validation = impl_->ValidateCommon(request))
@@ -1826,7 +1876,7 @@ ExecutionSubmissionReceipt ExecutionEngine::Submit(ExecutionRequest request)
         {
             receipt.error = Error(
                 ExecutionErrorCode::Busy,
-                "ExecutionEngine already owns a foreground operation");
+                "ExecutionControlCore already owns a foreground operation");
             return receipt;
         }
 
@@ -1934,7 +1984,7 @@ ExecutionSubmissionReceipt ExecutionEngine::Submit(ExecutionRequest request)
     return receipt;
 }
 
-ExecutionSubmissionReceipt ExecutionEngine::SubmitInterruptionChild(
+ExecutionSubmissionReceipt ExecutionControlCore::SubmitInterruptionChild(
     InterruptionFrameId frame_id,
     ExecutionRequest request)
 {
@@ -2051,21 +2101,21 @@ ExecutionSubmissionReceipt ExecutionEngine::SubmitInterruptionChild(
     return receipt;
 }
 
-ExecutionControlReceipt ExecutionEngine::Cancel(CancellationReason reason)
+ExecutionControlReceipt ExecutionControlCore::Cancel(CancellationReason reason)
 {
     ExecutionControlReceipt receipt;
     if (!impl_->OnOwnerThread())
     {
         receipt.error = Error(
             ExecutionErrorCode::WrongThread,
-            "ExecutionEngine cancelled outside its owner thread");
+            "ExecutionControlCore cancelled outside its owner thread");
         return receipt;
     }
     if (!impl_->active && impl_->handlers.empty())
     {
         receipt.error = Error(
             ExecutionErrorCode::InvalidState,
-            "ExecutionEngine has no active operation");
+            "ExecutionControlCore has no active operation");
         return receipt;
     }
     receipt.accepted = true;
@@ -2095,7 +2145,7 @@ ExecutionControlReceipt ExecutionEngine::Cancel(CancellationReason reason)
     return receipt;
 }
 
-ExecutionControlReceipt ExecutionEngine::CompleteInterruptionHandler(
+ExecutionControlReceipt ExecutionControlCore::CompleteInterruptionHandler(
     InterruptionFrameId frame_id,
     InterruptionHandlerOutcome outcome,
     std::string diagnostic)
@@ -2223,7 +2273,7 @@ ExecutionControlReceipt ExecutionEngine::CompleteInterruptionHandler(
         {
             const BackendResult pause = impl_->CallBackend(
                 "resumed safe pause",
-                [&] { return impl_->backend.RequestPause(); });
+                [&] { return SubmitControl(impl_->backend, BackendControlCommandKind::Pause); });
             if (!pause.ok)
                 resumed = BackendError("resumed safe pause failed", pause);
             break;
@@ -2257,7 +2307,7 @@ ExecutionControlReceipt ExecutionEngine::CompleteInterruptionHandler(
     return receipt;
 }
 
-void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
+void ExecutionControlCore::HandleStopPointReceipt(StopRouteReceipt receipt)
 {
     if (!impl_->OnOwnerThread() || !impl_->active)
     {
@@ -2284,6 +2334,23 @@ void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
             receipt.identity.sequence.value(),
             receipt.event ? receipt.event->evidence.hit_pc : 0,
             AwaitedPcs(impl_->active->request).c_str());
+    }
+    if (receipt.terminal == StopRouteTerminal::ForegroundMatched)
+    {
+        static std::atomic<std::uint64_t> next_stop_transition{1};
+        receipt.stop_transition_id =
+            next_stop_transition.fetch_add(1, std::memory_order_relaxed);
+        if (receipt.execution_operation_id != 0 &&
+            receipt.execution_operation_id != impl_->active->id.value())
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::BackendFailure,
+                Error(
+                    ExecutionErrorCode::StopPointFailure,
+                    "foreground stop belongs to a different execution operation"),
+                std::move(receipt));
+            return;
+        }
     }
     if (impl_->active->pending_terminal)
     {
@@ -2322,7 +2389,20 @@ void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
     switch (receipt.terminal)
     {
     case StopRouteTerminal::None:
+        return;
     case StopRouteTerminal::Stale:
+        if (receipt.core_must_remain_stopped ||
+            (receipt.event && receipt.event->authoritative))
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::BackendFailure,
+                Error(
+                    ExecutionErrorCode::StopPointFailure,
+                    receipt.error.message.empty()
+                        ? "authoritative stop became stale before execution control consumed it"
+                        : receipt.error.message),
+                std::move(receipt));
+        }
         return;
     case StopRouteTerminal::ForegroundMatched:
         impl_->BeginFinish(
@@ -2513,7 +2593,7 @@ void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
 
     const BackendResult pause = impl_->CallBackend(
         "interruption pause confirmation",
-        [&] { return impl_->backend.RequestPause(); });
+        [&] { return SubmitControl(impl_->backend, BackendControlCommandKind::Pause); });
     if (!pause.ok)
     {
         Impl::SuspendedFrame failed =
@@ -2552,7 +2632,7 @@ void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
     impl_->PublishState(&observed);
 }
 
-void ExecutionEngine::Pump()
+void ExecutionControlCore::Pump()
 {
     if (!impl_->OnOwnerThread() || !impl_->initialized ||
         impl_->stopping)
@@ -2560,6 +2640,16 @@ void ExecutionEngine::Pump()
         return;
     }
     const auto current = impl_->now();
+    const auto drain_authoritative_ingress = [this] {
+        for (StopRouteReceipt& receipt : impl_->stop_points.DrainIngress())
+            HandleStopPointReceipt(std::move(receipt));
+    };
+
+    // Native stop packets are published before CPU::Break. Consume anything
+    // already authoritative before observing Dolphin, then recheck after the
+    // observation so a stop crossing this boundary cannot be misclassified as
+    // an unexplained pause.
+    drain_authoritative_ingress();
 
     const bool suspended_parent_cancelled = std::any_of(
         impl_->handlers.begin(),
@@ -2633,6 +2723,7 @@ void ExecutionEngine::Pump()
         return;
     }
 
+    const ExecutionOperationId observed_operation = impl_->active->id;
     ExecutionObservation observed = impl_->Query();
     if (!observed.result.ok)
     {
@@ -2640,7 +2731,7 @@ void ExecutionEngine::Pump()
         impl_->active.reset();
         (void)impl_->CallBackend(
             "execution emergency pause after maintenance snapshot failure",
-            [&] { return impl_->backend.RequestPause(); });
+            [&] { return SubmitControl(impl_->backend, BackendControlCommandKind::Pause); });
         impl_->EmitTerminal(
             std::move(failed),
             ExecutionTerminalStatus::CleanupFailure,
@@ -2651,6 +2742,9 @@ void ExecutionEngine::Pump()
             &observed);
         return;
     }
+    drain_authoritative_ingress();
+    if (!impl_->active || impl_->active->id != observed_operation)
+        return;
     Impl::ActiveOperation& operation = *impl_->active;
     impl_->LogHeartbeat(operation, observed, current);
 
@@ -2723,7 +2817,6 @@ void ExecutionEngine::Pump()
         impl_->BeginFinish(ExecutionTerminalStatus::Cancelled);
         return;
     }
-
     if (operation.kind == ExecutionOperationKind::SafePause &&
         operation.pause_control_deadline &&
         current >= *operation.pause_control_deadline)
@@ -2768,6 +2861,23 @@ void ExecutionEngine::Pump()
         }
     }
 
+    const bool resume_driven =
+        operation.kind == ExecutionOperationKind::ContinueUntil ||
+        operation.kind == ExecutionOperationKind::ContinueUntilInputObserved ||
+        operation.kind == ExecutionOperationKind::InteractiveResume;
+    if (resume_driven && !operation.observed_running &&
+        observed.core_state == BackendCoreState::Paused)
+    {
+        // SetState(Running) and the CPU run loop do not become observable as
+        // one atomic host transition. A paused observation immediately after
+        // resume still belongs to that admission boundary; it cannot authorize
+        // a newer pause command or an unexpected-stop terminal.
+        operation.health_eligible = false;
+        impl_->RebaselineHealth(operation, observed, current);
+        impl_->PublishState(&observed);
+        return;
+    }
+
     if (operation.kind != ExecutionOperationKind::SafePause &&
         observed.core_state == BackendCoreState::Paused &&
         !observed.pause_confirmed)
@@ -2782,7 +2892,7 @@ void ExecutionEngine::Pump()
             // This requests no movie observation and does not resume the core.
             const BackendResult pause = impl_->CallBackend(
                 "confirm externally paused Dolphin core",
-                [&] { return impl_->backend.RequestPause(); });
+                [&] { return SubmitControl(impl_->backend, BackendControlCommandKind::Pause); });
             if (!pause.ok)
             {
                 impl_->BeginFinish(
@@ -2898,7 +3008,7 @@ void ExecutionEngine::Pump()
     }
 }
 
-std::vector<ExecutionEvent> ExecutionEngine::DrainEvents()
+std::vector<ExecutionEvent> ExecutionControlCore::DrainEvents()
 {
     if (!impl_->OnOwnerThread())
         return {};
@@ -2907,17 +3017,17 @@ std::vector<ExecutionEvent> ExecutionEngine::DrainEvents()
     return events;
 }
 
-ExecutionSnapshot ExecutionEngine::snapshot() const
+ExecutionSnapshot ExecutionControlCore::snapshot() const
 {
     return impl_->snapshot;
 }
 
-bool ExecutionEngine::has_active_operation() const noexcept
+bool ExecutionControlCore::has_active_operation() const noexcept
 {
     return impl_->active.has_value() || !impl_->handlers.empty();
 }
 
-std::optional<Clock::time_point> ExecutionEngine::next_wake() const
+std::optional<Clock::time_point> ExecutionControlCore::next_wake() const
 {
     if (impl_->stopping ||
         (!impl_->active && impl_->handlers.empty()))
@@ -2950,13 +3060,13 @@ std::optional<Clock::time_point> ExecutionEngine::next_wake() const
 }
 
 
-BackendResult ExecutionEngine::Shutdown()
+BackendResult ExecutionControlCore::Shutdown()
 {
     if (!impl_->OnOwnerThread())
     {
         return BackendResult::Failure(
             BackendErrorCode::InvalidState,
-            "ExecutionEngine shutdown called outside its owner thread");
+            "ExecutionControlCore shutdown called outside its owner thread");
     }
     if (impl_->stopping)
         return BackendResult::Success();
@@ -2974,7 +3084,7 @@ BackendResult ExecutionEngine::Shutdown()
     {
         const BackendResult pause = impl_->CallBackend(
             "execution shutdown pause",
-            [&] { return impl_->backend.RequestPause(); });
+            [&] { return SubmitControl(impl_->backend, BackendControlCommandKind::Pause); });
         if (!pause.ok)
             result = pause;
         observed = impl_->Query();
@@ -3048,7 +3158,7 @@ BackendResult ExecutionEngine::Shutdown()
         result = BackendResult::Failure(
             BackendErrorCode::OperationFailed,
             observed.result.message.empty()
-                ? "ExecutionEngine shutdown did not reach a confirmed pause"
+                ? "ExecutionControlCore shutdown did not reach a confirmed pause"
                 : observed.result.message,
             BackendIntegrity::Unknown);
     }
@@ -3065,10 +3175,10 @@ BackendResult ExecutionEngine::Shutdown()
     return result;
 }
 
-void ExecutionEngine::OnStopPoint(const StopDelivery&)
+void ExecutionControlCore::OnStopPoint(const StopDelivery&)
 {
     // StopPointRouter invokes consumers on the actor while constructing the
-    // authoritative route receipt. ExecutionEngine consumes that complete
+    // authoritative route receipt. ExecutionControlCore consumes that complete
     // receipt through HandleStopPointReceipt so policy is evaluated once.
 }
 

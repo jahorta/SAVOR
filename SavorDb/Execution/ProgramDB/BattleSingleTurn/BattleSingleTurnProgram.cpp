@@ -1,4 +1,6 @@
 #include "BattleSingleTurnProgram.h"
+
+#include "../../Workflow/WorkflowSettlementAdvancementService.h"
 #include "../WorksetObservationBinding.h"
 #include "../WorksetDerivedStateBinding.h"
 
@@ -1930,241 +1932,160 @@ bool Materializer::Continue(
         || plan->fingerprint != battle_set->battle_plan_fingerprint)
         return Fail("battle.single_turn continuation authoring lineage is missing", error_out);
     if (!ValidateBattlePlanForMaterialization(*plan, error_out)) return false;
-    const auto jobs = analysis_db_->ListBattleTurnJobsForWave(wave->wave_id);
-    if (jobs.empty()) return Fail("battle.single_turn wave lost its candidate population", error_out);
-    std::vector<RankedCandidate> results;
-    results.reserve(jobs.size());
-    for (const auto& job : jobs) {
-        if (!job.exec_job_id) return Fail("battle.single_turn candidate has no execution identity", error_out);
-        const auto result = analysis_db_->GetBattleSingleTurnResultForExecJob(*job.exec_job_id);
-        if (!result) return Fail("battle.single_turn candidate result is not durable", error_out);
-        if (result->error_code && IsCommandEntryFailure(
-                ProgramResult{}, *result->error_code, result->error_text.value_or(""))) {
-            result_out->disposition = ProgramJobContinuationDisposition::Failed;
-            result_out->failure_code = "BATTLE_COMMAND_ENTRY_WORKSET_FAILED";
-            result_out->failure_text =
-                "command-entry canary failed; correct the interaction and explicitly retry the complete workset";
-            return true;
+    const auto all_waves = analysis_db_->ListBattleTurnWaves(wave->battle_set_id);
+    std::vector<BattleTurnWaveSnapshot> turn_waves;
+    for (const auto& item : all_waves)
+        if (item.turn_index == wave->turn_index) turn_waves.push_back(item);
+    std::ranges::sort(turn_waves, {}, &BattleTurnWaveSnapshot::wave_id);
+
+    std::map<std::int64_t, std::vector<RankedCandidate>> cohort;
+    ApplyBattleTurnAdvancementCommand advancement{
+        .battle_set_id = wave->battle_set_id,
+        .turn_index = wave->turn_index,
+    };
+    for (const auto& turn_wave : turn_waves) {
+        const auto jobs = analysis_db_->ListBattleTurnJobsForWave(turn_wave.wave_id);
+        if (jobs.empty()) return Fail("battle turn wave lost its candidate population", error_out);
+        for (const auto& job : jobs) {
+            if (!job.exec_job_id) return Fail("battle turn candidate has no execution identity", error_out);
+            const auto execution = execution_db_ ? execution_db_->GetExecutionJob(*job.exec_job_id) : std::nullopt;
+            const auto durable = analysis_db_->GetBattleSingleTurnResultForExecJob(*job.exec_job_id);
+            if (!execution || execution->state != "SUCCEEDED" || !durable) {
+                result_out->disposition = ProgramJobContinuationDisposition::Complete;
+                result_out->event_lines.push_back("[battle-turn-barrier-blocked] battle_set="
+                    + std::to_string(wave->battle_set_id) + " turn="
+                    + std::to_string(wave->turn_index) + " job="
+                    + std::to_string(*job.exec_job_id));
+                return true;
+            }
+            if (durable->turn_job_id != job.turn_job_id
+                || durable->terminal_kind != "SUCCEEDED"
+                || !execution->worker_terminal_fingerprint
+                || *execution->worker_terminal_fingerprint != durable->worker_terminal_sha256) {
+                return Fail("battle turn result does not match current successful execution identity", error_out);
+            }
+            advancement.expected_results.push_back({
+                .wave_id = turn_wave.wave_id,
+                .turn_job_id = job.turn_job_id,
+                .exec_job_id = *job.exec_job_id,
+                .worker_terminal_sha256 = durable->worker_terminal_sha256,
+            });
+            cohort[turn_wave.wave_id].push_back({job, *durable});
         }
-        results.push_back({job, *result});
     }
+
     const auto now = types::UtcNow();
-
-    if (battle_set->status == BattleSetStatus::Victory) {
-        if (!analysis_db_->UpdateBattleTurnWaveStatus(
-                wave->wave_id, BattleTurnWaveStatus::Completed, now, error_out)) return false;
-        const auto status = AggregateBattleSetStatus(
-            analysis_db_, wave->battle_set_id, error_out);
-        if (!status) return false;
-        result_out->disposition = ProgramJobContinuationDisposition::Complete;
-        result_out->output = BattleSetOutput(wave->battle_set_id);
-        result_out->event_lines.push_back("[battle-wave-victory-absorbed] wave="
-            + std::to_string(wave->wave_id));
-        return true;
-    }
-
-    const auto victory = std::ranges::find_if(results, [](const RankedCandidate& candidate) {
-        return candidate.result.terminal_kind == "SUCCEEDED"
-            && candidate.result.domain_outcome == "Victory"
-            && candidate.result.successor_savestate_id.has_value();
-    });
-    if (victory != results.end()) {
-        if (!analysis_db_->UpdateBattleTurnWaveStatus(
-                wave->wave_id, BattleTurnWaveStatus::Completed, now, error_out)) return false;
-        const auto status = AggregateBattleSetStatus(
-            analysis_db_, wave->battle_set_id, error_out);
-        if (!status || *status != BattleSetStatus::Victory)
-            return Fail("BattleSet aggregation did not preserve Victory", error_out);
-        result_out->disposition = ProgramJobContinuationDisposition::Complete;
-        result_out->output = BattleSetOutput(wave->battle_set_id);
-        result_out->event_lines.push_back("[battle-wave-victory] wave="
-            + std::to_string(wave->wave_id));
-        return true;
-    }
-
-    std::vector<RankedCandidate> reached_next_turn;
-    for (const auto& candidate : results) {
-        if (candidate.result.terminal_kind != "SUCCEEDED"
-            || candidate.result.domain_outcome != "ReachedNextTurn"
-            || !candidate.result.ending_rng
-            || !candidate.result.successor_savestate_id) continue;
-        reached_next_turn.push_back(candidate);
-    }
-    if (reached_next_turn.empty()) {
-        if (!analysis_db_->UpdateBattleTurnWaveStatus(
-                wave->wave_id, BattleTurnWaveStatus::NoSurvivors, now, error_out)) return false;
-        const auto status = AggregateBattleSetStatus(
-            analysis_db_, wave->battle_set_id, error_out);
-        if (!status) return false;
-        result_out->disposition = ProgramJobContinuationDisposition::Complete;
-        if (IsTerminalBattleSetStatus(*status))
-            result_out->output = BattleSetOutput(wave->battle_set_id);
-        result_out->event_lines.push_back("[battle-wave-no-survivors] wave="
-            + std::to_string(wave->wave_id));
-        return true;
-    }
-
     const auto* next_turn = FindTurn(*plan, wave->turn_index + 1);
-    if (!next_turn) {
-        if (!analysis_db_->UpdateBattleTurnWaveStatus(
-                wave->wave_id, BattleTurnWaveStatus::PlanComplete, now, error_out)) return false;
-        const auto status = AggregateBattleSetStatus(
-            analysis_db_, wave->battle_set_id, error_out);
-        if (!status) return false;
-        result_out->disposition = ProgramJobContinuationDisposition::Complete;
-        if (IsTerminalBattleSetStatus(*status))
-            result_out->output = BattleSetOutput(wave->battle_set_id);
-        result_out->event_lines.push_back("[battle-plan-complete] wave="
-            + std::to_string(wave->wave_id));
-        return true;
-    }
-    if (!CompileBattleTurnVariants(*next_turn, nullptr, error_out)) return false;
-
-    if (battle_set->continuation_mode == BattleContinuationMode::ManualSelection) {
-        if (!analysis_db_->UpdateBattleTurnWaveStatus(
-                wave->wave_id, BattleTurnWaveStatus::AwaitingSelection,
-                std::nullopt, error_out)) return false;
-        if (!AggregateBattleSetStatus(analysis_db_, wave->battle_set_id, error_out))
-            return false;
-        result_out->disposition = ProgramJobContinuationDisposition::Complete;
-        result_out->event_lines.push_back("[battle-wave-awaiting-user-selection] wave="
-            + std::to_string(wave->wave_id));
-        return true;
+    if (next_turn && !CompileBattleTurnVariants(*next_turn, nullptr, error_out)) return false;
+    bool victory = false;
+    bool any_children = false;
+    bool any_awaiting = false;
+    bool any_plan_complete = false;
+    for (const auto& [wave_id_key, candidates] : cohort) {
+        if (std::ranges::any_of(candidates, [](const RankedCandidate& candidate) {
+                return candidate.result.domain_outcome == "Victory"
+                    && candidate.result.successor_savestate_id.has_value();
+            })) victory = true;
     }
 
-    std::vector<RankedCandidate> eligible;
-    std::size_t unavailable_count = 0;
-    std::size_t unknown_count = 0;
-    for (const auto& candidate : reached_next_turn) {
-        switch (ClassifyTargetArtifact(
-            state_db_, candidate.result, *next_turn)) {
-        case BattleTargetAvailability::Available:
-            eligible.push_back(candidate);
-            break;
-        case BattleTargetAvailability::Unavailable:
-            ++unavailable_count;
-            break;
-        case BattleTargetAvailability::Unknown:
-            ++unknown_count;
-            eligible.push_back(candidate);
-            break;
+    for (const auto& turn_wave : turn_waves) {
+        const auto& candidates = cohort.at(turn_wave.wave_id);
+        if (victory) {
+            advancement.wave_statuses.push_back({turn_wave.wave_id, BattleTurnWaveStatus::Completed, now});
+            continue;
         }
-    }
-    result_out->event_lines.push_back("[battle-target-eligibility] wave="
-        + std::to_string(wave->wave_id) + " available="
-        + std::to_string(eligible.size() - unknown_count) + " unavailable="
-        + std::to_string(unavailable_count) + " unknown="
-        + std::to_string(unknown_count));
-    if (unknown_count > 0) {
-        result_out->event_lines.push_back("[battle-target-context-unknown] wave="
-            + std::to_string(wave->wave_id) + " count="
-            + std::to_string(unknown_count)
-            + " automatic_continuation=eligible");
-    }
-    if (eligible.empty()) {
-        if (!analysis_db_->UpdateBattleTurnWaveStatus(
-                wave->wave_id, BattleTurnWaveStatus::AwaitingSelection,
-                std::nullopt, error_out)) return false;
-        if (!AggregateBattleSetStatus(analysis_db_, wave->battle_set_id, error_out))
-            return false;
-        result_out->disposition = ProgramJobContinuationDisposition::Complete;
-        result_out->event_lines.push_back("[battle-wave-awaiting-user-selection] wave="
-            + std::to_string(wave->wave_id) + " reason=targets_unavailable");
-        return true;
-    }
-
-    std::map<std::int64_t, RankedCandidate> best_by_rng;
-    for (const auto& candidate : eligible) {
-        auto [where, inserted] = best_by_rng.emplace(
-            *candidate.result.ending_rng, candidate);
-        if (!inserted && BetterCandidate(candidate, where->second))
-            where->second = candidate;
-    }
-
-    std::int64_t pool_id = 0;
-    if (!analysis_db_->EnsureBattleAdvancementPool({
-            .battle_set_id = wave->battle_set_id,
-            .turn_index = wave->turn_index,
-            .pool_name = "wave-" + std::to_string(wave->wave_id) + "-ending-rng",
+        std::vector<RankedCandidate> reached;
+        for (const auto& candidate : candidates) {
+            if (candidate.result.domain_outcome == "ReachedNextTurn"
+                && candidate.result.ending_rng && candidate.result.successor_savestate_id)
+                reached.push_back(candidate);
+        }
+        if (reached.empty()) {
+            advancement.wave_statuses.push_back({turn_wave.wave_id, BattleTurnWaveStatus::NoSurvivors, now});
+            continue;
+        }
+        if (!next_turn) {
+            advancement.wave_statuses.push_back({turn_wave.wave_id, BattleTurnWaveStatus::PlanComplete, now});
+            any_plan_complete = true;
+            continue;
+        }
+        if (battle_set->continuation_mode == BattleContinuationMode::ManualSelection) {
+            advancement.wave_statuses.push_back({turn_wave.wave_id, BattleTurnWaveStatus::AwaitingSelection, std::nullopt});
+            any_awaiting = true;
+            continue;
+        }
+        std::vector<RankedCandidate> eligible;
+        for (const auto& candidate : reached) {
+            if (ClassifyTargetArtifact(state_db_, candidate.result, *next_turn)
+                != BattleTargetAvailability::Unavailable) eligible.push_back(candidate);
+        }
+        if (eligible.empty()) {
+            advancement.wave_statuses.push_back({turn_wave.wave_id, BattleTurnWaveStatus::AwaitingSelection, std::nullopt});
+            any_awaiting = true;
+            continue;
+        }
+        std::map<std::int64_t, RankedCandidate> best_by_rng;
+        for (const auto& candidate : eligible) {
+            auto [where, inserted] = best_by_rng.emplace(*candidate.result.ending_rng, candidate);
+            if (!inserted && BetterCandidate(candidate, where->second)) where->second = candidate;
+        }
+        const auto pool_name = "wave-" + std::to_string(turn_wave.wave_id) + "-ending-rng";
+        BattleTurnAdvancementPoolPlan pool{
+            .pool_name = pool_name,
             .criterion_kind = BattleAdvancementCriterionKind::BestFakeAttacksByRngSeed,
-            .created_at_utc = now,
-            .correlation_id = "battle-set-" + std::to_string(wave->battle_set_id),
-            .causation_id = "wave-" + std::to_string(wave->wave_id),
-        }, &pool_id, error_out)) return false;
-    auto decisions = analysis_db_->ListBattleAdvancementDecisionsForPool(pool_id);
-    if (decisions.empty()) {
+        };
         std::set<std::int64_t> selected;
         for (const auto& [rng, candidate] : best_by_rng) {
             (void)rng;
             selected.insert(candidate.job.turn_job_id);
+            advancement.children.push_back({
+                .parent_wave_id = turn_wave.wave_id,
+                .parent_turn_job_id = candidate.job.turn_job_id,
+                .seed_candidate_id = turn_wave.seed_candidate_id,
+                .pool_name = pool_name,
+            });
+            any_children = true;
         }
         for (const auto& candidate : eligible) {
             const bool chosen = selected.contains(candidate.job.turn_job_id);
-            if (!analysis_db_->RecordBattleAdvancementDecision({
-                    .battle_advancement_pool_id = pool_id,
-                    .turn_job_id = candidate.job.turn_job_id,
-                    .decision_kind = chosen ? BattleAdvancementDecisionKind::Selected
-                                            : BattleAdvancementDecisionKind::NotSelected,
-                    .decision_reason = chosen
-                        ? std::optional<std::string>(
-                            "ending_rng winner: cumulative_fake_attacks, delta_vi, pred_passed, stable_job_id")
-                        : std::optional<std::string>("ending_rng duplicate"),
-                    .created_at_utc = now,
-                    .correlation_id = "battle-set-" + std::to_string(wave->battle_set_id),
-                    .causation_id = "battle-advancement-pool-" + std::to_string(pool_id),
-                }, nullptr, error_out)) return false;
+            pool.decisions.push_back({
+                .turn_job_id = candidate.job.turn_job_id,
+                .decision_kind = chosen ? BattleAdvancementDecisionKind::Selected
+                                        : BattleAdvancementDecisionKind::NotSelected,
+                .decision_reason = chosen
+                    ? std::optional<std::string>("ending_rng winner: cumulative_fake_attacks, delta_vi, pred_passed, stable_job_id")
+                    : std::optional<std::string>("ending_rng duplicate"),
+            });
         }
-        decisions = analysis_db_->ListBattleAdvancementDecisionsForPool(pool_id);
+        advancement.pools.push_back(std::move(pool));
+        advancement.wave_statuses.push_back({turn_wave.wave_id, BattleTurnWaveStatus::Completed, now});
     }
-    const auto all_waves = analysis_db_->ListBattleTurnWaves(wave->battle_set_id);
-    std::set<std::int64_t> eligible_turn_jobs;
-    for (const auto& candidate : eligible)
-        eligible_turn_jobs.insert(candidate.job.turn_job_id);
-    std::size_t created_count = 0;
-    for (const auto& decision : decisions) {
-        if (decision.decision_kind != BattleAdvancementDecisionKind::Selected) continue;
-        const auto candidate = analysis_db_->GetBattleTurnJob(decision.turn_job_id);
-        if (!candidate || candidate->wave_id != wave->wave_id
-            || !eligible_turn_jobs.contains(candidate->turn_job_id)
-            || candidate->battle_outcome != BattleTurnOutcome::ReachedNextTurn
-            || !candidate->output_savestate_id) continue;
-        const auto existing = std::ranges::find_if(all_waves, [&](const BattleTurnWaveSnapshot& item) {
-            return item.parent_wave_id == wave->wave_id
-                && item.parent_turn_job_id == candidate->turn_job_id
-                && item.turn_index == wave->turn_index + 1;
-        });
-        if (existing != all_waves.end()) continue;
-        std::int64_t child_id = 0;
-        if (!analysis_db_->CreateBattleTurnWave({
-                .battle_set_id = wave->battle_set_id,
-                .turn_index = wave->turn_index + 1,
-                .parent_wave_id = wave->wave_id,
-                .parent_turn_job_id = candidate->turn_job_id,
-                .seed_candidate_id = wave->seed_candidate_id,
-                .battle_advancement_pool_id = pool_id,
-                .status = BattleTurnWaveStatus::Ready,
-                .created_at_utc = now,
-                .correlation_id = "battle-set-" + std::to_string(wave->battle_set_id),
-                .causation_id = "turn-job-" + std::to_string(candidate->turn_job_id),
-        }, &child_id, error_out)) return false;
-        ++created_count;
-    }
-    if (!analysis_db_->UpdateBattleTurnWaveStatus(
-            wave->wave_id, BattleTurnWaveStatus::Completed, now, error_out)) return false;
-    const auto status = AggregateBattleSetStatus(
-        analysis_db_, wave->battle_set_id, error_out);
-    if (!status) return false;
+
+    advancement.battle_set_status = victory ? BattleSetStatus::Victory
+        : (any_children || any_awaiting) ? BattleSetStatus::Active
+        : any_plan_complete ? BattleSetStatus::Completed
+        : BattleSetStatus::NoSurvivors;
+    advancement.battle_set_completed_at_utc = IsTerminalBattleSetStatus(advancement.battle_set_status)
+        ? std::optional<types::UtcTimePoint>(now) : std::nullopt;
+    advancement.applied_at_utc = now;
+    advancement.correlation_id = "battle-set-" + std::to_string(wave->battle_set_id);
+    advancement.causation_id = "battle-turn-" + std::to_string(wave->turn_index);
+    ApplyBattleTurnAdvancementReceipt receipt{};
+    if (!analysis_db_->ApplyBattleTurnAdvancement(advancement, &receipt, error_out)) return false;
     result_out->disposition = ProgramJobContinuationDisposition::Complete;
-    if (IsTerminalBattleSetStatus(*status))
+    if (IsTerminalBattleSetStatus(advancement.battle_set_status))
         result_out->output = BattleSetOutput(wave->battle_set_id);
-    result_out->event_lines.push_back("[battle-next-waves-created] wave="
-        + std::to_string(wave->wave_id) + " count=" + std::to_string(created_count));
+    result_out->event_lines.push_back("[battle-turn-barrier-applied] battle_set="
+        + std::to_string(wave->battle_set_id) + " turn="
+        + std::to_string(wave->turn_index) + " children="
+        + std::to_string(receipt.child_wave_ids.size()));
     return true;
 }
 
 class Transition final : public IWorkflowTransitionHandler {
 public:
-    explicit Transition(IAnalysisDb* analysis_db) : analysis_db_(analysis_db) {}
+    Transition(IAnalysisDb* analysis_db, IExecutionDb* execution_db)
+        : analysis_db_(analysis_db), execution_db_(execution_db) {}
 
     WorkflowTransitionDecision EvaluateTransition(
         const WorkflowTransitionContext& context) const override {
@@ -2212,11 +2133,29 @@ public:
         if (set->status == BattleSetStatus::Victory) return decision;
         auto waves = analysis_db_->ListBattleTurnWaves(set->battle_set_id);
         std::ranges::sort(waves, {}, &BattleTurnWaveSnapshot::wave_id);
+        const auto graph = execution_db_ && execution_db_->WorkflowQueryService()
+            ? execution_db_->WorkflowQueryService()->GetWorkflowGraph(context.workflow_instance_id)
+            : std::nullopt;
         for (const auto& child : waves) {
-            if (child.parent_wave_id != wave->wave_id
+            if (!child.parent_wave_id
                 || child.turn_index != wave->turn_index + 1
                 || child.status != BattleTurnWaveStatus::Ready) continue;
+            if (!graph) {
+                decision.workflow_failure = true;
+                decision.blocked_reason = "battle_workflow_graph_missing";
+                return decision;
+            }
+            const auto parent_step = std::ranges::find_if(graph->steps, [&](const auto& step) {
+                return step.input_ref_kind == std::optional<std::string>(kWaveRefKind)
+                    && step.input_ref_id == child.parent_wave_id;
+            });
+            if (parent_step == graph->steps.end()) {
+                decision.workflow_failure = true;
+                decision.blocked_reason = "battle_parent_wave_step_missing";
+                return decision;
+            }
             decision.spawn_steps.push_back({
+                .parent_workflow_step_id = parent_step->workflow_step_id,
                 .step_key = "BattleTurn/t" + std::to_string(child.turn_index)
                     + "/w" + std::to_string(child.wave_id),
                 .step_kind = std::string(kStepKind),
@@ -2237,6 +2176,7 @@ public:
 
 private:
     IAnalysisDb* analysis_db_{};
+    IExecutionDb* execution_db_{};
 };
 
 } // namespace
@@ -2307,8 +2247,28 @@ bool RequestBattleWaveContinuation(
         }
     }
 
+    const auto turn_waves = analysis_db->ListBattleTurnWaves(parent->battle_set_id);
+    ApplyBattleTurnAdvancementCommand advancement{
+        .battle_set_id = parent->battle_set_id,
+        .turn_index = parent->turn_index,
+    };
+    for (const auto& turn_wave : turn_waves) {
+        if (turn_wave.turn_index != parent->turn_index) continue;
+        for (const auto& job : analysis_db->ListBattleTurnJobsForWave(turn_wave.wave_id)) {
+            if (!job.exec_job_id) return Fail("manual Battle turn contains a job without execution identity", error_out);
+            const auto execution = execution_db->GetExecutionJob(*job.exec_job_id);
+            const auto result = analysis_db->GetBattleSingleTurnResultForExecJob(*job.exec_job_id);
+            if (!execution || execution->state != "SUCCEEDED" || !result
+                || result->terminal_kind != "SUCCEEDED"
+                || !execution->worker_terminal_fingerprint
+                || *execution->worker_terminal_fingerprint != result->worker_terminal_sha256) {
+                return Fail("manual Battle continuation requires a completely successful turn cohort", error_out);
+            }
+            advancement.expected_results.push_back({turn_wave.wave_id, job.turn_job_id,
+                *job.exec_job_id, result->worker_terminal_sha256});
+        }
+    }
     const auto now = types::UtcNow();
-    auto all_waves = analysis_db->ListBattleTurnWaves(parent->battle_set_id);
     for (const auto turn_job_id : command.selected_turn_job_ids) {
         const auto found = std::ranges::find(
             parent_jobs, turn_job_id, &BattleTurnJobSnapshot::turn_job_id);
@@ -2325,64 +2285,57 @@ bool RequestBattleWaveContinuation(
             || !result->successor_savestate_id) {
             return Fail("manual Battle selection lacks a durable ReachedNextTurn result", error_out);
         }
-        const auto existing = std::ranges::find_if(
-            all_waves, [&](const BattleTurnWaveSnapshot& wave) {
-                return wave.parent_wave_id == parent->wave_id
-                    && wave.parent_turn_job_id == turn_job_id
-                    && wave.turn_index == parent->turn_index + 1;
-            });
-        if (existing != all_waves.end()) {
-            receipt.child_wave_ids.push_back(existing->wave_id);
-            continue;
-        }
-        std::int64_t child_wave_id = 0;
-        if (!analysis_db->CreateBattleTurnWave({
-                .battle_set_id = parent->battle_set_id,
-                .turn_index = parent->turn_index + 1,
-                .parent_wave_id = parent->wave_id,
-                .parent_turn_job_id = turn_job_id,
-                .seed_candidate_id = parent->seed_candidate_id,
-                .status = BattleTurnWaveStatus::Ready,
-                .created_at_utc = now,
-                .correlation_id = "battle-set-"
-                    + std::to_string(parent->battle_set_id),
-                .causation_id = "manual-turn-job-"
-                    + std::to_string(turn_job_id),
-            }, &child_wave_id, error_out)) return false;
-        receipt.child_wave_ids.push_back(child_wave_id);
-        ++receipt.newly_created_wave_count;
-        all_waves.push_back(*analysis_db->GetBattleTurnWave(child_wave_id));
-    }
-
-    auto* workflow_commands = execution_db->WorkflowCommandService();
-    if (!workflow_commands)
-        return Fail("workflow command service is unavailable", error_out);
-    workflow::WorkflowAppendDynamicStepsCommand append{
-        .workflow_instance_id = command.workflow_instance_id,
-        .parent_workflow_step_id = command.parent_workflow_step_id,
-        .requested_by = command.requested_by,
-    };
-    append.steps.reserve(receipt.child_wave_ids.size());
-    for (const auto wave_id : receipt.child_wave_ids) {
-        const auto wave = analysis_db->GetBattleTurnWave(wave_id);
-        if (!wave) return Fail("manual Battle child wave could not be reloaded", error_out);
-        append.steps.push_back({
-            .step_key = "BattleTurn/t" + std::to_string(wave->turn_index)
-                + "/w" + std::to_string(wave->wave_id),
-            .step_kind = std::string(kStepKind),
-            .input_ref_kind = std::string(kWaveRefKind),
-            .input_ref_id = wave->wave_id,
-            .priority = command.priority,
-            .max_attempts = 1,
+        advancement.children.push_back({
+            .parent_wave_id = parent->wave_id,
+            .parent_turn_job_id = turn_job_id,
+            .seed_candidate_id = parent->seed_candidate_id,
         });
     }
-    if (!workflow_commands->AppendDynamicSteps(append, error_out)) return false;
-    if (!analysis_db->UpdateBattleTurnWaveStatus(
-            parent->wave_id, BattleTurnWaveStatus::Completed, now, error_out)) {
-        return false;
-    }
-    if (!AggregateBattleSetStatus(
-            analysis_db, parent->battle_set_id, error_out)) return false;
+    advancement.wave_statuses.push_back({parent->wave_id, BattleTurnWaveStatus::Completed, now});
+    advancement.battle_set_status = BattleSetStatus::Active;
+    advancement.applied_at_utc = now;
+    advancement.correlation_id = "battle-set-" + std::to_string(parent->battle_set_id);
+    advancement.causation_id = "manual-wave-" + std::to_string(parent->wave_id);
+    ApplyBattleTurnAdvancementReceipt apply_receipt{};
+    if (!analysis_db->ApplyBattleTurnAdvancement(advancement, &apply_receipt, error_out)) return false;
+    receipt.child_wave_ids = apply_receipt.child_wave_ids;
+    receipt.newly_created_wave_count = apply_receipt.disposition
+        == ApplyBattleTurnAdvancementDisposition::Applied ? receipt.child_wave_ids.size() : 0;
+
+    auto* workflow_commands = execution_db->WorkflowCommandService();
+    if (!workflow_commands) return Fail("workflow command service is unavailable", error_out);
+    const programdb::WorkflowTransitionContext transition_context{
+        .workflow_instance_id = command.workflow_instance_id,
+        .workflow_step_id = command.parent_workflow_step_id,
+        .priority = command.priority,
+        .workflow_kind = "workflow_graph",
+        .step_kind = std::string(kStepKind),
+        .input_ref_kind = std::string(kWaveRefKind),
+        .input_ref_id = parent->wave_id,
+    };
+    Transition transition_handler(analysis_db, execution_db);
+    const auto transition = transition_handler.EvaluateTransition(transition_context);
+    if (!transition.should_advance || transition.workflow_failure)
+        return Fail(transition.blocked_reason.value_or("manual Battle transition did not advance"), error_out);
+    workflow::WorkflowTransitionApplicationService applicator(workflow_commands);
+    int spawned = 0;
+    if (!applicator.ApplyDynamicSteps(command.workflow_instance_id,
+            command.parent_workflow_step_id, command.priority, transition,
+            command.requested_by, &spawned, error_out)) return false;
+    (void)workflow_commands->AppendLifecycleEvent({
+        .workflow_instance_id = command.workflow_instance_id,
+        .workflow_step_id = command.parent_workflow_step_id,
+        .event_kind = "Execution.WorkflowTransitionEvaluated.v1",
+        .message = "transition_evaluated",
+        .requested_by = command.requested_by,
+    }, nullptr);
+    (void)workflow_commands->AppendLifecycleEvent({
+        .workflow_instance_id = command.workflow_instance_id,
+        .workflow_step_id = command.parent_workflow_step_id,
+        .event_kind = "Execution.WorkflowTransitionAdvanced.v1",
+        .message = "transition_advanced",
+        .requested_by = command.requested_by,
+    }, nullptr);
     (void)workflow_commands->AppendLifecycleEvent({
         .workflow_instance_id = command.workflow_instance_id,
         .workflow_step_id = command.parent_workflow_step_id,
@@ -2421,7 +2374,7 @@ ProgramKindDescriptor BuildBattleSingleTurnProgramDescriptor(
         state_db, analysis_db, authoring_db, config.working_dir_root);
     descriptor.result_handler = std::make_shared<ResultHandler>(
         execution_db, state_db, analysis_db, authoring_db, config.working_dir_root);
-    descriptor.workflow_transition = std::make_shared<Transition>(analysis_db);
+    descriptor.workflow_transition = std::make_shared<Transition>(analysis_db, execution_db);
     descriptor.supports_workflow_orchestration = true;
     return descriptor;
 }

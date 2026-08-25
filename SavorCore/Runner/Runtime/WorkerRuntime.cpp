@@ -3927,7 +3927,7 @@ struct WorkerRuntime::Impl
                 queued,
                 MapExecutionError(submission.error.code),
                 submission.error.message.empty()
-                    ? "ExecutionEngine rejected execution control"
+                    ? "ExecutionControlCore rejected execution control"
                     : submission.error.message);
             return;
         }
@@ -5270,34 +5270,6 @@ struct WorkerRuntime::Impl
             std::move(event.encoded_payload)});
     }
 
-    void DrainStopPointIngress()
-    {
-        if (!session)
-            return;
-        for (StopRouteReceipt& receipt : session->DrainStopPointEvents())
-        {
-            const StopRouteTerminal terminal = receipt.terminal;
-            const std::string diagnostic = receipt.error.message;
-            session->HandleStopPointReceipt(std::move(receipt));
-            if (terminal == StopRouteTerminal::RoutingFailure ||
-                terminal == StopRouteTerminal::Overflow)
-            {
-                // Preserve the engine's typed terminal before shutdown tears
-                // down its event queue. Pending control commands therefore
-                // complete from the authoritative routed failure exactly once.
-                DrainExecutionEvents();
-                if (Snapshot().state != WorkerState::Tainted)
-                {
-                    EnterTainted(
-                        diagnostic.empty()
-                            ? "Authoritative stop-point routing failed"
-                            : diagnostic);
-                }
-                break;
-            }
-        }
-    }
-
     [[nodiscard]] std::uint64_t DrainAuthoritativeIngressToStable(
         bool expose_test_window)
     {
@@ -5305,8 +5277,7 @@ struct WorkerRuntime::Impl
         {
             const std::uint64_t observed_generation =
                 mailbox->ingress_generation.load(std::memory_order_acquire);
-            DrainStopPointIngress();
-            DrainExecutionEvents();
+            PumpExecutionEvents();
 
             if (expose_test_window && test_hooks &&
                 test_hooks->before_ingress_stability_check)

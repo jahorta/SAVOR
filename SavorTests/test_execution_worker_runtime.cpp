@@ -999,7 +999,7 @@ struct RuntimeHarness
         bool supports_worksets = true,
         std::shared_ptr<ProgramBaselineComponentRegistry>
             baseline_components = {},
-        ExecutionEngineConfig execution_engine_config = {})
+        ExecutionControlCoreConfig execution_control_core_config = {})
     {
         {
             std::ofstream output(baseline_path, std::ios::binary);
@@ -1014,7 +1014,7 @@ struct RuntimeHarness
                 std::make_unique<ScriptedDolphinBackend>(
                     backend,
                     std::move(physical_stop_points)),
-                std::move(execution_engine_config)),
+                std::move(execution_control_core_config)),
             std::make_unique<FakeProgramRuntimePort>(program),
             [this](const WorkerEvent& event) { events.Record(event); },
             std::move(test_hooks),
@@ -3109,7 +3109,7 @@ TEST(
     GenuineCoreStallMarksSessionCleanWithDiagnosticsAndAllowsReuse)
 {
     std::atomic<std::int64_t> clock_offset_milliseconds{0};
-    ExecutionEngineConfig execution_config;
+    ExecutionControlCoreConfig execution_config;
     execution_config.now = [&clock_offset_milliseconds] {
         return std::chrono::steady_clock::now() +
             std::chrono::milliseconds(
@@ -3254,7 +3254,7 @@ TEST(
     UnprovenCoreStallPauseTaintsSessionAndTerminatesResidentWorkset)
 {
     std::atomic<std::int64_t> clock_offset_milliseconds{0};
-    ExecutionEngineConfig execution_config;
+    ExecutionControlCoreConfig execution_config;
     execution_config.now = [&clock_offset_milliseconds] {
         return std::chrono::steady_clock::now() +
             std::chrono::milliseconds(
@@ -3890,7 +3890,7 @@ TEST(
 {
     constexpr std::uint32_t kWakePc = 0x801dc288u;
     std::atomic<std::int64_t> clock_offset_milliseconds{0};
-    ExecutionEngineConfig execution_config;
+    ExecutionControlCoreConfig execution_config;
     execution_config.now = [&clock_offset_milliseconds] {
         return std::chrono::steady_clock::now() +
             std::chrono::milliseconds(

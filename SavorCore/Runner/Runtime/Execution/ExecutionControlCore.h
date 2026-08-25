@@ -17,7 +17,7 @@ namespace savor::runtime {
 
 class MovieService;
 
-struct ExecutionEngineConfig
+struct ExecutionControlCoreConfig
 {
     std::chrono::milliseconds maintenance_interval{10};
     std::chrono::milliseconds pause_confirmation_timeout{
@@ -36,18 +36,18 @@ struct ExecutionEngineConfig
         std::chrono::seconds(30)};
 };
 
-class ExecutionEngine final : private IStopPointConsumer
+class ExecutionControlCore final : private IStopPointConsumer
 {
 public:
-    ExecutionEngine(
+    ExecutionControlCore(
         IExecutionBackendPort& backend,
         MovieService& movies,
         StopPointRouter& stop_points,
-        ExecutionEngineConfig config = {});
-    ~ExecutionEngine();
+        ExecutionControlCoreConfig config = {});
+    ~ExecutionControlCore();
 
-    ExecutionEngine(const ExecutionEngine&) = delete;
-    ExecutionEngine& operator=(const ExecutionEngine&) = delete;
+    ExecutionControlCore(const ExecutionControlCore&) = delete;
+    ExecutionControlCore& operator=(const ExecutionControlCore&) = delete;
 
     [[nodiscard]] BackendResult Initialize(WorksetEpoch epoch);
     [[nodiscard]] ExecutionSubmissionReceipt Submit(ExecutionRequest request);
@@ -61,7 +61,6 @@ public:
         InterruptionHandlerOutcome outcome,
         std::string diagnostic = {});
 
-    void HandleStopPointReceipt(StopRouteReceipt receipt);
     void Pump();
     [[nodiscard]] std::vector<ExecutionEvent> DrainEvents();
 
@@ -73,6 +72,7 @@ public:
     [[nodiscard]] BackendResult Shutdown();
 
 private:
+    void HandleStopPointReceipt(StopRouteReceipt receipt);
     void OnStopPoint(const StopDelivery& delivery) override;
 
     struct Impl;

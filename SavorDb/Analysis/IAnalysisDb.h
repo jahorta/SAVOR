@@ -977,6 +977,63 @@ struct BattleRecordingRecord {
     std::optional<types::UtcTimePoint> completed_at_utc;
 };
 
+struct BattleTurnAdvancementExpectedResult {
+    std::int64_t wave_id = 0;
+    std::int64_t turn_job_id = 0;
+    std::int64_t exec_job_id = 0;
+    std::string worker_terminal_sha256;
+};
+
+struct BattleTurnAdvancementDecisionPlan {
+    std::int64_t turn_job_id = 0;
+    BattleAdvancementDecisionKind decision_kind = BattleAdvancementDecisionKind::Unknown;
+    std::optional<std::string> decision_reason;
+};
+
+struct BattleTurnAdvancementPoolPlan {
+    std::string pool_name;
+    BattleAdvancementCriterionKind criterion_kind = BattleAdvancementCriterionKind::Unknown;
+    std::vector<BattleTurnAdvancementDecisionPlan> decisions;
+};
+
+struct BattleTurnAdvancementChildPlan {
+    std::int64_t parent_wave_id = 0;
+    std::int64_t parent_turn_job_id = 0;
+    std::int64_t seed_candidate_id = 0;
+    std::optional<std::string> pool_name;
+};
+
+struct BattleTurnAdvancementWaveStatusPlan {
+    std::int64_t wave_id = 0;
+    BattleTurnWaveStatus status = BattleTurnWaveStatus::Unknown;
+    std::optional<types::UtcTimePoint> completed_at_utc;
+};
+
+struct ApplyBattleTurnAdvancementCommand {
+    std::int64_t battle_set_id = 0;
+    int turn_index = 0;
+    std::vector<BattleTurnAdvancementExpectedResult> expected_results;
+    std::vector<BattleTurnAdvancementPoolPlan> pools;
+    std::vector<BattleTurnAdvancementChildPlan> children;
+    std::vector<BattleTurnAdvancementWaveStatusPlan> wave_statuses;
+    BattleSetStatus battle_set_status = BattleSetStatus::Unknown;
+    std::optional<types::UtcTimePoint> battle_set_completed_at_utc;
+    types::UtcTimePoint applied_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+enum class ApplyBattleTurnAdvancementDisposition {
+    Applied = 0,
+    AlreadyApplied = 1,
+};
+
+struct ApplyBattleTurnAdvancementReceipt {
+    ApplyBattleTurnAdvancementDisposition disposition =
+        ApplyBattleTurnAdvancementDisposition::Applied;
+    std::vector<std::int64_t> child_wave_ids;
+};
+
 struct BindBattleRecordingValidationCommand {
     std::int64_t battle_recording_id = 0;
     std::int64_t tas_movie_tree_id = 0;
@@ -1490,6 +1547,11 @@ struct IAnalysisDb {
     virtual bool RecordBattleAdvancementDecision(
         const RecordBattleAdvancementDecisionCommand& command,
         std::int64_t* battle_advancement_decision_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool ApplyBattleTurnAdvancement(
+        const ApplyBattleTurnAdvancementCommand& command,
+        ApplyBattleTurnAdvancementReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
     virtual bool UpsertBattleManualFollowup(

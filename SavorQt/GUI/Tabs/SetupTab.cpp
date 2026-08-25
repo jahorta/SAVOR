@@ -413,9 +413,9 @@ void SetupTab::build()
     createLayout->addWidget(workflowSummaryLabel);
     workbenchLayout->addWidget(createWorkflowPanel, 1);
 
-    auto* sharedLaunchPanel = new WorkflowLauncherPage(workbench);
-    connect(sharedLaunchPanel, &WorkflowLauncherPage::statusToastRequested, this, &SetupTab::statusToastRequested);
-    workbenchLayout->addWidget(sharedLaunchPanel, 2);
+    workflowLauncherPage_ = new WorkflowLauncherPage(workbench);
+    connect(workflowLauncherPage_, &WorkflowLauncherPage::statusToastRequested, this, &SetupTab::statusToastRequested);
+    workbenchLayout->addWidget(workflowLauncherPage_, 2);
 
     auto workflowRows = std::make_shared<std::vector<WorkflowGraphViewRow>>();
     auto workflowRefreshPipeline =
@@ -578,4 +578,19 @@ void SetupTab::build()
     }
     footerLayout->addStretch();
     canvasLayout()->addWidget(footer);
+}
+
+void SetupTab::showWorkflowLauncher(
+    const QString& unitKind,
+    const QString& inputKey,
+    qint64 refId)
+{
+    if (workflowLauncherPage_ == nullptr) {
+        return;
+    }
+    workflowLauncherPage_->preselectStandaloneInput(
+        unitKind,
+        inputKey,
+        refId);
+    workflowLauncherPage_->setFocus(Qt::OtherFocusReason);
 }

@@ -134,7 +134,7 @@
     <ClCompile Include="test_TASPad.cpp" />
     <ClCompile Include="test_worker_protocol_v1.cpp" />
     <ClCompile Include="test_process_worker_v1.cpp" />
-    <ClCompile Include="test_execution_engine.cpp" />
+    <ClCompile Include="test_execution_control_core.cpp" />
     <ClCompile Include="test_interaction_composition.cpp" />
     <ClCompile Include="test_predicate_composition.cpp" />
     <ClCompile Include="test_battle_backend_contracts.cpp" />
