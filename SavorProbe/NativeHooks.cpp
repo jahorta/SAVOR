@@ -1,5 +1,6 @@
 #include "NativeStopHooks.h"
 #include "NativeHookSemantics.h"
+#include "BreakpointDiagnostics.h"
 
 #include <array>
 #include <atomic>
@@ -142,7 +143,12 @@ void check_breakpoints_from_jit_hook(PowerPC::PowerPCManager& power_pc)
     auto& cpu = Core::System::GetInstance().GetCPU();
     const bool dolphin_control = cpu.IsStepping();
     if (sink_control && !dolphin_control)
+    {
+        BreakpointDiagnosticCauseScope cause(
+            BreakpointDiagnosticCause::StopRouter,
+            sink_decision.routed_sequence);
         cpu.Break();
+    }
 }
 
 bool __fastcall memcheck_action_hook(
@@ -299,6 +305,16 @@ bool InstallNativeStopHooks(std::string* error_out)
         return false;
     }
 
+    if (!InstallBreakpointDiagnostics(error_out))
+    {
+        for (std::size_t index = 0; index < hooks.count; ++index)
+            MH_QueueDisableHook(hooks.hooks[index].target);
+        MH_ApplyQueued();
+        for (std::size_t index = 0; index < hooks.count; ++index)
+            MH_RemoveHook(hooks.hooks[index].target);
+        MH_Uninitialize();
+        return false;
+    }
     s_hooks_installed.store(true, std::memory_order_release);
     return true;
 }
@@ -308,6 +324,7 @@ void UninstallNativeStopHooks() noexcept
     std::scoped_lock lock(s_hook_mutex);
     if (!s_hooks_installed.exchange(false, std::memory_order_acq_rel))
         return;
+    UninstallBreakpointDiagnostics();
     const auto hooks = unique_hook_specs();
     for (std::size_t index = 0; index < hooks.count; ++index)
         MH_QueueDisableHook(hooks.hooks[index].target);

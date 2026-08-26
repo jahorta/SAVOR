@@ -915,6 +915,9 @@ CoordinatorController::buildWorkerConfig() const
     cfg.worker_mode = visualWorkerPoolEnabled_
         ? savor::runtime::WorkerMode::Visual
         : savor::runtime::WorkerMode::Headless;
+    cfg.breakpoint_diagnostics =
+        QCoreApplication::arguments().contains(
+            QStringLiteral("--breakpoint-diagnostics"));
     return cfg;
 }
 

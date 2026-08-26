@@ -389,6 +389,7 @@ void PrintUsage() {
               << " [--repeat <count>]"
               << " [--load-level low|mid|high]"
               << " [--visual-worker *]"
+              << " [--breakpoint-diagnostics]"
               << " [--visual-screenshot-dir <path>]"
               << " [--durable-lines <mode>]"
               << " [--tasmovie-rtc <value>]"
@@ -642,6 +643,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
             options.seedprobe_combo_sampler_tries = v;
+        } else if (arg == "--breakpoint-diagnostics") {
+            options.breakpoint_diagnostics = true;
         } else if (arg == "--battle-fake-attack-min") {
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;

@@ -2804,6 +2804,8 @@ savor::probe::NativeStopDecision StopPointRouter::RouteNative(
     const bool request_break = packet.request_break;
     const bool authoritative = packet.event.authoritative ||
         packet.terminal == StopRouteTerminal::Overflow;
+    const std::uint64_t routed_sequence =
+        packet.event.identity.sequence.value();
     if (packet.terminal == StopRouteTerminal::Overflow)
     {
         authoritative_overflow_.store(true, std::memory_order_release);
@@ -2824,7 +2826,7 @@ savor::probe::NativeStopDecision StopPointRouter::RouteNative(
             {
                 NotifyIngressPublication();
             }
-            return {true, true};
+            return {true, true, routed_sequence};
         }
         passive_drop_count_.fetch_add(1, std::memory_order_relaxed);
         for (std::size_t source_index = 0;
@@ -2838,7 +2840,7 @@ savor::probe::NativeStopDecision StopPointRouter::RouteNative(
         return {};
     }
     NotifyIngressPublication();
-    return {request_break, false};
+    return {request_break, false, routed_sequence};
 }
 
 void StopPointRouter::NotifyIngressPublication() noexcept

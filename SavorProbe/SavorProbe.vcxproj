@@ -33,6 +33,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="AddressProgramEvaluator.h" />
+    <ClInclude Include="BreakpointDiagnostics.h" />
     <ClInclude Include="CaptureRetention.h" />
     <ClInclude Include="NativeHookSemantics.h" />
     <ClInclude Include="NativeStopHooks.h" />
@@ -45,6 +46,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CaptureRetention.cpp" />
+    <ClCompile Include="BreakpointDiagnostics.cpp" />
     <ClCompile Include="NativeHooks.cpp" />
     <ClCompile Include="ProbeEvent.cpp" />
     <ClCompile Include="ProbeProfile.cpp" />

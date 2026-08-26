@@ -23,6 +23,8 @@
 
 #include <windows.h>
 
+#include "../SavorProbe/BreakpointDiagnostics.h"
+
 #include "Core/HostStubs.h"
 #include "Runner/IPC/WrmsProtocol.h"
 #include "Runner/Runtime/WorkerRuntime.h"
@@ -1526,6 +1528,7 @@ int main(int argc, char** argv) {
     std::uint64_t process_generation = 0;
     std::uint64_t utc_launch_ticks = 0;
     std::filesystem::path log_path;
+    bool breakpoint_diagnostics = false;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if (argument == "--id")
@@ -1536,6 +1539,8 @@ int main(int argc, char** argv) {
             utc_launch_ticks = ParseU64(NextArg(index, argc, argv));
         else if (argument == "--log-file")
             log_path = NextArg(index, argc, argv);
+        else if (argument == "--breakpoint-diagnostics")
+            breakpoint_diagnostics = true;
     }
 
     set_this_thread_name_utf8(
@@ -1574,14 +1579,16 @@ int main(int argc, char** argv) {
     logger.logf(
         savor::logger::Level::Info,
         __FILE__, __LINE__, __func__,
-        "tags=worker.identity worker_id=%llu process_generation=%llu pid=%lu utc_launch_ticks=%llu executable=%s log_path=%s",
+        "tags=worker.identity worker_id=%llu process_generation=%llu pid=%lu utc_launch_ticks=%llu executable=%s log_path=%s breakpoint_diagnostics=%d",
         static_cast<unsigned long long>(worker_id),
         static_cast<unsigned long long>(process_generation),
         static_cast<unsigned long>(GetCurrentProcessId()),
         static_cast<unsigned long long>(utc_launch_ticks),
         (executable_error ? std::filesystem::path(argv[0]) : executable_path)
             .string().c_str(),
-        log_path.string().c_str());
+        log_path.string().c_str(),
+        breakpoint_diagnostics ? 1 : 0);
+    savor::probe::ConfigureBreakpointDiagnostics(breakpoint_diagnostics);
 
     HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
     HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);

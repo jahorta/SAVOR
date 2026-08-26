@@ -1,5 +1,7 @@
 #include "ExecutionControlCore.h"
 
+#include "../../../../SavorProbe/BreakpointDiagnostics.h"
+
 #include <array>
 #include <atomic>
 
@@ -908,6 +910,22 @@ struct ExecutionControlCore::Impl
         catch (...)
         {
             text << '\n' << "stop_point_diagnostics_error=unknown";
+        }
+
+        try
+        {
+            text << '\n'
+                 << savor::probe::DescribeRecentBreakpointDiagnostics(32);
+        }
+        catch (const std::exception& ex)
+        {
+            text << '\n'
+                 << "breakpoint_diagnostics_error=" << ex.what();
+        }
+        catch (...)
+        {
+            text << '\n'
+                 << "breakpoint_diagnostics_error=unknown";
         }
 
         const std::string diagnostic = text.str();

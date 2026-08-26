@@ -63,6 +63,7 @@ struct WorkerCoordinatorConfig {
     std::uint32_t max_worker_start_attempts = 3;
     std::uint32_t max_concurrent_worker_starts_when_paused = 2;
     bool initially_paused = false;
+    bool breakpoint_diagnostics = false;
     std::uint32_t liveness_probe_interval_ms = 5000;
     std::uint32_t liveness_probe_timeout_ms = 2000;
     std::uint32_t liveness_probe_failure_threshold = 2;

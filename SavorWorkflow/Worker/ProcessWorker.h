@@ -92,6 +92,7 @@ struct ProcessLaunchOptions {
     std::uint64_t process_generation{ 0 };
     std::uint64_t utc_launch_ticks{ 0 };
     std::uint32_t hello_timeout_ms{ 10000 };
+    bool breakpoint_diagnostics{ false };
 };
 
 struct ProcessOpenSessionOptions {

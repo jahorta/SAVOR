@@ -43,6 +43,7 @@ struct NativeStopDecision
 {
     bool request_break = false;
     bool authoritative_overflow = false;
+    std::uint64_t routed_sequence = 0;
 };
 
 [[nodiscard]] constexpr bool NativeStopRequiresBreak(

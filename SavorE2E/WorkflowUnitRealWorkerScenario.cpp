@@ -439,6 +439,7 @@ bool RunWorkflowUnitRealWorkerScenario(
         .controller_sleep_ms = static_cast<std::uint32_t>(
             std::max<std::int64_t>(1, options.poll_ms)),
         .worker_start_timeout_ms = 60'000,
+        .breakpoint_diagnostics = options.breakpoint_diagnostics,
         .worker_exe_path = worker_exe.string(),
         .iso_path = options.iso_path.string(),
         .dolphin_base_dir = options.dolphin_base_dir.string(),

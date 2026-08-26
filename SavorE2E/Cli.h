@@ -74,6 +74,7 @@ struct CliOptions {
     std::optional<std::filesystem::path> worker_dir_root;
     std::optional<std::filesystem::path> perf_report_dir;
     bool visual_worker = false;
+    bool breakpoint_diagnostics = false;
     std::optional<std::filesystem::path> visual_screenshot_dir;
     std::optional<std::string> workflow_unit;
     std::optional<std::string> source_ref_kind;

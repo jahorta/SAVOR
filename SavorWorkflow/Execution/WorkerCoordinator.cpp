@@ -2119,6 +2119,7 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
                 .process_generation = process_generation,
                 .utc_launch_ticks = utc_launch_ticks,
                 .hello_timeout_ms = config_.worker_start_timeout_ms,
+                .breakpoint_diagnostics = config_.breakpoint_diagnostics,
             },
             &error)) {
         return {

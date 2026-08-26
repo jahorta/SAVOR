@@ -281,6 +281,8 @@ bool ProcessWorker::create_child(
             << " --utc-launch-ticks " << options.utc_launch_ticks;
     if (!options.log_file_path.empty())
         command << " --log-file \"" << options.log_file_path << '"';
+    if (options.breakpoint_diagnostics)
+        command << " --breakpoint-diagnostics";
 
     std::string command_line = command.str();
     command_line.push_back('\0');
