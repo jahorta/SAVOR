@@ -85,8 +85,8 @@ TEST(TasMovieInputEpoch, ProductionDefinitionsHaveIndependentCanonicalIdentities
     const auto rewrite = RewriteFullPhaseDefinitionV1();
     ASSERT_TRUE(annotation);
     ASSERT_TRUE(rewrite);
-    EXPECT_EQ(annotation->identity().program_kind, PK_TasMovieAnnotateInputEpochs);
-    EXPECT_EQ(rewrite->identity().program_kind, PK_TasMovieRewriteInputEpochs);
+    EXPECT_EQ(annotation->identity().program_kind, PK_TasMovieAnnotate);
+    EXPECT_EQ(rewrite->identity().program_kind, PK_TasMovieRevise);
     EXPECT_NE(annotation->identity().canonical_id, rewrite->identity().canonical_id);
     EXPECT_FALSE(annotation->module_envelope().payload.empty());
     EXPECT_FALSE(rewrite->module_envelope().payload.empty());

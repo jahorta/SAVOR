@@ -14,8 +14,8 @@
 
 ## Production identities
 
-- Program kind 13: `tasmovie.annotate_input_epochs`
-- Program kind 14: `tasmovie.rewrite_input_epochs`
+- Program kind 13: `tasmovie.annotate`
+- Program kind 14: `tasmovie.revise`
 - Stop point: `soa.tasmovie.point.input.PadReadReturned`, `0x801D6E7C`
 - State artifact: `TAS_MOVIE_INPUT_EPOCH_SCHEDULE`
 - Endpoint savestate type: `TAS_MOVIE_INPUT_EPOCH_REWRITE_ENDPOINT`

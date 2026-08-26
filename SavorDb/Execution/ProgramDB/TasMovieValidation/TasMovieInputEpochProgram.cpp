@@ -563,7 +563,7 @@ public:
         };
         const bool passive_annotation =
             phase_->identity().program_kind == static_cast<std::int32_t>(
-                savor::PK_TasMovieAnnotateInputEpochs);
+                savor::PK_TasMovieAnnotate);
         if (passive_annotation &&
             !IsLowerHexSha256(config_.capture_module_sha256)) {
             return Fail(
@@ -774,7 +774,7 @@ public:
         const auto input = inputepoch::EncodeAnnotationExecutionInputV1(native, &diagnostic);
         if (input.empty()) return fail("annotation invocation binding failed: " + diagnostic);
         auto workset = MakeWorkset(context, *phase_, path, artifact->sha256, input,
-            "SavorDb.PK_TasMovieAnnotateInputEpochs");
+            "SavorDb.PK_TasMovieAnnotate");
         std::vector<std::uint8_t> encoded;
         const auto status = savor::runtime::EncodeWorkerWorksetV4(workset, encoded);
         if (!status) return fail("annotation workset encoding failed: " + status.message);
@@ -809,7 +809,7 @@ public:
             || context.dispatch_token.empty() || !context.state_compatibility.Complete())
             return fail("input-epoch rewrite reconstruction requires one exact item");
         const auto& item = context.items.front();
-        if (item.program_kind != static_cast<std::int32_t>(savor::PK_TasMovieRewriteInputEpochs)
+        if (item.program_kind != static_cast<std::int32_t>(savor::PK_TasMovieRevise)
             || item.program_version != 1 || item.program_ref_kind != kRewriteRefKind
             || item.program_ref_id <= 0 || item.savestate_id
             || item.input_ini != JobInput("TMER1:", item.program_ref_id)
@@ -864,7 +864,7 @@ public:
         const auto input = inputepoch::EncodeRewriteExecutionInputV1(native, &diagnostic);
         if (input.empty()) return fail("rewrite invocation binding failed: " + diagnostic);
         auto workset = MakeWorkset(context, *phase_, source_path, source->sha256, input,
-            "SavorDb.PK_TasMovieRewriteInputEpochs");
+            "SavorDb.PK_TasMovieRevise");
         std::vector<std::uint8_t> encoded;
         const auto status = savor::runtime::EncodeWorkerWorksetV4(workset, encoded);
         if (!status) return fail("rewrite workset encoding failed: " + status.message);
@@ -916,7 +916,7 @@ public:
                 + " entrypoint=" + phase_->runtime_contract().entrypoint
                 + " path=ProgramResult\n" + error);
         const bool passive = context.program_kind == static_cast<std::int32_t>(
-            savor::PK_TasMovieAnnotateInputEpochs);
+            savor::PK_TasMovieAnnotate);
         if (passive && !DecodePassiveAnnotationCapture(
                 terminal.terminal.workset_artifacts, *request,
                 outcome.schedule.source_poll_count,
@@ -1020,7 +1020,7 @@ public:
         const ProgramResultProcessingContext& context) const override {
         if (!state_ || !analysis_ || !phase_
             || context.program_kind != static_cast<std::int32_t>(
-                savor::PK_TasMovieRewriteInputEpochs)
+                savor::PK_TasMovieRevise)
             || context.program_version != 1 || context.program_ref_kind != kRewriteRefKind
             || context.program_ref_id <= 0
             || context.input_ini != JobInput("TMER1:", context.program_ref_id))
@@ -1178,7 +1178,7 @@ ProgramKindDescriptor BuildAnnotationProgramDescriptor(IExecutionDb* execution_d
     TasMovieInputEpochProgramConfig config) {
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(
-        savor::PK_TasMovieAnnotateInputEpochs);
+        savor::PK_TasMovieAnnotate);
     descriptor.program_name = "TAS Movie Input Epoch Annotation";
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity = inputepoch::AnnotationFullPhaseDefinitionV1()->identity();
@@ -1201,7 +1201,7 @@ ProgramKindDescriptor BuildRewriteProgramDescriptor(IExecutionDb* execution_db,
     TasMovieInputEpochProgramConfig config) {
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(
-        savor::PK_TasMovieRewriteInputEpochs);
+        savor::PK_TasMovieRevise);
     descriptor.program_name = "TAS Movie Input Epoch Rewrite";
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity = inputepoch::RewriteFullPhaseDefinitionV1()->identity();

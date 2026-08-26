@@ -437,7 +437,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
 
     (void)registry.RegisterUnit(
         WorkflowUnitDefinition{
-            .unit_kind = "tas_movie_annotate_input_epochs",
+            .unit_kind = "tas_movie_annotate",
             .display_name = "TAS Movie: Annotate Input Epochs",
             .description = "Replays a complete boot DTM and records the controller state consumed by each guest PADRead epoch.",
             .default_activation_params_json = "{}",
@@ -447,14 +447,14 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .possible_outputs = {
                 Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Input-epoch annotation attempt"),
             },
-            .internal_step_kinds = {"tasmovie.annotate_input_epochs"},
-            .step_templates = SingleStep("tasmovie.annotate_input_epochs"),
+            .internal_step_kinds = {"tasmovie.annotate"},
+            .step_templates = SingleStep("tasmovie.annotate"),
         },
         &ignored);
 
     (void)registry.RegisterUnit(
         WorkflowUnitDefinition{
-            .unit_kind = "tas_movie_rewrite_input_epochs",
+            .unit_kind = "tas_movie_revise",
             .display_name = "TAS Movie: Rewrite Input Epochs",
             .description = "Inserts one neutral guest-input epoch and re-emits the complete downstream annotated input schedule.",
             .default_activation_params_json = "{}",
@@ -471,8 +471,8 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                     std::nullopt, 0,
                     static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())),
             },
-            .internal_step_kinds = {"tasmovie.rewrite_input_epochs"},
-            .step_templates = SingleStep("tasmovie.rewrite_input_epochs"),
+            .internal_step_kinds = {"tasmovie.revise"},
+            .step_templates = SingleStep("tasmovie.revise"),
         },
         &ignored);
 

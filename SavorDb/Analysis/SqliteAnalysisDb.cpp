@@ -1643,7 +1643,7 @@ bool SqliteAnalysisDb::CreateTasMovieInputEpochAnnotationRequest(
         || command.source_dtm_artifact_id <= 0
         || !IsLowerHexSha256(command.source_dtm_sha256)
         || (command.full_phase_program_kind != static_cast<std::int32_t>(
-                savor::PK_TasMovieAnnotateInputEpochs)
+                savor::PK_TasMovieAnnotate)
             && command.full_phase_program_kind != static_cast<std::int32_t>(
                 savor::PK_TasMovieInputEpochBreakpointDiagnostic))
         || command.full_phase_program_version <= 0

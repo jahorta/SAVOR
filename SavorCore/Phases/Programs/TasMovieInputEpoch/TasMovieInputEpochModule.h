@@ -22,10 +22,10 @@ inline constexpr std::uint32_t PadReadReturnedPc = 0x801D6E7Cu;
 inline constexpr std::size_t MaximumEpochs = 1'000'000;
 
 inline constexpr std::string_view AnnotationModuleCanonicalId =
-    "soa.tasmovie.annotate_input_epochs";
+    "soa.tasmovie.annotate";
 inline constexpr std::string_view AnnotationEntrypoint = "annotate";
 inline constexpr std::string_view AnnotationFullPhaseCanonicalId =
-    "savor.full_phase.tasmovie.annotate_input_epochs";
+    "savor.full_phase.tasmovie.annotate";
 inline constexpr std::string_view AnnotationBaselineLineage =
     "soa.tasmovie.input_epochs/complete-boot-dtm/v1";
 inline constexpr std::string_view BreakpointDiagnosticModuleCanonicalId =
@@ -35,10 +35,10 @@ inline constexpr std::string_view BreakpointDiagnosticFullPhaseCanonicalId =
     "savor.full_phase.tasmovie.input_epoch_breakpoint_diagnostic";
 
 inline constexpr std::string_view RewriteModuleCanonicalId =
-    "soa.tasmovie.rewrite_input_epochs";
+    "soa.tasmovie.revise";
 inline constexpr std::string_view RewriteEntrypoint = "rewrite";
 inline constexpr std::string_view RewriteFullPhaseCanonicalId =
-    "savor.full_phase.tasmovie.rewrite_input_epochs";
+    "savor.full_phase.tasmovie.revise";
 inline constexpr std::string_view RewriteBaselineLineage =
     "soa.tasmovie.input_epochs/source-playback/v1";
 

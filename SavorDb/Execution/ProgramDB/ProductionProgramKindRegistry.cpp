@@ -278,12 +278,12 @@ bool BuildProductionProgramKindRegistry(
                 dependencies.analysis_db,
                 config.tas_movie_input_epoch_annotation);
         if (tas_movie_input_epoch_annotation.program_kind
-                != static_cast<std::int32_t>(savor::PK_TasMovieAnnotateInputEpochs)
+                != static_cast<std::int32_t>(savor::PK_TasMovieAnnotate)
             || !tas_movie_input_epoch_annotation.job_materializer
             || !tas_movie_input_epoch_annotation.workset_reconstruction
             || !tas_movie_input_epoch_annotation.result_handler
             || !registry.Register(tas_movie_input_epoch_annotation)
-            || !registry.RegisterForStepKind("tasmovie.annotate_input_epochs",
+            || !registry.RegisterForStepKind("tasmovie.annotate",
                 tas_movie_input_epoch_annotation)) {
             return Fail("TAS Movie input-epoch annotation descriptor registration failed",
                 error_out);
@@ -314,12 +314,12 @@ bool BuildProductionProgramKindRegistry(
                 dependencies.analysis_db,
                 std::move(config.tas_movie_input_epoch_rewrite));
         if (tas_movie_input_epoch_rewrite.program_kind
-                != static_cast<std::int32_t>(savor::PK_TasMovieRewriteInputEpochs)
+                != static_cast<std::int32_t>(savor::PK_TasMovieRevise)
             || !tas_movie_input_epoch_rewrite.job_materializer
             || !tas_movie_input_epoch_rewrite.workset_reconstruction
             || !tas_movie_input_epoch_rewrite.result_handler
             || !registry.Register(tas_movie_input_epoch_rewrite)
-            || !registry.RegisterForStepKind("tasmovie.rewrite_input_epochs",
+            || !registry.RegisterForStepKind("tasmovie.revise",
                 tas_movie_input_epoch_rewrite)) {
             return Fail("TAS Movie input-epoch rewrite descriptor registration failed",
                 error_out);

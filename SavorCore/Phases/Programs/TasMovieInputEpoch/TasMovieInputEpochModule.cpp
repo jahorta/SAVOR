@@ -383,7 +383,7 @@ ProgramModule AnnotationModule(bool breakpoint_diagnostic = false)
             : std::string(AnnotationModuleCanonicalId),
         .revision = 1}};
     Builder builder(module, "TasMovieInputEpochAnnotation",
-        "tasmovie.annotate_input_epochs/v1");
+        "tasmovie.annotate/v1");
     AddTypes(builder);
     builder.AddLocalType({.identity = AnnotationRequestSchema(),
         .kind = TypeSchemaKind::Record,
@@ -635,7 +635,7 @@ ProgramModule PassiveAnnotationModule()
         .canonical_id = std::string(AnnotationModuleCanonicalId),
         .revision = 2}};
     Builder builder(module, "TasMovieInputEpochPassiveAnnotation",
-        "tasmovie.annotate_input_epochs/passive-v2");
+        "tasmovie.annotate/passive-v2");
     AddTypes(builder);
     builder.AddLocalType({.identity = AnnotationRequestSchema(),
         .kind = TypeSchemaKind::Record,
@@ -719,7 +719,7 @@ ProgramModule RewriteModule()
     ProgramModule module{.identity = {
         .canonical_id = std::string(RewriteModuleCanonicalId), .revision = 1}};
     Builder builder(module, "TasMovieInputEpochRewrite",
-        "tasmovie.rewrite_input_epochs/v1");
+        "tasmovie.revise/v1");
     AddTypes(builder);
     builder.AddLocalType({.identity = RewriteRequestSchema(),
         .kind = TypeSchemaKind::Record,
@@ -1420,7 +1420,7 @@ public:
         const std::string canonical = runtime_.module.canonical_hash +
             runtime_.verified_dependency_sha256 + runtime_.service_policy_sha256;
         identity_ = {diagnostic_ ? 100 : static_cast<std::int32_t>(
-                savor::PK_TasMovieAnnotateInputEpochs), ProgramVersion,
+                savor::PK_TasMovieAnnotate), ProgramVersion,
             diagnostic_ ? std::string(BreakpointDiagnosticFullPhaseCanonicalId)
                         : std::string(AnnotationFullPhaseCanonicalId), 1,
             hash::sha256(canonical.data(), canonical.size())};
@@ -1594,7 +1594,7 @@ public:
         runtime_.service_policy_sha256 = hash::sha256(service.data(),service.size());
         const std::string canonical = runtime_.module.canonical_hash +
             runtime_.verified_dependency_sha256 + runtime_.service_policy_sha256;
-        identity_ = {static_cast<std::int32_t>(savor::PK_TasMovieRewriteInputEpochs),
+        identity_ = {static_cast<std::int32_t>(savor::PK_TasMovieRevise),
             ProgramVersion, std::string(RewriteFullPhaseCanonicalId), 1,
             hash::sha256(canonical.data(),canonical.size())};
     }
