@@ -227,6 +227,8 @@ const FullPhaseProgramRegistry& ProductionRegistry()
         (void)value.Register(
             tasmovie::inputepoch::AnnotationFullPhaseDefinitionV1());
         (void)value.Register(
+            tasmovie::inputepoch::BreakpointDiagnosticFullPhaseDefinitionV1());
+        (void)value.Register(
             tasmovie::inputepoch::RewriteFullPhaseDefinitionV1());
         return value;
     }();

@@ -206,6 +206,7 @@ int main(int argc, char** argv) {
                     options, entry, argv[0], &service, &scenario_error);
                 break;
             case E2eScenarioKind::TasMovieInputEpochRewrite:
+            case E2eScenarioKind::TasMovieInputEpochBreakpointDiagnostics:
                 scenario_passed = RunTasMovieInputEpochRewriteRealWorkerScenario(
                     options, entry, argv[0], &service, &scenario_error);
                 break;

@@ -868,6 +868,20 @@ ReducerDescriptor FieldPadStatusToInputFrameReducerDescriptor()
         CanonicalRuntimeType(CanonicalRuntimeSchema::InputFramePayload));
 }
 
+CpuEvaluatorDescriptor TasMovieInputCountEvaluator()
+{
+    return {
+        .canonical_id = "soa.tasmovie.sample.MovieInputCount",
+        .routed_sample_descriptor_id = 0x53460002u,
+        .source = CpuEvaluatorSource::HostMovieInputCount,
+        .address_dependency = {},
+        .result_type = TypeRef::Builtin(BuiltinType::U64),
+        .operations = {},
+        .maximum_reads = 0,
+        .maximum_output_bytes = 8,
+    };
+}
+
 struct BattleCapabilityCatalog
 {
     std::vector<ActionDescriptor> actions;
@@ -897,7 +911,7 @@ CapabilityPackIdentity FieldPackIdentity()
         .dependencies = {CanonicalRuntimePackIdentity()},
         .semantic_points = BuildFieldPoints(),
         .address_symbols = BuildFieldAddresses(),
-        .cpu_evaluators = {FieldRngSeedEvaluator()},
+        .cpu_evaluators = {FieldRngSeedEvaluator(), TasMovieInputCountEvaluator()},
         .reducers = {pad_status_reducer.identity},
     };
     manifest.identity.manifest_hash =
@@ -1905,7 +1919,7 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         .schemas = {},
         .semantic_points = BuildFieldPoints(),
         .address_symbols = field_addresses,
-        .cpu_evaluators = {FieldRngSeedEvaluator()},
+        .cpu_evaluators = {FieldRngSeedEvaluator(), TasMovieInputCountEvaluator()},
         .reducers = {field_pad_status_reducer.identity},
     };
     field_pad_status_reducer.providing_pack = field.identity;

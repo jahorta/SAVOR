@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "../../../SavorCore/Runner/Runtime/ProgramKind.h"
+#include "../../../SavorCore/Utils/Hash.h"
 
 namespace savor::db::execution::programdb {
 namespace {
@@ -19,7 +20,8 @@ bool Fail(std::string message, std::string* error_out) {
 } // namespace
 
 ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(
-    const std::filesystem::path& runtime_working_dir_root) {
+    const std::filesystem::path& runtime_working_dir_root,
+    const std::filesystem::path& capture_module_path) {
     ProductionProgramKindRegistryConfig config{};
     config.tas_movie_validation.working_dir_root =
         runtime_working_dir_root / "tasmovie-validation";
@@ -27,6 +29,15 @@ ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(
         runtime_working_dir_root / "tasmovie-checkpoint-sterilization";
     config.tas_movie_input_epoch_annotation.working_dir_root =
         runtime_working_dir_root / "tasmovie-input-epoch-annotation";
+    if (!capture_module_path.empty()
+        && std::filesystem::is_regular_file(capture_module_path)) {
+        try {
+            config.tas_movie_input_epoch_annotation.capture_module_sha256 =
+                hash::sha256_of_file(capture_module_path.string());
+        } catch (...) {
+            config.tas_movie_input_epoch_annotation.capture_module_sha256.clear();
+        }
+    }
     config.tas_movie_input_epoch_rewrite.working_dir_root =
         runtime_working_dir_root / "tasmovie-input-epoch-rewrite";
     config.seed_probe.working_dir_root =
@@ -265,7 +276,7 @@ bool BuildProductionProgramKindRegistry(
             tasmovieinputepoch::BuildAnnotationProgramDescriptor(
                 dependencies.execution_db, dependencies.state_db,
                 dependencies.analysis_db,
-                std::move(config.tas_movie_input_epoch_annotation));
+                config.tas_movie_input_epoch_annotation);
         if (tas_movie_input_epoch_annotation.program_kind
                 != static_cast<std::int32_t>(savor::PK_TasMovieAnnotateInputEpochs)
             || !tas_movie_input_epoch_annotation.job_materializer
@@ -275,6 +286,25 @@ bool BuildProductionProgramKindRegistry(
             || !registry.RegisterForStepKind("tasmovie.annotate_input_epochs",
                 tas_movie_input_epoch_annotation)) {
             return Fail("TAS Movie input-epoch annotation descriptor registration failed",
+                error_out);
+        }
+
+        auto tas_movie_input_epoch_breakpoint_diagnostic =
+            tasmovieinputepoch::BuildBreakpointDiagnosticProgramDescriptor(
+                dependencies.execution_db, dependencies.state_db,
+                dependencies.analysis_db,
+                std::move(config.tas_movie_input_epoch_annotation));
+        if (tas_movie_input_epoch_breakpoint_diagnostic.program_kind
+                != static_cast<std::int32_t>(
+                    savor::PK_TasMovieInputEpochBreakpointDiagnostic)
+            || !tas_movie_input_epoch_breakpoint_diagnostic.job_materializer
+            || !tas_movie_input_epoch_breakpoint_diagnostic.workset_reconstruction
+            || !tas_movie_input_epoch_breakpoint_diagnostic.result_handler
+            || !registry.Register(tas_movie_input_epoch_breakpoint_diagnostic)
+            || !registry.RegisterForStepKind(
+                "tasmovie.input_epoch_breakpoint_diagnostic",
+                tas_movie_input_epoch_breakpoint_diagnostic)) {
+            return Fail("TAS Movie input-epoch breakpoint diagnostic descriptor registration failed",
                 error_out);
         }
 

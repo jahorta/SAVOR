@@ -29,13 +29,17 @@ struct FakeExecutionBackendControl
     runtime::BackendExecutionSnapshot snapshot{
         .result = runtime::BackendResult::Success(),
         .core_state = runtime::BackendCoreState::Paused,
-        .pause_confirmed = true,
+        .paused_quiescent = true,
     };
     runtime::BackendResult pause_result = runtime::BackendResult::Success();
     runtime::BackendResult resume_result = runtime::BackendResult::Success();
     runtime::BackendResult frame_step_result = runtime::BackendResult::Success();
+    runtime::BackendResult synchronize_result = runtime::BackendResult::Success();
     runtime::BackendResult throttle_result = runtime::BackendResult::Success();
     bool pause_changes_state = true;
+    runtime::BackendExecutionSnapshot::ControlTaskState control_task_state =
+        runtime::BackendExecutionSnapshot::ControlTaskState::Idle;
+    std::optional<runtime::BackendControlCompletion> control_completion;
     runtime::BackendHealthReport health{
         true,
         runtime::BackendCoreState::Paused,
@@ -73,8 +77,10 @@ public:
     [[nodiscard]] runtime::BackendExecutionSnapshot
     QueryExecutionSnapshot() const override;
     [[nodiscard]] runtime::BackendHealthReport CheckHealth() const override;
-    runtime::BackendResult SubmitControlCommand(
-        runtime::BackendControlCommand command) override;
+    runtime::BackendResult SubmitControlTask(
+        runtime::BackendControlTask task) override;
+    [[nodiscard]] std::optional<runtime::BackendControlCompletion>
+    TakeControlCompletion() override;
     runtime::BackendResult SetThrottleDisabled(bool disabled) override;
 
 private:

@@ -136,6 +136,7 @@ void check_breakpoints_from_jit_hook(PowerPC::PowerPCManager& power_pc)
             NativeStopOrigin::Jit,
             power_pc.GetPPCState().pc,
             &power_pc,
+            &Core::System::GetInstance(),
         });
     }
     const bool sink_control = NativeStopRequiresBreak(sink_decision);

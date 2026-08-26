@@ -40,7 +40,8 @@ struct ProductionProgramKindRegistryConfig {
 };
 
 ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(
-    const std::filesystem::path& runtime_working_dir_root);
+    const std::filesystem::path& runtime_working_dir_root,
+    const std::filesystem::path& capture_module_path = {});
 
 bool BuildProductionProgramKindRegistry(
     const ProductionProgramKindRegistryDependencies& dependencies,

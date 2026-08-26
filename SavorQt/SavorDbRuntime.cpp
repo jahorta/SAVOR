@@ -298,7 +298,8 @@ bool SavorDbRuntime::buildProgramRegistry(std::string* error_out) {
     const auto workspace_root = resultStagingRoot();
     auto config =
         savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
-            workspace_root);
+            workspace_root,
+            app_dir / "SavorWorker.exe");
     const savor::db::execution::programdb::ProductionProgramKindRegistryDependencies dependencies{
         .execution_db = executionDb(),
         .state_db = stateDb(),

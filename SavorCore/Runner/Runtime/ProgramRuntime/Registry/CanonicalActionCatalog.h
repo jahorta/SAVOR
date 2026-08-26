@@ -39,6 +39,7 @@ enum class CanonicalAction : std::uint8_t
     ExecutionRequirePausedPc,
     ExecutionContinueUntilInputObserved,
     ExecutionObservePausedPc,
+    ExecutionContinueToMovieEnd,
 };
 
 struct CanonicalActionDefinition

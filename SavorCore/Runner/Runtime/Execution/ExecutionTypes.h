@@ -16,7 +16,6 @@
 namespace savor::runtime {
 
 struct ExecutionOperationIdTag;
-struct ExecutionControlGenerationTag;
 struct StopTransitionIdTag;
 struct InterruptionFrameIdTag;
 struct InputExecutionRelationshipIdTag;
@@ -26,7 +25,6 @@ struct InputPublicationTokenTag;
 struct InputDeliveryIdTag;
 
 using ExecutionOperationId = StrongId<ExecutionOperationIdTag>;
-using ExecutionControlGeneration = StrongId<ExecutionControlGenerationTag>;
 using StopTransitionId = StrongId<StopTransitionIdTag>;
 using InterruptionFrameId = StrongId<InterruptionFrameIdTag>;
 using InputExecutionRelationshipId = StrongId<InputExecutionRelationshipIdTag>;
@@ -36,8 +34,7 @@ using InputPublicationToken = StrongId<InputPublicationTokenTag>;
 using InputDeliveryId = StrongId<InputDeliveryIdTag>;
 
 static_assert(!std::is_convertible_v<ExecutionOperationId, InvocationId>);
-static_assert(!std::is_convertible_v<ExecutionControlGeneration, ExecutionOperationId>);
-static_assert(!std::is_convertible_v<StopTransitionId, ExecutionControlGeneration>);
+static_assert(!std::is_convertible_v<StopTransitionId, ExecutionOperationId>);
 
 enum class ExecutionControlState : std::uint8_t
 {
@@ -143,6 +140,7 @@ struct ContinueUntilRequest
     // than this many complete DTM input records. Equality remains a valid
     // checkpoint boundary and may still be claimed by a routed stop.
     std::optional<std::uint64_t> expected_movie_input_count;
+    bool movie_end_only = false;
 };
 
 struct StepFramesRequest
@@ -242,7 +240,7 @@ struct ExecutionError
 struct ExecutionEnvironmentEvidence
 {
     BackendCoreState core_state = BackendCoreState::Unknown;
-    bool pause_confirmed = false;
+    bool paused_quiescent = false;
     std::uint32_t pc = 0;
     std::uint64_t vi_count = 0;
     MovieState movie_state = MovieState::Unknown;
@@ -261,7 +259,6 @@ struct ExecutionTerminalResult
     std::optional<StopRouteReceipt> stop;
     ExecutionError error;
     BackendIntegrity integrity = BackendIntegrity::Preserved;
-    ExecutionControlGeneration control_generation;
     StopTransitionId stop_transition;
 };
 
@@ -276,7 +273,6 @@ struct ExecutionSnapshot
     bool input_bound = false;
     ExecutionEnvironmentEvidence evidence;
     ExecutionControlState control_state = ExecutionControlState::Failed;
-    ExecutionControlGeneration control_generation;
     StopTransitionId stop_transition;
 };
 

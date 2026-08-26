@@ -88,7 +88,6 @@ struct PassiveStopObservation
 
 struct ForegroundStopWait
 {
-    std::uint64_t execution_control_generation = 0;
     std::uint64_t execution_operation_id = 0;
 
     friend bool operator==(
@@ -99,7 +98,6 @@ struct ForegroundStopWait
 struct TrustedStopInterruptionRequest
 {
     std::string handler_key;
-    std::uint64_t execution_control_generation = 0;
     std::uint64_t execution_operation_id = 0;
 
     friend bool operator==(
@@ -296,7 +294,6 @@ struct StopRouteReceipt
     std::vector<StopDelivery> deliveries;
     StopPointError error;
     bool core_must_remain_stopped = false;
-    std::uint64_t execution_control_generation = 0;
     std::uint64_t execution_operation_id = 0;
     std::uint64_t stop_transition_id = 0;
 };

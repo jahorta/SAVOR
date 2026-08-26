@@ -13,8 +13,11 @@
 #include "../../../../SavorCore/Runner/Runtime/Worksets/WorksetWireCodec.h"
 #include "../../../../SavorCore/Tas/DtmFile.h"
 #include "../../../../SavorCore/Utils/Hash.h"
+#include "../../../../SavorCaptureFormat/CaptureFormat.h"
 
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -47,6 +50,16 @@ const WorksetObservationDefaultsV1& ObservationDefaults() {
         .runtime_sample_trigger_pcs = {inputepoch::PadReadReturnedPc},
     };
     return defaults;
+}
+
+std::string AnnotationCaptureProfile(
+    const TasMovieInputEpochProgramConfig& config)
+{
+    return std::string(R"json({"schema":"savor.capture.profile/1","name":"tasmovie-padread-input-epochs","revision":1,"expected_module_sha256":")json")
+        + config.capture_module_sha256
+        + R"json(","limits":{"queue_bytes":16777216,"max_events":4096,"progress_events":16},"probes":[{"id":"tasmovie.padread.returned","group":"tasmovie.input_epochs","kind":"pc","address":)json"
+        + std::to_string(0x801D6E7Cu)
+        + R"json(,"subscriptions":["capture"],"samples":[{"name":"movie_input_count","type":"routed_sample","width":8,"descriptor_id":1397096450},{"name":"received_pad_status","type":"address_program","width":8,"program":[7,60,118,52,128,2,0]}]}]})json";
 }
 
 std::int64_t NowMs() { return types::UtcNow().time_since_epoch().count(); }
@@ -227,13 +240,24 @@ bool PublishSingleton(IExecutionDb* execution_db,
     std::string_view created_by, std::string_view ref_kind,
     std::int64_t ref_id, std::string fingerprint, std::string input,
     const std::filesystem::path& capture_root,
+    std::optional<std::string> capture_profile,
     WorkflowStepScheduleResult* result_out, std::string* error_out) {
     const auto package = savor::runtime::fullphase::BuildFullPhaseProgramPackage(phase);
     ResolvedWorksetDerivedStateBindingV1 derived_state;
     if (!ResolveWorksetDerivedStateBindingV1(std::span<const std::string>{},
             package, &derived_state, error_out)) return false;
     ResolvedWorksetObservationBindingV1 observation;
-    if (!ResolveWorksetObservationBindingV1(context, ObservationDefaults(),
+    ProgramJobMaterializationContext observation_context = context;
+    if (capture_profile && observation_context.graph) {
+        observation_context.graph->arguments.push_back({
+            .node_key = observation_context.graph->activation_graph_node_key,
+            .argument_key = std::string(kCaptureProfileJsonArgument),
+            .value_type = "text",
+            .text_value = std::move(*capture_profile),
+            .source_kind = "program_default",
+        });
+    }
+    if (!ResolveWorksetObservationBindingV1(observation_context, ObservationDefaults(),
             capture_root, &observation, error_out)) return false;
     EnsureMaterializingJobSetReceipt ensured{};
     const std::string materialization_key = std::string(created_by) + ".step."
@@ -442,12 +466,70 @@ bool ValidateTerminal(const ProgramResultProcessingContext& context,
     return true;
 }
 
+bool DecodePassiveAnnotationCapture(
+    std::span<const savor::wrms::WorksetArtifactPayload> artifacts,
+    const TasMovieInputEpochAnnotationRequestRecord& request,
+    std::uint64_t source_poll_count,
+    inputepoch::TasMovieInputEpochScheduleV1* schedule,
+    std::string* error_out)
+{
+    if (!schedule)
+        return Fail("capture schedule output is required", error_out);
+    const auto found = std::ranges::find_if(artifacts,
+        [](const savor::wrms::WorksetArtifactPayload& artifact) {
+            return artifact.schema_id ==
+                "savor.capture.profile.artifact";
+        });
+    if (found == artifacts.end() || !found->complete)
+        return Fail("worker terminal is missing the complete capture artifact", error_out);
+    std::vector<savor::capture_format::Event> events;
+    savor::capture_format::VerificationReport report;
+    std::string read_error;
+    if (!savor::capture_format::Reader::read_all(
+            found->storage_reference, events, &report, &read_error))
+        return Fail("capture artifact could not be read: " + read_error, error_out);
+    if (!report.ok)
+        return Fail("capture artifact verification failed", error_out);
+
+    *schedule = {.source_dtm_sha256 = request.source_dtm_sha256,
+        .source_poll_count = source_poll_count};
+    std::uint64_t previous_cursor = 0;
+    for (const auto& event : events) {
+        if (event.kind == savor::capture_format::EventKind::Gap)
+            return Fail("capture artifact contains a loss marker", error_out);
+        if (event.kind != savor::capture_format::EventKind::Pc
+            || event.probe_id != "tasmovie.padread.returned")
+            continue;
+        const auto cursor = std::ranges::find(event.fields,
+            std::string("movie_input_count"), &savor::capture_format::Field::name);
+        const auto pad = std::ranges::find(event.fields,
+            std::string("received_pad_status"), &savor::capture_format::Field::name);
+        if (cursor == event.fields.end() || pad == event.fields.end()
+            || cursor->status != savor::capture_format::FieldStatus::Present
+            || pad->status != savor::capture_format::FieldStatus::Present)
+            return Fail("capture event is missing a complete movie_input_count or received_pad_status field", error_out);
+        if (cursor->value == 0 || cursor->value < previous_cursor
+            || cursor->value > source_poll_count)
+            return Fail("capture movie_input_count is zero, regressed, or exceeds source_poll_count", error_out);
+        schedule->epochs.push_back({cursor->value,
+            inputepoch::DecodeGuestPadStatusV1(pad->value)});
+        previous_cursor = cursor->value;
+    }
+    if (schedule->epochs.empty())
+        return Fail("capture artifact contains no PadReadReturned observations", error_out);
+    return inputepoch::ValidateInputEpochScheduleV1(*schedule, error_out);
+}
+
 class AnnotationMaterializer final : public IProgramJobMaterializer {
 public:
     AnnotationMaterializer(IExecutionDb* execution, IStateDb* state,
-        IAnalysisDb* analysis, TasMovieInputEpochProgramConfig config)
+        IAnalysisDb* analysis, TasMovieInputEpochProgramConfig config,
+        bool breakpoint_diagnostic = false)
         : execution_(execution), state_(state), analysis_(analysis),
-          config_(std::move(config)), phase_(inputepoch::AnnotationFullPhaseDefinitionV1()) {}
+          config_(std::move(config)),
+          phase_(breakpoint_diagnostic
+              ? inputepoch::BreakpointDiagnosticFullPhaseDefinitionV1()
+              : inputepoch::AnnotationFullPhaseDefinitionV1()) {}
 
     bool Materialize(const ProgramJobMaterializationContext& context,
         WorkflowStepScheduleResult* result_out, std::string* error_out) const override {
@@ -479,6 +561,15 @@ public:
             .module_sha256 = runtime.module.canonical_hash,
             .created_at_utc = types::UtcNow(),
         };
+        const bool passive_annotation =
+            phase_->identity().program_kind == static_cast<std::int32_t>(
+                savor::PK_TasMovieAnnotateInputEpochs);
+        if (passive_annotation &&
+            !IsLowerHexSha256(config_.capture_module_sha256)) {
+            return Fail(
+                "input-epoch annotation capture module SHA-256 is unavailable",
+                error_out);
+        }
         std::int64_t request_id = 0;
         if (!analysis_->CreateTasMovieInputEpochAnnotationRequest(
                 command, &request_id, error_out)) return false;
@@ -489,6 +580,9 @@ public:
                 kAnnotationRefKind, request_id, fingerprint,
                 JobInput("TMEA1:", request_id),
                 WorkingRoot(config_.working_dir_root) / "captures",
+                passive_annotation
+                    ? std::optional<std::string>(AnnotationCaptureProfile(config_))
+                    : std::nullopt,
                 result_out, error_out)) return false;
         result_out->event_lines.push_back("[tasmovie-input-epoch-annotation-materialized] request="
             + std::to_string(request_id));
@@ -590,6 +684,7 @@ public:
                 kRewriteRefKind, request_id, fingerprint,
                 JobInput("TMER1:", request_id),
                 WorkingRoot(config_.working_dir_root) / "captures",
+                std::nullopt,
                 result_out, error_out)) return false;
         result_out->event_lines.push_back("[tasmovie-input-epoch-rewrite-materialized] request="
             + std::to_string(request_id));
@@ -631,9 +726,11 @@ private:
 class AnnotationReconstruction final : public IWorksetReconstructionAdapter {
 public:
     AnnotationReconstruction(IStateDb* state, IAnalysisDb* analysis,
-        std::filesystem::path root)
+        std::filesystem::path root, bool breakpoint_diagnostic = false)
         : state_(state), analysis_(analysis), root_(WorkingRoot(root)),
-          phase_(inputepoch::AnnotationFullPhaseDefinitionV1()) {}
+          phase_(breakpoint_diagnostic
+              ? inputepoch::BreakpointDiagnosticFullPhaseDefinitionV1()
+              : inputepoch::AnnotationFullPhaseDefinitionV1()) {}
 
     std::optional<WorksetReconstructionResult> Reconstruct(
         const WorksetReconstructionContext& context,
@@ -647,7 +744,7 @@ public:
             || context.dispatch_token.empty() || !context.state_compatibility.Complete())
             return fail("input-epoch annotation reconstruction requires one exact item");
         const auto& item = context.items.front();
-        if (item.program_kind != static_cast<std::int32_t>(savor::PK_TasMovieAnnotateInputEpochs)
+        if (item.program_kind != phase_->identity().program_kind
             || item.program_version != 1 || item.program_ref_kind != kAnnotationRefKind
             || item.program_ref_id <= 0 || item.savestate_id
             || item.input_ini != JobInput("TMEA1:", item.program_ref_id)
@@ -752,6 +849,11 @@ public:
             return fail("rewrite schedule binding failed: " + diagnostic);
         const auto output_dtm = request_root / "capture" / "rewritten.dtm";
         const auto output_sav = request_root / "capture" / "endpoint.sav";
+        std::error_code output_error;
+        std::filesystem::create_directories(output_dtm.parent_path(), output_error);
+        if (output_error)
+            return fail("rewrite output directory creation failed: "
+                + output_error.message());
         inputepoch::TasMovieInputEpochRewriteRequestV1 native{
             .source_dtm_path = source_path.string(),
             .schedule = std::move(schedule),
@@ -781,15 +883,16 @@ private:
 class AnnotationResultHandler final : public IProgramResultHandler {
 public:
     AnnotationResultHandler(IStateDb* state, IAnalysisDb* analysis,
-        std::filesystem::path root)
+        std::filesystem::path root, bool breakpoint_diagnostic = false)
         : state_(state), analysis_(analysis), root_(WorkingRoot(root)),
-          phase_(inputepoch::AnnotationFullPhaseDefinitionV1()) {}
+          phase_(breakpoint_diagnostic
+              ? inputepoch::BreakpointDiagnosticFullPhaseDefinitionV1()
+              : inputepoch::AnnotationFullPhaseDefinitionV1()) {}
 
     ProgramResultDecision Process(
         const ProgramResultProcessingContext& context) const override {
         if (!state_ || !analysis_ || !phase_
-            || context.program_kind != static_cast<std::int32_t>(
-                savor::PK_TasMovieAnnotateInputEpochs)
+            || context.program_kind != phase_->identity().program_kind
             || context.program_version != 1 || context.program_ref_kind != kAnnotationRefKind
             || context.program_ref_id <= 0
             || context.input_ini != JobInput("TMEA1:", context.program_ref_id))
@@ -805,7 +908,24 @@ public:
         inputepoch::TasMovieInputEpochAnnotationResultV1 outcome{};
         std::string error;
         if (!phase_->DecodeProgramResult(terminal.terminal.result, outcome, &error))
-            return FinalDecision("FAILED", "TAS_INPUT_EPOCH_ANNOTATION_RESULT_INVALID", error);
+            return FinalDecision("FAILED", "TAS_INPUT_EPOCH_ANNOTATION_RESULT_INVALID",
+                "job_id=" + std::to_string(context.job_id)
+                + " terminal_sha256=" + context.terminal.sha256
+                + " result_size=" + std::to_string(terminal.terminal.result.size())
+                + " module=" + phase_->runtime_contract().module.canonical_id
+                + " entrypoint=" + phase_->runtime_contract().entrypoint
+                + " path=ProgramResult\n" + error);
+        const bool passive = context.program_kind == static_cast<std::int32_t>(
+            savor::PK_TasMovieAnnotateInputEpochs);
+        if (passive && !DecodePassiveAnnotationCapture(
+                terminal.terminal.workset_artifacts, *request,
+                outcome.schedule.source_poll_count,
+                &outcome.schedule, &error))
+            return FinalDecision("FAILED", "TAS_INPUT_EPOCH_ANNOTATION_CAPTURE_INVALID",
+                "job_id=" + std::to_string(context.job_id)
+                + " terminal_sha256=" + context.terminal.sha256
+                + " path=DurableWorkerTerminalEnvelope.terminal.workset_artifacts[savor.capture.profile.artifact]\n"
+                + error);
         RecordTasMovieInputEpochAnnotationAttemptCommand attempt{
             .annotation_request_id = request->annotation_request_id,
             .source_job_id = context.job_id,
@@ -822,7 +942,7 @@ public:
         };
         std::optional<ProgramResultStagingFile> staged_schedule;
         if (attempt.succeeded) {
-            if (!decoded.artifacts.empty()
+            if ((!passive && !decoded.artifacts.empty())
                 || outcome.schedule.source_dtm_sha256 != request->source_dtm_sha256) {
                 return FinalDecision("FAILED", "TAS_INPUT_EPOCH_ANNOTATION_SHAPE_INVALID",
                     "completed annotation did not match its immutable source");
@@ -916,7 +1036,13 @@ public:
         inputepoch::TasMovieInputEpochRewriteResultV1 outcome{};
         std::string error;
         if (!phase_->DecodeProgramResult(terminal.terminal.result, outcome, &error))
-            return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_RESULT_INVALID", error);
+            return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_RESULT_INVALID",
+                "job_id=" + std::to_string(context.job_id)
+                + " terminal_sha256=" + context.terminal.sha256
+                + " result_size=" + std::to_string(terminal.terminal.result.size())
+                + " module=" + phase_->runtime_contract().module.canonical_id
+                + " entrypoint=" + phase_->runtime_contract().entrypoint
+                + " path=ProgramResult\n" + error);
         RecordTasMovieInputEpochRewriteAttemptCommand attempt{
             .rewrite_request_id = request->rewrite_request_id,
             .source_job_id = context.job_id,
@@ -1088,6 +1214,31 @@ ProgramKindDescriptor BuildRewriteProgramDescriptor(IExecutionDb* execution_db,
     descriptor.workset_reconstruction = std::make_shared<RewriteReconstruction>(
         state_db, analysis_db, config.working_dir_root);
     descriptor.result_handler = std::make_shared<RewriteResultHandler>(state_db, analysis_db);
+    descriptor.supports_workflow_orchestration = true;
+    return descriptor;
+}
+
+ProgramKindDescriptor BuildBreakpointDiagnosticProgramDescriptor(
+    IExecutionDb* execution_db, IStateDb* state_db, IAnalysisDb* analysis_db,
+    TasMovieInputEpochProgramConfig config)
+{
+    ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = static_cast<std::int32_t>(
+        savor::PK_TasMovieInputEpochBreakpointDiagnostic);
+    descriptor.program_name = "TAS Movie Input Epoch Breakpoint Diagnostic";
+    descriptor.result_staging_root = config.working_dir_root;
+    descriptor.full_phase_identity =
+        inputepoch::BreakpointDiagnosticFullPhaseDefinitionV1()->identity();
+    descriptor.default_progress_library_ids = ObservationDefaults().progress_library_ids;
+    descriptor.default_derived_state_block_ids = std::vector<std::string>{};
+    descriptor.default_progress_runtime_trigger_pcs =
+        ObservationDefaults().runtime_sample_trigger_pcs;
+    descriptor.job_materializer = std::make_shared<AnnotationMaterializer>(
+        execution_db, state_db, analysis_db, config, true);
+    descriptor.workset_reconstruction = std::make_shared<AnnotationReconstruction>(
+        state_db, analysis_db, config.working_dir_root, true);
+    descriptor.result_handler = std::make_shared<AnnotationResultHandler>(
+        state_db, analysis_db, config.working_dir_root, true);
     descriptor.supports_workflow_orchestration = true;
     return descriptor;
 }

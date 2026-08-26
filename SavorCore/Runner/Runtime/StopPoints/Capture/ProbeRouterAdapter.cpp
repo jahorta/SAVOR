@@ -20,6 +20,7 @@ struct CanonicalPcSite
 {
     std::uint32_t pc = 0;
     bool progress_only = true;
+    std::vector<std::uint32_t> sample_descriptor_ids;
 };
 
 struct CanonicalMemorySite
@@ -225,7 +226,8 @@ ProbeRouterAdapter::BuildCurrentGroupDefinition()
                     "capture profile requested a zero PC stop";
                 return result;
             }
-            pcs.push_back({requirement.address, progress_only});
+            pcs.push_back({requirement.address, progress_only,
+                requirement.routed_sample_descriptor_ids});
             continue;
         }
 
@@ -266,6 +268,11 @@ ProbeRouterAdapter::BuildCurrentGroupDefinition()
             unique_pcs.back().progress_only =
                 unique_pcs.back().progress_only &&
                 site.progress_only;
+            for (const auto descriptor_id : site.sample_descriptor_ids) {
+                if (std::ranges::find(unique_pcs.back().sample_descriptor_ids,
+                        descriptor_id) == unique_pcs.back().sample_descriptor_ids.end())
+                    unique_pcs.back().sample_descriptor_ids.push_back(descriptor_id);
+            }
         }
         else
         {
@@ -322,7 +329,8 @@ ProbeRouterAdapter::BuildCurrentGroupDefinition()
     std::uint64_t next_id = first_id;
     const auto add_subscription = [&](
                                       StopPointSpec point,
-                                      bool progress_only) {
+                                      bool progress_only,
+                                      std::vector<std::uint32_t> sample_descriptor_ids = {}) {
         result.definition.subscriptions.push_back(
             StopSubscriptionDefinition{
                 .id = StopSubscriptionId(next_id++),
@@ -334,6 +342,7 @@ ProbeRouterAdapter::BuildCurrentGroupDefinition()
                 },
                 .lifetime = StopSubscriptionLifetime::Scoped,
                 .priority = config_.priority,
+                .sample_descriptor_ids = std::move(sample_descriptor_ids),
                 .consumer = this,
             });
     };
@@ -341,7 +350,8 @@ ProbeRouterAdapter::BuildCurrentGroupDefinition()
     {
         add_subscription(
             PcStopPointSpec{site.pc},
-            site.progress_only);
+            site.progress_only,
+            site.sample_descriptor_ids);
     }
     for (const auto& site : merged_memory)
     {

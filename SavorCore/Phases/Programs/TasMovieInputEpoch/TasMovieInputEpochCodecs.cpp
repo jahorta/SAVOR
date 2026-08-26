@@ -147,6 +147,29 @@ bool ValidateRequestPath(std::string_view path)
 
 } // namespace
 
+GCInputFrame DecodeGuestPadStatusV1(std::uint64_t packed_status) noexcept
+{
+    const auto byte = [packed_status](std::size_t index) {
+        return static_cast<std::uint8_t>(
+            packed_status >> ((7u - index) * 8u));
+    };
+    const auto stick = [&byte](std::size_t index) {
+        return SaturateStickToU8(
+            static_cast<int>(static_cast<std::int8_t>(byte(index))));
+    };
+
+    GCInputFrame frame{};
+    frame.buttons = static_cast<std::uint16_t>(
+        (static_cast<std::uint16_t>(byte(0)) << 8u) | byte(1));
+    frame.main_x = stick(2);
+    frame.main_y = stick(3);
+    frame.c_x = stick(4);
+    frame.c_y = stick(5);
+    frame.trig_l = byte(6);
+    frame.trig_r = byte(7);
+    return frame;
+}
+
 bool ValidateInputEpochScheduleV1(
     const TasMovieInputEpochScheduleV1& schedule,
     std::string* diagnostic)

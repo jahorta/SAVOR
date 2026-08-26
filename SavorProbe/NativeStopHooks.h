@@ -25,6 +25,7 @@ struct NativePcStop
     NativeStopOrigin origin = NativeStopOrigin::Jit;
     std::uint32_t pc = 0;
     PowerPC::PowerPCManager* power_pc = nullptr;
+    Core::System* system = nullptr;
 };
 
 struct NativeMemoryStop

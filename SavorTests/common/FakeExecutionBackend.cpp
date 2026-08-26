@@ -32,7 +32,7 @@ void FakeExecutionBackendControl::SetCoreState(runtime::BackendCoreState value)
 {
     std::lock_guard lock(mutex);
     snapshot.core_state = value;
-    snapshot.pause_confirmed =
+    snapshot.paused_quiescent =
         value == runtime::BackendCoreState::Paused;
 }
 
@@ -156,45 +156,85 @@ runtime::BackendHealthReport FakeExecutionBackend::CheckHealth() const
     return control_->health;
 }
 
-runtime::BackendResult FakeExecutionBackend::SubmitControlCommand(
-    runtime::BackendControlCommand command)
+runtime::BackendResult FakeExecutionBackend::SubmitControlTask(
+    runtime::BackendControlTask task)
 {
     std::lock_guard lock(control_->mutex);
-    runtime::BackendResult result;
-    switch (command.kind)
+    if (control_->control_task_state !=
+        runtime::BackendExecutionSnapshot::ControlTaskState::Idle)
     {
-    case runtime::BackendControlCommandKind::Pause:
+        return runtime::BackendResult::Failure(
+            runtime::BackendErrorCode::InvalidState,
+            "fake execution actuator is busy");
+    }
+    control_->control_task_state =
+        runtime::BackendExecutionSnapshot::ControlTaskState::Running;
+    runtime::BackendResult result;
+    switch (task.kind)
+    {
+    case runtime::BackendControlTaskKind::Pause:
         control_->RecordLocked("pause");
         result = control_->pause_result;
         if (result.ok && control_->pause_changes_state)
         {
             control_->snapshot.core_state = runtime::BackendCoreState::Paused;
-            control_->snapshot.pause_confirmed = true;
+            control_->snapshot.paused_quiescent = true;
         }
         break;
-    case runtime::BackendControlCommandKind::Resume:
+    case runtime::BackendControlTaskKind::Resume:
         control_->RecordLocked("resume");
         result = control_->resume_result;
         if (result.ok)
         {
             control_->snapshot.core_state = runtime::BackendCoreState::Running;
-            control_->snapshot.pause_confirmed = false;
+            control_->snapshot.paused_quiescent = false;
         }
         break;
-    case runtime::BackendControlCommandKind::FrameStep:
+    case runtime::BackendControlTaskKind::FrameStep:
         control_->RecordLocked("frame_step");
         result = control_->frame_step_result;
         if (result.ok)
         {
             control_->snapshot.core_state = runtime::BackendCoreState::Paused;
-            control_->snapshot.pause_confirmed = true;
+            control_->snapshot.paused_quiescent = true;
             ++control_->snapshot.vi_count;
         }
         break;
+    case runtime::BackendControlTaskKind::SynchronizePaused:
+        control_->RecordLocked("synchronize_paused");
+        result = control_->synchronize_result;
+        if (result.ok &&
+            control_->snapshot.core_state == runtime::BackendCoreState::Paused)
+        {
+            control_->snapshot.paused_quiescent = true;
+        }
+        break;
     }
-    if (result.ok)
-        control_->snapshot.applied_control_generation = command.generation;
-    return result;
+    control_->control_completion = runtime::BackendControlCompletion{
+        task.kind,
+        result};
+    control_->control_task_state =
+        runtime::BackendExecutionSnapshot::ControlTaskState::Completed;
+    control_->snapshot.control_task_state = control_->control_task_state;
+    return runtime::BackendResult::Success();
+}
+
+std::optional<runtime::BackendControlCompletion>
+FakeExecutionBackend::TakeControlCompletion()
+{
+    std::lock_guard lock(control_->mutex);
+    if (control_->control_task_state !=
+            runtime::BackendExecutionSnapshot::ControlTaskState::Completed ||
+        !control_->control_completion)
+    {
+        return std::nullopt;
+    }
+    auto completion = std::move(control_->control_completion);
+    control_->control_completion.reset();
+    control_->control_task_state =
+        runtime::BackendExecutionSnapshot::ControlTaskState::Idle;
+    control_->snapshot.control_task_state = control_->control_task_state;
+    return completion;
 }
 
 runtime::BackendResult FakeExecutionBackend::SetThrottleDisabled(bool disabled)

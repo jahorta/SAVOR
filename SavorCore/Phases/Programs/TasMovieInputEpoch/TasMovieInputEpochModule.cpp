@@ -32,6 +32,13 @@ void Diagnostic(std::string* output, std::string value)
     if (output) *output = std::move(value);
 }
 
+void AppendDiagnostic(std::string* output, std::string value)
+{
+    if (!output) return;
+    if (!output->empty()) output->push_back('\n');
+    output->append(std::move(value));
+}
+
 SchemaIdentity Schema(std::string id, std::string contract)
 {
     return ExactSchema(std::move(id), 1, contract);
@@ -274,6 +281,25 @@ std::vector<Byte> PointSet()
     return EncodeSemanticPointSetV1(points);
 }
 
+ProgramValueId ContinueToMovieEnd(Builder& builder, ProgramFunction& function,
+    BasicBlock& block, ProgramValueId playback, std::string selector,
+    ProgramScopeId scope)
+{
+    const auto movie = OptionalValue(builder, function, block,
+        CanonicalRuntimeSchema::OptionalMoviePlaybackSession, playback,
+        selector + "/movie", scope);
+    const auto config = Constant(builder, function, block,
+        CanonicalRuntimeType(CanonicalRuntimeSchema::ContinueUntilStaticConfig),
+        ContinueConfig(false), selector + "/config", scope);
+    const auto request = Construct(builder, function, block,
+        CanonicalActionInputType(CanonicalAction::ExecutionContinueToMovieEnd),
+        std::array{movie, config}, selector + "/request",
+        scope);
+    return Await(builder, function, block,
+        CanonicalAction::ExecutionContinueToMovieEnd, request,
+        selector + "/await", scope);
+}
+
 void AddTypes(Builder& builder)
 {
     builder.AddTypeImport(CanonicalRuntimeSchemaIdentity(
@@ -346,10 +372,15 @@ void FailBlock(Builder& builder, ProgramFunction& function, BasicBlock& block,
             std::nullopt}}, "failure");
 }
 
-ProgramModule AnnotationModule()
+ProgramModule AnnotationModule(bool breakpoint_diagnostic = false)
 {
+    const std::string entrypoint = breakpoint_diagnostic
+        ? std::string(BreakpointDiagnosticEntrypoint)
+        : std::string(AnnotationEntrypoint);
     ProgramModule module{.identity = {
-        .canonical_id = std::string(AnnotationModuleCanonicalId),
+        .canonical_id = breakpoint_diagnostic
+            ? std::string(BreakpointDiagnosticModuleCanonicalId)
+            : std::string(AnnotationModuleCanonicalId),
         .revision = 1}};
     Builder builder(module, "TasMovieInputEpochAnnotation",
         "tasmovie.annotate_input_epochs/v1");
@@ -378,7 +409,7 @@ ProgramModule AnnotationModule()
         capabilities::FieldPadStatusToInputFrameReducerIdentity());
 
     const auto argument = builder.NewArgument(Named(AnnotationRequestSchema()));
-    auto& function = builder.AddFunction(std::string(AnnotationEntrypoint),
+    auto& function = builder.AddFunction(entrypoint,
         std::array{argument}, Named(AnnotationResultSchema()), Bool(), true);
     function.blocks.reserve(16);
     const auto entry_id = builder.AddBlock(function).id;
@@ -585,7 +616,7 @@ ProgramModule AnnotationModule()
         .maximum_artifacts = 1, .maximum_values = 16'000'000,
         .maximum_value_bytes = 512ull * 1024ull * 1024ull,
         .maximum_trace_events = 2'000'000};
-    module.entrypoints = {{.name = std::string(AnnotationEntrypoint),
+    module.entrypoints = {{.name = entrypoint,
         .function = function.id, .input_type = Named(AnnotationRequestSchema()),
         .output_type = Named(AnnotationResultSchema()),
         .domain_outcome_type = Bool(),
@@ -598,6 +629,91 @@ ProgramModule AnnotationModule()
 // Rewrite uses the same canonical action vocabulary. The IR is intentionally
 // compact: prefix verification and held-input delivery are performed by two
 // local loops, and every backend mutation remains an awaited canonical action.
+ProgramModule PassiveAnnotationModule()
+{
+    ProgramModule module{.identity = {
+        .canonical_id = std::string(AnnotationModuleCanonicalId),
+        .revision = 2}};
+    Builder builder(module, "TasMovieInputEpochPassiveAnnotation",
+        "tasmovie.annotate_input_epochs/passive-v2");
+    AddTypes(builder);
+    builder.AddLocalType({.identity = AnnotationRequestSchema(),
+        .kind = TypeSchemaKind::Record,
+        .record_fields = {{"prepare", CanonicalActionInputType(
+                CanonicalAction::MoviePrepareReadOnlyPlayback)},
+            {"source_hash", Named(HashSchema())},
+            {"source_poll_count", U64()}}});
+    builder.AddLocalType({.identity = AnnotationResultSchema(),
+        .kind = TypeSchemaKind::Record,
+        .record_fields = {{"outcome", Named(OutcomeSchema())},
+            {"source_hash", Named(HashSchema())}, {"source_poll_count", U64()},
+            {"epochs", Named(EpochListSchema())},
+            {"failure", Named(FailureSchema())}, {"failure_epoch", U64()},
+            {"expected_cursor", U64()}, {"actual_cursor", U64()}}});
+    for (const auto action : {CanonicalAction::MoviePrepareReadOnlyPlayback,
+             CanonicalAction::MovieStartPlayback,
+             CanonicalAction::ExecutionContinueToMovieEnd})
+        AddAction(builder, action);
+    builder.AddCapabilityImport(capabilities::FieldPackIdentity());
+    const auto argument = builder.NewArgument(Named(AnnotationRequestSchema()));
+    auto& function = builder.AddFunction(std::string(AnnotationEntrypoint),
+        std::array{argument}, Named(AnnotationResultSchema()), Bool(), true);
+    auto& entry = builder.AddBlock(function);
+    const auto scope = builder.NewScope();
+    (void)builder.AddInstruction(function, entry, InstructionOpcode::EnterScope,
+        std::nullopt, {}, {}, "scope", std::nullopt, scope);
+    const auto prepare_request = Project(builder, function, entry, argument.id,
+        CanonicalActionInputType(CanonicalAction::MoviePrepareReadOnlyPlayback),
+        "prepare", scope);
+    const auto prepared = Await(builder, function, entry,
+        CanonicalAction::MoviePrepareReadOnlyPlayback, prepare_request,
+        "prepare", scope);
+    const auto playback = Await(builder, function, entry,
+        CanonicalAction::MovieStartPlayback, prepared, "start", scope);
+    (void)ContinueToMovieEnd(builder, function, entry, playback,
+        "movie-end", scope);
+    const auto empty = Need(builder.AddInstruction(function, entry,
+        InstructionOpcode::ListConstruct, Named(EpochListSchema()), {}, {},
+        "capture-owned-epochs", std::nullopt, scope), "empty epoch list");
+    const auto source_hash = Project(builder, function, entry, argument.id,
+        Named(HashSchema()), "source_hash", scope);
+    const auto source_count = Project(builder, function, entry, argument.id,
+        U64(), "source_poll_count", scope);
+    const auto outcome = EnumConstant(builder, function, entry,
+        OutcomeSchema(), 0, "completed", scope);
+    const auto none = EnumConstant(builder, function, entry,
+        FailureSchema(), 0, "no-failure", scope);
+    const auto zero = Constant(builder, function, entry, U64(),
+        std::uint64_t{0}, "zero", scope);
+    const auto result = Construct(builder, function, entry,
+        Named(AnnotationResultSchema()), std::array{outcome, source_hash,
+            source_count, empty, none, zero, zero, zero}, "result", scope);
+    (void)builder.AddInstruction(function, entry, InstructionOpcode::ExitScope,
+        std::nullopt, {}, {}, "release-scope", std::nullopt, scope);
+    const auto succeeded = Constant(builder, function, entry, Bool(), true,
+        "succeeded");
+    builder.SetTerminator(function, entry, {.kind = TerminatorKind::Return,
+        .return_value = result, .domain_outcome = succeeded}, "return");
+    module.accepted_policies = {.state_policies = {
+            InvocationStatePolicy::EstablishBaseline},
+        .execution_intents = {ExecutionIntent::Live},
+        .permits_movie_playback = true};
+    module.budgets = {.maximum_instructions = 100'000,
+        .maximum_calls = 32, .maximum_call_depth = 8,
+        .maximum_action_requests = 8, .maximum_emissions = 1,
+        .maximum_artifacts = 1, .maximum_values = 100'000,
+        .maximum_value_bytes = 16ull * 1024ull * 1024ull,
+        .maximum_trace_events = 100'000};
+    module.entrypoints = {{.name = std::string(AnnotationEntrypoint),
+        .function = function.id, .input_type = Named(AnnotationRequestSchema()),
+        .output_type = Named(AnnotationResultSchema()),
+        .domain_outcome_type = Bool(),
+        .required_capability_packs = module.required_capability_packs,
+        .accepted_policies = module.accepted_policies}};
+    module.identity.module_hash = ComputeProgramModuleHashV1(module);
+    return module;
+}
+
 ProgramModule RewriteModule()
 {
     ProgramModule module{.identity = {
@@ -694,7 +810,7 @@ ProgramModule RewriteModule()
              {prefix_args[0].id}}}}, "prefix-check");
     auto& prefix_continue = Block(function, prefix_continue_id);
     const auto prefix_observation = Continue(builder, function,
-        prefix_continue, playback, std::nullopt, true, "prefix-pad-read", scope);
+        prefix_continue, playback, std::nullopt, false, "prefix-pad-read", scope);
     const auto prefix_reason = Project(builder, function, prefix_continue,
         prefix_observation, CanonicalRuntimeType(
             CanonicalRuntimeSchema::ContinueUntilCompletionReason),
@@ -895,8 +1011,11 @@ ProgramModule RewriteModule()
         "observe-after-tail", scope);
     const auto final_cursor = Project(builder, function, finalize, after_tail,
         U64(), "current_input_count", scope);
-    (void)Await(builder, function, finalize,
+    const auto finalized_dtm = Await(builder, function, finalize,
         CanonicalAction::MovieStopRecording, recording, "finalize-dtm", scope);
+    (void)builder.AddInstruction(function, finalize,
+        InstructionOpcode::PublishArtifact, std::nullopt,
+        std::array{finalized_dtm}, {}, "publish-dtm", std::nullopt, scope);
     const auto result_epochs = Project(builder, function, finalize, argument.id,
         Named(EpochListSchema()), "epochs", scope);
     const auto result_source_count = Need(builder.AddInstruction(function,
@@ -905,11 +1024,8 @@ ProgramModule RewriteModule()
         "source count");
     const auto result_insert = Project(builder, function, finalize, argument.id,
         U64(), "insert_before", scope);
-    const auto result_suffix = Binary(builder, function, finalize,
-        InstructionOpcode::SubtractChecked, U64(), result_source_count,
-        result_insert, "suffix", scope);
     const auto result_child = Binary(builder, function, finalize,
-        InstructionOpcode::AddChecked, U64(), result_suffix,
+        InstructionOpcode::AddChecked, U64(), result_source_count,
         Constant(builder, function, finalize, U64(), std::uint64_t{1},
             "one", scope), "child-count", scope);
     const auto completed = EnumConstant(builder, function, finalize,
@@ -1134,13 +1250,46 @@ const T* Payload(const ProgramValueGraph& graph, ProgramValueId id)
 }
 
 bool DecodeEpoch(const ProgramValueGraph& graph, ProgramValueId id,
-    TasMovieInputEpochV1& epoch)
+    TasMovieInputEpochV1& epoch, std::string_view path,
+    std::string* diagnostic)
 {
     const auto* record = Payload<RecordValue>(graph, id);
-    if (!record || record->fields.size() != 2) return false;
+    if (!record)
+    {
+        AppendDiagnostic(diagnostic, std::string(path) +
+            ": expected EpochV1 record");
+        return false;
+    }
+    if (record->fields.size() != 2)
+    {
+        AppendDiagnostic(diagnostic, std::string(path) +
+            ": expected 2 fields, found " +
+            std::to_string(record->fields.size()));
+        return false;
+    }
     const auto* cursor = Payload<std::uint64_t>(graph, record->fields[0]);
     const auto* bytes = Payload<std::vector<Byte>>(graph, record->fields[1]);
-    if (!cursor || !bytes || bytes->size() != 8) return false;
+    bool valid = true;
+    if (!cursor)
+    {
+        AppendDiagnostic(diagnostic, std::string(path) +
+            ".movie_input_cursor: expected u64");
+        valid = false;
+    }
+    if (!bytes)
+    {
+        AppendDiagnostic(diagnostic, std::string(path) +
+            ".received_input: expected byte payload");
+        valid = false;
+    }
+    else if (bytes->size() != 8)
+    {
+        AppendDiagnostic(diagnostic, std::string(path) +
+            ".received_input: expected 8 bytes, found " +
+            std::to_string(bytes->size()));
+        valid = false;
+    }
+    if (!valid) return false;
     epoch.movie_input_cursor = *cursor;
     epoch.input.buttons = static_cast<std::uint16_t>((*bytes)[0]) |
         (static_cast<std::uint16_t>((*bytes)[1]) << 8u);
@@ -1153,25 +1302,80 @@ bool DecodeEpoch(const ProgramValueGraph& graph, ProgramValueId id,
 template <typename Result>
 bool DecodeCommonResult(std::span<const Byte> bytes,
     const ModuleIdentity& module, const ProgramDependencyLock& dependencies,
-    std::string_view entrypoint, ProgramValueGraph const** output,
+    std::string_view entrypoint, ProgramValueGraph* output,
     std::vector<ProgramArtifact>* artifacts, std::string* diagnostic)
 {
     const auto decoded = DecodeProgramResultV1(bytes);
-    if (!decoded || !decoded.value || decoded.value->module != module ||
-        decoded.value->entrypoint != entrypoint ||
-        decoded.value->resolved_dependencies != dependencies ||
-        decoded.value->infrastructure != ProgramInfrastructureStatus::Completed ||
-        decoded.value->cleanup != ProgramCleanupStatus::Clean ||
-        decoded.value->session_disposition != SessionDisposition::Clean ||
-        !decoded.value->output || !decoded.value->domain_outcome)
+    if (!decoded || !decoded.value)
     {
-        Diagnostic(diagnostic, "input-epoch ProgramResult is not a clean exact result");
+        Diagnostic(diagnostic,
+            "$: failed to decode ProgramResultV1 envelope");
         return false;
     }
+    bool valid = true;
+    if (decoded.value->module != module)
+    {
+        AppendDiagnostic(diagnostic,
+            "$.module: does not match the requested module identity");
+        valid = false;
+    }
+    if (decoded.value->entrypoint != entrypoint)
+    {
+        AppendDiagnostic(diagnostic, "$.entrypoint: expected '" +
+            std::string(entrypoint) + "', found '" +
+            decoded.value->entrypoint + "'");
+        valid = false;
+    }
+    if (decoded.value->resolved_dependencies != dependencies)
+    {
+        AppendDiagnostic(diagnostic,
+            "$.resolved_dependencies: dependency lock does not match");
+        valid = false;
+    }
+    if (decoded.value->infrastructure != ProgramInfrastructureStatus::Completed)
+    {
+        AppendDiagnostic(diagnostic,
+            "$.infrastructure: expected Completed");
+        valid = false;
+    }
+    if (decoded.value->cleanup != ProgramCleanupStatus::Clean)
+    {
+        AppendDiagnostic(diagnostic, "$.cleanup: expected Clean");
+        valid = false;
+    }
+    if (decoded.value->session_disposition != SessionDisposition::Clean)
+    {
+        AppendDiagnostic(diagnostic,
+            "$.session_disposition: expected Clean");
+        valid = false;
+    }
+    if (!decoded.value->output)
+    {
+        AppendDiagnostic(diagnostic, "$.output: missing value graph");
+        valid = false;
+    }
+    if (!decoded.value->domain_outcome)
+    {
+        AppendDiagnostic(diagnostic,
+            "$.domain_outcome: missing value graph");
+        valid = false;
+    }
+    if (!valid) return false;
     const auto* domain = Payload<bool>(*decoded.value->domain_outcome,
         decoded.value->domain_outcome->root);
-    if (!domain || !*domain) return false;
-    *output = &*decoded.value->output;
+    if (!domain)
+    {
+        Diagnostic(diagnostic,
+            "$.domain_outcome.root: expected boolean");
+        return false;
+    }
+    if (!*domain)
+    {
+        Diagnostic(diagnostic,
+            "$.domain_outcome.root: expected true");
+        return false;
+    }
+    *output = std::move(*decoded.value->output);
     if (artifacts) *artifacts = decoded.value->artifacts;
     return true;
 }
@@ -1179,9 +1383,13 @@ bool DecodeCommonResult(std::span<const Byte> bytes,
 class AnnotationDefinition final : public IAnnotationFullPhaseDefinitionV1
 {
 public:
-    AnnotationDefinition()
+    explicit AnnotationDefinition(bool breakpoint_diagnostic)
     {
-        module_ = AnnotationModule(); dependencies_ = Verify(module_);
+        diagnostic_ = breakpoint_diagnostic;
+        entrypoint_ = diagnostic_ ? std::string(BreakpointDiagnosticEntrypoint)
+                                  : std::string(AnnotationEntrypoint);
+        module_ = diagnostic_ ? AnnotationModule(true) : PassiveAnnotationModule();
+        dependencies_ = Verify(module_);
         const auto encoded = EncodeProgramModuleV1(module_);
         if (!encoded) throw std::logic_error(encoded.status.message);
         envelope_ = {{module_.identity.canonical_id, module_.identity.revision,
@@ -1189,7 +1397,7 @@ public:
             false, encoded.bytes};
         profile_ = Profile(dependencies_);
         runtime_ = {.module = envelope_.identity,
-            .entrypoint = std::string(AnnotationEntrypoint),
+            .entrypoint = entrypoint_,
             .dependency_lock_sha256 = ComputeProgramDependencyLockHashV1(
                 dependencies_).ToHex(),
             .runtime_profile_sha256 = ProfileHash(profile_),
@@ -1211,9 +1419,10 @@ public:
         runtime_.service_policy_sha256 = hash::sha256(service.data(), service.size());
         const std::string canonical = runtime_.module.canonical_hash +
             runtime_.verified_dependency_sha256 + runtime_.service_policy_sha256;
-        identity_ = {static_cast<std::int32_t>(
+        identity_ = {diagnostic_ ? 100 : static_cast<std::int32_t>(
                 savor::PK_TasMovieAnnotateInputEpochs), ProgramVersion,
-            std::string(AnnotationFullPhaseCanonicalId), 1,
+            diagnostic_ ? std::string(BreakpointDiagnosticFullPhaseCanonicalId)
+                        : std::string(AnnotationFullPhaseCanonicalId), 1,
             hash::sha256(canonical.data(), canonical.size())};
     }
     const fullphase::FullPhaseProgramIdentity& identity() const noexcept override { return identity_; }
@@ -1231,42 +1440,112 @@ public:
         TasMovieInputEpochAnnotationResultV1& result,
         std::string* diagnostic) const override
     {
-        const ProgramValueGraph* graph = nullptr;
+        ProgramValueGraph graph;
         if (!DecodeCommonResult<TasMovieInputEpochAnnotationResultV1>(bytes,
-                module_.identity, dependencies_, AnnotationEntrypoint, &graph,
+                module_.identity, dependencies_, entrypoint_, &graph,
                 nullptr, diagnostic)) return false;
-        const auto* record = Payload<RecordValue>(*graph, graph->root);
-        if (!record || record->fields.size() != 8) return false;
-        const auto* outcome = Payload<EnumValue>(*graph, record->fields[0]);
-        const auto* source_hash = Payload<std::string>(*graph, record->fields[1]);
-        const auto* source_count = Payload<std::uint64_t>(*graph, record->fields[2]);
-        const auto* epochs = Payload<ListValue>(*graph, record->fields[3]);
-        const auto* failure = Payload<EnumValue>(*graph, record->fields[4]);
-        const auto* failure_epoch = Payload<std::uint64_t>(*graph, record->fields[5]);
-        const auto* expected = Payload<std::uint64_t>(*graph, record->fields[6]);
-        const auto* actual = Payload<std::uint64_t>(*graph, record->fields[7]);
-        if (!outcome || !source_hash || !source_count || !epochs || !failure ||
-            !failure_epoch || !expected || !actual) return false;
+        const auto* record = Payload<RecordValue>(graph, graph.root);
+        if (!record)
+        {
+            Diagnostic(diagnostic,
+                "$.output.root: expected AnnotationResultV1 record");
+            return false;
+        }
+        if (record->fields.size() != 8)
+        {
+            Diagnostic(diagnostic,
+                "$.output.root: expected 8 fields, found " +
+                std::to_string(record->fields.size()));
+            return false;
+        }
+        const auto* outcome = Payload<EnumValue>(graph, record->fields[0]);
+        const auto* source_hash = Payload<std::string>(graph, record->fields[1]);
+        const auto* source_count = Payload<std::uint64_t>(graph, record->fields[2]);
+        const auto* epochs = Payload<ListValue>(graph, record->fields[3]);
+        const auto* failure = Payload<EnumValue>(graph, record->fields[4]);
+        const auto* failure_epoch = Payload<std::uint64_t>(graph, record->fields[5]);
+        const auto* expected = Payload<std::uint64_t>(graph, record->fields[6]);
+        const auto* actual = Payload<std::uint64_t>(graph, record->fields[7]);
+        bool valid = true;
+        const auto require = [&](bool present, std::string_view path,
+                                 std::string_view type) {
+            if (present) return;
+            AppendDiagnostic(diagnostic, std::string(path) +
+                ": expected " + std::string(type));
+            valid = false;
+        };
+        require(outcome != nullptr, "$.output.outcome", "OutcomeV1 enum");
+        require(source_hash != nullptr, "$.output.source_hash", "utf8 SHA-256");
+        require(source_count != nullptr, "$.output.source_poll_count", "u64");
+        require(epochs != nullptr, "$.output.epochs", "EpochListV1");
+        require(failure != nullptr, "$.output.failure", "FailureReasonV1 enum");
+        require(failure_epoch != nullptr, "$.output.failure_epoch", "u64");
+        require(expected != nullptr, "$.output.expected_cursor", "u64");
+        require(actual != nullptr, "$.output.actual_cursor", "u64");
+        if (!valid) return false;
+        if (outcome->value < 0 || outcome->value > 1)
+        {
+            AppendDiagnostic(diagnostic,
+                "$.output.outcome: enum value is outside OutcomeV1");
+            valid = false;
+        }
+        if (failure->value < 0 || failure->value > 5)
+        {
+            AppendDiagnostic(diagnostic,
+                "$.output.failure: enum value is outside FailureReasonV1");
+            valid = false;
+        }
+        if (!valid) return false;
         result = {};
         result.outcome = static_cast<InputEpochOutcomeV1>(outcome->value);
         result.schedule.source_dtm_sha256 = *source_hash;
         result.schedule.source_poll_count = *source_count;
         result.schedule.epochs.resize(epochs->elements.size());
+        bool epochs_valid = true;
         for (std::size_t i=0;i!=epochs->elements.size();++i)
-            if (!DecodeEpoch(*graph, epochs->elements[i], result.schedule.epochs[i])) return false;
+        {
+            const std::string path = "$.output.epochs[" +
+                std::to_string(i) + "]";
+            if (!DecodeEpoch(graph, epochs->elements[i],
+                    result.schedule.epochs[i], path, diagnostic))
+                epochs_valid = false;
+        }
+        if (!epochs_valid) return false;
         result.failure_reason = static_cast<InputEpochFailureReasonV1>(failure->value);
         result.failure_epoch = *failure_epoch;
         result.expected_cursor = *expected;
         result.actual_cursor = *actual;
-        return result.outcome == InputEpochOutcomeV1::Completed &&
-            ValidateInputEpochScheduleV1(result.schedule, diagnostic);
+        if (result.outcome != InputEpochOutcomeV1::Completed)
+        {
+            Diagnostic(diagnostic,
+                "$.output.outcome: annotation did not complete");
+            return false;
+        }
+        if (!diagnostic_ && !result.schedule.epochs.empty())
+        {
+            Diagnostic(diagnostic,
+                "$.output.epochs: passive annotation must return an empty capture-owned schedule");
+            return false;
+        }
+        if (diagnostic_)
+        {
+            std::string schedule_diagnostic;
+            if (!ValidateInputEpochScheduleV1(result.schedule,
+                    &schedule_diagnostic))
+            {
+                Diagnostic(diagnostic, "$.output.schedule: " +
+                    schedule_diagnostic);
+                return false;
+            }
+        }
+        return true;
     }
 private:
     ProgramInvocation Resolve(const TasMovieInputEpochAnnotationRequestV1& request,
         ProgramExecutionId execution, AttemptId attempt) const
     {
         return {.invocation_id = execution, .attempt_id = attempt,
-            .module = module_.identity, .entrypoint = std::string(AnnotationEntrypoint),
+            .module = module_.identity, .entrypoint = entrypoint_,
             .dependencies = dependencies_, .runtime_profile = profile_,
             .state = {.policy = InvocationStatePolicy::EstablishBaseline,
                 .session_lineage = std::string(AnnotationBaselineLineage)},
@@ -1277,6 +1556,8 @@ private:
     ProgramModule module_; ProgramDependencyLock dependencies_; RuntimeProfile profile_;
     EncodedModuleEnvelope envelope_; fullphase::FullPhaseRuntimeContract runtime_;
     fullphase::FullPhaseProgramIdentity identity_;
+    bool diagnostic_ = false;
+    std::string entrypoint_;
 };
 
 class RewriteDefinition final : public IRewriteFullPhaseDefinitionV1
@@ -1330,31 +1611,97 @@ public:
     bool DecodeProgramResult(std::span<const Byte> bytes,
         TasMovieInputEpochRewriteResultV1& result, std::string* diagnostic) const override
     {
-        const ProgramValueGraph* graph = nullptr;
+        ProgramValueGraph graph;
         std::vector<ProgramArtifact> artifacts;
         if (!DecodeCommonResult<TasMovieInputEpochRewriteResultV1>(bytes,
                 module_.identity, dependencies_, RewriteEntrypoint, &graph,
                 &artifacts, diagnostic)) return false;
-        const auto* record = Payload<RecordValue>(*graph, graph->root);
-        if (!record || record->fields.size()!=9) return false;
-        const auto* outcome=Payload<EnumValue>(*graph,record->fields[0]);
-        const auto* insert=Payload<std::uint64_t>(*graph,record->fields[1]);
-        const auto* source=Payload<std::uint64_t>(*graph,record->fields[2]);
-        const auto* child=Payload<std::uint64_t>(*graph,record->fields[3]);
-        const auto* cursor=Payload<std::uint64_t>(*graph,record->fields[4]);
-        const auto* failure=Payload<EnumValue>(*graph,record->fields[5]);
-        const auto* failure_epoch=Payload<std::uint64_t>(*graph,record->fields[6]);
-        const auto* expected=Payload<std::uint64_t>(*graph,record->fields[7]);
-        const auto* actual=Payload<std::uint64_t>(*graph,record->fields[8]);
-        if(!outcome||!insert||!source||!child||!cursor||!failure||!failure_epoch||!expected||!actual||artifacts.size()!=2)return false;
+        const auto* record = Payload<RecordValue>(graph, graph.root);
+        if (!record)
+        {
+            Diagnostic(diagnostic,
+                "$.output.root: expected RewriteResultV1 record");
+            return false;
+        }
+        if (record->fields.size()!=9)
+        {
+            Diagnostic(diagnostic,
+                "$.output.root: expected 9 fields, found " +
+                std::to_string(record->fields.size()));
+            return false;
+        }
+        const auto* outcome=Payload<EnumValue>(graph,record->fields[0]);
+        const auto* insert=Payload<std::uint64_t>(graph,record->fields[1]);
+        const auto* source=Payload<std::uint64_t>(graph,record->fields[2]);
+        const auto* child=Payload<std::uint64_t>(graph,record->fields[3]);
+        const auto* cursor=Payload<std::uint64_t>(graph,record->fields[4]);
+        const auto* failure=Payload<EnumValue>(graph,record->fields[5]);
+        const auto* failure_epoch=Payload<std::uint64_t>(graph,record->fields[6]);
+        const auto* expected=Payload<std::uint64_t>(graph,record->fields[7]);
+        const auto* actual=Payload<std::uint64_t>(graph,record->fields[8]);
+        bool valid = true;
+        const auto require = [&](bool present, std::string_view path,
+                                 std::string_view type) {
+            if (present) return;
+            AppendDiagnostic(diagnostic, std::string(path) +
+                ": expected " + std::string(type));
+            valid = false;
+        };
+        require(outcome != nullptr, "$.output.outcome", "OutcomeV1 enum");
+        require(insert != nullptr, "$.output.insert_before", "u64");
+        require(source != nullptr, "$.output.source_count", "u64");
+        require(child != nullptr, "$.output.child_count", "u64");
+        require(cursor != nullptr, "$.output.final_cursor", "u64");
+        require(failure != nullptr, "$.output.failure", "FailureReasonV1 enum");
+        require(failure_epoch != nullptr, "$.output.failure_epoch", "u64");
+        require(expected != nullptr, "$.output.expected_cursor", "u64");
+        require(actual != nullptr, "$.output.actual_cursor", "u64");
+        if (artifacts.size()!=2)
+        {
+            AppendDiagnostic(diagnostic,
+                "$.artifacts: expected 2 artifacts, found " +
+                std::to_string(artifacts.size()));
+            valid = false;
+        }
+        if (!valid) return false;
+        if (outcome->value < 0 || outcome->value > 1)
+        {
+            AppendDiagnostic(diagnostic,
+                "$.output.outcome: enum value is outside OutcomeV1");
+            valid = false;
+        }
+        if (failure->value < 0 || failure->value > 5)
+        {
+            AppendDiagnostic(diagnostic,
+                "$.output.failure: enum value is outside FailureReasonV1");
+            valid = false;
+        }
+        if (!valid) return false;
         result={.outcome=static_cast<InputEpochOutcomeV1>(outcome->value),
             .insert_before_epoch=*insert,.source_epoch_count=*source,
             .child_epoch_count=*child,.final_cursor=*cursor,
             .failure_reason=static_cast<InputEpochFailureReasonV1>(failure->value),
             .failure_epoch=*failure_epoch,.expected_cursor=*expected,
             .actual_cursor=*actual,.artifacts=std::move(artifacts)};
-        return result.outcome==InputEpochOutcomeV1::Completed &&
-            result.child_epoch_count==result.source_epoch_count-result.insert_before_epoch+1;
+        if (result.outcome!=InputEpochOutcomeV1::Completed)
+        {
+            Diagnostic(diagnostic,
+                "$.output.outcome: rewrite did not complete");
+            return false;
+        }
+        if (result.insert_before_epoch > result.source_epoch_count)
+        {
+            Diagnostic(diagnostic,
+                "$.output.insert_before: exceeds source_count");
+            return false;
+        }
+        if (result.child_epoch_count != result.source_epoch_count + 1)
+        {
+            Diagnostic(diagnostic,
+                "$.output.child_count: inconsistent with source_count and insert_before");
+            return false;
+        }
+        return true;
     }
 private:
     ProgramInvocation Resolve(const TasMovieInputEpochRewriteRequestV1& request,
@@ -1378,7 +1725,14 @@ private:
 std::shared_ptr<const IAnnotationFullPhaseDefinitionV1>
 AnnotationFullPhaseDefinitionV1()
 {
-    static const auto value = std::make_shared<const AnnotationDefinition>();
+    static const auto value = std::make_shared<const AnnotationDefinition>(false);
+    return value;
+}
+
+std::shared_ptr<const IAnnotationFullPhaseDefinitionV1>
+BreakpointDiagnosticFullPhaseDefinitionV1()
+{
+    static const auto value = std::make_shared<const AnnotationDefinition>(true);
     return value;
 }
 

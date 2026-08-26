@@ -113,6 +113,7 @@ struct ProfileStopRequirement {
     bool exhausted = false;
     bool group_enabled = true;
     bool address_resolved = false;
+    std::vector<std::uint32_t> routed_sample_descriptor_ids;
 };
 
 class ProbeRuntime {
@@ -197,7 +198,8 @@ private:
         std::uint32_t size,
         std::uint64_t value,
         bool write,
-        RawProbeEvent& event);
+        RawProbeEvent& event,
+        const ProbeRoutedHitContext* routed_context = nullptr);
     bool evaluate_predicate(
         const ProbeDefinition& probe,
         const RawProbeEvent& event,

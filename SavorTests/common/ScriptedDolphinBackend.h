@@ -77,6 +77,9 @@ struct ScriptedDolphinBackendControl
     std::filesystem::path prepared_movie_path;
     bool movie_available = true;
     bool hit_time_memory_available = true;
+    runtime::BackendExecutionSnapshot::ControlTaskState control_task_state =
+        runtime::BackendExecutionSnapshot::ControlTaskState::Idle;
+    std::optional<runtime::BackendControlCompletion> control_completion;
 
     int open_count = 0;
     int core_stop_count = 0;
@@ -181,8 +184,10 @@ private:
     Capabilities() const noexcept override;
     [[nodiscard]] runtime::BackendExecutionSnapshot
     QueryExecutionSnapshot() const override;
-    runtime::BackendResult SubmitControlCommand(
-        runtime::BackendControlCommand command) override;
+    runtime::BackendResult SubmitControlTask(
+        runtime::BackendControlTask task) override;
+    [[nodiscard]] std::optional<runtime::BackendControlCompletion>
+    TakeControlCompletion() override;
     runtime::BackendResult SetThrottleDisabled(bool disabled) override;
 
     [[nodiscard]] bool IsAvailable(std::uint8_t port) const noexcept override;

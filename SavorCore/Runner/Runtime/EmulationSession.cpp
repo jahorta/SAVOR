@@ -455,7 +455,7 @@ EmulationSession::CaptureImmutableSavestateArtifact(
         execution_control_core_->has_active_operation() ||
         execution_control_core_->snapshot().activity !=
             ExecutionActivity::IdlePaused ||
-        !execution_control_core_->snapshot().evidence.pause_confirmed)
+        !execution_control_core_->snapshot().evidence.paused_quiescent)
     {
         receipt.result = SavestateServiceResult::Failure(
             SavestateServiceErrorCode::InvalidState,
@@ -1998,7 +1998,7 @@ BackendResult EmulationSession::ActivateDerivedStateForItem(
     {
         if (execution.activity != ExecutionActivity::IdlePaused ||
             execution.evidence.core_state != BackendCoreState::Paused ||
-            !execution.evidence.pause_confirmed || execution.evidence.pc == 0)
+            !execution.evidence.paused_quiescent || execution.evidence.pc == 0)
         {
             return BackendResult::Failure(
                 BackendErrorCode::InvalidState,

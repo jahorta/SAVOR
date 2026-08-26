@@ -32,6 +32,17 @@ TEST(TasMovieInputEpoch, DecodesDolphinControllerStateBitfield)
     EXPECT_TRUE(metadata.connected);
 }
 
+TEST(TasMovieInputEpoch, DecodesGuestPadStatusLayout)
+{
+    EXPECT_EQ(DecodeGuestPadStatusV1(0), GCInputFrame{});
+    EXPECT_EQ(
+        DecodeGuestPadStatusV1(0x0100000000000000ull),
+        GCInputFrame::new_btns(GC_A));
+    EXPECT_EQ(
+        DecodeGuestPadStatusV1(0x0200000000000000ull),
+        GCInputFrame::new_btns(GC_B));
+}
+
 TEST(TasMovieInputEpoch, ScheduleCodecAllowsRepeatedAndJumpedCursors)
 {
     TasMovieInputEpochScheduleV1 schedule{

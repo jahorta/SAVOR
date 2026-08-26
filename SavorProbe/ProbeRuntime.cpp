@@ -341,6 +341,13 @@ bool ProbeRuntime::arm_profile_sites(std::string* error_out)
     for (std::uint32_t i = 0; i < profile_.probes.size(); ++i) {
         const auto& probe = profile_.probes[i];
         const auto& state = probe_states_[i];
+        std::vector<std::uint32_t> routed_samples;
+        for (const auto& sample : probe.samples) {
+            if (sample.kind == SampleKind::RoutedSample
+                && std::ranges::find(routed_samples,
+                    sample.routed_sample_descriptor_id) == routed_samples.end())
+                routed_samples.push_back(sample.routed_sample_descriptor_id);
+        }
         if (probe.kind != ProbeKind::Memory || !state.active || !state.group_enabled
             || state.exhausted || !state.address_resolved) {
             continue;
@@ -624,6 +631,13 @@ ProbeRuntime::profile_stop_requirements() const
     for (std::uint32_t i = 0; i < profile_.probes.size(); ++i) {
         const auto& probe = profile_.probes[i];
         const auto& state = probe_states_[i];
+        std::vector<std::uint32_t> routed_samples;
+        for (const auto& sample : probe.samples) {
+            if (sample.kind == SampleKind::RoutedSample
+                && std::ranges::find(routed_samples,
+                    sample.routed_sample_descriptor_id) == routed_samples.end())
+                routed_samples.push_back(sample.routed_sample_descriptor_id);
+        }
         if (probe.activate_on_pc.has_value()) {
             requirements.push_back(ProfileStopRequirement{
                 .probe_index = i,
@@ -635,6 +649,7 @@ ProbeRuntime::profile_stop_requirements() const
                 .exhausted = false,
                 .group_enabled = state.group_enabled,
                 .address_resolved = true,
+                .routed_sample_descriptor_ids = routed_samples,
             });
         }
         if (probe.kind == ProbeKind::Pc) {
@@ -648,6 +663,7 @@ ProbeRuntime::profile_stop_requirements() const
                 .exhausted = state.exhausted,
                 .group_enabled = state.group_enabled,
                 .address_resolved = true,
+                .routed_sample_descriptor_ids = routed_samples,
             });
         } else if (probe.kind == ProbeKind::Memory) {
             requirements.push_back(ProfileStopRequirement{
@@ -661,6 +677,7 @@ ProbeRuntime::profile_stop_requirements() const
                 .exhausted = state.exhausted,
                 .group_enabled = state.group_enabled,
                 .address_resolved = state.address_resolved,
+                .routed_sample_descriptor_ids = routed_samples,
             });
         }
     }
@@ -880,7 +897,8 @@ void ProbeRuntime::process_routed_pc(
         }
         update_windows_before_probe(probe);
         RawProbeEvent event{};
-        if (!sample_probe(probe, state, *system_, pc, 0, 0, 0, false, event)) {
+        if (!sample_probe(probe, state, *system_, pc, 0, 0, 0, false, event,
+                &context)) {
             state.sample_failures.fetch_add(1, std::memory_order_relaxed);
             update_windows_after_probe(probe, false);
             continue;
@@ -1081,7 +1099,8 @@ bool ProbeRuntime::sample_probe(
     std::uint32_t size,
     std::uint64_t value,
     bool,
-    RawProbeEvent& event)
+    RawProbeEvent& event,
+    const ProbeRoutedHitContext* routed_context)
 {
     const auto& power_pc = system.GetPowerPC();
     const auto& ppc_state = power_pc.GetPPCState();
@@ -1148,6 +1167,24 @@ bool ProbeRuntime::sample_probe(
             if (!read_guest_value(system, sample_address, sample.width, field.value))
                 field.status = RawFieldStatus::Missing;
             break;
+        case SampleKind::RoutedSample: {
+            if (!routed_context) {
+                field.status = RawFieldStatus::Missing;
+                break;
+            }
+            const auto end = routed_context->samples.begin()
+                + std::min<std::size_t>(routed_context->sample_count,
+                    routed_context->samples.size());
+            const auto found = std::find_if(routed_context->samples.begin(), end,
+                [&sample](const ProbeRoutedHitSample& candidate) {
+                    return candidate.descriptor_id == sample.routed_sample_descriptor_id;
+                });
+            if (found == end || !found->available)
+                field.status = RawFieldStatus::Missing;
+            else
+                field.value = found->value;
+            break;
+        }
         case SampleKind::LinkedList: {
             RawAddressTrace trace;
             std::optional<std::uint32_t> root_address;

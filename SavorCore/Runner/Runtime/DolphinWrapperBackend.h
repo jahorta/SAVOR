@@ -72,8 +72,9 @@ private:
     Capabilities() const noexcept override;
     [[nodiscard]] BackendExecutionSnapshot
     QueryExecutionSnapshot() const override;
-    BackendResult SubmitControlCommand(
-        BackendControlCommand command) override;
+    BackendResult SubmitControlTask(BackendControlTask task) override;
+    [[nodiscard]] std::optional<BackendControlCompletion>
+    TakeControlCompletion() override;
     BackendResult SetThrottleDisabled(bool disabled) override;
 
     [[nodiscard]] bool IsAvailable(std::uint8_t port) const noexcept override;

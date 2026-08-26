@@ -596,7 +596,8 @@ bool SeedTasMovieInputEpochAnnotationWorkflow(
     std::int64_t dtm_artifact_id,
     std::string_view run_identity,
     std::int64_t* workflow_instance_id_out,
-    std::string* error_out) {
+    std::string* error_out,
+    bool breakpoint_diagnostic) {
     if (authoring_db == nullptr || execution_db == nullptr
         || dtm_artifact_id <= 0 || run_identity.empty()) {
         if (error_out) *error_out = "input-epoch annotation workflow inputs are invalid";
@@ -614,8 +615,12 @@ bool SeedTasMovieInputEpochAnnotationWorkflow(
                 .nodes = {
                     {
                         .node_key = "annotate_1",
-                        .unit_kind = "tas_movie_annotate_input_epochs",
-                        .display_name = "TAS Movie: Annotate Input Epochs",
+                        .unit_kind = breakpoint_diagnostic
+                            ? "tas_movie_input_epoch_breakpoint_diagnostic"
+                            : "tas_movie_annotate_input_epochs",
+                        .display_name = breakpoint_diagnostic
+                            ? "TAS Movie: Input Epoch Breakpoint Diagnostic"
+                            : "TAS Movie: Annotate Input Epochs",
                         .inputs = {
                             { .input_key = "root_dtm", .data_kind = "state_artifact.dtm_artifact_id", .ref_kind = "state_artifact", .display_name = "Complete boot DTM" },
                         },
@@ -642,11 +647,17 @@ bool SeedTasMovieInputEpochAnnotationWorkflow(
     const auto registry = savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
     std::string activation_error;
     auto activation = savor::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
-        registry, "annotate_1", "annotate_1", "tas_movie_annotate_input_epochs",
-        "TAS Movie: Annotate Input Epochs", std::nullopt, std::nullopt, {},
+        registry, "annotate_1", "annotate_1",
+        breakpoint_diagnostic ? "tas_movie_input_epoch_breakpoint_diagnostic"
+                              : "tas_movie_annotate_input_epochs",
+        breakpoint_diagnostic ? "TAS Movie: Input Epoch Breakpoint Diagnostic"
+                              : "TAS Movie: Annotate Input Epochs",
+        std::nullopt, std::nullopt, {},
         &activation_error);
     if (!activation || activation->steps.size() != 1
-        || activation->steps.front().step_kind != "tasmovie.annotate_input_epochs") {
+        || activation->steps.front().step_kind != (breakpoint_diagnostic
+            ? "tasmovie.input_epoch_breakpoint_diagnostic"
+            : "tasmovie.annotate_input_epochs")) {
         if (error_out) {
             *error_out = activation_error.empty()
                 ? "input-epoch annotation unit did not resolve to its canonical step"

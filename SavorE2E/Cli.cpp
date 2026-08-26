@@ -99,6 +99,17 @@ constexpr auto kScenarioCatalog = std::to_array<E2eScenarioDescriptor>({
         .requires_one_worker = true,
     },
     {
+        .name = "tasmovie_input_epoch_breakpoint_diagnostics",
+        .kind = E2eScenarioKind::TasMovieInputEpochBreakpointDiagnostics,
+        .supported_entry_sources =
+            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation),
+        .default_entry_source =
+            E2eScenarioEntrySource::FreshTasMovieValidation,
+        .must_run_alone = true,
+        .requires_repeat_one = true,
+        .requires_one_worker = true,
+    },
+    {
         .name = "workflow_unit",
         .kind = E2eScenarioKind::WorkflowUnit,
         .supported_entry_sources = EntrySourceBit(
@@ -390,6 +401,7 @@ void PrintUsage() {
               << " [--load-level low|mid|high]"
               << " [--visual-worker *]"
               << " [--breakpoint-diagnostics]"
+              << " [--diagnostic-max-runs <1..5>]"
               << " [--visual-screenshot-dir <path>]"
               << " [--durable-lines <mode>]"
               << " [--tasmovie-rtc <value>]"
@@ -645,6 +657,10 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             options.seedprobe_combo_sampler_tries = v;
         } else if (arg == "--breakpoint-diagnostics") {
             options.breakpoint_diagnostics = true;
+        } else if (arg == "--diagnostic-max-runs") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.diagnostic_max_runs = v;
         } else if (arg == "--battle-fake-attack-min") {
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
@@ -957,6 +973,10 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         && (*options.tasmovie_rtc < 0
             || *options.tasmovie_rtc > kMaxGameCubeRtc)) {
         if (error_out) *error_out = "--tasmovie-rtc must be between 0 and 4294967295";
+        return false;
+    }
+    if (options.diagnostic_max_runs < 1 || options.diagnostic_max_runs > 5) {
+        if (error_out) *error_out = "--diagnostic-max-runs must be between 1 and 5";
         return false;
     }
     if (options.tasmovie_rtc_min.has_value()

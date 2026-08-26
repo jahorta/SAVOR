@@ -476,6 +476,24 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
         },
         &ignored);
 
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
+            .unit_kind = "tas_movie_input_epoch_breakpoint_diagnostic",
+            .display_name = "TAS Movie: Input Epoch Breakpoint Diagnostic",
+            .description = "Actively stops at each PADRead return to diagnose breakpoint routing without changing production annotation.",
+            .hidden = true,
+            .default_activation_params_json = "{}",
+            .required_inputs = {
+                Port("root_dtm", "state_artifact.dtm_artifact_id", "state_artifact", "Complete boot DTM"),
+            },
+            .possible_outputs = {
+                Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Diagnostic annotation attempt"),
+            },
+            .internal_step_kinds = {"tasmovie.input_epoch_breakpoint_diagnostic"},
+            .step_templates = SingleStep("tasmovie.input_epoch_breakpoint_diagnostic"),
+        },
+        &ignored);
+
     (void)registry.RegisterUnit(SeedProbeUnit(), &ignored);
 
     (void)registry.RegisterUnit(

@@ -219,6 +219,7 @@ ContentHash256 ComputeCapabilityPackManifestContractHash(
         {
             AppendString(entry, evaluator.canonical_id);
             AppendNumber(entry, evaluator.routed_sample_descriptor_id);
+            AppendNumber(entry, evaluator.source);
             AppendString(entry, evaluator.address_dependency);
             AppendType(entry, evaluator.result_type);
             AppendNumber(entry, evaluator.operations.size());
@@ -499,6 +500,8 @@ RegistryResult CapabilityPackRegistry::ValidateManifestShape(
     for (const CpuEvaluatorDescriptor& evaluator :
          manifest.cpu_evaluators)
     {
+        const bool host_movie_input_count =
+            evaluator.source == CpuEvaluatorSource::HostMovieInputCount;
         if (evaluator.routed_sample_descriptor_id == 0 ||
             !routed_sample_ids.emplace(
                 evaluator.routed_sample_descriptor_id).second ||
@@ -506,11 +509,19 @@ RegistryResult CapabilityPackRegistry::ValidateManifestShape(
                 !schemas_->Resolve(*evaluator.result_type.named)) ||
             (!evaluator.result_type.is_named() &&
                 evaluator.result_type.builtin == BuiltinType::Unit) ||
-            evaluator.operations.empty() ||
-            evaluator.maximum_reads == 0 ||
             evaluator.maximum_output_bytes == 0 ||
-            evaluator.operations.size() >
-                static_cast<std::size_t>(evaluator.maximum_reads) * 4u)
+            (!host_movie_input_count &&
+                (evaluator.operations.empty() ||
+                 evaluator.maximum_reads == 0 ||
+                 evaluator.operations.size() >
+                    static_cast<std::size_t>(evaluator.maximum_reads) * 4u)) ||
+            (host_movie_input_count &&
+                (!evaluator.address_dependency.empty() ||
+                 !evaluator.operations.empty() ||
+                 evaluator.maximum_reads != 0 ||
+                 evaluator.result_type.is_named() ||
+                 evaluator.result_type.builtin != BuiltinType::U64 ||
+                 evaluator.maximum_output_bytes != 8)))
         {
             return Failure(
                 RegistryErrorCode::InvalidArgument,

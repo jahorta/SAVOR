@@ -56,6 +56,7 @@ enum class SampleKind : std::uint8_t {
     LinkedList = 5,
     Constant = 6,
     StackTrace = 7,
+    RoutedSample = 8,
 };
 
 enum class SampleWidth : std::uint8_t {
@@ -142,6 +143,7 @@ struct SampleDefinition {
     std::uint8_t base_register = 0;
     std::int32_t offset = 0;
     std::uint64_t constant = 0;
+    std::uint32_t routed_sample_descriptor_id = 0;
     std::vector<std::uint8_t> address_program;
     AddressTracePolicy trace = AddressTracePolicy::Off;
     bool address_provided = false;

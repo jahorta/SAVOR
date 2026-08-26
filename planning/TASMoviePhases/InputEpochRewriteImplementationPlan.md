@@ -1,5 +1,17 @@
 # Input Epoch Rewrite Implementation
 
+## Annotation execution boundary
+
+- Production annotation runs to authoritative movie end through
+  `ExecutionContinueToMovieEnd` and has no foreground PADRead breakpoint.
+- Its lossless capture profile samples `Movie::GetCurrentInputCount()` and the
+  eight-byte guest `PADStatus` in the same routed CPU callback.
+- Missing, dropped, malformed, regressed, overrun, or final-cursor-mismatched
+  capture evidence fails annotation persistence closed.
+- Active PADRead stopping exists only in the hidden diagnostic Full Phase at
+  reserved program kind `100`.
+- Rewrite remains an active, guest-acknowledged held-input protocol.
+
 ## Production identities
 
 - Program kind 13: `tasmovie.annotate_input_epochs`

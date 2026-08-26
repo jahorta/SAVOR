@@ -28,6 +28,11 @@ inline constexpr std::string_view AnnotationFullPhaseCanonicalId =
     "savor.full_phase.tasmovie.annotate_input_epochs";
 inline constexpr std::string_view AnnotationBaselineLineage =
     "soa.tasmovie.input_epochs/complete-boot-dtm/v1";
+inline constexpr std::string_view BreakpointDiagnosticModuleCanonicalId =
+    "soa.tasmovie.input_epoch_breakpoint_diagnostic";
+inline constexpr std::string_view BreakpointDiagnosticEntrypoint = "diagnose";
+inline constexpr std::string_view BreakpointDiagnosticFullPhaseCanonicalId =
+    "savor.full_phase.tasmovie.input_epoch_breakpoint_diagnostic";
 
 inline constexpr std::string_view RewriteModuleCanonicalId =
     "soa.tasmovie.rewrite_input_epochs";
@@ -112,6 +117,9 @@ struct TasMovieInputEpochRewriteResultV1
     std::vector<program::ProgramArtifact> artifacts;
 };
 
+[[nodiscard]] GCInputFrame DecodeGuestPadStatusV1(
+    std::uint64_t packed_status) noexcept;
+
 [[nodiscard]] bool ValidateInputEpochScheduleV1(
     const TasMovieInputEpochScheduleV1& schedule,
     std::string* diagnostic = nullptr);
@@ -164,6 +172,8 @@ public:
 
 [[nodiscard]] std::shared_ptr<const IAnnotationFullPhaseDefinitionV1>
 AnnotationFullPhaseDefinitionV1();
+[[nodiscard]] std::shared_ptr<const IAnnotationFullPhaseDefinitionV1>
+BreakpointDiagnosticFullPhaseDefinitionV1();
 [[nodiscard]] std::shared_ptr<const IRewriteFullPhaseDefinitionV1>
 RewriteFullPhaseDefinitionV1();
 

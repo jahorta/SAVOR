@@ -7,7 +7,7 @@ CREATE TABLE tmv_input_epoch_annotation_request (
     workflow_step_id INTEGER NOT NULL UNIQUE CHECK(workflow_step_id>0),
     source_dtm_artifact_id INTEGER NOT NULL CHECK(source_dtm_artifact_id>0),
     source_dtm_sha256 TEXT NOT NULL,
-    full_phase_program_kind INTEGER NOT NULL CHECK(full_phase_program_kind=13),
+    full_phase_program_kind INTEGER NOT NULL CHECK(full_phase_program_kind IN (13,100)),
     full_phase_program_version INTEGER NOT NULL CHECK(full_phase_program_version>0),
     full_phase_canonical_id TEXT NOT NULL,
     full_phase_contract_revision INTEGER NOT NULL CHECK(full_phase_contract_revision>0),

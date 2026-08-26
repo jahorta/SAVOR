@@ -1,5 +1,26 @@
 # TAS Movie Phases
 
+## Input epoch execution split
+
+Production `tasmovie.annotate_input_epochs` is passive. A lossless capture
+profile observes `PadReadReturned` without requesting a Dolphin break and
+records the host movie-input cursor and guest `PADStatus` synchronously in the
+routed CPU callback. The durable schedule remains only the ordered
+`(movie_input_cursor, received_input)` pairs.
+
+The schedule separately retains the source DTM poll count. Its final guest
+epoch cursor may be lower when Dolphin consumes trailing SI polls after the
+game's final `PADRead`; those polls do not fabricate additional guest epochs.
+
+`tasmovie.input_epoch_breakpoint_diagnostic` retains the active stop/read/resume
+loop solely for breakpoint-routing diagnosis. It is hidden from ordinary
+authoring and uses reserved program kind `100`.
+
+`tasmovie.rewrite_input_epochs` remains active because each held input must be
+acknowledged by a guest PADRead before the next input is published. DTM cursor
+counts are provenance and source-state lookup positions, not one-to-one timing
+units.
+
 ## Current direction
 
 TAS Movie production is organized around domain-specific recorders and guest-observed controller epochs.

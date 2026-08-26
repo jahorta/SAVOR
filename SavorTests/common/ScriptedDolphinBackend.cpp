@@ -887,32 +887,81 @@ ScriptedDolphinBackend::QueryExecutionSnapshot() const
         control_->throttle_disabled};
 }
 
-runtime::BackendResult ScriptedDolphinBackend::SubmitControlCommand(
-    runtime::BackendControlCommand command)
+runtime::BackendResult ScriptedDolphinBackend::SubmitControlTask(
+    runtime::BackendControlTask task)
 {
-    switch (command.kind)
     {
-    case runtime::BackendControlCommandKind::Pause:
-        return Pause(std::chrono::milliseconds(0));
-    case runtime::BackendControlCommandKind::Resume:
-        return Resume();
-    case runtime::BackendControlCommandKind::FrameStep:
+        std::lock_guard lock(control_->mutex);
+        if (control_->control_task_state !=
+            runtime::BackendExecutionSnapshot::ControlTaskState::Idle)
+        {
+            return runtime::BackendResult::Failure(
+                runtime::BackendErrorCode::InvalidState,
+                "scripted execution actuator is busy");
+        }
+        control_->control_task_state =
+            runtime::BackendExecutionSnapshot::ControlTaskState::Running;
+    }
+    runtime::BackendResult result;
+    switch (task.kind)
+    {
+    case runtime::BackendControlTaskKind::Pause:
+        result = Pause(std::chrono::milliseconds(0));
+        break;
+    case runtime::BackendControlTaskKind::Resume:
+        result = Resume();
+        break;
+    case runtime::BackendControlTaskKind::FrameStep:
     {
         std::lock_guard lock(control_->mutex);
         control_->RecordLocked("begin_frame_step");
-        runtime::BackendResult result = control_->step_frame_result;
+        result = control_->step_frame_result;
         if (result.ok)
         {
             ++control_->vi_count;
             control_->core_state = runtime::BackendCoreState::Paused;
         }
         control_->changed.notify_all();
-        return result;
+        break;
+    }
+    case runtime::BackendControlTaskKind::SynchronizePaused:
+    {
+        std::lock_guard lock(control_->mutex);
+        control_->RecordLocked("synchronize_paused");
+        result = control_->core_state == runtime::BackendCoreState::Paused
+            ? runtime::BackendResult::Success()
+            : runtime::BackendResult::Failure(
+                  runtime::BackendErrorCode::InvalidState,
+                  "scripted core is not paused");
+        break;
     }
     }
-    return runtime::BackendResult::Failure(
-        runtime::BackendErrorCode::InvalidArgument,
-        "unknown scripted control command");
+    {
+        std::lock_guard lock(control_->mutex);
+        control_->control_completion = runtime::BackendControlCompletion{
+            task.kind,
+            result};
+        control_->control_task_state =
+            runtime::BackendExecutionSnapshot::ControlTaskState::Completed;
+    }
+    return runtime::BackendResult::Success();
+}
+
+std::optional<runtime::BackendControlCompletion>
+ScriptedDolphinBackend::TakeControlCompletion()
+{
+    std::lock_guard lock(control_->mutex);
+    if (control_->control_task_state !=
+            runtime::BackendExecutionSnapshot::ControlTaskState::Completed ||
+        !control_->control_completion)
+    {
+        return std::nullopt;
+    }
+    auto completion = std::move(control_->control_completion);
+    control_->control_completion.reset();
+    control_->control_task_state =
+        runtime::BackendExecutionSnapshot::ControlTaskState::Idle;
+    return completion;
 }
 
 runtime::BackendResult ScriptedDolphinBackend::SetThrottleDisabled(

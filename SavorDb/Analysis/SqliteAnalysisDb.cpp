@@ -14,6 +14,7 @@
 #include "../Common/Events/EventPayloadDispatch.h"
 #include "../Common/Events/EventPayloadValidation.h"
 #include "../Common/Events/OutboxEventIds.h"
+#include "Runner/Runtime/ProgramKind.h"
 
 namespace savor::db::analysis {
 
@@ -1641,7 +1642,10 @@ bool SqliteAnalysisDb::CreateTasMovieInputEpochAnnotationRequest(
         || command.workflow_instance_id <= 0 || command.workflow_step_id <= 0
         || command.source_dtm_artifact_id <= 0
         || !IsLowerHexSha256(command.source_dtm_sha256)
-        || command.full_phase_program_kind != 13
+        || (command.full_phase_program_kind != static_cast<std::int32_t>(
+                savor::PK_TasMovieAnnotateInputEpochs)
+            && command.full_phase_program_kind != static_cast<std::int32_t>(
+                savor::PK_TasMovieInputEpochBreakpointDiagnostic))
         || command.full_phase_program_version <= 0
         || command.full_phase_canonical_id.empty()
         || command.full_phase_contract_revision <= 0

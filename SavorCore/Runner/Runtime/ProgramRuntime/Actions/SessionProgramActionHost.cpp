@@ -48,6 +48,7 @@ using Field = CanonicalActionPayloadField;
     case CanonicalAction::InputBeginDelivery:
     case CanonicalAction::InputCompleteDelivery:
     case CanonicalAction::ExecutionContinueUntil:
+    case CanonicalAction::ExecutionContinueToMovieEnd:
     case CanonicalAction::ExecutionStepFrames:
     case CanonicalAction::ExecutionContinueUntilInputObserved:
         return true;
@@ -756,6 +757,7 @@ bool UsesTypedRequestRecord(CanonicalAction action) noexcept
     switch (action)
     {
     case CanonicalAction::ExecutionContinueUntil:
+    case CanonicalAction::ExecutionContinueToMovieEnd:
     case CanonicalAction::ExecutionStepFrames:
     case CanonicalAction::ExecutionContinueUntilInputObserved:
     case CanonicalAction::InputAcquireLease:
@@ -1565,6 +1567,29 @@ bool DecodeTypedCanonicalRequest(
             return false;
         }
         (void)binding;
+        return true;
+    }
+    case CanonicalAction::ExecutionContinueToMovieEnd:
+    {
+        bool playback = false;
+        const auto* config = bytes(
+            1,
+            CanonicalRuntimeSchema::ContinueUntilStaticConfig);
+        if (record->fields.size() != 2 ||
+            !optional_handle(
+                0,
+                CanonicalRuntimeSchema::OptionalMoviePlaybackSession,
+                CanonicalAction::MovieStartPlayback,
+                Field::PlaybackHandle,
+                playback) ||
+            !playback ||
+            !config ||
+            !DecodeContinueConfig(*config, payload, diagnostic))
+        {
+            if (diagnostic.empty())
+                diagnostic = "ContinueToMovieEndRequest is malformed";
+            return false;
+        }
         return true;
     }
     case CanonicalAction::ExecutionContinueUntilInputObserved:
@@ -3569,7 +3594,7 @@ SessionProgramActionHost::Impl::InvokeSourceQuery(
         session.execution_snapshot();
     if (!execution ||
         execution->activity != ExecutionActivity::IdlePaused ||
-        !execution->evidence.pause_confirmed ||
+        !execution->evidence.paused_quiescent ||
         execution->evidence.pc != evidence.expected_pc)
     {
         return Reject(
@@ -3972,7 +3997,10 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         return completed;
     }
     case CanonicalAction::ExecutionContinueUntil:
+    case CanonicalAction::ExecutionContinueToMovieEnd:
     {
+        const bool movie_end_only =
+            action == CanonicalAction::ExecutionContinueToMovieEnd;
         StopSubscriptionGroupDefinition wake = BuildPcGroup(
             payload,
             request.invocation_id,
@@ -4004,7 +4032,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             }
             subscription.consumer = &stop_consumer;
         }
-        if (wake.subscriptions.empty())
+        if (wake.subscriptions.empty() && !movie_end_only)
         {
             return Reject(
                 request,
@@ -4086,7 +4114,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         ContinueUntilRequest execution{
             std::move(policy),
             std::move(wake),
-            expected_movie_input_count};
+            expected_movie_input_count,
+            movie_end_only};
         return SubmitExecutionAction(
             std::move(request),
             std::move(execution),
@@ -4211,7 +4240,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 "Exact paused-PC qualification observed another workset epoch");
         }
         if (execution->activity != ExecutionActivity::IdlePaused ||
-            !execution->evidence.pause_confirmed)
+            !execution->evidence.paused_quiescent)
         {
             return Reject(
                 request,
@@ -4261,7 +4290,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                 "Paused-PC observation observed another workset epoch");
         }
         if (execution->activity != ExecutionActivity::IdlePaused ||
-            !execution->evidence.pause_confirmed)
+            !execution->evidence.paused_quiescent)
         {
             return Reject(
                 request,
@@ -5425,7 +5454,8 @@ SessionProgramActionHost::Impl::ExecutionCompletion(
         return completion;
     }
 
-    if (*action == CanonicalAction::ExecutionContinueUntil)
+    if (*action == CanonicalAction::ExecutionContinueUntil ||
+        *action == CanonicalAction::ExecutionContinueToMovieEnd)
     {
         completion.output =
             ContinueUntilResultGraph(terminal);

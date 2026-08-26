@@ -4,6 +4,7 @@
 #include "../IDolphinBackend.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace savor::runtime {
 
@@ -53,25 +54,40 @@ struct BackendExecutionSnapshot
     BackendCoreState core_state = BackendCoreState::Unknown;
     // Paused is only authoritative after the backend has observed the CPU
     // thread leave its run loop. Core::GetState(Paused) alone is not enough.
-    bool pause_confirmed = false;
+    bool paused_quiescent = false;
     std::uint32_t pc = 0;
     std::uint64_t vi_count = 0;
     bool throttle_disabled = false;
-    ExecutionControlGeneration applied_control_generation;
-    bool control_transition_in_flight = false;
+    enum class ControlTaskState : std::uint8_t
+    {
+        Idle,
+        Pending,
+        Running,
+        Completed,
+        Stopping,
+    } control_task_state = ControlTaskState::Idle;
 };
 
-enum class BackendControlCommandKind : std::uint8_t
+enum class BackendControlTaskKind : std::uint8_t
 {
     Pause,
     Resume,
     FrameStep,
+    SynchronizePaused,
 };
 
-struct BackendControlCommand
+struct BackendControlTask
 {
-    ExecutionControlGeneration generation;
-    BackendControlCommandKind kind = BackendControlCommandKind::Pause;
+    BackendControlTaskKind kind = BackendControlTaskKind::Pause;
+};
+
+struct BackendControlCompletion
+{
+    BackendControlTaskKind kind = BackendControlTaskKind::Pause;
+    BackendResult result;
+    BackendCoreState resulting_core_state = BackendCoreState::Unknown;
+    std::uint32_t pc = 0;
+    std::uint64_t vi_count = 0;
 };
 
 class IExecutionBackendPort
@@ -88,8 +104,9 @@ public:
     QueryExecutionSnapshot() const = 0;
     [[nodiscard]] virtual BackendHealthReport CheckHealth() const = 0;
 
-    virtual BackendResult SubmitControlCommand(
-        BackendControlCommand command) = 0;
+    virtual BackendResult SubmitControlTask(BackendControlTask task) = 0;
+    [[nodiscard]] virtual std::optional<BackendControlCompletion>
+    TakeControlCompletion() = 0;
     virtual BackendResult SetThrottleDisabled(bool disabled) = 0;
 
 protected:

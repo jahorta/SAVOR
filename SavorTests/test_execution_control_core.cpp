@@ -20,38 +20,38 @@ concept HasLegacyResumeRequest = requires(T& value) {
 static_assert(!HasLegacyPauseRequest<IExecutionBackendPort>);
 static_assert(!HasLegacyResumeRequest<IExecutionBackendPort>);
 
-TEST(ExecutionControlCoreArchitecture, UsesOneGenerationTaggedControlSurface)
+TEST(ExecutionControlCoreArchitecture, UsesOneOwnedControlTaskAtATime)
 {
     auto control =
         std::make_shared<test_support::FakeExecutionBackendControl>();
     test_support::FakeExecutionBackend backend(control);
 
-    ASSERT_TRUE(backend.SubmitControlCommand({
-        ExecutionControlGeneration(41),
-        BackendControlCommandKind::Pause}).ok);
-    ASSERT_TRUE(backend.SubmitControlCommand({
-        ExecutionControlGeneration(42),
-        BackendControlCommandKind::Resume}).ok);
+    ASSERT_TRUE(backend.SubmitControlTask({
+        BackendControlTaskKind::Pause}).ok);
+    EXPECT_FALSE(backend.SubmitControlTask({
+        BackendControlTaskKind::Resume}).ok);
+    const auto pause = backend.TakeControlCompletion();
+    ASSERT_TRUE(pause.has_value());
+    EXPECT_EQ(pause->kind, BackendControlTaskKind::Pause);
+    ASSERT_TRUE(backend.SubmitControlTask({
+        BackendControlTaskKind::Resume}).ok);
+    const auto resume = backend.TakeControlCompletion();
+    ASSERT_TRUE(resume.has_value());
 
     const auto calls = control->Calls();
     ASSERT_EQ(calls.size(), 2u);
     EXPECT_EQ(calls[0], "pause");
     EXPECT_EQ(calls[1], "resume");
     const BackendExecutionSnapshot snapshot = control->Snapshot();
-    EXPECT_EQ(
-        snapshot.applied_control_generation,
-        ExecutionControlGeneration(42));
     EXPECT_EQ(snapshot.core_state, BackendCoreState::Running);
-    EXPECT_FALSE(snapshot.pause_confirmed);
+    EXPECT_FALSE(snapshot.paused_quiescent);
 }
 
 TEST(ExecutionControlCoreArchitecture, ForegroundIntentCarriesControlOwnership)
 {
     const ForegroundStopWait route{
-        .execution_control_generation = 19,
         .execution_operation_id = 7,
     };
-    EXPECT_EQ(route.execution_control_generation, 19u);
     EXPECT_EQ(route.execution_operation_id, 7u);
 }
 

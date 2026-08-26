@@ -66,6 +66,12 @@ enum class CpuEvaluatorOperation : std::uint8_t
     CompareMaskedEqual,
 };
 
+enum class CpuEvaluatorSource : std::uint8_t
+{
+    GuestMemory = 0,
+    HostMovieInputCount = 1,
+};
+
 struct CpuEvaluatorDescriptor
 {
     std::string canonical_id;
@@ -73,6 +79,7 @@ struct CpuEvaluatorDescriptor
     // This is part of the homogeneous runtime ABI and never supplied by a
     // workset.
     std::uint32_t routed_sample_descriptor_id = 0;
+    CpuEvaluatorSource source = CpuEvaluatorSource::GuestMemory;
     // Empty only for evaluators whose value comes from the native hit itself.
     // Guest-memory evaluators name an address symbol in this manifest.
     std::string address_dependency;

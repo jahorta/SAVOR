@@ -2870,7 +2870,7 @@ savor::probe::NativeStopDecision StopPointRouter::OnPcStop(
         false,
         0,
         stop.power_pc,
-        nullptr,
+        stop.system,
     };
     RoutedStopEvidence evidence{
         path,
@@ -2990,8 +2990,6 @@ namespace {
         if (const auto* foreground =
                 std::get_if<ForegroundStopWait>(&terminal_entry.route))
         {
-            receipt.execution_control_generation =
-                foreground->execution_control_generation;
             receipt.execution_operation_id =
                 foreground->execution_operation_id;
         }
@@ -2999,8 +2997,6 @@ namespace {
                      std::get_if<TrustedStopInterruptionRequest>(
                          &terminal_entry.route))
         {
-            receipt.execution_control_generation =
-                interruption->execution_control_generation;
             receipt.execution_operation_id =
                 interruption->execution_operation_id;
         }
@@ -3416,8 +3412,6 @@ std::string StopPointRouter::DescribeUnroutedPause(
             << " deliveries=" << receipt.deliveries.size()
             << " core_must_remain_stopped="
             << (receipt.core_must_remain_stopped ? 1 : 0)
-            << " control_generation="
-            << receipt.execution_control_generation
             << " operation=" << receipt.execution_operation_id
             << " stop_transition=" << receipt.stop_transition_id
             << " error="

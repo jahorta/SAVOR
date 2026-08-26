@@ -11,7 +11,7 @@
 namespace savor::runtime::program {
 namespace {
 
-constexpr std::array<CanonicalActionDefinition, 27> kActions{{
+constexpr std::array<CanonicalActionDefinition, 28> kActions{{
     {CanonicalAction::SavestateSaveImmutableArtifact, "runtime.savestate.save_immutable_artifact", "(SavestateArtifactSaveRequest)->PendingSavestateArtifactPublicationReceipt"},
     {CanonicalAction::ExecutionContinueUntil, "runtime.execution.continue_until", "(ContinueUntilRequest)->ContinueUntilResult"},
     {CanonicalAction::ExecutionStepFrames, "runtime.execution.step_frames", "(StepFramesRequest)->ExecutionResult"},
@@ -39,12 +39,13 @@ constexpr std::array<CanonicalActionDefinition, 27> kActions{{
     {CanonicalAction::ExecutionRequirePausedPc, "runtime.execution.require_paused_pc", "(RequirePausedPcRequest)->PausedPcReceipt"},
     {CanonicalAction::ExecutionContinueUntilInputObserved, "runtime.execution.continue_until_input_observed", "(ContinueUntilInputObservedRequest)->InputObservedExecutionResult"},
     {CanonicalAction::ExecutionObservePausedPc, "runtime.execution.observe_paused_pc", "(ObservePausedPcRequest)->PausedPcReceipt"},
+    {CanonicalAction::ExecutionContinueToMovieEnd, "runtime.execution.continue_to_movie_end", "(ContinueToMovieEndRequest)->ContinueUntilResult"},
 }};
 
 consteval bool CanonicalActionDefinitionsAreComplete()
 {
     constexpr auto expected = static_cast<std::size_t>(
-        CanonicalAction::ExecutionObservePausedPc) + 1u;
+        CanonicalAction::ExecutionContinueToMovieEnd) + 1u;
     if (kActions.size() != expected)
         return false;
     std::array<bool, expected> seen{};
@@ -137,6 +138,7 @@ bool UsesTypedRequestRecord(CanonicalAction action) noexcept
     switch (action)
     {
     case CanonicalAction::ExecutionContinueUntil:
+    case CanonicalAction::ExecutionContinueToMovieEnd:
     case CanonicalAction::ExecutionStepFrames:
     case CanonicalAction::ExecutionContinueUntilInputObserved:
     case CanonicalAction::InputAcquireLease:
@@ -195,6 +197,7 @@ std::optional<SchemaIdentity> SharedOutputSchemaIdentity(
     switch (action)
     {
     case CanonicalAction::ExecutionContinueUntil:
+    case CanonicalAction::ExecutionContinueToMovieEnd:
     {
         const TypeRef reason = CanonicalRuntimeType(
             CanonicalRuntimeSchema::ContinueUntilCompletionReason);
@@ -311,6 +314,17 @@ std::vector<RecordFieldDefinition> TypedRequestFields(
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
                      OptionalMovieInputCount)},
+            {"static_config",
+             CanonicalRuntimeType(
+                 CanonicalRuntimeSchema::
+                     ContinueUntilStaticConfig)},
+        };
+    case CanonicalAction::ExecutionContinueToMovieEnd:
+        return {
+            {"playback_session",
+             CanonicalRuntimeType(
+                 CanonicalRuntimeSchema::
+                     OptionalMoviePlaybackSession)},
             {"static_config",
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
@@ -436,6 +450,7 @@ ActionDescriptor Descriptor(
 {
     const bool cancellation_driven =
         action == CanonicalAction::ExecutionContinueUntil ||
+        action == CanonicalAction::ExecutionContinueToMovieEnd ||
         action == CanonicalAction::ExecutionStepFrames ||
         action == CanonicalAction::ExecutionContinueUntilInputObserved ||
         false;
@@ -964,7 +979,8 @@ BuildCanonicalRuntimeActionSchemas()
             }
         }
 
-        if (action == CanonicalAction::ExecutionContinueUntil)
+        if (action == CanonicalAction::ExecutionContinueUntil ||
+            action == CanonicalAction::ExecutionContinueToMovieEnd)
         {
             append({
                 .identity =
@@ -1225,6 +1241,11 @@ BuildCanonicalRuntimeActionDescriptors()
 
     result.push_back(Descriptor(
         CanonicalAction::ExecutionContinueUntil,
+        service(SessionServiceCapability::Execution),
+        effect(ActionEffect::AdvanceEmulation),
+        0));
+    result.push_back(Descriptor(
+        CanonicalAction::ExecutionContinueToMovieEnd,
         service(SessionServiceCapability::Execution),
         effect(ActionEffect::AdvanceEmulation),
         0));

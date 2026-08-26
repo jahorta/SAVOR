@@ -18,6 +18,8 @@ enum : std::uint8_t {
     PK_BattleReplay = 12,
     PK_TasMovieAnnotateInputEpochs = 13,
     PK_TasMovieRewriteInputEpochs = 14,
+    // Reserved high-value diagnostic range. Do not renumber with production kinds.
+    PK_TasMovieInputEpochBreakpointDiagnostic = 100,
 };
 
 } // namespace savor

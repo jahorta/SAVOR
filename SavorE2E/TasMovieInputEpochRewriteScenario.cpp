@@ -1,12 +1,14 @@
 #include "TasMovieInputEpochRewriteScenario.h"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -27,6 +29,135 @@ namespace savor::e2e {
 namespace {
 
 constexpr std::uint32_t kWorkerStartupOperationTimeoutMs = 60'000;
+
+struct BreakpointDiagnosticLogEvidence {
+    std::size_t completed_padreads = 0;
+    std::uint64_t last_cursor = 0;
+    bool unrouted_pause = false;
+    std::vector<std::string> correlated_records;
+};
+
+std::optional<std::uint64_t> ParseUnsignedField(
+    std::string_view line,
+    std::string_view field) {
+    const auto field_position = line.find(field);
+    if (field_position == std::string_view::npos) return std::nullopt;
+    const auto begin = field_position + field.size();
+    auto end = begin;
+    while (end < line.size() && line[end] >= '0' && line[end] <= '9') ++end;
+    if (end == begin) return std::nullopt;
+    std::uint64_t value = 0;
+    const auto parsed = std::from_chars(
+        line.data() + begin, line.data() + end, value);
+    return parsed.ec == std::errc{} && parsed.ptr == line.data() + end
+        ? std::optional<std::uint64_t>(value)
+        : std::nullopt;
+}
+
+BreakpointDiagnosticLogEvidence ReadBreakpointDiagnosticLog(
+    const std::filesystem::path& path) {
+    BreakpointDiagnosticLogEvidence evidence{};
+    std::ifstream stream(path);
+    std::string line;
+    while (std::getline(stream, line)) {
+        const bool routed_padread =
+            line.find("[tag=execution.operation,execution.terminal]")
+                != std::string::npos
+            && line.find("selector=next-pad-read/await") != std::string::npos
+            && line.find("status=requested_completion") != std::string::npos
+            && line.find("hit_pc=0x801D6E7C") != std::string::npos;
+        if (routed_padread) {
+            ++evidence.completed_padreads;
+            if (const auto cursor = ParseUnsignedField(
+                    line, "recording_input_count=")) {
+                evidence.last_cursor = *cursor;
+            }
+        }
+        const bool correlated =
+            line.find("[tag=stop.router,stop.router.hit]") != std::string::npos
+            || line.find("[tag=execution.unrouted_pause") != std::string::npos
+            || line.find("[tag=breakpoint.diagnostics") != std::string::npos;
+        if (!correlated) continue;
+        evidence.unrouted_pause = evidence.unrouted_pause
+            || line.find("[tag=execution.unrouted_pause") != std::string::npos;
+        evidence.correlated_records.push_back(line);
+        if (evidence.correlated_records.size() > 8)
+            evidence.correlated_records.erase(evidence.correlated_records.begin());
+    }
+    return evidence;
+}
+
+bool ReportBreakpointDiagnosticRun(
+    savor::db::IExecutionDb* execution_db,
+    const savor::runner::parallel::savordb::CoordinatorRuntime& coordinator,
+    std::int64_t workflow_id,
+    int run) {
+    const auto workers = coordinator.SnapshotWorkers();
+    BreakpointDiagnosticLogEvidence log_evidence{};
+    for (const auto& worker : workers) {
+        const auto evidence = ReadBreakpointDiagnosticLog(worker.log_path);
+        log_evidence.completed_padreads += evidence.completed_padreads;
+        if (evidence.last_cursor != 0)
+            log_evidence.last_cursor = evidence.last_cursor;
+        log_evidence.unrouted_pause = log_evidence.unrouted_pause
+            || evidence.unrouted_pause;
+        log_evidence.correlated_records.insert(
+            log_evidence.correlated_records.end(),
+            evidence.correlated_records.begin(), evidence.correlated_records.end());
+        std::cout << "[breakpoint-diagnostic-worker] run=" << run
+                  << " worker=" << worker.worker_id
+                  << " generation=" << worker.process_generation
+                  << " log_path=" << worker.log_path << '\n';
+    }
+    if (log_evidence.correlated_records.size() > 8) {
+        log_evidence.correlated_records.erase(
+            log_evidence.correlated_records.begin(),
+            log_evidence.correlated_records.end() - 8);
+    }
+
+    const auto graph = execution_db->WorkflowQueryService()
+        ->GetWorkflowGraph(workflow_id);
+    if (graph) {
+        for (const auto& step : graph->steps) {
+            if (!step.job_set_id) continue;
+            for (const auto& member :
+                 execution_db->ListJobsInJobSet(*step.job_set_id)) {
+                const auto job = execution_db->GetExecutionJob(member.job_id);
+                if (!job) continue;
+                std::cout << "[breakpoint-diagnostic-job] run=" << run
+                          << " workflow=" << workflow_id
+                          << " step=" << step.workflow_step_id
+                          << " job_set=" << *step.job_set_id
+                          << " job=" << job->job_id
+                          << " workset="
+                          << (job->workset_id
+                              ? std::to_string(*job->workset_id)
+                              : std::string("none"))
+                          << " state=" << job->state
+                          << " terminal="
+                          << job->worker_terminal_status.value_or("none")
+                          << " completed_padreads="
+                          << log_evidence.completed_padreads
+                          << " last_cursor=" << log_evidence.last_cursor
+                          << '\n';
+                for (const auto& event :
+                     execution_db->ListJobEvents(job->job_id)) {
+                    if (event.message.find(
+                            "Dolphin paused without a routed completion")
+                        != std::string::npos) {
+                        std::cout << "[breakpoint-diagnostic-terminal] job="
+                                  << job->job_id << " event="
+                                  << event.event_kind << " message="
+                                  << event.message << '\n';
+                    }
+                }
+            }
+        }
+    }
+    for (const auto& record : log_evidence.correlated_records)
+        std::cout << "[breakpoint-diagnostic-record] " << record << '\n';
+    return log_evidence.unrouted_pause;
+}
 
 std::optional<std::vector<std::uint8_t>> ReadFile(
     const std::filesystem::path& path,
@@ -144,6 +275,8 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
     savor::db::core::DBService* db_service,
     std::string* error_out) {
     namespace inputepoch = savor::runtime::tasmovie::inputepoch;
+    const bool breakpoint_diagnostic = options.scenario ==
+        "tasmovie_input_epoch_breakpoint_diagnostics";
     if (db_service == nullptr || options.dtm_file.empty()
         || options.iso_path.empty() || options.dolphin_base_dir.empty()) {
         if (error_out) *error_out = "input-epoch rewrite scenario inputs are incomplete";
@@ -177,12 +310,13 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
     if (!SeedTasMovieInputEpochAnnotationWorkflow(
             db_service->AuthoringDb(), db_service->ExecutionDb(),
             source_dtm_artifact_id, "source", &source_annotation_workflow,
-            error_out)) {
+            error_out, breakpoint_diagnostic)) {
         return false;
     }
 
     auto registry_config = savor::db::execution::programdb::
-        MakeProductionProgramKindRegistryConfig(workspace / "workflow-runtime");
+        MakeProductionProgramKindRegistryConfig(
+            workspace / "workflow-runtime", worker_exe);
     savor::db::execution::programdb::ProgramKindRegistry registry;
     std::string error;
     if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
@@ -208,7 +342,8 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
         .desired_workers = 1,
         .controller_sleep_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(1, options.poll_ms)),
         .worker_start_timeout_ms = kWorkerStartupOperationTimeoutMs,
-        .breakpoint_diagnostics = options.breakpoint_diagnostics,
+        .breakpoint_diagnostics = options.breakpoint_diagnostics
+            || breakpoint_diagnostic,
         .worker_exe_path = worker_exe.string(),
         .iso_path = options.iso_path.string(),
         .dolphin_base_dir = options.dolphin_base_dir.string(),
@@ -275,10 +410,49 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
         if (error_out) *error_out = std::move(message);
         return false;
     };
-    if (!WaitForWorkflow(db_service->ExecutionDb(), source_annotation_workflow,
-            "source-annotation", poll, &error)) {
-        return fail_after_start(error);
+    if (breakpoint_diagnostic) {
+        for (int run = 1; run <= options.diagnostic_max_runs; ++run) {
+            error.clear();
+            if (!WaitForWorkflow(db_service->ExecutionDb(), source_annotation_workflow,
+                    "breakpoint-diagnostic-" + std::to_string(run), poll, &error)) {
+                const bool reproduced = ReportBreakpointDiagnosticRun(
+                    db_service->ExecutionDb(), coordinator,
+                    source_annotation_workflow, run);
+                if (reproduced) {
+                    std::cout << "[RESULT] REPRODUCED run=" << run
+                              << " workflow=" << source_annotation_workflow
+                              << " classification=UNROUTED_PAUSE\n";
+                    const auto stop_error = stop_coordinator();
+                    if (!stop_error.empty() && error_out) *error_out = stop_error;
+                    return stop_error.empty();
+                }
+                return fail_after_start(error);
+            }
+            std::cout << "[RESULT] diagnostic_run=" << run
+                      << " workflow=" << source_annotation_workflow
+                      << " terminal=COMPLETED\n";
+            (void)ReportBreakpointDiagnosticRun(db_service->ExecutionDb(),
+                coordinator, source_annotation_workflow, run);
+            if (run < options.diagnostic_max_runs
+                && !SeedTasMovieInputEpochAnnotationWorkflow(
+                    db_service->AuthoringDb(), db_service->ExecutionDb(),
+                    source_dtm_artifact_id, "diagnostic-" + std::to_string(run + 1),
+                    &source_annotation_workflow, &error, true)) {
+                return fail_after_start(error);
+            }
+        }
+        const auto stop_error = stop_coordinator();
+        if (!stop_error.empty()) {
+            if (error_out) *error_out = stop_error;
+            return false;
+        }
+        std::cout << "[RESULT] NOT_REPRODUCED runs="
+                  << options.diagnostic_max_runs << '\n';
+        return true;
     }
+    if (!WaitForWorkflow(db_service->ExecutionDb(), source_annotation_workflow,
+            "source-annotation", poll, &error))
+        return fail_after_start(error);
 
     const auto source_attempt_id = FindOutput(
         db_service->ExecutionDb(), source_annotation_workflow, "annotate_1",

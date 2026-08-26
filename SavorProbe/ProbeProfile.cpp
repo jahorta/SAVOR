@@ -149,6 +149,7 @@ std::optional<SampleKind> parse_sample_kind(std::string_view value)
     if (value == "linked_list") return SampleKind::LinkedList;
     if (value == "constant") return SampleKind::Constant;
     if (value == "stack_trace") return SampleKind::StackTrace;
+    if (value == "routed_sample") return SampleKind::RoutedSample;
     return std::nullopt;
 }
 
@@ -162,6 +163,7 @@ std::string_view sample_kind_name(SampleKind value)
     case SampleKind::LinkedList: return "linked_list";
     case SampleKind::Constant: return "constant";
     case SampleKind::StackTrace: return "stack_trace";
+    case SampleKind::RoutedSample: return "routed_sample";
     }
     return "unknown";
 }
@@ -333,6 +335,9 @@ void parse_sample(
     case SampleKind::StackTrace:
         reject_unknown_keys(object, { "name", "type", "max_frames" }, context, errors);
         break;
+    case SampleKind::RoutedSample:
+        reject_unknown_keys(object, { "name", "type", "width", "descriptor_id" }, context, errors);
+        break;
     }
 
     SampleDefinition sample;
@@ -371,6 +376,13 @@ void parse_sample(
         else
             sample.constant = *parsed;
     }
+    if (member(object, "descriptor_id")) {
+        const auto parsed = unsigned_value(object, "descriptor_id");
+        if (!parsed.has_value() || *parsed == 0 || *parsed > UINT32_MAX)
+            errors.push_back(context + " has invalid routed sample descriptor_id");
+        else
+            sample.routed_sample_descriptor_id = static_cast<std::uint32_t>(*parsed);
+    }
     if (const auto trace = string_value(object, "trace"); trace.has_value()) {
         const auto parsed = parse_trace_policy(*trace);
         if (!parsed.has_value())
@@ -392,6 +404,8 @@ void parse_sample(
         errors.push_back(context + " requires program");
     if (*kind == SampleKind::Constant && !member(object, "value"))
         errors.push_back(context + " requires value");
+    if (*kind == SampleKind::RoutedSample && sample.routed_sample_descriptor_id == 0)
+        errors.push_back(context + " requires descriptor_id");
 
     if (*kind == SampleKind::LinkedList) {
         const bool static_root = sample.address_provided;
@@ -1077,7 +1091,7 @@ std::string serialize_profile_json(const Profile& profile)
                 };
                 if (sample.kind == SampleKind::Gpr || sample.kind == SampleKind::Memory
                     || sample.kind == SampleKind::RegisterMemory || sample.kind == SampleKind::AddressProgram
-                    || sample.kind == SampleKind::LinkedList) {
+                    || sample.kind == SampleKind::LinkedList || sample.kind == SampleKind::RoutedSample) {
                     item["width"] = json_u64(static_cast<std::uint8_t>(sample.width));
                 }
                 if (sample.kind == SampleKind::Gpr || sample.kind == SampleKind::RegisterMemory)
@@ -1086,6 +1100,8 @@ std::string serialize_profile_json(const Profile& profile)
                 if (sample.kind == SampleKind::Memory || (sample.kind == SampleKind::LinkedList && sample.address_provided))
                     item["address"] = json_u64(sample.address);
                 if (sample.kind == SampleKind::Constant) item["value"] = json_u64(sample.constant);
+                if (sample.kind == SampleKind::RoutedSample)
+                    item["descriptor_id"] = json_u64(sample.routed_sample_descriptor_id);
                 if (!sample.address_program.empty()) item["program"] = picojson::value(byte_array(sample.address_program));
                 if (sample.trace != AddressTracePolicy::Off) item["trace"] = picojson::value(std::string(trace_policy_name(sample.trace)));
                 if (sample.kind == SampleKind::LinkedList) {
