@@ -159,9 +159,8 @@ std::optional<ProgramValueId> AddRequest(
 std::vector<Byte> ContinueConfig(
     const InteractionSegmentDefinition& segment)
 {
-    StaticConfigWriter writer({'C', 'U', 'C', '1'});
-    writer.U8(1); // FutureOnly; suppress exact retained source re-entry.
-    writer.Bool(true);
+    StaticConfigWriter writer({'C', 'U', 'C', '2'});
+    writer.U8(1); // Ignore the current retained point.
     writer.Bool(segment.fail_on_movie_end);
     writer.U8(static_cast<std::uint8_t>(
         ExecutionThrottlePolicy::RequireDisabled));

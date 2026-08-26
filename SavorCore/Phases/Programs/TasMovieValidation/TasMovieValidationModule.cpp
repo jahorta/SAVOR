@@ -1404,9 +1404,8 @@ private:
 
 std::vector<Byte> ContinueConfig()
 {
-    StaticConfigWriter writer({'C', 'U', 'C', '1'});
-    writer.U8(1); // FutureOnly.
-    writer.Bool(true); // Suppress retained-source immediate re-entry.
+    StaticConfigWriter writer({'C', 'U', 'C', '2'});
+    writer.U8(1); // Ignore the current retained point.
     writer.U8(0); // Static movie policy Ignore; ownership supplies success.
     writer.U8(static_cast<std::uint8_t>(
         ExecutionThrottlePolicy::RequireDisabled));
