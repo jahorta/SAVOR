@@ -374,7 +374,8 @@ std::string_view ToString(const E2eScenarioEntrySource source) {
 bool EntrySourceRequiresFreshWorkspace(const E2eScenarioEntrySource source) {
     return source != E2eScenarioEntrySource::PreparedSterilizedCheckpoint
         && source != E2eScenarioEntrySource::TasMovieEstablishmentAttempt
-        && source != E2eScenarioEntrySource::ExistingWorkspaceReference;
+        && source != E2eScenarioEntrySource::ExistingWorkspaceReference
+        && source != E2eScenarioEntrySource::ExistingDtmArtifact;
 }
 
 std::filesystem::path ResolveWorkerExePath(const char* argv0) {
