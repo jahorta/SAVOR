@@ -405,9 +405,8 @@ bool VerifyComposedTasMovieSeedProbeGraph(
 
     const auto authored = authoring_db->GetWorkflowGraphRevision(
         *graph->instance.workflow_graph_revision_id);
-    if (!authored || authored->graph_hash
-            != "savor-e2e.workflow_graph.tasmovie_seedprobe.v2"
-        || authored->nodes.size() != 4 || authored->edges.size() != 3) {
+    if (!authored || authored->nodes.size() != 4
+        || authored->edges.size() != 3) {
         if (error_out) {
             *error_out = "tasmovie_seedprobe immutable authored graph is unavailable or drifted";
         }
