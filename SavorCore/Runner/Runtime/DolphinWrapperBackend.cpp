@@ -2563,8 +2563,7 @@ std::string DolphinWrapperBackend::DescribePhysicalStopPoints(
     const auto& breakpoints = power_pc.GetBreakPoints();
     const auto& memchecks = power_pc.GetMemChecks();
 
-    auto regular = breakpoints.GetBreakPoints();
-    std::ranges::sort(regular, {}, &TBreakPoint::address);
+    const auto& regular = breakpoints.GetBreakPoints();
     const auto& memory = memchecks.GetMemChecks();
 
     std::string shape_error;
