@@ -83,8 +83,7 @@ StopSubscriptionGroupDefinition WorkerWakeGroup(std::uint32_t pc)
         .subscriptions = {{
             .id = StopSubscriptionId(900),
             .point = PcStopPointSpec{pc},
-            .route = ForegroundStopWait{
-                .suppress_immediate_reentry = true},
+            .route = ForegroundStopWait{},
         }},
     };
 }

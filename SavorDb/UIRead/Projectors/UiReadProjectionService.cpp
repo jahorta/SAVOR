@@ -1651,6 +1651,11 @@ bool ClassifyOutboxEvent(
             return AddDirty(dirty,"sterilization_request",event.payload_ref_id,event,error_out);
         if (event.event_type == "AnalysisTasMovie.SterilizationAttemptRecorded.v1")
             return AddDirty(dirty,"sterilization_request",ParseInt64(event.aggregate_id),event,error_out);
+        if (event.event_type == "AnalysisTasMovie.InputEpochAnnotationRequestCreated.v1"
+            || event.event_type == "AnalysisTasMovie.InputEpochAnnotationAttemptRecorded.v1"
+            || event.event_type == "AnalysisTasMovie.InputEpochRewriteRequestCreated.v1"
+            || event.event_type == "AnalysisTasMovie.InputEpochRewriteAttemptRecorded.v1")
+            return true;
         break;
     case StreamKind::Archive:
         if (event.event_type == "Archive.PackageCreated.v1"

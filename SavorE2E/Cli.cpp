@@ -88,6 +88,17 @@ constexpr auto kScenarioCatalog = std::to_array<E2eScenarioDescriptor>({
         .requires_repeat_one = true,
     },
     {
+        .name = "tasmovie_input_epoch_rewrite",
+        .kind = E2eScenarioKind::TasMovieInputEpochRewrite,
+        .supported_entry_sources =
+            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation),
+        .default_entry_source =
+            E2eScenarioEntrySource::FreshTasMovieValidation,
+        .must_run_alone = true,
+        .requires_repeat_one = true,
+        .requires_one_worker = true,
+    },
+    {
         .name = "workflow_unit",
         .kind = E2eScenarioKind::WorkflowUnit,
         .supported_entry_sources = EntrySourceBit(

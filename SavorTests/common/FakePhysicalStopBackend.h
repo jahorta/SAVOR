@@ -123,6 +123,8 @@ public:
         savor::probe::INativeStopSink& sink) override;
     [[nodiscard]] runtime::PhysicalStopBackendReceipt
     QueryPhysicalStopPoints() const override;
+    [[nodiscard]] std::string DescribePhysicalStopPoints(
+        std::uint32_t observed_pc) const override;
     [[nodiscard]] runtime::PhysicalStopBackendReceipt
     ApplyExactPhysicalStopPlan(
         const runtime::PhysicalStopPointPlan& plan,

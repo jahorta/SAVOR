@@ -26,6 +26,8 @@ public:
     [[nodiscard]] PhysicalStopBackendReceipt RevalidateAfterJit(
         const std::function<void()>& commit_while_cpu_excluded = {});
     [[nodiscard]] PhysicalStopBackendReceipt ValidateExactPlanUnchanged();
+    [[nodiscard]] std::string DescribePhysicalStopPoints(
+        std::uint32_t observed_pc) const;
     [[nodiscard]] PhysicalStopBackendReceipt ClearOwnedStopPoints(
         const std::function<void()>& commit_while_cpu_excluded = {});
 

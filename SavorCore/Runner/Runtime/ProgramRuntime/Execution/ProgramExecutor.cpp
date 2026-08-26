@@ -132,6 +132,35 @@ void RemapPayload(
     return result;
 }
 
+[[nodiscard]] ProgramValueGraph AppendListGraph(
+    const ProgramValueGraph& source,
+    const ProgramValueGraph& element,
+    TypeRef type)
+{
+    const ProgramValue* source_root = RootValue(source);
+    if (!source_root || !std::holds_alternative<ListValue>(source_root->payload))
+        return {};
+
+    ProgramValueGraph result = source;
+    std::uint64_t next_id = 1;
+    for (const ProgramValue& value : result.values)
+        next_id = std::max(next_id, value.id.value() + 1);
+    const ProgramValueId element_root = AppendGraph(result, element, next_id);
+    if (!element_root)
+        return {};
+
+    const auto root = std::ranges::find(
+        result.values, result.root, &ProgramValue::id);
+    if (root == result.values.end())
+        return {};
+    auto* list = std::get_if<ListValue>(&root->payload);
+    if (!list)
+        return {};
+    root->type = std::move(type);
+    list->elements.push_back(element_root);
+    return result;
+}
+
 [[nodiscard]] ProgramValueGraph OptionalGraph(
     TypeRef type,
     const ProgramValueGraph* child)
@@ -1108,12 +1137,27 @@ struct ProgramExecutor::Impl
     {
         if (!id || value.values.empty() || !RootValue(value))
             return false;
+        std::uint64_t retained_value_count = value_count;
+        std::uint64_t retained_value_bytes = value_bytes;
+        const auto existing = frames.back().values.find(id.value());
+        if (existing != frames.back().values.end())
+        {
+            const auto measured_existing = MeasureProgramValueGraph(
+                existing->second,
+                {limits.maximum_values, limits.maximum_value_bytes});
+            if (!measured_existing ||
+                measured_existing.value_count > retained_value_count ||
+                measured_existing.value_bytes > retained_value_bytes)
+                return false;
+            retained_value_count -= measured_existing.value_count;
+            retained_value_bytes -= measured_existing.value_bytes;
+        }
         const ProgramValueArenaLimits remaining{
-            limits.maximum_values >= value_count
-                ? limits.maximum_values - value_count
+            limits.maximum_values >= retained_value_count
+                ? limits.maximum_values - retained_value_count
                 : 0,
-            limits.maximum_value_bytes >= value_bytes
-                ? limits.maximum_value_bytes - value_bytes
+            limits.maximum_value_bytes >= retained_value_bytes
+                ? limits.maximum_value_bytes - retained_value_bytes
                 : 0,
         };
         const ProgramValueArenaStatus graph_status =
@@ -1163,8 +1207,8 @@ struct ProgramExecutor::Impl
         frames.back().values.insert_or_assign(
             id.value(),
             std::move(value));
-        value_count += measured.value_count;
-        value_bytes += measured.value_bytes;
+        value_count = retained_value_count + measured.value_count;
+        value_bytes = retained_value_bytes + measured.value_bytes;
         return true;
     }
 
@@ -1685,14 +1729,14 @@ struct ProgramExecutor::Impl
                      : nullptr;
             if (!list)
                 return fail("List append target is not a list");
-            std::vector<ProgramValueGraph> elements;
-            for (ProgramValueId element : list->elements)
-                elements.push_back(ExtractGraph(*operand(0), element));
-            elements.push_back(*operand(1));
-            return bind_result(CompositeGraph(
-                instruction.result->type,
-                elements,
-                true));
+            ProgramValueGraph appended = AppendListGraph(
+                *operand(0), *operand(1), instruction.result->type);
+            if (appended.values.empty() ||
+                !Bind(instruction.result->id, instruction.result->type,
+                    std::move(appended)))
+                return fail("List append result could not be bound");
+            ++frames.back().instruction_index;
+            return {true, {}, {}};
         }
         case InstructionOpcode::ListSize:
         {

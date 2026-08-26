@@ -1163,6 +1163,37 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
                     + ") ORDER BY sterilization_attempt_id ASC;"});
         }
     }
+    if (!workflow_ids.empty()
+        && IsTablePresent(analysis_db, "tmv_input_epoch_annotation_request", nullptr)
+        && IsTablePresent(analysis_db, "tmv_input_epoch_rewrite_request", nullptr)) {
+        const auto rewrite_ids = QueryInt64Column(analysis_db,
+            "SELECT rewrite_request_id FROM tmv_input_epoch_rewrite_request WHERE workflow_instance_id IN ("
+                + workflow_id_list + ") ORDER BY rewrite_request_id;", &error);
+        const auto annotation_ids = QueryInt64Column(analysis_db,
+            "SELECT annotation_request_id FROM tmv_input_epoch_annotation_request WHERE workflow_instance_id IN ("
+                + workflow_id_list + ") UNION SELECT a.annotation_request_id "
+                  "FROM tmv_input_epoch_annotation_attempt a JOIN tmv_input_epoch_rewrite_request r "
+                  "ON r.annotation_attempt_id=a.annotation_attempt_id WHERE r.workflow_instance_id IN ("
+                + workflow_id_list + ") ORDER BY annotation_request_id;", &error);
+        if (!annotation_ids.empty()) {
+            const auto ids = JoinIds(annotation_ids);
+            specs.push_back({"analysis_tas_movie_input_epoch_annotation_requests",
+                "SELECT * FROM tmv_input_epoch_annotation_request WHERE annotation_request_id IN ("
+                    + ids + ") ORDER BY annotation_request_id;"});
+            specs.push_back({"analysis_tas_movie_input_epoch_annotation_attempts",
+                "SELECT * FROM tmv_input_epoch_annotation_attempt WHERE annotation_request_id IN ("
+                    + ids + ") ORDER BY annotation_attempt_id;"});
+        }
+        if (!rewrite_ids.empty()) {
+            const auto ids = JoinIds(rewrite_ids);
+            specs.push_back({"analysis_tas_movie_input_epoch_rewrite_requests",
+                "SELECT * FROM tmv_input_epoch_rewrite_request WHERE rewrite_request_id IN ("
+                    + ids + ") ORDER BY rewrite_request_id;"});
+            specs.push_back({"analysis_tas_movie_input_epoch_rewrite_attempts",
+                "SELECT * FROM tmv_input_epoch_rewrite_attempt WHERE rewrite_request_id IN ("
+                    + ids + ") ORDER BY rewrite_attempt_id;"});
+        }
+    }
     return specs;
 }
 
@@ -1928,6 +1959,32 @@ TasMovieArchiveClosure CollectTasMovieArchiveClosure(
     }
     std::string error;
     const auto workflows = JoinIds(workflow_ids);
+    auto append = [](std::vector<std::int64_t>* destination,
+                      std::vector<std::int64_t> values) {
+        destination->insert(destination->end(), values.begin(), values.end());
+    };
+    if (IsTablePresent(analysis_db, "tmv_input_epoch_annotation_request", nullptr)) {
+        append(&closure.artifact_ids, QueryInt64Column(analysis_db,
+            "SELECT source_dtm_artifact_id FROM tmv_input_epoch_annotation_request WHERE workflow_instance_id IN ("
+                + workflows + ") UNION SELECT a.schedule_artifact_id "
+                  "FROM tmv_input_epoch_annotation_attempt a JOIN tmv_input_epoch_annotation_request r "
+                  "ON r.annotation_request_id=a.annotation_request_id WHERE r.workflow_instance_id IN ("
+                + workflows + ") AND a.schedule_artifact_id IS NOT NULL;", &error));
+    }
+    if (IsTablePresent(analysis_db, "tmv_input_epoch_rewrite_request", nullptr)) {
+        append(&closure.artifact_ids, QueryInt64Column(analysis_db,
+            "SELECT source_dtm_artifact_id FROM tmv_input_epoch_rewrite_request WHERE workflow_instance_id IN ("
+                + workflows + ") UNION SELECT schedule_artifact_id FROM tmv_input_epoch_rewrite_request "
+                  "WHERE workflow_instance_id IN (" + workflows + ") UNION SELECT a.rewritten_dtm_artifact_id "
+                  "FROM tmv_input_epoch_rewrite_attempt a JOIN tmv_input_epoch_rewrite_request r "
+                  "ON r.rewrite_request_id=a.rewrite_request_id WHERE r.workflow_instance_id IN ("
+                + workflows + ") AND a.rewritten_dtm_artifact_id IS NOT NULL;", &error));
+        append(&closure.savestate_ids, QueryInt64Column(analysis_db,
+            "SELECT a.endpoint_savestate_id FROM tmv_input_epoch_rewrite_attempt a "
+            "JOIN tmv_input_epoch_rewrite_request r ON r.rewrite_request_id=a.rewrite_request_id "
+            "WHERE r.workflow_instance_id IN (" + workflows
+                + ") AND a.endpoint_savestate_id IS NOT NULL;", &error));
+    }
     const auto request_ids = QueryInt64Column(
         analysis_db,
         "WITH RECURSIVE selected(validation_request_id) AS ("
@@ -1944,9 +2001,6 @@ TasMovieArchiveClosure CollectTasMovieArchiveClosure(
         return closure;
     }
     const auto requests = JoinIds(request_ids);
-    auto append = [](std::vector<std::int64_t>* destination, std::vector<std::int64_t> values) {
-        destination->insert(destination->end(), values.begin(), values.end());
-    };
     append(&closure.artifact_ids, QueryInt64Column(
         analysis_db,
         "SELECT source_dtm_artifact_id FROM tmv_validation_request WHERE validation_request_id IN (" + requests + ") "

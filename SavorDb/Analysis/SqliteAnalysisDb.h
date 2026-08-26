@@ -59,6 +59,44 @@ public:
     std::vector<TasMovieCheckpointSterilizationAttemptRecord>
     ListTasMovieCheckpointSterilizationAttemptsForRequest(
         std::int64_t request_id) const override;
+    bool CreateTasMovieInputEpochAnnotationRequest(
+        const CreateTasMovieInputEpochAnnotationRequestCommand& command,
+        std::int64_t* request_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<TasMovieInputEpochAnnotationRequestRecord>
+    GetTasMovieInputEpochAnnotationRequest(std::int64_t request_id) const override;
+    std::optional<TasMovieInputEpochAnnotationRequestRecord>
+    GetTasMovieInputEpochAnnotationRequestForWorkflowStep(
+        std::int64_t workflow_step_id) const override;
+    bool RecordTasMovieInputEpochAnnotationAttempt(
+        const RecordTasMovieInputEpochAnnotationAttemptCommand& command,
+        std::int64_t* attempt_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<TasMovieInputEpochAnnotationAttemptRecord>
+    GetTasMovieInputEpochAnnotationAttempt(std::int64_t attempt_id) const override;
+    std::optional<TasMovieInputEpochAnnotationAttemptRecord>
+    FindTasMovieInputEpochAnnotationAttempt(
+        std::int64_t source_job_id,
+        std::string_view worker_terminal_sha256) const override;
+    bool CreateTasMovieInputEpochRewriteRequest(
+        const CreateTasMovieInputEpochRewriteRequestCommand& command,
+        std::int64_t* request_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<TasMovieInputEpochRewriteRequestRecord>
+    GetTasMovieInputEpochRewriteRequest(std::int64_t request_id) const override;
+    std::optional<TasMovieInputEpochRewriteRequestRecord>
+    GetTasMovieInputEpochRewriteRequestForWorkflowStep(
+        std::int64_t workflow_step_id) const override;
+    bool RecordTasMovieInputEpochRewriteAttempt(
+        const RecordTasMovieInputEpochRewriteAttemptCommand& command,
+        std::int64_t* attempt_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<TasMovieInputEpochRewriteAttemptRecord>
+    GetTasMovieInputEpochRewriteAttempt(std::int64_t attempt_id) const override;
+    std::optional<TasMovieInputEpochRewriteAttemptRecord>
+    FindTasMovieInputEpochRewriteAttempt(
+        std::int64_t source_job_id,
+        std::string_view worker_terminal_sha256) const override;
 
     std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const override;
     std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const override;

@@ -12,6 +12,7 @@
 #include "SeedProbe/SeedProbeProgram.h"
 #include "TasMovieValidation/TasMovieValidationProgram.h"
 #include "TasMovieValidation/TasMovieCheckpointSterilizationProgram.h"
+#include "TasMovieValidation/TasMovieInputEpochProgram.h"
 
 namespace savor::db::execution::programdb {
 
@@ -26,6 +27,10 @@ struct ProductionProgramKindRegistryConfig {
     tasmovievalidation::TasMovieValidationProgramConfig tas_movie_validation;
     tasmoviecheckpointsterilization::TasMovieCheckpointSterilizationProgramConfig
         tas_movie_checkpoint_sterilization;
+    tasmovieinputepoch::TasMovieInputEpochProgramConfig
+        tas_movie_input_epoch_annotation;
+    tasmovieinputepoch::TasMovieInputEpochProgramConfig
+        tas_movie_input_epoch_rewrite;
     seedprobe::SeedProbeProgramConfig seed_probe;
     battlecontext::BattleContextProgramConfig battle_context;
     battlecompletion::BattleCompletionProgramConfig battle_completion;

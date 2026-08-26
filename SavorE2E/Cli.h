@@ -107,6 +107,7 @@ enum class E2eScenarioKind {
     TasMovieValidation,
     TasMovieSeedProbe,
     TasMovieSterile,
+    TasMovieInputEpochRewrite,
     WorkflowUnit,
 };
 

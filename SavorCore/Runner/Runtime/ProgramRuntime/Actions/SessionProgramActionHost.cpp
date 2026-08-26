@@ -1188,14 +1188,12 @@ bool DecodeContinueConfig(
     CanonicalActionPayload& payload,
     std::string& diagnostic)
 {
-    StaticConfigReader reader(bytes, {'C', 'U', 'C', '1'});
+    StaticConfigReader reader(bytes, {'C', 'U', 'C', '2'});
     std::uint8_t current = 0;
-    bool suppress = false;
     std::uint8_t movie = 0;
     std::uint8_t throttle = 0;
     std::uint8_t interruption = 0;
-    if (!reader.U8(current) || !reader.Bool(suppress) ||
-        !reader.U8(movie) || !reader.U8(throttle) ||
+    if (!reader.U8(current) || !reader.U8(movie) || !reader.U8(throttle) ||
         !reader.U8(interruption) || !reader.done() ||
         current > 1 || movie > 1 ||
         throttle >
@@ -1205,7 +1203,7 @@ bool DecodeContinueConfig(
             static_cast<std::uint8_t>(
                 ExecutionInterruptionPolicy::AllowKnown))
     {
-        diagnostic = "CUC1 contains an invalid execution policy";
+        diagnostic = "CUC2 contains an invalid execution policy";
         return false;
     }
     return payload.AddUnsigned(
@@ -1226,10 +1224,7 @@ bool DecodeContinueConfig(
         payload.AddUnsigned(Field::ThrottlePolicy, throttle) &&
         payload.AddUnsigned(
             Field::InterruptionPolicy,
-            interruption) &&
-        payload.AddUnsigned(
-            Field::Flags,
-            suppress ? 1u : 0u);
+            interruption);
 }
 
 bool DecodeAdvanceConfig(
@@ -1903,9 +1898,7 @@ StopSubscriptionGroupDefinition BuildPcGroup(
             .id = StopSubscriptionId(
                 subscription_seed + index),
             .point = PcStopPointSpec{pcs[index]},
-            .route = ForegroundStopWait{
-                .suppress_immediate_reentry = true,
-            },
+            .route = ForegroundStopWait{},
             .lifetime = StopSubscriptionLifetime::Scoped,
             .sample_descriptor_ids = sample_descriptor_ids,
         });
@@ -3989,8 +3982,6 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             ProgramStopIdentitySeed(
                 request.invocation_id,
                 request.request_id);
-        const bool suppress =
-            UnsignedOr(payload, Field::Flags, 0) != 0;
         for (std::size_t index = 0;
              index < wake.subscriptions.size();
              ++index)
@@ -4011,7 +4002,6 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                     "invalid_stop_route",
                     "ContinueUntil requires foreground-wait alternatives");
             }
-            foreground->suppress_immediate_reentry = suppress;
             subscription.consumer = &stop_consumer;
         }
         if (wake.subscriptions.empty())

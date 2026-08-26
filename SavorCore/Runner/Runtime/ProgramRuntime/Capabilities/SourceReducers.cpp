@@ -2,6 +2,7 @@
 
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
 #include "Runner/Runtime/DerivedState/DerivedStateRegistry.h"
+#include "Core/Input/GCInputFrame.h"
 #include "Core/Input/SoaBattle/BattlePlanValidation.h"
 
 #include <algorithm>
@@ -1505,6 +1506,39 @@ std::optional<ProgramValueGraph> InvokeSourceReducer(
     std::string* diagnostic)
 {
     if (diagnostic != nullptr) diagnostic->clear();
+    if (identity == FieldPadStatusToInputFrameReducerIdentity())
+    {
+        if (inputs.size() != 1) return std::nullopt;
+        const auto packed = RootScalar<std::uint64_t>(inputs[0]);
+        if (!packed) return std::nullopt;
+
+        GCInputFrame frame{};
+        frame.buttons = static_cast<std::uint16_t>(*packed >> 48u);
+        frame.main_x = SaturateStickToU8(static_cast<std::int8_t>(
+            (*packed >> 40u) & 0xffu));
+        frame.main_y = SaturateStickToU8(static_cast<std::int8_t>(
+            (*packed >> 32u) & 0xffu));
+        frame.c_x = SaturateStickToU8(static_cast<std::int8_t>(
+            (*packed >> 24u) & 0xffu));
+        frame.c_y = SaturateStickToU8(static_cast<std::int8_t>(
+            (*packed >> 16u) & 0xffu));
+        frame.trig_l = static_cast<std::uint8_t>(*packed >> 8u);
+        frame.trig_r = static_cast<std::uint8_t>(*packed);
+
+        GraphBuilder builder;
+        const auto root = builder.Add(
+            CanonicalRuntimeType(CanonicalRuntimeSchema::InputFramePayload),
+            std::vector<Byte>{
+                static_cast<Byte>(frame.buttons),
+                static_cast<Byte>(frame.buttons >> 8u),
+                frame.main_x,
+                frame.main_y,
+                frame.c_x,
+                frame.c_y,
+                frame.trig_l,
+                frame.trig_r});
+        return std::move(builder).Finish(root);
+    }
     if (identity == FieldTransitionBuildContextReducerIdentity())
     {
         if (inputs.size() != 8) return std::nullopt;

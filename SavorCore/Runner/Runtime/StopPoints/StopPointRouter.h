@@ -252,9 +252,6 @@ public:
         StopSubscriptionGroupLease& lease);
     [[nodiscard]] StopRouteReceipt AcceptCurrentPoint(
         const StopSubscriptionGroupLease& lease);
-    [[nodiscard]] StopPointError ArmInterruptionSuppression(
-        const StopRouteReceipt& receipt,
-        const StopInterruptionHandlerRequest& request);
     [[nodiscard]] StopPointError DepartCurrentPoint();
     [[nodiscard]] StopPointError EstablishPausedCurrentPoint(
         std::uint32_t pc);
@@ -264,6 +261,8 @@ public:
     [[nodiscard]] std::vector<StopIngressDropDiagnostic>
     PassiveDropDiagnostics() const;
     [[nodiscard]] PhysicalStopPointPlan DesiredPhysicalPlan() const;
+    [[nodiscard]] std::string DescribeUnroutedPause(
+        std::uint32_t observed_pc) const;
 
     [[nodiscard]] WorksetEpoch workset_epoch() const noexcept
     {

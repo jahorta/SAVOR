@@ -8,6 +8,65 @@
 
 using namespace savor::tas;
 
+savor::GCInputFrame savor::tas::decode_gc_controller_state(
+    const DtmGCPoll& poll,
+    DtmControllerStateMetadata* metadata)
+{
+    constexpr std::uint16_t kStart = 1u << 0;
+    constexpr std::uint16_t kA = 1u << 1;
+    constexpr std::uint16_t kB = 1u << 2;
+    constexpr std::uint16_t kX = 1u << 3;
+    constexpr std::uint16_t kY = 1u << 4;
+    constexpr std::uint16_t kZ = 1u << 5;
+    constexpr std::uint16_t kUp = 1u << 6;
+    constexpr std::uint16_t kDown = 1u << 7;
+    constexpr std::uint16_t kLeft = 1u << 8;
+    constexpr std::uint16_t kRight = 1u << 9;
+    constexpr std::uint16_t kL = 1u << 10;
+    constexpr std::uint16_t kR = 1u << 11;
+    constexpr std::uint16_t kDisc = 1u << 12;
+    constexpr std::uint16_t kReset = 1u << 13;
+    constexpr std::uint16_t kConnected = 1u << 14;
+    constexpr std::uint16_t kOrigin = 1u << 15;
+
+    if (metadata)
+    {
+        *metadata = {
+            .disc_changed = (poll.button_bits & kDisc) != 0,
+            .reset = (poll.button_bits & kReset) != 0,
+            .connected = (poll.button_bits & kConnected) != 0,
+            .origin_reset = (poll.button_bits & kOrigin) != 0,
+        };
+    }
+
+    GCInputFrame frame{};
+    const auto map = [&](std::uint16_t source, std::uint16_t destination)
+    {
+        if ((poll.button_bits & source) != 0)
+            frame.buttons = static_cast<std::uint16_t>(
+                frame.buttons | destination);
+    };
+    map(kStart, GC_START);
+    map(kA, GC_A);
+    map(kB, GC_B);
+    map(kX, GC_X);
+    map(kY, GC_Y);
+    map(kZ, GC_Z);
+    map(kUp, GC_DU);
+    map(kDown, GC_DD);
+    map(kLeft, GC_DL);
+    map(kRight, GC_DR);
+    map(kL, GC_L_BTN);
+    map(kR, GC_R_BTN);
+    frame.main_x = poll.stick_x;
+    frame.main_y = poll.stick_y;
+    frame.c_x = poll.cstick_x;
+    frame.c_y = poll.cstick_y;
+    frame.trig_l = poll.trigger_l;
+    frame.trig_r = poll.trigger_r;
+    return frame;
+}
+
 template <class T>
 T DtmFile::read_le(const uint8_t* p)
 {

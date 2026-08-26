@@ -98,8 +98,14 @@ TasRoutesTab::TasRoutesTab(Actions actions, QWidget* parent)
     refresh_ = new savorqt::gui::AsyncRefreshPipeline<int, savorqt::db::TasRouteSnapshot>(this);
     refresh_->setAutoRefreshEnabled(true);
     refresh_->setRequestBuilder([](savorqt::gui::RefreshReason) { return 0; });
-    refresh_->setLoadAndPrepare([](int) { return savorqt::db::SavorDbTasRouteService::FetchRoutes(); });
-    refresh_->setApply([this](const savorqt::db::TasRouteSnapshot& value) { applySnapshot(value); });
+    refresh_->setLoadAndPrepare([](int) {
+        return savorqt::gui::AsyncRefreshResult<
+            savorqt::db::TasRouteSnapshot>::Ok(
+                savorqt::db::SavorDbTasRouteService::FetchRoutes());
+    });
+    refresh_->setApply([this](const savorqt::db::TasRouteSnapshot& value,
+        savorqt::gui::RefreshReason,
+        const savorqt::gui::RefreshStatus&) { applySnapshot(value); });
     refresh_->setActive(false);
 
     connect(refreshButton, &QPushButton::clicked, this, [this]() { requestRefresh(); });

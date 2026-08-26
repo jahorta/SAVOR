@@ -16,6 +16,8 @@ enum : std::uint8_t {
     PK_BattleRecord = 10,
     PK_TasMovieCheckpointSterilize = 11,
     PK_BattleReplay = 12,
+    PK_TasMovieAnnotateInputEpochs = 13,
+    PK_TasMovieRewriteInputEpochs = 14,
 };
 
 } // namespace savor

@@ -1154,7 +1154,7 @@ TEST_F(StopPointRouterFixture, MatchesMemoryAccessAndSyntheticIdentity)
         StopSubscriptionId(2));
 }
 
-TEST_F(StopPointRouterFixture, AcceptsRetainedCurrentPointAndSuppressesOneReentry)
+TEST_F(StopPointRouterFixture, AcceptsRetainedCurrentPointAndRoutesNextHit)
 {
     RecordingStopConsumer first_consumer;
     auto first = router.RegisterGroup(Group(
@@ -1177,8 +1177,7 @@ TEST_F(StopPointRouterFixture, AcceptsRetainedCurrentPointAndSuppressesOneReentr
             2,
             0x80001000u,
             second_consumer,
-            ForegroundStopWait{
-                .suppress_immediate_reentry = true})});
+            ForegroundStopWait{})});
     auto second = router.RegisterGroup(
         std::move(definition),
         {.current_point = StopCurrentPointPolicy::AcceptIfAvailable});
@@ -1190,9 +1189,6 @@ TEST_F(StopPointRouterFixture, AcceptsRetainedCurrentPointAndSuppressesOneReentr
         first_receipts[0].identity.sequence);
     ASSERT_EQ(second_consumer.deliveries.size(), 1u);
 
-    (void)backend.InjectJitPcStop(0x80001000u);
-    (void)router.DrainIngress();
-    EXPECT_EQ(second_consumer.deliveries.size(), 1u);
     (void)backend.InjectJitPcStop(0x80001000u);
     (void)router.DrainIngress();
     EXPECT_EQ(second_consumer.deliveries.size(), 2u);

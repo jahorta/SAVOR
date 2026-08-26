@@ -25,6 +25,10 @@ ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(
         runtime_working_dir_root / "tasmovie-validation";
     config.tas_movie_checkpoint_sterilization.working_dir_root =
         runtime_working_dir_root / "tasmovie-checkpoint-sterilization";
+    config.tas_movie_input_epoch_annotation.working_dir_root =
+        runtime_working_dir_root / "tasmovie-input-epoch-annotation";
+    config.tas_movie_input_epoch_rewrite.working_dir_root =
+        runtime_working_dir_root / "tasmovie-input-epoch-rewrite";
     config.seed_probe.working_dir_root =
         runtime_working_dir_root / "seedprobe";
     config.battle_context.working_dir_root =
@@ -254,6 +258,40 @@ bool BuildProductionProgramKindRegistry(
                 tas_movie_checkpoint_sterilization)) {
             return Fail(
                 "TAS Movie checkpoint sterilization production descriptor registration failed",
+                error_out);
+        }
+
+        auto tas_movie_input_epoch_annotation =
+            tasmovieinputepoch::BuildAnnotationProgramDescriptor(
+                dependencies.execution_db, dependencies.state_db,
+                dependencies.analysis_db,
+                std::move(config.tas_movie_input_epoch_annotation));
+        if (tas_movie_input_epoch_annotation.program_kind
+                != static_cast<std::int32_t>(savor::PK_TasMovieAnnotateInputEpochs)
+            || !tas_movie_input_epoch_annotation.job_materializer
+            || !tas_movie_input_epoch_annotation.workset_reconstruction
+            || !tas_movie_input_epoch_annotation.result_handler
+            || !registry.Register(tas_movie_input_epoch_annotation)
+            || !registry.RegisterForStepKind("tasmovie.annotate_input_epochs",
+                tas_movie_input_epoch_annotation)) {
+            return Fail("TAS Movie input-epoch annotation descriptor registration failed",
+                error_out);
+        }
+
+        auto tas_movie_input_epoch_rewrite =
+            tasmovieinputepoch::BuildRewriteProgramDescriptor(
+                dependencies.execution_db, dependencies.state_db,
+                dependencies.analysis_db,
+                std::move(config.tas_movie_input_epoch_rewrite));
+        if (tas_movie_input_epoch_rewrite.program_kind
+                != static_cast<std::int32_t>(savor::PK_TasMovieRewriteInputEpochs)
+            || !tas_movie_input_epoch_rewrite.job_materializer
+            || !tas_movie_input_epoch_rewrite.workset_reconstruction
+            || !tas_movie_input_epoch_rewrite.result_handler
+            || !registry.Register(tas_movie_input_epoch_rewrite)
+            || !registry.RegisterForStepKind("tasmovie.rewrite_input_epochs",
+                tas_movie_input_epoch_rewrite)) {
+            return Fail("TAS Movie input-epoch rewrite descriptor registration failed",
                 error_out);
         }
 

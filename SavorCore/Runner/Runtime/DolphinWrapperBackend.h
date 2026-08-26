@@ -135,6 +135,8 @@ private:
     PhysicalStopBackendReceipt UnbindNativeStopSink(
         savor::probe::INativeStopSink& sink) override;
     PhysicalStopBackendReceipt QueryPhysicalStopPoints() const override;
+    std::string DescribePhysicalStopPoints(
+        std::uint32_t observed_pc) const override;
     PhysicalStopBackendReceipt ApplyExactPhysicalStopPlan(
         const PhysicalStopPointPlan& plan,
         PhysicalPlanGeneration generation,

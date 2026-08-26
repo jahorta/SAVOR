@@ -215,6 +215,109 @@ QueuedAnalysisDb::ListTasMovieCheckpointSterilizationAttemptsForRequest(
         }, {});
 }
 
+bool QueuedAnalysisDb::CreateTasMovieInputEpochAnnotationRequest(
+    const CreateTasMovieInputEpochAnnotationRequestCommand& command,
+    std::int64_t* request_id_out, std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, request_id_out, error_out]() {
+        return inner_ && inner_->CreateTasMovieInputEpochAnnotationRequest(
+            command, request_id_out, error_out);
+    }, false, error_out);
+}
+
+std::optional<TasMovieInputEpochAnnotationRequestRecord>
+QueuedAnalysisDb::GetTasMovieInputEpochAnnotationRequest(
+    std::int64_t request_id) const {
+    return ExecuteRead<std::optional<TasMovieInputEpochAnnotationRequestRecord>>(
+        [this, request_id]() { return inner_ ? inner_->GetTasMovieInputEpochAnnotationRequest(
+            request_id) : std::nullopt; }, std::nullopt);
+}
+
+std::optional<TasMovieInputEpochAnnotationRequestRecord>
+QueuedAnalysisDb::GetTasMovieInputEpochAnnotationRequestForWorkflowStep(
+    std::int64_t workflow_step_id) const {
+    return ExecuteRead<std::optional<TasMovieInputEpochAnnotationRequestRecord>>(
+        [this, workflow_step_id]() { return inner_
+            ? inner_->GetTasMovieInputEpochAnnotationRequestForWorkflowStep(workflow_step_id)
+            : std::nullopt; }, std::nullopt);
+}
+
+bool QueuedAnalysisDb::RecordTasMovieInputEpochAnnotationAttempt(
+    const RecordTasMovieInputEpochAnnotationAttemptCommand& command,
+    std::int64_t* attempt_id_out, std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, attempt_id_out, error_out]() {
+        return inner_ && inner_->RecordTasMovieInputEpochAnnotationAttempt(
+            command, attempt_id_out, error_out);
+    }, false, error_out);
+}
+
+std::optional<TasMovieInputEpochAnnotationAttemptRecord>
+QueuedAnalysisDb::GetTasMovieInputEpochAnnotationAttempt(std::int64_t attempt_id) const {
+    return ExecuteRead<std::optional<TasMovieInputEpochAnnotationAttemptRecord>>(
+        [this, attempt_id]() { return inner_ ? inner_->GetTasMovieInputEpochAnnotationAttempt(
+            attempt_id) : std::nullopt; }, std::nullopt);
+}
+
+std::optional<TasMovieInputEpochAnnotationAttemptRecord>
+QueuedAnalysisDb::FindTasMovieInputEpochAnnotationAttempt(
+    std::int64_t source_job_id, std::string_view worker_terminal_sha256) const {
+    const std::string sha(worker_terminal_sha256);
+    return ExecuteRead<std::optional<TasMovieInputEpochAnnotationAttemptRecord>>(
+        [this, source_job_id, sha]() { return inner_
+            ? inner_->FindTasMovieInputEpochAnnotationAttempt(source_job_id, sha)
+            : std::nullopt; }, std::nullopt);
+}
+
+bool QueuedAnalysisDb::CreateTasMovieInputEpochRewriteRequest(
+    const CreateTasMovieInputEpochRewriteRequestCommand& command,
+    std::int64_t* request_id_out, std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, request_id_out, error_out]() {
+        return inner_ && inner_->CreateTasMovieInputEpochRewriteRequest(
+            command, request_id_out, error_out);
+    }, false, error_out);
+}
+
+std::optional<TasMovieInputEpochRewriteRequestRecord>
+QueuedAnalysisDb::GetTasMovieInputEpochRewriteRequest(std::int64_t request_id) const {
+    return ExecuteRead<std::optional<TasMovieInputEpochRewriteRequestRecord>>(
+        [this, request_id]() { return inner_ ? inner_->GetTasMovieInputEpochRewriteRequest(
+            request_id) : std::nullopt; }, std::nullopt);
+}
+
+std::optional<TasMovieInputEpochRewriteRequestRecord>
+QueuedAnalysisDb::GetTasMovieInputEpochRewriteRequestForWorkflowStep(
+    std::int64_t workflow_step_id) const {
+    return ExecuteRead<std::optional<TasMovieInputEpochRewriteRequestRecord>>(
+        [this, workflow_step_id]() { return inner_
+            ? inner_->GetTasMovieInputEpochRewriteRequestForWorkflowStep(workflow_step_id)
+            : std::nullopt; }, std::nullopt);
+}
+
+bool QueuedAnalysisDb::RecordTasMovieInputEpochRewriteAttempt(
+    const RecordTasMovieInputEpochRewriteAttemptCommand& command,
+    std::int64_t* attempt_id_out, std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, attempt_id_out, error_out]() {
+        return inner_ && inner_->RecordTasMovieInputEpochRewriteAttempt(
+            command, attempt_id_out, error_out);
+    }, false, error_out);
+}
+
+std::optional<TasMovieInputEpochRewriteAttemptRecord>
+QueuedAnalysisDb::GetTasMovieInputEpochRewriteAttempt(std::int64_t attempt_id) const {
+    return ExecuteRead<std::optional<TasMovieInputEpochRewriteAttemptRecord>>(
+        [this, attempt_id]() { return inner_ ? inner_->GetTasMovieInputEpochRewriteAttempt(
+            attempt_id) : std::nullopt; }, std::nullopt);
+}
+
+std::optional<TasMovieInputEpochRewriteAttemptRecord>
+QueuedAnalysisDb::FindTasMovieInputEpochRewriteAttempt(
+    std::int64_t source_job_id, std::string_view worker_terminal_sha256) const {
+    const std::string sha(worker_terminal_sha256);
+    return ExecuteRead<std::optional<TasMovieInputEpochRewriteAttemptRecord>>(
+        [this, source_job_id, sha]() { return inner_
+            ? inner_->FindTasMovieInputEpochRewriteAttempt(source_job_id, sha)
+            : std::nullopt; }, std::nullopt);
+}
+
 std::optional<std::int64_t> QueuedAnalysisDb::LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const {
     return ExecuteRead<std::optional<std::int64_t>>(
         [this, probe_run_id]() {

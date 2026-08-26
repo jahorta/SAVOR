@@ -16,6 +16,7 @@
 #include "SeedProbeRealWorkerScenario.h"
 #include "ScenarioEntry.h"
 #include "TasMovieRealWorkerScenario.h"
+#include "TasMovieInputEpochRewriteScenario.h"
 #include "WorkflowUnitRealWorkerScenario.h"
 
 namespace {
@@ -208,6 +209,10 @@ int main(int argc, char** argv) {
                 break;
             case E2eScenarioKind::TasMovieSeedProbe:
                 scenario_passed = RunTasMovieSeedProbeRealWorkerSmoke(
+                    options, entry, argv[0], &service, &scenario_error);
+                break;
+            case E2eScenarioKind::TasMovieInputEpochRewrite:
+                scenario_passed = RunTasMovieInputEpochRewriteRealWorkerScenario(
                     options, entry, argv[0], &service, &scenario_error);
                 break;
             case E2eScenarioKind::WorkflowUnit:

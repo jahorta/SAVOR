@@ -137,6 +137,7 @@ struct SourceCapabilityPackCatalog
 [[nodiscard]] ExactDependencyIdentity BattleCompletionBuildManifestReducerIdentity();
 [[nodiscard]] ExactDependencyIdentity BattleCompletionSemanticEqualReducerIdentity();
 [[nodiscard]] ExactDependencyIdentity FieldTransitionBuildContextReducerIdentity();
+[[nodiscard]] ExactDependencyIdentity FieldPadStatusToInputFrameReducerIdentity();
 [[nodiscard]] ExactDependencyIdentity BattleCompletionInteractionInitializeReducerIdentity();
 [[nodiscard]] ExactDependencyIdentity BattleCompletionInteractionAdvanceReducerIdentity();
 [[nodiscard]] ExactDependencyIdentity BattleCompletionInteractionCompleteSegmentReducerIdentity();

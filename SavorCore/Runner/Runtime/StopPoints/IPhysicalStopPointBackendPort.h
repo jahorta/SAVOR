@@ -21,6 +21,8 @@ public:
     [[nodiscard]] virtual PhysicalStopBackendReceipt UnbindNativeStopSink(
         savor::probe::INativeStopSink& sink) = 0;
     [[nodiscard]] virtual PhysicalStopBackendReceipt QueryPhysicalStopPoints() const = 0;
+    [[nodiscard]] virtual std::string DescribePhysicalStopPoints(
+        std::uint32_t observed_pc) const = 0;
     [[nodiscard]] virtual PhysicalStopBackendReceipt ApplyExactPhysicalStopPlan(
         const PhysicalStopPointPlan& plan,
         PhysicalPlanGeneration generation,

@@ -1465,6 +1465,105 @@ struct TasMovieCheckpointSterilizationAttemptRecord
     std::int64_t sterilization_attempt_id = 0;
 };
 
+struct CreateTasMovieInputEpochAnnotationRequestCommand {
+    std::string materialization_key;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::string source_dtm_sha256;
+    std::int64_t full_phase_program_kind = 0;
+    std::int64_t full_phase_program_version = 0;
+    std::string full_phase_canonical_id;
+    std::int64_t full_phase_contract_revision = 0;
+    std::string full_phase_sha256;
+    std::string module_canonical_id;
+    std::int64_t module_revision = 0;
+    std::string module_sha256;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct TasMovieInputEpochAnnotationRequestRecord
+    : CreateTasMovieInputEpochAnnotationRequestCommand {
+    std::int64_t annotation_request_id = 0;
+};
+
+struct RecordTasMovieInputEpochAnnotationAttemptCommand {
+    std::int64_t annotation_request_id = 0;
+    std::int64_t source_job_id = 0;
+    std::string worker_terminal_sha256;
+    bool succeeded = false;
+    std::optional<std::int64_t> schedule_artifact_id;
+    std::optional<std::string> schedule_sha256;
+    std::uint64_t source_poll_count = 0;
+    std::uint64_t epoch_count = 0;
+    std::uint64_t final_cursor = 0;
+    std::optional<std::uint64_t> divergence_epoch;
+    std::optional<std::uint64_t> divergence_cursor;
+    std::string failure_code;
+    std::string failure_text;
+    std::string worker_id;
+    std::uint64_t worker_process_generation = 0;
+    std::uint64_t workset_epoch = 0;
+    types::UtcTimePoint recorded_at_utc{};
+};
+
+struct TasMovieInputEpochAnnotationAttemptRecord
+    : RecordTasMovieInputEpochAnnotationAttemptCommand {
+    std::int64_t annotation_attempt_id = 0;
+};
+
+struct CreateTasMovieInputEpochRewriteRequestCommand {
+    std::string materialization_key;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t annotation_attempt_id = 0;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::string source_dtm_sha256;
+    std::int64_t schedule_artifact_id = 0;
+    std::string schedule_sha256;
+    std::uint64_t insert_before_epoch = 0;
+    std::int64_t full_phase_program_kind = 0;
+    std::int64_t full_phase_program_version = 0;
+    std::string full_phase_canonical_id;
+    std::int64_t full_phase_contract_revision = 0;
+    std::string full_phase_sha256;
+    std::string module_canonical_id;
+    std::int64_t module_revision = 0;
+    std::string module_sha256;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct TasMovieInputEpochRewriteRequestRecord
+    : CreateTasMovieInputEpochRewriteRequestCommand {
+    std::int64_t rewrite_request_id = 0;
+};
+
+struct RecordTasMovieInputEpochRewriteAttemptCommand {
+    std::int64_t rewrite_request_id = 0;
+    std::int64_t source_job_id = 0;
+    std::string worker_terminal_sha256;
+    bool succeeded = false;
+    std::optional<std::int64_t> rewritten_dtm_artifact_id;
+    std::optional<std::string> rewritten_dtm_sha256;
+    std::optional<std::int64_t> endpoint_savestate_id;
+    std::uint64_t source_epoch_count = 0;
+    std::uint64_t rewritten_epoch_count = 0;
+    std::uint64_t final_movie_input_count = 0;
+    std::optional<std::uint64_t> divergence_epoch;
+    std::optional<std::uint64_t> divergence_cursor;
+    std::string failure_code;
+    std::string failure_text;
+    std::string worker_id;
+    std::uint64_t worker_process_generation = 0;
+    std::uint64_t workset_epoch = 0;
+    types::UtcTimePoint recorded_at_utc{};
+};
+
+struct TasMovieInputEpochRewriteAttemptRecord
+    : RecordTasMovieInputEpochRewriteAttemptCommand {
+    std::int64_t rewrite_attempt_id = 0;
+};
+
 struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
 
@@ -1511,6 +1610,44 @@ struct IAnalysisDb {
     virtual std::vector<TasMovieCheckpointSterilizationAttemptRecord>
     ListTasMovieCheckpointSterilizationAttemptsForRequest(
         std::int64_t request_id) const = 0;
+    virtual bool CreateTasMovieInputEpochAnnotationRequest(
+        const CreateTasMovieInputEpochAnnotationRequestCommand& command,
+        std::int64_t* request_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<TasMovieInputEpochAnnotationRequestRecord>
+    GetTasMovieInputEpochAnnotationRequest(std::int64_t request_id) const = 0;
+    virtual std::optional<TasMovieInputEpochAnnotationRequestRecord>
+    GetTasMovieInputEpochAnnotationRequestForWorkflowStep(
+        std::int64_t workflow_step_id) const = 0;
+    virtual bool RecordTasMovieInputEpochAnnotationAttempt(
+        const RecordTasMovieInputEpochAnnotationAttemptCommand& command,
+        std::int64_t* attempt_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<TasMovieInputEpochAnnotationAttemptRecord>
+    GetTasMovieInputEpochAnnotationAttempt(std::int64_t attempt_id) const = 0;
+    virtual std::optional<TasMovieInputEpochAnnotationAttemptRecord>
+    FindTasMovieInputEpochAnnotationAttempt(
+        std::int64_t source_job_id,
+        std::string_view worker_terminal_sha256) const = 0;
+    virtual bool CreateTasMovieInputEpochRewriteRequest(
+        const CreateTasMovieInputEpochRewriteRequestCommand& command,
+        std::int64_t* request_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<TasMovieInputEpochRewriteRequestRecord>
+    GetTasMovieInputEpochRewriteRequest(std::int64_t request_id) const = 0;
+    virtual std::optional<TasMovieInputEpochRewriteRequestRecord>
+    GetTasMovieInputEpochRewriteRequestForWorkflowStep(
+        std::int64_t workflow_step_id) const = 0;
+    virtual bool RecordTasMovieInputEpochRewriteAttempt(
+        const RecordTasMovieInputEpochRewriteAttemptCommand& command,
+        std::int64_t* attempt_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<TasMovieInputEpochRewriteAttemptRecord>
+    GetTasMovieInputEpochRewriteAttempt(std::int64_t attempt_id) const = 0;
+    virtual std::optional<TasMovieInputEpochRewriteAttemptRecord>
+    FindTasMovieInputEpochRewriteAttempt(
+        std::int64_t source_job_id,
+        std::string_view worker_terminal_sha256) const = 0;
 
     virtual std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const = 0;
     virtual std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const = 0;

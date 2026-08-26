@@ -219,6 +219,23 @@ PhysicalStopBackendReceipt PhysicalStopPointManager::ValidateExactPlanUnchanged(
     return receipt;
 }
 
+std::string PhysicalStopPointManager::DescribePhysicalStopPoints(
+    std::uint32_t observed_pc) const
+{
+    try
+    {
+        return backend_.DescribePhysicalStopPoints(observed_pc);
+    }
+    catch (const std::exception& ex)
+    {
+        return std::string("physical-stop diagnostic threw: ") + ex.what();
+    }
+    catch (...)
+    {
+        return "physical-stop diagnostic threw";
+    }
+}
+
 PhysicalStopBackendReceipt PhysicalStopPointManager::ClearOwnedStopPoints(
     const std::function<void()>& commit_while_cpu_excluded)
 {

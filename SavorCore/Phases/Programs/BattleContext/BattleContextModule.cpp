@@ -101,7 +101,6 @@ SemanticObservationComposition BattleContextObservation()
             }},
             .current_point = CurrentPointPolicy::FutureOnly,
             .movie_policy = SemanticMoviePolicy::FailIfEnded,
-            .suppress_immediate_reentry = true,
             .continue_until_action = CanonicalActionIdentity(
                 CanonicalAction::ExecutionContinueUntil),
             .receipt_type = CanonicalActionOutputType(

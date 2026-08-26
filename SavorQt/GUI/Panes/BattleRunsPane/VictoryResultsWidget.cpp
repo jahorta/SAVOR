@@ -67,8 +67,14 @@ VictoryResultsWidget::VictoryResultsWidget(Actions actions, QWidget* parent)
         std::vector<savorqt::db::VictoryResultSummary>>(this);
     refresh_->setAutoRefreshEnabled(true);
     refresh_->setRequestBuilder([this](savorqt::gui::RefreshReason) { return routeNodeId_; });
-    refresh_->setLoadAndPrepare([](std::int64_t id) { return savorqt::db::SavorDbTasRouteService::FetchVictories(id); });
-    refresh_->setApply([this](const auto& rows) { applyRows(rows); });
+    refresh_->setLoadAndPrepare([](std::int64_t id) {
+        return savorqt::gui::AsyncRefreshResult<
+            std::vector<savorqt::db::VictoryResultSummary>>::Ok(
+                savorqt::db::SavorDbTasRouteService::FetchVictories(id));
+    });
+    refresh_->setApply([this](const auto& rows,
+        savorqt::gui::RefreshReason,
+        const savorqt::gui::RefreshStatus&) { applyRows(rows); });
     refresh_->setActive(true);
 
     connect(table_, &QTableWidget::itemSelectionChanged, this, [this]() { showSelected(); });

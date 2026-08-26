@@ -26,6 +26,9 @@
     <ClCompile Include="TasMovieRealWorkerScenario.cpp">
       <Filter>Scenarios</Filter>
     </ClCompile>
+    <ClCompile Include="TasMovieInputEpochRewriteScenario.cpp">
+      <Filter>Scenarios</Filter>
+    </ClCompile>
     <ClCompile Include="BattlePhasesRealWorkerScenario.cpp">
       <Filter>Scenarios</Filter>
     </ClCompile>
@@ -68,6 +71,9 @@
       <Filter>Scenarios</Filter>
     </ClInclude>
     <ClInclude Include="TasMovieRealWorkerScenario.h">
+      <Filter>Scenarios</Filter>
+    </ClInclude>
+    <ClInclude Include="TasMovieInputEpochRewriteScenario.h">
       <Filter>Scenarios</Filter>
     </ClInclude>
     <ClInclude Include="BattlePhasesRealWorkerScenario.h">

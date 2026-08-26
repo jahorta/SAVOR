@@ -61,6 +61,10 @@ inline constexpr WorkflowUnitToken TasMovieValidateRoot{
     "tas_movie_validate_root"};
 inline constexpr WorkflowUnitToken TasMovieCheckpointSterilize{
     "tas_movie_checkpoint_sterilize"};
+inline constexpr WorkflowUnitToken TasMovieAnnotateInputEpochs{
+    "tas_movie_annotate_input_epochs"};
+inline constexpr WorkflowUnitToken TasMovieRewriteInputEpochs{
+    "tas_movie_rewrite_input_epochs"};
 inline constexpr WorkflowUnitToken SeedProbe{"seed_probe"};
 inline constexpr WorkflowUnitToken BattleContext{"battle.context"};
 inline constexpr WorkflowUnitToken Battle{"battle"};
@@ -85,6 +89,17 @@ inline constexpr WorkflowPortToken PairedCheckpoint{
     "paired_checkpoint_savestate"};
 inline constexpr WorkflowPortToken SterilizedCheckpoint{
     "sterilized_checkpoint_savestate"};
+}
+namespace workflow::ports::tas_movie_annotate_input_epochs {
+inline constexpr WorkflowPortToken RootDtm{"root_dtm"};
+inline constexpr WorkflowPortToken AnnotationAttempt{"annotation_attempt"};
+}
+namespace workflow::ports::tas_movie_rewrite_input_epochs {
+inline constexpr WorkflowPortToken AnnotationAttempt{"annotation_attempt"};
+inline constexpr WorkflowPortToken RewriteAttempt{"rewrite_attempt"};
+inline constexpr WorkflowPortToken RewrittenDtm{"rewritten_dtm"};
+inline constexpr WorkflowPortToken RewrittenPairedSavestate{
+    "rewritten_paired_savestate"};
 }
 namespace workflow::ports::seed_probe {
 inline constexpr WorkflowPortToken EntrySavestate{"entry_savestate"};

@@ -5,10 +5,12 @@
 #include <cassert>
 #include <deque>
 #include <format>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <ranges>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
@@ -53,11 +55,6 @@ struct OneShotGate
     std::atomic<bool> fired{false};
 };
 
-struct SuppressionGate
-{
-    std::atomic<bool> armed{false};
-};
-
 struct SourceDropCounter
 {
     StopSourceId source_id;
@@ -69,7 +66,6 @@ struct SubscriptionRecord
     StopSubscriptionDefinition definition;
     std::size_t ordinal = 0;
     std::shared_ptr<OneShotGate> one_shot;
-    std::shared_ptr<SuppressionGate> suppression;
 };
 
 struct GroupRecord
@@ -98,7 +94,6 @@ struct DispatchEntry
     std::uint64_t registration_sequence = 0;
     std::size_t subscription_ordinal = 0;
     std::shared_ptr<OneShotGate> one_shot;
-    std::shared_ptr<SuppressionGate> suppression;
     SourceDropCounter* drop_counter = nullptr;
 };
 
@@ -251,22 +246,6 @@ private:
         return passive->lossless;
     }
     return true;
-}
-
-[[nodiscard]] bool SuppressesImmediateReentry(
-    const StopSubscriptionRoute& route) noexcept
-{
-    if (const auto* foreground =
-            std::get_if<ForegroundStopWait>(&route))
-    {
-        return foreground->suppress_immediate_reentry;
-    }
-    if (const auto* interruption =
-            std::get_if<TrustedStopInterruptionRequest>(&route))
-    {
-        return interruption->suppress_immediate_reentry;
-    }
-    return false;
 }
 
 [[nodiscard]] std::uint32_t CpuObserverDescriptor(
@@ -752,18 +731,6 @@ namespace {
         subscription.ordinal = i;
         if (subscription.definition.lifetime == StopSubscriptionLifetime::OneShot)
             subscription.one_shot = std::make_shared<OneShotGate>();
-        if (SuppressesImmediateReentry(subscription.definition.route))
-        {
-            subscription.suppression = std::make_shared<SuppressionGate>();
-            if (current_point &&
-                current_point->identity.workset_epoch == acquisition_epoch &&
-                PointMatchesEvidence(
-                    subscription.definition.point,
-                    current_point->evidence))
-            {
-                subscription.suppression->armed.store(true, std::memory_order_release);
-            }
-        }
         record.subscriptions.push_back(std::move(subscription));
     }
     return record;
@@ -2272,70 +2239,6 @@ StopPointError StopPointRouter::DepartCurrentPoint()
     return {};
 }
 
-StopPointError StopPointRouter::ArmInterruptionSuppression(
-    const StopRouteReceipt& receipt,
-    const StopInterruptionHandlerRequest& request)
-{
-    if (StopPointError error =
-            CheckControlThread(*this, owner_thread_, initialized_, stopping_))
-    {
-        return error;
-    }
-    if (receipt.terminal !=
-            StopRouteTerminal::InterruptionRequested ||
-        !receipt.interruption_handler_request ||
-        receipt.interruption_handler_request->source_id != request.source_id ||
-        receipt.interruption_handler_request->group_id != request.group_id ||
-        receipt.interruption_handler_request->subscription_id !=
-            request.subscription_id ||
-        receipt.interruption_handler_request->interruption_handler_key !=
-            request.interruption_handler_key)
-    {
-        return Error(
-            StopPointErrorCode::InvalidArgument,
-            "interruption suppression request does not match its route receipt");
-    }
-    if (!impl_->current_point ||
-        impl_->current_point->identity != receipt.identity ||
-        receipt.identity.workset_epoch != workset_epoch_ ||
-        !receipt.event ||
-        receipt.event->identity != impl_->current_point->identity ||
-        receipt.event->evidence != impl_->current_point->evidence)
-    {
-        return Error(
-            StopPointErrorCode::CurrentPointUnavailable,
-            "interruption suppression requires the exact retained receipt");
-    }
-    const auto group = impl_->groups.find(request.group_id.value());
-    if (group == impl_->groups.end() ||
-        group->second.source.id != request.source_id)
-    {
-        return Error(
-            StopPointErrorCode::SourceMismatch,
-            "interruption suppression source does not own the routed group");
-    }
-    const auto subscription = std::ranges::find_if(
-        group->second.subscriptions,
-        [&](const SubscriptionRecord& candidate) {
-            return candidate.definition.id == request.subscription_id;
-        });
-    const auto* interruption =
-        subscription == group->second.subscriptions.end()
-        ? nullptr
-        : std::get_if<TrustedStopInterruptionRequest>(
-              &subscription->definition.route);
-    if (interruption == nullptr ||
-        interruption->handler_key != request.interruption_handler_key ||
-        !subscription->suppression)
-    {
-        return Error(
-            StopPointErrorCode::SourceMismatch,
-            "interruption suppression subscription does not match the routed request");
-    }
-    subscription->suppression->armed.store(true, std::memory_order_release);
-    return {};
-}
-
 StopGroupReceipt StopPointRouter::ReplaceGroup(
     StopSubscriptionGroupLease& lease,
     StopSubscriptionGroupDefinition definition)
@@ -2596,11 +2499,6 @@ namespace {
         const DispatchEntry& entry = packet.snapshot->entries[i];
         if (!PointMatches(entry.point, context))
             continue;
-        if (entry.suppression &&
-            entry.suppression->armed.exchange(false, std::memory_order_acq_rel))
-        {
-            continue;
-        }
         if (entry.qualification_id != 0 &&
             (!evaluator ||
                 !evaluator->Qualify(entry.qualification_id, context)))
@@ -3426,6 +3324,108 @@ PhysicalStopPointPlan StopPointRouter::DesiredPhysicalPlan() const
 {
     const auto snapshot = impl_->dispatch.load(std::memory_order_acquire);
     return snapshot ? snapshot->physical_plan : PhysicalStopPointPlan{};
+}
+
+std::string StopPointRouter::DescribeUnroutedPause(
+    std::uint32_t observed_pc) const
+{
+    const PhysicalStopPointPlan desired = DesiredPhysicalPlan();
+    const PhysicalStopPointPlan& manager_plan = physical_manager_.current_plan();
+    std::ostringstream out;
+    const auto append_plan = [&](std::string_view label,
+                                 const PhysicalStopPointPlan& plan) {
+        out << label << " pc_count=" << plan.pcs.size() << " pcs=[";
+        for (std::size_t index = 0; index < plan.pcs.size(); ++index)
+        {
+            if (index != 0)
+                out << ',';
+            out << "0x" << std::hex << std::setw(8) << std::setfill('0')
+                << plan.pcs[index].pc << std::dec;
+        }
+        out << "] memcheck_count=" << plan.memory.size() << " memchecks=[";
+        for (std::size_t index = 0; index < plan.memory.size(); ++index)
+        {
+            if (index != 0)
+                out << ',';
+            const PhysicalMemoryStop& memory = plan.memory[index];
+            out << "0x" << std::hex << std::setw(8) << std::setfill('0')
+                << memory.start << "-0x" << std::setw(8) << memory.end
+                << std::dec << ":r" << (memory.read ? 1 : 0)
+                << "w" << (memory.write ? 1 : 0);
+        }
+        out << ']';
+    };
+
+    out << "router epoch=" << workset_epoch_.value()
+        << " dispatch_generation=" << dispatch_generation_.value()
+        << " physical_generation=" << physical_manager_.generation().value()
+        << " ingress_enabled="
+        << (ingress_enabled_.load(std::memory_order_acquire) ? 1 : 0)
+        << " authoritative_overflow="
+        << (authoritative_overflow_.load(std::memory_order_acquire) ? 1 : 0)
+        << " native_inflight="
+        << native_inflight_.load(std::memory_order_acquire)
+        << " passive_drops="
+        << passive_drop_count_.load(std::memory_order_acquire)
+        << " sink_bound=" << (physical_manager_.sink_bound() ? 1 : 0)
+        << " exact_plan=" << (physical_manager_.has_exact_plan() ? 1 : 0)
+        << " integrity_unknown="
+        << (physical_manager_.integrity_unknown() ? 1 : 0) << '\n';
+    append_plan("desired_plan", desired);
+    out << '\n';
+    append_plan("manager_plan", manager_plan);
+    out << " desired_matches_manager=" << (desired == manager_plan ? 1 : 0)
+        << '\n';
+
+    if (impl_->current_point)
+    {
+        out << "retained_point sequence="
+            << impl_->current_point->identity.sequence.value()
+            << " hit_pc=0x" << std::hex << std::setw(8) << std::setfill('0')
+            << impl_->current_point->evidence.hit_pc << std::dec
+            << " authoritative="
+            << (impl_->current_point->authoritative ? 1 : 0) << '\n';
+    }
+    else
+    {
+        out << "retained_point=<none>\n";
+    }
+
+    constexpr std::size_t history_limit = 8;
+    const std::size_t first = impl_->history.size() > history_limit
+        ? impl_->history.size() - history_limit
+        : 0;
+    out << "recent_routes count=" << (impl_->history.size() - first);
+    for (std::size_t index = first; index < impl_->history.size(); ++index)
+    {
+        const StopRouteReceipt& receipt = impl_->history[index];
+        out << "\n  terminal=" << static_cast<unsigned>(receipt.terminal)
+            << " sequence=" << receipt.identity.sequence.value()
+            << " epoch=" << receipt.identity.workset_epoch.value()
+            << " dispatch_generation="
+            << receipt.identity.dispatch_generation.value()
+            << " physical_generation="
+            << receipt.identity.physical_generation.value()
+            << " hit_pc=0x" << std::hex << std::setw(8)
+            << std::setfill('0')
+            << (receipt.event ? receipt.event->evidence.hit_pc : 0)
+            << std::dec
+            << " authoritative="
+            << (receipt.event && receipt.event->authoritative ? 1 : 0)
+            << " deliveries=" << receipt.deliveries.size()
+            << " core_must_remain_stopped="
+            << (receipt.core_must_remain_stopped ? 1 : 0)
+            << " control_generation="
+            << receipt.execution_control_generation
+            << " operation=" << receipt.execution_operation_id
+            << " stop_transition=" << receipt.stop_transition_id
+            << " error="
+            << (receipt.error.message.empty()
+                    ? "<none>"
+                    : receipt.error.message);
+    }
+    out << '\n' << physical_manager_.DescribePhysicalStopPoints(observed_pc);
+    return out.str();
 }
 
 StopPointError StopPointRouter::EstablishPausedCurrentPoint(std::uint32_t pc)

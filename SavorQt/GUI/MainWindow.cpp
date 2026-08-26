@@ -565,7 +565,12 @@ void MainWindow::openVictoryResults(std::int64_t routeNodeId)
         }
     }
     if (PersistentToolWindow* window = focusedWindows_.value(key); window != nullptr) {
-        if (auto* page = window->findChild<VictoryResultsWidget*>()) page->showRoute(routeNodeId);
+        for (QWidget* child : window->findChildren<QWidget*>()) {
+            if (auto* page = dynamic_cast<VictoryResultsWidget*>(child)) {
+                page->showRoute(routeNodeId);
+                break;
+            }
+        }
         window->show(); window->raise(); window->activateWindow();
     }
 }

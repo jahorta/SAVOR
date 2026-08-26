@@ -1,8 +1,8 @@
 #pragma once
 
 #include "SavorDbRuntime.h"
-#include "SavorDb/Analysis/IAnalysisDb.h"
-#include "SavorCore/Phases/Programs/BattleCompletion/BattleCompletionContracts.h"
+#include "Analysis/IAnalysisDb.h"
+#include "Phases/Programs/BattleCompletion/BattleCompletionContracts.h"
 
 #include <cstdint>
 #include <span>

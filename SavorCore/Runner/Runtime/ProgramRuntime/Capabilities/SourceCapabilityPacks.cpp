@@ -601,6 +601,11 @@ std::vector<SemanticPointDescriptor> BuildFieldPoints()
         .kind = SemanticPointKind::ProgramCounter,
         .pc = 0x801018acu,
     });
+    points.push_back({
+        .canonical_id = "soa.tasmovie.point.input.PadReadReturned",
+        .kind = SemanticPointKind::ProgramCounter,
+        .pc = 0x801D6E7Cu,
+    });
     return points;
 }
 
@@ -854,6 +859,15 @@ ReducerDescriptor PureReducer(
     return descriptor;
 }
 
+ReducerDescriptor FieldPadStatusToInputFrameReducerDescriptor()
+{
+    return PureReducer(
+        "soa.field.input.pad_status_to_input_frame",
+        UnsignedPackIdentity(std::string(kFieldPackId)),
+        {TypeRef::Builtin(BuiltinType::U64)},
+        CanonicalRuntimeType(CanonicalRuntimeSchema::InputFramePayload));
+}
+
 struct BattleCapabilityCatalog
 {
     std::vector<ActionDescriptor> actions;
@@ -874,6 +888,8 @@ RuntimeCompatibility SupportedSoaUsaCompatibility()
 
 CapabilityPackIdentity FieldPackIdentity()
 {
+    const auto pad_status_reducer =
+        FieldPadStatusToInputFrameReducerDescriptor();
     CapabilityPackManifest manifest{
         .identity = UnsignedPackIdentity(
             std::string(kFieldPackId)),
@@ -882,6 +898,7 @@ CapabilityPackIdentity FieldPackIdentity()
         .semantic_points = BuildFieldPoints(),
         .address_symbols = BuildFieldAddresses(),
         .cpu_evaluators = {FieldRngSeedEvaluator()},
+        .reducers = {pad_status_reducer.identity},
     };
     manifest.identity.manifest_hash =
         ComputeCapabilityPackManifestContractHash(manifest);
@@ -1746,6 +1763,11 @@ ExactDependencyIdentity FieldTransitionBuildContextReducerIdentity()
     return AuxiliaryReducer("soa.field.transition.build_context").identity;
 }
 
+ExactDependencyIdentity FieldPadStatusToInputFrameReducerIdentity()
+{
+    return FieldPadStatusToInputFrameReducerDescriptor().identity;
+}
+
 ExactDependencyIdentity BattleCompletionInteractionInitializeReducerIdentity()
 {
     return AuxiliaryReducer(
@@ -1870,6 +1892,9 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         auxiliary_battle_catalog.results_reducers.begin(),
         auxiliary_battle_catalog.results_reducers.end());
 
+    auto field_pad_status_reducer =
+        FieldPadStatusToInputFrameReducerDescriptor();
+
     auto field_addresses = BuildFieldAddresses();
     auto navigation_addresses = BuildNavigationAddresses();
 
@@ -1881,7 +1906,10 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         .semantic_points = BuildFieldPoints(),
         .address_symbols = field_addresses,
         .cpu_evaluators = {FieldRngSeedEvaluator()},
+        .reducers = {field_pad_status_reducer.identity},
     };
+    field_pad_status_reducer.providing_pack = field.identity;
+    catalog.reducers.push_back(std::move(field_pad_status_reducer));
 
     CapabilityPackManifest battle = battle_catalog.manifest;
 

@@ -51,7 +51,6 @@ struct SemanticAwaitDefinition
     std::vector<HitTimeSampleRequirement> hit_time_samples;
     CurrentPointPolicy current_point = CurrentPointPolicy::AcceptCurrent;
     SemanticMoviePolicy movie_policy = SemanticMoviePolicy::FailIfEnded;
-    bool suppress_immediate_reentry = true;
     ExactDependencyIdentity continue_until_action;
     TypeRef receipt_type;
 

@@ -48,7 +48,6 @@ TEST(ExecutionControlCoreArchitecture, UsesOneGenerationTaggedControlSurface)
 TEST(ExecutionControlCoreArchitecture, ForegroundIntentCarriesControlOwnership)
 {
     const ForegroundStopWait route{
-        .suppress_immediate_reentry = true,
         .execution_control_generation = 19,
         .execution_operation_id = 7,
     };

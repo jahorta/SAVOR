@@ -2,6 +2,7 @@
 
 #include "../../../Phases/Programs/SeedProbe/SeedProbeModule.h"
 #include "../../../Phases/Programs/TasMovieValidation/TasMovieValidationModule.h"
+#include "../../../Phases/Programs/TasMovieInputEpoch/TasMovieInputEpochModule.h"
 #include "../../../Phases/Programs/BattleContext/BattleContextModule.h"
 #include "../../../Phases/Programs/BattleCompletion/BattleCompletionModule.h"
 #include "../../../Phases/Programs/BattleRecord/BattleRecordModule.h"
@@ -223,6 +224,10 @@ const FullPhaseProgramRegistry& ProductionRegistry()
             tasmovie::TasMovieValidationFullPhaseDefinitionV1());
         (void)value.Register(
             tasmovie::TasMovieCheckpointSterilizationFullPhaseDefinitionV1());
+        (void)value.Register(
+            tasmovie::inputepoch::AnnotationFullPhaseDefinitionV1());
+        (void)value.Register(
+            tasmovie::inputepoch::RewriteFullPhaseDefinitionV1());
         return value;
     }();
     return registry;

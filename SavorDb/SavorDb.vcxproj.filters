@@ -254,6 +254,9 @@
     <ClInclude Include="Execution\ProgramDB\TasMovieValidation\TasMovieValidationProgram.h">
       <Filter>Programs\TasMovie</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\TasMovieValidation\TasMovieInputEpochProgram.h">
+      <Filter>Programs\TasMovie</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\ProgramDB\TasMovieValidation\TasMovieCheckpointSterilizationProgram.h">
       <Filter>Programs\TasMovie</Filter>
     </ClInclude>
@@ -469,6 +472,9 @@
     <ClCompile Include="Execution\ProgramDB\TasMovieValidation\TasMovieValidationProgram.cpp">
       <Filter>Programs\TasMovie</Filter>
     </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\TasMovieValidation\TasMovieInputEpochProgram.cpp">
+      <Filter>Programs\TasMovie</Filter>
+    </ClCompile>
     <ClCompile Include="Execution\ProgramDB\TasMovieValidation\TasMovieCheckpointSterilizationProgram.cpp">
       <Filter>Programs\TasMovie</Filter>
     </ClCompile>
@@ -574,6 +580,9 @@
       <Filter>Migrations\Analysis</Filter>
     </None>
     <None Include="migration\AnalysisTasMovie\202608161100_analysis_tas_movie_outbox.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
+    <None Include="migration\AnalysisTasMovie\202608251000_analysis_tas_movie_input_epochs.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
     <None Include="migration\AnalysisSpine\202604051000_analysisspine_stage2_schema.sql">
@@ -715,6 +724,9 @@
       <Filter>Migrations\State</Filter>
     </None>
     <None Include="migration\State\202608131100_state_battle_completion_artifact.sql">
+      <Filter>Migrations\State</Filter>
+    </None>
+    <None Include="migration\State\202608251010_state_tas_movie_input_epoch_schedule.sql">
       <Filter>Migrations\State</Filter>
     </None>
     <None Include="migration\State\202608161300_state_artifact_relative_object_locator.sql">

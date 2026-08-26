@@ -290,6 +290,7 @@
     <ClCompile Include="test_seedprobe_module.cpp" />
     <ClCompile Include="test_tas_movie_validation_module.cpp" />
     <ClCompile Include="test_tas_movie_validation_persistence.cpp" />
+    <ClCompile Include="test_tas_movie_input_epoch.cpp" />
     <ClCompile Include="test_job_execution_coordinator.cpp" />
     <ClCompile Include="test_worker_startup_barrier.cpp" />
     <ClCompile Include="test_worker_result_blob_store.cpp" />

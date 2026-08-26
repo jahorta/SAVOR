@@ -590,6 +590,169 @@ bool SeedTasMovieWorkflow(
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
+bool SeedTasMovieInputEpochAnnotationWorkflow(
+    savor::db::IAuthoringDb* authoring_db,
+    savor::db::IExecutionDb* execution_db,
+    std::int64_t dtm_artifact_id,
+    std::string_view run_identity,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out) {
+    if (authoring_db == nullptr || execution_db == nullptr
+        || dtm_artifact_id <= 0 || run_identity.empty()) {
+        if (error_out) *error_out = "input-epoch annotation workflow inputs are invalid";
+        return false;
+    }
+
+    const std::string identity(run_identity);
+    savor::db::SaveWorkflowGraphResult saved{};
+    if (!savor::db::authoring::MaterializeWorkflowGraph(authoring_db,
+            {
+                .name = "SavorE2E TAS Movie input-epoch annotation " + identity,
+                .description = "Annotates guest PADRead input epochs from a complete boot DTM.",
+                .graph_version = 1,
+                .graph_hash = "savor-e2e.workflow_graph.tasmovie.input_epoch_annotation." + identity,
+                .nodes = {
+                    {
+                        .node_key = "annotate_1",
+                        .unit_kind = "tas_movie_annotate_input_epochs",
+                        .display_name = "TAS Movie: Annotate Input Epochs",
+                        .inputs = {
+                            { .input_key = "root_dtm", .data_kind = "state_artifact.dtm_artifact_id", .ref_kind = "state_artifact", .display_name = "Complete boot DTM" },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "annotation_attempt", .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id", .ref_kind = "tmv_input_epoch_annotation_attempt", .display_name = "Input-epoch annotation attempt" },
+                        },
+                    },
+                },
+                .created_at_utc = UtcNow(),
+                .correlation_id = "savor-e2e.tasmovie.input_epoch_annotation." + identity,
+                .causation_id = "savor-e2e.seed",
+            },
+            &saved,
+            error_out)) {
+        return false;
+    }
+
+    savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
+    command.workflow_kind = "workflow_graph";
+    command.root_scope_kind = "manual";
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "savor-e2e";
+    command.created_at_utc = UtcNow().time_since_epoch().count();
+    const auto registry = savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+    std::string activation_error;
+    auto activation = savor::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+        registry, "annotate_1", "annotate_1", "tas_movie_annotate_input_epochs",
+        "TAS Movie: Annotate Input Epochs", std::nullopt, std::nullopt, {},
+        &activation_error);
+    if (!activation || activation->steps.size() != 1
+        || activation->steps.front().step_kind != "tasmovie.annotate_input_epochs") {
+        if (error_out) {
+            *error_out = activation_error.empty()
+                ? "input-epoch annotation unit did not resolve to its canonical step"
+                : activation_error;
+        }
+        return false;
+    }
+    command.unit_activations.push_back(std::move(*activation));
+    command.input_bindings.push_back({
+        .node_key = "annotate_1",
+        .input_key = "root_dtm",
+        .data_kind = "state_artifact.dtm_artifact_id",
+        .ref_kind = "state_artifact",
+        .ref_id = dtm_artifact_id,
+        .source_kind = "external",
+    });
+    return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
+}
+
+bool SeedTasMovieInputEpochRewriteWorkflow(
+    savor::db::IAuthoringDb* authoring_db,
+    savor::db::IExecutionDb* execution_db,
+    std::int64_t annotation_attempt_id,
+    std::int64_t insert_before_epoch,
+    std::string_view run_identity,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out) {
+    if (authoring_db == nullptr || execution_db == nullptr
+        || annotation_attempt_id <= 0 || insert_before_epoch < 0
+        || run_identity.empty()) {
+        if (error_out) *error_out = "input-epoch rewrite workflow inputs are invalid";
+        return false;
+    }
+
+    const std::string identity(run_identity);
+    savor::db::SaveWorkflowGraphResult saved{};
+    if (!savor::db::authoring::MaterializeWorkflowGraph(authoring_db,
+            {
+                .name = "SavorE2E TAS Movie input-epoch rewrite " + identity,
+                .description = "Inserts one guest-observed neutral input epoch and preserves the downstream schedule.",
+                .graph_version = 1,
+                .graph_hash = "savor-e2e.workflow_graph.tasmovie.input_epoch_rewrite." + identity,
+                .nodes = {
+                    {
+                        .node_key = "rewrite_1",
+                        .unit_kind = "tas_movie_rewrite_input_epochs",
+                        .display_name = "TAS Movie: Rewrite Input Epochs",
+                        .inputs = {
+                            { .input_key = "annotation_attempt", .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id", .ref_kind = "tmv_input_epoch_annotation_attempt", .display_name = "Source input-epoch annotation" },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "rewrite_attempt", .data_kind = "analysis.tas_movie_input_epoch_rewrite_attempt_id", .ref_kind = "tmv_input_epoch_rewrite_attempt", .display_name = "Input-epoch rewrite attempt" },
+                            { .output_key = "rewritten_dtm", .data_kind = "state_artifact.dtm_artifact_id", .ref_kind = "state_artifact", .display_name = "Rewritten DTM" },
+                            { .output_key = "rewritten_paired_savestate", .data_kind = "state.movie_paired_savestate_id", .ref_kind = "state.savestate", .display_name = "Rewritten movie-paired endpoint" },
+                        },
+                    },
+                },
+                .created_at_utc = UtcNow(),
+                .correlation_id = "savor-e2e.tasmovie.input_epoch_rewrite." + identity,
+                .causation_id = "savor-e2e.seed",
+            },
+            &saved,
+            error_out)) {
+        return false;
+    }
+
+    savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
+    command.workflow_kind = "workflow_graph";
+    command.root_scope_kind = "manual";
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "savor-e2e";
+    command.created_at_utc = UtcNow().time_since_epoch().count();
+    const auto registry = savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+    std::string activation_error;
+    auto activation = savor::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+        registry, "rewrite_1", "rewrite_1", "tas_movie_rewrite_input_epochs",
+        "TAS Movie: Rewrite Input Epochs", std::nullopt, std::nullopt, {},
+        &activation_error);
+    if (!activation || activation->steps.size() != 1
+        || activation->steps.front().step_kind != "tasmovie.rewrite_input_epochs") {
+        if (error_out) {
+            *error_out = activation_error.empty()
+                ? "input-epoch rewrite unit did not resolve to its canonical step"
+                : activation_error;
+        }
+        return false;
+    }
+    command.unit_activations.push_back(std::move(*activation));
+    command.input_bindings.push_back({
+        .node_key = "rewrite_1",
+        .input_key = "annotation_attempt",
+        .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id",
+        .ref_kind = "tmv_input_epoch_annotation_attempt",
+        .ref_id = annotation_attempt_id,
+        .source_kind = "external",
+    });
+    command.arguments.push_back({
+        .node_key = "rewrite_1",
+        .argument_key = "insert_before_epoch",
+        .value_type = "integer",
+        .integer_value = insert_before_epoch,
+        .source_kind = "scenario",
+    });
+    return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
+}
+
 bool SeedTasMovieRootValidationWorkflow(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IExecutionDb* execution_db,

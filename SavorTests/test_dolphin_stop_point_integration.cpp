@@ -172,8 +172,7 @@ private:
         .subscriptions = {{
             .id = kWakeSubscription,
             .point = PcStopPointSpec{kGameModeControllerPc},
-            .route = ForegroundStopWait{
-                .suppress_immediate_reentry = true},
+            .route = ForegroundStopWait{},
         }},
     };
 }
@@ -485,10 +484,9 @@ TEST(
     ASSERT_EQ(observe_consumer.deliveries.size(), 1u);
     EXPECT_EQ(session.snapshot().core_state, BackendCoreState::Paused);
 
-    // Requesting the same future-only wait while paused at the retained
-    // receipt must arm exact source suppression. The shared physical site
-    // remains installed because the passive Observe subscription still owns
-    // it, and the next completion must carry a fresh routed sequence.
+    // Requesting the same future-only wait while paused does not consume the
+    // retained receipt. Dolphin advances past the retained PC before entering
+    // its fast run loop, so the next hit is a genuine future occurrence.
     const ExecutionSubmissionReceipt second_wait =
         session.SubmitExecution(ContinueUntilRequest{
             .policy = MakeExecutionPolicy(WorksetEpoch(1)),
@@ -527,11 +525,8 @@ TEST(
     EXPECT_EQ(
         second_terminal->stop->event->evidence.path,
         NativeStopPath::Jit);
-    // Suppression belongs only to the future-only Wake subscription. The
-    // passive Observe subscription still sees the exact source re-entry,
-    // followed by the later hit that satisfies the Wake.
-    ASSERT_EQ(observe_consumer.deliveries.size(), 3u);
-    EXPECT_FALSE(
+    ASSERT_EQ(observe_consumer.deliveries.size(), 2u);
+    EXPECT_TRUE(
         observe_consumer.deliveries[1].event.active_foreground_wait);
     EXPECT_LT(
         observe_consumer.deliveries[1].event.identity.sequence,

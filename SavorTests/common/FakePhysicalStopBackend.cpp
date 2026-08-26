@@ -1,5 +1,6 @@
 #include "FakePhysicalStopBackend.h"
 
+#include <sstream>
 #include <utility>
 
 namespace savor::test_support {
@@ -260,6 +261,20 @@ FakePhysicalStopBackend::QueryPhysicalStopPoints() const
         control_->query_outcome,
         control_->actual_generation,
         control_->actual_plan);
+}
+
+std::string FakePhysicalStopBackend::DescribePhysicalStopPoints(
+    std::uint32_t observed_pc) const
+{
+    const runtime::PhysicalStopBackendReceipt receipt = QueryPhysicalStopPoints();
+    std::ostringstream out;
+    out << "fake_physical_state observed_pc=0x" << std::hex << observed_pc
+        << std::dec << " ok=" << (receipt.ok ? 1 : 0)
+        << " generation=" << receipt.generation.value()
+        << " regular_breakpoints=" << receipt.actual.pcs.size()
+        << " memchecks=" << receipt.actual.memory.size()
+        << " message=" << (receipt.message.empty() ? "<none>" : receipt.message);
+    return out.str();
 }
 
 runtime::PhysicalStopBackendReceipt

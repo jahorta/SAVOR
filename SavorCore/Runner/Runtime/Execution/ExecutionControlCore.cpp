@@ -1,5 +1,6 @@
 #include "ExecutionControlCore.h"
 
+#include <array>
 #include <atomic>
 
 #include "../Services/Movie/MovieService.h"
@@ -7,8 +8,10 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <iomanip>
 #include <limits>
 #include <map>
+#include <sstream>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -19,13 +22,19 @@ namespace {
 
 std::atomic<std::uint64_t> g_control_generation{1};
 
-[[nodiscard]] BackendResult SubmitControl(
-    IExecutionBackendPort& backend,
-    BackendControlCommandKind kind)
+[[nodiscard]] const char* ControlCommandKindName(
+    BackendControlCommandKind kind) noexcept
 {
-    const auto generation = ExecutionControlGeneration(
-        g_control_generation.fetch_add(1, std::memory_order_relaxed));
-    return backend.SubmitControlCommand({generation, kind});
+    switch (kind)
+    {
+    case BackendControlCommandKind::Pause:
+        return "Pause";
+    case BackendControlCommandKind::Resume:
+        return "Resume";
+    case BackendControlCommandKind::FrameStep:
+        return "FrameStep";
+    }
+    return "Unknown";
 }
 
 } // namespace
@@ -255,6 +264,17 @@ struct ExecutionObservation : BackendExecutionSnapshot
 
 struct ExecutionControlCore::Impl
 {
+    struct ControlTransitionDiagnostic
+    {
+        std::uint64_t sequence = 0;
+        ExecutionControlGeneration generation;
+        BackendControlCommandKind kind = BackendControlCommandKind::Pause;
+        Clock::time_point submitted;
+        bool ok = false;
+        std::string source;
+        std::string error;
+    };
+
     struct ActiveOperation
     {
         ExecutionOperationId id;
@@ -322,6 +342,11 @@ struct ExecutionControlCore::Impl
     std::map<std::string, InterruptionHandlerDescriptor, std::less<>>
         handler_registry;
     std::vector<ExecutionEvent> events;
+    std::array<ControlTransitionDiagnostic, 8> control_history{};
+    std::size_t control_history_size = 0;
+    std::size_t next_control_history = 0;
+    std::uint64_t next_control_sequence = 1;
+    std::uint64_t next_unrouted_pause_incident = 1;
     std::uint64_t next_operation = 1;
     std::uint64_t next_frame = 1;
     bool initialized = false;
@@ -783,6 +808,116 @@ struct ExecutionControlCore::Impl
         }
     }
 
+    [[nodiscard]] BackendResult SubmitBackendControl(
+        const char* source,
+        BackendControlCommandKind kind)
+    {
+        ControlTransitionDiagnostic diagnostic;
+        diagnostic.sequence = next_control_sequence++;
+        diagnostic.generation = ExecutionControlGeneration(
+            g_control_generation.fetch_add(1, std::memory_order_relaxed));
+        diagnostic.kind = kind;
+        diagnostic.submitted = now();
+        diagnostic.source = source;
+
+        BackendResult result = CallBackend(
+            source,
+            [&] {
+                return backend.SubmitControlCommand(
+                    {diagnostic.generation, kind});
+            });
+        diagnostic.ok = result.ok;
+        diagnostic.error = result.message;
+        control_history[next_control_history] = std::move(diagnostic);
+        next_control_history =
+            (next_control_history + 1) % control_history.size();
+        control_history_size =
+            std::min(control_history_size + 1, control_history.size());
+        return result;
+    }
+
+    [[nodiscard]] std::uint64_t LogUnroutedPause(
+        const ActiveOperation& operation,
+        const ExecutionObservation& observed,
+        const char* reason)
+    {
+        const std::uint64_t incident = next_unrouted_pause_incident++;
+        const ExecutionRequestPolicy* policy = DiagnosticPolicy(operation);
+        std::ostringstream text;
+        text << "incident=" << incident
+             << " reason=" << reason
+             << " operation=" << operation.id.value()
+             << " kind=" << KindName(operation.kind)
+             << " epoch=" << epoch.value()
+             << " invocation="
+             << (policy ? policy->diagnostic_invocation : 0)
+             << " attempt=" << (policy ? policy->diagnostic_attempt : 0)
+             << " request=" << (policy ? policy->diagnostic_request : 0)
+             << " selector="
+             << (policy && !policy->diagnostic_selector.empty()
+                     ? policy->diagnostic_selector
+                     : "<unnamed>")
+             << '\n'
+             << "execution_snapshot core_state="
+             << static_cast<unsigned>(observed.core_state)
+             << " pause_confirmed=" << (observed.pause_confirmed ? 1 : 0)
+             << " pc=0x" << std::hex << observed.pc << std::dec
+             << " vi=" << observed.vi_count
+             << " movie_state=" << static_cast<unsigned>(observed.movie_state)
+             << " movie_input_count=" << observed.movie_input_count
+             << " applied_control_generation="
+             << observed.applied_control_generation.value()
+             << " control_transition_in_flight="
+             << (observed.control_transition_in_flight ? 1 : 0)
+             << " observed_running="
+             << (operation.observed_running ? 1 : 0)
+             << '\n'
+             << "recent_control_commands count=" << control_history_size;
+
+        const auto current = now();
+        const std::size_t oldest =
+            (next_control_history + control_history.size() -
+             control_history_size) %
+            control_history.size();
+        for (std::size_t i = 0; i < control_history_size; ++i)
+        {
+            const ControlTransitionDiagnostic& command =
+                control_history[(oldest + i) % control_history.size()];
+            const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                current - command.submitted);
+            text << '\n'
+                 << "  sequence=" << command.sequence
+                 << " generation=" << command.generation.value()
+                 << " kind=" << ControlCommandKindName(command.kind)
+                 << " source=" << command.source
+                 << " age_ms=" << age.count()
+                 << " ok=" << (command.ok ? 1 : 0);
+            if (!command.error.empty())
+                text << " error=" << command.error;
+        }
+
+        try
+        {
+            text << '\n' << stop_points.DescribeUnroutedPause(observed.pc);
+        }
+        catch (const std::exception& ex)
+        {
+            text << '\n'
+                 << "stop_point_diagnostics_error=" << ex.what();
+        }
+        catch (...)
+        {
+            text << '\nstop_point_diagnostics_error=unknown";
+        }
+
+        const std::string diagnostic = text.str();
+        SCLOGWX(
+            SC_TAGS("execution.unrouted_pause", "execution.invariant"),
+            "%s",
+            diagnostic.c_str());
+        return incident;
+    }
+
     [[nodiscard]] BackendHealthReport CheckBackendHealth()
     {
         try
@@ -1200,9 +1335,9 @@ struct ExecutionControlCore::Impl
         {
             ActiveOperation finished = std::move(*active);
             active.reset();
-            (void)CallBackend(
+            (void)SubmitBackendControl(
                 "execution emergency pause after snapshot failure",
-                [&] { return SubmitControl(backend, BackendControlCommandKind::Pause); });
+                BackendControlCommandKind::Pause);
             EmitTerminal(
                 std::move(finished),
                 ExecutionTerminalStatus::CleanupFailure,
@@ -1240,9 +1375,9 @@ struct ExecutionControlCore::Impl
             active->pause_control_deadline =
                 now() + config.pause_confirmation_timeout;
         }
-        BackendResult pause = CallBackend(
+        BackendResult pause = SubmitBackendControl(
             "execution terminal pause",
-            [&] { return SubmitControl(backend, BackendControlCommandKind::Pause); });
+            BackendControlCommandKind::Pause);
         if (!pause.ok)
         {
             ActiveOperation finished = std::move(*active);
@@ -1426,10 +1561,6 @@ struct ExecutionControlCore::Impl
                     ExecutionErrorCode::InvalidArgument,
                     "ContinueUntil received a non-foreground route");
             }
-            foreground->suppress_immediate_reentry =
-                request.policy.current_point ==
-                    ExecutionCurrentPointPolicy::Ignore ||
-                restoring;
             foreground->execution_control_generation =
                 g_control_generation.load(std::memory_order_acquire) - 1;
             foreground->execution_operation_id = operation.id.value();
@@ -1526,9 +1657,9 @@ struct ExecutionControlCore::Impl
     {
         if (ExecutionError departed = DepartRetainedPoint())
             return departed;
-        BackendResult resumed = CallBackend(
+        BackendResult resumed = SubmitBackendControl(
             "execution resume",
-            [&] { return SubmitControl(backend, BackendControlCommandKind::Resume); });
+            BackendControlCommandKind::Resume);
         if (!resumed.ok)
             return BackendError("execution resume failed", resumed);
         return {};
@@ -1572,9 +1703,9 @@ struct ExecutionControlCore::Impl
                     ExecutionErrorCode::Unsupported,
                     "Guest-frame stepping is unavailable");
             }
-            started = CallBackend(
+            started = SubmitBackendControl(
                 "frame step",
-                [&] { return SubmitControl(backend, BackendControlCommandKind::FrameStep); });
+                BackendControlCommandKind::FrameStep);
             break;
         default:
             return Error(
@@ -1686,9 +1817,9 @@ struct ExecutionControlCore::Impl
                 now() +
                 std::get<SafePauseRequest>(operation.request)
                     .confirmation_timeout;
-            if (BackendResult pause = CallBackend(
+            if (BackendResult pause = SubmitBackendControl(
                     "safe pause",
-                    [&] { return SubmitControl(backend, BackendControlCommandKind::Pause); });
+                    BackendControlCommandKind::Pause);
                 !pause.ok)
             {
                 return BackendError("safe pause request failed", pause);
@@ -2271,9 +2402,9 @@ ExecutionControlReceipt ExecutionControlCore::CompleteInterruptionHandler(
             break;
         case ExecutionOperationKind::SafePause:
         {
-            const BackendResult pause = impl_->CallBackend(
+            const BackendResult pause = impl_->SubmitBackendControl(
                 "resumed safe pause",
-                [&] { return SubmitControl(impl_->backend, BackendControlCommandKind::Pause); });
+                BackendControlCommandKind::Pause);
             if (!pause.ok)
                 resumed = BackendError("resumed safe pause failed", pause);
             break;
@@ -2517,22 +2648,6 @@ void ExecutionControlCore::HandleStopPointReceipt(StopRouteReceipt receipt)
         }
     }
 
-    if (StopPointError suppression =
-            impl_->stop_points.ArmInterruptionSuppression(
-                receipt,
-                *receipt.interruption_handler_request))
-    {
-        impl_->BeginFinish(
-            ExecutionTerminalStatus::InterruptionFailed,
-            Error(
-                ExecutionErrorCode::StopPointFailure,
-                suppression.message.empty()
-                    ? "failed arming exact interruption re-entry suppression"
-                    : suppression.message,
-                BackendIntegrity::Unknown),
-            std::move(receipt));
-        return;
-    }
     if (ExecutionError parked =
             impl_->ParkWakeGroup(*impl_->active))
     {
@@ -2591,9 +2706,9 @@ void ExecutionControlCore::HandleStopPointReceipt(StopRouteReceipt receipt)
         return;
     }
 
-    const BackendResult pause = impl_->CallBackend(
+    const BackendResult pause = impl_->SubmitBackendControl(
         "interruption pause confirmation",
-        [&] { return SubmitControl(impl_->backend, BackendControlCommandKind::Pause); });
+        BackendControlCommandKind::Pause);
     if (!pause.ok)
     {
         Impl::SuspendedFrame failed =
@@ -2729,9 +2844,9 @@ void ExecutionControlCore::Pump()
     {
         Impl::ActiveOperation failed = std::move(*impl_->active);
         impl_->active.reset();
-        (void)impl_->CallBackend(
+        (void)impl_->SubmitBackendControl(
             "execution emergency pause after maintenance snapshot failure",
-            [&] { return SubmitControl(impl_->backend, BackendControlCommandKind::Pause); });
+            BackendControlCommandKind::Pause);
         impl_->EmitTerminal(
             std::move(failed),
             ExecutionTerminalStatus::CleanupFailure,
@@ -2890,9 +3005,9 @@ void ExecutionControlCore::Pump()
             // through SAVOR's pause synchronizer. Confirm that already-paused
             // state before MovieService performs its one paused inspection.
             // This requests no movie observation and does not resume the core.
-            const BackendResult pause = impl_->CallBackend(
+            const BackendResult pause = impl_->SubmitBackendControl(
                 "confirm externally paused Dolphin core",
-                [&] { return SubmitControl(impl_->backend, BackendControlCommandKind::Pause); });
+                BackendControlCommandKind::Pause);
             if (!pause.ok)
             {
                 impl_->BeginFinish(
@@ -2962,11 +3077,16 @@ void ExecutionControlCore::Pump()
         if (observed.core_state == BackendCoreState::Paused &&
             observed.pause_confirmed)
         {
+            const std::uint64_t incident = impl_->LogUnroutedPause(
+                operation,
+                observed,
+                "no_routed_completion");
             impl_->BeginFinish(
                 ExecutionTerminalStatus::UnexpectedStop,
                 Error(
                     ExecutionErrorCode::BackendFailure,
-                    "Dolphin paused without a routed completion"));
+                    "Dolphin paused without a routed completion; incident=" +
+                        std::to_string(incident)));
         }
         break;
     case ExecutionOperationKind::ContinueUntilInputObserved:
@@ -2997,11 +3117,16 @@ void ExecutionControlCore::Pump()
         if (observed.core_state == BackendCoreState::Paused &&
             observed.pause_confirmed)
         {
+            const std::uint64_t incident = impl_->LogUnroutedPause(
+                operation,
+                observed,
+                "input_publication_not_observed");
             impl_->BeginFinish(
                 ExecutionTerminalStatus::UnexpectedStop,
                 Error(
                     ExecutionErrorCode::BackendFailure,
-                    "Dolphin paused before the exact input publication was observed"));
+                    "Dolphin paused before the exact input publication was observed; incident=" +
+                        std::to_string(incident)));
         }
         break;
     }
@@ -3082,9 +3207,9 @@ BackendResult ExecutionControlCore::Shutdown()
         observed.core_state != BackendCoreState::Paused ||
         !observed.pause_confirmed)
     {
-        const BackendResult pause = impl_->CallBackend(
+        const BackendResult pause = impl_->SubmitBackendControl(
             "execution shutdown pause",
-            [&] { return SubmitControl(impl_->backend, BackendControlCommandKind::Pause); });
+            BackendControlCommandKind::Pause);
         if (!pause.ok)
             result = pause;
         observed = impl_->Query();

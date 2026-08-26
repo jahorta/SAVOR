@@ -25,6 +25,7 @@
 #include <exception>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -2546,6 +2547,86 @@ PhysicalStopBackendReceipt DolphinWrapperBackend::QueryPhysicalStopPoints() cons
         impl_->physical_generation,
         std::move(actual),
         std::move(error)};
+}
+
+std::string DolphinWrapperBackend::DescribePhysicalStopPoints(
+    std::uint32_t observed_pc) const
+{
+    if (BackendResult open = impl_->RequireOpen(); !open.ok)
+        return "dolphin_physical_state_unavailable=" + open.message;
+
+    Core::System& system = *impl_->wrapper->system();
+    Core::CPUThreadGuard guard(system);
+    auto& power_pc = system.GetPowerPC();
+    auto& cpu = system.GetCPU();
+    const auto& state = power_pc.GetPPCState();
+    const auto& breakpoints = power_pc.GetBreakPoints();
+    const auto& memchecks = power_pc.GetMemChecks();
+
+    auto regular = breakpoints.GetBreakPoints();
+    std::ranges::sort(regular, {}, &TBreakPoint::address);
+    auto memory = memchecks.GetMemChecks();
+    std::ranges::sort(memory, [](const TMemCheck& lhs, const TMemCheck& rhs) {
+        if (lhs.start_address != rhs.start_address)
+            return lhs.start_address < rhs.start_address;
+        return lhs.end_address < rhs.end_address;
+    });
+
+    std::string shape_error;
+    const bool manager_shape = PhysicalObjectsHaveManagerShape(
+        system,
+        impl_->owned_physical_plan,
+        &shape_error);
+    const TBreakPoint* effective = breakpoints.GetBreakpoint(observed_pc);
+    const TBreakPoint* regular_at_pc =
+        breakpoints.GetRegularBreakpoint(observed_pc);
+    const bool temporary_at_pc = effective != nullptr &&
+        effective != regular_at_pc;
+
+    std::ostringstream out;
+    out << "dolphin_cpu pc=0x" << std::hex << std::setw(8)
+        << std::setfill('0') << state.pc
+        << " npc=0x" << std::setw(8) << state.npc
+        << " lr=0x" << std::setw(8) << LR(state)
+        << " ctr=0x" << std::setw(8) << CTR(state)
+        << std::dec << " core_mode=" << static_cast<unsigned>(power_pc.GetMode())
+        << " cpu_stepping=" << (cpu.IsStepping() ? 1 : 0)
+        << " observed_pc_effective_breakpoint="
+        << (effective == nullptr ? "none" : temporary_at_pc ? "temporary" : "regular")
+        << '\n';
+    out << "native_hooks installed="
+        << (savor::probe::NativeStopHooksInstalled() ? 1 : 0)
+        << " sink_bound=" << (savor::probe::BoundNativeStopSink() != nullptr ? 1 : 0)
+        << " expected_sink_bound=" << (impl_->native_sink != nullptr ? 1 : 0)
+        << '\n';
+    out << "dolphin_regular_breakpoints count=" << regular.size();
+    for (const TBreakPoint& breakpoint : regular)
+    {
+        out << "\n  pc=0x" << std::hex << std::setw(8) << std::setfill('0')
+            << breakpoint.address << std::dec
+            << " enabled=" << (breakpoint.is_enabled ? 1 : 0)
+            << " break_on_hit=" << (breakpoint.break_on_hit ? 1 : 0)
+            << " log_on_hit=" << (breakpoint.log_on_hit ? 1 : 0)
+            << " condition=" << (breakpoint.condition.has_value() ? 1 : 0);
+    }
+    out << "\ndolphin_memchecks count=" << memory.size();
+    for (const TMemCheck& check : memory)
+    {
+        out << "\n  range=0x" << std::hex << std::setw(8)
+            << std::setfill('0') << check.start_address
+            << "-0x" << std::setw(8) << check.end_address << std::dec
+            << " enabled=" << (check.is_enabled ? 1 : 0)
+            << " read=" << (check.is_break_on_read ? 1 : 0)
+            << " write=" << (check.is_break_on_write ? 1 : 0)
+            << " break_on_hit=" << (check.break_on_hit ? 1 : 0)
+            << " log_on_hit=" << (check.log_on_hit ? 1 : 0)
+            << " condition=" << (check.condition.has_value() ? 1 : 0);
+    }
+    out << "\nmanager_shape_valid=" << (manager_shape ? 1 : 0)
+        << " manager_generation=" << impl_->physical_generation.value()
+        << " manager_shape_error="
+        << (shape_error.empty() ? "<none>" : shape_error);
+    return out.str();
 }
 
 PhysicalStopBackendReceipt DolphinWrapperBackend::ApplyExactPhysicalStopPlan(

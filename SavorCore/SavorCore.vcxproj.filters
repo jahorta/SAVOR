@@ -251,6 +251,9 @@
     <ClInclude Include="Phases\Programs\TasMovieValidation\TasMovieValidationModule.h">
       <Filter>Phases\TasMovie</Filter>
     </ClInclude>
+    <ClInclude Include="Phases\Programs\TasMovieInputEpoch\TasMovieInputEpochModule.h">
+      <Filter>Phases\TasMovie</Filter>
+    </ClInclude>
     
     
     
@@ -895,6 +898,12 @@
       <Filter>Phases\SeedProbe</Filter>
     </ClCompile>
     <ClCompile Include="Phases\Programs\TasMovieValidation\TasMovieValidationModule.cpp">
+      <Filter>Phases\TasMovie</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\Programs\TasMovieInputEpoch\TasMovieInputEpochCodecs.cpp">
+      <Filter>Phases\TasMovie</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\Programs\TasMovieInputEpoch\TasMovieInputEpochModule.cpp">
       <Filter>Phases\TasMovie</Filter>
     </ClCompile>
     

@@ -435,6 +435,47 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
         },
         &ignored);
 
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
+            .unit_kind = "tas_movie_annotate_input_epochs",
+            .display_name = "TAS Movie: Annotate Input Epochs",
+            .description = "Replays a complete boot DTM and records the controller state consumed by each guest PADRead epoch.",
+            .default_activation_params_json = "{}",
+            .required_inputs = {
+                Port("root_dtm", "state_artifact.dtm_artifact_id", "state_artifact", "Complete boot DTM"),
+            },
+            .possible_outputs = {
+                Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Input-epoch annotation attempt"),
+            },
+            .internal_step_kinds = {"tasmovie.annotate_input_epochs"},
+            .step_templates = SingleStep("tasmovie.annotate_input_epochs"),
+        },
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
+            .unit_kind = "tas_movie_rewrite_input_epochs",
+            .display_name = "TAS Movie: Rewrite Input Epochs",
+            .description = "Inserts one neutral guest-input epoch and re-emits the complete downstream annotated input schedule.",
+            .default_activation_params_json = "{}",
+            .required_inputs = {
+                Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Source input-epoch annotation"),
+            },
+            .possible_outputs = {
+                Port("rewrite_attempt", "analysis.tas_movie_input_epoch_rewrite_attempt_id", "tmv_input_epoch_rewrite_attempt", "Input-epoch rewrite attempt"),
+                Port("rewritten_dtm", "state_artifact.dtm_artifact_id", "state_artifact", "Rewritten DTM"),
+                Port("rewritten_paired_savestate", "state.movie_paired_savestate_id", "state.savestate", "Rewritten movie-paired endpoint"),
+            },
+            .launch_arguments = {
+                IntegerArgument("insert_before_epoch", "Insert before epoch", true,
+                    std::nullopt, 0,
+                    static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())),
+            },
+            .internal_step_kinds = {"tasmovie.rewrite_input_epochs"},
+            .step_templates = SingleStep("tasmovie.rewrite_input_epochs"),
+        },
+        &ignored);
+
     (void)registry.RegisterUnit(SeedProbeUnit(), &ignored);
 
     (void)registry.RegisterUnit(

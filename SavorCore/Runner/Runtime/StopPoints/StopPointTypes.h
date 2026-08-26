@@ -88,7 +88,6 @@ struct PassiveStopObservation
 
 struct ForegroundStopWait
 {
-    bool suppress_immediate_reentry = false;
     std::uint64_t execution_control_generation = 0;
     std::uint64_t execution_operation_id = 0;
 
@@ -100,7 +99,6 @@ struct ForegroundStopWait
 struct TrustedStopInterruptionRequest
 {
     std::string handler_key;
-    bool suppress_immediate_reentry = true;
     std::uint64_t execution_control_generation = 0;
     std::uint64_t execution_operation_id = 0;
 

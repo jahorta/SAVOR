@@ -1587,6 +1587,591 @@ bool SqliteAnalysisDb::RecordTasMovieCheckpointSterilizationAttempt(
     return true;
 }
 
+std::optional<TasMovieInputEpochAnnotationRequestRecord>
+SqliteAnalysisDb::GetTasMovieInputEpochAnnotationRequest(
+    const std::int64_t request_id) const {
+    if (db_ == nullptr || request_id <= 0) return std::nullopt;
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT annotation_request_id,materialization_key,workflow_instance_id,workflow_step_id,"
+        "source_dtm_artifact_id,source_dtm_sha256,full_phase_program_kind,"
+        "full_phase_program_version,full_phase_canonical_id,full_phase_contract_revision,"
+        "full_phase_sha256,module_canonical_id,module_revision,module_sha256,created_at_utc "
+        "FROM tmv_input_epoch_annotation_request WHERE annotation_request_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK)
+        return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, request_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    TasMovieInputEpochAnnotationRequestRecord row{};
+    row.annotation_request_id = sqlite3_column_int64(st.st, 0);
+    row.materialization_key = ColumnText(st.st, 1);
+    row.workflow_instance_id = sqlite3_column_int64(st.st, 2);
+    row.workflow_step_id = sqlite3_column_int64(st.st, 3);
+    row.source_dtm_artifact_id = sqlite3_column_int64(st.st, 4);
+    row.source_dtm_sha256 = ColumnText(st.st, 5);
+    row.full_phase_program_kind = sqlite3_column_int64(st.st, 6);
+    row.full_phase_program_version = sqlite3_column_int64(st.st, 7);
+    row.full_phase_canonical_id = ColumnText(st.st, 8);
+    row.full_phase_contract_revision = sqlite3_column_int64(st.st, 9);
+    row.full_phase_sha256 = ColumnText(st.st, 10);
+    row.module_canonical_id = ColumnText(st.st, 11);
+    row.module_revision = sqlite3_column_int64(st.st, 12);
+    row.module_sha256 = ColumnText(st.st, 13);
+    row.created_at_utc = ColumnTime(st.st, 14);
+    return row;
+}
+
+std::optional<TasMovieInputEpochAnnotationRequestRecord>
+SqliteAnalysisDb::GetTasMovieInputEpochAnnotationRequestForWorkflowStep(
+    const std::int64_t workflow_step_id) const {
+    if (db_ == nullptr || workflow_step_id <= 0) return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(db_,
+            "SELECT annotation_request_id FROM tmv_input_epoch_annotation_request WHERE workflow_step_id=?1;",
+            -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, workflow_step_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieInputEpochAnnotationRequest(sqlite3_column_int64(st.st, 0));
+}
+
+bool SqliteAnalysisDb::CreateTasMovieInputEpochAnnotationRequest(
+    const CreateTasMovieInputEpochAnnotationRequestCommand& command,
+    std::int64_t* request_id_out, std::string* error_out) {
+    if (db_ == nullptr || command.materialization_key.empty()
+        || command.workflow_instance_id <= 0 || command.workflow_step_id <= 0
+        || command.source_dtm_artifact_id <= 0
+        || !IsLowerHexSha256(command.source_dtm_sha256)
+        || command.full_phase_program_kind != 13
+        || command.full_phase_program_version <= 0
+        || command.full_phase_canonical_id.empty()
+        || command.full_phase_contract_revision <= 0
+        || !IsLowerHexSha256(command.full_phase_sha256)
+        || command.module_canonical_id.empty() || command.module_revision <= 0
+        || !IsLowerHexSha256(command.module_sha256)) {
+        if (error_out) *error_out = "invalid immutable TAS movie input-epoch annotation request";
+        return false;
+    }
+    if (const auto existing = GetTasMovieInputEpochAnnotationRequestForWorkflowStep(
+            command.workflow_step_id)) {
+        const bool same = existing->materialization_key == command.materialization_key
+            && existing->workflow_instance_id == command.workflow_instance_id
+            && existing->source_dtm_artifact_id == command.source_dtm_artifact_id
+            && existing->source_dtm_sha256 == command.source_dtm_sha256
+            && existing->full_phase_program_kind == command.full_phase_program_kind
+            && existing->full_phase_program_version == command.full_phase_program_version
+            && existing->full_phase_canonical_id == command.full_phase_canonical_id
+            && existing->full_phase_contract_revision == command.full_phase_contract_revision
+            && existing->full_phase_sha256 == command.full_phase_sha256
+            && existing->module_canonical_id == command.module_canonical_id
+            && existing->module_revision == command.module_revision
+            && existing->module_sha256 == command.module_sha256;
+        if (!same) {
+            if (error_out) *error_out = "workflow step already has a different input-epoch annotation request";
+            return false;
+        }
+        if (request_id_out) *request_id_out = existing->annotation_request_id;
+        return true;
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO tmv_input_epoch_annotation_request(materialization_key,workflow_instance_id,"
+        "workflow_step_id,source_dtm_artifact_id,source_dtm_sha256,full_phase_program_kind,"
+        "full_phase_program_version,full_phase_canonical_id,full_phase_contract_revision,"
+        "full_phase_sha256,module_canonical_id,module_revision,module_sha256,created_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14);";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_text(st.st, 1, command.materialization_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 2, command.workflow_instance_id);
+    sqlite3_bind_int64(st.st, 3, command.workflow_step_id);
+    sqlite3_bind_int64(st.st, 4, command.source_dtm_artifact_id);
+    sqlite3_bind_text(st.st, 5, command.source_dtm_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 6, command.full_phase_program_kind);
+    sqlite3_bind_int64(st.st, 7, command.full_phase_program_version);
+    sqlite3_bind_text(st.st, 8, command.full_phase_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 9, command.full_phase_contract_revision);
+    sqlite3_bind_text(st.st, 10, command.full_phase_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 11, command.module_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 12, command.module_revision);
+    sqlite3_bind_text(st.st, 13, command.module_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 14, command.created_at_utc.time_since_epoch().count());
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (!InsertTasMovieOutboxEvent(db_,
+            "AnalysisTasMovie.InputEpochAnnotationRequestCreated.v1",
+            "input_epoch_annotation_request", id,
+            command.created_at_utc.time_since_epoch().count(),
+            "input_epoch_annotation_request", id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (request_id_out) *request_id_out = id;
+    return true;
+}
+
+std::optional<TasMovieInputEpochAnnotationAttemptRecord>
+SqliteAnalysisDb::GetTasMovieInputEpochAnnotationAttempt(
+    const std::int64_t attempt_id) const {
+    if (db_ == nullptr || attempt_id <= 0) return std::nullopt;
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT annotation_attempt_id,annotation_request_id,source_job_id,worker_terminal_sha256,"
+        "succeeded,schedule_artifact_id,schedule_sha256,source_poll_count,epoch_count,final_cursor,"
+        "divergence_epoch,divergence_cursor,failure_code,failure_text,worker_id,"
+        "worker_process_generation,workset_epoch,recorded_at_utc "
+        "FROM tmv_input_epoch_annotation_attempt WHERE annotation_attempt_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK)
+        return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, attempt_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    TasMovieInputEpochAnnotationAttemptRecord row{};
+    row.annotation_attempt_id = sqlite3_column_int64(st.st, 0);
+    row.annotation_request_id = sqlite3_column_int64(st.st, 1);
+    row.source_job_id = sqlite3_column_int64(st.st, 2);
+    row.worker_terminal_sha256 = ColumnText(st.st, 3);
+    row.succeeded = sqlite3_column_int(st.st, 4) != 0;
+    row.schedule_artifact_id = ColumnInt64Optional(st.st, 5);
+    row.schedule_sha256 = ColumnTextOptional(st.st, 6);
+    row.source_poll_count = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 7));
+    row.epoch_count = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 8));
+    row.final_cursor = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 9));
+    if (const auto v = ColumnInt64Optional(st.st, 10)) row.divergence_epoch = static_cast<std::uint64_t>(*v);
+    if (const auto v = ColumnInt64Optional(st.st, 11)) row.divergence_cursor = static_cast<std::uint64_t>(*v);
+    row.failure_code = ColumnText(st.st, 12);
+    row.failure_text = ColumnText(st.st, 13);
+    row.worker_id = ColumnText(st.st, 14);
+    row.worker_process_generation = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 15));
+    row.workset_epoch = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 16));
+    row.recorded_at_utc = ColumnTime(st.st, 17);
+    return row;
+}
+
+std::optional<TasMovieInputEpochAnnotationAttemptRecord>
+SqliteAnalysisDb::FindTasMovieInputEpochAnnotationAttempt(
+    const std::int64_t source_job_id,
+    const std::string_view worker_terminal_sha256) const {
+    if (db_ == nullptr || source_job_id <= 0 || !IsLowerHexSha256(worker_terminal_sha256))
+        return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(db_,
+            "SELECT annotation_attempt_id FROM tmv_input_epoch_annotation_attempt WHERE source_job_id=?1 AND worker_terminal_sha256=?2;",
+            -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, source_job_id);
+    sqlite3_bind_text(st.st, 2, worker_terminal_sha256.data(),
+        static_cast<int>(worker_terminal_sha256.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieInputEpochAnnotationAttempt(sqlite3_column_int64(st.st, 0));
+}
+
+bool SqliteAnalysisDb::RecordTasMovieInputEpochAnnotationAttempt(
+    const RecordTasMovieInputEpochAnnotationAttemptCommand& command,
+    std::int64_t* attempt_id_out, std::string* error_out) {
+    constexpr auto kMax = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    const bool outputs_ok = command.succeeded
+        ? command.schedule_artifact_id && command.schedule_sha256
+            && IsLowerHexSha256(*command.schedule_sha256)
+            && command.failure_code.empty() && command.failure_text.empty()
+        : !command.schedule_artifact_id && !command.schedule_sha256
+            && !command.failure_code.empty();
+    if (db_ == nullptr || command.annotation_request_id <= 0 || command.source_job_id <= 0
+        || !IsLowerHexSha256(command.worker_terminal_sha256) || !outputs_ok
+        || command.source_poll_count > kMax || command.epoch_count > kMax
+        || command.final_cursor > kMax
+        || (command.divergence_epoch && *command.divergence_epoch > kMax)
+        || (command.divergence_cursor && *command.divergence_cursor > kMax)
+        || command.worker_id.empty() || command.worker_process_generation > kMax
+        || command.workset_epoch == 0 || command.workset_epoch > kMax
+        || !GetTasMovieInputEpochAnnotationRequest(command.annotation_request_id)) {
+        if (error_out) *error_out = "invalid immutable TAS movie input-epoch annotation attempt";
+        return false;
+    }
+    if (const auto existing = FindTasMovieInputEpochAnnotationAttempt(
+            command.source_job_id, command.worker_terminal_sha256)) {
+        const auto& e = *existing;
+        const bool same = e.annotation_request_id == command.annotation_request_id
+            && e.succeeded == command.succeeded
+            && e.schedule_artifact_id == command.schedule_artifact_id
+            && e.schedule_sha256 == command.schedule_sha256
+            && e.source_poll_count == command.source_poll_count
+            && e.epoch_count == command.epoch_count && e.final_cursor == command.final_cursor
+            && e.divergence_epoch == command.divergence_epoch
+            && e.divergence_cursor == command.divergence_cursor
+            && e.failure_code == command.failure_code && e.failure_text == command.failure_text
+            && e.worker_id == command.worker_id
+            && e.worker_process_generation == command.worker_process_generation
+            && e.workset_epoch == command.workset_epoch;
+        if (!same) {
+            if (error_out) *error_out = "worker terminal already identifies a different input-epoch annotation attempt";
+            return false;
+        }
+        if (attempt_id_out) *attempt_id_out = e.annotation_attempt_id;
+        return true;
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO tmv_input_epoch_annotation_attempt(annotation_request_id,source_job_id,"
+        "worker_terminal_sha256,succeeded,schedule_artifact_id,schedule_sha256,source_poll_count,"
+        "epoch_count,final_cursor,divergence_epoch,divergence_cursor,failure_code,failure_text,"
+        "worker_id,worker_process_generation,workset_epoch,recorded_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17);";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, command.annotation_request_id);
+    sqlite3_bind_int64(st.st, 2, command.source_job_id);
+    sqlite3_bind_text(st.st, 3, command.worker_terminal_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st.st, 4, command.succeeded ? 1 : 0);
+    if (command.schedule_artifact_id) sqlite3_bind_int64(st.st, 5, *command.schedule_artifact_id); else sqlite3_bind_null(st.st, 5);
+    if (command.schedule_sha256) sqlite3_bind_text(st.st, 6, command.schedule_sha256->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st.st, 6);
+    sqlite3_bind_int64(st.st, 7, static_cast<std::int64_t>(command.source_poll_count));
+    sqlite3_bind_int64(st.st, 8, static_cast<std::int64_t>(command.epoch_count));
+    sqlite3_bind_int64(st.st, 9, static_cast<std::int64_t>(command.final_cursor));
+    if (command.divergence_epoch) sqlite3_bind_int64(st.st, 10, static_cast<std::int64_t>(*command.divergence_epoch)); else sqlite3_bind_null(st.st, 10);
+    if (command.divergence_cursor) sqlite3_bind_int64(st.st, 11, static_cast<std::int64_t>(*command.divergence_cursor)); else sqlite3_bind_null(st.st, 11);
+    sqlite3_bind_text(st.st, 12, command.failure_code.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 13, command.failure_text.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 14, command.worker_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 15, static_cast<std::int64_t>(command.worker_process_generation));
+    sqlite3_bind_int64(st.st, 16, static_cast<std::int64_t>(command.workset_epoch));
+    sqlite3_bind_int64(st.st, 17, command.recorded_at_utc.time_since_epoch().count());
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (!InsertTasMovieOutboxEvent(db_,
+            "AnalysisTasMovie.InputEpochAnnotationAttemptRecorded.v1",
+            "input_epoch_annotation_request", command.annotation_request_id,
+            command.recorded_at_utc.time_since_epoch().count(),
+            "input_epoch_annotation_attempt", id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (attempt_id_out) *attempt_id_out = id;
+    return true;
+}
+
+std::optional<TasMovieInputEpochRewriteRequestRecord>
+SqliteAnalysisDb::GetTasMovieInputEpochRewriteRequest(const std::int64_t request_id) const {
+    if (db_ == nullptr || request_id <= 0) return std::nullopt;
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT rewrite_request_id,materialization_key,workflow_instance_id,workflow_step_id,"
+        "annotation_attempt_id,source_dtm_artifact_id,source_dtm_sha256,schedule_artifact_id,"
+        "schedule_sha256,insert_before_epoch,full_phase_program_kind,full_phase_program_version,"
+        "full_phase_canonical_id,full_phase_contract_revision,full_phase_sha256,module_canonical_id,"
+        "module_revision,module_sha256,created_at_utc FROM tmv_input_epoch_rewrite_request "
+        "WHERE rewrite_request_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, request_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    TasMovieInputEpochRewriteRequestRecord row{};
+    row.rewrite_request_id = sqlite3_column_int64(st.st, 0);
+    row.materialization_key = ColumnText(st.st, 1);
+    row.workflow_instance_id = sqlite3_column_int64(st.st, 2);
+    row.workflow_step_id = sqlite3_column_int64(st.st, 3);
+    row.annotation_attempt_id = sqlite3_column_int64(st.st, 4);
+    row.source_dtm_artifact_id = sqlite3_column_int64(st.st, 5);
+    row.source_dtm_sha256 = ColumnText(st.st, 6);
+    row.schedule_artifact_id = sqlite3_column_int64(st.st, 7);
+    row.schedule_sha256 = ColumnText(st.st, 8);
+    row.insert_before_epoch = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 9));
+    row.full_phase_program_kind = sqlite3_column_int64(st.st, 10);
+    row.full_phase_program_version = sqlite3_column_int64(st.st, 11);
+    row.full_phase_canonical_id = ColumnText(st.st, 12);
+    row.full_phase_contract_revision = sqlite3_column_int64(st.st, 13);
+    row.full_phase_sha256 = ColumnText(st.st, 14);
+    row.module_canonical_id = ColumnText(st.st, 15);
+    row.module_revision = sqlite3_column_int64(st.st, 16);
+    row.module_sha256 = ColumnText(st.st, 17);
+    row.created_at_utc = ColumnTime(st.st, 18);
+    return row;
+}
+
+std::optional<TasMovieInputEpochRewriteRequestRecord>
+SqliteAnalysisDb::GetTasMovieInputEpochRewriteRequestForWorkflowStep(
+    const std::int64_t workflow_step_id) const {
+    if (db_ == nullptr || workflow_step_id <= 0) return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(db_,
+            "SELECT rewrite_request_id FROM tmv_input_epoch_rewrite_request WHERE workflow_step_id=?1;",
+            -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, workflow_step_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieInputEpochRewriteRequest(sqlite3_column_int64(st.st, 0));
+}
+
+bool SqliteAnalysisDb::CreateTasMovieInputEpochRewriteRequest(
+    const CreateTasMovieInputEpochRewriteRequestCommand& command,
+    std::int64_t* request_id_out, std::string* error_out) {
+    constexpr auto kMax = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (db_ == nullptr || command.materialization_key.empty()
+        || command.workflow_instance_id <= 0 || command.workflow_step_id <= 0
+        || command.annotation_attempt_id <= 0 || command.source_dtm_artifact_id <= 0
+        || !IsLowerHexSha256(command.source_dtm_sha256)
+        || command.schedule_artifact_id <= 0 || !IsLowerHexSha256(command.schedule_sha256)
+        || command.insert_before_epoch > kMax || command.full_phase_program_kind != 14
+        || command.full_phase_program_version <= 0 || command.full_phase_canonical_id.empty()
+        || command.full_phase_contract_revision <= 0 || !IsLowerHexSha256(command.full_phase_sha256)
+        || command.module_canonical_id.empty() || command.module_revision <= 0
+        || !IsLowerHexSha256(command.module_sha256)
+        || !GetTasMovieInputEpochAnnotationAttempt(command.annotation_attempt_id)) {
+        if (error_out) *error_out = "invalid immutable TAS movie input-epoch rewrite request";
+        return false;
+    }
+    if (const auto existing = GetTasMovieInputEpochRewriteRequestForWorkflowStep(command.workflow_step_id)) {
+        const bool same = existing->materialization_key == command.materialization_key
+            && existing->workflow_instance_id == command.workflow_instance_id
+            && existing->annotation_attempt_id == command.annotation_attempt_id
+            && existing->source_dtm_artifact_id == command.source_dtm_artifact_id
+            && existing->source_dtm_sha256 == command.source_dtm_sha256
+            && existing->schedule_artifact_id == command.schedule_artifact_id
+            && existing->schedule_sha256 == command.schedule_sha256
+            && existing->insert_before_epoch == command.insert_before_epoch
+            && existing->full_phase_program_kind == command.full_phase_program_kind
+            && existing->full_phase_program_version == command.full_phase_program_version
+            && existing->full_phase_canonical_id == command.full_phase_canonical_id
+            && existing->full_phase_contract_revision == command.full_phase_contract_revision
+            && existing->full_phase_sha256 == command.full_phase_sha256
+            && existing->module_canonical_id == command.module_canonical_id
+            && existing->module_revision == command.module_revision
+            && existing->module_sha256 == command.module_sha256;
+        if (!same) {
+            if (error_out) *error_out = "workflow step already has a different input-epoch rewrite request";
+            return false;
+        }
+        if (request_id_out) *request_id_out = existing->rewrite_request_id;
+        return true;
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO tmv_input_epoch_rewrite_request(materialization_key,workflow_instance_id,"
+        "workflow_step_id,annotation_attempt_id,source_dtm_artifact_id,source_dtm_sha256,"
+        "schedule_artifact_id,schedule_sha256,insert_before_epoch,full_phase_program_kind,"
+        "full_phase_program_version,full_phase_canonical_id,full_phase_contract_revision,"
+        "full_phase_sha256,module_canonical_id,module_revision,module_sha256,created_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18);";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_text(st.st, 1, command.materialization_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 2, command.workflow_instance_id);
+    sqlite3_bind_int64(st.st, 3, command.workflow_step_id);
+    sqlite3_bind_int64(st.st, 4, command.annotation_attempt_id);
+    sqlite3_bind_int64(st.st, 5, command.source_dtm_artifact_id);
+    sqlite3_bind_text(st.st, 6, command.source_dtm_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 7, command.schedule_artifact_id);
+    sqlite3_bind_text(st.st, 8, command.schedule_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 9, static_cast<std::int64_t>(command.insert_before_epoch));
+    sqlite3_bind_int64(st.st, 10, command.full_phase_program_kind);
+    sqlite3_bind_int64(st.st, 11, command.full_phase_program_version);
+    sqlite3_bind_text(st.st, 12, command.full_phase_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 13, command.full_phase_contract_revision);
+    sqlite3_bind_text(st.st, 14, command.full_phase_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 15, command.module_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 16, command.module_revision);
+    sqlite3_bind_text(st.st, 17, command.module_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 18, command.created_at_utc.time_since_epoch().count());
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (!InsertTasMovieOutboxEvent(db_, "AnalysisTasMovie.InputEpochRewriteRequestCreated.v1",
+            "input_epoch_rewrite_request", id,
+            command.created_at_utc.time_since_epoch().count(),
+            "input_epoch_rewrite_request", id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (request_id_out) *request_id_out = id;
+    return true;
+}
+
+std::optional<TasMovieInputEpochRewriteAttemptRecord>
+SqliteAnalysisDb::GetTasMovieInputEpochRewriteAttempt(const std::int64_t attempt_id) const {
+    if (db_ == nullptr || attempt_id <= 0) return std::nullopt;
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT rewrite_attempt_id,rewrite_request_id,source_job_id,worker_terminal_sha256,succeeded,"
+        "rewritten_dtm_artifact_id,rewritten_dtm_sha256,endpoint_savestate_id,source_epoch_count,"
+        "rewritten_epoch_count,final_movie_input_count,divergence_epoch,divergence_cursor,"
+        "failure_code,failure_text,worker_id,worker_process_generation,workset_epoch,recorded_at_utc "
+        "FROM tmv_input_epoch_rewrite_attempt WHERE rewrite_attempt_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, attempt_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    TasMovieInputEpochRewriteAttemptRecord row{};
+    row.rewrite_attempt_id = sqlite3_column_int64(st.st, 0);
+    row.rewrite_request_id = sqlite3_column_int64(st.st, 1);
+    row.source_job_id = sqlite3_column_int64(st.st, 2);
+    row.worker_terminal_sha256 = ColumnText(st.st, 3);
+    row.succeeded = sqlite3_column_int(st.st, 4) != 0;
+    row.rewritten_dtm_artifact_id = ColumnInt64Optional(st.st, 5);
+    row.rewritten_dtm_sha256 = ColumnTextOptional(st.st, 6);
+    row.endpoint_savestate_id = ColumnInt64Optional(st.st, 7);
+    row.source_epoch_count = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 8));
+    row.rewritten_epoch_count = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 9));
+    row.final_movie_input_count = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 10));
+    if (const auto v = ColumnInt64Optional(st.st, 11)) row.divergence_epoch = static_cast<std::uint64_t>(*v);
+    if (const auto v = ColumnInt64Optional(st.st, 12)) row.divergence_cursor = static_cast<std::uint64_t>(*v);
+    row.failure_code = ColumnText(st.st, 13);
+    row.failure_text = ColumnText(st.st, 14);
+    row.worker_id = ColumnText(st.st, 15);
+    row.worker_process_generation = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 16));
+    row.workset_epoch = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 17));
+    row.recorded_at_utc = ColumnTime(st.st, 18);
+    return row;
+}
+
+std::optional<TasMovieInputEpochRewriteAttemptRecord>
+SqliteAnalysisDb::FindTasMovieInputEpochRewriteAttempt(
+    const std::int64_t source_job_id, const std::string_view worker_terminal_sha256) const {
+    if (db_ == nullptr || source_job_id <= 0 || !IsLowerHexSha256(worker_terminal_sha256))
+        return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(db_,
+            "SELECT rewrite_attempt_id FROM tmv_input_epoch_rewrite_attempt WHERE source_job_id=?1 AND worker_terminal_sha256=?2;",
+            -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, source_job_id);
+    sqlite3_bind_text(st.st, 2, worker_terminal_sha256.data(),
+        static_cast<int>(worker_terminal_sha256.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieInputEpochRewriteAttempt(sqlite3_column_int64(st.st, 0));
+}
+
+bool SqliteAnalysisDb::RecordTasMovieInputEpochRewriteAttempt(
+    const RecordTasMovieInputEpochRewriteAttemptCommand& command,
+    std::int64_t* attempt_id_out, std::string* error_out) {
+    constexpr auto kMax = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    const bool outputs_ok = command.succeeded
+        ? command.rewritten_dtm_artifact_id && command.rewritten_dtm_sha256
+            && IsLowerHexSha256(*command.rewritten_dtm_sha256)
+            && command.endpoint_savestate_id && command.failure_code.empty()
+            && command.failure_text.empty()
+        : !command.rewritten_dtm_artifact_id && !command.rewritten_dtm_sha256
+            && !command.endpoint_savestate_id && !command.failure_code.empty();
+    if (db_ == nullptr || command.rewrite_request_id <= 0 || command.source_job_id <= 0
+        || !IsLowerHexSha256(command.worker_terminal_sha256) || !outputs_ok
+        || command.source_epoch_count > kMax || command.rewritten_epoch_count > kMax
+        || command.final_movie_input_count > kMax
+        || (command.divergence_epoch && *command.divergence_epoch > kMax)
+        || (command.divergence_cursor && *command.divergence_cursor > kMax)
+        || command.worker_id.empty() || command.worker_process_generation > kMax
+        || command.workset_epoch == 0 || command.workset_epoch > kMax
+        || !GetTasMovieInputEpochRewriteRequest(command.rewrite_request_id)) {
+        if (error_out) *error_out = "invalid immutable TAS movie input-epoch rewrite attempt";
+        return false;
+    }
+    if (const auto existing = FindTasMovieInputEpochRewriteAttempt(
+            command.source_job_id, command.worker_terminal_sha256)) {
+        const auto& e = *existing;
+        const bool same = e.rewrite_request_id == command.rewrite_request_id
+            && e.succeeded == command.succeeded
+            && e.rewritten_dtm_artifact_id == command.rewritten_dtm_artifact_id
+            && e.rewritten_dtm_sha256 == command.rewritten_dtm_sha256
+            && e.endpoint_savestate_id == command.endpoint_savestate_id
+            && e.source_epoch_count == command.source_epoch_count
+            && e.rewritten_epoch_count == command.rewritten_epoch_count
+            && e.final_movie_input_count == command.final_movie_input_count
+            && e.divergence_epoch == command.divergence_epoch
+            && e.divergence_cursor == command.divergence_cursor
+            && e.failure_code == command.failure_code && e.failure_text == command.failure_text
+            && e.worker_id == command.worker_id
+            && e.worker_process_generation == command.worker_process_generation
+            && e.workset_epoch == command.workset_epoch;
+        if (!same) {
+            if (error_out) *error_out = "worker terminal already identifies a different input-epoch rewrite attempt";
+            return false;
+        }
+        if (attempt_id_out) *attempt_id_out = e.rewrite_attempt_id;
+        return true;
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO tmv_input_epoch_rewrite_attempt(rewrite_request_id,source_job_id,"
+        "worker_terminal_sha256,succeeded,rewritten_dtm_artifact_id,rewritten_dtm_sha256,"
+        "endpoint_savestate_id,source_epoch_count,rewritten_epoch_count,final_movie_input_count,"
+        "divergence_epoch,divergence_cursor,failure_code,failure_text,worker_id,"
+        "worker_process_generation,workset_epoch,recorded_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18);";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, command.rewrite_request_id);
+    sqlite3_bind_int64(st.st, 2, command.source_job_id);
+    sqlite3_bind_text(st.st, 3, command.worker_terminal_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st.st, 4, command.succeeded ? 1 : 0);
+    if (command.rewritten_dtm_artifact_id) sqlite3_bind_int64(st.st, 5, *command.rewritten_dtm_artifact_id); else sqlite3_bind_null(st.st, 5);
+    if (command.rewritten_dtm_sha256) sqlite3_bind_text(st.st, 6, command.rewritten_dtm_sha256->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st.st, 6);
+    if (command.endpoint_savestate_id) sqlite3_bind_int64(st.st, 7, *command.endpoint_savestate_id); else sqlite3_bind_null(st.st, 7);
+    sqlite3_bind_int64(st.st, 8, static_cast<std::int64_t>(command.source_epoch_count));
+    sqlite3_bind_int64(st.st, 9, static_cast<std::int64_t>(command.rewritten_epoch_count));
+    sqlite3_bind_int64(st.st, 10, static_cast<std::int64_t>(command.final_movie_input_count));
+    if (command.divergence_epoch) sqlite3_bind_int64(st.st, 11, static_cast<std::int64_t>(*command.divergence_epoch)); else sqlite3_bind_null(st.st, 11);
+    if (command.divergence_cursor) sqlite3_bind_int64(st.st, 12, static_cast<std::int64_t>(*command.divergence_cursor)); else sqlite3_bind_null(st.st, 12);
+    sqlite3_bind_text(st.st, 13, command.failure_code.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 14, command.failure_text.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 15, command.worker_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 16, static_cast<std::int64_t>(command.worker_process_generation));
+    sqlite3_bind_int64(st.st, 17, static_cast<std::int64_t>(command.workset_epoch));
+    sqlite3_bind_int64(st.st, 18, command.recorded_at_utc.time_since_epoch().count());
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (!InsertTasMovieOutboxEvent(db_, "AnalysisTasMovie.InputEpochRewriteAttemptRecorded.v1",
+            "input_epoch_rewrite_request", command.rewrite_request_id,
+            command.recorded_at_utc.time_since_epoch().count(),
+            "input_epoch_rewrite_attempt", id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (attempt_id_out) *attempt_id_out = id;
+    return true;
+}
+
 std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const {
     if (db_ == nullptr || probe_run_id <= 0) {
         return std::nullopt;

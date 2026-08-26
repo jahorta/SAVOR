@@ -347,10 +347,9 @@ std::vector<Byte> EncodeSemanticPointSetBytes(
 std::vector<Byte> ContinueConfig(
     const SemanticAwaitDefinition& definition)
 {
-    StaticConfigWriter writer({'C', 'U', 'C', '1'});
+    StaticConfigWriter writer({'C', 'U', 'C', '2'});
     writer.U8(static_cast<std::uint8_t>(
         definition.current_point));
-    writer.Bool(definition.suppress_immediate_reentry);
     writer.U8(static_cast<std::uint8_t>(
         definition.movie_policy));
     // Default Slice 5 execution policies: preserve throttle and fail closed

@@ -5,6 +5,8 @@
 #include <vector>
 #include <chrono>
 
+#include "../Core/Input/GCInputFrame.h"
+
 namespace savor::tas {
 
     static constexpr std::chrono::year_month_day date{
@@ -53,6 +55,20 @@ namespace savor::tas {
         uint8_t cstick_x{ 0x80 };
         uint8_t cstick_y{ 0x80 };
     };
+
+    struct DtmControllerStateMetadata {
+        bool disc_changed{ false };
+        bool reset{ false };
+        bool connected{ false };
+        bool origin_reset{ false };
+    };
+
+    // Dolphin stores GC DTM buttons as the packed Movie::ControllerState
+    // bitfield, not as GCPadStatus button masks. This is the canonical v1
+    // conversion used by TAS input-epoch annotation.
+    GCInputFrame decode_gc_controller_state(
+        const DtmGCPoll& poll,
+        DtmControllerStateMetadata* metadata = nullptr);
 
     class DtmFile {
     public:
