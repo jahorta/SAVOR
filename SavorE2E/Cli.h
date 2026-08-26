@@ -67,6 +67,7 @@ struct CliOptions {
     std::uint32_t durable_line_mask = kDurableLineNormalMask;
     std::filesystem::path savestate_file;
     std::filesystem::path dtm_file;
+    std::optional<std::int64_t> dtm_artifact_id;
     std::filesystem::path iso_path;
     std::filesystem::path dolphin_base_dir;
     std::optional<std::int64_t> source_savestate_id;
@@ -119,6 +120,7 @@ enum class E2eScenarioEntrySource : std::uint32_t {
     PreparedSterilizedCheckpoint = 1u << 2,
     TasMovieEstablishmentAttempt = 1u << 3,
     ExistingWorkspaceReference = 1u << 4,
+    ExistingDtmArtifact = 1u << 5,
 };
 
 struct E2eScenarioDescriptor {

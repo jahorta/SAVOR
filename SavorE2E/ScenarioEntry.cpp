@@ -2,12 +2,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "Common/DbService.h"
 #include "DbSetup.h"
+#include "Utils/Hash.h"
 
 namespace savor::e2e {
 namespace {
@@ -23,6 +25,53 @@ std::string NewRunIdentity(std::string_view scenario) {
 bool Fail(std::string message, std::string* error_out) {
     if (error_out != nullptr) *error_out = std::move(message);
     return false;
+}
+
+bool QualifyDtmArtifact(
+    savor::db::IStateDb* state_db,
+    const std::int64_t artifact_id,
+    std::string* sha256_out,
+    std::string* error_out) {
+    if (state_db == nullptr || artifact_id <= 0) {
+        return Fail("DTM artifact qualification requires a positive artifact id",
+                    error_out);
+    }
+    const auto artifact = state_db->GetArtifact(artifact_id);
+    if (!artifact) {
+        return Fail("DTM artifact does not exist: " + std::to_string(artifact_id),
+                    error_out);
+    }
+    if (artifact->artifact_kind != "DTM") {
+        return Fail("artifact " + std::to_string(artifact_id)
+                        + " is not a DTM artifact",
+                    error_out);
+    }
+    const std::filesystem::path payload_path(artifact->filename);
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(payload_path, ec) || ec) {
+        return Fail("DTM artifact payload is unavailable: "
+                        + payload_path.string(),
+                    error_out);
+    }
+    const auto payload_size = std::filesystem::file_size(payload_path, ec);
+    if (ec || payload_size != artifact->size_bytes) {
+        return Fail("DTM artifact payload size does not match State metadata",
+                    error_out);
+    }
+    try {
+        if (hash::sha256_of_file(payload_path.string()) != artifact->sha256) {
+            return Fail("DTM artifact payload hash does not match State metadata",
+                        error_out);
+        }
+    } catch (const std::exception& exception) {
+        return Fail("failed hashing DTM artifact payload: "
+                        + std::string(exception.what()),
+                    error_out);
+    }
+    if (sha256_out != nullptr) {
+        *sha256_out = artifact->sha256;
+    }
+    return true;
 }
 
 } // namespace
@@ -58,6 +107,21 @@ bool ResolveE2eScenarioEntry(
         break;
     case E2eScenarioEntrySource::ExistingWorkspaceReference:
         break;
+    case E2eScenarioEntrySource::ExistingDtmArtifact: {
+        if (!options.dtm_artifact_id || *options.dtm_artifact_id <= 0) {
+            return Fail("existing DTM entry lacks a positive --dtm-artifact-id",
+                        error_out);
+        }
+        std::string sha256;
+        if (!QualifyDtmArtifact(
+                db_service->StateDb(), *options.dtm_artifact_id,
+                &sha256, error_out)) {
+            return false;
+        }
+        entry.dtm_artifact_id = *options.dtm_artifact_id;
+        entry.dtm_artifact_sha256 = std::move(sha256);
+        break;
+    }
     case E2eScenarioEntrySource::PreparedSterilizedCheckpoint: {
         if (!options.source_savestate_id
             || *options.source_savestate_id <= 0) {
@@ -118,7 +182,9 @@ bool RequalifyPreparedScenarioEntry(
     if ((entry.source
             != E2eScenarioEntrySource::PreparedSterilizedCheckpoint)
         && (entry.source
-            != E2eScenarioEntrySource::TasMovieEstablishmentAttempt)) {
+            != E2eScenarioEntrySource::TasMovieEstablishmentAttempt)
+        && (entry.source
+            != E2eScenarioEntrySource::ExistingDtmArtifact)) {
         return true;
     }
     if (db_service == nullptr || db_service->StateDb() == nullptr
@@ -184,6 +250,22 @@ bool RequalifyPreparedScenarioEntry(
                 != savor::db::TasMovieValidationOperation::EstablishRootCursor
             || request->workflow_instance_id <= 0) {
             return Fail("stored TAS Movie establishment attempt is missing its request",
+                        error_out);
+        }
+    }
+    if (entry.source == E2eScenarioEntrySource::ExistingDtmArtifact) {
+        if (!entry.dtm_artifact_id || !entry.dtm_artifact_sha256) {
+            return Fail("existing DTM artifact entry cannot be requalified",
+                        error_out);
+        }
+        std::string current_sha256;
+        if (!QualifyDtmArtifact(
+                db_service->StateDb(), *entry.dtm_artifact_id,
+                &current_sha256, error_out)) {
+            return false;
+        }
+        if (current_sha256 != *entry.dtm_artifact_sha256) {
+            return Fail("existing DTM artifact identity changed during the scenario",
                         error_out);
         }
     }

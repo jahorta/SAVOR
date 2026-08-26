@@ -3152,9 +3152,14 @@ bool RunComposedTasMovieSeedProbeScenario(
     std::int64_t dtm_artifact_id = 0;
     std::int64_t seed_probe_spec_id = 0;
     std::int64_t workflow_instance_id = 0;
-    if (!SeedStateDtmArtifact(
+    const bool dtm_ready =
+        entry.source == E2eScenarioEntrySource::ExistingDtmArtifact
+        ? (entry.dtm_artifact_id.has_value()
+            && (dtm_artifact_id = *entry.dtm_artifact_id) > 0)
+        : SeedStateDtmArtifact(
             db_service->StateDb(), options.dtm_file,
-            &dtm_artifact_id, &error)
+            &dtm_artifact_id, &error);
+    if (!dtm_ready
         || !SeedAuthoringSpec(
             db_service->AuthoringDb(), options, entry.run_identity,
             &seed_probe_spec_id, &error)

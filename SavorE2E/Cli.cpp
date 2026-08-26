@@ -81,7 +81,8 @@ constexpr auto kScenarioCatalog = std::to_array<E2eScenarioDescriptor>({
         .name = "tasmovie_seedprobe",
         .kind = E2eScenarioKind::TasMovieSeedProbe,
         .supported_entry_sources =
-            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation),
+            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation)
+            | EntrySourceBit(E2eScenarioEntrySource::ExistingDtmArtifact),
         .default_entry_source =
             E2eScenarioEntrySource::FreshTasMovieValidation,
         .must_run_alone = true,
@@ -340,6 +341,9 @@ const E2eScenarioDescriptor* FindE2eScenarioDescriptor(
 E2eScenarioEntrySource SelectE2eScenarioEntrySource(
     const E2eScenarioDescriptor& descriptor,
     const CliOptions& options) {
+    if (options.dtm_artifact_id.has_value()) {
+        return E2eScenarioEntrySource::ExistingDtmArtifact;
+    }
     if (options.source_savestate_id.has_value()) {
         return E2eScenarioEntrySource::PreparedSterilizedCheckpoint;
     }
@@ -361,6 +365,8 @@ std::string_view ToString(const E2eScenarioEntrySource source) {
         return "TasMovieEstablishmentAttempt";
     case E2eScenarioEntrySource::ExistingWorkspaceReference:
         return "ExistingWorkspaceReference";
+    case E2eScenarioEntrySource::ExistingDtmArtifact:
+        return "ExistingDtmArtifact";
     }
     return "Unknown";
 }
@@ -388,6 +394,7 @@ void PrintUsage() {
               << " [--workflow-unit <unit-kind>]"
               << " [--source-ref-kind <kind>]"
               << " [--source-ref-id <positive-id>]"
+              << " [--dtm-artifact-id <positive-id>]"
               << " [--dtm-file <path>]"
               << " [--scenario seedprobe|battle|tasmovie_establish|tasmovie_validation|tasmovie_sterile|tasmovie_seedprobe|workflow_unit|all]"
               << " [--poll-ms <100..5000 - default 100>]"
@@ -423,6 +430,7 @@ void PrintUsage() {
     std::cout << "The tasmovie_validation scenario requires one exact --tasmovie-rtc in 0..4294967295 and must run alone.\n";
     std::cout << "The tasmovie_sterile scenario composes validation and sterilization, requires an exact RTC and no external savestate, and must run alone.\n";
     std::cout << "The tasmovie_seedprobe scenario composes validation with SeedProbe, requires an exact RTC and no external savestate, and must run alone.\n";
+    std::cout << "With --dtm-artifact-id, tasmovie_seedprobe preserves an existing workspace and reuses that qualified State DTM artifact.\n";
     std::cout << "The battle scenario validates the approved DTM, sterilizes its checkpoint, and in Fresh mode requires one exact --tasmovie-rtc with no external savestate.\n";
     std::cout << "With --source-savestate-id, battle starts from a prepared sterilized checkpoint.\n";
     std::cout << "With --tas-establishment-id, battle, tasmovie_validation, and tasmovie_sterile start from an existing root-cursor establishment attempt and do not reset the workspace.\n";
@@ -561,6 +569,10 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             std::int64_t v = 0;
             if (!require_int64("--source-ref-id", &v)) return false;
             options.source_ref_id = v;
+        } else if (arg == "--dtm-artifact-id") {
+            std::int64_t v = 0;
+            if (!require_int64("--dtm-artifact-id", &v)) return false;
+            options.dtm_artifact_id = v;
         } else if (arg == "--dtm-file") {
             std::string v;
             if (!require_value("--dtm-file", &v)) return false;
@@ -798,6 +810,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             break;
         case E2eScenarioEntrySource::ExistingWorkspaceReference:
             break;
+        case E2eScenarioEntrySource::ExistingDtmArtifact:
+            break;
         }
     }
 
@@ -829,6 +843,26 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             *error_out = "--workflow-unit, --source-ref-kind, and --source-ref-id require --scenario workflow_unit";
         }
         return false;
+    }
+    if (options.dtm_artifact_id.has_value()) {
+        if (*options.dtm_artifact_id <= 0) {
+            if (error_out) {
+                *error_out = "--dtm-artifact-id must be positive";
+            }
+            return false;
+        }
+        if (!options.workspace_root
+            || !IsCompleteExistingWorkspace(*options.workspace_root, error_out)) {
+            return false;
+        }
+        if (!options.dtm_file.empty() || !options.savestate_file.empty()
+            || options.source_savestate_id.has_value()
+            || options.tasmovie_establishment_id.has_value()) {
+            if (error_out) {
+                *error_out = "DTM-artifact mode requires an existing workspace and rejects --dtm-file, --savestate-file, --source-savestate-id, and --tas-establishment-id";
+            }
+            return false;
+        }
     }
 
     if (prepared_checkpoint_mode) {
