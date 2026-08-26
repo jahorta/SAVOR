@@ -70,7 +70,6 @@ struct CliOptions {
     std::filesystem::path iso_path;
     std::filesystem::path dolphin_base_dir;
     std::optional<std::int64_t> source_savestate_id;
-    std::optional<std::filesystem::path> migration_root;
     std::optional<std::filesystem::path> workspace_root;
     std::optional<std::filesystem::path> worker_dir_root;
     std::optional<std::filesystem::path> perf_report_dir;
@@ -146,7 +145,6 @@ bool EntrySourceRequiresFreshWorkspace(E2eScenarioEntrySource source);
 void PrintUsage();
 bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* error_out);
 std::filesystem::path ResolveWorkerExePath(const char* argv0);
-std::filesystem::path ResolveMigrationRoot(const std::optional<std::filesystem::path>& explicit_root);
 TasMovieRtcRange ResolveTasMovieRtcRange(
     const CliOptions& options,
     std::int64_t default_value);

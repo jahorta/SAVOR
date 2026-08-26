@@ -34,7 +34,6 @@ scenarios are intentionally excluded from `all` and must be requested alone.
 
 Optional workspace arguments include:
 
-- `--migration-root <path-to-SavorDb/migration>`
 - `--workspace-root <path>`
 - `--worker-dir-root <path>`
 

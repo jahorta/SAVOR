@@ -365,27 +365,6 @@ std::filesystem::path ResolveWorkerExePath(const char* argv0) {
     return exe_path.parent_path() / "SavorWorker.exe";
 }
 
-std::filesystem::path ResolveMigrationRoot(const std::optional<std::filesystem::path>& explicit_root) {
-    if (explicit_root.has_value() && !explicit_root->empty() && std::filesystem::exists(*explicit_root / "Execution")) {
-        return *explicit_root;
-    }
-
-    const std::filesystem::path candidates[] = {
-        std::filesystem::path("SavorDb") / "migration",
-        std::filesystem::path("..") / "SavorDb" / "migration",
-        std::filesystem::path("..") / ".." / "SavorDb" / "migration",
-        std::filesystem::path("migration"),
-    };
-
-    for (const auto& path : candidates) {
-        if (std::filesystem::exists(path / "Execution")) {
-            return path;
-        }
-    }
-
-    return candidates[0];
-}
-
 void PrintUsage() {
     std::cout << "SavorE2E - real-worker end-to-end workflow harness\n\n";
     std::cout << "Usage:\n";
@@ -403,7 +382,6 @@ void PrintUsage() {
               << " [--poll-ms <100..5000 - default 100>]"
               << " [--worker-count <1..30 - default 1>]"
               << " [--wait-for-workers-ready]"
-              << " [--migration-root <path>]"
               << " [--workspace-root <path>]"
               << " [--worker-dir-root <path>]"
               << " [--perf-report-dir <path>]"
@@ -574,10 +552,6 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             std::string v;
             if (!require_value("--dtm-file", &v)) return false;
             options.dtm_file = std::filesystem::path(v);
-        } else if (arg == "--migration-root") {
-            std::string v;
-            if (!require_value("--migration-root", &v)) return false;
-            options.migration_root = std::filesystem::path(v);
         } else if (arg == "--iso") {
             std::string v;
             if (!require_value("--iso", &v)) return false;

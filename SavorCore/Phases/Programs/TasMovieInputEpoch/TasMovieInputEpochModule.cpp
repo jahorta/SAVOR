@@ -215,9 +215,8 @@ private:
 
 std::vector<Byte> ContinueConfig(bool fail_on_movie_end)
 {
-    StaticWriter writer({'C','U','C','1'});
+    StaticWriter writer({'C','U','C','2'});
     writer.U8(1);
-    writer.Bool(true);
     writer.Bool(fail_on_movie_end);
     writer.U8(static_cast<std::uint8_t>(
         ExecutionThrottlePolicy::RequireDisabled));

@@ -93,14 +93,8 @@ int main(int argc, char** argv) {
         << "[worker-startup-policy] wait_for_workers_ready="
         << (options.wait_for_workers_ready ? 1 : 0) << "\n";
 
-    const auto migration_root = ResolveMigrationRoot(options.migration_root);
     const auto db_paths = BuildDbPaths(options);
-    DBService service(
-        db_paths,
-        MigrationSourceOptions{
-            .source_kind = MigrationSourceKind::Filesystem,
-            .filesystem_root = migration_root,
-        });
+    DBService service(db_paths);
 
     std::string db_error;
     if (!service.Start(&db_error)) {
