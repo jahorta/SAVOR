@@ -2565,12 +2565,7 @@ std::string DolphinWrapperBackend::DescribePhysicalStopPoints(
 
     auto regular = breakpoints.GetBreakPoints();
     std::ranges::sort(regular, {}, &TBreakPoint::address);
-    auto memory = memchecks.GetMemChecks();
-    std::ranges::sort(memory, [](const TMemCheck& lhs, const TMemCheck& rhs) {
-        if (lhs.start_address != rhs.start_address)
-            return lhs.start_address < rhs.start_address;
-        return lhs.end_address < rhs.end_address;
-    });
+    const auto& memory = memchecks.GetMemChecks();
 
     std::string shape_error;
     const bool manager_shape = PhysicalObjectsHaveManagerShape(

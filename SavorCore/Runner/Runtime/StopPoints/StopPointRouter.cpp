@@ -844,7 +844,6 @@ namespace {
                 group.registration_sequence,
                 subscription.ordinal,
                 subscription.one_shot,
-                subscription.suppression,
                 group.drop_counter.get(),
             });
         }

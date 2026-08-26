@@ -907,7 +907,7 @@ struct ExecutionControlCore::Impl
         }
         catch (...)
         {
-            text << '\nstop_point_diagnostics_error=unknown";
+            text << '\n' << "stop_point_diagnostics_error=unknown";
         }
 
         const std::string diagnostic = text.str();
