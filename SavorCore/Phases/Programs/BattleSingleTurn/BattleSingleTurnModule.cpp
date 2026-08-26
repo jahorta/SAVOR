@@ -78,7 +78,7 @@ class StaticWriter{public:explicit StaticWriter(std::array<char,4> m){for(char c
 SemanticPointReference Point(std::string name,std::uint32_t pc){const bool field=name.starts_with("prebattle.");return {.capability_pack=field?capabilities::FieldPackIdentity():capabilities::BattlePackIdentity(),.canonical_id=(field?"soa.field.point.":"soa.battle.point.")+std::move(name),.kind=SemanticPointKind::ProgramCounter,.physical_pc=pc};}
 SemanticPointReference CommandPoint(std::string name,std::uint32_t pc){return {.capability_pack=capabilities::BattleCommandPackIdentity(),.canonical_id="soa.battle.command.point."+std::move(name),.kind=SemanticPointKind::ProgramCounter,.physical_pc=pc};}
 SemanticPointReference CommandPoint(std::string name,BPKey key){const auto*point=bp::BpRegistry::FindRuntime(key);if(!point||point->pc==0)throw std::logic_error("battle command semantic point is unavailable");return CommandPoint(std::move(name),point->pc);}
-std::vector<Byte> ContinueConfig(){StaticWriter w({'C','U','C','1'});w.U8(1);w.Bool(true);w.Bool(true);w.U8(static_cast<std::uint8_t>(ExecutionThrottlePolicy::RequireDisabled));w.U8(0);return w.Finish();}
+std::vector<Byte> ContinueConfig(){StaticWriter w({'C','U','C','2'});w.U8(1);w.U8(1);w.U8(static_cast<std::uint8_t>(ExecutionThrottlePolicy::RequireDisabled));w.U8(0);return w.Finish();}
 std::vector<Byte> ObservationConfig(){StaticWriter w({'O','S','C','1'});w.Text("ending-rng");w.U8(0);w.Bool(false);w.U8(0);return w.Finish();}
 
 void AddAction(Builder& b,CanonicalAction a){b.AddCapabilityImport(CanonicalRuntimePackIdentity());b.AddActionImport(CanonicalActionIdentity(a));for(const auto&s:CanonicalActionTypeSchemaClosure(a))b.AddTypeImport(s);}

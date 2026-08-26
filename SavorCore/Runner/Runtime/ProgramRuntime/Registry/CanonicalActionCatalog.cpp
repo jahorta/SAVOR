@@ -713,7 +713,7 @@ SchemaIdentity CanonicalRuntimeSchemaIdentity(
     case CanonicalRuntimeSchema::ContinueUntilStaticConfig:
         return RuntimeSchemaIdentity(
             "runtime.execution.ContinueUntilStaticConfig",
-            "bytes(max=4096;CUC1 current-point, immediate-reentry, movie, interruption policies)");
+            "bytes(max=4096;CUC2 current-point, movie, throttle, interruption policies)");
     case CanonicalRuntimeSchema::ExecutionAdvanceStaticConfig:
         return RuntimeSchemaIdentity(
             "runtime.execution.AdvanceStaticConfig",

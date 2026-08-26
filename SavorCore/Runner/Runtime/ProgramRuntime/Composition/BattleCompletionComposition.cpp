@@ -54,10 +54,9 @@ private:
 
 std::vector<Byte> ContinueConfig()
 {
-    StaticWriter writer({'C','U','C','1'});
-    writer.U8(1); // FutureOnly
-    writer.Bool(true);
-    writer.Bool(true);
+    StaticWriter writer({'C','U','C','2'});
+    writer.U8(1); // Ignore the current retained point.
+    writer.U8(1); // Fail if the movie ends.
     writer.U8(static_cast<std::uint8_t>(
         ExecutionThrottlePolicy::RequireDisabled));
     writer.U8(0);

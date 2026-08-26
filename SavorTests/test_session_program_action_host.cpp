@@ -507,12 +507,13 @@ ProgramValueGraph ContinueRequestGraph(
     points_writer.U32(target.point.pc);
     points_writer.U32(0);
 
-    TestStaticConfigWriter writer({'C', 'U', 'C', '1'});
+    TestStaticConfigWriter writer({'C', 'U', 'C', '2'});
     writer.U8(1);
-    writer.Bool(true);
     writer.U8(0);
-    writer.U8(0);
-    writer.U8(0);
+    writer.U8(static_cast<std::uint8_t>(
+        ExecutionThrottlePolicy::RequireDisabled));
+    writer.U8(static_cast<std::uint8_t>(
+        ExecutionInterruptionPolicy::Reject));
 
     TestValueGraphBuilder builder;
     const ProgramValueId points = builder.Add(
