@@ -19,6 +19,7 @@
 #include "../Execution/IExecutionDb.h"
 #include "../Execution/QueuedExecutionDb.h"
 #include "../Execution/Workflow/SqliteExecutionDb.h"
+#include "../Execution/Workflow/WorkflowExpansionService.h"
 #include "../State/IStateDb.h"
 #include "../State/QueuedStateDb.h"
 #include "../State/SqliteStateDb.h"
@@ -70,6 +71,7 @@ public:
     savor::db::IAuthoringDb* AuthoringDb();
     savor::db::IUiReadDb* UiReadDb();
     savor::db::IArchiveDb* ArchiveDb();
+    savor::db::execution::workflow::WorkflowExpansionService* WorkflowExpansionService();
     bool RunUiReadProjectionOnce(std::string* error_out = nullptr);
     [[nodiscard]] DBServicePerformanceSnapshot SnapshotPerformance() const;
 
@@ -104,6 +106,8 @@ private:
     std::unique_ptr<savor::db::uiread::projectors::UiReadProjectionService> ui_read_projection_service_;
     std::unique_ptr<savor::db::SqliteArchiveDb> sqlite_archive_db_;
     std::unique_ptr<savor::db::QueuedArchiveDb> archive_db_;
+    std::unique_ptr<savor::db::execution::workflow::WorkflowExpansionService>
+        workflow_expansion_service_;
 };
 
 } // namespace savor::db::core

@@ -15,6 +15,7 @@
 #include "Authoring/AuthoringContentHash.h"
 #include "DB/SavorDbAuthoringService.h"
 #include "Execution/Workflow/WorkflowComposition.h"
+#include "Execution/Workflow/WorkflowExpansionService.h"
 #include "Execution/Workflow/WorkflowLaunchContract.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Execution/Workflow/WorkflowUnitActivationFactory.h"
@@ -319,6 +320,39 @@ public:
                 ? "workflow launch contract is invalid" : contract.issues.front());
         }
 
+        if (graph.nodes.size() == 1u) {
+            const auto* expansion_unit = registry.Find(graph.nodes.front().unit_kind);
+            if (expansion_unit && expansion_unit->execution_shape ==
+                    savor::db::execution::workflow::WorkflowUnitExecutionShape::WorkflowExpansion) {
+                if (request.input_bindings.size() != 1u)
+                    return Invalid<std::int64_t>("workflow expansion requires exactly one source binding");
+                const auto integer = [&](std::string_view key) -> std::optional<std::int64_t> {
+                    const auto found = std::find_if(contract.normalized_arguments.begin(),
+                        contract.normalized_arguments.end(), [&](const auto& value) {
+                            return value.argument_key == key;
+                        });
+                    return found == contract.normalized_arguments.end()
+                        ? std::nullopt : found->integer_value;
+                };
+                auto* db_service = savorqt::SavorDbRuntime::instance().service();
+                auto* expansions = db_service ? db_service->WorkflowExpansionService() : nullptr;
+                if (!expansions) return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
+                savor::db::execution::workflow::WorkflowExpansionCreateRequest expansion{};
+                expansion.kind = expansion_unit->expansion_kind;
+                expansion.source_ref_kind = request.input_bindings.front().ref_kind;
+                expansion.source_ref_id = request.input_bindings.front().ref_id;
+                expansion.rtc_min = integer("rtc_min");
+                expansion.rtc_max = integer("rtc_max");
+                expansion.max_neutral_epochs = integer("max_neutral_epochs").value_or(0);
+                expansion.created_by = request.created_by.empty() ? "SavorQt" : request.created_by;
+                std::int64_t expansion_id = 0;
+                std::string error;
+                if (!expansions->Create(expansion, &expansion_id, &error))
+                    return Failed<std::int64_t>(std::move(error));
+                return ServiceResult<std::int64_t>::Ok(expansion_id);
+            }
+        }
+
         const auto binding_key = [](const std::string& node_key, const std::string& input_key) {
             return node_key + "\n" + input_key;
         };
@@ -519,6 +553,17 @@ public:
             return ServiceResult<void>::Err({ ServiceErrorKind::Failed, std::move(error) });
         }
         return ServiceResult<void>::Ok();
+    }
+
+    static ServiceResult<std::vector<savor::db::execution::workflow::WorkflowExpansionSnapshot>>
+    ListWorkflowExpansions(bool include_final = false) {
+        auto* db_service = savorqt::SavorDbRuntime::instance().service();
+        auto* expansions = db_service ? db_service->WorkflowExpansionService() : nullptr;
+        if (!expansions)
+            return Unavailable<std::vector<savor::db::execution::workflow::WorkflowExpansionSnapshot>>(
+                kSavorDbRuntimeUnavailableMessage);
+        return ServiceResult<std::vector<savor::db::execution::workflow::WorkflowExpansionSnapshot>>::Ok(
+            expansions->List(include_final));
     }
 
     static ServiceResult<RecordBattleVictoryResult> RecordBattleVictory(

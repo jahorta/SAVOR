@@ -298,6 +298,7 @@ std::vector<std::uint8_t> EncodeRewriteExecutionInputV1(
         request.schedule, diagnostic);
     if (schedule.empty() ||
         request.insert_before_epoch >= request.schedule.epochs.size() ||
+        request.neutral_epoch_count == 0 ||
         !ValidateRequestPath(request.source_dtm_path) ||
         !ValidateRequestPath(request.output_dtm_path) ||
         !ValidateRequestPath(request.output_savestate_path))
@@ -310,6 +311,7 @@ std::vector<std::uint8_t> EncodeRewriteExecutionInputV1(
     writer.Text(request.source_dtm_path);
     writer.Bytes(schedule);
     writer.U64(request.insert_before_epoch);
+    writer.U64(request.neutral_epoch_count);
     writer.Text(request.output_dtm_path);
     writer.Text(request.output_savestate_path);
     return std::move(writer).Finish();
@@ -327,11 +329,13 @@ bool DecodeRewriteExecutionInputV1(
     if (!reader.U32(version) || version != ContractVersion ||
         !reader.Text(decoded.source_dtm_path) || !reader.Bytes(schedule) ||
         !reader.U64(decoded.insert_before_epoch) ||
+        !reader.U64(decoded.neutral_epoch_count) ||
         !reader.Text(decoded.output_dtm_path) ||
         !reader.Text(decoded.output_savestate_path) || !reader.Complete() ||
         !DecodeInputEpochScheduleArtifactV1(
             schedule, decoded.schedule, diagnostic) ||
         decoded.insert_before_epoch >= decoded.schedule.epochs.size() ||
+        decoded.neutral_epoch_count == 0 ||
         !ValidateRequestPath(decoded.source_dtm_path) ||
         !ValidateRequestPath(decoded.output_dtm_path) ||
         !ValidateRequestPath(decoded.output_savestate_path)) return false;

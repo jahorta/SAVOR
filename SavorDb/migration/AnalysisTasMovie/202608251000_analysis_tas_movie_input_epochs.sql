@@ -60,6 +60,8 @@ CREATE TABLE tmv_input_epoch_rewrite_request (
     schedule_artifact_id INTEGER NOT NULL CHECK(schedule_artifact_id>0),
     schedule_sha256 TEXT NOT NULL,
     insert_before_epoch INTEGER NOT NULL CHECK(insert_before_epoch>=0),
+    neutral_epoch_count INTEGER NOT NULL CHECK(neutral_epoch_count>0),
+    placement_profile TEXT NOT NULL,
     full_phase_program_kind INTEGER NOT NULL CHECK(full_phase_program_kind=14),
     full_phase_program_version INTEGER NOT NULL CHECK(full_phase_program_version>0),
     full_phase_canonical_id TEXT NOT NULL,

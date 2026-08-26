@@ -65,6 +65,10 @@ inline constexpr WorkflowUnitToken TasMovieAnnotate{
     "tas_movie_annotate"};
 inline constexpr WorkflowUnitToken TasMovieRevise{
     "tas_movie_revise"};
+inline constexpr WorkflowUnitToken TasMovieFirstBattleExploration{
+    "tas_movie_first_battle_exploration"};
+inline constexpr WorkflowUnitToken TasMovieDelayExploration{
+    "tas_movie_delay_exploration"};
 inline constexpr WorkflowUnitToken SeedProbe{"seed_probe"};
 inline constexpr WorkflowUnitToken BattleContext{"battle.context"};
 inline constexpr WorkflowUnitToken Battle{"battle"};
@@ -100,6 +104,12 @@ inline constexpr WorkflowPortToken RewriteAttempt{"rewrite_attempt"};
 inline constexpr WorkflowPortToken RewrittenDtm{"rewritten_dtm"};
 inline constexpr WorkflowPortToken RewrittenPairedSavestate{
     "rewritten_paired_savestate"};
+}
+namespace workflow::ports::tas_movie_first_battle_exploration {
+inline constexpr WorkflowPortToken RootDtm{"root_dtm"};
+}
+namespace workflow::ports::tas_movie_delay_exploration {
+inline constexpr WorkflowPortToken TasNode{"tas_node"};
 }
 namespace workflow::ports::seed_probe {
 inline constexpr WorkflowPortToken EntrySavestate{"entry_savestate"};

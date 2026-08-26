@@ -278,6 +278,10 @@ void WorkflowLauncherPage::createWidgets()
     rtcLayout->addWidget(rtcLowEdit_);
     rtcLayout->addWidget(new QLabel(QStringLiteral("to"), rtcRangePanel_));
     rtcLayout->addWidget(rtcHighEdit_);
+    maxNeutralEpochsLabel_ = new QLabel(QStringLiteral("Maximum neutral epochs"), formPanel);
+    maxNeutralEpochsSpin_ = new QSpinBox(formPanel);
+    maxNeutralEpochsSpin_->setRange(0, 1000);
+    maxNeutralEpochsSpin_->setValue(0);
     seedSamplesLabel_ = new QLabel(QStringLiteral("Seed samples/axis"), formPanel);
     seedSamplesSpin_ = new QSpinBox(formPanel);
     seedSamplesSpin_->setRange(1, 64);
@@ -304,6 +308,7 @@ void WorkflowLauncherPage::createWidgets()
         formPanel);
     form->addRow(authoredRefLabel_, authoredRefCombo_);
     form->addRow(rtcRangeLabel_, rtcRangePanel_);
+    form->addRow(maxNeutralEpochsLabel_, maxNeutralEpochsSpin_);
     form->addRow(seedSamplesLabel_, seedSamplesSpin_);
     form->addRow(battleFakeRangeLabel_, battleFakeRangePanel_);
     form->addRow(continuationLabel_, continuationCombo_);
@@ -435,7 +440,9 @@ void WorkflowLauncherPage::renderCurrentGraphIfNeeded(bool forceRebuild)
     populateExternalInputs(*graph);
     authoredRefLabel_->hide();
     authoredRefCombo_->hide();
-    const bool hasTasMovie = !argumentNodeKeys(*graph,"rtc").empty();
+    const bool hasTasMovie = !argumentNodeKeys(*graph,"rtc").empty() ||
+        !argumentNodeKeys(*graph,"rtc_min").empty();
+    const bool hasNeutralExpansion = !argumentNodeKeys(*graph,"max_neutral_epochs").empty();
     const bool hasSeedProbe = !argumentNodeKeys(*graph,"samples_per_axis").empty();
     const bool hasBattle = !argumentNodeKeys(*graph,"fake_attack_min").empty();
     const auto continuationNodes = argumentNodeKeys(*graph, "continuation_mode");
@@ -443,6 +450,8 @@ void WorkflowLauncherPage::renderCurrentGraphIfNeeded(bool forceRebuild)
         *graph, "continue_automatic_exploration_after_victory");
     rtcRangeLabel_->setVisible(hasTasMovie);
     rtcRangePanel_->setVisible(hasTasMovie);
+    maxNeutralEpochsLabel_->setVisible(hasNeutralExpansion);
+    maxNeutralEpochsSpin_->setVisible(hasNeutralExpansion);
     seedSamplesLabel_->setVisible(hasSeedProbe);
     seedSamplesSpin_->setVisible(hasSeedProbe);
     battleFakeRangeLabel_->setVisible(hasBattle);
@@ -536,6 +545,8 @@ void WorkflowLauncherPage::renderCurrentUnitIfNeeded(bool forceRebuild)
         continuationLabel_->hide();
         continuationCombo_->hide();
         continueAfterVictoryCheck_->hide();
+        maxNeutralEpochsLabel_->hide();
+        maxNeutralEpochsSpin_->hide();
         return;
     }
 
@@ -563,6 +574,7 @@ void WorkflowLauncherPage::captureLauncherDraft()
     LauncherDraft draft;
     draft.rtcLow = rtcLowEdit_ == nullptr ? QString() : rtcLowEdit_->text();
     draft.rtcHigh = rtcHighEdit_ == nullptr ? QString() : rtcHighEdit_->text();
+    draft.maxNeutralEpochs = maxNeutralEpochsSpin_ == nullptr ? 0 : maxNeutralEpochsSpin_->value();
     draft.seedSamplesPerAxis = seedSamplesSpin_ == nullptr ? 5 : seedSamplesSpin_->value();
     draft.battleFakeMin = battleFakeMinSpin_ == nullptr ? 0 : battleFakeMinSpin_->value();
     draft.battleFakeMax = battleFakeMaxSpin_ == nullptr ? 0 : battleFakeMaxSpin_->value();
@@ -609,6 +621,8 @@ void WorkflowLauncherPage::restoreLauncherDraft()
     if (battleFakeMaxSpin_ != nullptr) {
         battleFakeMaxSpin_->setValue(draft.battleFakeMax);
     }
+    if (maxNeutralEpochsSpin_ != nullptr)
+        maxNeutralEpochsSpin_->setValue(draft.maxNeutralEpochs);
     if (continuationCombo_ != nullptr && !draft.continuationMode.isEmpty()) {
         const int continuationIndex = continuationCombo_->findData(draft.continuationMode);
         if (continuationIndex >= 0) continuationCombo_->setCurrentIndex(continuationIndex);
@@ -662,6 +676,9 @@ void WorkflowLauncherPage::launchSelectedGraph()
     }
 
     const auto tasNodes = argumentNodeKeys(*graph,"rtc");
+    const auto rtcMinNodes = argumentNodeKeys(*graph,"rtc_min");
+    const auto rtcMaxNodes = argumentNodeKeys(*graph,"rtc_max");
+    const auto neutralExpansionNodes = argumentNodeKeys(*graph,"max_neutral_epochs");
     const auto seedNodes = argumentNodeKeys(*graph,"samples_per_axis");
     const auto battleNodes = argumentNodeKeys(*graph,"fake_attack_min");
     const auto continuationNodes = argumentNodeKeys(*graph,"continuation_mode");
@@ -669,7 +686,7 @@ void WorkflowLauncherPage::launchSelectedGraph()
         *graph, "continue_automatic_exploration_after_victory");
     std::int64_t rtcLow = 0;
     std::int64_t rtcHigh = 0;
-    if (!tasNodes.empty()) {
+    if (!tasNodes.empty() || !rtcMinNodes.empty()) {
         bool lowOk = false;
         bool highOk = false;
         rtcLow = rtcLowEdit_->text().trimmed().toLongLong(&lowOk, 0);
@@ -733,8 +750,9 @@ void WorkflowLauncherPage::launchSelectedGraph()
 
     launchButton_->setEnabled(false);
     std::vector<std::int64_t> workflowIds;
-    const std::int64_t launchLow = tasNodes.empty() ? 0 : rtcLow;
-    const std::int64_t launchHigh = tasNodes.empty() ? 0 : rtcHigh;
+    const bool expansionLaunch = !rtcMinNodes.empty() || !neutralExpansionNodes.empty();
+    const std::int64_t launchLow = tasNodes.empty() || expansionLaunch ? 0 : rtcLow;
+    const std::int64_t launchHigh = tasNodes.empty() || expansionLaunch ? 0 : rtcHigh;
     for (std::int64_t rtc = launchLow; rtc <= launchHigh; ++rtc) {
         savorqt::db::WorkflowGraphStartRequest request{};
         request.workflow_graph_revision_id = graph->workflow_graph_revision_id;
@@ -775,6 +793,15 @@ void WorkflowLauncherPage::launchSelectedGraph()
                 });
             }
         }
+        for (const auto& nodeKey : rtcMinNodes) request.arguments.push_back({
+            .node_key=nodeKey.toStdString(),.argument_key="rtc_min",.value_type="integer",
+            .integer_value=rtcLow,.source_kind="launcher"});
+        for (const auto& nodeKey : rtcMaxNodes) request.arguments.push_back({
+            .node_key=nodeKey.toStdString(),.argument_key="rtc_max",.value_type="integer",
+            .integer_value=rtcHigh,.source_kind="launcher"});
+        for (const auto& nodeKey : neutralExpansionNodes) request.arguments.push_back({
+            .node_key=nodeKey.toStdString(),.argument_key="max_neutral_epochs",.value_type="integer",
+            .integer_value=maxNeutralEpochsSpin_->value(),.source_kind="launcher"});
         for (const auto& nodeKey : continuationNodes) {
             request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
                 .node_key = nodeKey.toStdString(),
@@ -804,8 +831,9 @@ void WorkflowLauncherPage::launchSelectedGraph()
     }
     launchButton_->setEnabled(true);
     if (workflowIds.size() == 1) {
-        launchStatusLabel_->setText(QStringLiteral("Launched workflow instance %1.").arg(static_cast<qint64>(workflowIds.front())));
-        postStatusMessage(QStringLiteral("Launched workflow instance %1.").arg(static_cast<qint64>(workflowIds.front())), StatusToast::Severity::Info);
+        const QString noun = expansionLaunch ? QStringLiteral("workflow family") : QStringLiteral("workflow instance");
+        launchStatusLabel_->setText(QStringLiteral("Launched %1 %2.").arg(noun).arg(static_cast<qint64>(workflowIds.front())));
+        postStatusMessage(QStringLiteral("Launched %1 %2.").arg(noun).arg(static_cast<qint64>(workflowIds.front())), StatusToast::Severity::Info);
     } else {
         launchStatusLabel_->setText(QStringLiteral("Launched %1 workflow instances for RTC %2-%3.")
             .arg(static_cast<int>(workflowIds.size()))
@@ -839,7 +867,7 @@ void WorkflowLauncherPage::launchStandaloneUnit()
     std::int64_t rtcLow = 0;
     std::int64_t rtcHigh = 0;
     const auto hasArgument=[unit](std::string_view key){return std::any_of(unit->launch_arguments.begin(),unit->launch_arguments.end(),[key](const auto& value){return value.key==key;});};
-    if (hasArgument("rtc")) {
+    if (hasArgument("rtc") || hasArgument("rtc_min")) {
         bool lowOk = false;
         bool highOk = false;
         rtcLow = rtcLowEdit_->text().trimmed().toLongLong(&lowOk, 0);
@@ -917,8 +945,10 @@ void WorkflowLauncherPage::launchStandaloneUnit()
     }
 
     std::vector<std::int64_t> workflowIds;
-    const std::int64_t launchLow = hasArgument("rtc") ? rtcLow : 0;
-    const std::int64_t launchHigh = hasArgument("rtc") ? rtcHigh : 0;
+    const bool expansionLaunch = unit->execution_shape ==
+        savor::db::execution::workflow::WorkflowUnitExecutionShape::WorkflowExpansion;
+    const std::int64_t launchLow = hasArgument("rtc") && !expansionLaunch ? rtcLow : 0;
+    const std::int64_t launchHigh = hasArgument("rtc") && !expansionLaunch ? rtcHigh : 0;
     const auto nodeKey = standaloneNodeKey(*unit);
     for (std::int64_t rtc = launchLow; rtc <= launchHigh; ++rtc) {
         savorqt::db::WorkflowGraphStartRequest request{};
@@ -958,6 +988,15 @@ void WorkflowLauncherPage::launchStandaloneUnit()
                 .source_kind = "launcher",
             });
         }
+        if (hasArgument("rtc_min")) request.arguments.push_back({
+            .node_key=nodeKey,.argument_key="rtc_min",.value_type="integer",
+            .integer_value=rtcLow,.source_kind="launcher"});
+        if (hasArgument("rtc_max")) request.arguments.push_back({
+            .node_key=nodeKey,.argument_key="rtc_max",.value_type="integer",
+            .integer_value=rtcHigh,.source_kind="launcher"});
+        if (hasArgument("max_neutral_epochs")) request.arguments.push_back({
+            .node_key=nodeKey,.argument_key="max_neutral_epochs",.value_type="integer",
+            .integer_value=maxNeutralEpochsSpin_->value(),.source_kind="launcher"});
         if (hasArgument("continuation_mode")) {
             request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
                 .node_key = nodeKey,
@@ -1123,7 +1162,8 @@ void WorkflowLauncherPage::updateStandaloneArgumentControls()
             unit->launch_arguments.begin(), unit->launch_arguments.end(),
             [key](const auto& value){return value.key==key;});
     };
-    const bool hasTasMovie = hasArgument("rtc");
+    const bool hasTasMovie = hasArgument("rtc") || hasArgument("rtc_min");
+    const bool hasNeutralExpansion = hasArgument("max_neutral_epochs");
     const bool hasSeedProbe = hasArgument("samples_per_axis");
     const bool hasBattle = hasArgument("fake_attack_min");
     const bool hasContinuation = hasArgument("continuation_mode");
@@ -1131,6 +1171,8 @@ void WorkflowLauncherPage::updateStandaloneArgumentControls()
         hasArgument("continue_automatic_exploration_after_victory");
     rtcRangeLabel_->setVisible(hasTasMovie);
     rtcRangePanel_->setVisible(hasTasMovie);
+    maxNeutralEpochsLabel_->setVisible(hasNeutralExpansion);
+    maxNeutralEpochsSpin_->setVisible(hasNeutralExpansion);
     seedSamplesLabel_->setVisible(hasSeedProbe);
     seedSamplesSpin_->setVisible(hasSeedProbe);
     battleFakeRangeLabel_->setVisible(hasBattle);

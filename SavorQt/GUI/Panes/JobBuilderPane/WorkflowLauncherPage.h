@@ -67,6 +67,7 @@ private:
     struct LauncherDraft {
         QString rtcLow;
         QString rtcHigh;
+        int maxNeutralEpochs = 0;
         int seedSamplesPerAxis = 5;
         int battleFakeMin = 0;
         int battleFakeMax = 0;
@@ -129,6 +130,8 @@ private:
     QFrame* rtcRangePanel_ = nullptr;
     QLineEdit* rtcLowEdit_ = nullptr;
     QLineEdit* rtcHighEdit_ = nullptr;
+    QLabel* maxNeutralEpochsLabel_ = nullptr;
+    QSpinBox* maxNeutralEpochsSpin_ = nullptr;
     QLabel* seedSamplesLabel_ = nullptr;
     QSpinBox* seedSamplesSpin_ = nullptr;
     QLabel* battleFakeRangeLabel_ = nullptr;

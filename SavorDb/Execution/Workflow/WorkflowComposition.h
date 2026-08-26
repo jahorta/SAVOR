@@ -30,6 +30,17 @@ enum class WorkflowLaunchArgumentValueType : std::uint8_t {
     Choice = 5,
 };
 
+enum class WorkflowUnitExecutionShape : std::uint8_t {
+    WorkflowInstance = 0,
+    WorkflowExpansion = 1,
+};
+
+enum class WorkflowExpansionKind : std::uint8_t {
+    None = 0,
+    TasMovieFirstBattleExploration = 1,
+    TasMovieDelayExploration = 2,
+};
+
 struct WorkflowLaunchArgumentChoiceDefinition {
     std::string value;
     std::string display_name;
@@ -71,6 +82,9 @@ struct WorkflowUnitDefinition {
     std::string description;
     bool hidden = false;
     bool standalone_launchable = true;
+    WorkflowUnitExecutionShape execution_shape =
+        WorkflowUnitExecutionShape::WorkflowInstance;
+    WorkflowExpansionKind expansion_kind = WorkflowExpansionKind::None;
     std::string standalone_presentation_family_key;
     std::string standalone_presentation_family_display_name;
     std::string unit_variant;

@@ -14,8 +14,8 @@
 
 namespace savor::runtime::tasmovie::inputepoch {
 
-inline constexpr std::uint32_t ContractVersion = 1;
-inline constexpr std::int32_t ProgramVersion = 1;
+inline constexpr std::uint32_t ContractVersion = 2;
+inline constexpr std::int32_t ProgramVersion = 2;
 inline constexpr std::string_view PadReadReturnedPointId =
     "soa.tasmovie.point.input.PadReadReturned";
 inline constexpr std::uint32_t PadReadReturnedPc = 0x801D6E7Cu;
@@ -98,6 +98,7 @@ struct TasMovieInputEpochRewriteRequestV1
     std::string source_dtm_path;
     TasMovieInputEpochScheduleV1 schedule;
     std::uint64_t insert_before_epoch = 0;
+    std::uint64_t neutral_epoch_count = 1;
     std::string output_dtm_path;
     std::string output_savestate_path;
 };
@@ -106,6 +107,7 @@ struct TasMovieInputEpochRewriteResultV1
 {
     InputEpochOutcomeV1 outcome = InputEpochOutcomeV1::Diverged;
     std::uint64_t insert_before_epoch = 0;
+    std::uint64_t neutral_epoch_count = 0;
     std::uint64_t source_epoch_count = 0;
     std::uint64_t child_epoch_count = 0;
     std::uint64_t final_cursor = 0;

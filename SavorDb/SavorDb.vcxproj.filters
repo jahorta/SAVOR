@@ -134,6 +134,8 @@
     <ClInclude Include="Execution\Workflow\WorkflowComposition.h">
       <Filter>Workflows</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowExpansionService.h"><Filter>Execution\Workflow</Filter></ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowGraphLaunchService.h"><Filter>Execution\Workflow</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowLaunchContract.h">
       <Filter>Workflows</Filter>
     </ClInclude>
@@ -373,6 +375,8 @@
     <ClCompile Include="Execution\Workflow\WorkflowComposition.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowExpansionService.cpp"><Filter>Execution\Workflow</Filter></ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowGraphLaunchService.cpp"><Filter>Execution\Workflow</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowLaunchContract.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>

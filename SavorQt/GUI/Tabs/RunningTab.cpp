@@ -41,6 +41,7 @@
 namespace {
 constexpr int kWorkflowIdRole = Qt::UserRole + 1;
 constexpr int kRetryableJobsRole = Qt::UserRole + 2;
+constexpr int kWorkflowExpansionIdRole = Qt::UserRole + 3;
 
 struct JobBuckets {
     std::vector<savor::db::UiJobSummary> queued;
@@ -65,7 +66,10 @@ struct RunningRefreshRequest {
 };
 
 struct RunningWorkflowRow {
+    qint64 rowKey = 0;
     qint64 workflowInstanceId = 0;
+    qint64 expansionId = 0;
+    bool family = false;
     QString workflow;
     QString kind;
     QString state;
@@ -536,7 +540,10 @@ bool coordinatorDolphinBaseReady(const CoordinatorController* controller)
 
 bool runningWorkflowRowsEqual(const RunningWorkflowRow& lhs, const RunningWorkflowRow& rhs)
 {
-    return lhs.workflowInstanceId == rhs.workflowInstanceId
+    return lhs.rowKey == rhs.rowKey
+        && lhs.workflowInstanceId == rhs.workflowInstanceId
+        && lhs.expansionId == rhs.expansionId
+        && lhs.family == rhs.family
         && lhs.workflow == rhs.workflow
         && lhs.kind == rhs.kind
         && lhs.state == rhs.state
@@ -562,6 +569,7 @@ void populateRunningWorkflowRow(QTableWidget* table, int row, const RunningWorkf
 {
     table->setItem(row, 0, createTableItem(workflow.workflow));
     table->item(row, 0)->setData(kWorkflowIdRole, workflow.workflowInstanceId);
+    table->item(row, 0)->setData(kWorkflowExpansionIdRole, workflow.expansionId);
     table->setItem(row, 1, createTableItem(workflow.kind));
     auto* stateItem = createTableItem(workflow.state);
     auto* retryableItem = createTableItem(QString::number(workflow.retryable));
@@ -711,6 +719,9 @@ RunningWorkflowRow prepareWorkflowRow(const savor::db::UiWorkflowInstanceSummary
 
     return RunningWorkflowRow{
         workflow.workflow_instance_id,
+        workflow.workflow_instance_id,
+        0,
+        false,
         QStringLiteral("#%1").arg(workflow.workflow_instance_id),
         qs(workflow.workflow_kind),
         qs(workflow.display_state.empty() ? workflow.state : workflow.display_state),
@@ -731,6 +742,7 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     workflowRequest.limit = 100;
     const auto workflows = savorqt::db::SavorDbWorkflowService::ListWorkflowInstances(workflowRequest);
     const auto workflowCountsResult = savorqt::db::SavorDbWorkflowService::CountWorkflowDisplayStates();
+    const auto expansions = savorqt::db::SavorDbWorkflowService::ListWorkflowExpansions(false);
 
     savor::db::UiReadJobListQuery jobQuery{};
     const auto jobs = savorqt::db::SavorDbJobService::FetchJobsPage(jobQuery, std::nullopt, std::nullopt, 100);
@@ -751,7 +763,7 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     const bool hasValidation = !request.validation.trimmed().isEmpty();
 
     RunningRefreshData data;
-    data.workflowsOk = workflows.ok && workflowCountsResult.ok;
+    data.workflowsOk = workflows.ok && workflowCountsResult.ok && expansions.ok;
     data.jobsOk = jobs.ok && jobCounts.ok;
     data.workflowError = !workflows.ok
         ? qs(workflows.error.message)
@@ -811,8 +823,47 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
             .arg(formatCount(terminalJobCount(counts)))
         : QStringLiteral("Job queue unavailable: %1").arg(data.jobError);
 
-    data.workflowRows.reserve(workflowItems.size());
+    std::set<std::int64_t> familyWorkflowIds;
+    if (expansions.ok) for (const auto& expansion : expansions.value)
+        for (const auto& member : expansion.members)
+            familyWorkflowIds.insert(member.workflow_instance_id);
+    data.workflowRows.reserve(workflowItems.size() +
+        (expansions.ok ? expansions.value.size() * 4u : 0u));
+    if (expansions.ok) for (const auto& expansion : expansions.value) {
+        qint64 completed = 0;
+        qint64 retryable = 0;
+        for (const auto& member : expansion.members) {
+            if (member.state == "COMPLETED") ++completed;
+            const auto found = std::find_if(workflowItems.begin(), workflowItems.end(), [&](const auto& row) {
+                return row.workflow_instance_id == member.workflow_instance_id;
+            });
+            if (found != workflowItems.end()) retryable += found->retryable_job_count;
+        }
+        const QString kind = expansion.kind == savor::db::execution::workflow::WorkflowExpansionKind::TasMovieFirstBattleExploration
+            ? QStringLiteral("First Battle Exploration") : QStringLiteral("Delay Exploration");
+        data.workflowRows.push_back({
+            -expansion.workflow_expansion_id, 0, expansion.workflow_expansion_id, true,
+            QStringLiteral("▾ Family #%1").arg(expansion.workflow_expansion_id), kind,
+            qs(expansion.state), retryable,
+            QStringLiteral("%1/%2 child workflows complete").arg(completed).arg(expansion.members.size()),
+            expansion.failure_text ? qs(*expansion.failure_text) : QStringLiteral("delays 0..%1").arg(expansion.max_neutral_epochs),
+            completed, static_cast<qint64>(expansion.members.size())-completed,
+            expansion.state=="ATTENTION" ? 1 : 0, 0});
+        for (const auto& member : expansion.members) {
+            data.workflowRows.push_back({
+                member.workflow_instance_id, member.workflow_instance_id,
+                expansion.workflow_expansion_id, false,
+                QStringLiteral("    ↳ #%1").arg(member.workflow_instance_id),
+                QStringLiteral("%1 · delay %2%3").arg(qs(member.role)).arg(member.neutral_epoch_count)
+                    .arg(member.rtc_value ? QStringLiteral(" · RTC %1").arg(*member.rtc_value) : QString()),
+                qs(member.state), 0, QStringLiteral("Child workflow"), QStringLiteral("--"),
+                member.state=="COMPLETED" ? 1 : 0,
+                member.state=="COMPLETED" ? 0 : 1,
+                (member.state=="FAILED" || member.state=="INTERRUPTED") ? 1 : 0, 0});
+        }
+    }
     for (const auto& workflow : workflowItems) {
+        if (familyWorkflowIds.contains(workflow.workflow_instance_id)) continue;
         data.workflowRows.push_back(prepareWorkflowRow(workflow));
     }
 
@@ -1161,7 +1212,18 @@ void RunningTab::build()
     workflowTable_->setItemDelegateForColumn(4, new savorqt::gui::SegmentedProgressDelegate(workflowTable_));
     workflowTable_->setContextMenuPolicy(Qt::CustomContextMenu);
     workflowTable_->installEventFilter(this);
-    QObject::connect(workflowTable_, &QTableWidget::cellDoubleClicked, workflowTable_, [this](int, int) { openSelectedWorkflow(); });
+    QObject::connect(workflowTable_, &QTableWidget::cellDoubleClicked, workflowTable_, [this](int row, int) {
+        const auto* item = workflowTable_->item(row, 0);
+        const qint64 workflowId = item ? item->data(kWorkflowIdRole).toLongLong() : 0;
+        const qint64 expansionId = item ? item->data(kWorkflowExpansionIdRole).toLongLong() : 0;
+        if (workflowId <= 0 && expansionId > 0) {
+            if (collapsedExpansionIds_.contains(expansionId)) collapsedExpansionIds_.erase(expansionId);
+            else collapsedExpansionIds_.insert(expansionId);
+            refreshCockpit();
+            return;
+        }
+        openSelectedWorkflow();
+    });
     QObject::connect(workflowTable_, &QWidget::customContextMenuRequested, workflowTable_, [this](const QPoint& position) {
         showWorkflowContextMenu(position);
     });
@@ -1336,9 +1398,16 @@ void RunningTab::build()
             workflowTable_,
             *workflowRows,
             data.workflowRows,
-            [](const RunningWorkflowRow& row) { return row.workflowInstanceId; },
+            [](const RunningWorkflowRow& row) { return row.rowKey; },
             runningWorkflowRowsEqual,
             populateRunningWorkflowRow);
+        for (int row = 0; row < workflowTable_->rowCount(); ++row) {
+            const auto* item = workflowTable_->item(row, 0);
+            const qint64 expansionId = item ? item->data(kWorkflowExpansionIdRole).toLongLong() : 0;
+            const qint64 workflowId = item ? item->data(kWorkflowIdRole).toLongLong() : 0;
+            workflowTable_->setRowHidden(row, workflowId > 0 && expansionId > 0 &&
+                collapsedExpansionIds_.contains(expansionId));
+        }
 
         queueSummaryLabel_->setText(data.queueSummary);
         clearLayout(queueBucketsLayout_);

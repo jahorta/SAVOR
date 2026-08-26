@@ -28,6 +28,15 @@ ServiceResult<std::vector<WorkflowReferenceOption>> WorkflowReferenceSelectorPro
         for(const auto& row:db->ListTasMovieValidationAttempts(std::nullopt,limit)) if(row.outcome=="ROOT_CURSOR_ESTABLISHED") out.push_back({row.validation_attempt_id,"Validation attempt #"+std::to_string(row.validation_attempt_id),"job "+std::to_string(row.source_job_id)+" · input "+std::to_string(row.actual_input_count),row.outcome});
     } else if (ref_kind == "state_tas_movie_tree") {
         for(const auto& row:db->ListTasMovieTrees(limit)) out.push_back({row.tas_movie_tree_id,"Recorded TAS branch #"+std::to_string(row.tas_movie_tree_id),"root "+std::to_string(row.tas_movie_root_id)+" · checkpoint "+std::to_string(row.checkpoint_savestate_id),"AVAILABLE"});
+    } else if (ref_kind == "tas_route_node") {
+        auto* analysis = savorqt::SavorDbRuntime::instance().analysisDb();
+        if (!analysis) return ServiceResult<std::vector<WorkflowReferenceOption>>::Err({ServiceErrorKind::Unavailable,kSavorDbRuntimeUnavailableMessage});
+        for (const auto& row : analysis->ListTasRouteNodes()) {
+            if (row.status != "AVAILABLE" && row.status != "ACTIVE" && row.status != "RECORDED") continue;
+            out.push_back({row.route_node_id,
+                row.label.empty() ? "TAS node #"+std::to_string(row.route_node_id) : row.label,
+                row.activity_kind+" · "+row.description,row.status});
+        }
     } else if (ref_kind == "sp_probe_run") {
         savor::db::UiReadSeedProbeRunListQuery query{};query.limit=limit;query.search=search;query.only_completed=true;
         for(const auto& row:db->ListSeedProbeRuns(query).items) out.push_back({row.probe_run_id,"SeedProbe #"+std::to_string(row.probe_run_id),"state "+std::to_string(row.entry_savestate_id)+" · "+std::to_string(row.unique_count)+" unique",row.status});

@@ -89,13 +89,13 @@ SchemaIdentity AnnotationResultSchema()
 SchemaIdentity RewriteRequestSchema()
 {
     return Schema("soa.tasmovie.input_epoch.RewriteRequestV1",
-        "record{prepare:runtime.movie.prepare_read_only_playback.Input/1,epochs:EpochListV1/1,insert_before:u64,recording_config:runtime.movie.RecordingStaticConfig,save_request:runtime.action.savestate_save_immutable_artifact.Input/1}");
+        "record{prepare:runtime.movie.prepare_read_only_playback.Input/1,epochs:EpochListV1/1,insert_before:u64,neutral_count:u64,recording_config:runtime.movie.RecordingStaticConfig,save_request:runtime.action.savestate_save_immutable_artifact.Input/1}");
 }
 
 SchemaIdentity RewriteResultSchema()
 {
     return Schema("soa.tasmovie.input_epoch.RewriteResultV1",
-        "record{outcome:OutcomeV1/1,insert_before:u64,source_count:u64,child_count:u64,final_cursor:u64,failure:FailureReasonV1/1,failure_epoch:u64,expected_cursor:u64,actual_cursor:u64}");
+        "record{outcome:OutcomeV1/1,insert_before:u64,neutral_count:u64,source_count:u64,child_count:u64,final_cursor:u64,failure:FailureReasonV1/1,failure_epoch:u64,expected_cursor:u64,actual_cursor:u64}");
 }
 
 TypeRef Named(const SchemaIdentity& schema) { return TypeRef::Named(schema); }
@@ -726,6 +726,7 @@ ProgramModule RewriteModule()
         .record_fields = {{"prepare", CanonicalActionInputType(
                 CanonicalAction::MoviePrepareReadOnlyPlayback)},
             {"epochs", Named(EpochListSchema())}, {"insert_before", U64()},
+            {"neutral_count", U64()},
             {"recording_config", CanonicalRuntimeType(
                 CanonicalRuntimeSchema::MovieRecordingStaticConfig)},
             {"save_request", CanonicalActionInputType(
@@ -733,7 +734,8 @@ ProgramModule RewriteModule()
     builder.AddLocalType({.identity = RewriteResultSchema(),
         .kind = TypeSchemaKind::Record,
         .record_fields = {{"outcome", Named(OutcomeSchema())},
-            {"insert_before", U64()}, {"source_count", U64()},
+            {"insert_before", U64()}, {"neutral_count", U64()},
+            {"source_count", U64()},
             {"child_count", U64()}, {"final_cursor", U64()},
             {"failure", Named(FailureSchema())}, {"failure_epoch", U64()},
             {"expected_cursor", U64()}, {"actual_cursor", U64()}}});
@@ -882,18 +884,17 @@ ProgramModule RewriteModule()
     const auto suffix_count = Binary(builder, function, emit,
         InstructionOpcode::SubtractChecked, U64(), source_count, emit_insert,
         "suffix-count", scope);
-    const auto emit_one = Constant(builder, function, emit, U64(),
-        std::uint64_t{1}, "one", scope);
+    const auto neutral_count = Project(builder, function, emit, argument.id,
+        U64(), "neutral_count", scope);
     const auto child_count = Binary(builder, function, emit,
-        InstructionOpcode::AddChecked, U64(), suffix_count, emit_one,
+        InstructionOpcode::AddChecked, U64(), suffix_count, neutral_count,
         "child-count", scope);
     const auto emit_done = Binary(builder, function, emit,
         InstructionOpcode::GreaterEqual, Bool(), emit_args[0].id, child_count,
         "emit-done", scope);
     const auto is_neutral = Binary(builder, function, emit,
-        InstructionOpcode::Equal, Bool(), emit_args[0].id,
-        Constant(builder, function, emit, U64(), std::uint64_t{0},
-            "zero", scope), "is-neutral", scope);
+        InstructionOpcode::Less, Bool(), emit_args[0].id, neutral_count,
+        "is-neutral", scope);
     const auto choose_id = builder.AddBlock(function,
         std::array{builder.NewArgument(U64()), builder.NewArgument(Bool())}).id;
     builder.SetTerminator(function, emit,
@@ -921,11 +922,11 @@ ProgramModule RewriteModule()
         Named(EpochListSchema()), "epochs", scope);
     const auto source_insert = Project(builder, function, source, argument.id,
         U64(), "insert_before", scope);
-    const auto source_one = Constant(builder, function, source, U64(),
-        std::uint64_t{1}, "one", scope);
+    const auto source_neutral_count = Project(builder, function, source,
+        argument.id, U64(), "neutral_count", scope);
     const auto suffix_index = Binary(builder, function, source,
         InstructionOpcode::SubtractChecked, U64(), source.arguments[0].id,
-        source_one, "suffix-index", scope);
+        source_neutral_count, "suffix-index", scope);
     const auto source_index = Binary(builder, function, source,
         InstructionOpcode::AddChecked, U64(), source_insert, suffix_index,
         "source-index", scope);
@@ -1024,10 +1025,11 @@ ProgramModule RewriteModule()
         "source count");
     const auto result_insert = Project(builder, function, finalize, argument.id,
         U64(), "insert_before", scope);
+    const auto result_neutral_count = Project(builder, function, finalize,
+        argument.id, U64(), "neutral_count", scope);
     const auto result_child = Binary(builder, function, finalize,
         InstructionOpcode::AddChecked, U64(), result_source_count,
-        Constant(builder, function, finalize, U64(), std::uint64_t{1},
-            "one", scope), "child-count", scope);
+        result_neutral_count, "child-count", scope);
     const auto completed = EnumConstant(builder, function, finalize,
         OutcomeSchema(), 0, "completed", scope);
     const auto no_failure = EnumConstant(builder, function, finalize,
@@ -1036,7 +1038,7 @@ ProgramModule RewriteModule()
         std::uint64_t{0}, "zero", scope);
     const auto result = Construct(builder, function, finalize,
         Named(RewriteResultSchema()), std::array{completed, result_insert,
-            result_source_count, result_child, final_cursor, no_failure,
+            result_neutral_count, result_source_count, result_child, final_cursor, no_failure,
             result_zero, result_zero, result_zero}, "result", scope);
     (void)builder.AddInstruction(function, finalize,
         InstructionOpcode::ExitScope, std::nullopt, {}, {}, "release-scope",
@@ -1228,12 +1230,13 @@ ProgramValueGraph RewriteInput(const TasMovieInputEpochRewriteRequestV1& request
     const auto epoch_list = graph.Add(Named(EpochListSchema()),
         ListValue{std::move(epochs)});
     const auto insertion = graph.Add(U64(), request.insert_before_epoch);
+    const auto neutral_count = graph.Add(U64(), request.neutral_epoch_count);
     const auto recording = graph.Add(CanonicalRuntimeType(
         CanonicalRuntimeSchema::MovieRecordingStaticConfig),
         RecordingConfig(request.output_dtm_path));
     const auto save = graph.Import(SaveGraph(request.output_savestate_path));
     return graph.Finish(graph.Add(Named(RewriteRequestSchema()),
-        RecordValue{{prepare, epoch_list, insertion, recording, save}}));
+        RecordValue{{prepare, epoch_list, insertion, neutral_count, recording, save}}));
 }
 
 const ProgramValue* Find(const ProgramValueGraph& graph, ProgramValueId id)
@@ -1623,22 +1626,23 @@ public:
                 "$.output.root: expected RewriteResultV1 record");
             return false;
         }
-        if (record->fields.size()!=9)
+        if (record->fields.size()!=10)
         {
             Diagnostic(diagnostic,
-                "$.output.root: expected 9 fields, found " +
+                "$.output.root: expected 10 fields, found " +
                 std::to_string(record->fields.size()));
             return false;
         }
         const auto* outcome=Payload<EnumValue>(graph,record->fields[0]);
         const auto* insert=Payload<std::uint64_t>(graph,record->fields[1]);
-        const auto* source=Payload<std::uint64_t>(graph,record->fields[2]);
-        const auto* child=Payload<std::uint64_t>(graph,record->fields[3]);
-        const auto* cursor=Payload<std::uint64_t>(graph,record->fields[4]);
-        const auto* failure=Payload<EnumValue>(graph,record->fields[5]);
-        const auto* failure_epoch=Payload<std::uint64_t>(graph,record->fields[6]);
-        const auto* expected=Payload<std::uint64_t>(graph,record->fields[7]);
-        const auto* actual=Payload<std::uint64_t>(graph,record->fields[8]);
+        const auto* neutral=Payload<std::uint64_t>(graph,record->fields[2]);
+        const auto* source=Payload<std::uint64_t>(graph,record->fields[3]);
+        const auto* child=Payload<std::uint64_t>(graph,record->fields[4]);
+        const auto* cursor=Payload<std::uint64_t>(graph,record->fields[5]);
+        const auto* failure=Payload<EnumValue>(graph,record->fields[6]);
+        const auto* failure_epoch=Payload<std::uint64_t>(graph,record->fields[7]);
+        const auto* expected=Payload<std::uint64_t>(graph,record->fields[8]);
+        const auto* actual=Payload<std::uint64_t>(graph,record->fields[9]);
         bool valid = true;
         const auto require = [&](bool present, std::string_view path,
                                  std::string_view type) {
@@ -1649,6 +1653,7 @@ public:
         };
         require(outcome != nullptr, "$.output.outcome", "OutcomeV1 enum");
         require(insert != nullptr, "$.output.insert_before", "u64");
+        require(neutral != nullptr, "$.output.neutral_count", "u64");
         require(source != nullptr, "$.output.source_count", "u64");
         require(child != nullptr, "$.output.child_count", "u64");
         require(cursor != nullptr, "$.output.final_cursor", "u64");
@@ -1678,7 +1683,8 @@ public:
         }
         if (!valid) return false;
         result={.outcome=static_cast<InputEpochOutcomeV1>(outcome->value),
-            .insert_before_epoch=*insert,.source_epoch_count=*source,
+            .insert_before_epoch=*insert,.neutral_epoch_count=*neutral,
+            .source_epoch_count=*source,
             .child_epoch_count=*child,.final_cursor=*cursor,
             .failure_reason=static_cast<InputEpochFailureReasonV1>(failure->value),
             .failure_epoch=*failure_epoch,.expected_cursor=*expected,
@@ -1695,7 +1701,9 @@ public:
                 "$.output.insert_before: exceeds source_count");
             return false;
         }
-        if (result.child_epoch_count != result.source_epoch_count + 1)
+        if (result.neutral_epoch_count == 0 ||
+            result.child_epoch_count != result.source_epoch_count +
+                result.neutral_epoch_count)
         {
             Diagnostic(diagnostic,
                 "$.output.child_count: inconsistent with source_count and insert_before");

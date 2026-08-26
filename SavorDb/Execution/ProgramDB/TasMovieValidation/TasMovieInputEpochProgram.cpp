@@ -198,6 +198,23 @@ std::optional<std::int64_t> IntegerArgument(
     return std::nullopt;
 }
 
+std::optional<std::string> TextArgument(
+    const ProgramJobMaterializationContext& context, std::string_view key) {
+    if (!context.graph) return std::nullopt;
+    for (const auto& argument : context.graph->arguments) {
+        if (argument.argument_key == key &&
+            (argument.value_type == "text" || argument.value_type == "choice") &&
+            argument.text_value) return argument.text_value;
+    }
+    return std::nullopt;
+}
+
+bool IsExactButtonOnly(const GCInputFrame& input, std::uint16_t button) {
+    return input.buttons == button && input.main_x == 128 && input.main_y == 128
+        && input.c_x == 128 && input.c_y == 128
+        && input.trig_l == 0 && input.trig_r == 0;
+}
+
 std::string JobInput(std::string_view prefix, std::int64_t request_id) {
     return std::string(prefix) + std::to_string(request_id);
 }
@@ -637,7 +654,9 @@ public:
         const auto attempt_id = Binding(context, "annotation_attempt",
             "analysis.tas_movie_input_epoch_annotation_attempt_id",
             "tmv_input_epoch_annotation_attempt");
-        const auto insertion = IntegerArgument(context, "insert_before_epoch");
+        auto insertion = IntegerArgument(context, "insert_before_epoch");
+        const auto neutral_count = IntegerArgument(context, "neutral_epoch_count");
+        const auto placement_profile = TextArgument(context, "placement_profile");
         const auto attempt = attempt_id
             ? analysis_->GetTasMovieInputEpochAnnotationAttempt(*attempt_id)
             : std::nullopt;
@@ -645,12 +664,31 @@ public:
             ? analysis_->GetTasMovieInputEpochAnnotationRequest(attempt->annotation_request_id)
             : std::nullopt;
         if (!attempt || !attempt->succeeded || !attempt->schedule_artifact_id
-            || !attempt->schedule_sha256 || !source_request || !insertion
-            || *insertion < 0
-            || static_cast<std::uint64_t>(*insertion) >= attempt->epoch_count) {
+            || !attempt->schedule_sha256 || !source_request || !neutral_count
+            || *neutral_count <= 0) {
             return Fail("input-epoch rewrite requires a successful annotation and a valid insertion epoch",
                 error_out);
         }
+        if (!insertion) {
+            if (!placement_profile || *placement_profile != "first_battle.final_dialog")
+                return Fail("input-epoch rewrite requires an explicit epoch or a supported placement profile", error_out);
+            const auto artifact = state_->GetArtifact(*attempt->schedule_artifact_id);
+            const auto bytes = artifact ? ReadFile(artifact->filename, error_out) : std::nullopt;
+            inputepoch::TasMovieInputEpochScheduleV1 schedule;
+            std::string diagnostic;
+            if (!bytes || !inputepoch::DecodeInputEpochScheduleArtifactV1(
+                    *bytes, schedule, &diagnostic))
+                return Fail("placement profile could not read the annotation schedule: " + diagnostic, error_out);
+            for (std::size_t index = 0; index + 1 < schedule.epochs.size(); ++index) {
+                if (IsExactButtonOnly(schedule.epochs[index].input, GC_B) &&
+                    IsExactButtonOnly(schedule.epochs[index + 1].input, GC_A))
+                    insertion = static_cast<std::int64_t>(index);
+            }
+            if (!insertion)
+                return Fail("first_battle.final_dialog found no exact final B-only to A-only transition", error_out);
+        }
+        if (*insertion < 0 || static_cast<std::uint64_t>(*insertion) >= attempt->epoch_count)
+            return Fail("input-epoch rewrite insertion epoch is outside the annotation schedule", error_out);
         const auto& identity = phase_->identity();
         const auto& runtime = phase_->runtime_contract();
         CreateTasMovieInputEpochRewriteRequestCommand command{
@@ -664,6 +702,8 @@ public:
             .schedule_artifact_id = *attempt->schedule_artifact_id,
             .schedule_sha256 = *attempt->schedule_sha256,
             .insert_before_epoch = static_cast<std::uint64_t>(*insertion),
+            .neutral_epoch_count = static_cast<std::uint64_t>(*neutral_count),
+            .placement_profile = placement_profile.value_or("explicit"),
             .full_phase_program_kind = identity.program_kind,
             .full_phase_program_version = identity.program_version,
             .full_phase_canonical_id = identity.canonical_id,
@@ -858,6 +898,7 @@ public:
             .source_dtm_path = source_path.string(),
             .schedule = std::move(schedule),
             .insert_before_epoch = request->insert_before_epoch,
+            .neutral_epoch_count = request->neutral_epoch_count,
             .output_dtm_path = output_dtm.string(),
             .output_savestate_path = output_sav.string(),
         };
@@ -1060,7 +1101,9 @@ public:
         std::optional<std::int64_t> savestate_id;
         if (attempt.succeeded) {
             if (outcome.insert_before_epoch != request->insert_before_epoch
-                || outcome.child_epoch_count != outcome.source_epoch_count + 1
+                || outcome.neutral_epoch_count != request->neutral_epoch_count
+                || outcome.child_epoch_count != outcome.source_epoch_count +
+                    request->neutral_epoch_count
                 || outcome.artifacts.size() != 2) {
                 return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_SHAPE_INVALID",
                     "completed rewrite returned an incompatible result shape");

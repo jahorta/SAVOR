@@ -3,6 +3,7 @@
 #include "GUI/Workspace/WorkspaceWidgets.h"
 
 #include <functional>
+#include <set>
 
 class CoordinatorController;
 class QEvent;
@@ -80,4 +81,5 @@ private:
     int lastFailedWorkflows_ = 0;
     int lastFailedJobs_ = 0;
     int lastAttentionItems_ = 0;
+    std::set<qint64> collapsedExpansionIds_;
 };

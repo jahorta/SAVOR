@@ -1522,6 +1522,8 @@ struct CreateTasMovieInputEpochRewriteRequestCommand {
     std::int64_t schedule_artifact_id = 0;
     std::string schedule_sha256;
     std::uint64_t insert_before_epoch = 0;
+    std::uint64_t neutral_epoch_count = 1;
+    std::string placement_profile;
     std::int64_t full_phase_program_kind = 0;
     std::int64_t full_phase_program_version = 0;
     std::string full_phase_canonical_id;

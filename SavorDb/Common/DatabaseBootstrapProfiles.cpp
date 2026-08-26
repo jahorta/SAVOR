@@ -96,6 +96,56 @@ authoring::AuthoringRecipe StandardRecipe()
     });
 
     recipe.Workflow({
+        .symbol = "workflow.tas_expansion_annotate",
+        .name = "TAS Movie Expansion: Annotate",
+        .description = "Shared passive input-epoch annotation used by TAS exploration families.",
+        .hidden = true,
+        .nodes = {{.node_key="tas_movie_annotate_expansion",
+                   .unit=ac::workflow::units::TasMovieAnnotate}},
+        .external_inputs = {{"tas_movie_annotate_expansion",
+            ac::workflow::ports::tas_movie_annotate::RootDtm}},
+    });
+
+    recipe.Workflow({
+        .symbol = "workflow.tas_expansion_revise_establish",
+        .name = "TAS Movie Expansion: Revise and Establish",
+        .description = "Revises an annotated DTM by a requested neutral delay and establishes the revised movie as a new root.",
+        .hidden = true,
+        .nodes = {
+            {.node_key="tas_movie_revise_1",
+             .unit=ac::workflow::units::TasMovieRevise},
+            {.node_key="tas_movie_establish_root_cursor_2",
+             .unit=ac::workflow::units::TasMovieEstablishRootCursor},
+        },
+        .external_inputs = {{"tas_movie_revise_1",
+            ac::workflow::ports::tas_movie_revise::AnnotationAttempt}},
+        .edges = {{"tas_movie_revise_1",
+            ac::workflow::ports::tas_movie_revise::RewrittenDtm,
+            "tas_movie_establish_root_cursor_2",
+            ac::workflow::ports::tas_movie_establish_root_cursor::RootDtm}},
+    });
+
+    recipe.Workflow({
+        .symbol = "workflow.first_battle_exploration",
+        .name = "First Battle Exploration",
+        .description = "Expands a root DTM across RTC values and neutral guest-input delays, then runs the complete first-battle workflow for every branch.",
+        .nodes = {{.node_key="first_battle_exploration_1",
+            .unit=ac::workflow::units::TasMovieFirstBattleExploration}},
+        .external_inputs = {{"first_battle_exploration_1",
+            ac::workflow::ports::tas_movie_first_battle_exploration::RootDtm}},
+    });
+
+    recipe.Workflow({
+        .symbol = "workflow.delay_exploration",
+        .name = "TAS Delay Exploration",
+        .description = "Expands a qualified TAS route node across neutral guest-input delays at its inherited RTC.",
+        .nodes = {{.node_key="delay_exploration_1",
+            .unit=ac::workflow::units::TasMovieDelayExploration}},
+        .external_inputs = {{"delay_exploration_1",
+            ac::workflow::ports::tas_movie_delay_exploration::TasNode}},
+    });
+
+    recipe.Workflow({
         .symbol = "workflow.first_battle_rtc", .name = "1st battle RTC",
         .description = "Validates and sterilizes an established TAS root, probes RTC seeds, captures battle context, and executes the first-battle plan.",
         .nodes = {

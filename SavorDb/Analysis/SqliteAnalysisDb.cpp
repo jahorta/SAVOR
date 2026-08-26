@@ -1884,7 +1884,7 @@ SqliteAnalysisDb::GetTasMovieInputEpochRewriteRequest(const std::int64_t request
     constexpr const char* kSql =
         "SELECT rewrite_request_id,materialization_key,workflow_instance_id,workflow_step_id,"
         "annotation_attempt_id,source_dtm_artifact_id,source_dtm_sha256,schedule_artifact_id,"
-        "schedule_sha256,insert_before_epoch,full_phase_program_kind,full_phase_program_version,"
+        "schedule_sha256,insert_before_epoch,neutral_epoch_count,placement_profile,full_phase_program_kind,full_phase_program_version,"
         "full_phase_canonical_id,full_phase_contract_revision,full_phase_sha256,module_canonical_id,"
         "module_revision,module_sha256,created_at_utc FROM tmv_input_epoch_rewrite_request "
         "WHERE rewrite_request_id=?1;";
@@ -1902,15 +1902,17 @@ SqliteAnalysisDb::GetTasMovieInputEpochRewriteRequest(const std::int64_t request
     row.schedule_artifact_id = sqlite3_column_int64(st.st, 7);
     row.schedule_sha256 = ColumnText(st.st, 8);
     row.insert_before_epoch = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 9));
-    row.full_phase_program_kind = sqlite3_column_int64(st.st, 10);
-    row.full_phase_program_version = sqlite3_column_int64(st.st, 11);
-    row.full_phase_canonical_id = ColumnText(st.st, 12);
-    row.full_phase_contract_revision = sqlite3_column_int64(st.st, 13);
-    row.full_phase_sha256 = ColumnText(st.st, 14);
-    row.module_canonical_id = ColumnText(st.st, 15);
-    row.module_revision = sqlite3_column_int64(st.st, 16);
-    row.module_sha256 = ColumnText(st.st, 17);
-    row.created_at_utc = ColumnTime(st.st, 18);
+    row.neutral_epoch_count = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 10));
+    row.placement_profile = ColumnText(st.st, 11);
+    row.full_phase_program_kind = sqlite3_column_int64(st.st, 12);
+    row.full_phase_program_version = sqlite3_column_int64(st.st, 13);
+    row.full_phase_canonical_id = ColumnText(st.st, 14);
+    row.full_phase_contract_revision = sqlite3_column_int64(st.st, 15);
+    row.full_phase_sha256 = ColumnText(st.st, 16);
+    row.module_canonical_id = ColumnText(st.st, 17);
+    row.module_revision = sqlite3_column_int64(st.st, 18);
+    row.module_sha256 = ColumnText(st.st, 19);
+    row.created_at_utc = ColumnTime(st.st, 20);
     return row;
 }
 
@@ -1936,7 +1938,9 @@ bool SqliteAnalysisDb::CreateTasMovieInputEpochRewriteRequest(
         || command.annotation_attempt_id <= 0 || command.source_dtm_artifact_id <= 0
         || !IsLowerHexSha256(command.source_dtm_sha256)
         || command.schedule_artifact_id <= 0 || !IsLowerHexSha256(command.schedule_sha256)
-        || command.insert_before_epoch > kMax || command.full_phase_program_kind != 14
+        || command.insert_before_epoch > kMax || command.neutral_epoch_count == 0
+        || command.neutral_epoch_count > kMax || command.placement_profile.empty()
+        || command.full_phase_program_kind != 14
         || command.full_phase_program_version <= 0 || command.full_phase_canonical_id.empty()
         || command.full_phase_contract_revision <= 0 || !IsLowerHexSha256(command.full_phase_sha256)
         || command.module_canonical_id.empty() || command.module_revision <= 0
@@ -1954,6 +1958,8 @@ bool SqliteAnalysisDb::CreateTasMovieInputEpochRewriteRequest(
             && existing->schedule_artifact_id == command.schedule_artifact_id
             && existing->schedule_sha256 == command.schedule_sha256
             && existing->insert_before_epoch == command.insert_before_epoch
+            && existing->neutral_epoch_count == command.neutral_epoch_count
+            && existing->placement_profile == command.placement_profile
             && existing->full_phase_program_kind == command.full_phase_program_kind
             && existing->full_phase_program_version == command.full_phase_program_version
             && existing->full_phase_canonical_id == command.full_phase_canonical_id
@@ -1977,10 +1983,10 @@ bool SqliteAnalysisDb::CreateTasMovieInputEpochRewriteRequest(
     constexpr const char* kSql =
         "INSERT INTO tmv_input_epoch_rewrite_request(materialization_key,workflow_instance_id,"
         "workflow_step_id,annotation_attempt_id,source_dtm_artifact_id,source_dtm_sha256,"
-        "schedule_artifact_id,schedule_sha256,insert_before_epoch,full_phase_program_kind,"
+        "schedule_artifact_id,schedule_sha256,insert_before_epoch,neutral_epoch_count,placement_profile,full_phase_program_kind,"
         "full_phase_program_version,full_phase_canonical_id,full_phase_contract_revision,"
         "full_phase_sha256,module_canonical_id,module_revision,module_sha256,created_at_utc) "
-        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18);";
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20);";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
@@ -1995,15 +2001,17 @@ bool SqliteAnalysisDb::CreateTasMovieInputEpochRewriteRequest(
     sqlite3_bind_int64(st.st, 7, command.schedule_artifact_id);
     sqlite3_bind_text(st.st, 8, command.schedule_sha256.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(st.st, 9, static_cast<std::int64_t>(command.insert_before_epoch));
-    sqlite3_bind_int64(st.st, 10, command.full_phase_program_kind);
-    sqlite3_bind_int64(st.st, 11, command.full_phase_program_version);
-    sqlite3_bind_text(st.st, 12, command.full_phase_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 13, command.full_phase_contract_revision);
-    sqlite3_bind_text(st.st, 14, command.full_phase_sha256.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 15, command.module_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 16, command.module_revision);
-    sqlite3_bind_text(st.st, 17, command.module_sha256.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 18, command.created_at_utc.time_since_epoch().count());
+    sqlite3_bind_int64(st.st, 10, static_cast<std::int64_t>(command.neutral_epoch_count));
+    sqlite3_bind_text(st.st, 11, command.placement_profile.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 12, command.full_phase_program_kind);
+    sqlite3_bind_int64(st.st, 13, command.full_phase_program_version);
+    sqlite3_bind_text(st.st, 14, command.full_phase_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 15, command.full_phase_contract_revision);
+    sqlite3_bind_text(st.st, 16, command.full_phase_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 17, command.module_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 18, command.module_revision);
+    sqlite3_bind_text(st.st, 19, command.module_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 20, command.created_at_utc.time_since_epoch().count());
     if (sqlite3_step(st.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);

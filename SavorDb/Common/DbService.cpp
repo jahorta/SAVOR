@@ -155,6 +155,16 @@ bool DBService::Start(std::string* error_out) {
         return fail_start("Failed starting UIRead projection service: " + (error_out ? *error_out : std::string{}));
     }
 
+    workflow_expansion_service_ = std::make_unique<
+        savor::db::execution::workflow::WorkflowExpansionService>(
+            config_paths_.execution_db_path, config_paths_.analysis_db_path,
+            authoring_db_.get(), execution_db_.get(), state_db_.get(),
+            analysis_db_.get());
+    if (!workflow_expansion_service_->Start(error_out)) {
+        return fail_start("Failed starting workflow expansion service: " +
+            (error_out ? *error_out : std::string{}));
+    }
+
     running_ = true;
     return true;
 }
@@ -220,6 +230,11 @@ savor::db::IUiReadDb* DBService::UiReadDb() {
 
 savor::db::IArchiveDb* DBService::ArchiveDb() {
     return archive_db_.get();
+}
+
+savor::db::execution::workflow::WorkflowExpansionService*
+DBService::WorkflowExpansionService() {
+    return workflow_expansion_service_.get();
 }
 
 bool DBService::RunUiReadProjectionOnce(std::string* error_out) {
@@ -392,6 +407,7 @@ void DBService::CloseConnections() {
 }
 
 void DBService::ResetServices() {
+    workflow_expansion_service_.reset();
     ui_read_projection_service_.reset();
     archive_db_.reset();
     sqlite_archive_db_.reset();
