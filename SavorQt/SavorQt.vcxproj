@@ -138,6 +138,7 @@
     <ClCompile Include="GUI\Authoring\GuidedPredicateRuleEditor.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunsPane\BattleRunsWidget.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunsPane\VictoryResultsWidget.cpp" />
+    <ClCompile Include="GUI\Panes\FirstBattleCoveragePane\FirstBattleCoverageWidget.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp" />
@@ -179,6 +180,7 @@
     <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h" />
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h" />
     <QtMoc Include="GUI\Widgets\PersistentToolWindow.h" />
+    <QtMoc Include="GUI\Panes\FirstBattleCoveragePane\FirstBattleCoverageWidget.h" />
     <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h" />
     <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayWindow.h" />
     <QtMoc Include="GUI\MainWindow.h" />

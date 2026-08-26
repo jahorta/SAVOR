@@ -11,6 +11,7 @@
 #include "GUI/Tabs/SetupTab.h"
 #include "GUI/Tabs/TasRoutesTab.h"
 #include "GUI/Panes/BattleRunsPane/VictoryResultsWidget.h"
+#include "GUI/Panes/FirstBattleCoveragePane/FirstBattleCoverageWidget.h"
 #include "GUI/Widgets/PersistentToolWindow.h"
 #include "DB/SavorDbArtifactService.h"
 #include "DB/SavorDbAuthoringService.h"
@@ -321,6 +322,7 @@ void MainWindow::createWidgets()
 		[this]() { openFocusedTool(FocusedTool::Workflows); },
 		[this](qint64 workflowId) { openWorkflow(workflowId); },
 		[this](qint64 workflowId) { retryWorkflowJobs(workflowId); },
+		[this](qint64 expansionId) { openFirstBattleCoverage(expansionId); },
 		[this]() { openFocusedTool(FocusedTool::Jobs); },
 		[this]() { openFocusedTool(FocusedTool::Workers); },
 		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::Section); },
@@ -340,7 +342,8 @@ void MainWindow::createWidgets()
     workspaceStack_->addWidget(analysisTab_);
     tasRoutesTab_ = new TasRoutesTab(TasRoutesTab::Actions{
         [this](qint64 routeNodeId) { openVictoryResults(routeNodeId); },
-        [this](qint64 workflowId) { openWorkflow(workflowId); }
+        [this](qint64 workflowId) { openWorkflow(workflowId); },
+        [this]() { openFirstBattleCoverage(); }
     }, root);
     workspaceStack_->addWidget(tasRoutesTab_);
 
@@ -572,6 +575,35 @@ void MainWindow::openVictoryResults(std::int64_t routeNodeId)
             }
         }
         window->show(); window->raise(); window->activateWindow();
+    }
+}
+
+void MainWindow::openFirstBattleCoverage(std::int64_t workflowExpansionId)
+{
+    const QString key = QStringLiteral("first_battle_coverage");
+    if (focusedWindows_.value(key) == nullptr) {
+        PersistentToolWindow* window = createFocusedWindow(
+            key, QStringLiteral("First Battle Coverage"));
+        if (window != nullptr) {
+            auto* page = new FirstBattleCoverageWidget({
+                [this](qint64 workflowId) { openWorkflow(workflowId); }
+            }, window);
+            page->setPageActive(true);
+            connect(window, &PersistentToolWindow::aboutToClose, page,
+                [page]() { page->setPageActive(false); });
+            connect(page, &FirstBattleCoverageWidget::statusToastRequested,
+                statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+            window->layout()->addWidget(page);
+        }
+    }
+    if (PersistentToolWindow* window = focusedWindows_.value(key); window != nullptr) {
+        if (auto* page = window->findChild<FirstBattleCoverageWidget*>()) {
+            if (workflowExpansionId > 0) page->showExpansion(workflowExpansionId);
+            else page->setPageActive(true);
+        }
+        window->show();
+        window->raise();
+        window->activateWindow();
     }
 }
 

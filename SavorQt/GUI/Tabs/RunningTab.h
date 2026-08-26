@@ -23,6 +23,7 @@ public:
         std::function<void()> openWorkflows;
         std::function<void(qint64)> openWorkflow;
         std::function<void(qint64)> retryWorkflowJobs;
+        std::function<void(qint64)> openFirstBattleCoverage;
         std::function<void()> openJobs;
         std::function<void()> openWorkers;
         std::function<void()> openCoordinatorSettings;

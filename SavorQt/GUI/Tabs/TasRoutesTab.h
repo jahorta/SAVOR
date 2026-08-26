@@ -19,6 +19,7 @@ public:
     struct Actions {
         std::function<void(std::int64_t)> openVictoryResults;
         std::function<void(std::int64_t)> openWorkflow;
+        std::function<void()> openFirstBattleCoverage;
     };
 
     explicit TasRoutesTab(Actions actions, QWidget* parent = nullptr);

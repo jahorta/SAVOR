@@ -54,10 +54,12 @@ TasRoutesTab::TasRoutesTab(Actions actions, QWidget* parent)
     search_ = new QLineEdit(this);
     search_->setPlaceholderText(QStringLiteral("Filter routes"));
     auto* fit = new QPushButton(QStringLiteral("Fit"), this);
+    auto* firstBattleCoverage = new QPushButton(QStringLiteral("First Battle Coverage"), this);
     auto* refreshButton = new QPushButton(QStringLiteral("Refresh"), this);
     controls->addWidget(rootFilter_);
     controls->addWidget(search_, 1);
     controls->addWidget(fit);
+    controls->addWidget(firstBattleCoverage);
     controls->addWidget(refreshButton);
     canvasLayout()->addLayout(controls);
 
@@ -109,6 +111,9 @@ TasRoutesTab::TasRoutesTab(Actions actions, QWidget* parent)
     refresh_->setActive(false);
 
     connect(refreshButton, &QPushButton::clicked, this, [this]() { requestRefresh(); });
+    connect(firstBattleCoverage, &QPushButton::clicked, this, [this]() {
+        if (actions_.openFirstBattleCoverage) actions_.openFirstBattleCoverage();
+    });
     connect(fit, &QPushButton::clicked, this, [this]() { view_->fitInView(scene_->itemsBoundingRect(), Qt::KeepAspectRatio); });
     connect(search_, &QLineEdit::textChanged, this, [this]() { if (snapshot_) applySnapshot(*snapshot_); });
     connect(rootFilter_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) { if (snapshot_) applySnapshot(*snapshot_); });

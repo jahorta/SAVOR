@@ -566,6 +566,40 @@ public:
             expansions->List(include_final));
     }
 
+    static ServiceResult<savor::db::execution::workflow::FirstBattleCoverageSnapshot>
+    ReadFirstBattleCoverage(
+        const savor::db::execution::workflow::FirstBattleCoverageQuery& query) {
+        auto* db_service = savorqt::SavorDbRuntime::instance().service();
+        auto* expansions = db_service ? db_service->WorkflowExpansionService() : nullptr;
+        if (!expansions)
+            return Unavailable<savor::db::execution::workflow::FirstBattleCoverageSnapshot>(
+                kSavorDbRuntimeUnavailableMessage);
+        savor::db::execution::workflow::FirstBattleCoverageSnapshot snapshot{};
+        std::string error;
+        if (!expansions->ReadFirstBattleCoverage(query, &snapshot, &error))
+            return Failed<savor::db::execution::workflow::FirstBattleCoverageSnapshot>(
+                std::move(error));
+        return ServiceResult<savor::db::execution::workflow::FirstBattleCoverageSnapshot>::Ok(
+            std::move(snapshot));
+    }
+
+    static ServiceResult<savor::db::execution::workflow::LaunchMissingFirstBattleCoverageReceipt>
+    LaunchMissingFirstBattleCoverage(
+        const savor::db::execution::workflow::LaunchMissingFirstBattleCoverageRequest& request) {
+        auto* db_service = savorqt::SavorDbRuntime::instance().service();
+        auto* expansions = db_service ? db_service->WorkflowExpansionService() : nullptr;
+        if (!expansions)
+            return Unavailable<savor::db::execution::workflow::LaunchMissingFirstBattleCoverageReceipt>(
+                kSavorDbRuntimeUnavailableMessage);
+        savor::db::execution::workflow::LaunchMissingFirstBattleCoverageReceipt receipt{};
+        std::string error;
+        if (!expansions->LaunchMissingFirstBattleCoverage(request, &receipt, &error))
+            return Failed<savor::db::execution::workflow::LaunchMissingFirstBattleCoverageReceipt>(
+                std::move(error));
+        return ServiceResult<savor::db::execution::workflow::LaunchMissingFirstBattleCoverageReceipt>::Ok(
+            std::move(receipt));
+    }
+
     static ServiceResult<RecordBattleVictoryResult> RecordBattleVictory(
         std::int64_t turn_job_id) {
         auto& runtime = savorqt::SavorDbRuntime::instance();

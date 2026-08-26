@@ -219,6 +219,7 @@
     <ClCompile Include="..\SavorE2E\ScenarioAssessment.cpp" />
     <ClCompile Include="..\SavorE2E\WorkerStartupBarrier.cpp" />
     <ClCompile Include="test_e2e_scenario_assessment.cpp" />
+    <ClCompile Include="test_workflow_expansion_targets.cpp" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googlemock\src\gmock-all.cc" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />

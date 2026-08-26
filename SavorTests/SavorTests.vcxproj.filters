@@ -170,6 +170,7 @@
     <ClCompile Include="test_stop_point_router.cpp" />
     <ClCompile Include="..\SavorE2E\ScenarioAssessment.cpp" />
     <ClCompile Include="test_e2e_scenario_assessment.cpp" />
+    <ClCompile Include="test_workflow_expansion_targets.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="scoped_wrapper.h" />

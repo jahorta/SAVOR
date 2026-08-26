@@ -13,6 +13,8 @@
 #include <chrono>
 #include <limits>
 #include <map>
+#include <set>
+#include <tuple>
 
 namespace savor::db::execution::workflow {
 namespace {
@@ -69,6 +71,10 @@ bool IsAttention(const std::string& state) {
     return state == "FAILED" || state == "INTERRUPTED";
 }
 
+bool IsActive(const std::string& state) {
+    return state == "PENDING" || state == "RUNNING" || state == "CANCELLING";
+}
+
 const WorkflowExpansionMemberSnapshot* FindMember(
     const WorkflowExpansionSnapshot& expansion, const std::string& role,
     std::int64_t delay, std::optional<std::int64_t> rtc = std::nullopt) {
@@ -116,6 +122,17 @@ bool BindInt64(sqlite3_stmt* statement, int index,
 
 } // namespace
 
+std::vector<WorkflowExpansionTarget> NormalizeFirstBattleExpansionTargets(
+    const std::vector<WorkflowExpansionTarget>& requested) {
+    std::set<WorkflowExpansionTarget> normalized;
+    for (const auto& target : requested) {
+        if (target.rtc_value < 0 || target.neutral_epoch_count < 0) continue;
+        for (std::int64_t delay = 0; delay <= target.neutral_epoch_count; ++delay)
+            normalized.insert({delay, target.rtc_value});
+    }
+    return {normalized.begin(), normalized.end()};
+}
+
 WorkflowExpansionService::WorkflowExpansionService(
     std::filesystem::path execution_db_path,
     std::filesystem::path analysis_db_path, IAuthoringDb* authoring,
@@ -159,15 +176,14 @@ void WorkflowExpansionService::Wake() { cv_.notify_all(); }
 bool WorkflowExpansionService::Create(
     const WorkflowExpansionCreateRequest& request,
     std::int64_t* expansion_id_out, std::string* error_out) {
+    std::lock_guard lock(db_mutex_);
     if (!db_ || request.kind == WorkflowExpansionKind::None ||
         request.source_ref_id <= 0 || request.max_neutral_epochs < 0)
         return false;
     const bool first = request.kind ==
         WorkflowExpansionKind::TasMovieFirstBattleExploration;
-    if (first && (request.source_ref_kind != "state_artifact" ||
-        !request.rtc_min || !request.rtc_max || *request.rtc_min < 0 ||
-        *request.rtc_max < *request.rtc_min)) {
-        if (error_out) *error_out = "first-battle expansion requires a DTM artifact and an inclusive RTC range";
+    if (first && request.source_ref_kind != "state_artifact") {
+        if (error_out) *error_out = "first-battle expansion requires a DTM artifact";
         return false;
     }
     if (!first && request.source_ref_kind != "tas_route_node") {
@@ -221,11 +237,50 @@ bool WorkflowExpansionService::Create(
         inherited_rtc = root->rtc_value;
     }
 
+    std::vector<WorkflowExpansionTarget> targets = request.targets;
+    if (first && targets.empty()) {
+        if (!request.rtc_min || !request.rtc_max || *request.rtc_min < 0 ||
+            *request.rtc_max < *request.rtc_min) {
+            if (error_out) *error_out = "first-battle expansion requires targets or an inclusive RTC range";
+            return false;
+        }
+        for (std::int64_t rtc = *request.rtc_min;; ++rtc) {
+            targets.push_back({request.max_neutral_epochs, rtc});
+            if (rtc == *request.rtc_max) break;
+        }
+        targets = NormalizeFirstBattleExpansionTargets(targets);
+    } else if (first) {
+        targets = NormalizeFirstBattleExpansionTargets(targets);
+    } else {
+        if (!inherited_rtc) return false;
+        targets.clear();
+        for (std::int64_t delay = 0; delay <= request.max_neutral_epochs; ++delay)
+            targets.push_back({delay, *inherited_rtc});
+    }
+    if (targets.empty()) {
+        if (error_out) *error_out = "workflow expansion has no valid targets";
+        return false;
+    }
+    const auto [rtc_min_it, rtc_max_it] = std::minmax_element(targets.begin(), targets.end(),
+        [](const auto& lhs, const auto& rhs) { return lhs.rtc_value < rhs.rtc_value; });
+    const auto max_delay_it = std::max_element(targets.begin(), targets.end(),
+        [](const auto& lhs, const auto& rhs) {
+            return lhs.neutral_epoch_count < rhs.neutral_epoch_count;
+        });
+    const std::int64_t rtc_min = rtc_min_it->rtc_value;
+    const std::int64_t rtc_max = rtc_max_it->rtc_value;
+    const std::int64_t max_delay = max_delay_it->neutral_epoch_count;
+
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) return false;
+    const auto rollback = [&] { Exec(db_, "ROLLBACK;", nullptr); };
+
     sqlite3_stmt* statement = nullptr;
     constexpr const char* sql =
         "INSERT INTO exec_workflow_expansion(expansion_kind,state,source_ref_kind,source_ref_id,source_dtm_artifact_id,source_establishment_attempt_id,inherited_rtc,rtc_min,rtc_max,max_neutral_epochs,created_by,created_at_utc,updated_at_utc) VALUES(?1,'RUNNING',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11);";
-    if (sqlite3_prepare_v2(db_, sql, -1, &statement, nullptr) != SQLITE_OK)
+    if (sqlite3_prepare_v2(db_, sql, -1, &statement, nullptr) != SQLITE_OK) {
+        rollback();
         return false;
+    }
     const auto now = types::UtcNow().time_since_epoch().count();
     const auto kind = KindText(request.kind);
     sqlite3_bind_text(statement, 1, kind.c_str(), -1, SQLITE_TRANSIENT);
@@ -234,9 +289,9 @@ bool WorkflowExpansionService::Create(
     BindInt64(statement, 4, source_dtm);
     BindInt64(statement, 5, source_attempt);
     BindInt64(statement, 6, inherited_rtc);
-    BindInt64(statement, 7, request.rtc_min);
-    BindInt64(statement, 8, request.rtc_max);
-    sqlite3_bind_int64(statement, 9, request.max_neutral_epochs);
+    sqlite3_bind_int64(statement, 7, rtc_min);
+    sqlite3_bind_int64(statement, 8, rtc_max);
+    sqlite3_bind_int64(statement, 9, max_delay);
     const auto created_by = request.created_by.empty() ? "SavorDb" : request.created_by;
     sqlite3_bind_text(statement, 10, created_by.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(statement, 11, now);
@@ -244,21 +299,49 @@ bool WorkflowExpansionService::Create(
     sqlite3_finalize(statement);
     if (!ok) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
         return false;
     }
-    if (expansion_id_out) *expansion_id_out = sqlite3_last_insert_rowid(db_);
+    const auto expansion_id = sqlite3_last_insert_rowid(db_);
+    if (sqlite3_prepare_v2(db_,
+        "INSERT INTO exec_workflow_expansion_target(workflow_expansion_id,neutral_epoch_count,rtc_value,created_at_utc) VALUES(?1,?2,?3,?4);",
+        -1, &statement, nullptr) != SQLITE_OK) {
+        rollback();
+        return false;
+    }
+    for (const auto& target : targets) {
+        sqlite3_reset(statement);
+        sqlite3_clear_bindings(statement);
+        sqlite3_bind_int64(statement, 1, expansion_id);
+        sqlite3_bind_int64(statement, 2, target.neutral_epoch_count);
+        sqlite3_bind_int64(statement, 3, target.rtc_value);
+        sqlite3_bind_int64(statement, 4, now);
+        if (sqlite3_step(statement) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            sqlite3_finalize(statement);
+            rollback();
+            return false;
+        }
+    }
+    sqlite3_finalize(statement);
+    if (!Exec(db_, "COMMIT;", error_out)) {
+        rollback();
+        return false;
+    }
+    if (expansion_id_out) *expansion_id_out = expansion_id;
     Wake();
     return true;
 }
 
 std::vector<WorkflowExpansionSnapshot> WorkflowExpansionService::List(
     bool include_final) const {
+    std::lock_guard lock(db_mutex_);
     std::vector<WorkflowExpansionSnapshot> rows;
     if (!db_) return rows;
     sqlite3_stmt* statement = nullptr;
     const char* sql = include_final
-        ? "SELECT workflow_expansion_id,expansion_kind,state,source_ref_id,rtc_min,rtc_max,max_neutral_epochs,failure_text FROM exec_workflow_expansion ORDER BY workflow_expansion_id DESC;"
-        : "SELECT workflow_expansion_id,expansion_kind,state,source_ref_id,rtc_min,rtc_max,max_neutral_epochs,failure_text FROM exec_workflow_expansion WHERE state NOT IN ('COMPLETED','CANCELED') ORDER BY workflow_expansion_id DESC;";
+        ? "SELECT workflow_expansion_id,expansion_kind,state,source_ref_id,rtc_min,rtc_max,max_neutral_epochs,failure_text,source_dtm_artifact_id FROM exec_workflow_expansion ORDER BY workflow_expansion_id DESC;"
+        : "SELECT workflow_expansion_id,expansion_kind,state,source_ref_id,rtc_min,rtc_max,max_neutral_epochs,failure_text,source_dtm_artifact_id FROM exec_workflow_expansion WHERE state NOT IN ('COMPLETED','CANCELED') ORDER BY workflow_expansion_id DESC;";
     if (sqlite3_prepare_v2(db_, sql, -1, &statement, nullptr) != SQLITE_OK)
         return rows;
     while (sqlite3_step(statement) == SQLITE_ROW) {
@@ -271,10 +354,21 @@ std::vector<WorkflowExpansionSnapshot> WorkflowExpansionService::List(
         if (sqlite3_column_type(statement, 5) != SQLITE_NULL) row.rtc_max = sqlite3_column_int64(statement, 5);
         row.max_neutral_epochs = sqlite3_column_int64(statement, 6);
         if (sqlite3_column_type(statement, 7) != SQLITE_NULL) row.failure_text = Text(statement, 7);
+        if (sqlite3_column_type(statement, 8) != SQLITE_NULL)
+            row.source_dtm_artifact_id = sqlite3_column_int64(statement, 8);
         rows.push_back(std::move(row));
     }
     sqlite3_finalize(statement);
     for (auto& row : rows) {
+        if (sqlite3_prepare_v2(db_,
+            "SELECT neutral_epoch_count,rtc_value FROM exec_workflow_expansion_target WHERE workflow_expansion_id=?1 ORDER BY rtc_value,neutral_epoch_count;",
+            -1, &statement, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(statement, 1, row.workflow_expansion_id);
+            while (sqlite3_step(statement) == SQLITE_ROW)
+                row.targets.push_back({sqlite3_column_int64(statement, 0),
+                                       sqlite3_column_int64(statement, 1)});
+        }
+        sqlite3_finalize(statement);
         if (sqlite3_prepare_v2(db_,
             "SELECT workflow_expansion_member_id,member_role,neutral_epoch_count,rtc_value,workflow_instance_id,state FROM exec_workflow_expansion_member WHERE workflow_expansion_id=?1 ORDER BY neutral_epoch_count,COALESCE(rtc_value,-1),workflow_expansion_member_id;",
             -1, &statement, nullptr) != SQLITE_OK) continue;
@@ -292,6 +386,286 @@ std::vector<WorkflowExpansionSnapshot> WorkflowExpansionService::List(
         sqlite3_finalize(statement);
     }
     return rows;
+}
+
+bool WorkflowExpansionService::ReadFirstBattleCoverage(
+    const FirstBattleCoverageQuery& requested_query,
+    FirstBattleCoverageSnapshot* snapshot_out,
+    std::string* error_out) const {
+    std::lock_guard lock(db_mutex_);
+    if (!snapshot_out || !db_) return false;
+    auto expansions = List(true);
+    FirstBattleCoverageQuery request = requested_query;
+    if (request.workflow_expansion_id) {
+        const auto found = std::find_if(expansions.begin(), expansions.end(),
+            [&](const auto& row) {
+                return row.workflow_expansion_id == *request.workflow_expansion_id &&
+                    row.kind == WorkflowExpansionKind::TasMovieFirstBattleExploration;
+            });
+        if (found == expansions.end() || !found->source_dtm_artifact_id) {
+            if (error_out) *error_out = "first-battle expansion was not found";
+            return false;
+        }
+        request.source_dtm_artifact_id = *found->source_dtm_artifact_id;
+        request.rtc_min = found->rtc_min.value_or(0);
+        request.rtc_max = found->rtc_max.value_or(request.rtc_min);
+        request.max_neutral_epochs = found->max_neutral_epochs;
+    }
+    if (request.source_dtm_artifact_id <= 0 || request.rtc_min < 0 ||
+        request.rtc_max < request.rtc_min || request.max_neutral_epochs < 0) {
+        if (error_out) *error_out = "invalid first-battle coverage query";
+        return false;
+    }
+
+    FirstBattleCoverageSnapshot result{};
+    result.source_dtm_artifact_id = request.source_dtm_artifact_id;
+    result.rtc_min = request.rtc_min;
+    result.rtc_max = request.rtc_max;
+    result.max_neutral_epochs = request.max_neutral_epochs;
+    std::map<std::int64_t, FirstBattleDelayPreparationSnapshot> preparations;
+    for (std::int64_t delay = 0; delay <= request.max_neutral_epochs; ++delay)
+        preparations.emplace(delay, FirstBattleDelayPreparationSnapshot{.neutral_epoch_count=delay});
+    std::map<std::pair<std::int64_t, std::int64_t>, FirstBattleCoverageCellSnapshot> cells;
+    for (std::int64_t rtc = request.rtc_min;; ++rtc) {
+        for (std::int64_t delay = 0; delay <= request.max_neutral_epochs; ++delay)
+            cells.emplace(std::pair{rtc, delay},
+                FirstBattleCoverageCellSnapshot{.rtc_value=rtc,
+                                                 .neutral_epoch_count=delay});
+        if (rtc == request.rtc_max) break;
+    }
+
+    const auto state_rank = [](const std::string& state) {
+        if (state == "FAILED" || state == "INTERRUPTED") return 4;
+        if (IsActive(state)) return 3;
+        if (state == "COMPLETED") return 2;
+        if (state == "CANCELED") return 1;
+        return 0;
+    };
+    const auto diagnostic = [](const WorkflowGraphSnapshot& graph) {
+        for (auto it = graph.unit_activations.rbegin(); it != graph.unit_activations.rend(); ++it)
+            if (it->failure_text && !it->failure_text->empty()) return *it->failure_text;
+        for (auto it = graph.steps.rbegin(); it != graph.steps.rend(); ++it)
+            if (it->blocked_reason && !it->blocked_reason->empty()) return *it->blocked_reason;
+        return std::string{};
+    };
+    const auto merge_preparation = [&](FirstBattleDelayPreparationSnapshot& target,
+        const WorkflowExpansionMemberSnapshot& member,
+        const WorkflowGraphSnapshot* graph) {
+        const auto state = graph ? StateText(graph->instance.state) : member.state;
+        target.workflow_instance_ids.push_back(member.workflow_instance_id);
+        if (IsAttention(state))
+            target.retryable_workflow_instance_ids.push_back(member.workflow_instance_id);
+        if (state_rank(state) >= state_rank(target.state)) target.state = state;
+        if (graph) {
+            const auto text = diagnostic(*graph);
+            if (!text.empty()) target.diagnostic = text;
+        }
+    };
+
+    auto* workflow_query = execution_ ? execution_->WorkflowQueryService() : nullptr;
+    if (!workflow_query) {
+        if (error_out) *error_out = "workflow query service is unavailable";
+        return false;
+    }
+    std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> latest_workflow;
+    for (const auto& expansion : expansions) {
+        if (expansion.kind != WorkflowExpansionKind::TasMovieFirstBattleExploration ||
+            expansion.source_dtm_artifact_id != request.source_dtm_artifact_id) continue;
+        const WorkflowExpansionMemberSnapshot* annotation = nullptr;
+        for (const auto& member : expansion.members)
+            if (member.role == "ANNOTATE") annotation = &member;
+        for (const auto& member : expansion.members) {
+            const auto graph = workflow_query->GetWorkflowGraph(member.workflow_instance_id);
+            if (member.role == "SOURCE_ESTABLISH")
+                merge_preparation(preparations[0], member, graph ? &*graph : nullptr);
+            else if (member.role == "DELAY_PRODUCTION" &&
+                     member.neutral_epoch_count <= request.max_neutral_epochs)
+                merge_preparation(preparations[member.neutral_epoch_count], member,
+                                  graph ? &*graph : nullptr);
+        }
+        if (annotation) {
+            const auto graph = workflow_query->GetWorkflowGraph(annotation->workflow_instance_id);
+            for (std::int64_t delay = 1; delay <= request.max_neutral_epochs; ++delay)
+                merge_preparation(preparations[delay], *annotation, graph ? &*graph : nullptr);
+        }
+
+        for (const auto& target : expansion.targets) {
+            if (target.rtc_value < request.rtc_min || target.rtc_value > request.rtc_max ||
+                target.neutral_epoch_count > request.max_neutral_epochs) continue;
+            auto& cell = cells[std::pair{target.rtc_value, target.neutral_epoch_count}];
+            const auto member = FindMember(expansion, "RTC_BATTLE",
+                target.neutral_epoch_count, target.rtc_value);
+            if (!member) {
+                if (IsActive(expansion.state)) {
+                    cell.active = true;
+                    if (cell.lifecycle == "NOT_RUN") cell.lifecycle = "WAITING";
+                }
+                continue;
+            }
+            cell.workflow_instance_ids.push_back(member->workflow_instance_id);
+            const auto graph = workflow_query->GetWorkflowGraph(member->workflow_instance_id);
+            const auto lifecycle = graph ? StateText(graph->instance.state) : member->state;
+            if (IsActive(lifecycle)) cell.active = true;
+            if (IsAttention(lifecycle)) {
+                cell.retryable = true;
+                cell.retryable_workflow_instance_ids.push_back(member->workflow_instance_id);
+            }
+            FirstBattleCoverageStage stage = FirstBattleCoverageStage::NotRun;
+            std::int64_t confirmed = 0;
+            bool seed_probe_completed = false;
+            if (graph) {
+                for (const auto& step : graph->steps) {
+                    if (step.state != WorkflowStepState::Completed) continue;
+                    if (step.step_kind == "tasmovie.validate_root")
+                        stage = std::max(stage, FirstBattleCoverageStage::Validated);
+                    else if (step.step_kind == "tasmovie.checkpoint_sterilize")
+                        stage = std::max(stage, FirstBattleCoverageStage::Sterilized);
+                    else if (step.step_kind == "seedprobe.confirm") {
+                        stage = std::max(stage, FirstBattleCoverageStage::SeedProbed);
+                        seed_probe_completed = true;
+                    }
+                }
+                if (seed_probe_completed && analysis_) {
+                    for (const auto& output : workflow_query->ListStepOutputs(member->workflow_instance_id)) {
+                        if (output.output_key != "seed_probe_run") continue;
+                        for (const auto& row : analysis_->ListSeedProbeResults(output.ref_id))
+                            if (row.evidence_state == SeedProbeEvidenceState::Confirmed) ++confirmed;
+                    }
+                    if (confirmed == 0) {
+                        cell.invariant_violation = true;
+                        cell.retryable = true;
+                        cell.diagnostic = "completed SeedProbe has no confirmed neutral seed";
+                    }
+                }
+                if (graph->instance.state == WorkflowInstanceState::Completed &&
+                    !cell.invariant_violation)
+                    stage = FirstBattleCoverageStage::BattleTested;
+                const auto text = diagnostic(*graph);
+                if (!text.empty()) cell.diagnostic = text;
+            }
+            cell.stage = std::max(cell.stage, stage);
+            cell.confirmed_seed_count = std::max(cell.confirmed_seed_count, confirmed);
+            auto& latest = latest_workflow[std::pair{target.rtc_value, target.neutral_epoch_count}];
+            if (member->workflow_instance_id >= latest) {
+                latest = member->workflow_instance_id;
+                cell.lifecycle = cell.invariant_violation ? "INVALID" : lifecycle;
+            }
+        }
+    }
+
+    for (auto& [coordinate, cell] : cells) {
+        const auto& preparation = preparations[cell.neutral_epoch_count];
+        if (!preparation.retryable_workflow_instance_ids.empty()) {
+            cell.retryable = true;
+            cell.retryable_workflow_instance_ids.insert(
+                cell.retryable_workflow_instance_ids.end(),
+                preparation.retryable_workflow_instance_ids.begin(),
+                preparation.retryable_workflow_instance_ids.end());
+            if (cell.lifecycle == "NOT_RUN" || cell.lifecycle == "WAITING")
+                cell.lifecycle = preparation.state;
+        } else if (IsActive(preparation.state) && cell.lifecycle == "NOT_RUN") {
+            cell.active = true;
+            cell.lifecycle = "WAITING";
+        }
+        std::sort(cell.workflow_instance_ids.begin(), cell.workflow_instance_ids.end());
+        cell.workflow_instance_ids.erase(
+            std::unique(cell.workflow_instance_ids.begin(), cell.workflow_instance_ids.end()),
+            cell.workflow_instance_ids.end());
+        std::sort(cell.retryable_workflow_instance_ids.begin(),
+                  cell.retryable_workflow_instance_ids.end());
+        cell.retryable_workflow_instance_ids.erase(
+            std::unique(cell.retryable_workflow_instance_ids.begin(),
+                        cell.retryable_workflow_instance_ids.end()),
+            cell.retryable_workflow_instance_ids.end());
+        result.cells.push_back(std::move(cell));
+    }
+    for (auto& [delay, preparation] : preparations) {
+        std::sort(preparation.workflow_instance_ids.begin(), preparation.workflow_instance_ids.end());
+        preparation.workflow_instance_ids.erase(
+            std::unique(preparation.workflow_instance_ids.begin(),
+                        preparation.workflow_instance_ids.end()),
+            preparation.workflow_instance_ids.end());
+        std::sort(preparation.retryable_workflow_instance_ids.begin(),
+                  preparation.retryable_workflow_instance_ids.end());
+        preparation.retryable_workflow_instance_ids.erase(
+            std::unique(preparation.retryable_workflow_instance_ids.begin(),
+                        preparation.retryable_workflow_instance_ids.end()),
+            preparation.retryable_workflow_instance_ids.end());
+        result.delay_preparations.push_back(std::move(preparation));
+    }
+    *snapshot_out = std::move(result);
+    return true;
+}
+
+bool WorkflowExpansionService::LaunchMissingFirstBattleCoverage(
+    const LaunchMissingFirstBattleCoverageRequest& request,
+    LaunchMissingFirstBattleCoverageReceipt* receipt_out,
+    std::string* error_out) {
+    std::lock_guard lock(db_mutex_);
+    if (!receipt_out || request.source_dtm_artifact_id <= 0) return false;
+    LaunchMissingFirstBattleCoverageReceipt receipt{};
+    std::set<WorkflowExpansionTarget> requested_unique;
+    for (const auto& target : request.targets)
+        if (target.rtc_value >= 0 && target.neutral_epoch_count >= 0)
+            requested_unique.insert(target);
+    receipt.requested_count = static_cast<std::int64_t>(requested_unique.size());
+    const auto normalized = NormalizeFirstBattleExpansionTargets(request.targets);
+    receipt.implied_count = static_cast<std::int64_t>(normalized.size()) - receipt.requested_count;
+    if (normalized.empty()) {
+        if (error_out) *error_out = "no valid first-battle coverage targets were selected";
+        return false;
+    }
+    const auto [rtc_min_it, rtc_max_it] = std::minmax_element(normalized.begin(), normalized.end(),
+        [](const auto& lhs, const auto& rhs) { return lhs.rtc_value < rhs.rtc_value; });
+    const auto max_delay_it = std::max_element(normalized.begin(), normalized.end(),
+        [](const auto& lhs, const auto& rhs) {
+            return lhs.neutral_epoch_count < rhs.neutral_epoch_count;
+        });
+    FirstBattleCoverageSnapshot coverage{};
+    if (!ReadFirstBattleCoverage({.source_dtm_artifact_id=request.source_dtm_artifact_id,
+            .rtc_min=rtc_min_it->rtc_value, .rtc_max=rtc_max_it->rtc_value,
+            .max_neutral_epochs=max_delay_it->neutral_epoch_count},
+            &coverage, error_out)) return false;
+    std::map<std::pair<std::int64_t, std::int64_t>, const FirstBattleCoverageCellSnapshot*> by_coordinate;
+    for (const auto& cell : coverage.cells)
+        by_coordinate[{cell.rtc_value, cell.neutral_epoch_count}] = &cell;
+    std::vector<WorkflowExpansionTarget> launch;
+    for (const auto& target : normalized) {
+        const auto found = by_coordinate.find({target.rtc_value, target.neutral_epoch_count});
+        if (found != by_coordinate.end()) {
+            const auto& cell = *found->second;
+            if (cell.stage == FirstBattleCoverageStage::BattleTested) {
+                ++receipt.already_covered_count;
+                continue;
+            }
+            if (cell.active) {
+                ++receipt.active_count;
+                continue;
+            }
+            if (cell.retryable) {
+                ++receipt.retryable_count;
+                continue;
+            }
+        }
+        launch.push_back(target);
+    }
+    if (!launch.empty()) {
+        WorkflowExpansionCreateRequest create{};
+        create.kind = WorkflowExpansionKind::TasMovieFirstBattleExploration;
+        create.source_ref_kind = "state_artifact";
+        create.source_ref_id = request.source_dtm_artifact_id;
+        create.rtc_min = rtc_min_it->rtc_value;
+        create.rtc_max = rtc_max_it->rtc_value;
+        create.max_neutral_epochs = max_delay_it->neutral_epoch_count;
+        create.targets = std::move(launch);
+        create.created_by = request.created_by.empty() ? "SavorQt.FirstBattleCoverage" : request.created_by;
+        std::int64_t expansion_id = 0;
+        if (!Create(create, &expansion_id, error_out)) return false;
+        receipt.workflow_expansion_id = expansion_id;
+        receipt.launched_count = static_cast<std::int64_t>(create.targets.size());
+    }
+    *receipt_out = std::move(receipt);
+    return true;
 }
 
 void WorkflowExpansionService::Run() {
@@ -321,6 +695,7 @@ void WorkflowExpansionService::AdvanceAll() {
 
 bool WorkflowExpansionService::Advance(
     const WorkflowExpansionSnapshot& expansion, std::string* error_out) {
+    std::lock_guard lock(db_mutex_);
     auto* query = execution_ ? execution_->WorkflowQueryService() : nullptr;
     if (!query) return false;
     for (const auto& member : expansion.members) {
@@ -421,18 +796,21 @@ bool WorkflowExpansionService::Advance(
     }
     if (!source_attempt) return true;
 
-    const auto rtc_low = refreshed.kind == WorkflowExpansionKind::TasMovieDelayExploration
+    const auto establishment_rtc = refreshed.kind == WorkflowExpansionKind::TasMovieDelayExploration
         ? inherited_rtc : refreshed.rtc_min;
-    const auto rtc_high = refreshed.kind == WorkflowExpansionKind::TasMovieDelayExploration
-        ? inherited_rtc : refreshed.rtc_max;
-    if (!rtc_low || !rtc_high) return false;
-    for (std::int64_t rtc = *rtc_low; rtc <= *rtc_high; ++rtc) {
+    if (!establishment_rtc) return false;
+    for (const auto& target : refreshed.targets) {
+        if (target.neutral_epoch_count != 0) continue;
+        const auto rtc = target.rtc_value;
         if (!launch("1st battle RTC", "RTC_BATTLE", 0, rtc,
             {{"tas_movie_validate_root_1","root_establishment",
               "analysis.tas_movie_validation_attempt_id","tmv_validation_attempt",*source_attempt,"expansion"}},
             {{"tas_movie_validate_root_1","rtc","integer",rtc,std::nullopt,"expansion"}})) return false;
     }
 
+    const bool has_positive_delay = std::any_of(refreshed.targets.begin(), refreshed.targets.end(),
+        [](const auto& target) { return target.neutral_epoch_count > 0; });
+    if (has_positive_delay) {
     const auto annotation = FindMember(refreshed, "ANNOTATE", 0);
     if (!annotation) {
         return launch("TAS Movie Expansion: Annotate", "ANNOTATE", 0,
@@ -446,7 +824,10 @@ bool WorkflowExpansionService::Advance(
         "tmv_input_epoch_annotation_attempt");
     if (!annotation_attempt) return true;
 
-    for (std::int64_t delay = 1; delay <= refreshed.max_neutral_epochs; ++delay) {
+    std::set<std::int64_t> delays;
+    for (const auto& target : refreshed.targets)
+        if (target.neutral_epoch_count > 0) delays.insert(target.neutral_epoch_count);
+    for (const auto delay : delays) {
         const auto production = FindMember(refreshed, "DELAY_PRODUCTION", delay);
         if (!production) {
             if (!launch("TAS Movie Expansion: Revise and Establish", "DELAY_PRODUCTION",
@@ -457,7 +838,7 @@ bool WorkflowExpansionService::Advance(
                 {{"tas_movie_revise_1","neutral_epoch_count","integer",delay,std::nullopt,"expansion"},
                  {"tas_movie_revise_1","placement_profile","choice",std::nullopt,
                   std::string("first_battle.final_dialog"),"expansion"},
-                 {"tas_movie_establish_root_cursor_2","rtc","integer",*rtc_low,std::nullopt,"expansion"}})) return false;
+                 {"tas_movie_establish_root_cursor_2","rtc","integer",*establishment_rtc,std::nullopt,"expansion"}})) return false;
             continue;
         }
         if (production->state != "COMPLETED") continue;
@@ -465,19 +846,21 @@ bool WorkflowExpansionService::Advance(
             "tas_movie_establish_root_cursor_2", "established_root_cursor_attempt",
             "tmv_validation_attempt");
         if (!revised_attempt) continue;
-        for (std::int64_t rtc = *rtc_low; rtc <= *rtc_high; ++rtc) {
+        for (const auto& target : refreshed.targets) {
+            if (target.neutral_epoch_count != delay) continue;
+            const auto rtc = target.rtc_value;
             if (!launch("1st battle RTC", "RTC_BATTLE", delay, rtc,
                 {{"tas_movie_validate_root_1","root_establishment",
                   "analysis.tas_movie_validation_attempt_id","tmv_validation_attempt",*revised_attempt,"expansion"}},
                 {{"tas_movie_validate_root_1","rtc","integer",rtc,std::nullopt,"expansion"}})) return false;
         }
     }
+    }
 
     const auto final = [&] {
         auto latest = refreshed;
         for (auto row : List(true)) if (row.workflow_expansion_id == refreshed.workflow_expansion_id) latest = std::move(row);
-        const std::int64_t rtc_count = *rtc_high - *rtc_low + 1;
-        const std::int64_t expected = (latest.max_neutral_epochs + 1) * rtc_count;
+        const std::int64_t expected = static_cast<std::int64_t>(latest.targets.size());
         std::int64_t completed = 0;
         bool attention = false;
         for (const auto& member : latest.members) {

@@ -1028,16 +1028,27 @@ void RunningTab::showWorkflowContextMenu(const QPoint& position)
     }
     workflowTable_->selectRow(index.row());
     const auto* idItem = workflowTable_->item(index.row(), 0);
+    const auto* kindItem = workflowTable_->item(index.row(), 1);
     const auto* retryableItem = workflowTable_->item(index.row(), 3);
     const qint64 workflowId = idItem != nullptr ? idItem->data(kWorkflowIdRole).toLongLong() : 0;
+    const qint64 expansionId = idItem != nullptr ? idItem->data(kWorkflowExpansionIdRole).toLongLong() : 0;
     const qint64 retryable = retryableItem != nullptr ? retryableItem->data(kRetryableJobsRole).toLongLong() : 0;
-    if (workflowId <= 0) {
+    if (workflowId <= 0 && expansionId <= 0) {
         return;
     }
 
     QMenu menu(workflowTable_);
-    auto* openAction = menu.addAction(QStringLiteral("Open workflow"));
-    QObject::connect(openAction, &QAction::triggered, workflowTable_, [this]() { openSelectedWorkflow(); });
+    if (workflowId > 0) {
+        auto* openAction = menu.addAction(QStringLiteral("Open workflow"));
+        QObject::connect(openAction, &QAction::triggered, workflowTable_, [this]() { openSelectedWorkflow(); });
+    }
+    if (expansionId > 0 && kindItem != nullptr &&
+        kindItem->text().contains(QStringLiteral("first battle"), Qt::CaseInsensitive) &&
+        actions_.openFirstBattleCoverage) {
+        auto* coverageAction = menu.addAction(QStringLiteral("Open First Battle Coverage"));
+        QObject::connect(coverageAction, &QAction::triggered, workflowTable_,
+            [this, expansionId]() { actions_.openFirstBattleCoverage(expansionId); });
+    }
     if (retryable > 0 && actions_.retryWorkflowJobs) {
         auto* retryAction = menu.addAction(
             QStringLiteral("Retry failed or interrupted jobs (%1)").arg(retryable));

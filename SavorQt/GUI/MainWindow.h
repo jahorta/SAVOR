@@ -83,6 +83,7 @@ private:
     void retryWorkflowJobs(std::int64_t workflowInstanceId);
     void recordBattleVictory(std::int64_t turnJobId);
     void openVictoryResults(std::int64_t routeNodeId);
+    void openFirstBattleCoverage(std::int64_t workflowExpansionId = 0);
     void showBattleRunsAnalysisPane();
     void openWorkflowGraphEditor();
     void openWorkflowGraphEditor(const savor::db::WorkflowGraphSnapshot& snapshot, bool duplicate);

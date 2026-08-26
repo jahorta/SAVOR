@@ -137,6 +137,9 @@
     <ClCompile Include="GUI\Panes\BattleRunsPane\VictoryResultsWidget.cpp">
       <Filter>GUI\Panes\BattleRuns</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\FirstBattleCoveragePane\FirstBattleCoverageWidget.cpp">
+      <Filter>GUI\Panes</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableModel.cpp">
       <Filter>GUI\Panes\Jobs</Filter>
     </ClCompile>
@@ -260,6 +263,9 @@
     </QtMoc>
     <QtMoc Include="GUI\Widgets\PersistentToolWindow.h">
       <Filter>GUI\Widgets</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\FirstBattleCoveragePane\FirstBattleCoverageWidget.h">
+      <Filter>GUI\Panes</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\SettingsPane\SettingsPage.h">
       <Filter>GUI\Panes\Settings</Filter>
