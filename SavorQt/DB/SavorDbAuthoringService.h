@@ -71,6 +71,8 @@ struct WorkflowGraphDraft {
     std::optional<bool> hidden;
     int graph_version = 1;
     std::string graph_hash;
+    std::string execution_shape = "WORKFLOW";
+    std::string expansion_kind;
     std::vector<savor::db::SaveWorkflowGraphNodeCommand> nodes;
     std::vector<savor::db::SaveWorkflowGraphEdgeCommand> edges;
 };
@@ -457,6 +459,8 @@ public:
         command.hidden = draft.hidden;
         command.graph_version = draft.graph_version;
         command.graph_hash = draft.graph_hash;
+        command.execution_shape = draft.execution_shape;
+        command.expansion_kind = draft.expansion_kind;
         command.nodes = draft.nodes;
         command.edges = draft.edges;
         command.created_at_utc = now;

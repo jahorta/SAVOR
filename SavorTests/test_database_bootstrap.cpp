@@ -57,7 +57,7 @@ TEST(DatabaseBootstrap, StandardAndEmptyProfilesCreateExpectedRoots)
     EXPECT_EQ(standard.created.predicate_groups, 1);
     EXPECT_EQ(standard.created.battle_action_presets, 2);
     EXPECT_EQ(standard.created.battle_plans, 1);
-    EXPECT_EQ(standard.created.workflow_graphs, 2);
+    EXPECT_EQ(standard.created.workflow_graphs, 5);
 
     const auto specs = service.AuthoringDb()->ListSeedProbeSpecs(10);
     ASSERT_EQ(specs.size(), 1u);
@@ -82,15 +82,23 @@ TEST(DatabaseBootstrap, StandardAndEmptyProfilesCreateExpectedRoots)
     ASSERT_EQ(plans.front().turns.size(), 2u);
 
     const auto graphs = service.AuthoringDb()->ListWorkflowGraphs(10, true);
-    ASSERT_EQ(graphs.size(), 2u);
+    ASSERT_EQ(graphs.size(), 5u);
+    const auto prepare_graph = std::ranges::find(
+        graphs, std::string("TAS Prepare Root"),
+        &savor::db::WorkflowGraphSnapshot::name);
+    ASSERT_NE(prepare_graph, graphs.end());
+    EXPECT_EQ(prepare_graph->nodes.size(), 3u);
+    ASSERT_EQ(prepare_graph->edges.size(), 2u);
+    EXPECT_EQ(prepare_graph->edges[0].edge_kind, "DATA");
+    EXPECT_EQ(prepare_graph->edges[1].edge_kind, "CONTROL");
     const auto battle_graph = std::ranges::find(
-        graphs, std::string("1st battle RTC"),
+        graphs, std::string("First Battle Exploration"),
         &savor::db::WorkflowGraphSnapshot::name);
     ASSERT_NE(battle_graph, graphs.end());
-    EXPECT_EQ(battle_graph->description,
-        "Validates and sterilizes an established TAS root, probes RTC seeds, captures battle context, and executes the first-battle plan.");
-    EXPECT_EQ(battle_graph->nodes.size(), 5u);
-    EXPECT_EQ(battle_graph->edges.size(), 5u);
+    EXPECT_EQ(battle_graph->execution_shape, "EXPANSION");
+    EXPECT_EQ(battle_graph->expansion_kind, "TAS_FIRST_BATTLE");
+    EXPECT_EQ(battle_graph->nodes.size(), 6u);
+    EXPECT_EQ(battle_graph->edges.size(), 6u);
     for (const auto& entry : std::filesystem::directory_iterator(temporary.path())) {
         const auto name = entry.path().filename().string();
         EXPECT_FALSE(name.starts_with("db.bootstrap-"));

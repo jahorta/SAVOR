@@ -39,6 +39,8 @@ struct WorkflowExpansionCreateRequest {
     WorkflowExpansionKind kind = WorkflowExpansionKind::None;
     std::string source_ref_kind;
     std::int64_t source_ref_id = 0;
+    std::optional<std::int64_t> source_annotation_attempt_id;
+    std::optional<std::int64_t> source_root_establishment_attempt_id;
     std::optional<std::int64_t> rtc_min;
     std::optional<std::int64_t> rtc_max;
     std::int64_t max_neutral_epochs = 0;
@@ -65,8 +67,18 @@ struct WorkflowExpansionSnapshot {
     std::int64_t max_neutral_epochs = 0;
     std::optional<std::string> failure_text;
     std::optional<std::int64_t> source_dtm_artifact_id;
+    std::optional<std::int64_t> source_annotation_attempt_id;
+    std::optional<std::int64_t> source_root_establishment_attempt_id;
     std::vector<WorkflowExpansionTarget> targets;
     std::vector<WorkflowExpansionMemberSnapshot> members;
+};
+
+struct PreparedTasRootSourceSnapshot {
+    std::int64_t annotation_attempt_id = 0;
+    std::int64_t root_establishment_attempt_id = 0;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::string source_dtm_sha256;
+    std::string display_name;
 };
 
 enum class FirstBattleCoverageStage : std::uint8_t {
@@ -101,6 +113,8 @@ struct FirstBattleCoverageCellSnapshot {
 
 struct FirstBattleCoverageQuery {
     std::int64_t source_dtm_artifact_id = 0;
+    std::optional<std::int64_t> source_annotation_attempt_id;
+    std::optional<std::int64_t> source_root_establishment_attempt_id;
     std::optional<std::int64_t> workflow_expansion_id;
     std::int64_t rtc_min = 0;
     std::int64_t rtc_max = 0;
@@ -109,6 +123,8 @@ struct FirstBattleCoverageQuery {
 
 struct FirstBattleCoverageSnapshot {
     std::int64_t source_dtm_artifact_id = 0;
+    std::optional<std::int64_t> source_annotation_attempt_id;
+    std::optional<std::int64_t> source_root_establishment_attempt_id;
     std::int64_t rtc_min = 0;
     std::int64_t rtc_max = 0;
     std::int64_t max_neutral_epochs = 0;
@@ -118,6 +134,8 @@ struct FirstBattleCoverageSnapshot {
 
 struct LaunchMissingFirstBattleCoverageRequest {
     std::int64_t source_dtm_artifact_id = 0;
+    std::int64_t source_annotation_attempt_id = 0;
+    std::int64_t source_root_establishment_attempt_id = 0;
     std::vector<WorkflowExpansionTarget> targets;
     std::string created_by;
 };
@@ -143,6 +161,8 @@ public:
     bool Create(const WorkflowExpansionCreateRequest& request,
         std::int64_t* expansion_id_out, std::string* error_out = nullptr);
     std::vector<WorkflowExpansionSnapshot> List(bool include_final = false) const;
+    std::vector<PreparedTasRootSourceSnapshot> ListPreparedTasRootSources(
+        int limit = 1000) const;
     bool ReadFirstBattleCoverage(const FirstBattleCoverageQuery& query,
         FirstBattleCoverageSnapshot* snapshot_out,
         std::string* error_out = nullptr) const;

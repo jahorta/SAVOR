@@ -61,7 +61,11 @@ bool WorkflowGraphLaunchService::Start(
         if (!nodes.contains(edge.from_node_key) || !nodes.contains(edge.to_node_key))
             return Fail("workflow graph edge references an unknown node", error_out);
         dependencies[edge.to_node_key].push_back(edge.from_node_key);
-        supplied_by_edge.insert(key(edge.to_node_key, edge.input_key));
+        if (edge.edge_kind == "DATA") {
+            supplied_by_edge.insert(key(edge.to_node_key, edge.input_key));
+        } else if (edge.edge_kind != "CONTROL") {
+            return Fail("workflow graph edge has an unsupported kind", error_out);
+        }
     }
 
     WorkflowCreateInstanceCommand command{};

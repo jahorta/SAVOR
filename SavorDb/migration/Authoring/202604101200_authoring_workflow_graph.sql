@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS au_workflow_graph_revision (
     workflow_graph_id INTEGER NOT NULL,
     graph_version INTEGER NOT NULL DEFAULT 1,
     graph_hash TEXT NOT NULL,
+    execution_shape TEXT NOT NULL DEFAULT 'WORKFLOW' CHECK(execution_shape IN ('WORKFLOW', 'EXPANSION')),
+    expansion_kind TEXT NOT NULL DEFAULT '',
     parent_revision_id INTEGER NULL,
     status TEXT NOT NULL DEFAULT 'active',
     created_at_utc INTEGER NOT NULL,
@@ -66,15 +68,18 @@ CREATE TABLE IF NOT EXISTS au_workflow_graph_revision_edge (
     workflow_graph_revision_edge_id INTEGER PRIMARY KEY,
     workflow_graph_revision_id INTEGER NOT NULL,
     from_revision_node_id INTEGER NOT NULL,
-    output_key TEXT NOT NULL,
+    output_key TEXT NULL,
     to_revision_node_id INTEGER NOT NULL,
-    input_key TEXT NOT NULL,
+    input_key TEXT NULL,
+    edge_kind TEXT NOT NULL DEFAULT 'DATA' CHECK(edge_kind IN ('DATA', 'CONTROL')),
     guard_kind TEXT NULL,
     guard_value TEXT NULL,
     ordinal INTEGER NOT NULL,
     FOREIGN KEY(workflow_graph_revision_id) REFERENCES au_workflow_graph_revision(workflow_graph_revision_id),
     FOREIGN KEY(from_revision_node_id) REFERENCES au_workflow_graph_revision_node(workflow_graph_revision_node_id),
     FOREIGN KEY(to_revision_node_id) REFERENCES au_workflow_graph_revision_node(workflow_graph_revision_node_id),
+    CHECK((edge_kind = 'DATA' AND output_key IS NOT NULL AND input_key IS NOT NULL)
+       OR (edge_kind = 'CONTROL' AND output_key IS NULL AND input_key IS NULL)),
     CONSTRAINT uq_au_workflow_graph_revision_edge UNIQUE (workflow_graph_revision_id, from_revision_node_id, output_key, to_revision_node_id, input_key)
 );
 

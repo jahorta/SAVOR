@@ -72,8 +72,11 @@ QString workflowGraphText(const savor::db::WorkflowGraphSnapshot& graph)
 std::string workflowGraphHash(
     const QString& name,
     const QString& description,
+    const std::string& executionShape,
+    const std::string& expansionKind,
     const std::vector<savor::db::execution::workflow::WorkflowCompositionNode>& nodes,
-    const std::vector<savor::db::execution::workflow::WorkflowUnitOutputBinding>& bindings)
+    const std::vector<savor::db::execution::workflow::WorkflowUnitOutputBinding>& bindings,
+    const std::vector<savor::db::SaveWorkflowGraphEdgeCommand>& controlDependencies)
 {
     std::vector<savor::db::authoring::WorkflowGraphHashNode> hashNodes;
     hashNodes.reserve(nodes.size());
@@ -84,10 +87,15 @@ std::string workflowGraphHash(
     hashEdges.reserve(bindings.size());
     for (const auto& binding : bindings) {
         hashEdges.push_back({binding.from_node_key, binding.output_key,
-            binding.to_node_key, binding.input_key});
+            binding.to_node_key, binding.input_key, "DATA"});
+    }
+    for (const auto& dependency : controlDependencies) {
+        hashEdges.push_back({dependency.from_node_key, {},
+            dependency.to_node_key, {}, "CONTROL"});
     }
     return savor::db::authoring::ComputeWorkflowGraphHash(
-        name.toStdString(), description.toStdString(), hashNodes, hashEdges);
+        name.toStdString(), description.toStdString(), executionShape,
+        expansionKind, hashNodes, hashEdges);
 }
 
 } // namespace
@@ -129,6 +137,9 @@ void WorkflowGraphEditorWindow::loadSnapshot(const savor::db::WorkflowGraphSnaps
     nodes_.clear();
     authoredRefsByNode_.clear();
     outputBindings_.clear();
+    controlDependencies_.clear();
+    executionShape_ = snapshot.execution_shape;
+    expansionKind_ = snapshot.expansion_kind;
     nextNodeOrdinal_ = 1;
 
     for (const auto& node_snapshot : snapshot.nodes) {
@@ -148,6 +159,16 @@ void WorkflowGraphEditorWindow::loadSnapshot(const savor::db::WorkflowGraphSnaps
     }
 
     for (const auto& edge : snapshot.edges) {
+        if (edge.edge_kind == "CONTROL") {
+            controlDependencies_.push_back(savor::db::SaveWorkflowGraphEdgeCommand{
+                .from_node_key = edge.from_node_key,
+                .to_node_key = edge.to_node_key,
+                .edge_kind = "CONTROL",
+                .guard_kind = edge.guard_kind,
+                .guard_value = edge.guard_value,
+            });
+            continue;
+        }
         outputBindings_.push_back(WorkflowUnitOutputBinding{
             .from_node_key = edge.from_node_key,
             .output_key = edge.output_key,
@@ -494,7 +515,10 @@ void WorkflowGraphEditorWindow::saveGraph()
     draft.name = nameEdit_->text().trimmed().toStdString();
     draft.description = descriptionEdit_->toPlainText().trimmed().toStdString();
     draft.graph_version = workflowGraphId_.has_value() ? 0 : 1;
-    draft.graph_hash = workflowGraphHash(nameEdit_->text().trimmed(), descriptionEdit_->toPlainText().trimmed(), nodes_, outputBindings_);
+    draft.graph_hash = workflowGraphHash(
+        nameEdit_->text().trimmed(), descriptionEdit_->toPlainText().trimmed(),
+        executionShape_, expansionKind_, nodes_, outputBindings_,
+        controlDependencies_);
 
     for (const auto& node : nodes_) {
         const auto* unit = findUnit(node.unit_kind);
@@ -581,8 +605,13 @@ void WorkflowGraphEditorWindow::saveGraph()
             .output_key = binding.output_key,
             .to_node_key = binding.to_node_key,
             .input_key = binding.input_key,
+            .edge_kind = "DATA",
         });
     }
+    draft.edges.insert(
+        draft.edges.end(), controlDependencies_.begin(), controlDependencies_.end());
+    draft.execution_shape = executionShape_;
+    draft.expansion_kind = expansionKind_;
 
     saveGraphButton_->setEnabled(false);
     const auto result = savorqt::db::SavorDbAuthoringService::SaveWorkflowGraph(draft);
@@ -819,7 +848,10 @@ void WorkflowGraphEditorWindow::refreshPreview()
     lines << QStringLiteral("Name: %1").arg(nameEdit_->text().trimmed());
     lines << QStringLiteral("Status: %1").arg(result.value.valid ? QStringLiteral("ready") : QStringLiteral("needs inputs"));
     lines << QStringLiteral("Hash: %1").arg(QString::fromStdString(
-        workflowGraphHash(nameEdit_->text().trimmed(), descriptionEdit_->toPlainText().trimmed(), nodes_, outputBindings_)));
+        workflowGraphHash(
+            nameEdit_->text().trimmed(), descriptionEdit_->toPlainText().trimmed(),
+            executionShape_, expansionKind_, nodes_, outputBindings_,
+            controlDependencies_)));
     lines << QString();
 
     if (result.value.nodes.empty()) {

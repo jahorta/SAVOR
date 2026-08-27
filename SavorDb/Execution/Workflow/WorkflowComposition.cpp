@@ -488,45 +488,6 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
 
     (void)registry.RegisterUnit(
         WorkflowUnitDefinition{
-            .unit_kind = "tas_movie_first_battle_exploration",
-            .display_name = "TAS Movie: First Battle Exploration",
-            .description = "Expands a root DTM into delay 0 through N, then runs every RTC through validation, sterilization, SeedProbe, Battle Context, and Battle.",
-            .execution_shape = WorkflowUnitExecutionShape::WorkflowExpansion,
-            .expansion_kind = WorkflowExpansionKind::TasMovieFirstBattleExploration,
-            .required_inputs = {
-                Port("root_dtm", "state_artifact.dtm_artifact_id", "state_artifact", "Root DTM"),
-            },
-            .launch_arguments = {
-                IntegerArgument("rtc_min", "RTC minimum", true, std::nullopt, 0,
-                    std::numeric_limits<std::uint32_t>::max()),
-                IntegerArgument("rtc_max", "RTC maximum", true, std::nullopt, 0,
-                    std::numeric_limits<std::uint32_t>::max()),
-                IntegerArgument("max_neutral_epochs", "Maximum neutral epochs", false,
-                    "0", 0, 1000),
-            },
-            .launch_argument_constraints = {{
-                .lesser_or_equal_key="rtc_min", .greater_or_equal_key="rtc_max",
-                .message="RTC minimum must not exceed RTC maximum"}},
-        }, &ignored);
-
-    (void)registry.RegisterUnit(
-        WorkflowUnitDefinition{
-            .unit_kind = "tas_movie_delay_exploration",
-            .display_name = "TAS Movie: Delay Exploration",
-            .description = "Expands a qualified TAS route node through delay 0 to N and runs each branch at the node's inherited RTC through Battle.",
-            .execution_shape = WorkflowUnitExecutionShape::WorkflowExpansion,
-            .expansion_kind = WorkflowExpansionKind::TasMovieDelayExploration,
-            .required_inputs = {
-                Port("tas_node", "analysis.tas_route_node_id", "tas_route_node", "TAS route node"),
-            },
-            .launch_arguments = {
-                IntegerArgument("max_neutral_epochs", "Maximum neutral epochs", false,
-                    "0", 0, 1000),
-            },
-        }, &ignored);
-
-    (void)registry.RegisterUnit(
-        WorkflowUnitDefinition{
             .unit_kind = "tas_movie_input_epoch_breakpoint_diagnostic",
             .display_name = "TAS Movie: Input Epoch Breakpoint Diagnostic",
             .description = "Actively stops at each PADRead return to diagnose breakpoint routing without changing production annotation.",

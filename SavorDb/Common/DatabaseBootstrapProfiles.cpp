@@ -96,14 +96,33 @@ authoring::AuthoringRecipe StandardRecipe()
     });
 
     recipe.Workflow({
-        .symbol = "workflow.tas_expansion_annotate",
-        .name = "TAS Movie Expansion: Annotate",
-        .description = "Shared passive input-epoch annotation used by TAS exploration families.",
-        .hidden = true,
-        .nodes = {{.node_key="tas_movie_annotate_expansion",
-                   .unit=ac::workflow::units::TasMovieAnnotate}},
-        .external_inputs = {{"tas_movie_annotate_expansion",
-            ac::workflow::ports::tas_movie_annotate::RootDtm}},
+        .symbol = "workflow.tas_prepare_root",
+        .name = "TAS Prepare Root",
+        .description = "Establishes and validates a TAS root, then passively annotates its guest input epochs for later revision.",
+        .nodes = {
+            {.node_key="tas_movie_establish_1",
+             .unit=ac::workflow::units::TasMovieEstablishRootCursor},
+            {.node_key="tas_movie_validate_root_2",
+             .unit=ac::workflow::units::TasMovieValidateRoot},
+            {.node_key="tas_movie_annotate_3",
+             .unit=ac::workflow::units::TasMovieAnnotate},
+        },
+        .external_inputs = {
+            {"tas_movie_establish_1",
+             ac::workflow::ports::tas_movie_establish_root_cursor::RootDtm},
+            {"tas_movie_annotate_3",
+             ac::workflow::ports::tas_movie_annotate::RootDtm},
+        },
+        .edges = {{
+            "tas_movie_establish_1",
+            ac::workflow::ports::tas_movie_establish_root_cursor::EstablishedRootCursorAttempt,
+            "tas_movie_validate_root_2",
+            ac::workflow::ports::tas_movie_validate_root::RootEstablishment,
+        }},
+        .control_dependencies = {{
+            .from_node_key="tas_movie_validate_root_2",
+            .to_node_key="tas_movie_annotate_3",
+        }},
     });
 
     recipe.Workflow({
@@ -122,28 +141,9 @@ authoring::AuthoringRecipe StandardRecipe()
     });
 
     recipe.Workflow({
-        .symbol = "workflow.first_battle_exploration",
-        .name = "First Battle Exploration",
-        .description = "Expands a root DTM across RTC values and neutral guest-input delays, then runs the complete first-battle workflow for every branch.",
-        .nodes = {{.node_key="first_battle_exploration_1",
-            .unit=ac::workflow::units::TasMovieFirstBattleExploration}},
-        .external_inputs = {{"first_battle_exploration_1",
-            ac::workflow::ports::tas_movie_first_battle_exploration::RootDtm}},
-    });
-
-    recipe.Workflow({
-        .symbol = "workflow.delay_exploration",
-        .name = "TAS Delay Exploration",
-        .description = "Expands a qualified TAS route node across neutral guest-input delays at its inherited RTC.",
-        .nodes = {{.node_key="delay_exploration_1",
-            .unit=ac::workflow::units::TasMovieDelayExploration}},
-        .external_inputs = {{"delay_exploration_1",
-            ac::workflow::ports::tas_movie_delay_exploration::TasNode}},
-    });
-
-    recipe.Workflow({
-        .symbol = "workflow.first_battle_rtc", .name = "1st battle RTC",
+        .symbol = "workflow.first_battle_rtc", .name = "First Battle Exploration: RTC Branch",
         .description = "Validates and sterilizes an established TAS root, probes RTC seeds, captures battle context, and executes the first-battle plan.",
+        .hidden = true,
         .nodes = {
             {.node_key = "tas_movie_validate_root_1",
              .unit = ac::workflow::units::TasMovieValidateRoot},
@@ -179,6 +179,46 @@ authoring::AuthoringRecipe StandardRecipe()
              "battle_5", ac::workflow::ports::battle::SeedProbeRun},
             {"battle.context_4", ac::workflow::ports::battle_context::Context,
              "battle_5", ac::workflow::ports::battle::Context},
+        },
+    });
+
+    recipe.Workflow({
+        .symbol = "workflow.first_battle_exploration",
+        .name = "First Battle Exploration",
+        .description = "Revises a prepared TAS root by requested neutral delays, validates each RTC branch, probes seeds, captures battle context, and runs the first battle.",
+        .execution_shape = "EXPANSION",
+        .expansion_kind = "TAS_FIRST_BATTLE",
+        .nodes = {
+            {.node_key="tas_movie_revise_1", .unit=ac::workflow::units::TasMovieRevise},
+            {.node_key="tas_movie_validate_root_2", .unit=ac::workflow::units::TasMovieValidateRoot},
+            {.node_key="tas_movie_checkpoint_sterilize_3", .unit=ac::workflow::units::TasMovieCheckpointSterilize},
+            {.node_key="seed_probe_4", .unit=ac::workflow::units::SeedProbe,
+             .authored_ref=authoring::WorkflowAuthoredReferenceDefinition{
+                 .kind=authoring::WorkflowAuthoredObjectKind::SeedProbeSpec,
+                 .ref=authoring::AuthoringRef<authoring::SeedProbeSpecTag>{seed_probe}}},
+            {.node_key="battle.context_5", .unit=ac::workflow::units::BattleContext},
+            {.node_key="battle_6", .unit=ac::workflow::units::Battle,
+             .authored_ref=authoring::WorkflowAuthoredReferenceDefinition{
+                 .kind=authoring::WorkflowAuthoredObjectKind::BattlePlan,
+                 .ref=authoring::AuthoringRef<authoring::BattlePlanTag>{battle_plan}}},
+        },
+        .external_inputs = {
+            {"tas_movie_revise_1", ac::workflow::ports::tas_movie_revise::AnnotationAttempt},
+            {"tas_movie_revise_1", ac::workflow::ports::tas_movie_revise::RootEstablishment},
+        },
+        .edges = {
+            {"tas_movie_revise_1", ac::workflow::ports::tas_movie_revise::RootEstablishment,
+             "tas_movie_validate_root_2", ac::workflow::ports::tas_movie_validate_root::RootEstablishment},
+            {"tas_movie_validate_root_2", ac::workflow::ports::tas_movie_validate_root::ValidatedCheckpoint,
+             "tas_movie_checkpoint_sterilize_3", ac::workflow::ports::tas_movie_checkpoint_sterilize::PairedCheckpoint},
+            {"tas_movie_checkpoint_sterilize_3", ac::workflow::ports::tas_movie_checkpoint_sterilize::SterilizedCheckpoint,
+             "seed_probe_4", ac::workflow::ports::seed_probe::EntrySavestate},
+            {"tas_movie_checkpoint_sterilize_3", ac::workflow::ports::tas_movie_checkpoint_sterilize::SterilizedCheckpoint,
+             "battle.context_5", ac::workflow::ports::battle_context::EntrySavestate},
+            {"seed_probe_4", ac::workflow::ports::seed_probe::Run,
+             "battle_6", ac::workflow::ports::battle::SeedProbeRun},
+            {"battle.context_5", ac::workflow::ports::battle_context::Context,
+             "battle_6", ac::workflow::ports::battle::Context},
         },
     });
     return std::move(recipe).Build();

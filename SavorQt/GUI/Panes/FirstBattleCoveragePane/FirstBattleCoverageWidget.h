@@ -1,6 +1,5 @@
 #pragma once
 
-#include "DB/WorkflowReferenceSelectorProvider.h"
 #include "Execution/Workflow/WorkflowExpansionService.h"
 #include "GUI/Common/StatusToast.h"
 
@@ -19,6 +18,8 @@ namespace savorqt::gui { template <typename Request, typename Result> class Asyn
 
 struct FirstBattleCoverageRefreshRequest {
     std::int64_t source_dtm_artifact_id = 0;
+    std::int64_t source_annotation_attempt_id = 0;
+    std::int64_t source_root_establishment_attempt_id = 0;
     std::int64_t workflow_expansion_id = 0;
     std::int64_t rtc_min = 0;
     std::int64_t rtc_max = 0;
@@ -28,7 +29,7 @@ struct FirstBattleCoverageRefreshRequest {
 struct FirstBattleCoverageRefreshData {
     bool ok = false;
     QString error;
-    std::vector<savorqt::db::WorkflowReferenceOption> sources;
+    std::vector<savor::db::execution::workflow::PreparedTasRootSourceSnapshot> sources;
     savor::db::execution::workflow::FirstBattleCoverageSnapshot coverage;
 };
 

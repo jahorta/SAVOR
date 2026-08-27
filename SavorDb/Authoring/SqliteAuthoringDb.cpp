@@ -1489,8 +1489,8 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
     if (sqlite3_prepare_v2(
             db_,
             "INSERT INTO au_workflow_graph_revision("
-            "workflow_graph_id,graph_version,graph_hash,parent_revision_id,status,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,'active',?5);",
+            "workflow_graph_id,graph_version,graph_hash,parent_revision_id,execution_shape,expansion_kind,status,created_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,'active',?7);",
             -1,
             &insert_revision.st,
             nullptr)
@@ -1504,7 +1504,9 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
     sqlite3_bind_text(insert_revision.st, 3, command.graph_hash.c_str(), -1, SQLITE_TRANSIENT);
     if (parent_revision_id.has_value()) sqlite3_bind_int64(insert_revision.st, 4, parent_revision_id.value());
     else sqlite3_bind_null(insert_revision.st, 4);
-    sqlite3_bind_int64(insert_revision.st, 5, ToEpochMillis(command.created_at_utc));
+    sqlite3_bind_text(insert_revision.st, 5, command.execution_shape.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_revision.st, 6, command.expansion_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_revision.st, 7, ToEpochMillis(command.created_at_utc));
     if (sqlite3_step(insert_revision.st) != SQLITE_DONE) {
         rollback();
         if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -1740,7 +1742,12 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
         const auto& edge = command.edges[static_cast<std::size_t>(edge_ordinal)];
         const auto from_it = node_id_by_key.find(edge.from_node_key);
         const auto to_it = node_id_by_key.find(edge.to_node_key);
-        if (edge.output_key.empty() || edge.input_key.empty() || from_it == node_id_by_key.end() || to_it == node_id_by_key.end()) {
+        const bool data_edge = edge.edge_kind == "DATA";
+        const bool control_edge = edge.edge_kind == "CONTROL";
+        if ((!data_edge && !control_edge)
+            || (data_edge && (edge.output_key.empty() || edge.input_key.empty()))
+            || (control_edge && (!edge.output_key.empty() || !edge.input_key.empty()))
+            || from_it == node_id_by_key.end() || to_it == node_id_by_key.end()) {
             rollback();
             if (error_out) *error_out = "workflow graph edge references unknown node or empty port";
             return false;
@@ -1763,8 +1770,8 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
         if (sqlite3_prepare_v2(
                 db_,
                 "INSERT INTO au_workflow_graph_revision_edge("
-                "workflow_graph_revision_id,from_revision_node_id,output_key,to_revision_node_id,input_key,guard_kind,guard_value,ordinal) "
-                "VALUES(?1,?2,?3,?4,?5,?6,?7,?8);",
+                "workflow_graph_revision_id,from_revision_node_id,output_key,to_revision_node_id,input_key,edge_kind,guard_kind,guard_value,ordinal) "
+                "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);",
                 -1,
                 &insert_edge.st,
                 nullptr)
@@ -1775,17 +1782,21 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
         }
         sqlite3_bind_int64(insert_edge.st, 1, workflow_graph_revision_id);
         sqlite3_bind_int64(insert_edge.st, 2, from_it->second);
-        sqlite3_bind_text(insert_edge.st, 3, edge.output_key.c_str(), -1, SQLITE_TRANSIENT);
+        if (data_edge) sqlite3_bind_text(insert_edge.st, 3, edge.output_key.c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(insert_edge.st, 3);
         sqlite3_bind_int64(insert_edge.st, 4, to_it->second);
-        sqlite3_bind_text(insert_edge.st, 5, edge.input_key.c_str(), -1, SQLITE_TRANSIENT);
-        if (edge.guard_kind.has_value()) sqlite3_bind_text(insert_edge.st, 6, edge.guard_kind->c_str(), -1, SQLITE_TRANSIENT);
-        else sqlite3_bind_null(insert_edge.st, 6);
-        if (edge.guard_value.has_value()) sqlite3_bind_text(insert_edge.st, 7, edge.guard_value->c_str(), -1, SQLITE_TRANSIENT);
+        if (data_edge) sqlite3_bind_text(insert_edge.st, 5, edge.input_key.c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(insert_edge.st, 5);
+        sqlite3_bind_text(insert_edge.st, 6, edge.edge_kind.c_str(), -1, SQLITE_TRANSIENT);
+        if (edge.guard_kind.has_value()) sqlite3_bind_text(insert_edge.st, 7, edge.guard_kind->c_str(), -1, SQLITE_TRANSIENT);
         else sqlite3_bind_null(insert_edge.st, 7);
-        sqlite3_bind_int(insert_edge.st, 8, edge_ordinal);
+        if (edge.guard_value.has_value()) sqlite3_bind_text(insert_edge.st, 8, edge.guard_value->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(insert_edge.st, 8);
+        sqlite3_bind_int(insert_edge.st, 9, edge_ordinal);
         if (sqlite3_step(insert_edge.st) != SQLITE_DONE) {
+            const std::string sqlite_error = sqlite3_errmsg(db_);
             rollback();
-            if (error_out) *error_out = sqlite3_errmsg(db_);
+            if (error_out) *error_out = "workflow graph edge insert failed: " + sqlite_error;
             return false;
         }
     }
@@ -1877,7 +1888,7 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
     if (sqlite3_prepare_v2(
             db_,
             "SELECT g.workflow_graph_id,r.workflow_graph_revision_id,r.parent_revision_id,g.name,COALESCE(g.description,''),"
-            "COALESCE(g.hidden,0),r.graph_version,r.graph_hash,r.status "
+            "COALESCE(g.hidden,0),r.graph_version,r.graph_hash,r.execution_shape,r.expansion_kind,r.status "
             "FROM au_workflow_graph g "
             "JOIN au_workflow_graph_revision r ON r.workflow_graph_revision_id=g.active_revision_id "
             "WHERE g.workflow_graph_id=?1;",
@@ -1901,7 +1912,9 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
     out.hidden = sqlite3_column_int(graph_st.st, 5) != 0;
     out.graph_version = sqlite3_column_int(graph_st.st, 6);
     out.graph_hash = ColumnText(graph_st.st, 7);
-    out.status = ColumnText(graph_st.st, 8);
+    out.execution_shape = ColumnText(graph_st.st, 8);
+    out.expansion_kind = ColumnText(graph_st.st, 9);
+    out.status = ColumnText(graph_st.st, 10);
 
     Statement node_st;
     if (sqlite3_prepare_v2(
@@ -2020,7 +2033,7 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
     Statement edge_st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT e.workflow_graph_revision_edge_id,fn.node_key,e.output_key,tn.node_key,e.input_key,e.guard_kind,e.guard_value "
+            "SELECT e.workflow_graph_revision_edge_id,fn.node_key,COALESCE(e.output_key,''),tn.node_key,COALESCE(e.input_key,''),e.edge_kind,e.guard_kind,e.guard_value "
             "FROM au_workflow_graph_revision_edge e "
             "JOIN au_workflow_graph_revision_node fn ON fn.workflow_graph_revision_node_id=e.from_revision_node_id "
             "JOIN au_workflow_graph_revision_node tn ON tn.workflow_graph_revision_node_id=e.to_revision_node_id "
@@ -2039,8 +2052,9 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
             .output_key = ColumnText(edge_st.st, 2),
             .to_node_key = ColumnText(edge_st.st, 3),
             .input_key = ColumnText(edge_st.st, 4),
-            .guard_kind = ColumnTextOptional(edge_st.st, 5),
-            .guard_value = ColumnTextOptional(edge_st.st, 6),
+            .edge_kind = ColumnText(edge_st.st, 5),
+            .guard_kind = ColumnTextOptional(edge_st.st, 6),
+            .guard_value = ColumnTextOptional(edge_st.st, 7),
         });
     }
 
@@ -2057,7 +2071,7 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision
     if (sqlite3_prepare_v2(
             db_,
             "SELECT g.workflow_graph_id,r.workflow_graph_revision_id,r.parent_revision_id,g.name,COALESCE(g.description,''),"
-            "COALESCE(g.hidden,0),r.graph_version,r.graph_hash,r.status "
+            "COALESCE(g.hidden,0),r.graph_version,r.graph_hash,r.execution_shape,r.expansion_kind,r.status "
             "FROM au_workflow_graph_revision r "
             "JOIN au_workflow_graph g ON g.workflow_graph_id=r.workflow_graph_id "
             "WHERE r.workflow_graph_revision_id=?1;",
@@ -2081,7 +2095,9 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision
     out.hidden = sqlite3_column_int(graph_st.st, 5) != 0;
     out.graph_version = sqlite3_column_int(graph_st.st, 6);
     out.graph_hash = ColumnText(graph_st.st, 7);
-    out.status = ColumnText(graph_st.st, 8);
+    out.execution_shape = ColumnText(graph_st.st, 8);
+    out.expansion_kind = ColumnText(graph_st.st, 9);
+    out.status = ColumnText(graph_st.st, 10);
 
     Statement node_st;
     if (sqlite3_prepare_v2(
@@ -2200,7 +2216,7 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision
     Statement edge_st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT e.workflow_graph_revision_edge_id,fn.node_key,e.output_key,tn.node_key,e.input_key,e.guard_kind,e.guard_value "
+            "SELECT e.workflow_graph_revision_edge_id,fn.node_key,COALESCE(e.output_key,''),tn.node_key,COALESCE(e.input_key,''),e.edge_kind,e.guard_kind,e.guard_value "
             "FROM au_workflow_graph_revision_edge e "
             "JOIN au_workflow_graph_revision_node fn ON fn.workflow_graph_revision_node_id=e.from_revision_node_id "
             "JOIN au_workflow_graph_revision_node tn ON tn.workflow_graph_revision_node_id=e.to_revision_node_id "
@@ -2219,8 +2235,9 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision
             .output_key = ColumnText(edge_st.st, 2),
             .to_node_key = ColumnText(edge_st.st, 3),
             .input_key = ColumnText(edge_st.st, 4),
-            .guard_kind = ColumnTextOptional(edge_st.st, 5),
-            .guard_value = ColumnTextOptional(edge_st.st, 6),
+            .edge_kind = ColumnText(edge_st.st, 5),
+            .guard_kind = ColumnTextOptional(edge_st.st, 6),
+            .guard_value = ColumnTextOptional(edge_st.st, 7),
         });
     }
 

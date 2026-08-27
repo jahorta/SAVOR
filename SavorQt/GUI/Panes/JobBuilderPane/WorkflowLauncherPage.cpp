@@ -151,8 +151,38 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
     referenceRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) { return externalInputs_; });
     referenceRefreshPipeline_->setLoadAndPrepare([](std::vector<ExternalInputRow> inputs) {
         ReferenceOptions options;
+        const bool preparedPair = std::ranges::any_of(inputs, [](const auto& input) {
+            return input.ref_kind == QStringLiteral("tmv_input_epoch_annotation_attempt");
+        }) && std::ranges::any_of(inputs, [](const auto& input) {
+            return input.ref_kind == QStringLiteral("tmv_root_establishment_attempt");
+        });
+        std::vector<savor::db::execution::workflow::PreparedTasRootSourceSnapshot> preparedSources;
+        if (preparedPair) {
+            const auto result = savorqt::db::SavorDbWorkflowService::ListPreparedTasRootSources(1000);
+            if (!result.ok)
+                return savorqt::gui::AsyncRefreshResult<ReferenceOptionsResult>::Ok(
+                    ReferenceOptionsResult::Err(result.error));
+            preparedSources = result.value;
+        }
         for (const auto& input : inputs) {
             if (input.satisfied_by_edge) continue;
+            if (preparedPair && (input.ref_kind == QStringLiteral("tmv_input_epoch_annotation_attempt")
+                || input.ref_kind == QStringLiteral("tmv_root_establishment_attempt"))) {
+                std::vector<savorqt::db::WorkflowReferenceOption> pairedOptions;
+                for (const auto& source : preparedSources) {
+                    pairedOptions.push_back({
+                        .ref_id = input.ref_kind == QStringLiteral("tmv_input_epoch_annotation_attempt")
+                            ? source.annotation_attempt_id : source.root_establishment_attempt_id,
+                        .primary_label = source.display_name,
+                        .secondary_evidence = source.source_dtm_sha256,
+                        .status = "READY",
+                        .data_kind = input.data_kind.toStdString(),
+                        .ref_kind = input.ref_kind.toStdString(),
+                    });
+                }
+                options.emplace(externalInputKey(input), std::move(pairedOptions));
+                continue;
+            }
             const auto result = input.presentation_family_key.isEmpty()
                 ? savorqt::db::WorkflowReferenceSelectorProvider::List(
                     input.ref_kind.toStdString(), input.data_kind.toStdString())
@@ -196,6 +226,27 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
                 if(index>=0)combo->setCurrentIndex(index);else combo->setEditText(prior);
             }
             blocker.unblock();
+            const auto& pairedInput = externalInputs_[static_cast<std::size_t>(row)];
+            if ((pairedInput.ref_kind == QStringLiteral("tmv_input_epoch_annotation_attempt")
+                    || pairedInput.ref_kind == QStringLiteral("tmv_root_establishment_attempt"))
+                && !combo->property("preparedPairSyncConnected").toBool()) {
+                combo->setProperty("preparedPairSyncConnected", true);
+                connect(combo, qOverload<int>(&QComboBox::currentIndexChanged),
+                    this, [this, combo](const int index) {
+                        if (index <= 0) return;
+                        for (int other = 0; other < externalInputsTable_->rowCount(); ++other) {
+                            if (other >= static_cast<int>(externalInputs_.size())) continue;
+                            auto* peer = qobject_cast<QComboBox*>(
+                                externalInputsTable_->cellWidget(other, 4));
+                            if (peer == nullptr || peer == combo) continue;
+                            const auto& input = externalInputs_[static_cast<std::size_t>(other)];
+                            if (input.ref_kind != QStringLiteral("tmv_input_epoch_annotation_attempt")
+                                && input.ref_kind != QStringLiteral("tmv_root_establishment_attempt")) continue;
+                            QSignalBlocker peerBlocker(peer);
+                            peer->setCurrentIndex(index < peer->count() ? index : 0);
+                        }
+                    });
+            }
             handleStandaloneSourceSelectionChanged(row);
         }
     });
@@ -442,7 +493,8 @@ void WorkflowLauncherPage::renderCurrentGraphIfNeeded(bool forceRebuild)
     authoredRefCombo_->hide();
     const bool hasTasMovie = !argumentNodeKeys(*graph,"rtc").empty() ||
         !argumentNodeKeys(*graph,"rtc_min").empty();
-    const bool hasNeutralExpansion = !argumentNodeKeys(*graph,"max_neutral_epochs").empty();
+    const bool hasNeutralExpansion = graph->execution_shape == "EXPANSION"
+        || !argumentNodeKeys(*graph,"max_neutral_epochs").empty();
     const bool hasSeedProbe = !argumentNodeKeys(*graph,"samples_per_axis").empty();
     const bool hasBattle = !argumentNodeKeys(*graph,"fake_attack_min").empty();
     const auto continuationNodes = argumentNodeKeys(*graph, "continuation_mode");
@@ -679,6 +731,7 @@ void WorkflowLauncherPage::launchSelectedGraph()
     const auto rtcMinNodes = argumentNodeKeys(*graph,"rtc_min");
     const auto rtcMaxNodes = argumentNodeKeys(*graph,"rtc_max");
     const auto neutralExpansionNodes = argumentNodeKeys(*graph,"max_neutral_epochs");
+    const auto neutralCountNodes = argumentNodeKeys(*graph,"neutral_epoch_count");
     const auto seedNodes = argumentNodeKeys(*graph,"samples_per_axis");
     const auto battleNodes = argumentNodeKeys(*graph,"fake_attack_min");
     const auto continuationNodes = argumentNodeKeys(*graph,"continuation_mode");
@@ -750,19 +803,24 @@ void WorkflowLauncherPage::launchSelectedGraph()
 
     launchButton_->setEnabled(false);
     std::vector<std::int64_t> workflowIds;
-    const bool expansionLaunch = !rtcMinNodes.empty() || !neutralExpansionNodes.empty();
+    const bool expansionLaunch = graph->execution_shape == "EXPANSION";
     const std::int64_t launchLow = tasNodes.empty() || expansionLaunch ? 0 : rtcLow;
     const std::int64_t launchHigh = tasNodes.empty() || expansionLaunch ? 0 : rtcHigh;
     for (std::int64_t rtc = launchLow; rtc <= launchHigh; ++rtc) {
         savorqt::db::WorkflowGraphStartRequest request{};
         request.workflow_graph_revision_id = graph->workflow_graph_revision_id;
         request.input_bindings = inputBindings;
+        if (expansionLaunch) {
+            request.expansion_rtc_min = rtcLow;
+            request.expansion_rtc_max = rtcHigh;
+            request.expansion_max_neutral_epochs = maxNeutralEpochsSpin_->value();
+        }
         for (const auto& nodeKey : tasNodes) {
             request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
                 .node_key = nodeKey.toStdString(),
                 .argument_key = "rtc",
                 .value_type = "integer",
-                .integer_value = rtc,
+                .integer_value = expansionLaunch ? rtcLow : rtc,
                 .source_kind = "launcher",
             });
         }
@@ -802,6 +860,9 @@ void WorkflowLauncherPage::launchSelectedGraph()
         for (const auto& nodeKey : neutralExpansionNodes) request.arguments.push_back({
             .node_key=nodeKey.toStdString(),.argument_key="max_neutral_epochs",.value_type="integer",
             .integer_value=maxNeutralEpochsSpin_->value(),.source_kind="launcher"});
+        for (const auto& nodeKey : neutralCountNodes) request.arguments.push_back({
+            .node_key=nodeKey.toStdString(),.argument_key="neutral_epoch_count",.value_type="integer",
+            .integer_value=std::max(1, maxNeutralEpochsSpin_->value()),.source_kind="launcher"});
         for (const auto& nodeKey : continuationNodes) {
             request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
                 .node_key = nodeKey.toStdString(),
@@ -1049,6 +1110,7 @@ void WorkflowLauncherPage::populateExternalInputs(const savor::db::WorkflowGraph
 {
     std::map<QString, QString> suppliedByEdge;
     for (const auto& edge : graph.edges) {
+        if (edge.edge_kind != "DATA") continue;
         suppliedByEdge.emplace(
             QString::fromStdString(edge.to_node_key + "\n" + edge.input_key),
             QString::fromStdString(edge.from_node_key + "." + edge.output_key));

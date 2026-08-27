@@ -73,10 +73,13 @@ private:
     std::vector<WorkflowUnitDefinition> units_;
     std::vector<WorkflowCompositionNode> nodes_;
     std::vector<WorkflowUnitOutputBinding> outputBindings_;
+    std::vector<savor::db::SaveWorkflowGraphEdgeCommand> controlDependencies_;
     std::vector<AuthoredRefOption> authoredRefOptions_;
     std::unordered_map<std::string, std::pair<std::optional<std::string>, std::optional<std::int64_t>>> authoredRefsByNode_;
     std::optional<std::int64_t> workflowGraphId_;
     std::optional<std::int64_t> parentRevisionId_;
+    std::string executionShape_ = "WORKFLOW";
+    std::string expansionKind_;
     int nextNodeOrdinal_ = 1;
     bool dirty_ = false;
 

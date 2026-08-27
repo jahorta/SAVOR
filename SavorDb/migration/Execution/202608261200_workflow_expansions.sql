@@ -5,6 +5,7 @@ CREATE TABLE exec_workflow_expansion(
     source_ref_kind TEXT NOT NULL,
     source_ref_id INTEGER NOT NULL CHECK(source_ref_id>0),
     source_dtm_artifact_id INTEGER NULL CHECK(source_dtm_artifact_id IS NULL OR source_dtm_artifact_id>0),
+    source_annotation_attempt_id INTEGER NULL CHECK(source_annotation_attempt_id IS NULL OR source_annotation_attempt_id>0),
     source_establishment_attempt_id INTEGER NULL CHECK(source_establishment_attempt_id IS NULL OR source_establishment_attempt_id>0),
     inherited_rtc INTEGER NULL CHECK(inherited_rtc IS NULL OR inherited_rtc>=0),
     rtc_min INTEGER NULL CHECK(rtc_min IS NULL OR rtc_min>=0),
@@ -19,7 +20,7 @@ CREATE TABLE exec_workflow_expansion(
 CREATE TABLE exec_workflow_expansion_member(
     workflow_expansion_member_id INTEGER PRIMARY KEY,
     workflow_expansion_id INTEGER NOT NULL REFERENCES exec_workflow_expansion(workflow_expansion_id) ON DELETE CASCADE,
-    member_role TEXT NOT NULL CHECK(member_role IN ('SOURCE_ESTABLISH','ANNOTATE','DELAY_PRODUCTION','RTC_BATTLE')),
+    member_role TEXT NOT NULL CHECK(member_role IN ('DELAY_PRODUCTION','RTC_BATTLE')),
     neutral_epoch_count INTEGER NOT NULL CHECK(neutral_epoch_count>=0),
     rtc_value INTEGER NULL CHECK(rtc_value IS NULL OR rtc_value>=0),
     workflow_instance_id INTEGER NOT NULL REFERENCES exec_workflow_instance(workflow_instance_id) ON DELETE CASCADE,

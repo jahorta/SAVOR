@@ -148,6 +148,13 @@ struct WorkflowEdgeDefinition {
     std::optional<std::string> guard_value;
 };
 
+struct WorkflowControlDependencyDefinition {
+    std::string from_node_key;
+    std::string to_node_key;
+    std::optional<std::string> guard_kind;
+    std::optional<std::string> guard_value;
+};
+
 struct WorkflowGraphDefinition {
     std::string symbol;
     std::optional<std::int64_t> workflow_graph_id;
@@ -158,9 +165,12 @@ struct WorkflowGraphDefinition {
     int graph_version = 1;
     bool make_active = true;
     bool standalone_hash = false;
+    std::string execution_shape = "WORKFLOW";
+    std::string expansion_kind;
     std::vector<WorkflowNodeDefinition> nodes;
     std::vector<WorkflowExternalInputDefinition> external_inputs;
     std::vector<WorkflowEdgeDefinition> edges;
+    std::vector<WorkflowControlDependencyDefinition> control_dependencies;
 };
 
 struct AuthoringRecipe {

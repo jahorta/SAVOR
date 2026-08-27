@@ -266,7 +266,8 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                 bool guarded_provider_absent = false;
                 std::optional<std::string> unguarded_missing;
                 for (const auto& edge : authored_graph->edges) {
-                    if (edge.to_node_key != target_node_key
+                    if (edge.edge_kind != "DATA"
+                        || edge.to_node_key != target_node_key
                         || edge.input_key != input.input_key) {
                         continue;
                     }
@@ -352,7 +353,8 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                         authored_graph->edges.begin(),
                         authored_graph->edges.end(),
                         [&](const auto& edge) {
-                            return edge.to_node_key == target_node_key
+                            return edge.edge_kind == "DATA"
+                                && edge.to_node_key == target_node_key
                                 && edge.input_key == input.input_key
                                 && edge.guard_kind.has_value();
                         });

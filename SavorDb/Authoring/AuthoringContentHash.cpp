@@ -41,11 +41,15 @@ std::string ComputeBattlePlanFingerprint(
 std::string ComputeWorkflowGraphHash(
     const std::string_view name,
     const std::string_view description,
+    const std::string_view execution_shape,
+    const std::string_view expansion_kind,
     const std::span<const WorkflowGraphHashNode> nodes,
     const std::span<const WorkflowGraphHashEdge> edges)
 {
     std::string content = "name:" + std::string(name)
-        + "\ndescription:" + std::string(description) + "\n";
+        + "\ndescription:" + std::string(description)
+        + "\nexecution_shape:" + std::string(execution_shape)
+        + "\nexpansion_kind:" + std::string(expansion_kind) + "\n";
     for (const auto& node : nodes) {
         content += "node:" + std::string(node.node_key)
             + ":" + std::string(node.unit_kind) + "\n";
@@ -54,7 +58,8 @@ std::string ComputeWorkflowGraphHash(
         content += "edge:" + std::string(edge.from_node_key)
             + "." + std::string(edge.output_key)
             + ">" + std::string(edge.to_node_key)
-            + "." + std::string(edge.input_key) + "\n";
+            + "." + std::string(edge.input_key)
+            + ":" + std::string(edge.edge_kind) + "\n";
     }
     return Fnv1a64("fnv1a64-", content);
 }

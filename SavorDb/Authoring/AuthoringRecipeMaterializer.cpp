@@ -173,6 +173,8 @@ bool AuthoringRecipeMaterializer::SaveWorkflowGraph(
         .description = definition.description,
         .hidden = definition.hidden,
         .graph_version = definition.graph_version,
+        .execution_shape = definition.execution_shape,
+        .expansion_kind = definition.expansion_kind,
         .make_active = definition.make_active,
         .created_at_utc = types::UtcNow(),
         .correlation_id = "authoring.recipe.workflow",
@@ -264,10 +266,21 @@ bool AuthoringRecipeMaterializer::SaveWorkflowGraph(
     for (const auto& edge : definition.edges) {
         command.edges.push_back({
             edge.from_node_key, std::string(edge.output.key), edge.to_node_key,
-            std::string(edge.input.key), edge.guard_kind, edge.guard_value});
+            std::string(edge.input.key), "DATA", edge.guard_kind, edge.guard_value});
         composition.output_bindings.push_back({
             edge.from_node_key, std::string(edge.output.key), edge.to_node_key,
             std::string(edge.input.key), edge.guard_kind, edge.guard_value});
+    }
+    for (const auto& dependency : definition.control_dependencies) {
+        if (!node_keys.contains(dependency.from_node_key)
+            || !node_keys.contains(dependency.to_node_key)
+            || dependency.from_node_key == dependency.to_node_key) {
+            SetError(error_out, "workflow control dependency references an invalid node");
+            return false;
+        }
+        command.edges.push_back({
+            dependency.from_node_key, {}, dependency.to_node_key, {}, "CONTROL",
+            dependency.guard_kind, dependency.guard_value});
     }
     const execution::workflow::WorkflowCompositionService composer(&registry);
     const auto preview = composer.Preview(composition);
@@ -284,7 +297,7 @@ bool AuthoringRecipeMaterializer::SaveWorkflowGraph(
     }
     for (const auto& edge : command.edges) {
         hash_edges.push_back({edge.from_node_key, edge.output_key,
-                              edge.to_node_key, edge.input_key});
+                              edge.to_node_key, edge.input_key, edge.edge_kind});
     }
     if (definition.standalone_hash) {
         if (command.nodes.size() != 1) {
@@ -297,9 +310,16 @@ bool AuthoringRecipeMaterializer::SaveWorkflowGraph(
             command.nodes.front().authored_ref_id);
     } else {
         command.graph_hash = ComputeWorkflowGraphHash(
-            command.name, command.description, hash_nodes, hash_edges);
+            command.name, command.description, command.execution_shape,
+            command.expansion_kind, hash_nodes, hash_edges);
     }
-    if (!db_->SaveWorkflowGraph(command, result_out, error_out)) return false;
+    if (!db_->SaveWorkflowGraph(command, result_out, error_out)) {
+        if (error_out) {
+            *error_out = "workflow graph persistence failed for '" + command.name
+                + "': " + *error_out;
+        }
+        return false;
+    }
     const auto snapshot = db_->GetWorkflowGraph(result_out->workflow_graph_id);
     if (!snapshot.has_value()
         || snapshot->workflow_graph_revision_id
@@ -569,6 +589,8 @@ bool MaterializeWorkflowGraph(
         .graph_version = draft.graph_version,
         .make_active = draft.make_active,
         .standalone_hash = draft.graph_hash.starts_with("standalone-"),
+        .execution_shape = draft.execution_shape,
+        .expansion_kind = draft.expansion_kind,
     };
     for (const auto& node : draft.nodes) {
         WorkflowNodeDefinition saved{
@@ -599,6 +621,12 @@ bool MaterializeWorkflowGraph(
         definition.nodes.push_back(std::move(saved));
     }
     for (const auto& edge : draft.edges) {
+        if (edge.edge_kind == "CONTROL") {
+            definition.control_dependencies.push_back({
+                edge.from_node_key, edge.to_node_key,
+                edge.guard_kind, edge.guard_value});
+            continue;
+        }
         definition.edges.push_back({
             edge.from_node_key, {edge.output_key}, edge.to_node_key,
             {edge.input_key}, edge.guard_kind, edge.guard_value});

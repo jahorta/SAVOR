@@ -30,6 +30,7 @@ struct WorkflowGraphHashEdge {
     std::string_view output_key;
     std::string_view to_node_key;
     std::string_view input_key;
+    std::string_view edge_kind = "DATA";
 };
 
 std::string ComputeBattlePlanFingerprint(
@@ -39,6 +40,8 @@ std::string ComputeBattlePlanFingerprint(
 std::string ComputeWorkflowGraphHash(
     std::string_view name,
     std::string_view description,
+    std::string_view execution_shape,
+    std::string_view expansion_kind,
     std::span<const WorkflowGraphHashNode> nodes,
     std::span<const WorkflowGraphHashEdge> edges);
 

@@ -187,6 +187,7 @@ struct SaveWorkflowGraphEdgeCommand {
     std::string output_key;
     std::string to_node_key;
     std::string input_key;
+    std::string edge_kind = "DATA";
     std::optional<std::string> guard_kind;
     std::optional<std::string> guard_value;
 };
@@ -199,6 +200,8 @@ struct SaveWorkflowGraphCommand {
     std::optional<bool> hidden;
     int graph_version = 1;
     std::string graph_hash;
+    std::string execution_shape = "WORKFLOW";
+    std::string expansion_kind;
     bool make_active = true;
     std::vector<SaveWorkflowGraphNodeCommand> nodes;
     std::vector<SaveWorkflowGraphEdgeCommand> edges;
@@ -306,6 +309,7 @@ struct WorkflowGraphEdgeSnapshot {
     std::string output_key;
     std::string to_node_key;
     std::string input_key;
+    std::string edge_kind = "DATA";
     std::optional<std::string> guard_kind;
     std::optional<std::string> guard_value;
 };
@@ -319,6 +323,8 @@ struct WorkflowGraphSnapshot {
     bool hidden = false;
     int graph_version = 1;
     std::string graph_hash;
+    std::string execution_shape = "WORKFLOW";
+    std::string expansion_kind;
     std::string status;
     std::vector<WorkflowGraphNodeSnapshot> nodes;
     std::vector<WorkflowGraphEdgeSnapshot> edges;

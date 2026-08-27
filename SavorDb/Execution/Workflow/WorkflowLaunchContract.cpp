@@ -135,6 +135,15 @@ WorkflowLaunchContractValidation WorkflowLaunchContractValidator::Validate(
             out.issues.push_back("workflow edge references an unknown node");
             continue;
         }
+        if (edge.edge_kind == "CONTROL") {
+            if (!edge.output_key.empty() || !edge.input_key.empty())
+                out.issues.push_back("workflow control edge must not declare data ports");
+            continue;
+        }
+        if (edge.edge_kind != "DATA") {
+            out.issues.push_back("workflow edge has an unsupported kind");
+            continue;
+        }
         const auto* output = FindOutput(*from->second, edge.output_key);
         const auto* input = FindInput(*to->second, edge.input_key);
         if (output == nullptr || input == nullptr) {

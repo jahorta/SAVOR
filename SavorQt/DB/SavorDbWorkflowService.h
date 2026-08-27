@@ -59,6 +59,9 @@ struct WorkflowGraphStartRequest {
     std::int64_t workflow_graph_revision_id = 0;
     std::string created_by = "SavorQt";
     std::optional<std::string> launch_key;
+    std::optional<std::int64_t> expansion_rtc_min;
+    std::optional<std::int64_t> expansion_rtc_max;
+    std::optional<std::int64_t> expansion_max_neutral_epochs;
     std::vector<WorkflowGraphInputBindingDraft> input_bindings;
     std::vector<WorkflowGraphArgumentDraft> arguments;
 };
@@ -320,12 +323,9 @@ public:
                 ? "workflow launch contract is invalid" : contract.issues.front());
         }
 
-        if (graph.nodes.size() == 1u) {
-            const auto* expansion_unit = registry.Find(graph.nodes.front().unit_kind);
-            if (expansion_unit && expansion_unit->execution_shape ==
-                    savor::db::execution::workflow::WorkflowUnitExecutionShape::WorkflowExpansion) {
-                if (request.input_bindings.size() != 1u)
-                    return Invalid<std::int64_t>("workflow expansion requires exactly one source binding");
+        if (graph.execution_shape == "EXPANSION") {
+            if (graph.expansion_kind != "TAS_FIRST_BATTLE")
+                return Invalid<std::int64_t>("workflow graph uses an unsupported expansion kind");
                 const auto integer = [&](std::string_view key) -> std::optional<std::int64_t> {
                     const auto found = std::find_if(contract.normalized_arguments.begin(),
                         contract.normalized_arguments.end(), [&](const auto& value) {
@@ -337,20 +337,43 @@ public:
                 auto* db_service = savorqt::SavorDbRuntime::instance().service();
                 auto* expansions = db_service ? db_service->WorkflowExpansionService() : nullptr;
                 if (!expansions) return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
+                const auto annotation = std::find_if(
+                    request.input_bindings.begin(), request.input_bindings.end(),
+                    [](const auto& value) {
+                        return value.ref_kind == "tmv_input_epoch_annotation_attempt";
+                    });
+                const auto root = std::find_if(
+                    request.input_bindings.begin(), request.input_bindings.end(),
+                    [](const auto& value) {
+                        return value.ref_kind == "tmv_root_establishment_attempt";
+                    });
+                const auto rtc = integer("rtc");
+                const auto delay = integer("neutral_epoch_count").value_or(0);
+                if (annotation == request.input_bindings.end()
+                    || root == request.input_bindings.end() || !rtc)
+                    return Invalid<std::int64_t>(
+                        "first-battle expansion requires paired annotation/root authorities and an exact RTC");
                 savor::db::execution::workflow::WorkflowExpansionCreateRequest expansion{};
-                expansion.kind = expansion_unit->expansion_kind;
-                expansion.source_ref_kind = request.input_bindings.front().ref_kind;
-                expansion.source_ref_id = request.input_bindings.front().ref_id;
-                expansion.rtc_min = integer("rtc_min");
-                expansion.rtc_max = integer("rtc_max");
-                expansion.max_neutral_epochs = integer("max_neutral_epochs").value_or(0);
+                expansion.kind = savor::db::execution::workflow::WorkflowExpansionKind::TasMovieFirstBattleExploration;
+                expansion.source_ref_kind = "prepared_tas_root";
+                expansion.source_ref_id = root->ref_id;
+                expansion.source_annotation_attempt_id = annotation->ref_id;
+                expansion.source_root_establishment_attempt_id = root->ref_id;
+                expansion.rtc_min = request.expansion_rtc_min.value_or(*rtc);
+                expansion.rtc_max = request.expansion_rtc_max.value_or(*rtc);
+                expansion.max_neutral_epochs =
+                    request.expansion_max_neutral_epochs.value_or(delay);
+                if (!request.expansion_rtc_min
+                    && !request.expansion_rtc_max
+                    && !request.expansion_max_neutral_epochs) {
+                    expansion.targets = {{delay, *rtc}};
+                }
                 expansion.created_by = request.created_by.empty() ? "SavorQt" : request.created_by;
                 std::int64_t expansion_id = 0;
                 std::string error;
                 if (!expansions->Create(expansion, &expansion_id, &error))
                     return Failed<std::int64_t>(std::move(error));
                 return ServiceResult<std::int64_t>::Ok(expansion_id);
-            }
         }
 
         const auto binding_key = [](const std::string& node_key, const std::string& input_key) {
@@ -564,6 +587,17 @@ public:
                 kSavorDbRuntimeUnavailableMessage);
         return ServiceResult<std::vector<savor::db::execution::workflow::WorkflowExpansionSnapshot>>::Ok(
             expansions->List(include_final));
+    }
+
+    static ServiceResult<std::vector<savor::db::execution::workflow::PreparedTasRootSourceSnapshot>>
+    ListPreparedTasRootSources(int limit = 1000) {
+        auto* db_service = savorqt::SavorDbRuntime::instance().service();
+        auto* expansions = db_service ? db_service->WorkflowExpansionService() : nullptr;
+        if (!expansions)
+            return Unavailable<std::vector<savor::db::execution::workflow::PreparedTasRootSourceSnapshot>>(
+                kSavorDbRuntimeUnavailableMessage);
+        return ServiceResult<std::vector<savor::db::execution::workflow::PreparedTasRootSourceSnapshot>>::Ok(
+            expansions->ListPreparedTasRootSources(limit));
     }
 
     static ServiceResult<savor::db::execution::workflow::FirstBattleCoverageSnapshot>
@@ -821,9 +855,10 @@ private:
         for (const auto& edge : draft.edges)
             hash_edges.push_back({
                 edge.from_node_key, edge.output_key,
-                edge.to_node_key, edge.input_key});
+                edge.to_node_key, edge.input_key, edge.edge_kind});
         draft.graph_hash = savor::db::authoring::ComputeWorkflowGraphHash(
-            draft.name, draft.description, hash_nodes, hash_edges);
+            draft.name, draft.description, draft.execution_shape,
+            draft.expansion_kind, hash_nodes, hash_edges);
 
         const auto existing =
             SavorDbAuthoringService::ListWorkflowGraphs(1000, true);

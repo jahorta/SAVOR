@@ -1,16 +1,29 @@
 # TAS Movie Exploration Expansion
 
-TAS exploration is represented by a durable workflow family above ordinary
-workflow instances. A family owns reusable preparation branches and creates
-ordinary child workflows for executable work.
+TAS preparation and exploration are authored as real workflow graphs. A graph
+revision declares either the normal `WORKFLOW` execution shape or an
+`EXPANSION` shape with a named expansion kind. Data edges transfer typed
+references; control edges impose ordering without fabricating a data port.
+
+## TAS Prepare Root
+
+`TAS Prepare Root` runs `tasmovie.establish -> tasmovie.validate`, then uses a
+control dependency to run `tasmovie.annotate` only after validation succeeds.
+The imported root DTM is supplied to both establish and annotate. Its durable
+result is the exact annotation/root-establishment authority pair for one DTM.
 
 ## First Battle Exploration
 
-Inputs are prepared annotation/root authorities, an inclusive RTC range, and a
+`First Battle Exploration` is an `EXPANSION/TAS_FIRST_BATTLE` graph whose
+authored shape is `tasmovie.revise -> tasmovie.validate -> sterilize ->
+SeedProbe/Battle Context -> Battle`. Inputs are a prepared annotation/root
+authority pair, an inclusive RTC range, and a
 maximum neutral guest-input delay. A range request materializes every exact
 `(delay, RTC)` coordinate for delays `0..N`. Each delay uses one
 `tasmovie.revise` child, whose child annotation and root authority feed its
-validation-through-Battle workflow directly.
+validation-through-Battle branches. Delay zero bypasses revision and uses the
+prepared root directly. Each positive delay is revised once and reused for all
+requested RTC values.
 
 ## Delay Exploration
 
