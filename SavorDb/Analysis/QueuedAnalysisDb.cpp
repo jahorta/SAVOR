@@ -354,6 +354,61 @@ bool QueuedAnalysisDb::RecordTasMovieInputEpochRewriteCompletion(
     }, false, error_out);
 }
 
+bool QueuedAnalysisDb::CreateTasMovieCutsceneRequest(
+    const CreateTasMovieCutsceneRequestCommand& command,
+    std::int64_t* request_id_out, std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, request_id_out, error_out]() {
+        return inner_ && inner_->CreateTasMovieCutsceneRequest(
+            command, request_id_out, error_out);
+    }, false, error_out);
+}
+
+std::optional<TasMovieCutsceneRequestRecord>
+QueuedAnalysisDb::GetTasMovieCutsceneRequest(std::int64_t request_id) const {
+    return ExecuteRead<std::optional<TasMovieCutsceneRequestRecord>>(
+        [this, request_id]() { return inner_
+            ? inner_->GetTasMovieCutsceneRequest(request_id) : std::nullopt;
+        }, std::nullopt);
+}
+
+std::optional<TasMovieCutsceneRequestRecord>
+QueuedAnalysisDb::GetTasMovieCutsceneRequestForWorkflowStep(
+    std::int64_t workflow_step_id) const {
+    return ExecuteRead<std::optional<TasMovieCutsceneRequestRecord>>(
+        [this, workflow_step_id]() { return inner_
+            ? inner_->GetTasMovieCutsceneRequestForWorkflowStep(workflow_step_id)
+            : std::nullopt;
+        }, std::nullopt);
+}
+
+bool QueuedAnalysisDb::RecordTasMovieCutsceneAttempt(
+    const RecordTasMovieCutsceneAttemptCommand& command,
+    std::int64_t* attempt_id_out, std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, attempt_id_out, error_out]() {
+        return inner_ && inner_->RecordTasMovieCutsceneAttempt(
+            command, attempt_id_out, error_out);
+    }, false, error_out);
+}
+
+std::optional<TasMovieCutsceneAttemptRecord>
+QueuedAnalysisDb::GetTasMovieCutsceneAttempt(std::int64_t attempt_id) const {
+    return ExecuteRead<std::optional<TasMovieCutsceneAttemptRecord>>(
+        [this, attempt_id]() { return inner_
+            ? inner_->GetTasMovieCutsceneAttempt(attempt_id) : std::nullopt;
+        }, std::nullopt);
+}
+
+std::optional<TasMovieCutsceneAttemptRecord>
+QueuedAnalysisDb::FindTasMovieCutsceneAttempt(
+    std::int64_t source_job_id, std::string_view worker_terminal_sha256) const {
+    const std::string sha(worker_terminal_sha256);
+    return ExecuteRead<std::optional<TasMovieCutsceneAttemptRecord>>(
+        [this, source_job_id, sha]() { return inner_
+            ? inner_->FindTasMovieCutsceneAttempt(source_job_id, sha)
+            : std::nullopt;
+        }, std::nullopt);
+}
+
 std::optional<std::int64_t> QueuedAnalysisDb::LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const {
     return ExecuteRead<std::optional<std::int64_t>>(
         [this, probe_run_id]() {

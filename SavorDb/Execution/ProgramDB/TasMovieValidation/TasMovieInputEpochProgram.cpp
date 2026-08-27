@@ -40,6 +40,7 @@ namespace inputepoch = savor::runtime::tasmovie::inputepoch;
 constexpr std::string_view kAnnotationRefKind =
     "tmv_input_epoch_annotation_request";
 constexpr std::string_view kRewriteRefKind = "tmv_input_epoch_rewrite_request";
+constexpr std::string_view kCutsceneRefKind = "tmv_cutscene_request";
 constexpr std::size_t kDeclaredTerminalBytes = 16ull * 1024ull * 1024ull;
 
 const WorksetObservationDefaultsV1& ObservationDefaults() {
@@ -267,7 +268,8 @@ bool PublishSingleton(IExecutionDb* execution_db,
     std::int64_t ref_id, std::string fingerprint, std::string input,
     const std::filesystem::path& capture_root,
     std::optional<std::string> capture_profile,
-    WorkflowStepScheduleResult* result_out, std::string* error_out) {
+    WorkflowStepScheduleResult* result_out, std::string* error_out,
+    std::optional<std::int64_t> savestate_id = std::nullopt) {
     const auto package = savor::runtime::fullphase::BuildFullPhaseProgramPackage(phase);
     ResolvedWorksetDerivedStateBindingV1 derived_state;
     if (!ResolveWorksetDerivedStateBindingV1(std::span<const std::string>{},
@@ -308,6 +310,7 @@ bool PublishSingleton(IExecutionDb* execution_db,
                 .program_version = 1,
                 .program_ref_kind = std::string(ref_kind),
                 .program_ref_id = ref_id,
+                .savestate_id = savestate_id,
                 .fingerprint = fingerprint,
                 .priority = context.step.step_priority,
                 .max_attempts = 1,
@@ -443,6 +446,24 @@ savor::runtime::WorkerWorksetDefinition MakeWorkset(
             .parent_correlation = context.contract_key,
         },
     });
+    return workset;
+}
+
+savor::runtime::WorkerWorksetDefinition MakeSavestateWorkset(
+    const WorksetReconstructionContext& context,
+    const savor::runtime::fullphase::IFullPhaseProgramDefinition& phase,
+    const std::filesystem::path& state_path, std::string_view state_sha,
+    const std::filesystem::path& dtm_path, std::string_view dtm_sha,
+    std::span<const std::uint8_t> input, std::string_view producer) {
+    auto workset = MakeWorkset(context, phase, dtm_path, dtm_sha, input, producer);
+    workset.baseline.artifact.kind =
+        savor::runtime::ProgramBaselineArtifactKind::Savestate;
+    workset.baseline.artifact.state_path = state_path;
+    workset.baseline.artifact.state_sha256 = std::string(state_sha);
+    workset.execution_key.baseline =
+        savor::runtime::ComputeProgramBaselineKey(workset.baseline);
+    workset.execution_key.canonical_sha256 =
+        savor::runtime::ComputeWorkerWorksetExecutionKeyHash(workset.execution_key);
     return workset;
 }
 
@@ -1462,6 +1483,447 @@ private:
     std::shared_ptr<const inputepoch::IRewriteFullPhaseDefinitionV1> phase_;
 };
 
+class CutsceneMaterializer final : public IProgramJobMaterializer {
+public:
+    CutsceneMaterializer(IExecutionDb* execution, IStateDb* state,
+        IAnalysisDb* analysis, TasMovieInputEpochProgramConfig config)
+        : execution_(execution), state_(state), analysis_(analysis),
+          config_(std::move(config)),
+          phase_(inputepoch::CutsceneFullPhaseDefinitionV1()) {}
+
+    bool Materialize(const ProgramJobMaterializationContext& context,
+        WorkflowStepScheduleResult* result_out,
+        std::string* error_out) const override {
+        if (!execution_ || !state_ || !analysis_ || !phase_ || !context.graph
+            || !result_out)
+            return Fail("cutscene dependencies are incomplete", error_out);
+        *result_out = {};
+        const auto tree_id = Binding(context, "tas_movie_tree",
+            "state.tas_movie_tree_id", "state_tas_movie_tree");
+        const auto tree = tree_id ? state_->GetTasMovieTree(*tree_id) : std::nullopt;
+        const auto source_state = tree
+            ? state_->GetSavestate(tree->checkpoint_savestate_id)
+            : std::nullopt;
+        const auto source_dtm = tree
+            ? state_->GetArtifact(tree->dtm_artifact_id)
+            : std::nullopt;
+        const auto source_itinerary = tree
+            ? state_->GetArtifact(tree->itinerary_artifact_id)
+            : std::nullopt;
+        const auto validation_status = source_dtm
+            ? analysis_->GetTasMovieValidationStatus(source_dtm->sha256)
+            : std::nullopt;
+        const auto validation = validation_status
+            ? analysis_->GetTasMovieValidationAttempt(
+                validation_status->validation_attempt_id)
+            : std::nullopt;
+        const auto validation_request = validation
+            ? analysis_->GetTasMovieValidationRequest(validation->validation_request_id)
+            : std::nullopt;
+        if (!validation_status
+            || validation_status->status != TasMovieValidationStatus::Valid
+            || !validation || validation->outcome != TasMovieValidationOutcome::Valid
+            || validation->actual_input_count == 0 || !validation_request
+            || validation_request->source_kind != TasMovieValidationSourceKind::Tree
+            || validation_request->source_ref_id != tree->tas_movie_tree_id
+            || !tree || !source_state || !source_dtm || !source_itinerary
+            || !source_state->is_complete
+            || source_state->playback_state != SavestatePlaybackState::MoviePaired
+            || source_state->dtm_artifact_id != source_dtm->artifact_id
+            || source_dtm->artifact_kind != "DTM"
+            || source_itinerary->artifact_kind != "TAS_MOVIE_ITINERARY")
+            return Fail("cutscene requires a successful validated movie-paired TAS tree",
+                error_out);
+
+        const auto& identity = phase_->identity();
+        const auto& runtime = phase_->runtime_contract();
+        CreateTasMovieCutsceneRequestCommand command{
+            .materialization_key = "tasmovie.cutscene.step."
+                + std::to_string(context.step.workflow_step_id),
+            .workflow_instance_id = context.step.workflow_instance_id,
+            .workflow_step_id = context.step.workflow_step_id,
+            .source_validation_attempt_id = validation->validation_attempt_id,
+            .source_tree_id = tree->tas_movie_tree_id,
+            .source_savestate_id = source_state->savestate_id,
+            .source_dtm_artifact_id = source_dtm->artifact_id,
+            .source_dtm_sha256 = source_dtm->sha256,
+            .source_itinerary_artifact_id = source_itinerary->artifact_id,
+            .source_itinerary_sha256 = source_itinerary->sha256,
+            .source_movie_input_cursor = validation->actual_input_count,
+            .full_phase_program_kind = identity.program_kind,
+            .full_phase_program_version = identity.program_version,
+            .full_phase_canonical_id = identity.canonical_id,
+            .full_phase_contract_revision = identity.contract_revision,
+            .full_phase_sha256 = identity.canonical_sha256,
+            .module_canonical_id = runtime.module.canonical_id,
+            .module_revision = runtime.module.revision,
+            .module_sha256 = runtime.module.canonical_hash,
+            .created_at_utc = types::UtcNow(),
+        };
+        std::int64_t request_id = 0;
+        if (!analysis_->CreateTasMovieCutsceneRequest(
+                command, &request_id, error_out)) return false;
+        if (!PublishSingleton(execution_, context, *phase_, identity.program_kind,
+                "TAS_MOVIE_CUTSCENE", "tas_movie_cutscene", kCutsceneRefKind,
+                request_id, Fingerprint(identity.program_kind, request_id,
+                    command.source_dtm_sha256, identity.canonical_sha256),
+                JobInput("TMC1:", request_id),
+                WorkingRoot(config_.working_dir_root) / "captures", std::nullopt,
+                result_out, error_out, source_state->savestate_id))
+            return false;
+        result_out->event_lines.push_back("[tasmovie-cutscene-materialized] request="
+            + std::to_string(request_id));
+        return true;
+    }
+
+    bool Continue(const ProgramJobContinuationContext& context,
+        ProgramJobContinuationResult* result_out,
+        std::string* error_out) const override {
+        if (!result_out || context.job_set_id <= 0)
+            return Fail("cutscene continuation is invalid", error_out);
+        const auto jobs = execution_->ListJobsInJobSet(context.job_set_id);
+        if (jobs.size() != 1)
+            return Fail("cutscene lost singleton shape", error_out);
+        const auto job = execution_->GetExecutionJob(jobs.front().job_id);
+        const auto attempt = job && job->worker_terminal_fingerprint
+            ? analysis_->FindTasMovieCutsceneAttempt(
+                job->job_id, *job->worker_terminal_fingerprint)
+            : std::nullopt;
+        if (!attempt || !attempt->succeeded)
+            return Fail("successful cutscene attempt is unavailable", error_out);
+        result_out->disposition = ProgramJobContinuationDisposition::Complete;
+        result_out->output = ProgramJobContinuationOutput{
+            .output_key = "cutscene_attempt",
+            .data_kind = "analysis.tas_movie_cutscene_attempt_id",
+            .ref_kind = "tmv_cutscene_attempt",
+            .ref_id = attempt->cutscene_attempt_id,
+        };
+        return true;
+    }
+
+private:
+    IExecutionDb* execution_{};
+    IStateDb* state_{};
+    IAnalysisDb* analysis_{};
+    TasMovieInputEpochProgramConfig config_;
+    std::shared_ptr<const inputepoch::ICutsceneFullPhaseDefinitionV1> phase_;
+};
+
+class CutsceneReconstruction final : public IWorksetReconstructionAdapter {
+public:
+    CutsceneReconstruction(IStateDb* state, IAnalysisDb* analysis,
+        std::filesystem::path root)
+        : state_(state), analysis_(analysis), root_(WorkingRoot(root)),
+          phase_(inputepoch::CutsceneFullPhaseDefinitionV1()) {}
+
+    std::optional<WorksetReconstructionResult> Reconstruct(
+        const WorksetReconstructionContext& context,
+        std::string* error_out) const override {
+        const auto fail = [&](std::string text)
+            -> std::optional<WorksetReconstructionResult> {
+            Fail(std::move(text), error_out);
+            return std::nullopt;
+        };
+        if (!state_ || !analysis_ || !phase_ || context.items.size() != 1
+            || !context.state_compatibility.Complete())
+            return fail("cutscene reconstruction requires one exact item");
+        const auto& item = context.items.front();
+        if (item.program_kind != static_cast<std::int32_t>(savor::PK_TasMovieCutscene)
+            || item.program_version != 1 || item.program_ref_kind != kCutsceneRefKind
+            || item.program_ref_id <= 0 || !item.savestate_id
+            || item.input_ini != JobInput("TMC1:", item.program_ref_id)
+            || item.reserved_attempt_id == 0 || item.claim_token.empty())
+            return fail("cutscene item identity drifted");
+        const auto request = analysis_->GetTasMovieCutsceneRequest(item.program_ref_id);
+        const auto source_state = request
+            ? state_->GetSavestate(request->source_savestate_id) : std::nullopt;
+        const auto source_dtm = request
+            ? state_->GetArtifact(request->source_dtm_artifact_id) : std::nullopt;
+        const auto source_sav_artifact = source_state
+            ? state_->GetArtifact(source_state->artifact_id) : std::nullopt;
+        if (!request || request->workflow_step_id != context.workflow_step_id
+            || request->full_phase_sha256 != phase_->identity().canonical_sha256
+            || request->module_sha256 != phase_->runtime_contract().module.canonical_hash
+            || *item.savestate_id != request->source_savestate_id
+            || !source_state || !source_state->is_complete
+            || source_state->playback_state != SavestatePlaybackState::MoviePaired
+            || !source_dtm || !source_sav_artifact
+            || source_dtm->sha256 != request->source_dtm_sha256)
+            return fail("cutscene immutable source identity drifted");
+        const auto request_root = root_ / ("cutscene-request-"
+            + std::to_string(request->cutscene_request_id));
+        const auto state_path = request_root / "source.sav";
+        const auto dtm_path = std::filesystem::path(state_path.string() + ".dtm");
+        if (!MaterializeArtifact(state_, *source_sav_artifact, state_path, error_out)
+            || !MaterializeArtifact(state_, *source_dtm, dtm_path, error_out))
+            return std::nullopt;
+        const inputepoch::TasMovieCutsceneRequestV1 native{
+            .source_movie_input_cursor = request->source_movie_input_cursor,
+            .output_dtm_path = (request_root / "result" / "cutscene.dtm").string(),
+            .output_savestate_path = (request_root / "result" / "cutscene.sav").string(),
+        };
+        std::string diagnostic;
+        const auto input = inputepoch::EncodeCutsceneExecutionInputV1(native, &diagnostic);
+        if (input.empty())
+            return fail("cutscene invocation binding failed: " + diagnostic);
+        auto workset = MakeSavestateWorkset(context, *phase_, state_path,
+            source_sav_artifact->sha256, dtm_path, source_dtm->sha256, input,
+            "SavorDb.PK_TasMovieCutscene");
+        std::vector<std::uint8_t> encoded;
+        const auto status = savor::runtime::EncodeWorkerWorksetV4(workset, encoded);
+        if (!status)
+            return fail("cutscene workset encoding failed: " + status.message);
+        workset.encoded_size_bytes = encoded.size();
+        return WorksetReconstructionResult{
+            .workset = std::move(workset), .ordered_job_ids = {item.job_id}};
+    }
+
+private:
+    IStateDb* state_{};
+    IAnalysisDb* analysis_{};
+    std::filesystem::path root_;
+    std::shared_ptr<const inputepoch::ICutsceneFullPhaseDefinitionV1> phase_;
+};
+
+std::string CutsceneEndpointName(inputepoch::TasMovieCutsceneEndpointV1 endpoint) {
+    switch (endpoint) {
+    case inputepoch::TasMovieCutsceneEndpointV1::PreBattleSeed:
+        return "PRE_BATTLE_SEED";
+    case inputepoch::TasMovieCutsceneEndpointV1::FieldFastPreseed:
+        return "FIELD_FAST_PRESEED";
+    case inputepoch::TasMovieCutsceneEndpointV1::FieldDeferredPreseed:
+        return "FIELD_DEFERRED_PRESEED";
+    }
+    return {};
+}
+
+class CutsceneResultHandler final : public IProgramResultHandler {
+public:
+    CutsceneResultHandler(IStateDb* state, IAnalysisDb* analysis,
+        std::filesystem::path root)
+        : state_(state), analysis_(analysis), root_(WorkingRoot(root)),
+          phase_(inputepoch::CutsceneFullPhaseDefinitionV1()) {}
+
+    ProgramResultDecision Process(
+        const ProgramResultProcessingContext& context) const override {
+        if (!state_ || !analysis_ || !phase_
+            || context.program_kind != static_cast<std::int32_t>(savor::PK_TasMovieCutscene)
+            || context.program_version != 1 || context.program_ref_kind != kCutsceneRefKind
+            || context.program_ref_id <= 0
+            || context.input_ini != JobInput("TMC1:", context.program_ref_id))
+            return FinalDecision("FAILED", "TAS_CUTSCENE_IDENTITY_INVALID",
+                "job is not an exact cutscene request");
+        const auto request = analysis_->GetTasMovieCutsceneRequest(context.program_ref_id);
+        if (!request) throw std::runtime_error("cutscene request is missing");
+        if (const auto existing = analysis_->FindTasMovieCutsceneAttempt(
+                context.job_id, context.terminal.sha256)) {
+            auto decision = existing->succeeded
+                ? FinalDecision("SUCCEEDED")
+                : FinalDecision("FAILED", existing->failure_code, existing->failure_text);
+            decision.outputs.push_back({.output_key = "cutscene_attempt",
+                .data_kind = "analysis.tas_movie_cutscene_attempt_id",
+                .ref_kind = "tmv_cutscene_attempt",
+                .ref_id = existing->cutscene_attempt_id});
+            return decision;
+        }
+        savor::runtime::DurableWorkerTerminalEnvelope terminal{};
+        savor::runtime::program::ProgramResult decoded{};
+        ProgramResultDecision failure;
+        if (!ValidateTerminal(context, &terminal, &decoded, &failure)) return failure;
+        inputepoch::TasMovieCutsceneResultV1 outcome{};
+        std::string error;
+        if (!phase_->DecodeProgramResult(terminal.terminal.result, outcome, &error))
+            return FinalDecision("FAILED", "TAS_CUTSCENE_RESULT_INVALID", error);
+        const savor::runtime::program::ArtifactReferenceValue* dtm = nullptr;
+        const savor::runtime::program::ArtifactReferenceValue* sav = nullptr;
+        for (const auto& artifact : outcome.artifacts) {
+            const std::filesystem::path path(artifact.artifact.storage_reference);
+            if (path.extension() == ".dtm") dtm = &artifact.artifact;
+            else if (path.extension() == ".sav") sav = &artifact.artifact;
+        }
+        if (!dtm || !sav)
+            return FinalDecision("FAILED", "TAS_CUTSCENE_ARTIFACTS_INVALID",
+                "cutscene did not return one DTM and one SAV artifact");
+        const auto persist = [&](const auto& artifact, std::string_view kind,
+                                 std::int64_t* id_out) {
+            const std::filesystem::path path(artifact.storage_reference);
+            const auto sha = HashFile(path);
+            std::error_code ec;
+            const auto size = std::filesystem::file_size(path, ec);
+            if (!artifact.complete || !sha || *sha != artifact.content_hash.ToHex()
+                || ec || size == 0)
+                return Fail("cutscene artifact does not match worker evidence", &error);
+            return state_->StoreArtifact({.sha256 = *sha,
+                .size_bytes = static_cast<std::int64_t>(size),
+                .filename = path.string(), .display_filename = path.filename().string(),
+                .file_ext = path.extension().string(), .artifact_kind = std::string(kind),
+                .created_at_utc = types::UtcNow(),
+                .correlation_id = "tmv-cutscene-request-" + std::to_string(request->cutscene_request_id),
+                .causation_id = "execution-job-" + std::to_string(context.job_id)},
+                id_out, &error);
+        };
+        std::int64_t dtm_id = 0;
+        std::int64_t sav_artifact_id = 0;
+        if (!persist(*dtm, "DTM", &dtm_id) || !persist(*sav, "SAV", &sav_artifact_id))
+            throw std::runtime_error(error);
+        const auto dtm_record = state_->GetArtifact(dtm_id);
+        const auto source_itinerary = state_->GetArtifact(
+            request->source_itinerary_artifact_id);
+        const auto itinerary_bytes = source_itinerary
+            ? ReadFile(source_itinerary->filename, &error) : std::nullopt;
+        savor::runtime::tasmovie::TasMovieItineraryV1 itinerary{};
+        savor::tas::DtmFile child_dtm;
+        if (!dtm_record || !source_itinerary
+            || source_itinerary->sha256 != request->source_itinerary_sha256
+            || !itinerary_bytes
+            || !savor::runtime::tasmovie::DecodeTasMovieItineraryArtifactV1(
+                *itinerary_bytes, itinerary, &error)
+            || !child_dtm.load(std::filesystem::path(dtm->storage_reference).string()))
+            return FinalDecision("FAILED", "TAS_CUTSCENE_ITINERARY_SOURCE_INVALID", error);
+        itinerary.checkpoints.push_back({.pc = outcome.endpoint_pc,
+            .input_count = {.value = outcome.checkpoint_input_count}});
+        if (!savor::runtime::tasmovie::ValidateTasMovieItineraryArtifactV1(
+                itinerary, child_dtm.info().input_count, outcome.endpoint_pc, &error))
+            return FinalDecision("FAILED", "TAS_CUTSCENE_ITINERARY_INVALID", error);
+        const auto encoded_itinerary =
+            savor::runtime::tasmovie::EncodeTasMovieItineraryArtifactV1(itinerary, &error);
+        if (encoded_itinerary.empty())
+            return FinalDecision("FAILED", "TAS_CUTSCENE_ITINERARY_INVALID", error);
+        const auto itinerary_sha = hash::sha256(
+            encoded_itinerary.data(), encoded_itinerary.size());
+        const auto itinerary_path = root_ / "published" / (itinerary_sha + ".tmi");
+        if (!WriteFile(itinerary_path, encoded_itinerary, &error))
+            throw std::runtime_error(error);
+        std::int64_t itinerary_id = 0;
+        if (!state_->StoreArtifact({.sha256 = itinerary_sha,
+                .size_bytes = static_cast<std::int64_t>(encoded_itinerary.size()),
+                .filename = itinerary_path.string(), .display_filename = "tas-movie-cutscene-itinerary.tmi",
+                .file_ext = ".tmi", .artifact_kind = "TAS_MOVIE_ITINERARY",
+                .created_at_utc = types::UtcNow(),
+                .correlation_id = "tmv-cutscene-request-" + std::to_string(request->cutscene_request_id),
+                .causation_id = "execution-job-" + std::to_string(context.job_id)},
+                &itinerary_id, &error))
+            throw std::runtime_error(error);
+        std::int64_t savestate_id = 0;
+        if (!state_->CreateSavestate({.artifact_id = sav_artifact_id,
+                .playback_state = SavestatePlaybackState::MoviePaired,
+                .dtm_artifact_id = dtm_id,
+                .savestate_type = "TAS_MOVIE_CUTSCENE_ENDPOINT",
+                .note = "Movie-paired endpoint after recorded cutscene dialogue",
+                .is_complete = true, .created_at_utc = types::UtcNow(),
+                .correlation_id = "tmv-cutscene-request-" + std::to_string(request->cutscene_request_id),
+                .causation_id = "execution-job-" + std::to_string(context.job_id)},
+                &savestate_id, &error)
+            || !state_->DeriveSavestate({.from_savestate_id = request->source_savestate_id,
+                .to_savestate_id = savestate_id, .method_kind = "tasmovie.cutscene.v1",
+                .source_context_kind = std::string(kCutsceneRefKind),
+                .source_context_id = request->cutscene_request_id,
+                .created_at_utc = types::UtcNow(),
+                .correlation_id = "tmv-cutscene-request-" + std::to_string(request->cutscene_request_id),
+                .causation_id = "execution-job-" + std::to_string(context.job_id)},
+                nullptr, &error))
+            throw std::runtime_error(error);
+        const auto source_tree = state_->GetTasMovieTree(request->source_tree_id);
+        if (!source_tree)
+            throw std::runtime_error("cutscene source TAS tree is missing");
+        std::int64_t tree_id = 0;
+        if (!state_->CreateTasMovieTree({.tas_movie_root_id = source_tree->tas_movie_root_id,
+                .parent_tas_movie_tree_id = source_tree->tas_movie_tree_id,
+                .dtm_artifact_id = dtm_id, .itinerary_artifact_id = itinerary_id,
+                .required_final_breakpoint_pc = outcome.endpoint_pc,
+                .checkpoint_savestate_id = savestate_id,
+                .source_context_kind = "CUTSCENE",
+                .source_context_id = request->cutscene_request_id,
+                .created_at_utc = types::UtcNow(),
+                .correlation_id = "tmv-cutscene-request-" + std::to_string(request->cutscene_request_id),
+                .causation_id = "execution-job-" + std::to_string(context.job_id)},
+                &tree_id, &error))
+            throw std::runtime_error(error);
+        RecordTasMovieCutsceneAttemptCommand attempt{
+            .cutscene_request_id = request->cutscene_request_id,
+            .source_job_id = context.job_id,
+            .worker_terminal_sha256 = context.terminal.sha256,
+            .succeeded = true, .endpoint_kind = CutsceneEndpointName(outcome.endpoint),
+            .endpoint_pc = outcome.endpoint_pc,
+            .checkpoint_movie_input_cursor = outcome.checkpoint_input_count,
+            .final_movie_input_cursor = outcome.final_input_count,
+            .output_dtm_artifact_id = dtm_id,
+            .output_dtm_sha256 = dtm_record->sha256,
+            .output_savestate_id = savestate_id,
+            .output_itinerary_artifact_id = itinerary_id,
+            .output_tree_id = tree_id,
+            .worker_id = std::to_string(terminal.worker_id),
+            .worker_process_generation = terminal.process_generation,
+            .workset_epoch = terminal.terminal.workset_epoch,
+            .recorded_at_utc = types::UtcNow(),
+        };
+        std::int64_t attempt_id = 0;
+        if (!analysis_->RecordTasMovieCutsceneAttempt(attempt, &attempt_id, &error))
+            throw std::runtime_error(error);
+        auto decision = FinalDecision("SUCCEEDED");
+        decision.cleanup_worker_staging = true;
+        decision.staging_files.push_back({
+            .relative_path = itinerary_path.lexically_relative(root_).generic_string(),
+            .sha256 = itinerary_sha,
+            .size_bytes = static_cast<std::uint64_t>(encoded_itinerary.size())});
+        decision.outputs = {
+            {.output_key = "cutscene_attempt",
+             .data_kind = "analysis.tas_movie_cutscene_attempt_id",
+             .ref_kind = "tmv_cutscene_attempt", .ref_id = attempt_id},
+            {.output_key = "tas_movie_tree",
+             .data_kind = "state.tas_movie_tree_id",
+             .ref_kind = "state.tas_movie_tree", .ref_id = tree_id},
+            {.output_key = "paired_savestate",
+             .data_kind = "state.movie_paired_savestate_id",
+             .ref_kind = "state.savestate", .ref_id = savestate_id},
+        };
+        decision.event_lines.push_back("[tasmovie-cutscene-recorded] attempt="
+            + std::to_string(attempt_id));
+        return decision;
+    }
+
+private:
+    IStateDb* state_{};
+    IAnalysisDb* analysis_{};
+    std::filesystem::path root_;
+    std::shared_ptr<const inputepoch::ICutsceneFullPhaseDefinitionV1> phase_;
+};
+
+class CutsceneTransition final : public IWorkflowTransitionHandler {
+public:
+    explicit CutsceneTransition(IAnalysisDb* analysis) : analysis_(analysis) {}
+
+    WorkflowTransitionDecision EvaluateTransition(
+        const WorkflowTransitionContext& context) const override {
+        WorkflowTransitionDecision decision{};
+        decision.should_advance = true;
+        if (!analysis_ || context.output_ref_kind !=
+                std::optional<std::string>("tmv_cutscene_attempt")
+            || !context.output_ref_id)
+            return decision;
+        const auto attempt = analysis_->GetTasMovieCutsceneAttempt(*context.output_ref_id);
+        if (!attempt || !attempt->succeeded || !attempt->output_tree_id) {
+            decision.should_advance = false;
+            decision.workflow_failure = true;
+            decision.blocked_reason = "cutscene_tree_missing";
+            return decision;
+        }
+        decision.spawn_steps.push_back({
+            .step_key = "Cutscene/" + std::to_string(attempt->cutscene_attempt_id)
+                + "/validate",
+            .step_kind = "tasmovie.validate_tree",
+            .input_ref_kind = "state_tas_movie_tree",
+            .input_ref_id = *attempt->output_tree_id,
+            .priority = context.priority,
+            .max_attempts = 1,
+        });
+        return decision;
+    }
+
+private:
+    IAnalysisDb* analysis_{};
+};
+
 } // namespace
 
 ProgramKindDescriptor BuildAnnotationProgramDescriptor(IExecutionDb* execution_db,
@@ -1506,6 +1968,30 @@ ProgramKindDescriptor BuildRewriteProgramDescriptor(IExecutionDb* execution_db,
         state_db, analysis_db, config.working_dir_root);
     descriptor.result_handler = std::make_shared<RewriteResultHandler>(
         state_db, analysis_db, config.working_dir_root);
+    descriptor.supports_workflow_orchestration = true;
+    return descriptor;
+}
+
+ProgramKindDescriptor BuildCutsceneProgramDescriptor(IExecutionDb* execution_db,
+    IStateDb* state_db, IAnalysisDb* analysis_db,
+    TasMovieInputEpochProgramConfig config) {
+    ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = static_cast<std::int32_t>(savor::PK_TasMovieCutscene);
+    descriptor.program_name = "TAS Movie Cutscene";
+    descriptor.result_staging_root = config.working_dir_root;
+    descriptor.full_phase_identity = inputepoch::CutsceneFullPhaseDefinitionV1()->identity();
+    descriptor.default_progress_library_ids = ObservationDefaults().progress_library_ids;
+    descriptor.default_derived_state_block_ids = std::vector<std::string>{};
+    descriptor.default_progress_runtime_trigger_pcs =
+        ObservationDefaults().runtime_sample_trigger_pcs;
+    descriptor.job_materializer = std::make_shared<CutsceneMaterializer>(
+        execution_db, state_db, analysis_db, config);
+    descriptor.workset_reconstruction = std::make_shared<CutsceneReconstruction>(
+        state_db, analysis_db, config.working_dir_root);
+    descriptor.result_handler = std::make_shared<CutsceneResultHandler>(
+        state_db, analysis_db, config.working_dir_root);
+    descriptor.workflow_transition =
+        std::make_shared<CutsceneTransition>(analysis_db);
     descriptor.supports_workflow_orchestration = true;
     return descriptor;
 }

@@ -285,6 +285,44 @@ TEST(InputArbiter, HeldAndNeutralTransitionsRequireExactGuestObservation)
     EXPECT_EQ(backend.publish_calls, publications);
 }
 
+TEST(InputArbiter, ReplacesObservedDeliveryWithoutNeutralGap)
+{
+    FakeInputBackend backend;
+    InputArbiter arbiter(backend);
+    ASSERT_TRUE(arbiter.InitializeWorksetEpoch(kEpoch).ok);
+    const auto lease = arbiter.Acquire({.owner = InputOwnerId(1)}, kEpoch);
+    ASSERT_TRUE(lease.ok);
+
+    GCInputFrame b;
+    b.B();
+    const auto first = arbiter.BeginDelivery(lease.lease, b, kEpoch);
+    ASSERT_TRUE(first.ok) << first.message;
+    backend.Poll();
+    const auto first_relationship = Relate(arbiter, first);
+    ASSERT_TRUE(first_relationship.ok) << first_relationship.message;
+    ASSERT_TRUE(arbiter.Complete(
+        first_relationship.relationship, kEpoch).ok);
+
+    GCInputFrame a;
+    a.A();
+    const auto second = arbiter.ReplaceDelivery(
+        lease.lease, first.binding, a, kEpoch);
+    ASSERT_TRUE(second.ok) << second.message;
+    EXPECT_EQ(backend.publish_calls, 2u);
+    EXPECT_EQ(backend.current_frame, a);
+
+    backend.Poll();
+    const auto second_relationship = Relate(arbiter, second);
+    ASSERT_TRUE(second_relationship.ok) << second_relationship.message;
+    ASSERT_TRUE(arbiter.Complete(
+        second_relationship.relationship, kEpoch).ok);
+    const auto completed = arbiter.CompleteDelivery(
+        lease.lease, second.binding, kEpoch);
+    ASSERT_TRUE(completed.ok) << completed.message;
+    EXPECT_EQ(backend.publish_calls, 3u);
+    EXPECT_EQ(backend.current_frame, GCInputFrame{});
+}
+
 TEST(InputArbiter, DiagnosticInspectionIsReadOnlyAndReportsExactPollCounters)
 {
     FakeInputBackend backend;

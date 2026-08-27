@@ -1620,6 +1620,59 @@ struct RecordTasMovieInputEpochRewriteCompletionReceipt {
     std::int64_t root_establishment_attempt_id = 0;
 };
 
+struct CreateTasMovieCutsceneRequestCommand {
+    std::string materialization_key;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t source_validation_attempt_id = 0;
+    std::int64_t source_tree_id = 0;
+    std::int64_t source_savestate_id = 0;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::string source_dtm_sha256;
+    std::int64_t source_itinerary_artifact_id = 0;
+    std::string source_itinerary_sha256;
+    std::uint64_t source_movie_input_cursor = 0;
+    std::int64_t full_phase_program_kind = 0;
+    std::int64_t full_phase_program_version = 0;
+    std::string full_phase_canonical_id;
+    std::int64_t full_phase_contract_revision = 0;
+    std::string full_phase_sha256;
+    std::string module_canonical_id;
+    std::int64_t module_revision = 0;
+    std::string module_sha256;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct TasMovieCutsceneRequestRecord : CreateTasMovieCutsceneRequestCommand {
+    std::int64_t cutscene_request_id = 0;
+};
+
+struct RecordTasMovieCutsceneAttemptCommand {
+    std::int64_t cutscene_request_id = 0;
+    std::int64_t source_job_id = 0;
+    std::string worker_terminal_sha256;
+    bool succeeded = false;
+    std::string endpoint_kind;
+    std::uint32_t endpoint_pc = 0;
+    std::uint64_t checkpoint_movie_input_cursor = 0;
+    std::uint64_t final_movie_input_cursor = 0;
+    std::optional<std::int64_t> output_dtm_artifact_id;
+    std::optional<std::string> output_dtm_sha256;
+    std::optional<std::int64_t> output_savestate_id;
+    std::optional<std::int64_t> output_itinerary_artifact_id;
+    std::optional<std::int64_t> output_tree_id;
+    std::string failure_code;
+    std::string failure_text;
+    std::string worker_id;
+    std::uint64_t worker_process_generation = 0;
+    std::uint64_t workset_epoch = 0;
+    types::UtcTimePoint recorded_at_utc{};
+};
+
+struct TasMovieCutsceneAttemptRecord : RecordTasMovieCutsceneAttemptCommand {
+    std::int64_t cutscene_attempt_id = 0;
+};
+
 struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
 
@@ -1716,6 +1769,24 @@ struct IAnalysisDb {
         const RecordTasMovieInputEpochRewriteCompletionCommand& command,
         RecordTasMovieInputEpochRewriteCompletionReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) = 0;
+    virtual bool CreateTasMovieCutsceneRequest(
+        const CreateTasMovieCutsceneRequestCommand& command,
+        std::int64_t* request_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<TasMovieCutsceneRequestRecord>
+    GetTasMovieCutsceneRequest(std::int64_t request_id) const = 0;
+    virtual std::optional<TasMovieCutsceneRequestRecord>
+    GetTasMovieCutsceneRequestForWorkflowStep(
+        std::int64_t workflow_step_id) const = 0;
+    virtual bool RecordTasMovieCutsceneAttempt(
+        const RecordTasMovieCutsceneAttemptCommand& command,
+        std::int64_t* attempt_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<TasMovieCutsceneAttemptRecord>
+    GetTasMovieCutsceneAttempt(std::int64_t attempt_id) const = 0;
+    virtual std::optional<TasMovieCutsceneAttemptRecord>
+    FindTasMovieCutsceneAttempt(std::int64_t source_job_id,
+        std::string_view worker_terminal_sha256) const = 0;
 
     virtual std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const = 0;
     virtual std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const = 0;

@@ -290,6 +290,7 @@ enum class ExecutionEventKind : std::uint8_t
     Progress,
     Terminal,
     HealthWarning,
+    InterruptionReady,
 };
 
 enum class ExecutionHealthWarningKind : std::uint8_t
@@ -311,6 +312,14 @@ struct ExecutionHealthWarning
     std::string message;
 };
 
+struct ExecutionInterruptionReady
+{
+    InterruptionFrameId frame_id;
+    std::string handler_key;
+    StopRouteReceipt trigger;
+    ExecutionEnvironmentEvidence evidence;
+};
+
 struct ExecutionEvent
 {
     ExecutionEventKind kind = ExecutionEventKind::StateChanged;
@@ -318,6 +327,7 @@ struct ExecutionEvent
     std::optional<ExecutionTerminalResult> terminal;
     std::optional<ExecutionProgress> progress;
     std::optional<ExecutionHealthWarning> health_warning;
+    std::optional<ExecutionInterruptionReady> interruption;
 };
 
 struct ExecutionSubmissionReceipt

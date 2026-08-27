@@ -7,6 +7,7 @@
 namespace {
 
 using namespace savor;
+using namespace savor::runtime::program;
 using namespace savor::runtime::tasmovie::inputepoch;
 
 TEST(TasMovieInputEpoch, DecodesDolphinControllerStateBitfield)
@@ -132,13 +133,23 @@ TEST(TasMovieInputEpoch, ProductionDefinitionsHaveIndependentCanonicalIdentities
 {
     const auto annotation = AnnotationFullPhaseDefinitionV1();
     const auto rewrite = RewriteFullPhaseDefinitionV1();
+    const auto cutscene = CutsceneFullPhaseDefinitionV1();
     ASSERT_TRUE(annotation);
     ASSERT_TRUE(rewrite);
+    ASSERT_TRUE(cutscene);
     EXPECT_EQ(annotation->identity().program_kind, PK_TasMovieAnnotate);
     EXPECT_EQ(rewrite->identity().program_kind, PK_TasMovieRevise);
+    EXPECT_EQ(cutscene->identity().program_kind, PK_TasMovieCutscene);
     EXPECT_NE(annotation->identity().canonical_id, rewrite->identity().canonical_id);
+    EXPECT_NE(rewrite->identity().canonical_id, cutscene->identity().canonical_id);
     EXPECT_FALSE(annotation->module_envelope().payload.empty());
     EXPECT_FALSE(rewrite->module_envelope().payload.empty());
+    EXPECT_FALSE(cutscene->module_envelope().payload.empty());
+    EXPECT_EQ(cutscene->runtime_contract().state_policy,
+        InvocationStatePolicy::RestoreBaseline);
+    EXPECT_TRUE(HasInvocationHandlerFlag(
+        cutscene->runtime_contract().execution.handler_flags,
+        InvocationHandlerFlag::DialogueAdvance));
 }
 
 } // namespace

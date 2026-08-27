@@ -1897,6 +1897,7 @@ void WriteExecutionPolicy(
     writer.Bool(execution.allow_input);
     writer.Bool(execution.allow_capture);
     writer.Bool(execution.record_trace);
+    writer.U32(execution.handler_flags);
 }
 
 bool ReadExecutionPolicy(
@@ -1908,7 +1909,8 @@ bool ReadExecutionPolicy(
         reader.Bool(execution.allow_movie_recording) &&
         reader.Bool(execution.allow_input) &&
         reader.Bool(execution.allow_capture) &&
-        reader.Bool(execution.record_trace);
+        reader.Bool(execution.record_trace) &&
+        reader.U32(execution.handler_flags);
 }
 
 void WriteProvenanceEntry(Writer& writer, const ProvenanceEntry& entry)

@@ -77,3 +77,7 @@ During the same invocation, a lossless passive capture observes every child `Pad
 - Full TAS-tree publication for rewritten segments.
 - SavorQt schedule inspection and insertion selection.
 - Domain-specific recorders beyond the current Battle pipeline.
+
+## Cutscene recording
+
+`tasmovie.cutscene` is the domain-specific recorder for dialogue-only cutscenes. It starts from a validated movie-paired TAS tree, enables the reusable `DialogueAdvance` invocation handler, records to the first qualified future pre-battle seed endpoint, and publishes a child TAS tree followed by `tasmovie.validate_tree`. See [CutscenePhase.md](CutscenePhase.md) for the execution and persistence contract. Dialogue choices remain an explicit unsupported boundary in v1.

@@ -110,6 +110,18 @@ SchemaIdentity RewriteResultSchema()
         "record{outcome:OutcomeV1/1,insert_before:u64,neutral_count:u64,source_count:u64,child_count:u64,final_cursor:u64,failure:FailureReasonV1/1,failure_epoch:u64,expected_cursor:u64,actual_cursor:u64}");
 }
 
+SchemaIdentity CutsceneRequestSchema()
+{
+    return Schema("soa.tasmovie.cutscene.RequestV1",
+        "record{source_cursor:u64,recording_config:runtime.movie.RecordingStaticConfig,save_request:runtime.action.savestate_save_immutable_artifact.Input/1}");
+}
+
+SchemaIdentity CutsceneResultSchema()
+{
+    return Schema("soa.tasmovie.cutscene.ResultV1",
+        "record{endpoint_pc:u64,checkpoint_input_count:u64,final_input_count:u64}");
+}
+
 TypeRef Named(const SchemaIdentity& schema) { return TypeRef::Named(schema); }
 TypeRef U64() { return TypeRef::Builtin(BuiltinType::U64); }
 TypeRef Bool() { return TypeRef::Builtin(BuiltinType::Bool); }
@@ -199,6 +211,7 @@ ProgramValueId Await(Builder& builder, ProgramFunction& function,
 {
     const bool creates_resource =
         action == CanonicalAction::MoviePrepareReadOnlyPlayback
+        || action == CanonicalAction::MovieAdoptRestoredReadOnlyPlayback
         || action == CanonicalAction::MovieStartPlayback
         || action == CanonicalAction::MovieStartRecording
         || action == CanonicalAction::InputAcquireLease;
@@ -232,14 +245,16 @@ private:
     std::vector<Byte> bytes_;
 };
 
-std::vector<Byte> ContinueConfig(bool fail_on_movie_end)
+std::vector<Byte> ContinueConfig(
+    bool fail_on_movie_end,
+    ExecutionInterruptionPolicy interruptions = ExecutionInterruptionPolicy::Reject)
 {
     StaticWriter writer({'C','U','C','2'});
     writer.U8(1);
     writer.Bool(fail_on_movie_end);
     writer.U8(static_cast<std::uint8_t>(
         ExecutionThrottlePolicy::RequireDisabled));
-    writer.U8(0);
+    writer.U8(static_cast<std::uint8_t>(interruptions));
     return std::move(writer).Finish();
 }
 
@@ -291,6 +306,27 @@ std::vector<Byte> PointSet()
         .physical_pc = PadReadReturnedPc,
     }}};
     return EncodeSemanticPointSetV1(points);
+}
+
+std::vector<Byte> CutsceneEndpointPointSet(bool deferred_only = false)
+{
+    const std::array<SemanticPointReference, 3> all{{
+        {.capability_pack=capabilities::FieldPackIdentity(),
+         .canonical_id="soa.field.point.prebattle.BeforeRandSeedSet",
+         .kind=SemanticPointKind::ProgramCounter,
+         .physical_pc=PreBattleBeforeRandSeedSetPc},
+        {.capability_pack=capabilities::FieldPackIdentity(),
+         .canonical_id="soa.field.point.transition.FastPreseed",
+         .kind=SemanticPointKind::ProgramCounter,
+         .physical_pc=FieldFastPreseedPc},
+        {.capability_pack=capabilities::FieldPackIdentity(),
+         .canonical_id="soa.field.point.transition.DeferredPreseed",
+         .kind=SemanticPointKind::ProgramCounter,
+         .physical_pc=FieldDeferredPreseedPc},
+    }};
+    const std::array<SemanticPointReference, 1> deferred{{all[2]}};
+    return deferred_only ? EncodeSemanticPointSetV1(deferred)
+                         : EncodeSemanticPointSetV1(all);
 }
 
 ProgramValueId ContinueToMovieEnd(Builder& builder, ProgramFunction& function,
@@ -1039,6 +1075,265 @@ ProgramModule RewriteModule()
     return module;
 }
 
+ProgramValueId ContinueCutscene(
+    Builder& builder, ProgramFunction& function, BasicBlock& block,
+    bool deferred_only, std::string selector, ProgramScopeId scope)
+{
+    const auto points = Constant(builder, function, block,
+        CanonicalRuntimeType(CanonicalRuntimeSchema::SemanticPointSet),
+        CutsceneEndpointPointSet(deferred_only), selector + "/points", scope);
+    const auto input = OptionalValue(builder, function, block,
+        CanonicalRuntimeSchema::OptionalInputExecutionBinding, std::nullopt,
+        selector + "/input", scope);
+    const auto movie = OptionalValue(builder, function, block,
+        CanonicalRuntimeSchema::OptionalMoviePlaybackSession, std::nullopt,
+        selector + "/movie", scope);
+    const auto count = OptionalValue(builder, function, block,
+        CanonicalRuntimeSchema::OptionalMovieInputCount, std::nullopt,
+        selector + "/count", scope);
+    const auto occurrences = Constant(builder, function, block, U64(),
+        std::uint64_t{1}, selector + "/occurrences", scope);
+    const auto verify = Constant(builder, function, block, Bool(), false,
+        selector + "/verify", scope);
+    const auto config = Constant(builder, function, block,
+        CanonicalRuntimeType(CanonicalRuntimeSchema::ContinueUntilStaticConfig),
+        ContinueConfig(false, ExecutionInterruptionPolicy::AllowKnown),
+        selector + "/config", scope);
+    const auto request = Construct(builder, function, block,
+        CanonicalActionInputType(CanonicalAction::ExecutionContinueUntil),
+        std::array{points,input,movie,count,occurrences,verify,config},
+        selector + "/request", scope);
+    return Await(builder, function, block,
+        CanonicalAction::ExecutionContinueUntil, request,
+        selector + "/await", scope);
+}
+
+ProgramModule CutsceneModule()
+{
+    ProgramModule module{.identity={
+        .canonical_id=std::string(CutsceneModuleCanonicalId), .revision=1}};
+    Builder builder(module, "TasMovieCutscene", "tasmovie.cutscene/v1");
+    builder.AddLocalType({.identity=CutsceneRequestSchema(),
+        .kind=TypeSchemaKind::Record,
+        .record_fields={{"source_cursor",U64()},
+            {"recording_config",CanonicalRuntimeType(
+                CanonicalRuntimeSchema::MovieRecordingStaticConfig)},
+            {"save_request",CanonicalActionInputType(
+                CanonicalAction::SavestateSaveImmutableArtifact)}}});
+    builder.AddLocalType({.identity=CutsceneResultSchema(),
+        .kind=TypeSchemaKind::Record,
+        .record_fields={{"endpoint_pc",TypeRef::Builtin(BuiltinType::U32)},
+            {"checkpoint_input_count",U64()},
+            {"final_input_count",U64()}}});
+    builder.AddCapabilityImport(capabilities::FieldPackIdentity());
+    for (const auto action : {
+             CanonicalAction::MovieAdoptRestoredReadOnlyPlayback,
+             CanonicalAction::MovieStartRecording,
+             CanonicalAction::ExecutionContinueUntil,
+             CanonicalAction::GuestReadU32,
+             CanonicalAction::SavestateSaveImmutableArtifact,
+             CanonicalAction::InputAcquireLease,
+             CanonicalAction::InputBeginDelivery,
+             CanonicalAction::ExecutionContinueUntilInputObserved,
+             CanonicalAction::InputCompleteDelivery,
+             CanonicalAction::MovieStopRecording}) AddAction(builder, action);
+
+    const auto argument = builder.NewArgument(Named(CutsceneRequestSchema()));
+    auto& function = builder.AddFunction(std::string(CutsceneEntrypoint),
+        std::array{argument}, Named(CutsceneResultSchema()), Bool(), true);
+    const auto startup_id = builder.AddBlock(function).id;
+    const auto qualify_id = builder.AddBlock(function,
+        std::array{builder.NewArgument(CanonicalActionOutputType(
+            CanonicalAction::ExecutionContinueUntil))}).id;
+    const auto deferred_id = builder.AddBlock(function).id;
+    const auto accept_id = builder.AddBlock(function,
+        std::array{builder.NewArgument(CanonicalActionOutputType(
+            CanonicalAction::ExecutionContinueUntil))}).id;
+    const auto publish_id = builder.AddBlock(function,
+        std::array{builder.NewArgument(TypeRef::Builtin(BuiltinType::U32)),
+            builder.NewArgument(U64())}).id;
+    const auto retry_future_id = builder.AddBlock(function).id;
+
+    auto& startup = Block(function, startup_id);
+    const auto scope = builder.NewScope();
+    (void)builder.AddInstruction(function,startup,InstructionOpcode::EnterScope,
+        std::nullopt,{}, {},"movie-scope",std::nullopt,scope);
+    const auto adopt_request = Construct(builder,function,startup,
+        CanonicalActionInputType(CanonicalAction::MovieAdoptRestoredReadOnlyPlayback),
+        {},"adopt-request",scope);
+    const auto playback = Await(builder,function,startup,
+        CanonicalAction::MovieAdoptRestoredReadOnlyPlayback,adopt_request,
+        "adopt-restored-playback",scope);
+    const auto recording_config = Project(builder,function,startup,argument.id,
+        CanonicalRuntimeType(CanonicalRuntimeSchema::MovieRecordingStaticConfig),
+        "recording_config",scope);
+    const auto recording_request = Construct(builder,function,startup,
+        CanonicalActionInputType(CanonicalAction::MovieStartRecording),
+        std::array{playback,recording_config},"recording-request",scope);
+    const auto recording = Await(builder,function,startup,
+        CanonicalAction::MovieStartRecording,recording_request,
+        "start-recording",scope);
+    const auto endpoint = ContinueCutscene(builder,function,startup,false,
+        "endpoint",scope);
+    const auto endpoint_pc = Project(builder,function,startup,endpoint,
+        TypeRef::Builtin(BuiltinType::U32),
+        "pc",scope);
+    const auto fast_pc = Constant(builder,function,startup,
+        TypeRef::Builtin(BuiltinType::U32),
+        static_cast<std::uint32_t>(FieldFastPreseedPc),"fast-pc",scope);
+    const auto is_fast = Binary(builder,function,startup,
+        InstructionOpcode::Equal,Bool(),endpoint_pc,fast_pc,"is-fast",scope);
+    builder.SetTerminator(function,startup,
+        {.kind=TerminatorKind::ConditionalBranch,
+         .condition_or_selector=is_fast,
+         .edges={{qualify_id,{endpoint}},{accept_id,{endpoint}}}},
+        "qualify-fast");
+
+    auto& qualify = Block(function,qualify_id);
+    const auto optional_stop = OptionalValue(builder,function,qualify,
+        CanonicalRuntimeSchema::OptionalContinueUntilResult,
+        qualify.arguments[0].id,"fast-stop",scope);
+    const auto flag_address = Constant(builder,function,qualify,U64(),
+        static_cast<std::uint64_t>(FieldFastPreseedQualificationAddress),
+        "fast-qualification-address",scope);
+    const auto observation_config = Constant(builder,function,qualify,
+        CanonicalRuntimeType(CanonicalRuntimeSchema::ObservationStaticConfig),
+        PadStatusObservationConfig(),"fast-qualification-config",scope);
+    const auto read_request = Construct(builder,function,qualify,
+        CanonicalActionInputType(CanonicalAction::GuestReadU32),
+        std::array{optional_stop,flag_address,observation_config},
+        "fast-qualification-request",scope);
+    const auto flag = Await(builder,function,qualify,
+        CanonicalAction::GuestReadU32,read_request,"fast-qualification",scope);
+    const auto zero_u32 = Constant(builder,function,qualify,
+        TypeRef::Builtin(BuiltinType::U32), std::uint32_t{0},"zero",scope);
+    const auto rejected = Binary(builder,function,qualify,
+        InstructionOpcode::Equal,Bool(),flag,zero_u32,"fast-rejected",scope);
+    builder.SetTerminator(function,qualify,
+        {.kind=TerminatorKind::ConditionalBranch,
+         .condition_or_selector=rejected,
+         .edges={{deferred_id,{}},{accept_id,{qualify.arguments[0].id}}}},
+        "fast-decision");
+
+    auto& deferred = Block(function,deferred_id);
+    const auto deferred_stop = ContinueCutscene(builder,function,deferred,true,
+        "deferred-endpoint",scope);
+    builder.SetTerminator(function,deferred,
+        {.kind=TerminatorKind::Branch,.edges={{accept_id,{deferred_stop}}}},
+        "accept-deferred");
+
+    auto& accept = Block(function,accept_id);
+    const auto accepted_pc = Project(builder,function,accept,
+        accept.arguments[0].id,TypeRef::Builtin(BuiltinType::U32),"pc",scope);
+    const auto checkpoint_cursor = Project(builder,function,accept,
+        accept.arguments[0].id,U64(),"movie_input_count",scope);
+    const auto source_cursor = Project(builder,function,accept,argument.id,
+        U64(),"source_cursor",scope);
+    const auto advanced = Binary(builder,function,accept,
+        InstructionOpcode::Greater,Bool(),checkpoint_cursor,source_cursor,
+        "cursor-advanced",scope);
+    builder.SetTerminator(function,accept,
+        {.kind=TerminatorKind::ConditionalBranch,
+         .condition_or_selector=advanced,
+         .edges={{publish_id,{accepted_pc,checkpoint_cursor}},{retry_future_id,{}}}},
+        "require-future-endpoint");
+
+    auto& retry_future = Block(function,retry_future_id);
+    const auto future_endpoint = ContinueCutscene(builder,function,retry_future,
+        false,"future-endpoint",scope);
+    builder.SetTerminator(function,retry_future,
+        {.kind=TerminatorKind::Branch,.edges={{accept_id,{future_endpoint}}}},
+        "accept-future-endpoint");
+
+    auto& publish = Block(function,publish_id);
+    const auto save_request = Project(builder,function,publish,argument.id,
+        CanonicalActionInputType(CanonicalAction::SavestateSaveImmutableArtifact),
+        "save_request",scope);
+    (void)Await(builder,function,publish,
+        CanonicalAction::SavestateSaveImmutableArtifact,save_request,
+        "save-endpoint",scope);
+    const auto tail_scope = builder.NewScope();
+    (void)builder.AddInstruction(function,publish,InstructionOpcode::EnterScope,
+        std::nullopt,{}, {},"neutral-tail-scope",std::nullopt,tail_scope);
+    const auto lease_config = Constant(builder,function,publish,
+        CanonicalRuntimeType(CanonicalRuntimeSchema::InputLeaseStaticConfig),
+        LeaseConfig(),"neutral-tail-lease-config",tail_scope);
+    const auto lease_request = Construct(builder,function,publish,
+        CanonicalActionInputType(CanonicalAction::InputAcquireLease),
+        std::array{lease_config},"neutral-tail-lease-request",tail_scope);
+    const auto lease = Await(builder,function,publish,
+        CanonicalAction::InputAcquireLease,lease_request,
+        "neutral-tail-lease",tail_scope);
+    const auto neutral = Constant(builder,function,publish,
+        CanonicalRuntimeType(CanonicalRuntimeSchema::InputFramePayload),
+        FrameBytes(GCInputFrame{}),"neutral",tail_scope);
+    const auto begin_request = Construct(builder,function,publish,
+        CanonicalActionInputType(CanonicalAction::InputBeginDelivery),
+        std::array{lease,neutral},"neutral-tail-begin",tail_scope);
+    const auto binding = Await(builder,function,publish,
+        CanonicalAction::InputBeginDelivery,begin_request,
+        "neutral-tail-binding",tail_scope);
+    const auto advance_config = Constant(builder,function,publish,
+        CanonicalRuntimeType(CanonicalRuntimeSchema::ExecutionAdvanceStaticConfig),
+        AdvanceConfig(),"neutral-tail-config",tail_scope);
+    const auto observe_request = Construct(builder,function,publish,
+        CanonicalActionInputType(CanonicalAction::ExecutionContinueUntilInputObserved),
+        std::array{binding,publish.arguments[1].id,advance_config},
+        "neutral-tail-observe-request",tail_scope);
+    const auto observed = Await(builder,function,publish,
+        CanonicalAction::ExecutionContinueUntilInputObserved,observe_request,
+        "neutral-tail-observe",tail_scope);
+    const auto final_cursor = Project(builder,function,publish,observed,U64(),
+        "movie_input_count",tail_scope);
+    const auto complete_request = Construct(builder,function,publish,
+        CanonicalActionInputType(CanonicalAction::InputCompleteDelivery),
+        std::array{lease,binding},"neutral-tail-complete-request",tail_scope);
+    (void)Await(builder,function,publish,
+        CanonicalAction::InputCompleteDelivery,complete_request,
+        "neutral-tail-complete",tail_scope);
+    (void)builder.AddInstruction(function,publish,InstructionOpcode::ExitScope,
+        std::nullopt,{}, {},"neutral-tail-release",std::nullopt,tail_scope);
+    const auto finalized = Await(builder,function,publish,
+        CanonicalAction::MovieStopRecording,recording,"finalize-recording",scope);
+    (void)builder.AddInstruction(function,publish,InstructionOpcode::PublishArtifact,
+        std::nullopt,std::array{finalized},{},"publish-dtm",std::nullopt,scope);
+    const auto result = Construct(builder,function,publish,
+        Named(CutsceneResultSchema()),std::array{publish.arguments[0].id,
+            publish.arguments[1].id,final_cursor},"result",scope);
+    (void)builder.AddInstruction(function,publish,InstructionOpcode::ExitScope,
+        std::nullopt,{}, {},"release-movie-scope",std::nullopt,scope);
+    const auto succeeded = Constant(builder,function,publish,Bool(),true,
+        "succeeded");
+    builder.SetTerminator(function,publish,
+        {.kind=TerminatorKind::Return,.return_value=result,
+         .domain_outcome=succeeded},"return");
+
+    module.accepted_policies = {
+        .state_policies={InvocationStatePolicy::RestoreBaseline},
+        .execution_intents={ExecutionIntent::Live},
+        .permits_movie_playback=true,.permits_movie_recording=true};
+    module.budgets = {.maximum_instructions=100'000,.maximum_calls=64,
+        .maximum_call_depth=8,.maximum_action_requests=100'000,
+        .maximum_emissions=8,.maximum_artifacts=4,.maximum_values=100'000,
+        .maximum_value_bytes=16ull*1024ull*1024ull,
+        .maximum_trace_events=100'000};
+    const auto sav = CanonicalActionArtifactPayloadSchemaIdentity(
+        CanonicalAction::SavestateSaveImmutableArtifact);
+    const auto dtm = CanonicalActionArtifactPayloadSchemaIdentity(
+        CanonicalAction::MovieStopRecording);
+    if (!sav || !dtm) throw std::logic_error("cutscene artifacts unavailable");
+    builder.AddTypeImport(*sav);
+    builder.AddTypeImport(*dtm);
+    module.entrypoints = {{.name=std::string(CutsceneEntrypoint),
+        .function=function.id,.input_type=Named(CutsceneRequestSchema()),
+        .output_type=Named(CutsceneResultSchema()),.domain_outcome_type=Bool(),
+        .artifact_schemas={*sav,*dtm},
+        .required_capability_packs=module.required_capability_packs,
+        .accepted_policies=module.accepted_policies}};
+    module.identity.module_hash=ComputeProgramModuleHashV1(module);
+    return module;
+}
+
 RuntimeProfile Profile(const ProgramDependencyLock& dependencies)
 {
     return {.profile_id = "soa-usa-jit64-v1",
@@ -1141,6 +1436,19 @@ ProgramValueGraph SaveGraph(std::string_view path)
     return encoded.ok ? encoded.graph : ProgramValueGraph{};
 }
 
+ProgramValueGraph CutsceneSaveGraph(std::string_view path)
+{
+    CanonicalActionPayload payload;
+    (void)payload.AddUtf8(CanonicalActionPayloadField::Path,
+        std::string(path));
+    (void)payload.AddUtf8(CanonicalActionPayloadField::Label,
+        "TAS movie cutscene endpoint");
+    const auto encoded = EncodeCanonicalActionPayload(payload,
+        *CanonicalActionInputSchemaIdentity(
+            CanonicalAction::SavestateSaveImmutableArtifact));
+    return encoded.ok ? encoded.graph : ProgramValueGraph{};
+}
+
 std::vector<Byte> RecordingConfig(std::string_view path)
 {
     class Writer
@@ -1152,6 +1460,20 @@ std::vector<Byte> RecordingConfig(std::string_view path)
     } writer;
     writer.Text(path);
     writer.Text("TAS movie input-epoch rewrite");
+    return std::move(writer.b);
+}
+
+std::vector<Byte> CutsceneRecordingConfig(std::string_view path)
+{
+    class Writer
+    {
+    public:
+        void U32(std::uint32_t value) { for (unsigned s=0;s!=32;s+=8) b.push_back(static_cast<Byte>(value>>s)); }
+        void Text(std::string_view value) { U32(static_cast<std::uint32_t>(value.size())); b.insert(b.end(),value.begin(),value.end()); }
+        std::vector<Byte> b{'M','R','C','1'};
+    } writer;
+    writer.Text(path);
+    writer.Text("TAS movie cutscene");
     return std::move(writer.b);
 }
 
@@ -1208,6 +1530,18 @@ ProgramValueGraph RewriteInput(const TasMovieInputEpochRewriteRequestV1& request
     return graph.Finish(graph.Add(Named(RewriteRequestSchema()),
         RecordValue{{prepare, epoch_list, input_run_list, insertion,
             neutral_count, recording, save}}));
+}
+
+ProgramValueGraph CutsceneInput(const TasMovieCutsceneRequestV1& request)
+{
+    Graph graph;
+    const auto source_cursor = graph.Add(U64(), request.source_movie_input_cursor);
+    const auto recording = graph.Add(CanonicalRuntimeType(
+        CanonicalRuntimeSchema::MovieRecordingStaticConfig),
+        CutsceneRecordingConfig(request.output_dtm_path));
+    const auto save = graph.Import(CutsceneSaveGraph(request.output_savestate_path));
+    return graph.Finish(graph.Add(Named(CutsceneRequestSchema()),
+        RecordValue{{source_cursor, recording, save}}));
 }
 
 const ProgramValue* Find(const ProgramValueGraph& graph, ProgramValueId id)
@@ -1698,6 +2032,153 @@ private:
     fullphase::FullPhaseProgramIdentity identity_;
 };
 
+class CutsceneDefinition final : public ICutsceneFullPhaseDefinitionV1
+{
+public:
+    CutsceneDefinition()
+    {
+        module_ = CutsceneModule();
+        dependencies_ = Verify(module_);
+        const auto encoded = EncodeProgramModuleV1(module_);
+        if (!encoded) throw std::logic_error(encoded.status.message);
+        envelope_ = {{module_.identity.canonical_id, module_.identity.revision,
+            module_.identity.module_hash.ToHex()}, kProgramCodecVersionV1,
+            false, encoded.bytes};
+        profile_ = Profile(dependencies_);
+        runtime_ = {.module = envelope_.identity,
+            .entrypoint = std::string(CutsceneEntrypoint),
+            .dependency_lock_sha256 = ComputeProgramDependencyLockHashV1(
+                dependencies_).ToHex(),
+            .runtime_profile_sha256 = ProfileHash(profile_),
+            .state_policy = InvocationStatePolicy::RestoreBaseline,
+            .execution = {.intent = ExecutionIntent::Live,
+                .allow_movie_playback = true,
+                .allow_movie_recording = true,
+                .allow_input = true,
+                .handler_flags = static_cast<std::uint32_t>(
+                    InvocationHandlerFlag::DialogueAdvance)},
+            .limits = module_.budgets,
+            .baseline_lineage = std::string(CutsceneBaselineLineage)};
+        const TasMovieCutsceneRequestV1 sample{
+            .source_movie_input_cursor = 1,
+            .output_dtm_path = "cutscene.dtm",
+            .output_savestate_path = "cutscene.sav"};
+        const auto invocation = Resolve(sample, ProgramExecutionId(1),
+            AttemptId(1));
+        runtime_.verified_dependency_sha256 =
+            ComputeProgramInvocationCompatibilityHashV1(invocation);
+        const std::string movie = "tasmovie.cutscene/playback-branch-record/v1";
+        const std::string service = "tasmovie.cutscene/dialogue-advance/v1";
+        runtime_.movie_policy_sha256 = hash::sha256(movie.data(), movie.size());
+        runtime_.service_policy_sha256 = hash::sha256(service.data(), service.size());
+        const std::string canonical = runtime_.module.canonical_hash +
+            runtime_.verified_dependency_sha256 + runtime_.service_policy_sha256;
+        identity_ = {static_cast<std::int32_t>(savor::PK_TasMovieCutscene),
+            CutsceneProgramVersion, std::string(CutsceneFullPhaseCanonicalId), 1,
+            hash::sha256(canonical.data(), canonical.size())};
+    }
+
+    const fullphase::FullPhaseProgramIdentity& identity() const noexcept override
+    {
+        return identity_;
+    }
+    const fullphase::FullPhaseRuntimeContract& runtime_contract() const noexcept override
+    {
+        return runtime_;
+    }
+    const EncodedModuleEnvelope& module_envelope() const noexcept override
+    {
+        return envelope_;
+    }
+    std::optional<ProgramInvocation> BuildResolvedExecution(
+        std::span<const std::uint8_t> bytes, ProgramExecutionId execution,
+        AttemptId attempt, std::string* diagnostic) const override
+    {
+        TasMovieCutsceneRequestV1 request;
+        if (!DecodeCutsceneExecutionInputV1(bytes, request, diagnostic))
+            return {};
+        return Resolve(request, execution, attempt);
+    }
+    bool DecodeProgramResult(std::span<const Byte> bytes,
+        TasMovieCutsceneResultV1& result, std::string* diagnostic) const override
+    {
+        ProgramValueGraph graph;
+        std::vector<ProgramArtifact> artifacts;
+        if (!DecodeCommonResult<TasMovieCutsceneResultV1>(bytes,
+                module_.identity, dependencies_, CutsceneEntrypoint, &graph,
+                &artifacts, diagnostic))
+            return false;
+        const auto* record = Payload<RecordValue>(graph, graph.root);
+        if (!record || record->fields.size() != 3)
+        {
+            Diagnostic(diagnostic,
+                "$.output.root: expected CutsceneResultV1 record with 3 fields");
+            return false;
+        }
+        const auto* endpoint_pc = Payload<std::uint32_t>(graph, record->fields[0]);
+        const auto* checkpoint = Payload<std::uint64_t>(graph, record->fields[1]);
+        const auto* final_cursor = Payload<std::uint64_t>(graph, record->fields[2]);
+        if (!endpoint_pc || !checkpoint || !final_cursor)
+        {
+            Diagnostic(diagnostic,
+                "$.output: endpoint_pc, checkpoint_input_count, and final_input_count must be u64");
+            return false;
+        }
+        TasMovieCutsceneEndpointV1 endpoint{};
+        if (*endpoint_pc == PreBattleBeforeRandSeedSetPc)
+            endpoint = TasMovieCutsceneEndpointV1::PreBattleSeed;
+        else if (*endpoint_pc == FieldFastPreseedPc)
+            endpoint = TasMovieCutsceneEndpointV1::FieldFastPreseed;
+        else if (*endpoint_pc == FieldDeferredPreseedPc)
+            endpoint = TasMovieCutsceneEndpointV1::FieldDeferredPreseed;
+        else
+        {
+            Diagnostic(diagnostic,
+                "$.output.endpoint_pc: unrecognized cutscene endpoint PC");
+            return false;
+        }
+        if (*final_cursor <= *checkpoint)
+        {
+            Diagnostic(diagnostic,
+                "$.output.final_input_count: trailing neutral poll was not recorded");
+            return false;
+        }
+        if (artifacts.size() != 2)
+        {
+            Diagnostic(diagnostic, "$.artifacts: expected SAV and DTM artifacts");
+            return false;
+        }
+        result = {.endpoint = endpoint,
+            .endpoint_pc = *endpoint_pc,
+            .checkpoint_input_count = *checkpoint,
+            .final_input_count = *final_cursor,
+            .artifacts = std::move(artifacts)};
+        return true;
+    }
+
+private:
+    ProgramInvocation Resolve(const TasMovieCutsceneRequestV1& request,
+        ProgramExecutionId execution, AttemptId attempt) const
+    {
+        return {.invocation_id = execution, .attempt_id = attempt,
+            .module = module_.identity,
+            .entrypoint = std::string(CutsceneEntrypoint),
+            .dependencies = dependencies_, .runtime_profile = profile_,
+            .state = {.policy = InvocationStatePolicy::RestoreBaseline,
+                .session_lineage = std::string(CutsceneBaselineLineage)},
+            .execution = runtime_.execution, .input = CutsceneInput(request),
+            .limits = module_.budgets,
+            .provenance = {.requesting_component = "SavorDb.tasmovie.cutscene"}};
+    }
+
+    ProgramModule module_;
+    ProgramDependencyLock dependencies_;
+    RuntimeProfile profile_;
+    EncodedModuleEnvelope envelope_;
+    fullphase::FullPhaseRuntimeContract runtime_;
+    fullphase::FullPhaseProgramIdentity identity_;
+};
+
 } // namespace
 
 std::shared_ptr<const IAnnotationFullPhaseDefinitionV1>
@@ -1718,6 +2199,13 @@ std::shared_ptr<const IRewriteFullPhaseDefinitionV1>
 RewriteFullPhaseDefinitionV1()
 {
     static const auto value = std::make_shared<const RewriteDefinition>();
+    return value;
+}
+
+std::shared_ptr<const ICutsceneFullPhaseDefinitionV1>
+CutsceneFullPhaseDefinitionV1()
+{
+    static const auto value = std::make_shared<const CutsceneDefinition>();
     return value;
 }
 

@@ -109,6 +109,24 @@ public:
         const RecordTasMovieInputEpochRewriteCompletionCommand& command,
         RecordTasMovieInputEpochRewriteCompletionReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
+    bool CreateTasMovieCutsceneRequest(
+        const CreateTasMovieCutsceneRequestCommand& command,
+        std::int64_t* request_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<TasMovieCutsceneRequestRecord>
+    GetTasMovieCutsceneRequest(std::int64_t request_id) const override;
+    std::optional<TasMovieCutsceneRequestRecord>
+    GetTasMovieCutsceneRequestForWorkflowStep(
+        std::int64_t workflow_step_id) const override;
+    bool RecordTasMovieCutsceneAttempt(
+        const RecordTasMovieCutsceneAttemptCommand& command,
+        std::int64_t* attempt_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<TasMovieCutsceneAttemptRecord>
+    GetTasMovieCutsceneAttempt(std::int64_t attempt_id) const override;
+    std::optional<TasMovieCutsceneAttemptRecord>
+    FindTasMovieCutsceneAttempt(std::int64_t source_job_id,
+        std::string_view worker_terminal_sha256) const override;
 
     std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const override;
     std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const override;

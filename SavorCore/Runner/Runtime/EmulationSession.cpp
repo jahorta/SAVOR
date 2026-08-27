@@ -1757,6 +1757,21 @@ BackendResult EmulationSession::InitializeExecution(WorksetEpoch first_epoch)
     try
     {
         ExecutionControlCoreConfig config = execution_control_core_config_;
+        const auto add_handler = [&config](InterruptionHandlerDescriptor descriptor) {
+            if (std::ranges::none_of(config.interruption_handlers,
+                    [&descriptor](const auto& existing) { return existing.key == descriptor.key; }))
+                config.interruption_handlers.push_back(std::move(descriptor));
+        };
+        add_handler({
+            .key = "soa.dialogue.advance",
+            .allowed_child_operations = {ExecutionOperationKind::ContinueUntil},
+            .maximum_depth = 1,
+        });
+        add_handler({
+            .key = "soa.dialogue.choice_unsupported",
+            .allowed_child_operations = {},
+            .maximum_depth = 1,
+        });
         config.input_relationships = input_arbiter_.get();
         config.host_activity = &host_activity_;
         execution_control_core_ =

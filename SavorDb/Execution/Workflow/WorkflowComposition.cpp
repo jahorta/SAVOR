@@ -504,6 +504,25 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
         },
         &ignored);
 
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
+            .unit_kind = "tas_movie_cutscene",
+            .display_name = "TAS Movie: Record Cutscene",
+            .description = "Records a validated TAS branch through dialogue and stops at the next qualified pre-battle seed boundary.",
+            .default_activation_params_json = "{}",
+            .required_inputs = {
+                Port("tas_movie_tree", "state.tas_movie_tree_id", "state_tas_movie_tree", "Validated movie-paired TAS branch"),
+            },
+            .possible_outputs = {
+                Port("cutscene_attempt", "analysis.tas_movie_cutscene_attempt_id", "tmv_cutscene_attempt", "Cutscene recording attempt"),
+                Port("tas_movie_tree", "state.tas_movie_tree_id", "state_tas_movie_tree", "Recorded TAS branch"),
+                Port("paired_savestate", "state.movie_paired_savestate_id", "state.savestate", "Movie-paired cutscene endpoint"),
+            },
+            .internal_step_kinds = {"tasmovie.cutscene"},
+            .step_templates = SingleStep("tasmovie.cutscene"),
+        },
+        &ignored);
+
     (void)registry.RegisterUnit(SeedProbeUnit(), &ignored);
 
     (void)registry.RegisterUnit(

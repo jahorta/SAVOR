@@ -747,6 +747,8 @@ ProgramRuntimeSubmission ProgramRuntime::StartInvocation(
         impl_->config.bounded_host_operation_timeout;
     state.allowed_effects =
         AllowedEffects(impl_->active->invocation.execution);
+    state.handler_flags =
+        impl_->active->invocation.execution.handler_flags;
     try
     {
         impl_->action_sink->Publish(std::move(state));
@@ -1239,6 +1241,8 @@ bool ProgramRuntime::Pump()
             std::move(pumped.host_request->diagnostic_selector);
         request.allowed_effects =
             AllowedEffects(impl_->active->invocation.execution);
+        request.handler_flags =
+            impl_->active->invocation.execution.handler_flags;
         request.timing = ActionTimingClass::BoundedHostOperation;
         if (request.action)
         {

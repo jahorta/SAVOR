@@ -54,6 +54,7 @@ struct ProgramActionRequest
     std::optional<std::chrono::steady_clock::time_point>
         bounded_host_deadline;
     ActionEffectMask allowed_effects = ~ActionEffectMask{0};
+    std::uint32_t handler_flags = 0;
     bool cleanup_only = false;
     // Existing IR selector carried only inside the worker for diagnostics.
     // It is not part of the program ABI or any wire/persistence contract.

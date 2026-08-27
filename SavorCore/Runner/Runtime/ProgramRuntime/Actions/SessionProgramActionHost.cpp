@@ -1966,6 +1966,59 @@ StopSubscriptionGroupDefinition BuildPcGroup(
     return definition;
 }
 
+inline constexpr std::uint32_t kDialogueTextReadyPc = 0x8010D300u;
+inline constexpr std::uint32_t kDialogueChoiceReadyPc = 0x8010CFD4u;
+inline constexpr std::uint32_t kDialoguePadReadReturnedPc = 0x801D6E7Cu;
+inline constexpr std::string_view kDialogueAdvanceHandler = "soa.dialogue.advance";
+inline constexpr std::string_view kDialogueChoiceHandler = "soa.dialogue.choice_unsupported";
+
+StopSubscriptionGroupDefinition BuildDialogueInterruptionGroup(
+    InvocationId invocation, IStopPointConsumer* consumer)
+{
+    const std::uint64_t seed = (invocation.value() << 12u) ^ 0xD1A100u;
+    StopSubscriptionGroupDefinition definition;
+    definition.id = StopSubscriptionGroupId(seed | 1u);
+    definition.source = {StopSourceId(seed | 2u),
+        "program.dialogue." + std::to_string(invocation.value()),
+        "invocation-scoped dialogue interruption handlers"};
+    definition.subscriptions = {
+        {.id=StopSubscriptionId(seed | 0x10u),
+         .point=PcStopPointSpec{kDialogueTextReadyPc},
+         .route=TrustedStopInterruptionRequest{.handler_key=std::string(kDialogueAdvanceHandler)},
+         .lifetime=StopSubscriptionLifetime::Scoped, .priority=100, .consumer=consumer},
+        {.id=StopSubscriptionId(seed | 0x11u),
+         .point=PcStopPointSpec{kDialogueChoiceReadyPc},
+         .route=TrustedStopInterruptionRequest{.handler_key=std::string(kDialogueChoiceHandler)},
+         .lifetime=StopSubscriptionLifetime::Scoped, .priority=110, .consumer=consumer},
+    };
+    return definition;
+}
+
+StopSubscriptionGroupDefinition BuildDialoguePadReadGroup(
+    InterruptionFrameId frame, bool a_stage, IStopPointConsumer* consumer)
+{
+    const std::uint64_t seed = (frame.value() << 12u) ^
+        (a_stage ? 0xD1A200u : 0xD1A300u);
+    return {
+        .id=StopSubscriptionGroupId(seed | 1u),
+        .source={StopSourceId(seed | 2u),
+            "dialogue.padread." + std::to_string(frame.value()),
+            a_stage ? "dialogue A acknowledgement" : "dialogue B acknowledgement"},
+        .subscriptions={{.id=StopSubscriptionId(seed | 0x10u),
+            .point=PcStopPointSpec{kDialoguePadReadReturnedPc},
+            .route=ForegroundStopWait{},
+            .lifetime=StopSubscriptionLifetime::Scoped,
+            .consumer=consumer}},
+    };
+}
+
+InputExecutionBindingEvidence BindingEvidence(
+    const InputExecutionBindingReceipt& receipt)
+{
+    return {receipt.lease, receipt.binding, receipt.publication,
+        receipt.epoch, receipt.state_generation, receipt.frame};
+}
+
 ProgramValueGraph UnitGraph()
 {
     ProgramValue value{
@@ -2349,14 +2402,19 @@ struct SessionProgramActionHost::Impl
         ResourceScopeId root_scope;
         CancellationSource cancellation;
         BaselineStage baseline_stage = BaselineStage::Established;
+        std::uint32_t handler_flags = 0;
+        std::uint64_t completed_dialogues = 0;
+        std::shared_ptr<StopSubscriptionGroupHandle> dialogue_stop_group;
 
         ActiveInvocation(
             InvocationId invocation_id,
-            AttemptId attempt_id)
+            AttemptId attempt_id,
+            std::uint32_t invocation_handler_flags)
             : invocation(invocation_id),
               attempt(attempt_id),
               owner(invocation_id.value()),
-              cancellation(invocation_id)
+              cancellation(invocation_id),
+              handler_flags(invocation_handler_flags)
         {
         }
     };
@@ -2386,6 +2444,18 @@ struct SessionProgramActionHost::Impl
     {
         Action,
         Cleanup,
+    };
+
+    enum class DialogueStage : std::uint8_t { AwaitingB, AwaitingA };
+
+    struct DialogueInterruption
+    {
+        InterruptionFrameId frame;
+        DialogueStage stage = DialogueStage::AwaitingB;
+        WorksetEpoch epoch;
+        InputLeaseId lease;
+        InputExecutionBindingId binding;
+        ExecutionOperationId child_operation;
     };
 
     struct PendingExecution
@@ -2952,9 +3022,27 @@ struct SessionProgramActionHost::Impl
         }
         const ResourceLedgerSnapshot ledger_snapshot =
             ledger->snapshot();
-        active.emplace(
-            request.invocation_id,
-            request.attempt_id);
+        std::shared_ptr<StopSubscriptionGroupHandle> dialogue_group;
+        if (HasInvocationHandlerFlag(request.handler_flags,
+                InvocationHandlerFlag::DialogueAdvance))
+        {
+            StopPointRouter* router = session.stop_points();
+            if (!router)
+                return Reject(request, ProgramActionResolutionStatus::Unsupported,
+                    "dialogue_router_unavailable",
+                    "Dialogue handling requires StopPointRouter");
+            auto registered = router->RegisterGroup(
+                BuildDialogueInterruptionGroup(request.invocation_id, &stop_consumer));
+            if (!registered.receipt.ok)
+                return Reject(request, ProgramActionResolutionStatus::Failed,
+                    "dialogue_route_registration_failed",
+                    registered.receipt.error.message);
+            dialogue_group = std::make_shared<StopSubscriptionGroupHandle>(
+                std::move(registered.handle));
+        }
+        active.emplace(request.invocation_id, request.attempt_id,
+            request.handler_flags);
+        active->dialogue_stop_group = std::move(dialogue_group);
         ResourceScopeResult invocation_scope =
             ledger->OpenSyntheticScope(
                 ledger_snapshot.session_root,
@@ -3040,6 +3128,12 @@ struct SessionProgramActionHost::Impl
         PendingExecution& continuation);
     void CompletePendingExecution(
         ExecutionTerminalResult terminal);
+    void HandleInterruptionReady(ExecutionInterruptionReady ready);
+    bool HandleDialogueChildTerminal(const ExecutionTerminalResult& terminal);
+    bool SubmitDialogueChild(
+        DialogueInterruption& handler,
+        const InputExecutionBindingReceipt& binding);
+    void FailDialogueHandler(std::string diagnostic);
     void CompleteCleanup(
         ExecutionTerminalResult terminal);
     [[nodiscard]] ProgramActionResolution ExecutionCompletion(
@@ -3068,6 +3162,7 @@ struct SessionProgramActionHost::Impl
     std::unordered_map<std::uint64_t, ResourceMapping> resources;
     std::unordered_map<std::string, SavedArtifact> saved_artifacts;
     std::optional<PendingExecution> pending;
+    std::optional<DialogueInterruption> dialogue;
     std::vector<ActorActionResult> completions;
     std::vector<ForegroundSemanticStopObservationV1>
         foreground_semantic_stops;
@@ -5673,6 +5768,186 @@ void SessionProgramActionHost::Impl::CompletePendingExecution(
     (void)Queue(std::move(completion));
 }
 
+bool SessionProgramActionHost::Impl::SubmitDialogueChild(
+    DialogueInterruption& handler,
+    const InputExecutionBindingReceipt& binding)
+{
+    InputArbiter* input = session.input_arbiter();
+    if (!input || !active)
+        return false;
+    const InputExecutionRelationshipReceipt relationship =
+        input->CreateExecutionRelationship(BindingEvidence(binding));
+    if (!relationship.ok)
+        return false;
+    ContinueUntilRequest child;
+    child.policy.expected_epoch = handler.epoch;
+    child.policy.movie_ended = MovieEndedPolicy::Fail;
+    child.policy.throttle = ExecutionThrottlePolicy::RequireDisabled;
+    child.policy.current_point = ExecutionCurrentPointPolicy::Ignore;
+    child.policy.interruptions = ExecutionInterruptionPolicy::Reject;
+    child.policy.input_relationship = relationship.relationship;
+    child.policy.cancellation = active->cancellation.token();
+    child.policy.diagnostic_invocation = active->invocation.value();
+    child.policy.diagnostic_attempt = active->attempt.value();
+    child.policy.diagnostic_selector = handler.stage == DialogueStage::AwaitingB
+        ? "dialogue/acknowledge-b" : "dialogue/acknowledge-a";
+    child.wake_group = BuildDialoguePadReadGroup(handler.frame,
+        handler.stage == DialogueStage::AwaitingA, &stop_consumer);
+    const ExecutionSubmissionReceipt submitted =
+        session.SubmitInterruptionChild(handler.frame, std::move(child));
+    if (!submitted.accepted)
+    {
+        (void)input->RemoveExecutionRelationship(relationship.relationship);
+        return false;
+    }
+    handler.binding = binding.binding;
+    handler.child_operation = submitted.operation_id;
+    return true;
+}
+
+void SessionProgramActionHost::Impl::FailDialogueHandler(
+    std::string diagnostic)
+{
+    if (!dialogue)
+        return;
+    const DialogueInterruption failed = *dialogue;
+    dialogue.reset();
+    if (InputArbiter* input = session.input_arbiter())
+        (void)input->CloseLease(failed.lease, failed.epoch);
+    const ExecutionControlReceipt completed = session.CompleteInterruptionHandler(
+        failed.frame, InterruptionHandlerOutcome::InfrastructureFailure,
+        diagnostic);
+    if (!completed.accepted)
+        session.MarkTainted("Dialogue handler could not retire its interruption frame: " +
+            completed.error.message);
+}
+
+void SessionProgramActionHost::Impl::HandleInterruptionReady(
+    ExecutionInterruptionReady ready)
+{
+    if (!active || dialogue)
+    {
+        if (ready.frame_id)
+            (void)session.CompleteInterruptionHandler(ready.frame_id,
+                InterruptionHandlerOutcome::InfrastructureFailure,
+                "dialogue handler state overlaps another interruption");
+        return;
+    }
+    if (ready.handler_key == kDialogueChoiceHandler)
+    {
+        (void)session.CompleteInterruptionHandler(ready.frame_id,
+            InterruptionHandlerOutcome::AbortParent,
+            "CUTSCENE_CHOICE_UNSUPPORTED: dialogue choice requires explicit branching");
+        return;
+    }
+    if (ready.handler_key != kDialogueAdvanceHandler)
+    {
+        (void)session.CompleteInterruptionHandler(ready.frame_id,
+            InterruptionHandlerOutcome::InfrastructureFailure,
+            "unknown invocation interruption handler");
+        return;
+    }
+    InputArbiter* input = session.input_arbiter();
+    if (!input)
+    {
+        (void)session.CompleteInterruptionHandler(ready.frame_id,
+            InterruptionHandlerOutcome::InfrastructureFailure,
+            "Dialogue InputArbiter is unavailable");
+        return;
+    }
+    const InputLeaseReceipt lease = input->Acquire({
+        .owner=InputOwnerId(active->invocation.value()),
+        .port=0,
+        .priority=1000,
+        .suspendable=true,
+        .interruption_borrowable=false,
+        .movie_exclusive=false,
+        .borrow_policy=InputBorrowPolicy::RequireStableNeutral,
+    }, session.snapshot().workset_epoch);
+    if (!lease.ok)
+    {
+        (void)session.CompleteInterruptionHandler(ready.frame_id,
+            InterruptionHandlerOutcome::InfrastructureFailure,
+            "Dialogue input lease failed: " + lease.message);
+        return;
+    }
+    const GCInputFrame b = GCInputFrame::new_btns(GC_B);
+    const InputExecutionBindingReceipt delivery =
+        input->BeginDelivery(lease.lease, b, lease.epoch);
+    if (!delivery.ok)
+    {
+        (void)input->CloseLease(lease.lease, lease.epoch);
+        (void)session.CompleteInterruptionHandler(ready.frame_id,
+            InterruptionHandlerOutcome::InfrastructureFailure,
+            "Dialogue B delivery failed: " + delivery.message);
+        return;
+    }
+    dialogue = DialogueInterruption{
+        .frame=ready.frame_id,
+        .stage=DialogueStage::AwaitingB,
+        .epoch=lease.epoch,
+        .lease=lease.lease,
+        .binding=delivery.binding,
+    };
+    if (!SubmitDialogueChild(*dialogue, delivery))
+        FailDialogueHandler("Dialogue B acknowledgement could not start");
+}
+
+bool SessionProgramActionHost::Impl::HandleDialogueChildTerminal(
+    const ExecutionTerminalResult& terminal)
+{
+    if (!dialogue || dialogue->child_operation != terminal.operation_id)
+        return false;
+    if (!ExecutionSucceeded(terminal) || !terminal.stop || !terminal.stop->event ||
+        terminal.stop->event->evidence.hit_pc != kDialoguePadReadReturnedPc)
+    {
+        FailDialogueHandler(terminal.error.message.empty()
+            ? "Dialogue PADRead acknowledgement failed"
+            : terminal.error.message);
+        return true;
+    }
+    InputArbiter* input = session.input_arbiter();
+    if (!input)
+    {
+        FailDialogueHandler("Dialogue InputArbiter disappeared");
+        return true;
+    }
+    if (dialogue->stage == DialogueStage::AwaitingB)
+    {
+        const GCInputFrame a = GCInputFrame::new_btns(GC_A);
+        const InputExecutionBindingReceipt replacement = input->ReplaceDelivery(
+            dialogue->lease, dialogue->binding, a, dialogue->epoch);
+        if (!replacement.ok)
+        {
+            FailDialogueHandler("Dialogue B-to-A replacement failed: " +
+                replacement.message);
+            return true;
+        }
+        dialogue->stage = DialogueStage::AwaitingA;
+        if (!SubmitDialogueChild(*dialogue, replacement))
+            FailDialogueHandler("Dialogue A acknowledgement could not start");
+        return true;
+    }
+    const InputDeliveryReceipt completed = input->CompleteDelivery(
+        dialogue->lease, dialogue->binding, dialogue->epoch);
+    const InputLeaseCloseReceipt closed = input->CloseLease(
+        dialogue->lease, dialogue->epoch);
+    if (!completed.ok || !closed.ok)
+    {
+        FailDialogueHandler(completed.ok ? closed.message : completed.message);
+        return true;
+    }
+    const InterruptionFrameId frame = dialogue->frame;
+    dialogue.reset();
+    ++active->completed_dialogues;
+    const ExecutionControlReceipt resumed = session.CompleteInterruptionHandler(
+        frame, InterruptionHandlerOutcome::ResumeParent);
+    if (!resumed.accepted)
+        session.MarkTainted("Dialogue handler could not resume its parent: " +
+            resumed.error.message);
+    return true;
+}
+
 void SessionProgramActionHost::Impl::CompleteCleanup(
     ExecutionTerminalResult terminal)
 {
@@ -5917,12 +6192,17 @@ void SessionProgramActionHost::RequestCancellation(
 void SessionProgramActionHost::HandleExecutionEvent(
     ExecutionEvent event)
 {
-    if (!impl_ || !impl_->BindOrCheckOwner() ||
-        event.kind != ExecutionEventKind::Terminal ||
-        !event.terminal)
+    if (!impl_ || !impl_->BindOrCheckOwner())
+        return;
+    if (event.kind == ExecutionEventKind::InterruptionReady && event.interruption)
     {
+        impl_->HandleInterruptionReady(std::move(*event.interruption));
         return;
     }
+    if (event.kind != ExecutionEventKind::Terminal || !event.terminal)
+        return;
+    if (impl_->HandleDialogueChildTerminal(*event.terminal))
+        return;
     impl_->CompletePendingExecution(
         std::move(*event.terminal));
 }

@@ -18,6 +18,7 @@ enum : std::uint8_t {
     PK_BattleReplay = 12,
     PK_TasMovieAnnotate = 13,
     PK_TasMovieRevise = 14,
+    PK_TasMovieCutscene = 15,
     // Reserved high-value diagnostic range. Do not renumber with production kinds.
     PK_TasMovieInputEpochBreakpointDiagnostic = 100,
 };

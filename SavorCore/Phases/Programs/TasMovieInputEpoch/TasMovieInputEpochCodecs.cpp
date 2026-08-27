@@ -351,6 +351,48 @@ bool DecodeRewriteExecutionInputV1(
     return true;
 }
 
+std::vector<std::uint8_t> EncodeCutsceneExecutionInputV1(
+    const TasMovieCutsceneRequestV1& request,
+    std::string* diagnostic)
+{
+    if (request.source_movie_input_cursor == 0 ||
+        !ValidateRequestPath(request.output_dtm_path) ||
+        !ValidateRequestPath(request.output_savestate_path))
+    {
+        SetDiagnostic(diagnostic, "cutscene execution input is invalid");
+        return {};
+    }
+    Writer writer({'T','M','C','1'});
+    writer.U32(CutsceneProgramVersion);
+    writer.U64(request.source_movie_input_cursor);
+    writer.Text(request.output_dtm_path);
+    writer.Text(request.output_savestate_path);
+    return std::move(writer).Finish();
+}
+
+bool DecodeCutsceneExecutionInputV1(
+    std::span<const std::uint8_t> bytes,
+    TasMovieCutsceneRequestV1& request,
+    std::string* diagnostic)
+{
+    Reader reader(bytes, {'T','M','C','1'});
+    std::uint32_t version = 0;
+    TasMovieCutsceneRequestV1 decoded;
+    if (!reader.U32(version) || version != CutsceneProgramVersion ||
+        !reader.U64(decoded.source_movie_input_cursor) ||
+        !reader.Text(decoded.output_dtm_path) ||
+        !reader.Text(decoded.output_savestate_path) ||
+        !reader.Complete() || decoded.source_movie_input_cursor == 0 ||
+        !ValidateRequestPath(decoded.output_dtm_path) ||
+        !ValidateRequestPath(decoded.output_savestate_path))
+    {
+        SetDiagnostic(diagnostic, "cutscene execution payload is malformed");
+        return false;
+    }
+    request = std::move(decoded);
+    return true;
+}
+
 std::vector<TasMovieInputEpochRewriteRequestV1::InputRun>
 BuildRewriteInputRunsV1(
     const TasMovieInputEpochScheduleV1& schedule,

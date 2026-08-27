@@ -606,6 +606,16 @@ std::vector<SemanticPointDescriptor> BuildFieldPoints()
         .kind = SemanticPointKind::ProgramCounter,
         .pc = 0x801D6E7Cu,
     });
+    points.push_back({
+        .canonical_id = "soa.dialogue.point.TextRevealInputReady",
+        .kind = SemanticPointKind::ProgramCounter,
+        .pc = 0x8010D300u,
+    });
+    points.push_back({
+        .canonical_id = "soa.dialogue.point.ChoiceInputReady",
+        .kind = SemanticPointKind::ProgramCounter,
+        .pc = 0x8010CFD4u,
+    });
     return points;
 }
 

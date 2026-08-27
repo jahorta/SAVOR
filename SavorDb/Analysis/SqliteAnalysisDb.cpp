@@ -2459,6 +2459,308 @@ bool SqliteAnalysisDb::RecordTasMovieInputEpochRewriteCompletion(
     return true;
 }
 
+std::optional<TasMovieCutsceneRequestRecord>
+SqliteAnalysisDb::GetTasMovieCutsceneRequest(const std::int64_t request_id) const {
+    if (db_ == nullptr || request_id <= 0) return std::nullopt;
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT cutscene_request_id,materialization_key,workflow_instance_id,workflow_step_id,"
+        "source_validation_attempt_id,source_tree_id,source_savestate_id,source_dtm_artifact_id,"
+        "source_dtm_sha256,source_itinerary_artifact_id,source_itinerary_sha256,source_movie_input_cursor,"
+        "full_phase_program_kind,full_phase_program_version,full_phase_canonical_id,"
+        "full_phase_contract_revision,full_phase_sha256,module_canonical_id,module_revision,module_sha256,created_at_utc "
+        "FROM tmv_cutscene_request WHERE cutscene_request_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, request_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    TasMovieCutsceneRequestRecord row{};
+    row.cutscene_request_id = sqlite3_column_int64(st.st, 0);
+    row.materialization_key = ColumnText(st.st, 1);
+    row.workflow_instance_id = sqlite3_column_int64(st.st, 2);
+    row.workflow_step_id = sqlite3_column_int64(st.st, 3);
+    row.source_validation_attempt_id = sqlite3_column_int64(st.st, 4);
+    row.source_tree_id = sqlite3_column_int64(st.st, 5);
+    row.source_savestate_id = sqlite3_column_int64(st.st, 6);
+    row.source_dtm_artifact_id = sqlite3_column_int64(st.st, 7);
+    row.source_dtm_sha256 = ColumnText(st.st, 8);
+    row.source_itinerary_artifact_id = sqlite3_column_int64(st.st, 9);
+    row.source_itinerary_sha256 = ColumnText(st.st, 10);
+    row.source_movie_input_cursor = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 11));
+    row.full_phase_program_kind = sqlite3_column_int64(st.st, 12);
+    row.full_phase_program_version = sqlite3_column_int64(st.st, 13);
+    row.full_phase_canonical_id = ColumnText(st.st, 14);
+    row.full_phase_contract_revision = sqlite3_column_int64(st.st, 15);
+    row.full_phase_sha256 = ColumnText(st.st, 16);
+    row.module_canonical_id = ColumnText(st.st, 17);
+    row.module_revision = sqlite3_column_int64(st.st, 18);
+    row.module_sha256 = ColumnText(st.st, 19);
+    row.created_at_utc = ColumnTime(st.st, 20);
+    return row;
+}
+
+std::optional<TasMovieCutsceneRequestRecord>
+SqliteAnalysisDb::GetTasMovieCutsceneRequestForWorkflowStep(
+    const std::int64_t workflow_step_id) const {
+    if (db_ == nullptr || workflow_step_id <= 0) return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(db_,
+            "SELECT cutscene_request_id FROM tmv_cutscene_request WHERE workflow_step_id=?1;",
+            -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, workflow_step_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieCutsceneRequest(sqlite3_column_int64(st.st, 0));
+}
+
+bool SqliteAnalysisDb::CreateTasMovieCutsceneRequest(
+    const CreateTasMovieCutsceneRequestCommand& command,
+    std::int64_t* request_id_out, std::string* error_out) {
+    constexpr auto kMax = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (db_ == nullptr || command.materialization_key.empty()
+        || command.workflow_instance_id <= 0 || command.workflow_step_id <= 0
+        || command.source_validation_attempt_id <= 0 || command.source_tree_id <= 0
+        || command.source_savestate_id <= 0 || command.source_dtm_artifact_id <= 0
+        || !IsLowerHexSha256(command.source_dtm_sha256)
+        || command.source_itinerary_artifact_id <= 0
+        || !IsLowerHexSha256(command.source_itinerary_sha256)
+        || command.source_movie_input_cursor == 0 || command.source_movie_input_cursor > kMax
+        || command.full_phase_program_kind != 15 || command.full_phase_program_version <= 0
+        || command.full_phase_canonical_id.empty() || command.full_phase_contract_revision <= 0
+        || !IsLowerHexSha256(command.full_phase_sha256)
+        || command.module_canonical_id.empty() || command.module_revision <= 0
+        || !IsLowerHexSha256(command.module_sha256)) {
+        if (error_out) *error_out = "invalid immutable TAS movie cutscene request";
+        return false;
+    }
+    if (const auto existing = GetTasMovieCutsceneRequestForWorkflowStep(command.workflow_step_id)) {
+        const bool same = existing->materialization_key == command.materialization_key
+            && existing->workflow_instance_id == command.workflow_instance_id
+            && existing->source_validation_attempt_id == command.source_validation_attempt_id
+            && existing->source_tree_id == command.source_tree_id
+            && existing->source_savestate_id == command.source_savestate_id
+            && existing->source_dtm_artifact_id == command.source_dtm_artifact_id
+            && existing->source_dtm_sha256 == command.source_dtm_sha256
+            && existing->source_itinerary_artifact_id == command.source_itinerary_artifact_id
+            && existing->source_itinerary_sha256 == command.source_itinerary_sha256
+            && existing->source_movie_input_cursor == command.source_movie_input_cursor
+            && existing->full_phase_sha256 == command.full_phase_sha256
+            && existing->module_sha256 == command.module_sha256;
+        if (!same) {
+            if (error_out) *error_out = "workflow step already has a different cutscene request";
+            return false;
+        }
+        if (request_id_out) *request_id_out = existing->cutscene_request_id;
+        return true;
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO tmv_cutscene_request(materialization_key,workflow_instance_id,workflow_step_id,"
+        "source_validation_attempt_id,source_tree_id,source_savestate_id,source_dtm_artifact_id,source_dtm_sha256,"
+        "source_itinerary_artifact_id,source_itinerary_sha256,source_movie_input_cursor,full_phase_program_kind,"
+        "full_phase_program_version,full_phase_canonical_id,full_phase_contract_revision,full_phase_sha256,"
+        "module_canonical_id,module_revision,module_sha256,created_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20);";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_text(st.st, 1, command.materialization_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 2, command.workflow_instance_id);
+    sqlite3_bind_int64(st.st, 3, command.workflow_step_id);
+    sqlite3_bind_int64(st.st, 4, command.source_validation_attempt_id);
+    sqlite3_bind_int64(st.st, 5, command.source_tree_id);
+    sqlite3_bind_int64(st.st, 6, command.source_savestate_id);
+    sqlite3_bind_int64(st.st, 7, command.source_dtm_artifact_id);
+    sqlite3_bind_text(st.st, 8, command.source_dtm_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 9, command.source_itinerary_artifact_id);
+    sqlite3_bind_text(st.st, 10, command.source_itinerary_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 11, static_cast<std::int64_t>(command.source_movie_input_cursor));
+    sqlite3_bind_int64(st.st, 12, command.full_phase_program_kind);
+    sqlite3_bind_int64(st.st, 13, command.full_phase_program_version);
+    sqlite3_bind_text(st.st, 14, command.full_phase_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 15, command.full_phase_contract_revision);
+    sqlite3_bind_text(st.st, 16, command.full_phase_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 17, command.module_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 18, command.module_revision);
+    sqlite3_bind_text(st.st, 19, command.module_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 20, command.created_at_utc.time_since_epoch().count());
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (!InsertTasMovieOutboxEvent(db_, "AnalysisTasMovie.CutsceneRequestCreated.v1",
+            "cutscene_request", id, command.created_at_utc.time_since_epoch().count(),
+            "cutscene_request", id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (request_id_out) *request_id_out = id;
+    return true;
+}
+
+std::optional<TasMovieCutsceneAttemptRecord>
+SqliteAnalysisDb::GetTasMovieCutsceneAttempt(const std::int64_t attempt_id) const {
+    if (db_ == nullptr || attempt_id <= 0) return std::nullopt;
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT cutscene_attempt_id,cutscene_request_id,source_job_id,worker_terminal_sha256,succeeded,"
+        "endpoint_kind,endpoint_pc,checkpoint_movie_input_cursor,final_movie_input_cursor,"
+        "output_dtm_artifact_id,output_dtm_sha256,output_savestate_id,output_itinerary_artifact_id,output_tree_id,"
+        "failure_code,failure_text,worker_id,worker_process_generation,workset_epoch,recorded_at_utc "
+        "FROM tmv_cutscene_attempt WHERE cutscene_attempt_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, attempt_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    TasMovieCutsceneAttemptRecord row{};
+    row.cutscene_attempt_id = sqlite3_column_int64(st.st, 0);
+    row.cutscene_request_id = sqlite3_column_int64(st.st, 1);
+    row.source_job_id = sqlite3_column_int64(st.st, 2);
+    row.worker_terminal_sha256 = ColumnText(st.st, 3);
+    row.succeeded = sqlite3_column_int(st.st, 4) != 0;
+    row.endpoint_kind = ColumnText(st.st, 5);
+    row.endpoint_pc = static_cast<std::uint32_t>(sqlite3_column_int64(st.st, 6));
+    row.checkpoint_movie_input_cursor = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 7));
+    row.final_movie_input_cursor = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 8));
+    row.output_dtm_artifact_id = ColumnInt64Optional(st.st, 9);
+    row.output_dtm_sha256 = ColumnTextOptional(st.st, 10);
+    row.output_savestate_id = ColumnInt64Optional(st.st, 11);
+    row.output_itinerary_artifact_id = ColumnInt64Optional(st.st, 12);
+    row.output_tree_id = ColumnInt64Optional(st.st, 13);
+    row.failure_code = ColumnText(st.st, 14);
+    row.failure_text = ColumnText(st.st, 15);
+    row.worker_id = ColumnText(st.st, 16);
+    row.worker_process_generation = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 17));
+    row.workset_epoch = static_cast<std::uint64_t>(sqlite3_column_int64(st.st, 18));
+    row.recorded_at_utc = ColumnTime(st.st, 19);
+    return row;
+}
+
+std::optional<TasMovieCutsceneAttemptRecord>
+SqliteAnalysisDb::FindTasMovieCutsceneAttempt(
+    const std::int64_t source_job_id,
+    const std::string_view worker_terminal_sha256) const {
+    if (db_ == nullptr || source_job_id <= 0 || !IsLowerHexSha256(worker_terminal_sha256))
+        return std::nullopt;
+    Statement st;
+    if (sqlite3_prepare_v2(db_,
+            "SELECT cutscene_attempt_id FROM tmv_cutscene_attempt WHERE source_job_id=?1 AND worker_terminal_sha256=?2;",
+            -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, source_job_id);
+    sqlite3_bind_text(st.st, 2, worker_terminal_sha256.data(),
+        static_cast<int>(worker_terminal_sha256.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    return GetTasMovieCutsceneAttempt(sqlite3_column_int64(st.st, 0));
+}
+
+bool SqliteAnalysisDb::RecordTasMovieCutsceneAttempt(
+    const RecordTasMovieCutsceneAttemptCommand& command,
+    std::int64_t* attempt_id_out, std::string* error_out) {
+    constexpr auto kMax = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    const bool outputs_ok = command.succeeded
+        ? !command.endpoint_kind.empty() && command.endpoint_pc != 0
+            && command.checkpoint_movie_input_cursor > 0
+            && command.final_movie_input_cursor > command.checkpoint_movie_input_cursor
+            && command.output_dtm_artifact_id && command.output_dtm_sha256
+            && IsLowerHexSha256(*command.output_dtm_sha256)
+            && command.output_savestate_id && command.output_itinerary_artifact_id
+            && command.output_tree_id && command.failure_code.empty()
+            && command.failure_text.empty()
+        : !command.output_dtm_artifact_id && !command.output_dtm_sha256
+            && !command.output_savestate_id && !command.output_itinerary_artifact_id
+            && !command.output_tree_id && !command.failure_code.empty();
+    if (db_ == nullptr || command.cutscene_request_id <= 0 || command.source_job_id <= 0
+        || !IsLowerHexSha256(command.worker_terminal_sha256) || !outputs_ok
+        || command.checkpoint_movie_input_cursor > kMax || command.final_movie_input_cursor > kMax
+        || command.worker_id.empty() || command.worker_process_generation > kMax
+        || command.workset_epoch == 0 || command.workset_epoch > kMax
+        || !GetTasMovieCutsceneRequest(command.cutscene_request_id)) {
+        if (error_out) *error_out = "invalid immutable TAS movie cutscene attempt";
+        return false;
+    }
+    if (const auto existing = FindTasMovieCutsceneAttempt(
+            command.source_job_id, command.worker_terminal_sha256)) {
+        const bool same = existing->cutscene_request_id == command.cutscene_request_id
+            && existing->succeeded == command.succeeded
+            && existing->endpoint_kind == command.endpoint_kind
+            && existing->endpoint_pc == command.endpoint_pc
+            && existing->checkpoint_movie_input_cursor == command.checkpoint_movie_input_cursor
+            && existing->final_movie_input_cursor == command.final_movie_input_cursor
+            && existing->output_dtm_artifact_id == command.output_dtm_artifact_id
+            && existing->output_dtm_sha256 == command.output_dtm_sha256
+            && existing->output_savestate_id == command.output_savestate_id
+            && existing->output_itinerary_artifact_id == command.output_itinerary_artifact_id
+            && existing->output_tree_id == command.output_tree_id
+            && existing->failure_code == command.failure_code
+            && existing->failure_text == command.failure_text;
+        if (!same) {
+            if (error_out) *error_out = "worker terminal already identifies a different cutscene attempt";
+            return false;
+        }
+        if (attempt_id_out) *attempt_id_out = existing->cutscene_attempt_id;
+        return true;
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO tmv_cutscene_attempt(cutscene_request_id,source_job_id,worker_terminal_sha256,succeeded,"
+        "endpoint_kind,endpoint_pc,checkpoint_movie_input_cursor,final_movie_input_cursor,output_dtm_artifact_id,"
+        "output_dtm_sha256,output_savestate_id,output_itinerary_artifact_id,output_tree_id,failure_code,failure_text,"
+        "worker_id,worker_process_generation,workset_epoch,recorded_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19);";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, command.cutscene_request_id);
+    sqlite3_bind_int64(st.st, 2, command.source_job_id);
+    sqlite3_bind_text(st.st, 3, command.worker_terminal_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st.st, 4, command.succeeded ? 1 : 0);
+    sqlite3_bind_text(st.st, 5, command.endpoint_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 6, command.endpoint_pc);
+    sqlite3_bind_int64(st.st, 7, static_cast<std::int64_t>(command.checkpoint_movie_input_cursor));
+    sqlite3_bind_int64(st.st, 8, static_cast<std::int64_t>(command.final_movie_input_cursor));
+    if (command.output_dtm_artifact_id) sqlite3_bind_int64(st.st, 9, *command.output_dtm_artifact_id); else sqlite3_bind_null(st.st, 9);
+    if (command.output_dtm_sha256) sqlite3_bind_text(st.st, 10, command.output_dtm_sha256->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st.st, 10);
+    if (command.output_savestate_id) sqlite3_bind_int64(st.st, 11, *command.output_savestate_id); else sqlite3_bind_null(st.st, 11);
+    if (command.output_itinerary_artifact_id) sqlite3_bind_int64(st.st, 12, *command.output_itinerary_artifact_id); else sqlite3_bind_null(st.st, 12);
+    if (command.output_tree_id) sqlite3_bind_int64(st.st, 13, *command.output_tree_id); else sqlite3_bind_null(st.st, 13);
+    sqlite3_bind_text(st.st, 14, command.failure_code.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 15, command.failure_text.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 16, command.worker_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 17, static_cast<std::int64_t>(command.worker_process_generation));
+    sqlite3_bind_int64(st.st, 18, static_cast<std::int64_t>(command.workset_epoch));
+    sqlite3_bind_int64(st.st, 19, command.recorded_at_utc.time_since_epoch().count());
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (!InsertTasMovieOutboxEvent(db_, "AnalysisTasMovie.CutsceneAttemptRecorded.v1",
+            "cutscene_request", command.cutscene_request_id,
+            command.recorded_at_utc.time_since_epoch().count(),
+            "cutscene_attempt", id, error_out)
+        || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (attempt_id_out) *attempt_id_out = id;
+    return true;
+}
+
 std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const {
     if (db_ == nullptr || probe_run_id <= 0) {
         return std::nullopt;

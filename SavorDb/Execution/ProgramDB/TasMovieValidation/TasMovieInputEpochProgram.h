@@ -36,4 +36,10 @@ ProgramKindDescriptor BuildRewriteProgramDescriptor(
     IAnalysisDb* analysis_db,
     TasMovieInputEpochProgramConfig config = {});
 
+ProgramKindDescriptor BuildCutsceneProgramDescriptor(
+    IExecutionDb* execution_db,
+    IStateDb* state_db,
+    IAnalysisDb* analysis_db,
+    TasMovieInputEpochProgramConfig config = {});
+
 } // namespace savor::db::execution::programdb::tasmovieinputepoch

@@ -821,6 +821,8 @@ RehydratePackagePreviewResult SqliteRehydrateExecutor::PreviewPackage(const Rehy
         {"analysis_tas_movie_input_epoch_annotation_attempts", "$.annotation_attempt_id", "analysis_tas_movie_input_epoch_annotation_attempt", "tmv_input_epoch_annotation_attempt", "annotation_attempt_id", analysis_db_},
         {"analysis_tas_movie_input_epoch_rewrite_requests", "$.rewrite_request_id", "analysis_tas_movie_input_epoch_rewrite_request", "tmv_input_epoch_rewrite_request", "rewrite_request_id", analysis_db_},
         {"analysis_tas_movie_input_epoch_rewrite_attempts", "$.rewrite_attempt_id", "analysis_tas_movie_input_epoch_rewrite_attempt", "tmv_input_epoch_rewrite_attempt", "rewrite_attempt_id", analysis_db_},
+        {"analysis_tas_movie_cutscene_requests", "$.cutscene_request_id", "analysis_tas_movie_cutscene_request", "tmv_cutscene_request", "cutscene_request_id", analysis_db_},
+        {"analysis_tas_movie_cutscene_attempts", "$.cutscene_attempt_id", "analysis_tas_movie_cutscene_attempt", "tmv_cutscene_attempt", "cutscene_attempt_id", analysis_db_},
         {"analysis_tas_movie_root_establishment_attempts", "$.root_establishment_attempt_id", "analysis_tas_movie_root_establishment_attempt", "tmv_root_establishment_attempt", "root_establishment_attempt_id", analysis_db_},
     };
     ScanCollisionRules(spec, rules, &result.blocking_reasons);
@@ -2621,6 +2623,80 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     StepDone(analysis_db_,st.st,&db_error);
                 });
 
+            restore_stream("analysis_tas_movie_cutscene_requests",
+                [&](const std::string& line) {
+                    bool ok_id=false,ok_workflow=false,ok_step=false,ok_validation=false;
+                    bool ok_tree=false,ok_state=false,ok_dtm=false,ok_itinerary=false;
+                    const auto old_id=JsonExtractInt(analysis_db_,line,"$.cutscene_request_id",&ok_id);
+                    const auto old_workflow=JsonExtractInt(analysis_db_,line,"$.workflow_instance_id",&ok_workflow);
+                    const auto old_step=JsonExtractInt(analysis_db_,line,"$.workflow_step_id",&ok_step);
+                    const auto old_validation=JsonExtractInt(analysis_db_,line,"$.source_validation_attempt_id",&ok_validation);
+                    const auto old_tree=JsonExtractInt(analysis_db_,line,"$.source_tree_id",&ok_tree);
+                    const auto old_state=JsonExtractInt(analysis_db_,line,"$.source_savestate_id",&ok_state);
+                    const auto old_dtm=JsonExtractInt(analysis_db_,line,"$.source_dtm_artifact_id",&ok_dtm);
+                    const auto old_itinerary=JsonExtractInt(analysis_db_,line,"$.source_itinerary_artifact_id",&ok_itinerary);
+                    if(!ok_id||!ok_workflow||!ok_step||!ok_validation||!ok_tree||!ok_state||!ok_dtm||!ok_itinerary)return;
+                    const auto new_id=map_id("analysis_tas_movie_cutscene_request",old_id);
+                    const auto workflow=lookup_map("workflow_instance",old_workflow);
+                    const auto step=lookup_map("workflow_step",old_step);
+                    const auto validation=lookup_map("analysis_tas_movie_validation_attempt",old_validation);
+                    const auto tree=lookup_map("state_tas_movie_tree",old_tree);
+                    const auto state=lookup_map("state_savestate",old_state);
+                    const auto dtm=lookup_map("state_artifact",old_dtm);
+                    const auto itinerary=lookup_map("state_artifact",old_itinerary);
+                    if(new_id==0||!workflow||!step||!validation||!tree||!state||!dtm||!itinerary){db_error="cutscene request mapping is missing";return;}
+                    const auto key=spec.target_namespace+":rehydrate:tmv-cutscene:"+std::to_string(old_id);
+                    Statement st;
+                    if(!Prepare(analysis_db_,
+                        "INSERT INTO tmv_cutscene_request(cutscene_request_id,materialization_key,workflow_instance_id,workflow_step_id,source_validation_attempt_id,source_tree_id,source_savestate_id,source_dtm_artifact_id,source_dtm_sha256,source_itinerary_artifact_id,source_itinerary_sha256,source_movie_input_cursor,full_phase_program_kind,full_phase_program_version,full_phase_canonical_id,full_phase_contract_revision,full_phase_sha256,module_canonical_id,module_revision,module_sha256,created_at_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,json_extract(?9,'$.source_dtm_sha256'),?10,json_extract(?9,'$.source_itinerary_sha256'),json_extract(?9,'$.source_movie_input_cursor'),json_extract(?9,'$.full_phase_program_kind'),json_extract(?9,'$.full_phase_program_version'),json_extract(?9,'$.full_phase_canonical_id'),json_extract(?9,'$.full_phase_contract_revision'),json_extract(?9,'$.full_phase_sha256'),json_extract(?9,'$.module_canonical_id'),json_extract(?9,'$.module_revision'),json_extract(?9,'$.module_sha256'),json_extract(?9,'$.created_at_utc'));",
+                        &st,&db_error))return;
+                    sqlite3_bind_int64(st.st,1,new_id);
+                    sqlite3_bind_text(st.st,2,key.c_str(),-1,SQLITE_TRANSIENT);
+                    sqlite3_bind_int64(st.st,3,*workflow);
+                    sqlite3_bind_int64(st.st,4,*step);
+                    sqlite3_bind_int64(st.st,5,*validation);
+                    sqlite3_bind_int64(st.st,6,*tree);
+                    sqlite3_bind_int64(st.st,7,*state);
+                    sqlite3_bind_int64(st.st,8,*dtm);
+                    sqlite3_bind_text(st.st,9,line.c_str(),-1,SQLITE_TRANSIENT);
+                    sqlite3_bind_int64(st.st,10,*itinerary);
+                    StepDone(analysis_db_,st.st,&db_error);
+                });
+
+            restore_stream("analysis_tas_movie_cutscene_attempts",
+                [&](const std::string& line) {
+                    bool ok_id=false,ok_request=false,ok_job=false,ok_dtm=false,ok_state=false,ok_itinerary=false,ok_tree=false;
+                    const auto old_id=JsonExtractInt(analysis_db_,line,"$.cutscene_attempt_id",&ok_id);
+                    const auto old_request=JsonExtractInt(analysis_db_,line,"$.cutscene_request_id",&ok_request);
+                    const auto old_job=JsonExtractInt(analysis_db_,line,"$.source_job_id",&ok_job);
+                    const auto old_dtm=JsonExtractInt(analysis_db_,line,"$.output_dtm_artifact_id",&ok_dtm);
+                    const auto old_state=JsonExtractInt(analysis_db_,line,"$.output_savestate_id",&ok_state);
+                    const auto old_itinerary=JsonExtractInt(analysis_db_,line,"$.output_itinerary_artifact_id",&ok_itinerary);
+                    const auto old_tree=JsonExtractInt(analysis_db_,line,"$.output_tree_id",&ok_tree);
+                    if(!ok_id||!ok_request||!ok_job)return;
+                    const auto new_id=map_id("analysis_tas_movie_cutscene_attempt",old_id);
+                    const auto request=lookup_map("analysis_tas_movie_cutscene_request",old_request);
+                    const auto job=lookup_map("job",old_job).value_or(old_job);
+                    const auto dtm=ok_dtm?lookup_map("state_artifact",old_dtm):std::optional<std::int64_t>{};
+                    const auto state=ok_state?lookup_map("state_savestate",old_state):std::optional<std::int64_t>{};
+                    const auto itinerary=ok_itinerary?lookup_map("state_artifact",old_itinerary):std::optional<std::int64_t>{};
+                    const auto tree=ok_tree?lookup_map("state_tas_movie_tree",old_tree):std::optional<std::int64_t>{};
+                    if(new_id==0||!request||(ok_dtm&&!dtm)||(ok_state&&!state)||(ok_itinerary&&!itinerary)||(ok_tree&&!tree)){db_error="cutscene attempt mapping is missing";return;}
+                    Statement st;
+                    if(!Prepare(analysis_db_,
+                        "INSERT INTO tmv_cutscene_attempt(cutscene_attempt_id,cutscene_request_id,source_job_id,worker_terminal_sha256,succeeded,endpoint_kind,endpoint_pc,checkpoint_movie_input_cursor,final_movie_input_cursor,output_dtm_artifact_id,output_dtm_sha256,output_savestate_id,output_itinerary_artifact_id,output_tree_id,failure_code,failure_text,worker_id,worker_process_generation,workset_epoch,recorded_at_utc) VALUES(?1,?2,?3,json_extract(?4,'$.worker_terminal_sha256'),json_extract(?4,'$.succeeded'),json_extract(?4,'$.endpoint_kind'),json_extract(?4,'$.endpoint_pc'),json_extract(?4,'$.checkpoint_movie_input_cursor'),json_extract(?4,'$.final_movie_input_cursor'),?5,json_extract(?4,'$.output_dtm_sha256'),?6,?7,?8,json_extract(?4,'$.failure_code'),json_extract(?4,'$.failure_text'),json_extract(?4,'$.worker_id'),json_extract(?4,'$.worker_process_generation'),json_extract(?4,'$.workset_epoch'),json_extract(?4,'$.recorded_at_utc'));",
+                        &st,&db_error))return;
+                    sqlite3_bind_int64(st.st,1,new_id);
+                    sqlite3_bind_int64(st.st,2,*request);
+                    sqlite3_bind_int64(st.st,3,job);
+                    sqlite3_bind_text(st.st,4,line.c_str(),-1,SQLITE_TRANSIENT);
+                    bind_optional_int64(st.st,5,dtm);
+                    bind_optional_int64(st.st,6,state);
+                    bind_optional_int64(st.st,7,itinerary);
+                    bind_optional_int64(st.st,8,tree);
+                    StepDone(analysis_db_,st.st,&db_error);
+                });
+
             restore_stream("analysis_tas_movie_root_establishment_attempts",
                 [&](const std::string& line) {
                     bool ok_id=false,ok_validation=false,ok_rewrite=false,ok_parent=false;
@@ -3583,6 +3659,9 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 if (ref_kind == "tmv_input_epoch_rewrite_request") {
                     return lookup_map("analysis_tas_movie_input_epoch_rewrite_request", old_id);
                 }
+                if (ref_kind == "tmv_cutscene_request") {
+                    return lookup_map("analysis_tas_movie_cutscene_request", old_id);
+                }
                 if (ref_kind == "analysis.tas_movie_input_epoch_annotation_attempt_id"
                     || ref_kind == "tmv_input_epoch_annotation_attempt") {
                     return lookup_map("analysis_tas_movie_input_epoch_annotation_attempt", old_id);
@@ -3590,6 +3669,10 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 if (ref_kind == "analysis.tas_movie_input_epoch_rewrite_attempt_id"
                     || ref_kind == "tmv_input_epoch_rewrite_attempt") {
                     return lookup_map("analysis_tas_movie_input_epoch_rewrite_attempt", old_id);
+                }
+                if (ref_kind == "analysis.tas_movie_cutscene_attempt_id"
+                    || ref_kind == "tmv_cutscene_attempt") {
+                    return lookup_map("analysis_tas_movie_cutscene_attempt", old_id);
                 }
                 if (ref_kind == "analysis.tas_movie_root_establishment_attempt_id"
                     || ref_kind == "tmv_root_establishment_attempt") {

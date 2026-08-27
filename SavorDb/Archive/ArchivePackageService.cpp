@@ -1221,6 +1221,21 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
                     + ids + ") ORDER BY rewrite_attempt_id;"});
         }
     }
+    if (!workflow_ids.empty()
+        && IsTablePresent(analysis_db, "tmv_cutscene_request", nullptr)) {
+        const auto ids = QueryInt64Column(analysis_db,
+            "SELECT cutscene_request_id FROM tmv_cutscene_request WHERE workflow_instance_id IN ("
+                + workflow_id_list + ") ORDER BY cutscene_request_id;", &error);
+        if (!ids.empty()) {
+            const auto list = JoinIds(ids);
+            specs.push_back({"analysis_tas_movie_cutscene_requests",
+                "SELECT * FROM tmv_cutscene_request WHERE cutscene_request_id IN ("
+                    + list + ") ORDER BY cutscene_request_id;"});
+            specs.push_back({"analysis_tas_movie_cutscene_attempts",
+                "SELECT * FROM tmv_cutscene_attempt WHERE cutscene_request_id IN ("
+                    + list + ") ORDER BY cutscene_attempt_id;"});
+        }
+    }
     return specs;
 }
 
@@ -2019,6 +2034,30 @@ TasMovieArchiveClosure CollectTasMovieArchiveClosure(
             "JOIN tmv_input_epoch_rewrite_request r ON r.rewrite_request_id=a.rewrite_request_id "
             "WHERE r.workflow_instance_id IN (" + workflows
                 + ") AND a.endpoint_savestate_id IS NOT NULL;", &error));
+    }
+    if (IsTablePresent(analysis_db, "tmv_cutscene_request", nullptr)) {
+        append(&closure.artifact_ids, QueryInt64Column(analysis_db,
+            "SELECT source_dtm_artifact_id FROM tmv_cutscene_request WHERE workflow_instance_id IN ("
+                + workflows + ") UNION SELECT source_itinerary_artifact_id FROM tmv_cutscene_request "
+                  "WHERE workflow_instance_id IN (" + workflows + ") UNION SELECT a.output_dtm_artifact_id "
+                  "FROM tmv_cutscene_attempt a JOIN tmv_cutscene_request r ON r.cutscene_request_id=a.cutscene_request_id "
+                  "WHERE r.workflow_instance_id IN (" + workflows + ") AND a.output_dtm_artifact_id IS NOT NULL "
+                  "UNION SELECT a.output_itinerary_artifact_id FROM tmv_cutscene_attempt a "
+                  "JOIN tmv_cutscene_request r ON r.cutscene_request_id=a.cutscene_request_id "
+                  "WHERE r.workflow_instance_id IN (" + workflows + ") AND a.output_itinerary_artifact_id IS NOT NULL;",
+            &error));
+        append(&closure.savestate_ids, QueryInt64Column(analysis_db,
+            "SELECT source_savestate_id FROM tmv_cutscene_request WHERE workflow_instance_id IN ("
+                + workflows + ") UNION SELECT a.output_savestate_id FROM tmv_cutscene_attempt a "
+                  "JOIN tmv_cutscene_request r ON r.cutscene_request_id=a.cutscene_request_id "
+                  "WHERE r.workflow_instance_id IN (" + workflows + ") AND a.output_savestate_id IS NOT NULL;",
+            &error));
+        append(&closure.tree_ids, QueryInt64Column(analysis_db,
+            "SELECT source_tree_id FROM tmv_cutscene_request WHERE workflow_instance_id IN ("
+                + workflows + ") UNION SELECT a.output_tree_id FROM tmv_cutscene_attempt a "
+                  "JOIN tmv_cutscene_request r ON r.cutscene_request_id=a.cutscene_request_id "
+                  "WHERE r.workflow_instance_id IN (" + workflows + ") AND a.output_tree_id IS NOT NULL;",
+            &error));
     }
     const auto request_ids = QueryInt64Column(
         analysis_db,

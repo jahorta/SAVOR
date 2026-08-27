@@ -191,6 +191,11 @@ public:
         InputLeaseId lease,
         InputExecutionBindingId binding,
         WorksetEpoch epoch);
+    [[nodiscard]] InputExecutionBindingReceipt ReplaceDelivery(
+        InputLeaseId lease,
+        InputExecutionBindingId observed_binding,
+        const savor::GCInputFrame& replacement,
+        WorksetEpoch epoch);
 
     [[nodiscard]] InputArbiterOperationReceipt ValidateBinding(
         const InputExecutionBindingEvidence& binding) const noexcept;

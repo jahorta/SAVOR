@@ -342,6 +342,52 @@ InputDeliveryReceipt InputArbiter::CompleteDelivery(
     return receipt;
 }
 
+InputExecutionBindingReceipt InputArbiter::ReplaceDelivery(
+    InputLeaseId lease,
+    InputExecutionBindingId observed_binding,
+    const savor::GCInputFrame& replacement,
+    WorksetEpoch epoch)
+{
+    if (!OnOwnerThread())
+        return {.ok=false, .binding=observed_binding, .lease=lease, .epoch=epoch,
+            .frame=replacement, .message="InputArbiter mutation was attempted off its actor thread",
+            .error=InputArbiterErrorCode::WrongThread};
+    if (IsStopped())
+        return {.ok=false, .binding=observed_binding, .lease=lease, .epoch=epoch,
+            .frame=replacement, .message="InputArbiter is shut down",
+            .error=InputArbiterErrorCode::Stopped};
+    LeaseState* state = FindLease(lease);
+    BindingState* delivery = FindBinding(observed_binding);
+    if (!state || !delivery || !active_ || *active_ != lease ||
+        state->status != InputLeaseStatus::Active ||
+        state->input_state != InputState::DeliveryPending ||
+        state->current_binding != observed_binding ||
+        delivery->lease != lease || delivery->epoch != epoch ||
+        delivery->kind != InputBindingKind::Delivery ||
+        !delivery->delivery || !delivery->publication)
+    {
+        return {.ok=false, .binding=observed_binding, .lease=lease, .epoch=epoch,
+            .frame=replacement, .message="replacement requires the exact active delivery"};
+    }
+    if (!delivery->observed || !delivery->poll)
+    {
+        return {.ok=false, .binding=observed_binding, .lease=lease, .epoch=epoch,
+            .frame=replacement, .message="replacement delivery has not been observed by the guest"};
+    }
+    const PublishedState published = PublishBackend(*state, replacement);
+    if (!published.ok)
+        return {.ok=false, .binding=observed_binding, .lease=lease, .epoch=epoch,
+            .frame=replacement, .message=published.message, .error=published.error};
+    EraseRelationshipsForLease(lease);
+    EraseBindingsForLease(lease);
+    ++state->state_generation;
+    state->input_state = InputState::DeliveryPending;
+    state->backend_neutral = IsNeutral(replacement);
+    state->mutated_backend = true;
+    return BindCurrentState(*state, replacement, InputBindingKind::Delivery,
+        published, InputDeliveryId(next_delivery_++));
+}
+
 InputArbiterOperationReceipt InputArbiter::ValidateBinding(
     const InputExecutionBindingEvidence& evidence) const noexcept
 {

@@ -73,9 +73,23 @@ struct InvocationExecutionPolicy
     bool allow_input = false;
     bool allow_capture = false;
     bool record_trace = false;
+    std::uint32_t handler_flags = 0;
 
     auto operator<=>(const InvocationExecutionPolicy&) const = default;
 };
+
+enum class InvocationHandlerFlag : std::uint32_t
+{
+    None = 0,
+    DialogueAdvance = 1u << 0u,
+};
+
+[[nodiscard]] constexpr bool HasInvocationHandlerFlag(
+    std::uint32_t flags,
+    InvocationHandlerFlag flag) noexcept
+{
+    return (flags & static_cast<std::uint32_t>(flag)) != 0;
+}
 
 struct ProvenanceEntry
 {

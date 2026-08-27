@@ -42,6 +42,8 @@ ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(
         runtime_working_dir_root / "tasmovie-input-epoch-rewrite";
     config.tas_movie_input_epoch_rewrite.capture_module_sha256 =
         config.tas_movie_input_epoch_annotation.capture_module_sha256;
+    config.tas_movie_cutscene.working_dir_root =
+        runtime_working_dir_root / "tasmovie-cutscene";
     config.seed_probe.working_dir_root =
         runtime_working_dir_root / "seedprobe";
     config.battle_context.working_dir_root =
@@ -324,6 +326,24 @@ bool BuildProductionProgramKindRegistry(
             || !registry.RegisterForStepKind("tasmovie.revise",
                 tas_movie_input_epoch_rewrite)) {
             return Fail("TAS Movie input-epoch rewrite descriptor registration failed",
+                error_out);
+        }
+
+        auto tas_movie_cutscene =
+            tasmovieinputepoch::BuildCutsceneProgramDescriptor(
+                dependencies.execution_db, dependencies.state_db,
+                dependencies.analysis_db, std::move(config.tas_movie_cutscene));
+        if (tas_movie_cutscene.program_kind
+                != static_cast<std::int32_t>(savor::PK_TasMovieCutscene)
+            || !tas_movie_cutscene.full_phase_identity
+            || !tas_movie_cutscene.job_materializer
+            || !tas_movie_cutscene.workset_reconstruction
+            || !tas_movie_cutscene.result_handler
+            || !tas_movie_cutscene.workflow_transition
+            || !registry.Register(tas_movie_cutscene)
+            || !registry.RegisterForStepKind("tasmovie.cutscene",
+                tas_movie_cutscene)) {
+            return Fail("TAS Movie cutscene descriptor registration failed",
                 error_out);
         }
 

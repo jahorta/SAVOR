@@ -42,6 +42,21 @@ inline constexpr std::string_view RewriteFullPhaseCanonicalId =
 inline constexpr std::string_view RewriteBaselineLineage =
     "soa.tasmovie.input_epochs/source-playback/v1";
 
+inline constexpr std::int32_t CutsceneProgramVersion = 1;
+inline constexpr std::string_view CutsceneModuleCanonicalId =
+    "soa.tasmovie.cutscene";
+inline constexpr std::string_view CutsceneEntrypoint = "record";
+inline constexpr std::string_view CutsceneFullPhaseCanonicalId =
+    "savor.full_phase.tasmovie.cutscene";
+inline constexpr std::string_view CutsceneBaselineLineage =
+    "soa.tasmovie.cutscene/validated-movie-paired-checkpoint/v1";
+inline constexpr std::uint32_t DialogueTextRevealInputReadyPc = 0x8010D300u;
+inline constexpr std::uint32_t DialogueChoiceInputReadyPc = 0x8010CFD4u;
+inline constexpr std::uint32_t PreBattleBeforeRandSeedSetPc = 0x80101E48u;
+inline constexpr std::uint32_t FieldFastPreseedPc = 0x80101894u;
+inline constexpr std::uint32_t FieldDeferredPreseedPc = 0x801018ACu;
+inline constexpr std::uint32_t FieldFastPreseedQualificationAddress = 0x803475D4u;
+
 enum class InputEpochOutcomeV1 : std::int64_t
 {
     Completed = 0,
@@ -133,6 +148,30 @@ struct TasMovieInputEpochRewriteResultV1
     std::vector<program::ProgramArtifact> artifacts;
 };
 
+enum class TasMovieCutsceneEndpointV1 : std::int64_t
+{
+    PreBattleSeed = 1,
+    FieldFastPreseed = 2,
+    FieldDeferredPreseed = 3,
+};
+
+struct TasMovieCutsceneRequestV1
+{
+    std::uint64_t source_movie_input_cursor = 0;
+    std::string output_dtm_path;
+    std::string output_savestate_path;
+};
+
+struct TasMovieCutsceneResultV1
+{
+    TasMovieCutsceneEndpointV1 endpoint =
+        TasMovieCutsceneEndpointV1::PreBattleSeed;
+    std::uint32_t endpoint_pc = 0;
+    std::uint64_t checkpoint_input_count = 0;
+    std::uint64_t final_input_count = 0;
+    std::vector<program::ProgramArtifact> artifacts;
+};
+
 [[nodiscard]] GCInputFrame DecodeGuestPadStatusV1(
     std::uint64_t packed_status) noexcept;
 
@@ -161,6 +200,13 @@ struct TasMovieInputEpochRewriteResultV1
     std::span<const std::uint8_t> bytes,
     TasMovieInputEpochRewriteRequestV1& request,
     std::string* diagnostic = nullptr);
+[[nodiscard]] std::vector<std::uint8_t> EncodeCutsceneExecutionInputV1(
+    const TasMovieCutsceneRequestV1& request,
+    std::string* diagnostic = nullptr);
+[[nodiscard]] bool DecodeCutsceneExecutionInputV1(
+    std::span<const std::uint8_t> bytes,
+    TasMovieCutsceneRequestV1& request,
+    std::string* diagnostic = nullptr);
 
 class IAnnotationFullPhaseDefinitionV1
     : public fullphase::IFullPhaseProgramDefinition
@@ -186,11 +232,25 @@ public:
         std::string* diagnostic = nullptr) const = 0;
 };
 
+class ICutsceneFullPhaseDefinitionV1
+    : public fullphase::IFullPhaseProgramDefinition
+{
+public:
+    [[nodiscard]] fullphase::FullPhaseWorksetPolicy workset_policy()
+        const noexcept final { return {1, 1}; }
+    [[nodiscard]] virtual bool DecodeProgramResult(
+        std::span<const program::Byte> encoded,
+        TasMovieCutsceneResultV1& result,
+        std::string* diagnostic = nullptr) const = 0;
+};
+
 [[nodiscard]] std::shared_ptr<const IAnnotationFullPhaseDefinitionV1>
 AnnotationFullPhaseDefinitionV1();
 [[nodiscard]] std::shared_ptr<const IAnnotationFullPhaseDefinitionV1>
 BreakpointDiagnosticFullPhaseDefinitionV1();
 [[nodiscard]] std::shared_ptr<const IRewriteFullPhaseDefinitionV1>
 RewriteFullPhaseDefinitionV1();
+[[nodiscard]] std::shared_ptr<const ICutsceneFullPhaseDefinitionV1>
+CutsceneFullPhaseDefinitionV1();
 
 } // namespace savor::runtime::tasmovie::inputepoch

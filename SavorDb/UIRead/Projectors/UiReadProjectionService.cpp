@@ -1654,7 +1654,9 @@ bool ClassifyOutboxEvent(
         if (event.event_type == "AnalysisTasMovie.InputEpochAnnotationRequestCreated.v1"
             || event.event_type == "AnalysisTasMovie.InputEpochAnnotationAttemptRecorded.v1"
             || event.event_type == "AnalysisTasMovie.InputEpochRewriteRequestCreated.v1"
-            || event.event_type == "AnalysisTasMovie.InputEpochRewriteAttemptRecorded.v1")
+            || event.event_type == "AnalysisTasMovie.InputEpochRewriteAttemptRecorded.v1"
+            || event.event_type == "AnalysisTasMovie.CutsceneRequestCreated.v1"
+            || event.event_type == "AnalysisTasMovie.CutsceneAttemptRecorded.v1")
             return true;
         break;
     case StreamKind::Archive:

@@ -322,6 +322,8 @@ struct ExecutionControlCore::Impl
         ActiveOperation parent;
         bool paused_quiescent = false;
         std::optional<Clock::time_point> pause_confirmation_deadline;
+        StopRouteReceipt trigger;
+        bool ready_event_published = false;
     };
 
     struct PendingParentTerminal
@@ -654,6 +656,28 @@ struct ExecutionControlCore::Impl
             std::nullopt,
             std::nullopt,
             std::move(warning)});
+    }
+
+    void PublishInterruptionReady(
+        SuspendedFrame& frame,
+        const ExecutionObservation& observed)
+    {
+        if (frame.ready_event_published || !frame.paused_quiescent)
+            return;
+        frame.ready_event_published = true;
+        RefreshSnapshot(&observed);
+        ExecutionInterruptionReady ready;
+        ready.frame_id = frame.id;
+        ready.handler_key = frame.descriptor.key;
+        ready.trigger = frame.trigger;
+        ready.evidence = ConvertEvidence(observed);
+        events.push_back({
+            ExecutionEventKind::InterruptionReady,
+            snapshot,
+            std::nullopt,
+            std::nullopt,
+            std::nullopt,
+            std::move(ready)});
     }
 
     void PublishHostActivityWarnings(
@@ -2792,7 +2816,9 @@ void ExecutionControlCore::HandleStopPointReceipt(StopRouteReceipt receipt)
         descriptor->second,
         std::move(parent),
         false,
-        suspended_at + impl_->config.pause_confirmation_timeout});
+        suspended_at + impl_->config.pause_confirmation_timeout,
+        receipt,
+        false});
     ExecutionObservation observed = impl_->Query();
     if (!observed.result.ok)
     {
@@ -2814,6 +2840,7 @@ void ExecutionControlCore::HandleStopPointReceipt(StopRouteReceipt receipt)
         impl_->handlers.back().paused_quiescent = true;
         impl_->handlers.back().pause_confirmation_deadline.reset();
         impl_->PublishState(&observed);
+        impl_->PublishInterruptionReady(impl_->handlers.back(), observed);
         return;
     }
 
@@ -3000,6 +3027,7 @@ void ExecutionControlCore::Pump()
             {
                 frame.paused_quiescent = true;
                 frame.pause_confirmation_deadline.reset();
+                impl_->PublishInterruptionReady(frame, observed);
             }
             else if (frame.pause_confirmation_deadline &&
                 current >= *frame.pause_confirmation_deadline)

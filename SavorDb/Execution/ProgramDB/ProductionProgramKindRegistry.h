@@ -31,6 +31,7 @@ struct ProductionProgramKindRegistryConfig {
         tas_movie_input_epoch_annotation;
     tasmovieinputepoch::TasMovieInputEpochProgramConfig
         tas_movie_input_epoch_rewrite;
+    tasmovieinputepoch::TasMovieInputEpochProgramConfig tas_movie_cutscene;
     seedprobe::SeedProbeProgramConfig seed_probe;
     battlecontext::BattleContextProgramConfig battle_context;
     battlecompletion::BattleCompletionProgramConfig battle_completion;
