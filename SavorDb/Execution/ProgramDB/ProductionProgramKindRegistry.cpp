@@ -40,6 +40,8 @@ ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(
     }
     config.tas_movie_input_epoch_rewrite.working_dir_root =
         runtime_working_dir_root / "tasmovie-input-epoch-rewrite";
+    config.tas_movie_input_epoch_rewrite.capture_module_sha256 =
+        config.tas_movie_input_epoch_annotation.capture_module_sha256;
     config.seed_probe.working_dir_root =
         runtime_working_dir_root / "seedprobe";
     config.battle_context.working_dir_root =

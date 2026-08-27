@@ -1109,7 +1109,7 @@ TEST_F(
         decision.outputs.begin(), decision.outputs.end(),
         [](const auto& output) {
             return output.output_key
-                == "established_root_cursor_attempt";
+                == "root_establishment";
         });
     ASSERT_NE(attempt_output, decision.outputs.end());
     ASSERT_NE(established_output, decision.outputs.end());
@@ -1139,8 +1139,8 @@ TEST_F(
                 .display_name = "TAS Movie: Validate Root",
                 .inputs = {{
                     .input_key = "root_establishment",
-                    .data_kind = "analysis.tas_movie_validation_attempt_id",
-                    .ref_kind = "tmv_validation_attempt",
+                    .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                    .ref_kind = "tmv_root_establishment_attempt",
                     .display_name = "Root cursor establishment",
                 }},
                 .possible_outputs = {{
@@ -1179,8 +1179,8 @@ TEST_F(
     create_root.input_bindings.push_back({
         .node_key = "validate-root",
         .input_key = "root_establishment",
-        .data_kind = "analysis.tas_movie_validation_attempt_id",
-        .ref_kind = "tmv_validation_attempt",
+        .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+        .ref_kind = "tmv_root_establishment_attempt",
         .ref_id = attempt->validation_attempt_id,
         .source_kind = "test",
     });
@@ -1225,8 +1225,8 @@ TEST_F(
             .input_bindings = {{
                 .node_key = "validate-root",
                 .input_key = "root_establishment",
-                .data_kind = "analysis.tas_movie_validation_attempt_id",
-                .ref_kind = "tmv_validation_attempt",
+                .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                .ref_kind = "tmv_root_establishment_attempt",
                 .ref_id = attempt->validation_attempt_id,
                 .source_kind = "test",
             }},

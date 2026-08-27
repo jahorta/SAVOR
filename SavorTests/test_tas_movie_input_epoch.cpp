@@ -79,6 +79,55 @@ TEST(TasMovieInputEpoch, ScheduleRejectsMalformedCursors)
     EXPECT_FALSE(diagnostic.empty());
 }
 
+TEST(TasMovieInputEpoch, RewriteRunsMergeInsertedAndSourceRepeatedInputs)
+{
+    const auto neutral = GCInputFrame{};
+    const auto b = GCInputFrame::new_btns(GC_B);
+    TasMovieInputEpochScheduleV1 schedule{
+        .source_dtm_sha256 = std::string(64, 'c'),
+        .source_poll_count = 5,
+        .epochs = {
+            {.movie_input_cursor = 1, .input = GCInputFrame::new_btns(GC_A)},
+            {.movie_input_cursor = 2, .input = neutral},
+            {.movie_input_cursor = 3, .input = neutral},
+            {.movie_input_cursor = 4, .input = b},
+            {.movie_input_cursor = 5, .input = b},
+        },
+    };
+
+    const auto runs = BuildRewriteInputRunsV1(schedule, 1, 2);
+    ASSERT_EQ(runs.size(), 2u);
+    EXPECT_EQ(runs[0].input, neutral);
+    EXPECT_EQ(runs[0].epoch_count, 4u);
+    EXPECT_EQ(runs[1].input, b);
+    EXPECT_EQ(runs[1].epoch_count, 2u);
+}
+
+TEST(TasMovieInputEpoch, RewriteRunsAcceptExactZeroAndFiveNeutralEpochs)
+{
+    const auto a = GCInputFrame::new_btns(GC_A);
+    TasMovieInputEpochScheduleV1 schedule{
+        .source_dtm_sha256 = std::string(64, 'd'),
+        .source_poll_count = 2,
+        .epochs = {
+            {.movie_input_cursor = 1, .input = a},
+            {.movie_input_cursor = 2, .input = a},
+        },
+    };
+
+    const auto unchanged = BuildRewriteInputRunsV1(schedule, 1, 0);
+    ASSERT_EQ(unchanged.size(), 1u);
+    EXPECT_EQ(unchanged.front().input, a);
+    EXPECT_EQ(unchanged.front().epoch_count, 1u);
+
+    const auto delayed = BuildRewriteInputRunsV1(schedule, 1, 5);
+    ASSERT_EQ(delayed.size(), 2u);
+    EXPECT_EQ(delayed.front().input, GCInputFrame{});
+    EXPECT_EQ(delayed.front().epoch_count, 5u);
+    EXPECT_EQ(delayed.back().input, a);
+    EXPECT_EQ(delayed.back().epoch_count, 1u);
+}
+
 TEST(TasMovieInputEpoch, ProductionDefinitionsHaveIndependentCanonicalIdentities)
 {
     const auto annotation = AnnotationFullPhaseDefinitionV1();

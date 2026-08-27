@@ -2588,6 +2588,11 @@ void ExecutionControlCore::HandleStopPointReceipt(StopRouteReceipt receipt)
                 std::move(receipt));
             return;
         }
+        if (receipt.event)
+        {
+            impl_->active->completed_count =
+                receipt.event->matched_occurrence_count;
+        }
     }
     if (impl_->active->pending_terminal)
     {

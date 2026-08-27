@@ -107,22 +107,18 @@ authoring::AuthoringRecipe StandardRecipe()
     });
 
     recipe.Workflow({
-        .symbol = "workflow.tas_expansion_revise_establish",
-        .name = "TAS Movie Expansion: Revise and Establish",
-        .description = "Revises an annotated DTM by a requested neutral delay and establishes the revised movie as a new root.",
+        .symbol = "workflow.tas_expansion_revise",
+        .name = "TAS Movie Expansion: Revise",
+        .description = "Revises an annotated DTM by an exact requested neutral delay and publishes its child annotation and root establishment.",
         .hidden = true,
-        .nodes = {
-            {.node_key="tas_movie_revise_1",
-             .unit=ac::workflow::units::TasMovieRevise},
-            {.node_key="tas_movie_establish_root_cursor_2",
-             .unit=ac::workflow::units::TasMovieEstablishRootCursor},
+        .nodes = {{.node_key="tas_movie_revise_1",
+                   .unit=ac::workflow::units::TasMovieRevise}},
+        .external_inputs = {
+            {"tas_movie_revise_1",
+             ac::workflow::ports::tas_movie_revise::AnnotationAttempt},
+            {"tas_movie_revise_1",
+             ac::workflow::ports::tas_movie_revise::RootEstablishment},
         },
-        .external_inputs = {{"tas_movie_revise_1",
-            ac::workflow::ports::tas_movie_revise::AnnotationAttempt}},
-        .edges = {{"tas_movie_revise_1",
-            ac::workflow::ports::tas_movie_revise::RewrittenDtm,
-            "tas_movie_establish_root_cursor_2",
-            ac::workflow::ports::tas_movie_establish_root_cursor::RootDtm}},
     });
 
     recipe.Workflow({

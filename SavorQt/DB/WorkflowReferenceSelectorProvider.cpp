@@ -24,8 +24,20 @@ ServiceResult<std::vector<WorkflowReferenceOption>> WorkflowReferenceSelectorPro
         if(data_kind.find("movie_inactive")!=std::string::npos)playback="MOVIE_INACTIVE";
         else if(data_kind.find("movie_paired")!=std::string::npos)playback="MOVIE_PAIRED";
         for(const auto& row:db->ListSavestates(playback,true,search,limit)) out.push_back({row.savestate_id,"State #"+std::to_string(row.savestate_id)+" "+row.filename,row.playback_state+" · "+row.sha256,row.is_complete?"COMPLETE":"INCOMPLETE"});
-    } else if (ref_kind == "tmv_validation_attempt") {
-        for(const auto& row:db->ListTasMovieValidationAttempts(std::nullopt,limit)) if(row.outcome=="ROOT_CURSOR_ESTABLISHED") out.push_back({row.validation_attempt_id,"Validation attempt #"+std::to_string(row.validation_attempt_id),"job "+std::to_string(row.source_job_id)+" · input "+std::to_string(row.actual_input_count),row.outcome});
+    } else if (ref_kind == "tmv_root_establishment_attempt") {
+        auto* analysis = savorqt::SavorDbRuntime::instance().analysisDb();
+        if (analysis != nullptr) {
+            for (const auto& row : analysis->ListTasMovieRootEstablishmentAttempts(limit)) {
+                const auto producer = row.producer == savor::db::TasMovieRootEstablishmentProducer::Revise
+                    ? "REVISE" : "ESTABLISH";
+                out.push_back({
+                    row.root_establishment_attempt_id,
+                    "TAS root #" + std::to_string(row.root_establishment_attempt_id),
+                    "job " + std::to_string(row.source_job_id)
+                        + " · cursor " + std::to_string(row.movie_input_cursor),
+                    producer});
+            }
+        }
     } else if (ref_kind == "state_tas_movie_tree") {
         for(const auto& row:db->ListTasMovieTrees(limit)) out.push_back({row.tas_movie_tree_id,"Recorded TAS branch #"+std::to_string(row.tas_movie_tree_id),"root "+std::to_string(row.tas_movie_root_id)+" · checkpoint "+std::to_string(row.checkpoint_savestate_id),"AVAILABLE"});
     } else if (ref_kind == "tas_route_node") {

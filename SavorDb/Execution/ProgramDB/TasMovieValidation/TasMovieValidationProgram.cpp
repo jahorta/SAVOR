@@ -348,20 +348,23 @@ public:
             command.source_dtm_sha256 = artifact->sha256;
             command.effective_dtm_sha256 = artifact->sha256;
         } else if (context.step.step_kind == "tasmovie.validate_root") {
-            const auto attempt_id = Binding(context, "root_establishment", "analysis.tas_movie_validation_attempt_id", "tmv_validation_attempt");
+            const auto establishment_id = Binding(context, "root_establishment",
+                "analysis.tas_movie_root_establishment_attempt_id",
+                "tmv_root_establishment_attempt");
             const auto rtc = IntegerArgument(context, "rtc");
-            const auto attempt = attempt_id ? analysis_db_->GetTasMovieValidationAttempt(*attempt_id) : std::nullopt;
-            const auto establishment = attempt ? analysis_db_->GetTasMovieValidationRequest(attempt->validation_request_id) : std::nullopt;
-            if (!attempt || attempt->outcome != TasMovieValidationOutcome::RootCursorEstablished
-                || !attempt->candidate_itinerary_artifact_id || !attempt->candidate_itinerary_sha256
-                || !establishment || establishment->operation != TasMovieValidationOperation::EstablishRootCursor
+            const auto establishment = establishment_id
+                ? analysis_db_->GetTasMovieRootEstablishmentAttempt(*establishment_id)
+                : std::nullopt;
+            if (!establishment
                 || !rtc || *rtc < 0
                 || static_cast<std::uint64_t>(*rtc)
                     > std::numeric_limits<std::uint32_t>::max())
                 return Fail("root validation requires a successful establishment attempt and GameCube RTC in 0..UINT32_MAX", error_out);
             const auto source = state_db_->GetArtifact(establishment->source_dtm_artifact_id);
-            const auto itinerary = state_db_->GetArtifact(*attempt->candidate_itinerary_artifact_id);
-            if (!source || !itinerary || itinerary->sha256 != *attempt->candidate_itinerary_sha256) return Fail("root validation source snapshot is unavailable", error_out);
+            const auto itinerary = state_db_->GetArtifact(establishment->itinerary_artifact_id);
+            if (!source || source->sha256 != establishment->source_dtm_sha256
+                || !itinerary || itinerary->sha256 != establishment->itinerary_sha256)
+                return Fail("root validation source snapshot is unavailable", error_out);
             const auto source_path = WorkingRoot(config_.working_dir_root) / "materialization" / (source->sha256 + ".dtm");
             if (!MaterializeArtifact(state_db_, *source, source_path, error_out)) return false;
             savor::tas::DtmFile dtm;
@@ -369,7 +372,7 @@ public:
             dtm.set_gamecube_rtc_seconds(static_cast<std::uint32_t>(*rtc));
             command.operation = TasMovieValidationOperation::Validate;
             command.source_kind = TasMovieValidationSourceKind::RootEstablishment;
-            command.source_ref_id = *attempt_id;
+            command.source_ref_id = *establishment_id;
             command.source_dtm_artifact_id = source->artifact_id;
             command.source_dtm_sha256 = source->sha256;
             command.rtc_value = *rtc;
@@ -753,6 +756,24 @@ public:
 
         std::int64_t attempt_id = 0;
         if (!analysis_db_->RecordTasMovieValidationAttempt(attempt, &attempt_id, &error)) throw std::runtime_error(error);
+        std::optional<std::int64_t> root_establishment_id;
+        if (attempt.outcome == TasMovieValidationOutcome::RootCursorEstablished) {
+            std::int64_t id = 0;
+            if (!analysis_db_->RecordTasMovieRootEstablishmentAttempt({
+                    .producer = TasMovieRootEstablishmentProducer::Establish,
+                    .validation_attempt_id = attempt_id,
+                    .source_dtm_artifact_id = request->source_dtm_artifact_id,
+                    .source_dtm_sha256 = request->source_dtm_sha256,
+                    .itinerary_artifact_id = *attempt.candidate_itinerary_artifact_id,
+                    .itinerary_sha256 = *attempt.candidate_itinerary_sha256,
+                    .root_pc = attempt.actual_pc,
+                    .movie_input_cursor = attempt.actual_input_count,
+                    .source_job_id = context.job_id,
+                    .worker_terminal_sha256 = context.terminal.sha256,
+                    .recorded_at_utc = types::UtcNow(),
+                }, &id, &error)) throw std::runtime_error(error);
+            root_establishment_id = id;
+        }
         ProgramResultDecision decision = FinalDecision("SUCCEEDED");
         decision.cleanup_worker_staging = true;
         if (generated_itinerary)
@@ -761,10 +782,10 @@ public:
             .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .ref_id = attempt_id});
         if (attempt.outcome == TasMovieValidationOutcome::RootCursorEstablished) {
             decision.outputs.push_back({
-                .output_key = "established_root_cursor_attempt",
-                .data_kind = "analysis.tas_movie_validation_attempt_id",
-                .ref_kind = "tmv_validation_attempt",
-                .ref_id = attempt_id,
+                .output_key = "root_establishment",
+                .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                .ref_kind = "tmv_root_establishment_attempt",
+                .ref_id = *root_establishment_id,
             });
         }
         if (validated_checkpoint_savestate_id) {

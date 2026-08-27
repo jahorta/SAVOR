@@ -89,6 +89,18 @@ struct PassiveStopObservation
 struct ForegroundStopWait
 {
     std::uint64_t execution_operation_id = 0;
+    std::uint32_t required_occurrences = 1;
+
+    struct SampleExpectation
+    {
+        std::uint32_t descriptor_id = 0;
+        std::uint64_t expected_value = 0;
+
+        friend bool operator==(
+            const SampleExpectation&,
+            const SampleExpectation&) = default;
+    };
+    std::optional<SampleExpectation> sample_expectation;
 
     friend bool operator==(
         const ForegroundStopWait&,
@@ -165,6 +177,12 @@ struct RoutedStopEvent
     RoutedStopEvidence evidence;
     std::array<RoutedHitSample, kMaxRoutedHitSamples> samples{};
     std::uint8_t sample_count = 0;
+    std::uint32_t matched_occurrence_count = 0;
+    bool sample_expectation_failed = false;
+    std::uint32_t expected_sample_descriptor_id = 0;
+    std::uint64_t expected_sample_value = 0;
+    std::uint64_t actual_sample_value = 0;
+    bool actual_sample_available = false;
     bool active_foreground_wait = false;
     bool authoritative = false;
     bool requires_physical_reconcile_before_resume = false;

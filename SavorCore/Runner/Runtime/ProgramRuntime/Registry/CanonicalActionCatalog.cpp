@@ -208,7 +208,7 @@ std::optional<SchemaIdentity> SharedOutputSchemaIdentity(
             "record ContinueUntilResult/1(reason:" +
                 TypeContract(reason) + ",routed_stop:" +
                 TypeContract(stop) +
-                ",pc:u32,movie_input_count:u64,vi_count:u64,workset_epoch:u64)");
+                ",pc:u32,movie_input_count:u64,vi_count:u64,completed_count:u64,workset_epoch:u64)");
     }
     case CanonicalAction::ExecutionStepFrames:
         return RuntimeSchemaIdentity(
@@ -314,6 +314,9 @@ std::vector<RecordFieldDefinition> TypedRequestFields(
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
                      OptionalMovieInputCount)},
+            {"required_occurrences", u64},
+            {"verify_bound_input",
+             TypeRef::Builtin(BuiltinType::Bool)},
             {"static_config",
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
@@ -1000,6 +1003,8 @@ BuildCanonicalRuntimeActionSchemas()
                     {"movie_input_count",
                      TypeRef::Builtin(BuiltinType::U64)},
                     {"vi_count",
+                     TypeRef::Builtin(BuiltinType::U64)},
+                    {"completed_count",
                      TypeRef::Builtin(BuiltinType::U64)},
                     {"workset_epoch",
                      TypeRef::Builtin(BuiltinType::U64)},

@@ -70,6 +70,7 @@ enum class CpuEvaluatorSource : std::uint8_t
 {
     GuestMemory = 0,
     HostMovieInputCount = 1,
+    GuestMemoryIndirectU32 = 2,
 };
 
 struct CpuEvaluatorDescriptor

@@ -294,11 +294,14 @@ std::vector<std::uint8_t> EncodeRewriteExecutionInputV1(
     const TasMovieInputEpochRewriteRequestV1& request,
     std::string* diagnostic)
 {
+    const auto runs = BuildRewriteInputRunsV1(
+        request.schedule,
+        request.insert_before_epoch,
+        request.neutral_epoch_count);
     const auto schedule = EncodeInputEpochScheduleArtifactV1(
         request.schedule, diagnostic);
-    if (schedule.empty() ||
+    if (schedule.empty() || runs.empty() ||
         request.insert_before_epoch >= request.schedule.epochs.size() ||
-        request.neutral_epoch_count == 0 ||
         !ValidateRequestPath(request.source_dtm_path) ||
         !ValidateRequestPath(request.output_dtm_path) ||
         !ValidateRequestPath(request.output_savestate_path))
@@ -335,12 +338,58 @@ bool DecodeRewriteExecutionInputV1(
         !DecodeInputEpochScheduleArtifactV1(
             schedule, decoded.schedule, diagnostic) ||
         decoded.insert_before_epoch >= decoded.schedule.epochs.size() ||
-        decoded.neutral_epoch_count == 0 ||
         !ValidateRequestPath(decoded.source_dtm_path) ||
         !ValidateRequestPath(decoded.output_dtm_path) ||
         !ValidateRequestPath(decoded.output_savestate_path)) return false;
+    decoded.input_runs = BuildRewriteInputRunsV1(
+        decoded.schedule,
+        decoded.insert_before_epoch,
+        decoded.neutral_epoch_count);
+    if (decoded.input_runs.empty())
+        return false;
     request = std::move(decoded);
     return true;
+}
+
+std::vector<TasMovieInputEpochRewriteRequestV1::InputRun>
+BuildRewriteInputRunsV1(
+    const TasMovieInputEpochScheduleV1& schedule,
+    std::uint64_t insert_before_epoch,
+    std::uint64_t neutral_epoch_count)
+{
+    using Run = TasMovieInputEpochRewriteRequestV1::InputRun;
+    if (insert_before_epoch >= schedule.epochs.size())
+    {
+        return {};
+    }
+    std::vector<Run> runs;
+    const auto append = [&runs](const GCInputFrame& input,
+                                std::uint64_t count) {
+        if (count == 0)
+            return true;
+        if (!runs.empty() && runs.back().input == input)
+        {
+            if (runs.back().epoch_count >
+                std::numeric_limits<std::uint64_t>::max() - count)
+            {
+                return false;
+            }
+            runs.back().epoch_count += count;
+            return true;
+        }
+        runs.push_back({input, count});
+        return true;
+    };
+    if (!append(GCInputFrame{}, neutral_epoch_count))
+        return {};
+    for (std::size_t index = static_cast<std::size_t>(insert_before_epoch);
+         index < schedule.epochs.size();
+         ++index)
+    {
+        if (!append(schedule.epochs[index].input, 1))
+            return {};
+    }
+    return runs;
 }
 
 } // namespace savor::runtime::tasmovie::inputepoch

@@ -55,6 +55,11 @@ struct OneShotGate
     std::atomic<bool> fired{false};
 };
 
+struct ForegroundOccurrenceGate
+{
+    std::atomic<std::uint32_t> observed{0};
+};
+
 struct SourceDropCounter
 {
     StopSourceId source_id;
@@ -66,6 +71,7 @@ struct SubscriptionRecord
     StopSubscriptionDefinition definition;
     std::size_t ordinal = 0;
     std::shared_ptr<OneShotGate> one_shot;
+    std::shared_ptr<ForegroundOccurrenceGate> foreground_occurrences;
 };
 
 struct GroupRecord
@@ -94,6 +100,7 @@ struct DispatchEntry
     std::uint64_t registration_sequence = 0;
     std::size_t subscription_ordinal = 0;
     std::shared_ptr<OneShotGate> one_shot;
+    std::shared_ptr<ForegroundOccurrenceGate> foreground_occurrences;
     SourceDropCounter* drop_counter = nullptr;
 };
 
@@ -647,6 +654,26 @@ namespace {
                 StopPointErrorCode::InvalidArgument,
                 "CPU observer descriptor is not registered by the frozen trusted observer port");
         }
+        if (const auto* foreground =
+                std::get_if<ForegroundStopWait>(&subscription.route))
+        {
+            if (foreground->required_occurrences == 0)
+            {
+                return Error(
+                    StopPointErrorCode::InvalidArgument,
+                    "Foreground occurrence count must be nonzero");
+            }
+            if (foreground->sample_expectation &&
+                (foreground->sample_expectation->descriptor_id == 0 ||
+                 !std::ranges::contains(
+                     subscription.sample_descriptor_ids,
+                     foreground->sample_expectation->descriptor_id)))
+            {
+                return Error(
+                    StopPointErrorCode::InvalidArgument,
+                    "Foreground sample expectation requires its routed sample descriptor");
+            }
+        }
         if (subscription.sample_descriptor_ids.size() > kMaxRoutedHitSamples)
         {
             return Error(
@@ -731,6 +758,12 @@ namespace {
         subscription.ordinal = i;
         if (subscription.definition.lifetime == StopSubscriptionLifetime::OneShot)
             subscription.one_shot = std::make_shared<OneShotGate>();
+        if (std::holds_alternative<ForegroundStopWait>(
+                subscription.definition.route))
+        {
+            subscription.foreground_occurrences =
+                std::make_shared<ForegroundOccurrenceGate>();
+        }
         record.subscriptions.push_back(std::move(subscription));
     }
     return record;
@@ -844,6 +877,7 @@ namespace {
                 group.registration_sequence,
                 subscription.ordinal,
                 subscription.one_shot,
+                subscription.foreground_occurrences,
                 group.drop_counter.get(),
             });
         }
@@ -1946,7 +1980,10 @@ StopGroupRegistrationResult StopPointRouter::RegisterGroup(
             {
                 if (entry.group_id != group_id ||
                     !PointMatchesEvidence(entry.point, impl_->current_point->evidence) ||
-                    entry.qualification_id != 0)
+                    entry.qualification_id != 0 ||
+                    (IsForeground(entry.route) &&
+                     std::get<ForegroundStopWait>(entry.route)
+                             .required_occurrences != 1))
                 {
                     continue;
                 }
@@ -2117,6 +2154,9 @@ StopRouteReceipt StopPointRouter::AcceptCurrentPoint(
                     entry.point,
                     impl_->current_point->evidence) ||
                 entry.qualification_id != 0 ||
+                (IsForeground(entry.route) &&
+                 std::get<ForegroundStopWait>(entry.route)
+                         .required_occurrences != 1) ||
                 !std::ranges::all_of(
                     entry.sample_descriptor_ids,
                     [&](std::uint32_t descriptor_id) {
@@ -2627,12 +2667,49 @@ namespace {
             }
         }
 
-        packet.entry_indices[packet.entry_count++] = entry_index;
-        packet.event.authoritative =
-            packet.event.authoritative || IsLossless(entry.route);
-
         if (IsForeground(entry.route))
         {
+            const auto& foreground =
+                std::get<ForegroundStopWait>(entry.route);
+            std::uint32_t occurrence = 1;
+            if (entry.foreground_occurrences)
+            {
+                occurrence = entry.foreground_occurrences->observed.fetch_add(
+                    1,
+                    std::memory_order_acq_rel) + 1;
+            }
+            packet.event.matched_occurrence_count = occurrence;
+            if (foreground.sample_expectation)
+            {
+                const auto expected = *foreground.sample_expectation;
+                const auto begin = packet.event.samples.begin();
+                const auto end = begin + packet.event.sample_count;
+                const auto found = std::ranges::find(
+                    std::ranges::subrange(begin, end),
+                    expected.descriptor_id,
+                    &RoutedHitSample::descriptor_id);
+                const bool available = found != end && found->available;
+                if (!available || found->value != expected.expected_value)
+                {
+                    packet.event.sample_expectation_failed = true;
+                    packet.event.expected_sample_descriptor_id =
+                        expected.descriptor_id;
+                    packet.event.expected_sample_value =
+                        expected.expected_value;
+                    packet.event.actual_sample_available = available;
+                    packet.event.actual_sample_value =
+                        available ? found->value : 0;
+                    packet.entry_indices[packet.entry_count++] = entry_index;
+                    packet.event.authoritative = true;
+                    packet.terminal = StopRouteTerminal::RoutingFailure;
+                    packet.terminal_entry = entry_index;
+                    packet.request_break = true;
+                    break;
+                }
+            }
+            if (occurrence < foreground.required_occurrences)
+                continue;
+            packet.entry_indices[packet.entry_count++] = entry_index;
             packet.event.active_foreground_wait = true;
             packet.event.authoritative = true;
             packet.terminal = StopRouteTerminal::ForegroundMatched;
@@ -2640,6 +2717,9 @@ namespace {
             packet.request_break = true;
             break;
         }
+        packet.entry_indices[packet.entry_count++] = entry_index;
+        packet.event.authoritative =
+            packet.event.authoritative || IsLossless(entry.route);
         if (IsInterruption(entry.route))
         {
             packet.event.authoritative = true;
@@ -2795,6 +2875,12 @@ savor::probe::NativeStopDecision StopPointRouter::RouteNative(
         impl_->next_sample_snapshot);
     if (!packet.physical_hit)
         return {};
+    if (packet.entry_count == 0 &&
+        packet.event.matched_occurrence_count != 0 &&
+        !packet.request_break)
+    {
+        return {};
+    }
     if (packet.entry_count == 0 &&
         packet.terminal != StopRouteTerminal::Overflow)
     {
@@ -3007,6 +3093,22 @@ namespace {
         receipt.error = Error(
             StopPointErrorCode::IngressOverflow,
             "Native stop routing exceeded its fixed delivery capacity");
+    }
+    else if (receipt.terminal == StopRouteTerminal::RoutingFailure &&
+             packet.event.sample_expectation_failed)
+    {
+        receipt.error = Error(
+            StopPointErrorCode::InvalidPolicy,
+            "Foreground occurrence sample mismatch at occurrence " +
+                std::to_string(packet.event.matched_occurrence_count) +
+                ": descriptor=" +
+                std::to_string(packet.event.expected_sample_descriptor_id) +
+                ", expected=" +
+                std::to_string(packet.event.expected_sample_value) +
+                ", actual=" +
+                (packet.event.actual_sample_available
+                    ? std::to_string(packet.event.actual_sample_value)
+                    : std::string("unavailable")));
     }
     receipt.core_must_remain_stopped =
         packet.event.requires_physical_reconcile_before_resume ||

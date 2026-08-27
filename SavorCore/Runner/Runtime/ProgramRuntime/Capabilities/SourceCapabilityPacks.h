@@ -9,6 +9,9 @@
 
 namespace savor::runtime::program::capabilities {
 
+inline constexpr std::uint32_t kTasMovieReceivedPadStatusSampleDescriptorId =
+    0x53460003u;
+
 inline constexpr std::string_view kSupportedGameId = "GEAE8P";
 inline constexpr std::string_view kSupportedExecutableIdentity =
     "soal-usa.GEAE8E";

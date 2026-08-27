@@ -368,7 +368,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             },
             .possible_outputs = {
                 Port("tas_movie_validation_attempt", "analysis.tas_movie_validation_attempt_id", "tmv_validation_attempt", "Validation attempt"),
-                Port("established_root_cursor_attempt", "analysis.tas_movie_validation_attempt_id", "tmv_validation_attempt", "Established root cursor attempt"),
+                Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Root establishment"),
             },
             .internal_step_kinds = { "tasmovie.establish_root_cursor" },
             .step_templates = SingleStep("tasmovie.establish_root_cursor"),
@@ -384,10 +384,10 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .standalone_presentation_family_display_name = "TAS Movie Validation",
             .default_activation_params_json = "{}",
             .required_inputs = {
-                Port("root_establishment", "analysis.tas_movie_validation_attempt_id", "tmv_validation_attempt", "Root cursor establishment"),
+                Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Root cursor establishment"),
             },
             .possible_outputs = {
-                Port("tas_movie_validation_attempt", "analysis.tas_movie_validation_attempt_id", "tmv_validation_attempt", "Validation attempt"),
+                Port("tas_movie_validation_attempt", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Validation attempt"),
                 Port("validated_checkpoint_savestate", "state.movie_paired_savestate_id", "state.savestate", "Validated checkpoint savestate"),
             },
             .launch_arguments = {
@@ -460,11 +460,14 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .default_activation_params_json = "{}",
             .required_inputs = {
                 Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Source input-epoch annotation"),
+                Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Source root establishment"),
             },
             .possible_outputs = {
                 Port("rewrite_attempt", "analysis.tas_movie_input_epoch_rewrite_attempt_id", "tmv_input_epoch_rewrite_attempt", "Input-epoch rewrite attempt"),
                 Port("rewritten_dtm", "state_artifact.dtm_artifact_id", "state_artifact", "Rewritten DTM"),
                 Port("rewritten_paired_savestate", "state.movie_paired_savestate_id", "state.savestate", "Rewritten movie-paired endpoint"),
+                Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Rewritten input-epoch annotation"),
+                Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Rewritten root establishment"),
             },
             .launch_arguments = {
                 IntegerArgument("insert_before_epoch", "Insert before epoch", false,

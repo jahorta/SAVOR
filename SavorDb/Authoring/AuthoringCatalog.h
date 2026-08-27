@@ -79,7 +79,7 @@ inline constexpr WorkflowPortToken RootDtm{"root_dtm"};
 inline constexpr WorkflowPortToken ValidationAttempt{
     "tas_movie_validation_attempt"};
 inline constexpr WorkflowPortToken EstablishedRootCursorAttempt{
-    "established_root_cursor_attempt"};
+    "root_establishment"};
 }
 namespace workflow::ports::tas_movie_validate_root {
 inline constexpr WorkflowPortToken RootEstablishment{"root_establishment"};
@@ -100,6 +100,7 @@ inline constexpr WorkflowPortToken AnnotationAttempt{"annotation_attempt"};
 }
 namespace workflow::ports::tas_movie_revise {
 inline constexpr WorkflowPortToken AnnotationAttempt{"annotation_attempt"};
+inline constexpr WorkflowPortToken RootEstablishment{"root_establishment"};
 inline constexpr WorkflowPortToken RewriteAttempt{"rewrite_attempt"};
 inline constexpr WorkflowPortToken RewrittenDtm{"rewritten_dtm"};
 inline constexpr WorkflowPortToken RewrittenPairedSavestate{

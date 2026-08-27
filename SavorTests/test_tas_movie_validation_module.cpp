@@ -193,6 +193,9 @@ ProgramValueGraph ContinueObservation(
     const ProgramValueId vi_count_id = add(
         TypeRef::Builtin(BuiltinType::U64),
         0ull);
+    const ProgramValueId completed_count_id = add(
+        TypeRef::Builtin(BuiltinType::U64),
+        count);
     const ProgramValueId epoch_id = add(
         TypeRef::Builtin(BuiltinType::U64),
         epoch);
@@ -205,6 +208,7 @@ ProgramValueGraph ContinueObservation(
             pc_id,
             count_id,
             vi_count_id,
+            completed_count_id,
             epoch_id}});
     return {root, std::move(values)};
 }

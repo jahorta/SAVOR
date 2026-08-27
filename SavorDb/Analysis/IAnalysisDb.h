@@ -1465,6 +1465,40 @@ struct TasMovieCheckpointSterilizationAttemptRecord
     std::int64_t sterilization_attempt_id = 0;
 };
 
+enum class TasMovieRootEstablishmentProducer {
+    Unknown = 0,
+    Establish,
+    Revise,
+};
+
+struct RecordTasMovieRootEstablishmentAttemptCommand {
+    TasMovieRootEstablishmentProducer producer =
+        TasMovieRootEstablishmentProducer::Unknown;
+    std::optional<std::int64_t> validation_attempt_id;
+    std::optional<std::int64_t> rewrite_request_id;
+    std::optional<std::int64_t> parent_root_establishment_attempt_id;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::string source_dtm_sha256;
+    std::int64_t itinerary_artifact_id = 0;
+    std::string itinerary_sha256;
+    std::uint32_t root_pc = 0;
+    std::uint64_t movie_input_cursor = 0;
+    std::int64_t source_job_id = 0;
+    std::string worker_terminal_sha256;
+    types::UtcTimePoint recorded_at_utc{};
+};
+
+struct TasMovieRootEstablishmentAttemptRecord
+    : RecordTasMovieRootEstablishmentAttemptCommand {
+    std::int64_t root_establishment_attempt_id = 0;
+};
+
+enum class TasMovieInputEpochAnnotationProducer {
+    Unknown = 0,
+    Annotate,
+    Revise,
+};
+
 struct CreateTasMovieInputEpochAnnotationRequestCommand {
     std::string materialization_key;
     std::int64_t workflow_instance_id = 0;
@@ -1488,7 +1522,12 @@ struct TasMovieInputEpochAnnotationRequestRecord
 };
 
 struct RecordTasMovieInputEpochAnnotationAttemptCommand {
-    std::int64_t annotation_request_id = 0;
+    TasMovieInputEpochAnnotationProducer producer =
+        TasMovieInputEpochAnnotationProducer::Unknown;
+    std::optional<std::int64_t> annotation_request_id;
+    std::optional<std::int64_t> rewrite_request_id;
+    std::int64_t source_dtm_artifact_id = 0;
+    std::string source_dtm_sha256;
     std::int64_t source_job_id = 0;
     std::string worker_terminal_sha256;
     bool succeeded = false;
@@ -1517,6 +1556,7 @@ struct CreateTasMovieInputEpochRewriteRequestCommand {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
     std::int64_t annotation_attempt_id = 0;
+    std::int64_t root_establishment_attempt_id = 0;
     std::int64_t source_dtm_artifact_id = 0;
     std::string source_dtm_sha256;
     std::int64_t schedule_artifact_id = 0;
@@ -1548,6 +1588,8 @@ struct RecordTasMovieInputEpochRewriteAttemptCommand {
     std::optional<std::int64_t> rewritten_dtm_artifact_id;
     std::optional<std::string> rewritten_dtm_sha256;
     std::optional<std::int64_t> endpoint_savestate_id;
+    std::optional<std::int64_t> produced_annotation_attempt_id;
+    std::optional<std::int64_t> produced_root_establishment_attempt_id;
     std::uint64_t source_epoch_count = 0;
     std::uint64_t rewritten_epoch_count = 0;
     std::uint64_t final_movie_input_count = 0;
@@ -1564,6 +1606,18 @@ struct RecordTasMovieInputEpochRewriteAttemptCommand {
 struct TasMovieInputEpochRewriteAttemptRecord
     : RecordTasMovieInputEpochRewriteAttemptCommand {
     std::int64_t rewrite_attempt_id = 0;
+};
+
+struct RecordTasMovieInputEpochRewriteCompletionCommand {
+    RecordTasMovieInputEpochRewriteAttemptCommand rewrite;
+    RecordTasMovieInputEpochAnnotationAttemptCommand annotation;
+    RecordTasMovieRootEstablishmentAttemptCommand root_establishment;
+};
+
+struct RecordTasMovieInputEpochRewriteCompletionReceipt {
+    std::int64_t rewrite_attempt_id = 0;
+    std::int64_t annotation_attempt_id = 0;
+    std::int64_t root_establishment_attempt_id = 0;
 };
 
 struct IAnalysisDb {
@@ -1612,6 +1666,14 @@ struct IAnalysisDb {
     virtual std::vector<TasMovieCheckpointSterilizationAttemptRecord>
     ListTasMovieCheckpointSterilizationAttemptsForRequest(
         std::int64_t request_id) const = 0;
+    virtual bool RecordTasMovieRootEstablishmentAttempt(
+        const RecordTasMovieRootEstablishmentAttemptCommand& command,
+        std::int64_t* attempt_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<TasMovieRootEstablishmentAttemptRecord>
+    GetTasMovieRootEstablishmentAttempt(std::int64_t attempt_id) const = 0;
+    virtual std::vector<TasMovieRootEstablishmentAttemptRecord>
+    ListTasMovieRootEstablishmentAttempts(int limit) const = 0;
     virtual bool CreateTasMovieInputEpochAnnotationRequest(
         const CreateTasMovieInputEpochAnnotationRequestCommand& command,
         std::int64_t* request_id_out = nullptr,
@@ -1650,6 +1712,10 @@ struct IAnalysisDb {
     FindTasMovieInputEpochRewriteAttempt(
         std::int64_t source_job_id,
         std::string_view worker_terminal_sha256) const = 0;
+    virtual bool RecordTasMovieInputEpochRewriteCompletion(
+        const RecordTasMovieInputEpochRewriteCompletionCommand& command,
+        RecordTasMovieInputEpochRewriteCompletionReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) = 0;
 
     virtual std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const = 0;
     virtual std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const = 0;

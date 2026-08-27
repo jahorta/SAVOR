@@ -72,6 +72,14 @@ public:
     std::vector<TasMovieCheckpointSterilizationAttemptRecord>
     ListTasMovieCheckpointSterilizationAttemptsForRequest(
         std::int64_t request_id) const override;
+    bool RecordTasMovieRootEstablishmentAttempt(
+        const RecordTasMovieRootEstablishmentAttemptCommand& command,
+        std::int64_t* attempt_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<TasMovieRootEstablishmentAttemptRecord>
+    GetTasMovieRootEstablishmentAttempt(std::int64_t attempt_id) const override;
+    std::vector<TasMovieRootEstablishmentAttemptRecord>
+    ListTasMovieRootEstablishmentAttempts(int limit) const override;
     bool CreateTasMovieInputEpochAnnotationRequest(
         const CreateTasMovieInputEpochAnnotationRequestCommand& command,
         std::int64_t* request_id_out = nullptr,
@@ -110,6 +118,10 @@ public:
     FindTasMovieInputEpochRewriteAttempt(
         std::int64_t source_job_id,
         std::string_view worker_terminal_sha256) const override;
+    bool RecordTasMovieInputEpochRewriteCompletion(
+        const RecordTasMovieInputEpochRewriteCompletionCommand& command,
+        RecordTasMovieInputEpochRewriteCompletionReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
 
     std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const override;
     std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const override;

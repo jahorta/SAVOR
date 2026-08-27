@@ -14,6 +14,7 @@ enum class CpuSampleSource : std::uint8_t
     HitAddress,
     HitValue,
     GuestMemoryAbsolute,
+    GuestMemoryIndirectU32,
     HostMovieInputCount,
 };
 

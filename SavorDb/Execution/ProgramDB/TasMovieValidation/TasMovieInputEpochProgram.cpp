@@ -7,6 +7,7 @@
 #include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../State/IStateDb.h"
 #include "../../../../SavorCore/Phases/Programs/TasMovieInputEpoch/TasMovieInputEpochModule.h"
+#include "../../../../SavorCore/Phases/Programs/TasMovieValidation/TasMovieValidationModule.h"
 #include "../../../../SavorCore/Runner/IPC/DurableWorkerTerminalEnvelope.h"
 #include "../../../../SavorCore/Runner/Runtime/ProgramKind.h"
 #include "../../../../SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
@@ -53,13 +54,21 @@ const WorksetObservationDefaultsV1& ObservationDefaults() {
 }
 
 std::string AnnotationCaptureProfile(
-    const TasMovieInputEpochProgramConfig& config)
+    const TasMovieInputEpochProgramConfig& config,
+    std::optional<std::uint32_t> root_pc = std::nullopt)
 {
-    return std::string(R"json({"schema":"savor.capture.profile/1","name":"tasmovie-padread-input-epochs","revision":1,"expected_module_sha256":")json")
+    std::string profile = std::string(R"json({"schema":"savor.capture.profile/1","name":"tasmovie-padread-input-epochs","revision":2,"expected_module_sha256":")json")
         + config.capture_module_sha256
         + R"json(","limits":{"queue_bytes":16777216,"max_events":4096,"progress_events":16},"probes":[{"id":"tasmovie.padread.returned","group":"tasmovie.input_epochs","kind":"pc","address":)json"
         + std::to_string(0x801D6E7Cu)
-        + R"json(,"subscriptions":["capture"],"samples":[{"name":"movie_input_count","type":"routed_sample","width":8,"descriptor_id":1397096450},{"name":"received_pad_status","type":"address_program","width":8,"program":[7,60,118,52,128,2,0]}]}]})json";
+        + R"json(,"subscriptions":["capture"],"samples":[{"name":"movie_input_count","type":"routed_sample","width":8,"descriptor_id":1397096450},{"name":"received_pad_status","type":"address_program","width":8,"program":[7,60,118,52,128,2,0]}]})json";
+    if (root_pc) {
+        profile += R"json(,{"id":"tasmovie.root.boundary","group":"tasmovie.root","kind":"pc","address":)json"
+            + std::to_string(*root_pc)
+            + R"json(,"subscriptions":["capture"],"samples":[{"name":"movie_input_count","type":"routed_sample","width":8,"descriptor_id":1397096450}]})json";
+    }
+    profile += "]}";
+    return profile;
 }
 
 std::int64_t NowMs() { return types::UtcNow().time_since_epoch().count(); }
@@ -485,7 +494,7 @@ bool ValidateTerminal(const ProgramResultProcessingContext& context,
 
 bool DecodePassiveAnnotationCapture(
     std::span<const savor::wrms::WorksetArtifactPayload> artifacts,
-    const TasMovieInputEpochAnnotationRequestRecord& request,
+    std::string_view source_dtm_sha256,
     std::uint64_t source_poll_count,
     inputepoch::TasMovieInputEpochScheduleV1* schedule,
     std::string* error_out)
@@ -508,7 +517,7 @@ bool DecodePassiveAnnotationCapture(
     if (!report.ok)
         return Fail("capture artifact verification failed", error_out);
 
-    *schedule = {.source_dtm_sha256 = request.source_dtm_sha256,
+    *schedule = {.source_dtm_sha256 = std::string(source_dtm_sha256),
         .source_poll_count = source_poll_count};
     std::uint64_t previous_cursor = 0;
     for (const auto& event : events) {
@@ -535,6 +544,51 @@ bool DecodePassiveAnnotationCapture(
     if (schedule->epochs.empty())
         return Fail("capture artifact contains no PadReadReturned observations", error_out);
     return inputepoch::ValidateInputEpochScheduleV1(*schedule, error_out);
+}
+
+bool DecodeRootEstablishmentCapture(
+    std::span<const savor::wrms::WorksetArtifactPayload> artifacts,
+    std::uint32_t expected_pc,
+    std::uint64_t child_poll_count,
+    std::uint64_t* cursor_out,
+    std::string* error_out)
+{
+    if (!cursor_out || expected_pc == 0)
+        return Fail("root capture output and expected PC are required", error_out);
+    const auto found = std::ranges::find_if(artifacts,
+        [](const savor::wrms::WorksetArtifactPayload& artifact) {
+            return artifact.schema_id == "savor.capture.profile.artifact";
+        });
+    if (found == artifacts.end() || !found->complete)
+        return Fail("worker terminal is missing the complete capture artifact", error_out);
+    std::vector<savor::capture_format::Event> events;
+    savor::capture_format::VerificationReport report;
+    std::string read_error;
+    if (!savor::capture_format::Reader::read_all(
+            found->storage_reference, events, &report, &read_error)
+        || !report.ok)
+        return Fail("root capture artifact could not be verified: " + read_error, error_out);
+    std::optional<std::uint64_t> cursor;
+    for (const auto& event : events) {
+        if (event.kind == savor::capture_format::EventKind::Gap)
+            return Fail("root capture artifact contains a loss marker", error_out);
+        if (event.kind != savor::capture_format::EventKind::Pc
+            || event.probe_id != "tasmovie.root.boundary")
+            continue;
+        if (event.pc != expected_pc || cursor)
+            return Fail("root capture is missing a unique inherited root observation", error_out);
+        const auto field = std::ranges::find(event.fields,
+            std::string("movie_input_count"), &savor::capture_format::Field::name);
+        if (field == event.fields.end()
+            || field->status != savor::capture_format::FieldStatus::Present
+            || field->value > child_poll_count)
+            return Fail("root capture has an invalid movie_input_count", error_out);
+        cursor = field->value;
+    }
+    if (!cursor)
+        return Fail("root capture contains no inherited root observation", error_out);
+    *cursor_out = *cursor;
+    return true;
 }
 
 class AnnotationMaterializer final : public IProgramJobMaterializer {
@@ -651,22 +705,32 @@ public:
             || !result_out)
             return Fail("input-epoch rewrite dependencies are incomplete", error_out);
         *result_out = {};
+        if (!IsLowerHexSha256(config_.capture_module_sha256)) {
+            return Fail(
+                "input-epoch rewrite capture module SHA-256 is unavailable",
+                error_out);
+        }
         const auto attempt_id = Binding(context, "annotation_attempt",
             "analysis.tas_movie_input_epoch_annotation_attempt_id",
             "tmv_input_epoch_annotation_attempt");
+        const auto root_establishment_id = Binding(context, "root_establishment",
+            "analysis.tas_movie_root_establishment_attempt_id",
+            "tmv_root_establishment_attempt");
         auto insertion = IntegerArgument(context, "insert_before_epoch");
         const auto neutral_count = IntegerArgument(context, "neutral_epoch_count");
         const auto placement_profile = TextArgument(context, "placement_profile");
         const auto attempt = attempt_id
             ? analysis_->GetTasMovieInputEpochAnnotationAttempt(*attempt_id)
             : std::nullopt;
-        const auto source_request = attempt
-            ? analysis_->GetTasMovieInputEpochAnnotationRequest(attempt->annotation_request_id)
+        const auto root_establishment = root_establishment_id
+            ? analysis_->GetTasMovieRootEstablishmentAttempt(*root_establishment_id)
             : std::nullopt;
         if (!attempt || !attempt->succeeded || !attempt->schedule_artifact_id
-            || !attempt->schedule_sha256 || !source_request || !neutral_count
-            || *neutral_count <= 0) {
-            return Fail("input-epoch rewrite requires a successful annotation and a valid insertion epoch",
+            || !attempt->schedule_sha256 || !root_establishment || !neutral_count
+            || *neutral_count <= 0
+            || attempt->source_dtm_artifact_id != root_establishment->source_dtm_artifact_id
+            || attempt->source_dtm_sha256 != root_establishment->source_dtm_sha256) {
+            return Fail("input-epoch rewrite requires matching successful annotation and root-establishment authorities",
                 error_out);
         }
         if (!insertion) {
@@ -697,8 +761,9 @@ public:
             .workflow_instance_id = context.step.workflow_instance_id,
             .workflow_step_id = context.step.workflow_step_id,
             .annotation_attempt_id = attempt->annotation_attempt_id,
-            .source_dtm_artifact_id = source_request->source_dtm_artifact_id,
-            .source_dtm_sha256 = source_request->source_dtm_sha256,
+            .root_establishment_attempt_id = root_establishment->root_establishment_attempt_id,
+            .source_dtm_artifact_id = attempt->source_dtm_artifact_id,
+            .source_dtm_sha256 = attempt->source_dtm_sha256,
             .schedule_artifact_id = *attempt->schedule_artifact_id,
             .schedule_sha256 = *attempt->schedule_sha256,
             .insert_before_epoch = static_cast<std::uint64_t>(*insertion),
@@ -724,7 +789,7 @@ public:
                 kRewriteRefKind, request_id, fingerprint,
                 JobInput("TMER1:", request_id),
                 WorkingRoot(config_.working_dir_root) / "captures",
-                std::nullopt,
+                AnnotationCaptureProfile(config_, root_establishment->root_pc),
                 result_out, error_out)) return false;
         result_out->event_lines.push_back("[tasmovie-input-epoch-rewrite-materialized] request="
             + std::to_string(request_id));
@@ -959,7 +1024,7 @@ public:
         const bool passive = context.program_kind == static_cast<std::int32_t>(
             savor::PK_TasMovieAnnotate);
         if (passive && !DecodePassiveAnnotationCapture(
-                terminal.terminal.workset_artifacts, *request,
+                terminal.terminal.workset_artifacts, request->source_dtm_sha256,
                 outcome.schedule.source_poll_count,
                 &outcome.schedule, &error))
             return FinalDecision("FAILED", "TAS_INPUT_EPOCH_ANNOTATION_CAPTURE_INVALID",
@@ -968,7 +1033,10 @@ public:
                 + " path=DurableWorkerTerminalEnvelope.terminal.workset_artifacts[savor.capture.profile.artifact]\n"
                 + error);
         RecordTasMovieInputEpochAnnotationAttemptCommand attempt{
+            .producer = TasMovieInputEpochAnnotationProducer::Annotate,
             .annotation_request_id = request->annotation_request_id,
+            .source_dtm_artifact_id = request->source_dtm_artifact_id,
+            .source_dtm_sha256 = request->source_dtm_sha256,
             .source_job_id = context.job_id,
             .worker_terminal_sha256 = context.terminal.sha256,
             .succeeded = outcome.outcome == inputepoch::InputEpochOutcomeV1::Completed,
@@ -1053,8 +1121,10 @@ private:
 
 class RewriteResultHandler final : public IProgramResultHandler {
 public:
-    RewriteResultHandler(IStateDb* state, IAnalysisDb* analysis)
+    RewriteResultHandler(IStateDb* state, IAnalysisDb* analysis,
+        std::filesystem::path root)
         : state_(state), analysis_(analysis),
+          root_(WorkingRoot(root)),
           phase_(inputepoch::RewriteFullPhaseDefinitionV1()) {}
 
     ProgramResultDecision Process(
@@ -1099,6 +1169,9 @@ public:
         };
         std::optional<std::int64_t> dtm_artifact_id;
         std::optional<std::int64_t> savestate_id;
+        std::optional<RecordTasMovieInputEpochAnnotationAttemptCommand> child_annotation;
+        std::optional<RecordTasMovieRootEstablishmentAttemptCommand> child_root;
+        std::vector<ProgramResultStagingFile> generated_files;
         if (attempt.succeeded) {
             if (outcome.insert_before_epoch != request->insert_before_epoch
                 || outcome.neutral_epoch_count != request->neutral_epoch_count
@@ -1169,6 +1242,154 @@ public:
             attempt.rewritten_dtm_artifact_id = dtm_id;
             attempt.rewritten_dtm_sha256 = dtm_record->sha256;
             attempt.endpoint_savestate_id = state_id;
+
+            savor::tas::DtmFile child_dtm;
+            if (!ValidateCompleteBootDtm(
+                    std::filesystem::path(dtm->storage_reference),
+                    &child_dtm, nullptr, &error))
+                return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_CHILD_DTM_INVALID", error);
+            inputepoch::TasMovieInputEpochScheduleV1 child_schedule;
+            if (!DecodePassiveAnnotationCapture(
+                    terminal.terminal.workset_artifacts, dtm_record->sha256,
+                    child_dtm.info().input_count, &child_schedule, &error))
+                return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_CAPTURE_INVALID", error);
+            const auto source_schedule_artifact = state_->GetArtifact(
+                request->schedule_artifact_id);
+            const auto source_schedule_bytes = source_schedule_artifact
+                ? ReadFile(source_schedule_artifact->filename, &error)
+                : std::nullopt;
+            inputepoch::TasMovieInputEpochScheduleV1 source_schedule;
+            if (!source_schedule_bytes
+                || !inputepoch::DecodeInputEpochScheduleArtifactV1(
+                    *source_schedule_bytes, source_schedule, &error))
+                return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_SOURCE_SCHEDULE_INVALID", error);
+            std::vector<GCInputFrame> expected;
+            expected.reserve(source_schedule.epochs.size()
+                + static_cast<std::size_t>(request->neutral_epoch_count));
+            for (std::size_t i = 0; i < request->insert_before_epoch; ++i)
+                expected.push_back(source_schedule.epochs[i].input);
+            for (std::uint64_t i = 0; i < request->neutral_epoch_count; ++i)
+                expected.push_back(GCInputFrame{});
+            for (std::size_t i = request->insert_before_epoch;
+                 i < source_schedule.epochs.size(); ++i)
+                expected.push_back(source_schedule.epochs[i].input);
+            if (child_schedule.epochs.size() != expected.size())
+                return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_CAPTURE_SHAPE_INVALID",
+                    "captured child schedule epoch count does not match the exact rewrite: expected="
+                        + std::to_string(expected.size()) + " captured="
+                        + std::to_string(child_schedule.epochs.size()));
+            for (std::size_t i = 0; i < expected.size(); ++i) {
+                if (!(child_schedule.epochs[i].input == expected[i]))
+                    return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_CAPTURE_DIVERGED",
+                        "captured child schedule diverged at epoch " + std::to_string(i));
+            }
+
+            const auto schedule_bytes = inputepoch::EncodeInputEpochScheduleArtifactV1(
+                child_schedule, &error);
+            if (schedule_bytes.empty())
+                return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_CHILD_SCHEDULE_INVALID", error);
+            const auto schedule_sha = hash::sha256(
+                schedule_bytes.data(), schedule_bytes.size());
+            const auto schedule_path = root_ / "published" / (schedule_sha + ".tes");
+            if (!WriteFile(schedule_path, schedule_bytes, &error))
+                throw std::runtime_error(error);
+            std::int64_t schedule_artifact_id = 0;
+            if (!state_->StoreArtifact({
+                    .sha256 = schedule_sha,
+                    .size_bytes = static_cast<std::int64_t>(schedule_bytes.size()),
+                    .compression_kind = 0,
+                    .filename = schedule_path.string(),
+                    .display_filename = "tas-movie-input-epoch-schedule.tes",
+                    .file_ext = ".tes",
+                    .artifact_kind = "TAS_MOVIE_INPUT_EPOCH_SCHEDULE",
+                    .created_at_utc = types::UtcNow(),
+                    .correlation_id = "tmv-input-epoch-rewrite-request-"
+                        + std::to_string(request->rewrite_request_id),
+                    .causation_id = "execution-job-" + std::to_string(context.job_id),
+                }, &schedule_artifact_id, &error)) throw std::runtime_error(error);
+
+            const auto parent_root = analysis_->GetTasMovieRootEstablishmentAttempt(
+                request->root_establishment_attempt_id);
+            std::uint64_t child_root_cursor = 0;
+            if (!parent_root || !DecodeRootEstablishmentCapture(
+                    terminal.terminal.workset_artifacts, parent_root->root_pc,
+                    child_dtm.info().input_count, &child_root_cursor, &error))
+                return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_ROOT_CAPTURE_INVALID", error);
+            savor::runtime::tasmovie::TasMovieItineraryV1 itinerary{{
+                {.pc = parent_root->root_pc,
+                 .input_count = savor::runtime::tasmovie::DtmInputCount(child_root_cursor)}}};
+            if (!savor::runtime::tasmovie::ValidateTasMovieItineraryArtifactV1(
+                    itinerary, child_dtm.info().input_count,
+                    parent_root->root_pc, &error))
+                return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_ROOT_INVALID", error);
+            const auto itinerary_bytes =
+                savor::runtime::tasmovie::EncodeTasMovieItineraryArtifactV1(
+                    itinerary, &error);
+            if (itinerary_bytes.empty())
+                return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_ITINERARY_INVALID", error);
+            const auto itinerary_sha = hash::sha256(
+                itinerary_bytes.data(), itinerary_bytes.size());
+            const auto itinerary_path = root_ / "published" / (itinerary_sha + ".tmi");
+            if (!WriteFile(itinerary_path, itinerary_bytes, &error))
+                throw std::runtime_error(error);
+            std::int64_t itinerary_artifact_id = 0;
+            if (!state_->StoreArtifact({
+                    .sha256 = itinerary_sha,
+                    .size_bytes = static_cast<std::int64_t>(itinerary_bytes.size()),
+                    .compression_kind = 0,
+                    .filename = itinerary_path.string(),
+                    .display_filename = "tas-movie-root-itinerary.tmi",
+                    .file_ext = ".tmi",
+                    .artifact_kind = "TAS_MOVIE_ITINERARY",
+                    .created_at_utc = types::UtcNow(),
+                    .correlation_id = "tmv-input-epoch-rewrite-request-"
+                        + std::to_string(request->rewrite_request_id),
+                    .causation_id = "execution-job-" + std::to_string(context.job_id),
+                }, &itinerary_artifact_id, &error)) throw std::runtime_error(error);
+
+            child_annotation = RecordTasMovieInputEpochAnnotationAttemptCommand{
+                .producer = TasMovieInputEpochAnnotationProducer::Revise,
+                .rewrite_request_id = request->rewrite_request_id,
+                .source_dtm_artifact_id = dtm_id,
+                .source_dtm_sha256 = dtm_record->sha256,
+                .source_job_id = context.job_id,
+                .worker_terminal_sha256 = context.terminal.sha256,
+                .succeeded = true,
+                .schedule_artifact_id = schedule_artifact_id,
+                .schedule_sha256 = schedule_sha,
+                .source_poll_count = child_schedule.source_poll_count,
+                .epoch_count = child_schedule.epochs.size(),
+                .final_cursor = child_schedule.epochs.back().movie_input_cursor,
+                .worker_id = std::to_string(terminal.worker_id),
+                .worker_process_generation = terminal.process_generation,
+                .workset_epoch = terminal.terminal.workset_epoch,
+                .recorded_at_utc = types::UtcNow(),
+            };
+            child_root = RecordTasMovieRootEstablishmentAttemptCommand{
+                .producer = TasMovieRootEstablishmentProducer::Revise,
+                .rewrite_request_id = request->rewrite_request_id,
+                .parent_root_establishment_attempt_id =
+                    request->root_establishment_attempt_id,
+                .source_dtm_artifact_id = dtm_id,
+                .source_dtm_sha256 = dtm_record->sha256,
+                .itinerary_artifact_id = itinerary_artifact_id,
+                .itinerary_sha256 = itinerary_sha,
+                .root_pc = parent_root->root_pc,
+                .movie_input_cursor = child_root_cursor,
+                .source_job_id = context.job_id,
+                .worker_terminal_sha256 = context.terminal.sha256,
+                .recorded_at_utc = types::UtcNow(),
+            };
+            generated_files.push_back({
+                .relative_path = schedule_path.lexically_relative(root_).generic_string(),
+                .sha256 = schedule_sha,
+                .size_bytes = static_cast<std::uint64_t>(schedule_bytes.size()),
+            });
+            generated_files.push_back({
+                .relative_path = itinerary_path.lexically_relative(root_).generic_string(),
+                .sha256 = itinerary_sha,
+                .size_bytes = static_cast<std::uint64_t>(itinerary_bytes.size()),
+            });
         } else {
             attempt.divergence_epoch = outcome.failure_epoch;
             attempt.divergence_cursor = outcome.actual_cursor;
@@ -1179,12 +1400,26 @@ public:
                 + std::to_string(outcome.actual_cursor);
         }
         std::int64_t attempt_id = 0;
-        if (!analysis_->RecordTasMovieInputEpochRewriteAttempt(
+        std::optional<std::int64_t> annotation_attempt_id;
+        std::optional<std::int64_t> root_establishment_attempt_id;
+        if (attempt.succeeded) {
+            RecordTasMovieInputEpochRewriteCompletionReceipt receipt{};
+            if (!analysis_->RecordTasMovieInputEpochRewriteCompletion({
+                    .rewrite = attempt,
+                    .annotation = *child_annotation,
+                    .root_establishment = *child_root,
+                }, &receipt, &error)) throw std::runtime_error(error);
+            attempt_id = receipt.rewrite_attempt_id;
+            annotation_attempt_id = receipt.annotation_attempt_id;
+            root_establishment_attempt_id = receipt.root_establishment_attempt_id;
+        } else if (!analysis_->RecordTasMovieInputEpochRewriteAttempt(
                 attempt, &attempt_id, &error)) throw std::runtime_error(error);
         auto decision = attempt.succeeded
             ? FinalDecision("SUCCEEDED")
             : FinalDecision("FAILED", attempt.failure_code, attempt.failure_text);
         decision.cleanup_worker_staging = true;
+        decision.staging_files.insert(decision.staging_files.end(),
+            generated_files.begin(), generated_files.end());
         decision.outputs.push_back({
             .output_key = "rewrite_attempt",
             .data_kind = "analysis.tas_movie_input_epoch_rewrite_attempt_id",
@@ -1203,6 +1438,18 @@ public:
             .ref_kind = "state.savestate",
             .ref_id = *savestate_id,
         });
+        if (annotation_attempt_id) decision.outputs.push_back({
+            .output_key = "annotation_attempt",
+            .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id",
+            .ref_kind = "tmv_input_epoch_annotation_attempt",
+            .ref_id = *annotation_attempt_id,
+        });
+        if (root_establishment_attempt_id) decision.outputs.push_back({
+            .output_key = "root_establishment",
+            .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+            .ref_kind = "tmv_root_establishment_attempt",
+            .ref_id = *root_establishment_attempt_id,
+        });
         decision.event_lines.push_back("[tasmovie-input-epoch-rewrite-recorded] attempt="
             + std::to_string(attempt_id));
         return decision;
@@ -1211,6 +1458,7 @@ public:
 private:
     IStateDb* state_{};
     IAnalysisDb* analysis_{};
+    std::filesystem::path root_;
     std::shared_ptr<const inputepoch::IRewriteFullPhaseDefinitionV1> phase_;
 };
 
@@ -1256,7 +1504,8 @@ ProgramKindDescriptor BuildRewriteProgramDescriptor(IExecutionDb* execution_db,
         execution_db, state_db, analysis_db, config);
     descriptor.workset_reconstruction = std::make_shared<RewriteReconstruction>(
         state_db, analysis_db, config.working_dir_root);
-    descriptor.result_handler = std::make_shared<RewriteResultHandler>(state_db, analysis_db);
+    descriptor.result_handler = std::make_shared<RewriteResultHandler>(
+        state_db, analysis_db, config.working_dir_root);
     descriptor.supports_workflow_orchestration = true;
     return descriptor;
 }

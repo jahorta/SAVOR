@@ -313,6 +313,12 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
             error_out, breakpoint_diagnostic)) {
         return false;
     }
+    std::int64_t source_establishment_workflow = 0;
+    if (!SeedTasMovieWorkflow(
+            db_service->AuthoringDb(), db_service->ExecutionDb(),
+            source_dtm_artifact_id, &source_establishment_workflow, error_out)) {
+        return false;
+    }
 
     auto registry_config = savor::db::execution::programdb::
         MakeProductionProgramKindRegistryConfig(
@@ -453,6 +459,9 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
     if (!WaitForWorkflow(db_service->ExecutionDb(), source_annotation_workflow,
             "source-annotation", poll, &error))
         return fail_after_start(error);
+    if (!WaitForWorkflow(db_service->ExecutionDb(), source_establishment_workflow,
+            "source-establishment", poll, &error))
+        return fail_after_start(error);
 
     const auto source_attempt_id = FindOutput(
         db_service->ExecutionDb(), source_annotation_workflow, "annotate_1",
@@ -465,6 +474,11 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
         || !source_attempt->schedule_artifact_id) {
         return fail_after_start("source annotation attempt is not a successful persisted schedule");
     }
+    const auto source_root_id = FindOutput(
+        db_service->ExecutionDb(), source_establishment_workflow, "tas_1",
+        "root_establishment", "analysis.tas_movie_root_establishment_attempt_id",
+        "tmv_root_establishment_attempt");
+    if (!source_root_id) return fail_after_start("source root establishment output is missing or ambiguous");
     inputepoch::TasMovieInputEpochScheduleV1 source_schedule;
     if (!LoadSchedule(db_service->StateDb(), *source_attempt->schedule_artifact_id,
             workspace / "verification" / "source.tes", &source_schedule, &error)) {
@@ -486,7 +500,8 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
     std::int64_t rewrite_workflow = 0;
     if (!SeedTasMovieInputEpochRewriteWorkflow(
             db_service->AuthoringDb(), db_service->ExecutionDb(),
-            *source_attempt_id, static_cast<std::int64_t>(*insertion_epoch),
+            *source_attempt_id, *source_root_id,
+            static_cast<std::int64_t>(*insertion_epoch), 1,
             "neutral-before-final-b-a", &rewrite_workflow, &error)) {
         return fail_after_start(error);
     }
@@ -521,21 +536,8 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
         return fail_after_start("rewritten DTM or paired endpoint invariant failed");
     }
 
-    if (!CheckWorkflowQuiescence(db_service->ExecutionDb(), &quiescence))
-        return fail_after_start("rewrite did not quiesce: " + quiescence);
-    std::int64_t child_annotation_workflow = 0;
-    if (!SeedTasMovieInputEpochAnnotationWorkflow(
-            db_service->AuthoringDb(), db_service->ExecutionDb(),
-            *rewrite_attempt->rewritten_dtm_artifact_id, "child",
-            &child_annotation_workflow, &error)) {
-        return fail_after_start(error);
-    }
-    if (!WaitForWorkflow(db_service->ExecutionDb(), child_annotation_workflow,
-            "child-annotation", poll, &error)) {
-        return fail_after_start(error);
-    }
     const auto child_attempt_id = FindOutput(
-        db_service->ExecutionDb(), child_annotation_workflow, "annotate_1",
+        db_service->ExecutionDb(), rewrite_workflow, "rewrite_1",
         "annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id",
         "tmv_input_epoch_annotation_attempt");
     if (!child_attempt_id) return fail_after_start("child annotation output is missing or ambiguous");
@@ -543,6 +545,11 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
         ->GetTasMovieInputEpochAnnotationAttempt(*child_attempt_id);
     if (!child_attempt || !child_attempt->succeeded || !child_attempt->schedule_artifact_id)
         return fail_after_start("child annotation attempt is incomplete");
+    const auto child_root_id = FindOutput(
+        db_service->ExecutionDb(), rewrite_workflow, "rewrite_1",
+        "root_establishment", "analysis.tas_movie_root_establishment_attempt_id",
+        "tmv_root_establishment_attempt");
+    if (!child_root_id) return fail_after_start("child root establishment output is missing or ambiguous");
     inputepoch::TasMovieInputEpochScheduleV1 child_schedule;
     if (!LoadSchedule(db_service->StateDb(), *child_attempt->schedule_artifact_id,
             workspace / "verification" / "child.tes", &child_schedule, &error)) {
@@ -561,6 +568,54 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
     for (std::size_t i = 0; i < expected.size(); ++i) {
         if (!(child_schedule.epochs[i].input == expected[i]))
             return fail_after_start("child schedule diverged at epoch " + std::to_string(i));
+    }
+
+    std::int64_t chained_rewrite_workflow = 0;
+    if (!SeedTasMovieInputEpochRewriteWorkflow(
+            db_service->AuthoringDb(), db_service->ExecutionDb(),
+            *child_attempt_id, *child_root_id,
+            static_cast<std::int64_t>(*insertion_epoch + 1), 2,
+            "chain-two-neutral-before-final-b-a", &chained_rewrite_workflow,
+            &error)) {
+        return fail_after_start(error);
+    }
+    if (!WaitForWorkflow(db_service->ExecutionDb(), chained_rewrite_workflow,
+            "chained-rewrite", poll, &error)) {
+        return fail_after_start(error);
+    }
+    const auto chained_attempt_id = FindOutput(
+        db_service->ExecutionDb(), chained_rewrite_workflow, "rewrite_1",
+        "annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id",
+        "tmv_input_epoch_annotation_attempt");
+    const auto chained_root_id = FindOutput(
+        db_service->ExecutionDb(), chained_rewrite_workflow, "rewrite_1",
+        "root_establishment", "analysis.tas_movie_root_establishment_attempt_id",
+        "tmv_root_establishment_attempt");
+    if (!chained_attempt_id || !chained_root_id)
+        return fail_after_start("chained revise authorities are missing or ambiguous");
+    const auto chained_attempt = db_service->AnalysisDb()
+        ->GetTasMovieInputEpochAnnotationAttempt(*chained_attempt_id);
+    if (!chained_attempt || !chained_attempt->succeeded
+        || !chained_attempt->schedule_artifact_id) {
+        return fail_after_start("chained annotation attempt is incomplete");
+    }
+    inputepoch::TasMovieInputEpochScheduleV1 chained_schedule;
+    if (!LoadSchedule(db_service->StateDb(), *chained_attempt->schedule_artifact_id,
+            workspace / "verification" / "chained.tes", &chained_schedule, &error)) {
+        return fail_after_start(error);
+    }
+    std::vector<GCInputFrame> chained_expected;
+    chained_expected.reserve(source_schedule.epochs.size() + 3);
+    for (std::size_t i = 0; i < *insertion_epoch; ++i)
+        chained_expected.push_back(source_schedule.epochs[i].input);
+    chained_expected.insert(chained_expected.end(), 3, GCInputFrame{});
+    for (std::size_t i = *insertion_epoch; i < source_schedule.epochs.size(); ++i)
+        chained_expected.push_back(source_schedule.epochs[i].input);
+    if (chained_schedule.epochs.size() != chained_expected.size())
+        return fail_after_start("chained schedule epoch count does not equal source plus three");
+    for (std::size_t i = 0; i < chained_expected.size(); ++i) {
+        if (!(chained_schedule.epochs[i].input == chained_expected[i]))
+            return fail_after_start("chained schedule diverged at epoch " + std::to_string(i));
     }
     const auto current_source_bytes = ReadFile(options.dtm_file, &error);
     if (!current_source_bytes || *current_source_bytes != *source_bytes)
@@ -585,12 +640,15 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
         << " child_schedule_artifact=" << *child_attempt->schedule_artifact_id
         << " child_schedule_sha256=" << child_attempt->schedule_sha256.value_or("")
         << " endpoint_savestate=" << *rewrite_attempt->endpoint_savestate_id
-        << " workflows=" << source_annotation_workflow << ',' << rewrite_workflow
-        << ',' << child_annotation_workflow << '\n';
+        << " chained_schedule_artifact=" << *chained_attempt->schedule_artifact_id
+        << " chained_epochs=" << chained_schedule.epochs.size()
+        << " workflows=" << source_establishment_workflow << ','
+        << source_annotation_workflow << ',' << rewrite_workflow << ','
+        << chained_rewrite_workflow << '\n';
     std::cout
         << "[tasmovie-input-epoch-trajectory] annotate_source=COMPLETED"
-        << " rewrite=COMPLETED annotate_child=COMPLETED replay=movie_end"
-        << " schedule=source_prefix+neutral+source_suffix checkpoint=MOVIE_PAIRED\n";
+        << " rewrite_count_1=COMPLETED rewrite_count_2=COMPLETED replay=movie_end"
+        << " schedule=source_prefix+neutral_x3+source_suffix checkpoint=MOVIE_PAIRED\n";
     return true;
 }
 

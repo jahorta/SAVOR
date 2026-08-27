@@ -104,14 +104,14 @@ TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
         establish->possible_outputs.begin(),
         establish->possible_outputs.end(),
         [](const auto& output) {
-            return output.key == "established_root_cursor_attempt"
+            return output.key == "root_establishment"
                 && output.data_kind
-                    == "analysis.tas_movie_validation_attempt_id"
-                && output.ref_kind == "tmv_validation_attempt";
+                    == "analysis.tas_movie_root_establishment_attempt_id"
+                && output.ref_kind == "tmv_root_establishment_attempt";
         }));
     ASSERT_EQ(validate_root->required_inputs.size(), 1u);
-    EXPECT_EQ(validate_root->required_inputs[0].data_kind, "analysis.tas_movie_validation_attempt_id");
-    EXPECT_EQ(validate_root->required_inputs[0].ref_kind, "tmv_validation_attempt");
+    EXPECT_EQ(validate_root->required_inputs[0].data_kind, "analysis.tas_movie_root_establishment_attempt_id");
+    EXPECT_EQ(validate_root->required_inputs[0].ref_kind, "tmv_root_establishment_attempt");
     EXPECT_TRUE(std::any_of(
         validate_root->possible_outputs.begin(),
         validate_root->possible_outputs.end(),
@@ -232,8 +232,8 @@ TEST(Stage5WorkflowComposition, AcceptsOnlyOutputPresentGuardWithoutValue) {
     composition.external_inputs = {{
         .node_key = "validate",
         .input_key = "root_establishment",
-        .data_kind = "analysis.tas_movie_validation_attempt_id",
-        .ref_kind = "tmv_validation_attempt",
+        .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+        .ref_kind = "tmv_root_establishment_attempt",
         .ref_id = 7,
     }};
     composition.output_bindings = {{
@@ -407,8 +407,8 @@ TEST(Stage5WorkflowLaunchContract, NormalizesDefaultsAndRejectsMalformedTypedLau
     ASSERT_NE(validate_root, nullptr);
     const auto validate_root_graph = make_graph(*validate_root);
     const std::vector<WorkflowLaunchInputValue> validate_root_inputs{{
-        "unit_1", "root_establishment", "analysis.tas_movie_validation_attempt_id",
-        "tmv_validation_attempt", 7, "external",
+        "unit_1", "root_establishment", "analysis.tas_movie_root_establishment_attempt_id",
+        "tmv_root_establishment_attempt", 7, "external",
     }};
     EXPECT_FALSE(WorkflowLaunchContractValidator::Validate(validate_root_graph, registry, validate_root_inputs, {}).valid);
     EXPECT_FALSE(WorkflowLaunchContractValidator::Validate(validate_root_graph, registry, validate_root_inputs, {{

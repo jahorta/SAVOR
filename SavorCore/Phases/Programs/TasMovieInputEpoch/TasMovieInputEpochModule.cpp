@@ -62,6 +62,18 @@ SchemaIdentity EpochListSchema()
         "list(max=1000000;soa.tasmovie.input_epoch.EpochV1/1)");
 }
 
+SchemaIdentity InputRunSchema()
+{
+    return Schema("soa.tasmovie.input_epoch.InputRunV1",
+        "record{input:runtime.input.InputFramePayload,epoch_count:u64}");
+}
+
+SchemaIdentity InputRunListSchema()
+{
+    return Schema("soa.tasmovie.input_epoch.InputRunListV1",
+        "list(max=1000000;soa.tasmovie.input_epoch.InputRunV1/1)");
+}
+
 SchemaIdentity OutcomeSchema()
 {
     return Schema("soa.tasmovie.input_epoch.OutcomeV1",
@@ -89,7 +101,7 @@ SchemaIdentity AnnotationResultSchema()
 SchemaIdentity RewriteRequestSchema()
 {
     return Schema("soa.tasmovie.input_epoch.RewriteRequestV1",
-        "record{prepare:runtime.movie.prepare_read_only_playback.Input/1,epochs:EpochListV1/1,insert_before:u64,neutral_count:u64,recording_config:runtime.movie.RecordingStaticConfig,save_request:runtime.action.savestate_save_immutable_artifact.Input/1}");
+        "record{prepare:runtime.movie.prepare_read_only_playback.Input/1,epochs:EpochListV1/1,input_runs:InputRunListV1/1,insert_before:u64,neutral_count:u64,recording_config:runtime.movie.RecordingStaticConfig,save_request:runtime.action.savestate_save_immutable_artifact.Input/1}");
 }
 
 SchemaIdentity RewriteResultSchema()
@@ -314,6 +326,14 @@ void AddTypes(Builder& builder)
     builder.AddLocalType({.identity = EpochListSchema(),
         .kind = TypeSchemaKind::BoundedList, .maximum_size = MaximumEpochs,
         .element_type = Named(EpochSchema())});
+    builder.AddLocalType({.identity = InputRunSchema(),
+        .kind = TypeSchemaKind::Record,
+        .record_fields = {{"input", CanonicalRuntimeType(
+                CanonicalRuntimeSchema::InputFramePayload)},
+            {"epoch_count", U64()}}});
+    builder.AddLocalType({.identity = InputRunListSchema(),
+        .kind = TypeSchemaKind::BoundedList, .maximum_size = MaximumEpochs,
+        .element_type = Named(InputRunSchema())});
     builder.AddLocalType({.identity = OutcomeSchema(),
         .kind = TypeSchemaKind::ClosedEnum,
         .enum_members = {{"Completed", 0}, {"Diverged", 1}}});
@@ -335,7 +355,9 @@ ProgramValueId EnumConstant(Builder& builder, ProgramFunction& function,
 ProgramValueId Continue(Builder& builder, ProgramFunction& function,
     BasicBlock& block, ProgramValueId playback,
     std::optional<ProgramValueId> binding, bool fail_on_movie_end,
-    std::string selector, ProgramScopeId scope)
+    std::string selector, ProgramScopeId scope,
+    std::optional<ProgramValueId> required_occurrences = std::nullopt,
+    bool verify_bound_input = false)
 {
     const auto points = Constant(builder, function, block,
         CanonicalRuntimeType(CanonicalRuntimeSchema::SemanticPointSet),
@@ -353,9 +375,14 @@ ProgramValueId Continue(Builder& builder, ProgramFunction& function,
     const auto config = Constant(builder, function, block,
         CanonicalRuntimeType(CanonicalRuntimeSchema::ContinueUntilStaticConfig),
         ContinueConfig(fail_on_movie_end), selector + "/config", scope);
+    const auto occurrences = required_occurrences.value_or(
+        Constant(builder, function, block, U64(), std::uint64_t{1},
+            selector + "/occurrences", scope));
+    const auto verify = Constant(builder, function, block, Bool(),
+        verify_bound_input, selector + "/verify-bound-input", scope);
     const auto request = Construct(builder, function, block,
         CanonicalActionInputType(CanonicalAction::ExecutionContinueUntil),
-        std::array{points, input, movie, count, config},
+        std::array{points, input, movie, count, occurrences, verify, config},
         selector + "/request", scope);
     return Await(builder, function, block,
         CanonicalAction::ExecutionContinueUntil, request,
@@ -725,7 +752,9 @@ ProgramModule RewriteModule()
         .kind = TypeSchemaKind::Record,
         .record_fields = {{"prepare", CanonicalActionInputType(
                 CanonicalAction::MoviePrepareReadOnlyPlayback)},
-            {"epochs", Named(EpochListSchema())}, {"insert_before", U64()},
+            {"epochs", Named(EpochListSchema())},
+            {"input_runs", Named(InputRunListSchema())},
+            {"insert_before", U64()},
             {"neutral_count", U64()},
             {"recording_config", CanonicalRuntimeType(
                 CanonicalRuntimeSchema::MovieRecordingStaticConfig)},
@@ -767,13 +796,10 @@ ProgramModule RewriteModule()
     const auto branch_id = builder.AddBlock(function).id;
     const auto emit_args = std::array{builder.NewArgument(U64())};
     const auto emit_id = builder.AddBlock(function, emit_args).id;
-    const auto neutral_id = builder.AddBlock(function,
-        std::array{builder.NewArgument(U64())}).id;
-    const auto source_id = builder.AddBlock(function,
-        std::array{builder.NewArgument(U64())}).id;
     const auto deliver_args = std::array{
         builder.NewArgument(CanonicalRuntimeType(
             CanonicalRuntimeSchema::InputFramePayload)),
+        builder.NewArgument(U64()),
         builder.NewArgument(U64())};
     const auto deliver_id = builder.AddBlock(function, deliver_args).id;
     const auto finalize_id = builder.AddBlock(function).id;
@@ -801,7 +827,7 @@ ProgramModule RewriteModule()
     const auto insertion = Project(builder, function, prefix, argument.id,
         U64(), "insert_before", scope);
     const auto prefix_done = Binary(builder, function, prefix,
-        InstructionOpcode::GreaterEqual, Bool(), prefix_args[0].id, insertion,
+        InstructionOpcode::Equal, Bool(), prefix_args[0].id, insertion,
         "prefix-done", scope);
     const auto prefix_continue_id = builder.AddBlock(function,
         std::array{builder.NewArgument(U64())}).id;
@@ -809,10 +835,11 @@ ProgramModule RewriteModule()
         {.kind = TerminatorKind::ConditionalBranch,
          .condition_or_selector = prefix_done,
          .edges = {{branch_id, {}}, {prefix_continue_id,
-             {prefix_args[0].id}}}}, "prefix-check");
+             {insertion}}}}, "prefix-check");
     auto& prefix_continue = Block(function, prefix_continue_id);
     const auto prefix_observation = Continue(builder, function,
-        prefix_continue, playback, std::nullopt, false, "prefix-pad-read", scope);
+        prefix_continue, playback, std::nullopt, false, "prefix-pad-read", scope,
+        prefix_continue.arguments[0].id, false);
     const auto prefix_reason = Project(builder, function, prefix_continue,
         prefix_observation, CanonicalRuntimeType(
             CanonicalRuntimeSchema::ContinueUntilCompletionReason),
@@ -831,7 +858,11 @@ ProgramModule RewriteModule()
         Named(EpochListSchema()), "epochs", scope);
     const auto expected_epoch = Need(builder.AddInstruction(function,
         prefix_hit, InstructionOpcode::ListIndex, Named(EpochSchema()),
-        std::array{epochs, prefix_hit_args[1].id}, {}, "expected-epoch",
+        std::array{epochs, Binary(builder, function, prefix_hit,
+            InstructionOpcode::SubtractChecked, U64(),
+            prefix_hit_args[1].id,
+            Constant(builder, function, prefix_hit, U64(), std::uint64_t{1},
+                "one", scope), "boundary-index", scope)}, {}, "expected-epoch",
         std::nullopt, scope), "expected epoch");
     const auto expected_cursor = Project(builder, function, prefix_hit,
         expected_epoch, U64(), "movie_input_cursor", scope);
@@ -840,15 +871,10 @@ ProgramModule RewriteModule()
     const auto matches = Binary(builder, function, prefix_hit,
         InstructionOpcode::Equal, Bool(), expected_cursor, actual_cursor,
         "prefix-matches", scope);
-    const auto one = Constant(builder, function, prefix_hit, U64(),
-        std::uint64_t{1}, "one", scope);
-    const auto next_prefix = Binary(builder, function, prefix_hit,
-        InstructionOpcode::AddChecked, U64(), prefix_hit_args[1].id, one,
-        "next-prefix", scope);
     builder.SetTerminator(function, prefix_hit,
         {.kind = TerminatorKind::ConditionalBranch,
          .condition_or_selector = matches,
-         .edges = {{prefix_id, {next_prefix}}, {fail_prefix_id, {}}}},
+         .edges = {{branch_id, {}}, {fail_prefix_id, {}}}},
         "verify-prefix");
 
     auto& branch = Block(function, branch_id);
@@ -874,72 +900,36 @@ ProgramModule RewriteModule()
         .edges = {{emit_id, {zero}}}}, "emit");
 
     auto& emit = Block(function, emit_id);
-    const auto emit_epochs = Project(builder, function, emit, argument.id,
-        Named(EpochListSchema()), "epochs", scope);
-    const auto source_count = Need(builder.AddInstruction(function, emit,
-        InstructionOpcode::ListSize, U64(), std::array{emit_epochs}, {},
-        "source-count", std::nullopt, scope), "source count");
-    const auto emit_insert = Project(builder, function, emit, argument.id,
-        U64(), "insert_before", scope);
-    const auto suffix_count = Binary(builder, function, emit,
-        InstructionOpcode::SubtractChecked, U64(), source_count, emit_insert,
-        "suffix-count", scope);
-    const auto neutral_count = Project(builder, function, emit, argument.id,
-        U64(), "neutral_count", scope);
-    const auto child_count = Binary(builder, function, emit,
-        InstructionOpcode::AddChecked, U64(), suffix_count, neutral_count,
-        "child-count", scope);
+    const auto runs = Project(builder, function, emit, argument.id,
+        Named(InputRunListSchema()), "input_runs", scope);
+    const auto run_count = Need(builder.AddInstruction(function, emit,
+        InstructionOpcode::ListSize, U64(), std::array{runs}, {},
+        "run-count", std::nullopt, scope), "run count");
     const auto emit_done = Binary(builder, function, emit,
-        InstructionOpcode::GreaterEqual, Bool(), emit_args[0].id, child_count,
+        InstructionOpcode::GreaterEqual, Bool(), emit_args[0].id, run_count,
         "emit-done", scope);
-    const auto is_neutral = Binary(builder, function, emit,
-        InstructionOpcode::Less, Bool(), emit_args[0].id, neutral_count,
-        "is-neutral", scope);
     const auto choose_id = builder.AddBlock(function,
-        std::array{builder.NewArgument(U64()), builder.NewArgument(Bool())}).id;
+        std::array{builder.NewArgument(U64())}).id;
     builder.SetTerminator(function, emit,
         {.kind = TerminatorKind::ConditionalBranch,
          .condition_or_selector = emit_done,
          .edges = {{finalize_id, {}}, {choose_id,
-             {emit_args[0].id, is_neutral}}}}, "emit-check");
+             {emit_args[0].id}}}}, "emit-check");
     auto& choose = Block(function, choose_id);
-    builder.SetTerminator(function, choose,
-        {.kind = TerminatorKind::ConditionalBranch,
-         .condition_or_selector = choose.arguments[1].id,
-         .edges = {{neutral_id, {choose.arguments[0].id}},
-             {source_id, {choose.arguments[0].id}}}}, "choose-frame");
-
-    auto& neutral = Block(function, neutral_id);
-    const auto neutral_frame = Constant(builder, function, neutral,
-        CanonicalRuntimeType(CanonicalRuntimeSchema::InputFramePayload),
-        FrameBytes(GCInputFrame{}), "neutral", scope);
-    builder.SetTerminator(function, neutral, {.kind = TerminatorKind::Branch,
-        .edges = {{deliver_id, {neutral_frame, neutral.arguments[0].id}}}},
-        "deliver-neutral");
-
-    auto& source = Block(function, source_id);
-    const auto source_epochs = Project(builder, function, source, argument.id,
-        Named(EpochListSchema()), "epochs", scope);
-    const auto source_insert = Project(builder, function, source, argument.id,
-        U64(), "insert_before", scope);
-    const auto source_neutral_count = Project(builder, function, source,
-        argument.id, U64(), "neutral_count", scope);
-    const auto suffix_index = Binary(builder, function, source,
-        InstructionOpcode::SubtractChecked, U64(), source.arguments[0].id,
-        source_neutral_count, "suffix-index", scope);
-    const auto source_index = Binary(builder, function, source,
-        InstructionOpcode::AddChecked, U64(), source_insert, suffix_index,
-        "source-index", scope);
-    const auto source_epoch = Need(builder.AddInstruction(function, source,
-        InstructionOpcode::ListIndex, Named(EpochSchema()),
-        std::array{source_epochs, source_index}, {}, "source-epoch",
-        std::nullopt, scope), "source epoch");
-    const auto source_frame = Project(builder, function, source, source_epoch,
+    const auto choose_runs = Project(builder, function, choose, argument.id,
+        Named(InputRunListSchema()), "input_runs", scope);
+    const auto run = Need(builder.AddInstruction(function, choose,
+        InstructionOpcode::ListIndex, Named(InputRunSchema()),
+        std::array{choose_runs, choose.arguments[0].id}, {}, "input-run",
+        std::nullopt, scope), "input run");
+    const auto source_frame = Project(builder, function, choose, run,
         CanonicalRuntimeType(CanonicalRuntimeSchema::InputFramePayload),
         "input", scope);
-    builder.SetTerminator(function, source, {.kind = TerminatorKind::Branch,
-        .edges = {{deliver_id, {source_frame, source.arguments[0].id}}}},
-        "deliver-source");
+    const auto source_run_count = Project(builder, function, choose, run,
+        U64(), "epoch_count", scope);
+    builder.SetTerminator(function, choose, {.kind = TerminatorKind::Branch,
+        .edges = {{deliver_id, {source_frame, source_run_count,
+            choose.arguments[0].id}}}}, "deliver-run");
 
     auto& deliver = Block(function, deliver_id);
     const auto begin_request = Construct(builder, function, deliver,
@@ -948,7 +938,8 @@ ProgramModule RewriteModule()
     const auto binding = Await(builder, function, deliver,
         CanonicalAction::InputBeginDelivery, begin_request, "begin", scope);
     const auto stop = Continue(builder, function, deliver, ProgramValueId{},
-        binding, true, "guest-acknowledgement", scope);
+        binding, true, "guest-acknowledgement", scope,
+        deliver_args[1].id, true);
     (void)stop;
     const auto complete_request = Construct(builder, function, deliver,
         CanonicalActionInputType(CanonicalAction::InputCompleteDelivery),
@@ -957,61 +948,27 @@ ProgramModule RewriteModule()
         CanonicalAction::InputCompleteDelivery, complete_request,
         "complete", scope);
     const auto next_emit = Binary(builder, function, deliver,
-        InstructionOpcode::AddChecked, U64(), deliver_args[1].id,
+        InstructionOpcode::AddChecked, U64(), deliver_args[2].id,
         Constant(builder, function, deliver, U64(), std::uint64_t{1},
             "one", scope), "next-emit", scope);
     builder.SetTerminator(function, deliver, {.kind = TerminatorKind::Branch,
         .edges = {{emit_id, {next_emit}}}}, "next-input");
 
     auto& finalize = Block(function, finalize_id);
+    const auto final_state_request = Construct(builder, function, finalize,
+        CanonicalActionInputType(CanonicalAction::MovieObserveState), {},
+        "observe-final-state", scope);
+    const auto final_state = Await(builder, function, finalize,
+        CanonicalAction::MovieObserveState, final_state_request,
+        "observe-final-state", scope);
+    const auto final_cursor = Project(builder, function, finalize, final_state,
+        U64(), "current_input_count", scope);
     const auto save_request = Project(builder, function, finalize, argument.id,
         CanonicalActionInputType(CanonicalAction::SavestateSaveImmutableArtifact),
         "save_request", scope);
     (void)Await(builder, function, finalize,
         CanonicalAction::SavestateSaveImmutableArtifact, save_request,
         "save-endpoint", scope);
-    const auto neutral_tail = Constant(builder, function, finalize,
-        CanonicalRuntimeType(CanonicalRuntimeSchema::InputFramePayload),
-        FrameBytes(GCInputFrame{}), "tail-neutral", scope);
-    const auto tail_begin_request = Construct(builder, function, finalize,
-        CanonicalActionInputType(CanonicalAction::InputBeginDelivery),
-        std::array{lease, neutral_tail}, "tail-begin-request", scope);
-    const auto tail_binding = Await(builder, function, finalize,
-        CanonicalAction::InputBeginDelivery, tail_begin_request,
-        "tail-begin", scope);
-    const auto before_tail_request = Construct(builder, function, finalize,
-        CanonicalActionInputType(CanonicalAction::MovieObserveState), {},
-        "observe-before-tail", scope);
-    const auto before_tail = Await(builder, function, finalize,
-        CanonicalAction::MovieObserveState, before_tail_request,
-        "observe-before-tail", scope);
-    const auto expected_count = Project(builder, function, finalize,
-        before_tail, U64(), "current_input_count", scope);
-    const auto advance_config = Constant(builder, function, finalize,
-        CanonicalRuntimeType(CanonicalRuntimeSchema::ExecutionAdvanceStaticConfig),
-        AdvanceConfig(), "tail-config", scope);
-    const auto tail_request = Construct(builder, function, finalize,
-        CanonicalActionInputType(
-            CanonicalAction::ExecutionContinueUntilInputObserved),
-        std::array{tail_binding, expected_count, advance_config},
-        "tail-request", scope);
-    (void)Await(builder, function, finalize,
-        CanonicalAction::ExecutionContinueUntilInputObserved, tail_request,
-        "tail-observed", scope);
-    const auto tail_complete_request = Construct(builder, function, finalize,
-        CanonicalActionInputType(CanonicalAction::InputCompleteDelivery),
-        std::array{lease, tail_binding}, "tail-complete-request", scope);
-    (void)Await(builder, function, finalize,
-        CanonicalAction::InputCompleteDelivery, tail_complete_request,
-        "tail-complete", scope);
-    const auto after_tail_request = Construct(builder, function, finalize,
-        CanonicalActionInputType(CanonicalAction::MovieObserveState), {},
-        "observe-after-tail", scope);
-    const auto after_tail = Await(builder, function, finalize,
-        CanonicalAction::MovieObserveState, after_tail_request,
-        "observe-after-tail", scope);
-    const auto final_cursor = Project(builder, function, finalize, after_tail,
-        U64(), "current_input_count", scope);
     const auto finalized_dtm = Await(builder, function, finalize,
         CanonicalAction::MovieStopRecording, recording, "finalize-dtm", scope);
     (void)builder.AddInstruction(function, finalize,
@@ -1229,6 +1186,19 @@ ProgramValueGraph RewriteInput(const TasMovieInputEpochRewriteRequestV1& request
         epochs.push_back(AddEpoch(graph, epoch));
     const auto epoch_list = graph.Add(Named(EpochListSchema()),
         ListValue{std::move(epochs)});
+    std::vector<ProgramValueId> input_runs;
+    input_runs.reserve(request.input_runs.size());
+    for (const auto& run : request.input_runs)
+    {
+        const auto input = graph.Add(CanonicalRuntimeType(
+            CanonicalRuntimeSchema::InputFramePayload),
+            FrameBytes(run.input));
+        const auto epoch_count = graph.Add(U64(), run.epoch_count);
+        input_runs.push_back(graph.Add(Named(InputRunSchema()),
+            RecordValue{{input, epoch_count}}));
+    }
+    const auto input_run_list = graph.Add(Named(InputRunListSchema()),
+        ListValue{std::move(input_runs)});
     const auto insertion = graph.Add(U64(), request.insert_before_epoch);
     const auto neutral_count = graph.Add(U64(), request.neutral_epoch_count);
     const auto recording = graph.Add(CanonicalRuntimeType(
@@ -1236,7 +1206,8 @@ ProgramValueGraph RewriteInput(const TasMovieInputEpochRewriteRequestV1& request
         RecordingConfig(request.output_dtm_path));
     const auto save = graph.Import(SaveGraph(request.output_savestate_path));
     return graph.Finish(graph.Add(Named(RewriteRequestSchema()),
-        RecordValue{{prepare, epoch_list, insertion, neutral_count, recording, save}}));
+        RecordValue{{prepare, epoch_list, input_run_list, insertion,
+            neutral_count, recording, save}}));
 }
 
 const ProgramValue* Find(const ProgramValueGraph& graph, ProgramValueId id)
@@ -1701,8 +1672,7 @@ public:
                 "$.output.insert_before: exceeds source_count");
             return false;
         }
-        if (result.neutral_epoch_count == 0 ||
-            result.child_epoch_count != result.source_epoch_count +
+        if (result.child_epoch_count != result.source_epoch_count +
                 result.neutral_epoch_count)
         {
             Diagnostic(diagnostic,

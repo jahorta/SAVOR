@@ -521,9 +521,9 @@ bool SeedBattleWorkflow(
                             .display_name = "Validation attempt",
                         },
                         {
-                            .output_key = "established_root_cursor_attempt",
-                            .data_kind = "analysis.tas_movie_validation_attempt_id",
-                            .ref_kind = "tmv_validation_attempt",
+                            .output_key = "root_establishment",
+                            .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                            .ref_kind = "tmv_root_establishment_attempt",
                             .display_name = "Established root cursor attempt",
                         },
                     },
@@ -534,8 +534,8 @@ bool SeedBattleWorkflow(
                     .display_name = "TAS Movie: Validate Root",
                     .inputs = {{
                         .input_key = "root_establishment",
-                        .data_kind = "analysis.tas_movie_validation_attempt_id",
-                        .ref_kind = "tmv_validation_attempt",
+                        .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                        .ref_kind = "tmv_root_establishment_attempt",
                         .display_name = "Root cursor establishment",
                     }},
                     .possible_outputs = {
@@ -693,7 +693,7 @@ bool SeedBattleWorkflow(
             .edges = {
                 {
                     .from_node_key = "tas_establish_1",
-                    .output_key = "established_root_cursor_attempt",
+                    .output_key = "root_establishment",
                     .to_node_key = "tas_validate_1",
                     .input_key = "root_establishment",
                     .guard_kind = std::string(
@@ -916,8 +916,8 @@ bool SeedEstablishedBattleWorkflow(
                     .display_name = "TAS Movie: Validate Root",
                     .inputs = {{
                         .input_key = "root_establishment",
-                        .data_kind = "analysis.tas_movie_validation_attempt_id",
-                        .ref_kind = "tmv_validation_attempt",
+                        .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                        .ref_kind = "tmv_root_establishment_attempt",
                         .display_name = "Root cursor establishment",
                     }},
                     .possible_outputs = {
@@ -1173,8 +1173,8 @@ bool SeedEstablishedBattleWorkflow(
     command.input_bindings.push_back({
         .node_key = "tas_validate_1",
         .input_key = "root_establishment",
-        .data_kind = "analysis.tas_movie_validation_attempt_id",
-        .ref_kind = "tmv_validation_attempt",
+        .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+        .ref_kind = "tmv_root_establishment_attempt",
         .ref_id = root_establishment_attempt_id,
         .source_kind = "external",
     });
@@ -1507,7 +1507,7 @@ bool CheckBattleInvariantsAndReportTrajectory(
                      "battle_context"},
     };
     static constexpr std::array kFreshEdges{
-        ExpectedEdge{"tas_establish_1", "established_root_cursor_attempt",
+        ExpectedEdge{"tas_establish_1", "root_establishment",
                      "tas_validate_1", "root_establishment"},
         ExpectedEdge{"tas_validate_1", "validated_checkpoint_savestate",
                      "tas_sterilize_1", "paired_checkpoint_savestate"},
@@ -1766,8 +1766,8 @@ bool CheckBattleInvariantsAndReportTrajectory(
                 return binding.node_key == "tas_validate_1"
                     && binding.input_key == "root_establishment"
                     && binding.data_kind
-                        == "analysis.tas_movie_validation_attempt_id"
-                    && binding.ref_kind == "tmv_validation_attempt"
+                        == "analysis.tas_movie_root_establishment_attempt_id"
+                    && binding.ref_kind == "tmv_root_establishment_attempt"
                     && binding.ref_id
                         == *entry.tas_movie_establishment_attempt_id
                     && binding.source_kind == "external";

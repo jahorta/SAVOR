@@ -215,6 +215,32 @@ QueuedAnalysisDb::ListTasMovieCheckpointSterilizationAttemptsForRequest(
         }, {});
 }
 
+bool QueuedAnalysisDb::RecordTasMovieRootEstablishmentAttempt(
+    const RecordTasMovieRootEstablishmentAttemptCommand& command,
+    std::int64_t* attempt_id_out, std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, attempt_id_out, error_out]() {
+        return inner_ && inner_->RecordTasMovieRootEstablishmentAttempt(
+            command, attempt_id_out, error_out);
+    }, false, error_out);
+}
+
+std::optional<TasMovieRootEstablishmentAttemptRecord>
+QueuedAnalysisDb::GetTasMovieRootEstablishmentAttempt(
+    const std::int64_t attempt_id) const {
+    return ExecuteRead<std::optional<TasMovieRootEstablishmentAttemptRecord>>(
+        [this, attempt_id]() { return inner_
+            ? inner_->GetTasMovieRootEstablishmentAttempt(attempt_id)
+            : std::nullopt; }, std::nullopt);
+}
+
+std::vector<TasMovieRootEstablishmentAttemptRecord>
+QueuedAnalysisDb::ListTasMovieRootEstablishmentAttempts(const int limit) const {
+    return ExecuteRead<std::vector<TasMovieRootEstablishmentAttemptRecord>>(
+        [this, limit]() { return inner_
+            ? inner_->ListTasMovieRootEstablishmentAttempts(limit)
+            : std::vector<TasMovieRootEstablishmentAttemptRecord>{}; }, {});
+}
+
 bool QueuedAnalysisDb::CreateTasMovieInputEpochAnnotationRequest(
     const CreateTasMovieInputEpochAnnotationRequestCommand& command,
     std::int64_t* request_id_out, std::string* error_out) {
@@ -316,6 +342,16 @@ QueuedAnalysisDb::FindTasMovieInputEpochRewriteAttempt(
         [this, source_job_id, sha]() { return inner_
             ? inner_->FindTasMovieInputEpochRewriteAttempt(source_job_id, sha)
             : std::nullopt; }, std::nullopt);
+}
+
+bool QueuedAnalysisDb::RecordTasMovieInputEpochRewriteCompletion(
+    const RecordTasMovieInputEpochRewriteCompletionCommand& command,
+    RecordTasMovieInputEpochRewriteCompletionReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>([this, command, receipt_out, error_out]() {
+        return inner_ && inner_->RecordTasMovieInputEpochRewriteCompletion(
+            command, receipt_out, error_out);
+    }, false, error_out);
 }
 
 std::optional<std::int64_t> QueuedAnalysisDb::LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const {

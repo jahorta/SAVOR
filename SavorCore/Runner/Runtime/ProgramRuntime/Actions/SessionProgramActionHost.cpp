@@ -725,6 +725,23 @@ bool AddInputExecutionBindingResult(
             EncodeInputFrame(binding.frame));
 }
 
+std::uint64_t EncodeGuestPadStatusSample(
+    const savor::GCInputFrame& frame) noexcept
+{
+    const auto stick = [](std::uint8_t value) {
+        return static_cast<std::uint8_t>(
+            static_cast<std::int8_t>(
+                static_cast<int>(value) - 128));
+    };
+    return (static_cast<std::uint64_t>(frame.buttons) << 48u) |
+        (static_cast<std::uint64_t>(stick(frame.main_x)) << 40u) |
+        (static_cast<std::uint64_t>(stick(frame.main_y)) << 32u) |
+        (static_cast<std::uint64_t>(stick(frame.c_x)) << 24u) |
+        (static_cast<std::uint64_t>(stick(frame.c_y)) << 16u) |
+        (static_cast<std::uint64_t>(frame.trig_l) << 8u) |
+        frame.trig_r;
+}
+
 std::optional<InputExecutionBindingEvidence>
 InputExecutionBindingEvidenceFromPayload(
     const CanonicalActionPayload& payload)
@@ -1491,14 +1508,16 @@ bool DecodeTypedCanonicalRequest(
         bool binding = false;
         bool playback = false;
         bool expected_count = false;
+        std::uint64_t required_occurrences = 0;
+        bool verify_bound_input = false;
         const auto* points = bytes(
             0,
             CanonicalRuntimeSchema::SemanticPointSet);
         const auto* config = bytes(
-            4,
+            6,
             CanonicalRuntimeSchema::
                 ContinueUntilStaticConfig);
-        if (record->fields.size() != 5 ||
+        if (record->fields.size() != 7 ||
             !points ||
             !DecodeStopGroupConfig(
                 *points,
@@ -1518,6 +1537,20 @@ bool DecodeTypedCanonicalRequest(
                     OptionalMovieInputCount,
                 Field::ExpectedMovieInputCount,
                 expected_count) ||
+            !u64(4, required_occurrences) ||
+            required_occurrences == 0 ||
+            required_occurrences > std::numeric_limits<std::uint32_t>::max() ||
+            !payload.AddUnsigned(
+                Field::RequiredOccurrences,
+                required_occurrences) ||
+            !ScalarValue(
+                graph,
+                record->fields[5],
+                verify_bound_input) ||
+            !payload.AddBoolean(
+                Field::VerifyBoundInput,
+                verify_bound_input) ||
+            (verify_bound_input && !binding) ||
             !config ||
             !DecodeContinueConfig(
                 *config,
@@ -1537,6 +1570,8 @@ bool DecodeTypedCanonicalRequest(
                     ? "ContinueUntil expected input count requires an exact playback session"
                     : playback
                     ? "ContinueUntil playback ownership requires static movie policy Ignore"
+                    : verify_bound_input && !binding
+                    ? "ContinueUntil bound-input verification requires an input binding"
                     : "ContinueUntilRequest is malformed";
             }
             return false;
@@ -2153,13 +2188,17 @@ ProgramValueGraph ContinueUntilResultGraph(
     const ProgramValueId vi_count = add(
         TypeRef::Builtin(BuiltinType::U64),
         terminal.evidence.vi_count);
+    const ProgramValueId completed_count = add(
+        TypeRef::Builtin(BuiltinType::U64),
+        static_cast<std::uint64_t>(terminal.completed_count));
     const ProgramValueId epoch = add(
         TypeRef::Builtin(BuiltinType::U64),
         terminal.workset_epoch.value());
     const ProgramValueId root = add(
         CanonicalActionOutputType(
             CanonicalAction::ExecutionContinueUntil),
-        RecordValue{{reason_id, optional_stop, pc, input_count, vi_count, epoch}});
+        RecordValue{{reason_id, optional_stop, pc, input_count, vi_count,
+            completed_count, epoch}});
     return {root, std::move(values)};
 }
 
@@ -4006,6 +4045,17 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             request.invocation_id,
             request.request_id,
             request.diagnostic_selector);
+        const std::uint64_t required_occurrences =
+            UnsignedOr(payload, Field::RequiredOccurrences, 1);
+        if (required_occurrences == 0 ||
+            required_occurrences > std::numeric_limits<std::uint32_t>::max())
+        {
+            return Reject(
+                request,
+                ProgramActionResolutionStatus::Rejected,
+                "invalid_occurrence_count",
+                "ContinueUntil occurrence count is outside its bounded range");
+        }
         const std::uint64_t seed =
             ProgramStopIdentitySeed(
                 request.invocation_id,
@@ -4030,6 +4080,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                     "invalid_stop_route",
                     "ContinueUntil requires foreground-wait alternatives");
             }
+            foreground->required_occurrences =
+                static_cast<std::uint32_t>(required_occurrences);
             subscription.consumer = &stop_consumer;
         }
         if (wake.subscriptions.empty() && !movie_end_only)
@@ -4042,6 +4094,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         }
         std::optional<InputExecutionRelationshipId>
             input_relationship;
+        std::optional<InputExecutionBindingEvidence> binding_evidence;
         if (payload.Contains(Field::Binding))
         {
             InputArbiter* input = session.input_arbiter();
@@ -4057,6 +4110,7 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                     "input_relationship_invalid",
                     "ContinueUntil requires a complete typed input execution binding");
             }
+            binding_evidence = binding;
             const InputExecutionRelationshipReceipt relationship =
                 input->CreateExecutionRelationship(*binding);
             if (!relationship.ok)
@@ -4068,6 +4122,37 @@ SessionProgramActionHost::Impl::InvokeCanonical(
                     relationship.message);
             }
             input_relationship = relationship.relationship;
+        }
+        if (BooleanOr(payload, Field::VerifyBoundInput, false))
+        {
+            if (!binding_evidence)
+            {
+                return Reject(
+                    request,
+                    ProgramActionResolutionStatus::Rejected,
+                    "input_verification_unavailable",
+                    "ContinueUntil bound-input verification requires binding evidence");
+            }
+            const std::uint32_t descriptor =
+                capabilities::kTasMovieReceivedPadStatusSampleDescriptorId;
+            const std::uint64_t expected =
+                EncodeGuestPadStatusSample(binding_evidence->frame);
+            for (StopSubscriptionDefinition& subscription :
+                wake.subscriptions)
+            {
+                if (!std::ranges::contains(
+                        subscription.sample_descriptor_ids,
+                        descriptor))
+                {
+                    subscription.sample_descriptor_ids.push_back(descriptor);
+                }
+                auto& foreground =
+                    std::get<ForegroundStopWait>(subscription.route);
+                foreground.sample_expectation =
+                    ForegroundStopWait::SampleExpectation{
+                        descriptor,
+                        expected};
+            }
         }
         std::optional<std::uint64_t> expected_movie_input_count;
         if (const auto expected = payload.Unsigned(

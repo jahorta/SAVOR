@@ -1690,6 +1690,12 @@ ProgramValueId Continue(
     ProgramScopeId scope,
     std::string selector)
 {
+    const ProgramValueId one_occurrence = ConstantU64(
+        builder, function, block, 1, selector + "/one-occurrence", scope);
+    const ProgramValueId no_verify = Constant(
+        builder, function, block,
+        LiteralValue{TypeRef::Builtin(BuiltinType::Bool), false},
+        selector + "/no-bound-input-verification", scope);
     const ProgramValueId request = Construct(
         builder,
         function,
@@ -1701,6 +1707,8 @@ ProgramValueId Continue(
             no_publication,
             playback,
             expected_count,
+            one_occurrence,
+            no_verify,
             config,
         },
         selector + "/request",

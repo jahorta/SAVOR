@@ -821,6 +821,7 @@ RehydratePackagePreviewResult SqliteRehydrateExecutor::PreviewPackage(const Rehy
         {"analysis_tas_movie_input_epoch_annotation_attempts", "$.annotation_attempt_id", "analysis_tas_movie_input_epoch_annotation_attempt", "tmv_input_epoch_annotation_attempt", "annotation_attempt_id", analysis_db_},
         {"analysis_tas_movie_input_epoch_rewrite_requests", "$.rewrite_request_id", "analysis_tas_movie_input_epoch_rewrite_request", "tmv_input_epoch_rewrite_request", "rewrite_request_id", analysis_db_},
         {"analysis_tas_movie_input_epoch_rewrite_attempts", "$.rewrite_attempt_id", "analysis_tas_movie_input_epoch_rewrite_attempt", "tmv_input_epoch_rewrite_attempt", "rewrite_attempt_id", analysis_db_},
+        {"analysis_tas_movie_root_establishment_attempts", "$.root_establishment_attempt_id", "analysis_tas_movie_root_establishment_attempt", "tmv_root_establishment_attempt", "root_establishment_attempt_id", analysis_db_},
     };
     ScanCollisionRules(spec, rules, &result.blocking_reasons);
 
@@ -2519,81 +2520,95 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
 
             restore_stream("analysis_tas_movie_input_epoch_annotation_attempts",
                 [&](const std::string& line) {
-                    bool ok_id=false,ok_request=false,ok_job=false,ok_schedule=false;
+                    bool ok_id=false,ok_request=false,ok_rewrite=false,ok_source=false;
+                    bool ok_job=false,ok_schedule=false;
                     const auto old_id=JsonExtractInt(analysis_db_,line,"$.annotation_attempt_id",&ok_id);
                     const auto old_request=JsonExtractInt(analysis_db_,line,"$.annotation_request_id",&ok_request);
+                    const auto old_rewrite=JsonExtractInt(analysis_db_,line,"$.rewrite_request_id",&ok_rewrite);
+                    const auto old_source=JsonExtractInt(analysis_db_,line,"$.source_dtm_artifact_id",&ok_source);
                     const auto old_job=JsonExtractInt(analysis_db_,line,"$.source_job_id",&ok_job);
                     const auto old_schedule=JsonExtractInt(analysis_db_,line,"$.schedule_artifact_id",&ok_schedule);
-                    if(!ok_id||!ok_request||!ok_job) return;
+                    if(!ok_id||!ok_source||!ok_job) return;
                     const auto new_id=map_id("analysis_tas_movie_input_epoch_annotation_attempt",old_id);
-                    const auto request=lookup_map("analysis_tas_movie_input_epoch_annotation_request",old_request);
+                    const auto request=ok_request?lookup_map("analysis_tas_movie_input_epoch_annotation_request",old_request):std::optional<std::int64_t>{};
+                    const auto rewrite=ok_rewrite?lookup_map("analysis_tas_movie_input_epoch_rewrite_request",old_rewrite):std::optional<std::int64_t>{};
+                    const auto source=lookup_map("state_artifact",old_source);
                     const auto job=lookup_map("job",old_job).value_or(old_job);
                     const auto schedule=ok_schedule?lookup_map("state_artifact",old_schedule):std::optional<std::int64_t>{};
-                    if(new_id==0||!request||(ok_schedule&&!schedule)){db_error="input-epoch annotation attempt mapping is missing";return;}
+                    if(new_id==0||!source||(ok_request&&!request)||(ok_rewrite&&!rewrite)||(ok_schedule&&!schedule)){db_error="input-epoch annotation attempt mapping is missing";return;}
                     Statement st;
                     if(!Prepare(analysis_db_,
-                        "INSERT INTO tmv_input_epoch_annotation_attempt(annotation_attempt_id,annotation_request_id,source_job_id,worker_terminal_sha256,succeeded,schedule_artifact_id,schedule_sha256,source_poll_count,epoch_count,final_cursor,divergence_epoch,divergence_cursor,failure_code,failure_text,worker_id,worker_process_generation,workset_epoch,recorded_at_utc) VALUES(?1,?2,?3,json_extract(?4,'$.worker_terminal_sha256'),json_extract(?4,'$.succeeded'),?5,json_extract(?4,'$.schedule_sha256'),json_extract(?4,'$.source_poll_count'),json_extract(?4,'$.epoch_count'),json_extract(?4,'$.final_cursor'),json_extract(?4,'$.divergence_epoch'),json_extract(?4,'$.divergence_cursor'),json_extract(?4,'$.failure_code'),json_extract(?4,'$.failure_text'),json_extract(?4,'$.worker_id'),json_extract(?4,'$.worker_process_generation'),json_extract(?4,'$.workset_epoch'),json_extract(?4,'$.recorded_at_utc'));",
+                        "INSERT INTO tmv_input_epoch_annotation_attempt(annotation_attempt_id,producer_kind,annotation_request_id,rewrite_request_id,source_dtm_artifact_id,source_dtm_sha256,source_job_id,worker_terminal_sha256,succeeded,schedule_artifact_id,schedule_sha256,source_poll_count,epoch_count,final_cursor,divergence_epoch,divergence_cursor,failure_code,failure_text,worker_id,worker_process_generation,workset_epoch,recorded_at_utc) VALUES(?1,json_extract(?2,'$.producer_kind'),?3,?4,?5,json_extract(?2,'$.source_dtm_sha256'),?6,json_extract(?2,'$.worker_terminal_sha256'),json_extract(?2,'$.succeeded'),?7,json_extract(?2,'$.schedule_sha256'),json_extract(?2,'$.source_poll_count'),json_extract(?2,'$.epoch_count'),json_extract(?2,'$.final_cursor'),json_extract(?2,'$.divergence_epoch'),json_extract(?2,'$.divergence_cursor'),json_extract(?2,'$.failure_code'),json_extract(?2,'$.failure_text'),json_extract(?2,'$.worker_id'),json_extract(?2,'$.worker_process_generation'),json_extract(?2,'$.workset_epoch'),json_extract(?2,'$.recorded_at_utc'));",
                         &st,&db_error)) return;
                     sqlite3_bind_int64(st.st,1,new_id);
-                    sqlite3_bind_int64(st.st,2,*request);
-                    sqlite3_bind_int64(st.st,3,job);
-                    sqlite3_bind_text(st.st,4,line.c_str(),-1,SQLITE_TRANSIENT);
-                    bind_optional_int64(st.st,5,schedule);
+                    sqlite3_bind_text(st.st,2,line.c_str(),-1,SQLITE_TRANSIENT);
+                    bind_optional_int64(st.st,3,request);
+                    bind_optional_int64(st.st,4,rewrite);
+                    sqlite3_bind_int64(st.st,5,*source);
+                    sqlite3_bind_int64(st.st,6,job);
+                    bind_optional_int64(st.st,7,schedule);
                     StepDone(analysis_db_,st.st,&db_error);
                 });
 
             restore_stream("analysis_tas_movie_input_epoch_rewrite_requests",
                 [&](const std::string& line) {
-                    bool ok_id=false,ok_workflow=false,ok_step=false,ok_annotation=false;
+                    bool ok_id=false,ok_workflow=false,ok_step=false,ok_annotation=false,ok_root=false;
                     bool ok_source=false,ok_schedule=false;
                     const auto old_id=JsonExtractInt(analysis_db_,line,"$.rewrite_request_id",&ok_id);
                     const auto old_workflow=JsonExtractInt(analysis_db_,line,"$.workflow_instance_id",&ok_workflow);
                     const auto old_step=JsonExtractInt(analysis_db_,line,"$.workflow_step_id",&ok_step);
                     const auto old_annotation=JsonExtractInt(analysis_db_,line,"$.annotation_attempt_id",&ok_annotation);
+                    const auto old_root=JsonExtractInt(analysis_db_,line,"$.root_establishment_attempt_id",&ok_root);
                     const auto old_source=JsonExtractInt(analysis_db_,line,"$.source_dtm_artifact_id",&ok_source);
                     const auto old_schedule=JsonExtractInt(analysis_db_,line,"$.schedule_artifact_id",&ok_schedule);
-                    if(!ok_id||!ok_workflow||!ok_step||!ok_annotation||!ok_source||!ok_schedule) return;
+                    if(!ok_id||!ok_workflow||!ok_step||!ok_annotation||!ok_root||!ok_source||!ok_schedule) return;
                     const auto new_id=map_id("analysis_tas_movie_input_epoch_rewrite_request",old_id);
                     const auto workflow=lookup_map("workflow_instance",old_workflow);
                     const auto step=lookup_map("workflow_step",old_step);
                     const auto annotation=lookup_map("analysis_tas_movie_input_epoch_annotation_attempt",old_annotation);
+                    const auto root=lookup_map("analysis_tas_movie_root_establishment_attempt",old_root);
                     const auto source=lookup_map("state_artifact",old_source);
                     const auto schedule=lookup_map("state_artifact",old_schedule);
-                    if(new_id==0||!workflow||!step||!annotation||!source||!schedule){db_error="input-epoch rewrite request mapping is missing";return;}
+                    if(new_id==0||!workflow||!step||!annotation||!root||!source||!schedule){db_error="input-epoch rewrite request mapping is missing";return;}
                     const auto key=spec.target_namespace+":rehydrate:tmv-input-epoch-rewrite:"+std::to_string(old_id);
                     Statement st;
                     if(!Prepare(analysis_db_,
-                        "INSERT INTO tmv_input_epoch_rewrite_request(rewrite_request_id,materialization_key,workflow_instance_id,workflow_step_id,annotation_attempt_id,source_dtm_artifact_id,source_dtm_sha256,schedule_artifact_id,schedule_sha256,insert_before_epoch,neutral_epoch_count,placement_profile,full_phase_program_kind,full_phase_program_version,full_phase_canonical_id,full_phase_contract_revision,full_phase_sha256,module_canonical_id,module_revision,module_sha256,created_at_utc) VALUES(?1,?2,?3,?4,?5,?6,json_extract(?7,'$.source_dtm_sha256'),?8,json_extract(?7,'$.schedule_sha256'),json_extract(?7,'$.insert_before_epoch'),json_extract(?7,'$.neutral_epoch_count'),json_extract(?7,'$.placement_profile'),json_extract(?7,'$.full_phase_program_kind'),json_extract(?7,'$.full_phase_program_version'),json_extract(?7,'$.full_phase_canonical_id'),json_extract(?7,'$.full_phase_contract_revision'),json_extract(?7,'$.full_phase_sha256'),json_extract(?7,'$.module_canonical_id'),json_extract(?7,'$.module_revision'),json_extract(?7,'$.module_sha256'),json_extract(?7,'$.created_at_utc'));",
+                        "INSERT INTO tmv_input_epoch_rewrite_request(rewrite_request_id,materialization_key,workflow_instance_id,workflow_step_id,annotation_attempt_id,root_establishment_attempt_id,source_dtm_artifact_id,source_dtm_sha256,schedule_artifact_id,schedule_sha256,insert_before_epoch,neutral_epoch_count,placement_profile,full_phase_program_kind,full_phase_program_version,full_phase_canonical_id,full_phase_contract_revision,full_phase_sha256,module_canonical_id,module_revision,module_sha256,created_at_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,json_extract(?8,'$.source_dtm_sha256'),?9,json_extract(?8,'$.schedule_sha256'),json_extract(?8,'$.insert_before_epoch'),json_extract(?8,'$.neutral_epoch_count'),json_extract(?8,'$.placement_profile'),json_extract(?8,'$.full_phase_program_kind'),json_extract(?8,'$.full_phase_program_version'),json_extract(?8,'$.full_phase_canonical_id'),json_extract(?8,'$.full_phase_contract_revision'),json_extract(?8,'$.full_phase_sha256'),json_extract(?8,'$.module_canonical_id'),json_extract(?8,'$.module_revision'),json_extract(?8,'$.module_sha256'),json_extract(?8,'$.created_at_utc'));",
                         &st,&db_error)) return;
                     sqlite3_bind_int64(st.st,1,new_id);
                     sqlite3_bind_text(st.st,2,key.c_str(),-1,SQLITE_TRANSIENT);
                     sqlite3_bind_int64(st.st,3,*workflow);
                     sqlite3_bind_int64(st.st,4,*step);
                     sqlite3_bind_int64(st.st,5,*annotation);
-                    sqlite3_bind_int64(st.st,6,*source);
-                    sqlite3_bind_text(st.st,7,line.c_str(),-1,SQLITE_TRANSIENT);
-                    sqlite3_bind_int64(st.st,8,*schedule);
+                    sqlite3_bind_int64(st.st,6,*root);
+                    sqlite3_bind_int64(st.st,7,*source);
+                    sqlite3_bind_text(st.st,8,line.c_str(),-1,SQLITE_TRANSIENT);
+                    sqlite3_bind_int64(st.st,9,*schedule);
                     StepDone(analysis_db_,st.st,&db_error);
                 });
 
             restore_stream("analysis_tas_movie_input_epoch_rewrite_attempts",
                 [&](const std::string& line) {
-                    bool ok_id=false,ok_request=false,ok_job=false,ok_dtm=false,ok_state=false;
+                    bool ok_id=false,ok_request=false,ok_job=false,ok_dtm=false,ok_state=false,ok_annotation=false,ok_root=false;
                     const auto old_id=JsonExtractInt(analysis_db_,line,"$.rewrite_attempt_id",&ok_id);
                     const auto old_request=JsonExtractInt(analysis_db_,line,"$.rewrite_request_id",&ok_request);
                     const auto old_job=JsonExtractInt(analysis_db_,line,"$.source_job_id",&ok_job);
                     const auto old_dtm=JsonExtractInt(analysis_db_,line,"$.rewritten_dtm_artifact_id",&ok_dtm);
                     const auto old_state=JsonExtractInt(analysis_db_,line,"$.endpoint_savestate_id",&ok_state);
+                    const auto old_annotation=JsonExtractInt(analysis_db_,line,"$.produced_annotation_attempt_id",&ok_annotation);
+                    const auto old_root=JsonExtractInt(analysis_db_,line,"$.produced_root_establishment_attempt_id",&ok_root);
                     if(!ok_id||!ok_request||!ok_job) return;
                     const auto new_id=map_id("analysis_tas_movie_input_epoch_rewrite_attempt",old_id);
                     const auto request=lookup_map("analysis_tas_movie_input_epoch_rewrite_request",old_request);
                     const auto job=lookup_map("job",old_job).value_or(old_job);
                     const auto dtm=ok_dtm?lookup_map("state_artifact",old_dtm):std::optional<std::int64_t>{};
                     const auto state=ok_state?lookup_map("state_savestate",old_state):std::optional<std::int64_t>{};
-                    if(new_id==0||!request||(ok_dtm&&!dtm)||(ok_state&&!state)){db_error="input-epoch rewrite attempt mapping is missing";return;}
+                    const auto annotation=ok_annotation?lookup_map("analysis_tas_movie_input_epoch_annotation_attempt",old_annotation):std::optional<std::int64_t>{};
+                    const auto root=ok_root?lookup_map("analysis_tas_movie_root_establishment_attempt",old_root):std::optional<std::int64_t>{};
+                    if(new_id==0||!request||(ok_dtm&&!dtm)||(ok_state&&!state)||(ok_annotation&&!annotation)||(ok_root&&!root)){db_error="input-epoch rewrite attempt mapping is missing";return;}
                     Statement st;
                     if(!Prepare(analysis_db_,
-                        "INSERT INTO tmv_input_epoch_rewrite_attempt(rewrite_attempt_id,rewrite_request_id,source_job_id,worker_terminal_sha256,succeeded,rewritten_dtm_artifact_id,rewritten_dtm_sha256,endpoint_savestate_id,source_epoch_count,rewritten_epoch_count,final_movie_input_count,divergence_epoch,divergence_cursor,failure_code,failure_text,worker_id,worker_process_generation,workset_epoch,recorded_at_utc) VALUES(?1,?2,?3,json_extract(?4,'$.worker_terminal_sha256'),json_extract(?4,'$.succeeded'),?5,json_extract(?4,'$.rewritten_dtm_sha256'),?6,json_extract(?4,'$.source_epoch_count'),json_extract(?4,'$.rewritten_epoch_count'),json_extract(?4,'$.final_movie_input_count'),json_extract(?4,'$.divergence_epoch'),json_extract(?4,'$.divergence_cursor'),json_extract(?4,'$.failure_code'),json_extract(?4,'$.failure_text'),json_extract(?4,'$.worker_id'),json_extract(?4,'$.worker_process_generation'),json_extract(?4,'$.workset_epoch'),json_extract(?4,'$.recorded_at_utc'));",
+                        "INSERT INTO tmv_input_epoch_rewrite_attempt(rewrite_attempt_id,rewrite_request_id,source_job_id,worker_terminal_sha256,succeeded,rewritten_dtm_artifact_id,rewritten_dtm_sha256,endpoint_savestate_id,produced_annotation_attempt_id,produced_root_establishment_attempt_id,source_epoch_count,rewritten_epoch_count,final_movie_input_count,divergence_epoch,divergence_cursor,failure_code,failure_text,worker_id,worker_process_generation,workset_epoch,recorded_at_utc) VALUES(?1,?2,?3,json_extract(?4,'$.worker_terminal_sha256'),json_extract(?4,'$.succeeded'),?5,json_extract(?4,'$.rewritten_dtm_sha256'),?6,?7,?8,json_extract(?4,'$.source_epoch_count'),json_extract(?4,'$.rewritten_epoch_count'),json_extract(?4,'$.final_movie_input_count'),json_extract(?4,'$.divergence_epoch'),json_extract(?4,'$.divergence_cursor'),json_extract(?4,'$.failure_code'),json_extract(?4,'$.failure_text'),json_extract(?4,'$.worker_id'),json_extract(?4,'$.worker_process_generation'),json_extract(?4,'$.workset_epoch'),json_extract(?4,'$.recorded_at_utc'));",
                         &st,&db_error)) return;
                     sqlite3_bind_int64(st.st,1,new_id);
                     sqlite3_bind_int64(st.st,2,*request);
@@ -2601,6 +2616,43 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     sqlite3_bind_text(st.st,4,line.c_str(),-1,SQLITE_TRANSIENT);
                     bind_optional_int64(st.st,5,dtm);
                     bind_optional_int64(st.st,6,state);
+                    bind_optional_int64(st.st,7,annotation);
+                    bind_optional_int64(st.st,8,root);
+                    StepDone(analysis_db_,st.st,&db_error);
+                });
+
+            restore_stream("analysis_tas_movie_root_establishment_attempts",
+                [&](const std::string& line) {
+                    bool ok_id=false,ok_validation=false,ok_rewrite=false,ok_parent=false;
+                    bool ok_source=false,ok_itinerary=false,ok_job=false;
+                    const auto old_id=JsonExtractInt(analysis_db_,line,"$.root_establishment_attempt_id",&ok_id);
+                    const auto old_validation=JsonExtractInt(analysis_db_,line,"$.validation_attempt_id",&ok_validation);
+                    const auto old_rewrite=JsonExtractInt(analysis_db_,line,"$.rewrite_request_id",&ok_rewrite);
+                    const auto old_parent=JsonExtractInt(analysis_db_,line,"$.parent_root_establishment_attempt_id",&ok_parent);
+                    const auto old_source=JsonExtractInt(analysis_db_,line,"$.source_dtm_artifact_id",&ok_source);
+                    const auto old_itinerary=JsonExtractInt(analysis_db_,line,"$.itinerary_artifact_id",&ok_itinerary);
+                    const auto old_job=JsonExtractInt(analysis_db_,line,"$.source_job_id",&ok_job);
+                    if(!ok_id||!ok_source||!ok_itinerary||!ok_job)return;
+                    const auto new_id=map_id("analysis_tas_movie_root_establishment_attempt",old_id);
+                    const auto validation=ok_validation?lookup_map("analysis_tas_movie_validation_attempt",old_validation):std::optional<std::int64_t>{};
+                    const auto rewrite=ok_rewrite?lookup_map("analysis_tas_movie_input_epoch_rewrite_request",old_rewrite):std::optional<std::int64_t>{};
+                    const auto parent=ok_parent?lookup_map("analysis_tas_movie_root_establishment_attempt",old_parent):std::optional<std::int64_t>{};
+                    const auto source=lookup_map("state_artifact",old_source);
+                    const auto itinerary=lookup_map("state_artifact",old_itinerary);
+                    const auto job=lookup_map("job",old_job).value_or(old_job);
+                    if(new_id==0||!source||!itinerary||(ok_validation&&!validation)||(ok_rewrite&&!rewrite)||(ok_parent&&!parent)){db_error="root establishment mapping is missing";return;}
+                    Statement st;
+                    if(!Prepare(analysis_db_,
+                        "INSERT INTO tmv_root_establishment_attempt(root_establishment_attempt_id,producer_kind,validation_attempt_id,rewrite_request_id,parent_root_establishment_attempt_id,source_dtm_artifact_id,source_dtm_sha256,itinerary_artifact_id,itinerary_sha256,root_pc,movie_input_cursor,source_job_id,worker_terminal_sha256,recorded_at_utc) VALUES(?1,json_extract(?2,'$.producer_kind'),?3,?4,?5,?6,json_extract(?2,'$.source_dtm_sha256'),?7,json_extract(?2,'$.itinerary_sha256'),json_extract(?2,'$.root_pc'),json_extract(?2,'$.movie_input_cursor'),?8,json_extract(?2,'$.worker_terminal_sha256'),json_extract(?2,'$.recorded_at_utc'));",
+                        &st,&db_error))return;
+                    sqlite3_bind_int64(st.st,1,new_id);
+                    sqlite3_bind_text(st.st,2,line.c_str(),-1,SQLITE_TRANSIENT);
+                    bind_optional_int64(st.st,3,validation);
+                    bind_optional_int64(st.st,4,rewrite);
+                    bind_optional_int64(st.st,5,parent);
+                    sqlite3_bind_int64(st.st,6,*source);
+                    sqlite3_bind_int64(st.st,7,*itinerary);
+                    sqlite3_bind_int64(st.st,8,job);
                     StepDone(analysis_db_,st.st,&db_error);
                 });
 
@@ -2611,9 +2663,9 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 const auto source_kind = JsonExtractText(analysis_db_, line, "$.source_kind", &ok_kind);
                 if (!ok_id || !ok_source || !ok_kind || source_kind != "ROOT_ESTABLISHMENT") return;
                 const auto request_id = lookup_map("analysis_tas_movie_validation_request", old_id);
-                const auto source = lookup_map("analysis_tas_movie_validation_attempt", old_source);
+                const auto source = lookup_map("analysis_tas_movie_root_establishment_attempt", old_source);
                 if (!request_id || !source) {
-                    db_error = "root-validation establishment attempt mapping is missing";
+                    db_error = "root-validation establishment authority mapping is missing";
                     return;
                 }
                 Statement st;
@@ -3538,6 +3590,10 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 if (ref_kind == "analysis.tas_movie_input_epoch_rewrite_attempt_id"
                     || ref_kind == "tmv_input_epoch_rewrite_attempt") {
                     return lookup_map("analysis_tas_movie_input_epoch_rewrite_attempt", old_id);
+                }
+                if (ref_kind == "analysis.tas_movie_root_establishment_attempt_id"
+                    || ref_kind == "tmv_root_establishment_attempt") {
+                    return lookup_map("analysis_tas_movie_root_establishment_attempt", old_id);
                 }
                 if (ref_kind == "analysis.tas_movie_validation_attempt_id"
                     || ref_kind == "tmv_validation_attempt") {

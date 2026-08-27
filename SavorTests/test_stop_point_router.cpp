@@ -512,6 +512,29 @@ TEST_F(StopPointRouterFixture, RoutesByPriorityThenRegistrationOrder)
         StopSubscriptionId(4));
 }
 
+TEST_F(StopPointRouterFixture, CountedForegroundWaitBreaksOnlyOnTargetOccurrence)
+{
+    RecordingStopConsumer consumer;
+    ForegroundStopWait wait;
+    wait.required_occurrences = 3;
+    auto registration = router.RegisterGroup(Group(
+        1,
+        {PcSubscription(1, 0x80001000u, consumer, wait)}));
+    ASSERT_TRUE(registration.receipt.ok) << registration.receipt.error.message;
+
+    EXPECT_FALSE(backend.InjectJitPcStop(0x80001000u).request_break);
+    EXPECT_TRUE(router.DrainIngress().empty());
+    EXPECT_FALSE(backend.InjectJitPcStop(0x80001000u).request_break);
+    EXPECT_TRUE(router.DrainIngress().empty());
+    EXPECT_TRUE(backend.InjectJitPcStop(0x80001000u).request_break);
+
+    const auto receipts = router.DrainIngress();
+    ASSERT_EQ(receipts.size(), 1u);
+    EXPECT_EQ(receipts[0].terminal, StopRouteTerminal::ForegroundMatched);
+    ASSERT_TRUE(receipts[0].event.has_value());
+    EXPECT_EQ(receipts[0].event->matched_occurrence_count, 3u);
+}
+
 TEST_F(StopPointRouterFixture, NativeHitDuringRegistrationUsesWholeOldSnapshot)
 {
     RecordingStopConsumer consumer;

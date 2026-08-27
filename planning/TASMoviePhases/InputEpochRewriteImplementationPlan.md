@@ -26,17 +26,17 @@ Both program kinds have independent immutable modules, Full Phase definitions, c
 
 Annotation replays a complete boot DTM read-only to movie end. At every post-`PADRead` stop it records only the nondecreasing movie cursor and the actual port-0 `PADStatus` written by that completed guest call, converted to the canonical controller state. The cursor is DTM annotation provenance and never supplies the received input. List order supplies the epoch ordinal and the encoded list count supplies the epoch count. Cursor jumps and repeats are accepted; malformed cursor evidence returns a precise divergence.
 
-Rewrite verifies the annotation's source hash and prefix, branches read-only playback to recording while paused, and acquires the port-0 input lease. Each output state is held across SI polling until a correlated `PadReadReturned` acknowledges that guest-input epoch. The phase inserts exactly one neutral state before the selected source epoch, then re-emits the entire source suffix.
+Rewrite verifies that its annotation and semantic root-establishment inputs name the same immutable source DTM, replays the prefix, branches playback to recording while paused, and acquires the port-0 input lease. Each output state is held across SI polling until a correlated `PadReadReturned` acknowledges that guest-input epoch. The phase inserts exactly `neutral_epoch_count` neutral states before the selected source epoch, then re-emits the entire source suffix. Equal adjacent input states are coalesced into held runs without changing guest-observed epoch count.
 
-The final source epoch is followed by deferred savestate capture and one observed neutral trailing poll before movie finalization.
+Once the final source epoch has been sampled and guest-acknowledged, the phase observes the final cursor, captures the deferred endpoint savestate, and finalizes recording while Dolphin remains paused. It does not add a trailing guest-input epoch.
 
 ## Persistence shape
 
-AnalysisTasMovie stores immutable annotation and rewrite requests plus idempotent attempts keyed by execution job and terminal SHA. Records preserve workflow/step/job identity, source and schedule hashes, insertion ordinal, output artifact IDs, endpoint savestate ID, counts, worker provenance, and divergence diagnostics.
+AnalysisTasMovie stores immutable annotation, semantic root-establishment, and rewrite authorities plus idempotent attempts keyed by execution job and terminal SHA. Annotation and root authorities identify their producer as `ANNOTATE`/`REVISE` and `ESTABLISH`/`REVISE`. Records preserve workflow/step/job identity, exact source and itinerary hashes, observed root PC and child movie cursor, insertion ordinal/count, output artifact IDs, endpoint savestate ID, worker provenance, and divergence diagnostics.
 
 State stores schedules, rewritten DTMs, and endpoint savestates. A successful rewrite endpoint is complete, `MOVIE_PAIRED`, and references the exact rewritten DTM artifact.
 
-Archive closure and rehydration include the four request/attempt streams and all referenced source, schedule, DTM, and savestate records.
+Archive closure and rehydration include request/attempt streams, root authorities, chain parents, and all referenced source, schedule, itinerary, DTM, and savestate records.
 
 ## Failure and cleanup behavior
 
@@ -50,11 +50,11 @@ Archive closure and rehydration include the four request/attempt streams and all
 
 The `tasmovie_input_epoch_rewrite` scenario uses one worker and the standard complete root DTM:
 
-1. Import and annotate the source DTM.
+1. Import, establish, and annotate the source DTM.
 2. Find the final adjacent exact canonical B-only then A-only epochs.
-3. Insert neutral immediately before the B epoch.
-4. Annotate the child DTM through movie end.
-5. Compare canonical input states against `source[0..B) + Neutral + source[B..end)`.
-6. Verify the source bytes are unchanged, hashes differ, and the endpoint is paired with the exact child DTM.
+3. Revise with exact count `1` immediately before the B epoch and consume its child authorities directly.
+4. Chain a second revise with exact count `2` immediately before the shifted B epoch.
+5. Compare the first child against `source[0..B) + Neutral + source[B..end)` and the chained child against `source[0..B) + Neutral x 3 + source[B..end)`.
+6. Verify the source bytes are unchanged, hashes differ, each endpoint is paired with its exact child DTM, and no standalone child annotation or establishment workflow ran.
 
-The scenario reports insertion epoch/cursor, source and child counts, artifact IDs and hashes, endpoint savestate identity, and all three workflow IDs.
+The scenario reports insertion epoch/cursor, source and child counts, artifact IDs and hashes, endpoint identities, and the source-establish, source-annotate, and two revise workflow IDs.

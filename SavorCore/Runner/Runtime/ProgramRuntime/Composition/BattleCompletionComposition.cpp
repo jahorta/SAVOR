@@ -235,7 +235,14 @@ ProgramValueId ContinueTo(
         CanonicalRuntimeType(CanonicalRuntimeSchema::ContinueUntilStaticConfig),
         ContinueConfig(),
         selector + "/config");
-    const std::array fields{point_set, no_input, no_movie, no_count, config};
+    const auto one = Constant(builder, function, block,
+        TypeRef::Builtin(BuiltinType::U64), std::uint64_t{1},
+        selector + "/one-occurrence");
+    const auto no_verify = Constant(builder, function, block,
+        TypeRef::Builtin(BuiltinType::Bool), false,
+        selector + "/no-bound-input-verification");
+    const std::array fields{point_set, no_input, no_movie, no_count,
+        one, no_verify, config};
     const auto request = Construct(
         builder,
         function,

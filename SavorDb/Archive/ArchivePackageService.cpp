@@ -1114,8 +1114,9 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
             "WITH RECURSIVE selected(validation_request_id) AS ("
             "SELECT validation_request_id FROM tmv_validation_request WHERE workflow_instance_id IN (" + workflow_id_list + ") "
             "UNION SELECT parent.validation_request_id FROM tmv_validation_request child "
-            "JOIN tmv_validation_attempt source_attempt ON child.source_kind='ROOT_ESTABLISHMENT' "
-            "AND source_attempt.validation_attempt_id=child.source_ref_id "
+            "JOIN tmv_root_establishment_attempt source_root ON child.source_kind='ROOT_ESTABLISHMENT' "
+            "AND source_root.root_establishment_attempt_id=child.source_ref_id "
+            "JOIN tmv_validation_attempt source_attempt ON source_attempt.validation_attempt_id=source_root.validation_attempt_id "
             "JOIN tmv_validation_request parent ON parent.validation_request_id=source_attempt.validation_request_id "
             "JOIN selected current ON current.validation_request_id=child.validation_request_id) "
             "SELECT validation_request_id FROM selected ORDER BY validation_request_id;",
@@ -1167,22 +1168,48 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
         && IsTablePresent(analysis_db, "tmv_input_epoch_annotation_request", nullptr)
         && IsTablePresent(analysis_db, "tmv_input_epoch_rewrite_request", nullptr)) {
         const auto rewrite_ids = QueryInt64Column(analysis_db,
+            "WITH RECURSIVE selected(rewrite_request_id) AS ("
             "SELECT rewrite_request_id FROM tmv_input_epoch_rewrite_request WHERE workflow_instance_id IN ("
-                + workflow_id_list + ") ORDER BY rewrite_request_id;", &error);
+                + workflow_id_list + ") UNION SELECT parent_root.rewrite_request_id "
+            "FROM tmv_input_epoch_rewrite_request child JOIN selected s ON s.rewrite_request_id=child.rewrite_request_id "
+            "JOIN tmv_root_establishment_attempt parent_root ON parent_root.root_establishment_attempt_id=child.root_establishment_attempt_id "
+            "WHERE parent_root.rewrite_request_id IS NOT NULL) "
+            "SELECT rewrite_request_id FROM selected ORDER BY rewrite_request_id;", &error);
+        const auto rewrite_id_list = rewrite_ids.empty() ? std::string("0") : JoinIds(rewrite_ids);
         const auto annotation_ids = QueryInt64Column(analysis_db,
-            "SELECT annotation_request_id FROM tmv_input_epoch_annotation_request WHERE workflow_instance_id IN ("
-                + workflow_id_list + ") UNION SELECT a.annotation_request_id "
-                  "FROM tmv_input_epoch_annotation_attempt a JOIN tmv_input_epoch_rewrite_request r "
-                  "ON r.annotation_attempt_id=a.annotation_attempt_id WHERE r.workflow_instance_id IN ("
-                + workflow_id_list + ") ORDER BY annotation_request_id;", &error);
+            "SELECT a.annotation_attempt_id FROM tmv_input_epoch_annotation_attempt a "
+            "LEFT JOIN tmv_input_epoch_annotation_request r ON r.annotation_request_id=a.annotation_request_id "
+            "WHERE r.workflow_instance_id IN (" + workflow_id_list + ") "
+            "UNION SELECT annotation_attempt_id FROM tmv_input_epoch_rewrite_request WHERE rewrite_request_id IN ("
+                + rewrite_id_list + ") UNION SELECT produced_annotation_attempt_id "
+            "FROM tmv_input_epoch_rewrite_attempt WHERE rewrite_request_id IN (" + rewrite_id_list
+                + ") AND produced_annotation_attempt_id IS NOT NULL ORDER BY annotation_attempt_id;", &error);
+        const auto root_ids = QueryInt64Column(analysis_db,
+            "SELECT root_establishment_attempt_id FROM tmv_root_establishment_attempt e "
+            "JOIN tmv_validation_attempt a ON a.validation_attempt_id=e.validation_attempt_id "
+            "JOIN tmv_validation_request r ON r.validation_request_id=a.validation_request_id "
+            "WHERE r.workflow_instance_id IN (" + workflow_id_list + ") "
+            "UNION SELECT root_establishment_attempt_id FROM tmv_input_epoch_rewrite_request "
+            "WHERE rewrite_request_id IN (" + rewrite_id_list + ") "
+            "UNION SELECT produced_root_establishment_attempt_id FROM tmv_input_epoch_rewrite_attempt "
+            "WHERE rewrite_request_id IN (" + rewrite_id_list
+                + ") AND produced_root_establishment_attempt_id IS NOT NULL "
+            "ORDER BY root_establishment_attempt_id;", &error);
         if (!annotation_ids.empty()) {
             const auto ids = JoinIds(annotation_ids);
             specs.push_back({"analysis_tas_movie_input_epoch_annotation_requests",
                 "SELECT * FROM tmv_input_epoch_annotation_request WHERE annotation_request_id IN ("
-                    + ids + ") ORDER BY annotation_request_id;"});
+                "SELECT annotation_request_id FROM tmv_input_epoch_annotation_attempt WHERE annotation_attempt_id IN ("
+                    + ids + ") AND annotation_request_id IS NOT NULL) ORDER BY annotation_request_id;"});
             specs.push_back({"analysis_tas_movie_input_epoch_annotation_attempts",
-                "SELECT * FROM tmv_input_epoch_annotation_attempt WHERE annotation_request_id IN ("
+                "SELECT * FROM tmv_input_epoch_annotation_attempt WHERE annotation_attempt_id IN ("
                     + ids + ") ORDER BY annotation_attempt_id;"});
+        }
+        if (!root_ids.empty()) {
+            const auto ids = JoinIds(root_ids);
+            specs.push_back({"analysis_tas_movie_root_establishment_attempts",
+                "SELECT * FROM tmv_root_establishment_attempt WHERE root_establishment_attempt_id IN ("
+                    + ids + ") ORDER BY root_establishment_attempt_id;"});
         }
         if (!rewrite_ids.empty()) {
             const auto ids = JoinIds(rewrite_ids);
@@ -1978,7 +2005,15 @@ TasMovieArchiveClosure CollectTasMovieArchiveClosure(
                   "WHERE workflow_instance_id IN (" + workflows + ") UNION SELECT a.rewritten_dtm_artifact_id "
                   "FROM tmv_input_epoch_rewrite_attempt a JOIN tmv_input_epoch_rewrite_request r "
                   "ON r.rewrite_request_id=a.rewrite_request_id WHERE r.workflow_instance_id IN ("
-                + workflows + ") AND a.rewritten_dtm_artifact_id IS NOT NULL;", &error));
+                + workflows + ") AND a.rewritten_dtm_artifact_id IS NOT NULL "
+                  "UNION SELECT child.schedule_artifact_id FROM tmv_input_epoch_rewrite_attempt a "
+                  "JOIN tmv_input_epoch_rewrite_request r ON r.rewrite_request_id=a.rewrite_request_id "
+                  "JOIN tmv_input_epoch_annotation_attempt child ON child.annotation_attempt_id=a.produced_annotation_attempt_id "
+                  "WHERE r.workflow_instance_id IN (" + workflows + ") AND child.schedule_artifact_id IS NOT NULL "
+                  "UNION SELECT root.itinerary_artifact_id FROM tmv_input_epoch_rewrite_attempt a "
+                  "JOIN tmv_input_epoch_rewrite_request r ON r.rewrite_request_id=a.rewrite_request_id "
+                  "JOIN tmv_root_establishment_attempt root ON root.root_establishment_attempt_id=a.produced_root_establishment_attempt_id "
+                  "WHERE r.workflow_instance_id IN (" + workflows + ");", &error));
         append(&closure.savestate_ids, QueryInt64Column(analysis_db,
             "SELECT a.endpoint_savestate_id FROM tmv_input_epoch_rewrite_attempt a "
             "JOIN tmv_input_epoch_rewrite_request r ON r.rewrite_request_id=a.rewrite_request_id "
@@ -1990,8 +2025,9 @@ TasMovieArchiveClosure CollectTasMovieArchiveClosure(
         "WITH RECURSIVE selected(validation_request_id) AS ("
         "SELECT validation_request_id FROM tmv_validation_request WHERE workflow_instance_id IN (" + workflows + ") "
         "UNION SELECT parent.validation_request_id FROM tmv_validation_request child "
-        "JOIN tmv_validation_attempt source_attempt ON child.source_kind='ROOT_ESTABLISHMENT' "
-        "AND source_attempt.validation_attempt_id=child.source_ref_id "
+        "JOIN tmv_root_establishment_attempt source_root ON child.source_kind='ROOT_ESTABLISHMENT' "
+        "AND source_root.root_establishment_attempt_id=child.source_ref_id "
+        "JOIN tmv_validation_attempt source_attempt ON source_attempt.validation_attempt_id=source_root.validation_attempt_id "
         "JOIN tmv_validation_request parent ON parent.validation_request_id=source_attempt.validation_request_id "
         "JOIN selected current ON current.validation_request_id=child.validation_request_id) "
         "SELECT validation_request_id FROM selected;",

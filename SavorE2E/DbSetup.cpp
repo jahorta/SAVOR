@@ -535,7 +535,7 @@ bool SeedTasMovieWorkflow(
                         },
                         .possible_outputs = {
                             { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Validation attempt" },
-                            { .output_key = "established_root_cursor_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Established root cursor attempt" },
+                            { .output_key = "root_establishment", .data_kind = "analysis.tas_movie_root_establishment_attempt_id", .ref_kind = "tmv_root_establishment_attempt", .display_name = "Established root cursor attempt" },
                         },
                     },
                 },
@@ -681,12 +681,15 @@ bool SeedTasMovieInputEpochRewriteWorkflow(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IExecutionDb* execution_db,
     std::int64_t annotation_attempt_id,
+    std::int64_t root_establishment_attempt_id,
     std::int64_t insert_before_epoch,
+    std::int64_t neutral_epoch_count,
     std::string_view run_identity,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || execution_db == nullptr
-        || annotation_attempt_id <= 0 || insert_before_epoch < 0
+        || annotation_attempt_id <= 0 || root_establishment_attempt_id <= 0
+        || insert_before_epoch < 0 || neutral_epoch_count < 0
         || run_identity.empty()) {
         if (error_out) *error_out = "input-epoch rewrite workflow inputs are invalid";
         return false;
@@ -707,11 +710,14 @@ bool SeedTasMovieInputEpochRewriteWorkflow(
                         .display_name = "TAS Movie: Rewrite Input Epochs",
                         .inputs = {
                             { .input_key = "annotation_attempt", .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id", .ref_kind = "tmv_input_epoch_annotation_attempt", .display_name = "Source input-epoch annotation" },
+                            { .input_key = "root_establishment", .data_kind = "analysis.tas_movie_root_establishment_attempt_id", .ref_kind = "tmv_root_establishment_attempt", .display_name = "Source root establishment" },
                         },
                         .possible_outputs = {
                             { .output_key = "rewrite_attempt", .data_kind = "analysis.tas_movie_input_epoch_rewrite_attempt_id", .ref_kind = "tmv_input_epoch_rewrite_attempt", .display_name = "Input-epoch rewrite attempt" },
                             { .output_key = "rewritten_dtm", .data_kind = "state_artifact.dtm_artifact_id", .ref_kind = "state_artifact", .display_name = "Rewritten DTM" },
                             { .output_key = "rewritten_paired_savestate", .data_kind = "state.movie_paired_savestate_id", .ref_kind = "state.savestate", .display_name = "Rewritten movie-paired endpoint" },
+                            { .output_key = "annotation_attempt", .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id", .ref_kind = "tmv_input_epoch_annotation_attempt", .display_name = "Child input-epoch annotation" },
+                            { .output_key = "root_establishment", .data_kind = "analysis.tas_movie_root_establishment_attempt_id", .ref_kind = "tmv_root_establishment_attempt", .display_name = "Child root establishment" },
                         },
                     },
                 },
@@ -754,11 +760,26 @@ bool SeedTasMovieInputEpochRewriteWorkflow(
         .ref_id = annotation_attempt_id,
         .source_kind = "external",
     });
+    command.input_bindings.push_back({
+        .node_key = "rewrite_1",
+        .input_key = "root_establishment",
+        .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+        .ref_kind = "tmv_root_establishment_attempt",
+        .ref_id = root_establishment_attempt_id,
+        .source_kind = "external",
+    });
     command.arguments.push_back({
         .node_key = "rewrite_1",
         .argument_key = "insert_before_epoch",
         .value_type = "integer",
         .integer_value = insert_before_epoch,
+        .source_kind = "scenario",
+    });
+    command.arguments.push_back({
+        .node_key = "rewrite_1",
+        .argument_key = "neutral_epoch_count",
+        .value_type = "integer",
+        .integer_value = neutral_epoch_count,
         .source_kind = "scenario",
     });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
@@ -796,8 +817,8 @@ bool SeedTasMovieRootValidationWorkflow(
                         .inputs = {
                             {
                                 .input_key = "root_establishment",
-                                .data_kind = "analysis.tas_movie_validation_attempt_id",
-                                .ref_kind = "tmv_validation_attempt",
+                                .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                                .ref_kind = "tmv_root_establishment_attempt",
                                 .display_name = "Root cursor establishment",
                             },
                         },
@@ -852,8 +873,8 @@ bool SeedTasMovieRootValidationWorkflow(
     command.input_bindings.push_back({
         .node_key = "tas_validate_1",
         .input_key = "root_establishment",
-        .data_kind = "analysis.tas_movie_validation_attempt_id",
-        .ref_kind = "tmv_validation_attempt",
+        .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+        .ref_kind = "tmv_root_establishment_attempt",
         .ref_id = establishment_attempt_id,
         .source_kind = "external",
     });
@@ -901,8 +922,8 @@ bool SeedTasMovieEstablishedValidationWorkflow(
                         .inputs = {
                             {
                                 .input_key = "root_establishment",
-                                .data_kind = "analysis.tas_movie_validation_attempt_id",
-                                .ref_kind = "tmv_validation_attempt",
+                                .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                                .ref_kind = "tmv_root_establishment_attempt",
                                 .display_name = "Root cursor establishment",
                             },
                         },
@@ -996,8 +1017,8 @@ bool SeedTasMovieEstablishedValidationWorkflow(
     command.input_bindings.push_back({
         .node_key = "tas_validate_1",
         .input_key = "root_establishment",
-        .data_kind = "analysis.tas_movie_validation_attempt_id",
-        .ref_kind = "tmv_validation_attempt",
+        .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+        .ref_kind = "tmv_root_establishment_attempt",
         .ref_id = establishment_attempt_id,
         .source_kind = "external",
     });
@@ -1052,7 +1073,7 @@ bool SeedTasMovieSterileWorkflow(
                         },
                         .possible_outputs = {
                             { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Validation attempt" },
-                            { .output_key = "established_root_cursor_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Established root cursor attempt" },
+                            { .output_key = "root_establishment", .data_kind = "analysis.tas_movie_root_establishment_attempt_id", .ref_kind = "tmv_root_establishment_attempt", .display_name = "Established root cursor attempt" },
                         },
                     },
                     {
@@ -1062,8 +1083,8 @@ bool SeedTasMovieSterileWorkflow(
                         .inputs = {
                             {
                                 .input_key = "root_establishment",
-                                .data_kind = "analysis.tas_movie_validation_attempt_id",
-                                .ref_kind = "tmv_validation_attempt",
+                                .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                                .ref_kind = "tmv_root_establishment_attempt",
                                 .display_name = "Root cursor establishment",
                             },
                         },
@@ -1092,7 +1113,7 @@ bool SeedTasMovieSterileWorkflow(
                 .edges = {
                     {
                         .from_node_key = "tas_establish_1",
-                        .output_key = "established_root_cursor_attempt",
+                        .output_key = "root_establishment",
                         .to_node_key = "tas_validate_1",
                         .input_key = "root_establishment",
                         .guard_kind = std::string(savor::db::kWorkflowOutputPresentGuard),
@@ -1237,7 +1258,7 @@ bool SeedTasMovieSeedProbeWorkflow(
                         },
                         .possible_outputs = {
                             { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Validation attempt" },
-                            { .output_key = "established_root_cursor_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Established root cursor attempt" },
+                            { .output_key = "root_establishment", .data_kind = "analysis.tas_movie_root_establishment_attempt_id", .ref_kind = "tmv_root_establishment_attempt", .display_name = "Established root cursor attempt" },
                         },
                     },
                     {
@@ -1247,8 +1268,8 @@ bool SeedTasMovieSeedProbeWorkflow(
                         .inputs = {
                             {
                                 .input_key = "root_establishment",
-                                .data_kind = "analysis.tas_movie_validation_attempt_id",
-                                .ref_kind = "tmv_validation_attempt",
+                                .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                                .ref_kind = "tmv_root_establishment_attempt",
                                 .display_name = "Root cursor establishment",
                             },
                         },
@@ -1295,7 +1316,7 @@ bool SeedTasMovieSeedProbeWorkflow(
                 .edges = {
                     {
                         .from_node_key = "tas_establish_1",
-                        .output_key = "established_root_cursor_attempt",
+                        .output_key = "root_establishment",
                         .to_node_key = "tas_validate_1",
                         .input_key = "root_establishment",
                         .guard_kind = std::string(savor::db::kWorkflowOutputPresentGuard),

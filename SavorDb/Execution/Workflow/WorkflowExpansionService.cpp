@@ -122,13 +122,12 @@ bool BindInt64(sqlite3_stmt* statement, int index,
 
 } // namespace
 
-std::vector<WorkflowExpansionTarget> NormalizeFirstBattleExpansionTargets(
+std::vector<WorkflowExpansionTarget> NormalizeExactFirstBattleExpansionTargets(
     const std::vector<WorkflowExpansionTarget>& requested) {
     std::set<WorkflowExpansionTarget> normalized;
     for (const auto& target : requested) {
         if (target.rtc_value < 0 || target.neutral_epoch_count < 0) continue;
-        for (std::int64_t delay = 0; delay <= target.neutral_epoch_count; ++delay)
-            normalized.insert({delay, target.rtc_value});
+        normalized.insert(target);
     }
     return {normalized.begin(), normalized.end()};
 }
@@ -245,12 +244,13 @@ bool WorkflowExpansionService::Create(
             return false;
         }
         for (std::int64_t rtc = *request.rtc_min;; ++rtc) {
-            targets.push_back({request.max_neutral_epochs, rtc});
+            for (std::int64_t delay = 0; delay <= request.max_neutral_epochs; ++delay)
+                targets.push_back({delay, rtc});
             if (rtc == *request.rtc_max) break;
         }
-        targets = NormalizeFirstBattleExpansionTargets(targets);
+        targets = NormalizeExactFirstBattleExpansionTargets(targets);
     } else if (first) {
-        targets = NormalizeFirstBattleExpansionTargets(targets);
+        targets = NormalizeExactFirstBattleExpansionTargets(targets);
     } else {
         if (!inherited_rtc) return false;
         targets.clear();
@@ -609,8 +609,7 @@ bool WorkflowExpansionService::LaunchMissingFirstBattleCoverage(
         if (target.rtc_value >= 0 && target.neutral_epoch_count >= 0)
             requested_unique.insert(target);
     receipt.requested_count = static_cast<std::int64_t>(requested_unique.size());
-    const auto normalized = NormalizeFirstBattleExpansionTargets(request.targets);
-    receipt.implied_count = static_cast<std::int64_t>(normalized.size()) - receipt.requested_count;
+    const auto normalized = NormalizeExactFirstBattleExpansionTargets(request.targets);
     if (normalized.empty()) {
         if (error_out) *error_out = "no valid first-battle coverage targets were selected";
         return false;
@@ -782,7 +781,7 @@ bool WorkflowExpansionService::Advance(
         if (source->state == "COMPLETED")
             source_attempt = Output(execution_, source->workflow_instance_id,
                 "tas_movie_establish_root_cursor_standalone",
-                "established_root_cursor_attempt", "tmv_validation_attempt");
+                "root_establishment", "tmv_root_establishment_attempt");
         if (!source_attempt) return true;
         if (sqlite3_prepare_v2(db_,
             "UPDATE exec_workflow_expansion SET source_establishment_attempt_id=?2,updated_at_utc=?3 WHERE workflow_expansion_id=?1;",
@@ -804,7 +803,7 @@ bool WorkflowExpansionService::Advance(
         const auto rtc = target.rtc_value;
         if (!launch("1st battle RTC", "RTC_BATTLE", 0, rtc,
             {{"tas_movie_validate_root_1","root_establishment",
-              "analysis.tas_movie_validation_attempt_id","tmv_validation_attempt",*source_attempt,"expansion"}},
+              "analysis.tas_movie_root_establishment_attempt_id","tmv_root_establishment_attempt",*source_attempt,"expansion"}},
             {{"tas_movie_validate_root_1","rtc","integer",rtc,std::nullopt,"expansion"}})) return false;
     }
 
@@ -830,28 +829,30 @@ bool WorkflowExpansionService::Advance(
     for (const auto delay : delays) {
         const auto production = FindMember(refreshed, "DELAY_PRODUCTION", delay);
         if (!production) {
-            if (!launch("TAS Movie Expansion: Revise and Establish", "DELAY_PRODUCTION",
+            if (!launch("TAS Movie Expansion: Revise", "DELAY_PRODUCTION",
                 delay, std::nullopt,
                 {{"tas_movie_revise_1","annotation_attempt",
                   "analysis.tas_movie_input_epoch_annotation_attempt_id",
-                  "tmv_input_epoch_annotation_attempt",*annotation_attempt,"expansion"}},
+                  "tmv_input_epoch_annotation_attempt",*annotation_attempt,"expansion"},
+                 {"tas_movie_revise_1","root_establishment",
+                  "analysis.tas_movie_root_establishment_attempt_id",
+                  "tmv_root_establishment_attempt",*source_attempt,"expansion"}},
                 {{"tas_movie_revise_1","neutral_epoch_count","integer",delay,std::nullopt,"expansion"},
                  {"tas_movie_revise_1","placement_profile","choice",std::nullopt,
-                  std::string("first_battle.final_dialog"),"expansion"},
-                 {"tas_movie_establish_root_cursor_2","rtc","integer",*establishment_rtc,std::nullopt,"expansion"}})) return false;
+                  std::string("first_battle.final_dialog"),"expansion"}})) return false;
             continue;
         }
         if (production->state != "COMPLETED") continue;
         const auto revised_attempt = Output(execution_, production->workflow_instance_id,
-            "tas_movie_establish_root_cursor_2", "established_root_cursor_attempt",
-            "tmv_validation_attempt");
+            "tas_movie_revise_1", "root_establishment",
+            "tmv_root_establishment_attempt");
         if (!revised_attempt) continue;
         for (const auto& target : refreshed.targets) {
             if (target.neutral_epoch_count != delay) continue;
             const auto rtc = target.rtc_value;
             if (!launch("1st battle RTC", "RTC_BATTLE", delay, rtc,
                 {{"tas_movie_validate_root_1","root_establishment",
-                  "analysis.tas_movie_validation_attempt_id","tmv_validation_attempt",*revised_attempt,"expansion"}},
+                  "analysis.tas_movie_root_establishment_attempt_id","tmv_root_establishment_attempt",*revised_attempt,"expansion"}},
                 {{"tas_movie_validate_root_1","rtc","integer",rtc,std::nullopt,"expansion"}})) return false;
         }
     }

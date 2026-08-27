@@ -645,7 +645,12 @@ void ValidateInstruction(
             Add(
                 context.diagnostics,
                 VerificationErrorCode::TypeMismatch,
-                "Record construction requires every declared field",
+                "Record construction requires every declared field: operands=" +
+                    std::to_string(instruction.operands.size()) +
+                    ", declared_fields=" +
+                    std::to_string(record == nullptr
+                        ? 0
+                        : record->record_fields.size()),
                 instruction.source_location);
             break;
         }

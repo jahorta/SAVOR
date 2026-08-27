@@ -99,9 +99,23 @@ struct TasMovieInputEpochRewriteRequestV1
     TasMovieInputEpochScheduleV1 schedule;
     std::uint64_t insert_before_epoch = 0;
     std::uint64_t neutral_epoch_count = 1;
+    struct InputRun
+    {
+        GCInputFrame input{};
+        std::uint64_t epoch_count = 0;
+
+        friend bool operator==(const InputRun&, const InputRun&) = default;
+    };
+    std::vector<InputRun> input_runs;
     std::string output_dtm_path;
     std::string output_savestate_path;
 };
+
+[[nodiscard]] std::vector<TasMovieInputEpochRewriteRequestV1::InputRun>
+BuildRewriteInputRunsV1(
+    const TasMovieInputEpochScheduleV1& schedule,
+    std::uint64_t insert_before_epoch,
+    std::uint64_t neutral_epoch_count);
 
 struct TasMovieInputEpochRewriteResultV1
 {

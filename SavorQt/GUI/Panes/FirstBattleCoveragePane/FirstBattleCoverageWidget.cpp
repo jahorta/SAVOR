@@ -339,10 +339,10 @@ void FirstBattleCoverageWidget::refreshSelectionDetails() {
         if (index == table_->currentIndex()) current = cell;
     }
     const std::vector<WorkflowExpansionTarget> raw(selected.begin(), selected.end());
-    const auto normalized = NormalizeFirstBattleExpansionTargets(raw);
+    const auto normalized = NormalizeExactFirstBattleExpansionTargets(raw);
     selectionPreview_->setText(selected.empty() ? QStringLiteral("No cells selected.")
-        : QStringLiteral("%1 selected; %2 lower-delay cells implied.")
-            .arg(selected.size()).arg(normalized.size() - selected.size()));
+        : QStringLiteral("%1 exact cell%2 selected.")
+            .arg(normalized.size()).arg(normalized.size() == 1 ? QString() : QStringLiteral("s")));
     runMissing_->setEnabled(!operationInFlight_ && !selected.empty() && source_->currentData().toLongLong() > 0);
     retry_->setEnabled(!operationInFlight_ && !retryable.empty());
     openWorkflow_->setEnabled(current && !current->workflow_instance_ids.empty());

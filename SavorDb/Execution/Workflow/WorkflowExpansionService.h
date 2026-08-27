@@ -32,7 +32,7 @@ struct WorkflowExpansionTarget {
     auto operator<=>(const WorkflowExpansionTarget&) const = default;
 };
 
-std::vector<WorkflowExpansionTarget> NormalizeFirstBattleExpansionTargets(
+std::vector<WorkflowExpansionTarget> NormalizeExactFirstBattleExpansionTargets(
     const std::vector<WorkflowExpansionTarget>& requested);
 
 struct WorkflowExpansionCreateRequest {
@@ -125,7 +125,6 @@ struct LaunchMissingFirstBattleCoverageRequest {
 struct LaunchMissingFirstBattleCoverageReceipt {
     std::optional<std::int64_t> workflow_expansion_id;
     std::int64_t requested_count = 0;
-    std::int64_t implied_count = 0;
     std::int64_t launched_count = 0;
     std::int64_t already_covered_count = 0;
     std::int64_t active_count = 0;

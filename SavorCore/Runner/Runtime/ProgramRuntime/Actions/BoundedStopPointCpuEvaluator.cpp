@@ -19,6 +19,14 @@ std::optional<CpuSampleWidth> WidthFor(
         && descriptor.operations.empty() && descriptor.address_dependency.empty()
         && descriptor.maximum_reads == 0)
         return CpuSampleWidth::U64;
+    if (descriptor.canonical_id == "soa.tasmovie.sample.ReceivedPadStatus" &&
+        descriptor.operations == std::vector{
+            CpuEvaluatorOperation::ReadU32,
+            CpuEvaluatorOperation::ReadU64} &&
+        descriptor.maximum_reads == 2)
+    {
+        return CpuSampleWidth::U64;
+    }
     if (descriptor.operations.size() != 1 ||
         descriptor.address_dependency.empty() ||
         descriptor.maximum_reads != 1)
@@ -95,7 +103,8 @@ BoundedStopPointCpuEvaluator::BoundedStopPointCpuEvaluator(
     {
         const CpuSampleDescriptor& sample = samples_[index];
         if (sample.id == 0 || !ValidWidth(sample.width) ||
-            (sample.source == CpuSampleSource::GuestMemoryAbsolute &&
+            ((sample.source == CpuSampleSource::GuestMemoryAbsolute ||
+                 sample.source == CpuSampleSource::GuestMemoryIndirectU32) &&
                 sample.address == 0))
         {
             return;
@@ -188,6 +197,20 @@ RoutedHitSample BoundedStopPointCpuEvaluator::Sample(
         return result;
     case CpuSampleSource::GuestMemoryAbsolute:
         break;
+    case CpuSampleSource::GuestMemoryIndirectU32:
+        if (!context.system)
+            return result;
+        {
+            auto& memory = context.system->GetMemory();
+            if (!memory.GetPointerForRange(descriptor->address, 4))
+                return result;
+            const std::uint32_t target = memory.Read_U32(descriptor->address);
+            if (!memory.GetPointerForRange(target, 8))
+                return result;
+            result.value = memory.Read_U64(target);
+            result.available = true;
+            return result;
+        }
     case CpuSampleSource::HostMovieInputCount:
         if (!context.system)
             return result;
@@ -249,6 +272,8 @@ BuildCanonicalStopPointCpuEvaluator()
                 WidthFor(evaluator);
         const bool host_movie_input_count = evaluator.source ==
             CpuEvaluatorSource::HostMovieInputCount;
+        const bool indirect_guest = evaluator.source ==
+            CpuEvaluatorSource::GuestMemoryIndirectU32;
             const auto address = std::ranges::find(
                 manifest.address_symbols,
                 evaluator.address_dependency,
@@ -264,7 +289,8 @@ BuildCanonicalStopPointCpuEvaluator()
             samples.push_back({
                 evaluator.routed_sample_descriptor_id,
                 host_movie_input_count ? CpuSampleSource::HostMovieInputCount
-                                       : CpuSampleSource::GuestMemoryAbsolute,
+                : indirect_guest ? CpuSampleSource::GuestMemoryIndirectU32
+                                 : CpuSampleSource::GuestMemoryAbsolute,
                 *width,
                 host_movie_input_count ? 0u : address->address,
             });

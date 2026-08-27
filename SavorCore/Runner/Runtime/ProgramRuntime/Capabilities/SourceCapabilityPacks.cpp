@@ -675,6 +675,11 @@ std::vector<AddressSymbolDescriptor> BuildFieldAddresses()
             .value_type = AddressValueType(name),
         });
     }
+    addresses.push_back({
+        .canonical_id = "soa.field.address.PadStatusPointer",
+        .address = 0x8034763cu,
+        .value_type = TypeRef::Builtin(BuiltinType::U32),
+    });
     return addresses;
 }
 
@@ -882,6 +887,23 @@ CpuEvaluatorDescriptor TasMovieInputCountEvaluator()
     };
 }
 
+CpuEvaluatorDescriptor TasMovieReceivedPadStatusEvaluator()
+{
+    return {
+        .canonical_id = "soa.tasmovie.sample.ReceivedPadStatus",
+        .routed_sample_descriptor_id =
+            kTasMovieReceivedPadStatusSampleDescriptorId,
+        .source = CpuEvaluatorSource::GuestMemoryIndirectU32,
+        .address_dependency = "soa.field.address.PadStatusPointer",
+        .result_type = TypeRef::Builtin(BuiltinType::U64),
+        .operations = {
+            CpuEvaluatorOperation::ReadU32,
+            CpuEvaluatorOperation::ReadU64},
+        .maximum_reads = 2,
+        .maximum_output_bytes = 8,
+    };
+}
+
 struct BattleCapabilityCatalog
 {
     std::vector<ActionDescriptor> actions;
@@ -911,7 +933,8 @@ CapabilityPackIdentity FieldPackIdentity()
         .dependencies = {CanonicalRuntimePackIdentity()},
         .semantic_points = BuildFieldPoints(),
         .address_symbols = BuildFieldAddresses(),
-        .cpu_evaluators = {FieldRngSeedEvaluator(), TasMovieInputCountEvaluator()},
+        .cpu_evaluators = {FieldRngSeedEvaluator(), TasMovieInputCountEvaluator(),
+            TasMovieReceivedPadStatusEvaluator()},
         .reducers = {pad_status_reducer.identity},
     };
     manifest.identity.manifest_hash =
@@ -1919,7 +1942,8 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         .schemas = {},
         .semantic_points = BuildFieldPoints(),
         .address_symbols = field_addresses,
-        .cpu_evaluators = {FieldRngSeedEvaluator(), TasMovieInputCountEvaluator()},
+        .cpu_evaluators = {FieldRngSeedEvaluator(), TasMovieInputCountEvaluator(),
+            TasMovieReceivedPadStatusEvaluator()},
         .reducers = {field_pad_status_reducer.identity},
     };
     field_pad_status_reducer.providing_pack = field.identity;

@@ -215,8 +215,8 @@ bool VerifySingletonRootValidationGraph(
     const auto& argument = graph->arguments.front();
     if (input.node_key != "tas_validate_1"
         || input.input_key != "root_establishment"
-        || input.data_kind != "analysis.tas_movie_validation_attempt_id"
-        || input.ref_kind != "tmv_validation_attempt"
+        || input.data_kind != "analysis.tas_movie_root_establishment_attempt_id"
+        || input.ref_kind != "tmv_root_establishment_attempt"
         || input.ref_id != establishment_attempt_id
         || input.source_kind != "external"
         || argument.node_key != "tas_validate_1"
@@ -430,7 +430,7 @@ bool VerifyComposedTasMovieSeedProbeGraph(
             });
     };
     if (!has_guarded_edge(
-            "tas_establish_1", "established_root_cursor_attempt",
+            "tas_establish_1", "root_establishment",
             "tas_validate_1", "root_establishment")
         || !has_guarded_edge(
             "tas_validate_1", "validated_checkpoint_savestate",
@@ -613,7 +613,7 @@ bool VerifyComposedTasMovieSterileGraph(
             });
     };
     if (!has_guarded_edge(
-            "tas_establish_1", "established_root_cursor_attempt",
+            "tas_establish_1", "root_establishment",
             "tas_validate_1", "root_establishment")
         || !has_guarded_edge(
             "tas_validate_1", "validated_checkpoint_savestate",
@@ -952,10 +952,10 @@ bool VerifyRootCursorAttempt(
     const auto established_output = std::find_if(
         outputs.begin(), outputs.end(), [&](const auto& output) {
             return output.graph_node_key == graph_node_key
-                && output.output_key == "established_root_cursor_attempt"
+                && output.output_key == "root_establishment"
                 && output.data_kind
-                    == "analysis.tas_movie_validation_attempt_id"
-                && output.ref_kind == "tmv_validation_attempt"
+                    == "analysis.tas_movie_root_establishment_attempt_id"
+                && output.ref_kind == "tmv_root_establishment_attempt"
                 && output.ref_id == attempt_outputs.front()->ref_id;
         });
     const auto attempt = db_service->AnalysisDb()

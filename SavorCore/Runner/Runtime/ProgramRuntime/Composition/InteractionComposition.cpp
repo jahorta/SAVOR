@@ -191,6 +191,20 @@ std::vector<Byte> LeaseConfig()
     return std::move(writer).Finish();
 }
 
+std::optional<ProgramValueId> AddLiteral(
+    ModuleFragmentBuilder& builder,
+    ProgramFunction& function,
+    BasicBlock& block,
+    TypeRef type,
+    LiteralPayload payload,
+    std::string selector,
+    ProgramScopeId scope)
+{
+    return builder.AddInstruction(
+        function, block, InstructionOpcode::Constant, type, {}, {},
+        std::move(selector), LiteralValue{type, std::move(payload)}, scope);
+}
+
 std::vector<Byte> ObservationConfig(
     std::string_view observation_id)
 {
@@ -1104,6 +1118,14 @@ CompositionResult LowerInteraction(
             "segment/" + segment.canonical_id +
                 "/continue/no-expected-count",
             segment_scope);
+        const auto one_occurrence = AddLiteral(
+            builder, function, block, TypeRef::Builtin(BuiltinType::U64),
+            std::uint64_t{1}, "segment/" + segment.canonical_id +
+                "/continue/one-occurrence", segment_scope);
+        const auto no_verify = AddLiteral(
+            builder, function, block, TypeRef::Builtin(BuiltinType::Bool),
+            false, "segment/" + segment.canonical_id +
+                "/continue/no-bound-input-verification", segment_scope);
         const auto wait_request = AddRequest(
             builder,
             function,
@@ -1114,6 +1136,8 @@ CompositionResult LowerInteraction(
                 *wait_binding,
                 *no_movie,
                 *no_expected_count,
+                *one_occurrence,
+                *no_verify,
                 *wait_config},
             "segment/" + segment.canonical_id +
                 "/continue/request",
@@ -1165,6 +1189,8 @@ CompositionResult LowerInteraction(
                     *wait_binding,
                     *no_movie,
                     *no_expected_count,
+                    *one_occurrence,
+                    *no_verify,
                     *wait_config},
                 "segment/" + segment.canonical_id +
                     "/held-successor/continue/request",
@@ -1311,6 +1337,8 @@ CompositionResult LowerInteraction(
                     *release_binding,
                     *no_movie,
                     *no_expected_count,
+                    *one_occurrence,
+                    *no_verify,
                     *wait_config},
                 "segment/" + segment.canonical_id +
                     "/post-release-gate/continue-request",

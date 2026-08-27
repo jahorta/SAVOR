@@ -319,7 +319,15 @@ ProgramValueId ContinueTo(
     const auto config = Constant(builder, function, block,
         CanonicalRuntimeType(CanonicalRuntimeSchema::ContinueUntilStaticConfig),
         ContinueConfig(), selector + "/config");
-    const std::array fields{point_set, no_input, no_movie, no_count, config};
+    const auto one = Constant(builder, function, block,
+        TypeRef::Builtin(BuiltinType::U64), std::uint64_t{1},
+        selector + "/one-occurrence");
+    const auto no_verify = Constant(builder, function, block,
+        TypeRef::Builtin(BuiltinType::Bool), false,
+        selector + "/no-bound-input-verification");
+    const std::array fields{
+        point_set, no_input, no_movie, no_count,
+        one, no_verify, config};
     const auto request = Construct(builder, function, block,
         CanonicalActionInputType(CanonicalAction::ExecutionContinueUntil),
         fields, selector + "/request");
@@ -999,7 +1007,18 @@ std::optional<ProgramDependencyLock> Verify(
     if (!verified.success || !verified.verified)
     {
         std::string message = "battle.record verification failed";
-        for (const auto& item : verified.diagnostics) message += "; " + item.message;
+        for (const auto& item : verified.diagnostics)
+        {
+            message += "; " + item.message;
+            if (item.source_location)
+            {
+                const auto source = std::ranges::find(
+                    module.source_map.entries, *item.source_location,
+                    &SourceMapEntry::id);
+                if (source != module.source_map.entries.end())
+                    message += " at " + source->semantic_path;
+            }
+        }
         Diagnostic(diagnostic, std::move(message)); return {};
     }
     return verified.verified->dependency_lock;

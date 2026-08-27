@@ -344,6 +344,20 @@ std::vector<Byte> EncodeSemanticPointSetBytes(
     return std::move(writer).Finish();
 }
 
+std::optional<ProgramValueId> AddLiteral(
+    ModuleFragmentBuilder& builder,
+    ProgramFunction& function,
+    BasicBlock& block,
+    TypeRef type,
+    LiteralPayload payload,
+    std::string selector,
+    ProgramScopeId scope)
+{
+    return builder.AddInstruction(
+        function, block, InstructionOpcode::Constant, type, {}, {},
+        std::move(selector), LiteralValue{type, std::move(payload)}, scope);
+}
+
 std::vector<Byte> ContinueConfig(
     const SemanticAwaitDefinition& definition)
 {
@@ -1018,9 +1032,15 @@ CompositionResult LowerSemanticObservation(
         ContinueConfig(definition.await),
         "continue-until/static-config",
         scope);
+    const auto one_occurrence = AddLiteral(
+        builder, function, block, TypeRef::Builtin(BuiltinType::U64),
+        std::uint64_t{1}, "continue-until/one-occurrence", scope);
+    const auto no_verify = AddLiteral(
+        builder, function, block, TypeRef::Builtin(BuiltinType::Bool),
+        false, "continue-until/no-bound-input-verification", scope);
     const auto continue_request =
         group_config && no_binding && no_movie && no_expected_count &&
-            continue_config
+            one_occurrence && no_verify && continue_config
         ? AddRequest(
               builder,
               function,
@@ -1028,9 +1048,11 @@ CompositionResult LowerSemanticObservation(
               CanonicalAction::ExecutionContinueUntil,
               std::array{
                   *group_config,
-            *no_binding,
+                  *no_binding,
                   *no_movie,
                   *no_expected_count,
+                  *one_occurrence,
+                  *no_verify,
                   *continue_config},
               "continue-until/request",
               scope)

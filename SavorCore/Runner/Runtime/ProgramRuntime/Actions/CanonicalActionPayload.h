@@ -94,6 +94,8 @@ enum class CanonicalActionPayloadField : std::uint16_t
     DeliveryId = 78,
     HitTimeSampleDescriptorIds = 79,
     MovieArtifactMode = 80,
+    RequiredOccurrences = 81,
+    VerifyBoundInput = 82,
 };
 
 enum class CanonicalActionPayloadKind : std::uint8_t

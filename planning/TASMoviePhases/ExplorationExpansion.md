@@ -6,18 +6,19 @@ ordinary child workflows for executable work.
 
 ## First Battle Exploration
 
-Inputs are a root DTM artifact, an inclusive RTC range, and a maximum neutral
-guest-input delay. Delay zero starts as soon as the source establishment is
-available. Positive delays share one passive `tasmovie.annotate` child, then
-each delay uses one `tasmovie.revise -> tasmovie.establish` child. Every
-`(delay, RTC)` pair receives its own validation-through-Battle child workflow.
+Inputs are prepared annotation/root authorities, an inclusive RTC range, and a
+maximum neutral guest-input delay. A range request materializes every exact
+`(delay, RTC)` coordinate for delays `0..N`. Each delay uses one
+`tasmovie.revise` child, whose child annotation and root authority feed its
+validation-through-Battle workflow directly.
 
 ## Delay Exploration
 
-The source is a qualified TAS route node. Its established root supplies the
-DTM and inherited RTC. Delays are always the dense range `0..N`; lower delays
-are admitted first. The remaining structure is identical to First Battle
-Exploration.
+The source is a qualified TAS route node. Its annotation and semantic root
+establishment supply the DTM schedule, inherited boundary, and RTC. A range
+request expands to the dense range `0..N`; an explicit target is one exact
+delay coordinate and never implies lower-delay children. The remaining
+structure is identical to First Battle Exploration.
 
 ## Placement and revision
 

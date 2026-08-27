@@ -27,8 +27,9 @@ TAS Movie production is organized around domain-specific recorders and guest-obs
 
 - Domain phases such as `battle.record` create meaningful DTM segments. There is no generic Round 1 recorder.
 - `tasmovie.annotate` replays a complete boot DTM and records the input state consumed at every return from the game's `PADRead` call.
-- `tasmovie.revise` branches playback into recording, inserts one held neutral input epoch, and re-emits the remaining guest-input schedule.
-- Later domain phases may consume the resulting DTM and movie-paired checkpoint. Rewriting does not create a TAS root or tree and does not run root validation automatically.
+- `tasmovie.revise` branches playback into recording, inserts an exact requested count of held neutral input epochs, and re-emits the remaining guest-input schedule.
+- A successful revise publishes the child annotation and semantic root-establishment authority in the same result, so another revise can consume the child directly without replaying it through standalone annotation or establishment.
+- Later domain phases may consume the resulting DTM and movie-paired checkpoint. Rewriting does not create a canonical validated TAS root or tree and does not run root validation automatically.
 
 ## Why guest input epochs
 
@@ -55,7 +56,7 @@ The immutable schedule is bound to the source DTM SHA-256 and stored as a `TAS_M
 
 ## Rewrite contract
 
-`tasmovie.revise` accepts a successful annotation attempt and an insertion epoch. It verifies the exact source DTM and unchanged prefix, then branches playback to recording while paused.
+`tasmovie.revise` accepts a successful annotation attempt, a semantic root-establishment attempt for the same immutable DTM, an insertion epoch, and an exact `neutral_epoch_count`. It replays the source prefix, then branches playback to recording while paused.
 
 For the inserted neutral epoch and every remaining source epoch, the phase:
 
@@ -64,9 +65,11 @@ For the inserted neutral epoch and every remaining source epoch, the phase:
 3. requires Dolphin to have sampled the binding;
 4. completes delivery only after the guest return.
 
-After the final source epoch, the phase captures a deferred endpoint savestate, publishes neutral, waits for a safe observed trailing poll, and finalizes the child DTM. The endpoint is persisted as a complete `MOVIE_PAIRED` savestate bound to that exact DTM.
+After the final source epoch has been sampled and acknowledged, the phase observes the final movie cursor, captures the deferred endpoint savestate, and finalizes the child DTM without resuming Dolphin. The endpoint is persisted as a complete `MOVIE_PAIRED` savestate bound to that exact DTM, and no unrequested trailing guest epoch is introduced.
 
-The operation inserts one neutral guest-input epoch, not one neutral DTM record and not one neutral presented frame.
+The operation inserts exactly the requested number of neutral guest-input epochs, not DTM records or presented frames. A direct request for count `5` creates only that child. Inclusive `0..N` expansion is an explicit orchestration operation that launches each exact count independently.
+
+During the same invocation, a lossless passive capture observes every child `PadReadReturned` and the inherited root PC. Result persistence validates the exact transformed schedule, creates the child itinerary from the observed child cursor, and publishes child annotation and root-establishment attempts atomically with the rewrite attempt.
 
 ## Deferred work
 

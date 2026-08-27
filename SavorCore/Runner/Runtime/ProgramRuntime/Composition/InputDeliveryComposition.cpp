@@ -203,12 +203,23 @@ std::optional<InputDeliveryLoweringResult> LowerSynchronizedFrameDelivery(
         builder, function, block,
         CanonicalRuntimeSchema::ContinueUntilStaticConfig,
         ContinueConfig(fail_on_movie_end), selector + "/continue-config", scope);
-    if (!binding || !optional_binding || !no_movie || !no_count || !continue_config)
+    const TypeRef occurrence_type = TypeRef::Builtin(BuiltinType::U64);
+    const auto one_occurrence = builder.AddInstruction(
+        function, block, InstructionOpcode::Constant, occurrence_type, {}, {},
+        selector + "/one-occurrence",
+        LiteralValue{occurrence_type, LiteralPayload{std::uint64_t{1}}}, scope);
+    const TypeRef verify_type = TypeRef::Builtin(BuiltinType::Bool);
+    const auto no_verify = builder.AddInstruction(
+        function, block, InstructionOpcode::Constant, verify_type, {}, {},
+        selector + "/no-bound-input-verification",
+        LiteralValue{verify_type, LiteralPayload{false}}, scope);
+    if (!binding || !optional_binding || !no_movie || !no_count ||
+        !one_occurrence || !no_verify || !continue_config)
         return std::nullopt;
     const auto continue_request = Request(
         builder, function, block, CanonicalAction::ExecutionContinueUntil,
         std::array{*point_set, *optional_binding, *no_movie, *no_count,
-            *continue_config},
+            *one_occurrence, *no_verify, *continue_config},
         selector + "/continue-request", scope);
     const auto stop = continue_request
         ? Await(builder, function, block, CanonicalAction::ExecutionContinueUntil,

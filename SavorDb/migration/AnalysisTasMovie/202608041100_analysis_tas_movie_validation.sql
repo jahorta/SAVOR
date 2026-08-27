@@ -85,4 +85,34 @@ CREATE INDEX ix_tmv_validation_attempt_request
 CREATE INDEX ix_tmv_validation_attempt_job
     ON tmv_validation_attempt(source_job_id,validation_attempt_id);
 
+CREATE TABLE tmv_root_establishment_attempt (
+    root_establishment_attempt_id INTEGER PRIMARY KEY,
+    producer_kind TEXT NOT NULL CHECK(producer_kind IN ('ESTABLISH','REVISE')),
+    validation_attempt_id INTEGER NULL,
+    rewrite_request_id INTEGER NULL,
+    parent_root_establishment_attempt_id INTEGER NULL,
+    source_dtm_artifact_id INTEGER NOT NULL CHECK(source_dtm_artifact_id>0),
+    source_dtm_sha256 TEXT NOT NULL,
+    itinerary_artifact_id INTEGER NOT NULL CHECK(itinerary_artifact_id>0),
+    itinerary_sha256 TEXT NOT NULL,
+    root_pc INTEGER NOT NULL CHECK(root_pc>0),
+    movie_input_cursor INTEGER NOT NULL CHECK(movie_input_cursor>=0),
+    source_job_id INTEGER NOT NULL CHECK(source_job_id>0),
+    worker_terminal_sha256 TEXT NOT NULL,
+    recorded_at_utc INTEGER NOT NULL,
+    FOREIGN KEY(validation_attempt_id) REFERENCES tmv_validation_attempt(validation_attempt_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY(rewrite_request_id) REFERENCES tmv_input_epoch_rewrite_request(rewrite_request_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY(parent_root_establishment_attempt_id)
+        REFERENCES tmv_root_establishment_attempt(root_establishment_attempt_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    UNIQUE(source_job_id,worker_terminal_sha256),
+    CHECK((producer_kind='ESTABLISH' AND validation_attempt_id IS NOT NULL AND rewrite_request_id IS NULL)
+       OR (producer_kind='REVISE' AND validation_attempt_id IS NULL AND rewrite_request_id IS NOT NULL))
+);
+
+CREATE INDEX ix_tmv_root_establishment_source
+    ON tmv_root_establishment_attempt(source_dtm_artifact_id,root_establishment_attempt_id);
+
 COMMIT;
