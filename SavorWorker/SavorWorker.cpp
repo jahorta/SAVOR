@@ -1273,7 +1273,7 @@ bool SubmitFrame(
         WorkerWorksetDefinition definition;
         const std::size_t actual_encoded_size =
             payload.encoded_workset.size();
-        const auto decoded = DecodeWorkerWorksetV4(
+        const auto decoded = DecodeWorkerWorksetV5(
             payload.encoded_workset,
             definition);
         if (!decoded) {

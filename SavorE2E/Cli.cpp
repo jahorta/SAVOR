@@ -41,6 +41,17 @@ constexpr auto kScenarioCatalog = std::to_array<E2eScenarioDescriptor>({
         .requires_repeat_one = true,
     },
     {
+        .name = "tasmovie_cutscene",
+        .kind = E2eScenarioKind::TasMovieCutscene,
+        .supported_entry_sources =
+            EntrySourceBit(E2eScenarioEntrySource::FreshTasMovieValidation),
+        .default_entry_source =
+            E2eScenarioEntrySource::FreshTasMovieValidation,
+        .must_run_alone = true,
+        .requires_repeat_one = true,
+        .requires_one_worker = true,
+    },
+    {
         .name = "tasmovie_establish",
         .kind = E2eScenarioKind::TasMovieEstablish,
         .supported_entry_sources =
@@ -408,6 +419,8 @@ void PrintUsage() {
               << " [--repeat <count>]"
               << " [--load-level low|mid|high]"
               << " [--visual-worker *]"
+              << " [--capture-seed-calls]"
+              << " [--cutscene-delay]"
               << " [--breakpoint-diagnostics]"
               << " [--diagnostic-max-runs <1..5>]"
               << " [--visual-screenshot-dir <path>]"
@@ -670,6 +683,10 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             options.seedprobe_combo_sampler_tries = v;
         } else if (arg == "--breakpoint-diagnostics") {
             options.breakpoint_diagnostics = true;
+        } else if (arg == "--capture-seed-calls") {
+            options.capture_seed_calls = true;
+        } else if (arg == "--cutscene-delay") {
+            options.cutscene_delay = true;
         } else if (arg == "--diagnostic-max-runs") {
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
@@ -736,6 +753,7 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     bool is_tasmovie_sterile = false;
     bool is_tasmovie_seedprobe = false;
     bool is_battle = false;
+    bool is_tasmovie_cutscene = false;
     bool is_workflow_unit = false;
     bool needs_savestate = false;
     bool needs_dtm = false;
@@ -791,6 +809,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         is_tasmovie_seedprobe = is_tasmovie_seedprobe
             || descriptor->kind == E2eScenarioKind::TasMovieSeedProbe;
         is_battle = is_battle || descriptor->kind == E2eScenarioKind::Battle;
+        is_tasmovie_cutscene = is_tasmovie_cutscene
+            || descriptor->kind == E2eScenarioKind::TasMovieCutscene;
         is_workflow_unit = is_workflow_unit
             || descriptor->kind == E2eScenarioKind::WorkflowUnit;
 
@@ -814,6 +834,14 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         case E2eScenarioEntrySource::ExistingDtmArtifact:
             break;
         }
+    }
+
+    if (options.capture_seed_calls
+        && (!is_tasmovie_cutscene || options.scenarios.size() != 1)) {
+        if (error_out) {
+            *error_out = "--capture-seed-calls is supported only by --scenario tasmovie_cutscene";
+        }
+        return false;
     }
 
     const bool has_workflow_unit_arguments = options.workflow_unit.has_value()
@@ -926,7 +954,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         return false;
     }
     if (!prepared_checkpoint_mode
-        && (is_tasmovie_validation || is_tasmovie_sterile || is_battle)
+        && (is_tasmovie_validation || is_tasmovie_sterile || is_battle
+            || is_tasmovie_cutscene)
         && (!options.tasmovie_rtc.has_value()
             || options.tasmovie_rtc_min.has_value()
             || options.tasmovie_rtc_max.has_value())) {
@@ -946,7 +975,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         return false;
     }
     if (!prepared_checkpoint_mode
-        && (is_tasmovie_seedprobe || is_tasmovie_sterile || is_battle) &&
+        && (is_tasmovie_seedprobe || is_tasmovie_sterile || is_battle
+            || is_tasmovie_cutscene) &&
         !options.savestate_file.empty()) {
         if (error_out) {
             *error_out = "validation-backed Battle scenarios do not accept --savestate-file; downstream phases use the sterilized validation checkpoint";

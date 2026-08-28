@@ -186,25 +186,27 @@ override or native-stop CPU callbacks.
 
 ## Results Screen handler
 
-The Results Screen belongs to the downstream domain phase selected by the
-preseed filename. That phase receives the completion manifest and sterilized
-preseed checkpoint, performs the generic SeedProbe/TBR transition to field
-postseed `0x801012B4`, and invokes the handler before its own exploration,
-cutscene, or ship-runtime behavior.
+The Results Screen is an invocation-scoped trusted interruption enabled by
+`BattleResultsAdvance`. It is not a Full Phase and takes no Battle Completion
+manifest or workflow input. Field postseed `0x801012B4` is not sufficient to
+identify Results; the handler starts only at the Results-specific
+`DescriptorReady` point `0x800E35F0`.
 
-The handler is a static homogeneous-worker capability and
-`InteractionComposition` component. It owns one controller lease and adapts to
-the registered descriptor, intro, gold, normal EXP, stat, magic EXP,
+The handler suspends its enclosing phase, owns one controller lease, and adapts
+to the observed descriptor, intro, gold, normal EXP, stat, magic EXP,
 learned-magic, item, confirmation, fade, lifecycle-exit (`0x800E64A0`), and
-cleanup (`0x800E3694`) points. At cleanup it requires lifecycle `0xFF`,
+cleanup (`0x800E3694`) points. It presses A for each actionable presentation,
+returns to neutral through the controller-neutral-copy point, and records only
+the segment counts actually observed. At cleanup it requires lifecycle `0xFF`,
 completion flag `1`, null result pointer, game mode `6`, and unchanged RNG.
-Its typed receipt is consumed by the enclosing phase. It creates no artifact,
-savestate, workflow output, or database aggregate.
+It then restores the enclosing phase's enabled interruption routes and resumes
+that phase. It creates no artifact, savestate, workflow output, or database
+aggregate.
 
-Static construction, lowering, schema, reducer, and admission tests are in
-scope now. Live, E2E, and test-only Full Phase execution validation of the
-Results handler is deferred until a real downstream phase exists. A temporary
-Full Phase must not be introduced solely for validation.
+Battle Completion retains predicted reward and presentation evidence. A future
+optional validator may compare that evidence with a Results receipt, but the
+comparison is not part of Results control and cannot prevent a generic phase
+from using the handler.
 
 ## Lifecycle and ownership invariants
 
@@ -220,4 +222,4 @@ Full Phase must not be introduced solely for validation.
 - Battle Replay emits no game-state or movie artifact and exists as a reusable
   production control phase rather than an E2E-only fork.
 - The accepted preseed is the Battle recording segment boundary; Results
-  handling begins only after the ordinary downstream postseed transition.
+  handling begins only if a later phase observes the Results descriptor.

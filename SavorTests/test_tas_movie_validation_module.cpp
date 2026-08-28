@@ -409,17 +409,17 @@ TEST(TasMovieValidationContracts, InputCountUsesCheckedEightByteBoundaries)
         .PayloadByteOffset());
 }
 
-TEST(TasMovieValidationContracts, Tmi1RoundTripsAndRejectsCorruptionAndInvalidBinding)
+TEST(TasMovieValidationContracts, Tmi2RoundTripsAndRejectsCorruptionAndInvalidBinding)
 {
     constexpr std::uint32_t pc = 0x80101E48u;
     const TasMovieItineraryV1 itinerary{{
-        {pc, DtmInputCount{4}},
-        {pc, DtmInputCount{9}},
+        MakeTasMovieCheckpointV1(pc, 4, 100),
+        MakeTasMovieCheckpointV1(pc, 9, 200),
     }};
     std::string diagnostic;
     const auto encoded = EncodeTasMovieItineraryArtifactV1(itinerary, &diagnostic);
-    ASSERT_EQ(encoded.size(), 32u) << diagnostic;
-    EXPECT_EQ(std::string(encoded.begin(), encoded.begin() + 4), "TMI1");
+    ASSERT_GT(encoded.size(), 32u) << diagnostic;
+    EXPECT_EQ(std::string(encoded.begin(), encoded.begin() + 4), "TMI2");
 
     TasMovieItineraryV1 decoded;
     ASSERT_TRUE(DecodeTasMovieItineraryArtifactV1(encoded, decoded, &diagnostic)) << diagnostic;

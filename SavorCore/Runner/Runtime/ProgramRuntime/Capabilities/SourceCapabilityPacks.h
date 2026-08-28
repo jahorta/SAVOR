@@ -129,11 +129,6 @@ struct SourceCapabilityPackCatalog
 [[nodiscard]] SchemaIdentity BattleCompletionInteractionSegmentSchemaIdentity();
 [[nodiscard]] SchemaIdentity BattleCompletionInteractionReceiptSchemaIdentity();
 [[nodiscard]] SchemaIdentity FieldTransitionContextSchemaIdentity();
-[[nodiscard]] SchemaIdentity BattleResultsHandlerInputSchemaIdentity();
-[[nodiscard]] SchemaIdentity BattleResultsStateSchemaIdentity();
-[[nodiscard]] SchemaIdentity BattleResultsTransitionSchemaIdentity();
-[[nodiscard]] SchemaIdentity BattleResultsSegmentSchemaIdentity();
-[[nodiscard]] SchemaIdentity BattleResultsReceiptSchemaIdentity();
 
 [[nodiscard]] ExactDependencyIdentity BattleCaptureContextActionIdentity();
 [[nodiscard]] ExactDependencyIdentity BattleCompletionCaptureSnapshotActionIdentity();
@@ -145,11 +140,6 @@ struct SourceCapabilityPackCatalog
 [[nodiscard]] ExactDependencyIdentity BattleCompletionInteractionAdvanceReducerIdentity();
 [[nodiscard]] ExactDependencyIdentity BattleCompletionInteractionCompleteSegmentReducerIdentity();
 [[nodiscard]] ExactDependencyIdentity BattleCompletionInteractionFinalizeReducerIdentity();
-[[nodiscard]] ExactDependencyIdentity BattleResultsInitializeReducerIdentity();
-[[nodiscard]] ExactDependencyIdentity BattleResultsAdvanceReducerIdentity();
-[[nodiscard]] ExactDependencyIdentity BattleResultsCompleteSegmentReducerIdentity();
-[[nodiscard]] ExactDependencyIdentity BattleResultsFinalizeReducerIdentity();
-[[nodiscard]] ExactDependencyIdentity BattleResultsAttachInvariantsReducerIdentity();
 [[nodiscard]] ExactDependencyIdentity BattleDerivedTurnEntryActionIdentity();
 [[nodiscard]] ExactDependencyIdentity BattleDerivedTurnOrderActionIdentity();
 [[nodiscard]] ExactDependencyIdentity BattleDerivedRewardsActionIdentity();

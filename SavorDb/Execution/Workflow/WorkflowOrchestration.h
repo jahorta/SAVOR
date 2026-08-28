@@ -379,6 +379,15 @@ struct WorkflowCreateInstanceArgumentSpec {
     std::string source_kind;
 };
 
+struct WorkflowCreateUnitActivationEdgeSpec {
+    std::string from_activation_key;
+    std::string to_activation_key;
+    std::optional<std::string> output_key;
+    std::optional<std::string> input_key;
+    std::optional<std::string> condition_kind;
+    std::optional<std::string> condition_value;
+};
+
 struct WorkflowCreateInstanceCommand {
     std::string workflow_kind;
     std::string root_scope_kind;
@@ -388,6 +397,7 @@ struct WorkflowCreateInstanceCommand {
     std::string created_by;
     std::int64_t created_at_utc = 0;
     std::vector<WorkflowCreateUnitActivationSpec> unit_activations;
+    std::vector<WorkflowCreateUnitActivationEdgeSpec> activation_edges;
     std::vector<WorkflowCreateInstanceInputBindingSpec> input_bindings;
     std::vector<WorkflowCreateInstanceArgumentSpec> arguments;
 };

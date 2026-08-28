@@ -159,6 +159,35 @@ ProgressLibraryDescriptor ScriptLocationLibrary()
     return result;
 }
 
+ProgressLibraryDescriptor SeedCallsLibrary()
+{
+    ProgressLibraryDescriptor result{
+        .canonical_id = "soa.progress.soa.seed_calls/1",
+        .revision = 1,
+        .provider_identity = "soa.capture.seed_calls/1",
+        .points = {{
+            .canonical_id = "rng.srand",
+            .provider = ProgressProviderKind::BreakpointCapture,
+            .breakpoint_pc = 0x8025ecbcu,
+            .schema = Schema(
+                "soa.progress.schema.seed_call/1",
+                "record{seed_argument:u32,previous_rng:u32,movie_input_count:u64,caller_stack:stack_trace}"),
+            .formatter = Formatter(
+                "soa.progress.formatter.seed_call/1",
+                "srand seed, prior RNG, movie cursor, and caller witness"),
+            .required_capture_fields = {
+                "seed_argument",
+                "previous_rng",
+                "movie_input_count",
+                "caller_stack",
+            },
+            .display_name = "RNG seed call",
+        }},
+    };
+    FinishLibrary(result);
+    return result;
+}
+
 ProgressPointDescriptor BattlePoint(
     std::string id,
     std::uint32_t pc,
@@ -354,6 +383,29 @@ savor::probe::SampleDefinition MemorySample(
     return sample;
 }
 
+savor::probe::SampleDefinition RoutedSample(
+    std::string name,
+    std::uint32_t descriptor_id)
+{
+    savor::probe::SampleDefinition sample;
+    sample.name = std::move(name);
+    sample.kind = savor::probe::SampleKind::RoutedSample;
+    sample.width = savor::probe::SampleWidth::U64;
+    sample.routed_sample_descriptor_id = descriptor_id;
+    return sample;
+}
+
+savor::probe::SampleDefinition StackTraceSample(
+    std::string name,
+    std::uint32_t max_frames)
+{
+    savor::probe::SampleDefinition sample;
+    sample.name = std::move(name);
+    sample.kind = savor::probe::SampleKind::StackTrace;
+    sample.max_frames = max_frames;
+    return sample;
+}
+
 savor::probe::SampleDefinition AddressProgramSample(
     std::string name,
     savor::probe::SampleWidth width,
@@ -464,6 +516,7 @@ ProgressLibraryRegistry::ProgressLibraryRegistry()
     : libraries_{
           RuntimeViLibrary(),
           ScriptLocationLibrary(),
+          SeedCallsLibrary(),
           BattleEventsLibrary(),
           PredicateLibrary()}
 {
@@ -859,6 +912,20 @@ BuildBreakpointProgressProbeV1(
     probe.progress_record = true;
     probe.progress_formatter = binding.formatter.canonical_id;
 
+    if (binding.library_id == "soa.progress.soa.seed_calls/1")
+    {
+        probe.samples.push_back(GprSample("seed_argument", 3));
+        probe.samples.push_back(MemorySample(
+            "previous_rng",
+            0x803469a8u,
+            savor::probe::SampleWidth::U32));
+        probe.samples.push_back(RoutedSample(
+            "movie_input_count",
+            1397096450u));
+        probe.samples.push_back(StackTraceSample("caller_stack", 4));
+        return probe;
+    }
+
     if (binding.library_id != "soa.progress.battle.events/1")
         return probe;
 
@@ -1038,7 +1105,37 @@ std::string FormatCaptureProgressText(
     const ProgressPointDescriptor& point,
     const savor::capture_format::Event& event)
 {
-    if (point.canonical_id == "attack_damage")
+    if (point.canonical_id == "rng.srand")
+    {
+        const auto seed = FieldValue(event, "seed_argument");
+        const auto previous = FieldValue(event, "previous_rng");
+        const auto cursor = FieldValue(event, "movie_input_count");
+        const auto stack = std::ranges::find_if(
+            event.fields,
+            [](const savor::capture_format::Field& field) {
+                return field.name == "caller_stack" &&
+                    field.status == savor::capture_format::FieldStatus::Present &&
+                    field.stack_trace.has_value();
+            });
+        if (seed && previous && cursor)
+        {
+            std::ostringstream text;
+            text << "srand seed=" << *seed
+                 << " previous_rng=" << *previous
+                 << " movie_cursor=" << *cursor
+                 << " pc=0x" << std::hex << event.pc
+                 << std::dec << " vi=" << event.frame_index;
+            if (stack != event.fields.end() &&
+                !stack->stack_trace->frames.empty())
+            {
+                const auto& frame = stack->stack_trace->frames.front();
+                text << " caller=0x" << std::hex << frame.callsite_pc
+                     << " return=0x" << frame.return_pc << std::dec;
+            }
+            return text.str();
+        }
+    }
+    else if (point.canonical_id == "attack_damage")
     {
         const auto attacker_slot = FieldValue(event, "attacker_slot");
         const auto target_slot = FieldValue(event, "target_slot");

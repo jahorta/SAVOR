@@ -55,12 +55,10 @@ bool WorkflowGraphLaunchService::Start(
             inputs.emplace(key(node.node_key, input.input_key), &input);
     }
 
-    std::unordered_map<std::string, std::vector<std::string>> dependencies;
     std::unordered_set<std::string> supplied_by_edge;
     for (const auto& edge : graph->edges) {
         if (!nodes.contains(edge.from_node_key) || !nodes.contains(edge.to_node_key))
             return Fail("workflow graph edge references an unknown node", error_out);
-        dependencies[edge.to_node_key].push_back(edge.from_node_key);
         if (edge.edge_kind == "DATA") {
             supplied_by_edge.insert(key(edge.to_node_key, edge.input_key));
         } else if (edge.edge_kind != "CONTROL") {
@@ -93,6 +91,18 @@ bool WorkflowGraphLaunchService::Start(
         command.arguments.push_back({argument.node_key, argument.argument_key,
             argument.value_type, argument.integer_value, argument.text_value,
             argument.source_kind.empty() ? "launcher" : argument.source_kind});
+    for (const auto& edge : graph->edges) {
+        command.activation_edges.push_back({
+            .from_activation_key = edge.from_node_key,
+            .to_activation_key = edge.to_node_key,
+            .output_key = edge.edge_kind == "DATA"
+                ? std::optional<std::string>(edge.output_key) : std::nullopt,
+            .input_key = edge.edge_kind == "DATA"
+                ? std::optional<std::string>(edge.input_key) : std::nullopt,
+            .condition_kind = edge.guard_kind,
+            .condition_value = edge.guard_value,
+        });
+    }
 
     for (const auto& node : graph->nodes) {
         for (const auto& input : node.inputs) {
@@ -105,7 +115,7 @@ bool WorkflowGraphLaunchService::Start(
         auto activation = BuildUnitActivationSpecFromDefinition(registry,
             node.node_key, node.node_key, node.unit_kind, node.display_name,
             node.authored_ref_kind, node.authored_ref_id,
-            dependencies[node.node_key], &activation_error);
+            {}, &activation_error);
         if (!activation) return Fail(std::move(activation_error), error_out);
         command.unit_activations.push_back(std::move(*activation));
     }

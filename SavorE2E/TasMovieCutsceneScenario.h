@@ -5,18 +5,15 @@
 #include "Cli.h"
 #include "ScenarioEntry.h"
 
-namespace savor::db::core {
-class DBService;
-}
+namespace savor::db::core { class DBService; }
 
 namespace savor::e2e {
 
-bool RunBattleWorkflowGraphRealWorkerScenario(
+bool RunTasMovieCutsceneRealWorkerScenario(
     const CliOptions& options,
     const ResolvedE2eScenarioEntry& entry,
     const char* argv0,
     savor::db::core::DBService* db_service,
-    std::string* error_out,
-    std::int64_t* workflow_instance_id_out = nullptr);
+    std::string* error_out);
 
 } // namespace savor::e2e

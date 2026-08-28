@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`tasmovie.cutscene` is a recording phase for non-interactive cutscene traversal. It starts from a successfully validated movie-paired TAS tree, records dialogue advancement, and publishes a child TAS tree at the first qualified future pre-battle seed boundary.
+`tasmovie.cutscene` is a recording phase for non-interactive cutscene traversal. It starts from a successfully validated movie-paired TAS tree, records to the next qualified TAS boundary, validates the child tree internally, and can feed that validated tree directly into another explicit Cutscene node.
 
 ## Dialogue handler
 
@@ -15,6 +15,19 @@ Dialogue advancement is an invocation handler selected by `DialogueAdvance`; it 
 - `ChoiceInputReady` at `0x8010CFD4` fails with `CUTSCENE_CHOICE_UNSUPPORTED`. Choice branching is deferred and must not silently select an option.
 
 The handler is reusable by future phases through the same invocation flag.
+
+## Battle Results handler
+
+Cutscene also enables the reusable `BattleResultsAdvance` interruption. If the
+recorded route encounters Results `DescriptorReady` at `0x800E35F0`, the
+handler advances the observed Results presentation through cleanup and resumes
+Cutscene recording. Cutscenes that do not follow battles never trigger the
+handler. No Battle Completion manifest or additional Cutscene input is
+required.
+
+Battle Results and Dialogue share one active trusted-interruption slot. Their
+invocation routes are withdrawn while either handler owns control and restored
+before the parent recording operation resumes.
 
 ## Endpoint selection
 
@@ -34,8 +47,23 @@ The phase captures a deferred movie-paired SAV at the selected endpoint, records
 
 The normal workflow transition appends `tasmovie.validate_tree`. It does not sterilize the result.
 
+The Cutscene unit does not publish downstream graph availability until that
+internal validation completes. Chaining is explicit in the authored workflow;
+the phase never launches itself recursively. Dialogue and Battle Results are
+optional interruption handlers, so a successful Cutscene may activate either,
+both, or neither.
+
+## Optional seed-call diagnostics
+
+Cutscene may opt into the code-owned progress library
+`soa.progress.soa.seed_calls/1`. It passively observes
+`RNG::srand_8025ecbc` at `0x8025ECBC` and records the seed argument, prior RNG
+state, movie-input cursor, VI count, PC, and a bounded caller stack. The library
+is disabled by default and is not enabled for SeedProbe or Battle phases. Zero
+observed calls is a valid diagnostic result.
+
 ## Deferred work
 
 - Dialogue-choice discovery and user-directed branch checkpoints.
-- Additional non-dialogue cutscene interactions.
-- E2E scenario coverage; this iteration intentionally uses focused runtime and descriptor tests only.
+- Additional non-dialogue cutscene interactions beyond Battle Results.
+- Richer UI presentation and comparison of seed-call evidence.

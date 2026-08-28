@@ -1,4 +1,5 @@
 #include "EmulationSession.h"
+#include "ProgramRuntime/Composition/BattleResultsHandler.h"
 #include "../../Boot/Boot.h"
 
 #include "../../Utils/Hash.h"
@@ -1770,6 +1771,12 @@ BackendResult EmulationSession::InitializeExecution(WorksetEpoch first_epoch)
         add_handler({
             .key = "soa.dialogue.choice_unsupported",
             .allowed_child_operations = {},
+            .maximum_depth = 1,
+        });
+        add_handler({
+            .key = std::string(
+                program::composition::kBattleResultsAdvanceHandlerKey),
+            .allowed_child_operations = {ExecutionOperationKind::ContinueUntil},
             .maximum_depth = 1,
         });
         config.input_relationships = input_arbiter_.get();

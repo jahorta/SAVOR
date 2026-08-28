@@ -266,43 +266,6 @@ std::vector<TypeSchemaDefinition> BuildSchemas()
         "soa.field.TransitionContext",
         256,
         "bytes(FTC1;max=256;canonical field transition context)"));
-    schemas.push_back(RecordSchema(
-        "soa.battle.results.HandlerInput",
-        {
-            {"completion", Named(completion_manifest)},
-            {"postseed_entry", CanonicalActionOutputType(
-                CanonicalAction::ExecutionRequirePausedPc)},
-        },
-        "record BattleResultsHandlerInput/1(completion,postseed-entry)"));
-    schemas.push_back(BytesSchema(
-        "soa.battle.results.State",
-        4096,
-        "bytes(BRS1;max=4096;adaptive results handler state)"));
-    const auto battle_results_state = schemas.back().identity;
-    schemas.push_back(EnumSchema(
-        "soa.battle.results.Segment",
-        {
-            {"Descriptor", 0}, {"Dispatch", 1}, {"AcceptIntro", 2},
-            {"AcceptGold", 3}, {"AcceptNormalExp", 4},
-            {"AcceptStatWave", 5}, {"AcceptMagicEntry", 6},
-            {"AcceptMagicExp", 7}, {"AcceptLearnedMagic", 8},
-            {"AcceptItemPopup", 9}, {"AcceptConfirm", 10},
-            {"AcceptFade", 11}, {"Cleanup", 12}, {"Complete", 13},
-        },
-        "enum BattleResultsSegment/1"));
-    const auto battle_results_segment = schemas.back().identity;
-    schemas.push_back(RecordSchema(
-        "soa.battle.results.Transition",
-        {
-            {"state", Named(battle_results_state)},
-            {"segment", Named(battle_results_segment)},
-        },
-        "record BattleResultsTransition/1(state,segment)"));
-    schemas.push_back(BytesSchema(
-        "soa.battle.results.Receipt",
-        4096,
-        "bytes(BRR1;max=4096;typed battle results handler receipt)"));
-
     schemas.push_back(EnumSchema(
         "soa.battle.TurnType",
         TurnTypeEnumMembers(),
@@ -1517,31 +1480,11 @@ std::vector<SemanticPointDescriptor> BuildBattleCompletionPoints()
 std::vector<SemanticPointDescriptor> BuildBattleResultsPoints()
 {
     return {
-        {"soa.battle.results.point.FieldPostseed", SemanticPointKind::ProgramCounter, 0x801012b4u},
         {"soa.battle.results.point.DescriptorReady", SemanticPointKind::ProgramCounter, 0x800e35f0u},
-        {"soa.battle.results.point.Dispatch", SemanticPointKind::ProgramCounter, 0x800e4660u},
-        {"soa.battle.results.point.IntroReady", SemanticPointKind::ProgramCounter, 0x800e46bcu},
-        {"soa.battle.results.point.IntroAccepted", SemanticPointKind::ProgramCounter, 0x800e46ccu},
-        {"soa.battle.results.point.GoldReady", SemanticPointKind::ProgramCounter, 0x800e488cu},
-        {"soa.battle.results.point.GoldAccepted", SemanticPointKind::ProgramCounter, 0x800e48a8u},
-        {"soa.battle.results.point.NormalExpReady", SemanticPointKind::ProgramCounter, 0x800e4d40u},
-        {"soa.battle.results.point.NormalExpAccepted", SemanticPointKind::ProgramCounter, 0x800e4d50u},
-        {"soa.battle.results.point.StatWaveReady", SemanticPointKind::ProgramCounter, 0x800e4f2cu},
-        {"soa.battle.results.point.StatWaveAccepted", SemanticPointKind::ProgramCounter, 0x800e4f3cu},
-        {"soa.battle.results.point.MagicEntryReady", SemanticPointKind::ProgramCounter, 0x800e52d8u},
-        {"soa.battle.results.point.MagicEntryAccepted", SemanticPointKind::ProgramCounter, 0x800e52e8u},
-        {"soa.battle.results.point.MagicExpReady", SemanticPointKind::ProgramCounter, 0x800e5460u},
-        {"soa.battle.results.point.MagicExpAccepted", SemanticPointKind::ProgramCounter, 0x800e5470u},
-        {"soa.battle.results.point.LearnedMagicReady", SemanticPointKind::ProgramCounter, 0x800e5c3cu},
-        {"soa.battle.results.point.LearnedMagicAccepted", SemanticPointKind::ProgramCounter, 0x800e5c4cu},
-        {"soa.battle.results.point.ItemPopupReady", SemanticPointKind::ProgramCounter, 0x800e5f80u},
-        {"soa.battle.results.point.ItemPopupAccepted", SemanticPointKind::ProgramCounter, 0x800e5f90u},
         {"soa.battle.results.point.ConfirmReady", SemanticPointKind::ProgramCounter, 0x800e6128u},
         {"soa.battle.results.point.ConfirmAccepted", SemanticPointKind::ProgramCounter, 0x800e6138u},
-        {"soa.battle.results.point.FadeReady", SemanticPointKind::ProgramCounter, 0x800e6470u},
-        {"soa.battle.results.point.FadeAccepted", SemanticPointKind::ProgramCounter, 0x800e6480u},
+        {"soa.battle.results.point.GuestPadReadReturned", SemanticPointKind::ProgramCounter, 0x801d6e7cu},
         {"soa.battle.results.point.LifecycleExit", SemanticPointKind::ProgramCounter, 0x800e64a0u},
-        {"soa.battle.results.point.ControllerNeutralCopied", SemanticPointKind::ProgramCounter, 0x801c7948u},
         {"soa.battle.results.point.CleanupComplete", SemanticPointKind::ProgramCounter, 0x800e3694u},
     };
 }
@@ -1550,7 +1493,6 @@ struct AuxiliaryBattleCapabilityCatalog
 {
     std::vector<ActionDescriptor> completion_actions;
     std::vector<ReducerDescriptor> completion_reducers;
-    std::vector<ReducerDescriptor> results_reducers;
     CapabilityPackManifest completion_manifest;
     CapabilityPackManifest results_manifest;
 };
@@ -1572,12 +1514,6 @@ AuxiliaryBattleCapabilityCatalog BuildAuxiliaryBattleCapabilityCatalog()
         schemas, "soa.battle.completion.InteractionTransition").identity);
     const auto completion_receipt = Named(RequireSchema(
         schemas, "soa.battle.completion.InteractionReceipt").identity);
-    const auto results_state = Named(RequireSchema(
-        schemas, "soa.battle.results.State").identity);
-    const auto results_transition = Named(RequireSchema(
-        schemas, "soa.battle.results.Transition").identity);
-    const auto results_receipt = Named(RequireSchema(
-        schemas, "soa.battle.results.Receipt").identity);
     const auto input_frame = CanonicalRuntimeType(
         CanonicalRuntimeSchema::InputFramePayload);
     const auto continue_result = CanonicalActionOutputType(
@@ -1626,25 +1562,6 @@ AuxiliaryBattleCapabilityCatalog BuildAuxiliaryBattleCapabilityCatalog()
             "soa.battle.completion.semantic_equal", completion_pack,
             {manifest, manifest}, boolean),
     };
-    catalog.results_reducers = {
-        PureReducer(
-            "soa.battle.results.initialize", results_pack,
-            {manifest, input_frame}, results_state),
-        PureReducer(
-            "soa.battle.results.advance", results_pack,
-            {results_state, continue_result}, results_transition),
-        PureReducer(
-            "soa.battle.results.complete_segment", results_pack,
-            {results_state, continue_result}, continue_result),
-        PureReducer(
-            "soa.battle.results.finalize", results_pack,
-            {results_state, continue_result}, results_receipt),
-        PureReducer(
-            "soa.battle.results.attach_invariants", results_pack,
-            {results_receipt, u32, u32, u32, u32, u32, u32},
-            results_receipt),
-    };
-
     auto schema_ids = [&](std::string_view prefix)
     {
         std::vector<SchemaIdentity> identities;
@@ -1676,16 +1593,10 @@ AuxiliaryBattleCapabilityCatalog BuildAuxiliaryBattleCapabilityCatalog()
     catalog.results_manifest = {
         .identity = results_pack,
         .compatibility = SupportedSoaUsaCompatibility(),
-        .dependencies = {CanonicalRuntimePackIdentity(), catalog.completion_manifest.identity},
-        .schemas = schema_ids("soa.battle.results."),
         .semantic_points = BuildBattleResultsPoints(),
     };
-    for (const auto& reducer : catalog.results_reducers)
-        catalog.results_manifest.reducers.push_back(reducer.identity);
     catalog.results_manifest.identity.manifest_hash =
         ComputeCapabilityPackManifestContractHash(catalog.results_manifest);
-    for (auto& reducer : catalog.results_reducers)
-        reducer.providing_pack = catalog.results_manifest.identity;
     return catalog;
 }
 
@@ -1709,7 +1620,6 @@ const ReducerDescriptor& AuxiliaryReducer(std::string_view id)
         return found == values.end() ? nullptr : &*found;
     };
     if (const auto* result = find(catalog.completion_reducers)) return *result;
-    if (const auto* result = find(catalog.results_reducers)) return *result;
     throw std::out_of_range("Unknown auxiliary Battle reducer");
 }
 
@@ -1764,32 +1674,6 @@ SchemaIdentity FieldTransitionContextSchemaIdentity()
     return RequireSchema(BuildSchemas(), "soa.field.TransitionContext").identity;
 }
 
-SchemaIdentity BattleResultsHandlerInputSchemaIdentity()
-{
-    return RequireSchema(
-        BuildSchemas(), "soa.battle.results.HandlerInput").identity;
-}
-
-SchemaIdentity BattleResultsStateSchemaIdentity()
-{
-    return RequireSchema(BuildSchemas(), "soa.battle.results.State").identity;
-}
-
-SchemaIdentity BattleResultsTransitionSchemaIdentity()
-{
-    return RequireSchema(BuildSchemas(), "soa.battle.results.Transition").identity;
-}
-
-SchemaIdentity BattleResultsSegmentSchemaIdentity()
-{
-    return RequireSchema(BuildSchemas(), "soa.battle.results.Segment").identity;
-}
-
-SchemaIdentity BattleResultsReceiptSchemaIdentity()
-{
-    return RequireSchema(BuildSchemas(), "soa.battle.results.Receipt").identity;
-}
-
 ExactDependencyIdentity BattleCompletionCaptureSnapshotActionIdentity()
 {
     return CanonicalAuxiliaryBattleCapabilityCatalog().completion_actions.front().identity;
@@ -1837,31 +1721,6 @@ ExactDependencyIdentity BattleCompletionInteractionFinalizeReducerIdentity()
 {
     return AuxiliaryReducer(
         "soa.battle.completion.interaction.finalize").identity;
-}
-
-ExactDependencyIdentity BattleResultsInitializeReducerIdentity()
-{
-    return AuxiliaryReducer("soa.battle.results.initialize").identity;
-}
-
-ExactDependencyIdentity BattleResultsAdvanceReducerIdentity()
-{
-    return AuxiliaryReducer("soa.battle.results.advance").identity;
-}
-
-ExactDependencyIdentity BattleResultsCompleteSegmentReducerIdentity()
-{
-    return AuxiliaryReducer("soa.battle.results.complete_segment").identity;
-}
-
-ExactDependencyIdentity BattleResultsFinalizeReducerIdentity()
-{
-    return AuxiliaryReducer("soa.battle.results.finalize").identity;
-}
-
-ExactDependencyIdentity BattleResultsAttachInvariantsReducerIdentity()
-{
-    return AuxiliaryReducer("soa.battle.results.attach_invariants").identity;
 }
 
 SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
@@ -1934,10 +1793,6 @@ SourceCapabilityPackCatalog BuildSourceCapabilityPackCatalog()
         catalog.reducers.end(),
         auxiliary_battle_catalog.completion_reducers.begin(),
         auxiliary_battle_catalog.completion_reducers.end());
-    catalog.reducers.insert(
-        catalog.reducers.end(),
-        auxiliary_battle_catalog.results_reducers.begin(),
-        auxiliary_battle_catalog.results_reducers.end());
 
     auto field_pad_status_reducer =
         FieldPadStatusToInputFrameReducerDescriptor();

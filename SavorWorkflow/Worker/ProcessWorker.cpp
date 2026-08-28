@@ -561,7 +561,7 @@ ProcessWorksetSubmitOutcome ProcessWorker::submit_workset_with_outcome(
 
     std::vector<std::uint8_t> encoded_workset;
     const auto encoded =
-        runtime::EncodeWorkerWorksetV4(workset, encoded_workset);
+        runtime::EncodeWorkerWorksetV5(workset, encoded_workset);
     if (!encoded)
     {
         outcome.diagnostic = encoded.message.empty()

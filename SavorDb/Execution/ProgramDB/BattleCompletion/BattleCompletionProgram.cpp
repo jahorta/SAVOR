@@ -1,4 +1,5 @@
 #include "BattleCompletionProgram.h"
+#include "../../../../SavorCore/Phases/Programs/TasMovieCheckpoint/TasMovieCheckpointModule.h"
 
 #include "../WorksetDerivedStateBinding.h"
 #include "../WorksetObservationBinding.h"
@@ -92,12 +93,16 @@ std::optional<std::filesystem::path> ResolveState(
 
 std::optional<std::int64_t> SelectedTurnJob(
     const ProgramJobMaterializationContext& context) {
-    if (!context.graph) return std::nullopt;
-    for (const auto& binding : context.graph->input_bindings)
-        if (binding.input_key == kInputKey &&
-            binding.data_kind == kInputDataKind &&
-            binding.ref_kind == kTurnJobRefKind && binding.ref_id > 0)
-            return binding.ref_id;
+    if (context.graph) {
+        for (const auto& binding : context.graph->input_bindings)
+            if (binding.input_key == kInputKey &&
+                binding.data_kind == kInputDataKind &&
+                binding.ref_kind == kTurnJobRefKind && binding.ref_id > 0)
+                return binding.ref_id;
+    }
+    if (context.step.domain_ref_kind == kTurnJobRefKind &&
+        context.step.domain_ref_id > 0)
+        return context.step.domain_ref_id;
     return std::nullopt;
 }
 
@@ -156,18 +161,8 @@ bool WriteAtomically(const std::filesystem::path& destination,
     return true;
 }
 
-std::string RouteName(phase::FieldContinuationKindV1 route) {
-    switch (route) {
-    case phase::FieldContinuationKindV1::OverworldNavigation:
-        return "OVERWORLD_NAVIGATION";
-    case phase::FieldContinuationKindV1::FieldNavigation:
-        return "FIELD_NAVIGATION";
-    case phase::FieldContinuationKindV1::Cutscene:
-        return "CUTSCENE";
-    case phase::FieldContinuationKindV1::ShipRuntime:
-        return "SHIP_RUNTIME";
-    }
-    return {};
+std::string RouteName(savor::runtime::tasmovie::TasMovieNextPhaseV1 route) {
+    return std::string(savor::runtime::tasmovie::TasMovieNextPhaseNameV1(route));
 }
 
 std::optional<std::int64_t> PublishSavestate(
@@ -258,7 +253,7 @@ public:
             !source || !source->is_complete ||
             source->playback_state != SavestatePlaybackState::MovieInactive ||
             source->dtm_artifact_id)
-            return Fail("battle.completion requires an explicitly selected durable Victory job", error_out);
+            return Fail("battle.completion requires a durable Victory job", error_out);
 
         std::int64_t completion_id = 0;
         const auto materialization_key = "battle.completion.step." +
@@ -478,7 +473,7 @@ public:
                 .claim_token = item.claim_token,
                 .parent_correlation = context.contract_key}});
         std::vector<std::uint8_t> encoded;
-        const auto status = savor::runtime::EncodeWorkerWorksetV4(workset, encoded);
+        const auto status = savor::runtime::EncodeWorkerWorksetV5(workset, encoded);
         if (!status) return fail("Battle Completion workset encoding failed: " + status.message);
         workset.encoded_size_bytes = encoded.size();
         return WorksetReconstructionResult{.workset = std::move(workset),
@@ -551,10 +546,14 @@ public:
             result.transition != result.manifest.transition)
             return PersistFailure(*row, context, "BATTLE_COMPLETION_RESULT_INVALID",
                 error.empty() ? "Battle Completion result evidence drifted" : error);
-        const auto route = phase::ClassifyFieldContinuationV1(
-            result.transition.sct_filename, &error);
-        if (!route) return PersistFailure(*row, context,
-            "BATTLE_COMPLETION_ROUTE_INVALID", error);
+        const auto route = savor::runtime::tasmovie::ClassifyTasMovieNextPhaseV1(
+            result.transition.provenance.pc,
+            result.transition.sct_filename,
+            result.transition.area);
+        if (route == savor::runtime::tasmovie::TasMovieNextPhaseV1::Unknown)
+            return PersistFailure(*row, context,
+                "BATTLE_COMPLETION_ROUTE_INVALID",
+                "Battle Completion transition cannot be classified");
         const auto successor = PublishSavestate(
             state_, *row, result.artifacts.front().artifact, &error);
         if (!successor) throw std::runtime_error(error);
@@ -585,7 +584,7 @@ public:
                     reinterpret_cast<const char*>(manifest.data()), manifest.size()),
                 .manifest_sha256 = sha,
                 .manifest_artifact_id = manifest_artifact,
-                .route_kind = RouteName(*route),
+                .route_kind = RouteName(route),
                 .transition_filename = result.transition.sct_filename,
                 .worker_terminal_sha256 = context.terminal.sha256,
                 .status = "COMPLETED", .completed_at_utc = types::UtcNow(),
@@ -602,7 +601,7 @@ public:
         });
         decision.outputs.push_back(Output(row->battle_completion_id));
         decision.event_lines.push_back("[battle-completion] completion=" +
-            std::to_string(row->battle_completion_id) + " route=" + RouteName(*route) +
+            std::to_string(row->battle_completion_id) + " route=" + RouteName(route) +
             " file=" + result.transition.sct_filename);
         return decision;
     }

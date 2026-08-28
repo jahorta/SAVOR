@@ -162,7 +162,8 @@ bool SqliteAnalysisDb::EnsureBattleRouteActivity(
         "INSERT INTO atr_route_node(parent_route_node_id,node_kind,activity_kind,activity_key,label,description,"
         "source_dtm_artifact_id,source_savestate_id,battle_plan_id,tas_movie_tree_id,status,created_at_utc,updated_at_utc) "
         "VALUES(?1,'ACTIVITY','battle',?2,?3,?4,NULL,?5,?6,NULL,'ACTIVE',?7,?7) "
-        "ON CONFLICT(parent_route_node_id,activity_kind,activity_key) DO NOTHING;";
+            "ON CONFLICT(parent_route_node_id,activity_kind,activity_key) "
+            "WHERE node_kind='ACTIVITY' DO NOTHING;";
     if (sqlite3_prepare_v2(db_, activity_sql, -1, &activity.value, nullptr) != SQLITE_OK)
         return Rollback(db_, sqlite3_errmsg(db_), error_out);
     sqlite3_bind_int64(activity.value, 1, *parent_checkpoint);

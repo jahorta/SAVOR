@@ -389,6 +389,7 @@ bool SeedBattlePredicateGroup(
 bool SeedBattleAuthoring(
     savor::db::IAuthoringDb* authoring_db,
     const std::string_view run_identity,
+    const bool cutscene_mode,
     std::int64_t* battle_plan_id_out,
     std::string* error_out)
 {
@@ -397,16 +398,20 @@ bool SeedBattleAuthoring(
 
     const auto now = savor::db::types::UtcNow();
     const std::string suffix(run_identity);
-    std::int64_t predicate_group_revision_id = 0;
-    if (!SeedBattlePredicateGroup(
-            authoring_db, run_identity,
-            &predicate_group_revision_id, error_out)) {
-        return false;
+    std::optional<std::int64_t> predicate_group_revision_id;
+    if (!cutscene_mode) {
+        std::int64_t group_id = 0;
+        if (!SeedBattlePredicateGroup(
+                authoring_db, run_identity, &group_id, error_out)) return false;
+        predicate_group_revision_id = group_id;
     }
     std::int64_t plan_id = 0;
     if (!savor::db::authoring::MaterializeBattlePlanHeader(authoring_db, {
-            .name = "SavorE2E two-turn Battle plan " + suffix,
-            .fingerprint = "savor-e2e-battle-phases-" + suffix,
+            .name = (cutscene_mode ? "SavorE2E four-turn cutscene Battle plan "
+                                   : "SavorE2E two-turn Battle plan ") + suffix,
+            .fingerprint = (cutscene_mode
+                ? "savor-e2e-cutscene-battle-" : "savor-e2e-battle-phases-")
+                + suffix,
             .created_at_utc = now,
             .correlation_id = std::string(kCorrelation),
             .causation_id = "scenario",
@@ -437,35 +442,21 @@ bool SeedBattleAuthoring(
         return false;
 
     std::int64_t turn_id = 0;
-    if (!savor::db::authoring::MaterializeBattlePlanTurn(authoring_db, {
-            .plan_id = plan_id,
-            .turn_index = 1,
-            .default_predicate_group_revision_id =
-                predicate_group_revision_id,
-            .actions = {
-                {.actor_slot = 0, .action_preset_id = attack_any_enemy_id, .ordinal = 0},
-                {.actor_slot = 1, .action_preset_id = attack_same_as_actor_zero_id, .ordinal = 1},
-            },
-            .created_at_utc = now,
-            .correlation_id = std::string(kCorrelation),
-            .causation_id = "plan-" + std::to_string(plan_id),
-        }, &turn_id, error_out))
-        return false;
-
-    if (!savor::db::authoring::MaterializeBattlePlanTurn(authoring_db, {
-            .plan_id = plan_id,
-            .turn_index = 2,
-            .default_predicate_group_revision_id =
-                predicate_group_revision_id,
-            .actions = {
-                {.actor_slot = 0, .action_preset_id = attack_any_enemy_id, .ordinal = 0},
-                {.actor_slot = 1, .action_preset_id = attack_same_as_actor_zero_id, .ordinal = 1},
-            },
-            .created_at_utc = now,
-            .correlation_id = std::string(kCorrelation),
-            .causation_id = "plan-" + std::to_string(plan_id),
-        }, &turn_id, error_out))
-        return false;
+    const int turn_count = cutscene_mode ? 4 : 2;
+    for (int turn_index = 1; turn_index <= turn_count; ++turn_index) {
+        if (!savor::db::authoring::MaterializeBattlePlanTurn(authoring_db, {
+                .plan_id = plan_id,
+                .turn_index = turn_index,
+                .default_predicate_group_revision_id = predicate_group_revision_id,
+                .actions = {
+                    {.actor_slot = 0, .action_preset_id = attack_any_enemy_id, .ordinal = 0},
+                    {.actor_slot = 1, .action_preset_id = attack_same_as_actor_zero_id, .ordinal = 1},
+                },
+                .created_at_utc = now,
+                .correlation_id = std::string(kCorrelation),
+                .causation_id = "plan-" + std::to_string(plan_id),
+            }, &turn_id, error_out)) return false;
+    }
 
     *battle_plan_id_out = plan_id;
     return true;
@@ -481,6 +472,7 @@ bool SeedBattleWorkflow(
     int samples_per_axis,
     int fake_attack_min,
     int fake_attack_max,
+    bool cutscene_delay,
     const std::string_view run_identity,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out)
@@ -495,7 +487,7 @@ bool SeedBattleWorkflow(
 
     const auto now = savor::db::types::UtcNow();
     savor::db::SaveWorkflowGraphResult saved{};
-    if (!savor::db::authoring::MaterializeWorkflowGraph(authoring_db, {
+    savor::db::SaveWorkflowGraphCommand graph_definition{
             .name = "SavorE2E Battle phases workflow "
                 + std::string(run_identity),
             .description = "Validate the approved DTM, sterilize its checkpoint, then run Battle Context and SeedProbe in parallel before battle.start",
@@ -525,6 +517,12 @@ bool SeedBattleWorkflow(
                             .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
                             .ref_kind = "tmv_root_establishment_attempt",
                             .display_name = "Established root cursor attempt",
+                        },
+                        {
+                            .output_key = "root_dtm",
+                            .data_kind = "state_artifact.dtm_artifact_id",
+                            .ref_kind = "state_artifact",
+                            .display_name = "Established root DTM",
                         },
                     },
                 },
@@ -743,7 +741,136 @@ bool SeedBattleWorkflow(
             .created_at_utc = now,
             .correlation_id = std::string(kCorrelation),
             .causation_id = "scenario",
-        }, &saved, error_out))
+        };
+    if (cutscene_delay) {
+        graph_definition.description =
+            "Establish and annotate the approved DTM, insert one neutral input epoch, validate and sterilize the revised checkpoint, then run Battle Context and SeedProbe in parallel before battle.start";
+        graph_definition.graph_hash = "savor-e2e.battle-phases.cutscene-delay-v1."
+            + std::string(run_identity);
+        graph_definition.nodes.insert(graph_definition.nodes.begin() + 1, {
+            .node_key = "tas_annotate_1",
+            .unit_kind = "tas_movie_annotate",
+            .display_name = "TAS Movie: Annotate Input Epochs",
+            .inputs = {{
+                .input_key = "root_dtm",
+                .data_kind = "state_artifact.dtm_artifact_id",
+                .ref_kind = "state_artifact",
+                .display_name = "Complete boot DTM",
+            }},
+            .possible_outputs = {{
+                .output_key = "annotation_attempt",
+                .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id",
+                .ref_kind = "tmv_input_epoch_annotation_attempt",
+                .display_name = "Input-epoch annotation attempt",
+            }},
+        });
+        graph_definition.nodes.insert(graph_definition.nodes.begin() + 2, {
+            .node_key = "tas_revise_1",
+            .unit_kind = "tas_movie_revise",
+            .display_name = "TAS Movie: Rewrite Input Epochs",
+            .inputs = {
+                {
+                    .input_key = "annotation_attempt",
+                    .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id",
+                    .ref_kind = "tmv_input_epoch_annotation_attempt",
+                    .display_name = "Source input-epoch annotation",
+                },
+                {
+                    .input_key = "root_establishment",
+                    .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                    .ref_kind = "tmv_root_establishment_attempt",
+                    .display_name = "Source root establishment",
+                },
+            },
+            .possible_outputs = {
+                {
+                    .output_key = "rewrite_attempt",
+                    .data_kind = "analysis.tas_movie_input_epoch_rewrite_attempt_id",
+                    .ref_kind = "tmv_input_epoch_rewrite_attempt",
+                    .display_name = "Input-epoch rewrite attempt",
+                },
+                {
+                    .output_key = "rewritten_dtm",
+                    .data_kind = "state_artifact.dtm_artifact_id",
+                    .ref_kind = "state_artifact",
+                    .display_name = "Rewritten DTM",
+                },
+                {
+                    .output_key = "rewritten_paired_savestate",
+                    .data_kind = "state.movie_paired_savestate_id",
+                    .ref_kind = "state.savestate",
+                    .display_name = "Rewritten movie-paired endpoint",
+                },
+                {
+                    .output_key = "annotation_attempt",
+                    .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id",
+                    .ref_kind = "tmv_input_epoch_annotation_attempt",
+                    .display_name = "Rewritten input-epoch annotation",
+                },
+                {
+                    .output_key = "root_establishment",
+                    .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                    .ref_kind = "tmv_root_establishment_attempt",
+                    .display_name = "Rewritten root establishment",
+                },
+            },
+            .arguments = {
+                {
+                    .argument_key = "neutral_epoch_count",
+                    .display_name = "Neutral input epochs",
+                    .value_type = "integer",
+                    .required = false,
+                    .default_value = std::string("1"),
+                    .minimum_integer = 1,
+                    .maximum_integer =
+                        static_cast<std::uint64_t>(
+                            std::numeric_limits<std::int32_t>::max()),
+                },
+                {
+                    .argument_key = "placement_profile",
+                    .display_name = "Placement profile",
+                    .value_type = "choice",
+                    .required = false,
+                    .default_value = std::string("first_battle.final_dialog"),
+                    .choices = {{
+                        .value = "first_battle.final_dialog",
+                        .display_name = "First battle: final dialog B to A",
+                    }},
+                },
+            },
+        });
+        auto establish_to_validate = std::ranges::find_if(
+            graph_definition.edges, [](const auto& edge) {
+                return edge.from_node_key == "tas_establish_1"
+                    && edge.to_node_key == "tas_validate_1";
+            });
+        if (establish_to_validate == graph_definition.edges.end())
+            return Fail("Battle workflow delay splice could not find the establishment edge", error_out);
+        establish_to_validate->to_node_key = "tas_revise_1";
+        graph_definition.edges.push_back({
+            .from_node_key = "tas_establish_1",
+            .output_key = "root_dtm",
+            .to_node_key = "tas_annotate_1",
+            .input_key = "root_dtm",
+            .guard_kind = std::string(savor::db::kWorkflowOutputPresentGuard),
+        });
+        graph_definition.edges.push_back({
+            .from_node_key = "tas_annotate_1",
+            .output_key = "annotation_attempt",
+            .to_node_key = "tas_revise_1",
+            .input_key = "annotation_attempt",
+            .guard_kind = std::string(savor::db::kWorkflowOutputPresentGuard),
+        });
+        graph_definition.edges.push_back({
+            .from_node_key = "tas_revise_1",
+            .output_key = "root_establishment",
+            .to_node_key = "tas_validate_1",
+            .input_key = "root_establishment",
+            .guard_kind = std::string(savor::db::kWorkflowOutputPresentGuard),
+        });
+    }
+    if (!savor::db::authoring::MaterializeWorkflowGraph(
+            authoring_db, graph_definition, &saved, error_out))
         return false;
 
     const auto unit_registry =
@@ -755,11 +882,29 @@ bool SeedBattleWorkflow(
             "tas_movie_establish_root_cursor",
             "TAS Movie: Establish Root Cursor", std::nullopt, std::nullopt,
             {}, &activation_error);
+    decltype(establish) annotate;
+    decltype(establish) revise;
+    if (cutscene_delay) {
+        annotate = savor::db::execution::workflow::
+            BuildUnitActivationSpecFromDefinition(
+                unit_registry, "tas_annotate_1", "tas_annotate_1",
+                "tas_movie_annotate", "TAS Movie: Annotate Input Epochs",
+                std::nullopt, std::nullopt, {"tas_establish_1"},
+                &activation_error);
+        revise = savor::db::execution::workflow::
+            BuildUnitActivationSpecFromDefinition(
+                unit_registry, "tas_revise_1", "tas_revise_1",
+                "tas_movie_revise", "TAS Movie: Rewrite Input Epochs",
+                std::nullopt, std::nullopt,
+                {"tas_establish_1", "tas_annotate_1"}, &activation_error);
+    }
     auto validate = savor::db::execution::workflow::
         BuildUnitActivationSpecFromDefinition(
             unit_registry, "tas_validate_1", "tas_validate_1",
             "tas_movie_validate_root", "TAS Movie: Validate Root",
-            std::nullopt, std::nullopt, {"tas_establish_1"},
+            std::nullopt, std::nullopt,
+            cutscene_delay ? std::vector<std::string>{"tas_revise_1"}
+                           : std::vector<std::string>{"tas_establish_1"},
             &activation_error);
     auto sterilize = savor::db::execution::workflow::
         BuildUnitActivationSpecFromDefinition(
@@ -784,8 +929,8 @@ bool SeedBattleWorkflow(
             "Battle", std::optional<std::string>(
                 "authoring.battle_plan"), battle_plan_id,
             {"probe_1", "context_1"}, &activation_error);
-    if (!establish || !validate || !sterilize || !probe || !context ||
-        !battle)
+    if (!establish || (cutscene_delay && (!annotate || !revise))
+        || !validate || !sterilize || !probe || !context || !battle)
         return Fail("Battle workflow activation failed: " + activation_error,
                     error_out);
 
@@ -806,9 +951,16 @@ bool SeedBattleWorkflow(
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "savor-e2e";
     command.created_at_utc = now.time_since_epoch().count();
-    command.unit_activations = {
-        std::move(*establish), std::move(*validate), std::move(*sterilize),
-        std::move(*probe), std::move(*context), std::move(*battle)};
+    command.unit_activations.push_back(std::move(*establish));
+    if (cutscene_delay) {
+        command.unit_activations.push_back(std::move(*annotate));
+        command.unit_activations.push_back(std::move(*revise));
+    }
+    command.unit_activations.push_back(std::move(*validate));
+    command.unit_activations.push_back(std::move(*sterilize));
+    command.unit_activations.push_back(std::move(*probe));
+    command.unit_activations.push_back(std::move(*context));
+    command.unit_activations.push_back(std::move(*battle));
     command.input_bindings.push_back({
         .node_key = "tas_establish_1",
         .input_key = "root_dtm",
@@ -817,6 +969,22 @@ bool SeedBattleWorkflow(
         .ref_id = dtm_artifact_id,
         .source_kind = "external",
     });
+    if (cutscene_delay) {
+        command.arguments.push_back({
+            .node_key = "tas_revise_1",
+            .argument_key = "neutral_epoch_count",
+            .value_type = "integer",
+            .integer_value = 1,
+            .source_kind = "scenario",
+        });
+        command.arguments.push_back({
+            .node_key = "tas_revise_1",
+            .argument_key = "placement_profile",
+            .value_type = "choice",
+            .text_value = std::string("first_battle.final_dialog"),
+            .source_kind = "scenario",
+        });
+    }
     command.arguments.push_back({
         .node_key = "tas_validate_1",
         .argument_key = "rtc",
@@ -850,20 +1018,6 @@ bool SeedBattleWorkflow(
         .argument_key = "continuation_mode",
         .value_type = "choice",
         .text_value = std::string("automatic_best_per_ending_rng"),
-        .source_kind = "scenario",
-    });
-    command.arguments.push_back({
-        .node_key = "battle_1",
-        .argument_key = "continue_automatic_exploration_after_victory",
-        .value_type = "boolean",
-        .integer_value = 0,
-        .source_kind = "scenario",
-    });
-    command.arguments.push_back({
-        .node_key = "battle_1",
-        .argument_key = "continue_automatic_exploration_after_victory",
-        .value_type = "boolean",
-        .integer_value = 0,
         .source_kind = "scenario",
     });
     command.arguments.push_back({
@@ -1493,6 +1647,16 @@ bool CheckBattleInvariantsAndReportTrajectory(
         ExpectedNode{"context_1", "battle.context"},
         ExpectedNode{"battle_1", "battle"},
     };
+    static constexpr std::array kDelayedCutsceneNodes{
+        ExpectedNode{"tas_establish_1", "tas_movie_establish_root_cursor"},
+        ExpectedNode{"tas_annotate_1", "tas_movie_annotate"},
+        ExpectedNode{"tas_revise_1", "tas_movie_revise"},
+        ExpectedNode{"tas_validate_1", "tas_movie_validate_root"},
+        ExpectedNode{"tas_sterilize_1", "tas_movie_checkpoint_sterilize"},
+        ExpectedNode{"probe_1", "seed_probe"},
+        ExpectedNode{"context_1", "battle.context"},
+        ExpectedNode{"battle_1", "battle"},
+    };
     static constexpr std::array kEstablishedNodes{
         ExpectedNode{"tas_validate_1", "tas_movie_validate_root"},
         ExpectedNode{"tas_sterilize_1", "tas_movie_checkpoint_sterilize"},
@@ -1508,6 +1672,26 @@ bool CheckBattleInvariantsAndReportTrajectory(
     };
     static constexpr std::array kFreshEdges{
         ExpectedEdge{"tas_establish_1", "root_establishment",
+                     "tas_validate_1", "root_establishment"},
+        ExpectedEdge{"tas_validate_1", "validated_checkpoint_savestate",
+                     "tas_sterilize_1", "paired_checkpoint_savestate"},
+        ExpectedEdge{"tas_sterilize_1", "sterilized_checkpoint_savestate",
+                     "probe_1", "entry_savestate"},
+        ExpectedEdge{"tas_sterilize_1", "sterilized_checkpoint_savestate",
+                     "context_1", "entry_savestate"},
+        ExpectedEdge{"probe_1", "seed_probe_run", "battle_1",
+                     "seed_probe_run"},
+        ExpectedEdge{"context_1", "battle_context", "battle_1",
+                     "battle_context"},
+    };
+    static constexpr std::array kDelayedCutsceneEdges{
+        ExpectedEdge{"tas_establish_1", "root_dtm",
+                     "tas_annotate_1", "root_dtm"},
+        ExpectedEdge{"tas_establish_1", "root_establishment",
+                     "tas_revise_1", "root_establishment"},
+        ExpectedEdge{"tas_annotate_1", "annotation_attempt",
+                     "tas_revise_1", "annotation_attempt"},
+        ExpectedEdge{"tas_revise_1", "root_establishment",
                      "tas_validate_1", "root_establishment"},
         ExpectedEdge{"tas_validate_1", "validated_checkpoint_savestate",
                      "tas_sterilize_1", "paired_checkpoint_savestate"},
@@ -1536,10 +1720,16 @@ bool CheckBattleInvariantsAndReportTrajectory(
         == E2eScenarioEntrySource::PreparedSterilizedCheckpoint;
     const bool established = entry.source
         == E2eScenarioEntrySource::TasMovieEstablishmentAttempt;
+    const bool delayed_cutscene = !prepared && !established
+        && options.scenario == "tasmovie_cutscene" && options.cutscene_delay;
     const auto expected_node_count = prepared ? kPreparedNodes.size()
-        : established ? kEstablishedNodes.size() : kFreshNodes.size();
+        : established ? kEstablishedNodes.size()
+        : delayed_cutscene ? kDelayedCutsceneNodes.size()
+                           : kFreshNodes.size();
     const auto expected_edge_count = prepared ? kPreparedEdges.size()
-        : established ? kEstablishedEdges.size() : kFreshEdges.size();
+        : established ? kEstablishedEdges.size()
+        : delayed_cutscene ? kDelayedCutsceneEdges.size()
+                           : kFreshEdges.size();
     if (authored->nodes.size() != expected_node_count
         || authored->edges.size() != expected_edge_count) {
         return Fail("Battle authored graph node or edge count drifted",
@@ -1571,11 +1761,13 @@ bool CheckBattleInvariantsAndReportTrajectory(
     };
     if (prepared ? !check_nodes(kPreparedNodes)
                  : established ? !check_nodes(kEstablishedNodes)
+                 : delayed_cutscene ? !check_nodes(kDelayedCutsceneNodes)
                                : !check_nodes(kFreshNodes)) {
         return Fail("Battle authored graph node identities drifted", error_out);
     }
     if (prepared ? !check_edges(kPreparedEdges)
                  : established ? !check_edges(kEstablishedEdges)
+                 : delayed_cutscene ? !check_edges(kDelayedCutsceneEdges)
                                : !check_edges(kFreshEdges)) {
         return Fail("Battle authored graph guarded edges drifted", error_out);
     }
@@ -1717,9 +1909,13 @@ bool CheckBattleInvariantsAndReportTrajectory(
     };
     if ((prepared ? !check_runtime_nodes(kPreparedNodes)
                   : established ? !check_runtime_nodes(kEstablishedNodes)
+                  : delayed_cutscene
+                        ? !check_runtime_nodes(kDelayedCutsceneNodes)
                                 : !check_runtime_nodes(kFreshNodes))
         || (prepared ? !check_runtime_edges(kPreparedEdges)
                      : established ? !check_runtime_edges(kEstablishedEdges)
+                     : delayed_cutscene
+                           ? !check_runtime_edges(kDelayedCutsceneEdges)
                                    : !check_runtime_edges(kFreshEdges))) {
         return Fail("Battle realized static graph topology drifted", error_out);
     }
@@ -1778,9 +1974,10 @@ bool CheckBattleInvariantsAndReportTrajectory(
                         error_out);
         }
     } else {
-        const auto root_dtm_binding_count = std::ranges::count_if(
-            graph.input_bindings, [](const auto& binding) {
-                return binding.node_key == "tas_establish_1"
+        const auto root_dtm_binding_count = [&](std::string_view node_key) {
+            return std::ranges::count_if(
+                graph.input_bindings, [&](const auto& binding) {
+                return binding.node_key == node_key
                     && binding.input_key == "root_dtm"
                     && binding.data_kind ==
                         "state_artifact.dtm_artifact_id"
@@ -1788,7 +1985,10 @@ bool CheckBattleInvariantsAndReportTrajectory(
                     && binding.ref_id > 0
                     && binding.source_kind == "external";
             });
-        if (external_binding_count != 1 || root_dtm_binding_count != 1) {
+        };
+        if (external_binding_count != 1
+            || root_dtm_binding_count("tas_establish_1") != 1
+            || root_dtm_binding_count("tas_annotate_1") != 0) {
             return Fail("Fresh Battle DTM entry binding drifted", error_out);
         }
     }
@@ -1819,7 +2019,8 @@ bool CheckBattleInvariantsAndReportTrajectory(
                     && argument.source_kind == "scenario";
             }) == 1;
     };
-    const auto expected_argument_count = prepared ? 5u : 6u;
+    const auto expected_argument_count = prepared ? 5u
+        : delayed_cutscene ? 8u : 6u;
     if (graph.arguments.size() != expected_argument_count
         || !has_integer_argument(
             "probe_1", "samples_per_axis",
@@ -1839,6 +2040,13 @@ bool CheckBattleInvariantsAndReportTrajectory(
         || !has_choice_argument(
             "battle_1", "continuation_mode",
             "automatic_best_per_ending_rng")
+        || (delayed_cutscene
+            && (!has_integer_argument(
+                    "tas_revise_1", "neutral_epoch_count",
+                    [](std::int64_t value) { return value == 1; })
+                || !has_choice_argument(
+                    "tas_revise_1", "placement_profile",
+                    "first_battle.final_dialog")))
         || !std::ranges::any_of(graph.arguments, [](const auto& argument) {
             return argument.node_key == "battle_1"
                 && argument.argument_key
@@ -1862,6 +2070,8 @@ bool CheckBattleInvariantsAndReportTrajectory(
             &savor::db::execution::workflow::WorkflowStepRecord::step_kind);
     };
     const auto establish_step = find_step("tasmovie.establish_root_cursor");
+    const auto annotate_step = find_step("tasmovie.annotate");
+    const auto revise_step = find_step("tasmovie.revise");
     const auto validate_step = find_step("tasmovie.validate_root");
     const auto sterilize_step = find_step("tasmovie.checkpoint_sterilize");
     const auto seedprobe_step = find_step("seedprobe.survey");
@@ -1885,6 +2095,12 @@ bool CheckBattleInvariantsAndReportTrajectory(
         || established) {
         if ((!established && establish_step == graph.steps.end())
             || (established && establish_step != graph.steps.end())
+            || (delayed_cutscene
+                && (annotate_step == graph.steps.end()
+                    || revise_step == graph.steps.end()))
+            || (!delayed_cutscene
+                && (annotate_step != graph.steps.end()
+                    || revise_step != graph.steps.end()))
             || validate_step == graph.steps.end()
             || sterilize_step == graph.steps.end()) {
             return Fail("Battle workflow is missing its validation and sterilization topology",
@@ -1907,6 +2123,9 @@ bool CheckBattleInvariantsAndReportTrajectory(
         }
         if ((!established
                 && establish_step->state != WorkflowStepState::Completed)
+            || (delayed_cutscene
+                && (annotate_step->state != WorkflowStepState::Completed
+                    || revise_step->state != WorkflowStepState::Completed))
             || validate_step->state != WorkflowStepState::Completed
             || sterilize_step->state != WorkflowStepState::Completed) {
             return Fail("Battle validation and sterilization topology is not terminal-consistent",
@@ -1918,6 +2137,21 @@ bool CheckBattleInvariantsAndReportTrajectory(
         const auto sterilized_checkpoint = find_output(
             "tas_sterilize_1", "sterilized_checkpoint_savestate",
             "state.movie_inactive_savestate_id", "state.savestate");
+        if (delayed_cutscene) {
+            const auto revised_root = find_output(
+                "tas_revise_1", "root_establishment",
+                "analysis.tas_movie_root_establishment_attempt_id",
+                "tmv_root_establishment_attempt");
+            const auto revised_annotation = find_output(
+                "tas_revise_1", "annotation_attempt",
+                "analysis.tas_movie_input_epoch_annotation_attempt_id",
+                "tmv_input_epoch_annotation_attempt");
+            if (revised_root == outputs.end()
+                || revised_annotation == outputs.end()
+                || validate_step->input_ref_id != revised_root->ref_id) {
+                return Fail("Cutscene delay did not publish and validate the revised TAS authorities", error_out);
+            }
+        }
         if (validated_checkpoint == outputs.end() ||
             sterilized_checkpoint == outputs.end())
             return Fail("Battle workflow checkpoint provenance is missing the paired-to-inactive sterilization boundary",
@@ -2481,7 +2715,8 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
     const ResolvedE2eScenarioEntry& entry,
     const char* argv0,
     savor::db::core::DBService* db_service,
-    std::string* error_out)
+    std::string* error_out,
+    std::int64_t* workflow_instance_id_out)
 {
     if (db_service == nullptr || !db_service->IsRunning() ||
         db_service->ExecutionDb() == nullptr ||
@@ -2536,7 +2771,9 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
         return Fail("failed seeding Battle SeedProbe spec: " + error,
                     error_out);
     std::int64_t battle_plan_id = 0;
+    const bool cutscene_mode = options.scenario == "tasmovie_cutscene";
     if (!SeedBattleAuthoring(db_service->AuthoringDb(), entry.run_identity,
+                             cutscene_mode,
                              &battle_plan_id, &error))
         return Fail("failed seeding Battle authoring: " + error, error_out);
     std::int64_t workflow_instance_id = 0;
@@ -2549,6 +2786,7 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
             options.seedprobe_samples_per_axis.value_or(1),
             options.battle_fake_attack_min.value_or(0),
             options.battle_fake_attack_max.value_or(0),
+            cutscene_mode && options.cutscene_delay,
             entry.run_identity, &workflow_instance_id, &error);
     } else if (entry.source
         == E2eScenarioEntrySource::TasMovieEstablishmentAttempt) {
@@ -2576,7 +2814,7 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
         std::filesystem::temp_directory_path() / "savor-e2e-battle");
     auto registry_config = savor::db::execution::programdb::
         MakeProductionProgramKindRegistryConfig(
-            workspace_root / "workflow-runtime");
+            workspace_root / "workflow-runtime", worker_exe);
     savor::db::execution::programdb::ProgramKindRegistry program_registry;
     if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry({
             .execution_db = db_service->ExecutionDb(),
@@ -2713,7 +2951,7 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
     }
     assessment.Require(workflow_completed, workflow_diagnostic);
     std::string battle_invariant_error;
-    if (workflow_completed) {
+    if (workflow_completed && !cutscene_mode) {
         const bool battle_invariants_valid =
             CheckBattleInvariantsAndReportTrajectory(
                 db_service, *graph, entry, options, event_sink,
@@ -2789,6 +3027,7 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
         durable_log.AppendLine(line.str());
         std::cout << line.str() << '\n';
     }
+    if (workflow_instance_id_out) *workflow_instance_id_out = workflow_instance_id;
     return true;
 }
 

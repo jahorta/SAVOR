@@ -136,6 +136,7 @@
     </ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowExpansionService.h"><Filter>Execution\Workflow</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowGraphLaunchService.h"><Filter>Execution\Workflow</Filter></ClInclude>
+    <ClInclude Include="Execution\Workflow\BattleVictoryRecordingService.h"><Filter>Execution\Workflow</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowLaunchContract.h">
       <Filter>Workflows</Filter>
     </ClInclude>

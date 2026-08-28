@@ -76,6 +76,8 @@ struct CliOptions {
     std::optional<std::filesystem::path> perf_report_dir;
     bool visual_worker = false;
     bool breakpoint_diagnostics = false;
+    bool capture_seed_calls = false;
+    bool cutscene_delay = false;
     int diagnostic_max_runs = 5;
     std::optional<std::filesystem::path> visual_screenshot_dir;
     std::optional<std::string> workflow_unit;
@@ -105,6 +107,7 @@ struct TasMovieRtcRange {
 enum class E2eScenarioKind {
     SeedProbe,
     Battle,
+    TasMovieCutscene,
     TasMovieEstablish,
     TasMovieValidation,
     TasMovieSeedProbe,

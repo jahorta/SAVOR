@@ -221,6 +221,7 @@
     
     <ClInclude Include="Phases\Programs\SeedProbe\SeedProbeModule.h" />
     <ClInclude Include="Phases\Programs\TasMovieValidation\TasMovieValidationModule.h" />
+    <ClInclude Include="Phases\Programs\TasMovieCheckpoint\TasMovieCheckpointModule.h" />
     <ClInclude Include="Phases\Programs\TasMovieInputEpoch\TasMovieInputEpochModule.h" />
     <ClInclude Include="Phases\RNGSeedDeltaMap.h" />
     <ClInclude Include="Runner\Breakpoints\BP.def.h" />
@@ -389,6 +390,7 @@
     
     <ClCompile Include="Phases\Programs\SeedProbe\SeedProbeModule.cpp" />
     <ClCompile Include="Phases\Programs\TasMovieValidation\TasMovieValidationModule.cpp" />
+    <ClCompile Include="Phases\Programs\TasMovieCheckpoint\TasMovieCheckpointModule.cpp" />
     <ClCompile Include="Phases\Programs\TasMovieInputEpoch\TasMovieInputEpochCodecs.cpp" />
     <ClCompile Include="Phases\Programs\TasMovieInputEpoch\TasMovieInputEpochModule.cpp" />
     <ClCompile Include="Phases\RNGSeedDeltaMap.cpp" />

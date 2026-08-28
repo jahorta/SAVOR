@@ -543,7 +543,7 @@ public:
 
         std::vector<std::uint8_t> encoded_workset;
         const auto wire =
-        savor::runtime::EncodeWorkerWorksetV4(
+        savor::runtime::EncodeWorkerWorksetV5(
                 workset,
                 encoded_workset);
         if (!wire) {

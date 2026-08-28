@@ -49,7 +49,7 @@ struct WorkerRuntimeContractV1
 {
     std::uint32_t contract_version = 1;
     std::uint16_t wrms_protocol_version = wrms::ProtocolVersion;
-    std::uint32_t workset_wire_version = 4;
+    std::uint32_t workset_wire_version = 5;
     std::uint32_t program_module_format_version = 1;
     std::uint32_t program_invocation_format_version = 1;
     std::uint32_t program_result_format_version = 1;
@@ -66,7 +66,7 @@ struct WorkerRuntimeContractV1
     {
         return contract_version == 1 &&
             wrms_protocol_version == wrms::ProtocolVersion &&
-            workset_wire_version == 4 && !supported_game_id.empty() &&
+            workset_wire_version == 5 && !supported_game_id.empty() &&
             !executable_identity.empty() && !address_map_revision.empty() &&
             !emulator_bridge_revision.empty() && !build_identity.empty() &&
             static_runtime_abi_sha256.size() == 64 &&

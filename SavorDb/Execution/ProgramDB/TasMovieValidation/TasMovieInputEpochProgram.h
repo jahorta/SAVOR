@@ -16,6 +16,7 @@ namespace savor::db::execution::programdb::tasmovieinputepoch {
 struct TasMovieInputEpochProgramConfig {
     std::filesystem::path working_dir_root;
     std::string capture_module_sha256;
+    bool enable_seed_call_progress = false;
 };
 
 ProgramKindDescriptor BuildAnnotationProgramDescriptor(

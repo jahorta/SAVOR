@@ -17,6 +17,7 @@
 #include "ScenarioEntry.h"
 #include "TasMovieRealWorkerScenario.h"
 #include "TasMovieInputEpochRewriteScenario.h"
+#include "TasMovieCutsceneScenario.h"
 #include "WorkflowUnitRealWorkerScenario.h"
 
 namespace {
@@ -187,6 +188,10 @@ int main(int argc, char** argv) {
                 break;
             case E2eScenarioKind::Battle:
                 scenario_passed = RunBattleWorkflowGraphRealWorkerScenario(
+                    options, entry, argv[0], &service, &scenario_error);
+                break;
+            case E2eScenarioKind::TasMovieCutscene:
+                scenario_passed = RunTasMovieCutsceneRealWorkerScenario(
                     options, entry, argv[0], &service, &scenario_error);
                 break;
             case E2eScenarioKind::TasMovieEstablish:

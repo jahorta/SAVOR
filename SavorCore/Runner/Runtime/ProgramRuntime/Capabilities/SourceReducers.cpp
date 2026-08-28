@@ -398,7 +398,7 @@ std::optional<std::uint32_t> ContinueResultPc(
         : nullptr;
     if (!root || root->type != CanonicalActionOutputType(
             CanonicalAction::ExecutionContinueUntil) ||
-        !record || record->fields.size() != 6)
+        !record || record->fields.size() != 7)
         return std::nullopt;
     std::uint32_t pc = 0;
     return Scalar(reader, record->fields[2], pc)
@@ -425,31 +425,13 @@ std::optional<ContinueProvenance> ContinueResultProvenance(
     ContinueProvenance value{};
     if (!root || root->type != CanonicalActionOutputType(
             CanonicalAction::ExecutionContinueUntil) ||
-        !record || record->fields.size() != 6 ||
+        !record || record->fields.size() != 7 ||
         !Scalar(reader, record->fields[2], value.pc) ||
         !Scalar(reader, record->fields[4], value.vi_count) ||
-        !Scalar(reader, record->fields[5], value.epoch))
+        !Scalar(reader, record->fields[6], value.epoch))
         return std::nullopt;
     return value;
 }
-
-enum class ResultsSegment : std::uint8_t
-{
-    Descriptor = 0,
-    Dispatch = 1,
-    AcceptIntro = 2,
-    AcceptGold = 3,
-    AcceptNormalExp = 4,
-    AcceptStatWave = 5,
-    AcceptMagicEntry = 6,
-    AcceptMagicExp = 7,
-    AcceptLearnedMagic = 8,
-    AcceptItemPopup = 9,
-    AcceptConfirm = 10,
-    AcceptFade = 11,
-    Cleanup = 12,
-    Complete = 13,
-};
 
 enum class CompletionSegment : std::uint8_t
 {
@@ -577,153 +559,6 @@ bool AdvanceCompletionState(
         return false;
     }
     return false;
-}
-
-struct ResultsState
-{
-    battlecompletion::BattleResultsPresentationV1 expected;
-    std::array<std::uint32_t, 10> observed{};
-    ResultsSegment segment = ResultsSegment::Descriptor;
-};
-
-std::vector<std::uint8_t> EncodeResultsState(const ResultsState& state)
-{
-    std::vector<std::uint8_t> bytes{'B','R','S','1',1,0,0,0};
-    const auto put32 = [&](std::uint32_t value)
-    {
-        for (unsigned shift = 0; shift != 32; shift += 8)
-            bytes.push_back(static_cast<std::uint8_t>(value >> shift));
-    };
-    put32(state.expected.gold_pages);
-    put32(state.expected.normal_exp_pages);
-    put32(state.expected.level_panels);
-    put32(state.expected.stat_waves);
-    put32(state.expected.magic_exp_pages);
-    put32(state.expected.magic_rank_events);
-    put32(state.expected.learned_magic_waves);
-    put32(state.expected.item_popups);
-    for (const auto count : state.observed) put32(count);
-    bytes.push_back(static_cast<std::uint8_t>(state.segment));
-    return bytes;
-}
-
-bool DecodeResultsState(
-    const ProgramValueGraph& graph,
-    ResultsState& state)
-{
-    const auto* bytes = RootNamedBytes(
-        graph, BattleResultsStateSchemaIdentity());
-    static constexpr std::array<Byte, 4> kMagic{'B','R','S','1'};
-    if (!bytes || bytes->size() != 81 ||
-        !std::equal(bytes->begin(), bytes->begin() + 4, kMagic.begin()) ||
-        (*bytes)[4] != 1 || (*bytes)[5] != 0 ||
-        (*bytes)[6] != 0 || (*bytes)[7] != 0)
-        return false;
-    std::size_t offset = 8;
-    const auto take32 = [&]()
-    {
-        std::uint32_t value = 0;
-        for (unsigned shift = 0; shift != 32; shift += 8)
-            value |= static_cast<std::uint32_t>((*bytes)[offset++]) << shift;
-        return value;
-    };
-    state.expected.gold_pages = take32();
-    state.expected.normal_exp_pages = take32();
-    state.expected.level_panels = take32();
-    state.expected.stat_waves = take32();
-    state.expected.magic_exp_pages = take32();
-    state.expected.magic_rank_events = take32();
-    state.expected.learned_magic_waves = take32();
-    state.expected.item_popups = take32();
-    for (auto& count : state.observed) count = take32();
-    const auto segment = (*bytes)[offset];
-    if (segment > static_cast<std::uint8_t>(ResultsSegment::Complete))
-        return false;
-    state.segment = static_cast<ResultsSegment>(segment);
-    return true;
-}
-
-ProgramValueGraph EncodeResultsStateGraph(const ResultsState& state)
-{
-    return NamedBytesGraph(
-        BattleResultsStateSchemaIdentity(),
-        EncodeResultsState(state));
-}
-
-ProgramValueGraph EncodeResultsTransition(const ResultsState& state)
-{
-    GraphBuilder builder;
-    const auto encoded_state = builder.Import(EncodeResultsStateGraph(state));
-    const auto segment = builder.Add(
-        TypeRef::Named(BattleResultsSegmentSchemaIdentity()),
-        EnumValue{
-            .schema = BattleResultsSegmentSchemaIdentity(),
-            .value = static_cast<std::int64_t>(state.segment),
-        });
-    const auto root = builder.AddRecord(
-        BattleResultsTransitionSchemaIdentity(),
-        {encoded_state, segment});
-    return std::move(builder).Finish(root);
-}
-
-bool AdvanceResultsState(ResultsState& state, std::uint32_t pc)
-{
-    if (state.segment == ResultsSegment::Descriptor)
-    {
-        if (pc != 0x800e35f0u) return false;
-        state.segment = ResultsSegment::Dispatch;
-        return true;
-    }
-    if (state.segment == ResultsSegment::Cleanup)
-    {
-        if (pc != 0x800e3694u) return false;
-        state.segment = ResultsSegment::Complete;
-        return true;
-    }
-    if (state.segment >= ResultsSegment::AcceptIntro &&
-        state.segment <= ResultsSegment::AcceptFade)
-    {
-        if (pc != 0x801c7948u) return false;
-        const auto index = static_cast<std::size_t>(state.segment) -
-            static_cast<std::size_t>(ResultsSegment::AcceptIntro);
-        ++state.observed[index];
-        state.segment = ResultsSegment::Dispatch;
-        return true;
-    }
-    if (state.segment != ResultsSegment::Dispatch) return false;
-    switch (pc)
-    {
-    case 0x800e4660u: return true;
-    case 0x800e46bcu: state.segment = ResultsSegment::AcceptIntro; return true;
-    case 0x800e488cu: state.segment = ResultsSegment::AcceptGold; return true;
-    case 0x800e4d40u: state.segment = ResultsSegment::AcceptNormalExp; return true;
-    case 0x800e4f2cu: state.segment = ResultsSegment::AcceptStatWave; return true;
-    case 0x800e52d8u: state.segment = ResultsSegment::AcceptMagicEntry; return true;
-    case 0x800e5460u: state.segment = ResultsSegment::AcceptMagicExp; return true;
-    case 0x800e5c3cu: state.segment = ResultsSegment::AcceptLearnedMagic; return true;
-    case 0x800e5f80u: state.segment = ResultsSegment::AcceptItemPopup; return true;
-    case 0x800e6128u: state.segment = ResultsSegment::AcceptConfirm; return true;
-    case 0x800e6470u: state.segment = ResultsSegment::AcceptFade; return true;
-    case 0x800e64a0u: state.segment = ResultsSegment::Cleanup; return true;
-    default: return false;
-    }
-}
-
-bool ResultsPresentationMatchesManifest(const ResultsState& state)
-{
-    const auto& expected = state.expected;
-    const auto expected_stat_waves =
-        expected.level_panels == 0 ? 0u : 3u;
-    const auto expected_magic_entries =
-        expected.magic_rank_events == 0 ? 0u : 1u;
-    return expected.stat_waves == expected_stat_waves &&
-        state.observed[1] == expected.gold_pages &&
-        state.observed[2] == expected.normal_exp_pages &&
-        state.observed[3] == expected.stat_waves &&
-        state.observed[4] == expected_magic_entries &&
-        state.observed[5] == expected.magic_exp_pages &&
-        state.observed[6] == expected.learned_magic_waves &&
-        state.observed[7] == expected.item_popups;
 }
 
 enum class BattleDerivedGroup : std::int64_t
@@ -1106,7 +941,7 @@ bool DecodeBattleDerivedQueryValue(
     if (!result_value ||
         result_value->type != CanonicalActionOutputType(
             CanonicalAction::ExecutionContinueUntil) ||
-        !result || result->fields.size() != 6)
+        !result || result->fields.size() != 7)
     {
         return false;
     }
@@ -1709,109 +1544,6 @@ std::optional<ProgramValueGraph> InvokeSourceReducer(
             battlecompletion::SemanticallyEqualBattleCompletionManifestV1(a, b));
         return std::move(builder).Finish(root);
     }
-    if (identity == BattleResultsInitializeReducerIdentity())
-    {
-        if (inputs.size() != 2) return std::nullopt;
-        const auto* manifest_bytes = RootNamedBytes(
-            inputs[0], BattleCompletionManifestSchemaIdentity());
-        if (!manifest_bytes) return std::nullopt;
-        battlecompletion::BattleCompletionManifestV1 manifest{};
-        if (!battlecompletion::DecodeBattleCompletionManifestV1(
-                *manifest_bytes, manifest))
-            return std::nullopt;
-        GraphReader frame_reader(inputs[1]);
-        const auto* frame_root = frame_reader.Find(inputs[1].root);
-        if (!frame_reader.valid() || !frame_root ||
-            frame_root->type != CanonicalRuntimeType(
-                CanonicalRuntimeSchema::InputFramePayload))
-            return std::nullopt;
-        ResultsState state{};
-        state.expected = manifest.presentation;
-        return EncodeResultsStateGraph(state);
-    }
-    if (identity == BattleResultsAdvanceReducerIdentity())
-    {
-        if (inputs.size() != 2) return std::nullopt;
-        ResultsState state{};
-        const auto pc = ContinueResultPc(inputs[1]);
-        if (!DecodeResultsState(inputs[0], state) || !pc ||
-            !AdvanceResultsState(state, *pc))
-        {
-            if (diagnostic) *diagnostic =
-                "Battle Results handler reached an unexpected semantic point";
-            return std::nullopt;
-        }
-        return EncodeResultsTransition(state);
-    }
-    if (identity == BattleResultsCompleteSegmentReducerIdentity())
-    {
-        return inputs.size() == 2 ? std::optional(inputs[1]) : std::nullopt;
-    }
-    if (identity == BattleResultsFinalizeReducerIdentity())
-    {
-        if (inputs.size() != 2) return std::nullopt;
-        ResultsState state{};
-        const auto pc = ContinueResultPc(inputs[1]);
-        if (!DecodeResultsState(inputs[0], state) || !pc ||
-            state.segment != ResultsSegment::Complete || *pc != 0x800e3694u)
-            return std::nullopt;
-        if (!ResultsPresentationMatchesManifest(state))
-        {
-            if (diagnostic) *diagnostic =
-                "Battle Results presentation did not match the completion manifest";
-            return std::nullopt;
-        }
-        auto receipt = EncodeResultsState(state);
-        receipt[0] = 'B'; receipt[1] = 'R'; receipt[2] = 'R'; receipt[3] = '1';
-        const auto put32 = [&](std::uint32_t value)
-        {
-            for (unsigned shift = 0; shift != 32; shift += 8)
-                receipt.push_back(static_cast<std::uint8_t>(value >> shift));
-        };
-        const auto put64 = [&](std::uint64_t value)
-        {
-            put32(static_cast<std::uint32_t>(value));
-            put32(static_cast<std::uint32_t>(value >> 32u));
-        };
-        const auto terminal = ContinueResultProvenance(inputs[1]);
-        if (!terminal) return std::nullopt;
-        put32(terminal->pc);
-        put64(terminal->vi_count);
-        put64(terminal->epoch);
-        return NamedBytesGraph(BattleResultsReceiptSchemaIdentity(), std::move(receipt));
-    }
-    if (identity == BattleResultsAttachInvariantsReducerIdentity())
-    {
-        if (inputs.size() != 7) return std::nullopt;
-        const auto* receipt = RootNamedBytes(
-            inputs[0], BattleResultsReceiptSchemaIdentity());
-        const auto entry_rng = RootScalar<std::uint32_t>(inputs[1]);
-        const auto exit_rng = RootScalar<std::uint32_t>(inputs[2]);
-        const auto lifecycle = RootScalar<std::uint32_t>(inputs[3]);
-        const auto completed = RootScalar<std::uint32_t>(inputs[4]);
-        const auto result_pointer = RootScalar<std::uint32_t>(inputs[5]);
-        const auto game_mode = RootScalar<std::uint32_t>(inputs[6]);
-        if (!receipt || receipt->size() != 101 || !entry_rng || !exit_rng ||
-            !lifecycle || !completed || !result_pointer || !game_mode ||
-            (*receipt)[0] != 'B' || (*receipt)[1] != 'R' ||
-            (*receipt)[2] != 'R' || (*receipt)[3] != '1' ||
-            *entry_rng != *exit_rng || *lifecycle != 0xffu ||
-            *completed != 1u || *result_pointer != 0u || *game_mode != 6u)
-            return std::nullopt;
-        auto bytes = std::vector<std::uint8_t>(receipt->begin(), receipt->end());
-        const auto put32 = [&](std::uint32_t value)
-        {
-            for (unsigned shift = 0; shift != 32; shift += 8)
-                bytes.push_back(static_cast<std::uint8_t>(value >> shift));
-        };
-        put32(*entry_rng);
-        put32(*exit_rng);
-        put32(*lifecycle);
-        put32(*completed);
-        put32(*result_pointer);
-        put32(*game_mode);
-        return NamedBytesGraph(BattleResultsReceiptSchemaIdentity(), std::move(bytes));
-    }
     const auto derived_reducer = [&](std::string_view canonical_id) {
         return identity == BattleDerivedReducerIdentity(canonical_id);
     };
@@ -1949,7 +1681,7 @@ std::optional<ProgramValueGraph> InvokeSourceReducer(
                 : nullptr;
             if (!root || root->type != CanonicalActionOutputType(
                     CanonicalAction::ExecutionContinueUntil) ||
-                !record || record->fields.size() != 6 ||
+                !record || record->fields.size() != 7 ||
                 !Scalar(receipt, record->fields[3],
                     state.last_command_commit_input_count))
             {

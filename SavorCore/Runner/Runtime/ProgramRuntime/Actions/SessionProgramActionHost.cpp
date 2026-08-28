@@ -3,6 +3,7 @@
 #include "CanonicalActionPayload.h"
 #include "../Capabilities/SourceCapabilityPacks.h"
 #include "../Capabilities/SourceReducers.h"
+#include "../Composition/BattleResultsHandler.h"
 #include "../Composition/SemanticObservationComposition.h"
 #include "../Model/ProgramValueArena.h"
 #include "../Registry/CanonicalActionCatalog.h"
@@ -1036,7 +1037,7 @@ bool DecodeStopReceipt(
     }
     const auto* record =
         std::get_if<RecordValue>(&value.payload);
-    if (!record || record->fields.size() != 6)
+    if (!record || record->fields.size() != 7)
     {
         diagnostic = "Observation stop receipt has the wrong result shape";
         return false;
@@ -1966,7 +1967,8 @@ StopSubscriptionGroupDefinition BuildPcGroup(
     return definition;
 }
 
-inline constexpr std::uint32_t kDialogueTextReadyPc = 0x8010D300u;
+inline constexpr std::uint32_t kDialogueTextReadyPc = 0x8010D280u;
+inline constexpr std::uint32_t kDialogueFinalReadyPc = 0x8010D1D0u;
 inline constexpr std::uint32_t kDialogueChoiceReadyPc = 0x8010CFD4u;
 inline constexpr std::uint32_t kDialoguePadReadReturnedPc = 0x801D6E7Cu;
 inline constexpr std::string_view kDialogueAdvanceHandler = "soa.dialogue.advance";
@@ -1984,6 +1986,10 @@ StopSubscriptionGroupDefinition BuildDialogueInterruptionGroup(
     definition.subscriptions = {
         {.id=StopSubscriptionId(seed | 0x10u),
          .point=PcStopPointSpec{kDialogueTextReadyPc},
+         .route=TrustedStopInterruptionRequest{.handler_key=std::string(kDialogueAdvanceHandler)},
+         .lifetime=StopSubscriptionLifetime::Scoped, .priority=100, .consumer=consumer},
+        {.id=StopSubscriptionId(seed | 0x12u),
+         .point=PcStopPointSpec{kDialogueFinalReadyPc},
          .route=TrustedStopInterruptionRequest{.handler_key=std::string(kDialogueAdvanceHandler)},
          .lifetime=StopSubscriptionLifetime::Scoped, .priority=100, .consumer=consumer},
         {.id=StopSubscriptionId(seed | 0x11u),
@@ -2010,6 +2016,52 @@ StopSubscriptionGroupDefinition BuildDialoguePadReadGroup(
             .lifetime=StopSubscriptionLifetime::Scoped,
             .consumer=consumer}},
     };
+}
+
+StopSubscriptionGroupDefinition BuildBattleResultsInterruptionGroup(
+    InvocationId invocation, IStopPointConsumer* consumer)
+{
+    const std::uint64_t seed = (invocation.value() << 12u) ^ 0xB7A100u;
+    return {
+        .id=StopSubscriptionGroupId(seed | 1u),
+        .source={StopSourceId(seed | 2u),
+            "program.battle-results." + std::to_string(invocation.value()),
+            "invocation-scoped Battle Results interruption handler"},
+        .subscriptions={{.id=StopSubscriptionId(seed | 0x10u),
+            .point=PcStopPointSpec{
+                composition::kBattleResultsDescriptorReadyPc},
+            .route=TrustedStopInterruptionRequest{
+                .handler_key=std::string(
+                    composition::kBattleResultsAdvanceHandlerKey)},
+            .lifetime=StopSubscriptionLifetime::Scoped,
+            .priority=100,
+            .consumer=consumer}},
+    };
+}
+
+StopSubscriptionGroupDefinition BuildBattleResultsWakeGroup(
+    InterruptionFrameId frame,
+    const composition::BattleResultsHandlerStepV1& step,
+    IStopPointConsumer* consumer)
+{
+    const std::uint64_t seed = (frame.value() << 20u) ^
+        (step.sequence << 8u) ^ 0xB7A200u;
+    StopSubscriptionGroupDefinition definition;
+    definition.id = StopSubscriptionGroupId(seed | 1u);
+    definition.source = {StopSourceId(seed | 2u),
+        "battle-results.step." + std::to_string(step.sequence),
+        std::string(step.diagnostic_selector)};
+    std::uint64_t ordinal = 0x10u;
+    for (const std::uint32_t pc : step.WakePcs())
+    {
+        definition.subscriptions.push_back({
+            .id=StopSubscriptionId(seed | ordinal++),
+            .point=PcStopPointSpec{pc},
+            .route=ForegroundStopWait{},
+            .lifetime=StopSubscriptionLifetime::Scoped,
+            .consumer=consumer});
+    }
+    return definition;
 }
 
 InputExecutionBindingEvidence BindingEvidence(
@@ -2404,7 +2456,10 @@ struct SessionProgramActionHost::Impl
         BaselineStage baseline_stage = BaselineStage::Established;
         std::uint32_t handler_flags = 0;
         std::uint64_t completed_dialogues = 0;
+        std::uint64_t completed_battle_results = 0;
         std::shared_ptr<StopSubscriptionGroupHandle> dialogue_stop_group;
+        std::shared_ptr<StopSubscriptionGroupHandle>
+            battle_results_stop_group;
 
         ActiveInvocation(
             InvocationId invocation_id,
@@ -2456,6 +2511,16 @@ struct SessionProgramActionHost::Impl
         InputLeaseId lease;
         InputExecutionBindingId binding;
         ExecutionOperationId child_operation;
+    };
+
+    struct BattleResultsInterruption
+    {
+        InterruptionFrameId frame;
+        WorksetEpoch epoch;
+        InputLeaseId lease;
+        std::optional<InputExecutionBindingId> binding;
+        ExecutionOperationId child_operation;
+        composition::BattleResultsHandlerV1 handler;
     };
 
     struct PendingExecution
@@ -3039,10 +3104,55 @@ struct SessionProgramActionHost::Impl
                     registered.receipt.error.message);
             dialogue_group = std::make_shared<StopSubscriptionGroupHandle>(
                 std::move(registered.handle));
+            const PhysicalStopPointPlan plan = router->DesiredPhysicalPlan();
+            const auto contains_pc = [&plan](std::uint32_t pc) {
+                return std::ranges::any_of(plan.pcs,
+                    [pc](const PhysicalPcStop& point) {
+                        return point.pc == pc;
+                    });
+            };
+            SCLOGDX(
+                SC_TAGS("program.handler", "program.handler.dialogue"),
+                "invocation=%llu handler_flags=0x%08X registered=1 text_pc=0x%08X text_installed=%u final_pc=0x%08X final_installed=%u choice_pc=0x%08X choice_installed=%u physical_pc_count=%zu",
+                request.invocation_id.value(), request.handler_flags,
+                kDialogueTextReadyPc,
+                contains_pc(kDialogueTextReadyPc) ? 1u : 0u,
+                kDialogueFinalReadyPc,
+                contains_pc(kDialogueFinalReadyPc) ? 1u : 0u,
+                kDialogueChoiceReadyPc,
+                contains_pc(kDialogueChoiceReadyPc) ? 1u : 0u,
+                plan.pcs.size());
+        }
+        std::shared_ptr<StopSubscriptionGroupHandle> battle_results_group;
+        if (HasInvocationHandlerFlag(request.handler_flags,
+                InvocationHandlerFlag::BattleResultsAdvance))
+        {
+            StopPointRouter* router = session.stop_points();
+            if (!router)
+                return Reject(request, ProgramActionResolutionStatus::Unsupported,
+                    "battle_results_router_unavailable",
+                    "Battle Results handling requires StopPointRouter");
+            auto registered = router->RegisterGroup(
+                BuildBattleResultsInterruptionGroup(
+                    request.invocation_id, &stop_consumer));
+            if (!registered.receipt.ok)
+                return Reject(request, ProgramActionResolutionStatus::Failed,
+                    "battle_results_route_registration_failed",
+                    registered.receipt.error.message);
+            battle_results_group =
+                std::make_shared<StopSubscriptionGroupHandle>(
+                    std::move(registered.handle));
+            SCLOGDX(
+                SC_TAGS("program.handler", "program.handler.battle-results"),
+                "invocation=%llu handler_flags=0x%08X registered=1 descriptor_pc=0x%08X",
+                request.invocation_id.value(), request.handler_flags,
+                composition::kBattleResultsDescriptorReadyPc);
         }
         active.emplace(request.invocation_id, request.attempt_id,
             request.handler_flags);
         active->dialogue_stop_group = std::move(dialogue_group);
+        active->battle_results_stop_group =
+            std::move(battle_results_group);
         ResourceScopeResult invocation_scope =
             ledger->OpenSyntheticScope(
                 ledger_snapshot.session_root,
@@ -3134,6 +3244,11 @@ struct SessionProgramActionHost::Impl
         DialogueInterruption& handler,
         const InputExecutionBindingReceipt& binding);
     void FailDialogueHandler(std::string diagnostic);
+    bool RestoreInvocationHandlerRoutes(std::string& diagnostic);
+    bool SubmitBattleResultsStep(BattleResultsInterruption& handler);
+    bool HandleBattleResultsChildTerminal(
+        const ExecutionTerminalResult& terminal);
+    void FailBattleResultsHandler(std::string diagnostic);
     void CompleteCleanup(
         ExecutionTerminalResult terminal);
     [[nodiscard]] ProgramActionResolution ExecutionCompletion(
@@ -3163,6 +3278,7 @@ struct SessionProgramActionHost::Impl
     std::unordered_map<std::string, SavedArtifact> saved_artifacts;
     std::optional<PendingExecution> pending;
     std::optional<DialogueInterruption> dialogue;
+    std::optional<BattleResultsInterruption> battle_results;
     std::vector<ActorActionResult> completions;
     std::vector<ForegroundSemanticStopObservationV1>
         foreground_semantic_stops;
@@ -5768,6 +5884,132 @@ void SessionProgramActionHost::Impl::CompletePendingExecution(
     (void)Queue(std::move(completion));
 }
 
+bool SessionProgramActionHost::Impl::RestoreInvocationHandlerRoutes(
+    std::string& diagnostic)
+{
+    if (!active)
+    {
+        diagnostic = "invocation handler routes have no active invocation";
+        return false;
+    }
+    StopPointRouter* router = session.stop_points();
+    if (!router)
+    {
+        diagnostic = "invocation handler routes require StopPointRouter";
+        return false;
+    }
+
+    std::shared_ptr<StopSubscriptionGroupHandle> dialogue_group;
+    if (HasInvocationHandlerFlag(
+            active->handler_flags, InvocationHandlerFlag::DialogueAdvance))
+    {
+        auto registered = router->RegisterGroup(
+            BuildDialogueInterruptionGroup(active->invocation, &stop_consumer));
+        if (!registered.receipt.ok)
+        {
+            diagnostic = "Dialogue route restoration failed: " +
+                registered.receipt.error.message;
+            return false;
+        }
+        dialogue_group = std::make_shared<StopSubscriptionGroupHandle>(
+            std::move(registered.handle));
+    }
+
+    std::shared_ptr<StopSubscriptionGroupHandle> battle_results_group;
+    if (HasInvocationHandlerFlag(active->handler_flags,
+            InvocationHandlerFlag::BattleResultsAdvance))
+    {
+        auto registered = router->RegisterGroup(
+            BuildBattleResultsInterruptionGroup(
+                active->invocation, &stop_consumer));
+        if (!registered.receipt.ok)
+        {
+            diagnostic = "Battle Results route restoration failed: " +
+                registered.receipt.error.message;
+            return false;
+        }
+        battle_results_group =
+            std::make_shared<StopSubscriptionGroupHandle>(
+                std::move(registered.handle));
+    }
+
+    active->dialogue_stop_group = std::move(dialogue_group);
+    active->battle_results_stop_group =
+        std::move(battle_results_group);
+    diagnostic.clear();
+    return true;
+}
+
+bool SessionProgramActionHost::Impl::SubmitBattleResultsStep(
+    BattleResultsInterruption& interruption)
+{
+    if (!active)
+        return false;
+    const auto step = interruption.handler.NextStep();
+    if (step.action == composition::BattleResultsHandlerAction::Complete ||
+        step.WakePcs().empty())
+    {
+        return false;
+    }
+
+    InputArbiter* input = session.input_arbiter();
+    if (!input)
+        return false;
+    std::optional<InputExecutionRelationshipId> input_relationship;
+    if (step.action == composition::BattleResultsHandlerAction::PressA)
+    {
+        if (interruption.binding)
+            return false;
+        const InputExecutionBindingReceipt delivery = input->BeginDelivery(
+            interruption.lease, GCInputFrame::new_btns(GC_A),
+            interruption.epoch);
+        if (!delivery.ok)
+            return false;
+        const InputExecutionRelationshipReceipt relationship =
+            input->CreateExecutionRelationship(BindingEvidence(delivery));
+        if (!relationship.ok)
+            return false;
+        interruption.binding = delivery.binding;
+        input_relationship = relationship.relationship;
+    }
+    else if (step.action == composition::BattleResultsHandlerAction::ReleaseA)
+    {
+        if (!interruption.binding)
+            return false;
+        const InputDeliveryReceipt completed = input->CompleteDelivery(
+            interruption.lease, *interruption.binding,
+            interruption.epoch);
+        if (!completed.ok)
+            return false;
+        interruption.binding.reset();
+    }
+
+    ContinueUntilRequest child;
+    child.policy.expected_epoch = interruption.epoch;
+    child.policy.movie_ended = MovieEndedPolicy::Fail;
+    child.policy.throttle = ExecutionThrottlePolicy::RequireDisabled;
+    child.policy.current_point = ExecutionCurrentPointPolicy::Ignore;
+    child.policy.interruptions = ExecutionInterruptionPolicy::Reject;
+    child.policy.input_relationship = input_relationship;
+    child.policy.cancellation = active->cancellation.token();
+    child.policy.diagnostic_invocation = active->invocation.value();
+    child.policy.diagnostic_attempt = active->attempt.value();
+    child.policy.diagnostic_selector = std::string(step.diagnostic_selector);
+    child.wake_group = BuildBattleResultsWakeGroup(
+        interruption.frame, step, &stop_consumer);
+    const ExecutionSubmissionReceipt submitted =
+        session.SubmitInterruptionChild(
+            interruption.frame, std::move(child));
+    if (!submitted.accepted)
+    {
+        if (input_relationship)
+            (void)input->RemoveExecutionRelationship(*input_relationship);
+        return false;
+    }
+    interruption.child_operation = submitted.operation_id;
+    return true;
+}
+
 bool SessionProgramActionHost::Impl::SubmitDialogueChild(
     DialogueInterruption& handler,
     const InputExecutionBindingReceipt& binding)
@@ -5825,12 +6067,12 @@ void SessionProgramActionHost::Impl::FailDialogueHandler(
 void SessionProgramActionHost::Impl::HandleInterruptionReady(
     ExecutionInterruptionReady ready)
 {
-    if (!active || dialogue)
+    if (!active || dialogue || battle_results)
     {
         if (ready.frame_id)
             (void)session.CompleteInterruptionHandler(ready.frame_id,
                 InterruptionHandlerOutcome::InfrastructureFailure,
-                "dialogue handler state overlaps another interruption");
+                "invocation handler state overlaps another interruption");
         return;
     }
     if (ready.handler_key == kDialogueChoiceHandler)
@@ -5840,6 +6082,76 @@ void SessionProgramActionHost::Impl::HandleInterruptionReady(
             "CUTSCENE_CHOICE_UNSUPPORTED: dialogue choice requires explicit branching");
         return;
     }
+    if (ready.handler_key == composition::kBattleResultsAdvanceHandlerKey)
+    {
+        active->dialogue_stop_group.reset();
+        active->battle_results_stop_group.reset();
+        GuestMemory* memory = session.guest_memory();
+        if (!memory)
+        {
+            (void)session.CompleteInterruptionHandler(ready.frame_id,
+                InterruptionHandlerOutcome::InfrastructureFailure,
+                "Battle Results GuestMemory is unavailable");
+            return;
+        }
+        const WorksetEpoch epoch = ready.trigger.identity.workset_epoch;
+        const GuestReadReceipt rng = memory->ReadScalar(
+            composition::kBattleResultsRngAddress,
+            GuestScalarWidth::U32, epoch);
+        if (!rng.ok)
+        {
+            (void)session.CompleteInterruptionHandler(ready.frame_id,
+                InterruptionHandlerOutcome::InfrastructureFailure,
+                "Battle Results entry RNG read failed: " + rng.message);
+            return;
+        }
+        InputArbiter* input = session.input_arbiter();
+        if (!input)
+        {
+            (void)session.CompleteInterruptionHandler(ready.frame_id,
+                InterruptionHandlerOutcome::InfrastructureFailure,
+                "Battle Results InputArbiter is unavailable");
+            return;
+        }
+        const InputLeaseReceipt lease = input->Acquire({
+            .owner=InputOwnerId(active->invocation.value()),
+            .port=0,
+            .priority=1000,
+            .suspendable=true,
+            .interruption_borrowable=false,
+            .movie_exclusive=false,
+            .borrow_policy=InputBorrowPolicy::RequireStableNeutral,
+        }, epoch);
+        if (!lease.ok)
+        {
+            (void)session.CompleteInterruptionHandler(ready.frame_id,
+                InterruptionHandlerOutcome::InfrastructureFailure,
+                "Battle Results input lease failed: " + lease.message);
+            return;
+        }
+        BattleResultsInterruption interruption;
+        interruption.frame = ready.frame_id;
+        interruption.epoch = lease.epoch;
+        interruption.lease = lease.lease;
+        std::string diagnostic;
+        if (!interruption.handler.Begin({
+                .pc=ready.evidence.pc,
+                .vi_count=ready.evidence.vi_count,
+                .workset_epoch=epoch.value()},
+                static_cast<std::uint32_t>(rng.value), &diagnostic))
+        {
+            (void)input->CloseLease(lease.lease, lease.epoch);
+            (void)session.CompleteInterruptionHandler(ready.frame_id,
+                InterruptionHandlerOutcome::InfrastructureFailure,
+                std::move(diagnostic));
+            return;
+        }
+        battle_results.emplace(std::move(interruption));
+        if (!SubmitBattleResultsStep(*battle_results))
+            FailBattleResultsHandler(
+                "Battle Results first transition could not start");
+        return;
+    }
     if (ready.handler_key != kDialogueAdvanceHandler)
     {
         (void)session.CompleteInterruptionHandler(ready.frame_id,
@@ -5847,6 +6159,8 @@ void SessionProgramActionHost::Impl::HandleInterruptionReady(
             "unknown invocation interruption handler");
         return;
     }
+    active->dialogue_stop_group.reset();
+    active->battle_results_stop_group.reset();
     InputArbiter* input = session.input_arbiter();
     if (!input)
     {
@@ -5939,11 +6253,181 @@ bool SessionProgramActionHost::Impl::HandleDialogueChildTerminal(
     }
     const InterruptionFrameId frame = dialogue->frame;
     dialogue.reset();
+    if (!active)
+    {
+        (void)session.CompleteInterruptionHandler(frame,
+            InterruptionHandlerOutcome::InfrastructureFailure,
+            "Dialogue routes could not be restored");
+        return true;
+    }
+    std::string diagnostic;
+    if (!RestoreInvocationHandlerRoutes(diagnostic))
+    {
+        (void)session.CompleteInterruptionHandler(frame,
+            InterruptionHandlerOutcome::InfrastructureFailure,
+            std::move(diagnostic));
+        return true;
+    }
     ++active->completed_dialogues;
     const ExecutionControlReceipt resumed = session.CompleteInterruptionHandler(
         frame, InterruptionHandlerOutcome::ResumeParent);
     if (!resumed.accepted)
         session.MarkTainted("Dialogue handler could not resume its parent: " +
+            resumed.error.message);
+    return true;
+}
+
+void SessionProgramActionHost::Impl::FailBattleResultsHandler(
+    std::string diagnostic)
+{
+    if (!battle_results)
+        return;
+    const auto failed = std::move(*battle_results);
+    battle_results.reset();
+    if (InputArbiter* input = session.input_arbiter())
+    {
+        const InputLeaseCloseReceipt closed = input->CloseLease(
+            failed.lease, failed.epoch);
+        if (!closed.ok)
+        {
+            session.MarkTainted(
+                "Battle Results handler could not release its input lease: " +
+                closed.message);
+            diagnostic += "\nBattle Results input cleanup failed: " +
+                closed.message;
+        }
+    }
+    const ExecutionControlReceipt completed =
+        session.CompleteInterruptionHandler(
+            failed.frame,
+            InterruptionHandlerOutcome::InfrastructureFailure,
+            std::move(diagnostic));
+    if (!completed.accepted)
+        session.MarkTainted(
+            "Battle Results handler could not retire its interruption frame: " +
+            completed.error.message);
+}
+
+bool SessionProgramActionHost::Impl::HandleBattleResultsChildTerminal(
+    const ExecutionTerminalResult& terminal)
+{
+    if (!battle_results ||
+        battle_results->child_operation != terminal.operation_id)
+    {
+        return false;
+    }
+    if (!ExecutionSucceeded(terminal) || !terminal.stop ||
+        terminal.stop->terminal != StopRouteTerminal::ForegroundMatched ||
+        !terminal.stop->event)
+    {
+        FailBattleResultsHandler(terminal.error.message.empty()
+            ? "Battle Results transition failed"
+            : terminal.error.message);
+        return true;
+    }
+
+    std::string diagnostic;
+    if (!battle_results->handler.Observe({
+            .pc=terminal.evidence.pc,
+            .vi_count=terminal.evidence.vi_count,
+            .workset_epoch=terminal.workset_epoch.value()},
+            &diagnostic))
+    {
+        FailBattleResultsHandler(std::move(diagnostic));
+        return true;
+    }
+    if (!battle_results->handler.complete())
+    {
+        if (!SubmitBattleResultsStep(*battle_results))
+            FailBattleResultsHandler(
+                "Battle Results next transition could not start");
+        return true;
+    }
+
+    GuestMemory* memory = session.guest_memory();
+    if (!memory)
+    {
+        FailBattleResultsHandler(
+            "Battle Results terminal GuestMemory is unavailable");
+        return true;
+    }
+    const auto read = [&](std::uint32_t address, GuestScalarWidth width,
+                          std::uint32_t& value) {
+        const GuestReadReceipt receipt = memory->ReadScalar(
+            address, width, battle_results->epoch);
+        if (!receipt.ok)
+        {
+            diagnostic = receipt.message;
+            return false;
+        }
+        value = static_cast<std::uint32_t>(receipt.value);
+        return true;
+    };
+    std::uint32_t exit_rng = 0;
+    std::uint32_t completion_flag = 0;
+    std::uint32_t result_pointer = 0;
+    std::uint32_t game_mode = 0;
+    if (!read(composition::kBattleResultsRngAddress,
+            GuestScalarWidth::U32, exit_rng) ||
+        !read(composition::kBattleResultsCompletionFlagAddress,
+            GuestScalarWidth::U32, completion_flag) ||
+        !read(composition::kBattleResultsResultPointerAddress,
+            GuestScalarWidth::U32, result_pointer) ||
+        !read(composition::kBattleResultsGameModeAddress,
+            GuestScalarWidth::U32, game_mode))
+    {
+        FailBattleResultsHandler(
+            "Battle Results terminal guest read failed: " + diagnostic);
+        return true;
+    }
+
+    composition::BattleResultsHandlerReceiptV1 receipt;
+    if (!battle_results->handler.Finalize(exit_rng, completion_flag,
+            result_pointer, game_mode,
+            receipt, &diagnostic))
+    {
+        FailBattleResultsHandler(std::move(diagnostic));
+        return true;
+    }
+
+    const InterruptionFrameId frame = battle_results->frame;
+    InputArbiter* input = session.input_arbiter();
+    if (!input)
+    {
+        FailBattleResultsHandler(
+            "Battle Results InputArbiter disappeared during cleanup");
+        return true;
+    }
+    const InputLeaseCloseReceipt closed = input->CloseLease(
+        battle_results->lease, battle_results->epoch);
+    if (!closed.ok)
+    {
+        FailBattleResultsHandler(
+            "Battle Results input lease cleanup failed: " + closed.message);
+        return true;
+    }
+    battle_results.reset();
+    if (!active || !RestoreInvocationHandlerRoutes(diagnostic))
+    {
+        (void)session.CompleteInterruptionHandler(frame,
+            InterruptionHandlerOutcome::InfrastructureFailure,
+            diagnostic.empty()
+                ? "Battle Results routes could not be restored"
+                : std::move(diagnostic));
+        return true;
+    }
+    ++active->completed_battle_results;
+    SCLOGDX(
+        SC_TAGS("program.handler", "program.handler.battle-results"),
+        "invocation=%llu completed=%llu entry_rng=0x%08X exit_rng=0x%08X terminal_pc=0x%08X",
+        active->invocation.value(), active->completed_battle_results,
+        receipt.entry_rng, receipt.exit_rng, receipt.terminal.pc);
+    const ExecutionControlReceipt resumed =
+        session.CompleteInterruptionHandler(
+            frame, InterruptionHandlerOutcome::ResumeParent);
+    if (!resumed.accepted)
+        session.MarkTainted(
+            "Battle Results handler could not resume its parent: " +
             resumed.error.message);
     return true;
 }
@@ -6200,6 +6684,8 @@ void SessionProgramActionHost::HandleExecutionEvent(
         return;
     }
     if (event.kind != ExecutionEventKind::Terminal || !event.terminal)
+        return;
+    if (impl_->HandleBattleResultsChildTerminal(*event.terminal))
         return;
     if (impl_->HandleDialogueChildTerminal(*event.terminal))
         return;

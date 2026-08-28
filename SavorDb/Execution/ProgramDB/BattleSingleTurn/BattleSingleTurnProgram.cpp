@@ -1381,7 +1381,7 @@ public:
             ordered_ids.push_back(item.job_id);
         }
         std::vector<std::uint8_t> encoded;
-        const auto status = EncodeWorkerWorksetV4(workset, encoded);
+        const auto status = EncodeWorkerWorksetV5(workset, encoded);
         if (!status) return fail("battle.single_turn workset encoding failed: " + status.message);
         workset.encoded_size_bytes = encoded.size();
         return WorksetReconstructionResult{

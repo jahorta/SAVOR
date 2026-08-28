@@ -1250,7 +1250,7 @@ public:
             },
         });
         std::vector<std::uint8_t> encoded;
-        const auto status = savor::runtime::EncodeWorkerWorksetV4(
+        const auto status = savor::runtime::EncodeWorkerWorksetV5(
             workset, encoded);
         if (!status)
             return fail("Battle Recording workset encoding failed: " +
@@ -1396,7 +1396,6 @@ public:
         if (!result.observed_completion || !result.transition ||
             !completion::SemanticallyEqualBattleCompletionManifestV1(
                 *result.observed_completion, plan.expected_completion) ||
-            *result.transition != plan.expected_completion.transition ||
             result.observed_completion->transition != *result.transition ||
             result.timing_anchor.turn_index != plan.turns.back().turn_index ||
             result.timing_anchor.actor_slot !=
@@ -1647,10 +1646,13 @@ public:
                 itinerary, original.info().input_count,
                 itinerary.checkpoints.back().pc, error_out))
             return std::nullopt;
-        itinerary.checkpoints.push_back({
-            .pc = transition.provenance.pc,
-            .input_count = {.value = result.checkpoint_input_count},
-        });
+        itinerary.checkpoints.push_back(tasmovie::MakeTasMovieCheckpointV1(
+            transition.provenance.pc,
+            result.checkpoint_input_count,
+            transition.provenance.vi_count,
+            transition.sct_filename,
+            transition.area,
+            transition.effective_suffix));
         if (!tasmovie::ValidateTasMovieItineraryArtifactV1(
                 itinerary, recorded.info().input_count,
                 transition.provenance.pc, error_out))
@@ -2178,7 +2180,7 @@ public:
                 .claim_token = item.claim_token,
                 .parent_correlation = context.contract_key}});
         std::vector<std::uint8_t> encoded;
-        const auto status = savor::runtime::EncodeWorkerWorksetV4(workset, encoded);
+        const auto status = savor::runtime::EncodeWorkerWorksetV5(workset, encoded);
         if (!status) return fail("Battle Replay workset encoding failed: " +
                                  status.message);
         workset.encoded_size_bytes = encoded.size();

@@ -934,8 +934,22 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
         }
     }
 
+    std::unordered_map<std::string, int> explicit_incoming_edges;
+    for (const auto& edge : command.activation_edges) {
+        if (edge.from_activation_key.empty() || edge.to_activation_key.empty()
+            || !activation_id_by_key.contains(edge.from_activation_key)
+            || !activation_id_by_key.contains(edge.to_activation_key)) {
+            if (error_out) *error_out =
+                "workflow activation edge references an unknown activation";
+            rollback();
+            return false;
+        }
+        ++explicit_incoming_edges[edge.to_activation_key];
+    }
+
     for (const auto& activation : activations) {
-        const bool is_ready = activation.dependencies.empty();
+        const bool is_ready = activation.dependencies.empty()
+            && explicit_incoming_edges[activation.activation_key] == 0;
         Statement insert_activation;
         if (!Prepare(db_,
             "INSERT INTO exec_workflow_unit_activation("
@@ -982,7 +996,8 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
     for (const auto& activation : activations) {
         const auto activation_id = activation_id_by_key[activation.activation_key];
         const auto graph_node_key = activation.graph_node_key.empty() ? activation.activation_key : activation.graph_node_key;
-        const bool activation_ready = activation.dependencies.empty();
+        const bool activation_ready = activation.dependencies.empty()
+            && explicit_incoming_edges[activation.activation_key] == 0;
         for (const auto& step : activation.steps) {
             const auto step_key = StepKeyForActivation(activation.activation_key, step);
             if (step_key.empty() || step.step_kind.empty()) {
@@ -1082,6 +1097,78 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
                 rollback();
                 return false;
             }
+        }
+    }
+
+
+    for (const auto& edge : command.activation_edges) {
+        const auto from_activation_id = activation_id_by_key[edge.from_activation_key];
+        const auto to_activation_id = activation_id_by_key[edge.to_activation_key];
+        const auto from_step = first_step_id_by_activation_key.find(edge.from_activation_key);
+        const auto to_step = first_step_id_by_activation_key.find(edge.to_activation_key);
+        if (from_step == first_step_id_by_activation_key.end()
+            || to_step == first_step_id_by_activation_key.end()) {
+            if (error_out) *error_out =
+                "workflow activation edge has no execution step endpoint";
+            rollback();
+            return false;
+        }
+
+        Statement activation_edge;
+        if (!Prepare(db_,
+                "INSERT INTO exec_workflow_unit_activation_edge("
+                "workflow_instance_id,from_workflow_unit_activation_id,to_workflow_unit_activation_id,"
+                "output_key,input_key,condition_kind,condition_value,created_at_utc) "
+                "VALUES(?1,?2,?3,?4,?5,?6,?7,?8);",
+                &activation_edge, error_out)) {
+            rollback();
+            return false;
+        }
+        sqlite3_bind_int64(activation_edge.st, 1, workflow_instance_id);
+        sqlite3_bind_int64(activation_edge.st, 2, from_activation_id);
+        sqlite3_bind_int64(activation_edge.st, 3, to_activation_id);
+        if (edge.output_key) sqlite3_bind_text(activation_edge.st, 4,
+            edge.output_key->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(activation_edge.st, 4);
+        if (edge.input_key) sqlite3_bind_text(activation_edge.st, 5,
+            edge.input_key->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(activation_edge.st, 5);
+        if (edge.condition_kind) sqlite3_bind_text(activation_edge.st, 6,
+            edge.condition_kind->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(activation_edge.st, 6);
+        if (edge.condition_value) sqlite3_bind_text(activation_edge.st, 7,
+            edge.condition_value->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(activation_edge.st, 7);
+        sqlite3_bind_int64(activation_edge.st, 8, now);
+        if (sqlite3_step(activation_edge.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+
+        Statement step_edge;
+        if (!Prepare(db_,
+                "INSERT INTO exec_workflow_edge(workflow_instance_id,from_step_id,to_step_id,"
+                "condition_kind,condition_value,created_at_utc) "
+                "VALUES(?1,?2,?3,?4,?5,?6);",
+                &step_edge, error_out)) {
+            rollback();
+            return false;
+        }
+        sqlite3_bind_int64(step_edge.st, 1, workflow_instance_id);
+        sqlite3_bind_int64(step_edge.st, 2, from_step->second);
+        sqlite3_bind_int64(step_edge.st, 3, to_step->second);
+        if (edge.condition_kind) sqlite3_bind_text(step_edge.st, 4,
+            edge.condition_kind->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(step_edge.st, 4);
+        if (edge.condition_value) sqlite3_bind_text(step_edge.st, 5,
+            edge.condition_value->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(step_edge.st, 5);
+        sqlite3_bind_int64(step_edge.st, 6, now);
+        if (sqlite3_step(step_edge.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
         }
     }
 
@@ -2249,8 +2336,8 @@ bool SqliteWorkflowOrchestrationCommandService::RecordStepOutput(
         "INSERT INTO exec_workflow_step_output("
         "workflow_instance_id, workflow_step_id, graph_node_key, output_key, data_kind, ref_kind, ref_id, created_at_utc) "
         "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) "
-        "ON CONFLICT(workflow_instance_id, graph_node_key, output_key) DO UPDATE SET "
-        "workflow_step_id=CASE WHEN data_kind=excluded.data_kind AND ref_kind=excluded.ref_kind AND ref_id=excluded.ref_id THEN workflow_step_id ELSE workflow_step_id END;",
+        "ON CONFLICT(workflow_step_id, output_key) DO UPDATE SET "
+        "graph_node_key=CASE WHEN data_kind=excluded.data_kind AND ref_kind=excluded.ref_kind AND ref_id=excluded.ref_id THEN graph_node_key ELSE graph_node_key END;",
         &insert,
         error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
@@ -2273,15 +2360,14 @@ bool SqliteWorkflowOrchestrationCommandService::RecordStepOutput(
     Statement verify;
     if (!Prepare(db_,
         "SELECT data_kind, ref_kind, ref_id FROM exec_workflow_step_output "
-        "WHERE workflow_instance_id=?1 AND graph_node_key=?2 AND output_key=?3;",
+        "WHERE workflow_step_id=?1 AND output_key=?2;",
         &verify,
         error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
     }
-    sqlite3_bind_int64(verify.st, 1, workflow_instance_id);
-    sqlite3_bind_text(verify.st, 2, graph_node_key.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(verify.st, 3, command.output_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(verify.st, 1, command.workflow_step_id);
+    sqlite3_bind_text(verify.st, 2, command.output_key.c_str(), -1, SQLITE_TRANSIENT);
     if (sqlite3_step(verify.st) != SQLITE_ROW
         || command.output_data_kind != reinterpret_cast<const char*>(sqlite3_column_text(verify.st, 0))
         || command.output_ref_kind != reinterpret_cast<const char*>(sqlite3_column_text(verify.st, 1))

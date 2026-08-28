@@ -549,29 +549,4 @@ bool ReconstructFieldSctFilenameV1(
     return true;
 }
 
-std::optional<FieldContinuationKindV1> ClassifyFieldContinuationV1(
-    std::string_view filename,
-    std::string* diagnostic)
-{
-    if (filename.size() != 10 || !filename.starts_with("me") ||
-        !filename.ends_with(".sct"))
-    {
-        SetDiagnostic(diagnostic, "Field SCT filename is not canonical meNNNx.sct");
-        return std::nullopt;
-    }
-    unsigned area = 0;
-    const auto converted = std::from_chars(
-        filename.data() + 2, filename.data() + 5, area);
-    if (converted.ec != std::errc{} || converted.ptr != filename.data() + 5)
-    {
-        SetDiagnostic(diagnostic, "Field SCT filename has a malformed area number");
-        return std::nullopt;
-    }
-    SetDiagnostic(diagnostic, {});
-    if (area == 99) return FieldContinuationKindV1::OverworldNavigation;
-    if (area < 200) return FieldContinuationKindV1::FieldNavigation;
-    if (area < 500) return FieldContinuationKindV1::Cutscene;
-    return FieldContinuationKindV1::ShipRuntime;
-}
-
 } // namespace savor::runtime::battlecompletion

@@ -1,5 +1,6 @@
 #pragma once
 
+
 #include "Core/Input/GCInputFrame.h"
 #include "Runner/Runtime/FullPhase/FullPhaseProgram.h"
 
@@ -168,6 +169,9 @@ struct TasMovieCutsceneResultV1
         TasMovieCutsceneEndpointV1::PreBattleSeed;
     std::uint32_t endpoint_pc = 0;
     std::uint64_t checkpoint_input_count = 0;
+    std::uint64_t checkpoint_vi_count = 0;
+    std::uint32_t area = 0;
+    std::uint8_t subfield = 0;
     std::uint64_t final_input_count = 0;
     std::vector<program::ProgramArtifact> artifacts;
 };

@@ -264,6 +264,7 @@ void WriteRuntimeContract(
     writer.U8(contract.execution.allow_input ? 1 : 0);
     writer.U8(contract.execution.allow_capture ? 1 : 0);
     writer.U8(contract.execution.record_trace ? 1 : 0);
+    writer.U32(contract.execution.handler_flags);
     WriteBudgets(writer, contract.limits);
     writer.String(contract.baseline_lineage);
     writer.String(contract.movie_policy_sha256);
@@ -285,6 +286,7 @@ bool ReadRuntimeContract(
 {
     std::uint8_t state_policy = 0;
     std::uint8_t intent = 0;
+    std::uint32_t handler_flags = 0;
     if (!ReadModule(reader, contract.module) ||
         !reader.String(contract.entrypoint) ||
         !reader.String(contract.dependency_lock_sha256) ||
@@ -301,6 +303,7 @@ bool ReadRuntimeContract(
         !ReadBool(reader, contract.execution.allow_input) ||
         !ReadBool(reader, contract.execution.allow_capture) ||
         !ReadBool(reader, contract.execution.record_trace) ||
+        !reader.U32(handler_flags) ||
         !ReadBudgets(reader, contract.limits) ||
         !reader.String(contract.baseline_lineage) ||
         !reader.String(contract.movie_policy_sha256) ||
@@ -312,6 +315,7 @@ bool ReadRuntimeContract(
         static_cast<program::InvocationStatePolicy>(state_policy);
     contract.execution.intent =
         static_cast<program::ExecutionIntent>(intent);
+    contract.execution.handler_flags = handler_flags;
     return true;
 }
 
@@ -771,12 +775,12 @@ bool ReadLimits(Reader& reader, WorkerWorksetLimits& limits)
 
 } // namespace
 
-WorksetWireCodecResult EncodeWorkerWorksetV4(
+WorksetWireCodecResult EncodeWorkerWorksetV5(
     const WorkerWorksetDefinition& definition,
     std::vector<std::uint8_t>& output)
 {
     Writer writer;
-    writer.U32(kWorksetWireVersionV4);
+    writer.U32(kWorksetWireVersionV5);
     writer.U64(definition.workset_id.value());
     writer.U64(definition.phase_invocation.invocation_id.workflow_step_id);
     writer.U64(definition.phase_invocation.invocation_id.job_set_id);
@@ -818,7 +822,7 @@ WorksetWireCodecResult EncodeWorkerWorksetV4(
     return writer.Finish(output, kMaximumWorksetWireBytes);
 }
 
-WorksetWireCodecResult DecodeWorkerWorksetV4(
+WorksetWireCodecResult DecodeWorkerWorksetV5(
     std::span<const std::uint8_t> input,
     WorkerWorksetDefinition& output)
 {
@@ -831,7 +835,7 @@ WorksetWireCodecResult DecodeWorkerWorksetV4(
     std::uint64_t workflow_step_id = 0;
     std::uint64_t job_set_id = 0;
     WorkerWorksetExecutionKey& key = candidate.execution_key;
-    if (!reader.U32(version) || version != kWorksetWireVersionV4 ||
+    if (!reader.U32(version) || version != kWorksetWireVersionV5 ||
         !reader.U64(workset_id) ||
         !reader.U64(workflow_step_id) ||
         !reader.U64(job_set_id) ||

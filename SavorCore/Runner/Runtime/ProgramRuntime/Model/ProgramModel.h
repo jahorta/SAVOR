@@ -82,6 +82,7 @@ enum class InvocationHandlerFlag : std::uint32_t
 {
     None = 0,
     DialogueAdvance = 1u << 0u,
+    BattleResultsAdvance = 1u << 1u,
 };
 
 [[nodiscard]] constexpr bool HasInvocationHandlerFlag(

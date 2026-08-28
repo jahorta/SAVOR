@@ -1,4 +1,5 @@
 #include "TasMovieInputEpochProgram.h"
+
 #include "../WorksetDerivedStateBinding.h"
 #include "../WorksetObservationBinding.h"
 
@@ -52,6 +53,21 @@ const WorksetObservationDefaultsV1& ObservationDefaults() {
         .runtime_sample_trigger_pcs = {inputepoch::PadReadReturnedPc},
     };
     return defaults;
+}
+
+const WorksetObservationDefaultsV1& CutsceneObservationDefaults(
+    bool enable_seed_call_progress)
+{
+    static const WorksetObservationDefaultsV1 normal = ObservationDefaults();
+    static const WorksetObservationDefaultsV1 with_seed_calls{
+        .progress_library_ids = {
+            "soa.progress.runtime.vi/1",
+            "soa.progress.soa.script_location/1",
+            "soa.progress.soa.seed_calls/1",
+        },
+        .runtime_sample_trigger_pcs = {inputepoch::PadReadReturnedPc},
+    };
+    return enable_seed_call_progress ? with_seed_calls : normal;
 }
 
 std::string AnnotationCaptureProfile(
@@ -263,6 +279,7 @@ std::string FailureCode(inputepoch::InputEpochFailureReasonV1 reason) {
 bool PublishSingleton(IExecutionDb* execution_db,
     const ProgramJobMaterializationContext& context,
     const savor::runtime::fullphase::IFullPhaseProgramDefinition& phase,
+    const WorksetObservationDefaultsV1& observation_defaults,
     std::int32_t program_kind, std::string_view purpose,
     std::string_view created_by, std::string_view ref_kind,
     std::int64_t ref_id, std::string fingerprint, std::string input,
@@ -285,7 +302,7 @@ bool PublishSingleton(IExecutionDb* execution_db,
             .source_kind = "program_default",
         });
     }
-    if (!ResolveWorksetObservationBindingV1(observation_context, ObservationDefaults(),
+    if (!ResolveWorksetObservationBindingV1(observation_context, observation_defaults,
             capture_root, &observation, error_out)) return false;
     EnsureMaterializingJobSetReceipt ensured{};
     const std::string materialization_key = std::string(created_by) + ".step."
@@ -572,9 +589,10 @@ bool DecodeRootEstablishmentCapture(
     std::uint32_t expected_pc,
     std::uint64_t child_poll_count,
     std::uint64_t* cursor_out,
+    std::uint64_t* vi_count_out,
     std::string* error_out)
 {
-    if (!cursor_out || expected_pc == 0)
+    if (!cursor_out || !vi_count_out || expected_pc == 0)
         return Fail("root capture output and expected PC are required", error_out);
     const auto found = std::ranges::find_if(artifacts,
         [](const savor::wrms::WorksetArtifactPayload& artifact) {
@@ -590,6 +608,7 @@ bool DecodeRootEstablishmentCapture(
         || !report.ok)
         return Fail("root capture artifact could not be verified: " + read_error, error_out);
     std::optional<std::uint64_t> cursor;
+    std::optional<std::uint64_t> vi_count;
     for (const auto& event : events) {
         if (event.kind == savor::capture_format::EventKind::Gap)
             return Fail("root capture artifact contains a loss marker", error_out);
@@ -605,10 +624,12 @@ bool DecodeRootEstablishmentCapture(
             || field->value > child_poll_count)
             return Fail("root capture has an invalid movie_input_count", error_out);
         cursor = field->value;
+        vi_count = event.frame_index;
     }
     if (!cursor)
         return Fail("root capture contains no inherited root observation", error_out);
     *cursor_out = *cursor;
+    *vi_count_out = *vi_count;
     return true;
 }
 
@@ -667,8 +688,9 @@ public:
                 command, &request_id, error_out)) return false;
         const auto fingerprint = Fingerprint(identity.program_kind, request_id,
             artifact->sha256, identity.canonical_sha256);
-        if (!PublishSingleton(execution_, context, *phase_, identity.program_kind,
-                "TAS_MOVIE_INPUT_EPOCH_ANNOTATION", "tas_movie_input_epoch_annotation",
+        if (!PublishSingleton(execution_, context, *phase_, ObservationDefaults(),
+                identity.program_kind, "TAS_MOVIE_INPUT_EPOCH_ANNOTATION",
+                "tas_movie_input_epoch_annotation",
                 kAnnotationRefKind, request_id, fingerprint,
                 JobInput("TMEA1:", request_id),
                 WorkingRoot(config_.working_dir_root) / "captures",
@@ -805,8 +827,9 @@ public:
                 command, &request_id, error_out)) return false;
         const auto fingerprint = Fingerprint(identity.program_kind, request_id,
             command.source_dtm_sha256, identity.canonical_sha256);
-        if (!PublishSingleton(execution_, context, *phase_, identity.program_kind,
-                "TAS_MOVIE_INPUT_EPOCH_REWRITE", "tas_movie_input_epoch_rewrite",
+        if (!PublishSingleton(execution_, context, *phase_, ObservationDefaults(),
+                identity.program_kind, "TAS_MOVIE_INPUT_EPOCH_REWRITE",
+                "tas_movie_input_epoch_rewrite",
                 kRewriteRefKind, request_id, fingerprint,
                 JobInput("TMER1:", request_id),
                 WorkingRoot(config_.working_dir_root) / "captures",
@@ -902,7 +925,7 @@ public:
         auto workset = MakeWorkset(context, *phase_, path, artifact->sha256, input,
             "SavorDb.PK_TasMovieAnnotate");
         std::vector<std::uint8_t> encoded;
-        const auto status = savor::runtime::EncodeWorkerWorksetV4(workset, encoded);
+        const auto status = savor::runtime::EncodeWorkerWorksetV5(workset, encoded);
         if (!status) return fail("annotation workset encoding failed: " + status.message);
         workset.encoded_size_bytes = encoded.size();
         return WorksetReconstructionResult{
@@ -993,7 +1016,7 @@ public:
         auto workset = MakeWorkset(context, *phase_, source_path, source->sha256, input,
             "SavorDb.PK_TasMovieRevise");
         std::vector<std::uint8_t> encoded;
-        const auto status = savor::runtime::EncodeWorkerWorksetV4(workset, encoded);
+        const auto status = savor::runtime::EncodeWorkerWorksetV5(workset, encoded);
         if (!status) return fail("rewrite workset encoding failed: " + status.message);
         workset.encoded_size_bytes = encoded.size();
         return WorksetReconstructionResult{
@@ -1332,13 +1355,16 @@ public:
             const auto parent_root = analysis_->GetTasMovieRootEstablishmentAttempt(
                 request->root_establishment_attempt_id);
             std::uint64_t child_root_cursor = 0;
+            std::uint64_t child_root_vi_count = 0;
             if (!parent_root || !DecodeRootEstablishmentCapture(
                     terminal.terminal.workset_artifacts, parent_root->root_pc,
-                    child_dtm.info().input_count, &child_root_cursor, &error))
+                    child_dtm.info().input_count, &child_root_cursor,
+                    &child_root_vi_count, &error))
                 return FinalDecision("FAILED", "TAS_INPUT_EPOCH_REWRITE_ROOT_CAPTURE_INVALID", error);
             savor::runtime::tasmovie::TasMovieItineraryV1 itinerary{{
-                {.pc = parent_root->root_pc,
-                 .input_count = savor::runtime::tasmovie::DtmInputCount(child_root_cursor)}}};
+                savor::runtime::tasmovie::MakeTasMovieCheckpointV1(
+                    parent_root->root_pc, child_root_cursor,
+                    child_root_vi_count)}};
             if (!savor::runtime::tasmovie::ValidateTasMovieItineraryArtifactV1(
                     itinerary, child_dtm.info().input_count,
                     parent_root->root_pc, &error))
@@ -1563,8 +1589,10 @@ public:
         std::int64_t request_id = 0;
         if (!analysis_->CreateTasMovieCutsceneRequest(
                 command, &request_id, error_out)) return false;
-        if (!PublishSingleton(execution_, context, *phase_, identity.program_kind,
-                "TAS_MOVIE_CUTSCENE", "tas_movie_cutscene", kCutsceneRefKind,
+        if (!PublishSingleton(execution_, context, *phase_,
+                CutsceneObservationDefaults(config_.enable_seed_call_progress),
+                identity.program_kind, "TAS_MOVIE_CUTSCENE",
+                "tas_movie_cutscene", kCutsceneRefKind,
                 request_id, Fingerprint(identity.program_kind, request_id,
                     command.source_dtm_sha256, identity.canonical_sha256),
                 JobInput("TMC1:", request_id),
@@ -1654,13 +1682,17 @@ public:
             + std::to_string(request->cutscene_request_id));
         const auto state_path = request_root / "source.sav";
         const auto dtm_path = std::filesystem::path(state_path.string() + ".dtm");
+        const auto output_dtm_path = request_root / "result" / "cutscene.dtm";
+        const auto output_savestate_path = request_root / "result" / "cutscene.sav";
+        if (!EnsureParent(output_dtm_path, error_out))
+            return std::nullopt;
         if (!MaterializeArtifact(state_, *source_sav_artifact, state_path, error_out)
             || !MaterializeArtifact(state_, *source_dtm, dtm_path, error_out))
             return std::nullopt;
         const inputepoch::TasMovieCutsceneRequestV1 native{
             .source_movie_input_cursor = request->source_movie_input_cursor,
-            .output_dtm_path = (request_root / "result" / "cutscene.dtm").string(),
-            .output_savestate_path = (request_root / "result" / "cutscene.sav").string(),
+            .output_dtm_path = output_dtm_path.string(),
+            .output_savestate_path = output_savestate_path.string(),
         };
         std::string diagnostic;
         const auto input = inputepoch::EncodeCutsceneExecutionInputV1(native, &diagnostic);
@@ -1670,7 +1702,7 @@ public:
             source_sav_artifact->sha256, dtm_path, source_dtm->sha256, input,
             "SavorDb.PK_TasMovieCutscene");
         std::vector<std::uint8_t> encoded;
-        const auto status = savor::runtime::EncodeWorkerWorksetV4(workset, encoded);
+        const auto status = savor::runtime::EncodeWorkerWorksetV5(workset, encoded);
         if (!status)
             return fail("cutscene workset encoding failed: " + status.message);
         workset.encoded_size_bytes = encoded.size();
@@ -1697,6 +1729,40 @@ std::string CutsceneEndpointName(inputepoch::TasMovieCutsceneEndpointV1 endpoint
     return {};
 }
 
+bool AppendCutsceneOutputs(
+    std::int64_t attempt_id,
+    bool succeeded,
+    std::optional<std::int64_t> tree_id,
+    std::optional<std::int64_t> savestate_id,
+    ProgramResultDecision* decision)
+{
+    if (attempt_id <= 0 || decision == nullptr)
+        return false;
+    decision->outputs.push_back({
+        .output_key = "cutscene_attempt",
+        .data_kind = "analysis.tas_movie_cutscene_attempt_id",
+        .ref_kind = "tmv_cutscene_attempt",
+        .ref_id = attempt_id,
+    });
+    if (!succeeded)
+        return true;
+    if (!tree_id || *tree_id <= 0 || !savestate_id || *savestate_id <= 0)
+        return false;
+    decision->outputs.push_back({
+        .output_key = "tas_movie_tree",
+        .data_kind = "state.tas_movie_tree_id",
+        .ref_kind = "state_tas_movie_tree",
+        .ref_id = *tree_id,
+    });
+    decision->outputs.push_back({
+        .output_key = "paired_savestate",
+        .data_kind = "state.movie_paired_savestate_id",
+        .ref_kind = "state.savestate",
+        .ref_id = *savestate_id,
+    });
+    return true;
+}
+
 class CutsceneResultHandler final : public IProgramResultHandler {
 public:
     CutsceneResultHandler(IStateDb* state, IAnalysisDb* analysis,
@@ -1720,10 +1786,11 @@ public:
             auto decision = existing->succeeded
                 ? FinalDecision("SUCCEEDED")
                 : FinalDecision("FAILED", existing->failure_code, existing->failure_text);
-            decision.outputs.push_back({.output_key = "cutscene_attempt",
-                .data_kind = "analysis.tas_movie_cutscene_attempt_id",
-                .ref_kind = "tmv_cutscene_attempt",
-                .ref_id = existing->cutscene_attempt_id});
+            if (!AppendCutsceneOutputs(existing->cutscene_attempt_id,
+                    existing->succeeded, existing->output_tree_id,
+                    existing->output_savestate_id, &decision))
+                throw std::runtime_error(
+                    "persisted successful cutscene attempt is missing durable outputs");
             return decision;
         }
         savor::runtime::DurableWorkerTerminalEnvelope terminal{};
@@ -1780,8 +1847,11 @@ public:
                 *itinerary_bytes, itinerary, &error)
             || !child_dtm.load(std::filesystem::path(dtm->storage_reference).string()))
             return FinalDecision("FAILED", "TAS_CUTSCENE_ITINERARY_SOURCE_INVALID", error);
-        itinerary.checkpoints.push_back({.pc = outcome.endpoint_pc,
-            .input_count = {.value = outcome.checkpoint_input_count}});
+        itinerary.checkpoints.push_back(
+            savor::runtime::tasmovie::MakeTasMovieCheckpointV1(
+                outcome.endpoint_pc, outcome.checkpoint_input_count,
+                outcome.checkpoint_vi_count, std::nullopt,
+                outcome.area, outcome.subfield));
         if (!savor::runtime::tasmovie::ValidateTasMovieItineraryArtifactV1(
                 itinerary, child_dtm.info().input_count, outcome.endpoint_pc, &error))
             return FinalDecision("FAILED", "TAS_CUTSCENE_ITINERARY_INVALID", error);
@@ -1866,17 +1936,10 @@ public:
             .relative_path = itinerary_path.lexically_relative(root_).generic_string(),
             .sha256 = itinerary_sha,
             .size_bytes = static_cast<std::uint64_t>(encoded_itinerary.size())});
-        decision.outputs = {
-            {.output_key = "cutscene_attempt",
-             .data_kind = "analysis.tas_movie_cutscene_attempt_id",
-             .ref_kind = "tmv_cutscene_attempt", .ref_id = attempt_id},
-            {.output_key = "tas_movie_tree",
-             .data_kind = "state.tas_movie_tree_id",
-             .ref_kind = "state.tas_movie_tree", .ref_id = tree_id},
-            {.output_key = "paired_savestate",
-             .data_kind = "state.movie_paired_savestate_id",
-             .ref_kind = "state.savestate", .ref_id = savestate_id},
-        };
+        if (!AppendCutsceneOutputs(attempt_id, true, tree_id, savestate_id,
+                &decision))
+            throw std::runtime_error(
+                "new successful cutscene attempt is missing durable outputs");
         decision.event_lines.push_back("[tasmovie-cutscene-recorded] attempt="
             + std::to_string(attempt_id));
         return decision;
@@ -1980,10 +2043,12 @@ ProgramKindDescriptor BuildCutsceneProgramDescriptor(IExecutionDb* execution_db,
     descriptor.program_name = "TAS Movie Cutscene";
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity = inputepoch::CutsceneFullPhaseDefinitionV1()->identity();
-    descriptor.default_progress_library_ids = ObservationDefaults().progress_library_ids;
+    const auto& observation_defaults = CutsceneObservationDefaults(
+        config.enable_seed_call_progress);
+    descriptor.default_progress_library_ids = observation_defaults.progress_library_ids;
     descriptor.default_derived_state_block_ids = std::vector<std::string>{};
     descriptor.default_progress_runtime_trigger_pcs =
-        ObservationDefaults().runtime_sample_trigger_pcs;
+        observation_defaults.runtime_sample_trigger_pcs;
     descriptor.job_materializer = std::make_shared<CutsceneMaterializer>(
         execution_db, state_db, analysis_db, config);
     descriptor.workset_reconstruction = std::make_shared<CutsceneReconstruction>(

@@ -227,6 +227,9 @@ std::optional<std::int64_t> Binding(
     std::string_view input_key,
     std::string_view data_kind,
     std::string_view ref_kind) {
+    if (context.step.domain_ref_id > 0 &&
+        context.step.domain_ref_kind == ref_kind)
+        return context.step.domain_ref_id;
     if (context.graph) {
         for (const auto& binding : context.graph->input_bindings) {
             if (binding.input_key == input_key && binding.data_kind == data_kind
@@ -234,9 +237,6 @@ std::optional<std::int64_t> Binding(
                 return binding.ref_id;
         }
     }
-    if (context.step.domain_ref_id > 0 &&
-        context.step.domain_ref_kind == ref_kind)
-        return context.step.domain_ref_id;
     return std::nullopt;
 }
 
@@ -604,7 +604,7 @@ public:
             .correlation = {.durable_job_id = std::to_string(item.job_id), .claim_token = item.claim_token,
                 .parent_correlation = context.contract_key}});
         std::vector<std::uint8_t> encoded;
-        const auto status = savor::runtime::EncodeWorkerWorksetV4(workset, encoded);
+        const auto status = savor::runtime::EncodeWorkerWorksetV5(workset, encoded);
         if (!status) return fail("TAS Movie validation workset encoding failed: " + status.message);
         workset.encoded_size_bytes = encoded.size();
         return WorksetReconstructionResult{.workset = std::move(workset), .ordered_job_ids = {item.job_id}};
@@ -670,7 +670,11 @@ public:
             if (!outcome.candidate_checkpoint || !decoded.value->artifacts.empty()
                 || request->operation != TasMovieValidationOperation::EstablishRootCursor)
                 return FinalDecision("FAILED", "TAS_MOVIE_ROOT_CURSOR_ARTIFACT_INVALID", "root establishment returned an illegal result shape");
-            savor::runtime::tasmovie::TasMovieItineraryV1 itinerary{{*outcome.candidate_checkpoint}};
+            const auto checkpoint = savor::runtime::tasmovie::MakeTasMovieCheckpointV1(
+                outcome.candidate_checkpoint->pc,
+                outcome.candidate_checkpoint->input_count.value,
+                outcome.candidate_checkpoint->vi_count);
+            savor::runtime::tasmovie::TasMovieItineraryV1 itinerary{{checkpoint}};
             savor::tas::DtmFile source_dtm;
             const auto effective = ResolveEffectiveDtm(state_db_, *request, root_, &error);
             if (!effective || !ValidateDtm(*effective, &source_dtm, &error)
@@ -698,8 +702,8 @@ public:
                     .causation_id = "execution-job-" + std::to_string(context.job_id)}, &artifact_id, &error))
                 throw std::runtime_error(error);
             attempt.outcome = TasMovieValidationOutcome::RootCursorEstablished;
-            attempt.actual_pc = outcome.candidate_checkpoint->pc;
-            attempt.actual_input_count = outcome.candidate_checkpoint->input_count.value;
+            attempt.actual_pc = checkpoint.pc;
+            attempt.actual_input_count = checkpoint.input_count.value;
             attempt.candidate_itinerary_artifact_id = artifact_id;
             attempt.candidate_itinerary_sha256 = sha;
             generated_itinerary = ProgramResultStagingFile{
@@ -786,6 +790,12 @@ public:
                 .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
                 .ref_kind = "tmv_root_establishment_attempt",
                 .ref_id = *root_establishment_id,
+            });
+            decision.outputs.push_back({
+                .output_key = "root_dtm",
+                .data_kind = "state_artifact.dtm_artifact_id",
+                .ref_kind = "state_artifact",
+                .ref_id = request->source_dtm_artifact_id,
             });
         }
         if (validated_checkpoint_savestate_id) {

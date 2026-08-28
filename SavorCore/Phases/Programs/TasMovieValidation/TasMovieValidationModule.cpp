@@ -42,7 +42,7 @@ constexpr std::string_view kInputCountContract =
 constexpr std::string_view kOperationContract =
     "enum TasMovieValidationOperation/1{EstablishRootCursor=0,Validate=1}";
 constexpr std::string_view kCheckpointContract =
-    "record TasMovieCheckpoint/1{pc:u32,input_count:soa.tas_movie_validation.DtmInputCount/1}";
+    "record TasMovieCheckpoint/2{pc:u32,input_count:soa.tas_movie_validation.DtmInputCount/1,vi_count:u64}";
 constexpr std::string_view kItineraryContract =
     "list<TasMovieCheckpoint/1>(max=4096)";
 constexpr std::string_view kOutcomeContract =
@@ -531,13 +531,15 @@ bool DecodeCheckpoint(
         ? std::get_if<RecordValue>(&value->payload)
         : nullptr;
     return value && value->type == CheckpointType() && record &&
-        record->fields.size() == 2 &&
+        record->fields.size() == 3 &&
         ReadScalar(
             graph,
             record->fields[0],
             BuiltinType::U32,
             checkpoint.pc) &&
-        DecodeInputCount(graph, record->fields[1], checkpoint.input_count);
+        DecodeInputCount(graph, record->fields[1], checkpoint.input_count) &&
+        ReadScalar(graph, record->fields[2], BuiltinType::U64,
+            checkpoint.vi_count);
 }
 
 std::optional<std::vector<Byte>> ActionRequestBytes(
@@ -646,9 +648,11 @@ ProgramValueGraph EncodeModuleRequest(
         const ProgramValueId count = add(
             InputCountType(),
             RecordValue{{count_value}});
+        const ProgramValueId vi_count = add(
+            TypeRef::Builtin(BuiltinType::U64), checkpoint.vi_count);
         checkpoint_ids.push_back(add(
             CheckpointType(),
-            RecordValue{{pc, count}}));
+            RecordValue{{pc, count, vi_count}}));
     }
     const ProgramValueId itinerary = add(
         ItineraryType(),
@@ -778,7 +782,7 @@ SchemaIdentity TasMovieCheckpointSchemaIdentityV1()
 {
     return composition::ExactSchema(
         "soa.tas_movie_validation.Checkpoint",
-        1,
+        2,
         kCheckpointContract);
 }
 
@@ -904,9 +908,11 @@ ProgramValueGraph EncodeTasMovieValidationResultV1(
         const ProgramValueId pc = add(
             TypeRef::Builtin(BuiltinType::U32),
             checkpoint.pc);
+        const ProgramValueId vi_count = add(
+            TypeRef::Builtin(BuiltinType::U64), checkpoint.vi_count);
         return add(
             CheckpointType(),
-            RecordValue{{pc, add_count(checkpoint.input_count)}});
+            RecordValue{{pc, add_count(checkpoint.input_count), vi_count}});
     };
 
     const ProgramValueId outcome = add(
@@ -1171,6 +1177,7 @@ std::vector<std::uint8_t> EncodeTasMovieValidationExecutionInputV1(
     {
         writer.U32(checkpoint.pc);
         writer.U64(checkpoint.input_count.value);
+        writer.U64(checkpoint.vi_count);
     }
     writer.U8(request.final_checkpoint_path ? 1u : 0u);
     if (request.final_checkpoint_path)
@@ -1211,7 +1218,8 @@ bool DecodeTasMovieValidationExecutionInputV1(
     {
         TasMovieCheckpointV1 checkpoint;
         if (!reader.U32(checkpoint.pc) ||
-            !reader.U64(checkpoint.input_count.value))
+            !reader.U64(checkpoint.input_count.value) ||
+            !reader.U64(checkpoint.vi_count))
         {
             SetDiagnostic(
                 diagnostic,
@@ -1260,13 +1268,16 @@ std::vector<std::uint8_t> EncodeTasMovieItineraryArtifactV1(
     if (itinerary.checkpoints.empty()
         || itinerary.checkpoints.size() > MaximumItineraryEntries)
     {
-        SetDiagnostic(diagnostic, "TMI1 itinerary entry count is outside [1,4096]");
+        SetDiagnostic(diagnostic, "TMI2 itinerary entry count is outside [1,4096]");
         return {};
     }
 
     std::vector<std::uint8_t> bytes;
-    bytes.reserve(8 + itinerary.checkpoints.size() * 12);
-    bytes.insert(bytes.end(), {'T', 'M', 'I', '1'});
+    bytes.reserve(8 + itinerary.checkpoints.size() * 64);
+    bytes.insert(bytes.end(), {'T', 'M', 'I', '2'});
+    const auto append_u8 = [&bytes](std::uint8_t value) {
+        bytes.push_back(value);
+    };
     const auto append_u32 = [&bytes](std::uint32_t value) {
         for (int i = 0; i < 4; ++i)
             bytes.push_back(static_cast<std::uint8_t>(value >> (i * 8)));
@@ -1275,11 +1286,26 @@ std::vector<std::uint8_t> EncodeTasMovieItineraryArtifactV1(
         for (int i = 0; i < 8; ++i)
             bytes.push_back(static_cast<std::uint8_t>(value >> (i * 8)));
     };
+    const auto append_text = [&append_u32, &bytes](std::string_view value) {
+        append_u32(static_cast<std::uint32_t>(value.size()));
+        bytes.insert(bytes.end(), value.begin(), value.end());
+    };
     append_u32(static_cast<std::uint32_t>(itinerary.checkpoints.size()));
     for (const auto& checkpoint : itinerary.checkpoints)
     {
         append_u32(checkpoint.pc);
         append_u64(checkpoint.input_count.value);
+        append_u64(checkpoint.vi_count);
+        append_u8(static_cast<std::uint8_t>(checkpoint.expected_next_phase));
+        append_text(checkpoint.breakpoint_id);
+        std::uint8_t flags = 0;
+        if (checkpoint.sct_filename) flags |= 0x01u;
+        if (checkpoint.area) flags |= 0x02u;
+        if (checkpoint.subfield) flags |= 0x04u;
+        append_u8(flags);
+        if (checkpoint.sct_filename) append_text(*checkpoint.sct_filename);
+        if (checkpoint.area) append_u32(*checkpoint.area);
+        if (checkpoint.subfield) append_u8(*checkpoint.subfield);
     }
     SetDiagnostic(diagnostic, {});
     return bytes;
@@ -1293,9 +1319,9 @@ bool DecodeTasMovieItineraryArtifactV1(
     itinerary = {};
     if (payload.size() < 8
         || payload[0] != 'T' || payload[1] != 'M'
-        || payload[2] != 'I' || payload[3] != '1')
+        || payload[2] != 'I' || payload[3] != '2')
     {
-        SetDiagnostic(diagnostic, "TMI1 magic or header is invalid");
+        SetDiagnostic(diagnostic, "TMI2 magic or header is invalid");
         return false;
     }
     const auto read_u32 = [&payload](std::size_t offset) {
@@ -1311,16 +1337,72 @@ bool DecodeTasMovieItineraryArtifactV1(
         return value;
     };
     const auto count = read_u32(4);
-    if (count == 0 || count > MaximumItineraryEntries
-        || payload.size() != 8ull + static_cast<std::size_t>(count) * 12ull)
+    if (count == 0 || count > MaximumItineraryEntries)
     {
-        SetDiagnostic(diagnostic, "TMI1 entry count or byte length is invalid");
+        SetDiagnostic(diagnostic, "TMI2 entry count is invalid");
         return false;
     }
     itinerary.checkpoints.reserve(count);
     std::size_t offset = 8;
-    for (std::uint32_t i = 0; i < count; ++i, offset += 12)
-        itinerary.checkpoints.push_back({read_u32(offset), DtmInputCount{read_u64(offset + 4)}});
+    const auto read_text = [&payload, &read_u32](std::size_t& cursor,
+                                                std::string& value) {
+        if (cursor + 4 > payload.size()) return false;
+        const auto size = read_u32(cursor);
+        cursor += 4;
+        if (size > MaximumPathBytes || cursor + size > payload.size())
+            return false;
+        value.assign(reinterpret_cast<const char*>(payload.data() + cursor), size);
+        cursor += size;
+        return true;
+    };
+    for (std::uint32_t i = 0; i < count; ++i)
+    {
+        if (offset + 22 > payload.size())
+        {
+            SetDiagnostic(diagnostic, "TMI2 checkpoint is truncated");
+            return false;
+        }
+        TasMovieCheckpointV1 checkpoint;
+        checkpoint.pc = read_u32(offset); offset += 4;
+        checkpoint.input_count.value = read_u64(offset); offset += 8;
+        checkpoint.vi_count = read_u64(offset); offset += 8;
+        const auto phase = payload[offset++];
+        if (phase > static_cast<std::uint8_t>(TasMovieNextPhaseV1::Unknown) ||
+            !read_text(offset, checkpoint.breakpoint_id) || offset >= payload.size())
+        {
+            SetDiagnostic(diagnostic, "TMI2 checkpoint metadata is malformed");
+            return false;
+        }
+        checkpoint.expected_next_phase = static_cast<TasMovieNextPhaseV1>(phase);
+        const auto flags = payload[offset++];
+        if ((flags & ~0x07u) != 0)
+        {
+            SetDiagnostic(diagnostic, "TMI2 checkpoint location flags are malformed");
+            return false;
+        }
+        if ((flags & 0x01u) != 0)
+        {
+            std::string value;
+            if (!read_text(offset, value)) return false;
+            checkpoint.sct_filename = std::move(value);
+        }
+        if ((flags & 0x02u) != 0)
+        {
+            if (offset + 4 > payload.size()) return false;
+            checkpoint.area = read_u32(offset); offset += 4;
+        }
+        if ((flags & 0x04u) != 0)
+        {
+            if (offset >= payload.size()) return false;
+            checkpoint.subfield = payload[offset++];
+        }
+        itinerary.checkpoints.push_back(std::move(checkpoint));
+    }
+    if (offset != payload.size())
+    {
+        SetDiagnostic(diagnostic, "TMI2 contains trailing bytes");
+        return false;
+    }
     SetDiagnostic(diagnostic, {});
     return true;
 }
@@ -1334,7 +1416,7 @@ bool ValidateTasMovieItineraryArtifactV1(
     if (itinerary.checkpoints.empty()
         || itinerary.checkpoints.size() > MaximumItineraryEntries)
     {
-        SetDiagnostic(diagnostic, "TMI1 itinerary entry count is outside [1,4096]");
+        SetDiagnostic(diagnostic, "TMI2 itinerary entry count is outside [1,4096]");
         return false;
     }
     std::optional<std::uint64_t> previous;
@@ -1342,24 +1424,38 @@ bool ValidateTasMovieItineraryArtifactV1(
     {
         if (!TasMovieBoundaryCatalogContainsPcV1(checkpoint.pc))
         {
-            SetDiagnostic(diagnostic, "TMI1 contains a PC outside the TAS Movie boundary catalog");
+            SetDiagnostic(diagnostic, "TMI2 contains a PC outside the TAS Movie boundary catalog");
             return false;
         }
         if (checkpoint.input_count.value >= total_dtm_input_count)
         {
-            SetDiagnostic(diagnostic, "TMI1 input count is not before the DTM input-stream end");
+            SetDiagnostic(diagnostic, "TMI2 input count is not before the DTM input-stream end");
             return false;
         }
         if (previous.has_value() && checkpoint.input_count.value <= *previous)
         {
-            SetDiagnostic(diagnostic, "TMI1 input counts are not strictly increasing");
+            SetDiagnostic(diagnostic, "TMI2 input counts are not strictly increasing");
+            return false;
+        }
+        if (checkpoint.breakpoint_id != TasMovieBreakpointIdForPcV1(checkpoint.pc))
+        {
+            SetDiagnostic(diagnostic, "TMI2 breakpoint identity does not match its PC");
+            return false;
+        }
+        const auto sct = checkpoint.sct_filename
+            ? std::optional<std::string_view>(*checkpoint.sct_filename)
+            : std::nullopt;
+        if (checkpoint.expected_next_phase !=
+            ClassifyTasMovieNextPhaseV1(checkpoint.pc, sct, checkpoint.area))
+        {
+            SetDiagnostic(diagnostic, "TMI2 expected next phase does not match checkpoint evidence");
             return false;
         }
         previous = checkpoint.input_count.value;
     }
     if (itinerary.checkpoints.back().pc != required_final_pc)
     {
-        SetDiagnostic(diagnostic, "TMI1 final PC does not match the required terminal PC");
+        SetDiagnostic(diagnostic, "TMI2 final PC does not match the required terminal PC");
         return false;
     }
     SetDiagnostic(diagnostic, {});
@@ -1866,6 +1962,7 @@ void AddLocalTypes(
         .record_fields = {
             {"pc", TypeRef::Builtin(BuiltinType::U32)},
             {"input_count", InputCountType()},
+            {"vi_count", TypeRef::Builtin(BuiltinType::U64)},
         },
     });
     builder.AddLocalType({
@@ -2430,6 +2527,14 @@ ProgramModule ConstructTasMovieValidationModuleV1()
         establish_breakpoint.arguments[0].id,
         "movie_input_count",
         scope);
+    const ProgramValueId established_vi_count = Project(
+        builder,
+        function,
+        establish_breakpoint,
+        TypeRef::Builtin(BuiltinType::U64),
+        establish_breakpoint.arguments[0].id,
+        "vi_count",
+        scope);
     const ProgramValueId established_count = Construct(
         builder,
         function,
@@ -2443,7 +2548,7 @@ ProgramModule ConstructTasMovieValidationModuleV1()
         function,
         establish_breakpoint,
         CheckpointType(),
-        std::array{established_pc, established_count},
+        std::array{established_pc, established_count, established_vi_count},
         "root/candidate",
         scope);
     const ProgramValueId optional_candidate = Optional(

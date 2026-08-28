@@ -1,5 +1,6 @@
 #include "TasMovieInputEpochModule.h"
 
+
 #include "Runner/Runtime/Execution/ExecutionTypes.h"
 #include "Runner/Runtime/ProgramKind.h"
 #include "Runner/Runtime/ProgramRuntime/Actions/CanonicalActionPayload.h"
@@ -119,11 +120,12 @@ SchemaIdentity CutsceneRequestSchema()
 SchemaIdentity CutsceneResultSchema()
 {
     return Schema("soa.tasmovie.cutscene.ResultV1",
-        "record{endpoint_pc:u64,checkpoint_input_count:u64,final_input_count:u64}");
+        "record{endpoint_pc:u32,checkpoint_input_count:u64,checkpoint_vi_count:u64,area:u32,subfield:u8,final_input_count:u64}");
 }
 
 TypeRef Named(const SchemaIdentity& schema) { return TypeRef::Named(schema); }
 TypeRef U64() { return TypeRef::Builtin(BuiltinType::U64); }
+TypeRef U8() { return TypeRef::Builtin(BuiltinType::U8); }
 TypeRef Bool() { return TypeRef::Builtin(BuiltinType::Bool); }
 
 InstructionTarget Action(CanonicalAction action)
@@ -1124,6 +1126,9 @@ ProgramModule CutsceneModule()
         .kind=TypeSchemaKind::Record,
         .record_fields={{"endpoint_pc",TypeRef::Builtin(BuiltinType::U32)},
             {"checkpoint_input_count",U64()},
+            {"checkpoint_vi_count",U64()},
+            {"area",TypeRef::Builtin(BuiltinType::U32)},
+            {"subfield",U8()},
             {"final_input_count",U64()}}});
     builder.AddCapabilityImport(capabilities::FieldPackIdentity());
     for (const auto action : {
@@ -1131,6 +1136,7 @@ ProgramModule CutsceneModule()
              CanonicalAction::MovieStartRecording,
              CanonicalAction::ExecutionContinueUntil,
              CanonicalAction::GuestReadU32,
+             CanonicalAction::GuestReadU8,
              CanonicalAction::SavestateSaveImmutableArtifact,
              CanonicalAction::InputAcquireLease,
              CanonicalAction::InputBeginDelivery,
@@ -1151,7 +1157,9 @@ ProgramModule CutsceneModule()
             CanonicalAction::ExecutionContinueUntil))}).id;
     const auto publish_id = builder.AddBlock(function,
         std::array{builder.NewArgument(TypeRef::Builtin(BuiltinType::U32)),
-            builder.NewArgument(U64())}).id;
+            builder.NewArgument(U64()), builder.NewArgument(U64()),
+            builder.NewArgument(TypeRef::Builtin(BuiltinType::U32)),
+            builder.NewArgument(U8())}).id;
     const auto retry_future_id = builder.AddBlock(function).id;
 
     auto& startup = Block(function, startup_id);
@@ -1227,6 +1235,30 @@ ProgramModule CutsceneModule()
         accept.arguments[0].id,TypeRef::Builtin(BuiltinType::U32),"pc",scope);
     const auto checkpoint_cursor = Project(builder,function,accept,
         accept.arguments[0].id,U64(),"movie_input_count",scope);
+    const auto checkpoint_vi = Project(builder,function,accept,
+        accept.arguments[0].id,U64(),"vi_count",scope);
+    const auto accepted_stop = OptionalValue(builder,function,accept,
+        CanonicalRuntimeSchema::OptionalContinueUntilResult,
+        accept.arguments[0].id,"accepted-stop",scope);
+    const auto location_config = Constant(builder,function,accept,
+        CanonicalRuntimeType(CanonicalRuntimeSchema::ObservationStaticConfig),
+        PadStatusObservationConfig(),"location-config",scope);
+    const auto area_address = Constant(builder,function,accept,U64(),
+        std::uint64_t{0x80311AC4u},"area-address",scope);
+    const auto area_request = Construct(builder,function,accept,
+        CanonicalActionInputType(CanonicalAction::GuestReadU32),
+        std::array{accepted_stop,area_address,location_config},
+        "area-request",scope);
+    const auto area = Await(builder,function,accept,
+        CanonicalAction::GuestReadU32,area_request,"area",scope);
+    const auto subfield_address = Constant(builder,function,accept,U64(),
+        std::uint64_t{0x80311AC8u},"subfield-address",scope);
+    const auto subfield_request = Construct(builder,function,accept,
+        CanonicalActionInputType(CanonicalAction::GuestReadU8),
+        std::array{accepted_stop,subfield_address,location_config},
+        "subfield-request",scope);
+    const auto subfield = Await(builder,function,accept,
+        CanonicalAction::GuestReadU8,subfield_request,"subfield",scope);
     const auto source_cursor = Project(builder,function,accept,argument.id,
         U64(),"source_cursor",scope);
     const auto advanced = Binary(builder,function,accept,
@@ -1235,7 +1267,8 @@ ProgramModule CutsceneModule()
     builder.SetTerminator(function,accept,
         {.kind=TerminatorKind::ConditionalBranch,
          .condition_or_selector=advanced,
-         .edges={{publish_id,{accepted_pc,checkpoint_cursor}},{retry_future_id,{}}}},
+         .edges={{publish_id,{accepted_pc,checkpoint_cursor,checkpoint_vi,
+             area,subfield}},{retry_future_id,{}}}},
         "require-future-endpoint");
 
     auto& retry_future = Block(function,retry_future_id);
@@ -1299,7 +1332,9 @@ ProgramModule CutsceneModule()
         std::nullopt,std::array{finalized},{},"publish-dtm",std::nullopt,scope);
     const auto result = Construct(builder,function,publish,
         Named(CutsceneResultSchema()),std::array{publish.arguments[0].id,
-            publish.arguments[1].id,final_cursor},"result",scope);
+            publish.arguments[1].id,publish.arguments[2].id,
+            publish.arguments[3].id,publish.arguments[4].id,final_cursor},
+        "result",scope);
     (void)builder.AddInstruction(function,publish,InstructionOpcode::ExitScope,
         std::nullopt,{}, {},"release-movie-scope",std::nullopt,scope);
     const auto succeeded = Constant(builder,function,publish,Bool(),true,
@@ -2056,7 +2091,9 @@ public:
                 .allow_movie_recording = true,
                 .allow_input = true,
                 .handler_flags = static_cast<std::uint32_t>(
-                    InvocationHandlerFlag::DialogueAdvance)},
+                    InvocationHandlerFlag::DialogueAdvance) |
+                    static_cast<std::uint32_t>(
+                        InvocationHandlerFlag::BattleResultsAdvance)},
             .limits = module_.budgets,
             .baseline_lineage = std::string(CutsceneBaselineLineage)};
         const TasMovieCutsceneRequestV1 sample{
@@ -2068,7 +2105,8 @@ public:
         runtime_.verified_dependency_sha256 =
             ComputeProgramInvocationCompatibilityHashV1(invocation);
         const std::string movie = "tasmovie.cutscene/playback-branch-record/v1";
-        const std::string service = "tasmovie.cutscene/dialogue-advance/v1";
+        const std::string service =
+            "tasmovie.cutscene/dialogue-and-battle-results/v2";
         runtime_.movie_policy_sha256 = hash::sha256(movie.data(), movie.size());
         runtime_.service_policy_sha256 = hash::sha256(service.data(), service.size());
         const std::string canonical = runtime_.module.canonical_hash +
@@ -2109,19 +2147,23 @@ public:
                 &artifacts, diagnostic))
             return false;
         const auto* record = Payload<RecordValue>(graph, graph.root);
-        if (!record || record->fields.size() != 3)
+        if (!record || record->fields.size() != 6)
         {
             Diagnostic(diagnostic,
-                "$.output.root: expected CutsceneResultV1 record with 3 fields");
+                "$.output.root: expected CutsceneResultV1 record with 6 fields");
             return false;
         }
         const auto* endpoint_pc = Payload<std::uint32_t>(graph, record->fields[0]);
         const auto* checkpoint = Payload<std::uint64_t>(graph, record->fields[1]);
-        const auto* final_cursor = Payload<std::uint64_t>(graph, record->fields[2]);
-        if (!endpoint_pc || !checkpoint || !final_cursor)
+        const auto* checkpoint_vi = Payload<std::uint64_t>(graph, record->fields[2]);
+        const auto* area = Payload<std::uint32_t>(graph, record->fields[3]);
+        const auto* subfield = Payload<std::uint8_t>(graph, record->fields[4]);
+        const auto* final_cursor = Payload<std::uint64_t>(graph, record->fields[5]);
+        if (!endpoint_pc || !checkpoint || !checkpoint_vi || !area ||
+            !subfield || !final_cursor)
         {
             Diagnostic(diagnostic,
-                "$.output: endpoint_pc, checkpoint_input_count, and final_input_count must be u64");
+                "$.output: checkpoint identity and location fields must be unsigned integers");
             return false;
         }
         TasMovieCutsceneEndpointV1 endpoint{};
@@ -2151,6 +2193,9 @@ public:
         result = {.endpoint = endpoint,
             .endpoint_pc = *endpoint_pc,
             .checkpoint_input_count = *checkpoint,
+            .checkpoint_vi_count = *checkpoint_vi,
+            .area = *area,
+            .subfield = *subfield,
             .final_input_count = *final_cursor,
             .artifacts = std::move(artifacts)};
         return true;

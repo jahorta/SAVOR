@@ -126,6 +126,7 @@
     <ClCompile Include="SeedProbeRealWorkerScenario.cpp" />
     <ClCompile Include="TasMovieRealWorkerScenario.cpp" />
     <ClCompile Include="TasMovieInputEpochRewriteScenario.cpp" />
+    <ClCompile Include="TasMovieCutsceneScenario.cpp" />
     <ClCompile Include="WorkerStartupBarrier.cpp" />
     <ClCompile Include="WorkflowUnitRealWorkerScenario.cpp" />
   </ItemGroup>
@@ -140,6 +141,7 @@
     <ClInclude Include="SeedProbeRealWorkerScenario.h" />
     <ClInclude Include="TasMovieRealWorkerScenario.h" />
     <ClInclude Include="TasMovieInputEpochRewriteScenario.h" />
+    <ClInclude Include="TasMovieCutsceneScenario.h" />
     <ClInclude Include="WorkerStartupBarrier.h" />
     <ClInclude Include="WorkflowUnitRealWorkerScenario.h" />
   </ItemGroup>

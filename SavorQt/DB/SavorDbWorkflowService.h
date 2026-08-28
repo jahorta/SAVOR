@@ -15,6 +15,7 @@
 #include "Authoring/AuthoringContentHash.h"
 #include "DB/SavorDbAuthoringService.h"
 #include "Execution/Workflow/WorkflowComposition.h"
+#include "Execution/Workflow/BattleVictoryRecordingService.h"
 #include "Execution/Workflow/WorkflowExpansionService.h"
 #include "Execution/Workflow/WorkflowLaunchContract.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
@@ -637,136 +638,23 @@ public:
     static ServiceResult<RecordBattleVictoryResult> RecordBattleVictory(
         std::int64_t turn_job_id) {
         auto& runtime = savorqt::SavorDbRuntime::instance();
+        auto* authoring = runtime.authoringDb();
         auto* analysis = runtime.analysisDb();
         auto* execution = runtime.executionDb();
-        if (!analysis || !execution)
+        if (!authoring || !analysis || !execution)
             return Unavailable<RecordBattleVictoryResult>(
                 kSavorDbRuntimeUnavailableMessage);
-        const auto job = analysis->GetBattleTurnJob(turn_job_id);
-        const auto wave = job ? analysis->GetBattleTurnWave(job->wave_id) : std::nullopt;
-        const auto result = job && job->exec_job_id
-            ? analysis->GetBattleSingleTurnResultForExecJob(*job->exec_job_id)
-            : std::nullopt;
-        const auto execution_job = job && job->exec_job_id
-            ? execution->GetExecutionJob(*job->exec_job_id) : std::nullopt;
-        if (!job || !wave || !result || !execution_job || !job->exec_job_id
-            || execution_job->state != "SUCCEEDED"
-            || !execution_job->worker_terminal_fingerprint
-            || *execution_job->worker_terminal_fingerprint
-                != result->worker_terminal_sha256
-            || result->terminal_kind != "SUCCEEDED"
-            || result->domain_outcome != std::optional<std::string>("Victory")
-            || !result->ending_rng || !result->successor_savestate_id
-            || job->output_savestate_id != result->successor_savestate_id) {
-            return Invalid<RecordBattleVictoryResult>(
-                "Record Victory requires a current successful durable Victory with ending RNG and successor state");
-        }
-
-        savor::db::EnsurePendingVictoryRouteBranchReceipt route_branch{};
-        std::string route_error;
-        if (!analysis->EnsurePendingVictoryRouteBranch({
-                .battle_set_id = wave->battle_set_id,
-                .selected_turn_job_id = turn_job_id,
-                .default_label = "Victory RNG " + std::to_string(*result->ending_rng),
-                .created_at_utc = savor::db::types::UtcNow(),
-            }, &route_branch, &route_error)) {
-            return Failed<RecordBattleVictoryResult>(route_error.empty()
-                ? "could not create the pending TAS route branch" : route_error);
-        }
-        const auto bind_route_workflow = [&](std::int64_t workflow_id,
-                                             std::string status)
-            -> ServiceResult<void> {
-            std::string error;
-            if (!analysis->BindVictoryRouteBranchWorkflow({
-                    .selected_turn_job_id = turn_job_id,
-                    .workflow_instance_id = workflow_id,
-                    .status = std::move(status),
-                    .updated_at_utc = savor::db::types::UtcNow(),
-                }, &error)) {
-                return ServiceResult<void>::Err({ServiceErrorKind::Failed,
-                    error.empty() ? "could not bind the recording workflow to its TAS route branch" : std::move(error)});
-            }
-            return ServiceResult<void>::Ok();
-        };
-
-        const auto completion =
-            analysis->GetBattleCompletionForSelectedTurnJob(turn_job_id);
-        if (completion && completion->status != "COMPLETED") {
-            const auto bound = bind_route_workflow(
-                completion->workflow_instance_id, "WAITING_COMPLETION");
-            if (!bound.ok) return ServiceResult<RecordBattleVictoryResult>::Err(bound.error);
-            return ServiceResult<RecordBattleVictoryResult>::Ok({
-                .workflow_instance_id = completion->workflow_instance_id,
-                .focused_existing_completion = true,
-            });
-        }
-
-        if (!completion) {
-            for (const auto& pool :
-                 analysis->ListBattleAdvancementPoolsForBattleTurn(
-                     wave->battle_set_id, wave->turn_index)) {
-                if (!pool.pool_name.starts_with("victory-completion-rng-")) continue;
-                for (const auto& decision :
-                     analysis->ListBattleAdvancementDecisionsForPool(
-                         pool.battle_advancement_pool_id)) {
-                    if (decision.turn_job_id == turn_job_id
-                        && decision.decision_kind
-                            == savor::db::BattleAdvancementDecisionKind::
-                                SelectedForCompletion) {
-                        const auto workflow =
-                            analysis->GetBattleWorkflowInstanceId(
-                                wave->battle_set_id);
-                        if (!workflow)
-                            return Failed<RecordBattleVictoryResult>(
-                                "automatic Victory completion lost its Battle workflow identity");
-                        const auto bound = bind_route_workflow(*workflow, "WAITING_COMPLETION");
-                        if (!bound.ok) return ServiceResult<RecordBattleVictoryResult>::Err(bound.error);
-                        return ServiceResult<RecordBattleVictoryResult>::Ok({
-                            .workflow_instance_id = *workflow,
-                            .focused_existing_completion = true,
-                        });
-                    }
-                }
-            }
-        }
-
-        const bool include_completion = !completion.has_value();
-        const auto graph = EnsureVictoryRecordingGraph(include_completion);
-        if (!graph.ok)
-            return ServiceResult<RecordBattleVictoryResult>::Err(graph.error);
-        WorkflowGraphStartRequest launch{
-            .workflow_graph_revision_id = graph.value.workflow_graph_revision_id,
-            .created_by = "SavorQt",
-            .launch_key = "battle-victory-recording:" +
-                std::to_string(turn_job_id),
-        };
-        if (include_completion) {
-            launch.input_bindings.push_back({
-                .node_key = "complete",
-                .input_key = "victory_turn_job",
-                .data_kind = "analysis_battle.battle_turn_job",
-                .ref_kind = "analysis_battle.turn_job",
-                .ref_id = turn_job_id,
-                .source_kind = "record-victory",
-            });
-        } else {
-            launch.input_bindings.push_back({
-                .node_key = "record",
-                .input_key = "completion",
-                .data_kind = "analysis_battle.battle_completion",
-                .ref_kind = "analysis_battle.battle_completion",
-                .ref_id = completion->battle_completion_id,
-                .source_kind = "record-victory",
-            });
-        }
-        const auto started = StartWorkflowGraphRevision(launch);
-        if (!started.ok)
-            return ServiceResult<RecordBattleVictoryResult>::Err(started.error);
-        const auto bound = bind_route_workflow(started.value, "RECORDING");
-        if (!bound.ok) return ServiceResult<RecordBattleVictoryResult>::Err(bound.error);
+        savor::db::execution::workflow::BattleVictoryRecordingService service(
+            authoring, execution, analysis);
+        savor::db::execution::workflow::RecordBattleVictoryReceipt receipt{};
+        std::string error;
+        if (!service.Record({.turn_job_id = turn_job_id,
+                .created_by = "SavorQt"}, &receipt, &error))
+            return Failed<RecordBattleVictoryResult>(std::move(error));
         return ServiceResult<RecordBattleVictoryResult>::Ok({
-            .workflow_instance_id = started.value,
-            .recording_workflow_created = true,
+            .workflow_instance_id = receipt.workflow_instance_id,
+            .recording_workflow_created = receipt.recording_workflow_created,
+            .focused_existing_completion = receipt.focused_existing_completion,
         });
     }
 
@@ -801,83 +689,6 @@ public:
     }
 
 private:
-    static ServiceResult<savor::db::SaveWorkflowGraphResult>
-    EnsureVictoryRecordingGraph(bool include_completion) {
-        const std::string name = include_completion
-            ? "Internal: Complete and Record Battle Victory"
-            : "Internal: Record Completed Battle Victory";
-        const std::string description = include_completion
-            ? "Completes the selected Victory lineage, records it, and validates the resulting TAS movie tree."
-            : "Records a completed Victory and validates the resulting TAS movie tree.";
-        const auto registry =
-            savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
-        const auto* completion = registry.Find("battle_completion");
-        const auto* recording = registry.Find("battle_recording");
-        if (!recording || (include_completion && !completion))
-            return Failed<savor::db::SaveWorkflowGraphResult>(
-                "hidden Battle recording workflow units are unavailable");
-
-        auto node = [](const WorkflowUnitDefinition& unit,
-                       std::string key) {
-            savor::db::SaveWorkflowGraphNodeCommand result{};
-            result.node_key = std::move(key);
-            result.unit_kind = unit.unit_kind;
-            result.display_name = unit.display_name;
-            for (const auto& input : unit.required_inputs)
-                result.inputs.push_back({
-                    .input_key = input.key, .data_kind = input.data_kind,
-                    .ref_kind = input.ref_kind,
-                    .display_name = input.display_name,
-                    .required = input.required});
-            for (const auto& output : unit.possible_outputs)
-                result.possible_outputs.push_back({
-                    .output_key = output.key, .data_kind = output.data_kind,
-                    .ref_kind = output.ref_kind,
-                    .display_name = output.display_name});
-            return result;
-        };
-
-        WorkflowGraphDraft draft{};
-        draft.name = name;
-        draft.description = description;
-        draft.hidden = true;
-        if (include_completion) draft.nodes.push_back(node(*completion, "complete"));
-        draft.nodes.push_back(node(*recording, "record"));
-        if (include_completion)
-            draft.edges.push_back({
-                .from_node_key = "complete", .output_key = "completion",
-                .to_node_key = "record", .input_key = "completion"});
-
-        std::vector<savor::db::authoring::WorkflowGraphHashNode> hash_nodes;
-        for (const auto& item : draft.nodes)
-            hash_nodes.push_back({item.node_key, item.unit_kind});
-        std::vector<savor::db::authoring::WorkflowGraphHashEdge> hash_edges;
-        for (const auto& edge : draft.edges)
-            hash_edges.push_back({
-                edge.from_node_key, edge.output_key,
-                edge.to_node_key, edge.input_key, edge.edge_kind});
-        draft.graph_hash = savor::db::authoring::ComputeWorkflowGraphHash(
-            draft.name, draft.description, draft.execution_shape,
-            draft.expansion_kind, hash_nodes, hash_edges);
-
-        const auto existing =
-            SavorDbAuthoringService::ListWorkflowGraphs(1000, true);
-        if (!existing.ok)
-            return ServiceResult<savor::db::SaveWorkflowGraphResult>::Err(
-                existing.error);
-        for (const auto& graph : existing.value) {
-            if (graph.name == name && graph.graph_hash == draft.graph_hash)
-                return ServiceResult<savor::db::SaveWorkflowGraphResult>::Ok({
-                    .workflow_graph_id = graph.workflow_graph_id,
-                    .workflow_graph_revision_id =
-                        graph.workflow_graph_revision_id});
-            if (graph.name == name)
-                return Failed<savor::db::SaveWorkflowGraphResult>(
-                    "hidden Battle recording workflow graph drifted");
-        }
-        return SavorDbAuthoringService::SaveWorkflowGraph(draft);
-    }
-
     static void FilterUnavailableProductionUnits(
         std::vector<WorkflowUnitDefinition>& units) {
         auto* production = savorqt::SavorDbRuntime::instance().programKindRegistry();

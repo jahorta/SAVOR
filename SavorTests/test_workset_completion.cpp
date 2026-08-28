@@ -262,9 +262,9 @@ TEST(WorksetWireCodec, RoundTripsCompositeBaselineAndRuntimeContract)
         CodecWorksetDefinition();
 
     std::vector<std::uint8_t> encoded;
-    ASSERT_TRUE(EncodeWorkerWorksetV4(definition, encoded));
+    ASSERT_TRUE(EncodeWorkerWorksetV5(definition, encoded));
     WorkerWorksetDefinition decoded;
-    ASSERT_TRUE(DecodeWorkerWorksetV4(encoded, decoded));
+    ASSERT_TRUE(DecodeWorkerWorksetV5(encoded, decoded));
     definition.encoded_size_bytes = encoded.size();
     EXPECT_EQ(decoded, definition);
 
@@ -304,7 +304,7 @@ TEST(WorksetWireCodec, RoundTripsStandaloneObservationBindings)
 TEST(WorksetWireCodec, RejectsWorksetV3WithoutPublishingOutput)
 {
     std::vector<std::uint8_t> encoded;
-    ASSERT_TRUE(EncodeWorkerWorksetV4(
+    ASSERT_TRUE(EncodeWorkerWorksetV5(
         CodecWorksetDefinition(), encoded));
     ASSERT_GE(encoded.size(), 4u);
     encoded[0] = 3;
@@ -315,7 +315,7 @@ TEST(WorksetWireCodec, RejectsWorksetV3WithoutPublishingOutput)
     WorkerWorksetDefinition output;
     output.workset_id = WorkerWorksetId(999);
     const WorkerWorksetDefinition unchanged = output;
-    EXPECT_FALSE(DecodeWorkerWorksetV4(encoded, output));
+    EXPECT_FALSE(DecodeWorkerWorksetV5(encoded, output));
     EXPECT_EQ(output, unchanged);
 }
 
@@ -326,7 +326,7 @@ TEST(
     const WorkerWorksetDefinition definition =
         CodecWorksetDefinition();
     std::vector<std::uint8_t> legacy;
-    ASSERT_TRUE(EncodeWorkerWorksetV4(definition, legacy));
+    ASSERT_TRUE(EncodeWorkerWorksetV5(definition, legacy));
 
     // The former v1 item layout placed declared_active_budget (u64 ms)
     // immediately after the encoded invocation template payload.
@@ -358,7 +358,7 @@ TEST(
     output.workset_id = WorkerWorksetId(999);
     const WorkerWorksetDefinition unchanged = output;
     const WorksetWireCodecResult rejected =
-        DecodeWorkerWorksetV4(legacy, output);
+        DecodeWorkerWorksetV5(legacy, output);
     EXPECT_FALSE(rejected);
     EXPECT_EQ(output, unchanged);
 }

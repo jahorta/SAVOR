@@ -2737,7 +2737,7 @@ void ExecutionControlCore::HandleStopPointReceipt(StopRouteReceipt receipt)
         return;
     }
 
-    const std::string& key =
+    const std::string key =
         receipt.interruption_handler_request->interruption_handler_key;
     const auto descriptor = impl_->handler_registry.find(key);
     if (descriptor == impl_->handler_registry.end())

@@ -4,6 +4,7 @@
 #include "../SavorCore/Phases/Programs/BattleCompletion/BattleCompletionModule.h"
 #include "../SavorCore/Phases/Programs/BattleRecord/BattleRecordModule.h"
 #include "../SavorCore/Phases/Programs/BattleRecord/BattleReplayModule.h"
+#include "../SavorCore/Phases/Programs/TasMovieCheckpoint/TasMovieCheckpointModule.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Composition/BattleCompletionComposition.h"
@@ -23,6 +24,7 @@ namespace {
 namespace completion = savor::runtime::battlecompletion;
 namespace recording = savor::runtime::battlerecord;
 namespace replaying = savor::runtime::battlereplay;
+namespace tasmovie = savor::runtime::tasmovie;
 namespace capabilities = savor::runtime::program::capabilities;
 namespace composition = savor::runtime::program::composition;
 using namespace savor::runtime::program;
@@ -164,43 +166,6 @@ recording::BattleReplaySourceBindingV1 SourceBinding(bool paired)
     result.canonical_sha256 =
         recording::ComputeBattleReplaySourceBindingHashV1(result);
     return result;
-}
-
-std::vector<std::uint8_t> ResultsReceipt(
-    completion::BattleResultsPresentationV1 expected,
-    std::array<std::uint32_t, 10> observed)
-{
-    std::vector<std::uint8_t> bytes{'B','R','R','1',1,0,0,0};
-    const auto put32 = [&](std::uint32_t value)
-    {
-        for (unsigned shift = 0; shift != 32; shift += 8)
-            bytes.push_back(static_cast<std::uint8_t>(value >> shift));
-    };
-    const auto put64 = [&](std::uint64_t value)
-    {
-        put32(static_cast<std::uint32_t>(value));
-        put32(static_cast<std::uint32_t>(value >> 32u));
-    };
-    put32(expected.gold_pages);
-    put32(expected.normal_exp_pages);
-    put32(expected.level_panels);
-    put32(expected.stat_waves);
-    put32(expected.magic_exp_pages);
-    put32(expected.magic_rank_events);
-    put32(expected.learned_magic_waves);
-    put32(expected.item_popups);
-    for (const auto count : observed) put32(count);
-    bytes.push_back(13); // complete
-    put32(0x800e3694u);
-    put64(321);
-    put64(7);
-    put32(0x12345678u);
-    put32(0x12345678u);
-    put32(0xffu);
-    put32(1u);
-    put32(0u);
-    put32(6u);
-    return bytes;
 }
 
 std::vector<const Instruction*> Instructions(const ProgramModule& module)
@@ -374,21 +339,22 @@ TEST(BattleCompletionContracts, ReconstructsAndClassifiesCanonicalSctNames)
         << diagnostic;
     EXPECT_EQ(suffix, static_cast<std::uint8_t>('c'));
     EXPECT_EQ(filename, "me099c.sct");
-    EXPECT_EQ(completion::ClassifyFieldContinuationV1(filename),
-              completion::FieldContinuationKindV1::OverworldNavigation);
+    EXPECT_EQ(tasmovie::ClassifyTasMovieNextPhaseV1(
+                  tasmovie::FieldFastPreseedPc, filename),
+              tasmovie::TasMovieNextPhaseV1::OverworldNavigation);
 
     struct Case
     {
         std::uint32_t area;
-        completion::FieldContinuationKindV1 kind;
+        tasmovie::TasMovieNextPhaseV1 kind;
     };
     constexpr std::array cases{
-        Case{0, completion::FieldContinuationKindV1::FieldNavigation},
-        Case{199, completion::FieldContinuationKindV1::FieldNavigation},
-        Case{200, completion::FieldContinuationKindV1::Cutscene},
-        Case{499, completion::FieldContinuationKindV1::Cutscene},
-        Case{500, completion::FieldContinuationKindV1::ShipRuntime},
-        Case{999, completion::FieldContinuationKindV1::ShipRuntime},
+        Case{0, tasmovie::TasMovieNextPhaseV1::FieldNavigation},
+        Case{199, tasmovie::TasMovieNextPhaseV1::FieldNavigation},
+        Case{200, tasmovie::TasMovieNextPhaseV1::Cutscene},
+        Case{499, tasmovie::TasMovieNextPhaseV1::Cutscene},
+        Case{500, tasmovie::TasMovieNextPhaseV1::ShipBattle},
+        Case{999, tasmovie::TasMovieNextPhaseV1::ShipBattle},
     };
     for (const auto& test : cases)
     {
@@ -399,7 +365,8 @@ TEST(BattleCompletionContracts, ReconstructsAndClassifiesCanonicalSctNames)
             suffix,
             filename,
             &diagnostic)) << diagnostic;
-        EXPECT_EQ(completion::ClassifyFieldContinuationV1(filename), test.kind);
+        EXPECT_EQ(tasmovie::ClassifyTasMovieNextPhaseV1(
+                      tasmovie::FieldFastPreseedPc, filename), test.kind);
     }
 
     EXPECT_FALSE(completion::ReconstructFieldSctFilenameV1(
@@ -411,7 +378,9 @@ TEST(BattleCompletionContracts, ReconstructsAndClassifiesCanonicalSctNames)
     EXPECT_FALSE(completion::ReconstructFieldSctFilenameV1(
         1000, static_cast<std::uint8_t>('a'), std::nullopt,
         suffix, filename, &diagnostic));
-    EXPECT_FALSE(completion::ClassifyFieldContinuationV1("battle").has_value());
+    EXPECT_EQ(tasmovie::ClassifyTasMovieNextPhaseV1(
+                  tasmovie::FieldFastPreseedPc, "battle"),
+              tasmovie::TasMovieNextPhaseV1::Unknown);
 }
 
 TEST(BattleReplayPlan, CodecRoundTripsAndHashIsDeterministic)
@@ -869,137 +838,106 @@ TEST(BattleRecordModule,
                 DeferredFinalRecordingPair));
 }
 
-TEST(BattleResultsHandler, ReceiptPreservesExactManifestCountsAndValidatesGates)
+TEST(BattleResultsHandler, AdvancesFinalConfirmationWithoutManifest)
 {
-    const completion::BattleResultsPresentationV1 expected{
-        .gold_pages = 1,
-        .normal_exp_pages = 1,
-        .level_panels = 2,
-        .stat_waves = 3,
-        .magic_exp_pages = 1,
-        .magic_rank_events = 4,
-        .learned_magic_waves = 2,
-        .item_popups = 1,
-    };
-    std::array<std::uint32_t, 10> observed{};
-    observed[0] = 1;
-    observed[1] = 1;
-    observed[2] = 1;
-    observed[3] = 3;
-    observed[4] = 1;
-    observed[5] = 1;
-    observed[6] = 2;
-    observed[7] = 1;
-    observed[8] = 1;
-
-    auto bytes = ResultsReceipt(expected, observed);
-    composition::BattleResultsHandlerReceiptV1 decoded;
+    composition::BattleResultsHandlerV1 handler;
     std::string diagnostic;
-    ASSERT_TRUE(composition::DecodeBattleResultsHandlerReceiptV1(
-        bytes, decoded, &diagnostic)) << diagnostic;
-    EXPECT_EQ(decoded.expected, expected);
-    EXPECT_EQ(decoded.observed.level_panels, 2u);
-    EXPECT_EQ(decoded.observed.stat_waves, 3u);
-    EXPECT_EQ(decoded.observed.magic_rank_events, 4u);
-    EXPECT_EQ(decoded.terminal,
-              (completion::BattleStopProvenanceV1{
-                  .pc = 0x800e3694u,
-                  .vi_count = 321,
-                  .workset_epoch = 7}));
-    EXPECT_TRUE(decoded.lifecycle_complete);
-    EXPECT_TRUE(decoded.completion_flag_set);
-    EXPECT_TRUE(decoded.result_pointer_cleared);
-    EXPECT_TRUE(decoded.field_mode_restored);
-    EXPECT_TRUE(decoded.rng_unchanged);
+    const auto stop = [](std::uint32_t pc, std::uint64_t vi) {
+        return composition::BattleResultsStopProvenanceV1{
+            .pc=pc, .vi_count=vi, .workset_epoch=7};
+    };
+    ASSERT_TRUE(handler.Begin(
+        stop(composition::kBattleResultsDescriptorReadyPc, 100),
+        0x12345678u, &diagnostic)) << diagnostic;
+    EXPECT_EQ(handler.NextStep().action,
+        composition::BattleResultsHandlerAction::ContinueNeutral);
+    ASSERT_TRUE(handler.Observe(
+        stop(composition::kBattleResultsConfirmReadyPc, 101), &diagnostic));
+    EXPECT_EQ(handler.NextStep().action,
+        composition::BattleResultsHandlerAction::PressA);
+    ASSERT_TRUE(handler.Observe(
+        stop(composition::kBattleResultsConfirmAcceptedPc, 102),
+        &diagnostic));
+    EXPECT_EQ(handler.NextStep().action,
+        composition::BattleResultsHandlerAction::ReleaseA);
+    ASSERT_TRUE(handler.Observe(
+        stop(composition::kBattleResultsGuestPadReadReturnedPc, 103),
+        &diagnostic));
+    ASSERT_TRUE(handler.Observe(
+        stop(composition::kBattleResultsLifecycleExitPc, 104), &diagnostic));
+    ASSERT_TRUE(handler.Observe(
+        stop(composition::kBattleResultsCleanupCompletePc, 105), &diagnostic));
+    ASSERT_TRUE(handler.complete());
 
-    auto malformed_terminal = bytes;
-    malformed_terminal[105] ^= 1u; // exit RNG no longer matches entry RNG
-    EXPECT_FALSE(composition::DecodeBattleResultsHandlerReceiptV1(
-        malformed_terminal, decoded, &diagnostic));
-
-    // The one MagicEntry presentation gate represents the presence of all
-    // rank events, but zero gates cannot satisfy a nonzero manifest count.
-    observed[4] = 0;
-    bytes = ResultsReceipt(expected, observed);
-    EXPECT_FALSE(composition::DecodeBattleResultsHandlerReceiptV1(
-        bytes, decoded, &diagnostic));
-
-    // Level panels are likewise represented by the fixed three stat waves;
-    // the receipt rejects a manifest whose two fields disagree.
-    auto malformed_expected = expected;
-    malformed_expected.stat_waves = 0;
-    observed[4] = 1;
-    bytes = ResultsReceipt(malformed_expected, observed);
-    EXPECT_FALSE(composition::DecodeBattleResultsHandlerReceiptV1(
-        bytes, decoded, &diagnostic));
+    composition::BattleResultsHandlerReceiptV1 receipt;
+    ASSERT_TRUE(handler.Finalize(0x12345678u, 1u, 0u, 6u,
+        receipt, &diagnostic)) << diagnostic;
+    EXPECT_EQ(receipt.terminal,
+        stop(composition::kBattleResultsCleanupCompletePc, 105));
+    EXPECT_EQ(receipt.entry_rng, receipt.exit_rng);
 }
 
-TEST(BattleResultsHandler, LowersAsLocalFunctionWithExactPostseedCorrelation)
+TEST(BattleResultsHandler, RejectsUnexpectedStopsAndTerminalInvariantDrift)
 {
-    ProgramModule module;
-    const auto lowered = composition::LowerBattleResultsHandlerV1(module);
-    ASSERT_TRUE(lowered);
-    ASSERT_TRUE(lowered.function.has_value());
-    EXPECT_TRUE(module.entrypoints.empty());
+    composition::BattleResultsHandlerV1 handler;
+    std::string diagnostic;
+    ASSERT_TRUE(handler.Begin({
+        .pc=composition::kBattleResultsDescriptorReadyPc,
+        .vi_count=1,
+        .workset_epoch=7}, 55, &diagnostic));
+    EXPECT_FALSE(handler.Observe({
+        .pc=0xdeadbeefu,
+        .vi_count=2,
+        .workset_epoch=7}, &diagnostic));
+    EXPECT_FALSE(diagnostic.empty());
 
-    const auto found = std::ranges::find(
-        module.functions, *lowered.function, &ProgramFunction::id);
-    ASSERT_NE(found, module.functions.end());
-    EXPECT_FALSE(found->exported);
-    ASSERT_EQ(found->arguments.size(), 2u);
-    EXPECT_EQ(found->arguments[0].type,
-              TypeRef::Named(
-                  capabilities::BattleResultsHandlerInputSchemaIdentity()));
-    EXPECT_EQ(found->arguments[1].type,
-              CanonicalRuntimeType(
-                  CanonicalRuntimeSchema::InputFramePayload));
-
-    const auto instructions = Instructions(module);
-    EXPECT_NE(std::ranges::find_if(
-        instructions,
-        [](const Instruction* instruction)
-        {
-            return instruction->opcode == InstructionOpcode::RecordProject &&
-                instruction->selector == "completion";
-        }), instructions.end());
-    EXPECT_NE(std::ranges::find_if(
-        instructions,
-        [](const Instruction* instruction)
-        {
-            return instruction->opcode == InstructionOpcode::RecordProject &&
-                instruction->selector == "postseed_entry";
-        }), instructions.end());
-    EXPECT_GE(std::ranges::count(
-        instructions,
-        InstructionOpcode::Equal,
-        [](const Instruction* instruction) { return instruction->opcode; }),
-        9);
-
-    bool saw_postseed_mismatch = false;
-    for (const auto& block : found->blocks)
-    {
-        if (block.terminator.kind == TerminatorKind::StructuredFail &&
-            block.terminator.failure &&
-            block.terminator.failure->code ==
-                "battle_results_postseed_provenance_mismatch")
-        {
-            saw_postseed_mismatch = true;
-        }
-    }
-    EXPECT_TRUE(saw_postseed_mismatch);
+    composition::BattleResultsHandlerV1 terminal_handler;
+    ASSERT_TRUE(terminal_handler.Begin({
+        .pc=composition::kBattleResultsDescriptorReadyPc,
+        .vi_count=10,
+        .workset_epoch=9}, 55, &diagnostic));
+    ASSERT_TRUE(terminal_handler.Observe({
+        .pc=composition::kBattleResultsConfirmReadyPc,
+        .vi_count=11,
+        .workset_epoch=9}, &diagnostic));
+    ASSERT_TRUE(terminal_handler.Observe({
+        .pc=composition::kBattleResultsConfirmAcceptedPc,
+        .vi_count=12,
+        .workset_epoch=9}, &diagnostic));
+    ASSERT_TRUE(terminal_handler.Observe({
+        .pc=composition::kBattleResultsGuestPadReadReturnedPc,
+        .vi_count=13,
+        .workset_epoch=9}, &diagnostic));
+    ASSERT_TRUE(terminal_handler.Observe({
+        .pc=composition::kBattleResultsLifecycleExitPc,
+        .vi_count=14,
+        .workset_epoch=9}, &diagnostic));
+    ASSERT_TRUE(terminal_handler.Observe({
+        .pc=composition::kBattleResultsCleanupCompletePc,
+        .vi_count=15,
+        .workset_epoch=9}, &diagnostic));
+    composition::BattleResultsHandlerReceiptV1 receipt;
+    EXPECT_FALSE(terminal_handler.Finalize(
+        56, 1u, 0u, 6u, receipt, &diagnostic));
+    EXPECT_FALSE(diagnostic.empty());
 
     const auto catalog = capabilities::BuildSourceCapabilityPackCatalog();
-    const auto input_schema = std::ranges::find(
-        catalog.schemas,
-        capabilities::BattleResultsHandlerInputSchemaIdentity(),
-        &TypeSchemaDefinition::identity);
-    ASSERT_NE(input_schema, catalog.schemas.end());
-    ASSERT_EQ(input_schema->record_fields.size(), 2u);
-    EXPECT_EQ(input_schema->record_fields[0].name, "completion");
-    EXPECT_EQ(input_schema->record_fields[1].name, "postseed_entry");
-    EXPECT_EQ(input_schema->record_fields[1].type,
-              CanonicalActionOutputType(
-                  CanonicalAction::ExecutionRequirePausedPc));
+    EXPECT_EQ(std::ranges::count_if(catalog.schemas,
+        [](const TypeSchemaDefinition& schema) {
+            return schema.identity.canonical_id.starts_with(
+                "soa.battle.results.");
+        }), 0);
+    const auto pack = std::ranges::find(
+        catalog.manifests, capabilities::BattleResultsPackIdentity(),
+        &CapabilityPackManifest::identity);
+    ASSERT_NE(pack, catalog.manifests.end());
+    EXPECT_TRUE(pack->schemas.empty());
+    EXPECT_TRUE(pack->reducers.empty());
+    EXPECT_NE(std::ranges::find(
+        pack->semantic_points,
+        composition::kBattleResultsDescriptorReadyPc,
+        &SemanticPointDescriptor::pc),
+        pack->semantic_points.end());
 }
 
 } // namespace

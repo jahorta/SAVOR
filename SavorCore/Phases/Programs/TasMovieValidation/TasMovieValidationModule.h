@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../TasMovieCheckpoint/TasMovieCheckpointModule.h"
 #include "../../../Runner/Runtime/FullPhase/FullPhaseProgram.h"
 #include "../../../Runner/Runtime/ProgramRuntime/Model/ProgramModel.h"
 
@@ -26,29 +27,12 @@ inline constexpr std::string_view FullPhaseCanonicalId =
 
 inline constexpr std::string_view BeforeRandSeedSetPointId =
     "soa.field.point.prebattle.BeforeRandSeedSet";
-inline constexpr std::uint32_t BeforeRandSeedSetPc = 0x80101E48u;
 inline constexpr std::string_view FieldFastPreseedPointId =
     "soa.field.point.transition.FastPreseed";
-inline constexpr std::uint32_t FieldFastPreseedPc = 0x80101894u;
 inline constexpr std::string_view FieldDeferredPreseedPointId =
     "soa.field.point.transition.DeferredPreseed";
-inline constexpr std::uint32_t FieldDeferredPreseedPc = 0x801018ACu;
-inline constexpr std::size_t MaximumItineraryEntries = 4096;
 inline constexpr std::size_t MaximumPathBytes = 4096;
 inline constexpr std::uint64_t GameCubeDtmInputRecordBytes = 8;
-
-struct DtmInputCount
-{
-    std::uint64_t value = 0;
-
-    // Returns the byte boundary within the DTM input payload. N identifies
-    // the boundary after N complete fixed-size GameCube records and before
-    // record index N.
-    [[nodiscard]] std::optional<std::uint64_t>
-    PayloadByteOffset() const noexcept;
-
-    auto operator<=>(const DtmInputCount&) const = default;
-};
 
 enum class TasMovieValidationOperationV1 : std::int64_t
 {
@@ -56,20 +40,6 @@ enum class TasMovieValidationOperationV1 : std::int64_t
     Validate = 1,
 };
 
-struct TasMovieCheckpointV1
-{
-    std::uint32_t pc = 0;
-    DtmInputCount input_count;
-
-    auto operator<=>(const TasMovieCheckpointV1&) const = default;
-};
-
-struct TasMovieItineraryV1
-{
-    std::vector<TasMovieCheckpointV1> checkpoints;
-
-    auto operator<=>(const TasMovieItineraryV1&) const = default;
-};
 
 enum class TasMovieValidationOutcomeV1 : std::int64_t
 {
@@ -198,22 +168,6 @@ EncodeTasMovieValidationExecutionInputV1(
 [[nodiscard]] bool DecodeTasMovieValidationExecutionInputV1(
     std::span<const std::uint8_t> payload,
     TasMovieValidationRequestV1& request,
-    std::string* diagnostic = nullptr);
-
-// Canonical durable itinerary sidecar. TMI1 is intentionally independent of
-// the scalar TMV1 invocation binding: it stores only the immutable ordered
-// checkpoint facts shared by every validation of the same complete DTM.
-[[nodiscard]] std::vector<std::uint8_t> EncodeTasMovieItineraryArtifactV1(
-    const TasMovieItineraryV1& itinerary,
-    std::string* diagnostic = nullptr);
-[[nodiscard]] bool DecodeTasMovieItineraryArtifactV1(
-    std::span<const std::uint8_t> payload,
-    TasMovieItineraryV1& itinerary,
-    std::string* diagnostic = nullptr);
-[[nodiscard]] bool ValidateTasMovieItineraryArtifactV1(
-    const TasMovieItineraryV1& itinerary,
-    std::uint64_t total_dtm_input_count,
-    std::uint32_t required_final_pc,
     std::string* diagnostic = nullptr);
 
 [[nodiscard]] std::shared_ptr<

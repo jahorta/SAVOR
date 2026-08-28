@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS exec_workflow_step_output (
     created_at_utc INTEGER NOT NULL,
     FOREIGN KEY(workflow_instance_id) REFERENCES exec_workflow_instance(workflow_instance_id),
     FOREIGN KEY(workflow_step_id) REFERENCES exec_workflow_step(workflow_step_id),
-    CONSTRAINT uq_exec_workflow_step_output UNIQUE (workflow_instance_id, graph_node_key, output_key)
+    CONSTRAINT uq_exec_workflow_step_output UNIQUE (workflow_step_id, output_key)
 );
 
 CREATE INDEX IF NOT EXISTS ix_exec_workflow_step_graph_node

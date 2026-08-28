@@ -81,6 +81,7 @@ std::string ComputeFullPhaseProgramPackageHash(
     AppendNumber(canonical, runtime.execution.allow_input ? 1 : 0);
     AppendNumber(canonical, runtime.execution.allow_capture ? 1 : 0);
     AppendNumber(canonical, runtime.execution.record_trace ? 1 : 0);
+    AppendNumber(canonical, runtime.execution.handler_flags);
     AppendBudgets(canonical, runtime.limits);
     AppendField(canonical, runtime.baseline_lineage);
     AppendField(canonical, runtime.movie_policy_sha256);
@@ -230,6 +231,8 @@ const FullPhaseProgramRegistry& ProductionRegistry()
             tasmovie::inputepoch::BreakpointDiagnosticFullPhaseDefinitionV1());
         (void)value.Register(
             tasmovie::inputepoch::RewriteFullPhaseDefinitionV1());
+        (void)value.Register(
+            tasmovie::inputepoch::CutsceneFullPhaseDefinitionV1());
         return value;
     }();
     return registry;

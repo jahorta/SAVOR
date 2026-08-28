@@ -74,14 +74,6 @@ struct BattleCompletionSnapshotV1
     std::uint32_t reward_phase = 0;
 };
 
-enum class FieldContinuationKindV1 : std::uint8_t
-{
-    OverworldNavigation = 0,
-    FieldNavigation = 1,
-    Cutscene = 2,
-    ShipRuntime = 3,
-};
-
 struct FieldTransitionContextV1
 {
     std::uint32_t area = 0;
@@ -180,11 +172,6 @@ enum class BattleRecordOutcomeV1 : std::uint8_t
     std::optional<std::uint8_t> area_99_suffix_index,
     std::uint8_t& effective_suffix,
     std::string& filename,
-    std::string* diagnostic = nullptr);
-
-[[nodiscard]] std::optional<FieldContinuationKindV1>
-ClassifyFieldContinuationV1(
-    std::string_view filename,
     std::string* diagnostic = nullptr);
 
 } // namespace savor::runtime::battlecompletion

@@ -1456,7 +1456,7 @@ struct WorkerRuntime::Impl
             ComputeInitialWorksetCancellationSidecarSha256(
                 command.initial_cancellations);
         std::vector<std::uint8_t> encoded_definition;
-        const auto encoded = EncodeWorkerWorksetV4(
+        const auto encoded = EncodeWorkerWorksetV5(
             command.definition,
             encoded_definition);
         const auto definition_sha256 = encoded.ok

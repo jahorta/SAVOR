@@ -369,6 +369,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .possible_outputs = {
                 Port("tas_movie_validation_attempt", "analysis.tas_movie_validation_attempt_id", "tmv_validation_attempt", "Validation attempt"),
                 Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Root establishment"),
+                Port("root_dtm", "state_artifact.dtm_artifact_id", "state_artifact", "Established root DTM"),
             },
             .internal_step_kinds = { "tasmovie.establish_root_cursor" },
             .step_templates = SingleStep("tasmovie.establish_root_cursor"),

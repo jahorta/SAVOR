@@ -20,7 +20,7 @@ CREATE TABLE ab_battle_completion (
     manifest_sha256 TEXT NULL,
     manifest_artifact_id INTEGER NULL,
     route_kind TEXT NULL CHECK(route_kind IS NULL OR route_kind IN (
-        'OVERWORLD_NAVIGATION','FIELD_NAVIGATION','CUTSCENE','SHIP_RUNTIME')),
+        'OVERWORLD_NAVIGATION','FIELD_NAVIGATION','CUTSCENE','SHIP_BATTLE')),
     transition_filename TEXT NULL,
     worker_terminal_sha256 TEXT NULL,
     error_code TEXT NULL,

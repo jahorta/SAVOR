@@ -180,21 +180,33 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
             }
         }
     }
-    const auto job_outputs = execution_db_->ListJobOutputsForWorkflowStep(snapshot.workflow_step_id);
-    for (const auto& job_output : job_outputs) {
-        std::string command_error;
-        if (!command_service_->RecordStepOutput(
-                {
-                    .workflow_step_id = snapshot.workflow_step_id,
-                    .output_key = job_output.output_key,
-                    .output_data_kind = job_output.data_kind,
-                    .output_ref_kind = job_output.ref_kind,
-                    .output_ref_id = job_output.ref_id,
-                    .requested_by = "workflow_graph_routing",
-                },
-                &command_error)) {
-            if (error_out) *error_out = command_error;
-            return false;
+    std::vector<std::int64_t> output_step_ids{snapshot.workflow_step_id};
+    if (snapshot.workflow_unit_activation_id) {
+        output_step_ids.clear();
+        for (const auto& step : execution_graph->steps) {
+            if (step.workflow_unit_activation_id
+                == snapshot.workflow_unit_activation_id)
+                output_step_ids.push_back(step.workflow_step_id);
+        }
+    }
+    for (const auto workflow_step_id : output_step_ids) {
+        const auto job_outputs =
+            execution_db_->ListJobOutputsForWorkflowStep(workflow_step_id);
+        for (const auto& job_output : job_outputs) {
+            std::string command_error;
+            if (!command_service_->RecordStepOutput(
+                    {
+                        .workflow_step_id = workflow_step_id,
+                        .output_key = job_output.output_key,
+                        .output_data_kind = job_output.data_kind,
+                        .output_ref_kind = job_output.ref_kind,
+                        .output_ref_id = job_output.ref_id,
+                        .requested_by = "workflow_graph_routing",
+                    },
+                    &command_error)) {
+                if (error_out) *error_out = command_error;
+                return false;
+            }
         }
     }
 

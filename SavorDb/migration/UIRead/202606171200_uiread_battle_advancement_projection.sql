@@ -17,7 +17,10 @@ CREATE TABLE IF NOT EXISTS ui_battle_advancement_decision (
     battle_advancement_decision_id INTEGER PRIMARY KEY,
     battle_advancement_pool_id INTEGER NOT NULL,
     turn_job_id INTEGER NOT NULL,
-    decision_kind TEXT NOT NULL CHECK(decision_kind IN ('SELECTED', 'NOT_SELECTED', 'REJECTED')),
+    decision_kind TEXT NOT NULL CHECK(decision_kind IN (
+        'SELECTED', 'NOT_SELECTED', 'REJECTED',
+        'SELECTED_FOR_COMPLETION', 'DUPLICATE_ENDING_RNG',
+        'RECOMMENDED', 'NOT_RECOMMENDED')),
     decision_reason TEXT NULL,
     created_at_utc INTEGER NOT NULL
 );

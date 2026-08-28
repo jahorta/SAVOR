@@ -21,7 +21,7 @@ TEST(ProgressTypes, ProductionRegistryIsDeterministicAndComplete)
     const ProgressLibraryRegistry second;
     EXPECT_EQ(first.libraries(), second.libraries());
     EXPECT_EQ(first.canonical_sha256(), second.canonical_sha256());
-    EXPECT_EQ(first.libraries().size(), 4u);
+    EXPECT_EQ(first.libraries().size(), 5u);
     for (const auto& library : first.libraries())
         EXPECT_TRUE(static_cast<bool>(library));
 }
@@ -261,6 +261,23 @@ TEST(ProgressTypes, BattleProvidersCarryTheResearchedTypedObservations)
         BuildBreakpointProgressProbeV1(*instructions);
     ASSERT_TRUE(instruction_probe.has_value());
     EXPECT_EQ(instruction_probe->samples.size(), 60u);
+}
+
+TEST(ProgressTypes, SeedCallProviderCapturesSynchronousCallEvidence)
+{
+    constexpr std::array<std::string_view, 1> libraries{
+        "soa.progress.soa.seed_calls/1"};
+    const ProgressPlanV1 plan = ResolveProgressPlanV1(libraries);
+    ASSERT_EQ(plan.points.size(), 1u);
+    const auto probe = BuildBreakpointProgressProbeV1(plan.points.front());
+    ASSERT_TRUE(probe.has_value());
+    EXPECT_EQ(probe->address, 0x8025ecbcu);
+    ASSERT_EQ(probe->samples.size(), 4u);
+    EXPECT_EQ(probe->samples[0].kind, savor::probe::SampleKind::Gpr);
+    EXPECT_EQ(probe->samples[1].kind, savor::probe::SampleKind::Memory);
+    EXPECT_EQ(probe->samples[2].kind, savor::probe::SampleKind::RoutedSample);
+    EXPECT_EQ(probe->samples[3].kind, savor::probe::SampleKind::StackTrace);
+    EXPECT_EQ(probe->samples[3].max_frames, 4u);
 }
 
 } // namespace

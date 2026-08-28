@@ -150,6 +150,9 @@ TEST(TasMovieInputEpoch, ProductionDefinitionsHaveIndependentCanonicalIdentities
     EXPECT_TRUE(HasInvocationHandlerFlag(
         cutscene->runtime_contract().execution.handler_flags,
         InvocationHandlerFlag::DialogueAdvance));
+    EXPECT_TRUE(HasInvocationHandlerFlag(
+        cutscene->runtime_contract().execution.handler_flags,
+        InvocationHandlerFlag::BattleResultsAdvance));
 }
 
 } // namespace

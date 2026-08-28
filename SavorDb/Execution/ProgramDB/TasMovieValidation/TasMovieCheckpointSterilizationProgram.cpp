@@ -537,7 +537,7 @@ public:
             },
         });
         std::vector<std::uint8_t> encoded;
-        const auto status = savor::runtime::EncodeWorkerWorksetV4(workset, encoded);
+        const auto status = savor::runtime::EncodeWorkerWorksetV5(workset, encoded);
         if (!status) return fail("sterilization workset encoding failed: " + status.message);
         workset.encoded_size_bytes = encoded.size();
         return WorksetReconstructionResult{
