@@ -2423,7 +2423,7 @@ ProgramKindDescriptor BuildBattleRecordProgramDescriptor(
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind =
         static_cast<std::int32_t>(savor::PK_BattleRecord);
-    descriptor.program_name = "Battle Recording";
+    descriptor.program_name = savor::ProgramKindDisplayName(descriptor.program_kind);
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity =
         phase::BattleRecordKindHandlerV1()->identity();
@@ -2466,7 +2466,7 @@ ProgramKindDescriptor BuildBattleReplayProgramDescriptor(
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind =
         static_cast<std::int32_t>(savor::PK_BattleReplay);
-    descriptor.program_name = "Battle Replay";
+    descriptor.program_name = savor::ProgramKindDisplayName(descriptor.program_kind);
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity =
         savor::runtime::battlereplay::BattleReplayKindHandlerV1()->identity();

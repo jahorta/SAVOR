@@ -219,6 +219,18 @@ SessionOperationReceipt EmulationSession::Open(const SessionOpenOptions& options
             "Dolphin backend does not provide the required movie facet",
             BackendIntegrity::Preserved);
     }
+    if (result.ok && options.visual_messages.show_current_phase)
+    {
+        IVisualMessageBackendPort* visual = backend_->VisualMessages();
+        if (visual && visual->IsAvailable())
+        {
+            visual_message_service_ =
+                std::make_unique<SessionVisualMessageService>(
+                    *visual,
+                    options.visual_messages);
+            (void)visual_message_service_->SetIdle();
+        }
+    }
     if (result.ok)
     {
         opened_ = true;
@@ -1246,6 +1258,7 @@ SessionOperationReceipt EmulationSession::Shutdown()
     }
     if (backend_ && !backend_shutdown_attempted_)
     {
+        visual_message_service_.reset();
         backend_shutdown_attempted_ = true;
         BackendResult close = CallBackend(
             "Dolphin backend shutdown",

@@ -1,4 +1,5 @@
 #include "WorkerRuntime.h"
+#include "ProgramKind.h"
 
 #include "DolphinWrapperBackend.h"
 #include "ProgramRuntime/Actions/SessionProgramActionHost.h"
@@ -2517,6 +2518,15 @@ struct WorkerRuntime::Impl
             active_workset->definition.workset_id;
         active_invocation->workset_item_id = item.item_id;
         active_invocation->workset_item_ordinal = ordinal;
+        if (SessionVisualMessageService* visual =
+                session->visual_messages())
+        {
+            const std::string_view display_name = ProgramKindDisplayName(
+                active_workset->definition.phase_invocation
+                    .program_package.identity.program_kind);
+            if (!display_name.empty())
+                (void)visual->SetCurrentPhase(display_name);
+        }
         const WorkerOutboundSequence start_sequence =
             NextOutboundSequence();
         if (!start_sequence)
@@ -3524,6 +3534,8 @@ struct WorkerRuntime::Impl
 
         const std::uint32_t ordinal =
             active_invocation->workset_item_ordinal;
+        if (SessionVisualMessageService* visual = session->visual_messages())
+            (void)visual->SetIdle();
         active_invocation.reset();
         if (active_workset &&
             active_workset->definition.workset_id ==
@@ -5883,6 +5895,8 @@ struct WorkerRuntime::Impl
             (void)session->Shutdown();
         }
 
+        if (SessionVisualMessageService* visual = session->visual_messages())
+            (void)visual->SetIdle();
         active_invocation.reset();
         RefreshSnapshot();
         ChangeState(WorkerState::Tainted);
@@ -6019,6 +6033,8 @@ struct WorkerRuntime::Impl
                 BackendIntegrity::Preserved);
         }
 
+        if (SessionVisualMessageService* visual = session->visual_messages())
+            (void)visual->SetIdle();
         active_invocation.reset();
         RefreshSnapshot();
         ChangeState(WorkerState::Stopped);

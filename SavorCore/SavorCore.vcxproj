@@ -300,6 +300,8 @@
     <ClInclude Include="Runner\Runtime\Services\Resources\SessionResourceLedger.h" />
     <ClInclude Include="Runner\Runtime\Services\Screenshot\IScreenshotBackendPort.h" />
     <ClInclude Include="Runner\Runtime\Services\Screenshot\ScreenshotService.h" />
+    <ClInclude Include="Runner\Runtime\Services\Visual\IVisualMessageBackendPort.h" />
+    <ClInclude Include="Runner\Runtime\Services\Visual\SessionVisualMessageService.h" />
     <ClInclude Include="Runner\Runtime\Services\Savestate\ISavestateBackendPort.h" />
     <ClInclude Include="Runner\Runtime\Services\Savestate\SessionSavestateBackendAdapter.h" />
     <ClInclude Include="Runner\Runtime\Services\Savestate\SavestateService.h" />
@@ -438,6 +440,7 @@
     <ClCompile Include="Runner\Runtime\Services\Movie\MovieService.cpp" />
     <ClCompile Include="Runner\Runtime\Services\Resources\SessionResourceLedger.cpp" />
     <ClCompile Include="Runner\Runtime\Services\Screenshot\ScreenshotService.cpp" />
+    <ClCompile Include="Runner\Runtime\Services\Visual\SessionVisualMessageService.cpp" />
     <ClCompile Include="Runner\Runtime\Services\Savestate\SessionSavestateBackendAdapter.cpp" />
     <ClCompile Include="Runner\Runtime\Services\Savestate\SavestateService.cpp" />
     <ClCompile Include="Runner\Runtime\Services\Telemetry\TelemetryBus.cpp" />

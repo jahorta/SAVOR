@@ -1995,7 +1995,7 @@ ProgramKindDescriptor BuildAnnotationProgramDescriptor(IExecutionDb* execution_d
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(
         savor::PK_TasMovieAnnotate);
-    descriptor.program_name = "TAS Movie Input Epoch Annotation";
+    descriptor.program_name = savor::ProgramKindDisplayName(descriptor.program_kind);
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity = inputepoch::AnnotationFullPhaseDefinitionV1()->identity();
     descriptor.default_progress_library_ids = ObservationDefaults().progress_library_ids;
@@ -2018,7 +2018,7 @@ ProgramKindDescriptor BuildRewriteProgramDescriptor(IExecutionDb* execution_db,
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(
         savor::PK_TasMovieRevise);
-    descriptor.program_name = "TAS Movie Input Epoch Rewrite";
+    descriptor.program_name = savor::ProgramKindDisplayName(descriptor.program_kind);
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity = inputepoch::RewriteFullPhaseDefinitionV1()->identity();
     descriptor.default_progress_library_ids = ObservationDefaults().progress_library_ids;
@@ -2040,7 +2040,7 @@ ProgramKindDescriptor BuildCutsceneProgramDescriptor(IExecutionDb* execution_db,
     TasMovieInputEpochProgramConfig config) {
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(savor::PK_TasMovieCutscene);
-    descriptor.program_name = "TAS Movie Cutscene";
+    descriptor.program_name = savor::ProgramKindDisplayName(descriptor.program_kind);
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity = inputepoch::CutsceneFullPhaseDefinitionV1()->identity();
     const auto& observation_defaults = CutsceneObservationDefaults(
@@ -2068,7 +2068,7 @@ ProgramKindDescriptor BuildBreakpointDiagnosticProgramDescriptor(
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(
         savor::PK_TasMovieInputEpochBreakpointDiagnostic);
-    descriptor.program_name = "TAS Movie Input Epoch Breakpoint Diagnostic";
+    descriptor.program_name = savor::ProgramKindDisplayName(descriptor.program_kind);
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity =
         inputepoch::BreakpointDiagnosticFullPhaseDefinitionV1()->identity();

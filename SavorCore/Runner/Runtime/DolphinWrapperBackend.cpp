@@ -14,6 +14,7 @@
 #include "Core/HW/Memmap.h"
 #include "Core/Movie.h"
 #include "Core/PowerPC/BreakPoints.h"
+#include "VideoCommon/OnScreenDisplay.h"
 
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
@@ -687,6 +688,9 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
     if (impl_->cpu_core == DolphinBackendCpuCore::Jit64)
         Config::SetCurrent(Config::MAIN_CPU_CORE, PowerPC::CPUCore::JIT64);
 
+    if (options.visual)
+        Config::SetCurrent(Config::MAIN_OSD_MESSAGES, true);
+
     if (!wrapper->loadGame(
             options.iso_path.string(),
             true))
@@ -735,6 +739,49 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
             BackendIntegrity::Unknown);
     }
     return BackendResult::Success();
+}
+
+IVisualMessageBackendPort*
+DolphinWrapperBackend::VisualMessages() noexcept
+{
+    return impl_ && impl_->open && impl_->has_open_options &&
+            impl_->last_open_options.visual
+        ? this
+        : nullptr;
+}
+
+bool DolphinWrapperBackend::IsAvailable() const noexcept
+{
+    return impl_ && impl_->open && impl_->wrapper &&
+        impl_->has_open_options && impl_->last_open_options.visual;
+}
+
+BackendResult DolphinWrapperBackend::ReplaceMessage(
+    const VisualMessageSlot slot,
+    std::string message)
+{
+    if (!IsAvailable())
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::Unavailable,
+            "Visual message backend is unavailable");
+    }
+
+    constexpr std::uint32_t CurrentPhaseDurationMs =
+        24u * 60u * 60u * 1000u;
+    switch (slot)
+    {
+    case VisualMessageSlot::CurrentPhase:
+        OSD::AddTypedMessage(
+            static_cast<OSD::MessageType>(-1000),
+            std::move(message),
+            CurrentPhaseDurationMs,
+            OSD::Color::CYAN);
+        return BackendResult::Success();
+    }
+    return BackendResult::Failure(
+        BackendErrorCode::InvalidArgument,
+        "Visual message slot is unknown");
 }
 
 MovieBackendResult DolphinWrapperBackend::StopCoreForPreparedReadOnlyMovie()

@@ -161,6 +161,7 @@
     <ClCompile Include="test_async_logger.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />
     <ClCompile Include="test_session_services.cpp" />
+    <ClCompile Include="test_visual_message_service.cpp" />
     <ClCompile Include="test_movie_service.cpp" />
     <ClCompile Include="test_session_resource_ledger.cpp" />
     <ClCompile Include="test_savestate_service.cpp" />

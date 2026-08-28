@@ -19,6 +19,7 @@ class IHitTimeGuestMemoryBackendPort;
 class IScreenshotBackendPort;
 class IMovieBackendPort;
 class ICaptureBackendPort;
+class IVisualMessageBackendPort;
 
 enum class BackendErrorCode : std::uint16_t
 {
@@ -139,6 +140,7 @@ public:
     [[nodiscard]] virtual IScreenshotBackendPort* Screenshots() noexcept = 0;
     [[nodiscard]] virtual IMovieBackendPort* Movies() noexcept = 0;
     [[nodiscard]] virtual ICaptureBackendPort* Captures() noexcept = 0;
+    [[nodiscard]] virtual IVisualMessageBackendPort* VisualMessages() noexcept = 0;
 
 protected:
     IDolphinBackend() = default;

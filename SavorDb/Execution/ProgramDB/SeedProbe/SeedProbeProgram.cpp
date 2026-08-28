@@ -2003,7 +2003,7 @@ ProgramKindDescriptor BuildSeedProbeProgramDescriptor(
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind =
         static_cast<std::int32_t>(savor::PK_SeedProbe);
-    descriptor.program_name = "SeedProbe";
+    descriptor.program_name = savor::ProgramKindDisplayName(descriptor.program_kind);
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity =
         savor::runtime::seedprobe::

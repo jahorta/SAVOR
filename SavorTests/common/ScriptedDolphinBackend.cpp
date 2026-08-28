@@ -527,6 +527,12 @@ ScriptedDolphinBackend::Captures() noexcept
     return nullptr;
 }
 
+runtime::IVisualMessageBackendPort*
+ScriptedDolphinBackend::VisualMessages() noexcept
+{
+    return nullptr;
+}
+
 bool ScriptedDolphinBackend::IsAvailable(std::uint8_t port) const noexcept
 {
     std::lock_guard lock(control_->mutex);

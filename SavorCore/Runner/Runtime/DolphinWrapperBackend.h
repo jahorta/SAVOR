@@ -8,6 +8,7 @@
 #include "Services/Movie/IMovieBackendPort.h"
 #include "Services/Screenshot/IScreenshotBackendPort.h"
 #include "Services/Capture/ICaptureBackendPort.h"
+#include "Services/Visual/IVisualMessageBackendPort.h"
 #include "StopPoints/IPhysicalStopPointBackendPort.h"
 
 #include <memory>
@@ -29,7 +30,8 @@ class DolphinWrapperBackend final
       private IHitTimeGuestMemoryBackendPort,
       private IScreenshotBackendPort,
       private IMovieBackendPort,
-      private ICaptureBackendPort
+      private ICaptureBackendPort,
+      private IVisualMessageBackendPort
 {
 public:
     explicit DolphinWrapperBackend(
@@ -66,6 +68,7 @@ public:
     [[nodiscard]] IScreenshotBackendPort* Screenshots() noexcept override;
     [[nodiscard]] IMovieBackendPort* Movies() noexcept override;
     [[nodiscard]] ICaptureBackendPort* Captures() noexcept override;
+    [[nodiscard]] IVisualMessageBackendPort* VisualMessages() noexcept override;
 
 private:
     [[nodiscard]] BackendExecutionCapabilityMask
@@ -130,6 +133,11 @@ private:
     CreateCaptureProfileAdapter(
         const ProbeRouterAdapterConfig& config,
         std::string* error_out) override;
+
+    [[nodiscard]] bool IsAvailable() const noexcept override;
+    BackendResult ReplaceMessage(
+        VisualMessageSlot slot,
+        std::string message) override;
 
     PhysicalStopBackendReceipt BindNativeStopSink(
         savor::probe::INativeStopSink& sink) override;

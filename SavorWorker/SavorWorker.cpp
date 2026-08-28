@@ -1252,6 +1252,7 @@ bool SubmitFrame(
         options.worker_mode = MapWorkerMode(payload.worker_mode);
         options.backend.visual =
             options.worker_mode != savor::runtime::WorkerMode::Headless;
+        options.visual_messages.show_current_phase = options.backend.visual;
         options.backend.render_window_handle =
             static_cast<std::uintptr_t>(payload.render_window_handle);
         options.runtime_artifact_root = payload.runtime_artifact_root;

@@ -627,7 +627,7 @@ ProgramKindDescriptor BuildBattleContextProgramDescriptor(
     BattleContextProgramConfig config) {
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(savor::PK_BattleContext);
-    descriptor.program_name = "Battle Context";
+    descriptor.program_name = savor::ProgramKindDisplayName(descriptor.program_kind);
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity = savor::runtime::battlecontext::
         BattleContextFullPhaseDefinitionV1()->identity();

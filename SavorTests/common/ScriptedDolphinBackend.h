@@ -178,6 +178,7 @@ public:
     [[nodiscard]] runtime::IScreenshotBackendPort* Screenshots() noexcept override;
     [[nodiscard]] runtime::IMovieBackendPort* Movies() noexcept override;
     [[nodiscard]] runtime::ICaptureBackendPort* Captures() noexcept override;
+    [[nodiscard]] runtime::IVisualMessageBackendPort* VisualMessages() noexcept override;
 
 private:
     [[nodiscard]] runtime::BackendExecutionCapabilityMask

@@ -2478,7 +2478,7 @@ ProgramKindDescriptor BuildBattleSingleTurnProgramDescriptor(
     BattleSingleTurnPhaseRegistrationConfig config) {
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner);
-    descriptor.program_name = "Battle Single Turn";
+    descriptor.program_name = savor::ProgramKindDisplayName(descriptor.program_kind);
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity =
         runtime::battlesingleturn::BattleSingleTurnKindHandlerV1()->identity();

@@ -1147,7 +1147,7 @@ ProgramKindDescriptor BuildTasMovieValidationProgramDescriptor(
     TasMovieValidationProgramConfig config) {
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = static_cast<std::int32_t>(savor::PK_TasMovie);
-    descriptor.program_name = "TAS Movie Complete Validation";
+    descriptor.program_name = savor::ProgramKindDisplayName(descriptor.program_kind);
     descriptor.result_staging_root = config.working_dir_root;
     descriptor.full_phase_identity = savor::runtime::tasmovie::TasMovieValidationFullPhaseDefinitionV1()->identity();
     descriptor.default_progress_library_ids =

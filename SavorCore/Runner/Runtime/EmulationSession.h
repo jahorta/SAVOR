@@ -17,6 +17,7 @@
 #include "Services/Savestate/SessionSavestateBackendAdapter.h"
 #include "Services/Savestate/SavestateService.h"
 #include "Services/Telemetry/TelemetryBus.h"
+#include "Services/Visual/SessionVisualMessageService.h"
 #include "StopPoints/StopPointRouter.h"
 #include "ProgramRuntime/Actions/SessionResourceBindingTable.h"
 #include "ProgramRuntime/Actions/BoundedStopPointCpuEvaluator.h"
@@ -55,6 +56,7 @@ struct SessionOpenOptions
     WorkerMode worker_mode = WorkerMode::Headless;
     BackendOpenOptions backend;
     std::filesystem::path runtime_artifact_root;
+    SessionVisualMessageOptions visual_messages;
 };
 
 struct SessionSnapshot
@@ -213,6 +215,11 @@ public:
         return artifact_sink_.get();
     }
 
+    [[nodiscard]] SessionVisualMessageService* visual_messages() noexcept
+    {
+        return visual_message_service_.get();
+    }
+
     [[nodiscard]] SessionResourceLedger* resources() noexcept
     {
         return resource_ledger_.get();
@@ -295,6 +302,7 @@ private:
     std::unique_ptr<GuestMutationService> guest_mutations_;
     std::unique_ptr<ScreenshotService> screenshot_service_;
     std::unique_ptr<RuntimeArtifactSink> artifact_sink_;
+    std::unique_ptr<SessionVisualMessageService> visual_message_service_;
     std::unique_ptr<SessionSavestateBackendAdapter> savestate_backend_adapter_;
     std::unique_ptr<SavestateService> savestate_service_;
     std::unique_ptr<InputMovieReservationAdapter>

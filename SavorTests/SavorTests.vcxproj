@@ -300,6 +300,7 @@
     <ClCompile Include="test_workset_completion.cpp" />
     <ClCompile Include="test_workset_stager.cpp" />
     <ClCompile Include="test_session_services.cpp" />
+    <ClCompile Include="test_visual_message_service.cpp" />
     <ClCompile Include="test_movie_service.cpp" />
     <ClCompile Include="test_session_resource_ledger.cpp" />
     <ClCompile Include="test_savestate_service.cpp" />
