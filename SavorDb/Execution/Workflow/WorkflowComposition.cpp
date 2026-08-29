@@ -443,7 +443,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .description = "Replays a complete boot DTM and records the controller state consumed by each guest PADRead epoch.",
             .default_activation_params_json = "{}",
             .required_inputs = {
-                Port("root_dtm", "state_artifact.dtm_artifact_id", "state_artifact", "Complete boot DTM"),
+                Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Root establishment"),
             },
             .possible_outputs = {
                 Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Input-epoch annotation attempt"),
@@ -461,7 +461,6 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .default_activation_params_json = "{}",
             .required_inputs = {
                 Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Source input-epoch annotation"),
-                Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Source root establishment"),
             },
             .possible_outputs = {
                 Port("rewrite_attempt", "analysis.tas_movie_input_epoch_rewrite_attempt_id", "tmv_input_epoch_rewrite_attempt", "Input-epoch rewrite attempt"),
@@ -495,7 +494,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .hidden = true,
             .default_activation_params_json = "{}",
             .required_inputs = {
-                Port("root_dtm", "state_artifact.dtm_artifact_id", "state_artifact", "Complete boot DTM"),
+                Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Root establishment"),
             },
             .possible_outputs = {
                 Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Diagnostic annotation attempt"),

@@ -3,6 +3,7 @@
 #include <QtCore/QtMath>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QEvent>
+#include <QtCore/QSettings>
 #include <QtGui/QPlatformSurfaceEvent>
 #include <QtGui/QResizeEvent>
 #include <QtWidgets/QFrame>
@@ -11,10 +12,67 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSizePolicy>
+#include <QtWidgets/QSpinBox>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
 #include <algorithm>
+
+namespace {
+
+constexpr auto kSettingsGroup = "VisualWorkerDashboard";
+constexpr auto kColumnsKey = "columns";
+constexpr int kDefaultColumns = 4;
+constexpr int kMinimumColumns = 1;
+constexpr int kMaximumColumns = 10;
+
+class AspectRatioSurfaceContainer final : public QWidget
+{
+public:
+    explicit AspectRatioSurfaceContainer(QWidget* parent = nullptr)
+        : QWidget(parent)
+    {
+        setMinimumSize(160, 90);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    }
+
+    void setSurface(QWidget* surface)
+    {
+        surface_ = surface;
+        updateSurfaceGeometry();
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QWidget::resizeEvent(event);
+        updateSurfaceGeometry();
+    }
+
+private:
+    void updateSurfaceGeometry()
+    {
+        if (surface_ == nullptr || width() <= 0 || height() <= 0) {
+            return;
+        }
+
+        int surfaceWidth = width();
+        int surfaceHeight = surfaceWidth * 9 / 16;
+        if (surfaceHeight > height()) {
+            surfaceHeight = height();
+            surfaceWidth = surfaceHeight * 16 / 9;
+        }
+        surface_->setGeometry(
+            (width() - surfaceWidth) / 2,
+            (height() - surfaceHeight) / 2,
+            surfaceWidth,
+            surfaceHeight);
+    }
+
+    QWidget* surface_ = nullptr;
+};
+
+} // namespace
 
 VisualWorkerDashboardWindow::VisualWorkerDashboardWindow(QWidget* parent)
     : PersistentToolWindow(parent)
@@ -26,15 +84,35 @@ VisualWorkerDashboardWindow::VisualWorkerDashboardWindow(QWidget* parent)
     rootLayout->setContentsMargins(12, 12, 12, 12);
     rootLayout->setSpacing(10);
 
+    QHBoxLayout* toolbarLayout = new QHBoxLayout();
     QLabel* titleLabel = new QLabel(QStringLiteral("Visual Workers"), this);
     titleLabel->setObjectName(QStringLiteral("panelTitle"));
-    rootLayout->addWidget(titleLabel);
+    toolbarLayout->addWidget(titleLabel);
+    toolbarLayout->addStretch();
+    toolbarLayout->addWidget(new QLabel(QStringLiteral("Columns"), this));
+
+    QSettings settings;
+    settings.beginGroup(QString::fromLatin1(kSettingsGroup));
+    configuredColumns_ = std::clamp(
+        settings.value(QString::fromLatin1(kColumnsKey), kDefaultColumns).toInt(),
+        kMinimumColumns,
+        kMaximumColumns);
+    settings.endGroup();
+
+    columnsSpin_ = new QSpinBox(this);
+    columnsSpin_->setRange(kMinimumColumns, kMaximumColumns);
+    columnsSpin_->setValue(configuredColumns_);
+    columnsSpin_->setToolTip(QStringLiteral(
+        "Keep the visual worker grid at this number of columns."));
+    toolbarLayout->addWidget(columnsSpin_);
+    rootLayout->addLayout(toolbarLayout);
 
     scrollArea_ = new QScrollArea(this);
     scrollArea_->setWidgetResizable(true);
     scrollArea_->setFrameShape(QFrame::NoFrame);
 
     gridContainer_ = new QWidget(scrollArea_);
+    gridContainer_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     gridLayout_ = new QGridLayout(gridContainer_);
     gridLayout_->setContentsMargins(0, 0, 0, 0);
     gridLayout_->setHorizontalSpacing(10);
@@ -42,20 +120,24 @@ VisualWorkerDashboardWindow::VisualWorkerDashboardWindow(QWidget* parent)
     scrollArea_->setWidget(gridContainer_);
 
     rootLayout->addWidget(scrollArea_, 1);
+
+    connect(
+        columnsSpin_,
+        qOverload<int>(&QSpinBox::valueChanged),
+        this,
+        [this](int columns) {
+            configuredColumns_ = columns;
+            QSettings settings;
+            settings.beginGroup(QString::fromLatin1(kSettingsGroup));
+            settings.setValue(QString::fromLatin1(kColumnsKey), columns);
+            settings.endGroup();
+            rebuildGrid();
+        });
 }
 
-void VisualWorkerDashboardWindow::setWorkerCount(int count, bool allowShrink)
+void VisualWorkerDashboardWindow::ensureWorkerCount(int count)
 {
     const int clampedCount = std::max(0, count);
-    if (allowShrink) {
-        while (tiles_.size() > clampedCount) {
-            Tile tile = tiles_.takeLast();
-            if (tile.frame != nullptr) {
-                tile.frame->deleteLater();
-            }
-        }
-    }
-
     while (tiles_.size() < clampedCount) {
         tiles_.append(createTile(tiles_.size()));
     }
@@ -63,12 +145,36 @@ void VisualWorkerDashboardWindow::setWorkerCount(int count, bool allowShrink)
     rebuildGrid();
 }
 
+void VisualWorkerDashboardWindow::releaseWorkersFrom(int firstWorkerIndex)
+{
+    const int retainedCount = std::clamp(
+        firstWorkerIndex, 0, static_cast<int>(tiles_.size()));
+    while (static_cast<int>(tiles_.size()) > retainedCount) {
+        Tile tile = tiles_.takeLast();
+        if (tile.nativeHandle != 0) {
+            emit surfaceInvalidated(tile.workerIndex, tile.surfaceGeneration);
+            tile.nativeHandle = 0;
+        }
+        if (tile.frame != nullptr) {
+            tile.frame->deleteLater();
+        }
+    }
+    rebuildGrid();
+}
+
+int VisualWorkerDashboardWindow::workerCount() const
+{
+    return tiles_.size();
+}
+
 void VisualWorkerDashboardWindow::updateWorkerStatus(
     const WorkerSnapshot& snapshot)
 {
-    if (snapshot.worker_id >= static_cast<std::size_t>(tiles_.size()))
+    const qint64 workerIndex = static_cast<qint64>(snapshot.worker_id);
+    if (workerIndex < 0 ||
+        workerIndex >= static_cast<qint64>(tiles_.size()))
         return;
-    Tile& tile = tiles_[static_cast<int>(snapshot.worker_id)];
+    Tile& tile = tiles_[static_cast<int>(workerIndex)];
     tile.stateLabel->setText(stateText(snapshot.state));
     tile.jobLabel->setText(snapshot.job_id.has_value()
         ? QStringLiteral("Job: %1").arg(*snapshot.job_id)
@@ -127,8 +233,8 @@ VisualWorkerDashboardWindow::Tile VisualWorkerDashboardWindow::createTile(int wo
 
     QFrame* frame = new QFrame(gridContainer_);
     frame->setObjectName(QStringLiteral("coordinatorCard"));
-    frame->setMinimumWidth(340);
-    frame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    frame->setMinimumWidth(180);
+    frame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     QVBoxLayout* layout = new QVBoxLayout(frame);
     layout->setContentsMargins(10, 10, 10, 10);
@@ -143,14 +249,14 @@ VisualWorkerDashboardWindow::Tile VisualWorkerDashboardWindow::createTile(int wo
     headerLayout->addStretch();
     headerLayout->addWidget(stateLabel);
 
-    QWidget* renderWidget = new QWidget(frame);
+    auto* renderContainer = new AspectRatioSurfaceContainer(frame);
+    QWidget* renderWidget = new QWidget(renderContainer);
     renderWidget->setObjectName(QStringLiteral("visualWorkerRenderWidget"));
     renderWidget->setAttribute(Qt::WA_NativeWindow, true);
     renderWidget->setAttribute(Qt::WA_PaintOnScreen, true);
     renderWidget->setAutoFillBackground(true);
-    renderWidget->setMinimumSize(320, 180);
-    renderWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    renderWidget->resize(320, 180);
+    renderWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    renderContainer->setSurface(renderWidget);
     renderWidget->installEventFilter(this);
     (void)renderWidget->winId();
 
@@ -158,17 +264,19 @@ VisualWorkerDashboardWindow::Tile VisualWorkerDashboardWindow::createTile(int wo
     jobLabel->setObjectName(QStringLiteral("panelBody"));
 
     layout->addLayout(headerLayout);
-    layout->addWidget(renderWidget);
+    layout->addWidget(renderContainer, 1);
     layout->addWidget(jobLabel);
 
     tile.frame = frame;
+    tile.renderContainer = renderContainer;
     tile.renderWidget = renderWidget;
     tile.titleLabel = titleLabel;
     tile.stateLabel = stateLabel;
     tile.jobLabel = jobLabel;
     tile.workerIndex = workerIndex;
     tile.nativeHandle = renderWidget->effectiveWinId();
-    tile.surfaceGeneration = 1;
+    tile.surfaceGeneration = surfaceGenerations_.value(workerIndex, 0) + 1;
+    surfaceGenerations_.insert(workerIndex, tile.surfaceGeneration);
     return tile;
 }
 
@@ -200,6 +308,8 @@ bool VisualWorkerDashboardWindow::eventFilter(
             }
             found->nativeHandle = newHandle;
             ++found->surfaceGeneration;
+            surfaceGenerations_.insert(
+                found->workerIndex, found->surfaceGeneration);
             emit surfaceChanged(VisualWorkerSurfaceBinding{
                 .workerIndex = found->workerIndex,
                 .renderWidgetHandle = found->nativeHandle,
@@ -213,19 +323,28 @@ bool VisualWorkerDashboardWindow::eventFilter(
     return PersistentToolWindow::eventFilter(watched, event);
 }
 
-void VisualWorkerDashboardWindow::resizeEvent(QResizeEvent* event)
-{
-    PersistentToolWindow::resizeEvent(event);
-    rebuildGrid();
-}
-
 void VisualWorkerDashboardWindow::rebuildGrid()
 {
     while (QLayoutItem* item = gridLayout_->takeAt(0)) {
         delete item;
     }
 
-    const int columns = std::max(1, width() / 390);
+    for (int row = 0; row < gridRowCount_; ++row) {
+        gridLayout_->setRowStretch(row, 0);
+    }
+    for (int column = 0; column < gridColumnCount_; ++column) {
+        gridLayout_->setColumnStretch(column, 0);
+    }
+
+    if (tiles_.isEmpty()) {
+        gridRowCount_ = 0;
+        gridColumnCount_ = 0;
+        return;
+    }
+
+    const int tileCount = static_cast<int>(tiles_.size());
+    const int columns = std::min(configuredColumns_, tileCount);
+    const int rows = (tileCount + columns - 1) / columns;
     for (int i = 0; i < tiles_.size(); ++i) {
         const int row = i / columns;
         const int column = i % columns;
@@ -234,4 +353,9 @@ void VisualWorkerDashboardWindow::rebuildGrid()
     for (int column = 0; column < columns; ++column) {
         gridLayout_->setColumnStretch(column, 1);
     }
+    for (int row = 0; row < rows; ++row) {
+        gridLayout_->setRowStretch(row, 1);
+    }
+    gridRowCount_ = rows;
+    gridColumnCount_ = columns;
 }

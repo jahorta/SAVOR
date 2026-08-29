@@ -181,10 +181,9 @@ bool WorkflowExpansionService::Create(
         return false;
     const bool first = request.kind ==
         WorkflowExpansionKind::TasMovieFirstBattleExploration;
-    if (first && (request.source_ref_kind != "prepared_tas_root"
-        || !request.source_annotation_attempt_id
-        || !request.source_root_establishment_attempt_id)) {
-        if (error_out) *error_out = "first-battle expansion requires a prepared TAS root authority pair";
+    if (first && (request.source_ref_kind != "tmv_input_epoch_annotation_attempt"
+        || request.source_ref_id <= 0)) {
+        if (error_out) *error_out = "first-battle expansion requires one annotation authority";
         return false;
     }
     if (!first && request.source_ref_kind != "tas_route_node") {
@@ -198,9 +197,11 @@ bool WorkflowExpansionService::Create(
     std::optional<std::int64_t> inherited_rtc;
     if (first) {
         const auto annotation = analysis_->GetTasMovieInputEpochAnnotationAttempt(
-            *request.source_annotation_attempt_id);
-        const auto root = analysis_->GetTasMovieRootEstablishmentAttempt(
-            *request.source_root_establishment_attempt_id);
+            request.source_ref_id);
+        const auto root = annotation && annotation->root_establishment_attempt_id
+            ? analysis_->GetTasMovieRootEstablishmentAttempt(
+                *annotation->root_establishment_attempt_id)
+            : std::nullopt;
         if (!annotation || !annotation->succeeded || !annotation->schedule_artifact_id
             || !root || annotation->source_dtm_artifact_id != root->source_dtm_artifact_id
             || annotation->source_dtm_sha256 != root->source_dtm_sha256) {
@@ -241,11 +242,32 @@ bool WorkflowExpansionService::Create(
             "SELECT validation_attempt_id FROM tmv_validation_attempt WHERE validation_request_id=?1 AND produced_tas_movie_root_id IS NOT NULL ORDER BY validation_attempt_id DESC LIMIT 1;",
             -1, &statement, nullptr) != SQLITE_OK) return false;
         sqlite3_bind_int64(statement, 1, root->source_context_id);
+        std::optional<std::int64_t> validation_attempt;
         if (sqlite3_step(statement) == SQLITE_ROW)
-            source_attempt = sqlite3_column_int64(statement, 0);
+            validation_attempt = sqlite3_column_int64(statement, 0);
         sqlite3_finalize(statement);
+        if (validation_attempt && sqlite3_prepare_v2(analysis_sqlite_,
+            "SELECT root_establishment_attempt_id FROM tmv_root_establishment_attempt WHERE validation_attempt_id=?1 ORDER BY root_establishment_attempt_id DESC LIMIT 1;",
+            -1, &statement, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(statement, 1, *validation_attempt);
+            if (sqlite3_step(statement) == SQLITE_ROW)
+                source_attempt = sqlite3_column_int64(statement, 0);
+            sqlite3_finalize(statement);
+        }
         if (!source_attempt) {
             if (error_out) *error_out = "TAS route node establishment attempt is unavailable";
+            return false;
+        }
+        if (sqlite3_prepare_v2(analysis_sqlite_,
+            "SELECT annotation_attempt_id FROM tmv_input_epoch_annotation_attempt WHERE root_establishment_attempt_id=?1 AND succeeded=1 AND schedule_artifact_id IS NOT NULL ORDER BY annotation_attempt_id DESC LIMIT 1;",
+            -1, &statement, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(statement, 1, *source_attempt);
+            if (sqlite3_step(statement) == SQLITE_ROW)
+                source_annotation = sqlite3_column_int64(statement, 0);
+            sqlite3_finalize(statement);
+        }
+        if (!source_annotation) {
+            if (error_out) *error_out = "TAS route node annotation authority is unavailable";
             return false;
         }
         source_dtm = root->dtm_artifact_id;
@@ -292,7 +314,7 @@ bool WorkflowExpansionService::Create(
 
     sqlite3_stmt* statement = nullptr;
     constexpr const char* sql =
-        "INSERT INTO exec_workflow_expansion(expansion_kind,state,source_ref_kind,source_ref_id,source_dtm_artifact_id,source_annotation_attempt_id,source_establishment_attempt_id,inherited_rtc,rtc_min,rtc_max,max_neutral_epochs,created_by,created_at_utc,updated_at_utc) VALUES(?1,'RUNNING',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12);";
+        "INSERT INTO exec_workflow_expansion(expansion_kind,state,source_ref_kind,source_ref_id,inherited_rtc,rtc_min,rtc_max,max_neutral_epochs,created_by,created_at_utc,updated_at_utc) VALUES(?1,'RUNNING',?2,?3,?4,?5,?6,?7,?8,?9,?9);";
     if (sqlite3_prepare_v2(db_, sql, -1, &statement, nullptr) != SQLITE_OK) {
         rollback();
         return false;
@@ -300,18 +322,17 @@ bool WorkflowExpansionService::Create(
     const auto now = types::UtcNow().time_since_epoch().count();
     const auto kind = KindText(request.kind);
     sqlite3_bind_text(statement, 1, kind.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(statement, 2, request.source_ref_kind.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(statement, 3, first ? *source_attempt : request.source_ref_id);
-    BindInt64(statement, 4, source_dtm);
-    BindInt64(statement, 5, source_annotation);
-    BindInt64(statement, 6, source_attempt);
-    BindInt64(statement, 7, inherited_rtc);
-    sqlite3_bind_int64(statement, 8, rtc_min);
-    sqlite3_bind_int64(statement, 9, rtc_max);
-    sqlite3_bind_int64(statement, 10, max_delay);
+    static constexpr auto kAnnotationAuthorityKind =
+        "tmv_input_epoch_annotation_attempt";
+    sqlite3_bind_text(statement, 2, kAnnotationAuthorityKind, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(statement, 3, *source_annotation);
+    BindInt64(statement, 4, inherited_rtc);
+    sqlite3_bind_int64(statement, 5, rtc_min);
+    sqlite3_bind_int64(statement, 6, rtc_max);
+    sqlite3_bind_int64(statement, 7, max_delay);
     const auto created_by = request.created_by.empty() ? "SavorDb" : request.created_by;
-    sqlite3_bind_text(statement, 11, created_by.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(statement, 12, now);
+    sqlite3_bind_text(statement, 8, created_by.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 9, now);
     const bool ok = sqlite3_step(statement) == SQLITE_DONE;
     sqlite3_finalize(statement);
     if (!ok) {
@@ -357,8 +378,8 @@ std::vector<WorkflowExpansionSnapshot> WorkflowExpansionService::List(
     if (!db_) return rows;
     sqlite3_stmt* statement = nullptr;
     const char* sql = include_final
-        ? "SELECT workflow_expansion_id,expansion_kind,state,source_ref_id,rtc_min,rtc_max,max_neutral_epochs,failure_text,source_dtm_artifact_id,source_annotation_attempt_id,source_establishment_attempt_id FROM exec_workflow_expansion ORDER BY workflow_expansion_id DESC;"
-        : "SELECT workflow_expansion_id,expansion_kind,state,source_ref_id,rtc_min,rtc_max,max_neutral_epochs,failure_text,source_dtm_artifact_id,source_annotation_attempt_id,source_establishment_attempt_id FROM exec_workflow_expansion WHERE state NOT IN ('COMPLETED','CANCELED') ORDER BY workflow_expansion_id DESC;";
+        ? "SELECT workflow_expansion_id,expansion_kind,state,source_ref_id,rtc_min,rtc_max,max_neutral_epochs,failure_text FROM exec_workflow_expansion ORDER BY workflow_expansion_id DESC;"
+        : "SELECT workflow_expansion_id,expansion_kind,state,source_ref_id,rtc_min,rtc_max,max_neutral_epochs,failure_text FROM exec_workflow_expansion WHERE state NOT IN ('COMPLETED','CANCELED') ORDER BY workflow_expansion_id DESC;";
     if (sqlite3_prepare_v2(db_, sql, -1, &statement, nullptr) != SQLITE_OK)
         return rows;
     while (sqlite3_step(statement) == SQLITE_ROW) {
@@ -371,12 +392,15 @@ std::vector<WorkflowExpansionSnapshot> WorkflowExpansionService::List(
         if (sqlite3_column_type(statement, 5) != SQLITE_NULL) row.rtc_max = sqlite3_column_int64(statement, 5);
         row.max_neutral_epochs = sqlite3_column_int64(statement, 6);
         if (sqlite3_column_type(statement, 7) != SQLITE_NULL) row.failure_text = Text(statement, 7);
-        if (sqlite3_column_type(statement, 8) != SQLITE_NULL)
-            row.source_dtm_artifact_id = sqlite3_column_int64(statement, 8);
-        if (sqlite3_column_type(statement, 9) != SQLITE_NULL)
-            row.source_annotation_attempt_id = sqlite3_column_int64(statement, 9);
-        if (sqlite3_column_type(statement, 10) != SQLITE_NULL)
-            row.source_root_establishment_attempt_id = sqlite3_column_int64(statement, 10);
+        row.source_annotation_attempt_id = row.source_ref_id;
+        const auto annotation = analysis_
+            ? analysis_->GetTasMovieInputEpochAnnotationAttempt(row.source_ref_id)
+            : std::nullopt;
+        if (annotation) {
+            row.source_dtm_artifact_id = annotation->source_dtm_artifact_id;
+            row.source_root_establishment_attempt_id =
+                annotation->root_establishment_attempt_id;
+        }
         rows.push_back(std::move(row));
     }
     sqlite3_finalize(statement);
@@ -419,13 +443,11 @@ WorkflowExpansionService::ListPreparedTasRootSources(const int limit) const {
         constexpr const char* sql =
             "SELECT annotation_attempt_id FROM tmv_input_epoch_annotation_attempt "
             "WHERE succeeded=1 AND schedule_artifact_id IS NOT NULL "
-            "AND source_dtm_artifact_id=?1 AND source_dtm_sha256=?2 "
-            "ORDER BY CASE WHEN source_job_id=?3 THEN 0 ELSE 1 END, annotation_attempt_id DESC LIMIT 1;";
+            "AND root_establishment_attempt_id=?1 "
+            "ORDER BY annotation_attempt_id DESC LIMIT 1;";
         if (sqlite3_prepare_v2(analysis_sqlite_, sql, -1, &statement, nullptr)
             != SQLITE_OK) continue;
-        sqlite3_bind_int64(statement, 1, root.source_dtm_artifact_id);
-        sqlite3_bind_text(statement, 2, root.source_dtm_sha256.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(statement, 3, root.source_job_id);
+        sqlite3_bind_int64(statement, 1, root.root_establishment_attempt_id);
         if (sqlite3_step(statement) == SQLITE_ROW) {
             const auto annotation_id = sqlite3_column_int64(statement, 0);
             rows.push_back({
@@ -457,29 +479,37 @@ bool WorkflowExpansionService::ReadFirstBattleCoverage(
                 return row.workflow_expansion_id == *request.workflow_expansion_id &&
                     row.kind == WorkflowExpansionKind::TasMovieFirstBattleExploration;
             });
-        if (found == expansions.end() || !found->source_dtm_artifact_id) {
+        if (found == expansions.end() || !found->source_annotation_attempt_id) {
             if (error_out) *error_out = "first-battle expansion was not found";
             return false;
         }
-        request.source_dtm_artifact_id = *found->source_dtm_artifact_id;
-        request.source_annotation_attempt_id = found->source_annotation_attempt_id;
-        request.source_root_establishment_attempt_id =
-            found->source_root_establishment_attempt_id;
+        request.source_annotation_attempt_id = *found->source_annotation_attempt_id;
         request.rtc_min = found->rtc_min.value_or(0);
         request.rtc_max = found->rtc_max.value_or(request.rtc_min);
         request.max_neutral_epochs = found->max_neutral_epochs;
     }
-    if (request.source_dtm_artifact_id <= 0 || request.rtc_min < 0 ||
+    const auto annotation = analysis_
+        ? analysis_->GetTasMovieInputEpochAnnotationAttempt(
+            request.source_annotation_attempt_id)
+        : std::nullopt;
+    const auto root = annotation && annotation->root_establishment_attempt_id
+        ? analysis_->GetTasMovieRootEstablishmentAttempt(
+            *annotation->root_establishment_attempt_id)
+        : std::nullopt;
+    if (!annotation || !annotation->succeeded || !annotation->schedule_artifact_id
+        || !root || annotation->source_dtm_artifact_id != root->source_dtm_artifact_id
+        || annotation->source_dtm_sha256 != root->source_dtm_sha256
+        || request.rtc_min < 0 ||
         request.rtc_max < request.rtc_min || request.max_neutral_epochs < 0) {
         if (error_out) *error_out = "invalid first-battle coverage query";
         return false;
     }
 
     FirstBattleCoverageSnapshot result{};
-    result.source_dtm_artifact_id = request.source_dtm_artifact_id;
+    result.source_dtm_artifact_id = annotation->source_dtm_artifact_id;
     result.source_annotation_attempt_id = request.source_annotation_attempt_id;
     result.source_root_establishment_attempt_id =
-        request.source_root_establishment_attempt_id;
+        annotation->root_establishment_attempt_id;
     result.rtc_min = request.rtc_min;
     result.rtc_max = request.rtc_max;
     result.max_neutral_epochs = request.max_neutral_epochs;
@@ -530,14 +560,9 @@ bool WorkflowExpansionService::ReadFirstBattleCoverage(
     }
     std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> latest_workflow;
     for (const auto& expansion : expansions) {
-        if (expansion.kind != WorkflowExpansionKind::TasMovieFirstBattleExploration ||
-            expansion.source_dtm_artifact_id != request.source_dtm_artifact_id) continue;
-        if (request.source_annotation_attempt_id
-            && expansion.source_annotation_attempt_id
+        if (expansion.kind != WorkflowExpansionKind::TasMovieFirstBattleExploration
+            || expansion.source_annotation_attempt_id
                 != request.source_annotation_attempt_id) continue;
-        if (request.source_root_establishment_attempt_id
-            && expansion.source_root_establishment_attempt_id
-                != request.source_root_establishment_attempt_id) continue;
         for (const auto& member : expansion.members) {
             const auto graph = workflow_query->GetWorkflowGraph(member.workflow_instance_id);
             if (member.role == "DELAY_PRODUCTION" &&
@@ -658,10 +683,8 @@ bool WorkflowExpansionService::LaunchMissingFirstBattleCoverage(
     const LaunchMissingFirstBattleCoverageRequest& request,
     LaunchMissingFirstBattleCoverageReceipt* receipt_out,
     std::string* error_out) {
-    if (!receipt_out || request.source_dtm_artifact_id <= 0
-        || request.source_annotation_attempt_id <= 0
-        || request.source_root_establishment_attempt_id <= 0) {
-        if (error_out) *error_out = "prepared TAS root source is required";
+    if (!receipt_out || request.source_annotation_attempt_id <= 0) {
+        if (error_out) *error_out = "annotation authority is required";
         return false;
     }
     LaunchMissingFirstBattleCoverageReceipt receipt{};
@@ -682,9 +705,7 @@ bool WorkflowExpansionService::LaunchMissingFirstBattleCoverage(
             return lhs.neutral_epoch_count < rhs.neutral_epoch_count;
         });
     FirstBattleCoverageSnapshot coverage{};
-    if (!ReadFirstBattleCoverage({.source_dtm_artifact_id=request.source_dtm_artifact_id,
-            .source_annotation_attempt_id=request.source_annotation_attempt_id,
-            .source_root_establishment_attempt_id=request.source_root_establishment_attempt_id,
+    if (!ReadFirstBattleCoverage({.source_annotation_attempt_id=request.source_annotation_attempt_id,
             .rtc_min=rtc_min_it->rtc_value, .rtc_max=rtc_max_it->rtc_value,
             .max_neutral_epochs=max_delay_it->neutral_epoch_count},
             &coverage, error_out)) return false;
@@ -714,11 +735,8 @@ bool WorkflowExpansionService::LaunchMissingFirstBattleCoverage(
     if (!launch.empty()) {
         WorkflowExpansionCreateRequest create{};
         create.kind = WorkflowExpansionKind::TasMovieFirstBattleExploration;
-        create.source_ref_kind = "prepared_tas_root";
-        create.source_ref_id = request.source_root_establishment_attempt_id;
-        create.source_annotation_attempt_id = request.source_annotation_attempt_id;
-        create.source_root_establishment_attempt_id =
-            request.source_root_establishment_attempt_id;
+        create.source_ref_kind = "tmv_input_epoch_annotation_attempt";
+        create.source_ref_id = request.source_annotation_attempt_id;
         create.rtc_min = rtc_min_it->rtc_value;
         create.rtc_max = rtc_max_it->rtc_value;
         create.max_neutral_epochs = max_delay_it->neutral_epoch_count;
@@ -824,19 +842,26 @@ bool WorkflowExpansionService::Advance(
     std::optional<std::int64_t> inherited_rtc;
     sqlite3_stmt* statement = nullptr;
     if (sqlite3_prepare_v2(db_,
-        "SELECT source_dtm_artifact_id,source_annotation_attempt_id,source_establishment_attempt_id,inherited_rtc,rtc_min,rtc_max,max_neutral_epochs FROM exec_workflow_expansion WHERE workflow_expansion_id=?1;",
+        "SELECT source_ref_id,inherited_rtc FROM exec_workflow_expansion WHERE workflow_expansion_id=?1;",
         -1, &statement, nullptr) != SQLITE_OK) return false;
     sqlite3_bind_int64(statement, 1, refreshed.workflow_expansion_id);
     if (sqlite3_step(statement) == SQLITE_ROW) {
-        if (sqlite3_column_type(statement,0)!=SQLITE_NULL) source_dtm=sqlite3_column_int64(statement,0);
-        if (sqlite3_column_type(statement,1)!=SQLITE_NULL) source_annotation=sqlite3_column_int64(statement,1);
-        if (sqlite3_column_type(statement,2)!=SQLITE_NULL) source_attempt=sqlite3_column_int64(statement,2);
-        if (sqlite3_column_type(statement,3)!=SQLITE_NULL) inherited_rtc=sqlite3_column_int64(statement,3);
+        source_annotation=sqlite3_column_int64(statement,0);
+        if (sqlite3_column_type(statement,1)!=SQLITE_NULL) inherited_rtc=sqlite3_column_int64(statement,1);
     }
     sqlite3_finalize(statement);
-    if (!source_dtm) return false;
-
-    if (!source_attempt) return true;
+    const auto annotation = source_annotation
+        ? analysis_->GetTasMovieInputEpochAnnotationAttempt(*source_annotation)
+        : std::nullopt;
+    const auto root = annotation && annotation->root_establishment_attempt_id
+        ? analysis_->GetTasMovieRootEstablishmentAttempt(
+            *annotation->root_establishment_attempt_id)
+        : std::nullopt;
+    if (!annotation || !root || !annotation->succeeded
+        || annotation->source_dtm_artifact_id != root->source_dtm_artifact_id
+        || annotation->source_dtm_sha256 != root->source_dtm_sha256) return false;
+    source_dtm = annotation->source_dtm_artifact_id;
+    source_attempt = root->root_establishment_attempt_id;
 
     const auto establishment_rtc = refreshed.kind == WorkflowExpansionKind::TasMovieDelayExploration
         ? inherited_rtc : refreshed.rtc_min;
@@ -866,25 +891,26 @@ bool WorkflowExpansionService::Advance(
                 {{"tas_movie_revise_1","annotation_attempt",
                   "analysis.tas_movie_input_epoch_annotation_attempt_id",
                   "tmv_input_epoch_annotation_attempt",*source_annotation,"expansion"},
-                 {"tas_movie_revise_1","root_establishment",
-                  "analysis.tas_movie_root_establishment_attempt_id",
-                  "tmv_root_establishment_attempt",*source_attempt,"expansion"}},
+                },
                 {{"tas_movie_revise_1","neutral_epoch_count","integer",delay,std::nullopt,"expansion"},
                  {"tas_movie_revise_1","placement_profile","choice",std::nullopt,
                   std::string("first_battle.final_dialog"),"expansion"}})) return false;
             continue;
         }
         if (production->state != "COMPLETED") continue;
-        const auto revised_attempt = Output(execution_, production->workflow_instance_id,
-            "tas_movie_revise_1", "root_establishment",
-            "tmv_root_establishment_attempt");
-        if (!revised_attempt) continue;
+        const auto revised_annotation = Output(execution_, production->workflow_instance_id,
+            "tas_movie_revise_1", "annotation_attempt",
+            "tmv_input_epoch_annotation_attempt");
+        const auto child_annotation = revised_annotation
+            ? analysis_->GetTasMovieInputEpochAnnotationAttempt(*revised_annotation)
+            : std::nullopt;
+        if (!child_annotation || !child_annotation->root_establishment_attempt_id) continue;
         for (const auto& target : refreshed.targets) {
             if (target.neutral_epoch_count != delay) continue;
             const auto rtc = target.rtc_value;
             if (!launch("First Battle Exploration: RTC Branch", "RTC_BATTLE", delay, rtc,
                 {{"tas_movie_validate_root_1","root_establishment",
-                  "analysis.tas_movie_root_establishment_attempt_id","tmv_root_establishment_attempt",*revised_attempt,"expansion"}},
+                  "analysis.tas_movie_root_establishment_attempt_id","tmv_root_establishment_attempt",*child_annotation->root_establishment_attempt_id,"expansion"}},
                 {{"tas_movie_validate_root_1","rtc","integer",rtc,std::nullopt,"expansion"}})) return false;
         }
     }

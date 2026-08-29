@@ -29,8 +29,15 @@ public:
         DolphinBaseDir
     };
 
-    explicit CoordinatorPane(CoordinatorController* controller, QWidget* parent = nullptr);
+    explicit CoordinatorPane(QWidget* parent = nullptr);
+    CoordinatorController* controller() const;
     void setPageActive(bool active);
+    void startCoordinator();
+    void stopCoordinator();
+    void togglePaused();
+    void setTargetWorkers(int targetWorkers);
+    void setVisualWorkerPoolEnabled(bool enabled);
+    void showVisualWorkers();
 
 signals:
     void settingsNavigationRequested(SettingsFocusTarget target);
@@ -57,7 +64,7 @@ private:
     void setControlsEnabledForLifecycleState(CoordinatorLifecycleState state);
     void syncActionButtonStates(CoordinatorLifecycleState state, bool valid);
     void syncVisualReplayWindow();
-    void ensureVisualWorkerDashboardSurfaces(int workerCount, bool allowShrink);
+    void ensureVisualWorkerDashboardSurfaces(int workerCount);
     void syncVisualWorkerDashboard();
 
     CoordinatorController* controller_ = nullptr;

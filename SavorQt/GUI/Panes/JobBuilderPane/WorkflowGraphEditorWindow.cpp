@@ -76,7 +76,9 @@ std::string workflowGraphHash(
     const std::string& expansionKind,
     const std::vector<savor::db::execution::workflow::WorkflowCompositionNode>& nodes,
     const std::vector<savor::db::execution::workflow::WorkflowUnitOutputBinding>& bindings,
-    const std::vector<savor::db::SaveWorkflowGraphEdgeCommand>& controlDependencies)
+    const std::vector<savor::db::SaveWorkflowGraphEdgeCommand>& controlDependencies,
+    const std::unordered_map<std::string,
+        std::unordered_map<std::string, std::string>>& constantArguments)
 {
     std::vector<savor::db::authoring::WorkflowGraphHashNode> hashNodes;
     hashNodes.reserve(nodes.size());
@@ -93,9 +95,14 @@ std::string workflowGraphHash(
         hashEdges.push_back({dependency.from_node_key, {},
             dependency.to_node_key, {}, "CONTROL"});
     }
+    std::vector<savor::db::authoring::WorkflowGraphHashArgument> hashArguments;
+    for (const auto& [nodeKey, arguments] : constantArguments) {
+        for (const auto& [argumentKey, value] : arguments)
+            hashArguments.push_back({nodeKey, argumentKey, "CONSTANT", value});
+    }
     return savor::db::authoring::ComputeWorkflowGraphHash(
         name.toStdString(), description.toStdString(), executionShape,
-        expansionKind, hashNodes, hashEdges);
+        expansionKind, hashNodes, hashArguments, hashEdges);
 }
 
 } // namespace
@@ -136,6 +143,7 @@ void WorkflowGraphEditorWindow::loadSnapshot(const savor::db::WorkflowGraphSnaps
 
     nodes_.clear();
     authoredRefsByNode_.clear();
+    constantArgumentsByNode_.clear();
     outputBindings_.clear();
     controlDependencies_.clear();
     executionShape_ = snapshot.execution_shape;
@@ -148,6 +156,11 @@ void WorkflowGraphEditorWindow::loadSnapshot(const savor::db::WorkflowGraphSnaps
         node.unit_kind = node_snapshot.unit_kind;
         nodes_.push_back(std::move(node));
         authoredRefsByNode_[node_snapshot.node_key] = { node_snapshot.authored_ref_kind, node_snapshot.authored_ref_id };
+        for (const auto& argument : node_snapshot.arguments) {
+            if (argument.binding_mode == savor::db::SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant
+                && argument.constant_value)
+                constantArgumentsByNode_[node_snapshot.node_key][argument.argument_key] = *argument.constant_value;
+        }
 
         const auto underscore = node_snapshot.node_key.rfind('_');
         if (underscore != std::string::npos && underscore + 1 < node_snapshot.node_key.size()) {
@@ -476,6 +489,7 @@ void WorkflowGraphEditorWindow::removeSelectedNode()
         return;
     }
     authoredRefsByNode_.erase(nodes_[static_cast<std::size_t>(row)].node_key);
+    constantArgumentsByNode_.erase(nodes_[static_cast<std::size_t>(row)].node_key);
     nodes_.erase(nodes_.begin() + row);
     rebuildBindings();
     refreshCompositionList();
@@ -489,6 +503,7 @@ void WorkflowGraphEditorWindow::clearComposition()
     nodes_.clear();
     outputBindings_.clear();
     authoredRefsByNode_.clear();
+    constantArgumentsByNode_.clear();
     rebuildBindings();
     refreshCompositionList();
     refreshNodeSettings();
@@ -518,7 +533,7 @@ void WorkflowGraphEditorWindow::saveGraph()
     draft.graph_hash = workflowGraphHash(
         nameEdit_->text().trimmed(), descriptionEdit_->toPlainText().trimmed(),
         executionShape_, expansionKind_, nodes_, outputBindings_,
-        controlDependencies_);
+        controlDependencies_, constantArgumentsByNode_);
 
     for (const auto& node : nodes_) {
         const auto* unit = findUnit(node.unit_kind);
@@ -581,6 +596,15 @@ void WorkflowGraphEditorWindow::saveGraph()
                 .minimum_integer = argument.minimum_integer,
                 .maximum_integer = argument.maximum_integer,
             };
+            if (const auto nodeConstants = constantArgumentsByNode_.find(node.node_key);
+                nodeConstants != constantArgumentsByNode_.end()) {
+                if (const auto constant = nodeConstants->second.find(argument.key);
+                    constant != nodeConstants->second.end()) {
+                    argument_command.binding_mode =
+                        savor::db::SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant;
+                    argument_command.constant_value = constant->second;
+                }
+            }
             for (const auto& choice : argument.choices) {
                 argument_command.choices.push_back({
                     .value = choice.value,
@@ -851,7 +875,7 @@ void WorkflowGraphEditorWindow::refreshPreview()
         workflowGraphHash(
             nameEdit_->text().trimmed(), descriptionEdit_->toPlainText().trimmed(),
             executionShape_, expansionKind_, nodes_, outputBindings_,
-            controlDependencies_)));
+            controlDependencies_, constantArgumentsByNode_)));
     lines << QString();
 
     if (result.value.nodes.empty()) {

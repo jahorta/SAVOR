@@ -343,23 +343,15 @@ public:
                     [](const auto& value) {
                         return value.ref_kind == "tmv_input_epoch_annotation_attempt";
                     });
-                const auto root = std::find_if(
-                    request.input_bindings.begin(), request.input_bindings.end(),
-                    [](const auto& value) {
-                        return value.ref_kind == "tmv_root_establishment_attempt";
-                    });
                 const auto rtc = integer("rtc");
                 const auto delay = integer("neutral_epoch_count").value_or(0);
-                if (annotation == request.input_bindings.end()
-                    || root == request.input_bindings.end() || !rtc)
+                if (annotation == request.input_bindings.end() || !rtc)
                     return Invalid<std::int64_t>(
-                        "first-battle expansion requires paired annotation/root authorities and an exact RTC");
+                        "first-battle expansion requires one annotation authority and an exact RTC");
                 savor::db::execution::workflow::WorkflowExpansionCreateRequest expansion{};
                 expansion.kind = savor::db::execution::workflow::WorkflowExpansionKind::TasMovieFirstBattleExploration;
-                expansion.source_ref_kind = "prepared_tas_root";
-                expansion.source_ref_id = root->ref_id;
-                expansion.source_annotation_attempt_id = annotation->ref_id;
-                expansion.source_root_establishment_attempt_id = root->ref_id;
+                expansion.source_ref_kind = "tmv_input_epoch_annotation_attempt";
+                expansion.source_ref_id = annotation->ref_id;
                 expansion.rtc_min = request.expansion_rtc_min.value_or(*rtc);
                 expansion.rtc_max = request.expansion_rtc_max.value_or(*rtc);
                 expansion.max_neutral_epochs =

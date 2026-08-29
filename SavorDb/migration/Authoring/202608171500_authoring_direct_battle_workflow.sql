@@ -16,19 +16,23 @@ CREATE TABLE au_workflow_graph_revision_node_argument (
     default_value TEXT NULL,
     minimum_integer INTEGER NULL,
     maximum_integer INTEGER NULL,
+    binding_mode TEXT NOT NULL DEFAULT 'INSTANCE' CHECK(binding_mode IN ('INSTANCE','CONSTANT')),
+    constant_value TEXT NULL,
     ordinal INTEGER NOT NULL,
     FOREIGN KEY(workflow_graph_revision_node_id) REFERENCES au_workflow_graph_revision_node(workflow_graph_revision_node_id),
     CONSTRAINT uq_au_workflow_graph_revision_node_argument UNIQUE (workflow_graph_revision_node_id, argument_key),
-    CHECK((value_type='integer') OR (minimum_integer IS NULL AND maximum_integer IS NULL))
+    CHECK((value_type='integer') OR (minimum_integer IS NULL AND maximum_integer IS NULL)),
+    CHECK((binding_mode='INSTANCE' AND constant_value IS NULL)
+       OR (binding_mode='CONSTANT' AND constant_value IS NOT NULL))
 );
 
 INSERT INTO au_workflow_graph_revision_node_argument(
     workflow_graph_revision_node_argument_id,workflow_graph_revision_node_id,
     argument_key,display_name,value_type,required,default_value,
-    minimum_integer,maximum_integer,ordinal)
+    minimum_integer,maximum_integer,binding_mode,constant_value,ordinal)
 SELECT workflow_graph_revision_node_argument_id,workflow_graph_revision_node_id,
        argument_key,display_name,value_type,required,default_value,
-       minimum_integer,maximum_integer,ordinal
+       minimum_integer,maximum_integer,'INSTANCE',NULL,ordinal
 FROM au_workflow_graph_revision_node_argument_legacy;
 
 DROP TABLE au_workflow_graph_revision_node_argument_legacy;

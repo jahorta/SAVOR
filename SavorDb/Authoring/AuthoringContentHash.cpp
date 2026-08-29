@@ -44,6 +44,7 @@ std::string ComputeWorkflowGraphHash(
     const std::string_view execution_shape,
     const std::string_view expansion_kind,
     const std::span<const WorkflowGraphHashNode> nodes,
+    const std::span<const WorkflowGraphHashArgument> arguments,
     const std::span<const WorkflowGraphHashEdge> edges)
 {
     std::string content = "name:" + std::string(name)
@@ -53,6 +54,12 @@ std::string ComputeWorkflowGraphHash(
     for (const auto& node : nodes) {
         content += "node:" + std::string(node.node_key)
             + ":" + std::string(node.unit_kind) + "\n";
+    }
+    for (const auto& argument : arguments) {
+        content += "argument:" + std::string(argument.node_key)
+            + "." + std::string(argument.argument_key)
+            + ":" + std::string(argument.binding_mode)
+            + ":" + std::string(argument.constant_value) + "\n";
     }
     for (const auto& edge : edges) {
         content += "edge:" + std::string(edge.from_node_key)

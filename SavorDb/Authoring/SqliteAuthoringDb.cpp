@@ -1642,7 +1642,11 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
                     && argument.value_type != "boolean" && argument.value_type != "json"
                     && argument.value_type != "choice")
                 || (argument.value_type == "choice" && argument.choices.empty())
-                || (argument.value_type != "choice" && !argument.choices.empty())) {
+                || (argument.value_type != "choice" && !argument.choices.empty())
+                || (argument.binding_mode == SaveWorkflowGraphNodeArgumentCommand::BindingMode::Instance
+                    && argument.constant_value.has_value())
+                || (argument.binding_mode == SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant
+                    && !argument.constant_value.has_value())) {
                 rollback();
                 if (error_out) *error_out = "workflow graph argument contract is invalid";
                 return false;
@@ -1650,8 +1654,8 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
             Statement insert_argument;
             if (sqlite3_prepare_v2(db_,
                     "INSERT INTO au_workflow_graph_revision_node_argument("
-                    "workflow_graph_revision_node_id,argument_key,display_name,value_type,required,default_value,minimum_integer,maximum_integer,ordinal) "
-                    "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);",
+                    "workflow_graph_revision_node_id,argument_key,display_name,value_type,required,default_value,minimum_integer,maximum_integer,binding_mode,constant_value,ordinal) "
+                    "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11);",
                     -1, &insert_argument.st, nullptr) != SQLITE_OK) {
                 rollback();
                 if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -1665,7 +1669,14 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
             if (argument.default_value) sqlite3_bind_text(insert_argument.st, 6, argument.default_value->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(insert_argument.st, 6);
             if (argument.minimum_integer) sqlite3_bind_int64(insert_argument.st, 7, *argument.minimum_integer); else sqlite3_bind_null(insert_argument.st, 7);
             if (argument.maximum_integer) sqlite3_bind_int64(insert_argument.st, 8, static_cast<sqlite3_int64>(*argument.maximum_integer)); else sqlite3_bind_null(insert_argument.st, 8);
-            sqlite3_bind_int(insert_argument.st, 9, argument_ordinal);
+            const char* binding_mode = argument.binding_mode ==
+                    SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant
+                ? "CONSTANT" : "INSTANCE";
+            sqlite3_bind_text(insert_argument.st, 9, binding_mode, -1, SQLITE_STATIC);
+            if (argument.constant_value) sqlite3_bind_text(insert_argument.st, 10,
+                argument.constant_value->c_str(), -1, SQLITE_TRANSIENT);
+            else sqlite3_bind_null(insert_argument.st, 10);
+            sqlite3_bind_int(insert_argument.st, 11, argument_ordinal);
             if (sqlite3_step(insert_argument.st) != SQLITE_DONE) {
                 rollback();
                 if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -1983,7 +1994,7 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
 
         Statement argument_st;
         if (sqlite3_prepare_v2(db_,
-                "SELECT workflow_graph_revision_node_argument_id,argument_key,display_name,value_type,required,default_value,minimum_integer,maximum_integer "
+                "SELECT workflow_graph_revision_node_argument_id,argument_key,display_name,value_type,required,default_value,minimum_integer,maximum_integer,binding_mode,constant_value "
                 "FROM au_workflow_graph_revision_node_argument WHERE workflow_graph_revision_node_id=?1 ORDER BY ordinal ASC, workflow_graph_revision_node_argument_id ASC;",
                 -1, &argument_st.st, nullptr) != SQLITE_OK) return std::nullopt;
         sqlite3_bind_int64(argument_st.st, 1, node.workflow_graph_revision_node_id);
@@ -1998,6 +2009,10 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
                 .default_value = ColumnTextOptional(argument_st.st, 5),
                 .minimum_integer = ColumnInt64Optional(argument_st.st, 6),
                 .maximum_integer = maximum ? std::optional<std::uint64_t>(static_cast<std::uint64_t>(*maximum)) : std::nullopt,
+                .binding_mode = ColumnText(argument_st.st, 8) == "CONSTANT"
+                    ? SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant
+                    : SaveWorkflowGraphNodeArgumentCommand::BindingMode::Instance,
+                .constant_value = ColumnTextOptional(argument_st.st, 9),
             };
             Statement choice_st;
             if (sqlite3_prepare_v2(db_,
@@ -2166,7 +2181,7 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision
 
         Statement argument_st;
         if (sqlite3_prepare_v2(db_,
-                "SELECT workflow_graph_revision_node_argument_id,argument_key,display_name,value_type,required,default_value,minimum_integer,maximum_integer "
+                "SELECT workflow_graph_revision_node_argument_id,argument_key,display_name,value_type,required,default_value,minimum_integer,maximum_integer,binding_mode,constant_value "
                 "FROM au_workflow_graph_revision_node_argument WHERE workflow_graph_revision_node_id=?1 ORDER BY ordinal ASC, workflow_graph_revision_node_argument_id ASC;",
                 -1, &argument_st.st, nullptr) != SQLITE_OK) return std::nullopt;
         sqlite3_bind_int64(argument_st.st, 1, node.workflow_graph_revision_node_id);
@@ -2181,6 +2196,10 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision
                 .default_value = ColumnTextOptional(argument_st.st, 5),
                 .minimum_integer = ColumnInt64Optional(argument_st.st, 6),
                 .maximum_integer = maximum ? std::optional<std::uint64_t>(static_cast<std::uint64_t>(*maximum)) : std::nullopt,
+                .binding_mode = ColumnText(argument_st.st, 8) == "CONSTANT"
+                    ? SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant
+                    : SaveWorkflowGraphNodeArgumentCommand::BindingMode::Instance,
+                .constant_value = ColumnTextOptional(argument_st.st, 9),
             };
             Statement choice_st;
             if (sqlite3_prepare_v2(db_,

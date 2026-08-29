@@ -91,7 +91,6 @@ private:
     void openSettingsTool(SettingsPage::CoordinatorFocusTarget focusTarget = SettingsPage::CoordinatorFocusTarget::Section);
     PersistentToolWindow* createFocusedWindow(const QString& key, const QString& title);
     void setWorkspaceIndex(int index);
-    void ensureVisualReplayHost();
 
     QStackedWidget* workspaceStack_ = nullptr;
     savorqt::gui::WorkspaceSelectorBar* workspaceSelector_ = nullptr;
@@ -100,7 +99,7 @@ private:
     AnalysisTab* analysisTab_ = nullptr;
     TasRoutesTab* tasRoutesTab_ = nullptr;
     CoordinatorController* coordinatorController_ = nullptr;
-    CoordinatorPane* visualReplayHost_ = nullptr;
+    CoordinatorPane* coordinatorPane_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;
     QTimer statusBarRefreshTimer_;
     savorqt::gui::AsyncRefreshPipeline<int, QPair<int, int>>* workspaceBadgeRefreshPipeline_ = nullptr;

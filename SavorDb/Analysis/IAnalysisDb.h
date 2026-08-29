@@ -1503,6 +1503,7 @@ struct CreateTasMovieInputEpochAnnotationRequestCommand {
     std::string materialization_key;
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
+    std::int64_t root_establishment_attempt_id = 0;
     std::int64_t source_dtm_artifact_id = 0;
     std::string source_dtm_sha256;
     std::int64_t full_phase_program_kind = 0;
@@ -1526,6 +1527,7 @@ struct RecordTasMovieInputEpochAnnotationAttemptCommand {
         TasMovieInputEpochAnnotationProducer::Unknown;
     std::optional<std::int64_t> annotation_request_id;
     std::optional<std::int64_t> rewrite_request_id;
+    std::optional<std::int64_t> root_establishment_attempt_id;
     std::int64_t source_dtm_artifact_id = 0;
     std::string source_dtm_sha256;
     std::int64_t source_job_id = 0;

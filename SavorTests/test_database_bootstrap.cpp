@@ -88,9 +88,22 @@ TEST(DatabaseBootstrap, StandardAndEmptyProfilesCreateExpectedRoots)
         &savor::db::WorkflowGraphSnapshot::name);
     ASSERT_NE(prepare_graph, graphs.end());
     EXPECT_EQ(prepare_graph->nodes.size(), 3u);
-    ASSERT_EQ(prepare_graph->edges.size(), 2u);
-    EXPECT_EQ(prepare_graph->edges[0].edge_kind, "DATA");
-    EXPECT_EQ(prepare_graph->edges[1].edge_kind, "CONTROL");
+    ASSERT_EQ(prepare_graph->edges.size(), 3u);
+    EXPECT_EQ(std::ranges::count(prepare_graph->edges, std::string("DATA"),
+        &savor::db::WorkflowGraphEdgeSnapshot::edge_kind), 2);
+    EXPECT_EQ(std::ranges::count(prepare_graph->edges, std::string("CONTROL"),
+        &savor::db::WorkflowGraphEdgeSnapshot::edge_kind), 1);
+    const auto validate_node = std::ranges::find(
+        prepare_graph->nodes, std::string("tas_movie_validate_root_2"),
+        &savor::db::WorkflowGraphNodeSnapshot::node_key);
+    ASSERT_NE(validate_node, prepare_graph->nodes.end());
+    const auto rtc_argument = std::ranges::find(
+        validate_node->arguments, std::string("rtc"),
+        &savor::db::WorkflowGraphNodeArgumentSnapshot::argument_key);
+    ASSERT_NE(rtc_argument, validate_node->arguments.end());
+    EXPECT_EQ(rtc_argument->binding_mode,
+        savor::db::SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant);
+    EXPECT_EQ(rtc_argument->constant_value, "0");
     const auto battle_graph = std::ranges::find(
         graphs, std::string("First Battle Exploration"),
         &savor::db::WorkflowGraphSnapshot::name);

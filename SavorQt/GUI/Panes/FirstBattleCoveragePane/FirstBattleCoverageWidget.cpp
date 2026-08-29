@@ -212,9 +212,7 @@ FirstBattleCoverageWidget::FirstBattleCoverageWidget(Actions actions, QWidget* p
     refresh_->setRequestBuilder([this](savorqt::gui::RefreshReason) {
         const auto source = source_->currentData().toList();
         return FirstBattleCoverageRefreshRequest{
-            .source_dtm_artifact_id=source.value(0).toLongLong(),
-            .source_annotation_attempt_id=source.value(1).toLongLong(),
-            .source_root_establishment_attempt_id=source.value(2).toLongLong(),
+            .source_annotation_attempt_id=source.value(0).toLongLong(),
             .workflow_expansion_id=focusExpansionId_,
             .rtc_min=rtcMin_->value(), .rtc_max=rtcMax_->value(),
             .max_neutral_epochs=maxDelay_->value()};
@@ -227,19 +225,16 @@ FirstBattleCoverageWidget::FirstBattleCoverageWidget(Actions actions, QWidget* p
             return savorqt::gui::AsyncRefreshResult<FirstBattleCoverageRefreshData>::Ok(std::move(data));
         }
         data.sources = sources.value;
-        if (request.source_dtm_artifact_id <= 0 && request.workflow_expansion_id <= 0 && !data.sources.empty())
-            request.source_dtm_artifact_id = data.sources.front().source_dtm_artifact_id;
+        if (request.source_annotation_attempt_id <= 0
+            && request.workflow_expansion_id <= 0 && !data.sources.empty()) {
             request.source_annotation_attempt_id = data.sources.front().annotation_attempt_id;
-            request.source_root_establishment_attempt_id =
-                data.sources.front().root_establishment_attempt_id;
-        if (request.source_dtm_artifact_id <= 0 && request.workflow_expansion_id <= 0) {
+        }
+        if (request.source_annotation_attempt_id <= 0 && request.workflow_expansion_id <= 0) {
             data.ok = true;
             return savorqt::gui::AsyncRefreshResult<FirstBattleCoverageRefreshData>::Ok(std::move(data));
         }
         const auto coverage = savorqt::db::SavorDbWorkflowService::ReadFirstBattleCoverage({
-            .source_dtm_artifact_id=request.source_dtm_artifact_id,
             .source_annotation_attempt_id=request.source_annotation_attempt_id,
-            .source_root_establishment_attempt_id=request.source_root_establishment_attempt_id,
             .workflow_expansion_id=request.workflow_expansion_id > 0
                 ? std::optional<std::int64_t>(request.workflow_expansion_id) : std::nullopt,
             .rtc_min=request.rtc_min, .rtc_max=request.rtc_max,
@@ -286,19 +281,15 @@ void FirstBattleCoverageWidget::requestRefresh() {
 
 void FirstBattleCoverageWidget::applyRefresh(const FirstBattleCoverageRefreshData& data) {
     if (!data.ok) { summary_->setText(data.error); return; }
-    const auto currentSource = source_->currentData().toList();
-    const auto selectedRoot = data.coverage.source_root_establishment_attempt_id.value_or(
-        currentSource.value(2).toLongLong());
+    const auto selectedAnnotation = data.coverage.source_annotation_attempt_id.value_or(
+        source_->currentData().toLongLong());
     source_->blockSignals(true);
     source_->clear();
     int sourceIndex = -1;
     for (const auto& option : data.sources) {
-        QVariantList identity{
-            option.source_dtm_artifact_id,
-            option.annotation_attempt_id,
-            option.root_establishment_attempt_id};
-        source_->addItem(QString::fromStdString(option.display_name), identity);
-        if (option.root_establishment_attempt_id == selectedRoot)
+        source_->addItem(QString::fromStdString(option.display_name),
+            option.annotation_attempt_id);
+        if (option.annotation_attempt_id == selectedAnnotation)
             sourceIndex = source_->count() - 1;
     }
     if (sourceIndex >= 0) source_->setCurrentIndex(sourceIndex);
@@ -378,10 +369,7 @@ void FirstBattleCoverageWidget::launchSelected() {
         if (const auto* cell = model->cellAt(index)) selected.insert({cell->neutral_epoch_count, cell->rtc_value});
     if (selected.empty()) return;
     LaunchMissingFirstBattleCoverageRequest request{};
-    const auto source = source_->currentData().toList();
-    request.source_dtm_artifact_id = source.value(0).toLongLong();
-    request.source_annotation_attempt_id = source.value(1).toLongLong();
-    request.source_root_establishment_attempt_id = source.value(2).toLongLong();
+    request.source_annotation_attempt_id = source_->currentData().toLongLong();
     request.targets.assign(selected.begin(), selected.end());
     request.created_by = "SavorQt.FirstBattleCoverage";
     operationInFlight_ = true; refreshSelectionDetails();

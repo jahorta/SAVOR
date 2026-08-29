@@ -39,8 +39,6 @@ struct WorkflowExpansionCreateRequest {
     WorkflowExpansionKind kind = WorkflowExpansionKind::None;
     std::string source_ref_kind;
     std::int64_t source_ref_id = 0;
-    std::optional<std::int64_t> source_annotation_attempt_id;
-    std::optional<std::int64_t> source_root_establishment_attempt_id;
     std::optional<std::int64_t> rtc_min;
     std::optional<std::int64_t> rtc_max;
     std::int64_t max_neutral_epochs = 0;
@@ -112,9 +110,7 @@ struct FirstBattleCoverageCellSnapshot {
 };
 
 struct FirstBattleCoverageQuery {
-    std::int64_t source_dtm_artifact_id = 0;
-    std::optional<std::int64_t> source_annotation_attempt_id;
-    std::optional<std::int64_t> source_root_establishment_attempt_id;
+    std::int64_t source_annotation_attempt_id = 0;
     std::optional<std::int64_t> workflow_expansion_id;
     std::int64_t rtc_min = 0;
     std::int64_t rtc_max = 0;
@@ -133,9 +129,7 @@ struct FirstBattleCoverageSnapshot {
 };
 
 struct LaunchMissingFirstBattleCoverageRequest {
-    std::int64_t source_dtm_artifact_id = 0;
     std::int64_t source_annotation_attempt_id = 0;
-    std::int64_t source_root_establishment_attempt_id = 0;
     std::vector<WorkflowExpansionTarget> targets;
     std::string created_by;
 };

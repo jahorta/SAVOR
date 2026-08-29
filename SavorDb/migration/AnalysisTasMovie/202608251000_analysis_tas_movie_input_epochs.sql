@@ -5,6 +5,7 @@ CREATE TABLE tmv_input_epoch_annotation_request (
     materialization_key TEXT NOT NULL UNIQUE,
     workflow_instance_id INTEGER NOT NULL CHECK(workflow_instance_id>0),
     workflow_step_id INTEGER NOT NULL UNIQUE CHECK(workflow_step_id>0),
+    root_establishment_attempt_id INTEGER NOT NULL CHECK(root_establishment_attempt_id>0),
     source_dtm_artifact_id INTEGER NOT NULL CHECK(source_dtm_artifact_id>0),
     source_dtm_sha256 TEXT NOT NULL,
     full_phase_program_kind INTEGER NOT NULL CHECK(full_phase_program_kind IN (13,100)),
@@ -15,7 +16,10 @@ CREATE TABLE tmv_input_epoch_annotation_request (
     module_canonical_id TEXT NOT NULL,
     module_revision INTEGER NOT NULL CHECK(module_revision>0),
     module_sha256 TEXT NOT NULL,
-    created_at_utc INTEGER NOT NULL
+    created_at_utc INTEGER NOT NULL,
+    FOREIGN KEY(root_establishment_attempt_id)
+        REFERENCES tmv_root_establishment_attempt(root_establishment_attempt_id)
+        DEFERRABLE INITIALLY DEFERRED
 );
 
 CREATE TABLE tmv_input_epoch_annotation_attempt (
@@ -23,6 +27,7 @@ CREATE TABLE tmv_input_epoch_annotation_attempt (
     producer_kind TEXT NOT NULL CHECK(producer_kind IN ('ANNOTATE','REVISE')),
     annotation_request_id INTEGER NULL,
     rewrite_request_id INTEGER NULL,
+    root_establishment_attempt_id INTEGER NOT NULL CHECK(root_establishment_attempt_id>0),
     source_dtm_artifact_id INTEGER NOT NULL CHECK(source_dtm_artifact_id>0),
     source_dtm_sha256 TEXT NOT NULL,
     source_job_id INTEGER NOT NULL CHECK(source_job_id>0),
@@ -46,6 +51,9 @@ CREATE TABLE tmv_input_epoch_annotation_attempt (
         DEFERRABLE INITIALLY DEFERRED,
     FOREIGN KEY(rewrite_request_id)
         REFERENCES tmv_input_epoch_rewrite_request(rewrite_request_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY(root_establishment_attempt_id)
+        REFERENCES tmv_root_establishment_attempt(root_establishment_attempt_id)
         DEFERRABLE INITIALLY DEFERRED,
     UNIQUE(source_job_id,worker_terminal_sha256),
     CHECK((producer_kind='ANNOTATE' AND annotation_request_id IS NOT NULL AND rewrite_request_id IS NULL)

@@ -65,7 +65,7 @@ bool SeedTasMovieWorkflow(
 bool SeedTasMovieInputEpochAnnotationWorkflow(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IExecutionDb* execution_db,
-    std::int64_t dtm_artifact_id,
+    std::int64_t root_establishment_attempt_id,
     std::string_view run_identity,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out,
@@ -75,7 +75,6 @@ bool SeedTasMovieInputEpochRewriteWorkflow(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IExecutionDb* execution_db,
     std::int64_t annotation_attempt_id,
-    std::int64_t root_establishment_attempt_id,
     std::int64_t insert_before_epoch,
     std::int64_t neutral_epoch_count,
     std::string_view run_identity,

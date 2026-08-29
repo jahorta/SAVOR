@@ -593,13 +593,13 @@ bool SeedTasMovieWorkflow(
 bool SeedTasMovieInputEpochAnnotationWorkflow(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IExecutionDb* execution_db,
-    std::int64_t dtm_artifact_id,
+    std::int64_t root_establishment_attempt_id,
     std::string_view run_identity,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out,
     bool breakpoint_diagnostic) {
     if (authoring_db == nullptr || execution_db == nullptr
-        || dtm_artifact_id <= 0 || run_identity.empty()) {
+        || root_establishment_attempt_id <= 0 || run_identity.empty()) {
         if (error_out) *error_out = "input-epoch annotation workflow inputs are invalid";
         return false;
     }
@@ -622,7 +622,7 @@ bool SeedTasMovieInputEpochAnnotationWorkflow(
                             ? "TAS Movie: Input Epoch Breakpoint Diagnostic"
                             : "TAS Movie: Annotate Input Epochs",
                         .inputs = {
-                            { .input_key = "root_dtm", .data_kind = "state_artifact.dtm_artifact_id", .ref_kind = "state_artifact", .display_name = "Complete boot DTM" },
+                            { .input_key = "root_establishment", .data_kind = "analysis.tas_movie_root_establishment_attempt_id", .ref_kind = "tmv_root_establishment_attempt", .display_name = "Root establishment" },
                         },
                         .possible_outputs = {
                             { .output_key = "annotation_attempt", .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id", .ref_kind = "tmv_input_epoch_annotation_attempt", .display_name = "Input-epoch annotation attempt" },
@@ -668,10 +668,10 @@ bool SeedTasMovieInputEpochAnnotationWorkflow(
     command.unit_activations.push_back(std::move(*activation));
     command.input_bindings.push_back({
         .node_key = "annotate_1",
-        .input_key = "root_dtm",
-        .data_kind = "state_artifact.dtm_artifact_id",
-        .ref_kind = "state_artifact",
-        .ref_id = dtm_artifact_id,
+        .input_key = "root_establishment",
+        .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+        .ref_kind = "tmv_root_establishment_attempt",
+        .ref_id = root_establishment_attempt_id,
         .source_kind = "external",
     });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
@@ -681,14 +681,13 @@ bool SeedTasMovieInputEpochRewriteWorkflow(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IExecutionDb* execution_db,
     std::int64_t annotation_attempt_id,
-    std::int64_t root_establishment_attempt_id,
     std::int64_t insert_before_epoch,
     std::int64_t neutral_epoch_count,
     std::string_view run_identity,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || execution_db == nullptr
-        || annotation_attempt_id <= 0 || root_establishment_attempt_id <= 0
+        || annotation_attempt_id <= 0
         || insert_before_epoch < 0 || neutral_epoch_count < 0
         || run_identity.empty()) {
         if (error_out) *error_out = "input-epoch rewrite workflow inputs are invalid";
@@ -710,7 +709,6 @@ bool SeedTasMovieInputEpochRewriteWorkflow(
                         .display_name = "TAS Movie: Rewrite Input Epochs",
                         .inputs = {
                             { .input_key = "annotation_attempt", .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id", .ref_kind = "tmv_input_epoch_annotation_attempt", .display_name = "Source input-epoch annotation" },
-                            { .input_key = "root_establishment", .data_kind = "analysis.tas_movie_root_establishment_attempt_id", .ref_kind = "tmv_root_establishment_attempt", .display_name = "Source root establishment" },
                         },
                         .possible_outputs = {
                             { .output_key = "rewrite_attempt", .data_kind = "analysis.tas_movie_input_epoch_rewrite_attempt_id", .ref_kind = "tmv_input_epoch_rewrite_attempt", .display_name = "Input-epoch rewrite attempt" },
@@ -758,14 +756,6 @@ bool SeedTasMovieInputEpochRewriteWorkflow(
         .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id",
         .ref_kind = "tmv_input_epoch_annotation_attempt",
         .ref_id = annotation_attempt_id,
-        .source_kind = "external",
-    });
-    command.input_bindings.push_back({
-        .node_key = "rewrite_1",
-        .input_key = "root_establishment",
-        .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
-        .ref_kind = "tmv_root_establishment_attempt",
-        .ref_id = root_establishment_attempt_id,
         .source_kind = "external",
     });
     command.arguments.push_back({

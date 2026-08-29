@@ -76,6 +76,7 @@ private:
     std::vector<savor::db::SaveWorkflowGraphEdgeCommand> controlDependencies_;
     std::vector<AuthoredRefOption> authoredRefOptions_;
     std::unordered_map<std::string, std::pair<std::optional<std::string>, std::optional<std::int64_t>>> authoredRefsByNode_;
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> constantArgumentsByNode_;
     std::optional<std::int64_t> workflowGraphId_;
     std::optional<std::int64_t> parentRevisionId_;
     std::string executionShape_ = "WORKFLOW";

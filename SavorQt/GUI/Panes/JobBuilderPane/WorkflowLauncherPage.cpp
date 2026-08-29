@@ -151,13 +151,11 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
     referenceRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) { return externalInputs_; });
     referenceRefreshPipeline_->setLoadAndPrepare([](std::vector<ExternalInputRow> inputs) {
         ReferenceOptions options;
-        const bool preparedPair = std::ranges::any_of(inputs, [](const auto& input) {
+        const bool preparedAnnotation = std::ranges::any_of(inputs, [](const auto& input) {
             return input.ref_kind == QStringLiteral("tmv_input_epoch_annotation_attempt");
-        }) && std::ranges::any_of(inputs, [](const auto& input) {
-            return input.ref_kind == QStringLiteral("tmv_root_establishment_attempt");
         });
         std::vector<savor::db::execution::workflow::PreparedTasRootSourceSnapshot> preparedSources;
-        if (preparedPair) {
+        if (preparedAnnotation) {
             const auto result = savorqt::db::SavorDbWorkflowService::ListPreparedTasRootSources(1000);
             if (!result.ok)
                 return savorqt::gui::AsyncRefreshResult<ReferenceOptionsResult>::Ok(
@@ -166,13 +164,12 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
         }
         for (const auto& input : inputs) {
             if (input.satisfied_by_edge) continue;
-            if (preparedPair && (input.ref_kind == QStringLiteral("tmv_input_epoch_annotation_attempt")
-                || input.ref_kind == QStringLiteral("tmv_root_establishment_attempt"))) {
+            if (preparedAnnotation
+                && input.ref_kind == QStringLiteral("tmv_input_epoch_annotation_attempt")) {
                 std::vector<savorqt::db::WorkflowReferenceOption> pairedOptions;
                 for (const auto& source : preparedSources) {
                     pairedOptions.push_back({
-                        .ref_id = input.ref_kind == QStringLiteral("tmv_input_epoch_annotation_attempt")
-                            ? source.annotation_attempt_id : source.root_establishment_attempt_id,
+                        .ref_id = source.annotation_attempt_id,
                         .primary_label = source.display_name,
                         .secondary_evidence = source.source_dtm_sha256,
                         .status = "READY",
@@ -1595,7 +1592,11 @@ std::vector<QString> WorkflowLauncherPage::argumentNodeKeys(const savor::db::Wor
 {
     std::vector<QString> keys;
     for (const auto& node : graph.nodes) {
-        if(std::any_of(node.arguments.begin(),node.arguments.end(),[argument_key](const auto& argument){return argument.argument_key==argument_key;})) {
+        if(std::any_of(node.arguments.begin(),node.arguments.end(),[argument_key](const auto& argument){
+            return argument.argument_key==argument_key
+                && argument.binding_mode
+                    == savor::db::SaveWorkflowGraphNodeArgumentCommand::BindingMode::Instance;
+        })) {
             keys.push_back(QString::fromStdString(node.node_key));
         }
     }

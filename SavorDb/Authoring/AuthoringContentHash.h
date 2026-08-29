@@ -25,6 +25,13 @@ struct WorkflowGraphHashNode {
     std::string_view unit_kind;
 };
 
+struct WorkflowGraphHashArgument {
+    std::string_view node_key;
+    std::string_view argument_key;
+    std::string_view binding_mode;
+    std::string_view constant_value;
+};
+
 struct WorkflowGraphHashEdge {
     std::string_view from_node_key;
     std::string_view output_key;
@@ -43,6 +50,7 @@ std::string ComputeWorkflowGraphHash(
     std::string_view execution_shape,
     std::string_view expansion_kind,
     std::span<const WorkflowGraphHashNode> nodes,
+    std::span<const WorkflowGraphHashArgument> arguments,
     std::span<const WorkflowGraphHashEdge> edges);
 
 std::string ComputeStandaloneWorkflowGraphHash(

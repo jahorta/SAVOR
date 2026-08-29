@@ -17,9 +17,7 @@ class QTableView;
 namespace savorqt::gui { template <typename Request, typename Result> class AsyncRefreshPipeline; }
 
 struct FirstBattleCoverageRefreshRequest {
-    std::int64_t source_dtm_artifact_id = 0;
     std::int64_t source_annotation_attempt_id = 0;
-    std::int64_t source_root_establishment_attempt_id = 0;
     std::int64_t workflow_expansion_id = 0;
     std::int64_t rtc_min = 0;
     std::int64_t rtc_max = 0;

@@ -1191,6 +1191,8 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
             "WHERE r.workflow_instance_id IN (" + workflow_id_list + ") "
             "UNION SELECT root_establishment_attempt_id FROM tmv_input_epoch_rewrite_request "
             "WHERE rewrite_request_id IN (" + rewrite_id_list + ") "
+            "UNION SELECT root_establishment_attempt_id FROM tmv_input_epoch_annotation_attempt "
+            "WHERE annotation_attempt_id IN (" + JoinIds(annotation_ids) + ") "
             "UNION SELECT produced_root_establishment_attempt_id FROM tmv_input_epoch_rewrite_attempt "
             "WHERE rewrite_request_id IN (" + rewrite_id_list
                 + ") AND produced_root_establishment_attempt_id IS NOT NULL "

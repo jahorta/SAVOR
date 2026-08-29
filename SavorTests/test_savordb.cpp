@@ -374,6 +374,32 @@ TEST(Stage5WorkflowLaunchContract, NormalizesDefaultsAndRejectsMalformedTypedLau
         "unit_1", "unknown", "integer", 1, std::nullopt, "test",
     }}).valid);
 
+    const auto* validate = registry.Find("tas_movie_validate_root");
+    ASSERT_NE(validate, nullptr);
+    auto validate_graph = make_graph(*validate);
+    auto& rtc = *std::find_if(validate_graph.nodes.front().arguments.begin(),
+        validate_graph.nodes.front().arguments.end(), [](const auto& argument) {
+            return argument.argument_key == "rtc";
+        });
+    rtc.binding_mode = SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant;
+    rtc.constant_value = "0";
+    const std::vector<WorkflowLaunchInputValue> validate_inputs{{
+        "unit_1", "root_establishment",
+        "analysis.tas_movie_root_establishment_attempt_id",
+        "tmv_root_establishment_attempt", 44, "external",
+    }};
+    const auto constant_result = WorkflowLaunchContractValidator::Validate(
+        validate_graph, registry, validate_inputs, {});
+    ASSERT_TRUE(constant_result.valid);
+    ASSERT_EQ(constant_result.normalized_arguments.size(), 1u);
+    EXPECT_EQ(constant_result.normalized_arguments.front().integer_value, 0);
+    EXPECT_EQ(constant_result.normalized_arguments.front().source_kind,
+        "graph_constant");
+    EXPECT_FALSE(WorkflowLaunchContractValidator::Validate(
+        validate_graph, registry, validate_inputs, {{
+            "unit_1", "rtc", "integer", 5, std::nullopt, "test",
+        }}).valid);
+
     const auto* battle = registry.Find("battle");
     ASSERT_NE(battle, nullptr);
     auto battle_graph = make_graph(*battle);

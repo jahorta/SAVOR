@@ -233,7 +233,27 @@ bool AuthoringRecipeMaterializer::SaveWorkflowGraph(
             for (const auto& choice : argument.choices) {
                 saved_argument.choices.push_back({choice.value, choice.display_name});
             }
+            const auto constant = std::ranges::find(
+                node.constant_arguments, argument.key,
+                &WorkflowNodeDefinition::ConstantArgument::argument_key);
+            if (constant != node.constant_arguments.end()) {
+                saved_argument.binding_mode =
+                    SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant;
+                saved_argument.constant_value = constant->canonical_value;
+            }
             saved.arguments.push_back(std::move(saved_argument));
+        }
+        for (const auto& constant : node.constant_arguments) {
+            if (std::ranges::count(node.constant_arguments, constant.argument_key,
+                    &WorkflowNodeDefinition::ConstantArgument::argument_key) != 1
+                || std::ranges::none_of(unit->launch_arguments,
+                    [&](const auto& argument) {
+                        return argument.key == constant.argument_key;
+                    })) {
+                SetError(error_out, "workflow constant references an unknown or duplicate argument: "
+                    + node.node_key + "." + constant.argument_key);
+                return false;
+            }
         }
         for (const auto& constraint : unit->launch_argument_constraints) {
             saved.argument_constraints.push_back({
@@ -291,9 +311,17 @@ bool AuthoringRecipeMaterializer::SaveWorkflowGraph(
         return false;
     }
     std::vector<WorkflowGraphHashNode> hash_nodes;
+    std::vector<WorkflowGraphHashArgument> hash_arguments;
     std::vector<WorkflowGraphHashEdge> hash_edges;
     for (const auto& node : command.nodes) {
         hash_nodes.push_back({node.node_key, node.unit_kind});
+        for (const auto& argument : node.arguments) {
+            if (argument.binding_mode ==
+                SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant) {
+                hash_arguments.push_back({node.node_key, argument.argument_key,
+                    "CONSTANT", argument.constant_value.value_or("")});
+            }
+        }
     }
     for (const auto& edge : command.edges) {
         hash_edges.push_back({edge.from_node_key, edge.output_key,
@@ -311,7 +339,7 @@ bool AuthoringRecipeMaterializer::SaveWorkflowGraph(
     } else {
         command.graph_hash = ComputeWorkflowGraphHash(
             command.name, command.description, command.execution_shape,
-            command.expansion_kind, hash_nodes, hash_edges);
+            command.expansion_kind, hash_nodes, hash_arguments, hash_edges);
     }
     if (!db_->SaveWorkflowGraph(command, result_out, error_out)) {
         if (error_out) {
@@ -598,6 +626,14 @@ bool MaterializeWorkflowGraph(
             .unit = {node.unit_kind},
             .display_name = node.display_name,
         };
+        for (const auto& argument : node.arguments) {
+            if (argument.binding_mode ==
+                    SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant
+                && argument.constant_value) {
+                saved.constant_arguments.push_back({
+                    argument.argument_key, *argument.constant_value});
+            }
+        }
         if (node.authored_ref_kind.has_value()
             && node.authored_ref_id.has_value()) {
             if (*node.authored_ref_kind == "seed_probe_spec") {

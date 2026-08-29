@@ -80,7 +80,8 @@ QString focusedToolTitle(MainWindow::FocusedTool tool)
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    coordinatorController_ = new CoordinatorController(this);
+    coordinatorPane_ = new CoordinatorPane(this);
+    coordinatorController_ = coordinatorPane_->controller();
     createWidgets();
     createMenus();
 
@@ -153,9 +154,8 @@ void MainWindow::handleCoordinatorSettingsNavigation(CoordinatorPane::SettingsFo
 
 void MainWindow::handleVisualReplayRequested(qint64 jobId)
 {
-    ensureVisualReplayHost();
-    if (visualReplayHost_) {
-        visualReplayHost_->requestVisualReplay(jobId);
+    if (coordinatorPane_) {
+        coordinatorPane_->requestVisualReplay(jobId);
     }
 }
 
@@ -305,6 +305,16 @@ void MainWindow::createWidgets()
     rootLayout->setSpacing(0);
 
     statusBarWidget_ = createStatusBarWidget();
+    connect(
+        coordinatorPane_,
+        &CoordinatorPane::statusToastRequested,
+        statusBarWidget_,
+        qOverload<StatusToast>(&StatusBarWidget::postToast));
+    connect(
+        coordinatorPane_,
+        &CoordinatorPane::settingsNavigationRequested,
+        this,
+        &MainWindow::handleCoordinatorSettingsNavigation);
     workspaceStack_ = new QStackedWidget(root);
     workspaceStack_->setObjectName("workspaceStack");
 	setupTab_ = new SetupTab(coordinatorController_, root);
@@ -327,7 +337,12 @@ void MainWindow::createWidgets()
 		[this]() { openFocusedTool(FocusedTool::Workers); },
 		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::Section); },
 		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::IsoPath); },
-		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::DolphinBaseDir); }
+		[this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::DolphinBaseDir); },
+		[this]() { coordinatorPane_->startCoordinator(); },
+		[this]() { coordinatorPane_->stopCoordinator(); },
+		[this]() { coordinatorPane_->togglePaused(); },
+		[this](int targetWorkers) { coordinatorPane_->setTargetWorkers(targetWorkers); },
+		[this](bool enabled) { coordinatorPane_->setVisualWorkerPoolEnabled(enabled); }
 		}, root);
 	workspaceStack_->addWidget(runningTab_);
     analysisTab_ = new AnalysisTab(AnalysisTab::Actions{
@@ -433,6 +448,13 @@ void MainWindow::showSetupLauncherPreselected(const QString& unitKind,const QStr
 
 void MainWindow::openFocusedTool(FocusedTool tool)
 {
+    if (tool == FocusedTool::Workers) {
+        coordinatorPane_->setPageActive(true);
+        coordinatorPane_->show();
+        coordinatorPane_->raise();
+        coordinatorPane_->activateWindow();
+        return;
+    }
     if (tool == FocusedTool::Settings) {
         openSettingsTool();
         return;
@@ -470,13 +492,7 @@ void MainWindow::openFocusedTool(FocusedTool tool)
         break;
     }
     case FocusedTool::Workers: {
-        auto* workers = new CoordinatorPane(coordinatorController_, window);
-        workers->setPageActive(true);
-        connect(window, &PersistentToolWindow::aboutToClose, workers, [workers]() { workers->setPageActive(false); });
-        connect(workers, &CoordinatorPane::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-        connect(workers, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
-        page = workers;
-        break;
+        return;
     }
     case FocusedTool::Artifacts: {
         auto* artifacts = new ArtifactsPage(window);
@@ -789,17 +805,6 @@ void MainWindow::setWorkspaceIndex(int index)
     if (tasRoutesTab_ != nullptr) {
         tasRoutesTab_->setPageActive(index == 3);
     }
-}
-
-void MainWindow::ensureVisualReplayHost()
-{
-    if (visualReplayHost_ != nullptr) {
-        return;
-    }
-    visualReplayHost_ = new CoordinatorPane(coordinatorController_, this);
-    visualReplayHost_->hide();
-    connect(visualReplayHost_, &CoordinatorPane::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    connect(visualReplayHost_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
 }
 
 StatusBarWidget* MainWindow::createStatusBarWidget()

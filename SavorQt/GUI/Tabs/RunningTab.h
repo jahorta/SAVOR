@@ -11,6 +11,7 @@ class QFrame;
 class QLabel;
 class QPushButton;
 class QSpinBox;
+class QCheckBox;
 class QTabWidget;
 class QTableWidget;
 class QVBoxLayout;
@@ -29,6 +30,11 @@ public:
         std::function<void()> openCoordinatorSettings;
         std::function<void()> openIsoSettings;
         std::function<void()> openDolphinSettings;
+        std::function<void()> startCoordinator;
+        std::function<void()> stopCoordinator;
+        std::function<void()> toggleCoordinatorPaused;
+        std::function<void(int)> setTargetWorkers;
+        std::function<void(bool)> setVisualWorkerPoolEnabled;
     };
 
     explicit RunningTab(CoordinatorController* coordinatorController, Actions actions, QWidget* parent = nullptr);
@@ -58,6 +64,7 @@ private:
     QPushButton* pauseCoordinatorButton_ = nullptr;
     QPushButton* stopCoordinatorButton_ = nullptr;
     QSpinBox* targetWorkersSpin_ = nullptr;
+    QCheckBox* visualWorkersCheck_ = nullptr;
     QPushButton* isoSetupButton_ = nullptr;
     QPushButton* dolphinSetupButton_ = nullptr;
     QPushButton* fixRuntimeSetupButton_ = nullptr;

@@ -32,10 +32,11 @@ namespace {
 constexpr int kRefreshIntervalMs = 500;
 }
 
-CoordinatorPane::CoordinatorPane(CoordinatorController* controller, QWidget* parent)
-    : QWidget(parent)
-    , controller_(controller)
+CoordinatorPane::CoordinatorPane(QWidget* parent)
+    : QWidget(parent, Qt::Window)
+    , controller_(new CoordinatorController(this))
 {
+    setWindowTitle(QStringLiteral("Workers"));
     createWidgets();
 
     refreshCoordinator_ = new savorqt::gui::RefreshCoordinator(this);
@@ -229,6 +230,45 @@ void CoordinatorPane::configureTable(QTreeView* tableView)
         &QTreeView::customContextMenuRequested,
         this,
         &CoordinatorPane::showWorkerContextMenu);
+}
+
+CoordinatorController* CoordinatorPane::controller() const
+{
+    return controller_;
+}
+
+void CoordinatorPane::startCoordinator()
+{
+    handleStartRequested();
+}
+
+void CoordinatorPane::stopCoordinator()
+{
+    if (controller_ != nullptr) {
+        controller_->stopCoordinator();
+    }
+}
+
+void CoordinatorPane::togglePaused()
+{
+    if (controller_ != nullptr) {
+        controller_->togglePaused();
+    }
+}
+
+void CoordinatorPane::setTargetWorkers(int targetWorkers)
+{
+    handleTargetWorkersChanged(targetWorkers);
+}
+
+void CoordinatorPane::setVisualWorkerPoolEnabled(bool enabled)
+{
+    handleVisualWorkersToggled(enabled);
+}
+
+void CoordinatorPane::showVisualWorkers()
+{
+    showVisualWorkerDashboard();
 }
 
 void CoordinatorPane::showWorkerContextMenu(const QPoint& position)
@@ -434,7 +474,7 @@ void CoordinatorPane::handleStartRequested()
     }
 
     if (controller_->visualWorkerPoolEnabled()) {
-        ensureVisualWorkerDashboardSurfaces(controller_->targetWorkers(), true);
+        ensureVisualWorkerDashboardSurfaces(controller_->targetWorkers());
         showVisualWorkerDashboard();
     }
 
@@ -447,10 +487,20 @@ void CoordinatorPane::handleTargetWorkersChanged(int targetWorkers)
         return;
     }
 
-    if (controller_->visualWorkerPoolEnabled()) {
-        ensureVisualWorkerDashboardSurfaces(targetWorkers, !controller_->isRunning());
+    const int previousTarget = controller_->targetWorkers();
+    if (controller_->visualWorkerPoolEnabled() &&
+        targetWorkers > previousTarget) {
+        ensureVisualWorkerDashboardSurfaces(targetWorkers);
     }
     controller_->setTargetWorkers(targetWorkers);
+    if (controller_->visualWorkerPoolEnabled() && visualWorkerDashboard_) {
+        if (controller_->isStopped()) {
+            visualWorkerDashboard_->releaseWorkersFrom(
+                controller_->targetWorkers());
+        } else {
+            syncVisualWorkerDashboard();
+        }
+    }
 }
 
 void CoordinatorPane::handleVisualWorkersToggled(bool enabled)
@@ -468,7 +518,7 @@ void CoordinatorPane::handleVisualWorkersToggled(bool enabled)
         return;
     }
 
-    ensureVisualWorkerDashboardSurfaces(controller_->targetWorkers(), true);
+    ensureVisualWorkerDashboardSurfaces(controller_->targetWorkers());
     showVisualWorkerDashboard();
 }
 
@@ -478,7 +528,7 @@ void CoordinatorPane::showVisualWorkerDashboard()
         return;
     }
 
-    ensureVisualWorkerDashboardSurfaces(controller_->targetWorkers(), !controller_->isRunning());
+    ensureVisualWorkerDashboardSurfaces(controller_->targetWorkers());
     visualWorkerDashboard_->show();
     visualWorkerDashboard_->raise();
     visualWorkerDashboard_->activateWindow();
@@ -500,7 +550,7 @@ void CoordinatorPane::syncVisualReplayWindow()
     }
 }
 
-void CoordinatorPane::ensureVisualWorkerDashboardSurfaces(int workerCount, bool allowShrink)
+void CoordinatorPane::ensureVisualWorkerDashboardSurfaces(int workerCount)
 {
     if (controller_ == nullptr) {
         return;
@@ -526,7 +576,7 @@ void CoordinatorPane::ensureVisualWorkerDashboardSurfaces(int workerCount, bool 
             &CoordinatorController::invalidateVisualWorkerSurface);
     }
 
-    visualWorkerDashboard_->setWorkerCount(workerCount, allowShrink);
+    visualWorkerDashboard_->ensureWorkerCount(workerCount);
     for (const VisualWorkerSurfaceBinding& binding : visualWorkerDashboard_->surfaceBindings()) {
         controller_->setVisualWorkerSurface(
             binding.workerIndex,
@@ -550,6 +600,23 @@ void CoordinatorPane::syncVisualWorkerDashboard()
         visualWorkerDashboard_->updateWorkerStatus(snapshot);
     }
     visualWorkerDashboard_->clearWorkerStatusesExcept(activeWorkerIds);
+
+    const int targetWorkers = controller_->targetWorkers();
+    while (visualWorkerDashboard_->workerCount() > targetWorkers) {
+        const int workerIndex = visualWorkerDashboard_->workerCount() - 1;
+        const auto found = std::find_if(
+            controller_->snapshot().begin(),
+            controller_->snapshot().end(),
+            [workerIndex](const WorkerSnapshot& snapshot) {
+                return snapshot.worker_id ==
+                    static_cast<std::size_t>(workerIndex);
+            });
+        if (found != controller_->snapshot().end() &&
+            found->state != WorkerStateKind::Dead) {
+            break;
+        }
+        visualWorkerDashboard_->releaseWorkersFrom(workerIndex);
+    }
 }
 
 void CoordinatorPane::requestVisualReplay(qint64 jobId)

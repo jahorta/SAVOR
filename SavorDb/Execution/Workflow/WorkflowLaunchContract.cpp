@@ -203,6 +203,12 @@ WorkflowLaunchContractValidation WorkflowLaunchContractValidator::Validate(
             out.issues.push_back("unknown or mistyped workflow argument: " + argument.node_key + "." + argument.argument_key);
             continue;
         }
+        if (definition->binding_mode ==
+            savor::db::SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant) {
+            out.issues.push_back("graph constant cannot be overridden: "
+                + argument.node_key + "." + argument.argument_key);
+            continue;
+        }
         if (!supplied_arguments.emplace(Key(argument.node_key, argument.argument_key), &argument).second) {
             out.issues.push_back("duplicate workflow argument: " + argument.node_key + "." + argument.argument_key);
         }
@@ -217,7 +223,18 @@ WorkflowLaunchContractValidation WorkflowLaunchContractValidator::Validate(
             normalized.argument_key = definition.argument_key;
             normalized.value_type = definition.value_type;
             normalized.source_kind = "catalog_default";
-            if (const auto supplied = supplied_arguments.find(key); supplied != supplied_arguments.end()) {
+            if (definition.binding_mode ==
+                savor::db::SaveWorkflowGraphNodeArgumentCommand::BindingMode::Constant) {
+                if (!definition.constant_value) {
+                    out.issues.push_back("workflow graph constant is missing: "
+                        + node_key + "." + definition.argument_key);
+                    continue;
+                }
+                normalized.source_kind = "graph_constant";
+                if (definition.value_type == "integer")
+                    normalized.integer_value = ParseInteger(*definition.constant_value);
+                else normalized.text_value = definition.constant_value;
+            } else if (const auto supplied = supplied_arguments.find(key); supplied != supplied_arguments.end()) {
                 normalized = *supplied->second;
                 if (normalized.source_kind.empty()) normalized.source_kind = "launcher";
             } else if (definition.default_value.has_value()) {

@@ -307,12 +307,6 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
     }
 
     std::int64_t source_annotation_workflow = 0;
-    if (!SeedTasMovieInputEpochAnnotationWorkflow(
-            db_service->AuthoringDb(), db_service->ExecutionDb(),
-            source_dtm_artifact_id, "source", &source_annotation_workflow,
-            error_out, breakpoint_diagnostic)) {
-        return false;
-    }
     std::int64_t source_establishment_workflow = 0;
     if (!SeedTasMovieWorkflow(
             db_service->AuthoringDb(), db_service->ExecutionDb(),
@@ -417,6 +411,21 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
         return false;
     };
     if (breakpoint_diagnostic) {
+        if (!WaitForWorkflow(db_service->ExecutionDb(), source_establishment_workflow,
+                "diagnostic-source-establishment", poll, &error))
+            return fail_after_start(error);
+        const auto diagnostic_root_id = FindOutput(
+            db_service->ExecutionDb(), source_establishment_workflow, "tas_1",
+            "root_establishment", "analysis.tas_movie_root_establishment_attempt_id",
+            "tmv_root_establishment_attempt");
+        if (!diagnostic_root_id
+            || !SeedTasMovieInputEpochAnnotationWorkflow(
+                db_service->AuthoringDb(), db_service->ExecutionDb(),
+                *diagnostic_root_id, "diagnostic-1", &source_annotation_workflow,
+                &error, true)) {
+            return fail_after_start(diagnostic_root_id
+                ? error : "diagnostic root establishment output is missing");
+        }
         for (int run = 1; run <= options.diagnostic_max_runs; ++run) {
             error.clear();
             if (!WaitForWorkflow(db_service->ExecutionDb(), source_annotation_workflow,
@@ -442,7 +451,7 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
             if (run < options.diagnostic_max_runs
                 && !SeedTasMovieInputEpochAnnotationWorkflow(
                     db_service->AuthoringDb(), db_service->ExecutionDb(),
-                    source_dtm_artifact_id, "diagnostic-" + std::to_string(run + 1),
+                    *diagnostic_root_id, "diagnostic-" + std::to_string(run + 1),
                     &source_annotation_workflow, &error, true)) {
                 return fail_after_start(error);
             }
@@ -456,13 +465,23 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
                   << options.diagnostic_max_runs << '\n';
         return true;
     }
-    if (!WaitForWorkflow(db_service->ExecutionDb(), source_annotation_workflow,
-            "source-annotation", poll, &error))
-        return fail_after_start(error);
     if (!WaitForWorkflow(db_service->ExecutionDb(), source_establishment_workflow,
             "source-establishment", poll, &error))
         return fail_after_start(error);
-
+    const auto source_root_id = FindOutput(
+        db_service->ExecutionDb(), source_establishment_workflow, "tas_1",
+        "root_establishment", "analysis.tas_movie_root_establishment_attempt_id",
+        "tmv_root_establishment_attempt");
+    if (!source_root_id) return fail_after_start("source root establishment output is missing or ambiguous");
+    if (!SeedTasMovieInputEpochAnnotationWorkflow(
+            db_service->AuthoringDb(), db_service->ExecutionDb(),
+            *source_root_id, "source", &source_annotation_workflow,
+            &error, breakpoint_diagnostic)) {
+        return fail_after_start(error);
+    }
+    if (!WaitForWorkflow(db_service->ExecutionDb(), source_annotation_workflow,
+            "source-annotation", poll, &error))
+        return fail_after_start(error);
     const auto source_attempt_id = FindOutput(
         db_service->ExecutionDb(), source_annotation_workflow, "annotate_1",
         "annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id",
@@ -474,11 +493,6 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
         || !source_attempt->schedule_artifact_id) {
         return fail_after_start("source annotation attempt is not a successful persisted schedule");
     }
-    const auto source_root_id = FindOutput(
-        db_service->ExecutionDb(), source_establishment_workflow, "tas_1",
-        "root_establishment", "analysis.tas_movie_root_establishment_attempt_id",
-        "tmv_root_establishment_attempt");
-    if (!source_root_id) return fail_after_start("source root establishment output is missing or ambiguous");
     inputepoch::TasMovieInputEpochScheduleV1 source_schedule;
     if (!LoadSchedule(db_service->StateDb(), *source_attempt->schedule_artifact_id,
             workspace / "verification" / "source.tes", &source_schedule, &error)) {
@@ -500,7 +514,7 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
     std::int64_t rewrite_workflow = 0;
     if (!SeedTasMovieInputEpochRewriteWorkflow(
             db_service->AuthoringDb(), db_service->ExecutionDb(),
-            *source_attempt_id, *source_root_id,
+            *source_attempt_id,
             static_cast<std::int64_t>(*insertion_epoch), 1,
             "neutral-before-final-b-a", &rewrite_workflow, &error)) {
         return fail_after_start(error);
@@ -573,7 +587,7 @@ bool RunTasMovieInputEpochRewriteRealWorkerScenario(
     std::int64_t chained_rewrite_workflow = 0;
     if (!SeedTasMovieInputEpochRewriteWorkflow(
             db_service->AuthoringDb(), db_service->ExecutionDb(),
-            *child_attempt_id, *child_root_id,
+            *child_attempt_id,
             static_cast<std::int64_t>(*insertion_epoch + 1), 2,
             "chain-two-neutral-before-final-b-a", &chained_rewrite_workflow,
             &error)) {

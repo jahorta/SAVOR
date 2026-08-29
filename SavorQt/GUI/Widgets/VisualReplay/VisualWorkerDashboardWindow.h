@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QtCore/QHash>
 #include <QtCore/QVector>
 #include <QtCore/QSet>
 #include <QtCore/QString>
@@ -19,6 +20,7 @@ struct VisualWorkerSurfaceBinding {
 class QGridLayout;
 class QLabel;
 class QScrollArea;
+class QSpinBox;
 
 class VisualWorkerDashboardWindow final : public PersistentToolWindow
 {
@@ -27,7 +29,9 @@ class VisualWorkerDashboardWindow final : public PersistentToolWindow
 public:
     explicit VisualWorkerDashboardWindow(QWidget* parent = nullptr);
 
-    void setWorkerCount(int count, bool allowShrink);
+    void ensureWorkerCount(int count);
+    void releaseWorkersFrom(int firstWorkerIndex);
+    int workerCount() const;
     void updateWorkerStatus(const WorkerSnapshot& snapshot);
     void clearWorkerStatusesExcept(const QSet<int>& workerIds);
     QVector<VisualWorkerSurfaceBinding> surfaceBindings() const;
@@ -38,11 +42,11 @@ signals:
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
-    void resizeEvent(QResizeEvent* event) override;
 
 private:
     struct Tile {
         QWidget* frame = nullptr;
+        QWidget* renderContainer = nullptr;
         QWidget* renderWidget = nullptr;
         QLabel* titleLabel = nullptr;
         QLabel* stateLabel = nullptr;
@@ -59,5 +63,10 @@ private:
     QScrollArea* scrollArea_ = nullptr;
     QWidget* gridContainer_ = nullptr;
     QGridLayout* gridLayout_ = nullptr;
+    QSpinBox* columnsSpin_ = nullptr;
     QVector<Tile> tiles_;
+    QHash<int, quint64> surfaceGenerations_;
+    int configuredColumns_ = 4;
+    int gridRowCount_ = 0;
+    int gridColumnCount_ = 0;
 };

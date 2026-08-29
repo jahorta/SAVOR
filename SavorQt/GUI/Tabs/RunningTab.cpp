@@ -16,6 +16,7 @@
 #include <QtCore/QTimeZone>
 #include <QtGui/QKeyEvent>
 #include <QtWidgets/QAbstractItemView>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHeaderView>
@@ -62,6 +63,7 @@ struct RunningRefreshRequest {
     bool coordinatorPaused = false;
     int activeWorkers = 0;
     int targetWorkers = 1;
+    bool visualWorkerPoolEnabled = false;
     std::vector<WorkerSnapshot> workers;
 };
 
@@ -151,6 +153,7 @@ struct RunningRefreshData {
     bool isoMissing = false;
     bool dolphinMissing = false;
     int targetWorkers = 1;
+    bool visualWorkerPoolEnabled = false;
     int failedWorkflows = 0;
     int failedJobs = 0;
     int workerAttentionCount = 0;
@@ -779,6 +782,7 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     data.isoMissing = request.isoMissing;
     data.dolphinMissing = request.dolphinMissing;
     data.targetWorkers = request.targetWorkers;
+    data.visualWorkerPoolEnabled = request.visualWorkerPoolEnabled;
     data.failedWorkflows = static_cast<int>((std::min<std::int64_t>)(workflowCounts.failed, std::numeric_limits<int>::max()));
     data.failedJobs = static_cast<int>(counts.failed);
 
@@ -1081,24 +1085,24 @@ void RunningTab::build()
 
     startCoordinatorButton_ = createActionButton(QStringLiteral("Start coordinator"), statusStrip, true);
     QObject::connect(startCoordinatorButton_, &QPushButton::clicked, statusStrip, [this]() {
-        if (coordinatorController_ != nullptr) {
-            coordinatorController_->startCoordinator();
+        if (actions_.startCoordinator) {
+            actions_.startCoordinator();
         }
     });
     statusLayout->addWidget(startCoordinatorButton_);
 
     pauseCoordinatorButton_ = createActionButton(QStringLiteral("Pause"), statusStrip);
     QObject::connect(pauseCoordinatorButton_, &QPushButton::clicked, statusStrip, [this]() {
-        if (coordinatorController_ != nullptr) {
-            coordinatorController_->togglePaused();
+        if (actions_.toggleCoordinatorPaused) {
+            actions_.toggleCoordinatorPaused();
         }
     });
     statusLayout->addWidget(pauseCoordinatorButton_);
 
     stopCoordinatorButton_ = createActionButton(QStringLiteral("Stop"), statusStrip);
     QObject::connect(stopCoordinatorButton_, &QPushButton::clicked, statusStrip, [this]() {
-        if (coordinatorController_ != nullptr) {
-            coordinatorController_->stopCoordinator();
+        if (actions_.stopCoordinator) {
+            actions_.stopCoordinator();
         }
     });
     statusLayout->addWidget(stopCoordinatorButton_);
@@ -1110,11 +1114,26 @@ void RunningTab::build()
         savor::runner::parallel::savordb::kMaximumWorkerCount));
     targetWorkersSpin_->setPrefix(QStringLiteral("Target: "));
     QObject::connect(targetWorkersSpin_, qOverload<int>(&QSpinBox::valueChanged), statusStrip, [this](int value) {
-        if (coordinatorController_ != nullptr) {
-            coordinatorController_->setTargetWorkers(value);
+        if (actions_.setTargetWorkers) {
+            actions_.setTargetWorkers(value);
         }
     });
     statusLayout->addWidget(targetWorkersSpin_);
+
+    visualWorkersCheck_ = new QCheckBox(QStringLiteral("Visual workers"), statusStrip);
+    visualWorkersCheck_->setToolTip(QStringLiteral(
+        "Start workers with embedded Dolphin render surfaces. "
+        "Requires stopping the coordinator to change."));
+    QObject::connect(
+        visualWorkersCheck_,
+        &QCheckBox::toggled,
+        statusStrip,
+        [this](bool enabled) {
+            if (actions_.setVisualWorkerPoolEnabled) {
+                actions_.setVisualWorkerPoolEnabled(enabled);
+            }
+        });
+    statusLayout->addWidget(visualWorkersCheck_);
 
     isoSetupButton_ = new QPushButton(QStringLiteral("Set ISO"), statusStrip);
     isoSetupButton_->setObjectName("setupWarningButton");
@@ -1358,6 +1377,8 @@ void RunningTab::build()
         request.coordinatorPaused = coordinatorController_->isPaused();
         request.activeWorkers = coordinatorController_->activeWorkers();
         request.targetWorkers = coordinatorController_->targetWorkers();
+        request.visualWorkerPoolEnabled =
+            coordinatorController_->visualWorkerPoolEnabled();
         request.workers = coordinatorController_->freshSnapshot();
         return std::optional<RunningRefreshRequest>{ request };
     });
@@ -1388,7 +1409,14 @@ void RunningTab::build()
             const QSignalBlocker blocker(targetWorkersSpin_);
             targetWorkersSpin_->setValue(data.targetWorkers);
         }
-        targetWorkersSpin_->setVisible(data.controllerAvailable && running);
+        targetWorkersSpin_->setVisible(data.controllerAvailable);
+        targetWorkersSpin_->setEnabled(stopped || running);
+        {
+            const QSignalBlocker blocker(visualWorkersCheck_);
+            visualWorkersCheck_->setChecked(data.visualWorkerPoolEnabled);
+        }
+        visualWorkersCheck_->setVisible(data.controllerAvailable);
+        visualWorkersCheck_->setEnabled(stopped);
         isoSetupButton_->setText(data.isoMissing ? QStringLiteral("Set ISO") : QStringLiteral("Fix ISO"));
         isoSetupButton_->setVisible(!data.isoReady);
         dolphinSetupButton_->setText(data.dolphinMissing ? QStringLiteral("Set Dolphin base") : QStringLiteral("Fix Dolphin base"));

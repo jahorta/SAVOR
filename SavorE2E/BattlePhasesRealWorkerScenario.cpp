@@ -752,10 +752,10 @@ bool SeedBattleWorkflow(
             .unit_kind = "tas_movie_annotate",
             .display_name = "TAS Movie: Annotate Input Epochs",
             .inputs = {{
-                .input_key = "root_dtm",
-                .data_kind = "state_artifact.dtm_artifact_id",
-                .ref_kind = "state_artifact",
-                .display_name = "Complete boot DTM",
+                .input_key = "root_establishment",
+                .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
+                .ref_kind = "tmv_root_establishment_attempt",
+                .display_name = "Root establishment",
             }},
             .possible_outputs = {{
                 .output_key = "annotation_attempt",
@@ -774,12 +774,6 @@ bool SeedBattleWorkflow(
                     .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id",
                     .ref_kind = "tmv_input_epoch_annotation_attempt",
                     .display_name = "Source input-epoch annotation",
-                },
-                {
-                    .input_key = "root_establishment",
-                    .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
-                    .ref_kind = "tmv_root_establishment_attempt",
-                    .display_name = "Source root establishment",
                 },
             },
             .possible_outputs = {
@@ -849,9 +843,9 @@ bool SeedBattleWorkflow(
         establish_to_validate->to_node_key = "tas_revise_1";
         graph_definition.edges.push_back({
             .from_node_key = "tas_establish_1",
-            .output_key = "root_dtm",
+            .output_key = "root_establishment",
             .to_node_key = "tas_annotate_1",
-            .input_key = "root_dtm",
+            .input_key = "root_establishment",
             .guard_kind = std::string(savor::db::kWorkflowOutputPresentGuard),
         });
         graph_definition.edges.push_back({
@@ -1685,10 +1679,8 @@ bool CheckBattleInvariantsAndReportTrajectory(
                      "battle_context"},
     };
     static constexpr std::array kDelayedCutsceneEdges{
-        ExpectedEdge{"tas_establish_1", "root_dtm",
-                     "tas_annotate_1", "root_dtm"},
         ExpectedEdge{"tas_establish_1", "root_establishment",
-                     "tas_revise_1", "root_establishment"},
+                     "tas_annotate_1", "root_establishment"},
         ExpectedEdge{"tas_annotate_1", "annotation_attempt",
                      "tas_revise_1", "annotation_attempt"},
         ExpectedEdge{"tas_revise_1", "root_establishment",

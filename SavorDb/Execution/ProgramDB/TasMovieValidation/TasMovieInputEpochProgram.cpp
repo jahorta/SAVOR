@@ -650,11 +650,18 @@ public:
             || !result_out)
             return Fail("input-epoch annotation dependencies are incomplete", error_out);
         *result_out = {};
-        const auto artifact_id = Binding(context, "root_dtm",
-            "state_artifact.dtm_artifact_id", "state_artifact");
-        const auto artifact = artifact_id ? state_->GetArtifact(*artifact_id) : std::nullopt;
-        if (!artifact || artifact->artifact_kind != "DTM")
-            return Fail("input-epoch annotation requires one DTM artifact", error_out);
+        const auto root_id = Binding(context, "root_establishment",
+            "analysis.tas_movie_root_establishment_attempt_id",
+            "tmv_root_establishment_attempt");
+        const auto root = root_id
+            ? analysis_->GetTasMovieRootEstablishmentAttempt(*root_id)
+            : std::nullopt;
+        const auto artifact = root
+            ? state_->GetArtifact(root->source_dtm_artifact_id)
+            : std::nullopt;
+        if (!root || !artifact || artifact->artifact_kind != "DTM"
+            || artifact->sha256 != root->source_dtm_sha256)
+            return Fail("input-epoch annotation requires one internally consistent root-establishment authority", error_out);
         const auto& identity = phase_->identity();
         const auto& runtime = phase_->runtime_contract();
         CreateTasMovieInputEpochAnnotationRequestCommand command{
@@ -662,6 +669,7 @@ public:
                 + std::to_string(context.step.workflow_step_id),
             .workflow_instance_id = context.step.workflow_instance_id,
             .workflow_step_id = context.step.workflow_step_id,
+            .root_establishment_attempt_id = root->root_establishment_attempt_id,
             .source_dtm_artifact_id = artifact->artifact_id,
             .source_dtm_sha256 = artifact->sha256,
             .full_phase_program_kind = identity.program_kind,
@@ -756,17 +764,15 @@ public:
         const auto attempt_id = Binding(context, "annotation_attempt",
             "analysis.tas_movie_input_epoch_annotation_attempt_id",
             "tmv_input_epoch_annotation_attempt");
-        const auto root_establishment_id = Binding(context, "root_establishment",
-            "analysis.tas_movie_root_establishment_attempt_id",
-            "tmv_root_establishment_attempt");
         auto insertion = IntegerArgument(context, "insert_before_epoch");
         const auto neutral_count = IntegerArgument(context, "neutral_epoch_count");
         const auto placement_profile = TextArgument(context, "placement_profile");
         const auto attempt = attempt_id
             ? analysis_->GetTasMovieInputEpochAnnotationAttempt(*attempt_id)
             : std::nullopt;
-        const auto root_establishment = root_establishment_id
-            ? analysis_->GetTasMovieRootEstablishmentAttempt(*root_establishment_id)
+        const auto root_establishment = attempt && attempt->root_establishment_attempt_id
+            ? analysis_->GetTasMovieRootEstablishmentAttempt(
+                *attempt->root_establishment_attempt_id)
             : std::nullopt;
         if (!attempt || !attempt->succeeded || !attempt->schedule_artifact_id
             || !attempt->schedule_sha256 || !root_establishment || !neutral_count
@@ -1079,6 +1085,7 @@ public:
         RecordTasMovieInputEpochAnnotationAttemptCommand attempt{
             .producer = TasMovieInputEpochAnnotationProducer::Annotate,
             .annotation_request_id = request->annotation_request_id,
+            .root_establishment_attempt_id = request->root_establishment_attempt_id,
             .source_dtm_artifact_id = request->source_dtm_artifact_id,
             .source_dtm_sha256 = request->source_dtm_sha256,
             .source_job_id = context.job_id,

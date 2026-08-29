@@ -103,21 +103,25 @@ authoring::AuthoringRecipe StandardRecipe()
             {.node_key="tas_movie_establish_1",
              .unit=ac::workflow::units::TasMovieEstablishRootCursor},
             {.node_key="tas_movie_validate_root_2",
-             .unit=ac::workflow::units::TasMovieValidateRoot},
+             .unit=ac::workflow::units::TasMovieValidateRoot,
+             .constant_arguments={{"rtc", "0"}}},
             {.node_key="tas_movie_annotate_3",
              .unit=ac::workflow::units::TasMovieAnnotate},
         },
         .external_inputs = {
             {"tas_movie_establish_1",
              ac::workflow::ports::tas_movie_establish_root_cursor::RootDtm},
-            {"tas_movie_annotate_3",
-             ac::workflow::ports::tas_movie_annotate::RootDtm},
         },
         .edges = {{
             "tas_movie_establish_1",
             ac::workflow::ports::tas_movie_establish_root_cursor::EstablishedRootCursorAttempt,
             "tas_movie_validate_root_2",
             ac::workflow::ports::tas_movie_validate_root::RootEstablishment,
+        }, {
+            "tas_movie_establish_1",
+            ac::workflow::ports::tas_movie_establish_root_cursor::EstablishedRootCursorAttempt,
+            "tas_movie_annotate_3",
+            ac::workflow::ports::tas_movie_annotate::RootEstablishment,
         }},
         .control_dependencies = {{
             .from_node_key="tas_movie_validate_root_2",
@@ -135,8 +139,6 @@ authoring::AuthoringRecipe StandardRecipe()
         .external_inputs = {
             {"tas_movie_revise_1",
              ac::workflow::ports::tas_movie_revise::AnnotationAttempt},
-            {"tas_movie_revise_1",
-             ac::workflow::ports::tas_movie_revise::RootEstablishment},
         },
     });
 
@@ -204,7 +206,6 @@ authoring::AuthoringRecipe StandardRecipe()
         },
         .external_inputs = {
             {"tas_movie_revise_1", ac::workflow::ports::tas_movie_revise::AnnotationAttempt},
-            {"tas_movie_revise_1", ac::workflow::ports::tas_movie_revise::RootEstablishment},
         },
         .edges = {
             {"tas_movie_revise_1", ac::workflow::ports::tas_movie_revise::RootEstablishment,

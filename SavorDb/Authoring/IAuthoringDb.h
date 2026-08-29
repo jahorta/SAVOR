@@ -162,6 +162,9 @@ struct SaveWorkflowGraphNodeArgumentCommand {
         std::string display_name;
     };
     std::vector<Choice> choices;
+    enum class BindingMode { Instance, Constant };
+    BindingMode binding_mode = BindingMode::Instance;
+    std::optional<std::string> constant_value;
 };
 
 struct SaveWorkflowGraphNodeArgumentConstraintCommand {
@@ -282,6 +285,9 @@ struct WorkflowGraphNodeArgumentSnapshot {
         std::string display_name;
     };
     std::vector<Choice> choices;
+    SaveWorkflowGraphNodeArgumentCommand::BindingMode binding_mode =
+        SaveWorkflowGraphNodeArgumentCommand::BindingMode::Instance;
+    std::optional<std::string> constant_value;
 };
 
 struct WorkflowGraphNodeArgumentConstraintSnapshot {

@@ -128,10 +128,15 @@ struct WorkflowAuthoredReferenceDefinition {
 };
 
 struct WorkflowNodeDefinition {
+    struct ConstantArgument {
+        std::string argument_key;
+        std::string canonical_value;
+    };
     std::string node_key;
     catalog::WorkflowUnitToken unit;
     std::optional<std::string> display_name;
     std::optional<WorkflowAuthoredReferenceDefinition> authored_ref;
+    std::vector<ConstantArgument> constant_arguments;
 };
 
 struct WorkflowExternalInputDefinition {
