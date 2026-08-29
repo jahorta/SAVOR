@@ -259,13 +259,6 @@ TEST(WorkerProtocolV2, RoundTripsEveryTypedPayload)
         "caller requested cancellation",
     });
 
-    ExpectPayloadRoundTrip(CaptureScreenshotPayload{
-        55,
-        66,
-        "C:/shots/final.png",
-        2500,
-    });
-
     ExpectPayloadRoundTrip(ShutdownPayload{ 5000 });
 
     ExpectPayloadRoundTrip(ControlExecutionPayload{
@@ -304,16 +297,6 @@ TEST(WorkerProtocolV2, RoundTripsEveryTypedPayload)
         .rejection_code = RejectionCode::None,
         .error_code = {},
         .message = "session ready",
-    });
-
-    ExpectPayloadRoundTrip(ScreenshotResultPayload{
-        .status = ScreenshotStatus::Captured,
-        .session_id = 55,
-        .workset_epoch = 3,
-        .output_path = "C:/shots/final.png",
-        .rejection_code = RejectionCode::None,
-        .error_code = {},
-        .message = "captured",
     });
 
     ExpectPayloadRoundTrip(ShutdownResultPayload{
@@ -842,19 +825,6 @@ TEST(WorkerProtocolV2, RejectsTrailingAndInvalidTypedPayloadWithoutPublishingOut
     EXPECT_EQ(result.error, PayloadError::InvalidEnumValue);
     EXPECT_EQ(unchanged_session.runtime_root, "unchanged");
 
-    ScreenshotResultPayload valid_screenshot;
-    std::vector<std::uint8_t> encoded_screenshot;
-    ASSERT_EQ(
-        EncodePayload(valid_screenshot, encoded_screenshot).error,
-        PayloadError::None);
-    ASSERT_FALSE(encoded_screenshot.empty());
-    encoded_screenshot[0] = 0xff;
-
-    ScreenshotResultPayload unchanged_screenshot;
-    unchanged_screenshot.output_path = "unchanged.png";
-    result = DecodePayload(encoded_screenshot, unchanged_screenshot);
-    EXPECT_EQ(result.error, PayloadError::InvalidEnumValue);
-    EXPECT_EQ(unchanged_screenshot.output_path, "unchanged.png");
 }
 
 TEST(WorkerProtocolV2, PreservesRequestIdsAcrossBackToBackFrames)

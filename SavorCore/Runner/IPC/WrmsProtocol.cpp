@@ -17,11 +17,6 @@ constexpr bool IsKnownCommandStatus(std::uint8_t value) noexcept
     return value <= static_cast<std::uint8_t>(CommandStatus::Unsupported);
 }
 
-constexpr bool IsKnownScreenshotStatus(std::uint8_t value) noexcept
-{
-    return value <= static_cast<std::uint8_t>(ScreenshotStatus::Failed);
-}
-
 constexpr bool IsKnownShutdownStatus(std::uint8_t value) noexcept
 {
     return value <= static_cast<std::uint8_t>(ShutdownStatus::CleanupFailed);
@@ -380,7 +375,6 @@ bool IsKnownMessageKind(MessageKind kind) noexcept
     case MessageKind::ProcessHello:
     case MessageKind::OpenSession:
     case MessageKind::CancelInvocation:
-    case MessageKind::CaptureScreenshot:
     case MessageKind::Shutdown:
     case MessageKind::ControlExecution:
     case MessageKind::SubmitWorkset:
@@ -390,7 +384,6 @@ bool IsKnownMessageKind(MessageKind kind) noexcept
     case MessageKind::LivenessProbe:
     case MessageKind::CommandResult:
     case MessageKind::OpenSessionResult:
-    case MessageKind::ScreenshotResult:
     case MessageKind::ShutdownResult:
     case MessageKind::SessionEvent:
     case MessageKind::InvocationProgress:
@@ -413,7 +406,6 @@ MessageDirection DirectionOf(MessageKind kind) noexcept
     switch (kind) {
     case MessageKind::OpenSession:
     case MessageKind::CancelInvocation:
-    case MessageKind::CaptureScreenshot:
     case MessageKind::Shutdown:
     case MessageKind::ControlExecution:
     case MessageKind::SubmitWorkset:
@@ -756,30 +748,6 @@ PayloadCodecResult DecodePayload(
 }
 
 PayloadCodecResult EncodePayload(
-    const CaptureScreenshotPayload& value,
-    std::vector<std::uint8_t>& output)
-{
-    return EncodePayloadImpl(value, output, [](PayloadWriter& writer, const auto& payload) {
-        writer.u64(payload.workset_id);
-        writer.u64(payload.item_id);
-        writer.string(payload.output_path);
-        writer.u32(payload.timeout_ms);
-    });
-}
-
-PayloadCodecResult DecodePayload(
-    std::span<const std::uint8_t> input,
-    CaptureScreenshotPayload& output)
-{
-    return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
-        reader.u64(payload.workset_id);
-        reader.u64(payload.item_id);
-        reader.string(payload.output_path);
-        reader.u32(payload.timeout_ms);
-    });
-}
-
-PayloadCodecResult EncodePayload(
     const ShutdownPayload& value,
     std::vector<std::uint8_t>& output)
 {
@@ -914,53 +882,6 @@ PayloadCodecResult DecodePayload(
             if (!IsKnownSessionDisposition(session_disposition))
                 reader.fail(PayloadError::InvalidEnumValue);
         }
-        if (reader.u16(rejection_code)) {
-            payload.rejection_code =
-                static_cast<RejectionCode>(rejection_code);
-            if (!IsKnownRejectionCode(rejection_code))
-                reader.fail(PayloadError::InvalidEnumValue);
-        }
-        reader.string(payload.error_code);
-        reader.string(payload.message);
-    });
-}
-
-PayloadCodecResult EncodePayload(
-    const ScreenshotResultPayload& value,
-    std::vector<std::uint8_t>& output)
-{
-    return EncodePayloadImpl(value, output, [](PayloadWriter& writer, const auto& payload) {
-        if (!IsKnownScreenshotStatus(static_cast<std::uint8_t>(payload.status)))
-            writer.fail(PayloadError::InvalidEnumValue);
-        writer.u8(static_cast<std::uint8_t>(payload.status));
-        writer.u64(payload.session_id);
-        writer.u64(payload.workset_epoch);
-        writer.string(payload.output_path);
-        if (!IsKnownRejectionCode(
-                static_cast<std::uint16_t>(payload.rejection_code))) {
-            writer.fail(PayloadError::InvalidEnumValue);
-        }
-        writer.u16(static_cast<std::uint16_t>(payload.rejection_code));
-        writer.string(payload.error_code);
-        writer.string(payload.message);
-    });
-}
-
-PayloadCodecResult DecodePayload(
-    std::span<const std::uint8_t> input,
-    ScreenshotResultPayload& output)
-{
-    return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
-        std::uint8_t status = 0;
-        std::uint16_t rejection_code = 0;
-        if (reader.u8(status)) {
-            payload.status = static_cast<ScreenshotStatus>(status);
-            if (!IsKnownScreenshotStatus(status))
-                reader.fail(PayloadError::InvalidEnumValue);
-        }
-        reader.u64(payload.session_id);
-        reader.u64(payload.workset_epoch);
-        reader.string(payload.output_path);
         if (reader.u16(rejection_code)) {
             payload.rejection_code =
                 static_cast<RejectionCode>(rejection_code);

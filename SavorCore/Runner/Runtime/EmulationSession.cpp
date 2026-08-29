@@ -851,37 +851,6 @@ SavestateRestoreReceipt EmulationSession::ReconcileRestoredSavestate(
     return receipt;
 }
 
-SessionOperationReceipt EmulationSession::CaptureScreenshot(
-    const std::filesystem::path& path,
-    std::chrono::milliseconds timeout)
-{
-    if (!BindOrCheckOwner() || !CanOperate())
-    {
-        return Reject(
-            SessionOperation::Screenshot,
-            BackendErrorCode::InvalidState,
-            "EmulationSession cannot capture a screenshot in its current state");
-    }
-    if (!screenshot_service_)
-    {
-        return Reject(
-            SessionOperation::Screenshot,
-            BackendErrorCode::Unavailable,
-            "ScreenshotService is unavailable");
-    }
-    ScreenshotReceipt screenshot =
-        screenshot_service_->Capture(path, timeout, workset_epoch_);
-    BackendResult result = screenshot.ok
-        ? BackendResult::Success()
-        : BackendResult::Failure(
-              screenshot.status == ScreenshotStatus::Failed
-                  ? BackendErrorCode::OperationFailed
-                  : BackendErrorCode::InvalidState,
-              std::move(screenshot.message),
-              screenshot.integrity);
-    return Complete(SessionOperation::Screenshot, std::move(result));
-}
-
 std::vector<TelemetryEvent> EmulationSession::DrainTelemetry()
 {
     if (!BindOrCheckOwner() || !telemetry_bus_)
@@ -1612,11 +1581,9 @@ BackendResult EmulationSession::InitializeServiceComposition()
         backend_ ? backend_->GuestMemory() : nullptr;
     IHitTimeGuestMemoryBackendPort* hit_time_memory =
         backend_ ? backend_->HitTimeGuestMemory() : nullptr;
-    IScreenshotBackendPort* screenshots =
-        backend_ ? backend_->Screenshots() : nullptr;
     IMovieBackendPort* movies =
         backend_ ? backend_->Movies() : nullptr;
-    if (!input || !memory || !hit_time_memory || !screenshots || !movies)
+    if (!input || !memory || !hit_time_memory || !movies)
     {
         return BackendResult::Failure(
             BackendErrorCode::Unavailable,
@@ -1635,8 +1602,6 @@ BackendResult EmulationSession::InitializeServiceComposition()
             std::make_unique<GuestMutationService>(
                 *guest_memory_,
                 *memory);
-        screenshot_service_ =
-            std::make_unique<ScreenshotService>(*screenshots);
         artifact_sink_ = std::make_unique<RuntimeArtifactSink>(
             open_options_.runtime_artifact_root);
         if (ICaptureBackendPort* capture = backend_->Captures())
@@ -1736,7 +1701,7 @@ BackendResult EmulationSession::InitializeServices(WorksetEpoch first_epoch)
 {
     if (!telemetry_bus_ || !input_arbiter_ ||
         !guest_memory_ || !guest_mutations_ ||
-        !screenshot_service_ || !movie_service_)
+        !movie_service_)
     {
         return BackendResult::Failure(
             BackendErrorCode::Unavailable,
@@ -1754,7 +1719,6 @@ BackendResult EmulationSession::InitializeServices(WorksetEpoch first_epoch)
             BackendIntegrity::Unknown);
     }
     guest_mutations_->InitializeWorksetEpoch(first_epoch);
-    screenshot_service_->InitializeWorksetEpoch(first_epoch);
     return BackendResult::Success();
 }
 
@@ -1976,7 +1940,6 @@ BackendResult EmulationSession::CleanupServices() noexcept
     }
     movie_input_reservations_.reset();
     resource_relationships_.reset();
-    screenshot_service_.reset();
     artifact_sink_.reset();
     if (guest_mutations_)
     {

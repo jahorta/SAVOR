@@ -1106,7 +1106,8 @@ void RunningTab::build()
     targetWorkersSpin_ = new QSpinBox(statusStrip);
     targetWorkersSpin_->setObjectName("jobsRefreshSpin");
     targetWorkersSpin_->setMinimum(1);
-    targetWorkersSpin_->setMaximum(9999);
+    targetWorkersSpin_->setMaximum(static_cast<int>(
+        savor::runner::parallel::savordb::kMaximumWorkerCount));
     targetWorkersSpin_->setPrefix(QStringLiteral("Target: "));
     QObject::connect(targetWorkersSpin_, qOverload<int>(&QSpinBox::valueChanged), statusStrip, [this](int value) {
         if (coordinatorController_ != nullptr) {

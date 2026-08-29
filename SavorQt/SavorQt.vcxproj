@@ -229,7 +229,7 @@
     <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h" />
     <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogFilterController.h" />
     <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h" />
-    <ClInclude Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardWindow.h" />
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardWindow.h" />
     <ClInclude Include="DB\SavorDbArtifactService.h" />
     <ClInclude Include="DB\SavorDbArchiveService.h" />
     <ClInclude Include="DB\SavorDbAuthoringService.h" />

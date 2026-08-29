@@ -6,7 +6,6 @@
 #include "Runner/Runtime/Services/Memory/IGuestMemoryBackendPort.h"
 #include "Runner/Runtime/Services/Memory/IHitTimeGuestMemoryBackendPort.h"
 #include "Runner/Runtime/Services/Movie/IMovieBackendPort.h"
-#include "Runner/Runtime/Services/Screenshot/IScreenshotBackendPort.h"
 #include "Runner/Runtime/StopPoints/IPhysicalStopPointBackendPort.h"
 
 #include <chrono>
@@ -31,7 +30,6 @@ struct ScriptedDolphinBackendControl
     std::optional<std::thread::id> owner_thread;
     bool owner_thread_violation = false;
     std::vector<std::string> calls;
-    std::vector<std::filesystem::path> screenshots;
 
     runtime::BackendResult open_result = runtime::BackendResult::Success();
     runtime::MovieBackendResult core_stop_result =
@@ -50,7 +48,6 @@ struct ScriptedDolphinBackendControl
     std::optional<runtime::BackendCoreState> restore_buffer_core_state;
     runtime::BackendResult save_file_result = runtime::BackendResult::Success();
     runtime::BackendResult save_buffer_result = runtime::BackendResult::Success();
-    runtime::BackendResult screenshot_result = runtime::BackendResult::Success();
     runtime::MovieBackendResult movie_result =
         runtime::MovieBackendResult::Success();
     runtime::MovieBackendResult movie_activation_result =
@@ -86,7 +83,6 @@ struct ScriptedDolphinBackendControl
     int core_start_count = 0;
     int movie_activation_count = 0;
     int close_count = 0;
-    int screenshot_count = 0;
     int restore_file_count = 0;
     int restore_buffer_count = 0;
     int destruction_count = 0;
@@ -110,15 +106,12 @@ struct ScriptedDolphinBackendControl
     void SetSaveBufferResult(
         runtime::BackendResult result,
         std::vector<std::uint8_t> bytes = {0x10, 0x20, 0x30});
-    void SetScreenshotResult(runtime::BackendResult result);
     void SetCoreState(runtime::BackendCoreState state);
     void SetDestructionObserver(std::function<void()> observer);
 
     [[nodiscard]] int CloseCount() const;
     [[nodiscard]] int OpenCount() const;
     [[nodiscard]] int DestructionCount() const;
-    [[nodiscard]] int ScreenshotCount() const;
-    [[nodiscard]] std::vector<std::filesystem::path> ScreenshotPaths() const;
     [[nodiscard]] std::vector<std::string> Calls() const;
     [[nodiscard]] bool HasOwnerViolation() const;
     [[nodiscard]] std::optional<std::thread::id> OwnerThread() const;
@@ -133,7 +126,6 @@ class ScriptedDolphinBackend final
       private runtime::IInputBackendPort,
       private runtime::IGuestMemoryBackendPort,
       private runtime::IHitTimeGuestMemoryBackendPort,
-      private runtime::IScreenshotBackendPort,
       private runtime::IMovieBackendPort
 {
 public:
@@ -165,9 +157,6 @@ public:
     runtime::BackendResult RestoreStateBuffer(
         const std::vector<std::uint8_t>& bytes) override;
 
-    runtime::BackendResult CaptureScreenshot(
-        const std::filesystem::path& path,
-        std::chrono::milliseconds timeout) override;
     [[nodiscard]] runtime::IPhysicalStopPointBackendPort*
     PhysicalStopPoints() noexcept override;
     [[nodiscard]] runtime::IExecutionBackendPort* Execution() noexcept override;
@@ -175,7 +164,6 @@ public:
     [[nodiscard]] runtime::IGuestMemoryBackendPort* GuestMemory() noexcept override;
     [[nodiscard]] runtime::IHitTimeGuestMemoryBackendPort*
     HitTimeGuestMemory() noexcept override;
-    [[nodiscard]] runtime::IScreenshotBackendPort* Screenshots() noexcept override;
     [[nodiscard]] runtime::IMovieBackendPort* Movies() noexcept override;
     [[nodiscard]] runtime::ICaptureBackendPort* Captures() noexcept override;
     [[nodiscard]] runtime::IVisualMessageBackendPort* VisualMessages() noexcept override;
@@ -212,9 +200,6 @@ private:
         std::uint32_t address,
         std::size_t size) override;
 
-    runtime::BackendResult Capture(
-        const std::filesystem::path& path,
-        std::chrono::milliseconds timeout) override;
 
     runtime::MoviePlaybackPrepareResult
     PrepareReadOnlyPlaybackForRestart(

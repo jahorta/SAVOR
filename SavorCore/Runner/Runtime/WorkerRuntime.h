@@ -52,14 +52,6 @@ struct AcknowledgeTerminalCommand
     WorkerItemTerminalCorrelation correlation;
 };
 
-struct CaptureScreenshotCommand
-{
-    WorkerWorksetId workset_id;
-    WorkerWorksetItemId item_id;
-    std::filesystem::path output_path;
-    std::chrono::milliseconds timeout{3000};
-};
-
 enum class WorkerExecutionControlKind : std::uint8_t
 {
     Pause,
@@ -87,7 +79,6 @@ using WorkerCommand = std::variant<
     CancelWorksetItemCommand,
     CancelWorksetCommand,
     AcknowledgeTerminalCommand,
-    CaptureScreenshotCommand,
     ControlExecutionCommand,
     ShutdownCommand>;
 

@@ -11,7 +11,7 @@
 namespace savor::runtime::program {
 namespace {
 
-constexpr std::array<CanonicalActionDefinition, 28> kActions{{
+constexpr std::array<CanonicalActionDefinition, 27> kActions{{
     {CanonicalAction::SavestateSaveImmutableArtifact, "runtime.savestate.save_immutable_artifact", "(SavestateArtifactSaveRequest)->PendingSavestateArtifactPublicationReceipt"},
     {CanonicalAction::ExecutionContinueUntil, "runtime.execution.continue_until", "(ContinueUntilRequest)->ContinueUntilResult"},
     {CanonicalAction::ExecutionStepFrames, "runtime.execution.step_frames", "(StepFramesRequest)->ExecutionResult"},
@@ -34,7 +34,6 @@ constexpr std::array<CanonicalActionDefinition, 28> kActions{{
     {CanonicalAction::GuestWriteData, "runtime.guest.write_data", "(GuestDataWriteRequest)->GuestMutationHandle"},
     {CanonicalAction::GuestPatchExecutable, "runtime.guest.patch_executable", "(ExecutablePatchRequest)->GuestMutationHandle"},
     {CanonicalAction::CaptureMark, "runtime.capture.mark", "(CaptureMarkerRequest)->CaptureMarkerReceipt"},
-    {CanonicalAction::ScreenshotCapture, "runtime.screenshot.capture", "(ScreenshotRequest)->ScreenshotArtifactRef"},
     {CanonicalAction::TelemetryEmit, "runtime.telemetry.emit", "(TypedTelemetryRecord)->TelemetryReceipt"},
     {CanonicalAction::ExecutionRequirePausedPc, "runtime.execution.require_paused_pc", "(RequirePausedPcRequest)->PausedPcReceipt"},
     {CanonicalAction::ExecutionContinueUntilInputObserved, "runtime.execution.continue_until_input_observed", "(ContinueUntilInputObservedRequest)->InputObservedExecutionResult"},
@@ -174,7 +173,6 @@ ActionOutputShape OutputShape(CanonicalAction action) noexcept
     case CanonicalAction::GuestPatchExecutable:
         return ActionOutputShape::ResourceHandle;
     case CanonicalAction::MovieStopRecording:
-    case CanonicalAction::ScreenshotCapture:
         return ActionOutputShape::ArtifactReference;
     case CanonicalAction::SavestateSaveImmutableArtifact:
         return ActionOutputShape::SapReceipt;
@@ -1436,20 +1434,6 @@ BuildCanonicalRuntimeActionDescriptors()
         service(SessionServiceCapability::Capture),
         effect(ActionEffect::Capture),
         5000));
-    result.push_back(Descriptor(
-        CanonicalAction::ScreenshotCapture,
-        services(
-            SessionServiceCapability::Screenshot,
-            SessionServiceCapability::Artifact),
-        effect(ActionEffect::ArtifactIo),
-        30000,
-        ActionEpochPolicy::RequiresCurrentEpoch,
-        ActionReplayClass::ExternalCommit,
-        ActionCancellationMode::BeforeMutationOnly,
-        ActionResourceBehavior::None,
-        ActionCleanupGuarantee::VerifiedCompensation,
-        true,
-        ActionIdempotency::ReceiptProven));
     result.push_back(Descriptor(
         CanonicalAction::TelemetryEmit,
         service(SessionServiceCapability::Telemetry),

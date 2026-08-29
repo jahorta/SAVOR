@@ -13,7 +13,6 @@
 #include "Services/Movie/InputMovieReservationAdapter.h"
 #include "Services/Movie/MovieService.h"
 #include "Services/Resources/SessionResourceLedger.h"
-#include "Services/Screenshot/ScreenshotService.h"
 #include "Services/Savestate/SessionSavestateBackendAdapter.h"
 #include "Services/Savestate/SavestateService.h"
 #include "Services/Telemetry/TelemetryBus.h"
@@ -43,7 +42,6 @@ enum class SessionOperation : std::uint8_t
     CommitWorksetItemReset,
     EndWorkset,
     RestoreSavestate,
-    Screenshot,
     CoreRestartReconciliation,
     JitRevalidation,
     BreakpointReconciliation,
@@ -118,9 +116,6 @@ public:
     [[nodiscard]] SavestateServiceResult ReleaseSavestateArtifact(
         SavestateArtifactId artifact) noexcept;
 
-    SessionOperationReceipt CaptureScreenshot(
-        const std::filesystem::path& path,
-        std::chrono::milliseconds timeout);
     SessionOperationReceipt RevalidateStopPointsAfterJit();
     SessionOperationReceipt ValidateBreakpointChangeNotification();
     [[nodiscard]] std::vector<StopRouteReceipt> DrainStopPointEvents();
@@ -300,7 +295,6 @@ private:
     std::unique_ptr<GuestMemory> guest_memory_;
     std::unique_ptr<derived::DerivedStateService> derived_state_;
     std::unique_ptr<GuestMutationService> guest_mutations_;
-    std::unique_ptr<ScreenshotService> screenshot_service_;
     std::unique_ptr<RuntimeArtifactSink> artifact_sink_;
     std::unique_ptr<SessionVisualMessageService> visual_message_service_;
     std::unique_ptr<SessionSavestateBackendAdapter> savestate_backend_adapter_;

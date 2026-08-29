@@ -60,7 +60,6 @@ namespace savor {
             std::string* error_out = nullptr);
         bool loadSavestate(const std::string& state_path);
         bool saveSavestateBlocking(const std::string& state_path);
-        bool saveScreenshotBlocking(const std::string& image_path, uint32_t timeout_ms = 3000);
         bool saveStateToBuffer(Common::UniqueBuffer<u8>& buffer);
         bool loadStateFromBuffer(Common::UniqueBuffer<u8>& buffer);
 

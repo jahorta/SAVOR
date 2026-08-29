@@ -34,7 +34,6 @@ enum class CanonicalAction : std::uint8_t
     GuestWriteData,
     GuestPatchExecutable,
     CaptureMark,
-    ScreenshotCapture,
     TelemetryEmit,
     ExecutionRequirePausedPc,
     ExecutionContinueUntilInputObserved,

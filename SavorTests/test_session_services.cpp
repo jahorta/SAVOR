@@ -2,7 +2,6 @@
 
 #include "Runner/Runtime/Services/Input/InputArbiter.h"
 #include "Runner/Runtime/Services/Memory/GuestMutationService.h"
-#include "Runner/Runtime/Services/Screenshot/ScreenshotService.h"
 #include "Runner/Runtime/Services/Telemetry/TelemetryBus.h"
 
 #include <chrono>
@@ -159,23 +158,6 @@ public:
     std::map<std::uint32_t, std::uint8_t> memory;
     std::vector<std::pair<std::uint32_t, std::size_t>> invalidations;
     BackendResult invalidate_result = BackendResult::Success();
-};
-
-class FakeScreenshotBackend final : public IScreenshotBackendPort
-{
-public:
-    BackendResult Capture(
-        const std::filesystem::path& path,
-        std::chrono::milliseconds timeout) override
-    {
-        paths.push_back(path);
-        timeouts.push_back(timeout);
-        return result;
-    }
-
-    BackendResult result = BackendResult::Success();
-    std::vector<std::filesystem::path> paths;
-    std::vector<std::chrono::milliseconds> timeouts;
 };
 
 [[nodiscard]] InputExecutionBindingEvidence Evidence(
@@ -1050,33 +1032,6 @@ TEST(
     EXPECT_EQ(memory_backend.invalidate_calls, 0u);
 }
 
-TEST(
-    SessionServicesOwnership,
-    ScreenshotServiceRejectsOffActorWithoutBackendCalls)
-{
-    FakeScreenshotBackend screenshot_backend;
-    ScreenshotService screenshots(screenshot_backend);
-    screenshots.InitializeWorksetEpoch(kEpoch);
-
-    ScreenshotReceipt captured;
-    ScreenshotReceipt cancelled;
-    std::optional<ScreenshotReceipt> last;
-    std::thread other([&] {
-        screenshots.InitializeWorksetEpoch(WorksetEpoch(12));
-        captured = screenshots.Capture("wrong-thread.png", 1s, kEpoch);
-        cancelled =
-            screenshots.Cancel(ScreenshotRequestId(1), kEpoch);
-        last = screenshots.last_receipt();
-    });
-    other.join();
-
-    EXPECT_FALSE(captured.ok);
-    EXPECT_EQ(captured.status, ScreenshotStatus::Rejected);
-    EXPECT_FALSE(cancelled.ok);
-    EXPECT_FALSE(last.has_value());
-    EXPECT_TRUE(screenshot_backend.paths.empty());
-}
-
 TEST(TelemetryBus, CoalescesLossyEventsAndFailsRequiredOverflow)
 {
     TelemetryBus bus(1);
@@ -1119,28 +1074,6 @@ TEST(TelemetryBus, CoalescingPreservesSequenceOrderAtCapacityTwo)
     EXPECT_EQ(events[0].sequence, second.sequence);
     EXPECT_EQ(events[1].payload, "two");
     EXPECT_EQ(events[1].sequence, replacement.sequence);
-}
-
-TEST(ScreenshotService, CorrelatesOneRequestAndPreservesBackendFailure)
-{
-    FakeScreenshotBackend backend;
-    ScreenshotService service(backend);
-    service.InitializeWorksetEpoch(kEpoch);
-    const std::filesystem::path path = "shot.png";
-    ScreenshotReceipt success = service.Capture(path, 2s, kEpoch);
-    ASSERT_TRUE(success.ok);
-    EXPECT_EQ(success.status, ScreenshotStatus::Complete);
-    ASSERT_EQ(backend.paths.size(), 1u);
-    EXPECT_EQ(backend.paths.front(), path);
-
-    backend.result = BackendResult::Failure(
-        BackendErrorCode::Timeout,
-        "timeout",
-        BackendIntegrity::Preserved);
-    ScreenshotReceipt failed = service.Capture(path, 1s, kEpoch);
-    EXPECT_FALSE(failed.ok);
-    EXPECT_EQ(failed.status, ScreenshotStatus::Failed);
-    EXPECT_EQ(failed.message, "timeout");
 }
 
 } // namespace

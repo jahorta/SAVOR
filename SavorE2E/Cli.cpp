@@ -1,5 +1,7 @@
 #include "Cli.h"
 
+#include "Execution/WorkerLimits.h"
+
 #include <algorithm>
 #include <cctype>
 #include <array>
@@ -1012,8 +1014,15 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "--poll-ms must be >= 100";
         return false;
     }    
-    if (options.worker_count < 1 || options.worker_count > 30) {
-        if (error_out) *error_out = "--worker-count must be between 1 and 30";
+    if (options.worker_count < 1
+        || options.worker_count
+            > static_cast<std::int64_t>(
+                savor::runner::parallel::savordb::kMaximumWorkerCount)) {
+        if (error_out) {
+            *error_out = "--worker-count must be between 1 and "
+                + std::to_string(
+                    savor::runner::parallel::savordb::kMaximumWorkerCount);
+        }
         return false;
     }
     if (options.poll_ms > 5000) {

@@ -41,6 +41,9 @@
     <ClInclude Include="Execution\WorkerCoordinator.h">
       <Filter>Execution</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\WorkerLimits.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
     <ClInclude Include="Worker\ProcessWorker.h">
       <Filter>Worker</Filter>
     </ClInclude>

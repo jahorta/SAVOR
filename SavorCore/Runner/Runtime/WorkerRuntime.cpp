@@ -54,7 +54,6 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
             [](const CancelWorksetItemCommand&) { return WorkerCommandKind::CancelWorksetItem; },
             [](const CancelWorksetCommand&) { return WorkerCommandKind::CancelWorkset; },
             [](const AcknowledgeTerminalCommand&) { return WorkerCommandKind::AcknowledgeTerminal; },
-            [](const CaptureScreenshotCommand&) { return WorkerCommandKind::CaptureScreenshot; },
             [](const ControlExecutionCommand&) { return WorkerCommandKind::ControlExecution; },
             [](const ShutdownCommand&) { return WorkerCommandKind::Shutdown; }},
         command);
@@ -942,9 +941,6 @@ struct WorkerRuntime::Impl
                 },
                 [this, &queued](const AcknowledgeTerminalCommand& command) {
                     HandleAcknowledgeTerminal(queued, command);
-                },
-                [this, &queued](const CaptureScreenshotCommand& command) {
-                    HandleScreenshot(queued, command);
                 },
                 [this, &queued](const ControlExecutionCommand& command) {
                     HandleExecutionControl(queued, command);
@@ -3750,60 +3746,6 @@ struct WorkerRuntime::Impl
         staged_workset.reset();
         RefreshSnapshot();
         ActivateCurrentWorkset();
-    }
-
-    void HandleScreenshot(
-        const std::shared_ptr<QueuedCommand>& queued,
-        const CaptureScreenshotCommand& command)
-    {
-        const WorkerState state = Snapshot().state;
-        if (state != WorkerState::Ready &&
-            state != WorkerState::Running &&
-            state != WorkerState::Cancelling)
-        {
-            Reject(
-                queued,
-                state == WorkerState::Tainted
-                    ? WorkerRejectionCode::SessionTainted
-                    : WorkerRejectionCode::InvalidState,
-                "Screenshot is unavailable in the current worker state");
-            return;
-        }
-
-        if (!active_workset || !active_invocation ||
-            !command.workset_id || !command.item_id ||
-            active_workset->definition.workset_id != command.workset_id ||
-            active_invocation->workset_id != command.workset_id ||
-            active_invocation->workset_item_id != command.item_id)
-        {
-            Reject(
-                queued,
-                WorkerRejectionCode::WorksetItemNotFound,
-                "Screenshot does not identify the exact active workset item");
-            return;
-        }
-
-        SessionOperationReceipt receipt =
-            session->CaptureScreenshot(command.output_path, command.timeout);
-        RefreshSnapshot();
-        if (!receipt.ok)
-        {
-            if (receipt.disposition == SessionDisposition::Tainted)
-                EnterTainted(receipt.backend.message);
-            Reject(
-                queued,
-                MapBackendError(receipt.backend.code),
-                receipt.backend.message,
-                receipt);
-            return;
-        }
-
-        Complete(
-            queued,
-            WorkerCommandOutcome::Completed,
-            {},
-            {},
-            std::move(receipt));
     }
 
     void HandleExecutionControl(

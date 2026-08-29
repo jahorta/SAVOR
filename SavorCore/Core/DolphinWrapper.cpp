@@ -801,60 +801,6 @@ namespace savor {
         return true;
     }
 
-    bool DolphinWrapper::saveScreenshotBlocking(const std::string& path, uint32_t timeout_ms)
-    {
-        if (!Core::IsRunning(*m_system)) {
-            SCLOGW("[DW] saveScreenshotBlocking rejected path=%s running=0", path.c_str());
-            return false;
-        }
-
-        const auto output_path = std::filesystem::path(path);
-        const auto parent = output_path.parent_path();
-        if (!parent.empty()) {
-            std::error_code ec;
-            std::filesystem::create_directories(parent, ec);
-            if (ec) {
-                SCLOGW("[DW] saveScreenshotBlocking create_directories failed path=%s error=%s",
-                    parent.string().c_str(),
-                    ec.message().c_str());
-                return false;
-            }
-        }
-
-        std::error_code remove_ec;
-        std::filesystem::remove(output_path, remove_ec);
-
-        SCLOGI("[DW] saveScreenshotBlocking begin path=%s visual=%d state=%d",
-            path.c_str(),
-            m_visual_mode ? 1 : 0,
-            static_cast<int>(Core::GetState(*m_system)));
-        Core::SaveScreenShot(path);
-
-        const auto deadline = std::chrono::steady_clock::now()
-            + std::chrono::milliseconds(timeout_ms == 0 ? 3000 : timeout_ms);
-        while (std::chrono::steady_clock::now() < deadline) {
-            Core::HostDispatchJobs(*m_system);
-            std::error_code ec;
-            if (std::filesystem::exists(output_path, ec)) {
-                const auto size = std::filesystem::file_size(output_path, ec);
-                if (!ec && size > 0) {
-                    SCLOGI("[DW] saveScreenshotBlocking end path=%s exists=1 size=%llu",
-                        path.c_str(),
-                        static_cast<unsigned long long>(size));
-                    return true;
-                }
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
-
-        std::error_code ec;
-        const bool exists = std::filesystem::exists(output_path, ec);
-        SCLOGW("[DW] saveScreenshotBlocking timeout path=%s exists=%d",
-            path.c_str(),
-            exists ? 1 : 0);
-        return exists;
-    }
-
     bool DolphinWrapper::saveStateToBuffer(Common::UniqueBuffer<u8>& buffer)
     {
         State::SaveToBuffer(*m_system, buffer);

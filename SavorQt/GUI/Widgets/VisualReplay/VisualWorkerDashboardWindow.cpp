@@ -1,6 +1,10 @@
 #include "GUI/Widgets/VisualReplay/VisualWorkerDashboardWindow.h"
 
 #include <QtCore/QtMath>
+#include <QtCore/QCoreApplication>
+#include <QtCore/QEvent>
+#include <QtGui/QPlatformSurfaceEvent>
+#include <QtGui/QResizeEvent>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHBoxLayout>
@@ -59,26 +63,26 @@ void VisualWorkerDashboardWindow::setWorkerCount(int count, bool allowShrink)
     rebuildGrid();
 }
 
-void VisualWorkerDashboardWindow::updateWorkerSnapshots(const std::vector<WorkerSnapshot>& snapshots)
+void VisualWorkerDashboardWindow::updateWorkerStatus(
+    const WorkerSnapshot& snapshot)
+{
+    if (snapshot.worker_id >= static_cast<std::size_t>(tiles_.size()))
+        return;
+    Tile& tile = tiles_[static_cast<int>(snapshot.worker_id)];
+    tile.stateLabel->setText(stateText(snapshot.state));
+    tile.jobLabel->setText(snapshot.job_id.has_value()
+        ? QStringLiteral("Job: %1").arg(*snapshot.job_id)
+        : QStringLiteral("Job: --"));
+}
+
+void VisualWorkerDashboardWindow::clearWorkerStatusesExcept(
+    const QSet<int>& workerIds)
 {
     for (int i = 0; i < tiles_.size(); ++i) {
-        Tile& tile = tiles_[i];
-        auto it = std::find_if(
-            snapshots.begin(),
-            snapshots.end(),
-            [i](const WorkerSnapshot& snapshot) {
-                return snapshot.worker_id == i;
-            });
-        if (it == snapshots.end()) {
-            tile.stateLabel->setText(QStringLiteral("Waiting"));
-            tile.jobLabel->setText(QStringLiteral("Job: --"));
+        if (workerIds.contains(i))
             continue;
-        }
-
-        tile.stateLabel->setText(stateText(it->state));
-        tile.jobLabel->setText(it->job_id.has_value()
-            ? QStringLiteral("Job: %1").arg(*it->job_id)
-            : QStringLiteral("Job: --"));
+        tiles_[i].stateLabel->setText(QStringLiteral("Waiting"));
+        tiles_[i].jobLabel->setText(QStringLiteral("Job: --"));
     }
 }
 
@@ -90,7 +94,10 @@ QVector<VisualWorkerSurfaceBinding> VisualWorkerDashboardWindow::surfaceBindings
         const Tile& tile = tiles_[i];
         bindings.append(VisualWorkerSurfaceBinding{
             .workerIndex = i,
-            .renderWidgetHandle = tile.renderWidget != nullptr ? tile.renderWidget->winId() : 0,
+            .renderWidgetHandle = tile.nativeHandle,
+            .surfaceGeneration = tile.surfaceGeneration,
+            .ownerProcessId = static_cast<quint32>(
+                QCoreApplication::applicationPid()),
             .hostEventsPipeName = QString{},
         });
     }
@@ -144,6 +151,7 @@ VisualWorkerDashboardWindow::Tile VisualWorkerDashboardWindow::createTile(int wo
     renderWidget->setMinimumSize(320, 180);
     renderWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     renderWidget->resize(320, 180);
+    renderWidget->installEventFilter(this);
     (void)renderWidget->winId();
 
     QLabel* jobLabel = new QLabel(QStringLiteral("Job: --"), frame);
@@ -158,7 +166,57 @@ VisualWorkerDashboardWindow::Tile VisualWorkerDashboardWindow::createTile(int wo
     tile.titleLabel = titleLabel;
     tile.stateLabel = stateLabel;
     tile.jobLabel = jobLabel;
+    tile.workerIndex = workerIndex;
+    tile.nativeHandle = renderWidget->effectiveWinId();
+    tile.surfaceGeneration = 1;
     return tile;
+}
+
+bool VisualWorkerDashboardWindow::eventFilter(
+    QObject* watched,
+    QEvent* event)
+{
+    auto found = std::find_if(
+        tiles_.begin(), tiles_.end(),
+        [watched](const Tile& tile) { return tile.renderWidget == watched; });
+    if (found == tiles_.end())
+        return PersistentToolWindow::eventFilter(watched, event);
+
+    if (event->type() == QEvent::PlatformSurface) {
+        auto* surfaceEvent = static_cast<QPlatformSurfaceEvent*>(event);
+        if (surfaceEvent->surfaceEventType() ==
+            QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed &&
+            found->nativeHandle != 0) {
+            emit surfaceInvalidated(
+                found->workerIndex, found->surfaceGeneration);
+            found->nativeHandle = 0;
+        }
+    } else if (event->type() == QEvent::WinIdChange) {
+        const quintptr newHandle = found->renderWidget->effectiveWinId();
+        if (newHandle != 0 && newHandle != found->nativeHandle) {
+            if (found->nativeHandle != 0) {
+                emit surfaceInvalidated(
+                    found->workerIndex, found->surfaceGeneration);
+            }
+            found->nativeHandle = newHandle;
+            ++found->surfaceGeneration;
+            emit surfaceChanged(VisualWorkerSurfaceBinding{
+                .workerIndex = found->workerIndex,
+                .renderWidgetHandle = found->nativeHandle,
+                .surfaceGeneration = found->surfaceGeneration,
+                .ownerProcessId = static_cast<quint32>(
+                    QCoreApplication::applicationPid()),
+                .hostEventsPipeName = QString{},
+            });
+        }
+    }
+    return PersistentToolWindow::eventFilter(watched, event);
+}
+
+void VisualWorkerDashboardWindow::resizeEvent(QResizeEvent* event)
+{
+    PersistentToolWindow::resizeEvent(event);
+    rebuildGrid();
 }
 
 void VisualWorkerDashboardWindow::rebuildGrid()

@@ -35,6 +35,8 @@ namespace savor::runner::parallel::savordb {
 struct CoordinatorWorkerVisualSurface {
     std::size_t worker_id = 0;
     std::uint64_t render_widget_handle = 0;
+    std::uint64_t surface_generation = 0;
+    std::uint32_t owner_process_id = 0;
     std::string host_events_pipe_name;
 };
 
@@ -83,7 +85,19 @@ class CoordinatorRuntime final {
     bool Stop(std::string* error_out = nullptr);
 
     void SetExecutionPaused(bool paused);
-    void SetDesiredWorkerCount(std::size_t desired_workers);
+    bool SetDesiredWorkerCount(
+        std::size_t desired_workers,
+        std::string* error_out = nullptr);
+    bool ResizeVisualWorkerPool(
+        std::size_t desired_workers,
+        std::vector<CoordinatorWorkerVisualSurface> surfaces,
+        std::string* error_out = nullptr);
+    bool SetWorkerVisualSurface(
+        CoordinatorWorkerVisualSurface surface,
+        std::string* error_out = nullptr);
+    void InvalidateWorkerVisualSurface(
+        std::size_t worker_id,
+        std::uint64_t surface_generation);
 
     [[nodiscard]] bool IsStarted() const noexcept;
     [[nodiscard]] bool IsExecutionPaused() const noexcept;

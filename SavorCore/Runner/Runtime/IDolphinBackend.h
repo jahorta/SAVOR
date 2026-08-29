@@ -16,7 +16,6 @@ class IExecutionBackendPort;
 class IInputBackendPort;
 class IGuestMemoryBackendPort;
 class IHitTimeGuestMemoryBackendPort;
-class IScreenshotBackendPort;
 class IMovieBackendPort;
 class ICaptureBackendPort;
 class IVisualMessageBackendPort;
@@ -120,10 +119,6 @@ public:
     virtual BackendBufferResult SaveStateBuffer() = 0;
     virtual BackendResult RestoreStateBuffer(const std::vector<std::uint8_t>& bytes) = 0;
 
-    virtual BackendResult CaptureScreenshot(
-        const std::filesystem::path& path,
-        std::chrono::milliseconds timeout) = 0;
-
     // The session gives this facet only to its PhysicalStopPointManager. Other
     // runtime layers never receive Dolphin's physical debugging surface.
     [[nodiscard]] virtual IPhysicalStopPointBackendPort*
@@ -137,7 +132,6 @@ public:
     [[nodiscard]] virtual IGuestMemoryBackendPort* GuestMemory() noexcept = 0;
     [[nodiscard]] virtual IHitTimeGuestMemoryBackendPort*
     HitTimeGuestMemory() noexcept = 0;
-    [[nodiscard]] virtual IScreenshotBackendPort* Screenshots() noexcept = 0;
     [[nodiscard]] virtual IMovieBackendPort* Movies() noexcept = 0;
     [[nodiscard]] virtual ICaptureBackendPort* Captures() noexcept = 0;
     [[nodiscard]] virtual IVisualMessageBackendPort* VisualMessages() noexcept = 0;

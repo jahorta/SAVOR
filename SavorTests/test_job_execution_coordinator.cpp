@@ -1770,4 +1770,40 @@ TEST(
         "Worker cancellation workset was not resident");
 }
 
+TEST(WorkerCoordinator, RejectsWorkerCountsAboveSharedLimit) {
+    constexpr auto kLimit =
+        savor::runner::parallel::savordb::kMaximumWorkerCount;
+    WorkerCoordinator workers(WorkerCoordinatorConfig{.desired_workers = 0});
+
+    std::string error;
+    EXPECT_TRUE(workers.SetDesiredWorkerCount(kLimit, &error)) << error;
+    EXPECT_EQ(workers.DesiredWorkerCount(), kLimit);
+
+    EXPECT_FALSE(workers.SetDesiredWorkerCount(kLimit + 1, &error));
+    EXPECT_EQ(workers.DesiredWorkerCount(), kLimit);
+    EXPECT_NE(error.find(std::to_string(kLimit)), std::string::npos) << error;
+}
+
+TEST(WorkerCoordinator, RejectsIncompleteManagedVisualPoolResize) {
+    WorkerCoordinator workers(WorkerCoordinatorConfig{.desired_workers = 0});
+
+    std::string error;
+    EXPECT_FALSE(workers.ResizeVisualWorkerPool(1, {}, &error));
+    EXPECT_EQ(workers.DesiredWorkerCount(), 0u);
+    EXPECT_NE(error.find("worker 0"), std::string::npos) << error;
+}
+
+TEST(WorkerCoordinator, RejectsOversizedStartupConfiguration) {
+    WorkerCoordinator workers(WorkerCoordinatorConfig{
+        .desired_workers =
+            savor::runner::parallel::savordb::kMaximumWorkerCount + 1,
+    });
+
+    const auto result = workers.Start();
+    EXPECT_FALSE(result.started());
+    EXPECT_EQ(result.status, WorkerCoordinatorStartStatus::StartupExhausted);
+    EXPECT_NE(result.diagnostic.find("maximum supported"), std::string::npos)
+        << result.diagnostic;
+}
+
 } // namespace

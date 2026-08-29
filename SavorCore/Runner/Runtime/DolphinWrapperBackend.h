@@ -6,7 +6,6 @@
 #include "Services/Memory/IGuestMemoryBackendPort.h"
 #include "Services/Memory/IHitTimeGuestMemoryBackendPort.h"
 #include "Services/Movie/IMovieBackendPort.h"
-#include "Services/Screenshot/IScreenshotBackendPort.h"
 #include "Services/Capture/ICaptureBackendPort.h"
 #include "Services/Visual/IVisualMessageBackendPort.h"
 #include "StopPoints/IPhysicalStopPointBackendPort.h"
@@ -28,7 +27,6 @@ class DolphinWrapperBackend final
       private IInputBackendPort,
       private IGuestMemoryBackendPort,
       private IHitTimeGuestMemoryBackendPort,
-      private IScreenshotBackendPort,
       private IMovieBackendPort,
       private ICaptureBackendPort,
       private IVisualMessageBackendPort
@@ -55,17 +53,12 @@ public:
     BackendBufferResult SaveStateBuffer() override;
     BackendResult RestoreStateBuffer(const std::vector<std::uint8_t>& bytes) override;
 
-    BackendResult CaptureScreenshot(
-        const std::filesystem::path& path,
-        std::chrono::milliseconds timeout) override;
-
     [[nodiscard]] IPhysicalStopPointBackendPort* PhysicalStopPoints() noexcept override;
     [[nodiscard]] IExecutionBackendPort* Execution() noexcept override;
     [[nodiscard]] IInputBackendPort* Input() noexcept override;
     [[nodiscard]] IGuestMemoryBackendPort* GuestMemory() noexcept override;
     [[nodiscard]] IHitTimeGuestMemoryBackendPort*
     HitTimeGuestMemory() noexcept override;
-    [[nodiscard]] IScreenshotBackendPort* Screenshots() noexcept override;
     [[nodiscard]] IMovieBackendPort* Movies() noexcept override;
     [[nodiscard]] ICaptureBackendPort* Captures() noexcept override;
     [[nodiscard]] IVisualMessageBackendPort* VisualMessages() noexcept override;
@@ -101,9 +94,6 @@ private:
         std::uint32_t address,
         std::size_t size) override;
 
-    BackendResult Capture(
-        const std::filesystem::path& path,
-        std::chrono::milliseconds timeout) override;
 
     MoviePlaybackPrepareResult PrepareReadOnlyPlaybackForRestart(
         const std::filesystem::path& dtm_path) override;

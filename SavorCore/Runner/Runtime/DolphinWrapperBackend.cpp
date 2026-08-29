@@ -1414,29 +1414,6 @@ BackendResult DolphinWrapperBackend::RestoreStateBuffer(
         BackendIntegrity::Unknown);
 }
 
-BackendResult DolphinWrapperBackend::CaptureScreenshot(
-    const std::filesystem::path& path,
-    std::chrono::milliseconds timeout)
-{
-    if (BackendResult open = impl_->RequireOpen(); !open.ok)
-        return open;
-    if (path.empty())
-    {
-        return BackendResult::Failure(
-            BackendErrorCode::InvalidArgument,
-            "A screenshot output path is required");
-    }
-    if (impl_->wrapper->saveScreenshotBlocking(
-            path.string(),
-            ClampUnsignedTimeout(timeout)))
-    {
-        return BackendResult::Success();
-    }
-    return BackendResult::Failure(
-        BackendErrorCode::Timeout,
-        "Dolphin failed to capture a screenshot before the deadline");
-}
-
 IPhysicalStopPointBackendPort* DolphinWrapperBackend::PhysicalStopPoints() noexcept
 {
     return this;
@@ -1459,11 +1436,6 @@ IGuestMemoryBackendPort* DolphinWrapperBackend::GuestMemory() noexcept
 
 IHitTimeGuestMemoryBackendPort*
 DolphinWrapperBackend::HitTimeGuestMemory() noexcept
-{
-    return this;
-}
-
-IScreenshotBackendPort* DolphinWrapperBackend::Screenshots() noexcept
 {
     return this;
 }
@@ -2300,13 +2272,6 @@ BackendResult DolphinWrapperBackend::InvalidateExecutableRange(
             address + static_cast<std::uint32_t>(offset));
     }
     return BackendResult::Success();
-}
-
-BackendResult DolphinWrapperBackend::Capture(
-    const std::filesystem::path& path,
-    std::chrono::milliseconds timeout)
-{
-    return CaptureScreenshot(path, timeout);
 }
 
 PhysicalStopBackendReceipt DolphinWrapperBackend::BindNativeStopSink(

@@ -11,6 +11,7 @@
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QSignalBlocker>
+#include <QtCore/QSet>
 #include <QtCore/QStringList>
 #include <QtCore/QUrl>
 #include <QtGui/QDesktopServices>
@@ -291,7 +292,8 @@ QWidget* CoordinatorPane::createControlsCard()
     targetWorkersSpin_ = new QSpinBox(card);
     targetWorkersSpin_->setObjectName("jobsRefreshSpin");
     targetWorkersSpin_->setMinimum(1);
-    targetWorkersSpin_->setMaximum(9999);
+    targetWorkersSpin_->setMaximum(static_cast<int>(
+        savor::runner::parallel::savordb::kMaximumWorkerCount));
     targetWorkersSpin_->setPrefix(QStringLiteral("Target: "));
     controlsLayout->addWidget(startButton_);
     controlsLayout->addWidget(pauseButton_);
@@ -505,6 +507,23 @@ void CoordinatorPane::ensureVisualWorkerDashboardSurfaces(int workerCount, bool 
     }
     if (!visualWorkerDashboard_) {
         visualWorkerDashboard_ = new VisualWorkerDashboardWindow(this);
+        connect(
+            visualWorkerDashboard_,
+            &VisualWorkerDashboardWindow::surfaceChanged,
+            this,
+            [this](const VisualWorkerSurfaceBinding& binding) {
+                controller_->setVisualWorkerSurface(
+                    binding.workerIndex,
+                    binding.renderWidgetHandle,
+                    binding.surfaceGeneration,
+                    binding.ownerProcessId,
+                    binding.hostEventsPipeName);
+            });
+        connect(
+            visualWorkerDashboard_,
+            &VisualWorkerDashboardWindow::surfaceInvalidated,
+            controller_,
+            &CoordinatorController::invalidateVisualWorkerSurface);
     }
 
     visualWorkerDashboard_->setWorkerCount(workerCount, allowShrink);
@@ -512,6 +531,8 @@ void CoordinatorPane::ensureVisualWorkerDashboardSurfaces(int workerCount, bool 
         controller_->setVisualWorkerSurface(
             binding.workerIndex,
             binding.renderWidgetHandle,
+            binding.surfaceGeneration,
+            binding.ownerProcessId,
             binding.hostEventsPipeName);
     }
     syncVisualWorkerDashboard();
@@ -523,7 +544,12 @@ void CoordinatorPane::syncVisualWorkerDashboard()
         return;
     }
 
-    visualWorkerDashboard_->updateWorkerSnapshots(controller_->snapshot());
+    QSet<int> activeWorkerIds;
+    for (const WorkerSnapshot& snapshot : controller_->snapshot()) {
+        activeWorkerIds.insert(static_cast<int>(snapshot.worker_id));
+        visualWorkerDashboard_->updateWorkerStatus(snapshot);
+    }
+    visualWorkerDashboard_->clearWorkerStatusesExcept(activeWorkerIds);
 }
 
 void CoordinatorPane::requestVisualReplay(qint64 jobId)

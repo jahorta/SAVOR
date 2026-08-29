@@ -139,6 +139,7 @@
     <ClInclude Include="Execution\WorkflowIntegrationMode.h" />
     <ClInclude Include="Execution\WorkflowSchedulerAdapter.h" />
     <ClInclude Include="Execution\WorkerCoordinator.h" />
+    <ClInclude Include="Execution\WorkerLimits.h" />
     <ClInclude Include="Worker\ProcessWorker.h" />
     <ClInclude Include="Worker\TSQueue.h" />
     <ClInclude Include="Worker\WorkerStatusRegistry.h" />

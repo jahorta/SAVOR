@@ -10,7 +10,7 @@
 namespace savor::wrms {
 
 inline constexpr std::array<std::uint8_t, 4> Magic{ 'W', 'R', 'M', 'S' };
-inline constexpr std::uint16_t ProtocolVersion = 4;
+inline constexpr std::uint16_t ProtocolVersion = 5;
 inline constexpr std::size_t HeaderSize = 20;
 inline constexpr std::size_t MaximumPayloadSize = 64u * 1024u * 1024u;
 
@@ -18,7 +18,6 @@ enum class MessageKind : std::uint16_t {
     ProcessHello = 0x0001,
     OpenSession = 0x0010,
     CancelInvocation = 0x0013,
-    CaptureScreenshot = 0x0014,
     Shutdown = 0x0015,
     ControlExecution = 0x0016,
     SubmitWorkset = 0x0017,
@@ -31,7 +30,6 @@ enum class MessageKind : std::uint16_t {
 
     CommandResult = 0x0100,
     OpenSessionResult = 0x0101,
-    ScreenshotResult = 0x0102,
     ShutdownResult = 0x0103,
     SessionEvent = 0x0104,
     InvocationProgress = 0x0105,
@@ -126,11 +124,6 @@ enum class CommandStatus : std::uint8_t {
     Rejected = 1,
     Failed = 2,
     Unsupported = 3,
-};
-
-enum class ScreenshotStatus : std::uint8_t {
-    Captured = 0,
-    Failed = 1,
 };
 
 enum class ShutdownStatus : std::uint8_t {
@@ -326,15 +319,6 @@ struct CancelInvocationPayload {
     friend bool operator==(const CancelInvocationPayload&, const CancelInvocationPayload&) = default;
 };
 
-struct CaptureScreenshotPayload {
-    std::uint64_t workset_id = 0;
-    std::uint64_t item_id = 0;
-    std::string output_path;
-    std::uint32_t timeout_ms = 0;
-
-    friend bool operator==(const CaptureScreenshotPayload&, const CaptureScreenshotPayload&) = default;
-};
-
 struct ShutdownPayload {
     std::uint32_t grace_period_ms = 0;
 
@@ -377,18 +361,6 @@ struct OpenSessionResultPayload {
     std::string message;
 
     friend bool operator==(const OpenSessionResultPayload&, const OpenSessionResultPayload&) = default;
-};
-
-struct ScreenshotResultPayload {
-    ScreenshotStatus status = ScreenshotStatus::Captured;
-    std::uint64_t session_id = 0;
-    std::uint64_t workset_epoch = 0;
-    std::string output_path;
-    RejectionCode rejection_code = RejectionCode::None;
-    std::string error_code;
-    std::string message;
-
-    friend bool operator==(const ScreenshotResultPayload&, const ScreenshotResultPayload&) = default;
 };
 
 struct ShutdownResultPayload {
@@ -658,12 +630,10 @@ SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CancelWorksetItemPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CancelWorksetPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(AcknowledgeTerminalPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CancelInvocationPayload);
-SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CaptureScreenshotPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ShutdownPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ControlExecutionPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CommandResultPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(OpenSessionResultPayload);
-SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ScreenshotResultPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ShutdownResultPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(SessionEventPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(InvocationProgressPayload);

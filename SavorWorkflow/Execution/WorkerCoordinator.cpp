@@ -1,5 +1,9 @@
 #include "WorkerCoordinator.h"
 
+#ifdef _WIN32
+#include <Windows.h>
+#endif
+
 #include <algorithm>
 #include <exception>
 #include <fstream>
@@ -96,6 +100,14 @@ std::string JoinDiagnostic(
 bool ValidateHomogeneousPoolConfiguration(
     const WorkerCoordinatorConfig& config,
     std::string* diagnostic_out) {
+    if (config.desired_workers > kMaximumWorkerCount) {
+        if (diagnostic_out) {
+            *diagnostic_out =
+                "worker count exceeds the maximum supported count of "
+                + std::to_string(kMaximumWorkerCount);
+        }
+        return false;
+    }
     const auto validated =
         savor::runtime::ValidateWorkerRuntimeContractV1(
             config.expected_runtime_contract);
@@ -825,6 +837,37 @@ bool EnsureSharedWorkerRuntime(
     return true;
 }
 
+bool ValidateVisualSurfaceBinding(
+    const WorkerVisualSurfaceBinding& surface,
+    std::string* error_out) {
+    const auto fail = [&](std::string message) {
+        if (error_out != nullptr)
+            *error_out = std::move(message);
+        return false;
+    };
+    if (surface.worker_id >= kMaximumWorkerCount)
+        return fail("visual surface worker ID exceeds the worker limit");
+    if (surface.render_widget_handle == 0)
+        return fail("visual surface has no native window handle");
+    if (surface.surface_generation == 0)
+        return fail("visual surface has no generation");
+    if (surface.owner_process_id == 0)
+        return fail("visual surface has no owner process");
+#ifdef _WIN32
+    const auto hwnd = reinterpret_cast<HWND>(
+        static_cast<std::uintptr_t>(surface.render_widget_handle));
+    if (!::IsWindow(hwnd))
+        return fail("visual surface native window is invalid");
+    DWORD actual_owner = 0;
+    (void)::GetWindowThreadProcessId(hwnd, &actual_owner);
+    if (actual_owner != surface.owner_process_id)
+        return fail("visual surface belongs to a different process");
+#endif
+    if (error_out != nullptr)
+        error_out->clear();
+    return true;
+}
+
 } // namespace
 
 WorkerCoordinator::WorkerCoordinator(WorkerCoordinatorConfig config)
@@ -1016,11 +1059,21 @@ bool WorkerCoordinator::IsPaused() const noexcept {
     return paused_.load(std::memory_order_acquire);
 }
 
-void WorkerCoordinator::SetDesiredWorkerCount(
-    std::size_t desired_workers) {
+bool WorkerCoordinator::SetDesiredWorkerCount(
+    std::size_t desired_workers,
+    std::string* error_out) {
+    if (desired_workers > kMaximumWorkerCount) {
+        if (error_out != nullptr)
+            *error_out = "desired worker count exceeds the maximum of 40";
+        return false;
+    }
     desired_worker_count_.store(
         desired_workers,
         std::memory_order_release);
+    if (error_out != nullptr)
+        error_out->clear();
+    NotifyAvailabilityChanged();
+    return true;
 }
 
 std::size_t WorkerCoordinator::DesiredWorkerCount() const noexcept {
@@ -1854,28 +1907,125 @@ WorkerCommandResult WorkerCoordinator::AcknowledgeTerminal(
     };
 }
 
+bool WorkerCoordinator::ResizeVisualWorkerPool(
+    std::size_t desired_workers,
+    std::vector<WorkerVisualSurfaceBinding> surfaces,
+    std::string* error_out) {
+    if (desired_workers > kMaximumWorkerCount) {
+        if (error_out != nullptr)
+            *error_out = "desired worker count exceeds the maximum of 40";
+        return false;
+    }
+    std::unordered_map<std::size_t, WorkerVisualSurfaceBinding> requested;
+    for (auto& surface : surfaces) {
+        std::string validation_error;
+        if (!ValidateVisualSurfaceBinding(surface, &validation_error)) {
+            if (error_out != nullptr)
+                *error_out = std::move(validation_error);
+            return false;
+        }
+        if (!requested.emplace(surface.worker_id, std::move(surface)).second) {
+            if (error_out != nullptr)
+                *error_out = "duplicate visual surface worker ID";
+            return false;
+        }
+    }
+    for (std::size_t worker_id = 0; worker_id < desired_workers; ++worker_id) {
+        if (!requested.contains(worker_id)) {
+            if (error_out != nullptr)
+                *error_out = "visual worker pool is missing required surface for worker "
+                    + std::to_string(worker_id);
+            return false;
+        }
+    }
+    for (auto& [worker_id, surface] : requested) {
+        std::string surface_error;
+        if (!SetWorkerVisualSurface(std::move(surface), &surface_error)) {
+            if (error_out != nullptr)
+                *error_out = std::move(surface_error);
+            return false;
+        }
+    }
+    return SetDesiredWorkerCount(desired_workers, error_out);
+}
+
 bool WorkerCoordinator::SetWorkerVisualSurface(
-    std::size_t worker_id,
-    std::uint64_t render_widget_handle,
-    std::string host_events_pipe_name) {
+    WorkerVisualSurfaceBinding surface,
+    std::string* error_out) {
+    if (!ValidateVisualSurfaceBinding(surface, error_out))
+        return false;
+    const std::size_t worker_id = surface.worker_id;
     WorkerSlotPtr slot;
     {
         std::lock_guard<std::mutex> workers_lock(workers_mutex_);
-        visual_surfaces_[worker_id] = WorkerVisualSurface{
-            .render_widget_handle = render_widget_handle,
-            .host_events_pipe_name = host_events_pipe_name,
-        };
+        const auto existing = visual_surfaces_.find(worker_id);
+        if (existing != visual_surfaces_.end() &&
+            existing->second.render_widget_handle ==
+                surface.render_widget_handle &&
+            existing->second.surface_generation ==
+                surface.surface_generation &&
+            existing->second.owner_process_id == surface.owner_process_id) {
+            if (error_out != nullptr)
+                error_out->clear();
+            return true;
+        }
+        visual_surfaces_[worker_id] = surface;
         if (worker_id < workers_.size()) {
             slot = workers_[worker_id];
         }
     }
     if (slot) {
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
-        slot->visual_render_widget_handle = render_widget_handle;
+        const bool active_surface_changed =
+            slot->visual_render_widget_handle != 0 &&
+            (slot->visual_render_widget_handle !=
+                 surface.render_widget_handle ||
+             slot->visual_surface_generation !=
+                 surface.surface_generation);
+        slot->visual_render_widget_handle = surface.render_widget_handle;
+        slot->visual_surface_generation = surface.surface_generation;
+        slot->visual_owner_process_id = surface.owner_process_id;
         slot->visual_host_events_pipe_name =
-            std::move(host_events_pipe_name);
+            std::move(surface.host_events_pipe_name);
+        if (active_surface_changed) {
+            slot->quarantine_requested = true;
+            slot->quarantine_diagnostic =
+                "visual worker surface was replaced";
+        }
     }
+    if (error_out != nullptr)
+        error_out->clear();
+    NotifyAvailabilityChanged();
     return true;
+}
+
+void WorkerCoordinator::InvalidateWorkerVisualSurface(
+    std::size_t worker_id,
+    std::uint64_t surface_generation) {
+    WorkerSlotPtr slot;
+    {
+        std::lock_guard<std::mutex> workers_lock(workers_mutex_);
+        const auto found = visual_surfaces_.find(worker_id);
+        if (found == visual_surfaces_.end() ||
+            found->second.surface_generation != surface_generation) {
+            return;
+        }
+        visual_surfaces_.erase(found);
+        if (worker_id < workers_.size())
+            slot = workers_[worker_id];
+    }
+    if (slot) {
+        std::lock_guard<std::mutex> slot_lock(slot->mutex);
+        if (slot->visual_surface_generation != surface_generation)
+            return;
+        slot->visual_render_widget_handle = 0;
+        slot->visual_surface_generation = 0;
+        slot->visual_owner_process_id = 0;
+        slot->quarantine_requested = true;
+        slot->quarantine_diagnostic =
+            "visual worker surface was invalidated";
+    }
+    NotifyAvailabilityChanged();
 }
 
 WorkerWorksetDispatchInfo WorkerCoordinator::DispatchInfoOf(
@@ -1905,6 +2055,10 @@ WorkerCoordinator::WorkerSlotPtr WorkerCoordinator::MakeWorkerSlot(
     if (surface_it != visual_surfaces_.end()) {
         slot->visual_render_widget_handle =
             surface_it->second.render_widget_handle;
+        slot->visual_surface_generation =
+            surface_it->second.surface_generation;
+        slot->visual_owner_process_id =
+            surface_it->second.owner_process_id;
         slot->visual_host_events_pipe_name =
             surface_it->second.host_events_pipe_name;
     }
@@ -2049,6 +2203,12 @@ WorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
     if (!worker) {
         return {
             .error = "worker process object is unavailable",
+        };
+    }
+    if (config_.require_managed_visual_surfaces &&
+        render_widget_handle == 0) {
+        return {
+            .error = "managed visual worker has no valid render surface",
         };
     }
     if (config_.worker_runtime_preflight) {
@@ -2876,6 +3036,34 @@ void WorkerCoordinator::ProbeWorkerLiveness() {
 }
 
 void WorkerCoordinator::ReconcileWorkerPool() {
+#ifdef _WIN32
+    if (config_.require_managed_visual_surfaces) {
+        const auto observed_slots = CopyWorkerSlots();
+        for (const auto& slot : observed_slots) {
+            if (!slot)
+                continue;
+            std::uint64_t handle = 0;
+            std::uint64_t generation = 0;
+            std::uint32_t expected_owner = 0;
+            {
+                std::lock_guard<std::mutex> slot_lock(slot->mutex);
+                handle = slot->visual_render_widget_handle;
+                generation = slot->visual_surface_generation;
+                expected_owner = slot->visual_owner_process_id;
+            }
+            if (handle == 0 || generation == 0)
+                continue;
+            const auto hwnd = reinterpret_cast<HWND>(
+                static_cast<std::uintptr_t>(handle));
+            DWORD actual_owner = 0;
+            const bool valid = ::IsWindow(hwnd) != FALSE &&
+                ::GetWindowThreadProcessId(hwnd, &actual_owner) != 0 &&
+                actual_owner == expected_owner;
+            if (!valid)
+                InvalidateWorkerVisualSurface(slot->id, generation);
+        }
+    }
+#endif
     const auto desired =
         desired_worker_count_.load(std::memory_order_acquire);
     std::vector<WorkerSlotPtr> removed_slots;

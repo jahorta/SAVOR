@@ -174,7 +174,6 @@ std::vector<WorkerSnapshot> CoordinatorController::freshSnapshot() const
         ? coordinator_runtime_->SnapshotWorkers()
         : snapshotCache_;
 }
-const std::vector<WorkerSnapshot>& CoordinatorController::visualSnapshot() const { return visualSnapshotCache_; }
 const std::vector<
     savor::runner::parallel::savordb::JobExecutionCoordinatorWarning>&
 CoordinatorController::warningSnapshot() const
@@ -247,6 +246,8 @@ void CoordinatorController::startCoordinator()
                     .worker_id = static_cast<std::size_t>(workerIndex),
                     .render_widget_handle = static_cast<std::uint64_t>(
                         it->second.renderWidgetHandle),
+                    .surface_generation = it->second.surfaceGeneration,
+                    .owner_process_id = it->second.ownerProcessId,
                     .host_events_pipe_name =
                         it->second.hostEventsPipeName.toStdString(),
                 });
@@ -448,12 +449,50 @@ void CoordinatorController::setTargetWorkers(int targetWorkers)
         return;
     }
 
+    std::string resizeError;
+    if (coordinator_runtime_) {
+        bool resized = false;
+        if (visualWorkerPoolEnabled_) {
+            std::vector<savor::runner::parallel::savordb::
+                CoordinatorWorkerVisualSurface> surfaces;
+            surfaces.reserve(static_cast<std::size_t>(clampedValue));
+            for (int workerIndex = 0;
+                 workerIndex < clampedValue;
+                 ++workerIndex) {
+                const auto found = visualWorkerSurfaces_.find(workerIndex);
+                if (found == visualWorkerSurfaces_.end()) {
+                    resizeError =
+                        "visual worker pool is missing a required surface";
+                    break;
+                }
+                surfaces.push_back({
+                    .worker_id = static_cast<std::size_t>(workerIndex),
+                    .render_widget_handle = static_cast<std::uint64_t>(
+                        found->second.renderWidgetHandle),
+                    .surface_generation = found->second.surfaceGeneration,
+                    .owner_process_id = found->second.ownerProcessId,
+                    .host_events_pipe_name =
+                        found->second.hostEventsPipeName.toStdString(),
+                });
+            }
+            resized = resizeError.empty() &&
+                coordinator_runtime_->ResizeVisualWorkerPool(
+                    static_cast<std::size_t>(clampedValue),
+                    std::move(surfaces),
+                    &resizeError);
+        } else {
+            resized = coordinator_runtime_->SetDesiredWorkerCount(
+                static_cast<std::size_t>(clampedValue), &resizeError);
+        }
+        if (!resized) {
+            validationMessage_ = QString::fromStdString(resizeError);
+            emit stateChanged();
+            return;
+        }
+    }
     targetWorkers_ = clampedValue;
     persistInt(kTargetWorkersKey, targetWorkers_);
-    if (coordinator_runtime_) {
-        coordinator_runtime_->SetDesiredWorkerCount(
-            static_cast<size_t>(targetWorkers_));
-    }
+    validationMessage_.clear();
     emit stateChanged();
 }
 
@@ -483,15 +522,53 @@ void CoordinatorController::setVisualWorkerPoolEnabled(bool enabled)
     emit stateChanged();
 }
 
-void CoordinatorController::setVisualWorkerSurface(int workerIndex, quintptr hwnd, const QString& hostEventsPipeName)
+void CoordinatorController::setVisualWorkerSurface(
+    int workerIndex,
+    quintptr hwnd,
+    quint64 surfaceGeneration,
+    quint32 ownerProcessId,
+    const QString& hostEventsPipeName)
 {
-    if (!isStopped() || workerIndex < 0) {
+    if (isTransitioning() || workerIndex < 0) {
         return;
     }
     visualWorkerSurfaces_[workerIndex] = VisualWorkerSurface{
         .renderWidgetHandle = hwnd,
+        .surfaceGeneration = surfaceGeneration,
+        .ownerProcessId = ownerProcessId,
         .hostEventsPipeName = hostEventsPipeName,
     };
+    if (coordinator_runtime_ && visualWorkerPoolEnabled_) {
+        std::string error;
+        if (!coordinator_runtime_->SetWorkerVisualSurface({
+                .worker_id = static_cast<std::size_t>(workerIndex),
+                .render_widget_handle = static_cast<std::uint64_t>(hwnd),
+                .surface_generation = surfaceGeneration,
+                .owner_process_id = ownerProcessId,
+                .host_events_pipe_name = hostEventsPipeName.toStdString(),
+            }, &error)) {
+            validationMessage_ = QString::fromStdString(error);
+            emit stateChanged();
+        }
+    }
+}
+
+void CoordinatorController::invalidateVisualWorkerSurface(
+    int workerIndex,
+    quint64 surfaceGeneration)
+{
+    if (workerIndex < 0)
+        return;
+    const auto found = visualWorkerSurfaces_.find(workerIndex);
+    if (found == visualWorkerSurfaces_.end() ||
+        found->second.surfaceGeneration != surfaceGeneration) {
+        return;
+    }
+    visualWorkerSurfaces_.erase(found);
+    if (coordinator_runtime_) {
+        coordinator_runtime_->InvalidateWorkerVisualSurface(
+            static_cast<std::size_t>(workerIndex), surfaceGeneration);
+    }
 }
 
 void CoordinatorController::clearVisualWorkerSurfaces()
@@ -663,14 +740,12 @@ void CoordinatorController::updateSnapshotCache()
             return;
         }
         snapshotCache_.clear();
-        visualSnapshotCache_.clear();
         warningSnapshotCache_.clear();
         resultStagingCleanupError_.clear();
         return;
     }
 
     snapshotCache_ = coordinator_runtime_->SnapshotWorkers();
-    visualSnapshotCache_.clear();
     warningSnapshotCache_ =
         coordinator_runtime_->SnapshotExecutionWarnings();
     const auto telemetry = coordinator_runtime_->SnapshotTelemetry();
@@ -915,6 +990,7 @@ CoordinatorController::buildWorkerConfig() const
     cfg.worker_mode = visualWorkerPoolEnabled_
         ? savor::runtime::WorkerMode::Visual
         : savor::runtime::WorkerMode::Headless;
+    cfg.require_managed_visual_surfaces = visualWorkerPoolEnabled_;
     cfg.breakpoint_diagnostics =
         QCoreApplication::arguments().contains(
             QStringLiteral("--breakpoint-diagnostics"));

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "WorkerLimits.h"
+
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -26,6 +28,14 @@
 #include "FleetStartupSnapshot.h"
 
 namespace savor::runner::parallel::savordb {
+
+struct WorkerVisualSurfaceBinding {
+    std::size_t worker_id = 0;
+    std::uint64_t render_widget_handle = 0;
+    std::uint64_t surface_generation = 0;
+    std::uint32_t owner_process_id = 0;
+    std::string host_events_pipe_name;
+};
 
 // This component deliberately has no execution-database, workflow, descriptor,
 // or result-projection dependency. It owns only the physical worker fleet and
@@ -64,6 +74,7 @@ struct WorkerCoordinatorConfig {
     std::uint32_t max_concurrent_worker_starts_when_paused = 2;
     bool initially_paused = false;
     bool breakpoint_diagnostics = false;
+    bool require_managed_visual_surfaces = false;
     std::uint32_t liveness_probe_interval_ms = 5000;
     std::uint32_t liveness_probe_timeout_ms = 2000;
     std::uint32_t liveness_probe_failure_threshold = 2;
@@ -281,7 +292,9 @@ public:
 
     void SetPaused(bool paused);
     [[nodiscard]] bool IsPaused() const noexcept;
-    void SetDesiredWorkerCount(std::size_t desired_workers);
+    bool SetDesiredWorkerCount(
+        std::size_t desired_workers,
+        std::string* error_out = nullptr);
     [[nodiscard]] std::size_t DesiredWorkerCount() const noexcept;
     [[nodiscard]] bool IsStarted() const noexcept;
     [[nodiscard]] const savor::runtime::WorkerRuntimeContractV1&
@@ -319,10 +332,16 @@ public:
     [[nodiscard]] WorkerCommandResult AcknowledgeTerminal(
         const savor::runtime::WorkerItemTerminalCorrelation& terminal);
 
+    bool ResizeVisualWorkerPool(
+        std::size_t desired_workers,
+        std::vector<WorkerVisualSurfaceBinding> surfaces,
+        std::string* error_out = nullptr);
     bool SetWorkerVisualSurface(
+        WorkerVisualSurfaceBinding surface,
+        std::string* error_out = nullptr);
+    void InvalidateWorkerVisualSurface(
         std::size_t worker_id,
-        std::uint64_t render_widget_handle,
-        std::string host_events_pipe_name = {});
+        std::uint64_t surface_generation);
 
     [[nodiscard]] static WorkerWorksetDispatchInfo DispatchInfoOf(
         const savor::runtime::WorkerWorksetDefinition& workset);
@@ -367,12 +386,9 @@ private:
         std::uint64_t accepted_worksets = 0;
         std::uint64_t completed_worksets = 0;
         std::uint64_t visual_render_widget_handle = 0;
+        std::uint64_t visual_surface_generation = 0;
+        std::uint32_t visual_owner_process_id = 0;
         std::string visual_host_events_pipe_name;
-    };
-
-    struct WorkerVisualSurface {
-        std::uint64_t render_widget_handle = 0;
-        std::string host_events_pipe_name;
     };
 
     struct WorksetRoute {
@@ -484,7 +500,7 @@ private:
 
     mutable std::mutex workers_mutex_;
     std::vector<WorkerSlotPtr> workers_;
-    std::unordered_map<std::size_t, WorkerVisualSurface> visual_surfaces_;
+    std::unordered_map<std::size_t, WorkerVisualSurfaceBinding> visual_surfaces_;
 
     mutable std::mutex runtime_preparation_mutex_;
     mutable std::optional<std::filesystem::path>

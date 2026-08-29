@@ -25,7 +25,6 @@ enum class SessionServiceCapability : std::uint32_t
     GuestMemory = 1u << 5,
     GuestMutation = 1u << 6,
     Capture = 1u << 7,
-    Screenshot = 1u << 8,
     Telemetry = 1u << 9,
     Artifact = 1u << 10,
     DerivedState = 1u << 11,

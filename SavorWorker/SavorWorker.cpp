@@ -249,8 +249,6 @@ MessageKind MapCommandKind(savor::runtime::WorkerCommandKind kind) {
         return MessageKind::CancelWorkset;
     case savor::runtime::WorkerCommandKind::AcknowledgeTerminal:
         return MessageKind::AcknowledgeTerminal;
-    case savor::runtime::WorkerCommandKind::CaptureScreenshot:
-        return MessageKind::CaptureScreenshot;
     case savor::runtime::WorkerCommandKind::ControlExecution:
         return MessageKind::ControlExecution;
     case savor::runtime::WorkerCommandKind::Shutdown:
@@ -667,23 +665,6 @@ public:
         std::uint32_t item_ordinal = 0;
     };
 
-    void RememberScreenshot(
-        std::uint64_t request_id,
-        std::string output_path) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        screenshot_paths_[request_id] = std::move(output_path);
-    }
-
-    std::string TakeScreenshot(std::uint64_t request_id) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto found = screenshot_paths_.find(request_id);
-        if (found == screenshot_paths_.end())
-            return {};
-        std::string value = std::move(found->second);
-        screenshot_paths_.erase(found);
-        return value;
-    }
-
     void RememberWorksetItem(
         const savor::runtime::WorkerWorksetItemStartedEvent& item) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -709,7 +690,6 @@ public:
 
 private:
     std::mutex mutex_;
-    std::unordered_map<std::uint64_t, std::string> screenshot_paths_;
     std::unordered_map<std::uint64_t, WorksetCorrelation> workset_items_;
 };
 
@@ -738,25 +718,6 @@ void PublishCommandCompletion(
         };
         publisher.Publish(
             MessageKind::OpenSessionResult,
-            result.request_id.value(),
-            payload);
-        return;
-    }
-    case savor::runtime::WorkerCommandKind::CaptureScreenshot: {
-        savor::wrms::ScreenshotResultPayload payload{
-            .status = succeeded
-                ? savor::wrms::ScreenshotStatus::Captured
-                : savor::wrms::ScreenshotStatus::Failed,
-            .session_id = session.session_id.value(),
-            .workset_epoch = session.workset_epoch.value(),
-            .output_path =
-                metadata.TakeScreenshot(result.request_id.value()),
-            .rejection_code = MapRejectionCode(result.error.code),
-            .error_code = ErrorCodeString(result.error.code),
-            .message = result.error.message,
-        };
-        publisher.Publish(
-            MessageKind::ScreenshotResult,
             result.request_id.value(),
             payload);
         return;
@@ -1151,16 +1112,6 @@ void PublishMalformedCommand(
                 .error_code = "MalformedPayload",
                 .message = message,
             });
-    } else if (kind == MessageKind::CaptureScreenshot) {
-        publisher.Publish(
-            MessageKind::ScreenshotResult,
-            request_id,
-            savor::wrms::ScreenshotResultPayload{
-                .status = savor::wrms::ScreenshotStatus::Failed,
-                .rejection_code = savor::wrms::RejectionCode::InvalidArgument,
-                .error_code = "MalformedPayload",
-                .message = message,
-            });
     } else if (kind == MessageKind::Shutdown) {
         publisher.Publish(
             MessageKind::ShutdownResult,
@@ -1437,30 +1388,6 @@ bool SubmitFrame(
         (void)runtime.Submit(
             WireRequestId{frame.header.request_id},
             CancelInvocationCommand{InvocationId{payload.invocation_id}});
-        return true;
-    }
-    case MessageKind::CaptureScreenshot: {
-        savor::wrms::CaptureScreenshotPayload payload;
-        if (!savor::wrms::DecodePayload(frame.payload, payload)) {
-            PublishMalformedCommand(
-                publisher,
-                frame.header.kind,
-                frame.header.request_id,
-                "invalid CaptureScreenshot payload");
-            return true;
-        }
-        metadata.RememberScreenshot(
-            frame.header.request_id,
-            payload.output_path);
-        (void)runtime.Submit(
-            WireRequestId{frame.header.request_id},
-            CaptureScreenshotCommand{
-                .workset_id = WorkerWorksetId{payload.workset_id},
-                .item_id = WorkerWorksetItemId{payload.item_id},
-                .output_path = std::move(payload.output_path),
-                .timeout = std::chrono::milliseconds{
-                    payload.timeout_ms ? payload.timeout_ms : 3000},
-            });
         return true;
     }
     case MessageKind::ControlExecution: {

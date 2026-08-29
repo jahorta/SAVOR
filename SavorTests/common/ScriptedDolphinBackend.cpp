@@ -107,13 +107,6 @@ void ScriptedDolphinBackendControl::SetSaveBufferResult(
     save_buffer_bytes = std::move(bytes);
 }
 
-void ScriptedDolphinBackendControl::SetScreenshotResult(
-    runtime::BackendResult result)
-{
-    std::lock_guard lock(mutex);
-    screenshot_result = std::move(result);
-}
-
 void ScriptedDolphinBackendControl::SetCoreState(
     runtime::BackendCoreState state)
 {
@@ -144,19 +137,6 @@ int ScriptedDolphinBackendControl::DestructionCount() const
 {
     std::lock_guard lock(mutex);
     return destruction_count;
-}
-
-int ScriptedDolphinBackendControl::ScreenshotCount() const
-{
-    std::lock_guard lock(mutex);
-    return screenshot_count;
-}
-
-std::vector<std::filesystem::path>
-ScriptedDolphinBackendControl::ScreenshotPaths() const
-{
-    std::lock_guard lock(mutex);
-    return screenshots;
 }
 
 std::vector<std::string> ScriptedDolphinBackendControl::Calls() const
@@ -463,21 +443,6 @@ runtime::BackendResult ScriptedDolphinBackend::RestoreStateBuffer(
     return result;
 }
 
-runtime::BackendResult ScriptedDolphinBackend::CaptureScreenshot(
-    const std::filesystem::path& path,
-    std::chrono::milliseconds)
-{
-    std::lock_guard lock(control_->mutex);
-    control_->RecordLocked("screenshot");
-    ++control_->screenshot_count;
-    control_->screenshots.push_back(path);
-    runtime::BackendResult result = control_->screenshot_result;
-    if (!result.ok && result.integrity == runtime::BackendIntegrity::Unknown)
-        control_->core_state = runtime::BackendCoreState::Unknown;
-    control_->changed.notify_all();
-    return result;
-}
-
 runtime::IPhysicalStopPointBackendPort*
 ScriptedDolphinBackend::PhysicalStopPoints() noexcept
 {
@@ -506,12 +471,6 @@ ScriptedDolphinBackend::HitTimeGuestMemory() noexcept
 {
     std::lock_guard lock(control_->mutex);
     return control_->hit_time_memory_available ? this : nullptr;
-}
-
-runtime::IScreenshotBackendPort*
-ScriptedDolphinBackend::Screenshots() noexcept
-{
-    return this;
 }
 
 runtime::IMovieBackendPort*
@@ -671,13 +630,6 @@ runtime::BackendResult ScriptedDolphinBackend::InvalidateExecutableRange(
     control_->invalidations.emplace_back(address, size);
     control_->RecordLocked("memory.invalidate");
     return runtime::BackendResult::Success();
-}
-
-runtime::BackendResult ScriptedDolphinBackend::Capture(
-    const std::filesystem::path& path,
-    std::chrono::milliseconds timeout)
-{
-    return CaptureScreenshot(path, timeout);
 }
 
 runtime::MoviePlaybackPrepareResult

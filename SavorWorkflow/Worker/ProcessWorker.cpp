@@ -925,56 +925,6 @@ bool ProcessWorker::cancel_invocation(
     return result.status == wrms::CommandStatus::Succeeded;
 }
 
-bool ProcessWorker::request_screenshot(
-    runtime::WorkerWorksetId workset_id,
-    runtime::WorkerWorksetItemId item_id,
-    std::string output_path,
-    std::uint32_t capture_timeout_ms,
-    wrms::ScreenshotResultPayload* result_out,
-    std::uint32_t command_timeout_ms)
-{
-    const ProcessWorkerSnapshot observed = latest_snapshot();
-    if (!workset_id || !item_id || !observed.active_workset ||
-        !observed.active_workset_item ||
-        *observed.active_workset != workset_id ||
-        *observed.active_workset_item != item_id)
-    {
-        set_last_error("screenshot requires an exact active workset item");
-        return false;
-    }
-    wrms::CaptureScreenshotPayload request{
-        .workset_id = workset_id.value(),
-        .item_id = item_id.value(),
-        .output_path = std::move(output_path),
-        .timeout_ms = capture_timeout_ms,
-    };
-    std::vector<std::uint8_t> payload;
-    if (!EncodeTypedPayload(request, &payload))
-    {
-        set_last_error("failed encoding CaptureScreenshot payload");
-        return false;
-    }
-    ProcessCommandCompletion completion;
-    if (!request_response(
-            wrms::MessageKind::CaptureScreenshot,
-            payload,
-            wrms::MessageKind::ScreenshotResult,
-            command_timeout_ms,
-            &completion))
-    {
-        return false;
-    }
-    wrms::ScreenshotResultPayload result;
-    if (!wrms::DecodePayload(completion.payload, result))
-    {
-        set_last_error("invalid ScreenshotResult payload");
-        return false;
-    }
-    if (result_out)
-        *result_out = result;
-    return result.status == wrms::ScreenshotStatus::Captured;
-}
-
 std::uint32_t ProcessWorker::effective_execution_command_timeout(
     std::uint32_t operation_timeout_ms,
     std::uint32_t command_timeout_ms) noexcept
@@ -2118,33 +2068,6 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             snapshot_.last_rejection_code =
                 MapRejectionCode(result.rejection_code);
             if (!result.success)
-                snapshot_.last_error = result.message;
-        }
-        complete_pending(
-            frame.header.request_id,
-            frame.header.kind,
-            frame.payload);
-        return;
-    }
-    case wrms::MessageKind::ScreenshotResult:
-    {
-        wrms::ScreenshotResultPayload result;
-        if (frame.header.request_id == 0 ||
-            !has_exact_pending_request(
-                frame.header.request_id,
-                wrms::MessageKind::CaptureScreenshot) ||
-            !wrms::DecodePayload(frame.payload, result))
-        {
-            fail_protocol(
-                "invalid or unsolicited WRMS ScreenshotResult");
-            return;
-        }
-        if (result.status != wrms::ScreenshotStatus::Captured)
-        {
-            std::lock_guard<std::mutex> lock(snapshot_mutex_);
-            snapshot_.last_rejection_code =
-                MapRejectionCode(result.rejection_code);
-            if (!result.message.empty())
                 snapshot_.last_error = result.message;
         }
         complete_pending(

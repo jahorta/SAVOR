@@ -123,7 +123,6 @@ enum class WorkerCommandKind : std::uint8_t
 {
     OpenSession,
     CancelInvocation,
-    CaptureScreenshot,
     ControlExecution,
     SubmitWorkset,
     CancelWorksetItem,

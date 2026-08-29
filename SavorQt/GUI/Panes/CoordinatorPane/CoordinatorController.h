@@ -63,7 +63,6 @@ public:
     QString resultStagingCleanupError() const;
     const std::vector<WorkerSnapshot>& snapshot() const;
     std::vector<WorkerSnapshot> freshSnapshot() const;
-    const std::vector<WorkerSnapshot>& visualSnapshot() const;
     const std::vector<
         savor::runner::parallel::savordb::JobExecutionCoordinatorWarning>&
         warningSnapshot() const;
@@ -80,7 +79,15 @@ public slots:
     void setTargetWorkers(int targetWorkers);
     void setStartPaused(bool startPaused);
     void setVisualWorkerPoolEnabled(bool enabled);
-    void setVisualWorkerSurface(int workerIndex, quintptr hwnd, const QString& hostEventsPipeName);
+    void setVisualWorkerSurface(
+        int workerIndex,
+        quintptr hwnd,
+        quint64 surfaceGeneration,
+        quint32 ownerProcessId,
+        const QString& hostEventsPipeName);
+    void invalidateVisualWorkerSurface(
+        int workerIndex,
+        quint64 surfaceGeneration);
     void clearVisualWorkerSurfaces();
     void setIsoPath(const QString& isoPath);
     void setDolphinBaseDir(const QString& dolphinBaseDir);
@@ -101,7 +108,8 @@ signals:
 
 private:
     static constexpr int kMinTargetWorkers = 1;
-    static constexpr int kMaxTargetWorkers = 9999;
+    static constexpr int kMaxTargetWorkers = static_cast<int>(
+        savor::runner::parallel::savordb::kMaximumWorkerCount);
 
     void loadSettings();
     void persistString(const char* key, const QString& value);
@@ -120,6 +128,8 @@ private:
 
     struct VisualWorkerSurface {
         quintptr renderWidgetHandle = 0;
+        quint64 surfaceGeneration = 0;
+        quint32 ownerProcessId = 0;
         QString hostEventsPipeName;
     };
 
@@ -136,7 +146,6 @@ private:
     std::uint64_t startup_generation_ = 0;
     std::uint64_t shutdown_generation_ = 0;
     std::vector<WorkerSnapshot> snapshotCache_;
-    std::vector<WorkerSnapshot> visualSnapshotCache_;
     std::vector<
         savor::runner::parallel::savordb::JobExecutionCoordinatorWarning>
         warningSnapshotCache_;

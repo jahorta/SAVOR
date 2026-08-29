@@ -108,9 +108,22 @@ bool CoordinatorRuntime::Start(
         worker_coordinator_ =
             std::make_unique<WorkerCoordinator>(std::move(config.worker));
         for (auto& surface : config.visual_surfaces) {
-            (void)worker_coordinator_->SetWorkerVisualSurface(
-                surface.worker_id, surface.render_widget_handle,
-                std::move(surface.host_events_pipe_name));
+            std::string surface_error;
+            if (!worker_coordinator_->SetWorkerVisualSurface(
+                    WorkerVisualSurfaceBinding{
+                        .worker_id = surface.worker_id,
+                        .render_widget_handle = surface.render_widget_handle,
+                        .surface_generation = surface.surface_generation,
+                        .owner_process_id = surface.owner_process_id,
+                        .host_events_pipe_name =
+                            std::move(surface.host_events_pipe_name),
+                    },
+                    &surface_error)) {
+                return FailStart(
+                    "visual worker surface registration failed: " +
+                        surface_error,
+                    error_out);
+            }
         }
 
         job_execution_coordinator_ = std::make_unique<JobExecutionCoordinator>(
@@ -272,9 +285,62 @@ void CoordinatorRuntime::SetExecutionPaused(bool paused) {
     }
 }
 
-void CoordinatorRuntime::SetDesiredWorkerCount(std::size_t desired_workers) {
+bool CoordinatorRuntime::SetDesiredWorkerCount(
+    std::size_t desired_workers,
+    std::string* error_out) {
+    return worker_coordinator_ == nullptr
+        ? false
+        : worker_coordinator_->SetDesiredWorkerCount(
+              desired_workers, error_out);
+}
+
+bool CoordinatorRuntime::ResizeVisualWorkerPool(
+    std::size_t desired_workers,
+    std::vector<CoordinatorWorkerVisualSurface> surfaces,
+    std::string* error_out) {
+    if (worker_coordinator_ == nullptr) {
+        if (error_out != nullptr)
+            *error_out = "worker coordinator is unavailable";
+        return false;
+    }
+    std::vector<WorkerVisualSurfaceBinding> bindings;
+    bindings.reserve(surfaces.size());
+    for (auto& surface : surfaces) {
+        bindings.push_back(WorkerVisualSurfaceBinding{
+            .worker_id = surface.worker_id,
+            .render_widget_handle = surface.render_widget_handle,
+            .surface_generation = surface.surface_generation,
+            .owner_process_id = surface.owner_process_id,
+            .host_events_pipe_name =
+                std::move(surface.host_events_pipe_name),
+        });
+    }
+    return worker_coordinator_->ResizeVisualWorkerPool(
+        desired_workers, std::move(bindings), error_out);
+}
+
+bool CoordinatorRuntime::SetWorkerVisualSurface(
+    CoordinatorWorkerVisualSurface surface,
+    std::string* error_out) {
+    return worker_coordinator_ != nullptr &&
+        worker_coordinator_->SetWorkerVisualSurface(
+            WorkerVisualSurfaceBinding{
+                .worker_id = surface.worker_id,
+                .render_widget_handle = surface.render_widget_handle,
+                .surface_generation = surface.surface_generation,
+                .owner_process_id = surface.owner_process_id,
+                .host_events_pipe_name =
+                    std::move(surface.host_events_pipe_name),
+            },
+            error_out);
+}
+
+void CoordinatorRuntime::InvalidateWorkerVisualSurface(
+    std::size_t worker_id,
+    std::uint64_t surface_generation) {
     if (worker_coordinator_ != nullptr) {
-        worker_coordinator_->SetDesiredWorkerCount(desired_workers);
+        worker_coordinator_->InvalidateWorkerVisualSurface(
+            worker_id, surface_generation);
     }
 }
 

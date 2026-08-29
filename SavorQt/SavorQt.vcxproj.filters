@@ -372,9 +372,9 @@
     <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardWindow.h">
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardWindow.h">
       <Filter>GUI\Widgets\VisualReplay</Filter>
-    </ClInclude>
+    </QtMoc>
     <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </QtMoc>

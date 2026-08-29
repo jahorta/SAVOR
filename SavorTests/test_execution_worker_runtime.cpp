@@ -2378,19 +2378,6 @@ TEST(
         terminals[0].terminal.status,
         InvocationTerminalStatus::CleanupFailure);
     EXPECT_TRUE(terminals[1].unstarted);
-    const WorkerCommandResult after_taint =
-        harness.runtime
-            ->Submit(
-                harness.NextRequest(),
-                CaptureScreenshotCommand{
-                    harness.runtime->snapshot().active_workset.value_or(WorkerWorksetId(1)),
-                    harness.runtime->snapshot().active_workset_item.value_or(WorkerWorksetItemId(1)),
-                    "after-taint.png",
-                    100ms})
-            .get();
-    EXPECT_EQ(
-        after_taint.error.code,
-        WorkerRejectionCode::SessionTainted);
     EXPECT_EQ(
         harness.runtime->snapshot().state,
         WorkerState::Tainted);
@@ -2429,19 +2416,7 @@ TEST(
         terminals[0].terminal.status,
         InvocationTerminalStatus::InfrastructureFailure);
     EXPECT_TRUE(terminals[1].unstarted);
-    const WorkerCommandResult after_taint =
-        harness.runtime
-            ->Submit(
-                harness.NextRequest(),
-                CaptureScreenshotCommand{
-                    harness.runtime->snapshot().active_workset.value_or(WorkerWorksetId(1)),
-                    harness.runtime->snapshot().active_workset_item.value_or(WorkerWorksetItemId(1)),
-                    "after-workset-fault.png",
-                    100ms})
-            .get();
-    EXPECT_EQ(
-        after_taint.error.code,
-        WorkerRejectionCode::SessionTainted);
+    EXPECT_EQ(harness.runtime->snapshot().state, WorkerState::Tainted);
 }
 
 TEST(EmulationSession, BootFailureDoesNotAdvanceEpochAndShutdownIsIdempotent)
@@ -2529,7 +2504,6 @@ TEST(EmulationSession, UnknownIntegrityAndStoppedCoreTaintWithoutAdvancingEpoch)
     EXPECT_EQ(
         session.snapshot().disposition,
         SessionDisposition::Tainted);
-    EXPECT_FALSE(session.CaptureScreenshot("after-taint.png", 100ms).ok);
     EXPECT_TRUE(session.Shutdown().ok);
 }
 
@@ -2544,14 +2518,13 @@ TEST(EmulationSession, RejectsOffOwnerCallsBeforeBackendMutation)
     std::promise<SessionOperationReceipt> attempted;
     std::thread other([&] {
         attempted.set_value(
-            session.CaptureScreenshot("wrong-thread.png", 100ms));
+            session.OpenWorksetInitialization(WorkerWorksetId(1)));
     });
     other.join();
 
     const SessionOperationReceipt receipt = attempted.get_future().get();
     EXPECT_FALSE(receipt.ok);
     EXPECT_EQ(receipt.backend.code, BackendErrorCode::InvalidState);
-    EXPECT_EQ(control->ScreenshotCount(), 0);
     EXPECT_TRUE(session.Shutdown().ok);
     EXPECT_FALSE(control->HasOwnerViolation());
 }
@@ -2565,75 +2538,6 @@ TEST(EmulationSession, WorksetEpochIsNotACommandOrDispatchEpoch)
     EXPECT_EQ(workset_epoch.value(), dispatch_epoch);
     EXPECT_EQ(command_sequence.value(), dispatch_epoch);
     EXPECT_FALSE((std::is_same_v<WorksetEpoch, WorkerCommandSequence>));
-}
-
-TEST(ExecutionWorkerRuntime, SerializesConcurrentProducersOnOneBackendOwner)
-{
-    RuntimeHarness harness;
-    ASSERT_EQ(harness.Open().outcome, WorkerCommandOutcome::Completed);
-    ASSERT_EQ(harness.Invoke(99).outcome, WorkerCommandOutcome::Accepted);
-    ASSERT_TRUE(harness.program->WaitForStarts(1));
-
-    constexpr std::size_t producer_count = 8;
-    std::barrier start(static_cast<std::ptrdiff_t>(producer_count + 1));
-    std::vector<std::thread> producers;
-    std::vector<std::thread::id> producer_threads(producer_count);
-    std::vector<WorkerCommandResult> results(producer_count);
-    producers.reserve(producer_count);
-
-    for (std::size_t index = 0; index < producer_count; ++index)
-    {
-        producers.emplace_back([&, index] {
-            producer_threads[index] = std::this_thread::get_id();
-            start.arrive_and_wait();
-            results[index] = harness.runtime->Submit(
-                WireRequestId(100 + index),
-                CaptureScreenshotCommand{
-                    harness.runtime->snapshot().active_workset.value_or(WorkerWorksetId(1)),
-                    harness.runtime->snapshot().active_workset_item.value_or(WorkerWorksetItemId(1)),
-                    std::filesystem::path(
-                        "producer-" + std::to_string(index) + ".png"),
-                    100ms}).get();
-        });
-    }
-    start.arrive_and_wait();
-    for (std::thread& producer : producers)
-        producer.join();
-
-    std::vector<std::uint64_t> sequences;
-    for (const WorkerCommandResult& result : results)
-    {
-        EXPECT_EQ(result.outcome, WorkerCommandOutcome::Completed);
-        sequences.push_back(result.command_sequence.value());
-    }
-    std::sort(sequences.begin(), sequences.end());
-    ASSERT_EQ(sequences.size(), producer_count);
-    for (std::size_t index = 1; index < sequences.size(); ++index)
-        EXPECT_EQ(sequences[index], sequences[index - 1] + 1);
-
-    ASSERT_TRUE(harness.events.WaitForCommandCount(
-        WorkerCommandKind::CaptureScreenshot,
-        producer_count));
-    const auto completion_events = harness.events.CommandResults(
-        WorkerCommandKind::CaptureScreenshot);
-    ASSERT_EQ(completion_events.size(), producer_count);
-    EXPECT_TRUE(std::is_sorted(
-        completion_events.begin(),
-        completion_events.end(),
-        [](const WorkerCommandResult& lhs, const WorkerCommandResult& rhs) {
-            return lhs.command_sequence < rhs.command_sequence;
-        }));
-
-    EXPECT_EQ(harness.backend->ScreenshotCount(), producer_count);
-    EXPECT_FALSE(harness.backend->HasOwnerViolation());
-    const auto owner = harness.backend->OwnerThread();
-    ASSERT_TRUE(owner.has_value());
-    for (const std::thread::id producer : producer_threads)
-        EXPECT_NE(*owner, producer);
-
-    ASSERT_TRUE(CompleteAndAcknowledgeActiveWorkset(harness));
-    EXPECT_EQ(harness.Shutdown().outcome, WorkerCommandOutcome::Completed);
-    EXPECT_EQ(harness.backend->CloseCount(), 1);
 }
 
 TEST(ExecutionWorkerRuntime, EnforcesOneSessionAndOneActiveInvocation)
@@ -3419,74 +3323,6 @@ TEST(
         WorkerState::Stopped);
 }
 
-TEST(ExecutionWorkerRuntime, ScreenshotRequiresTheExactActiveWorksetItem)
-{
-    RuntimeHarness harness;
-
-    const WorkerCommandResult before_open = harness.runtime->Submit(
-        harness.NextRequest(),
-        CaptureScreenshotCommand{
-            harness.runtime->snapshot().active_workset.value_or(WorkerWorksetId(1)),
-                    harness.runtime->snapshot().active_workset_item.value_or(WorkerWorksetItemId(1)),
-            "before-open.png",
-            100ms}).get();
-    EXPECT_EQ(before_open.outcome, WorkerCommandOutcome::Rejected);
-    EXPECT_EQ(before_open.error.code, WorkerRejectionCode::InvalidState);
-    EXPECT_EQ(harness.backend->ScreenshotCount(), 0);
-
-    ASSERT_EQ(harness.Open().outcome, WorkerCommandOutcome::Completed);
-    const WorkerCommandResult without_item = harness.runtime->Submit(
-        harness.NextRequest(),
-        CaptureScreenshotCommand{
-            WorkerWorksetId(1),
-            WorkerWorksetItemId(1),
-            "without-item.png",
-            100ms}).get();
-    EXPECT_EQ(without_item.outcome, WorkerCommandOutcome::Rejected);
-    EXPECT_EQ(
-        without_item.error.code,
-        WorkerRejectionCode::WorksetItemNotFound);
-    EXPECT_EQ(harness.backend->ScreenshotCount(), 0);
-
-    ASSERT_EQ(harness.Invoke(601).outcome, WorkerCommandOutcome::Accepted);
-    ASSERT_TRUE(harness.program->WaitForStarts(1));
-    WorkerSnapshot active = harness.runtime->snapshot();
-    for (int attempt = 0;
-         attempt < 100 && !active.active_workset_item;
-         ++attempt)
-    {
-        std::this_thread::sleep_for(1ms);
-        active = harness.runtime->snapshot();
-    }
-    ASSERT_TRUE(active.active_workset);
-    ASSERT_TRUE(active.active_workset_item);
-    const WorkerCommandResult mismatch = harness.runtime->Submit(
-        harness.NextRequest(),
-        CaptureScreenshotCommand{
-            WorkerWorksetId(active.active_workset->value() + 1),
-            *active.active_workset_item,
-            "wrong-workset.png",
-            100ms}).get();
-    EXPECT_EQ(mismatch.outcome, WorkerCommandOutcome::Rejected);
-    EXPECT_EQ(
-        mismatch.error.code,
-        WorkerRejectionCode::WorksetItemNotFound);
-    EXPECT_EQ(harness.backend->ScreenshotCount(), 0);
-
-    const WorkerCommandResult running = harness.runtime->Submit(
-        harness.NextRequest(),
-        CaptureScreenshotCommand{
-            *active.active_workset,
-            *active.active_workset_item,
-            "running.png",
-            100ms}).get();
-    EXPECT_EQ(running.outcome, WorkerCommandOutcome::Completed);
-    EXPECT_EQ(harness.backend->ScreenshotCount(), 1);
-
-    ASSERT_TRUE(CompleteAndAcknowledgeActiveWorkset(harness));
-    EXPECT_EQ(harness.Shutdown().outcome, WorkerCommandOutcome::Completed);
-}
-
 TEST(ExecutionWorkerRuntime, VisualActiveItemControlsCompleteExactlyOnce)
 {
     RuntimeHarness harness;
@@ -3701,29 +3537,23 @@ TEST(
         injection_complete_signal.set_value();
     });
 
-    const WireRequestId screenshot_request = harness.NextRequest();
+    const WireRequestId boundary_request = harness.NextRequest();
     arm_boundary_injection.store(true, std::memory_order_release);
-    auto screenshot_future = harness.runtime->Submit(
-        screenshot_request,
-        CaptureScreenshotCommand{
-            *active.active_workset,
-            *active.active_workset_item,
-            "ingress-boundary.png",
-            1s});
-    const std::future_status screenshot_status =
-        screenshot_future.wait_for(5s);
+    auto boundary_future = harness.runtime->Submit(
+        boundary_request,
+        CancelInvocationCommand{InvocationId(999999)});
+    const std::future_status boundary_status =
+        boundary_future.wait_for(5s);
     injector.join();
-    ASSERT_EQ(screenshot_status, std::future_status::ready);
-    const WorkerCommandResult screenshot =
-        screenshot_future.get();
+    ASSERT_EQ(boundary_status, std::future_status::ready);
+    const WorkerCommandResult boundary = boundary_future.get();
 
     EXPECT_FALSE(
         coordination_timed_out.load(std::memory_order_acquire));
     EXPECT_TRUE(
         continue_accepted.load(std::memory_order_acquire));
     EXPECT_TRUE(requested_break.load(std::memory_order_acquire));
-    EXPECT_EQ(screenshot.outcome, WorkerCommandOutcome::Completed)
-        << screenshot.error.message;
+    EXPECT_EQ(boundary.outcome, WorkerCommandOutcome::Rejected);
     ASSERT_TRUE(harness.events.WaitForExecutionTerminalCount(1));
 
     const std::vector<WorkerEvent> events = harness.events.Events();
@@ -3973,11 +3803,7 @@ TEST(
     (void)harness.runtime
         ->Submit(
             harness.NextRequest(),
-            CaptureScreenshotCommand{
-                harness.runtime->snapshot().active_workset.value_or(WorkerWorksetId(1)),
-                    harness.runtime->snapshot().active_workset_item.value_or(WorkerWorksetItemId(1)),
-                "arm-precedence-wake.png",
-                100ms})
+            CancelInvocationCommand{InvocationId(999999)})
         .get();
     ASSERT_TRUE(
         execution_accepted.load(std::memory_order_acquire))
@@ -4081,48 +3907,6 @@ TEST(ExecutionWorkerRuntime, RuntimeSubmissionExceptionTaintsAndTerminatesOnce)
     EXPECT_EQ(shutdown.outcome, WorkerCommandOutcome::Rejected);
     EXPECT_EQ(harness.backend->CloseCount(), 1);
     EXPECT_EQ(harness.program->ShutdownCount(), 1);
-}
-
-TEST(ExecutionWorkerRuntime, UnknownScreenshotFailureSynthesizesOneTerminal)
-{
-    RuntimeHarness harness;
-    ASSERT_EQ(harness.Open().outcome, WorkerCommandOutcome::Completed);
-    ASSERT_EQ(harness.Invoke(901).outcome, WorkerCommandOutcome::Accepted);
-    ASSERT_TRUE(harness.program->WaitForStarts(1));
-
-    harness.backend->SetScreenshotResult(BackendResult::Failure(
-        BackendErrorCode::OperationFailed,
-        "screenshot left core integrity unknown",
-        BackendIntegrity::Unknown));
-    const WorkerCommandResult screenshot = harness.runtime->Submit(
-        harness.NextRequest(),
-        CaptureScreenshotCommand{
-            harness.runtime->snapshot().active_workset.value_or(WorkerWorksetId(1)),
-                    harness.runtime->snapshot().active_workset_item.value_or(WorkerWorksetItemId(1)),
-            "uncertain.png",
-            100ms}).get();
-    EXPECT_EQ(screenshot.outcome, WorkerCommandOutcome::Rejected);
-    EXPECT_EQ(harness.runtime->snapshot().state, WorkerState::Tainted);
-    ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
-
-    const auto terminals = harness.events.Terminals();
-    ASSERT_EQ(terminals.size(), 1);
-    EXPECT_EQ(
-        terminals.front().status,
-        InvocationTerminalStatus::InfrastructureFailure);
-    EXPECT_EQ(terminals.front().cleanup, CleanupStatus::Failed);
-    EXPECT_EQ(
-        terminals.front().session_disposition,
-        SessionDisposition::Tainted);
-
-    // The taint path retires ProgramRuntime ingress. A late completion cannot
-    // produce a second terminal.
-    ASSERT_TRUE(harness.program->EmitTerminal(
-        InvocationTerminalStatus::Completed));
-    const WorkerCommandResult shutdown = harness.Shutdown();
-    EXPECT_EQ(shutdown.outcome, WorkerCommandOutcome::Rejected);
-    EXPECT_EQ(harness.events.TerminalCount(), 1);
-    EXPECT_EQ(harness.backend->CloseCount(), 1);
 }
 
 } // namespace

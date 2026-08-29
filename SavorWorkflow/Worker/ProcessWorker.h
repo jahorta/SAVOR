@@ -277,13 +277,6 @@ public:
         std::string reason,
         wrms::CommandResultPayload* result_out = nullptr,
         std::uint32_t timeout_ms = 0);
-    bool request_screenshot(
-        runtime::WorkerWorksetId workset_id,
-        runtime::WorkerWorksetItemId item_id,
-        std::string output_path,
-        std::uint32_t capture_timeout_ms,
-        wrms::ScreenshotResultPayload* result_out = nullptr,
-        std::uint32_t command_timeout_ms = 10000);
     bool pause_guest_execution(
         runtime::WorkerWorksetId workset_id,
         runtime::WorkerWorksetItemId item_id,
