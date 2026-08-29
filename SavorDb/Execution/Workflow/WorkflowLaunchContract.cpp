@@ -231,14 +231,17 @@ WorkflowLaunchContractValidation WorkflowLaunchContractValidator::Validate(
                     continue;
                 }
                 normalized.source_kind = "graph_constant";
-                if (definition.value_type == "integer")
+                if (definition.value_type == "integer" ||
+                    definition.value_type == "boolean")
                     normalized.integer_value = ParseInteger(*definition.constant_value);
                 else normalized.text_value = definition.constant_value;
             } else if (const auto supplied = supplied_arguments.find(key); supplied != supplied_arguments.end()) {
                 normalized = *supplied->second;
                 if (normalized.source_kind.empty()) normalized.source_kind = "launcher";
             } else if (definition.default_value.has_value()) {
-                if (definition.value_type == "integer") normalized.integer_value = ParseInteger(*definition.default_value);
+                if (definition.value_type == "integer" ||
+                    definition.value_type == "boolean")
+                    normalized.integer_value = ParseInteger(*definition.default_value);
                 else normalized.text_value = definition.default_value;
             } else if (definition.required) {
                 out.issues.push_back("required workflow argument is not supplied: " + node_key + "." + definition.argument_key);
@@ -247,15 +250,26 @@ WorkflowLaunchContractValidation WorkflowLaunchContractValidator::Validate(
                 continue;
             }
 
-            if (definition.value_type == "integer") {
+            if (definition.value_type == "integer" ||
+                definition.value_type == "boolean") {
                 if (!normalized.integer_value.has_value() || normalized.text_value.has_value()) {
-                    out.issues.push_back("integer workflow argument has the wrong value shape: " + node_key + "." + definition.argument_key);
+                    out.issues.push_back(definition.value_type
+                        + " workflow argument has the wrong value shape: "
+                        + node_key + "." + definition.argument_key);
                     continue;
                 }
                 const auto value = *normalized.integer_value;
-                if ((definition.minimum_integer && value < *definition.minimum_integer)
-                    || value < 0
-                    || (definition.maximum_integer && static_cast<std::uint64_t>(value) > *definition.maximum_integer)) {
+                if (definition.value_type == "boolean" && value != 0 && value != 1) {
+                    out.issues.push_back("boolean workflow argument must be 0 or 1: "
+                        + node_key + "." + definition.argument_key);
+                    continue;
+                }
+                if (definition.value_type == "integer"
+                    && ((definition.minimum_integer && value < *definition.minimum_integer)
+                        || value < 0
+                        || (definition.maximum_integer
+                            && static_cast<std::uint64_t>(value)
+                                > *definition.maximum_integer))) {
                     out.issues.push_back("workflow argument is outside its numeric bounds: " + node_key + "." + definition.argument_key);
                     continue;
                 }
