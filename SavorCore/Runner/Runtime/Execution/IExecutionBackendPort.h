@@ -105,6 +105,7 @@ public:
     [[nodiscard]] virtual BackendHealthReport CheckHealth() const = 0;
 
     virtual BackendResult SubmitControlTask(BackendControlTask task) = 0;
+    virtual BackendResult PumpControlTask() = 0;
     [[nodiscard]] virtual std::optional<BackendControlCompletion>
     TakeControlCompletion() = 0;
     virtual BackendResult SetThrottleDisabled(bool disabled) = 0;

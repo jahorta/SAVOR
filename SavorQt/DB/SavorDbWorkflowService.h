@@ -274,6 +274,16 @@ public:
         return ServiceResult<savor::db::UiWorkflowDetail>::Ok(*detail);
     }
 
+    static ServiceResult<std::vector<savor::db::UiWorkflowDetail>> GetWorkflowDetails(
+        const std::vector<std::int64_t>& workflow_instance_ids) {
+        auto* db = UiReadDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<savor::db::UiWorkflowDetail>>(kSavorDbRuntimeUnavailableMessage);
+        }
+        return ServiceResult<std::vector<savor::db::UiWorkflowDetail>>::Ok(
+            db->GetWorkflowDetails(workflow_instance_ids));
+    }
+
     static ServiceResult<std::int64_t> StartWorkflowGraphRevision(const WorkflowGraphStartRequest& request) {
         auto* command_service = WorkflowCommandService();
         if (command_service == nullptr) {
@@ -360,6 +370,30 @@ public:
                     && !request.expansion_rtc_max
                     && !request.expansion_max_neutral_epochs) {
                     expansion.targets = {{delay, *rtc}};
+                }
+                static constexpr std::string_view kForwardedArguments[] = {
+                    "samples_per_axis",
+                    "fake_attack_min",
+                    "fake_attack_max",
+                    "continuation_mode",
+                    "continue_automatic_exploration_after_victory",
+                };
+                for (const auto key : kForwardedArguments) {
+                    const auto value = std::find_if(
+                        contract.normalized_arguments.begin(),
+                        contract.normalized_arguments.end(),
+                        [&](const auto& candidate) {
+                            return candidate.argument_key == key;
+                        });
+                    if (value == contract.normalized_arguments.end()) continue;
+                    expansion.arguments.push_back({
+                        .member_role = "RTC_BATTLE",
+                        .argument_key = value->argument_key,
+                        .value_type = value->value_type,
+                        .integer_value = value->integer_value,
+                        .text_value = value->text_value,
+                        .source_kind = value->source_kind,
+                    });
                 }
                 expansion.created_by = request.created_by.empty() ? "SavorQt" : request.created_by;
                 std::int64_t expansion_id = 0;

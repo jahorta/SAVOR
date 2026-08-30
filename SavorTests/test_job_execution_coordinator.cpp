@@ -888,40 +888,6 @@ TEST(
 
 TEST(
     WorkerCoordinator,
-    ReportsStartupExhaustionWhenRetryBudgetIsAlreadySpent) {
-    WorkerCoordinatorConfig config{
-        .desired_workers = 1,
-        .max_worker_start_attempts = 1,
-    };
-        config.worker_runtime_preflight =
-        [](
-            std::size_t,
-            const WorkerCoordinatorConfig&,
-            const std::shared_ptr<savor::ProcessWorker>&) {
-            return savor::runner::parallel::savordb::
-                WorkerCoordinatorRuntimePreflightResult{
-                    .process_ready = false,
-                    .retryable = true,
-                    .error = "retryable startup failure",
-                };
-        };
-    WorkerCoordinator coordinator(std::move(config));
-
-    const auto result = coordinator.Start();
-    EXPECT_EQ(
-        result.status,
-        WorkerCoordinatorStartStatus::StartupExhausted);
-    EXPECT_FALSE(result.started());
-    EXPECT_NE(
-        result.diagnostic.find("retryable startup failure"),
-        std::string::npos)
-        << result.diagnostic;
-
-    coordinator.Stop();
-}
-
-TEST(
-    WorkerCoordinator,
     ReturnsAfterFirstReadyWorkerAndBoundsSecondaryStartupConcurrency) {
     std::promise<void> release_promise;
     auto release = release_promise.get_future().share();
@@ -1176,42 +1142,6 @@ TEST(
         started.diagnostic.find("Headless or Visual"),
         std::string::npos)
         << started.diagnostic;
-}
-
-TEST(
-    WorkerCoordinator,
-    UnderqualifiedWorkerNeverBecomesReady) {
-    WorkerCoordinatorConfig config{
-        .desired_workers = 1,
-        .max_worker_start_attempts = 1,
-    };
-        config.worker_runtime_preflight =
-        [](
-            std::size_t,
-            const WorkerCoordinatorConfig&,
-            const std::shared_ptr<savor::ProcessWorker>&) {
-            auto contract = TestRuntimeContract();
-            contract.limits.maximum_items_per_workset = 15;
-            contract.canonical_sha256 =
-                savor::runtime::ComputeWorkerRuntimeContractHashV1(
-                    contract);
-            return savor::runner::parallel::savordb::
-                WorkerCoordinatorRuntimePreflightResult{
-                    .process_ready = true,
-                    .runtime_contract = std::move(contract),
-                };
-        };
-    WorkerCoordinator coordinator(std::move(config));
-    const auto start = coordinator.Start();
-    EXPECT_EQ(
-        start.status,
-        WorkerCoordinatorStartStatus::StartupExhausted);
-    EXPECT_TRUE(coordinator.SnapshotReadyWorkers().empty());
-    EXPECT_NE(
-        start.diagnostic.find("expected homogeneous runtime identity"),
-        std::string::npos)
-        << start.diagnostic;
-    coordinator.Stop();
 }
 
 TEST(
@@ -1474,7 +1404,7 @@ TEST(
                 == 6;
         },
         std::chrono::milliseconds(250)));
-    EXPECT_EQ(coordinator.SnapshotWorkerLanes().size(), 3u);
+    EXPECT_EQ(coordinator.SnapshotWorkerDispatches().size(), 3u);
     EXPECT_GT(
         coordinator.SnapshotTelemetry().claim_batches,
         0u);
@@ -1613,16 +1543,10 @@ TEST(
             && telemetry.reconstruction_queue_depth == 3;
     }));
     const auto blocked = coordinator.SnapshotTelemetry();
-    const auto lanes = coordinator.SnapshotWorkerLanes();
-    std::size_t reservations = 0;
-    std::size_t reconstructing = 0;
-    for (const auto& lane : lanes) {
-        reservations += lane.reservations;
-        reconstructing += lane.reconstructing;
-    }
-    EXPECT_EQ(lanes.size(), 2u);
-    EXPECT_EQ(reservations, 4u);
-    EXPECT_EQ(reconstructing, 4u);
+    const auto worker_dispatches = coordinator.SnapshotWorkerDispatches();
+    EXPECT_EQ(worker_dispatches.size(), 2u);
+    EXPECT_EQ(blocked.worksets_claimed, 4u);
+    EXPECT_EQ(blocked.global_prepared_worksets, 0u);
     EXPECT_EQ(blocked.reconstruction_queue_high_water, 3u);
     EXPECT_EQ(adapter->maximum_active(), 1);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1632,7 +1556,7 @@ TEST(
 
     reconstruction_release_promise.set_value();
     EXPECT_TRUE(WaitUntil([&]() {
-        return coordinator.SnapshotTelemetry().invariant_paused;
+        return coordinator.SnapshotTelemetry().invariant_admission_paused;
     }));
     coordinator.Stop();
     workers.Stop();

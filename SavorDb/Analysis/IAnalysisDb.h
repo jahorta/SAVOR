@@ -1039,6 +1039,7 @@ struct TasRouteNodeSnapshot {
     std::string activity_key;
     std::string label;
     std::string description;
+    std::optional<std::int64_t> root_establishment_attempt_id;
     std::optional<std::int64_t> source_dtm_artifact_id;
     std::optional<std::int64_t> source_savestate_id;
     std::optional<std::int64_t> battle_plan_id;

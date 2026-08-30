@@ -12,16 +12,12 @@
 class QComboBox;
 class QLabel;
 class QPushButton;
-class QSpinBox;
 class QTableView;
 namespace savorqt::gui { template <typename Request, typename Result> class AsyncRefreshPipeline; }
 
 struct FirstBattleCoverageRefreshRequest {
-    std::int64_t source_annotation_attempt_id = 0;
+    std::int64_t source_root_establishment_attempt_id = 0;
     std::int64_t workflow_expansion_id = 0;
-    std::int64_t rtc_min = 0;
-    std::int64_t rtc_max = 0;
-    std::int64_t max_neutral_epochs = 0;
 };
 
 struct FirstBattleCoverageRefreshData {
@@ -57,9 +53,6 @@ private:
     savorqt::gui::AsyncRefreshPipeline<FirstBattleCoverageRefreshRequest,
         FirstBattleCoverageRefreshData>* refresh_ = nullptr;
     QComboBox* source_ = nullptr;
-    QSpinBox* rtcMin_ = nullptr;
-    QSpinBox* rtcMax_ = nullptr;
-    QSpinBox* maxDelay_ = nullptr;
     QTableView* table_ = nullptr;
     QLabel* summary_ = nullptr;
     QLabel* details_ = nullptr;

@@ -226,7 +226,6 @@ QString workflowDetailText(const savor::db::WorkflowGraphSnapshot& graph)
     QStringList lines;
     lines << QStringLiteral("Name: %1").arg(qs(graph.name));
     lines << QStringLiteral("Kind: Graph");
-    lines << QStringLiteral("Status: %1").arg(graph.status.empty() ? QStringLiteral("ready") : qs(graph.status));
     lines << QStringLiteral("Revision: #%1").arg(graph.workflow_graph_revision_id);
     lines << QString();
     lines << QStringLiteral("Activation chain:");

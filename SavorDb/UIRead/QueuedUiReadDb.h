@@ -72,6 +72,8 @@ public:
     UiWorkflowDisplayStateCounts CountWorkflowDisplayStates() const override;
     std::optional<UiWorkflowDetail> GetWorkflowDetail(
         std::int64_t workflow_instance_id) const override;
+    std::vector<UiWorkflowDetail> GetWorkflowDetails(
+        const std::vector<std::int64_t>& workflow_instance_ids) const override;
 
     UiReadPage<UiBattleGroupSummary> ListBattleGroups(
         const UiBattleGroupListQuery& query) const override;

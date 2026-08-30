@@ -30,18 +30,23 @@ TEST(ExecutionControlCoreArchitecture, UsesOneOwnedControlTaskAtATime)
         BackendControlTaskKind::Pause}).ok);
     EXPECT_FALSE(backend.SubmitControlTask({
         BackendControlTaskKind::Resume}).ok);
+    EXPECT_FALSE(backend.TakeControlCompletion().has_value());
+    ASSERT_TRUE(backend.PumpControlTask().ok);
     const auto pause = backend.TakeControlCompletion();
     ASSERT_TRUE(pause.has_value());
     EXPECT_EQ(pause->kind, BackendControlTaskKind::Pause);
     ASSERT_TRUE(backend.SubmitControlTask({
         BackendControlTaskKind::Resume}).ok);
+    ASSERT_TRUE(backend.PumpControlTask().ok);
     const auto resume = backend.TakeControlCompletion();
     ASSERT_TRUE(resume.has_value());
 
     const auto calls = control->Calls();
-    ASSERT_EQ(calls.size(), 2u);
-    EXPECT_EQ(calls[0], "pause");
-    EXPECT_EQ(calls[1], "resume");
+    ASSERT_EQ(calls.size(), 4u);
+    EXPECT_EQ(calls[0], "pump_control_task");
+    EXPECT_EQ(calls[1], "pause");
+    EXPECT_EQ(calls[2], "pump_control_task");
+    EXPECT_EQ(calls[3], "resume");
     const BackendExecutionSnapshot snapshot = control->Snapshot();
     EXPECT_EQ(snapshot.core_state, BackendCoreState::Running);
     EXPECT_FALSE(snapshot.paused_quiescent);

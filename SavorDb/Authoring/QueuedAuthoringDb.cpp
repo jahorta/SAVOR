@@ -431,6 +431,15 @@ std::optional<WorkflowGraphSnapshot> QueuedAuthoringDb::GetWorkflowGraph(
         std::nullopt);
 }
 
+std::optional<WorkflowGraphSnapshot> QueuedAuthoringDb::GetWorkflowGraphByName(
+    const std::string& name) const {
+    return ExecuteRead<std::optional<WorkflowGraphSnapshot>>(
+        [this, name]() {
+            return inner_ != nullptr ? inner_->GetWorkflowGraphByName(name) : std::nullopt;
+        },
+        std::nullopt);
+}
+
 std::optional<WorkflowGraphSnapshot> QueuedAuthoringDb::GetWorkflowGraphRevision(
     std::int64_t workflow_graph_revision_id) const {
     return ExecuteRead<std::optional<WorkflowGraphSnapshot>>(

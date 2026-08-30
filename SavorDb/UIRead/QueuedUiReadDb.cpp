@@ -231,6 +231,17 @@ std::optional<UiWorkflowDetail> QueuedUiReadDb::GetWorkflowDetail(
         std::nullopt);
 }
 
+std::vector<UiWorkflowDetail> QueuedUiReadDb::GetWorkflowDetails(
+    const std::vector<std::int64_t>& workflow_instance_ids) const {
+    return ExecuteRead<std::vector<UiWorkflowDetail>>(
+        [this, workflow_instance_ids]() {
+            return inner_ != nullptr
+                ? inner_->GetWorkflowDetails(workflow_instance_ids)
+                : std::vector<UiWorkflowDetail>{};
+        },
+        {});
+}
+
 UiReadPage<UiBattleGroupSummary> QueuedUiReadDb::ListBattleGroups(
     const UiBattleGroupListQuery& query) const {
     return ExecuteRead<UiReadPage<UiBattleGroupSummary>>(

@@ -1061,6 +1061,12 @@ void EmulationSession::PumpExecution()
     RefreshCoreState();
 }
 
+bool EmulationSession::execution_has_immediate_work() const noexcept
+{
+    return execution_control_core_ &&
+        execution_control_core_->has_immediate_work();
+}
+
 std::vector<ExecutionEvent> EmulationSession::DrainExecutionEvents()
 {
     if (!BindOrCheckOwner())

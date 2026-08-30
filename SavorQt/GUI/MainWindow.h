@@ -20,6 +20,7 @@
 
 class CoordinatorController;
 class CoordinatorPane;
+class QCloseEvent;
 class SetupTab;
 class RunningTab;
 class AnalysisTab;
@@ -58,6 +59,9 @@ public:
 
 signals:
     void coordinatorStateChanged(CoordinatorLifecycleState state, bool paused, int targetWorkers, int activeWorkers, const QString& validationMessage);
+
+protected:
+    void closeEvent(QCloseEvent* event) override;
 
 private slots:
     void handleWorkspaceChanged(int currentIndex);

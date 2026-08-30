@@ -105,13 +105,10 @@ std::optional<std::int64_t> Output(IExecutionDb* execution,
 std::optional<std::int64_t> GraphRevision(IAuthoringDb* authoring,
     std::string_view name) {
     if (!authoring) return std::nullopt;
-    std::optional<std::int64_t> found;
-    for (const auto& graph : authoring->ListWorkflowGraphs(1000, true)) {
-        if (graph.name != name || graph.status != "ACTIVE") continue;
-        if (!found || graph.workflow_graph_revision_id > *found)
-            found = graph.workflow_graph_revision_id;
-    }
-    return found;
+    const auto graph = authoring->GetWorkflowGraphByName(std::string(name));
+    return graph
+        ? std::optional<std::int64_t>{graph->workflow_graph_revision_id}
+        : std::nullopt;
 }
 
 bool BindInt64(sqlite3_stmt* statement, int index,
@@ -181,6 +178,22 @@ bool WorkflowExpansionService::Create(
         return false;
     const bool first = request.kind ==
         WorkflowExpansionKind::TasMovieFirstBattleExploration;
+    std::set<std::pair<std::string, std::string>> argument_keys;
+    for (const auto& argument : request.arguments) {
+        const bool integer_value = argument.value_type == "integer"
+            || argument.value_type == "boolean";
+        const bool text_value = argument.value_type == "text"
+            || argument.value_type == "json"
+            || argument.value_type == "choice";
+        if (argument.member_role != "RTC_BATTLE" || argument.argument_key.empty()
+            || (!integer_value && !text_value)
+            || (integer_value && (!argument.integer_value || argument.text_value))
+            || (text_value && (argument.integer_value || !argument.text_value))
+            || !argument_keys.emplace(argument.member_role, argument.argument_key).second) {
+            if (error_out) *error_out = "workflow expansion contains an invalid or duplicate child argument";
+            return false;
+        }
+    }
     if (first && (request.source_ref_kind != "tmv_input_epoch_annotation_attempt"
         || request.source_ref_id <= 0)) {
         if (error_out) *error_out = "first-battle expansion requires one annotation authority";
@@ -362,6 +375,36 @@ bool WorkflowExpansionService::Create(
         }
     }
     sqlite3_finalize(statement);
+    if (!request.arguments.empty()) {
+        constexpr const char* argument_sql =
+            "INSERT INTO exec_workflow_expansion_argument(workflow_expansion_id,member_role,argument_key,value_type,integer_value,text_value,source_kind,created_at_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,?8);";
+        if (sqlite3_prepare_v2(db_, argument_sql, -1, &statement, nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+        for (const auto& argument : request.arguments) {
+            sqlite3_reset(statement);
+            sqlite3_clear_bindings(statement);
+            sqlite3_bind_int64(statement, 1, expansion_id);
+            sqlite3_bind_text(statement, 2, argument.member_role.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(statement, 3, argument.argument_key.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(statement, 4, argument.value_type.c_str(), -1, SQLITE_TRANSIENT);
+            BindInt64(statement, 5, argument.integer_value);
+            if (argument.text_value) sqlite3_bind_text(statement, 6, argument.text_value->c_str(), -1, SQLITE_TRANSIENT);
+            else sqlite3_bind_null(statement, 6);
+            const auto source_kind = argument.source_kind.empty() ? "expansion" : argument.source_kind;
+            sqlite3_bind_text(statement, 7, source_kind.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(statement, 8, now);
+            if (sqlite3_step(statement) != SQLITE_DONE) {
+                if (error_out) *error_out = sqlite3_errmsg(db_);
+                sqlite3_finalize(statement);
+                rollback();
+                return false;
+            }
+        }
+        sqlite3_finalize(statement);
+    }
     if (!Exec(db_, "COMMIT;", error_out)) {
         rollback();
         return false;
@@ -415,6 +458,24 @@ std::vector<WorkflowExpansionSnapshot> WorkflowExpansionService::List(
         }
         sqlite3_finalize(statement);
         if (sqlite3_prepare_v2(db_,
+            "SELECT member_role,argument_key,value_type,integer_value,text_value,source_kind FROM exec_workflow_expansion_argument WHERE workflow_expansion_id=?1 ORDER BY member_role,argument_key;",
+            -1, &statement, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(statement, 1, row.workflow_expansion_id);
+            while (sqlite3_step(statement) == SQLITE_ROW) {
+                WorkflowExpansionArgumentValue argument{};
+                argument.member_role = Text(statement, 0);
+                argument.argument_key = Text(statement, 1);
+                argument.value_type = Text(statement, 2);
+                if (sqlite3_column_type(statement, 3) != SQLITE_NULL)
+                    argument.integer_value = sqlite3_column_int64(statement, 3);
+                if (sqlite3_column_type(statement, 4) != SQLITE_NULL)
+                    argument.text_value = Text(statement, 4);
+                argument.source_kind = Text(statement, 5);
+                row.arguments.push_back(std::move(argument));
+            }
+        }
+        sqlite3_finalize(statement);
+        if (sqlite3_prepare_v2(db_,
             "SELECT workflow_expansion_member_id,member_role,neutral_epoch_count,rtc_value,workflow_instance_id,state FROM exec_workflow_expansion_member WHERE workflow_expansion_id=?1 ORDER BY neutral_epoch_count,COALESCE(rtc_value,-1),workflow_expansion_member_id;",
             -1, &statement, nullptr) != SQLITE_OK) continue;
         sqlite3_bind_int64(statement, 1, row.workflow_expansion_id);
@@ -438,7 +499,10 @@ WorkflowExpansionService::ListPreparedTasRootSources(const int limit) const {
     std::lock_guard lock(db_mutex_);
     std::vector<PreparedTasRootSourceSnapshot> rows;
     if (!analysis_ || !analysis_sqlite_ || limit <= 0) return rows;
+    const auto route_nodes = analysis_->ListTasRouteNodes();
     for (const auto& root : analysis_->ListTasMovieRootEstablishmentAttempts(limit)) {
+        if (root.producer != TasMovieRootEstablishmentProducer::Establish
+            || root.parent_root_establishment_attempt_id) continue;
         sqlite3_stmt* statement = nullptr;
         constexpr const char* sql =
             "SELECT annotation_attempt_id FROM tmv_input_epoch_annotation_attempt "
@@ -450,12 +514,20 @@ WorkflowExpansionService::ListPreparedTasRootSources(const int limit) const {
         sqlite3_bind_int64(statement, 1, root.root_establishment_attempt_id);
         if (sqlite3_step(statement) == SQLITE_ROW) {
             const auto annotation_id = sqlite3_column_int64(statement, 0);
+            const auto route = std::find_if(route_nodes.begin(), route_nodes.end(),
+                [&](const auto& node) {
+                    return node.node_kind == TasRouteNodeKind::Checkpoint
+                        && node.root_establishment_attempt_id
+                            == root.root_establishment_attempt_id;
+                });
+            const std::string prefix = route == route_nodes.end()
+                ? "Established TAS" : route->label;
             rows.push_back({
                 .annotation_attempt_id = annotation_id,
                 .root_establishment_attempt_id = root.root_establishment_attempt_id,
                 .source_dtm_artifact_id = root.source_dtm_artifact_id,
                 .source_dtm_sha256 = root.source_dtm_sha256,
-                .display_name = "DTM #" + std::to_string(root.source_dtm_artifact_id)
+                .display_name = prefix + " | DTM #" + std::to_string(root.source_dtm_artifact_id)
                     + " | annotation #" + std::to_string(annotation_id)
                     + " | root #" + std::to_string(root.root_establishment_attempt_id),
             });
@@ -470,9 +542,36 @@ bool WorkflowExpansionService::ReadFirstBattleCoverage(
     FirstBattleCoverageSnapshot* snapshot_out,
     std::string* error_out) const {
     std::lock_guard lock(db_mutex_);
-    if (!snapshot_out || !db_) return false;
+    if (!snapshot_out || !db_ || !analysis_) return false;
     auto expansions = List(true);
     FirstBattleCoverageQuery request = requested_query;
+    const auto canonical_root = [&](std::int64_t root_id,
+        std::string* diagnostic) -> std::optional<TasMovieRootEstablishmentAttemptRecord> {
+        std::set<std::int64_t> seen;
+        for (;;) {
+            if (root_id <= 0 || !seen.insert(root_id).second) {
+                if (diagnostic) *diagnostic = "root-establishment lineage is missing or cyclic";
+                return std::nullopt;
+            }
+            const auto root = analysis_->GetTasMovieRootEstablishmentAttempt(root_id);
+            if (!root) {
+                if (diagnostic) *diagnostic = "root-establishment lineage is incomplete";
+                return std::nullopt;
+            }
+            if (!root->parent_root_establishment_attempt_id) {
+                if (root->producer != TasMovieRootEstablishmentProducer::Establish) {
+                    if (diagnostic) *diagnostic = "root lineage does not terminate at ESTABLISH";
+                    return std::nullopt;
+                }
+                return root;
+            }
+            if (root->producer != TasMovieRootEstablishmentProducer::Revise) {
+                if (diagnostic) *diagnostic = "non-REVISE root has a parent authority";
+                return std::nullopt;
+            }
+            root_id = *root->parent_root_establishment_attempt_id;
+        }
+    };
     if (request.workflow_expansion_id) {
         const auto found = std::find_if(expansions.begin(), expansions.end(),
             [&](const auto& row) {
@@ -483,46 +582,77 @@ bool WorkflowExpansionService::ReadFirstBattleCoverage(
             if (error_out) *error_out = "first-battle expansion was not found";
             return false;
         }
-        request.source_annotation_attempt_id = *found->source_annotation_attempt_id;
-        request.rtc_min = found->rtc_min.value_or(0);
-        request.rtc_max = found->rtc_max.value_or(request.rtc_min);
-        request.max_neutral_epochs = found->max_neutral_epochs;
+        const auto annotation = analysis_->GetTasMovieInputEpochAnnotationAttempt(
+            *found->source_annotation_attempt_id);
+        const auto root = annotation && annotation->root_establishment_attempt_id
+            ? canonical_root(*annotation->root_establishment_attempt_id, error_out)
+            : std::nullopt;
+        if (!root) return false;
+        request.source_root_establishment_attempt_id =
+            root->root_establishment_attempt_id;
     }
-    const auto annotation = analysis_
-        ? analysis_->GetTasMovieInputEpochAnnotationAttempt(
-            request.source_annotation_attempt_id)
-        : std::nullopt;
-    const auto root = annotation && annotation->root_establishment_attempt_id
-        ? analysis_->GetTasMovieRootEstablishmentAttempt(
-            *annotation->root_establishment_attempt_id)
-        : std::nullopt;
-    if (!annotation || !annotation->succeeded || !annotation->schedule_artifact_id
-        || !root || annotation->source_dtm_artifact_id != root->source_dtm_artifact_id
-        || annotation->source_dtm_sha256 != root->source_dtm_sha256
-        || request.rtc_min < 0 ||
-        request.rtc_max < request.rtc_min || request.max_neutral_epochs < 0) {
+    const auto root = canonical_root(
+        request.source_root_establishment_attempt_id, error_out);
+    if (!root || root->root_establishment_attempt_id
+            != request.source_root_establishment_attempt_id) {
         if (error_out) *error_out = "invalid first-battle coverage query";
+        return false;
+    }
+    sqlite3_stmt* latest_statement = nullptr;
+    constexpr auto latest_sql =
+        "SELECT annotation_attempt_id FROM tmv_input_epoch_annotation_attempt "
+        "WHERE succeeded=1 AND schedule_artifact_id IS NOT NULL "
+        "AND root_establishment_attempt_id=?1 ORDER BY annotation_attempt_id DESC LIMIT 1;";
+    if (!analysis_sqlite_ || sqlite3_prepare_v2(analysis_sqlite_, latest_sql, -1,
+            &latest_statement, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = "latest root annotation could not be queried";
+        return false;
+    }
+    sqlite3_bind_int64(latest_statement, 1, root->root_establishment_attempt_id);
+    const auto latest_annotation_id = sqlite3_step(latest_statement) == SQLITE_ROW
+        ? std::optional<std::int64_t>(sqlite3_column_int64(latest_statement, 0))
+        : std::nullopt;
+    sqlite3_finalize(latest_statement);
+    if (!latest_annotation_id) {
+        if (error_out) *error_out = "established TAS route has no successful annotation";
         return false;
     }
 
     FirstBattleCoverageSnapshot result{};
-    result.source_dtm_artifact_id = annotation->source_dtm_artifact_id;
-    result.source_annotation_attempt_id = request.source_annotation_attempt_id;
+    result.source_dtm_artifact_id = root->source_dtm_artifact_id;
+    result.source_annotation_attempt_id = *latest_annotation_id;
     result.source_root_establishment_attempt_id =
-        annotation->root_establishment_attempt_id;
-    result.rtc_min = request.rtc_min;
-    result.rtc_max = request.rtc_max;
-    result.max_neutral_epochs = request.max_neutral_epochs;
+        root->root_establishment_attempt_id;
+    std::vector<const WorkflowExpansionSnapshot*> matching_expansions;
+    std::set<std::int64_t> rtc_values;
+    std::set<std::int64_t> delay_values;
+    for (const auto& expansion : expansions) {
+        if (expansion.kind != WorkflowExpansionKind::TasMovieFirstBattleExploration
+            || !expansion.source_annotation_attempt_id) continue;
+        const auto annotation = analysis_->GetTasMovieInputEpochAnnotationAttempt(
+            *expansion.source_annotation_attempt_id);
+        const auto expansion_root = annotation && annotation->root_establishment_attempt_id
+            ? canonical_root(*annotation->root_establishment_attempt_id, nullptr)
+            : std::nullopt;
+        if (!expansion_root || expansion_root->root_establishment_attempt_id
+                != root->root_establishment_attempt_id) continue;
+        matching_expansions.push_back(&expansion);
+        for (const auto& target : expansion.targets) {
+            rtc_values.insert(target.rtc_value);
+            delay_values.insert(target.neutral_epoch_count);
+        }
+    }
+    result.rtc_values.assign(rtc_values.begin(), rtc_values.end());
+    result.neutral_epoch_counts.assign(delay_values.begin(), delay_values.end());
     std::map<std::int64_t, FirstBattleDelayPreparationSnapshot> preparations;
-    for (std::int64_t delay = 0; delay <= request.max_neutral_epochs; ++delay)
+    for (const auto delay : result.neutral_epoch_counts)
         preparations.emplace(delay, FirstBattleDelayPreparationSnapshot{.neutral_epoch_count=delay});
     std::map<std::pair<std::int64_t, std::int64_t>, FirstBattleCoverageCellSnapshot> cells;
-    for (std::int64_t rtc = request.rtc_min;; ++rtc) {
-        for (std::int64_t delay = 0; delay <= request.max_neutral_epochs; ++delay)
+    for (const auto rtc : result.rtc_values) {
+        for (const auto delay : result.neutral_epoch_counts)
             cells.emplace(std::pair{rtc, delay},
                 FirstBattleCoverageCellSnapshot{.rtc_value=rtc,
                                                  .neutral_epoch_count=delay});
-        if (rtc == request.rtc_max) break;
     }
 
     const auto state_rank = [](const std::string& state) {
@@ -559,22 +689,19 @@ bool WorkflowExpansionService::ReadFirstBattleCoverage(
         return false;
     }
     std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> latest_workflow;
-    for (const auto& expansion : expansions) {
-        if (expansion.kind != WorkflowExpansionKind::TasMovieFirstBattleExploration
-            || expansion.source_annotation_attempt_id
-                != request.source_annotation_attempt_id) continue;
+    for (const auto* expansion_ptr : matching_expansions) {
+        const auto& expansion = *expansion_ptr;
         for (const auto& member : expansion.members) {
             const auto graph = workflow_query->GetWorkflowGraph(member.workflow_instance_id);
-            if (member.role == "DELAY_PRODUCTION" &&
-                     member.neutral_epoch_count <= request.max_neutral_epochs)
+            if (member.role == "DELAY_PRODUCTION"
+                && preparations.contains(member.neutral_epoch_count))
                 merge_preparation(preparations[member.neutral_epoch_count], member,
                                   graph ? &*graph : nullptr);
         }
 
         for (const auto& target : expansion.targets) {
-            if (target.rtc_value < request.rtc_min || target.rtc_value > request.rtc_max ||
-                target.neutral_epoch_count > request.max_neutral_epochs) continue;
             auto& cell = cells[std::pair{target.rtc_value, target.neutral_epoch_count}];
+            cell.requested = true;
             const auto member = FindMember(expansion, "RTC_BATTLE",
                 target.neutral_epoch_count, target.rtc_value);
             if (!member) {
@@ -637,7 +764,7 @@ bool WorkflowExpansionService::ReadFirstBattleCoverage(
 
     for (auto& [coordinate, cell] : cells) {
         const auto& preparation = preparations[cell.neutral_epoch_count];
-        if (!preparation.retryable_workflow_instance_ids.empty()) {
+        if (cell.requested && !preparation.retryable_workflow_instance_ids.empty()) {
             cell.retryable = true;
             cell.retryable_workflow_instance_ids.insert(
                 cell.retryable_workflow_instance_ids.end(),
@@ -645,7 +772,7 @@ bool WorkflowExpansionService::ReadFirstBattleCoverage(
                 preparation.retryable_workflow_instance_ids.end());
             if (cell.lifecycle == "NOT_RUN" || cell.lifecycle == "WAITING")
                 cell.lifecycle = preparation.state;
-        } else if (IsActive(preparation.state) && cell.lifecycle == "NOT_RUN") {
+        } else if (cell.requested && IsActive(preparation.state) && cell.lifecycle == "NOT_RUN") {
             cell.active = true;
             cell.lifecycle = "WAITING";
         }
@@ -683,8 +810,8 @@ bool WorkflowExpansionService::LaunchMissingFirstBattleCoverage(
     const LaunchMissingFirstBattleCoverageRequest& request,
     LaunchMissingFirstBattleCoverageReceipt* receipt_out,
     std::string* error_out) {
-    if (!receipt_out || request.source_annotation_attempt_id <= 0) {
-        if (error_out) *error_out = "annotation authority is required";
+    if (!receipt_out || request.source_root_establishment_attempt_id <= 0) {
+        if (error_out) *error_out = "established TAS route authority is required";
         return false;
     }
     LaunchMissingFirstBattleCoverageReceipt receipt{};
@@ -705,9 +832,9 @@ bool WorkflowExpansionService::LaunchMissingFirstBattleCoverage(
             return lhs.neutral_epoch_count < rhs.neutral_epoch_count;
         });
     FirstBattleCoverageSnapshot coverage{};
-    if (!ReadFirstBattleCoverage({.source_annotation_attempt_id=request.source_annotation_attempt_id,
-            .rtc_min=rtc_min_it->rtc_value, .rtc_max=rtc_max_it->rtc_value,
-            .max_neutral_epochs=max_delay_it->neutral_epoch_count},
+    if (!ReadFirstBattleCoverage({
+            .source_root_establishment_attempt_id=
+                request.source_root_establishment_attempt_id},
             &coverage, error_out)) return false;
     std::map<std::pair<std::int64_t, std::int64_t>, const FirstBattleCoverageCellSnapshot*> by_coordinate;
     for (const auto& cell : coverage.cells)
@@ -736,11 +863,20 @@ bool WorkflowExpansionService::LaunchMissingFirstBattleCoverage(
         WorkflowExpansionCreateRequest create{};
         create.kind = WorkflowExpansionKind::TasMovieFirstBattleExploration;
         create.source_ref_kind = "tmv_input_epoch_annotation_attempt";
-        create.source_ref_id = request.source_annotation_attempt_id;
+        create.source_ref_id = *coverage.source_annotation_attempt_id;
         create.rtc_min = rtc_min_it->rtc_value;
         create.rtc_max = rtc_max_it->rtc_value;
         create.max_neutral_epochs = max_delay_it->neutral_epoch_count;
         create.targets = std::move(launch);
+        create.arguments = {
+            {"RTC_BATTLE","samples_per_axis","integer",5,std::nullopt,"coverage_default"},
+            {"RTC_BATTLE","fake_attack_min","integer",0,std::nullopt,"coverage_default"},
+            {"RTC_BATTLE","fake_attack_max","integer",0,std::nullopt,"coverage_default"},
+            {"RTC_BATTLE","continuation_mode","choice",std::nullopt,
+             std::string("automatic_best_per_ending_rng"),"coverage_default"},
+            {"RTC_BATTLE","continue_automatic_exploration_after_victory","boolean",0,
+             std::nullopt,"coverage_default"},
+        };
         create.created_by = request.created_by.empty() ? "SavorQt.FirstBattleCoverage" : request.created_by;
         std::int64_t expansion_id = 0;
         if (!Create(create, &expansion_id, error_out)) return false;
@@ -812,6 +948,46 @@ bool WorkflowExpansionService::Advance(
         if (!revision) {
             if (error_out) *error_out = "required expansion workflow graph is unavailable: " + std::string(graph_name);
             return false;
+        }
+        const auto graph = authoring_->GetWorkflowGraphRevision(*revision);
+        if (!graph) {
+            if (error_out) *error_out = "required expansion workflow graph revision is unavailable: " + std::string(graph_name);
+            return false;
+        }
+        for (const auto& expansion_argument : refreshed.arguments) {
+            if (expansion_argument.member_role != role) continue;
+            const WorkflowGraphNodeSnapshot* matched_node = nullptr;
+            const WorkflowGraphNodeArgumentSnapshot* matched_argument = nullptr;
+            for (const auto& node : graph->nodes) {
+                for (const auto& candidate : node.arguments) {
+                    if (candidate.argument_key != expansion_argument.argument_key) continue;
+                    if (matched_argument != nullptr) {
+                        if (error_out) *error_out = "expansion child argument is ambiguous: "
+                            + std::string(graph_name) + "." + expansion_argument.argument_key;
+                        return false;
+                    }
+                    matched_node = &node;
+                    matched_argument = &candidate;
+                }
+            }
+            if (matched_node == nullptr || matched_argument == nullptr) {
+                if (error_out) *error_out = "expansion child argument is unavailable: "
+                    + std::string(graph_name) + "." + expansion_argument.argument_key;
+                return false;
+            }
+            if (matched_argument->value_type != expansion_argument.value_type) {
+                if (error_out) *error_out = "expansion child argument type does not match: "
+                    + std::string(graph_name) + "." + expansion_argument.argument_key;
+                return false;
+            }
+            arguments.push_back({
+                matched_node->node_key,
+                expansion_argument.argument_key,
+                expansion_argument.value_type,
+                expansion_argument.integer_value,
+                expansion_argument.text_value,
+                "expansion",
+            });
         }
         const auto launch_key = "workflow-expansion:" +
             std::to_string(refreshed.workflow_expansion_id) + ":" + role + ":" +

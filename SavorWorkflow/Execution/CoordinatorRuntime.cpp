@@ -378,9 +378,9 @@ CoordinatorRuntimeTelemetry CoordinatorRuntime::SnapshotTelemetry() const {
                   ResultStagingCleanupTelemetry{},
         .worker_admission_paused =
             worker_coordinator_ != nullptr && worker_coordinator_->IsPaused(),
-        .lanes = job_execution_coordinator_ != nullptr
-                     ? job_execution_coordinator_->SnapshotWorkerLanes()
-                     : std::vector<JobExecutionWorkerLaneSnapshot>{},
+        .worker_dispatches = job_execution_coordinator_ != nullptr
+                     ? job_execution_coordinator_->SnapshotWorkerDispatches()
+                     : std::vector<JobExecutionWorkerDispatchSnapshot>{},
         .execution_db_queue =
             queued_execution_db_ != nullptr
                 ? std::optional(queued_execution_db_->GetTelemetrySnapshot())

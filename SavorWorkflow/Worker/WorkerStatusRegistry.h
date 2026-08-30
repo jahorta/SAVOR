@@ -18,6 +18,7 @@ public:
 
     void UpdateState(int64_t worker_id, WorkerStateKind s);
     void SetCurrentJob(int64_t worker_id, std::optional<int64_t> job_id, std::optional<int> program_kind);
+    void ClearCurrentJobIf(int64_t worker_id, int64_t expected_job_id);
     void SetLeaseInfo(int64_t worker_id, std::optional<int64_t> lease_expires_at, int attempts, int max_attempts);
 
     void RecordEvent(int64_t worker_id, WorkerEventKind k, std::optional<int64_t> job_id = std::nullopt, const std::string& note = {});

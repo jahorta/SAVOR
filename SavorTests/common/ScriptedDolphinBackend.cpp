@@ -858,6 +858,22 @@ runtime::BackendResult ScriptedDolphinBackend::SubmitControlTask(
                 "scripted execution actuator is busy");
         }
         control_->control_task_state =
+            runtime::BackendExecutionSnapshot::ControlTaskState::Pending;
+        control_->pending_control_task = task;
+    }
+    return runtime::BackendResult::Success();
+}
+
+runtime::BackendResult ScriptedDolphinBackend::PumpControlTask()
+{
+    runtime::BackendControlTask task;
+    {
+        std::lock_guard lock(control_->mutex);
+        if (!control_->pending_control_task)
+            return runtime::BackendResult::Success();
+        task = std::move(*control_->pending_control_task);
+        control_->pending_control_task.reset();
+        control_->control_task_state =
             runtime::BackendExecutionSnapshot::ControlTaskState::Running;
     }
     runtime::BackendResult result;

@@ -725,6 +725,9 @@ struct WorkerRuntime::Impl
             PumpProgramActionHost();
             DrainArtifactFinalizers();
             (void)PublishReadyWorksetTerminals();
+            AdvanceShutdown();
+            if (Snapshot().state == WorkerState::Stopped)
+                break;
 
             bool external_command_waiting = false;
             {
@@ -774,6 +777,9 @@ struct WorkerRuntime::Impl
                 PumpExecutionEvents();
                 PumpProgramActionHost();
                 PumpProgramRuntime();
+                AdvanceShutdown();
+                if (Snapshot().state == WorkerState::Stopped)
+                    break;
                 const auto next_execution_wake = session
                     ? session->next_execution_wake()
                     : std::nullopt;
@@ -909,6 +915,7 @@ struct WorkerRuntime::Impl
             (void)DrainAuthoritativeIngressToStable(false);
             PumpExecutionEvents();
             PumpProgramActionHost();
+            AdvanceShutdown();
 
             if (Snapshot().state == WorkerState::Stopped)
                 break;
@@ -3530,8 +3537,6 @@ struct WorkerRuntime::Impl
 
         const std::uint32_t ordinal =
             active_invocation->workset_item_ordinal;
-        if (SessionVisualMessageService* visual = session->visual_messages())
-            (void)visual->SetIdle();
         active_invocation.reset();
         if (active_workset &&
             active_workset->definition.workset_id ==
@@ -3705,6 +3710,8 @@ struct WorkerRuntime::Impl
     {
         if (!active_workset)
             return;
+        if (SessionVisualMessageService* visual = session->visual_messages())
+            (void)visual->SetIdle();
         WorksetPackage finished =
             std::move(*active_workset);
         active_workset.reset();
@@ -3922,26 +3929,51 @@ struct WorkerRuntime::Impl
         pending_shutdown_commands.push_back(queued);
         ChangeState(WorkerState::Stopping);
 
+        AdvanceShutdown();
+    }
+
+    void AdvanceShutdown()
+    {
+        if (finishing_shutdown || pending_shutdown_commands.empty())
+            return;
+
         std::optional<ExecutionSnapshot> execution = session
             ? session->execution_snapshot()
             : std::nullopt;
         if (execution && execution->activity !=
                 ExecutionActivity::IdlePaused)
         {
-            (void)session->CancelExecution(CancellationReason::Shutdown);
-            PumpExecutionEvents();
-            execution = session
-                ? session->execution_snapshot()
-                : std::nullopt;
-            if (execution && execution->activity !=
-                    ExecutionActivity::IdlePaused)
+            if (!shutdown_execution_cancellation_requested)
             {
-                return;
+                const ExecutionControlReceipt cancellation =
+                    session->CancelExecution(CancellationReason::Shutdown);
+                if (!cancellation.accepted)
+                {
+                    const std::string message =
+                        cancellation.error.message.empty()
+                        ? "ExecutionControlCore rejected shutdown cancellation"
+                        : cancellation.error.message;
+                    EnterTainted(
+                        "Shutdown execution cancellation failed: " + message,
+                        true,
+                        false);
+                    FinishShutdown(false);
+                    return;
+                }
+                shutdown_execution_cancellation_requested = true;
             }
+            return;
         }
 
         if (active_invocation)
         {
+            if (shutdown_program_cancellation_invocation &&
+                *shutdown_program_cancellation_invocation ==
+                    active_invocation->invocation_id)
+            {
+                return;
+            }
+
             if (program_runtime)
             {
                 const ProgramRuntimeSubmission submission =
@@ -3960,6 +3992,8 @@ struct WorkerRuntime::Impl
                     FinishShutdown(false);
                     return;
                 }
+                shutdown_program_cancellation_invocation =
+                    active_invocation->invocation_id;
                 if (submission.execution_already_finished)
                     return;
             }
@@ -3978,6 +4012,8 @@ struct WorkerRuntime::Impl
                     active_invocation->invocation_id,
                     CancellationReason::Shutdown);
             }
+            shutdown_program_cancellation_invocation =
+                active_invocation->invocation_id;
             return;
         }
 
@@ -5241,10 +5277,14 @@ struct WorkerRuntime::Impl
 
             // This acquire is the command linearization point. A native stop
             // published before it either appeared in the completed drain or
-            // changed the generation and forces another drain. A stop
-            // published afterward belongs to the next actor turn.
+            // changed the generation and forces another drain. Actor-local
+            // execution consequences of received ingress must also reach a
+            // stable boundary before an external command can linearize.
+            const bool immediate_execution_work = session &&
+                session->execution_has_immediate_work();
             if (mailbox->ingress_generation.load(
-                    std::memory_order_acquire) == observed_generation)
+                    std::memory_order_acquire) == observed_generation &&
+                !immediate_execution_work)
             {
                 return observed_generation;
             }
@@ -6024,6 +6064,8 @@ struct WorkerRuntime::Impl
             }
         }
         pending_shutdown_commands.clear();
+        shutdown_execution_cancellation_requested = false;
+        shutdown_program_cancellation_invocation.reset();
 
         for (auto& [_, pending] : pending_execution_commands)
         {
@@ -6528,6 +6570,8 @@ struct WorkerRuntime::Impl
         pending_execution_commands;
     std::vector<std::shared_ptr<QueuedCommand>> pending_shutdown_commands;
     bool finishing_shutdown = false;
+    bool shutdown_execution_cancellation_requested = false;
+    std::optional<InvocationId> shutdown_program_cancellation_invocation;
     std::thread actor;
     std::mutex join_mutex;
 };

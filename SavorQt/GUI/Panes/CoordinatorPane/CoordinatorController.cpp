@@ -46,6 +46,7 @@ constexpr auto kDolphinBaseKey = "dolphin_base";
 constexpr auto kTargetWorkersKey = "target_workers";
 constexpr auto kStartPausedKey = "start_paused";
 constexpr auto kVisualWorkerPoolKey = "visual_worker_pool";
+constexpr int kSnapshotRefreshIntervalMs = 500;
 
 bool fileExists(const QString& path)
 {
@@ -115,6 +116,12 @@ CoordinatorController::CoordinatorController(QObject* parent)
         &QFutureWatcher<CoordinatorShutdownResult>::finished,
         this,
         &CoordinatorController::handleShutdownFinished);
+    snapshot_refresh_timer_.setInterval(kSnapshotRefreshIntervalMs);
+    connect(
+        &snapshot_refresh_timer_,
+        &QTimer::timeout,
+        this,
+        &CoordinatorController::refreshSnapshot);
     loadSettings();
     updateValidationMessage();
     updateSnapshotCache();
@@ -393,6 +400,7 @@ void CoordinatorController::startCoordinator()
 
 void CoordinatorController::stopCoordinator()
 {
+    snapshot_refresh_timer_.stop();
     if (lifecycle_state_ == CoordinatorLifecycleState::Starting
         && startup_state_) {
         startup_state_->cancel_requested.store(
@@ -795,6 +803,7 @@ void CoordinatorController::handleStartupFinished()
             coordinator_runtime_ = std::move(startedRuntime);
             startup_state_.reset();
             lifecycle_state_ = CoordinatorLifecycleState::Running;
+            snapshot_refresh_timer_.start();
             updateSnapshotCache();
             emit stateChanged();
             emit snapshotChanged();

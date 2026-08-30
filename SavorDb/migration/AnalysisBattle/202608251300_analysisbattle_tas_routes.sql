@@ -8,6 +8,7 @@ CREATE TABLE atr_route_node (
     activity_key TEXT NOT NULL DEFAULT '',
     label TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    root_establishment_attempt_id INTEGER NULL,
     source_dtm_artifact_id INTEGER NULL,
     source_savestate_id INTEGER NULL,
     battle_plan_id INTEGER NULL,
@@ -15,15 +16,14 @@ CREATE TABLE atr_route_node (
     status TEXT NOT NULL CHECK(status IN ('PENDING','ACTIVE','READY','FAILED','INTERRUPTED','CANCELED')),
     created_at_utc INTEGER NOT NULL,
     updated_at_utc INTEGER NOT NULL,
-    FOREIGN KEY(parent_route_node_id) REFERENCES atr_route_node(route_node_id)
+    FOREIGN KEY(parent_route_node_id) REFERENCES atr_route_node(route_node_id),
+    FOREIGN KEY(root_establishment_attempt_id)
+        REFERENCES tmv_root_establishment_attempt(root_establishment_attempt_id)
 );
 
-CREATE UNIQUE INDEX ux_atr_route_root_source_dtm
-    ON atr_route_node(source_dtm_artifact_id)
-    WHERE parent_route_node_id IS NULL AND source_dtm_artifact_id IS NOT NULL;
-CREATE UNIQUE INDEX ux_atr_route_root_source_state
-    ON atr_route_node(source_savestate_id)
-    WHERE parent_route_node_id IS NULL AND source_dtm_artifact_id IS NULL;
+CREATE UNIQUE INDEX ux_atr_route_checkpoint_root_establishment
+    ON atr_route_node(root_establishment_attempt_id)
+    WHERE node_kind='CHECKPOINT' AND root_establishment_attempt_id IS NOT NULL;
 CREATE UNIQUE INDEX ux_atr_route_activity
     ON atr_route_node(parent_route_node_id,activity_kind,activity_key)
     WHERE node_kind='ACTIVITY';

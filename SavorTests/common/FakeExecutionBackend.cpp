@@ -168,6 +168,22 @@ runtime::BackendResult FakeExecutionBackend::SubmitControlTask(
             "fake execution actuator is busy");
     }
     control_->control_task_state =
+        runtime::BackendExecutionSnapshot::ControlTaskState::Pending;
+    control_->pending_control_task = task;
+    control_->snapshot.control_task_state = control_->control_task_state;
+    return runtime::BackendResult::Success();
+}
+
+runtime::BackendResult FakeExecutionBackend::PumpControlTask()
+{
+    std::lock_guard lock(control_->mutex);
+    control_->RecordLocked("pump_control_task");
+    if (!control_->pending_control_task)
+        return runtime::BackendResult::Success();
+    const runtime::BackendControlTask task =
+        *control_->pending_control_task;
+    control_->pending_control_task.reset();
+    control_->control_task_state =
         runtime::BackendExecutionSnapshot::ControlTaskState::Running;
     runtime::BackendResult result;
     switch (task.kind)

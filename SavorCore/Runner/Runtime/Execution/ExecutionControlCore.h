@@ -62,6 +62,7 @@ public:
         std::string diagnostic = {});
 
     void Pump();
+    [[nodiscard]] bool has_immediate_work() const noexcept;
     [[nodiscard]] std::vector<ExecutionEvent> DrainEvents();
 
     [[nodiscard]] ExecutionSnapshot snapshot() const;

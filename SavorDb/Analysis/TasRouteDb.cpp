@@ -3,7 +3,9 @@
 #include <sqlite3.h>
 
 #include <optional>
+#include <set>
 #include <string>
+#include <vector>
 
 namespace savor::db::analysis {
 namespace {
@@ -104,6 +106,61 @@ bool SqliteAnalysisDb::EnsureBattleRouteActivity(
                 source_dtm = sqlite3_column_int64(st.value, 0);
         }
     }
+    if (!source_dtm)
+        return Rollback(db_, "Battle entry savestate has no sterilized source DTM", error_out);
+
+    std::optional<std::int64_t> source_root_establishment;
+    {
+        Statement st;
+        constexpr auto sql =
+            "SELECT root_establishment_attempt_id FROM tmv_root_establishment_attempt "
+            "WHERE source_dtm_artifact_id=?1 ORDER BY root_establishment_attempt_id DESC LIMIT 2;";
+        if (sqlite3_prepare_v2(db_, sql, -1, &st.value, nullptr) != SQLITE_OK)
+            return Rollback(db_, sqlite3_errmsg(db_), error_out);
+        sqlite3_bind_int64(st.value, 1, *source_dtm);
+        if (sqlite3_step(st.value) != SQLITE_ROW)
+            return Rollback(db_, "Sterilized source DTM has no root-establishment authority", error_out);
+        source_root_establishment = sqlite3_column_int64(st.value, 0);
+        if (sqlite3_step(st.value) == SQLITE_ROW)
+            return Rollback(db_, "Sterilized source DTM has ambiguous root-establishment authorities", error_out);
+    }
+
+    struct RootAuthority {
+        std::int64_t id = 0;
+        std::optional<std::int64_t> parent_id;
+        std::int64_t source_dtm_id = 0;
+        std::string producer;
+    };
+    std::vector<RootAuthority> root_lineage;
+    std::set<std::int64_t> seen_root_ids;
+    auto current_root_id = *source_root_establishment;
+    for (;;) {
+        if (!seen_root_ids.insert(current_root_id).second)
+            return Rollback(db_, "Root-establishment lineage contains a cycle", error_out);
+        Statement st;
+        constexpr auto sql =
+            "SELECT producer_kind,parent_root_establishment_attempt_id,source_dtm_artifact_id "
+            "FROM tmv_root_establishment_attempt WHERE root_establishment_attempt_id=?1;";
+        if (sqlite3_prepare_v2(db_, sql, -1, &st.value, nullptr) != SQLITE_OK)
+            return Rollback(db_, sqlite3_errmsg(db_), error_out);
+        sqlite3_bind_int64(st.value, 1, current_root_id);
+        if (sqlite3_step(st.value) != SQLITE_ROW)
+            return Rollback(db_, "Root-establishment lineage is incomplete", error_out);
+        RootAuthority authority{};
+        authority.id = current_root_id;
+        authority.producer = Text(st.value, 0);
+        authority.parent_id = OptionalI64(st.value, 1);
+        authority.source_dtm_id = sqlite3_column_int64(st.value, 2);
+        if (authority.parent_id && authority.producer != "REVISE")
+            return Rollback(db_, "Only revised roots may have a parent root authority", error_out);
+        root_lineage.push_back(authority);
+        if (!authority.parent_id) {
+            if (authority.producer != "ESTABLISH")
+                return Rollback(db_, "Root-establishment lineage does not terminate at ESTABLISH", error_out);
+            break;
+        }
+        current_root_id = *authority.parent_id;
+    }
 
     std::optional<std::int64_t> parent_checkpoint;
     {
@@ -124,33 +181,58 @@ bool SqliteAnalysisDb::EnsureBattleRouteActivity(
     }
 
     if (parent_checkpoint) {
+        Statement bind_root;
+        constexpr auto sql =
+            "UPDATE atr_route_node SET root_establishment_attempt_id=COALESCE(root_establishment_attempt_id,?2),"
+            "source_dtm_artifact_id=COALESCE(source_dtm_artifact_id,?3),updated_at_utc=?4 "
+            "WHERE route_node_id=?1 AND node_kind='CHECKPOINT' "
+            "AND (root_establishment_attempt_id IS NULL OR root_establishment_attempt_id=?2);";
+        if (sqlite3_prepare_v2(db_, sql, -1, &bind_root.value, nullptr) != SQLITE_OK)
+            return Rollback(db_, sqlite3_errmsg(db_), error_out);
+        sqlite3_bind_int64(bind_root.value, 1, *parent_checkpoint);
+        sqlite3_bind_int64(bind_root.value, 2, *source_root_establishment);
+        sqlite3_bind_int64(bind_root.value, 3, *source_dtm);
+        sqlite3_bind_int64(bind_root.value, 4, command.created_at_utc.time_since_epoch().count());
+        if (sqlite3_step(bind_root.value) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+            return Rollback(db_, "Recorded checkpoint conflicts with its root-establishment authority", error_out);
         receipt.root_route_node_id = *parent_checkpoint;
     } else {
+        for (const auto& authority : root_lineage) {
+            if (const auto existing = ScalarI64(db_,
+                    "SELECT route_node_id FROM atr_route_node WHERE node_kind='CHECKPOINT' "
+                    "AND root_establishment_attempt_id=?1 LIMIT 1;", authority.id)) {
+                parent_checkpoint = *existing;
+                receipt.root_route_node_id = *existing;
+                break;
+            }
+        }
+    }
+
+    if (!parent_checkpoint) {
+        const auto& established = root_lineage.back();
         Statement root;
         constexpr auto sql =
             "INSERT INTO atr_route_node(parent_route_node_id,node_kind,activity_kind,activity_key,label,description,"
-            "source_dtm_artifact_id,source_savestate_id,battle_plan_id,tas_movie_tree_id,status,created_at_utc,updated_at_utc) "
-            "VALUES(NULL,'CHECKPOINT','','',?1,'Source TAS movie',?2,?3,NULL,NULL,'READY',?4,?4) "
+            "root_establishment_attempt_id,source_dtm_artifact_id,source_savestate_id,battle_plan_id,tas_movie_tree_id,status,created_at_utc,updated_at_utc) "
+            "VALUES(NULL,'CHECKPOINT','','',?1,'Established TAS route',?2,?3,?4,NULL,NULL,'READY',?5,?5) "
             "ON CONFLICT DO NOTHING;";
         if (sqlite3_prepare_v2(db_, sql, -1, &root.value, nullptr) != SQLITE_OK)
             return Rollback(db_, sqlite3_errmsg(db_), error_out);
-        const std::string label = source_dtm
-            ? "TAS source " + std::to_string(*source_dtm)
-            : "Checkpoint " + std::to_string(command.entry_savestate_id);
+        const std::string label = "TAS source " + std::to_string(established.source_dtm_id);
         sqlite3_bind_text(root.value, 1, label.c_str(), -1, SQLITE_TRANSIENT);
-        if (source_dtm) sqlite3_bind_int64(root.value, 2, *source_dtm);
-        else sqlite3_bind_null(root.value, 2);
-        sqlite3_bind_int64(root.value, 3, command.entry_savestate_id);
-        sqlite3_bind_int64(root.value, 4, command.created_at_utc.time_since_epoch().count());
+        sqlite3_bind_int64(root.value, 2, established.id);
+        sqlite3_bind_int64(root.value, 3, established.source_dtm_id);
+        sqlite3_bind_int64(root.value, 4, command.entry_savestate_id);
+        sqlite3_bind_int64(root.value, 5, command.created_at_utc.time_since_epoch().count());
         if (sqlite3_step(root.value) != SQLITE_DONE)
             return Rollback(db_, sqlite3_errmsg(db_), error_out);
         Statement find;
-        const char* find_sql = source_dtm
-            ? "SELECT route_node_id FROM atr_route_node WHERE parent_route_node_id IS NULL AND source_dtm_artifact_id=?1 LIMIT 1;"
-            : "SELECT route_node_id FROM atr_route_node WHERE parent_route_node_id IS NULL AND source_dtm_artifact_id IS NULL AND source_savestate_id=?1 LIMIT 1;";
+        constexpr auto find_sql =
+            "SELECT route_node_id FROM atr_route_node WHERE node_kind='CHECKPOINT' "
+            "AND root_establishment_attempt_id=?1 LIMIT 1;";
         if (sqlite3_prepare_v2(db_, find_sql, -1, &find.value, nullptr) != SQLITE_OK)
             return Rollback(db_, sqlite3_errmsg(db_), error_out);
-        sqlite3_bind_int64(find.value, 1, source_dtm.value_or(command.entry_savestate_id));
+        sqlite3_bind_int64(find.value, 1, established.id);
         if (sqlite3_step(find.value) != SQLITE_ROW)
             return Rollback(db_, "TAS route root was not persisted", error_out);
         receipt.root_route_node_id = sqlite3_column_int64(find.value, 0);
@@ -160,8 +242,8 @@ bool SqliteAnalysisDb::EnsureBattleRouteActivity(
     Statement activity;
     constexpr auto activity_sql =
         "INSERT INTO atr_route_node(parent_route_node_id,node_kind,activity_kind,activity_key,label,description,"
-        "source_dtm_artifact_id,source_savestate_id,battle_plan_id,tas_movie_tree_id,status,created_at_utc,updated_at_utc) "
-        "VALUES(?1,'ACTIVITY','battle',?2,?3,?4,NULL,?5,?6,NULL,'ACTIVE',?7,?7) "
+        "root_establishment_attempt_id,source_dtm_artifact_id,source_savestate_id,battle_plan_id,tas_movie_tree_id,status,created_at_utc,updated_at_utc) "
+        "VALUES(?1,'ACTIVITY','battle',?2,?3,?4,NULL,NULL,?5,?6,NULL,'ACTIVE',?7,?7) "
             "ON CONFLICT(parent_route_node_id,activity_kind,activity_key) "
             "WHERE node_kind='ACTIVITY' DO NOTHING;";
     if (sqlite3_prepare_v2(db_, activity_sql, -1, &activity.value, nullptr) != SQLITE_OK)
@@ -241,8 +323,8 @@ bool SqliteAnalysisDb::EnsurePendingVictoryRouteBranch(
     Statement checkpoint;
     constexpr auto checkpoint_sql =
         "INSERT INTO atr_route_node(parent_route_node_id,node_kind,activity_kind,activity_key,label,description,"
-        "source_dtm_artifact_id,source_savestate_id,battle_plan_id,tas_movie_tree_id,status,created_at_utc,updated_at_utc) "
-        "VALUES(?1,'CHECKPOINT','','',?2,'Recorded Battle Victory checkpoint',NULL,NULL,NULL,NULL,'PENDING',?3,?3);";
+        "root_establishment_attempt_id,source_dtm_artifact_id,source_savestate_id,battle_plan_id,tas_movie_tree_id,status,created_at_utc,updated_at_utc) "
+        "VALUES(?1,'CHECKPOINT','','',?2,'Recorded Battle Victory checkpoint',NULL,NULL,NULL,NULL,NULL,'PENDING',?3,?3);";
     if (sqlite3_prepare_v2(db_, checkpoint_sql, -1, &checkpoint.value, nullptr) != SQLITE_OK)
         return Rollback(db_, sqlite3_errmsg(db_), error_out);
     const std::string label = command.default_label.empty()
@@ -328,7 +410,7 @@ std::vector<TasRouteNodeSnapshot> SqliteAnalysisDb::ListTasRouteNodes() const {
     Statement st;
     constexpr auto sql =
         "SELECT route_node_id,parent_route_node_id,node_kind,activity_kind,activity_key,label,description,"
-        "source_dtm_artifact_id,source_savestate_id,battle_plan_id,tas_movie_tree_id,status,created_at_utc,updated_at_utc "
+        "root_establishment_attempt_id,source_dtm_artifact_id,source_savestate_id,battle_plan_id,tas_movie_tree_id,status,created_at_utc,updated_at_utc "
         "FROM atr_route_node ORDER BY route_node_id;";
     if (sqlite3_prepare_v2(db_, sql, -1, &st.value, nullptr) != SQLITE_OK) return rows;
     while (sqlite3_step(st.value) == SQLITE_ROW) {
@@ -341,13 +423,14 @@ std::vector<TasRouteNodeSnapshot> SqliteAnalysisDb::ListTasRouteNodes() const {
         row.activity_key = Text(st.value, 4);
         row.label = Text(st.value, 5);
         row.description = Text(st.value, 6);
-        row.source_dtm_artifact_id = OptionalI64(st.value, 7);
-        row.source_savestate_id = OptionalI64(st.value, 8);
-        row.battle_plan_id = OptionalI64(st.value, 9);
-        row.tas_movie_tree_id = OptionalI64(st.value, 10);
-        row.status = Text(st.value, 11);
-        row.created_at_utc = Time(st.value, 12);
-        row.updated_at_utc = Time(st.value, 13);
+        row.root_establishment_attempt_id = OptionalI64(st.value, 7);
+        row.source_dtm_artifact_id = OptionalI64(st.value, 8);
+        row.source_savestate_id = OptionalI64(st.value, 9);
+        row.battle_plan_id = OptionalI64(st.value, 10);
+        row.tas_movie_tree_id = OptionalI64(st.value, 11);
+        row.status = Text(st.value, 12);
+        row.created_at_utc = Time(st.value, 13);
+        row.updated_at_utc = Time(st.value, 14);
         rows.push_back(std::move(row));
     }
     return rows;

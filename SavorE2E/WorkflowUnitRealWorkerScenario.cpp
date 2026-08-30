@@ -554,7 +554,7 @@ bool RunWorkflowUnitRealWorkerScenario(
             break;
         }
         const auto telemetry = coordinators.SnapshotTelemetry();
-        if (telemetry.execution.invariant_paused) {
+        if (telemetry.execution.invariant_admission_paused) {
             error = telemetry.execution.last_error.empty()
                 ? "workflow_unit JobExecutionCoordinator entered an invariant pause"
                 : telemetry.execution.last_error;

@@ -165,12 +165,12 @@ void AssessCommonScenarioExecution(
             && telemetry.execution.cancellation_mutation_rollbacks == 0,
         "job execution coordinator recorded sidecar or cancellation persistence drift");
     assessment->Require(
-        telemetry.execution.pending_worker_terminals == 0
+        telemetry.execution.persistence_queue_depth == 0
             && telemetry.execution.draining_worksets == 0
-            && !telemetry.execution.claims_paused_for_terminal_staging,
+            && !telemetry.execution.storage_admission_paused,
         "job execution coordinator retained terminal or draining state");
     assessment->Require(
-        !telemetry.execution.invariant_paused,
+        !telemetry.execution.invariant_admission_paused,
         "job execution coordinator ended invariant-paused");
     assessment->Require(
         telemetry.execution.worker_terminal_acks

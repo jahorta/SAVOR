@@ -142,6 +142,9 @@ public:
     std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(
         std::int64_t workflow_graph_id) const override;
 
+    std::optional<WorkflowGraphSnapshot> GetWorkflowGraphByName(
+        const std::string& name) const override;
+
     std::optional<WorkflowGraphSnapshot> GetWorkflowGraphRevision(
         std::int64_t workflow_graph_revision_id) const override;
 

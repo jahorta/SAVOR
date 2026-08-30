@@ -701,6 +701,9 @@ struct IUiReadDb {
     virtual std::optional<UiWorkflowDetail> GetWorkflowDetail(
         std::int64_t workflow_instance_id) const = 0;
 
+    virtual std::vector<UiWorkflowDetail> GetWorkflowDetails(
+        const std::vector<std::int64_t>& workflow_instance_ids) const = 0;
+
     virtual UiReadPage<UiBattleGroupSummary> ListBattleGroups(
         const UiBattleGroupListQuery& query) const = 0;
 

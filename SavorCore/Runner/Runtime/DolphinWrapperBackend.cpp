@@ -328,16 +328,11 @@ void ReplacePhysicalPlan(
 
 struct DolphinWrapperBackend::Impl
 {
-    // One helper thread owns at most one movable Dolphin control task. A
-    // completed task remains authoritative until ExecutionControlCore consumes
-    // its completion; no later task can replace or supersede it.
+    // The Dolphin host actor owns at most one movable control task. A completed
+    // task remains authoritative until ExecutionControlCore consumes it; no
+    // later task can replace or supersede it.
     struct ControlActuator
     {
-        ~ControlActuator()
-        {
-            StopAndJoin();
-        }
-
         ControlActuator() = default;
         ControlActuator(const ControlActuator&) = delete;
         ControlActuator& operator=(const ControlActuator&) = delete;
@@ -347,8 +342,8 @@ struct DolphinWrapperBackend::Impl
             std::atomic<bool>& target_paused_quiescent,
             std::string* error)
         {
-            std::scoped_lock lock(mutex);
-            if (worker.joinable() || system != nullptr)
+            if (system != nullptr ||
+                state != BackendExecutionSnapshot::ControlTaskState::Stopping)
             {
                 if (error)
                     *error = "Dolphin control actuator is already started";
@@ -357,30 +352,16 @@ struct DolphinWrapperBackend::Impl
 
             system = &target_system;
             paused_quiescent = &target_paused_quiescent;
-            stop_requested = false;
             state = BackendExecutionSnapshot::ControlTaskState::Idle;
             task.reset();
             completion.reset();
-            try
-            {
-                worker = std::thread([this]() { Run(); });
-            }
-            catch (const std::exception& ex)
-            {
-                system = nullptr;
-                paused_quiescent = nullptr;
-                state = BackendExecutionSnapshot::ControlTaskState::Stopping;
-                if (error)
-                    *error = ex.what();
-                return false;
-            }
             return true;
         }
 
         [[nodiscard]] BackendResult Submit(BackendControlTask submitted)
         {
-            std::scoped_lock lock(mutex);
-            if (!worker.joinable() || system == nullptr || stop_requested)
+            if (system == nullptr ||
+                state == BackendExecutionSnapshot::ControlTaskState::Stopping)
             {
                 return BackendResult::Failure(
                     BackendErrorCode::InvalidState,
@@ -396,13 +377,50 @@ struct DolphinWrapperBackend::Impl
 
             task.emplace(std::move(submitted));
             state = BackendExecutionSnapshot::ControlTaskState::Pending;
-            cv.notify_all();
+            return BackendResult::Success();
+        }
+
+        [[nodiscard]] BackendResult Pump()
+        {
+            if (system == nullptr || paused_quiescent == nullptr ||
+                state == BackendExecutionSnapshot::ControlTaskState::Stopping)
+            {
+                return BackendResult::Failure(
+                    BackendErrorCode::InvalidState,
+                    "Dolphin control actuator is unavailable");
+            }
+            if (state != BackendExecutionSnapshot::ControlTaskState::Pending)
+                return BackendResult::Success();
+            if (!task || completion)
+            {
+                return BackendResult::Failure(
+                    BackendErrorCode::InvalidState,
+                    "Pending Dolphin control actuator state has no unique task");
+            }
+
+            BackendControlTask owned_task = std::move(*task);
+            task.reset();
+            state = BackendExecutionSnapshot::ControlTaskState::Running;
+            SCLOGDX(
+                SC_TAGS("dolphin.control", "dolphin.actor_task.begin"),
+                "kind=%u thread=%llu",
+                static_cast<unsigned>(owned_task.kind),
+                static_cast<unsigned long long>(
+                    std::hash<std::thread::id>{}(std::this_thread::get_id())));
+            completion.emplace(Execute(owned_task));
+            state = BackendExecutionSnapshot::ControlTaskState::Completed;
+            SCLOGDX(
+                SC_TAGS("dolphin.control", "dolphin.actor_task.end"),
+                "kind=%u ok=%d thread=%llu",
+                static_cast<unsigned>(owned_task.kind),
+                completion->result.ok ? 1 : 0,
+                static_cast<unsigned long long>(
+                    std::hash<std::thread::id>{}(std::this_thread::get_id())));
             return BackendResult::Success();
         }
 
         [[nodiscard]] std::optional<BackendControlCompletion> TakeCompletion()
         {
-            std::scoped_lock lock(mutex);
             if (state != BackendExecutionSnapshot::ControlTaskState::Completed ||
                 !completion)
             {
@@ -413,42 +431,42 @@ struct DolphinWrapperBackend::Impl
                 std::move(completion);
             completion.reset();
             state = BackendExecutionSnapshot::ControlTaskState::Idle;
-            cv.notify_all();
             return taken;
         }
 
         [[nodiscard]] BackendExecutionSnapshot::ControlTaskState State() const
         {
-            std::scoped_lock lock(mutex);
             return state;
         }
 
-        void StopAndJoin() noexcept
+        [[nodiscard]] BackendResult Stop() noexcept
         {
+            BackendResult result = BackendResult::Success();
+            if (state == BackendExecutionSnapshot::ControlTaskState::Running)
             {
-                std::scoped_lock lock(mutex);
-                if (!worker.joinable())
-                {
-                    system = nullptr;
-                    paused_quiescent = nullptr;
-                    task.reset();
-                    completion.reset();
-                    state = BackendExecutionSnapshot::ControlTaskState::Stopping;
-                    return;
-                }
-                stop_requested = true;
-                state = BackendExecutionSnapshot::ControlTaskState::Stopping;
-                cv.notify_all();
+                result = BackendResult::Failure(
+                    BackendErrorCode::InvalidState,
+                    "Dolphin shutdown encountered a running actor control task");
             }
-
-            worker.join();
-
-            std::scoped_lock lock(mutex);
+            else if (state == BackendExecutionSnapshot::ControlTaskState::Completed ||
+                     completion)
+            {
+                result = BackendResult::Failure(
+                    BackendErrorCode::InvalidState,
+                    "Dolphin shutdown encountered an unconsumed control completion");
+            }
+            else if (state == BackendExecutionSnapshot::ControlTaskState::Pending)
+            {
+                SCLOGWX(
+                    SC_TAGS("dolphin.control", "dolphin.actor_task.cancel"),
+                    "reason=backend_shutdown");
+            }
             system = nullptr;
             paused_quiescent = nullptr;
             task.reset();
             completion.reset();
             state = BackendExecutionSnapshot::ControlTaskState::Stopping;
+            return result;
         }
 
     private:
@@ -462,8 +480,8 @@ struct DolphinWrapperBackend::Impl
                 switch (owned_task.kind)
                 {
                 case BackendControlTaskKind::Pause:
+                    paused_quiescent->store(false, std::memory_order_release);
                     Core::SetState(*system, Core::State::Paused);
-                    paused_quiescent->store(true, std::memory_order_release);
                     break;
                 case BackendControlTaskKind::Resume:
                     paused_quiescent->store(false, std::memory_order_release);
@@ -474,6 +492,12 @@ struct DolphinWrapperBackend::Impl
                     Core::DoFrameStep(*system);
                     break;
                 case BackendControlTaskKind::SynchronizePaused:
+                    SCLOGDX(
+                        SC_TAGS("dolphin.control", "dolphin.synchronize_paused.begin"),
+                        "thread=%llu",
+                        static_cast<unsigned long long>(
+                            std::hash<std::thread::id>{}(
+                                std::this_thread::get_id())));
                     if (system->GetCPU().GetState() != CPU::State::Stepping)
                     {
                         completed.result = BackendResult::Failure(
@@ -491,6 +515,12 @@ struct DolphinWrapperBackend::Impl
                         return completed;
                     }
                     paused_quiescent->store(true, std::memory_order_release);
+                    SCLOGDX(
+                        SC_TAGS("dolphin.control", "dolphin.synchronize_paused.end"),
+                        "ok=1 thread=%llu",
+                        static_cast<unsigned long long>(
+                            std::hash<std::thread::id>{}(
+                                std::this_thread::get_id())));
                     break;
                 }
 
@@ -512,50 +542,12 @@ struct DolphinWrapperBackend::Impl
             return completed;
         }
 
-        void Run() noexcept
-        {
-            for (;;)
-            {
-                BackendControlTask owned_task;
-                {
-                    std::unique_lock lock(mutex);
-                    cv.wait(lock, [this]() {
-                        return stop_requested || task.has_value();
-                    });
-                    if (stop_requested && !task)
-                        break;
-                    owned_task = std::move(*task);
-                    task.reset();
-                    state = BackendExecutionSnapshot::ControlTaskState::Running;
-                }
-
-                BackendControlCompletion completed = Execute(owned_task);
-
-                std::unique_lock lock(mutex);
-                if (stop_requested)
-                    break;
-                completion.emplace(std::move(completed));
-                state = BackendExecutionSnapshot::ControlTaskState::Completed;
-                cv.notify_all();
-                cv.wait(lock, [this]() {
-                    return stop_requested ||
-                        state == BackendExecutionSnapshot::ControlTaskState::Idle;
-                });
-                if (stop_requested)
-                    break;
-            }
-        }
-
-        mutable std::mutex mutex;
-        std::condition_variable cv;
-        std::thread worker;
         Core::System* system = nullptr;
         std::atomic<bool>* paused_quiescent = nullptr;
         BackendExecutionSnapshot::ControlTaskState state =
             BackendExecutionSnapshot::ControlTaskState::Stopping;
         std::optional<BackendControlTask> task;
         std::optional<BackendControlCompletion> completion;
-        bool stop_requested = false;
     };
     std::unique_ptr<DolphinWrapper> wrapper;
     BackendOpenOptions last_open_options;
@@ -568,6 +560,8 @@ struct DolphinWrapperBackend::Impl
         DolphinBackendCpuCore::ProductionDefault;
     std::atomic<bool> paused_quiescent{false};
     ControlActuator control_actuator;
+    std::thread::id host_thread;
+    bool host_thread_declared = false;
     mutable std::uint32_t last_confirmed_pc = 0;    std::optional<std::filesystem::path> prepared_movie_path;
     std::optional<std::filesystem::path> prepared_movie_savestate;
     std::optional<std::string> prepared_movie_sha256;
@@ -613,8 +607,70 @@ struct DolphinWrapperBackend::Impl
         }
         return BackendResult::Success();
     }
+    [[nodiscard]] BackendResult BindHostThread()
+    {
+        if (host_thread_declared)
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::InvalidState,
+                "Dolphin host thread is already bound");
+        }
+        if (Core::IsHostThread())
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::InvalidState,
+                "Current thread already has an unowned Dolphin host registration");
+        }
+        host_thread = std::this_thread::get_id();
+        Core::DeclareAsHostThread();
+        host_thread_declared = true;
+        SCLOGDX(
+            SC_TAGS("dolphin.host", "dolphin.host.bind"),
+            "thread=%llu",
+            static_cast<unsigned long long>(
+                std::hash<std::thread::id>{}(host_thread)));
+        return BackendResult::Success();
+    }
+    [[nodiscard]] BackendResult RequireHostThread() const
+    {
+        if (!host_thread_declared || !Core::IsHostThread())
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::InvalidState,
+                "Dolphin backend owner is not a declared host thread");
+        }
+        if (host_thread != std::this_thread::get_id())
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::InvalidState,
+                "Dolphin backend was accessed from a non-owner thread");
+        }
+        return BackendResult::Success();
+    }
+    [[nodiscard]] BackendResult ReleaseHostThread() noexcept
+    {
+        if (!host_thread_declared)
+            return BackendResult::Success();
+        if (host_thread != std::this_thread::get_id() || !Core::IsHostThread())
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::InvalidState,
+                "Dolphin host thread cannot be released by a non-owner");
+        }
+        SCLOGDX(
+            SC_TAGS("dolphin.host", "dolphin.host.release"),
+            "thread=%llu",
+            static_cast<unsigned long long>(
+                std::hash<std::thread::id>{}(host_thread)));
+        Core::UndeclareAsHostThread();
+        host_thread = {};
+        host_thread_declared = false;
+        return BackendResult::Success();
+    }
     [[nodiscard]] BackendResult RequireOpen() const
     {
+        if (BackendResult owner = RequireHostThread(); !owner.ok)
+            return owner;
         if (!open || !wrapper)
         {
             return BackendResult::Failure(
@@ -634,8 +690,13 @@ DolphinWrapperBackend::DolphinWrapperBackend(
 
 DolphinWrapperBackend::~DolphinWrapperBackend()
 {
-    if (impl_)
+    if (impl_ && (!impl_->host_thread_declared ||
+                  impl_->host_thread == std::this_thread::get_id()))
         (void)Close();
+    else if (impl_)
+        SCLOGEX(
+            SC_TAGS("dolphin.host", "dolphin.host.invariant"),
+            "destructor refused non-owner Dolphin shutdown");
 }
 
 BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
@@ -664,6 +725,18 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
             BackendErrorCode::InvalidArgument,
             "A readable game ISO path is required");
     }
+    if (BackendResult owner = impl_->BindHostThread(); !owner.ok)
+        return owner;
+    struct HostOpenRollback
+    {
+        Impl& impl;
+        bool committed = false;
+        ~HostOpenRollback()
+        {
+            if (!committed)
+                (void)impl.ReleaseHostThread();
+        }
+    } host_rollback{*impl_};
     auto wrapper = std::make_unique<DolphinWrapper>();
 
     simboot::BootOptions boot_options;
@@ -738,6 +811,7 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
                 ex.what(),
             BackendIntegrity::Unknown);
     }
+    host_rollback.committed = true;
     return BackendResult::Success();
 }
 
@@ -828,7 +902,14 @@ MovieBackendResult DolphinWrapperBackend::StopCoreForPreparedReadOnlyMovie()
             GuestIntegrity::Unknown);
     }
 
-    impl_->control_actuator.StopAndJoin();
+    if (BackendResult actuator = impl_->control_actuator.Stop(); !actuator.ok)
+    {
+        return MovieBackendResult::Failure(
+            actuator.message.empty()
+                ? "Dolphin control actuator was not drained before core stop"
+                : actuator.message,
+            GuestIntegrity::Unknown);
+    }
     impl_->active_movie_sha256.reset();
     std::string error;
     bool stopped = false;
@@ -989,9 +1070,29 @@ DolphinWrapperBackend::DiscardPreparedReadOnlyMovie() noexcept
 
 BackendResult DolphinWrapperBackend::Close()
 {
+    if (impl_->host_thread_declared)
+    {
+        if (BackendResult owner = impl_->RequireHostThread(); !owner.ok)
+            return owner;
+    }
+    struct HostCloseRelease
+    {
+        Impl& impl;
+        ~HostCloseRelease()
+        {
+            const BackendResult released = impl.ReleaseHostThread();
+            if (!released.ok)
+            {
+                SCLOGEX(
+                    SC_TAGS("dolphin.host", "dolphin.host.invariant"),
+                    "release_failed=%s",
+                    released.message.c_str());
+            }
+        }
+    } host_release{*impl_};
     const MovieBackendResult pause_at_end =
         ReleasePauseAtPlaybackEnd();
-    impl_->control_actuator.StopAndJoin();
+    const BackendResult actuator_stop = impl_->control_actuator.Stop();
     if (!impl_->wrapper)
     {
         if (impl_->native_sink)
@@ -1021,11 +1122,13 @@ BackendResult DolphinWrapperBackend::Close()
         }
         impl_->owned_movie_restore_paths.clear();
         impl_->ResetControlState(false);
-        if (!pause_at_end.ok)
+        if (!pause_at_end.ok || !actuator_stop.ok)
         {
             return BackendResult::Failure(
                 BackendErrorCode::OperationFailed,
-                pause_at_end.message.empty()
+                !actuator_stop.ok
+                    ? actuator_stop.message
+                    : pause_at_end.message.empty()
                     ? "Dolphin pause-at-playback-end configuration was not restored"
                     : pause_at_end.message,
                 BackendIntegrity::Unknown);
@@ -1035,12 +1138,16 @@ BackendResult DolphinWrapperBackend::Close()
 
     try
     {
-        bool cleanup_ok = pause_at_end.ok &&
+        bool cleanup_ok = pause_at_end.ok && actuator_stop.ok &&
             impl_->owned_physical_plan.pcs.empty() &&
             impl_->owned_physical_plan.memory.empty();
         std::string cleanup_message;
+        if (!actuator_stop.ok)
+            cleanup_message = actuator_stop.message;
         if (!pause_at_end.ok)
         {
+            if (!cleanup_message.empty())
+                cleanup_message += "; ";
             cleanup_message = pause_at_end.message.empty()
                 ? "Dolphin pause-at-playback-end configuration was not restored"
                 : pause_at_end.message;
@@ -1192,6 +1299,20 @@ BackendResult DolphinWrapperBackend::SubmitControlTask(BackendControlTask task)
         static_cast<unsigned long long>(
             std::hash<std::thread::id>{}(std::this_thread::get_id())));
     return impl_->control_actuator.Submit(std::move(task));
+}
+
+BackendResult DolphinWrapperBackend::PumpControlTask()
+{
+    if (BackendResult open = impl_->RequireOpen(); !open.ok)
+        return open;
+    SCLOGDX(
+        SC_TAGS("dolphin.control", "dolphin.actor_pump"),
+        "actuator_state=%u thread=%llu",
+        static_cast<unsigned>(impl_->control_actuator.State()),
+        static_cast<unsigned long long>(
+            std::hash<std::thread::id>{}(std::this_thread::get_id())));
+    Core::HostDispatchJobs(*impl_->wrapper->system());
+    return impl_->control_actuator.Pump();
 }
 
 std::optional<BackendControlCompletion>

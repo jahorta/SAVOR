@@ -14,7 +14,6 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
-#include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QStyledItemDelegate>
 #include <QtWidgets/QTableView>
@@ -66,23 +65,23 @@ public:
     }
 
     int rowCount(const QModelIndex& = {}) const override {
-        return coverage_.rtc_max >= coverage_.rtc_min
-            ? static_cast<int>(coverage_.rtc_max - coverage_.rtc_min + 1) : 0;
+        return static_cast<int>(coverage_.rtc_values.size());
     }
     int columnCount(const QModelIndex& = {}) const override {
-        return coverage_.max_neutral_epochs >= 0
-            ? static_cast<int>(coverage_.max_neutral_epochs + 1) : 0;
+        return static_cast<int>(coverage_.neutral_epoch_counts.size());
     }
     QVariant data(const QModelIndex& index, int role) const override {
         const auto* cell = cellAt(index);
         if (!cell) return {};
         if (role == Qt::DisplayRole) {
+            if (!cell->requested) return QStringLiteral("Not requested");
             QString text = StageText(cell->stage);
             if (cell->lifecycle != "NOT_RUN" && cell->lifecycle != "COMPLETED")
                 text += QStringLiteral("\n%1").arg(QString::fromStdString(cell->lifecycle));
             return text;
         }
-        if (role == Qt::BackgroundRole) return QBrush(StageColor(cell->stage));
+        if (role == Qt::BackgroundRole) return QBrush(cell->requested
+            ? StageColor(cell->stage) : QColor(QStringLiteral("#1f2329")));
         if (role == Qt::ForegroundRole) return QBrush(Qt::white);
         if (role == Qt::TextAlignmentRole) return Qt::AlignCenter;
         if (role == Qt::ToolTipRole) {
@@ -91,6 +90,8 @@ public:
                 .arg(StageText(cell->stage))
                 .arg(QString::fromStdString(cell->lifecycle))
                 .arg(cell->confirmed_seed_count);
+            if (!cell->requested)
+                text += QStringLiteral("\nThis coordinate has not been requested.");
             if (!cell->diagnostic.empty()) text += QStringLiteral("\n%1").arg(QString::fromStdString(cell->diagnostic));
             return text;
         }
@@ -101,8 +102,8 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override {
         if (role != Qt::DisplayRole && role != Qt::ToolTipRole) return {};
         if (orientation == Qt::Vertical)
-            return QStringLiteral("RTC %1").arg(coverage_.rtc_min + section);
-        const auto delay = static_cast<std::int64_t>(section);
+            return QStringLiteral("RTC %1").arg(coverage_.rtc_values.at(section));
+        const auto delay = coverage_.neutral_epoch_counts.at(section);
         const auto found = preparations_.find(delay);
         const QString state = found == preparations_.end()
             ? QStringLiteral("NOT STARTED") : QString::fromStdString(found->second->state);
@@ -113,7 +114,11 @@ public:
     }
     const FirstBattleCoverageCellSnapshot* cellAt(const QModelIndex& index) const {
         if (!index.isValid()) return nullptr;
-        const auto found = cells_.find({coverage_.rtc_min + index.row(), index.column()});
+        if (index.row() >= static_cast<int>(coverage_.rtc_values.size())
+            || index.column() >= static_cast<int>(coverage_.neutral_epoch_counts.size()))
+            return nullptr;
+        const auto found = cells_.find({coverage_.rtc_values[index.row()],
+            coverage_.neutral_epoch_counts[index.column()]});
         return found == cells_.end() ? nullptr : found->second;
     }
 private:
@@ -155,14 +160,8 @@ FirstBattleCoverageWidget::FirstBattleCoverageWidget(Actions actions, QWidget* p
     auto* controls = new QHBoxLayout();
     source_ = new QComboBox(this);
     source_->setMinimumWidth(340);
-    rtcMin_ = new QSpinBox(this); rtcMin_->setRange(0, 1000000); rtcMin_->setPrefix(QStringLiteral("RTC min: "));
-    rtcMax_ = new QSpinBox(this); rtcMax_->setRange(0, 1000000); rtcMax_->setPrefix(QStringLiteral("RTC max: "));
-    maxDelay_ = new QSpinBox(this); maxDelay_->setRange(0, 10000); maxDelay_->setPrefix(QStringLiteral("Max delay: "));
     auto* refreshButton = new QPushButton(QStringLiteral("Refresh"), this);
     controls->addWidget(source_, 1);
-    controls->addWidget(rtcMin_);
-    controls->addWidget(rtcMax_);
-    controls->addWidget(maxDelay_);
     controls->addWidget(refreshButton);
     root->addLayout(controls);
     summary_ = new QLabel(QStringLiteral("Select a root DTM to view first-battle coverage."), this);
@@ -210,12 +209,9 @@ FirstBattleCoverageWidget::FirstBattleCoverageWidget(Actions actions, QWidget* p
     refresh_->setRefreshIntervalMs(1000);
     refresh_->setAutoRefreshEnabled(true);
     refresh_->setRequestBuilder([this](savorqt::gui::RefreshReason) {
-        const auto source = source_->currentData().toList();
         return FirstBattleCoverageRefreshRequest{
-            .source_annotation_attempt_id=source.value(0).toLongLong(),
-            .workflow_expansion_id=focusExpansionId_,
-            .rtc_min=rtcMin_->value(), .rtc_max=rtcMax_->value(),
-            .max_neutral_epochs=maxDelay_->value()};
+            .source_root_establishment_attempt_id=source_->currentData().toLongLong(),
+            .workflow_expansion_id=focusExpansionId_};
     });
     refresh_->setLoadAndPrepare([](FirstBattleCoverageRefreshRequest request) {
         FirstBattleCoverageRefreshData data{};
@@ -225,20 +221,22 @@ FirstBattleCoverageWidget::FirstBattleCoverageWidget(Actions actions, QWidget* p
             return savorqt::gui::AsyncRefreshResult<FirstBattleCoverageRefreshData>::Ok(std::move(data));
         }
         data.sources = sources.value;
-        if (request.source_annotation_attempt_id <= 0
+        if (request.source_root_establishment_attempt_id <= 0
             && request.workflow_expansion_id <= 0 && !data.sources.empty()) {
-            request.source_annotation_attempt_id = data.sources.front().annotation_attempt_id;
+            request.source_root_establishment_attempt_id =
+                data.sources.front().root_establishment_attempt_id;
         }
-        if (request.source_annotation_attempt_id <= 0 && request.workflow_expansion_id <= 0) {
+        if (request.source_root_establishment_attempt_id <= 0
+            && request.workflow_expansion_id <= 0) {
             data.ok = true;
             return savorqt::gui::AsyncRefreshResult<FirstBattleCoverageRefreshData>::Ok(std::move(data));
         }
         const auto coverage = savorqt::db::SavorDbWorkflowService::ReadFirstBattleCoverage({
-            .source_annotation_attempt_id=request.source_annotation_attempt_id,
+            .source_root_establishment_attempt_id=
+                request.source_root_establishment_attempt_id,
             .workflow_expansion_id=request.workflow_expansion_id > 0
-                ? std::optional<std::int64_t>(request.workflow_expansion_id) : std::nullopt,
-            .rtc_min=request.rtc_min, .rtc_max=request.rtc_max,
-            .max_neutral_epochs=request.max_neutral_epochs});
+                ? std::optional<std::int64_t>(request.workflow_expansion_id)
+                : std::nullopt});
         if (!coverage.ok) data.error = QString::fromStdString(coverage.error.message);
         else { data.ok = true; data.coverage = coverage.value; }
         return savorqt::gui::AsyncRefreshResult<FirstBattleCoverageRefreshData>::Ok(std::move(data));
@@ -251,10 +249,6 @@ FirstBattleCoverageWidget::FirstBattleCoverageWidget(Actions actions, QWidget* p
     connect(source_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
         focusExpansionId_ = 0; requestRefresh();
     });
-    const auto boundsChanged = [this](int) { focusExpansionId_ = 0; requestRefresh(); };
-    connect(rtcMin_, qOverload<int>(&QSpinBox::valueChanged), this, boundsChanged);
-    connect(rtcMax_, qOverload<int>(&QSpinBox::valueChanged), this, boundsChanged);
-    connect(maxDelay_, qOverload<int>(&QSpinBox::valueChanged), this, boundsChanged);
     connect(table_->selectionModel(), &QItemSelectionModel::selectionChanged,
         this, [this]() { refreshSelectionDetails(); });
     connect(table_, &QTableView::doubleClicked, this, [this](const QModelIndex&) { openSelectedWorkflow(); });
@@ -281,25 +275,20 @@ void FirstBattleCoverageWidget::requestRefresh() {
 
 void FirstBattleCoverageWidget::applyRefresh(const FirstBattleCoverageRefreshData& data) {
     if (!data.ok) { summary_->setText(data.error); return; }
-    const auto selectedAnnotation = data.coverage.source_annotation_attempt_id.value_or(
+    const auto selectedRoot = data.coverage.source_root_establishment_attempt_id.value_or(
         source_->currentData().toLongLong());
     source_->blockSignals(true);
     source_->clear();
     int sourceIndex = -1;
     for (const auto& option : data.sources) {
         source_->addItem(QString::fromStdString(option.display_name),
-            option.annotation_attempt_id);
-        if (option.annotation_attempt_id == selectedAnnotation)
+            option.root_establishment_attempt_id);
+        if (option.root_establishment_attempt_id == selectedRoot)
             sourceIndex = source_->count() - 1;
     }
     if (sourceIndex >= 0) source_->setCurrentIndex(sourceIndex);
     source_->blockSignals(false);
-    if (focusExpansionId_ > 0 && data.coverage.source_dtm_artifact_id > 0) {
-        rtcMin_->blockSignals(true); rtcMax_->blockSignals(true); maxDelay_->blockSignals(true);
-        rtcMin_->setValue(static_cast<int>(data.coverage.rtc_min));
-        rtcMax_->setValue(static_cast<int>(data.coverage.rtc_max));
-        maxDelay_->setValue(static_cast<int>(data.coverage.max_neutral_epochs));
-        rtcMin_->blockSignals(false); rtcMax_->blockSignals(false); maxDelay_->blockSignals(false);
+    if (focusExpansionId_ > 0 && data.coverage.source_root_establishment_attempt_id) {
         focusExpansionId_ = 0;
     }
     std::set<std::pair<std::int64_t, std::int64_t>> selected;
@@ -311,8 +300,13 @@ void FirstBattleCoverageWidget::applyRefresh(const FirstBattleCoverageRefreshDat
     QItemSelection selection;
     for (int row = 0; row < table_->model()->rowCount(); ++row)
         for (int column = 0; column < table_->model()->columnCount(); ++column)
-            if (selected.contains({coverage_.rtc_min + row, column})) {
-                const auto index = table_->model()->index(row, column);
+            if (const auto index = table_->model()->index(row, column);
+                [&] {
+                    const auto* cell = static_cast<CoverageTableModel*>(
+                        table_->model())->cellAt(index);
+                    return cell && selected.contains(
+                        {cell->rtc_value, cell->neutral_epoch_count});
+                }()) {
                 selection.select(index, index);
             }
     table_->selectionModel()->select(selection, QItemSelectionModel::Select);
@@ -323,9 +317,13 @@ void FirstBattleCoverageWidget::applyRefresh(const FirstBattleCoverageRefreshDat
         if (cell.retryable || cell.invariant_violation) ++attention;
         if (cell.active) ++active;
     }
-    summary_->setText(QStringLiteral("%1 RTC rows × %2 delay columns · %3 Battle tested · %4 Seed probed · %5 active · %6 attention")
-        .arg(table_->model()->rowCount()).arg(table_->model()->columnCount())
-        .arg(tested).arg(probed).arg(active).arg(attention));
+    if (coverage_.cells.empty())
+        summary_->setText(QStringLiteral(
+            "No expansion targets have been requested for this TAS route."));
+    else
+        summary_->setText(QStringLiteral("%1 RTC rows × %2 delay columns · %3 Battle tested · %4 Seed probed · %5 active · %6 attention")
+            .arg(table_->model()->rowCount()).arg(table_->model()->columnCount())
+            .arg(tested).arg(probed).arg(active).arg(attention));
     refreshSelectionDetails();
 }
 
@@ -369,7 +367,8 @@ void FirstBattleCoverageWidget::launchSelected() {
         if (const auto* cell = model->cellAt(index)) selected.insert({cell->neutral_epoch_count, cell->rtc_value});
     if (selected.empty()) return;
     LaunchMissingFirstBattleCoverageRequest request{};
-    request.source_annotation_attempt_id = source_->currentData().toLongLong();
+    request.source_root_establishment_attempt_id =
+        source_->currentData().toLongLong();
     request.targets.assign(selected.begin(), selected.end());
     request.created_by = "SavorQt.FirstBattleCoverage";
     operationInFlight_ = true; refreshSelectionDetails();

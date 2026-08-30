@@ -20,7 +20,6 @@ CREATE TABLE IF NOT EXISTS au_workflow_graph_revision (
     execution_shape TEXT NOT NULL DEFAULT 'WORKFLOW' CHECK(execution_shape IN ('WORKFLOW', 'EXPANSION')),
     expansion_kind TEXT NOT NULL DEFAULT '',
     parent_revision_id INTEGER NULL,
-    status TEXT NOT NULL DEFAULT 'active',
     created_at_utc INTEGER NOT NULL,
     FOREIGN KEY(workflow_graph_id) REFERENCES au_workflow_graph(workflow_graph_id),
     FOREIGN KEY(parent_revision_id) REFERENCES au_workflow_graph_revision(workflow_graph_revision_id),

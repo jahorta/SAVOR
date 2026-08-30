@@ -4,6 +4,7 @@
 #include <QtCore/QObject>
 #include <QtCore/QString>
 #include <QtCore/QStringList>
+#include <QtCore/QTimer>
 
 #include <cstdint>
 #include <memory>
@@ -141,6 +142,7 @@ private:
     QFutureWatcher<void> startup_cleanup_watcher_;
     std::shared_ptr<CoordinatorShutdownSharedState> shutdown_state_;
     QFutureWatcher<CoordinatorShutdownResult> shutdown_watcher_;
+    QTimer snapshot_refresh_timer_;
     CoordinatorLifecycleState lifecycle_state_ =
         CoordinatorLifecycleState::Stopped;
     std::uint64_t startup_generation_ = 0;

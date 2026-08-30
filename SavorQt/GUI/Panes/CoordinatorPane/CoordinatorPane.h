@@ -30,14 +30,15 @@ public:
     };
 
     explicit CoordinatorPane(QWidget* parent = nullptr);
+    ~CoordinatorPane() override;
     CoordinatorController* controller() const;
-    void setPageActive(bool active);
     void startCoordinator();
     void stopCoordinator();
     void togglePaused();
     void setTargetWorkers(int targetWorkers);
     void setVisualWorkerPoolEnabled(bool enabled);
     void showVisualWorkers();
+    void closeVisualWorkersForApplicationClose();
 
 signals:
     void settingsNavigationRequested(SettingsFocusTarget target);
@@ -68,7 +69,6 @@ private:
     void syncVisualWorkerDashboard();
 
     CoordinatorController* controller_ = nullptr;
-    savorqt::gui::RefreshCoordinator* refreshCoordinator_ = nullptr;
     WorkerTableModel* workerTableModel_ = nullptr;
 
     QPushButton* startButton_ = nullptr;

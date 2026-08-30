@@ -355,6 +355,7 @@ struct ExecutionControlCore::Impl
     std::size_t next_control_history = 0;
     std::uint64_t next_control_sequence = 1;
     std::optional<PendingBackendControl> pending_backend_control;
+    bool actor_follow_up_required = false;
     std::uint64_t next_unrouted_pause_incident = 1;
     std::uint64_t next_operation = 1;
     std::uint64_t next_frame = 1;
@@ -874,6 +875,11 @@ struct ExecutionControlCore::Impl
     {
         while (pending_backend_control)
         {
+            BackendResult pumped = CallBackend(
+                "pump Dolphin actor control task",
+                [&] { return backend.PumpControlTask(); });
+            if (!pumped.ok)
+                return pumped;
             std::optional<BackendControlCompletion> completion;
             try
             {
@@ -2883,6 +2889,7 @@ void ExecutionControlCore::Pump()
     {
         return;
     }
+    impl_->actor_follow_up_required = false;
     const auto current = impl_->now();
     const auto drain_authoritative_ingress = [this] {
         for (StopRouteReceipt& receipt : impl_->stop_points.DrainIngress())
@@ -2902,6 +2909,25 @@ void ExecutionControlCore::Pump()
 
     if (impl_->pending_backend_control)
     {
+        BackendResult pumped = impl_->CallBackend(
+            "pump Dolphin actor control task",
+            [&] { return impl_->backend.PumpControlTask(); });
+        if (!pumped.ok)
+        {
+            if (impl_->active)
+            {
+                Impl::ActiveOperation failed = std::move(*impl_->active);
+                impl_->active.reset();
+                const ExecutionObservation observed = impl_->Query();
+                impl_->EmitTerminal(
+                    std::move(failed),
+                    ExecutionTerminalStatus::CleanupFailure,
+                    BackendError("Dolphin host control pump failed", pumped),
+                    std::nullopt,
+                    &observed);
+            }
+            return;
+        }
         std::optional<BackendControlCompletion> completion;
         try
         {
@@ -2979,6 +3005,7 @@ void ExecutionControlCore::Pump()
         // The exact completion has now been consumed and the actuator is Idle.
         // End this pump at the consumption boundary. A later pump drains any
         // resulting route before observing Dolphin or admitting another task.
+        impl_->actor_follow_up_required = true;
         return;
     }
 
@@ -3396,6 +3423,13 @@ void ExecutionControlCore::Pump()
         break;
     }
     }
+}
+
+bool ExecutionControlCore::has_immediate_work() const noexcept
+{
+    return impl_ && impl_->initialized && !impl_->stopping &&
+        (impl_->pending_backend_control.has_value() ||
+         impl_->actor_follow_up_required);
 }
 
 std::vector<ExecutionEvent> ExecutionControlCore::DrainEvents()

@@ -331,7 +331,6 @@ struct WorkflowGraphSnapshot {
     std::string graph_hash;
     std::string execution_shape = "WORKFLOW";
     std::string expansion_kind;
-    std::string status;
     std::vector<WorkflowGraphNodeSnapshot> nodes;
     std::vector<WorkflowGraphEdgeSnapshot> edges;
 };
@@ -719,6 +718,9 @@ struct IAuthoringDb {
 
     virtual std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(
         std::int64_t workflow_graph_id) const = 0;
+
+    virtual std::optional<WorkflowGraphSnapshot> GetWorkflowGraphByName(
+        const std::string& name) const = 0;
 
     virtual std::optional<WorkflowGraphSnapshot> GetWorkflowGraphRevision(
         std::int64_t workflow_graph_revision_id) const = 0;

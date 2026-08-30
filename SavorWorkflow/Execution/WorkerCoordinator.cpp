@@ -5,6 +5,7 @@
 #endif
 
 #include <algorithm>
+#include <charconv>
 #include <exception>
 #include <fstream>
 #include <limits>
@@ -1323,6 +1324,20 @@ void WorkerCoordinator::QuarantineWorkerGeneration(
     }
 }
 
+namespace {
+std::optional<std::int64_t> ParseTelemetryJobId(
+    const std::string& value) {
+    std::int64_t parsed = 0;
+    const auto result = std::from_chars(
+        value.data(), value.data() + value.size(), parsed);
+    if (result.ec != std::errc{} ||
+        result.ptr != value.data() + value.size() || parsed <= 0) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+} // namespace
+
 WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
     WorkerExecutionTarget target,
     const savor::runtime::WorkerWorksetDefinition& workset,
@@ -1490,13 +1505,23 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
     }
 
     if (!idempotent_retry) {
+        WorksetRoute route{
+            .worker_id = slot->id,
+            .process_generation = generation,
+        };
+        route.job_ids_by_ordinal.resize(workset.items.size());
+        route.program_kind = static_cast<int>(
+            workset.phase_invocation.program_package.identity.program_kind);
+        for (const auto& item : workset.items) {
+            if (item.ordinal < route.job_ids_by_ordinal.size()) {
+                route.job_ids_by_ordinal[item.ordinal] =
+                    ParseTelemetryJobId(item.correlation.durable_job_id);
+            }
+        }
         std::lock_guard<std::mutex> routes_lock(routes_mutex_);
         const auto [route_it, inserted] = routes_.emplace(
             workset_id,
-            WorksetRoute{
-                .worker_id = slot->id,
-                .process_generation = generation,
-            });
+            std::move(route));
         (void)route_it;
         if (!inserted) {
             std::lock_guard<std::mutex> slot_lock(slot->mutex);
@@ -2806,6 +2831,9 @@ void WorkerCoordinator::CompleteWorkerSlotStart(
                 slot->last_start_error);
         }
     }
+    RefreshStartResult(
+        ready ? std::string{} : validation_error);
+    NotifyAvailabilityChanged();
     if (rejected_worker) {
         if (stopping_.load(std::memory_order_acquire)) {
             rejected_worker->begin_stop();
@@ -2813,9 +2841,6 @@ void WorkerCoordinator::CompleteWorkerSlotStart(
             rejected_worker->stop();
         }
     }
-    RefreshStartResult(
-        ready ? std::string{} : validation_error);
-    NotifyAvailabilityChanged();
 }
 
 void WorkerCoordinator::StopWorkerSlot(const WorkerSlotPtr& slot) {
@@ -3373,6 +3398,10 @@ void WorkerCoordinator::HandleWorksetState(
             worker_status_.UpdateState(
                 ToTelemetryWorkerId(worker_id),
                 WorkerStateKind::Idle);
+            worker_status_.SetCurrentJob(
+                ToTelemetryWorkerId(worker_id),
+                std::nullopt,
+                std::nullopt);
         } else if (
             payload.state == savor::wrms::WorksetStateCode::Admitted
             || payload.state
@@ -3425,9 +3454,26 @@ void WorkerCoordinator::HandleItemStarted(
     if (!context.has_value()) {
         return;
     }
+    std::optional<std::int64_t> job_id;
+    std::optional<int> program_kind;
+    {
+        std::lock_guard<std::mutex> routes_lock(routes_mutex_);
+        const auto route = routes_.find(payload.workset_id);
+        if (route != routes_.end() &&
+            route->second.worker_id == worker_id &&
+            route->second.process_generation == process_generation &&
+            payload.item_ordinal <
+                route->second.job_ids_by_ordinal.size()) {
+            job_id = route->second.job_ids_by_ordinal[
+                payload.item_ordinal];
+            program_kind = route->second.program_kind;
+        }
+    }
     worker_status_.UpdateState(
         ToTelemetryWorkerId(worker_id),
         WorkerStateKind::Running);
+    worker_status_.SetCurrentJob(
+        ToTelemetryWorkerId(worker_id), job_id, program_kind);
     worker_status_.RecordHeartbeat(ToTelemetryWorkerId(worker_id));
 
     std::function<void(
@@ -3457,7 +3503,8 @@ void WorkerCoordinator::HandleItemProgress(
         payload.display_text.empty()
             ? "workset progress ordinal "
                 + std::to_string(payload.ordinal)
-            : payload.display_text);
+            : payload.display_text,
+        ParseTelemetryJobId(payload.durable_job_id));
 
     std::function<void(
         const WorkerCoordinatorEventContext&,
@@ -3480,6 +3527,7 @@ void WorkerCoordinator::HandleItemTerminal(
     if (!context.has_value()) {
         return;
     }
+    std::optional<std::int64_t> terminal_job_id;
     {
         std::lock_guard<std::mutex> routes_lock(routes_mutex_);
         const auto route_it = routes_.find(payload.workset_id);
@@ -3491,9 +3539,18 @@ void WorkerCoordinator::HandleItemTerminal(
         }
         route_it->second.retained_terminals.insert(
             TerminalKey(payload));
+        if (payload.item_ordinal <
+            route_it->second.job_ids_by_ordinal.size()) {
+            terminal_job_id = route_it->second.job_ids_by_ordinal[
+                payload.item_ordinal];
+        }
     }
     ++terminal_envelopes_;
     worker_status_.RecordHeartbeat(ToTelemetryWorkerId(worker_id));
+    if (terminal_job_id) {
+        worker_status_.ClearCurrentJobIf(
+            ToTelemetryWorkerId(worker_id), *terminal_job_id);
+    }
 
     std::function<void(const WorkerTerminalEnvelope&)> callback;
     {

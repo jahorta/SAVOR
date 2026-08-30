@@ -74,9 +74,10 @@ private:
 
 } // namespace
 
-VisualWorkerDashboardWindow::VisualWorkerDashboardWindow(QWidget* parent)
-    : PersistentToolWindow(parent)
+VisualWorkerDashboardWindow::VisualWorkerDashboardWindow()
+    : PersistentToolWindow(nullptr)
 {
+    setAttribute(Qt::WA_QuitOnClose, false);
     setWindowTitle(QStringLiteral("Visual Workers"));
     resize(1180, 760);
 

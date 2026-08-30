@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 
+#include <QtGui/QCloseEvent>
+
 #include "GUI/Panes/ArtifactsPane/ArtifactsPage.h"
 #include "GUI/Panes/ArchivePane/ArchiveWorkbenchPage.h"
 #include "GUI/Panes/JobBuilderPane/WorkflowGraphEditorWindow.h"
@@ -113,6 +115,18 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow()
 {
+    shutdownCoordinator();
+}
+
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    QMainWindow::closeEvent(event);
+    if (!event->isAccepted()) {
+        return;
+    }
+    if (coordinatorPane_ != nullptr) {
+        coordinatorPane_->closeVisualWorkersForApplicationClose();
+    }
     shutdownCoordinator();
 }
 
@@ -449,7 +463,6 @@ void MainWindow::showSetupLauncherPreselected(const QString& unitKind,const QStr
 void MainWindow::openFocusedTool(FocusedTool tool)
 {
     if (tool == FocusedTool::Workers) {
-        coordinatorPane_->setPageActive(true);
         coordinatorPane_->show();
         coordinatorPane_->raise();
         coordinatorPane_->activateWindow();

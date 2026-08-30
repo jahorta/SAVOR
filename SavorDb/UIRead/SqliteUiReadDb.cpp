@@ -1307,6 +1307,18 @@ std::optional<UiWorkflowDetail> SqliteUiReadDb::GetWorkflowDetail(
     return detail;
 }
 
+std::vector<UiWorkflowDetail> SqliteUiReadDb::GetWorkflowDetails(
+    const std::vector<std::int64_t>& workflow_instance_ids) const {
+    std::vector<UiWorkflowDetail> details;
+    details.reserve(workflow_instance_ids.size());
+    for (const std::int64_t workflow_instance_id : workflow_instance_ids) {
+        if (auto detail = GetWorkflowDetail(workflow_instance_id); detail.has_value()) {
+            details.push_back(std::move(*detail));
+        }
+    }
+    return details;
+}
+
 UiReadPage<UiBattleGroupSummary> SqliteUiReadDb::ListBattleGroups(
     const UiBattleGroupListQuery& query) const {
     UiReadPage<UiBattleGroupSummary> page{};

@@ -65,7 +65,7 @@ bool WaitForWorkflow(
             return Fail(std::move(message), error_out);
         }
         const auto telemetry = runtime.SnapshotTelemetry();
-        if (telemetry.execution.invariant_paused) {
+        if (telemetry.execution.invariant_admission_paused) {
             return Fail(telemetry.execution.last_error.empty()
                 ? std::string(label) + " coordinator entered an invariant pause"
                 : telemetry.execution.last_error, error_out);

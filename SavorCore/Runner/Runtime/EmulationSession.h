@@ -130,6 +130,7 @@ public:
         InterruptionHandlerOutcome outcome,
         std::string diagnostic = {});
     void PumpExecution();
+    [[nodiscard]] bool execution_has_immediate_work() const noexcept;
     [[nodiscard]] std::vector<ExecutionEvent> DrainExecutionEvents();
     [[nodiscard]] std::optional<ExecutionSnapshot> execution_snapshot() const;
     [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>

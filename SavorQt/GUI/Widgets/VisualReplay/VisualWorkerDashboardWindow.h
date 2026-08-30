@@ -27,7 +27,7 @@ class VisualWorkerDashboardWindow final : public PersistentToolWindow
     Q_OBJECT
 
 public:
-    explicit VisualWorkerDashboardWindow(QWidget* parent = nullptr);
+    VisualWorkerDashboardWindow();
 
     void ensureWorkerCount(int count);
     void releaseWorkersFrom(int firstWorkerIndex);

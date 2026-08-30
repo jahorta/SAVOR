@@ -448,8 +448,8 @@ INSERT INTO au_workflow_graph(
     workflow_graph_id,name,description,active_revision_id,created_at_utc)
 VALUES(201,'contract-graph','migration fixture',NULL,1);
 INSERT INTO au_workflow_graph_revision(
-    workflow_graph_revision_id,workflow_graph_id,graph_version,graph_hash,status,created_at_utc)
-VALUES(202,201,1,'contract-graph-hash','active',1);
+    workflow_graph_revision_id,workflow_graph_id,graph_version,graph_hash,created_at_utc)
+VALUES(202,201,1,'contract-graph-hash',1);
 UPDATE au_workflow_graph SET active_revision_id=202 WHERE workflow_graph_id=201;
 INSERT INTO au_workflow_graph_revision_node(
     workflow_graph_revision_node_id,workflow_graph_revision_id,node_key,unit_kind,
@@ -7244,11 +7244,28 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresDirectBattlePlanWithou
     EXPECT_EQ(active_graph->parent_revision_id.value_or(0), saved.workflow_graph_revision_id);
     EXPECT_EQ(active_graph->nodes[2].authored_ref_id.value_or(0), 88);
 
+    ASSERT_TRUE(authoring_db->SetWorkflowGraphHidden(saved.workflow_graph_id, true, &err)) << err;
+    const auto active_graph_by_name = authoring_db->GetWorkflowGraphByName(active_graph->name);
+    ASSERT_TRUE(active_graph_by_name.has_value());
+    EXPECT_TRUE(active_graph_by_name->hidden);
+    EXPECT_EQ(active_graph_by_name->workflow_graph_revision_id, revised.workflow_graph_revision_id);
+
     const auto first_revision = authoring_db->GetWorkflowGraphRevision(saved.workflow_graph_revision_id);
     ASSERT_TRUE(first_revision.has_value());
     EXPECT_EQ(first_revision->workflow_graph_id, saved.workflow_graph_id);
     EXPECT_EQ(first_revision->workflow_graph_revision_id, saved.workflow_graph_revision_id);
     EXPECT_EQ(first_revision->nodes[2].authored_ref_id.value_or(0), 77);
+
+    sqlite3_stmt* status_column = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1) FROM pragma_table_info('au_workflow_graph_revision') WHERE name='status';",
+        -1,
+        &status_column,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(status_column));
+    EXPECT_EQ(sqlite3_column_int64(status_column, 0), 0);
+    sqlite3_finalize(status_column);
 
     sqlite3_stmt* revision_counts = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(

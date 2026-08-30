@@ -64,6 +64,14 @@ void WorkerStatusRegistry::UpdateState(int64_t worker_id, WorkerStateKind s) {
     if (it == workers_.end()) return;
     auto& wr = it->second;
     wr.state = s;
+    if (s == WorkerStateKind::Spawning ||
+        s == WorkerStateKind::Idle ||
+        s == WorkerStateKind::Exiting ||
+        s == WorkerStateKind::Stopping ||
+        s == WorkerStateKind::Dead) {
+        wr.job_id.reset();
+        wr.program_kind.reset();
+    }
     wr.last_state_change_mono_ns = NowMonoNs();
 }
 
@@ -78,6 +86,19 @@ void WorkerStatusRegistry::SetCurrentJob(int64_t worker_id, std::optional<int64_
     }
     wr.job_id = job_id;
     wr.program_kind = program_kind;
+}
+
+void WorkerStatusRegistry::ClearCurrentJobIf(
+    int64_t worker_id,
+    int64_t expected_job_id) {
+    std::unique_lock rk(mtx_);
+    auto it = workers_.find(worker_id);
+    if (it == workers_.end() ||
+        it->second.job_id != std::optional<int64_t>(expected_job_id)) {
+        return;
+    }
+    it->second.job_id.reset();
+    it->second.program_kind.reset();
 }
 
 void WorkerStatusRegistry::SetLeaseInfo(int64_t worker_id, std::optional<int64_t> lease_expires_at, int attempts, int max_attempts) {

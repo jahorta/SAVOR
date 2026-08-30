@@ -32,6 +32,15 @@ struct WorkflowExpansionTarget {
     auto operator<=>(const WorkflowExpansionTarget&) const = default;
 };
 
+struct WorkflowExpansionArgumentValue {
+    std::string member_role;
+    std::string argument_key;
+    std::string value_type;
+    std::optional<std::int64_t> integer_value;
+    std::optional<std::string> text_value;
+    std::string source_kind = "expansion";
+};
+
 std::vector<WorkflowExpansionTarget> NormalizeExactFirstBattleExpansionTargets(
     const std::vector<WorkflowExpansionTarget>& requested);
 
@@ -43,6 +52,7 @@ struct WorkflowExpansionCreateRequest {
     std::optional<std::int64_t> rtc_max;
     std::int64_t max_neutral_epochs = 0;
     std::vector<WorkflowExpansionTarget> targets;
+    std::vector<WorkflowExpansionArgumentValue> arguments;
     std::string created_by;
 };
 
@@ -68,6 +78,7 @@ struct WorkflowExpansionSnapshot {
     std::optional<std::int64_t> source_annotation_attempt_id;
     std::optional<std::int64_t> source_root_establishment_attempt_id;
     std::vector<WorkflowExpansionTarget> targets;
+    std::vector<WorkflowExpansionArgumentValue> arguments;
     std::vector<WorkflowExpansionMemberSnapshot> members;
 };
 
@@ -98,6 +109,7 @@ struct FirstBattleDelayPreparationSnapshot {
 struct FirstBattleCoverageCellSnapshot {
     std::int64_t rtc_value = 0;
     std::int64_t neutral_epoch_count = 0;
+    bool requested = false;
     FirstBattleCoverageStage stage = FirstBattleCoverageStage::NotRun;
     std::string lifecycle = "NOT_RUN";
     std::int64_t confirmed_seed_count = 0;
@@ -110,26 +122,22 @@ struct FirstBattleCoverageCellSnapshot {
 };
 
 struct FirstBattleCoverageQuery {
-    std::int64_t source_annotation_attempt_id = 0;
+    std::int64_t source_root_establishment_attempt_id = 0;
     std::optional<std::int64_t> workflow_expansion_id;
-    std::int64_t rtc_min = 0;
-    std::int64_t rtc_max = 0;
-    std::int64_t max_neutral_epochs = 0;
 };
 
 struct FirstBattleCoverageSnapshot {
     std::int64_t source_dtm_artifact_id = 0;
     std::optional<std::int64_t> source_annotation_attempt_id;
     std::optional<std::int64_t> source_root_establishment_attempt_id;
-    std::int64_t rtc_min = 0;
-    std::int64_t rtc_max = 0;
-    std::int64_t max_neutral_epochs = 0;
+    std::vector<std::int64_t> rtc_values;
+    std::vector<std::int64_t> neutral_epoch_counts;
     std::vector<FirstBattleDelayPreparationSnapshot> delay_preparations;
     std::vector<FirstBattleCoverageCellSnapshot> cells;
 };
 
 struct LaunchMissingFirstBattleCoverageRequest {
-    std::int64_t source_annotation_attempt_id = 0;
+    std::int64_t source_root_establishment_attempt_id = 0;
     std::vector<WorkflowExpansionTarget> targets;
     std::string created_by;
 };

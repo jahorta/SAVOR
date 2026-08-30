@@ -60,7 +60,7 @@ struct CoordinatorRuntimeTelemetry {
     savor::db::execution::programdb::ResultStagingCleanupTelemetry
         result_staging_cleanup;
     bool worker_admission_paused = false;
-    std::vector<JobExecutionWorkerLaneSnapshot> lanes;
+    std::vector<JobExecutionWorkerDispatchSnapshot> worker_dispatches;
     std::optional<savor::db::execution::ExecutionQueueTelemetrySnapshot>
         execution_db_queue;
 };

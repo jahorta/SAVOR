@@ -681,12 +681,13 @@ QString workflowCurrentText(
     return QStringLiteral("--");
 }
 
-RunningWorkflowRow prepareWorkflowRow(const savor::db::UiWorkflowInstanceSummary& workflow)
+RunningWorkflowRow prepareWorkflowRow(
+    const savor::db::UiWorkflowInstanceSummary& workflow,
+    const savor::db::UiWorkflowDetail* workflowDetail)
 {
-    const auto detailResult = savorqt::db::SavorDbWorkflowService::GetWorkflowDetail(workflow.workflow_instance_id);
     const std::optional<savor::db::UiWorkflowDetail> detail =
-        detailResult.ok
-            ? std::optional<savor::db::UiWorkflowDetail>{ detailResult.value }
+        workflowDetail != nullptr
+            ? std::optional<savor::db::UiWorkflowDetail>{ *workflowDetail }
             : std::nullopt;
 
     qint64 total = 0;
@@ -747,6 +748,24 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     const auto workflowCountsResult = savorqt::db::SavorDbWorkflowService::CountWorkflowDisplayStates();
     const auto expansions = savorqt::db::SavorDbWorkflowService::ListWorkflowExpansions(false);
 
+    std::set<std::int64_t> requestedWorkflowDetailIds;
+    if (workflows.ok) {
+        for (const auto& workflow : workflows.value.items) {
+            requestedWorkflowDetailIds.insert(workflow.workflow_instance_id);
+        }
+    }
+    if (expansions.ok) {
+        for (const auto& expansion : expansions.value) {
+            for (const auto& member : expansion.members) {
+                requestedWorkflowDetailIds.insert(member.workflow_instance_id);
+            }
+        }
+    }
+    const std::vector<std::int64_t> requestedWorkflowDetails(
+        requestedWorkflowDetailIds.begin(), requestedWorkflowDetailIds.end());
+    const auto workflowDetails =
+        savorqt::db::SavorDbWorkflowService::GetWorkflowDetails(requestedWorkflowDetails);
+
     savor::db::UiReadJobListQuery jobQuery{};
     const auto jobs = savorqt::db::SavorDbJobService::FetchJobsPage(jobQuery, std::nullopt, std::nullopt, 100);
     const auto jobCounts = savorqt::db::SavorDbJobService::CountJobsByState(jobQuery);
@@ -766,11 +785,15 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     const bool hasValidation = !request.validation.trimmed().isEmpty();
 
     RunningRefreshData data;
-    data.workflowsOk = workflows.ok && workflowCountsResult.ok && expansions.ok;
+    data.workflowsOk = workflows.ok && workflowCountsResult.ok && expansions.ok && workflowDetails.ok;
     data.jobsOk = jobs.ok && jobCounts.ok;
     data.workflowError = !workflows.ok
         ? qs(workflows.error.message)
-        : (workflowCountsResult.ok ? QString() : qs(workflowCountsResult.error.message));
+        : (!workflowCountsResult.ok
+            ? qs(workflowCountsResult.error.message)
+            : (!expansions.ok
+                ? qs(expansions.error.message)
+                : (workflowDetails.ok ? QString() : qs(workflowDetails.error.message))));
     data.jobError = !jobs.ok ? qs(jobs.error.message) : (jobCounts.ok ? QString() : qs(jobCounts.error.message));
     data.controllerAvailable = request.controllerAvailable;
     data.hasValidation = hasValidation;
@@ -833,15 +856,21 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
             familyWorkflowIds.insert(member.workflow_instance_id);
     data.workflowRows.reserve(workflowItems.size() +
         (expansions.ok ? expansions.value.size() * 4u : 0u));
+    const auto findWorkflowDetail = [&](std::int64_t workflowInstanceId) -> const savor::db::UiWorkflowDetail* {
+        if (!workflowDetails.ok) return nullptr;
+        const auto found = std::find_if(workflowDetails.value.begin(), workflowDetails.value.end(), [&](const auto& detail) {
+            return detail.instance.workflow_instance_id == workflowInstanceId;
+        });
+        return found != workflowDetails.value.end() ? &*found : nullptr;
+    };
     if (expansions.ok) for (const auto& expansion : expansions.value) {
         qint64 completed = 0;
         qint64 retryable = 0;
         for (const auto& member : expansion.members) {
             if (member.state == "COMPLETED") ++completed;
-            const auto found = std::find_if(workflowItems.begin(), workflowItems.end(), [&](const auto& row) {
-                return row.workflow_instance_id == member.workflow_instance_id;
-            });
-            if (found != workflowItems.end()) retryable += found->retryable_job_count;
+            if (const auto* detail = findWorkflowDetail(member.workflow_instance_id); detail != nullptr) {
+                retryable += detail->instance.retryable_job_count;
+            }
         }
         const QString kind = expansion.kind == savor::db::execution::workflow::WorkflowExpansionKind::TasMovieFirstBattleExploration
             ? QStringLiteral("First Battle Exploration") : QStringLiteral("Delay Exploration");
@@ -854,21 +883,30 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
             completed, static_cast<qint64>(expansion.members.size())-completed,
             expansion.state=="ATTENTION" ? 1 : 0, 0});
         for (const auto& member : expansion.members) {
-            data.workflowRows.push_back({
-                member.workflow_instance_id, member.workflow_instance_id,
-                expansion.workflow_expansion_id, false,
-                QStringLiteral("    ↳ #%1").arg(member.workflow_instance_id),
-                QStringLiteral("%1 · delay %2%3").arg(qs(member.role)).arg(member.neutral_epoch_count)
-                    .arg(member.rtc_value ? QStringLiteral(" · RTC %1").arg(*member.rtc_value) : QString()),
-                qs(member.state), 0, QStringLiteral("Child workflow"), QStringLiteral("--"),
-                member.state=="COMPLETED" ? 1 : 0,
-                member.state=="COMPLETED" ? 0 : 1,
-                (member.state=="FAILED" || member.state=="INTERRUPTED") ? 1 : 0, 0});
+            const QString memberKind = QStringLiteral("%1 · delay %2%3")
+                .arg(qs(member.role)).arg(member.neutral_epoch_count)
+                .arg(member.rtc_value ? QStringLiteral(" · RTC %1").arg(*member.rtc_value) : QString());
+            if (const auto* detail = findWorkflowDetail(member.workflow_instance_id); detail != nullptr) {
+                RunningWorkflowRow row = prepareWorkflowRow(detail->instance, detail);
+                row.expansionId = expansion.workflow_expansion_id;
+                row.workflow = QStringLiteral("    ↳ #%1").arg(member.workflow_instance_id);
+                row.kind = memberKind;
+                data.workflowRows.push_back(std::move(row));
+            } else {
+                data.workflowRows.push_back({
+                    member.workflow_instance_id, member.workflow_instance_id,
+                    expansion.workflow_expansion_id, false,
+                    QStringLiteral("    ↳ #%1").arg(member.workflow_instance_id),
+                    memberKind, qs(member.state), 0,
+                    QStringLiteral("Workflow details unavailable"), QStringLiteral("--"),
+                    0, 0, 0, 0});
+            }
         }
     }
     for (const auto& workflow : workflowItems) {
         if (familyWorkflowIds.contains(workflow.workflow_instance_id)) continue;
-        data.workflowRows.push_back(prepareWorkflowRow(workflow));
+        data.workflowRows.push_back(prepareWorkflowRow(
+            workflow, findWorkflowDetail(workflow.workflow_instance_id)));
     }
 
     data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Queued"), jobBuckets.queued));

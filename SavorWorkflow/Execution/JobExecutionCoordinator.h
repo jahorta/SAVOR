@@ -60,7 +60,9 @@ struct JobExecutionCoordinatorConfig {
     std::chrono::milliseconds terminal_retry_max_interval{30000};
     std::chrono::milliseconds blob_readiness_retry_interval{1000};
     std::chrono::milliseconds blob_readiness_retry_max_interval{30000};
-    std::size_t worker_queue_capacity = 2;
+    // Global preparation capacity per currently ready worker. Prepared
+    // worksets are not owned by a worker until submission begins.
+    std::size_t prepared_worksets_per_ready_worker = 2;
     std::size_t terminal_persistence_threads = 4;
     std::size_t worker_event_batch_size = 32;
     std::chrono::milliseconds worker_event_collection_delay{2};
@@ -82,27 +84,25 @@ struct JobExecutionCoordinatorWarning {
     std::string detail;
 };
 
-enum class WorkerSchedulerAffinityState : std::uint8_t {
-    Cold = 0,
-    Projected,
-    Actual,
+enum class JobExecutionWorkerDispatchState : std::uint8_t {
+    Unavailable = 0,
+    Ready,
+    Submitting,
+    Active,
+    Draining,
 };
 
-struct JobExecutionWorkerLaneSnapshot {
+struct JobExecutionWorkerDispatchSnapshot {
     std::size_t worker_id = 0;
     std::uint64_t process_generation = 0;
-    std::size_t reservations = 0;
-    std::size_t reconstructing = 0;
-    std::size_t waiting_queue_depth = 0;
+    JobExecutionWorkerDispatchState state =
+        JobExecutionWorkerDispatchState::Unavailable;
     std::optional<std::int64_t> submitting_dispatch_attempt_id;
     std::optional<std::int64_t> active_dispatch_attempt_id;
     std::size_t persistence_queue_depth = 0;
-    std::size_t control_queue_depth = 0;
+    std::size_t mailbox_depth = 0;
     std::size_t pending_acknowledgements = 0;
     std::size_t pending_cancellations = 0;
-    WorkerSchedulerAffinityState affinity_state =
-        WorkerSchedulerAffinityState::Cold;
-    std::optional<std::string> projected_execution_affinity_key;
     std::optional<std::string> actual_execution_affinity_key;
 };
 
@@ -188,14 +188,14 @@ struct JobExecutionCoordinatorTelemetry {
     std::uint64_t current_claim_backoff_ms = 0;
     std::uint64_t reconciliation_claims = 0;
     std::string last_scheduler_wake_reason;
-    std::size_t reserved_slots = 0;
+    std::size_t prepared_worksets = 0;
     std::size_t reconstruction_queue_depth = 0;
     std::size_t reconstruction_queue_high_water = 0;
     std::uint64_t reconstruction_oldest_item_age_ms = 0;
     bool reconstruction_active = false;
     std::uint64_t reconstruction_total_duration_ms = 0;
     std::uint64_t reconstruction_max_duration_ms = 0;
-    std::size_t reconstructed_waiting_worksets = 0;
+    std::size_t global_prepared_worksets = 0;
     std::size_t submitting_worksets = 0;
     std::size_t active_worksets = 0;
     std::size_t draining_worksets = 0;
@@ -203,7 +203,7 @@ struct JobExecutionCoordinatorTelemetry {
     std::size_t persistence_queue_high_water = 0;
     std::uint64_t persistence_oldest_event_age_ms = 0;
     std::size_t active_worker_streams = 0;
-    std::size_t worker_control_queue_depth = 0;
+    std::size_t mailbox_command_depth = 0;
     std::size_t worker_control_queue_high_water = 0;
     std::uint64_t worker_control_oldest_command_age_ms = 0;
     std::size_t pending_acknowledgements = 0;
@@ -228,12 +228,6 @@ struct JobExecutionCoordinatorTelemetry {
     bool invariant_admission_paused = false;
     bool storage_admission_paused = false;
 
-    // Compatibility aliases retained for the existing SeedProbe progress
-    // renderer while it is cut over to the lane-specific fields.
-    std::size_t buffered_worksets = 0;
-    std::size_t pending_worker_terminals = 0;
-    bool claims_paused_for_terminal_staging = false;
-    bool invariant_paused = false;
     std::string last_error;
 };
 
@@ -272,8 +266,8 @@ public:
             cancellations);
     void OpenCancellationAdmission();
     [[nodiscard]] JobExecutionCoordinatorTelemetry SnapshotTelemetry() const;
-    [[nodiscard]] std::vector<JobExecutionWorkerLaneSnapshot>
-        SnapshotWorkerLanes() const;
+    [[nodiscard]] std::vector<JobExecutionWorkerDispatchSnapshot>
+        SnapshotWorkerDispatches() const;
     [[nodiscard]] std::vector<JobExecutionCoordinatorWarning>
         SnapshotWarnings() const;
 

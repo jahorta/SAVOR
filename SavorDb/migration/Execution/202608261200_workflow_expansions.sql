@@ -37,9 +37,29 @@ CREATE TABLE exec_workflow_expansion_target(
     UNIQUE(workflow_expansion_id,neutral_epoch_count,rtc_value)
 );
 
+CREATE TABLE exec_workflow_expansion_argument(
+    workflow_expansion_argument_id INTEGER PRIMARY KEY,
+    workflow_expansion_id INTEGER NOT NULL REFERENCES exec_workflow_expansion(workflow_expansion_id) ON DELETE CASCADE,
+    member_role TEXT NOT NULL CHECK(member_role IN ('RTC_BATTLE')),
+    argument_key TEXT NOT NULL,
+    value_type TEXT NOT NULL CHECK(value_type IN ('integer','text','json','boolean','choice')),
+    integer_value INTEGER NULL,
+    text_value TEXT NULL,
+    source_kind TEXT NOT NULL,
+    created_at_utc INTEGER NOT NULL,
+    UNIQUE(workflow_expansion_id,member_role,argument_key),
+    CHECK(
+        (value_type IN ('integer','boolean') AND integer_value IS NOT NULL AND text_value IS NULL)
+        OR
+        (value_type IN ('text','json','choice') AND integer_value IS NULL AND text_value IS NOT NULL)
+    )
+);
+
 CREATE INDEX ix_exec_workflow_expansion_state
 ON exec_workflow_expansion(state,workflow_expansion_id);
 CREATE INDEX ix_exec_workflow_expansion_member_parent
 ON exec_workflow_expansion_member(workflow_expansion_id,neutral_epoch_count,rtc_value);
 CREATE INDEX ix_exec_workflow_expansion_target_parent
 ON exec_workflow_expansion_target(workflow_expansion_id,rtc_value,neutral_epoch_count);
+CREATE INDEX ix_exec_workflow_expansion_argument_parent
+ON exec_workflow_expansion_argument(workflow_expansion_id,member_role,argument_key);

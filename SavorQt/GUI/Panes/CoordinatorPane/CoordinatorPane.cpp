@@ -28,10 +28,6 @@
 #include <QtWidgets/QTreeView>
 #include <QtWidgets/QVBoxLayout>
 
-namespace {
-constexpr int kRefreshIntervalMs = 500;
-}
-
 CoordinatorPane::CoordinatorPane(QWidget* parent)
     : QWidget(parent, Qt::Window)
     , controller_(new CoordinatorController(this))
@@ -39,28 +35,19 @@ CoordinatorPane::CoordinatorPane(QWidget* parent)
     setWindowTitle(QStringLiteral("Workers"));
     createWidgets();
 
-    refreshCoordinator_ = new savorqt::gui::RefreshCoordinator(this);
-    refreshCoordinator_->setRefreshIntervalMs(kRefreshIntervalMs);
-    refreshCoordinator_->setRefreshRequestedCallback([this](savorqt::gui::RefreshReason) {
-        if (controller_ != nullptr) {
-            controller_->refreshSnapshot();
-        }
-        refreshCoordinator_->finishRefresh(true);
-    });
-
     connect(controller_, &CoordinatorController::stateChanged, this, &CoordinatorPane::refreshUi);
     connect(controller_, &CoordinatorController::snapshotChanged, this, &CoordinatorPane::refreshUi);
 
     refreshUi();
 }
 
-void CoordinatorPane::setPageActive(bool active)
+CoordinatorPane::~CoordinatorPane()
 {
-    if (refreshCoordinator_ == nullptr || controller_ == nullptr) {
-        return;
+    if (visualWorkerDashboard_ != nullptr) {
+        visualWorkerDashboard_->close();
+        delete visualWorkerDashboard_;
+        visualWorkerDashboard_ = nullptr;
     }
-
-    refreshCoordinator_->setActive(active);
 }
 
 void CoordinatorPane::refreshUi()
@@ -181,7 +168,7 @@ void CoordinatorPane::refreshUi()
     }
 
     tableSummaryLabel_->setText(running
-        ? QStringLiteral("DB workflow worker telemetry refreshes every %1 ms.").arg(kRefreshIntervalMs)
+        ? QStringLiteral("Worker telemetry refreshes continuously while the coordinator is running.")
         : QStringLiteral("Start the coordinator to populate the live worker table."));
 
     syncActionButtonStates(lifecycleState, valid);
@@ -534,6 +521,13 @@ void CoordinatorPane::showVisualWorkerDashboard()
     visualWorkerDashboard_->activateWindow();
 }
 
+void CoordinatorPane::closeVisualWorkersForApplicationClose()
+{
+    if (visualWorkerDashboard_ != nullptr) {
+        visualWorkerDashboard_->close();
+    }
+}
+
 void CoordinatorPane::syncVisualReplayWindow()
 {
     if (!visualReplayWindow_ || controller_ == nullptr) {
@@ -556,7 +550,7 @@ void CoordinatorPane::ensureVisualWorkerDashboardSurfaces(int workerCount)
         return;
     }
     if (!visualWorkerDashboard_) {
-        visualWorkerDashboard_ = new VisualWorkerDashboardWindow(this);
+        visualWorkerDashboard_ = new VisualWorkerDashboardWindow();
         connect(
             visualWorkerDashboard_,
             &VisualWorkerDashboardWindow::surfaceChanged,

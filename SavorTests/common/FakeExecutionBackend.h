@@ -40,6 +40,7 @@ struct FakeExecutionBackendControl
     runtime::BackendExecutionSnapshot::ControlTaskState control_task_state =
         runtime::BackendExecutionSnapshot::ControlTaskState::Idle;
     std::optional<runtime::BackendControlCompletion> control_completion;
+    std::optional<runtime::BackendControlTask> pending_control_task;
     runtime::BackendHealthReport health{
         true,
         runtime::BackendCoreState::Paused,
@@ -79,6 +80,7 @@ public:
     [[nodiscard]] runtime::BackendHealthReport CheckHealth() const override;
     runtime::BackendResult SubmitControlTask(
         runtime::BackendControlTask task) override;
+    runtime::BackendResult PumpControlTask() override;
     [[nodiscard]] std::optional<runtime::BackendControlCompletion>
     TakeControlCompletion() override;
     runtime::BackendResult SetThrottleDisabled(bool disabled) override;

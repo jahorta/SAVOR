@@ -1489,8 +1489,8 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
     if (sqlite3_prepare_v2(
             db_,
             "INSERT INTO au_workflow_graph_revision("
-            "workflow_graph_id,graph_version,graph_hash,parent_revision_id,execution_shape,expansion_kind,status,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,'active',?7);",
+            "workflow_graph_id,graph_version,graph_hash,parent_revision_id,execution_shape,expansion_kind,created_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7);",
             -1,
             &insert_revision.st,
             nullptr)
@@ -1899,7 +1899,7 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
     if (sqlite3_prepare_v2(
             db_,
             "SELECT g.workflow_graph_id,r.workflow_graph_revision_id,r.parent_revision_id,g.name,COALESCE(g.description,''),"
-            "COALESCE(g.hidden,0),r.graph_version,r.graph_hash,r.execution_shape,r.expansion_kind,r.status "
+            "COALESCE(g.hidden,0),r.graph_version,r.graph_hash,r.execution_shape,r.expansion_kind "
             "FROM au_workflow_graph g "
             "JOIN au_workflow_graph_revision r ON r.workflow_graph_revision_id=g.active_revision_id "
             "WHERE g.workflow_graph_id=?1;",
@@ -1925,8 +1925,6 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
     out.graph_hash = ColumnText(graph_st.st, 7);
     out.execution_shape = ColumnText(graph_st.st, 8);
     out.expansion_kind = ColumnText(graph_st.st, 9);
-    out.status = ColumnText(graph_st.st, 10);
-
     Statement node_st;
     if (sqlite3_prepare_v2(
             db_,
@@ -2076,6 +2074,25 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
     return out;
 }
 
+std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphByName(
+    const std::string& name) const {
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT workflow_graph_id FROM au_workflow_graph WHERE name=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_text(st.st, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+    return GetWorkflowGraph(sqlite3_column_int64(st.st, 0));
+}
+
 std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision(
     std::int64_t workflow_graph_revision_id) const {
     if (db_ == nullptr || workflow_graph_revision_id <= 0) {
@@ -2086,7 +2103,7 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision
     if (sqlite3_prepare_v2(
             db_,
             "SELECT g.workflow_graph_id,r.workflow_graph_revision_id,r.parent_revision_id,g.name,COALESCE(g.description,''),"
-            "COALESCE(g.hidden,0),r.graph_version,r.graph_hash,r.execution_shape,r.expansion_kind,r.status "
+            "COALESCE(g.hidden,0),r.graph_version,r.graph_hash,r.execution_shape,r.expansion_kind "
             "FROM au_workflow_graph_revision r "
             "JOIN au_workflow_graph g ON g.workflow_graph_id=r.workflow_graph_id "
             "WHERE r.workflow_graph_revision_id=?1;",
@@ -2112,8 +2129,6 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision
     out.graph_hash = ColumnText(graph_st.st, 7);
     out.execution_shape = ColumnText(graph_st.st, 8);
     out.expansion_kind = ColumnText(graph_st.st, 9);
-    out.status = ColumnText(graph_st.st, 10);
-
     Statement node_st;
     if (sqlite3_prepare_v2(
             db_,

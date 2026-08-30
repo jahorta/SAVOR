@@ -52,7 +52,7 @@ using savor::db::execution::workflow::WorkflowCoordinatorTelemetry;
 using savor::runner::parallel::savordb::JobExecutionCoordinatorTelemetry;
 using savor::runner::parallel::savordb::JobExecutionCoordinatorWarning;
 using savor::runner::parallel::savordb::
-    JobExecutionWorkerLaneSnapshot;
+    JobExecutionWorkerDispatchSnapshot;
 using savor::runner::parallel::savordb::ReadyWorkerDispatchSnapshot;
 using savor::runner::parallel::savordb::WorkerCoordinatorTelemetry;
 using ::WorkerSnapshot;
@@ -359,8 +359,8 @@ std::string FormatCoordinatorTelemetryLine(
         << " blob_readiness_failures="
         << telemetry.execution.blob_readiness_failures
         << " pending_terminals="
-        << telemetry.execution.pending_worker_terminals
-        << " reserved=" << telemetry.execution.reserved_slots
+        << telemetry.execution.persistence_queue_depth
+        << " prepared=" << telemetry.execution.prepared_worksets
         << " recon_q=" << telemetry.execution.reconstruction_queue_depth
         << " recon_q_hwm="
         << telemetry.execution.reconstruction_queue_high_water
@@ -373,7 +373,7 @@ std::string FormatCoordinatorTelemetryLine(
         << " recon_max_ms="
         << telemetry.execution.reconstruction_max_duration_ms
         << " waiting="
-        << telemetry.execution.reconstructed_waiting_worksets
+        << telemetry.execution.global_prepared_worksets
         << " submitting=" << telemetry.execution.submitting_worksets
         << " active=" << telemetry.execution.active_worksets
         << " draining_worksets="
@@ -387,7 +387,7 @@ std::string FormatCoordinatorTelemetryLine(
         << " persist_streams="
         << telemetry.execution.active_worker_streams
         << " control_q="
-        << telemetry.execution.worker_control_queue_depth
+        << telemetry.execution.mailbox_command_depth
         << " control_q_hwm="
         << telemetry.execution.worker_control_queue_high_water
         << " control_oldest_ms="
@@ -449,7 +449,7 @@ std::string FormatCoordinatorTelemetryLine(
         << " pause_storage="
         << (telemetry.execution.storage_admission_paused ? 1 : 0)
         << " claims_storage_paused="
-        << (telemetry.execution.claims_paused_for_terminal_staging
+        << (telemetry.execution.storage_admission_paused
                 ? 1
                 : 0)
         << " startup_recovered_dispatches="
@@ -516,45 +516,26 @@ std::string FormatCoordinatorTelemetryLine(
     return oss.str();
 }
 
-const char* AffinityStateName(
-    savor::runner::parallel::savordb::
-        WorkerSchedulerAffinityState state) {
-    using State = savor::runner::parallel::savordb::
-        WorkerSchedulerAffinityState;
-    switch (state) {
-    case State::Cold: return "COLD";
-    case State::Projected: return "PROJECTED";
-    case State::Actual: return "ACTUAL";
-    }
-    return "COLD";
-}
-
-std::string FormatWorkerLaneLine(
-    const JobExecutionWorkerLaneSnapshot& lane) {
+std::string FormatWorkerDispatchLine(
+    const JobExecutionWorkerDispatchSnapshot& worker) {
     std::ostringstream out;
-    out << "lane=w" << lane.worker_id
-        << " gen=" << lane.process_generation
-        << " reserved=" << lane.reservations
-        << " reconstructing=" << lane.reconstructing
-        << " waiting=" << lane.waiting_queue_depth
+    out << "worker_dispatch=w" << worker.worker_id
+        << " gen=" << worker.process_generation
         << " submitting="
-        << (lane.submitting_dispatch_attempt_id.has_value()
+        << (worker.submitting_dispatch_attempt_id.has_value()
                 ? std::to_string(
-                    *lane.submitting_dispatch_attempt_id)
+                    *worker.submitting_dispatch_attempt_id)
                 : "none")
         << " active="
-        << (lane.active_dispatch_attempt_id.has_value()
-                ? std::to_string(*lane.active_dispatch_attempt_id)
+        << (worker.active_dispatch_attempt_id.has_value()
+                ? std::to_string(*worker.active_dispatch_attempt_id)
                 : "none")
-        << " persist_q=" << lane.persistence_queue_depth
-        << " control_q=" << lane.control_queue_depth
-        << " acks=" << lane.pending_acknowledgements
-        << " cancels=" << lane.pending_cancellations;
-    out << " affinity=" << AffinityStateName(lane.affinity_state)
-        << " projected_execution="
-        << lane.projected_execution_affinity_key.value_or("none")
+        << " persist_q=" << worker.persistence_queue_depth
+        << " mailbox_q=" << worker.mailbox_depth
+        << " acks=" << worker.pending_acknowledgements
+        << " cancels=" << worker.pending_cancellations
         << " actual_execution="
-        << lane.actual_execution_affinity_key.value_or("none");
+        << worker.actual_execution_affinity_key.value_or("none");
     return out.str();
 }
 
@@ -753,8 +734,8 @@ std::vector<std::string> BuildProgressLines(
             FormatExecutionDbQueueLine(
                 *telemetry.execution_db_queue));
     }
-    for (const auto& lane : telemetry.lanes) {
-        lines.push_back(FormatWorkerLaneLine(lane));
+    for (const auto& worker_dispatch : telemetry.worker_dispatches) {
+        lines.push_back(FormatWorkerDispatchLine(worker_dispatch));
     }
     if (CountActiveWorkers(worker_snapshot) > 1) {
         lines.push_back(FormatWorkerRollupLine(worker_snapshot));
@@ -1093,14 +1074,14 @@ bool ValidateSplitCoordinatorExecution(
             && telemetry.execution.blob_readiness_failures == 0,
         "JobExecutionCoordinator result blob store was not continuously ready");
     require_clean(
-        telemetry.execution.pending_worker_terminals == 0
+        telemetry.execution.persistence_queue_depth == 0
             && telemetry.execution.draining_worksets == 0
             && !telemetry.execution
-                    .claims_paused_for_terminal_staging,
+                    .storage_admission_paused,
         "JobExecutionCoordinator ended with storage backpressure or "
         "authority-loss draining");
     require_clean(
-        !telemetry.execution.invariant_paused
+        !telemetry.execution.invariant_admission_paused
             && telemetry.execution.last_error.empty(),
         "JobExecutionCoordinator ended paused or with an error: "
             + telemetry.execution.last_error);
@@ -2091,7 +2072,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             std::cout << snapshot.str() << '\n';
         }
 
-        if (telemetry.execution.invariant_paused) {
+        if (telemetry.execution.invariant_admission_paused) {
             saw_workflow_failure = true;
             coordinator_failure =
                 telemetry.execution.last_error.empty()
@@ -2146,7 +2127,30 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     const auto final_graph =
         execution_db->WorkflowQueryService()->GetWorkflowGraph(
             workflow_instance_id);
-    const auto final_telemetry = coordinators.SnapshotTelemetry();
+    auto final_telemetry = coordinators.SnapshotTelemetry();
+    const auto accounting_settled = [](const auto& telemetry) {
+        const auto& execution = telemetry.execution;
+        return execution.persistence_queue_depth == 0
+            && execution.draining_worksets == 0
+            && execution.worker_terminal_acks
+                == execution.worker_terminals_staged
+                    + execution
+                          .worker_terminals_discarded_after_authority_release
+            && execution.worker_terminals_observed
+                == execution.worker_terminals_staged
+                    + execution
+                          .worker_terminals_discarded_after_authority_release
+            && execution.draining_transitions
+                == execution.worksets_submitted;
+    };
+    const auto accounting_deadline = std::chrono::steady_clock::now()
+        + std::chrono::seconds(10);
+    while (reached_completed && !accounting_settled(final_telemetry)
+        && std::chrono::steady_clock::now() < accounting_deadline) {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(options.poll_ms));
+        final_telemetry = coordinators.SnapshotTelemetry();
+    }
     const auto final_worker_snapshot =
         coordinators.SnapshotWorkers();
     const auto final_ready_workers =
@@ -2190,12 +2194,12 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             << " blob_readiness_failures="
             << final_telemetry.execution.blob_readiness_failures
             << " pending_terminals="
-            << final_telemetry.execution.pending_worker_terminals
+            << final_telemetry.execution.persistence_queue_depth
             << " draining_worksets="
             << final_telemetry.execution.draining_worksets
             << " claims_storage_paused="
             << (final_telemetry.execution
-                        .claims_paused_for_terminal_staging
+                        .storage_admission_paused
                     ? 1
                     : 0)
             << " startup_recovered_dispatches="

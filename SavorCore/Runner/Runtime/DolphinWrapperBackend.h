@@ -69,6 +69,7 @@ private:
     [[nodiscard]] BackendExecutionSnapshot
     QueryExecutionSnapshot() const override;
     BackendResult SubmitControlTask(BackendControlTask task) override;
+    BackendResult PumpControlTask() override;
     [[nodiscard]] std::optional<BackendControlCompletion>
     TakeControlCompletion() override;
     BackendResult SetThrottleDisabled(bool disabled) override;

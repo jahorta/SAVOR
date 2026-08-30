@@ -394,6 +394,8 @@ private:
     struct WorksetRoute {
         std::size_t worker_id = 0;
         std::uint64_t process_generation = 0;
+        std::vector<std::optional<std::int64_t>> job_ids_by_ordinal;
+        std::optional<int> program_kind;
         bool terminal_state_observed = false;
         bool summary_observed = false;
         std::unordered_set<std::string> retained_terminals;

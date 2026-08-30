@@ -76,6 +76,7 @@ struct ScriptedDolphinBackendControl
     bool hit_time_memory_available = true;
     runtime::BackendExecutionSnapshot::ControlTaskState control_task_state =
         runtime::BackendExecutionSnapshot::ControlTaskState::Idle;
+    std::optional<runtime::BackendControlTask> pending_control_task;
     std::optional<runtime::BackendControlCompletion> control_completion;
 
     int open_count = 0;
@@ -175,6 +176,7 @@ private:
     QueryExecutionSnapshot() const override;
     runtime::BackendResult SubmitControlTask(
         runtime::BackendControlTask task) override;
+    runtime::BackendResult PumpControlTask() override;
     [[nodiscard]] std::optional<runtime::BackendControlCompletion>
     TakeControlCompletion() override;
     runtime::BackendResult SetThrottleDisabled(bool disabled) override;
