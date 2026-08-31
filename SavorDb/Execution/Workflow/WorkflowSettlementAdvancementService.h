@@ -25,6 +25,7 @@ struct WorkflowSettlementAdvancementResult {
     bool workflow_completed = false;
     bool workflow_failed = false;
     std::optional<std::string> blocked_reason;
+    std::optional<WorkflowGraphRoutingFailure> graph_routing_failure;
 };
 
 class WorkflowTransitionApplicationService {

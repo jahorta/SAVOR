@@ -143,12 +143,8 @@ ProgramResultDecision FinalDecision(
 }
 
 ProgramResultOutput ContextOutput(std::int64_t context_id) {
-    return {
-        .output_key = std::string(kOutputKey),
-        .data_kind = std::string(kOutputDataKind),
-        .ref_kind = std::string(kProgramRefKind),
-        .ref_id = context_id,
-    };
+    return MakeWorkflowResultOutput(
+        workflow_outputs::BattleContext, context_id);
 }
 
 bool ValidateSource(
@@ -384,12 +380,8 @@ public:
         if (!row || row->probe_status != BattleContextProbeStatus::Succeeded)
             return Fail("Battle Context result is not durably complete", error_out);
         result_out->disposition = ProgramJobContinuationDisposition::Complete;
-        result_out->output = ProgramJobContinuationOutput{
-            .output_key = std::string(kOutputKey),
-            .data_kind = std::string(kOutputDataKind),
-            .ref_kind = std::string(kProgramRefKind),
-            .ref_id = row->context_probe_id,
-        };
+        result_out->output = MakeWorkflowContinuationOutput(
+            workflow_outputs::BattleContext, row->context_probe_id);
         return true;
     }
 

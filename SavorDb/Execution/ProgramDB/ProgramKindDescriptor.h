@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "WorkflowOutputContractCatalog.h"
+
 #include "../../../SavorCore/Runner/Runtime/Worksets/WorksetTypes.h"
 #include "../../../SavorCore/Runner/Runtime/FullPhase/FullPhaseProgram.h"
 
@@ -171,6 +173,12 @@ struct ProgramJobContinuationOutput {
     std::int64_t ref_id = 0;
 };
 
+inline ProgramJobContinuationOutput MakeWorkflowContinuationOutput(
+    const WorkflowOutputContract& contract, std::int64_t ref_id) {
+    return {std::string(contract.output_key), std::string(contract.data_kind),
+        std::string(contract.ref_kind), ref_id};
+}
+
 struct ProgramJobContinuationContext {
     ProgramJobMaterializationContext materialization;
     std::int64_t job_set_id = 0;
@@ -313,6 +321,12 @@ struct ProgramResultOutput {
     std::int64_t ref_id = 0;
 };
 
+inline ProgramResultOutput MakeWorkflowResultOutput(
+    const WorkflowOutputContract& contract, std::int64_t ref_id) {
+    return {std::string(contract.output_key), std::string(contract.data_kind),
+        std::string(contract.ref_kind), ref_id};
+}
+
 struct ProgramResultCancellation {
     std::int64_t job_id = 0;
     std::string request_key;
@@ -438,6 +452,8 @@ struct ProgramKindDescriptor {
     std::vector<std::uint32_t> default_progress_runtime_trigger_pcs;
 
     std::shared_ptr<IWorkflowTransitionHandler> workflow_transition;
+
+    std::vector<WorkflowOutputContract> workflow_outputs;
 
     // Complete production coordination contracts.
     std::shared_ptr<IProgramJobMaterializer> job_materializer;

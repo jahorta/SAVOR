@@ -233,6 +233,9 @@
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h">
       <Filter>Programs</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\WorkflowOutputContractCatalog.h">
+      <Filter>Header Files\Execution\ProgramDB</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\ProgramDB\WorksetObservationBinding.h">
       <Filter>Programs</Filter>
     </ClInclude>

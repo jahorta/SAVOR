@@ -1948,12 +1948,8 @@ private:
         }
         result_out->disposition =
             ProgramJobContinuationDisposition::Complete;
-        result_out->output = ProgramJobContinuationOutput{
-            .output_key = "seed_probe_run",
-            .data_kind = "analysis.seed_probe_run",
-            .ref_kind = "sp_probe_run",
-            .ref_id = run.probe_run_id,
-        };
+        result_out->output = MakeWorkflowContinuationOutput(
+            workflow_outputs::SeedProbeRun, run.probe_run_id);
         result_out->event_lines.push_back(
             "[seedprobe-completed] run="
             + std::to_string(run.probe_run_id)

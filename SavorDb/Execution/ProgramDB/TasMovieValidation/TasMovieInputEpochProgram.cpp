@@ -726,12 +726,9 @@ public:
         if (!attempt || !attempt->succeeded)
             return Fail("successful input-epoch annotation attempt is unavailable", error_out);
         result_out->disposition = ProgramJobContinuationDisposition::Complete;
-        result_out->output = ProgramJobContinuationOutput{
-            .output_key = "annotation_attempt",
-            .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id",
-            .ref_kind = "tmv_input_epoch_annotation_attempt",
-            .ref_id = attempt->annotation_attempt_id,
-        };
+        result_out->output = MakeWorkflowContinuationOutput(
+            workflow_outputs::TasMovieAnnotationAttempt,
+            attempt->annotation_attempt_id);
         return true;
     }
 
@@ -861,12 +858,9 @@ public:
         if (!attempt || !attempt->succeeded)
             return Fail("successful input-epoch rewrite attempt is unavailable", error_out);
         result_out->disposition = ProgramJobContinuationDisposition::Complete;
-        result_out->output = ProgramJobContinuationOutput{
-            .output_key = "rewrite_attempt",
-            .data_kind = "analysis.tas_movie_input_epoch_rewrite_attempt_id",
-            .ref_kind = "tmv_input_epoch_rewrite_attempt",
-            .ref_id = attempt->rewrite_attempt_id,
-        };
+        result_out->output = MakeWorkflowContinuationOutput(
+            workflow_outputs::TasMovieRewriteAttempt,
+            attempt->rewrite_attempt_id);
         return true;
     }
 
@@ -1151,12 +1145,8 @@ public:
             : FinalDecision("FAILED", attempt.failure_code, attempt.failure_text);
         decision.cleanup_worker_staging = true;
         if (staged_schedule) decision.staging_files.push_back(*staged_schedule);
-        decision.outputs.push_back({
-            .output_key = "annotation_attempt",
-            .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id",
-            .ref_kind = "tmv_input_epoch_annotation_attempt",
-            .ref_id = attempt_id,
-        });
+        decision.outputs.push_back(MakeWorkflowResultOutput(
+            workflow_outputs::TasMovieAnnotationAttempt, attempt_id));
         decision.event_lines.push_back("[tasmovie-input-epoch-annotation-recorded] attempt="
             + std::to_string(attempt_id));
         return decision;
@@ -1470,36 +1460,16 @@ public:
         decision.cleanup_worker_staging = true;
         decision.staging_files.insert(decision.staging_files.end(),
             generated_files.begin(), generated_files.end());
-        decision.outputs.push_back({
-            .output_key = "rewrite_attempt",
-            .data_kind = "analysis.tas_movie_input_epoch_rewrite_attempt_id",
-            .ref_kind = "tmv_input_epoch_rewrite_attempt",
-            .ref_id = attempt_id,
-        });
-        if (dtm_artifact_id) decision.outputs.push_back({
-            .output_key = "rewritten_dtm",
-            .data_kind = "state_artifact.dtm_artifact_id",
-            .ref_kind = "state_artifact",
-            .ref_id = *dtm_artifact_id,
-        });
-        if (savestate_id) decision.outputs.push_back({
-            .output_key = "rewritten_paired_savestate",
-            .data_kind = "state.movie_paired_savestate_id",
-            .ref_kind = "state.savestate",
-            .ref_id = *savestate_id,
-        });
-        if (annotation_attempt_id) decision.outputs.push_back({
-            .output_key = "annotation_attempt",
-            .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id",
-            .ref_kind = "tmv_input_epoch_annotation_attempt",
-            .ref_id = *annotation_attempt_id,
-        });
-        if (root_establishment_attempt_id) decision.outputs.push_back({
-            .output_key = "root_establishment",
-            .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
-            .ref_kind = "tmv_root_establishment_attempt",
-            .ref_id = *root_establishment_attempt_id,
-        });
+        decision.outputs.push_back(MakeWorkflowResultOutput(
+            workflow_outputs::TasMovieRewriteAttempt, attempt_id));
+        if (dtm_artifact_id) decision.outputs.push_back(MakeWorkflowResultOutput(
+            workflow_outputs::TasMovieRewrittenDtm, *dtm_artifact_id));
+        if (savestate_id) decision.outputs.push_back(MakeWorkflowResultOutput(
+            workflow_outputs::TasMovieRewrittenPairedSavestate, *savestate_id));
+        if (annotation_attempt_id) decision.outputs.push_back(MakeWorkflowResultOutput(
+            workflow_outputs::TasMovieAnnotationAttempt, *annotation_attempt_id));
+        if (root_establishment_attempt_id) decision.outputs.push_back(MakeWorkflowResultOutput(
+            workflow_outputs::TasMovieRootEstablishment, *root_establishment_attempt_id));
         decision.event_lines.push_back("[tasmovie-input-epoch-rewrite-recorded] attempt="
             + std::to_string(attempt_id));
         return decision;
@@ -1623,12 +1593,9 @@ public:
         if (!attempt || !attempt->succeeded)
             return Fail("successful cutscene attempt is unavailable", error_out);
         result_out->disposition = ProgramJobContinuationDisposition::Complete;
-        result_out->output = ProgramJobContinuationOutput{
-            .output_key = "cutscene_attempt",
-            .data_kind = "analysis.tas_movie_cutscene_attempt_id",
-            .ref_kind = "tmv_cutscene_attempt",
-            .ref_id = attempt->cutscene_attempt_id,
-        };
+        result_out->output = MakeWorkflowContinuationOutput(
+            workflow_outputs::TasMovieCutsceneAttempt,
+            attempt->cutscene_attempt_id);
         return true;
     }
 
@@ -1741,28 +1708,16 @@ bool AppendCutsceneOutputs(
 {
     if (attempt_id <= 0 || decision == nullptr)
         return false;
-    decision->outputs.push_back({
-        .output_key = "cutscene_attempt",
-        .data_kind = "analysis.tas_movie_cutscene_attempt_id",
-        .ref_kind = "tmv_cutscene_attempt",
-        .ref_id = attempt_id,
-    });
+    decision->outputs.push_back(MakeWorkflowResultOutput(
+        workflow_outputs::TasMovieCutsceneAttempt, attempt_id));
     if (!succeeded)
         return true;
     if (!tree_id || *tree_id <= 0 || !savestate_id || *savestate_id <= 0)
         return false;
-    decision->outputs.push_back({
-        .output_key = "tas_movie_tree",
-        .data_kind = "state.tas_movie_tree_id",
-        .ref_kind = "state_tas_movie_tree",
-        .ref_id = *tree_id,
-    });
-    decision->outputs.push_back({
-        .output_key = "paired_savestate",
-        .data_kind = "state.movie_paired_savestate_id",
-        .ref_kind = "state.savestate",
-        .ref_id = *savestate_id,
-    });
+    decision->outputs.push_back(MakeWorkflowResultOutput(
+        workflow_outputs::TasMovieTree, *tree_id));
+    decision->outputs.push_back(MakeWorkflowResultOutput(
+        workflow_outputs::TasMoviePairedSavestate, *savestate_id));
     return true;
 }
 

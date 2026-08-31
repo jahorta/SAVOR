@@ -13,6 +13,19 @@ struct IAuthoringDb;
 
 namespace savor::db::execution::workflow {
 
+enum class WorkflowGraphRoutingFailureClass {
+    None = 0,
+    GraphConstruction,
+    Operation,
+};
+
+struct WorkflowGraphRoutingFailure {
+    WorkflowGraphRoutingFailureClass failure_class =
+        WorkflowGraphRoutingFailureClass::None;
+    std::string code;
+    std::string message;
+};
+
 struct WorkflowGraphRoutingResult {
     bool graph_instance = false;
     bool routed_input_binding = false;
@@ -20,6 +33,7 @@ struct WorkflowGraphRoutingResult {
     int skipped_step_count = 0;
     bool workflow_completed = false;
     std::optional<std::string> blocked_reason;
+    std::optional<WorkflowGraphRoutingFailure> failure;
 };
 
 class WorkflowGraphRoutingService {

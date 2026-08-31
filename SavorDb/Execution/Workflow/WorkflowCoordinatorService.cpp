@@ -749,6 +749,45 @@ bool WorkflowCoordinatorService::AdvanceSettlementSnapshot(
                 ? failure_stage
                 : "AdvanceTerminalStep",
             error.empty() ? "unknown error" : error);
+        if (advancement.graph_routing_failure.has_value()
+            && advancement.graph_routing_failure->failure_class
+                == WorkflowGraphRoutingFailureClass::GraphConstruction) {
+            auto* commands = execution_db_ != nullptr
+                ? execution_db_->WorkflowCommandService()
+                : nullptr;
+            if (commands == nullptr) return false;
+            const auto& routing_failure =
+                *advancement.graph_routing_failure;
+            const std::string stage = failure_stage != nullptr
+                ? failure_stage
+                : "AdvanceTerminalStep";
+            const std::string failure_message =
+                "stage=" + stage
+                + ";routing_code=" + routing_failure.code
+                + ";step=" + snapshot.step_key
+                + ";node=" + snapshot.graph_node_key
+                + ";reason=" + routing_failure.message;
+            std::string fail_error;
+            if (!commands->FailWorkflowInstance(
+                    {
+                        .workflow_instance_id = snapshot.workflow_instance_id,
+                        .workflow_step_id = std::nullopt,
+                        .failure_code =
+                            "WORKFLOW_GRAPH_CONSTRUCTION_FAILED",
+                        .failure_message = failure_message,
+                        .requested_by =
+                            "workflow_coordinator_graph_construction",
+                    },
+                    &fail_error)) {
+                EmitWorkflowFailureEvent(
+                    step,
+                    "FailWorkflowGraphConstruction",
+                    fail_error.empty() ? "unknown error" : fail_error);
+                return false;
+            }
+            ++workflow_failed_count_;
+            return true;
+        }
         return false;
     }
 

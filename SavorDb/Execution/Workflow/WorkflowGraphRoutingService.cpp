@@ -122,6 +122,59 @@ bool AllExecutionStepsSuccessful(const WorkflowGraphSnapshot& execution_graph) {
         [](const auto& step) { return IsSuccessful(step.state); });
 }
 
+bool ValidateAuthoredGraphDefinition(
+    const savor::db::WorkflowGraphSnapshot& graph,
+    const WorkflowUnitRegistry& registry,
+    std::string* code_out,
+    std::string* error_out) {
+    for (const auto& node : graph.nodes) {
+        if (registry.Find(node.unit_kind) == nullptr) {
+            if (code_out) *code_out = "UNREGISTERED_WORKFLOW_UNIT";
+            if (error_out) *error_out =
+                "workflow graph node references an unregistered unit: "
+                + node.node_key;
+            return false;
+        }
+    }
+    for (const auto& edge : graph.edges) {
+        const auto* source = FindNode(graph, edge.from_node_key);
+        const auto* target = FindNode(graph, edge.to_node_key);
+        if (source == nullptr || target == nullptr) {
+            if (code_out) *code_out = "UNKNOWN_WORKFLOW_EDGE_NODE";
+            if (error_out) *error_out =
+                "workflow graph edge references an unknown node";
+            return false;
+        }
+        if (edge.edge_kind != "DATA") continue;
+        if ((edge.guard_kind.has_value()
+                && *edge.guard_kind != savor::db::kWorkflowOutputPresentGuard)
+            || edge.guard_value.has_value()) {
+            if (code_out) *code_out = "UNSUPPORTED_WORKFLOW_EDGE_GUARD";
+            if (error_out) *error_out =
+                "workflow graph contains an unsupported edge guard";
+            return false;
+        }
+        const auto* output = FindDeclaredOutput(*source, edge.output_key);
+        const auto* input = FindInput(*target, edge.input_key);
+        if (output == nullptr || input == nullptr) {
+            if (code_out) *code_out = "UNKNOWN_WORKFLOW_EDGE_PORT";
+            if (error_out) *error_out =
+                "workflow graph edge references an unknown port";
+            return false;
+        }
+        if (output->data_kind != input->data_kind
+            || output->ref_kind != input->ref_kind) {
+            if (code_out) *code_out = "WORKFLOW_EDGE_CONTRACT_MISMATCH";
+            if (error_out) *error_out =
+                "workflow graph edge contract mismatch: "
+                + edge.from_node_key + "." + edge.output_key + " -> "
+                + edge.to_node_key + "." + edge.input_key;
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 WorkflowGraphRoutingService::WorkflowGraphRoutingService(
@@ -142,6 +195,18 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
     WorkflowGraphRoutingResult* result_out,
     std::string* error_out) const {
     WorkflowGraphRoutingResult result{};
+    const auto fail = [&](WorkflowGraphRoutingFailureClass failure_class,
+                          std::string code,
+                          std::string message) {
+        result.failure = WorkflowGraphRoutingFailure{
+            .failure_class = failure_class,
+            .code = std::move(code),
+            .message = std::move(message),
+        };
+        if (result_out) *result_out = result;
+        if (error_out) *error_out = result.failure->message;
+        return false;
+    };
     if (snapshot.workflow_kind != "workflow_graph") {
         if (result_out) {
             *result_out = result;
@@ -151,24 +216,28 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
     result.graph_instance = true;
 
     if (!snapshot.workflow_graph_revision_id.has_value() || *snapshot.workflow_graph_revision_id <= 0) {
-        if (error_out) *error_out = "workflow_graph_revision_id is required for graph routing";
-        return false;
+        return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+            "MISSING_WORKFLOW_GRAPH_REVISION",
+            "workflow_graph_revision_id is required for graph routing");
     }
     if (execution_db_ == nullptr || authoring_db_ == nullptr || query_service_ == nullptr || command_service_ == nullptr) {
-        if (error_out) *error_out = "graph routing dependencies are not configured";
-        return false;
+        return fail(WorkflowGraphRoutingFailureClass::Operation,
+            "GRAPH_ROUTING_NOT_CONFIGURED",
+            "graph routing dependencies are not configured");
     }
 
     const auto authored_graph = authoring_db_->GetWorkflowGraphRevision(*snapshot.workflow_graph_revision_id);
     if (!authored_graph.has_value()) {
-        if (error_out) *error_out = "workflow graph revision not found";
-        return false;
+        return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+            "WORKFLOW_GRAPH_REVISION_NOT_FOUND",
+            "workflow graph revision not found");
     }
 
     auto execution_graph = query_service_->GetWorkflowGraph(snapshot.workflow_instance_id);
     if (!execution_graph.has_value()) {
-        if (error_out) *error_out = "workflow execution graph not found";
-        return false;
+        return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+            "WORKFLOW_EXECUTION_GRAPH_NOT_FOUND",
+            "workflow execution graph not found");
     }
 
     auto graph_node_key = snapshot.graph_node_key.empty() ? snapshot.step_key : snapshot.graph_node_key;
@@ -202,9 +271,58 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
     }
     const auto* source_node = FindNode(*authored_graph, graph_node_key);
     if (source_node == nullptr) {
-        if (error_out) *error_out =
-            "workflow settlement references an unknown graph node";
-        return false;
+        return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+            "UNKNOWN_SETTLEMENT_GRAPH_NODE",
+            "workflow settlement references an unknown graph node");
+    }
+    const auto registry = BuildDefaultWorkflowUnitRegistry();
+    std::string preflight_code;
+    std::string preflight_error;
+    if (!ValidateAuthoredGraphDefinition(
+            *authored_graph, registry, &preflight_code, &preflight_error)) {
+        return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+            std::move(preflight_code), std::move(preflight_error));
+    }
+    const auto* source_unit = registry.Find(source_node->unit_kind);
+    if (source_unit == nullptr) {
+        return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+            "UNREGISTERED_SOURCE_WORKFLOW_UNIT",
+            "workflow graph node references an unregistered unit");
+    }
+    for (const auto workflow_step_id : output_step_ids) {
+        for (const auto& job_output :
+             execution_db_->ListJobOutputsForWorkflowStep(workflow_step_id)) {
+            const auto* declared = FindDeclaredOutput(
+                *source_node, job_output.output_key);
+            if (declared == nullptr
+                || declared->data_kind != job_output.data_kind
+                || declared->ref_kind != job_output.ref_kind) {
+                return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+                    "PROGRAM_OUTPUT_OUTSIDE_UNIT_CONTRACT",
+                    "program output is outside the workflow unit contract: "
+                        + graph_node_key + "." + job_output.output_key);
+            }
+        }
+    }
+    for (const auto& mapping : source_unit->pass_through_outputs) {
+        const auto binding = std::find_if(
+            execution_graph->input_bindings.begin(),
+            execution_graph->input_bindings.end(),
+            [&](const auto& value) {
+                return value.node_key == graph_node_key
+                    && value.input_key == mapping.input_key;
+            });
+        const auto* declared = FindDeclaredOutput(
+            *source_node, mapping.output_key);
+        if (binding == execution_graph->input_bindings.end()
+            || declared == nullptr
+            || binding->data_kind != declared->data_kind
+            || binding->ref_kind != declared->ref_kind) {
+            return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+                "UNRESOLVED_WORKFLOW_PASS_THROUGH",
+                "workflow pass-through mapping could not be resolved: "
+                    + graph_node_key + "." + mapping.output_key);
+        }
     }
     for (const auto workflow_step_id : output_step_ids) {
         const auto job_outputs =
@@ -215,11 +333,10 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
             if (declared == nullptr ||
                 declared->data_kind != job_output.data_kind ||
                 declared->ref_kind != job_output.ref_kind) {
-                if (error_out) {
-                    *error_out = "program output is outside the workflow unit contract: " +
-                        graph_node_key + "." + job_output.output_key;
-                }
-                return false;
+                return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+                    "PROGRAM_OUTPUT_OUTSIDE_UNIT_CONTRACT",
+                    "program output is outside the workflow unit contract: "
+                        + graph_node_key + "." + job_output.output_key);
             }
             std::string command_error;
             if (!command_service_->RecordStepOutput(
@@ -232,19 +349,12 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                         .requested_by = "workflow_graph_routing",
                     },
                     &command_error)) {
-                if (error_out) *error_out = command_error;
-                return false;
+                return fail(WorkflowGraphRoutingFailureClass::Operation,
+                    "RECORD_STEP_OUTPUT_FAILED", command_error);
             }
         }
     }
 
-    const auto registry = BuildDefaultWorkflowUnitRegistry();
-    const auto* source_unit = registry.Find(source_node->unit_kind);
-    if (source_unit == nullptr) {
-        if (error_out) *error_out =
-            "workflow graph node references an unregistered unit";
-        return false;
-    }
     for (const auto& mapping : source_unit->pass_through_outputs) {
         const auto binding = std::find_if(
             execution_graph->input_bindings.begin(),
@@ -258,10 +368,10 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
         if (binding == execution_graph->input_bindings.end() ||
             declared == nullptr || binding->data_kind != declared->data_kind ||
             binding->ref_kind != declared->ref_kind) {
-            if (error_out) *error_out =
-                "workflow pass-through mapping could not be resolved: " +
-                graph_node_key + "." + mapping.output_key;
-            return false;
+            return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+                "UNRESOLVED_WORKFLOW_PASS_THROUGH",
+                "workflow pass-through mapping could not be resolved: "
+                    + graph_node_key + "." + mapping.output_key);
         }
         std::string command_error;
         if (!command_service_->RecordStepOutput({
@@ -272,8 +382,8 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                 .output_ref_id = binding->ref_id,
                 .requested_by = "workflow_graph_pass_through",
             }, &command_error)) {
-            if (error_out) *error_out = command_error;
-            return false;
+            return fail(WorkflowGraphRoutingFailureClass::Operation,
+                "RECORD_PASS_THROUGH_OUTPUT_FAILED", command_error);
         }
     }
 
@@ -291,8 +401,9 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
         execution_graph = query_service_->GetWorkflowGraph(
             snapshot.workflow_instance_id);
         if (!execution_graph) {
-            if (error_out) *error_out = "workflow execution graph disappeared during routing";
-            return false;
+            return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+                "WORKFLOW_EXECUTION_GRAPH_DISAPPEARED",
+                "workflow execution graph disappeared during routing");
         }
         const auto outputs = query_service_->ListStepOutputs(
             snapshot.workflow_instance_id);
@@ -322,8 +433,9 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
             const auto* target_node = FindNode(
                 *authored_graph, target_node_key);
             if (target_node == nullptr) {
-                if (error_out) *error_out = "workflow graph edge references unknown target node";
-                return false;
+                return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+                    "UNKNOWN_WORKFLOW_EDGE_TARGET",
+                    "workflow graph edge references unknown target node");
             }
 
             bool all_required_satisfied = true;
@@ -355,11 +467,9 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                             && *edge.guard_kind
                                 != savor::db::kWorkflowOutputPresentGuard)
                         || edge.guard_value.has_value()) {
-                        if (error_out) {
-                            *error_out =
-                                "workflow graph contains an unsupported edge guard";
-                        }
-                        return false;
+                        return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+                            "UNSUPPORTED_WORKFLOW_EDGE_GUARD",
+                            "workflow graph contains an unsupported edge guard");
                     }
 
                     const auto* output = FindOutput(
@@ -369,11 +479,9 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                     if (output != nullptr) {
                         if (!input.data_kind.empty()
                             && input.data_kind != output->data_kind) {
-                            if (error_out) {
-                                *error_out =
-                                    "workflow graph edge data_kind mismatch";
-                            }
-                            return false;
+                            return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+                                "WORKFLOW_EDGE_DATA_KIND_MISMATCH",
+                                "workflow graph edge data_kind mismatch");
                         }
                         std::string command_error;
                         if (!command_service_->RecordInputBinding(
@@ -392,8 +500,8 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                                         "workflow_graph_routing",
                                 },
                                 &command_error)) {
-                            if (error_out) *error_out = command_error;
-                            return false;
+                            return fail(WorkflowGraphRoutingFailureClass::Operation,
+                                "RECORD_INPUT_BINDING_FAILED", command_error);
                         }
                         result.routed_input_binding = true;
                         binding_by_key.emplace(input_key, nullptr);
@@ -462,11 +570,9 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                     }
                     if (step.state != WorkflowStepState::Waiting
                         && step.state != WorkflowStepState::Ready) {
-                        if (error_out) {
-                            *error_out =
-                                "guarded workflow target became active before its required output was available";
-                        }
-                        return false;
+                        return fail(WorkflowGraphRoutingFailureClass::GraphConstruction,
+                            "GUARDED_TARGET_ACTIVE_WITHOUT_OUTPUT",
+                            "guarded workflow target became active before its required output was available");
                     }
                     std::string command_error;
                     if (!command_service_->SkipStep(
@@ -476,8 +582,8 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                                 .requested_by = "workflow_graph_routing",
                             },
                             &command_error)) {
-                        if (error_out) *error_out = command_error;
-                        return false;
+                        return fail(WorkflowGraphRoutingFailureClass::Operation,
+                            "SKIP_WORKFLOW_STEP_FAILED", command_error);
                     }
                     ++result.skipped_step_count;
                     skipped_target = true;
@@ -515,8 +621,8 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                             + successor_step_priority_boost_,
                     },
                     &command_error)) {
-                if (error_out) *error_out = command_error;
-                return false;
+                return fail(WorkflowGraphRoutingFailureClass::Operation,
+                    "MARK_WORKFLOW_STEP_READY_FAILED", command_error);
             }
             result.advanced_ready_step = true;
         }
@@ -534,8 +640,8 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                 },
                 &command_error)) {
             if (command_error != "complete precondition failed") {
-                if (error_out) *error_out = command_error;
-                return false;
+                return fail(WorkflowGraphRoutingFailureClass::Operation,
+                    "COMPLETE_WORKFLOW_INSTANCE_FAILED", command_error);
             }
         } else {
             result.workflow_completed = true;

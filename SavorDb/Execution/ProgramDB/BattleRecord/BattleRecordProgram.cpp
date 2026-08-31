@@ -731,18 +731,12 @@ ProgramResultDecision Decision(
 
 ProgramResultOutput Output(std::int64_t id)
 {
-    return {.output_key = std::string(kOutputKey),
-            .data_kind = std::string(kOutputDataKind),
-            .ref_kind = std::string(kProgramRefKind),
-            .ref_id = id};
+    return MakeWorkflowResultOutput(workflow_outputs::BattleRecording, id);
 }
 
 ProgramJobContinuationOutput ContinuationOutput(std::int64_t id)
 {
-    return {.output_key = std::string(kOutputKey),
-            .data_kind = std::string(kOutputDataKind),
-            .ref_kind = std::string(kProgramRefKind),
-            .ref_id = id};
+    return MakeWorkflowContinuationOutput(workflow_outputs::BattleRecording, id);
 }
 
 std::string ReplayJobInput(std::int64_t replay_id,
@@ -767,18 +761,12 @@ std::string ReplayFingerprint(const BattleReplayRecord& row,
 
 ProgramResultOutput ReplayOutput(std::int64_t id)
 {
-    return {.output_key = std::string(kReplayOutputKey),
-            .data_kind = std::string(kReplayOutputDataKind),
-            .ref_kind = std::string(kReplayProgramRefKind),
-            .ref_id = id};
+    return MakeWorkflowResultOutput(workflow_outputs::BattleReplay, id);
 }
 
 ProgramJobContinuationOutput ReplayContinuationOutput(std::int64_t id)
 {
-    return {.output_key = std::string(kReplayOutputKey),
-            .data_kind = std::string(kReplayOutputDataKind),
-            .ref_kind = std::string(kReplayProgramRefKind),
-            .ref_id = id};
+    return MakeWorkflowContinuationOutput(workflow_outputs::BattleReplay, id);
 }
 
 class Materializer final : public IProgramJobMaterializer

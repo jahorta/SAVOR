@@ -7,6 +7,10 @@
 #include <unordered_map>
 #include <vector>
 
+namespace savor::db::execution::programdb {
+class ProgramKindRegistry;
+}
+
 namespace savor::db::execution::workflow {
 
 enum class WorkflowPortDirection {
@@ -175,6 +179,11 @@ private:
 };
 
 WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry();
+
+bool ValidateWorkflowUnitProgramOutputContracts(
+    const WorkflowUnitRegistry& unit_registry,
+    const programdb::ProgramKindRegistry& program_registry,
+    std::string* error_out);
 
 class WorkflowCompositionService {
 public:

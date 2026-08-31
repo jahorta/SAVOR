@@ -485,9 +485,9 @@ public:
         const auto attempt = analysis_db_->FindTasMovieValidationAttempt(job->job_id, *job->worker_terminal_fingerprint);
         if (!attempt) return Fail("TAS Movie validation attempt was not durably persisted", error_out);
         result_out->disposition = ProgramJobContinuationDisposition::Complete;
-        result_out->output = ProgramJobContinuationOutput{.output_key = "tas_movie_validation_attempt",
-            .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt",
-            .ref_id = attempt->validation_attempt_id};
+        result_out->output = MakeWorkflowContinuationOutput(
+            workflow_outputs::TasMovieValidationAttempt,
+            attempt->validation_attempt_id);
         return true;
     }
 
@@ -782,29 +782,20 @@ public:
         decision.cleanup_worker_staging = true;
         if (generated_itinerary)
             decision.staging_files.push_back(*generated_itinerary);
-        decision.outputs.push_back({.output_key = "tas_movie_validation_attempt",
-            .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .ref_id = attempt_id});
+        decision.outputs.push_back(MakeWorkflowResultOutput(
+            workflow_outputs::TasMovieValidationAttempt, attempt_id));
         if (attempt.outcome == TasMovieValidationOutcome::RootCursorEstablished) {
-            decision.outputs.push_back({
-                .output_key = "root_establishment",
-                .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
-                .ref_kind = "tmv_root_establishment_attempt",
-                .ref_id = *root_establishment_id,
-            });
-            decision.outputs.push_back({
-                .output_key = "root_dtm",
-                .data_kind = "state_artifact.dtm_artifact_id",
-                .ref_kind = "state_artifact",
-                .ref_id = request->source_dtm_artifact_id,
-            });
+            decision.outputs.push_back(MakeWorkflowResultOutput(
+                workflow_outputs::TasMovieRootEstablishment,
+                *root_establishment_id));
+            decision.outputs.push_back(MakeWorkflowResultOutput(
+                workflow_outputs::TasMovieRootDtm,
+                request->source_dtm_artifact_id));
         }
         if (validated_checkpoint_savestate_id) {
-            decision.outputs.push_back({
-                .output_key = "validated_checkpoint_savestate",
-                .data_kind = "state.movie_paired_savestate_id",
-                .ref_kind = "state.savestate",
-                .ref_id = *validated_checkpoint_savestate_id,
-            });
+            decision.outputs.push_back(MakeWorkflowResultOutput(
+                workflow_outputs::TasMovieValidatedCheckpoint,
+                *validated_checkpoint_savestate_id));
         }
         if (attempt.outcome == TasMovieValidationOutcome::Invalid) {
             decision.error_code = "TAS_MOVIE_INVALID";

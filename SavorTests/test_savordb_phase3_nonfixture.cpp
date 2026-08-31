@@ -864,7 +864,7 @@ VALUES(6201, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch
 INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc, materialization_state)
 VALUES(6202, 1, 'workflow-test', 1, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
-VALUES(6203, 6202, 1, 1, 'unit.input', 6203, 'workflow-terminal-success', 0, 'COMPLETED', 1, 1, unixepoch()*1000, unixepoch()*1000);
+VALUES(6203, 6202, 1, 1, 'unit.input', 6203, 'workflow-terminal-success', 0, 'SUCCEEDED', 1, 1, unixepoch()*1000, unixepoch()*1000);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
 VALUES(6204, 6201, 'Current', 'unit.step', 'MATERIALIZED', 6202, 0, 1, unixepoch()*1000, unixepoch()*1000);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc)
@@ -971,7 +971,7 @@ VALUES(7506, 7501, 'Current', 'unit.step', 'MATERIALIZED', 7502, 0, 1, unixepoch
 
         ASSERT_TRUE(ExecSql(db, R"SQL(
 UPDATE exec_job
-SET state='COMPLETED', attempts=1, ended_at_utc=unixepoch()*1000
+SET state='SUCCEEDED', attempts=1, ended_at_utc=unixepoch()*1000
 WHERE job_id IN (7505,7507);
 )SQL"));
         ASSERT_TRUE(
@@ -1150,7 +1150,7 @@ INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, crea
 VALUES(6302, 1, 'workflow-test', 2, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
 VALUES
-    (6303, 6302, 1, 1, 'unit.input', 6303, 'workflow-terminal-failed-1', 0, 'COMPLETED', 1, 1, unixepoch()*1000, unixepoch()*1000),
+    (6303, 6302, 1, 1, 'unit.input', 6303, 'workflow-terminal-failed-1', 0, 'SUCCEEDED', 1, 1, unixepoch()*1000, unixepoch()*1000),
     (6304, 6302, 1, 1, 'unit.input', 6304, 'workflow-terminal-failed-2', 0, 'FAILED', 1, 1, unixepoch()*1000, unixepoch()*1000);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
 VALUES(6305, 6301, 'Current', 'unit.step', 'MATERIALIZED', 6302, 0, 1, unixepoch()*1000, unixepoch()*1000);

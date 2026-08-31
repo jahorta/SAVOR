@@ -131,15 +131,11 @@ ProgramResultDecision Decision(std::string state,
 }
 
 ProgramResultOutput Output(std::int64_t id) {
-    return {.output_key = std::string(kOutputKey),
-        .data_kind = std::string(kOutputDataKind),
-        .ref_kind = std::string(kProgramRefKind), .ref_id = id};
+    return MakeWorkflowResultOutput(workflow_outputs::BattleCompletion, id);
 }
 
 ProgramJobContinuationOutput ContinuationOutput(std::int64_t id) {
-    return {.output_key = std::string(kOutputKey),
-        .data_kind = std::string(kOutputDataKind),
-        .ref_kind = std::string(kProgramRefKind), .ref_id = id};
+    return MakeWorkflowContinuationOutput(workflow_outputs::BattleCompletion, id);
 }
 
 bool WriteAtomically(const std::filesystem::path& destination,

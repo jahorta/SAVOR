@@ -1,4 +1,5 @@
 #include "WorkflowComposition.h"
+#include "../ProgramDB/ProgramKindRegistry.h"
 
 #include <algorithm>
 #include <charconv>
@@ -26,6 +27,15 @@ WorkflowPortDefinition Port(
         .display_name = std::move(display_name),
         .required = required,
     };
+}
+
+WorkflowPortDefinition Port(
+    const programdb::WorkflowOutputContract& contract,
+    std::string display_name,
+    bool required = true) {
+    return Port(std::string(contract.output_key),
+        std::string(contract.data_kind), std::string(contract.ref_kind),
+        std::move(display_name), required);
 }
 
 WorkflowLaunchArgumentDefinition IntegerArgument(
@@ -105,11 +115,7 @@ WorkflowUnitDefinition SeedProbeUnit() {
             Port("entry_savestate", "state.movie_inactive_savestate_id", "state.savestate", "Entry savestate"),
         },
         .possible_outputs = {
-            Port(
-                "seed_probe_run",
-                "analysis.seed_probe_run",
-                "sp_probe_run",
-                "Confirmed SeedProbe run"),
+            Port(programdb::workflow_outputs::SeedProbeRun, "Confirmed SeedProbe run"),
         },
         .launch_arguments = {
             IntegerArgument("samples_per_axis", "Samples per axis", false, "5", 1, 64),
@@ -181,6 +187,27 @@ bool WorkflowUnitRegistry::RegisterUnit(WorkflowUnitDefinition definition, std::
                     definition.unit_kind;
             }
             return false;
+        }
+    }
+    for (const auto& step_kind : definition.internal_step_kinds) {
+        for (const auto& emitted :
+             programdb::workflow_outputs::ForStepKind(step_kind)) {
+            const auto declared = std::find_if(
+                definition.possible_outputs.begin(),
+                definition.possible_outputs.end(),
+                [&](const auto& output) {
+                    return output.key == emitted.output_key
+                        && output.data_kind == emitted.data_kind
+                        && output.ref_kind == emitted.ref_kind;
+                });
+            if (declared == definition.possible_outputs.end()) {
+                if (error_out) {
+                    *error_out = "workflow output contract mismatch for "
+                        + definition.unit_kind + "/" + step_kind + ": "
+                        + std::string(emitted.output_key);
+                }
+                return false;
+            }
         }
     }
     const bool has_presentation_key =
@@ -385,9 +412,9 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("root_dtm", "state_artifact.dtm_artifact_id", "state_artifact", "Handcrafted root DTM"),
             },
             .possible_outputs = {
-                Port("tas_movie_validation_attempt", "analysis.tas_movie_validation_attempt_id", "tmv_validation_attempt", "Validation attempt"),
-                Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Root establishment"),
-                Port("root_dtm", "state_artifact.dtm_artifact_id", "state_artifact", "Established root DTM"),
+                Port(programdb::workflow_outputs::TasMovieValidationAttempt, "Validation attempt"),
+                Port(programdb::workflow_outputs::TasMovieRootEstablishment, "Root establishment"),
+                Port(programdb::workflow_outputs::TasMovieRootDtm, "Established root DTM"),
             },
             .internal_step_kinds = { "tasmovie.establish_root_cursor" },
             .step_templates = SingleStep("tasmovie.establish_root_cursor"),
@@ -406,8 +433,8 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Root cursor establishment"),
             },
             .possible_outputs = {
-                Port("tas_movie_validation_attempt", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Validation attempt"),
-                Port("validated_checkpoint_savestate", "state.movie_paired_savestate_id", "state.savestate", "Validated checkpoint savestate"),
+                Port(programdb::workflow_outputs::TasMovieValidationAttempt, "Validation attempt"),
+                Port(programdb::workflow_outputs::TasMovieValidatedCheckpoint, "Validated checkpoint savestate"),
             },
             .launch_arguments = {
                 IntegerArgument("rtc", "RTC", true, std::nullopt, 0, std::numeric_limits<std::uint32_t>::max()),
@@ -429,8 +456,8 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("tas_movie_tree", "state.tas_movie_tree_id", "state_tas_movie_tree", "TAS movie tree"),
             },
             .possible_outputs = {
-                Port("tas_movie_validation_attempt", "analysis.tas_movie_validation_attempt_id", "tmv_validation_attempt", "Validation attempt"),
-                Port("validated_checkpoint_savestate", "state.movie_paired_savestate_id", "state.savestate", "Validated checkpoint savestate"),
+                Port(programdb::workflow_outputs::TasMovieValidationAttempt, "Validation attempt"),
+                Port(programdb::workflow_outputs::TasMovieValidatedCheckpoint, "Validated checkpoint savestate"),
             },
             .internal_step_kinds = { "tasmovie.validate_tree" },
             .step_templates = SingleStep("tasmovie.validate_tree"),
@@ -447,7 +474,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("paired_checkpoint_savestate", "state.movie_paired_savestate_id", "state.savestate", "Movie-paired checkpoint"),
             },
             .possible_outputs = {
-                Port("sterilized_checkpoint_savestate", "state.movie_inactive_savestate_id", "state.savestate", "Movie-inactive checkpoint"),
+                Port(programdb::workflow_outputs::TasMovieSterilizedCheckpoint, "Movie-inactive checkpoint"),
             },
             .internal_step_kinds = { "tasmovie.checkpoint_sterilize" },
             .step_templates = SingleStep("tasmovie.checkpoint_sterilize"),
@@ -464,7 +491,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Root establishment"),
             },
             .possible_outputs = {
-                Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Input-epoch annotation attempt"),
+                Port(programdb::workflow_outputs::TasMovieAnnotationAttempt, "Input-epoch annotation attempt"),
             },
             .internal_step_kinds = {"tasmovie.annotate"},
             .step_templates = SingleStep("tasmovie.annotate"),
@@ -481,11 +508,11 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Source input-epoch annotation"),
             },
             .possible_outputs = {
-                Port("rewrite_attempt", "analysis.tas_movie_input_epoch_rewrite_attempt_id", "tmv_input_epoch_rewrite_attempt", "Input-epoch rewrite attempt"),
-                Port("rewritten_dtm", "state_artifact.dtm_artifact_id", "state_artifact", "Rewritten DTM"),
-                Port("rewritten_paired_savestate", "state.movie_paired_savestate_id", "state.savestate", "Rewritten movie-paired endpoint"),
-                Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Rewritten input-epoch annotation"),
-                Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Rewritten root establishment"),
+                Port(programdb::workflow_outputs::TasMovieRewriteAttempt, "Input-epoch rewrite attempt"),
+                Port(programdb::workflow_outputs::TasMovieRewrittenDtm, "Rewritten DTM"),
+                Port(programdb::workflow_outputs::TasMovieRewrittenPairedSavestate, "Rewritten movie-paired endpoint"),
+                Port(programdb::workflow_outputs::TasMovieAnnotationAttempt, "Rewritten input-epoch annotation"),
+                Port(programdb::workflow_outputs::TasMovieRootEstablishment, "Rewritten root establishment"),
             },
             .launch_arguments = {
                 IntegerArgument("insert_before_epoch", "Insert before epoch", false,
@@ -515,7 +542,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("root_establishment", "analysis.tas_movie_root_establishment_attempt_id", "tmv_root_establishment_attempt", "Root establishment"),
             },
             .possible_outputs = {
-                Port("annotation_attempt", "analysis.tas_movie_input_epoch_annotation_attempt_id", "tmv_input_epoch_annotation_attempt", "Diagnostic annotation attempt"),
+                Port(programdb::workflow_outputs::TasMovieAnnotationAttempt, "Diagnostic annotation attempt"),
             },
             .internal_step_kinds = {"tasmovie.input_epoch_breakpoint_diagnostic"},
             .step_templates = SingleStep("tasmovie.input_epoch_breakpoint_diagnostic"),
@@ -555,7 +582,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("entry_savestate", "state.movie_inactive_savestate_id", "state.savestate", "Entry savestate"),
             },
             .possible_outputs = {
-                Port("battle_context", "analysis_battle.battle_context_id", "ab_battle_context", "Battle context"),
+                Port(programdb::workflow_outputs::BattleContext, "Battle context"),
             },
             .internal_step_kinds = { "battle.context" },
             .step_templates = SingleStep("battle.context"),
@@ -578,7 +605,8 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("battle_context", "analysis_battle.battle_context_id", "ab_battle_context", "Battle context"),
             },
             .possible_outputs = {
-                Port("battle_set", "analysis_battle.battle_set", "analysis_battle.battle_set", "Battle set"),
+                Port(programdb::workflow_outputs::BattleSet, "Battle set"),
+                Port(programdb::workflow_outputs::BattleCompletion, "Battle completion"),
                 Port("battle_manual_followup", "analysis.battle_manual_followup_id", "manual_followup", "Battle manual follow-up"),
             },
             .launch_arguments = {
@@ -619,7 +647,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("victory_turn_job", "analysis_battle.battle_turn_job", "analysis_battle.turn_job", "Selected Victory turn job"),
             },
             .possible_outputs = {
-                Port("completion", "analysis_battle.battle_completion", "analysis_battle.battle_completion", "Battle completion"),
+                Port(programdb::workflow_outputs::BattleCompletion, "Battle completion"),
             },
             .internal_step_kinds = { "battle.completion" },
             .step_templates = SingleStep("battle.completion"),
@@ -639,7 +667,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("completion", "analysis_battle.battle_completion", "analysis_battle.battle_completion", "Battle completion"),
             },
             .possible_outputs = {
-                Port("recording", "analysis_battle.battle_recording", "analysis_battle.battle_recording", "Battle recording"),
+                Port(programdb::workflow_outputs::BattleRecording, "Battle recording"),
             },
             .internal_step_kinds = { "battle.record" },
             .step_templates = SingleStep("battle.record"),
@@ -659,7 +687,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("completion", "analysis_battle.battle_completion", "analysis_battle.battle_completion", "Battle completion"),
             },
             .possible_outputs = {
-                Port("replay", "analysis_battle.battle_replay", "analysis_battle.battle_replay", "Battle replay"),
+                Port(programdb::workflow_outputs::BattleReplay, "Battle replay"),
             },
             .internal_step_kinds = { "battle.replay" },
             .step_templates = SingleStep("battle.replay"),
@@ -731,6 +759,37 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
         &ignored);
 
     return registry;
+}
+
+bool ValidateWorkflowUnitProgramOutputContracts(
+    const WorkflowUnitRegistry& unit_registry,
+    const programdb::ProgramKindRegistry& program_registry,
+    std::string* error_out) {
+    for (const auto& unit : unit_registry.ListUnits()) {
+        for (const auto& step_kind : unit.internal_step_kinds) {
+            const auto* descriptor = program_registry.FindForStepKind(step_kind);
+            if (descriptor == nullptr) continue;
+            for (const auto& emitted : descriptor->workflow_outputs) {
+                const auto declared = std::find_if(
+                    unit.possible_outputs.begin(), unit.possible_outputs.end(),
+                    [&](const auto& output) {
+                        return output.key == emitted.output_key
+                            && output.data_kind == emitted.data_kind
+                            && output.ref_kind == emitted.ref_kind;
+                    });
+                if (declared == unit.possible_outputs.end()) {
+                    if (error_out) {
+                        *error_out = "workflow output contract mismatch for "
+                            + unit.unit_kind + "/" + step_kind + ": "
+                            + std::string(emitted.output_key);
+                    }
+                    return false;
+                }
+            }
+        }
+    }
+    if (error_out) error_out->clear();
+    return true;
 }
 
 WorkflowCompositionService::WorkflowCompositionService(const WorkflowUnitRegistry* registry)

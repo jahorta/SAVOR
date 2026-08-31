@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -7448,7 +7449,7 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
     EXPECT_NE(err.find("workflow_kind must be workflow_graph"), std::string::npos);
 }
 
-TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInputs) {
+TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesValidateRootToSterilizeAndClassifiesContractFailures) {
     using namespace savor::db;
     using namespace savor::db::execution::workflow;
 
@@ -7456,288 +7457,170 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
     auto* execution_db = db_service_->ExecutionDb();
     ASSERT_NE(authoring_db, nullptr);
     ASSERT_NE(execution_db, nullptr);
-
     std::string err;
-    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000789));
-    SaveWorkflowGraphResult saved{};
+    savor::db::SaveWorkflowGraphResult saved{};
+    const savor::db::types::UtcTimePoint now{
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())};
     ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
         {
-            .name = "route-tas-probe-battle",
-            .description = "TAS and seed probe outputs feed battle",
+            .name = "route-validation-sterilize",
+            .description = "Validated checkpoint feeds sterilization",
             .graph_version = 1,
-            .graph_hash = "graph-hash-route-tas-probe-battle",
+            .graph_hash = "graph-hash-route-validation-sterilize",
             .nodes = {
                 {
-                    .node_key = "tas_1",
-                    .unit_kind = "tas_movie",
-                    .display_name = "TAS Movie",
+                    .node_key = "validate_1",
+                    .unit_kind = "tas_movie_validate_root",
+                    .display_name = "Validate Root",
                     .possible_outputs = {
-                        { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                        { .output_key = "tas_movie_validation_attempt", .data_kind = "analysis.tas_movie_validation_attempt_id", .ref_kind = "tmv_validation_attempt", .display_name = "Validation attempt" },
+                        { .output_key = "validated_checkpoint_savestate", .data_kind = "state.movie_paired_savestate_id", .ref_kind = "state.savestate", .display_name = "Validated checkpoint" },
                     },
                 },
                 {
-                    .node_key = "probe_1",
-                    .unit_kind = "seed_probe",
-                    .display_name = "Seed Probe",
+                    .node_key = "sterilize_1",
+                    .unit_kind = "tas_movie_checkpoint_sterilize",
+                    .display_name = "Sterilize Checkpoint",
                     .inputs = {
-                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                        { .input_key = "paired_checkpoint_savestate", .data_kind = "state.movie_paired_savestate_id", .ref_kind = "state.savestate", .display_name = "Paired checkpoint" },
                     },
                     .possible_outputs = {
-                        { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
-                    },
-                },
-                {
-                    .node_key = "battle_1",
-                    .unit_kind = "battle",
-                    .display_name = "Battle",
-                    .inputs = {
-                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
-                        { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
-                    },
-                    .possible_outputs = {
-                        { .output_key = "battle_set", .data_kind = "analysis_battle.battle_set", .display_name = "Battle set" },
+                        { .output_key = "sterilized_checkpoint_savestate", .data_kind = "state.movie_inactive_savestate_id", .ref_kind = "state.savestate", .display_name = "Sterilized checkpoint" },
                     },
                 },
             },
             .edges = {
-                { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
-                { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
-                { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+                { .from_node_key = "validate_1", .output_key = "validated_checkpoint_savestate", .to_node_key = "sterilize_1", .input_key = "paired_checkpoint_savestate" },
             },
             .created_at_utc = now,
-            .correlation_id = "au-workflow-graph-routing",
+            .correlation_id = "route-validation-sterilize",
         },
         &saved,
         &err)) << err;
 
-    std::int64_t workflow_instance_id = 0;
+    auto validation = TestUnitActivation(
+        "validate_1", "tas_movie_validate_root", "Validate Root", {}, 10, 1);
+    validation.steps.front().step_kind = "tasmovie.validate_root";
+    auto sterilize = TestUnitActivation(
+        "sterilize_1", "tas_movie_checkpoint_sterilize", "Sterilize", {"validate_1"}, 5, 1);
+    sterilize.steps.front().step_kind = "tasmovie.checkpoint_sterilize";
     WorkflowCreateInstanceCommand create{};
     create.workflow_kind = "workflow_graph";
     create.root_scope_kind = "manual";
     create.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     create.created_by = "sqlite-fixture";
     create.created_at_utc = now.time_since_epoch().count();
-    create.unit_activations.push_back(TestUnitActivation("tas_1", "tas_movie", "TAS Movie", {}, 10, 1));
-    create.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe", "Seed Probe", { "tas_1" }, 5, 1));
-    create.unit_activations.push_back(TestUnitActivation("battle_1", "battle", "Battle", { "tas_1", "probe_1" }, 1, 1));
-    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(create, &workflow_instance_id, &err)) << err;
-
-    auto step_id = [&](const std::string& step_key) -> std::int64_t {
-        const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
-        EXPECT_TRUE(graph.has_value());
-        if (!graph.has_value()) {
-            return 0;
-        }
-        const auto it = std::find_if(
-            graph->steps.begin(),
-            graph->steps.end(),
-            [&](const auto& step) { return step.step_key == step_key; });
-        EXPECT_NE(it, graph->steps.end());
-        return it != graph->steps.end() ? it->workflow_step_id : 0;
-    };
-    auto step_state = [&](const std::string& step_key) -> WorkflowStepState {
-        const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
-        EXPECT_TRUE(graph.has_value());
-        if (!graph.has_value()) {
-            return WorkflowStepState::Failed;
-        }
-        const auto it = std::find_if(
-            graph->steps.begin(),
-            graph->steps.end(),
-            [&](const auto& step) { return step.step_key == step_key; });
-        EXPECT_NE(it, graph->steps.end());
-        return it != graph->steps.end() ? it->state : WorkflowStepState::Failed;
-    };
-    auto step_priority = [&](const std::string& step_key) -> int {
-        const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
-        EXPECT_TRUE(graph.has_value());
-        if (!graph.has_value()) {
-            return 0;
-        }
-        const auto it = std::find_if(
-            graph->steps.begin(),
-            graph->steps.end(),
-            [&](const auto& step) { return step.step_key == step_key; });
-        EXPECT_NE(it, graph->steps.end());
-        return it != graph->steps.end() ? it->priority : 0;
-    };
-
-    const auto tas_step_id = step_id("tas_1");
-    std::int64_t tas_job_set_id = 0;
-    ASSERT_TRUE(execution_db->CreateJobSet(
-        {
-            .program_kind = 10,
-            .purpose = "TAS Movie",
-            .created_by = std::string("test"),
-            .expected_total = 1,
-        },
-        &tas_job_set_id,
-        &err)) << err;
-    ASSERT_TRUE(execution_db->WorkflowCommandService()->MarkStepMaterialized(
-        { .workflow_step_id = tas_step_id, .job_set_id = tas_job_set_id, .requested_by = "test" },
-        &err)) << err;
-    std::int64_t tas_job_id = 0;
-    ASSERT_TRUE(execution_db->EnqueueJob(
-        {
-            .job_set_id = tas_job_set_id,
-            .program_kind = 10,
-            .program_version = 1,
-            .program_ref_kind = "state.dtm_artifact",
-            .program_ref_id = 111,
-            .fingerprint = "tas-route-job",
-            .priority = 0,
-            .max_attempts = 1,
-        },
-        &tas_job_id,
-        &err)) << err;
-    ASSERT_TRUE(execution_db->JobCommandService()->AppendLifecycleEvent(
-        { .kind = execution::jobs::JobLifecycleEventKind::JobCompleted, .job_id = tas_job_id, .terminal_state = std::string("SUCCEEDED") },
-        &err)) << err;
-    ASSERT_TRUE(execution_db->RecordJobOutput(
-        {
-            .job_id = tas_job_id,
-            .output_key = "savestate",
-            .data_kind = "state.savestate_id",
-            .ref_kind = "state.savestate",
-            .ref_id = 7001,
-            .requested_by = "worker_result_drain",
-        },
-        &err)) << err;
-    ASSERT_TRUE(execution_db->WorkflowCommandService()->CompleteWorkflowStep(
-        { .workflow_step_id = tas_step_id, .completion_state = "COMPLETED", .requested_by = "test" },
-        &err)) << err;
-
-    WorkflowGraphRoutingService router(
-        execution_db,
-        authoring_db,
-        execution_db->WorkflowQueryService(),
-        execution_db->WorkflowCommandService());
-    WorkflowGraphRoutingResult route_result{};
-    ASSERT_TRUE(router.RouteTerminalStep(
-        {
-            .workflow_instance_id = workflow_instance_id,
-            .workflow_step_id = tas_step_id,
-            .job_set_id = tas_job_set_id,
-            .workflow_kind = "workflow_graph",
-            .workflow_graph_revision_id = saved.workflow_graph_revision_id,
-            .step_key = "tas_1",
-            .graph_node_key = "tas_1",
-            .step_kind = "tas_movie",
-            .priority = step_priority("tas_1"),
-            .expected_total = 1,
-            .discovered_total = 1,
-            .settled_total = 1,
-            .succeeded_total = 1,
-            .failed_total = 0,
-        },
-        &route_result,
-        &err)) << err;
-    EXPECT_TRUE(route_result.routed_input_binding);
-    EXPECT_TRUE(route_result.advanced_ready_step);
-    EXPECT_EQ(step_state("probe_1"), WorkflowStepState::Ready);
-    EXPECT_EQ(step_priority("probe_1"), 20);
-    EXPECT_EQ(step_state("battle_1"), WorkflowStepState::Waiting);
+    create.unit_activations = {validation, sterilize};
+    std::int64_t workflow_instance_id = 0;
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(
+        create, &workflow_instance_id, &err)) << err;
 
     auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
     ASSERT_TRUE(graph.has_value());
-    auto has_binding = [&](const std::string& node_key, const std::string& input_key, std::int64_t ref_id) {
-        return std::any_of(
-            graph->input_bindings.begin(),
-            graph->input_bindings.end(),
-            [&](const auto& binding) {
-                return binding.node_key == node_key
-                    && binding.input_key == input_key
-                    && binding.ref_id == ref_id
-                    && binding.source_kind == "upstream";
-            });
-    };
-    EXPECT_TRUE(has_binding("probe_1", "entry_savestate", 7001));
-    EXPECT_TRUE(has_binding("battle_1", "entry_savestate", 7001));
-    EXPECT_FALSE(has_binding("battle_1", "initial_input_frames", 8001));
+    const auto validation_step = std::find_if(
+        graph->steps.begin(), graph->steps.end(),
+        [](const auto& step) { return step.step_key == "validate_1"; });
+    const auto sterilize_step = std::find_if(
+        graph->steps.begin(), graph->steps.end(),
+        [](const auto& step) { return step.step_key == "sterilize_1"; });
+    ASSERT_NE(validation_step, graph->steps.end());
+    ASSERT_NE(sterilize_step, graph->steps.end());
+    const auto validation_step_id = validation_step->workflow_step_id;
+    const auto sterilize_step_id = sterilize_step->workflow_step_id;
 
-    const auto probe_step_id = step_id("probe_1");
-    std::int64_t probe_job_set_id = 0;
+    std::int64_t job_set_id = 0;
     ASSERT_TRUE(execution_db->CreateJobSet(
-        {
-            .program_kind = 20,
-            .purpose = "Seed Probe",
-            .created_by = std::string("test"),
-            .expected_total = 1,
-        },
-        &probe_job_set_id,
-        &err)) << err;
+        {.program_kind = 1, .purpose = "validate", .created_by = std::string("test"), .expected_total = 1},
+        &job_set_id, &err)) << err;
     ASSERT_TRUE(execution_db->WorkflowCommandService()->MarkStepMaterialized(
-        { .workflow_step_id = probe_step_id, .job_set_id = probe_job_set_id, .requested_by = "test" },
+        {.workflow_step_id = validation_step_id, .job_set_id = job_set_id, .requested_by = "test"},
         &err)) << err;
-    std::int64_t probe_job_id = 0;
+    std::int64_t job_id = 0;
     ASSERT_TRUE(execution_db->EnqueueJob(
-        {
-            .job_set_id = probe_job_set_id,
-            .program_kind = 20,
-            .program_version = 1,
-            .program_ref_kind = "sp_probe_run",
-            .program_ref_id = 222,
-            .fingerprint = "probe-route-job",
-            .priority = 0,
-            .max_attempts = 1,
-        },
-        &probe_job_id,
-        &err)) << err;
+        {.job_set_id = job_set_id, .program_kind = 1, .program_version = 1,
+         .program_ref_kind = "tmv_root_establishment_attempt", .program_ref_id = 1,
+         .fingerprint = "validate-route", .priority = 0, .max_attempts = 1},
+        &job_id, &err)) << err;
     ASSERT_TRUE(execution_db->JobCommandService()->AppendLifecycleEvent(
-        { .kind = execution::jobs::JobLifecycleEventKind::JobCompleted, .job_id = probe_job_id, .terminal_state = std::string("SUCCEEDED") },
+        {.kind = execution::jobs::JobLifecycleEventKind::JobCompleted,
+         .job_id = job_id, .terminal_state = std::string("SUCCEEDED")},
         &err)) << err;
     ASSERT_TRUE(execution_db->RecordJobOutput(
-        {
-            .job_id = probe_job_id,
-            .output_key = "accepted_input_frames",
-            .data_kind = "analysis.input_frame_set_id",
-            .ref_kind = "an.input_set",
-            .ref_id = 8001,
-            .requested_by = "worker_result_drain",
-        },
-        &err)) << err;
+        {.job_id = job_id, .output_key = "tas_movie_validation_attempt",
+         .data_kind = "analysis.tas_movie_validation_attempt_id",
+         .ref_kind = "tmv_validation_attempt", .ref_id = 71,
+         .requested_by = "worker_result_drain"}, &err)) << err;
+    ASSERT_TRUE(execution_db->RecordJobOutput(
+        {.job_id = job_id, .output_key = "validated_checkpoint_savestate",
+         .data_kind = "state.movie_paired_savestate_id",
+         .ref_kind = "state.savestate", .ref_id = 72,
+         .requested_by = "worker_result_drain"}, &err)) << err;
     ASSERT_TRUE(execution_db->WorkflowCommandService()->CompleteWorkflowStep(
-        { .workflow_step_id = probe_step_id, .completion_state = "COMPLETED", .requested_by = "test" },
+        {.workflow_step_id = validation_step_id, .completion_state = "COMPLETED", .requested_by = "test"},
         &err)) << err;
 
-    route_result = {};
-    ASSERT_TRUE(router.RouteTerminalStep(
-        {
-            .workflow_instance_id = workflow_instance_id,
-            .workflow_step_id = probe_step_id,
-            .job_set_id = probe_job_set_id,
-            .workflow_kind = "workflow_graph",
-            .workflow_graph_revision_id = saved.workflow_graph_revision_id,
-            .step_key = "probe_1",
-            .graph_node_key = "probe_1",
-            .step_kind = "seed_probe",
-            .priority = step_priority("probe_1"),
-            .expected_total = 1,
-            .discovered_total = 1,
-            .settled_total = 1,
-            .succeeded_total = 1,
-            .failed_total = 0,
-        },
-        &route_result,
-        &err)) << err;
+    WorkflowGraphRoutingService router(
+        execution_db, authoring_db, execution_db->WorkflowQueryService(),
+        execution_db->WorkflowCommandService());
+    WorkflowGraphRoutingResult route_result{};
+    WorkflowStepSettlementSnapshot terminal{
+        .workflow_instance_id = workflow_instance_id,
+        .workflow_step_id = validation_step_id,
+        .job_set_id = job_set_id,
+        .workflow_kind = "workflow_graph",
+        .workflow_graph_revision_id = saved.workflow_graph_revision_id,
+        .step_key = "validate_1",
+        .graph_node_key = "validate_1",
+        .step_kind = "tasmovie.validate_root",
+        .priority = 10,
+        .expected_total = 1,
+        .discovered_total = 1,
+        .settled_total = 1,
+        .succeeded_total = 1,
+    };
+    ASSERT_TRUE(router.RouteTerminalStep(terminal, &route_result, &err)) << err;
     EXPECT_TRUE(route_result.routed_input_binding);
     EXPECT_TRUE(route_result.advanced_ready_step);
-    EXPECT_EQ(step_state("battle_1"), WorkflowStepState::Ready);
-    EXPECT_EQ(step_priority("battle_1"), 30);
-
     graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
     ASSERT_TRUE(graph.has_value());
-    EXPECT_TRUE(has_binding("battle_1", "initial_input_frames", 8001));
+    const auto updated_sterilize = std::find_if(
+        graph->steps.begin(), graph->steps.end(),
+        [&](const auto& step) { return step.workflow_step_id == sterilize_step_id; });
+    ASSERT_NE(updated_sterilize, graph->steps.end());
+    EXPECT_EQ(updated_sterilize->state, WorkflowStepState::Ready);
 
-    const auto outputs = execution_db->WorkflowQueryService()->ListStepOutputs(workflow_instance_id);
-    EXPECT_EQ(std::count_if(outputs.begin(), outputs.end(), [](const auto& output) {
-        return output.graph_node_key == "tas_1" && output.output_key == "savestate";
-    }), 1);
-    EXPECT_EQ(std::count_if(outputs.begin(), outputs.end(), [](const auto& output) {
-        return output.graph_node_key == "probe_1" && output.output_key == "accepted_input_frames";
-    }), 1);
+    ASSERT_TRUE(execution_db->RecordJobOutput(
+        {.job_id = job_id, .output_key = "undeclared_output",
+         .data_kind = "analysis.invalid", .ref_kind = "invalid.ref",
+         .ref_id = 73, .requested_by = "test"}, &err)) << err;
+    route_result = {};
+    EXPECT_FALSE(router.RouteTerminalStep(terminal, &route_result, &err));
+    ASSERT_TRUE(route_result.failure.has_value());
+    EXPECT_EQ(route_result.failure->failure_class,
+        WorkflowGraphRoutingFailureClass::GraphConstruction);
+    EXPECT_EQ(route_result.failure->code,
+        "PROGRAM_OUTPUT_OUTSIDE_UNIT_CONTRACT");
+
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->FailWorkflowInstance(
+        {.workflow_instance_id = workflow_instance_id,
+         .workflow_step_id = std::nullopt,
+         .failure_code = "WORKFLOW_GRAPH_CONSTRUCTION_FAILED",
+         .failure_message = route_result.failure->message,
+         .requested_by = "workflow_coordinator_graph_construction"},
+        &err)) << err;
+    graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    ASSERT_TRUE(graph.has_value());
+    const auto completed_validation = std::find_if(
+        graph->steps.begin(), graph->steps.end(),
+        [&](const auto& step) { return step.workflow_step_id == validation_step_id; });
+    ASSERT_NE(completed_validation, graph->steps.end());
+    EXPECT_EQ(completed_validation->state, WorkflowStepState::Completed);
+    const auto failed_workflows = execution_db->WorkflowQueryService()->ListWorkflowInstances(
+        WorkflowInstanceState::Failed, 0, (std::numeric_limits<std::int64_t>::max)());
+    EXPECT_TRUE(std::any_of(failed_workflows.begin(), failed_workflows.end(),
+        [&](const auto& workflow) { return workflow.workflow_instance_id == workflow_instance_id; }));
 }
-
 TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) {
     using namespace savor::db;
     using namespace savor::db::execution::workflow;

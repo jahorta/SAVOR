@@ -456,6 +456,8 @@ bool WorkflowSettlementAdvancementService::AdvanceSnapshot(
     if (snapshot.workflow_kind == "workflow_graph" && graph_routing_service_ != nullptr) {
         WorkflowGraphRoutingResult graph_result{};
         if (!graph_routing_service_->RouteTerminalStep(snapshot, &graph_result, &command_error)) {
+            result.graph_routing_failure = graph_result.failure;
+            if (result_out) *result_out = result;
             if (error_out) *error_out = command_error;
             return false;
         }

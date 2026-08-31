@@ -84,13 +84,15 @@ public:
             !descriptor.default_derived_state_block_ids.has_value()) {
             return false;
         }
+        ProgramKindDescriptor step_descriptor = descriptor;
+        step_descriptor.workflow_outputs = workflow_outputs::ForStepKind(step_kind);
         std::unique_lock lock(mutex_);
         const bool inserted =
             step_kind_descriptors_
                 .emplace(
                     std::move(step_kind),
                     std::make_shared<const ProgramKindDescriptor>(
-                        descriptor))
+                        std::move(step_descriptor)))
                 .second;
         if (inserted) {
             generation_.fetch_add(1, std::memory_order_release);

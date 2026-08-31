@@ -6,6 +6,7 @@
 
 #include "../../../SavorCore/Runner/Runtime/ProgramKind.h"
 #include "../../../SavorCore/Utils/Hash.h"
+#include "../Workflow/WorkflowComposition.h"
 
 namespace savor::db::execution::programdb {
 namespace {
@@ -353,6 +354,15 @@ bool BuildProductionProgramKindRegistry(
                 error_out);
         }
 
+        const auto workflow_units =
+            workflow::BuildDefaultWorkflowUnitRegistry();
+        std::string contract_error;
+        if (!workflow::ValidateWorkflowUnitProgramOutputContracts(
+                workflow_units, registry, &contract_error)) {
+            return Fail("Production workflow output contracts are invalid: "
+                    + contract_error,
+                error_out);
+        }
         *registry_out = std::move(registry);
     } catch (const std::exception& exception) {
         return Fail(

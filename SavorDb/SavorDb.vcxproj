@@ -202,6 +202,7 @@
     
     <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnProgram.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
+    <ClInclude Include="Execution\ProgramDB\WorkflowOutputContractCatalog.h" />
     <ClInclude Include="Execution\ProgramDB\WorksetObservationBinding.h" />
     <ClInclude Include="Execution\ProgramDB\WorksetDerivedStateBinding.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />

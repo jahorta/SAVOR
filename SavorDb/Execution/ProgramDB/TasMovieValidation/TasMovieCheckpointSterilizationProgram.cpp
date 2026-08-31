@@ -113,12 +113,8 @@ ProgramResultDecision FinalDecision(
 }
 
 ProgramResultOutput Output(std::int64_t savestate_id) {
-    return {
-        .output_key = std::string(kOutputKey),
-        .data_kind = std::string(kOutputDataKind),
-        .ref_kind = std::string(kStateRefKind),
-        .ref_id = savestate_id,
-    };
+    return MakeWorkflowResultOutput(
+        workflow_outputs::TasMovieSterilizedCheckpoint, savestate_id);
 }
 
 bool VerifySourceSnapshot(
@@ -370,12 +366,8 @@ public:
         if (!VerifyCanonicalResult(state_db_, *request, output_id, std::nullopt, &verification_error))
             return Fail(std::move(verification_error), error_out);
         result_out->disposition = ProgramJobContinuationDisposition::Complete;
-        result_out->output = ProgramJobContinuationOutput{
-            .output_key = std::string(kOutputKey),
-            .data_kind = std::string(kOutputDataKind),
-            .ref_kind = std::string(kStateRefKind),
-            .ref_id = output_id,
-        };
+        result_out->output = MakeWorkflowContinuationOutput(
+            workflow_outputs::TasMovieSterilizedCheckpoint, output_id);
         return true;
     }
 

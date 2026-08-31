@@ -1818,12 +1818,8 @@ bool BetterCandidate(const RankedCandidate& lhs, const RankedCandidate& rhs) {
 }
 
 ProgramJobContinuationOutput BattleSetOutput(std::int64_t battle_set_id) {
-    return {
-        .output_key = std::string(kBattleSetOutputKey),
-        .data_kind = std::string(kBattleSetDataKind),
-        .ref_kind = std::string(kBattleSetRefKind),
-        .ref_id = battle_set_id,
-    };
+    return MakeWorkflowContinuationOutput(
+        workflow_outputs::BattleSet, battle_set_id);
 }
 
 bool IsTerminalBattleSetStatus(BattleSetStatus status) {
