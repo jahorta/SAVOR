@@ -2,6 +2,7 @@
 
 #include "WorkflowGraphLaunchService.h"
 #include "WorkflowOrchestration.h"
+#include "../ProgramDB/TasMovieValidation/TasMovieInputEpochProgram.h"
 #include "../../Analysis/IAnalysisDb.h"
 #include "../../Authoring/IAuthoringDb.h"
 #include "../../State/IStateDb.h"
@@ -115,6 +116,82 @@ bool BindInt64(sqlite3_stmt* statement, int index,
     std::optional<std::int64_t> value) {
     return value ? sqlite3_bind_int64(statement, index, *value) == SQLITE_OK
                  : sqlite3_bind_null(statement, index) == SQLITE_OK;
+}
+
+std::optional<std::int64_t> WorkflowGraphRevision(sqlite3* db,
+    const std::int64_t workflow_instance_id) {
+    sqlite3_stmt* statement = nullptr;
+    if (!db || workflow_instance_id <= 0 || sqlite3_prepare_v2(db,
+            "SELECT workflow_graph_revision_id FROM exec_workflow_instance WHERE workflow_instance_id=?1;",
+            -1, &statement, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(statement, 1, workflow_instance_id);
+    std::optional<std::int64_t> value;
+    if (sqlite3_step(statement) == SQLITE_ROW
+        && sqlite3_column_type(statement, 0) != SQLITE_NULL)
+        value = sqlite3_column_int64(statement, 0);
+    sqlite3_finalize(statement);
+    return value;
+}
+
+std::optional<std::string> WorkflowState(sqlite3* db,
+    const std::int64_t workflow_instance_id) {
+    sqlite3_stmt* statement = nullptr;
+    if (!db || workflow_instance_id <= 0 || sqlite3_prepare_v2(db,
+            "SELECT state FROM exec_workflow_instance WHERE workflow_instance_id=?1;",
+            -1, &statement, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(statement, 1, workflow_instance_id);
+    std::optional<std::string> value;
+    if (sqlite3_step(statement) == SQLITE_ROW)
+        value = Text(statement, 0);
+    sqlite3_finalize(statement);
+    return value;
+}
+
+std::vector<std::int64_t> MatchingRewriteRequestIds(sqlite3* analysis_db,
+    const programdb::tasmovieinputepoch::TasMovieDelayPreparationIdentity& identity) {
+    std::vector<std::int64_t> ids;
+    sqlite3_stmt* statement = nullptr;
+    constexpr const char* sql =
+        "SELECT rewrite_request_id FROM tmv_input_epoch_rewrite_request "
+        "WHERE source_dtm_sha256=?1 AND schedule_sha256=?2 AND insert_before_epoch=?3 "
+        "AND neutral_epoch_count=?4 AND placement_profile=?5 AND full_phase_program_kind=?6 "
+        "AND full_phase_program_version=?7 AND full_phase_canonical_id=?8 "
+        "AND full_phase_contract_revision=?9 AND full_phase_sha256=?10 "
+        "AND module_canonical_id=?11 AND module_revision=?12 AND module_sha256=?13 "
+        "ORDER BY rewrite_request_id;";
+    if (!analysis_db || sqlite3_prepare_v2(analysis_db, sql, -1, &statement,
+            nullptr) != SQLITE_OK) return ids;
+    sqlite3_bind_text(statement, 1, identity.source_dtm_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, 2, identity.source_schedule_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 3, static_cast<std::int64_t>(identity.insert_before_epoch));
+    sqlite3_bind_int64(statement, 4, static_cast<std::int64_t>(identity.neutral_epoch_count));
+    sqlite3_bind_text(statement, 5, identity.placement_profile.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 6, identity.full_phase_program_kind);
+    sqlite3_bind_int64(statement, 7, identity.full_phase_program_version);
+    sqlite3_bind_text(statement, 8, identity.full_phase_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 9, identity.full_phase_contract_revision);
+    sqlite3_bind_text(statement, 10, identity.full_phase_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, 11, identity.module_canonical_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 12, identity.module_revision);
+    sqlite3_bind_text(statement, 13, identity.module_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    while (sqlite3_step(statement) == SQLITE_ROW)
+        ids.push_back(sqlite3_column_int64(statement, 0));
+    sqlite3_finalize(statement);
+    return ids;
+}
+
+std::optional<std::int64_t> SuccessfulRewriteAttemptId(sqlite3* analysis_db,
+    const std::int64_t request_id) {
+    sqlite3_stmt* statement = nullptr;
+    if (!analysis_db || sqlite3_prepare_v2(analysis_db,
+            "SELECT rewrite_attempt_id FROM tmv_input_epoch_rewrite_attempt WHERE rewrite_request_id=?1 AND succeeded=1 ORDER BY rewrite_attempt_id DESC LIMIT 1;",
+            -1, &statement, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_int64(statement, 1, request_id);
+    std::optional<std::int64_t> value;
+    if (sqlite3_step(statement) == SQLITE_ROW)
+        value = sqlite3_column_int64(statement, 0);
+    sqlite3_finalize(statement);
+    return value;
 }
 
 } // namespace
@@ -939,10 +1016,29 @@ bool WorkflowExpansionService::Advance(
         return {};
     }();
 
+    const auto attach = [&](const std::string& role, const std::int64_t delay,
+        const std::optional<std::int64_t> rtc,
+        const std::int64_t workflow) -> bool {
+        sqlite3_stmt* statement = nullptr;
+        if (sqlite3_prepare_v2(db_,
+            "INSERT OR IGNORE INTO exec_workflow_expansion_member(workflow_expansion_id,member_role,neutral_epoch_count,rtc_value,workflow_instance_id,state,created_at_utc,updated_at_utc) VALUES(?1,?2,?3,?4,?5,'PENDING',?6,?6);",
+            -1, &statement, nullptr) != SQLITE_OK) return false;
+        sqlite3_bind_int64(statement, 1, refreshed.workflow_expansion_id);
+        sqlite3_bind_text(statement, 2, role.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(statement, 3, delay);
+        BindInt64(statement, 4, rtc);
+        sqlite3_bind_int64(statement, 5, workflow);
+        sqlite3_bind_int64(statement, 6, types::UtcNow().time_since_epoch().count());
+        const bool inserted = sqlite3_step(statement) == SQLITE_DONE;
+        sqlite3_finalize(statement);
+        return inserted;
+    };
+
     const auto launch = [&](std::string_view graph_name, std::string role,
         std::int64_t delay, std::optional<std::int64_t> rtc,
         std::vector<WorkflowLaunchInputValue> inputs,
-        std::vector<WorkflowLaunchArgumentValue> arguments) -> bool {
+        std::vector<WorkflowLaunchArgumentValue> arguments,
+        std::optional<std::string> semantic_launch_key = std::nullopt) -> bool {
         if (FindMember(refreshed, role, delay, rtc)) return true;
         const auto revision = GraphRevision(authoring_, graph_name);
         if (!revision) {
@@ -989,27 +1085,15 @@ bool WorkflowExpansionService::Advance(
                 "expansion",
             });
         }
-        const auto launch_key = "workflow-expansion:" +
+        const auto launch_key = semantic_launch_key.value_or("workflow-expansion:" +
             std::to_string(refreshed.workflow_expansion_id) + ":" + role + ":" +
-            std::to_string(delay) + ":" + (rtc ? std::to_string(*rtc) : "none");
+            std::to_string(delay) + ":" + (rtc ? std::to_string(*rtc) : "none"));
         std::int64_t workflow = 0;
         if (!WorkflowGraphLaunchService(authoring_, execution_).Start(
             {.workflow_graph_revision_id=*revision, .created_by="WorkflowExpansionService",
              .launch_key=launch_key, .input_bindings=std::move(inputs),
              .arguments=std::move(arguments)}, &workflow, error_out)) return false;
-        sqlite3_stmt* statement = nullptr;
-        if (sqlite3_prepare_v2(db_,
-            "INSERT OR IGNORE INTO exec_workflow_expansion_member(workflow_expansion_id,member_role,neutral_epoch_count,rtc_value,workflow_instance_id,state,created_at_utc,updated_at_utc) VALUES(?1,?2,?3,?4,?5,'PENDING',?6,?6);",
-            -1, &statement, nullptr) != SQLITE_OK) return false;
-        sqlite3_bind_int64(statement, 1, refreshed.workflow_expansion_id);
-        sqlite3_bind_text(statement, 2, role.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(statement, 3, delay);
-        BindInt64(statement, 4, rtc);
-        sqlite3_bind_int64(statement, 5, workflow);
-        sqlite3_bind_int64(statement, 6, types::UtcNow().time_since_epoch().count());
-        const bool inserted = sqlite3_step(statement) == SQLITE_DONE;
-        sqlite3_finalize(statement);
-        return inserted;
+        return attach(role, delay, rtc, workflow);
     };
 
     std::optional<std::int64_t> source_dtm;
@@ -1060,8 +1144,77 @@ bool WorkflowExpansionService::Advance(
     for (const auto& target : refreshed.targets)
         if (target.neutral_epoch_count > 0) delays.insert(target.neutral_epoch_count);
     for (const auto delay : delays) {
+        const auto revise_revision = GraphRevision(authoring_,
+            "TAS Movie Expansion: Revise");
+        if (!revise_revision) {
+            if (error_out) *error_out =
+                "required expansion workflow graph is unavailable: TAS Movie Expansion: Revise";
+            return false;
+        }
+        programdb::tasmovieinputepoch::TasMovieDelayPlacementResolution placement;
+        if (!programdb::tasmovieinputepoch::ResolveTasMovieDelayPlacement(
+                state_, *annotation, std::nullopt,
+                std::string_view("first_battle.final_dialog"), &placement,
+                error_out)) return false;
+        const auto identity =
+            programdb::tasmovieinputepoch::BuildTasMovieDelayPreparationIdentity(
+                *annotation, *root, placement,
+                static_cast<std::uint64_t>(delay), *revise_revision);
+        const auto preparation_hash =
+            programdb::tasmovieinputepoch::HashTasMovieDelayPreparationIdentity(
+                identity);
         const auto production = FindMember(refreshed, "DELAY_PRODUCTION", delay);
         if (!production) {
+            std::optional<std::int64_t> reusable_workflow;
+            std::optional<std::int64_t> active_workflow;
+            std::optional<std::int64_t> attention_workflow;
+            for (const auto request_id : MatchingRewriteRequestIds(
+                    analysis_sqlite_, identity)) {
+                const auto request =
+                    analysis_->GetTasMovieInputEpochRewriteRequest(request_id);
+                const auto request_root = request
+                    ? analysis_->GetTasMovieRootEstablishmentAttempt(
+                        request->root_establishment_attempt_id) : std::nullopt;
+                if (!request || !request_root
+                    || !programdb::tasmovieinputepoch::TasMovieRewriteRequestMatchesPreparation(
+                        *request, *request_root, identity)) continue;
+                const auto graph_revision = WorkflowGraphRevision(
+                    db_, request->workflow_instance_id);
+                if (!graph_revision || *graph_revision != *revise_revision) continue;
+                const auto attempt_id = SuccessfulRewriteAttemptId(
+                    analysis_sqlite_, request_id);
+                if (attempt_id) {
+                    const auto attempt =
+                        analysis_->GetTasMovieInputEpochRewriteAttempt(*attempt_id);
+                    if (!attempt
+                        || !programdb::tasmovieinputepoch::ValidateReusableTasMovieDelayPreparation(
+                            state_, analysis_, *request, *attempt, identity,
+                            error_out)) return false;
+                    reusable_workflow = request->workflow_instance_id;
+                    break;
+                }
+                const auto workflow_state = WorkflowState(
+                    db_, request->workflow_instance_id);
+                if (workflow_state && IsActive(*workflow_state)
+                    && !active_workflow) {
+                    active_workflow = request->workflow_instance_id;
+                } else if (workflow_state && IsAttention(*workflow_state)
+                    && !attention_workflow) {
+                    attention_workflow = request->workflow_instance_id;
+                } else if (workflow_state && *workflow_state == "COMPLETED") {
+                    if (error_out) *error_out =
+                        "matching TAS delay producer completed without a successful durable rewrite attempt";
+                    return false;
+                }
+            }
+            if (!reusable_workflow)
+                reusable_workflow = active_workflow
+                    ? active_workflow : attention_workflow;
+            if (reusable_workflow) {
+                if (!attach("DELAY_PRODUCTION", delay, std::nullopt,
+                        *reusable_workflow)) return false;
+                continue;
+            }
             if (!launch("TAS Movie Expansion: Revise", "DELAY_PRODUCTION",
                 delay, std::nullopt,
                 {{"tas_movie_revise_1","annotation_attempt",
@@ -1070,17 +1223,48 @@ bool WorkflowExpansionService::Advance(
                 },
                 {{"tas_movie_revise_1","neutral_epoch_count","integer",delay,std::nullopt,"expansion"},
                  {"tas_movie_revise_1","placement_profile","choice",std::nullopt,
-                  std::string("first_battle.final_dialog"),"expansion"}})) return false;
+                  std::string("first_battle.final_dialog"),"expansion"}},
+                "tas-delay-preparation:" + preparation_hash)) return false;
             continue;
         }
         if (production->state != "COMPLETED") continue;
+        std::optional<TasMovieInputEpochRewriteRequestRecord> producer_request;
+        for (const auto request_id : MatchingRewriteRequestIds(
+                analysis_sqlite_, identity)) {
+            const auto candidate =
+                analysis_->GetTasMovieInputEpochRewriteRequest(request_id);
+            if (candidate
+                && candidate->workflow_instance_id == production->workflow_instance_id
+                && WorkflowGraphRevision(db_, candidate->workflow_instance_id)
+                    == std::optional<std::int64_t>(*revise_revision)) {
+                producer_request = candidate;
+                break;
+            }
+        }
+        const auto producer_attempt_id = producer_request
+            ? SuccessfulRewriteAttemptId(analysis_sqlite_,
+                producer_request->rewrite_request_id) : std::nullopt;
+        const auto producer_attempt = producer_attempt_id
+            ? analysis_->GetTasMovieInputEpochRewriteAttempt(*producer_attempt_id)
+            : std::nullopt;
+        if (!producer_request || !producer_attempt
+            || !programdb::tasmovieinputepoch::ValidateReusableTasMovieDelayPreparation(
+                state_, analysis_, *producer_request, *producer_attempt,
+                identity, error_out)) return false;
         const auto revised_annotation = Output(execution_, production->workflow_instance_id,
             "tas_movie_revise_1", "annotation_attempt",
             "tmv_input_epoch_annotation_attempt");
         const auto child_annotation = revised_annotation
             ? analysis_->GetTasMovieInputEpochAnnotationAttempt(*revised_annotation)
             : std::nullopt;
-        if (!child_annotation || !child_annotation->root_establishment_attempt_id) continue;
+        if (!child_annotation || !child_annotation->root_establishment_attempt_id
+            || producer_attempt->produced_annotation_attempt_id != revised_annotation
+            || producer_attempt->produced_root_establishment_attempt_id
+                != child_annotation->root_establishment_attempt_id) {
+            if (error_out) *error_out =
+                "shared TAS delay producer output does not match its verified authority set";
+            return false;
+        }
         for (const auto& target : refreshed.targets) {
             if (target.neutral_epoch_count != delay) continue;
             const auto rtc = target.rtc_value;

@@ -779,26 +779,11 @@ public:
             return Fail("input-epoch rewrite requires matching successful annotation and root-establishment authorities",
                 error_out);
         }
-        if (!insertion) {
-            if (!placement_profile || *placement_profile != "first_battle.final_dialog")
-                return Fail("input-epoch rewrite requires an explicit epoch or a supported placement profile", error_out);
-            const auto artifact = state_->GetArtifact(*attempt->schedule_artifact_id);
-            const auto bytes = artifact ? ReadFile(artifact->object_path, error_out) : std::nullopt;
-            inputepoch::TasMovieInputEpochScheduleV1 schedule;
-            std::string diagnostic;
-            if (!bytes || !inputepoch::DecodeInputEpochScheduleArtifactV1(
-                    *bytes, schedule, &diagnostic))
-                return Fail("placement profile could not read the annotation schedule: " + diagnostic, error_out);
-            for (std::size_t index = 0; index + 1 < schedule.epochs.size(); ++index) {
-                if (IsExactButtonOnly(schedule.epochs[index].input, GC_B) &&
-                    IsExactButtonOnly(schedule.epochs[index + 1].input, GC_A))
-                    insertion = static_cast<std::int64_t>(index);
-            }
-            if (!insertion)
-                return Fail("first_battle.final_dialog found no exact final B-only to A-only transition", error_out);
-        }
-        if (*insertion < 0 || static_cast<std::uint64_t>(*insertion) >= attempt->epoch_count)
-            return Fail("input-epoch rewrite insertion epoch is outside the annotation schedule", error_out);
+        TasMovieDelayPlacementResolution placement;
+        if (!ResolveTasMovieDelayPlacement(state_, *attempt, insertion,
+                placement_profile ? std::optional<std::string_view>(*placement_profile)
+                                  : std::nullopt,
+                &placement, error_out)) return false;
         const auto& identity = phase_->identity();
         const auto& runtime = phase_->runtime_contract();
         CreateTasMovieInputEpochRewriteRequestCommand command{
@@ -812,9 +797,9 @@ public:
             .source_dtm_sha256 = attempt->source_dtm_sha256,
             .schedule_artifact_id = *attempt->schedule_artifact_id,
             .schedule_sha256 = *attempt->schedule_sha256,
-            .insert_before_epoch = static_cast<std::uint64_t>(*insertion),
+            .insert_before_epoch = placement.insert_before_epoch,
             .neutral_epoch_count = static_cast<std::uint64_t>(*neutral_count),
-            .placement_profile = placement_profile.value_or("explicit"),
+            .placement_profile = placement.placement_profile,
             .full_phase_program_kind = identity.program_kind,
             .full_phase_program_version = identity.program_version,
             .full_phase_canonical_id = identity.canonical_id,
@@ -1946,6 +1931,200 @@ private:
 };
 
 } // namespace
+
+bool ResolveTasMovieDelayPlacement(IStateDb* state_db,
+    const TasMovieInputEpochAnnotationAttemptRecord& annotation,
+    std::optional<std::int64_t> explicit_epoch,
+    std::optional<std::string_view> placement_profile,
+    TasMovieDelayPlacementResolution* resolution_out,
+    std::string* error_out) {
+    if (!state_db || !resolution_out || !annotation.succeeded
+        || !annotation.schedule_artifact_id || !annotation.schedule_sha256
+        || annotation.epoch_count == 0) {
+        return Fail("TAS delay placement requires a complete annotation authority",
+            error_out);
+    }
+    auto insertion = explicit_epoch;
+    const std::string profile = placement_profile
+        ? std::string(*placement_profile) : std::string("explicit");
+    if (!insertion) {
+        if (profile != "first_battle.final_dialog") {
+            return Fail("input-epoch rewrite requires an explicit epoch or the first_battle.final_dialog placement profile",
+                error_out);
+        }
+        const auto artifact = state_db->GetArtifact(*annotation.schedule_artifact_id);
+        const auto bytes = artifact ? ReadFile(artifact->object_path, error_out)
+                                    : std::nullopt;
+        inputepoch::TasMovieInputEpochScheduleV1 schedule;
+        std::string diagnostic;
+        if (!artifact || artifact->sha256 != *annotation.schedule_sha256
+            || !bytes || !inputepoch::DecodeInputEpochScheduleArtifactV1(
+                *bytes, schedule, &diagnostic)) {
+            return Fail("placement profile could not read the exact annotation schedule: "
+                + diagnostic, error_out);
+        }
+        for (std::size_t index = 0; index + 1 < schedule.epochs.size(); ++index) {
+            if (IsExactButtonOnly(schedule.epochs[index].input, GC_B)
+                && IsExactButtonOnly(schedule.epochs[index + 1].input, GC_A)) {
+                insertion = static_cast<std::int64_t>(index);
+            }
+        }
+        if (!insertion) {
+            return Fail("first_battle.final_dialog found no exact final B-only to A-only transition",
+                error_out);
+        }
+    }
+    if (*insertion < 0
+        || static_cast<std::uint64_t>(*insertion) >= annotation.epoch_count) {
+        return Fail("input-epoch rewrite insertion epoch is outside the annotation schedule",
+            error_out);
+    }
+    *resolution_out = {
+        .insert_before_epoch = static_cast<std::uint64_t>(*insertion),
+        .placement_profile = profile,
+    };
+    return true;
+}
+
+TasMovieDelayPreparationIdentity BuildTasMovieDelayPreparationIdentity(
+    const TasMovieInputEpochAnnotationAttemptRecord& annotation,
+    const TasMovieRootEstablishmentAttemptRecord& root_establishment,
+    const TasMovieDelayPlacementResolution& placement,
+    const std::uint64_t neutral_epoch_count,
+    const std::int64_t revise_graph_revision_id) {
+    const auto phase = inputepoch::RewriteFullPhaseDefinitionV1();
+    const auto& program = phase->identity();
+    const auto& runtime = phase->runtime_contract();
+    return {
+        .source_dtm_sha256 = annotation.source_dtm_sha256,
+        .source_schedule_sha256 = annotation.schedule_sha256.value_or(""),
+        .root_pc = root_establishment.root_pc,
+        .root_movie_input_cursor = root_establishment.movie_input_cursor,
+        .root_itinerary_sha256 = root_establishment.itinerary_sha256,
+        .insert_before_epoch = placement.insert_before_epoch,
+        .neutral_epoch_count = neutral_epoch_count,
+        .placement_profile = placement.placement_profile,
+        .full_phase_program_kind = program.program_kind,
+        .full_phase_program_version = program.program_version,
+        .full_phase_canonical_id = program.canonical_id,
+        .full_phase_contract_revision = program.contract_revision,
+        .full_phase_sha256 = program.canonical_sha256,
+        .module_canonical_id = runtime.module.canonical_id,
+        .module_revision = runtime.module.revision,
+        .module_sha256 = runtime.module.canonical_hash,
+        .revise_graph_revision_id = revise_graph_revision_id,
+    };
+}
+
+std::string CanonicalTasMovieDelayPreparationIdentity(
+    const TasMovieDelayPreparationIdentity& identity) {
+    std::string encoded = "savor.tas-delay-preparation/1;";
+    const auto append = [&](std::string_view key, std::string_view value) {
+        encoded.append(key).push_back('=');
+        encoded.append(std::to_string(value.size())).push_back(':');
+        encoded.append(value).push_back(';');
+    };
+    const auto number = [&](std::string_view key, const auto value) {
+        append(key, std::to_string(value));
+    };
+    append("source_dtm_sha256", identity.source_dtm_sha256);
+    append("source_schedule_sha256", identity.source_schedule_sha256);
+    number("root_pc", identity.root_pc);
+    number("root_movie_input_cursor", identity.root_movie_input_cursor);
+    append("root_itinerary_sha256", identity.root_itinerary_sha256);
+    number("insert_before_epoch", identity.insert_before_epoch);
+    number("neutral_epoch_count", identity.neutral_epoch_count);
+    append("placement_profile", identity.placement_profile);
+    number("full_phase_program_kind", identity.full_phase_program_kind);
+    number("full_phase_program_version", identity.full_phase_program_version);
+    append("full_phase_canonical_id", identity.full_phase_canonical_id);
+    number("full_phase_contract_revision", identity.full_phase_contract_revision);
+    append("full_phase_sha256", identity.full_phase_sha256);
+    append("module_canonical_id", identity.module_canonical_id);
+    number("module_revision", identity.module_revision);
+    append("module_sha256", identity.module_sha256);
+    number("revise_graph_revision_id", identity.revise_graph_revision_id);
+    return encoded;
+}
+
+std::string HashTasMovieDelayPreparationIdentity(
+    const TasMovieDelayPreparationIdentity& identity) {
+    const auto encoded = CanonicalTasMovieDelayPreparationIdentity(identity);
+    return hash::sha256(encoded.data(), encoded.size());
+}
+
+bool TasMovieRewriteRequestMatchesPreparation(
+    const TasMovieInputEpochRewriteRequestRecord& request,
+    const TasMovieRootEstablishmentAttemptRecord& root_establishment,
+    const TasMovieDelayPreparationIdentity& identity) {
+    return request.source_dtm_sha256 == identity.source_dtm_sha256
+        && request.schedule_sha256 == identity.source_schedule_sha256
+        && root_establishment.root_pc == identity.root_pc
+        && root_establishment.movie_input_cursor == identity.root_movie_input_cursor
+        && root_establishment.itinerary_sha256 == identity.root_itinerary_sha256
+        && request.insert_before_epoch == identity.insert_before_epoch
+        && request.neutral_epoch_count == identity.neutral_epoch_count
+        && request.placement_profile == identity.placement_profile
+        && request.full_phase_program_kind == identity.full_phase_program_kind
+        && request.full_phase_program_version == identity.full_phase_program_version
+        && request.full_phase_canonical_id == identity.full_phase_canonical_id
+        && request.full_phase_contract_revision == identity.full_phase_contract_revision
+        && request.full_phase_sha256 == identity.full_phase_sha256
+        && request.module_canonical_id == identity.module_canonical_id
+        && request.module_revision == identity.module_revision
+        && request.module_sha256 == identity.module_sha256;
+}
+
+bool ValidateReusableTasMovieDelayPreparation(IStateDb* state_db,
+    IAnalysisDb* analysis_db,
+    const TasMovieInputEpochRewriteRequestRecord& request,
+    const TasMovieInputEpochRewriteAttemptRecord& attempt,
+    const TasMovieDelayPreparationIdentity& identity,
+    std::string* error_out) {
+    const auto source_root = analysis_db
+        ? analysis_db->GetTasMovieRootEstablishmentAttempt(
+            request.root_establishment_attempt_id) : std::nullopt;
+    if (!state_db || !analysis_db || !source_root
+        || !TasMovieRewriteRequestMatchesPreparation(request, *source_root, identity)
+        || !attempt.succeeded || attempt.rewrite_request_id != request.rewrite_request_id
+        || !attempt.rewritten_dtm_artifact_id || !attempt.rewritten_dtm_sha256
+        || !attempt.endpoint_savestate_id || !attempt.produced_annotation_attempt_id
+        || !attempt.produced_root_establishment_attempt_id) {
+        return Fail("cached TAS delay preparation is incomplete or has a different identity",
+            error_out);
+    }
+    const auto dtm = state_db->GetArtifact(*attempt.rewritten_dtm_artifact_id);
+    const auto endpoint = state_db->GetSavestate(*attempt.endpoint_savestate_id);
+    const auto annotation = analysis_db->GetTasMovieInputEpochAnnotationAttempt(
+        *attempt.produced_annotation_attempt_id);
+    const auto root = analysis_db->GetTasMovieRootEstablishmentAttempt(
+        *attempt.produced_root_establishment_attempt_id);
+    const auto schedule = annotation && annotation->schedule_artifact_id
+        ? state_db->GetArtifact(*annotation->schedule_artifact_id) : std::nullopt;
+    const auto itinerary = root
+        ? state_db->GetArtifact(root->itinerary_artifact_id) : std::nullopt;
+    if (!dtm || dtm->sha256 != *attempt.rewritten_dtm_sha256
+        || !endpoint || !endpoint->is_complete
+        || endpoint->playback_state != SavestatePlaybackState::MoviePaired
+        || endpoint->dtm_artifact_id != dtm->artifact_id
+        || !annotation || !annotation->succeeded
+        || annotation->producer != TasMovieInputEpochAnnotationProducer::Revise
+        || annotation->rewrite_request_id != request.rewrite_request_id
+        || annotation->source_dtm_artifact_id != dtm->artifact_id
+        || annotation->source_dtm_sha256 != dtm->sha256
+        || !annotation->schedule_sha256 || !schedule
+        || schedule->sha256 != *annotation->schedule_sha256
+        || !root || root->producer != TasMovieRootEstablishmentProducer::Revise
+        || root->rewrite_request_id != request.rewrite_request_id
+        || root->source_dtm_artifact_id != dtm->artifact_id
+        || root->source_dtm_sha256 != dtm->sha256
+        || root->root_pc != identity.root_pc || !itinerary
+        || itinerary->sha256 != root->itinerary_sha256) {
+        return Fail("cached TAS delay preparation authority set failed verification",
+            error_out);
+    }
+    return true;
+}
 
 ProgramKindDescriptor BuildAnnotationProgramDescriptor(IExecutionDb* execution_db,
     IStateDb* state_db, IAnalysisDb* analysis_db,

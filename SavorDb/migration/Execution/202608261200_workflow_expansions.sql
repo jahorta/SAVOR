@@ -23,10 +23,18 @@ CREATE TABLE exec_workflow_expansion_member(
     workflow_instance_id INTEGER NOT NULL REFERENCES exec_workflow_instance(workflow_instance_id) ON DELETE CASCADE,
     state TEXT NOT NULL,
     created_at_utc INTEGER NOT NULL,
-    updated_at_utc INTEGER NOT NULL,
-    UNIQUE(workflow_expansion_id,member_role,neutral_epoch_count,rtc_value),
-    UNIQUE(workflow_instance_id)
+    updated_at_utc INTEGER NOT NULL
 );
+
+CREATE UNIQUE INDEX ux_exec_workflow_expansion_member_coordinate
+ON exec_workflow_expansion_member(
+    workflow_expansion_id,
+    member_role,
+    neutral_epoch_count,
+    COALESCE(rtc_value,-1));
+
+CREATE INDEX ix_exec_workflow_expansion_member_workflow
+ON exec_workflow_expansion_member(workflow_instance_id);
 
 CREATE TABLE exec_workflow_expansion_target(
     workflow_expansion_target_id INTEGER PRIMARY KEY,
