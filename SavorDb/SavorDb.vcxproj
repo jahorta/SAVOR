@@ -237,6 +237,7 @@
     <ClInclude Include="Execution\Workflow\WorkflowIntegrityChecks.h" />
     <ClInclude Include="Execution\Workflow\WorkflowProjector.h" />
     <ClInclude Include="Execution\Workflow\WorkflowCoordinatorService.h" />
+    <ClInclude Include="Analysis\TasRouteProjectionService.h" />
     <ClInclude Include="Execution\Workflow\WorkflowGraphRoutingService.h" />
     <ClInclude Include="Execution\Workflow\WorkflowSettlementAdvancementService.h" />
     <ClInclude Include="Execution\Workflow\WorkflowStepSettlementGate.h" />
@@ -270,6 +271,7 @@
     <ClCompile Include="Analysis\QueuedAnalysisDb.cpp" />
     <ClCompile Include="Analysis\BattleCompletionRecordingDb.cpp" />
     <ClCompile Include="Analysis\TasRouteDb.cpp" />
+    <ClCompile Include="Analysis\TasRouteProjectionService.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisDb.cpp" />
     <ClCompile Include="Authoring\AuthoringContentHash.cpp" />
@@ -408,6 +410,7 @@
     <None Include="migration\State\202608081000_state_battle_context_artifact.sql" />
     <None Include="migration\State\202608131100_state_battle_completion_artifact.sql" />
     <None Include="migration\State\202608251010_state_tas_movie_input_epoch_schedule.sql" />
+    <None Include="migration\State\202608301200_state_artifact_explicit_locator.sql" />
     <None Include="migration\State\202608161300_state_artifact_relative_object_locator.sql" />
     <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql" />
     <None Include="migration\UIRead\202604051200_uiread_stage3b_workflow.sql" />

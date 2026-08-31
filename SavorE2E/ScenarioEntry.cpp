@@ -46,7 +46,7 @@ bool QualifyDtmArtifact(
                         + " is not a DTM artifact",
                     error_out);
     }
-    const std::filesystem::path payload_path(artifact->filename);
+    const std::filesystem::path payload_path(artifact->object_path);
     std::error_code ec;
     if (!std::filesystem::is_regular_file(payload_path, ec) || ec) {
         return Fail("DTM artifact payload is unavailable: "

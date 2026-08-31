@@ -835,7 +835,7 @@ bool ProjectArtifact(sqlite3* source, sqlite3* ui, std::int64_t artifact_id, std
     if (artifact_id <= 0) return true;
     Statement src;
     if (!Prepare(source,
-            "SELECT artifact_id,sha256,size_bytes,artifact_kind,filename,created_at_utc FROM state_artifact WHERE artifact_id=?1;",
+            "SELECT artifact_id,sha256,size_bytes,artifact_kind,display_filename,created_at_utc FROM state_artifact WHERE artifact_id=?1;",
             &src,
             error_out)) return false;
     sqlite3_bind_int64(src.st, 1, artifact_id);
@@ -859,7 +859,7 @@ bool ProjectArtifact(sqlite3* source, sqlite3* ui, std::int64_t artifact_id, std
 
 bool ProjectSavestate(sqlite3* source, sqlite3* ui, std::int64_t id, std::string* error_out) {
     Statement src;
-    if (!Prepare(source,"SELECT s.savestate_id,s.artifact_id,s.savestate_type,COALESCE(s.note,''),s.is_complete,s.playback_state,s.dtm_artifact_id,a.sha256,a.size_bytes,a.filename,s.created_at_utc FROM state_savestate s JOIN state_artifact a ON a.artifact_id=s.artifact_id WHERE s.savestate_id=?1;",&src,error_out)) return false;
+    if (!Prepare(source,"SELECT s.savestate_id,s.artifact_id,s.savestate_type,COALESCE(s.note,''),s.is_complete,s.playback_state,s.dtm_artifact_id,a.sha256,a.size_bytes,a.display_filename,s.created_at_utc FROM state_savestate s JOIN state_artifact a ON a.artifact_id=s.artifact_id WHERE s.savestate_id=?1;",&src,error_out)) return false;
     sqlite3_bind_int64(src.st,1,id); if(sqlite3_step(src.st)!=SQLITE_ROW)return true;
     Statement dst; constexpr const char* sql="INSERT INTO ui_state_savestate_summary(savestate_id,artifact_id,savestate_type,note,is_complete,playback_state,dtm_artifact_id,sha256,size_bytes,filename,created_at_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(savestate_id) DO UPDATE SET artifact_id=excluded.artifact_id,savestate_type=excluded.savestate_type,note=excluded.note,is_complete=excluded.is_complete,playback_state=excluded.playback_state,dtm_artifact_id=excluded.dtm_artifact_id,sha256=excluded.sha256,size_bytes=excluded.size_bytes,filename=excluded.filename,created_at_utc=excluded.created_at_utc;";
     if(!Prepare(ui,sql,&dst,error_out))return false;for(int i=0;i<11;++i)BindColumn(dst.st,i+1,src.st,i);return StepDone(ui,dst.st,error_out);

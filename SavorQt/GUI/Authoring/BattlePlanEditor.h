@@ -12,7 +12,7 @@
 #include "GUI/Common/StatusToast.h"
 #include "Authoring/IAuthoringDb.h"
 #include "DB/SavorDbServiceResult.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 
 class QCheckBox;
 class QComboBox;
@@ -137,9 +137,9 @@ private:
         PredicatePageResult library;
         PredicatePageResult published;
     };
-    savorqt::gui::AsyncRefreshPipeline<PredicateRefreshRequest, PredicateRefreshData>*
+    savorqt::gui::DatabaseProjectionController<PredicateRefreshRequest, PredicateRefreshData>*
         predicateRefreshPipeline_ = nullptr;
     using PredicateDetailData = savorqt::db::ServiceResult<savor::db::PredicateGroupRevisionSnapshot>;
-    savorqt::gui::AsyncRefreshPipeline<std::int64_t, PredicateDetailData>*
+    savorqt::gui::DatabaseProjectionController<std::int64_t, PredicateDetailData>*
         predicateDetailPipeline_ = nullptr;
 };

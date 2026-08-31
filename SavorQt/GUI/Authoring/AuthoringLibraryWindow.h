@@ -10,7 +10,8 @@
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
+#include "GUI/Refresh/ViewState.h"
 #include "GUI/Widgets/PersistentToolWindow.h"
 
 class QLabel;
@@ -120,8 +121,10 @@ private:
     QVBoxLayout* rightPaneLayout_ = nullptr;
     QLabel* placeholderLabel_ = nullptr;
     QWidget* activeEditor_ = nullptr;
+    savorqt::gui::KeyedSelection<qint64> savedSelection_;
+    bool initialSavedHydration_ = true;
     QSplitter* contentSplitter_ = nullptr;
-    savorqt::gui::AsyncRefreshPipeline<LibraryRefreshRequest, LibraryRefreshData>* refreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<LibraryRefreshRequest, LibraryRefreshData>* refreshPipeline_ = nullptr;
 };
 
 class AuthoringLibraryWindow : public PersistentToolWindow

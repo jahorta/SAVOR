@@ -1000,6 +1000,7 @@ struct EnsureBattleRouteActivityCommand {
     std::int64_t battle_set_id = 0;
     std::int64_t entry_savestate_id = 0;
     std::int64_t battle_plan_id = 0;
+    std::int64_t root_establishment_attempt_id = 0;
     std::string activity_key;
     std::string default_label;
     std::string default_description;

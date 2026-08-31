@@ -23,7 +23,7 @@ class QTreeWidget;
 namespace savorqt::gui {
 
 template <typename Request, typename Data>
-class AsyncRefreshPipeline;
+class DatabaseProjectionController;
 
 class BattleRunsWidget final : public QWidget
 {
@@ -160,7 +160,7 @@ private:
     QTreeWidget* waveTree_ = nullptr;
     QTableWidget* jobsTable_ = nullptr;
 
-    AsyncRefreshPipeline<RefreshRequest, RefreshData>* refreshPipeline_ = nullptr;
+    DatabaseProjectionController<RefreshRequest, RefreshData>* refreshPipeline_ = nullptr;
 
     std::vector<GroupRow> currentGroups_;
     std::vector<WaveTurnRow> currentWaveTurns_;

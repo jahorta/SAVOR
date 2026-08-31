@@ -612,7 +612,7 @@ ProgramJobMaterializationContext TestMaterializationContext(
                     std::string("seed_probe_spec"),
                 .authored_ref_id = spec_id,
                 .step_priority = 0,
-                .input_bindings =
+                .inputs =
                     {
                         WorkflowGraphInputBinding{
                             .node_key = "seedprobe.survey",

@@ -10,6 +10,7 @@
 #include "../Analysis/IAnalysisDb.h"
 #include "../Analysis/QueuedAnalysisDb.h"
 #include "../Analysis/SqliteAnalysisDb.h"
+#include "../Analysis/TasRouteProjectionService.h"
 #include "../Archive/IArchiveDb.h"
 #include "../Archive/QueuedArchiveDb.h"
 #include "../Archive/SqliteArchiveDb.h"
@@ -108,6 +109,8 @@ private:
     std::unique_ptr<savor::db::QueuedArchiveDb> archive_db_;
     std::unique_ptr<savor::db::execution::workflow::WorkflowExpansionService>
         workflow_expansion_service_;
+    std::unique_ptr<savor::db::analysis::TasRouteProjectionService>
+        tas_route_projection_service_;
 };
 
 } // namespace savor::db::core

@@ -11,7 +11,7 @@
 #include "Authoring/IAuthoringDb.h"
 #include "DB/SavorDbServiceResult.h"
 #include "GUI/Common/StatusToast.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 
 class GuidedPredicateRuleEditor;
 class QCheckBox;
@@ -103,7 +103,7 @@ private:
     QPushButton* publishButton_ = nullptr;
     QPushButton* duplicateButton_ = nullptr;
     QPushButton* abandonButton_ = nullptr;
-    savorqt::gui::AsyncRefreshPipeline<int, CatalogRefreshData>* refreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<int, CatalogRefreshData>* refreshPipeline_ = nullptr;
 };
 
 class PredicateGroupEditor final : public QWidget
@@ -165,5 +165,5 @@ private:
     QVBoxLayout* memberCardsLayout_ = nullptr;
     QLabel* validationLabel_ = nullptr;
     QPushButton* abandonButton_ = nullptr;
-    savorqt::gui::AsyncRefreshPipeline<int, RefreshData>* refreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<int, RefreshData>* refreshPipeline_ = nullptr;
 };

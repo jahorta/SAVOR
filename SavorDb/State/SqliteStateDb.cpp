@@ -74,17 +74,17 @@ std::optional<ArtifactMaterializationRecord> LoadArtifactMaterializationRecord(
     ArtifactMaterializationRecord record{};
     const auto* sha256 = sqlite3_column_text(st.st, 0);
     const auto* file_ext = sqlite3_column_text(st.st, 1);
-    const auto* filename = sqlite3_column_text(st.st, 2);
+    const auto* object_relpath = sqlite3_column_text(st.st, 2);
     record.sha256 = sha256 == nullptr ? "" : reinterpret_cast<const char*>(sha256);
     record.file_ext = file_ext == nullptr ? "" : reinterpret_cast<const char*>(file_ext);
-    const std::filesystem::path relative_path = filename == nullptr
+    const std::filesystem::path relative_path = object_relpath == nullptr
         ? std::filesystem::path{}
-        : std::filesystem::path(reinterpret_cast<const char*>(filename));
+        : std::filesystem::path(reinterpret_cast<const char*>(object_relpath));
     const auto resolved = ResolveArtifactObjectPath(
         object_store_root, relative_path, error_out);
     record.source_path = resolved ? resolved->string() : std::string{};
     if (record.sha256.empty() || record.file_ext.empty() || record.source_path.empty()) {
-        if (error_out) *error_out = "artifact row is missing required sha256/file_ext/filename fields";
+        if (error_out) *error_out = "artifact row is missing required sha256/file_ext/object_relpath fields";
         return std::nullopt;
     }
 
@@ -327,136 +327,43 @@ std::optional<events::StateArtifactPayloadView> ResolveTasMovieTreeRef(
 
 SqliteStateDb::SqliteStateDb(
     sqlite3* db,
+    std::filesystem::path artifact_workspace_root,
     std::filesystem::path object_store_root)
     : db_(db)
+    , artifact_workspace_root_(std::move(artifact_workspace_root))
     , object_store_root_(std::move(object_store_root)) {
 }
 
-bool SqliteStateDb::ReconcileArtifactObjectLocators(std::string* error_out) {
-    if (db_ == nullptr || object_store_root_.empty()) {
-        if (error_out) *error_out = "State artifact reconciliation is not configured";
-        return false;
-    }
-    Statement query;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT artifact_id,sha256,size_bytes,filename,file_ext,object_relpath "
-            "FROM state_artifact ORDER BY artifact_id;",
-            -1, &query.st, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-    struct LocatorUpdate {
-        std::int64_t artifact_id = 0;
-        std::string display_filename;
-        std::string relative_path;
-    };
-    std::vector<LocatorUpdate> updates;
-    while (sqlite3_step(query.st) == SQLITE_ROW) {
-        const auto artifact_id = sqlite3_column_int64(query.st, 0);
-        const auto* sha_text = sqlite3_column_text(query.st, 1);
-        const auto size = sqlite3_column_int64(query.st, 2);
-        const auto* locator_text = sqlite3_column_text(query.st, 3);
-        const auto* ext_text = sqlite3_column_text(query.st, 4);
-        const auto* relative_text = sqlite3_column_text(query.st, 5);
-        const std::string sha = sha_text
-            ? reinterpret_cast<const char*>(sha_text) : "";
-        const std::filesystem::path legacy_locator = locator_text
-            ? reinterpret_cast<const char*>(locator_text) : "";
-        const std::filesystem::path stored_relative = relative_text
-            ? reinterpret_cast<const char*>(relative_text) : "";
-        const std::string ext = ext_text
-            ? reinterpret_cast<const char*>(ext_text) : "";
-        const auto canonical_relative = MakeArtifactObjectRelativePath(
-            sha, ext, error_out);
-        if (!canonical_relative) {
-            if (error_out) {
-                *error_out = "artifact_id=" + std::to_string(artifact_id) +
-                    ": " + *error_out;
-            }
-            return false;
-        }
-        std::filesystem::path normalized = *canonical_relative;
-        if (!stored_relative.empty()) {
-            if (!IsValidArtifactObjectRelativePath(stored_relative, error_out)) {
-                if (error_out) {
-                    *error_out = "artifact_id=" + std::to_string(artifact_id) +
-                        ": " + *error_out;
-                }
-                return false;
-            }
-            if (stored_relative.lexically_normal() != *canonical_relative) {
-                if (error_out) {
-                    *error_out = "artifact_id=" + std::to_string(artifact_id) +
-                        ": artifact object locator is not canonical for its durable identity";
-                }
-                return false;
-            }
-        } else {
-            std::string source_error;
-            const auto source = ResolveLegacyArtifactSource(
-                object_store_root_, legacy_locator, &source_error);
-            if (source) {
-                const auto imported = ImportArtifactObject(
-                    object_store_root_, *source, sha, size, ext, error_out);
-                if (!imported) {
-                    if (error_out) {
-                        *error_out = "artifact_id=" + std::to_string(artifact_id) +
-                            ": " + *error_out;
-                    }
-                    return false;
-                }
-                normalized = imported->relative_path;
-            }
-        }
-        const auto normalized_text = normalized.generic_string();
-        auto display_filename = legacy_locator.filename().string();
-        if (display_filename.empty()) display_filename = sha + ext;
-        if (stored_relative.generic_string() != normalized_text ||
-            legacy_locator.string() != display_filename) {
-            updates.push_back({artifact_id, display_filename, normalized_text});
-        }
-    }
-    if (updates.empty()) return true;
-
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-    Statement update;
-    if (sqlite3_prepare_v2(
-            db_,
-            "UPDATE state_artifact SET filename=?1,object_relpath=?2 "
-            "WHERE artifact_id=?3;",
-            -1, &update.st, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    for (const auto& item : updates) {
-        sqlite3_reset(update.st);
-        sqlite3_clear_bindings(update.st);
-        sqlite3_bind_text(
-            update.st, 1, item.display_filename.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(
-            update.st, 2, item.relative_path.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(update.st, 3, item.artifact_id);
-        if (sqlite3_step(update.st) != SQLITE_DONE) {
-            if (error_out) *error_out = sqlite3_errmsg(db_);
-            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-            return false;
-        }
-    }
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    return true;
+std::filesystem::path SqliteStateDb::ArtifactWorkspaceRoot() const {
+    return artifact_workspace_root_;
 }
 
-bool SqliteStateDb::StoreArtifact(
-    const StoreArtifactCommand& command,
+bool SqliteStateDb::StoreWorkspaceArtifact(
+    const StoreWorkspaceArtifactCommand& command,
+    std::int64_t* artifact_id_out,
+    std::string* error_out) {
+    const auto source = ResolveWorkspaceArtifactSource(
+        artifact_workspace_root_, command.workspace_relative_path, error_out);
+    return source && StoreImportedArtifact(
+        *source, command.artifact, artifact_id_out, error_out);
+}
+
+bool SqliteStateDb::ImportExternalArtifact(
+    const ImportExternalArtifactCommand& command,
+    std::int64_t* artifact_id_out,
+    std::string* error_out) {
+    if (!command.absolute_source_path.is_absolute()) {
+        if (error_out) *error_out = "external artifact source must be absolute";
+        return false;
+    }
+    return StoreImportedArtifact(
+        command.absolute_source_path.lexically_normal(), command.artifact,
+        artifact_id_out, error_out);
+}
+
+bool SqliteStateDb::StoreImportedArtifact(
+    const std::filesystem::path& absolute_source_path,
+    const ArtifactStoreMetadata& command,
     std::int64_t* artifact_id_out,
     std::string* error_out) {
     if (db_ == nullptr) {
@@ -464,20 +371,19 @@ bool SqliteStateDb::StoreArtifact(
         return false;
     }
     if (command.sha256.empty()
-        || command.filename.empty()
         || command.file_ext.empty()
         || command.artifact_kind.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
 
-    auto imported = ImportArtifactObject(
-        object_store_root_, command.filename, command.sha256,
+    auto imported = PublishVerifiedArtifactObject(
+        object_store_root_, absolute_source_path, command.sha256,
         command.size_bytes, command.file_ext, error_out);
     if (!imported) return false;
     const auto relative_locator = imported->relative_path.generic_string();
     auto display_filename = command.display_filename.empty()
-        ? std::filesystem::path(command.filename).filename().string()
+        ? absolute_source_path.filename().string()
         : std::filesystem::path(command.display_filename).filename().string();
     if (display_filename.empty()) {
         display_filename = command.sha256 + command.file_ext;
@@ -493,11 +399,11 @@ bool SqliteStateDb::StoreArtifact(
     Statement insert_artifact;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO state_artifact(sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc,object_relpath) "
+            "INSERT INTO state_artifact(sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) "
             "VALUES(?1,?2,?3,?4,?5,?6,?7,?8) "
             "ON CONFLICT(sha256) DO UPDATE SET "
             "size_bytes=excluded.size_bytes,compression_kind=excluded.compression_kind,"
-            "filename=excluded.filename,file_ext=excluded.file_ext,artifact_kind=excluded.artifact_kind,"
+            "display_filename=excluded.display_filename,file_ext=excluded.file_ext,artifact_kind=excluded.artifact_kind,"
             "object_relpath=excluded.object_relpath "
             "RETURNING artifact_id;",
             -1,
@@ -808,7 +714,7 @@ std::optional<ArtifactRecord> SqliteStateDb::GetArtifact(
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc,object_relpath "
+            "SELECT artifact_id,sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath "
             "FROM state_artifact WHERE artifact_id=?1;",
             -1, &st.st, nullptr) != SQLITE_OK) return std::nullopt;
     sqlite3_bind_int64(st.st, 1, artifact_id);
@@ -828,7 +734,7 @@ std::optional<ArtifactRecord> SqliteStateDb::GetArtifact(
         object_store_root_,
         row.object_relpath);
     if (!resolved) return std::nullopt;
-    row.filename = resolved->string();
+    row.object_path = resolved->string();
     row.file_ext = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 5));
     row.artifact_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
     row.created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 7)));
@@ -863,8 +769,8 @@ std::optional<SavestateRecord> SqliteStateDb::GetSavestate(
     Statement st;
     constexpr const char* kSql =
         "SELECT s.savestate_id,s.artifact_id,s.savestate_type,s.note,s.is_complete,s.created_at_utc,"
-        "a.sha256,a.size_bytes,a.filename,a.object_relpath,a.file_ext,a.artifact_kind,"
-        "s.playback_state,s.dtm_artifact_id,d.sha256,d.filename,d.object_relpath "
+        "a.sha256,a.size_bytes,a.display_filename,a.object_relpath,a.file_ext,a.artifact_kind,"
+        "s.playback_state,s.dtm_artifact_id,d.sha256,d.display_filename,d.object_relpath "
         "FROM state_savestate s "
         "JOIN state_artifact a ON a.artifact_id=s.artifact_id "
         "LEFT JOIN state_artifact d ON d.artifact_id=s.dtm_artifact_id "
@@ -1130,10 +1036,10 @@ bool SqliteStateDb::CreateOrGetSterilizedCheckpoint(
     CreateOrGetSterilizedCheckpointReceipt* receipt_out,
     std::string* error_out) {
     if (db_ == nullptr || command.from_savestate_id <= 0
-        || command.artifact.sha256.empty()
-        || command.artifact.filename.empty()
-        || command.artifact.file_ext != ".sav"
-        || command.artifact.artifact_kind != "SAV"
+        || command.artifact.artifact.sha256.empty()
+        || command.artifact.workspace_relative_path.empty()
+        || command.artifact.artifact.file_ext != ".sav"
+        || command.artifact.artifact.artifact_kind != "SAV"
         || command.savestate_type.empty()
         || command.method_kind != "tasmovie.checkpoint_sterilize.v1"
         || command.source_context_kind.empty()
@@ -1141,18 +1047,24 @@ bool SqliteStateDb::CreateOrGetSterilizedCheckpoint(
         if (error_out) *error_out = "sterilized checkpoint command is incomplete";
         return false;
     }
-    auto imported = ImportArtifactObject(
-        object_store_root_, command.artifact.filename,
-        command.artifact.sha256, command.artifact.size_bytes,
-        command.artifact.file_ext, error_out);
+    const auto source_path = ResolveWorkspaceArtifactSource(
+        artifact_workspace_root_, command.artifact.workspace_relative_path,
+        error_out);
+    if (!source_path) return false;
+    auto imported = PublishVerifiedArtifactObject(
+        object_store_root_, *source_path,
+        command.artifact.artifact.sha256,
+        command.artifact.artifact.size_bytes,
+        command.artifact.artifact.file_ext, error_out);
     if (!imported) return false;
     const auto relative_locator = imported->relative_path.generic_string();
-    auto display_filename = command.artifact.display_filename.empty()
-        ? std::filesystem::path(command.artifact.filename).filename().string()
+    auto display_filename = command.artifact.artifact.display_filename.empty()
+        ? source_path->filename().string()
         : std::filesystem::path(
-            command.artifact.display_filename).filename().string();
+            command.artifact.artifact.display_filename).filename().string();
     if (display_filename.empty()) {
-        display_filename = command.artifact.sha256 + command.artifact.file_ext;
+        display_filename = command.artifact.artifact.sha256 +
+            command.artifact.artifact.file_ext;
     }
     if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -1215,22 +1127,22 @@ bool SqliteStateDb::CreateOrGetSterilizedCheckpoint(
     Statement artifact;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO state_artifact(sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc,object_relpath) "
+            "INSERT INTO state_artifact(sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) "
             "VALUES(?1,?2,?3,?4,?5,?6,?7,?8) "
             "ON CONFLICT(sha256) DO UPDATE SET "
             "size_bytes=excluded.size_bytes,compression_kind=excluded.compression_kind,"
-            "filename=excluded.filename,file_ext=excluded.file_ext,artifact_kind=excluded.artifact_kind,"
+            "display_filename=excluded.display_filename,file_ext=excluded.file_ext,artifact_kind=excluded.artifact_kind,"
             "object_relpath=excluded.object_relpath "
             "RETURNING artifact_id;",
             -1, &artifact.st, nullptr) != SQLITE_OK) {
         return fail(sqlite3_errmsg(db_));
     }
-    sqlite3_bind_text(artifact.st, 1, command.artifact.sha256.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(artifact.st, 2, command.artifact.size_bytes);
-    sqlite3_bind_int(artifact.st, 3, command.artifact.compression_kind);
+    sqlite3_bind_text(artifact.st, 1, command.artifact.artifact.sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(artifact.st, 2, command.artifact.artifact.size_bytes);
+    sqlite3_bind_int(artifact.st, 3, command.artifact.artifact.compression_kind);
     sqlite3_bind_text(artifact.st, 4, display_filename.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(artifact.st, 5, command.artifact.file_ext.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(artifact.st, 6, command.artifact.artifact_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(artifact.st, 5, command.artifact.artifact.file_ext.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(artifact.st, 6, command.artifact.artifact.artifact_kind.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(artifact.st, 7, command.created_at_utc.time_since_epoch().count());
     sqlite3_bind_text(artifact.st, 8, relative_locator.c_str(), -1, SQLITE_TRANSIENT);
     if (sqlite3_step(artifact.st) != SQLITE_ROW) return fail(sqlite3_errmsg(db_));

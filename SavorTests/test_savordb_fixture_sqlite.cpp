@@ -1355,16 +1355,19 @@ VALUES(8104,8103,8105,13,0,0,'SUCCEEDED',1,2,7002);
                   static_cast<std::streamsize>(manifest_blob.size()));
     }
     std::int64_t manifest_artifact_id = 0;
-    ASSERT_TRUE(state->StoreArtifact({
-        .sha256 = manifest_sha,
-        .size_bytes = static_cast<std::int64_t>(manifest_blob.size()),
-        .compression_kind = 0,
-        .filename = manifest_path.string(),
-        .file_ext = ".bcmb",
-        .artifact_kind = "BATTLE_COMPLETION",
-        .created_at_utc = now,
-        .correlation_id = "completion-recording-fixture",
-        .causation_id = "completion-recording-fixture",
+    ASSERT_TRUE(state->ImportExternalArtifact({
+        .absolute_source_path = manifest_path,
+        .artifact = {
+            .sha256 = manifest_sha,
+            .size_bytes = static_cast<std::int64_t>(manifest_blob.size()),
+            .compression_kind = 0,
+            .display_filename = manifest_path.filename().string(),
+            .file_ext = ".bcmb",
+            .artifact_kind = "BATTLE_COMPLETION",
+            .created_at_utc = now,
+            .correlation_id = "completion-recording-fixture",
+            .causation_id = "completion-recording-fixture",
+        },
     }, &manifest_artifact_id, &error)) << error;
 
     const CompleteBattleCompletionCommand completion_result{
@@ -3113,18 +3116,21 @@ TEST_F(SqliteDbFixture, AllScenarioStyleRepeatedSeedWritesUseDbOwnedOutboxEventI
                 static_cast<std::streamsize>(artifact_bytes.size()));
         }
         std::int64_t artifact_id = 0;
-        ASSERT_TRUE(state_db->StoreArtifact(
+        ASSERT_TRUE(state_db->ImportExternalArtifact(
             {
-                .sha256 = hash::sha256(
-                    artifact_bytes.data(), artifact_bytes.size()),
-                .size_bytes = static_cast<std::int64_t>(artifact_bytes.size()),
-                .compression_kind = 0,
-                .filename = artifact_path.string(),
-                .file_ext = ".sav",
-                .artifact_kind = "SAV",
-                .created_at_utc = now,
-                .correlation_id = "all-scenario-style",
-                .causation_id = "test",
+                .absolute_source_path = artifact_path,
+                .artifact = {
+                    .sha256 = hash::sha256(
+                        artifact_bytes.data(), artifact_bytes.size()),
+                    .size_bytes = static_cast<std::int64_t>(artifact_bytes.size()),
+                    .compression_kind = 0,
+                    .display_filename = artifact_path.filename().string(),
+                    .file_ext = ".sav",
+                    .artifact_kind = "SAV",
+                    .created_at_utc = now,
+                    .correlation_id = "all-scenario-style",
+                    .causation_id = "test",
+                },
             },
             &artifact_id,
             &error)) << error;
@@ -3977,7 +3983,7 @@ VALUES(
 
     class TerminalOnlyMaterializer final : public IProgramJobMaterializer {
     public:
-        bool Materialize(
+        bool MaterializeJobs(
             const ProgramJobMaterializationContext&,
             WorkflowStepScheduleResult*,
             std::string* error_out) const override {
@@ -10185,17 +10191,20 @@ TEST_F(SqliteDbFixture, StateDbMaterializesSavestateToExplicitPath) {
 
     std::string err;
     std::int64_t artifact_id = 0;
-    ASSERT_TRUE(state_db->StoreArtifact(
+    ASSERT_TRUE(state_db->ImportExternalArtifact(
         {
-            .sha256 = "state-db-materialize-savestate-test",
-            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(source_path)),
-            .compression_kind = 0,
-            .filename = source_path.string(),
-            .file_ext = ".sav",
-            .artifact_kind = "SAV",
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.state.materialize_savestate",
-            .causation_id = "test",
+            .absolute_source_path = source_path,
+            .artifact = {
+                .sha256 = hash::sha256_of_file(source_path.string()),
+                .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(source_path)),
+                .compression_kind = 0,
+                .display_filename = source_path.filename().string(),
+                .file_ext = ".sav",
+                .artifact_kind = "SAV",
+                .created_at_utc = savor::db::types::UtcNow(),
+                .correlation_id = "test.state.materialize_savestate",
+                .causation_id = "test",
+            },
         },
         &artifact_id,
         &err))
@@ -10253,34 +10262,40 @@ TEST_F(SqliteDbFixture, StateDbDedupesArtifactAndUiReadListsSummary) {
 
     std::string err;
     std::int64_t first_artifact_id = 0;
-    ASSERT_TRUE(state_db->StoreArtifact(
+    ASSERT_TRUE(state_db->ImportExternalArtifact(
         {
-            .sha256 = "state-db-dedupe-artifact-test",
-            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(first_path)),
-            .compression_kind = 0,
-            .filename = first_path.string(),
-            .file_ext = ".sav",
-            .artifact_kind = "SAV",
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.state.artifact.dedupe",
-            .causation_id = "test",
+            .absolute_source_path = first_path,
+            .artifact = {
+                .sha256 = hash::sha256_of_file(first_path.string()),
+                .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(first_path)),
+                .compression_kind = 0,
+                .display_filename = first_path.filename().string(),
+                .file_ext = ".sav",
+                .artifact_kind = "SAV",
+                .created_at_utc = savor::db::types::UtcNow(),
+                .correlation_id = "test.state.artifact.dedupe",
+                .causation_id = "test",
+            },
         },
         &first_artifact_id,
         &err))
         << err;
 
     std::int64_t second_artifact_id = 0;
-    ASSERT_TRUE(state_db->StoreArtifact(
+    ASSERT_TRUE(state_db->ImportExternalArtifact(
         {
-            .sha256 = "state-db-dedupe-artifact-test",
-            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(second_path)),
-            .compression_kind = 0,
-            .filename = second_path.string(),
-            .file_ext = ".sav",
-            .artifact_kind = "SAV",
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.state.artifact.dedupe",
-            .causation_id = "test",
+            .absolute_source_path = second_path,
+            .artifact = {
+                .sha256 = hash::sha256_of_file(second_path.string()),
+                .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(second_path)),
+                .compression_kind = 0,
+                .display_filename = second_path.filename().string(),
+                .file_ext = ".sav",
+                .artifact_kind = "SAV",
+                .created_at_utc = savor::db::types::UtcNow(),
+                .correlation_id = "test.state.artifact.dedupe",
+                .causation_id = "test",
+            },
         },
         &second_artifact_id,
         &err))
@@ -10316,18 +10331,21 @@ TEST_F(SqliteDbFixture, StateDbAcceptsFirstClassBattleCompletionArtifact) {
 
     std::string error;
     std::int64_t artifact_id = 0;
-    ASSERT_TRUE(state_db->StoreArtifact(
+    ASSERT_TRUE(state_db->ImportExternalArtifact(
         {
-            .sha256 = hash::sha256(
-                manifest_bytes.data(), manifest_bytes.size()),
-            .size_bytes = static_cast<std::int64_t>(manifest_bytes.size()),
-            .compression_kind = 0,
-            .filename = manifest_path.string(),
-            .file_ext = ".bcmb",
-            .artifact_kind = "BATTLE_COMPLETION",
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.state.battle-completion",
-            .causation_id = "test",
+            .absolute_source_path = manifest_path,
+            .artifact = {
+                .sha256 = hash::sha256(
+                    manifest_bytes.data(), manifest_bytes.size()),
+                .size_bytes = static_cast<std::int64_t>(manifest_bytes.size()),
+                .compression_kind = 0,
+                .display_filename = manifest_path.filename().string(),
+                .file_ext = ".bcmb",
+                .artifact_kind = "BATTLE_COMPLETION",
+                .created_at_utc = savor::db::types::UtcNow(),
+                .correlation_id = "test.state.battle-completion",
+                .causation_id = "test",
+            },
         },
         &artifact_id,
         &error)) << error;
@@ -10339,28 +10357,126 @@ TEST_F(SqliteDbFixture, StateDbAcceptsFirstClassBattleCompletionArtifact) {
     EXPECT_EQ(artifact->display_filename, manifest_path.filename().string());
     EXPECT_FALSE(std::filesystem::path(artifact->object_relpath).is_absolute());
     EXPECT_EQ(
-        std::filesystem::path(artifact->filename).parent_path().parent_path().parent_path().parent_path(),
+        std::filesystem::path(artifact->object_path).parent_path().parent_path().parent_path().parent_path(),
         temp_root_ / "object_store");
-    EXPECT_TRUE(std::filesystem::is_regular_file(artifact->filename));
+    EXPECT_TRUE(std::filesystem::is_regular_file(artifact->object_path));
 
     std::int64_t rejected_id = 0;
-    EXPECT_FALSE(state_db->StoreArtifact(
+    EXPECT_FALSE(state_db->ImportExternalArtifact(
         {
-            .sha256 = std::string(64, 'f'),
-            .size_bytes = 1,
-            .compression_kind = 0,
-            .filename = (temp_root_ / "unknown.bin").string(),
-            .file_ext = ".bin",
-            .artifact_kind = "UNKNOWN_COMPLETION_KIND",
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.state.battle-completion",
-            .causation_id = "test",
+            .absolute_source_path = temp_root_ / "unknown.bin",
+            .artifact = {
+                .sha256 = std::string(64, 'f'),
+                .size_bytes = 1,
+                .compression_kind = 0,
+                .display_filename = "unknown.bin",
+                .file_ext = ".bin",
+                .artifact_kind = "UNKNOWN_COMPLETION_KIND",
+                .created_at_utc = savor::db::types::UtcNow(),
+                .correlation_id = "test.state.battle-completion",
+                .causation_id = "test",
+            },
         },
         &rejected_id,
         &error));
 }
 
-TEST(SavorDbArtifactObjectStore, RelocatedWorkspaceReconcilesLegacyAbsoluteLocator) {
+TEST_F(SqliteDbFixture, StateDbStoresOnlyContainedWorkspaceArtifacts) {
+    auto* state_db = db_service_->StateDb();
+    ASSERT_NE(state_db, nullptr);
+
+    const std::string bytes = "workspace-artifact";
+    const auto workspace_source =
+        state_db->ArtifactWorkspaceRoot() / "published" / "contained.sav";
+    ASSERT_TRUE(std::filesystem::create_directories(
+        workspace_source.parent_path()));
+    {
+        std::ofstream out(workspace_source, std::ios::binary);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+
+    const savor::db::ArtifactStoreMetadata metadata{
+        .sha256 = hash::sha256(bytes.data(), bytes.size()),
+        .size_bytes = static_cast<std::int64_t>(bytes.size()),
+        .compression_kind = 0,
+        .display_filename = "contained.sav",
+        .file_ext = ".sav",
+        .artifact_kind = "SAV",
+        .created_at_utc = savor::db::types::UtcNow(),
+        .correlation_id = "test.state.workspace-ingestion",
+        .causation_id = "test",
+    };
+    std::string error;
+    std::int64_t artifact_id = 0;
+    ASSERT_TRUE(state_db->StoreWorkspaceArtifact({
+        .workspace_relative_path =
+            std::filesystem::path("published") / "contained.sav",
+        .artifact = metadata,
+    }, &artifact_id, &error)) << error;
+    const auto artifact = state_db->GetArtifact(artifact_id);
+    ASSERT_TRUE(artifact.has_value());
+    EXPECT_TRUE(std::filesystem::is_regular_file(artifact->object_path));
+
+    std::int64_t rejected_id = 0;
+    error.clear();
+    EXPECT_FALSE(state_db->StoreWorkspaceArtifact({
+        .workspace_relative_path =
+            std::filesystem::path("..") / "outside.sav",
+        .artifact = metadata,
+    }, &rejected_id, &error));
+    EXPECT_FALSE(error.empty());
+
+    error.clear();
+    EXPECT_FALSE(state_db->ImportExternalArtifact({
+        .absolute_source_path = "relative.sav",
+        .artifact = metadata,
+    }, &rejected_id, &error));
+    EXPECT_FALSE(error.empty());
+}
+
+TEST_F(SqliteDbFixture, StateDbRejectsCorruptedExistingObject) {
+    auto* state_db = db_service_->StateDb();
+    ASSERT_NE(state_db, nullptr);
+
+    const auto source = temp_root_ / "object-integrity.sav";
+    const std::string bytes = "verified-object";
+    {
+        std::ofstream out(source, std::ios::binary);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    const savor::db::ImportExternalArtifactCommand command{
+        .absolute_source_path = source,
+        .artifact = {
+            .sha256 = hash::sha256(bytes.data(), bytes.size()),
+            .size_bytes = static_cast<std::int64_t>(bytes.size()),
+            .compression_kind = 0,
+            .display_filename = source.filename().string(),
+            .file_ext = ".sav",
+            .artifact_kind = "SAV",
+            .created_at_utc = savor::db::types::UtcNow(),
+            .correlation_id = "test.state.object-integrity",
+            .causation_id = "test",
+        },
+    };
+    std::string error;
+    std::int64_t artifact_id = 0;
+    ASSERT_TRUE(state_db->ImportExternalArtifact(
+        command, &artifact_id, &error)) << error;
+    const auto artifact = state_db->GetArtifact(artifact_id);
+    ASSERT_TRUE(artifact.has_value());
+    {
+        std::ofstream out(artifact->object_path, std::ios::binary | std::ios::trunc);
+        out << "corrupt";
+    }
+
+    std::int64_t repeated_id = 0;
+    error.clear();
+    EXPECT_FALSE(state_db->ImportExternalArtifact(
+        command, &repeated_id, &error));
+    EXPECT_FALSE(error.empty());
+}
+
+TEST(SavorDbArtifactObjectStore, RelocatedDatabaseRootResolvesCanonicalObjectLocator) {
     namespace migrations = savor::db::migrations;
 
     const auto container = MakeTempPhase4Dir("state-artifact-relocation");
@@ -10385,17 +10501,19 @@ TEST(SavorDbArtifactObjectStore, RelocatedWorkspaceReconcilesLegacyAbsoluteLocat
             out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
         }
         artifact_sha = hash::sha256(bytes.data(), bytes.size());
-        ASSERT_TRUE(service.StateDb()->StoreArtifact({
-            .sha256 = artifact_sha,
-            .size_bytes = static_cast<std::int64_t>(bytes.size()),
-            .compression_kind = 0,
-            .filename = input.string(),
-            .display_filename = "portable-input.dtm",
-            .file_ext = ".dtm",
-            .artifact_kind = "DTM",
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.state.relative-locator",
-            .causation_id = "test",
+        ASSERT_TRUE(service.StateDb()->ImportExternalArtifact({
+            .absolute_source_path = input,
+            .artifact = {
+                .sha256 = artifact_sha,
+                .size_bytes = static_cast<std::int64_t>(bytes.size()),
+                .compression_kind = 0,
+                .display_filename = "portable-input.dtm",
+                .file_ext = ".dtm",
+                .artifact_kind = "DTM",
+                .created_at_utc = savor::db::types::UtcNow(),
+                .correlation_id = "test.state.relative-locator",
+                .causation_id = "test",
+            },
         }, &artifact_id, &error)) << error;
 
         const auto artifact = service.StateDb()->GetArtifact(artifact_id);
@@ -10403,27 +10521,6 @@ TEST(SavorDbArtifactObjectStore, RelocatedWorkspaceReconcilesLegacyAbsoluteLocat
         ASSERT_FALSE(artifact->object_relpath.empty());
         EXPECT_FALSE(std::filesystem::path(artifact->object_relpath).is_absolute());
 
-        const auto legacy_relative =
-            std::filesystem::path("09") / "5a" / "portable-input.dtm";
-        const auto legacy_absolute =
-            source_paths.object_store_root / legacy_relative;
-        ASSERT_TRUE(std::filesystem::create_directories(
-            legacy_absolute.parent_path()));
-        ASSERT_TRUE(std::filesystem::copy_file(
-            artifact->filename, legacy_absolute,
-            std::filesystem::copy_options::overwrite_existing));
-
-        sqlite3_stmt* update = nullptr;
-        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-            service.RawStateSqlite(),
-            "UPDATE state_artifact SET filename=?1,object_relpath='' "
-            "WHERE artifact_id=?2;",
-            -1, &update, nullptr));
-        const auto legacy_text = legacy_absolute.string();
-        sqlite3_bind_text(update, 1, legacy_text.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(update, 2, artifact_id);
-        ASSERT_EQ(SQLITE_DONE, sqlite3_step(update));
-        sqlite3_finalize(update);
         service.Stop();
     }
 
@@ -10448,9 +10545,9 @@ TEST(SavorDbArtifactObjectStore, RelocatedWorkspaceReconcilesLegacyAbsoluteLocat
     EXPECT_EQ(artifact->sha256, artifact_sha);
     EXPECT_EQ(artifact->display_filename, "portable-input.dtm");
     EXPECT_FALSE(std::filesystem::path(artifact->object_relpath).is_absolute());
-    EXPECT_TRUE(std::filesystem::is_regular_file(artifact->filename));
+    EXPECT_TRUE(std::filesystem::is_regular_file(artifact->object_path));
     EXPECT_EQ(
-        std::filesystem::path(artifact->filename)
+        std::filesystem::path(artifact->object_path)
             .lexically_relative(target_paths.object_store_root)
             .generic_string(),
         artifact->object_relpath);
@@ -10518,17 +10615,20 @@ TEST_F(SqliteDbFixture, UiReadProjectionStreamsSeparateStateDatabaseForArtifactS
     ASSERT_NE(ui_read_db, nullptr);
 
     std::int64_t artifact_id = 0;
-    ASSERT_TRUE(state_db->StoreArtifact(
+    ASSERT_TRUE(state_db->ImportExternalArtifact(
         {
-            .sha256 = "state-db-attached-projection-test",
-            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(source_path)),
-            .compression_kind = 0,
-            .filename = source_path.string(),
-            .file_ext = ".sav",
-            .artifact_kind = "SAV",
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.state.artifact.attached_projection",
-            .causation_id = "test",
+            .absolute_source_path = source_path,
+            .artifact = {
+                .sha256 = hash::sha256_of_file(source_path.string()),
+                .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(source_path)),
+                .compression_kind = 0,
+                .display_filename = source_path.filename().string(),
+                .file_ext = ".sav",
+                .artifact_kind = "SAV",
+                .created_at_utc = savor::db::types::UtcNow(),
+                .correlation_id = "test.state.artifact.attached_projection",
+                .causation_id = "test",
+            },
         },
         &artifact_id,
         &err))
@@ -11258,7 +11358,7 @@ TEST_F(SqliteDbFixture, UiReadProjectionFailureDiagnosticsRecordPayloadRefsBefor
     ASSERT_NE(state_handle, nullptr);
     ASSERT_EQ(SQLITE_OK, sqlite3_busy_timeout(state_handle, 5000));
     savor::db::state::SqliteStateDb state_db(
-        state_handle, paths.object_store_root);
+        state_handle, separate_root / "workflow-runtime", paths.object_store_root);
 
     sqlite3* ui_handle = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &ui_handle));
@@ -11281,18 +11381,28 @@ TEST_F(SqliteDbFixture, UiReadProjectionFailureDiagnosticsRecordPayloadRefsBefor
     std::string err;
     ASSERT_TRUE(projection.Start(&err)) << err;
 
+    const auto diagnostic_path = separate_root / "diagnostic.sav";
+    const std::string diagnostic_bytes = "diagnostic-12";
+    {
+        std::ofstream out(diagnostic_path, std::ios::binary);
+        out.write(diagnostic_bytes.data(), static_cast<std::streamsize>(diagnostic_bytes.size()));
+    }
     std::int64_t artifact_id = 0;
-    ASSERT_TRUE(state_db.StoreArtifact(
+    ASSERT_TRUE(state_db.ImportExternalArtifact(
         {
-            .sha256 = "projection-diagnostic-artifact",
-            .size_bytes = 12,
-            .compression_kind = 0,
-            .filename = "diagnostic.sav",
-            .file_ext = ".sav",
-            .artifact_kind = "SAV",
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "projection-diagnostic",
-            .causation_id = "test",
+            .absolute_source_path = diagnostic_path,
+            .artifact = {
+                .sha256 = hash::sha256(
+                    diagnostic_bytes.data(), diagnostic_bytes.size()),
+                .size_bytes = static_cast<std::int64_t>(diagnostic_bytes.size()),
+                .compression_kind = 0,
+                .display_filename = diagnostic_path.filename().string(),
+                .file_ext = ".sav",
+                .artifact_kind = "SAV",
+                .created_at_utc = savor::db::types::UtcNow(),
+                .correlation_id = "projection-diagnostic",
+                .causation_id = "test",
+            },
         },
         &artifact_id,
         &err)) << err;
@@ -11339,22 +11449,31 @@ TEST_F(SqliteDbFixture, UiReadProjectionAdvancesStateCursorOncePerBatch) {
     ASSERT_NE(state_handle, nullptr);
     ASSERT_EQ(SQLITE_OK, sqlite3_busy_timeout(state_handle, 5000));
     savor::db::state::SqliteStateDb state_db(
-        state_handle, paths.object_store_root);
+        state_handle, separate_root / "workflow-runtime", paths.object_store_root);
 
     std::string err;
     for (int i = 0; i < 3; ++i) {
+        const auto source_path = separate_root / ("batch-" + std::to_string(i) + ".sav");
+        const std::string bytes(static_cast<std::size_t>(12 + i), static_cast<char>('a' + i));
+        {
+            std::ofstream out(source_path, std::ios::binary);
+            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
         std::int64_t artifact_id = 0;
-        ASSERT_TRUE(state_db.StoreArtifact(
+        ASSERT_TRUE(state_db.ImportExternalArtifact(
             {
-                .sha256 = "projection-batch-artifact-" + std::to_string(i),
-                .size_bytes = 12 + i,
-                .compression_kind = 0,
-                .filename = "batch-" + std::to_string(i) + ".sav",
-                .file_ext = ".sav",
-                .artifact_kind = "SAV",
-                .created_at_utc = savor::db::types::UtcNow(),
-                .correlation_id = "projection-batch",
-                .causation_id = "test",
+                .absolute_source_path = source_path,
+                .artifact = {
+                    .sha256 = hash::sha256(bytes.data(), bytes.size()),
+                    .size_bytes = static_cast<std::int64_t>(bytes.size()),
+                    .compression_kind = 0,
+                    .display_filename = source_path.filename().string(),
+                    .file_ext = ".sav",
+                    .artifact_kind = "SAV",
+                    .created_at_utc = savor::db::types::UtcNow(),
+                    .correlation_id = "projection-batch",
+                    .causation_id = "test",
+                },
             },
             &artifact_id,
             &err)) << err;

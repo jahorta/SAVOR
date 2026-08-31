@@ -8,7 +8,7 @@
 #include <optional>
 
 #include "DB/SavorDbExplorerRunService.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 
 class ExplorerRunsController final : public QObject
 {
@@ -79,7 +79,7 @@ private:
     qint64 groupDetailRequestId_ = 0;
     qint64 jobDetailRequestId_ = 0;
 
-    savorqt::gui::AsyncRefreshPipeline<GroupPageFetchRequest, GroupPageResult>* groupRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<GroupPageFetchRequest, GroupPageResult>* groupRefreshPipeline_ = nullptr;
     QFutureWatcher<GroupDetailResult> groupDetailWatcher_;
     QFutureWatcher<JobDetailResult> jobDetailWatcher_;
 };

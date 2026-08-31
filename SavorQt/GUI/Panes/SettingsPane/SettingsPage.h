@@ -5,6 +5,7 @@
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
+#include "GUI/Refresh/ViewState.h"
 
 #include <functional>
 #include <utility>
@@ -102,6 +103,8 @@ private:
     QLineEdit* dolphinBaseDirEdit_ = nullptr;
     QPushButton* dolphinBrowseButton_ = nullptr;
     QCheckBox* startPausedCheck_ = nullptr;
+    savorqt::gui::DraftState<QString> isoPathDraft_;
+    savorqt::gui::DraftState<QString> dolphinBaseDirDraft_;
     QLabel* coordinatorValidationLabel_ = nullptr;
     QToolButton* coordinatorSectionToggle_ = nullptr;
 

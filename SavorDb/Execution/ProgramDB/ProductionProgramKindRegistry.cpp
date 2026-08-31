@@ -23,12 +23,18 @@ ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(
     const std::filesystem::path& runtime_working_dir_root,
     const std::filesystem::path& capture_module_path) {
     ProductionProgramKindRegistryConfig config{};
+    std::error_code root_error;
+    const auto normalized_runtime_root = std::filesystem::absolute(
+        runtime_working_dir_root, root_error).lexically_normal();
+    const auto& root = root_error
+        ? runtime_working_dir_root
+        : normalized_runtime_root;
     config.tas_movie_validation.working_dir_root =
-        runtime_working_dir_root / "tasmovie-validation";
+        root / "tasmovie-validation";
     config.tas_movie_checkpoint_sterilization.working_dir_root =
-        runtime_working_dir_root / "tasmovie-checkpoint-sterilization";
+        root / "tasmovie-checkpoint-sterilization";
     config.tas_movie_input_epoch_annotation.working_dir_root =
-        runtime_working_dir_root / "tasmovie-input-epoch-annotation";
+        root / "tasmovie-input-epoch-annotation";
     if (!capture_module_path.empty()
         && std::filesystem::is_regular_file(capture_module_path)) {
         try {
@@ -39,23 +45,23 @@ ProductionProgramKindRegistryConfig MakeProductionProgramKindRegistryConfig(
         }
     }
     config.tas_movie_input_epoch_rewrite.working_dir_root =
-        runtime_working_dir_root / "tasmovie-input-epoch-rewrite";
+        root / "tasmovie-input-epoch-rewrite";
     config.tas_movie_input_epoch_rewrite.capture_module_sha256 =
         config.tas_movie_input_epoch_annotation.capture_module_sha256;
     config.tas_movie_cutscene.working_dir_root =
-        runtime_working_dir_root / "tasmovie-cutscene";
+        root / "tasmovie-cutscene";
     config.seed_probe.working_dir_root =
-        runtime_working_dir_root / "seedprobe";
+        root / "seedprobe";
     config.battle_context.working_dir_root =
-        runtime_working_dir_root / "battle-context";
+        root / "battle-context";
     config.battle_completion.working_dir_root =
-        runtime_working_dir_root / "battle-completion";
+        root / "battle-completion";
     config.battle_record.working_dir_root =
-        runtime_working_dir_root / "battle-record";
+        root / "battle-record";
     config.battle_replay.working_dir_root =
-        runtime_working_dir_root / "battle-replay";
+        root / "battle-replay";
     config.battle_single_turn.working_dir_root =
-        runtime_working_dir_root / "battle-single-turn";
+        root / "battle-single-turn";
     return config;
 }
 

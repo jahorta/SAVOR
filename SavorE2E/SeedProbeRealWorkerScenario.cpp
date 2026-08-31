@@ -334,26 +334,14 @@ std::string FormatCoordinatorTelemetryLine(
         << telemetry.execution.worker_terminal_staging_failures
         << " terminal_retries="
         << telemetry.execution.worker_terminal_retry_attempts
-        << " worker_event_batches="
-        << telemetry.execution.worker_event_batches
-        << " worker_event_items="
-        << telemetry.execution.worker_event_batch_items
-        << " worker_event_batch_max="
-        << telemetry.execution.worker_event_batch_max_size
-        << " worker_event_batch_avg="
-        << telemetry.execution.worker_event_batch_average_size
-        << " worker_event_batch_q="
-        << telemetry.execution.worker_event_batch_queue_depth
-        << " worker_event_batch_q_hwm="
-        << telemetry.execution.worker_event_batch_queue_high_water
-        << " worker_event_batch_rollbacks="
-        << telemetry.execution.worker_event_batch_rollbacks
-        << " worker_event_full_flushes="
-        << telemetry.execution.worker_event_full_flushes
-        << " worker_event_deadline_flushes="
-        << telemetry.execution.worker_event_deadline_flushes
-        << " worker_event_barrier_flushes="
-        << telemetry.execution.worker_event_barrier_flushes
+        << " persistence_attempts="
+        << telemetry.execution.dispatch_persistence_attempts
+        << " persistence_events="
+        << telemetry.execution.dispatch_persistence_events
+        << " persistence_failures="
+        << telemetry.execution.dispatch_persistence_failures
+        << " persistence_retries="
+        << telemetry.execution.dispatch_persistence_retries
         << " blob_ready="
         << (telemetry.execution.blob_store_ready ? 1 : 0)
         << " blob_readiness_failures="
@@ -446,10 +434,10 @@ std::string FormatCoordinatorTelemetryLine(
         << (telemetry.execution.user_admission_paused ? 1 : 0)
         << " pause_invariant="
         << (telemetry.execution.invariant_admission_paused ? 1 : 0)
-        << " pause_storage="
-        << (telemetry.execution.storage_admission_paused ? 1 : 0)
-        << " claims_storage_paused="
-        << (telemetry.execution.storage_admission_paused
+        << " storage_unavailable="
+        << (telemetry.execution.global_storage_unavailable ? 1 : 0)
+        << " claims_storage_unavailable="
+        << (telemetry.execution.global_storage_unavailable
                 ? 1
                 : 0)
         << " startup_recovered_dispatches="
@@ -1077,7 +1065,7 @@ bool ValidateSplitCoordinatorExecution(
         telemetry.execution.persistence_queue_depth == 0
             && telemetry.execution.draining_worksets == 0
             && !telemetry.execution
-                    .storage_admission_paused,
+                    .global_storage_unavailable,
         "JobExecutionCoordinator ended with storage backpressure or "
         "authority-loss draining");
     require_clean(
@@ -2183,12 +2171,12 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             << " terminal_retries="
             << final_telemetry.execution
                    .worker_terminal_retry_attempts
-            << " worker_event_batches="
-            << final_telemetry.execution.worker_event_batches
-            << " worker_event_items="
-            << final_telemetry.execution.worker_event_batch_items
-            << " worker_event_batch_max="
-            << final_telemetry.execution.worker_event_batch_max_size
+            << " persistence_attempts="
+            << final_telemetry.execution.dispatch_persistence_attempts
+            << " persistence_events="
+            << final_telemetry.execution.dispatch_persistence_events
+            << " persistence_failures="
+            << final_telemetry.execution.dispatch_persistence_failures
             << " blob_ready="
             << (final_telemetry.execution.blob_store_ready ? 1 : 0)
             << " blob_readiness_failures="
@@ -2197,9 +2185,9 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             << final_telemetry.execution.persistence_queue_depth
             << " draining_worksets="
             << final_telemetry.execution.draining_worksets
-            << " claims_storage_paused="
+            << " claims_storage_unavailable="
             << (final_telemetry.execution
-                        .storage_admission_paused
+                        .global_storage_unavailable
                     ? 1
                     : 0)
             << " startup_recovered_dispatches="

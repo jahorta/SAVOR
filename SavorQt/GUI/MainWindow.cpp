@@ -380,7 +380,7 @@ void MainWindow::createWidgets()
     workspaceSelector_->setSelectionChangedCallback([this](int index) {
         handleWorkspaceChanged(index);
     });
-    workspaceBadgeRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<int, QPair<int, int>>(this);
+    workspaceBadgeRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<int, QPair<int, int>>(this);
     workspaceBadgeRefreshPipeline_->setAutoRefreshEnabled(false);
     workspaceBadgeRefreshPipeline_->setRequestBuilder([](savorqt::gui::RefreshReason) {
         return 0;
@@ -402,7 +402,7 @@ void MainWindow::createWidgets()
         battleQuery.limit = 10;
         const auto battleRuns = savorqt::db::SavorDbExplorerRunService::ListBattleGroups(battleQuery);
         const int battleGroups = battleRuns.ok ? static_cast<int>(battleRuns.value.groups.size()) : 0;
-        return savorqt::gui::AsyncRefreshResult<QPair<int, int>>::Ok(qMakePair(activeJobs, battleGroups));
+        return savorqt::gui::ProjectionLoadResult<QPair<int, int>>::Ok(qMakePair(activeJobs, battleGroups));
     });
     workspaceBadgeRefreshPipeline_->setApply([this](const QPair<int, int>& counts, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         if (workspaceSelector_ == nullptr) {

@@ -202,7 +202,7 @@ std::optional<std::int64_t> Binding(const ProgramJobMaterializationContext& cont
     std::string_view input_key, std::string_view data_kind,
     std::string_view ref_kind) {
     if (context.graph) {
-        for (const auto& binding : context.graph->input_bindings) {
+        for (const auto& binding : context.graph->inputs) {
             if (binding.input_key == input_key && binding.data_kind == data_kind
                 && binding.ref_kind == ref_kind && binding.ref_id > 0)
                 return binding.ref_id;
@@ -294,7 +294,7 @@ bool PublishSingleton(IExecutionDb* execution_db,
     ResolvedWorksetObservationBindingV1 observation;
     ProgramJobMaterializationContext observation_context = context;
     if (capture_profile && observation_context.graph) {
-        observation_context.graph->arguments.push_back({
+        observation_context.graph->arguments.Add({
             .node_key = observation_context.graph->activation_graph_node_key,
             .argument_key = std::string(kCaptureProfileJsonArgument),
             .value_type = "text",
@@ -644,7 +644,7 @@ public:
               ? inputepoch::BreakpointDiagnosticFullPhaseDefinitionV1()
               : inputepoch::AnnotationFullPhaseDefinitionV1()) {}
 
-    bool Materialize(const ProgramJobMaterializationContext& context,
+    bool MaterializeJobs(const ProgramJobMaterializationContext& context,
         WorkflowStepScheduleResult* result_out, std::string* error_out) const override {
         if (!execution_ || !state_ || !analysis_ || !phase_ || !context.graph
             || !result_out)
@@ -750,7 +750,7 @@ public:
         : execution_(execution), state_(state), analysis_(analysis),
           config_(std::move(config)), phase_(inputepoch::RewriteFullPhaseDefinitionV1()) {}
 
-    bool Materialize(const ProgramJobMaterializationContext& context,
+    bool MaterializeJobs(const ProgramJobMaterializationContext& context,
         WorkflowStepScheduleResult* result_out, std::string* error_out) const override {
         if (!execution_ || !state_ || !analysis_ || !phase_ || !context.graph
             || !result_out)
@@ -786,7 +786,7 @@ public:
             if (!placement_profile || *placement_profile != "first_battle.final_dialog")
                 return Fail("input-epoch rewrite requires an explicit epoch or a supported placement profile", error_out);
             const auto artifact = state_->GetArtifact(*attempt->schedule_artifact_id);
-            const auto bytes = artifact ? ReadFile(artifact->filename, error_out) : std::nullopt;
+            const auto bytes = artifact ? ReadFile(artifact->object_path, error_out) : std::nullopt;
             inputepoch::TasMovieInputEpochScheduleV1 schedule;
             std::string diagnostic;
             if (!bytes || !inputepoch::DecodeInputEpochScheduleArtifactV1(
@@ -1115,11 +1115,10 @@ public:
             const auto path = root_ / "published" / (sha + ".tes");
             if (!WriteFile(path, bytes, &error)) throw std::runtime_error(error);
             std::int64_t artifact_id = 0;
-            if (!state_->StoreArtifact({
+            if (!StoreWorkspaceArtifactFile(state_, path, {
                     .sha256 = sha,
                     .size_bytes = static_cast<std::int64_t>(bytes.size()),
                     .compression_kind = 0,
-                    .filename = path.string(),
                     .display_filename = "tas-movie-input-epoch-schedule.tes",
                     .file_ext = ".tes",
                     .artifact_kind = "TAS_MOVIE_INPUT_EPOCH_SCHEDULE",
@@ -1251,11 +1250,10 @@ public:
                 if (!artifact.complete || !sha || *sha != artifact.content_hash.ToHex()
                     || ec || size == 0)
                     return Fail("rewrite artifact does not match finalized worker evidence", &error);
-                return state_->StoreArtifact({
+                return StoreWorkspaceArtifactFile(state_, path, {
                     .sha256 = *sha,
                     .size_bytes = static_cast<std::int64_t>(size),
                     .compression_kind = 0,
-                    .filename = path.string(),
                     .display_filename = path.filename().string(),
                     .file_ext = path.extension().string(),
                     .artifact_kind = std::string(kind),
@@ -1307,7 +1305,7 @@ public:
             const auto source_schedule_artifact = state_->GetArtifact(
                 request->schedule_artifact_id);
             const auto source_schedule_bytes = source_schedule_artifact
-                ? ReadFile(source_schedule_artifact->filename, &error)
+                ? ReadFile(source_schedule_artifact->object_path, &error)
                 : std::nullopt;
             inputepoch::TasMovieInputEpochScheduleV1 source_schedule;
             if (!source_schedule_bytes
@@ -1345,11 +1343,10 @@ public:
             if (!WriteFile(schedule_path, schedule_bytes, &error))
                 throw std::runtime_error(error);
             std::int64_t schedule_artifact_id = 0;
-            if (!state_->StoreArtifact({
+            if (!StoreWorkspaceArtifactFile(state_, schedule_path, {
                     .sha256 = schedule_sha,
                     .size_bytes = static_cast<std::int64_t>(schedule_bytes.size()),
                     .compression_kind = 0,
-                    .filename = schedule_path.string(),
                     .display_filename = "tas-movie-input-epoch-schedule.tes",
                     .file_ext = ".tes",
                     .artifact_kind = "TAS_MOVIE_INPUT_EPOCH_SCHEDULE",
@@ -1387,11 +1384,10 @@ public:
             if (!WriteFile(itinerary_path, itinerary_bytes, &error))
                 throw std::runtime_error(error);
             std::int64_t itinerary_artifact_id = 0;
-            if (!state_->StoreArtifact({
+            if (!StoreWorkspaceArtifactFile(state_, itinerary_path, {
                     .sha256 = itinerary_sha,
                     .size_bytes = static_cast<std::int64_t>(itinerary_bytes.size()),
                     .compression_kind = 0,
-                    .filename = itinerary_path.string(),
                     .display_filename = "tas-movie-root-itinerary.tmi",
                     .file_ext = ".tmi",
                     .artifact_kind = "TAS_MOVIE_ITINERARY",
@@ -1524,7 +1520,7 @@ public:
           config_(std::move(config)),
           phase_(inputepoch::CutsceneFullPhaseDefinitionV1()) {}
 
-    bool Materialize(const ProgramJobMaterializationContext& context,
+    bool MaterializeJobs(const ProgramJobMaterializationContext& context,
         WorkflowStepScheduleResult* result_out,
         std::string* error_out) const override {
         if (!execution_ || !state_ || !analysis_ || !phase_ || !context.graph
@@ -1827,9 +1823,9 @@ public:
             if (!artifact.complete || !sha || *sha != artifact.content_hash.ToHex()
                 || ec || size == 0)
                 return Fail("cutscene artifact does not match worker evidence", &error);
-            return state_->StoreArtifact({.sha256 = *sha,
+            return StoreWorkspaceArtifactFile(state_, path, {.sha256 = *sha,
                 .size_bytes = static_cast<std::int64_t>(size),
-                .filename = path.string(), .display_filename = path.filename().string(),
+                .display_filename = path.filename().string(),
                 .file_ext = path.extension().string(), .artifact_kind = std::string(kind),
                 .created_at_utc = types::UtcNow(),
                 .correlation_id = "tmv-cutscene-request-" + std::to_string(request->cutscene_request_id),
@@ -1844,7 +1840,7 @@ public:
         const auto source_itinerary = state_->GetArtifact(
             request->source_itinerary_artifact_id);
         const auto itinerary_bytes = source_itinerary
-            ? ReadFile(source_itinerary->filename, &error) : std::nullopt;
+            ? ReadFile(source_itinerary->object_path, &error) : std::nullopt;
         savor::runtime::tasmovie::TasMovieItineraryV1 itinerary{};
         savor::tas::DtmFile child_dtm;
         if (!dtm_record || !source_itinerary
@@ -1872,9 +1868,9 @@ public:
         if (!WriteFile(itinerary_path, encoded_itinerary, &error))
             throw std::runtime_error(error);
         std::int64_t itinerary_id = 0;
-        if (!state_->StoreArtifact({.sha256 = itinerary_sha,
+        if (!StoreWorkspaceArtifactFile(state_, itinerary_path, {.sha256 = itinerary_sha,
                 .size_bytes = static_cast<std::int64_t>(encoded_itinerary.size()),
-                .filename = itinerary_path.string(), .display_filename = "tas-movie-cutscene-itinerary.tmi",
+                .display_filename = "tas-movie-cutscene-itinerary.tmi",
                 .file_ext = ".tmi", .artifact_kind = "TAS_MOVIE_ITINERARY",
                 .created_at_utc = types::UtcNow(),
                 .correlation_id = "tmv-cutscene-request-" + std::to_string(request->cutscene_request_id),

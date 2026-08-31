@@ -858,6 +858,8 @@ WorkflowCoordinatorService::BuildMaterializationContext(
             }
         }
     }
+    const WorkflowUnitDefinition* owning_unit = nullptr;
+    auto units = BuildDefaultWorkflowUnitRegistry();
     if (owning_activation != nullptr) {
         context.activation_key = owning_activation->activation_key;
         context.activation_graph_node_key = owning_activation->graph_node_key;
@@ -865,12 +867,17 @@ WorkflowCoordinatorService::BuildMaterializationContext(
         context.activation_params_json = owning_activation->activation_params_json;
         context.authored_ref_kind = owning_activation->authored_ref_kind;
         context.authored_ref_id = owning_activation->authored_ref_id;
-        const auto units = BuildDefaultWorkflowUnitRegistry();
-        const auto* unit = units.Find(owning_activation->unit_kind);
-        if (unit != nullptr) {
-            context.unit_variant = unit->unit_variant;
-            context.breakpoint_profile_key = unit->breakpoint_profile_key;
+        owning_unit = units.Find(owning_activation->unit_kind);
+        if (owning_unit != nullptr) {
+            context.unit_variant = owning_unit->unit_variant;
+            context.breakpoint_profile_key = owning_unit->breakpoint_profile_key;
         }
+    }
+    if (owning_activation != nullptr && owning_unit == nullptr) {
+        if (error_out) *error_out =
+            "workflow activation references an unregistered unit: " +
+            owning_activation->unit_kind;
+        return std::nullopt;
     }
     const auto expected_node_key = context.activation_graph_node_key.empty()
         ? step.step_key
@@ -879,7 +886,23 @@ WorkflowCoordinatorService::BuildMaterializationContext(
         if (binding.node_key != expected_node_key) {
             continue;
         }
-        context.input_bindings.push_back(
+        if (owning_unit != nullptr) {
+            const auto port = std::find_if(
+                owning_unit->required_inputs.begin(),
+                owning_unit->required_inputs.end(),
+                [&](const auto& value) {
+                    return value.key == binding.input_key &&
+                        value.data_kind == binding.data_kind &&
+                        value.ref_kind == binding.ref_kind;
+                });
+            if (port == owning_unit->required_inputs.end()) {
+                if (error_out) *error_out =
+                    "workflow input is outside the unit contract: " +
+                    binding.node_key + "." + binding.input_key;
+                return std::nullopt;
+            }
+        }
+        if (!context.inputs.Add(
             programdb::WorkflowGraphInputBinding{
                 .node_key = binding.node_key,
                 .input_key = binding.input_key,
@@ -887,13 +910,43 @@ WorkflowCoordinatorService::BuildMaterializationContext(
                 .ref_kind = binding.ref_kind,
                 .ref_id = binding.ref_id,
                 .source_kind = binding.source_kind,
-            });
+            })) {
+            if (error_out) *error_out =
+                "workflow input is duplicate or outside the unit contract: " +
+                binding.node_key + "." + binding.input_key;
+            return std::nullopt;
+        }
+    }
+    if (owning_unit != nullptr) {
+        for (const auto& input : owning_unit->required_inputs) {
+            if (input.required && context.inputs.Require(
+                    input.key, input.data_kind, input.ref_kind) == nullptr) {
+                if (error_out) *error_out =
+                    "required workflow input is not resolved: " +
+                    expected_node_key + "." + input.key;
+                return std::nullopt;
+            }
+        }
     }
     for (const auto& argument : graph->arguments) {
         if (!argument.node_key.empty() && argument.node_key != expected_node_key) {
             continue;
         }
-        context.arguments.push_back(
+        if (owning_unit != nullptr) {
+            const auto definition = std::find_if(
+                owning_unit->launch_arguments.begin(),
+                owning_unit->launch_arguments.end(),
+                [&](const auto& value) {
+                    return value.key == argument.argument_key;
+                });
+            if (definition == owning_unit->launch_arguments.end()) {
+                if (error_out) *error_out =
+                    "workflow argument is outside the unit contract: " +
+                    expected_node_key + "." + argument.argument_key;
+                return std::nullopt;
+            }
+        }
+        if (!context.arguments.Add(
             programdb::WorkflowGraphArgument{
                 .node_key = argument.node_key,
                 .argument_key = argument.argument_key,
@@ -901,7 +954,12 @@ WorkflowCoordinatorService::BuildMaterializationContext(
                 .integer_value = argument.integer_value,
                 .text_value = argument.text_value,
                 .source_kind = argument.source_kind,
-            });
+            })) {
+            if (error_out) *error_out =
+                "workflow argument is duplicate or outside the unit contract: " +
+                expected_node_key + "." + argument.argument_key;
+            return std::nullopt;
+        }
     }
     if (error_out != nullptr) {
         error_out->clear();
@@ -921,7 +979,7 @@ WorkflowCoordinatorService::BuildMaterializationContext(
     };
 }
 
-std::optional<programdb::WorkflowStepScheduleResult>
+programdb::ProgramJobMaterializationResult
 WorkflowCoordinatorService::ScheduleReadyStep(
     const WorkflowReadyStepRecord& step,
     std::string* error_out) const {
@@ -930,7 +988,10 @@ WorkflowCoordinatorService::ScheduleReadyStep(
             *error_out =
                 "workflow materialization dependencies are unavailable";
         }
-        return std::nullopt;
+        return {
+            .disposition = programdb::ProgramJobMaterializationDisposition::InvariantFailure,
+            .diagnostic = error_out ? *error_out : "materialization dependencies unavailable",
+        };
     }
     const auto* descriptor =
         program_kind_registry_->FindForStepKind(step.step_kind);
@@ -940,58 +1001,76 @@ WorkflowCoordinatorService::ScheduleReadyStep(
                 "program job materializer is unavailable for step kind "
                 + step.step_kind;
         }
-        return std::nullopt;
+        return {
+            .disposition = programdb::ProgramJobMaterializationDisposition::InvariantFailure,
+            .diagnostic = error_out ? *error_out : "materializer unavailable",
+        };
     }
 
     auto context = BuildMaterializationContext(step, error_out);
     if (!context.has_value()) {
-        return std::nullopt;
+        return {
+            .disposition = programdb::ProgramJobMaterializationDisposition::InvariantFailure,
+            .diagnostic = error_out ? *error_out : "invalid workflow materialization contract",
+        };
     }
-    programdb::WorkflowStepScheduleResult result{};
     try {
-        if (!descriptor->job_materializer->Materialize(
-                *context,
-                &result,
-                error_out)) {
-            return std::nullopt;
-        }
+        auto result = descriptor->job_materializer->Materialize(*context);
+        if (error_out != nullptr) *error_out = result.diagnostic;
+        return result;
     } catch (const std::exception& exception) {
         if (error_out != nullptr) {
             *error_out =
                 std::string("program job materializer threw: ")
                 + exception.what();
         }
-        return std::nullopt;
+        return {
+            .disposition = programdb::ProgramJobMaterializationDisposition::InvariantFailure,
+            .diagnostic = error_out ? *error_out : "materializer threw",
+        };
     } catch (...) {
         if (error_out != nullptr) {
             *error_out =
                 "program job materializer threw an unknown exception";
         }
-        return std::nullopt;
+        return {
+            .disposition = programdb::ProgramJobMaterializationDisposition::InvariantFailure,
+            .diagnostic = error_out ? *error_out : "materializer threw",
+        };
     }
-    if (error_out != nullptr) {
-        error_out->clear();
-    }
-    return result;
 }
 
 bool WorkflowCoordinatorService::MaterializeWorkflowStep(const WorkflowReadyStepRecord& step) {
     const auto started = std::chrono::steady_clock::now();
     std::string schedule_error;
     const auto scheduled = ScheduleReadyStep(step, &schedule_error);
-    if (!scheduled.has_value() || scheduled->job_set_id <= 0) {
+    if (scheduled.disposition !=
+            programdb::ProgramJobMaterializationDisposition::Success ||
+        scheduled.schedule.job_set_id <= 0) {
         ++materialization_failure_count_;
-        if (scheduled.has_value()) {
-            for (const auto& line : scheduled->event_lines) {
-                EmitEventLine(line);
-            }
+        for (const auto& line : scheduled.schedule.event_lines) {
+            EmitEventLine(line);
         }
         const std::string failure_reason = !schedule_error.empty()
             ? std::move(schedule_error)
-            : scheduled.has_value()
+            : scheduled.disposition ==
+                    programdb::ProgramJobMaterializationDisposition::Success
             ? "schedule result did not include a job set"
             : "no schedule result";
         EmitWorkflowFailureEvent(step, "MaterializeWorkflowStep", failure_reason);
+        if (scheduled.disposition ==
+            programdb::ProgramJobMaterializationDisposition::InvariantFailure) {
+            if (auto* commands = execution_db_ != nullptr
+                    ? execution_db_->WorkflowCommandService()
+                    : nullptr) {
+                std::string block_error;
+                (void)commands->MarkStepBlocked({
+                    .workflow_step_id = step.workflow_step_id,
+                    .blocked_reason = "MATERIALIZATION_INVARIANT: " + failure_reason,
+                    .requested_by = "workflow_coordinator_contract_invariant",
+                }, &block_error);
+            }
+        }
         MaybeTerminalFailStepInStrictSmokeMode(
             step,
             "workflow_coordinator_materialize_strict_smoke",
@@ -1008,12 +1087,12 @@ bool WorkflowCoordinatorService::MaterializeWorkflowStep(const WorkflowReadyStep
     if (!commands->MarkStepMaterialized(
         {
             .workflow_step_id = step.workflow_step_id,
-            .job_set_id = scheduled->job_set_id,
-            .input_ref_kind = scheduled->persistence.program_ref_kind.empty()
+            .job_set_id = scheduled.schedule.job_set_id,
+            .input_ref_kind = scheduled.schedule.persistence.program_ref_kind.empty()
                 ? std::nullopt
-                : std::optional<std::string>(scheduled->persistence.program_ref_kind),
-            .input_ref_id = scheduled->persistence.program_ref_id > 0
-                ? std::optional<std::int64_t>(scheduled->persistence.program_ref_id)
+                : std::optional<std::string>(scheduled.schedule.persistence.program_ref_kind),
+            .input_ref_id = scheduled.schedule.persistence.program_ref_id > 0
+                ? std::optional<std::int64_t>(scheduled.schedule.persistence.program_ref_id)
                 : std::nullopt,
             .requested_by = "workflow_coordinator_materialize",
         },
@@ -1028,19 +1107,19 @@ bool WorkflowCoordinatorService::MaterializeWorkflowStep(const WorkflowReadyStep
         return false;
     }
 
-    for (const auto& line : scheduled->event_lines) {
+    for (const auto& line : scheduled.schedule.event_lines) {
         EmitEventLine(line);
     }
 
     if (execution_db_ != nullptr) {
-        const auto details = execution_db_->GetJobSetProgress(scheduled->job_set_id);
+        const auto details = execution_db_->GetJobSetProgress(scheduled.schedule.job_set_id);
         if (details.has_value()) {
             std::ostringstream line;
             line << "[workflow-materialization-counts]"
                  << " step=" << step.step_key
                  << " kind=" << step.step_kind
                  << " workflow_step_id=" << step.workflow_step_id
-                 << " job_set=" << scheduled->job_set_id
+                 << " job_set=" << scheduled.schedule.job_set_id
                  << " total=" << details->total_jobs
                  << " done=" << details->settled_jobs;
             if (details->expected_total.has_value()) {

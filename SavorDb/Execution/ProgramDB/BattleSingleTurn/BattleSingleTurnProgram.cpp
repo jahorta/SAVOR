@@ -421,7 +421,7 @@ std::optional<soa::battle::ctx::BattleContext> ReadBattleContextArtifact(
         || artifact->size_bytes <= 0 || !IsLowerHexSha256(artifact->sha256)) {
         return std::nullopt;
     }
-    const std::filesystem::path path(artifact->filename);
+    const std::filesystem::path path(artifact->object_path);
     std::error_code file_error;
     if (!std::filesystem::is_regular_file(path, file_error) || file_error
         || static_cast<std::int64_t>(std::filesystem::file_size(path, file_error))
@@ -443,7 +443,7 @@ std::optional<soa::battle::ctx::BattleContext> ReadBattleContextArtifact(
 std::optional<std::int64_t> WaveId(const ProgramJobMaterializationContext& context) {
     if (context.step.domain_ref_id > 0) return context.step.domain_ref_id;
     if (!context.graph) return std::nullopt;
-    for (const auto& binding : context.graph->input_bindings) {
+    for (const auto& binding : context.graph->inputs) {
         if (binding.ref_kind == kWaveRefKind && binding.ref_id > 0)
             return binding.ref_id;
     }
@@ -456,7 +456,7 @@ std::optional<std::int64_t> ExactGraphInput(
     std::string_view data_kind,
     std::string_view ref_kind) {
     if (!context.graph) return std::nullopt;
-    for (const auto& binding : context.graph->input_bindings) {
+    for (const auto& binding : context.graph->inputs) {
         if (binding.input_key == input_key && binding.data_kind == data_kind
             && binding.ref_kind == ref_kind && binding.ref_id > 0) {
             return binding.ref_id;
@@ -813,7 +813,7 @@ public:
         : execution_db_(execution_db), state_db_(state_db), analysis_db_(analysis_db),
           authoring_db_(authoring_db), config_(std::move(config)) {}
 
-    bool Materialize(const ProgramJobMaterializationContext& context,
+    bool MaterializeJobs(const ProgramJobMaterializationContext& context,
                      WorkflowStepScheduleResult* result_out,
                      std::string* error_out) const override {
         if (context.step.step_kind == kStartStepKind)
@@ -1163,17 +1163,6 @@ private:
             }, &joined, error_out)) return false;
         if (joined.battle_set_id <= 0 || joined.first_wave_ids.empty())
             return Fail("battle.start join produced no first-turn waves", error_out);
-        EnsureBattleRouteActivityReceipt route{};
-        if (!analysis_db_->EnsureBattleRouteActivity({
-                .battle_set_id = joined.battle_set_id,
-                .entry_savestate_id = run->entry_savestate_id,
-                .battle_plan_id = plan->plan_id,
-                .activity_key = "battle-plan:" + plan->fingerprint,
-                .default_label = "Battle plan " + std::to_string(plan->plan_id),
-                .default_description = "Battle activity grouped across equivalent RTC inputs.",
-                .created_at_utc = types::UtcNow(),
-            }, &route, error_out)) return false;
-
         EnsureMaterializingJobSetReceipt ensured{};
         if (!execution_db_->EnsureMaterializingJobSet({
                 .materialization_key = materialization_key,
@@ -1414,11 +1403,10 @@ std::optional<std::int64_t> PublishSuccessorSavestate(
         return std::nullopt;
     }
     std::int64_t artifact_id = 0;
-    if (!state_db->StoreArtifact({
+    if (!StoreWorkspaceArtifactFile(state_db, path, {
             .sha256 = *sha,
             .size_bytes = static_cast<std::int64_t>(size),
             .compression_kind = 0,
-            .filename = path.string(),
             .file_ext = ".sav",
             .artifact_kind = "SAV",
             .created_at_utc = types::UtcNow(),
@@ -1467,11 +1455,10 @@ std::optional<std::int64_t> PublishTurnContext(
         / ("turn-job-" + std::to_string(turn_job_id) + "-" + std::string(terminal_sha) + ".bctx");
     if (!WriteTextAtomically(path, bytes, error_out)) return std::nullopt;
     std::int64_t artifact_id = 0;
-    if (!state_db->StoreArtifact({
+    if (!StoreWorkspaceArtifactFile(state_db, path, {
             .sha256 = hash::sha256(bytes.data(), bytes.size()),
             .size_bytes = static_cast<std::int64_t>(bytes.size()),
             .compression_kind = 0,
-            .filename = path.string(),
             .file_ext = soa::battle::ctx::codec::ext,
             .artifact_kind = "BATTLE_CONTEXT",
             .created_at_utc = types::UtcNow(),

@@ -9,6 +9,8 @@
 #include "Authoring/IAuthoringDb.h"
 #include "Execution/Workflow/WorkflowComposition.h"
 #include "GUI/Common/StatusToast.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
+#include "GUI/Refresh/ViewState.h"
 #include "GUI/Widgets/PersistentToolWindow.h"
 
 class QCloseEvent;
@@ -70,6 +72,10 @@ private:
     std::function<void(const QString&, StatusToast::Severity)> statusCallback_;
     std::function<void()> savedCallback_;
     std::vector<savor::db::WorkflowGraphSnapshot> workflowGraphs_;
+    savorqt::gui::DatabaseProjectionController<bool,
+        std::vector<savor::db::WorkflowGraphSnapshot>>* graphProjection_ = nullptr;
+    savorqt::gui::KeyedSelection<std::int64_t> graphSelection_;
+    bool initialGraphHydration_ = true;
     std::vector<WorkflowUnitDefinition> units_;
     std::vector<WorkflowCompositionNode> nodes_;
     std::vector<WorkflowUnitOutputBinding> outputBindings_;

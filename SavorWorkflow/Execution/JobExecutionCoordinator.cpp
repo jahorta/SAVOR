@@ -297,12 +297,6 @@ std::chrono::steady_clock::time_point LeaseRenewalDeadline(
         : now_steady + (remaining - renewal_lead_time);
 }
 
-std::string WorkerStreamKey(
-    std::size_t worker_id,
-    std::uint64_t generation) {
-    return std::to_string(worker_id) + ":" + std::to_string(generation);
-}
-
 void StoreMaximum(
     std::atomic<std::uint64_t>& target,
     std::uint64_t value) {
@@ -479,26 +473,45 @@ private:
     struct PersistenceEvent {
         std::size_t worker_id = 0;
         std::uint64_t generation = 0;
+        std::int64_t dispatch_attempt_id = 0;
         Clock::time_point enqueued_at{};
         PersistencePayload payload;
+        struct PersistMutationRequest {
+            savor::db::WorkerExecutionEventMutation mutation;
+        };
+        struct StageBlobRequest {
+            std::int64_t workset_id = 0;
+            std::int64_t dispatch_attempt_id = 0;
+            std::int64_t job_id = 0;
+            std::uint64_t terminal_id = 0;
+            std::vector<std::uint8_t> envelope;
+        };
+        using IoRequest = std::variant<
+            PersistMutationRequest,
+            StageBlobRequest>;
+        enum class IoKind : std::uint8_t {
+            PersistMutation = 0,
+            StageBlob,
+        };
+        struct IoCompletion {
+            IoKind kind = IoKind::PersistMutation;
+            bool succeeded = false;
+            savor::db::WorkerExecutionEventMutationReceipt receipt;
+            savor::db::execution::WorkerResultBlobReference blob;
+            std::string error;
+        };
+        std::optional<IoRequest> io_request;
+        std::optional<IoCompletion> io_completion;
     };
     struct PersistenceStream {
         std::deque<PersistenceEvent> events;
         bool active = false;
+        std::uint32_t retry_attempt = 0;
+        Clock::time_point retry_at{};
+        std::string last_error;
     };
 
-    struct PreparedWorkerEventMutation {
-        savor::db::WorkerExecutionEventMutation mutation;
-        Clock::time_point enqueued_at{};
-        std::mutex mutex;
-        std::condition_variable cv;
-        bool completed = false;
-        bool succeeded = false;
-        savor::db::WorkerExecutionEventMutationReceipt receipt;
-        std::string error;
-    };
-    using PreparedWorkerEventMutationPtr =
-        std::shared_ptr<PreparedWorkerEventMutation>;
+    struct PersistenceIoYield {};
 
     enum class WorkerControlKind : std::uint8_t {
         Acknowledge = 0,
@@ -627,7 +640,6 @@ private:
     void ScheduleActor();
     void ReconstructionLoop();
     void PersistenceLoop();
-    void WorkerEventBatchLoop();
     void CancellationMutationLoop();
     void LeaseHeartbeatLoop();
     void CoordinationIoLoop();
@@ -663,9 +675,17 @@ private:
     bool HandleProgress(const ProgressEvent& event);
     bool HandleTerminal(TerminalEvent& event);
     bool HandleWorksetSummary(const SummaryEvent& event);
-    bool PersistPreparedWorkerEvent(
+    bool PersistDispatchWorkerEvent(
         savor::db::WorkerExecutionEventMutation mutation,
         savor::db::WorkerExecutionEventMutationReceipt* receipt_out,
+        std::string* error_out);
+    bool StageDispatchTerminalBlob(
+        std::int64_t workset_id,
+        std::int64_t dispatch_attempt_id,
+        std::int64_t job_id,
+        std::uint64_t terminal_id,
+        const std::vector<std::uint8_t>& envelope,
+        savor::db::execution::WorkerResultBlobReference* blob_out,
         std::string* error_out);
 
     void EnqueueActor(
@@ -813,8 +833,7 @@ private:
     std::atomic<bool> quiescing_{false};
     std::atomic<bool> user_paused_{false};
     std::atomic<bool> invariant_paused_{false};
-    std::atomic<bool> storage_paused_{false};
-    std::atomic<bool> cancellation_storage_paused_{false};
+    std::atomic<bool> global_storage_unavailable_{false};
     std::atomic<bool> cancellation_admission_open_{false};
     std::atomic<bool> blob_store_ready_{false};
 
@@ -822,7 +841,6 @@ private:
     std::thread::id actor_thread_id_{};
     std::thread reconstruction_thread_;
     std::thread lease_heartbeat_thread_;
-    std::thread worker_event_batch_thread_;
     std::thread cancellation_mutation_thread_;
     std::thread coordination_io_thread_;
     std::vector<std::thread> persistence_threads_;
@@ -864,16 +882,12 @@ private:
 
     mutable std::mutex persistence_mutex_;
     std::condition_variable persistence_cv_;
-    std::map<std::string, PersistenceStream> persistence_streams_;
+    std::map<std::int64_t, PersistenceStream> persistence_streams_;
     std::size_t persistence_high_water_ = 0;
     std::unordered_map<std::int64_t, std::deque<PersistenceEvent>>
         buffered_worker_evidence_;
 
-    mutable std::mutex worker_event_batch_mutex_;
-    std::condition_variable worker_event_batch_cv_;
-    std::deque<PreparedWorkerEventMutationPtr>
-        worker_event_batch_queue_;
-    std::size_t worker_event_batch_high_water_ = 0;
+    PersistenceEvent* active_persistence_event_ = nullptr;
 
     std::deque<CoordinatorEvent> actor_events_;
     mutable std::mutex coordination_io_mutex_;
@@ -939,17 +953,11 @@ private:
         worker_terminal_ack_abandoned_generation_loss_{0};
     std::atomic<std::uint64_t> worker_terminal_staging_failures_{0};
     std::atomic<std::uint64_t> worker_terminal_retry_attempts_{0};
-    std::atomic<std::uint64_t> worker_event_batches_{0};
-    std::atomic<std::uint64_t> worker_event_batch_items_{0};
-    std::atomic<std::uint64_t> worker_event_batch_rollbacks_{0};
-    std::atomic<std::uint64_t> worker_event_batch_retries_{0};
-    std::atomic<std::uint64_t> worker_event_full_flushes_{0};
-    std::atomic<std::uint64_t> worker_event_deadline_flushes_{0};
-    std::atomic<std::uint64_t> worker_event_barrier_flushes_{0};
-    std::atomic<std::uint64_t> worker_event_batch_max_size_{0};
-    std::atomic<std::uint64_t> worker_event_batch_total_size_{0};
-    std::atomic<std::uint64_t>
-        worker_event_batch_max_collection_age_ms_{0};
+    std::atomic<std::uint64_t> dispatch_persistence_attempts_{0};
+    std::atomic<std::uint64_t> dispatch_persistence_events_{0};
+    std::atomic<std::uint64_t> dispatch_persistence_failures_{0};
+    std::atomic<std::uint64_t> dispatch_persistence_retries_{0};
+    Clock::time_point next_snapshot_publish_at_{};
     std::atomic<std::uint64_t> blob_readiness_failures_{0};
     std::atomic<std::uint64_t> cancellations_delivered_{0};
     std::atomic<std::uint64_t>
@@ -1079,10 +1087,8 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
         || config_.blob_readiness_retry_max_interval
             < config_.blob_readiness_retry_interval
         || config_.prepared_worksets_per_ready_worker == 0
-        || config_.terminal_persistence_threads == 0
-        || config_.worker_event_batch_size == 0
-        || config_.worker_event_collection_delay
-            < std::chrono::milliseconds::zero()
+        || config_.persistence_io_threads == 0
+        || config_.max_pending_evidence_per_dispatch == 0
         || config_.cancellation_batch_size == 0
         || config_.cancellation_mutation_delay
             < std::chrono::milliseconds::zero()
@@ -1124,11 +1130,6 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
         std::lock_guard lock(persistence_mutex_);
         persistence_streams_.clear();
         persistence_high_water_ = 0;
-    }
-    {
-        std::lock_guard lock(worker_event_batch_mutex_);
-        worker_event_batch_queue_.clear();
-        worker_event_batch_high_water_ = 0;
     }
     {
         std::lock_guard lock(actor_mutex_);
@@ -1267,8 +1268,7 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
     stop_.store(false);
     quiescing_.store(false);
     invariant_paused_.store(false);
-    storage_paused_.store(false);
-    cancellation_storage_paused_.store(false);
+    global_storage_unavailable_.store(false);
     cancellation_admission_open_.store(false);
     blob_store_ready_.store(true);
     blob_readiness_retry_attempt_ = 0;
@@ -1276,15 +1276,13 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
     ConfigureWorkerCallbacks();
     running_.store(true);
 
-    persistence_threads_.reserve(config_.terminal_persistence_threads);
+    persistence_threads_.reserve(config_.persistence_io_threads);
     for (std::size_t index = 0;
-         index < config_.terminal_persistence_threads;
+         index < config_.persistence_io_threads;
          ++index) {
         persistence_threads_.emplace_back(
             [this]() { PersistenceLoop(); });
     }
-    worker_event_batch_thread_ =
-        std::thread([this]() { WorkerEventBatchLoop(); });
     cancellation_mutation_thread_ =
         std::thread([this]() { CancellationMutationLoop(); });
     reconstruction_thread_ =
@@ -1375,7 +1373,6 @@ void JobExecutionCoordinator::Impl::Stop() {
     actor_cv_.notify_all();
     reconstruction_cv_.notify_all();
     persistence_cv_.notify_all();
-    worker_event_batch_cv_.notify_all();
     actor_cv_.notify_all();
     lease_heartbeat_cv_.notify_all();
     lifecycle_cv_.notify_all();
@@ -1411,9 +1408,6 @@ void JobExecutionCoordinator::Impl::Stop() {
         if (thread.joinable()) thread.join();
     }
     persistence_threads_.clear();
-    if (worker_event_batch_thread_.joinable()) {
-        worker_event_batch_thread_.join();
-    }
     worker_coordinator_->SetCallbacks({});
     blob_store_->UnpinAll();
     {
@@ -1717,8 +1711,8 @@ void JobExecutionCoordinator::Impl::WakeScheduler(
 bool JobExecutionCoordinator::Impl::IsDispatchAdmissionPaused()
     const noexcept {
     return quiescing_.load() || user_paused_.load()
-        || invariant_paused_.load() || storage_paused_.load()
-        || cancellation_storage_paused_.load()
+        || invariant_paused_.load()
+        || global_storage_unavailable_.load()
         || !cancellation_admission_open_.load();
 }
 
@@ -1769,29 +1763,14 @@ JobExecutionCoordinator::Impl::BuildTelemetrySnapshot() const {
         worker_terminal_staging_failures_.load();
     telemetry.worker_terminal_retry_attempts =
         worker_terminal_retry_attempts_.load();
-    telemetry.worker_event_batches = worker_event_batches_.load();
-    telemetry.worker_event_batch_items = worker_event_batch_items_.load();
-    telemetry.worker_event_batch_rollbacks =
-        worker_event_batch_rollbacks_.load();
-    telemetry.worker_event_batch_retries =
-        worker_event_batch_retries_.load();
-    telemetry.worker_event_full_flushes =
-        worker_event_full_flushes_.load();
-    telemetry.worker_event_deadline_flushes =
-        worker_event_deadline_flushes_.load();
-    telemetry.worker_event_barrier_flushes =
-        worker_event_barrier_flushes_.load();
-    telemetry.worker_event_batch_max_size =
-        worker_event_batch_max_size_.load();
-    telemetry.worker_event_batch_total_size =
-        worker_event_batch_total_size_.load();
-    if (telemetry.worker_event_batches != 0) {
-        telemetry.worker_event_batch_average_size =
-            static_cast<double>(telemetry.worker_event_batch_total_size)
-            / static_cast<double>(telemetry.worker_event_batches);
-    }
-    telemetry.worker_event_batch_max_collection_age_ms =
-        worker_event_batch_max_collection_age_ms_.load();
+    telemetry.dispatch_persistence_attempts =
+        dispatch_persistence_attempts_.load();
+    telemetry.dispatch_persistence_events =
+        dispatch_persistence_events_.load();
+    telemetry.dispatch_persistence_failures =
+        dispatch_persistence_failures_.load();
+    telemetry.dispatch_persistence_retries =
+        dispatch_persistence_retries_.load();
     telemetry.blob_readiness_failures =
         blob_readiness_failures_.load();
     telemetry.cancellations_delivered =
@@ -1896,8 +1875,8 @@ JobExecutionCoordinator::Impl::BuildTelemetrySnapshot() const {
         cancellation_admission_open_.load();
     telemetry.user_admission_paused = user_paused_.load();
     telemetry.invariant_admission_paused = invariant_paused_.load();
-    telemetry.storage_admission_paused = storage_paused_.load()
-        || cancellation_storage_paused_.load();
+    telemetry.global_storage_unavailable =
+        global_storage_unavailable_.load();
     {
         std::lock_guard lock(actor_mutex_);
         telemetry.last_scheduler_wake_reason =
@@ -1955,6 +1934,13 @@ JobExecutionCoordinator::Impl::BuildTelemetrySnapshot() const {
             (void)key;
             telemetry.persistence_queue_depth += stream.events.size();
             if (stream.active) ++telemetry.active_worker_streams;
+            if (stream.active) {
+                ++telemetry.persistence_streams_in_flight;
+            } else if (stream.retry_at > now) {
+                ++telemetry.persistence_streams_retrying;
+            } else if (!stream.events.empty()) {
+                ++telemetry.persistence_streams_ready;
+            }
             if (!stream.events.empty()
                 && (!oldest.has_value()
                     || stream.events.front().enqueued_at < *oldest)) {
@@ -1968,13 +1954,6 @@ JobExecutionCoordinator::Impl::BuildTelemetrySnapshot() const {
                         now - *oldest)
                         .count());
         }
-    }
-    {
-        std::lock_guard lock(worker_event_batch_mutex_);
-        telemetry.worker_event_batch_queue_depth =
-            worker_event_batch_queue_.size();
-        telemetry.worker_event_batch_queue_high_water =
-            worker_event_batch_high_water_;
     }
     telemetry.pending_cancellation_mutations =
         pending_cancellation_mutations_.load();
@@ -2082,14 +2061,41 @@ JobExecutionCoordinator::Impl::BuildWorkerDispatchSnapshots() const {
             snapshot.actual_execution_affinity_key =
                 lane->actual_execution_key;
         }
-        const auto key =
-            WorkerStreamKey(snapshot.worker_id, snapshot.process_generation);
+        if (snapshot.active_dispatch_attempt_id.has_value()) {
+            const auto dispatch = FindDispatch(
+                *snapshot.active_dispatch_attempt_id);
+            if (dispatch) {
+                std::lock_guard lock(dispatch->mutex);
+                if (dispatch->phase == DispatchPhase::Draining) {
+                    snapshot.state =
+                        JobExecutionWorkerDispatchState::Draining;
+                }
+            }
+        }
         {
             std::lock_guard lock(persistence_mutex_);
-            const auto found = persistence_streams_.find(key);
+            const auto dispatch_id = snapshot.active_dispatch_attempt_id
+                .has_value()
+                ? snapshot.active_dispatch_attempt_id
+                : snapshot.submitting_dispatch_attempt_id;
+            const auto found = dispatch_id.has_value()
+                ? persistence_streams_.find(*dispatch_id)
+                : persistence_streams_.end();
             if (found != persistence_streams_.end()) {
                 snapshot.persistence_queue_depth =
                     found->second.events.size();
+                snapshot.persistence_retry_attempt =
+                    found->second.retry_attempt;
+                snapshot.persistence_diagnostic =
+                    found->second.last_error;
+                snapshot.persistence_state =
+                    global_storage_unavailable_.load()
+                    ? JobExecutionDispatchPersistenceState::GloballyBlocked
+                    : found->second.active
+                    ? JobExecutionDispatchPersistenceState::InFlight
+                    : found->second.retry_at > Clock::now()
+                    ? JobExecutionDispatchPersistenceState::RetryPending
+                    : JobExecutionDispatchPersistenceState::Ready;
             }
         }
         snapshots.push_back(std::move(snapshot));
@@ -3639,11 +3645,25 @@ void JobExecutionCoordinator::Impl::FlushBufferedEvidence(
 void JobExecutionCoordinator::Impl::EnqueuePersistence(
     PersistenceEvent event) {
     if (stop_.load()) return;
+    event.dispatch_attempt_id = std::visit(
+        [](const auto& payload) {
+            using T = std::decay_t<decltype(payload)>;
+            if constexpr (std::is_same_v<T, TerminalEvent>) {
+                return static_cast<std::int64_t>(
+                    payload.envelope.terminal.workset_id);
+            } else {
+                return static_cast<std::int64_t>(
+                    payload.payload.workset_id);
+            }
+        },
+        event.payload);
+    bool overflow = false;
     {
         std::lock_guard lock(persistence_mutex_);
-        auto& stream = persistence_streams_[
-            WorkerStreamKey(event.worker_id, event.generation)];
-        stream.events.push_back(std::move(event));
+        auto& stream = persistence_streams_[event.dispatch_attempt_id];
+        overflow = stream.events.size()
+            >= config_.max_pending_evidence_per_dispatch;
+        if (!overflow) stream.events.push_back(std::move(event));
         std::size_t depth = 0;
         for (const auto& [key, candidate] : persistence_streams_) {
             (void)key;
@@ -3652,136 +3672,91 @@ void JobExecutionCoordinator::Impl::EnqueuePersistence(
         persistence_high_water_ =
             std::max(persistence_high_water_, depth);
     }
+    if (overflow) {
+        const auto dispatch = FindDispatch(event.dispatch_attempt_id);
+        if (dispatch) {
+            RecordError(
+                "dispatch evidence queue exceeded its configured bound");
+            (void)ReleaseDispatch(
+                dispatch,
+                "EVIDENCE_BACKPRESSURE_OVERFLOW",
+                "worker evidence exceeded the per-dispatch persistence bound");
+        }
+        return;
+    }
     persistence_cv_.notify_all();
 }
 
-bool JobExecutionCoordinator::Impl::PersistPreparedWorkerEvent(
+bool JobExecutionCoordinator::Impl::PersistDispatchWorkerEvent(
     savor::db::WorkerExecutionEventMutation mutation,
     savor::db::WorkerExecutionEventMutationReceipt* receipt_out,
     std::string* error_out) {
-    auto pending = std::make_shared<PreparedWorkerEventMutation>();
-    pending->mutation = std::move(mutation);
-    pending->enqueued_at = Clock::now();
-    {
-        std::lock_guard lock(worker_event_batch_mutex_);
-        worker_event_batch_queue_.push_back(pending);
-        worker_event_batch_high_water_ = std::max(
-            worker_event_batch_high_water_,
-            worker_event_batch_queue_.size());
-    }
-    worker_event_batch_cv_.notify_one();
-
-    std::unique_lock lock(pending->mutex);
-    pending->cv.wait(lock, [this, &pending]() {
-        return pending->completed || stop_.load();
-    });
-    if (!pending->completed) {
-        if (error_out != nullptr) *error_out = "worker-event batcher stopped";
+    if (active_persistence_event_ == nullptr) {
+        if (error_out) {
+            *error_out = "worker evidence persistence was requested outside the actor";
+        }
         return false;
     }
-    if (receipt_out != nullptr) *receipt_out = pending->receipt;
-    if (error_out != nullptr) *error_out = pending->error;
-    return pending->succeeded;
+    auto& event = *active_persistence_event_;
+    if (event.io_completion.has_value()) {
+        auto completion = std::move(*event.io_completion);
+        event.io_completion.reset();
+        if (completion.kind != PersistenceEvent::IoKind::PersistMutation) {
+            if (error_out) {
+                *error_out = "dispatch persistence received a blob-stage completion";
+            }
+            return false;
+        }
+        if (receipt_out) *receipt_out = std::move(completion.receipt);
+        if (error_out) *error_out = std::move(completion.error);
+        return completion.succeeded;
+    }
+    event.io_request = PersistenceEvent::PersistMutationRequest{
+        std::move(mutation)};
+    throw PersistenceIoYield{};
 }
 
-void JobExecutionCoordinator::Impl::WorkerEventBatchLoop() {
-    for (;;) {
-        std::vector<PreparedWorkerEventMutationPtr> pending;
-        bool full_flush = false;
-        bool deadline_flush = false;
-        bool barrier_flush = false;
-        {
-            std::unique_lock lock(worker_event_batch_mutex_);
-            worker_event_batch_cv_.wait(lock, [this]() {
-                return stop_.load() || !worker_event_batch_queue_.empty();
-            });
-            if (stop_.load() && worker_event_batch_queue_.empty()) return;
-
-            const auto deadline = worker_event_batch_queue_.front()->enqueued_at
-                + config_.worker_event_collection_delay;
-            while (!stop_.load()
-                && worker_event_batch_queue_.size()
-                    < config_.worker_event_batch_size
-                && config_.worker_event_collection_delay
-                    > std::chrono::milliseconds::zero()) {
-                if (worker_event_batch_cv_.wait_until(
-                        lock,
-                        deadline,
-                        [this]() {
-                            return stop_.load()
-                                || worker_event_batch_queue_.size()
-                                    >= config_.worker_event_batch_size;
-                        })) {
-                    break;
-                }
-                break;
-            }
-            full_flush = worker_event_batch_queue_.size()
-                >= config_.worker_event_batch_size;
-            deadline_flush = !full_flush && !stop_.load()
-                && Clock::now() >= deadline;
-            barrier_flush = stop_.load();
-            const auto count = std::min(
-                config_.worker_event_batch_size,
-                worker_event_batch_queue_.size());
-            pending.reserve(count);
-            for (std::size_t index = 0; index < count; ++index) {
-                pending.push_back(
-                    std::move(worker_event_batch_queue_.front()));
-                worker_event_batch_queue_.pop_front();
-            }
+bool JobExecutionCoordinator::Impl::StageDispatchTerminalBlob(
+    std::int64_t workset_id,
+    std::int64_t dispatch_attempt_id,
+    std::int64_t job_id,
+    std::uint64_t terminal_id,
+    const std::vector<std::uint8_t>& envelope,
+    savor::db::execution::WorkerResultBlobReference* blob_out,
+    std::string* error_out) {
+    if (active_persistence_event_ == nullptr) {
+        if (error_out) {
+            *error_out = "terminal blob staging was requested outside the actor";
         }
-        if (pending.empty()) continue;
-        if (full_flush) ++worker_event_full_flushes_;
-        else if (deadline_flush) ++worker_event_deadline_flushes_;
-        else if (barrier_flush) ++worker_event_barrier_flushes_;
-
-        savor::db::PersistWorkerExecutionEventsBatchCommand command;
-        command.events.reserve(pending.size());
-        for (const auto& item : pending) {
-            command.events.push_back(item->mutation);
-        }
-        savor::db::PersistWorkerExecutionEventsBatchReceipt receipt;
-        std::string error;
-        const bool succeeded =
-            execution_db_->PersistWorkerExecutionEventsBatch(
-                command,
-                &receipt,
-                &error)
-            && receipt.events.size() == pending.size();
-
-        ++worker_event_batches_;
-        worker_event_batch_items_.fetch_add(pending.size());
-        worker_event_batch_total_size_.fetch_add(pending.size());
-        StoreMaximum(worker_event_batch_max_size_, pending.size());
-        const auto oldest_age = std::chrono::duration_cast<
-            std::chrono::milliseconds>(
-            Clock::now() - pending.front()->enqueued_at).count();
-        StoreMaximum(
-            worker_event_batch_max_collection_age_ms_,
-            static_cast<std::uint64_t>(std::max<std::int64_t>(0, oldest_age)));
-        if (!succeeded) {
-            ++worker_event_batch_rollbacks_;
-            worker_event_batch_retries_.fetch_add(pending.size());
-        }
-
-        for (std::size_t index = 0; index < pending.size(); ++index) {
-            auto& item = pending[index];
-            {
-                std::lock_guard lock(item->mutex);
-                item->succeeded = succeeded;
-                item->error = error;
-                if (succeeded) item->receipt = std::move(receipt.events[index]);
-                item->completed = true;
-            }
-            item->cv.notify_one();
-        }
+        return false;
     }
+    auto& event = *active_persistence_event_;
+    if (event.io_completion.has_value()) {
+        auto completion = std::move(*event.io_completion);
+        event.io_completion.reset();
+        if (completion.kind != PersistenceEvent::IoKind::StageBlob) {
+            if (error_out) {
+                *error_out = "terminal blob staging received a DB completion";
+            }
+            return false;
+        }
+        if (blob_out) *blob_out = std::move(completion.blob);
+        if (error_out) *error_out = std::move(completion.error);
+        return completion.succeeded;
+    }
+    event.io_request = PersistenceEvent::StageBlobRequest{
+        .workset_id = workset_id,
+        .dispatch_attempt_id = dispatch_attempt_id,
+        .job_id = job_id,
+        .terminal_id = terminal_id,
+        .envelope = envelope,
+    };
+    throw PersistenceIoYield{};
 }
 
 void JobExecutionCoordinator::Impl::PersistenceLoop() {
     while (!stop_.load()) {
-        std::string selected_key;
+        std::int64_t selected_key = 0;
         PersistenceEvent event;
         {
             std::unique_lock lock(persistence_mutex_);
@@ -3801,11 +3776,7 @@ void JobExecutionCoordinator::Impl::PersistenceLoop() {
                                 || entry.second.events.empty()) {
                                 return false;
                             }
-                            const auto* terminal =
-                                std::get_if<TerminalEvent>(
-                                    &entry.second.events.front().payload);
-                            return terminal == nullptr
-                                || terminal->retry_at <= now;
+                            return entry.second.retry_at <= now;
                         });
                 });
             if (stop_.load()) return;
@@ -3817,10 +3788,7 @@ void JobExecutionCoordinator::Impl::PersistenceLoop() {
                         || entry.second.events.empty()) {
                         return false;
                     }
-                    const auto* terminal = std::get_if<TerminalEvent>(
-                        &entry.second.events.front().payload);
-                    return terminal == nullptr
-                        || terminal->retry_at <= now;
+                    return entry.second.retry_at <= now;
                 });
             if (found == persistence_streams_.end()) continue;
             selected_key = found->first;
@@ -3828,76 +3796,120 @@ void JobExecutionCoordinator::Impl::PersistenceLoop() {
             event = found->second.events.front();
         }
 
-        struct ActorPersistenceResult {
-            std::mutex mutex;
-            std::condition_variable cv;
-            PersistenceEvent event;
-            bool consumed = false;
-            bool completed = false;
-        };
-        auto actor_result = std::make_shared<ActorPersistenceResult>();
-        actor_result->event = std::move(event);
-        EnqueueActor(
-            CoordinatorEventKind::PersistenceCompleted,
-            [this, actor_result]() {
-            actor_result->consumed =
-                ProcessPersistenceEvent(actor_result->event);
+        bool consumed = false;
+        for (;;) {
+            struct ActorPersistenceResult {
+                std::mutex mutex;
+                std::condition_variable cv;
+                PersistenceEvent event;
+                bool consumed = false;
+                bool completed = false;
+            };
+            auto actor_result = std::make_shared<ActorPersistenceResult>();
+            actor_result->event = std::move(event);
+            EnqueueActor(
+                CoordinatorEventKind::PersistenceCompleted,
+                [this, actor_result]() {
+                    actor_result->consumed =
+                        ProcessPersistenceEvent(actor_result->event);
+                    {
+                        std::lock_guard lock(actor_result->mutex);
+                        actor_result->completed = true;
+                    }
+                    actor_result->cv.notify_one();
+                });
             {
-                std::lock_guard lock(actor_result->mutex);
-                actor_result->completed = true;
+                std::unique_lock lock(actor_result->mutex);
+                actor_result->cv.wait(lock, [this, &actor_result]() {
+                    return actor_result->completed || stop_.load();
+                });
             }
-            actor_result->cv.notify_one();
-            });
-        {
-            std::unique_lock lock(actor_result->mutex);
-            actor_result->cv.wait(lock, [this, &actor_result]() {
-                return actor_result->completed || stop_.load();
-            });
+            if (!actor_result->completed) return;
+            consumed = actor_result->consumed;
+            event = std::move(actor_result->event);
+            if (!event.io_request.has_value()) break;
+
+            PersistenceEvent::IoCompletion completion{};
+            ++dispatch_persistence_attempts_;
+            std::visit(
+                [this, &completion](auto& request) {
+                    using T = std::decay_t<decltype(request)>;
+                    if constexpr (std::is_same_v<
+                                      T,
+                                      PersistenceEvent::
+                                          PersistMutationRequest>) {
+                        completion.kind =
+                            PersistenceEvent::IoKind::PersistMutation;
+                        savor::db::PersistWorkerExecutionEventsBatchCommand
+                            command;
+                        command.events.push_back(std::move(request.mutation));
+                        savor::db::PersistWorkerExecutionEventsBatchReceipt
+                            receipt;
+                        completion.succeeded =
+                            execution_db_->PersistWorkerExecutionEventsBatch(
+                                command,
+                                &receipt,
+                                &completion.error)
+                            && receipt.events.size() == 1;
+                        if (completion.succeeded) {
+                            completion.receipt = std::move(receipt.events[0]);
+                            ++dispatch_persistence_events_;
+                        }
+                    } else {
+                        completion.kind = PersistenceEvent::IoKind::StageBlob;
+                        completion.succeeded = blob_store_->Stage(
+                            {
+                                .workset_id = request.workset_id,
+                                .dispatch_attempt_id =
+                                    request.dispatch_attempt_id,
+                                .job_id = request.job_id,
+                                .terminal_id = request.terminal_id,
+                                .envelope = request.envelope,
+                            },
+                            &completion.blob,
+                            &completion.error);
+                    }
+                },
+                *event.io_request);
+            if (!completion.succeeded) {
+                ++dispatch_persistence_failures_;
+            }
+            event.io_request.reset();
+            event.io_completion = std::move(completion);
         }
-        if (!actor_result->completed) return;
-        const bool consumed = actor_result->consumed;
-        event = std::move(actor_result->event);
-        bool retry_pending = false;
         {
             std::lock_guard lock(persistence_mutex_);
             const auto found = persistence_streams_.find(selected_key);
             if (found != persistence_streams_.end()) {
                 if (consumed && !found->second.events.empty()) {
                     found->second.events.pop_front();
+                    found->second.retry_attempt = 0;
+                    found->second.retry_at = {};
+                    found->second.last_error.clear();
                 } else if (!consumed && !found->second.events.empty()) {
                     found->second.events.front() = event;
+                    ++found->second.retry_attempt;
+                    ++dispatch_persistence_retries_;
+                    const auto* terminal = std::get_if<TerminalEvent>(
+                        &found->second.events.front().payload);
+                    found->second.retry_at = terminal != nullptr
+                        && terminal->retry_at > Clock::now()
+                        ? terminal->retry_at
+                        : Clock::now() + CappedExponentialDelay(
+                            config_.terminal_retry_interval,
+                            config_.terminal_retry_max_interval,
+                            found->second.retry_attempt);
+                    found->second.last_error =
+                        "dispatch persistence retry pending";
                 }
                 found->second.active = false;
                 if (found->second.events.empty()) {
                     persistence_streams_.erase(found);
                 }
             }
-            retry_pending = std::any_of(
-                persistence_streams_.begin(),
-                persistence_streams_.end(),
-                [](const auto& entry) {
-                    return std::any_of(
-                        entry.second.events.begin(),
-                        entry.second.events.end(),
-                        [](const PersistenceEvent& candidate) {
-                            const auto* terminal =
-                                std::get_if<TerminalEvent>(
-                                    &candidate.payload);
-                            return terminal != nullptr
-                                && terminal->retry_attempt != 0;
-                        });
-                });
-        }
-        if (consumed && !retry_pending && blob_store_ready_.load()) {
-            storage_paused_.store(false);
         }
         if (!consumed) {
-            std::unique_lock lock(persistence_mutex_);
-            persistence_cv_.wait_for(
-                lock,
-                std::max(
-                    config_.poll_interval,
-                    std::chrono::milliseconds(1)));
+            persistence_cv_.notify_all();
         } else {
             persistence_cv_.notify_all();
         }
@@ -3906,20 +3918,28 @@ void JobExecutionCoordinator::Impl::PersistenceLoop() {
 
 bool JobExecutionCoordinator::Impl::ProcessPersistenceEvent(
     PersistenceEvent& event) {
-    return std::visit(
-        [this](auto& payload) -> bool {
-            using T = std::decay_t<decltype(payload)>;
-            if constexpr (std::is_same_v<T, ItemStartedEvent>) {
-                return HandleItemStarted(payload);
-            } else if constexpr (std::is_same_v<T, ProgressEvent>) {
-                return HandleProgress(payload);
-            } else if constexpr (std::is_same_v<T, TerminalEvent>) {
-                return HandleTerminal(payload);
-            } else {
-                return HandleWorksetSummary(payload);
-            }
-        },
-        event.payload);
+    active_persistence_event_ = &event;
+    try {
+        const bool consumed = std::visit(
+            [this](auto& payload) -> bool {
+                using T = std::decay_t<decltype(payload)>;
+                if constexpr (std::is_same_v<T, ItemStartedEvent>) {
+                    return HandleItemStarted(payload);
+                } else if constexpr (std::is_same_v<T, ProgressEvent>) {
+                    return HandleProgress(payload);
+                } else if constexpr (std::is_same_v<T, TerminalEvent>) {
+                    return HandleTerminal(payload);
+                } else {
+                    return HandleWorksetSummary(payload);
+                }
+            },
+            event.payload);
+        active_persistence_event_ = nullptr;
+        return consumed;
+    } catch (const PersistenceIoYield&) {
+        active_persistence_event_ = nullptr;
+        return false;
+    }
 }
 
 bool JobExecutionCoordinator::Impl::HandleItemStarted(
@@ -3986,7 +4006,7 @@ bool JobExecutionCoordinator::Impl::HandleItemStarted(
     savor::db::WorkerExecutionEventMutationReceipt batch_receipt{};
     std::string error;
     const bool accepted =
-        PersistPreparedWorkerEvent(
+        PersistDispatchWorkerEvent(
             savor::db::MarkWorksetJobStartedCommand{
                 .dispatch_attempt_id = dispatch_id,
                 .claim_token = claimed.claim_token,
@@ -4112,7 +4132,7 @@ bool JobExecutionCoordinator::Impl::HandleProgress(
 
     savor::db::WorkerExecutionEventMutationReceipt batch_receipt{};
     std::string error;
-    const bool persisted = PersistPreparedWorkerEvent(
+    const bool persisted = PersistDispatchWorkerEvent(
         savor::db::RecordCanonicalJobProgressCommand{
             .dispatch_attempt_id = dispatch_id,
             .claim_token = claimed.claim_token,
@@ -4334,14 +4354,12 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
     auto prepared = event.prepared;
     if (!prepared) {
         savor::db::execution::WorkerResultBlobReference blob{};
-        if (!blob_store_->Stage(
-                {
-                    .workset_id = claimed.workset_id,
-                    .dispatch_attempt_id = dispatch_id,
-                    .job_id = durable_item.job_id,
-                    .terminal_id = payload.terminal_id,
-                    .envelope = envelope_bytes,
-                },
+        if (!StageDispatchTerminalBlob(
+                claimed.workset_id,
+                dispatch_id,
+                durable_item.job_id,
+                payload.terminal_id,
+                envelope_bytes,
                 &blob,
                 &error)) {
             ++worker_terminal_staging_failures_;
@@ -4356,8 +4374,7 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
                     config_.terminal_retry_interval,
                     config_.terminal_retry_max_interval,
                     event.retry_attempt);
-            storage_paused_.store(true);
-            WakeScheduler("storage-pause", false);
+            WakeScheduler("dispatch-persistence-retry", false);
             return false;
         }
         prepared = std::make_shared<PreparedTerminalPersistence>();
@@ -4388,12 +4405,13 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
                 },
                 .requested_by = "job_execution_coordinator",
             };
+        event.prepared = prepared;
     }
     const auto& blob = prepared->blob;
 
     savor::db::StageWorkerTerminalReceipt receipt{};
     savor::db::WorkerExecutionEventMutationReceipt batch_receipt{};
-    const bool persisted = PersistPreparedWorkerEvent(
+    const bool persisted = PersistDispatchWorkerEvent(
             prepared->command,
             &batch_receipt,
             &error);
@@ -4422,8 +4440,7 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
                     config_.terminal_retry_interval,
                     config_.terminal_retry_max_interval,
                     event.retry_attempt);
-            storage_paused_.store(true);
-            WakeScheduler("storage-pause", false);
+            WakeScheduler("dispatch-persistence-retry", false);
             return false;
         } else {
             if (prepared->pinned) {
@@ -4580,7 +4597,6 @@ bool JobExecutionCoordinator::Impl::HandleWorksetSummary(
         }
         dispatch->summary_observed = true;
     }
-    ClearWorkerIdentity(dispatch->target, dispatch_id);
     WakeScheduler("workset-summary", false);
     MaybeRetire(dispatch);
     return true;
@@ -4821,7 +4837,12 @@ void JobExecutionCoordinator::Impl::ActorLoop() {
         advanced = ProcessPendingDrainingTransitions() || advanced;
         advanced = ProcessPendingDispatchReleases() || advanced;
         ScheduleActor();
-        PublishSnapshots();
+        const auto snapshot_now = Clock::now();
+        if (advanced || snapshot_now >= next_snapshot_publish_at_) {
+            PublishSnapshots();
+            next_snapshot_publish_at_ =
+                snapshot_now + std::chrono::milliseconds(250);
+        }
 
         if (!advanced) {
             auto deadline = Clock::now() + std::chrono::seconds(30);
@@ -4836,6 +4857,7 @@ void JobExecutionCoordinator::Impl::ActorLoop() {
                             deadline, dispatch->activation_retry_at);
                     }
                     if (dispatch->phase == DispatchPhase::Draining
+                        && !dispatch->draining_transition_persisted
                         && dispatch->draining_retry_at
                             != Clock::time_point{}) {
                         deadline = std::min(
@@ -4859,6 +4881,9 @@ void JobExecutionCoordinator::Impl::ActorLoop() {
             if (next_blob_readiness_retry_at_ != Clock::time_point{}) {
                 deadline = std::min(
                     deadline, next_blob_readiness_retry_at_);
+            }
+            if (next_snapshot_publish_at_ != Clock::time_point{}) {
+                deadline = std::min(deadline, next_snapshot_publish_at_);
             }
             actor_cv_.wait_until(lock, deadline);
         }
@@ -4980,8 +5005,7 @@ void JobExecutionCoordinator::Impl::CancellationMutationLoop() {
             if (committed) break;
             ++cancellation_mutation_rollbacks_;
             cancellation_mutation_retries_.fetch_add(pending.size());
-            cancellation_storage_paused_.store(true);
-            WakeScheduler("cancellation-storage-pause", false);
+            WakeScheduler("cancellation-persistence-retry", false);
             RecordError(
                 error.empty()
                     ? "failed committing cancellation mutation batch"
@@ -5013,9 +5037,7 @@ void JobExecutionCoordinator::Impl::CancellationMutationLoop() {
             }
             continue;
         }
-        if (cancellation_storage_paused_.exchange(false)) {
-            WakeScheduler("cancellation-storage-resume", false);
-        }
+        WakeScheduler("cancellation-persistence-complete", false);
         EnqueueActor(
             CoordinatorEventKind::CancellationCompleted,
             [this,
@@ -5231,7 +5253,6 @@ void JobExecutionCoordinator::Impl::HandleWorksetState(
             "dispatch_attempt_id=" + std::to_string(dispatch_id));
         return;
     }
-    ClearWorkerIdentity(dispatch->target, dispatch_id);
     UnregisterLeaseHeartbeat(
         dispatch_id,
         dispatch->claimed.claim_token);
@@ -5305,6 +5326,7 @@ void JobExecutionCoordinator::Impl::HandleDrainingIoCompletion(
             if (dispatch->phase == DispatchPhase::Draining
                 && !dispatch->draining_transition_persisted) {
                 dispatch->draining_transition_persisted = true;
+                dispatch->draining_retry_at = {};
                 first_persisted_transition = true;
             }
         }
@@ -5422,31 +5444,13 @@ void JobExecutionCoordinator::Impl::RefreshStorageReadiness() {
     if (blob_store_->ValidateReady(&error)) {
         blob_store_ready_.store(true);
         blob_readiness_retry_attempt_ = 0;
-        bool has_retries = false;
-        {
-            std::lock_guard lock(persistence_mutex_);
-            has_retries = std::any_of(
-                persistence_streams_.begin(),
-                persistence_streams_.end(),
-                [](const auto& entry) {
-                    return std::any_of(
-                        entry.second.events.begin(),
-                        entry.second.events.end(),
-                        [](const PersistenceEvent& event) {
-                            const auto* terminal =
-                                std::get_if<TerminalEvent>(&event.payload);
-                            return terminal != nullptr
-                                && terminal->retry_attempt != 0;
-                        });
-                });
-        }
-        if (!has_retries) storage_paused_.store(false);
+        global_storage_unavailable_.store(false);
         WakeScheduler("storage-ready", false);
         return;
     }
     ++blob_readiness_failures_;
     ++blob_readiness_retry_attempt_;
-    storage_paused_.store(true);
+    global_storage_unavailable_.store(true);
     next_blob_readiness_retry_at_ =
         now
         + CappedExponentialDelay(

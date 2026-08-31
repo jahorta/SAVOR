@@ -742,7 +742,7 @@ std::optional<ArtifactRecord> read_artifact_for_savestate(
     Statement st;
     constexpr const char* kSql =
         "SELECT s.savestate_id,a.artifact_id,a.sha256,a.size_bytes,a.file_ext,"
-        "a.filename,a.object_relpath "
+        "a.display_filename,a.object_relpath "
         "FROM state_savestate s JOIN state_artifact a ON a.artifact_id=s.artifact_id "
         "WHERE s.savestate_id=?1;";
     if (!prepare(state_db, kSql, &st, err)) {
@@ -759,17 +759,16 @@ std::optional<ArtifactRecord> read_artifact_for_savestate(
     row.sha256 = column_text(st.st, 2);
     row.size_bytes = sqlite3_column_int64(st.st, 3);
     row.file_ext = column_text(st.st, 4);
-    const auto legacy_filename = fs::path(column_text(st.st, 5));
+    const auto display_filename = fs::path(column_text(st.st, 5));
     row.object_relpath = fs::path(column_text(st.st, 6));
-    std::string resolve_error;
-    std::optional<fs::path> source;
-    if (!row.object_relpath.empty()) {
-        source = savor::db::state::ResolveArtifactObjectPath(
-            object_store_root, row.object_relpath, &resolve_error);
-    } else {
-        source = savor::db::state::ResolveLegacyArtifactSource(
-            object_store_root, legacy_filename, &resolve_error);
+    if (row.object_relpath.empty()) {
+        err << "Savestate artifact " << row.artifact_id
+            << " has no object_relpath; recreate the source database.\n";
+        return std::nullopt;
     }
+    std::string resolve_error;
+    const auto source = savor::db::state::ResolveArtifactObjectPath(
+        object_store_root, row.object_relpath, &resolve_error);
     if (!source.has_value()) {
         err << "Failed resolving savestate artifact " << row.artifact_id
             << ": " << resolve_error << "\n";
@@ -1278,7 +1277,7 @@ int hydrate_battle_single_turn_job_subset_into_existing(
             continue;
         }
         std::string import_error;
-        const auto imported = savor::db::state::ImportArtifactObject(
+        const auto imported = savor::db::state::PublishVerifiedArtifactObject(
             target_paths.object_store_root,
             artifact.source_path,
             artifact.sha256,

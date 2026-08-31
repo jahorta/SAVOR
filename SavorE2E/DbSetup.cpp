@@ -54,8 +54,10 @@ const char* WorkflowStepStateName(
 } // namespace
 
 savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
-    const auto root = options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default");
+    const auto requested_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default");
     std::error_code ec;
+    const auto root = std::filesystem::absolute(requested_root, ec).lexically_normal();
     std::filesystem::create_directories(root, ec);
     std::filesystem::create_directories(root / "log", ec);
     std::filesystem::create_directories(root / "object_store", ec);
@@ -68,6 +70,7 @@ savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
         .authoring_db_path = root / "authoring.db",
         .ui_read_db_path = root / "ui_read.db",
         .archive_db_path = root / "archive.db",
+        .artifact_workspace_root = root / "workflow-runtime",
         .object_store_root = root / "object_store",
         .archive_store_root = root / "archive_store",
     };
@@ -305,17 +308,20 @@ bool SeedStateSavestate(
     }
 
     std::int64_t artifact_id = 0;
-    if (!state_db->StoreArtifact(
+    if (!state_db->ImportExternalArtifact(
             {
-                .sha256 = std::move(savestate_sha256),
-                .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(savestate_file)),
-                .compression_kind = 0,
-                .filename = std::filesystem::absolute(savestate_file).string(),
-                .file_ext = savestate_file.extension().string(),
-                .artifact_kind = "SAV",
-                .created_at_utc = UtcNow(),
-                .correlation_id = "savor-e2e.seedprobe",
-                .causation_id = "savor-e2e.seed",
+                .absolute_source_path = std::filesystem::absolute(savestate_file),
+                .artifact = {
+                    .sha256 = std::move(savestate_sha256),
+                    .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(savestate_file)),
+                    .compression_kind = 0,
+                    .display_filename = savestate_file.filename().string(),
+                    .file_ext = savestate_file.extension().string(),
+                    .artifact_kind = "SAV",
+                    .created_at_utc = UtcNow(),
+                    .correlation_id = "savor-e2e.seedprobe",
+                    .causation_id = "savor-e2e.seed",
+                },
             },
             &artifact_id,
             error_out)) {
@@ -356,17 +362,20 @@ bool SeedStateDtmArtifact(
         return false;
     }
 
-    return state_db->StoreArtifact(
+    return state_db->ImportExternalArtifact(
         {
-            .sha256 = dtm.compute_sha256(),
-            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(dtm_file)),
-            .compression_kind = 0,
-            .filename = std::filesystem::absolute(dtm_file).string(),
-            .file_ext = dtm_file.extension().string(),
-            .artifact_kind = "DTM",
-            .created_at_utc = UtcNow(),
-            .correlation_id = "savor-e2e.tasmovie",
-            .causation_id = "savor-e2e.seed",
+            .absolute_source_path = std::filesystem::absolute(dtm_file),
+            .artifact = {
+                .sha256 = dtm.compute_sha256(),
+                .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(dtm_file)),
+                .compression_kind = 0,
+                .display_filename = dtm_file.filename().string(),
+                .file_ext = dtm_file.extension().string(),
+                .artifact_kind = "DTM",
+                .created_at_utc = UtcNow(),
+                .correlation_id = "savor-e2e.tasmovie",
+                .causation_id = "savor-e2e.seed",
+            },
         },
         artifact_id_out,
         error_out);

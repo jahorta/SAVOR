@@ -6,13 +6,15 @@
 #include <functional>
 #include <vector>
 
+#include "GUI/Refresh/ViewState.h"
+
 class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
 class QTableWidget;
 namespace savorqt::db { struct VictoryResultSummary; }
-namespace savorqt::gui { template <typename Request, typename Result> class AsyncRefreshPipeline; }
+namespace savorqt::gui { template <typename Request, typename Result> class DatabaseProjectionController; }
 
 class VictoryResultsWidget final : public QWidget {
 public:
@@ -31,7 +33,7 @@ private:
     void showSelected();
 
     Actions actions_;
-    savorqt::gui::AsyncRefreshPipeline<std::int64_t,
+    savorqt::gui::DatabaseProjectionController<std::int64_t,
         std::vector<savorqt::db::VictoryResultSummary>>* refresh_ = nullptr;
     QTableWidget* table_ = nullptr;
     QComboBox* battleFilter_ = nullptr;
@@ -43,5 +45,7 @@ private:
     QPushButton* openJob_ = nullptr;
     QPushButton* openArtifact_ = nullptr;
     std::vector<savorqt::db::VictoryResultSummary> rows_;
+    savorqt::gui::KeyedSelection<std::int64_t> selectedVictory_;
+    bool initialHydration_ = true;
     std::int64_t routeNodeId_ = 0;
 };

@@ -7,7 +7,7 @@
 #include <QtCore/QString>
 
 #include "DB/SavorDbArtifactService.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 
 #include <optional>
 
@@ -73,7 +73,7 @@ private:
     std::optional<savor::db::UiReadListCursor> before_;
     std::optional<savor::db::UiReadListCursor> after_;
     bool initialLoadStarted_ = false;
-    savorqt::gui::AsyncRefreshPipeline<ObjectPageFetchRequest, ObjectPageResult>* pageRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<ObjectPageFetchRequest, ObjectPageResult>* pageRefreshPipeline_ = nullptr;
     QFutureWatcher<ObjectRowResult> importWatcher_;
     QFutureWatcher<VoidResult> materializeWatcher_;
 };

@@ -1,10 +1,14 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "../../../SavorCore/Runner/Runtime/Worksets/WorksetTypes.h"
@@ -43,6 +47,83 @@ struct WorkflowGraphArgument {
     std::string source_kind;
 };
 
+class WorkflowResolvedInputSet {
+public:
+    WorkflowResolvedInputSet() = default;
+    WorkflowResolvedInputSet(
+        std::initializer_list<WorkflowGraphInputBinding> values) {
+        for (auto& value : values) (void)Add(value);
+    }
+    bool Add(WorkflowGraphInputBinding binding) {
+        if (binding.input_key.empty() || binding.data_kind.empty() ||
+            binding.ref_kind.empty() || binding.ref_id <= 0 ||
+            Find(binding.input_key) != nullptr) {
+            return false;
+        }
+        values_.push_back(std::move(binding));
+        return true;
+    }
+
+    [[nodiscard]] const WorkflowGraphInputBinding* Find(
+        std::string_view input_key) const noexcept {
+        for (const auto& value : values_) {
+            if (value.input_key == input_key) return &value;
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] const WorkflowGraphInputBinding* Require(
+        std::string_view input_key,
+        std::string_view data_kind,
+        std::string_view ref_kind) const noexcept {
+        const auto* value = Find(input_key);
+        return value != nullptr && value->data_kind == data_kind &&
+                value->ref_kind == ref_kind
+            ? value
+            : nullptr;
+    }
+
+    [[nodiscard]] auto begin() const noexcept { return values_.begin(); }
+    [[nodiscard]] auto end() const noexcept { return values_.end(); }
+    [[nodiscard]] bool empty() const noexcept { return values_.empty(); }
+    [[nodiscard]] std::size_t size() const noexcept { return values_.size(); }
+
+private:
+    std::vector<WorkflowGraphInputBinding> values_;
+};
+
+class WorkflowResolvedArgumentSet {
+public:
+    WorkflowResolvedArgumentSet() = default;
+    WorkflowResolvedArgumentSet(
+        std::initializer_list<WorkflowGraphArgument> values) {
+        for (auto& value : values) (void)Add(value);
+    }
+    bool Add(WorkflowGraphArgument argument) {
+        if (argument.argument_key.empty() || Find(argument.argument_key) != nullptr) {
+            return false;
+        }
+        values_.push_back(std::move(argument));
+        return true;
+    }
+
+    [[nodiscard]] const WorkflowGraphArgument* Find(
+        std::string_view argument_key) const noexcept {
+        for (const auto& value : values_) {
+            if (value.argument_key == argument_key) return &value;
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto begin() const noexcept { return values_.begin(); }
+    [[nodiscard]] auto end() const noexcept { return values_.end(); }
+    [[nodiscard]] bool empty() const noexcept { return values_.empty(); }
+    [[nodiscard]] std::size_t size() const noexcept { return values_.size(); }
+
+private:
+    std::vector<WorkflowGraphArgument> values_;
+};
+
 struct WorkflowStepScheduleContext {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
@@ -69,8 +150,8 @@ struct WorkflowGraphStepScheduleContext {
     std::optional<std::string> authored_ref_kind;
     std::optional<std::int64_t> authored_ref_id;
     int step_priority = 0;
-    std::vector<WorkflowGraphInputBinding> input_bindings;
-    std::vector<WorkflowGraphArgument> arguments;
+    WorkflowResolvedInputSet inputs;
+    WorkflowResolvedArgumentSet arguments;
 };
 
 struct ProgramJobMaterializationContext {
@@ -112,6 +193,19 @@ struct ProgramJobContinuationResult {
     std::vector<std::string> event_lines;
 };
 
+enum class ProgramJobMaterializationDisposition {
+    Success = 0,
+    RetryableFailure,
+    InvariantFailure,
+};
+
+struct ProgramJobMaterializationResult {
+    ProgramJobMaterializationDisposition disposition =
+        ProgramJobMaterializationDisposition::RetryableFailure;
+    WorkflowStepScheduleResult schedule;
+    std::string diagnostic;
+};
+
 struct IProgramJobMaterializer {
     virtual ~IProgramJobMaterializer() = default;
 
@@ -124,7 +218,17 @@ struct IProgramJobMaterializer {
     //   5. completed workset publication.
     // Implementations must be idempotent so the workflow coordinator can
     // invoke the same step again after interruption.
-    virtual bool Materialize(
+    [[nodiscard]] ProgramJobMaterializationResult Materialize(
+        const ProgramJobMaterializationContext& context) const {
+        ProgramJobMaterializationResult result{};
+        if (MaterializeJobs(context, &result.schedule, &result.diagnostic)) {
+            result.disposition = ProgramJobMaterializationDisposition::Success;
+            result.diagnostic.clear();
+        }
+        return result;
+    }
+
+    virtual bool MaterializeJobs(
         const ProgramJobMaterializationContext& context,
         WorkflowStepScheduleResult* result_out,
         std::string* error_out) const = 0;

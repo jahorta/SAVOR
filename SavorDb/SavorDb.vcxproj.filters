@@ -113,6 +113,9 @@
     <ClInclude Include="Execution\Workflow\WorkflowCoordinatorService.h">
       <Filter>Workflows</Filter>
     </ClInclude>
+    <ClInclude Include="Analysis\TasRouteProjectionService.h">
+      <Filter>Analysis</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowGraphRoutingService.h">
       <Filter>Workflows</Filter>
     </ClInclude>
@@ -439,6 +442,9 @@
       <Filter>Analysis</Filter>
     </ClCompile>
     <ClCompile Include="Analysis\TasRouteDb.cpp">
+      <Filter>Analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="Analysis\TasRouteProjectionService.cpp">
       <Filter>Analysis</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Workflow\SqliteExecutionDb.cpp">

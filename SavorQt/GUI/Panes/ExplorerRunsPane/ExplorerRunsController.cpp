@@ -32,7 +32,7 @@ ExplorerRunsController::ExplorerRunsController(QObject* parent)
 {
     loadSettings();
 
-    groupRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<GroupPageFetchRequest, GroupPageResult>(this);
+    groupRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<GroupPageFetchRequest, GroupPageResult>(this);
     groupRefreshPipeline_->setRefreshIntervalMs(state_.refreshSeconds * 1000);
     groupRefreshPipeline_->setAutoRefreshEnabled(state_.autoRefresh);
     groupRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason reason) -> std::optional<GroupPageFetchRequest> {
@@ -50,7 +50,7 @@ ExplorerRunsController::ExplorerRunsController(QObject* parent)
         return GroupPageFetchRequest{ query };
     });
     groupRefreshPipeline_->setLoadAndPrepare([](GroupPageFetchRequest request) {
-        return savorqt::gui::AsyncRefreshResult<GroupPageResult>::Ok(
+        return savorqt::gui::ProjectionLoadResult<GroupPageResult>::Ok(
             SavorDbExplorerRunService::ListGroups(request.query));
     });
     groupRefreshPipeline_->setApply([this](const GroupPageResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {

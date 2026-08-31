@@ -9,6 +9,7 @@
 #include "Common/Types/UtcTimestamp.h"
 #include "Execution/IExecutionDb.h"
 #include "Runner/Runtime/ProgramKind.h"
+#include "Utils/Hash.h"
 #include "Utils/IniDoc.h"
 
 #include <sqlite3.h>
@@ -192,19 +193,23 @@ protected:
         seeded.source_sav_path = source_root / ("seed-" + std::to_string(key) + ".sav");
         {
             std::ofstream sav(seeded.source_sav_path, std::ios::binary | std::ios::trunc);
-            sav << "source sav bytes";
+            sav << "source sav bytes " << key;
         }
 
-        RequireFixtureStep(db_service.StateDb()->StoreArtifact(
+        RequireFixtureStep(db_service.StateDb()->ImportExternalArtifact(
             {
-                .sha256 = "seed-sav-hash-" + std::to_string(key),
-                .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(seeded.source_sav_path)),
-                .filename = seeded.source_sav_path.string(),
-                .file_ext = ".sav",
-                .artifact_kind = "SAV",
-                .created_at_utc = now,
-                .correlation_id = "dbutils-test",
-                .causation_id = "seed",
+                .absolute_source_path = seeded.source_sav_path,
+                .artifact = {
+                    .sha256 = hash::sha256_of_file(
+                        seeded.source_sav_path.string()),
+                    .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(seeded.source_sav_path)),
+                    .display_filename = seeded.source_sav_path.filename().string(),
+                    .file_ext = ".sav",
+                    .artifact_kind = "SAV",
+                    .created_at_utc = now,
+                    .correlation_id = "dbutils-test",
+                    .causation_id = "seed",
+                },
             },
             &seeded.artifact_id,
             &err), err, "store source artifact");
@@ -214,7 +219,7 @@ protected:
             stored_artifact.has_value(),
             "stored State artifact could not be resolved",
             "resolve stored source artifact");
-        seeded.stored_sav_path = stored_artifact->filename;
+        seeded.stored_sav_path = stored_artifact->object_path;
         RequireFixtureStep(db_service.StateDb()->CreateSavestate(
             {
                 .artifact_id = seeded.artifact_id,

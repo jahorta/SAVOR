@@ -239,6 +239,7 @@
     <ClCompile Include="test_framestep.cpp" />
     <ClCompile Include="test_GC_input_frame_builder.cpp" />
     <ClCompile Include="test_import_from_qt.cpp" />
+    <ClCompile Include="test_savorqt_view_state.cpp" />
     <ClCompile Include="test_capture_format.cpp" />
     <ClCompile Include="test_capture_profile_json.cpp" />
     <ClCompile Include="test_probe_profile.cpp" />

@@ -5,7 +5,7 @@
 #include "DB/SavorDbWorkflowService.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 #include "GUI/Panes/JobBuilderPane/WorkflowLauncherPage.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 #include "GUI/Refresh/RowUpdate.h"
 #include "SavorDbRuntime.h"
 
@@ -418,7 +418,7 @@ void SetupTab::build()
 
     auto workflowRows = std::make_shared<std::vector<WorkflowGraphViewRow>>();
     auto workflowRefreshPipeline =
-        new savorqt::gui::AsyncRefreshPipeline<WorkflowGraphRefreshRequest, WorkflowGraphRefreshData>(createWorkflowPanel);
+        new savorqt::gui::DatabaseProjectionController<WorkflowGraphRefreshRequest, WorkflowGraphRefreshData>(createWorkflowPanel);
     auto kickWorkflowRefresh = std::make_shared<std::function<void()>>();
 
     workflowRefreshPipeline->setRequestBuilder([showHiddenWorkflowsCheck](savorqt::gui::RefreshReason) {
@@ -429,9 +429,9 @@ void SetupTab::build()
     workflowRefreshPipeline->setLoadAndPrepare([](WorkflowGraphRefreshRequest request) {
         const auto result = savorqt::db::SavorDbAuthoringService::ListWorkflowGraphs(100, true);
         if (!result.ok) {
-            return savorqt::gui::AsyncRefreshResult<WorkflowGraphRefreshData>::Err(qs(result.error.message));
+            return savorqt::gui::ProjectionLoadResult<WorkflowGraphRefreshData>::Error(qs(result.error.message));
         }
-        return savorqt::gui::AsyncRefreshResult<WorkflowGraphRefreshData>::Ok(prepareWorkflowGraphData(result.value, request));
+        return savorqt::gui::ProjectionLoadResult<WorkflowGraphRefreshData>::Ok(prepareWorkflowGraphData(result.value, request));
     });
     workflowRefreshPipeline->setApply([=](const WorkflowGraphRefreshData& data, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         *workflowGraphs = data.graphs;

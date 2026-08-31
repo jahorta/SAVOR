@@ -1,4 +1,5 @@
 #include "WorkflowGraphRoutingService.h"
+#include "WorkflowComposition.h"
 
 #include <algorithm>
 #include <deque>
@@ -62,6 +63,16 @@ const savor::db::WorkflowGraphNodeInputSnapshot* FindInput(
         node.inputs.end(),
         [&](const auto& input) { return input.input_key == input_key; });
     return it != node.inputs.end() ? &*it : nullptr;
+}
+
+const savor::db::WorkflowGraphNodeOutputSnapshot* FindDeclaredOutput(
+    const savor::db::WorkflowGraphNodeSnapshot& node,
+    const std::string& output_key) {
+    const auto it = std::find_if(
+        node.possible_outputs.begin(),
+        node.possible_outputs.end(),
+        [&](const auto& output) { return output.output_key == output_key; });
+    return it != node.possible_outputs.end() ? &*it : nullptr;
 }
 
 const WorkflowStepOutputRecord* FindOutput(
@@ -189,10 +200,27 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                 output_step_ids.push_back(step.workflow_step_id);
         }
     }
+    const auto* source_node = FindNode(*authored_graph, graph_node_key);
+    if (source_node == nullptr) {
+        if (error_out) *error_out =
+            "workflow settlement references an unknown graph node";
+        return false;
+    }
     for (const auto workflow_step_id : output_step_ids) {
         const auto job_outputs =
             execution_db_->ListJobOutputsForWorkflowStep(workflow_step_id);
         for (const auto& job_output : job_outputs) {
+            const auto* declared = FindDeclaredOutput(
+                *source_node, job_output.output_key);
+            if (declared == nullptr ||
+                declared->data_kind != job_output.data_kind ||
+                declared->ref_kind != job_output.ref_kind) {
+                if (error_out) {
+                    *error_out = "program output is outside the workflow unit contract: " +
+                        graph_node_key + "." + job_output.output_key;
+                }
+                return false;
+            }
             std::string command_error;
             if (!command_service_->RecordStepOutput(
                     {
@@ -207,6 +235,45 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                 if (error_out) *error_out = command_error;
                 return false;
             }
+        }
+    }
+
+    const auto registry = BuildDefaultWorkflowUnitRegistry();
+    const auto* source_unit = registry.Find(source_node->unit_kind);
+    if (source_unit == nullptr) {
+        if (error_out) *error_out =
+            "workflow graph node references an unregistered unit";
+        return false;
+    }
+    for (const auto& mapping : source_unit->pass_through_outputs) {
+        const auto binding = std::find_if(
+            execution_graph->input_bindings.begin(),
+            execution_graph->input_bindings.end(),
+            [&](const auto& value) {
+                return value.node_key == graph_node_key &&
+                    value.input_key == mapping.input_key;
+            });
+        const auto* declared = FindDeclaredOutput(
+            *source_node, mapping.output_key);
+        if (binding == execution_graph->input_bindings.end() ||
+            declared == nullptr || binding->data_kind != declared->data_kind ||
+            binding->ref_kind != declared->ref_kind) {
+            if (error_out) *error_out =
+                "workflow pass-through mapping could not be resolved: " +
+                graph_node_key + "." + mapping.output_key;
+            return false;
+        }
+        std::string command_error;
+        if (!command_service_->RecordStepOutput({
+                .workflow_step_id = snapshot.workflow_step_id,
+                .output_key = mapping.output_key,
+                .output_data_kind = binding->data_kind,
+                .output_ref_kind = binding->ref_kind,
+                .output_ref_id = binding->ref_id,
+                .requested_by = "workflow_graph_pass_through",
+            }, &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
         }
     }
 

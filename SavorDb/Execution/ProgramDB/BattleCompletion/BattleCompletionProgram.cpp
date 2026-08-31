@@ -94,7 +94,7 @@ std::optional<std::filesystem::path> ResolveState(
 std::optional<std::int64_t> SelectedTurnJob(
     const ProgramJobMaterializationContext& context) {
     if (context.graph) {
-        for (const auto& binding : context.graph->input_bindings)
+        for (const auto& binding : context.graph->inputs)
             if (binding.input_key == kInputKey &&
                 binding.data_kind == kInputDataKind &&
                 binding.ref_kind == kTurnJobRefKind && binding.ref_id > 0)
@@ -179,9 +179,9 @@ std::optional<std::int64_t> PublishSavestate(
         return std::nullopt;
     }
     std::int64_t artifact_id = 0;
-    if (!state_db->StoreArtifact({.sha256 = *sha,
+    if (!StoreWorkspaceArtifactFile(state_db, path, {.sha256 = *sha,
             .size_bytes = static_cast<std::int64_t>(size),
-            .filename = path.string(), .file_ext = ".sav",
+            .file_ext = ".sav",
             .artifact_kind = "SAV", .created_at_utc = types::UtcNow(),
             .correlation_id = "battle-completion-" +
                 std::to_string(completion.battle_completion_id),
@@ -222,7 +222,7 @@ public:
           config_(std::move(config)),
           phase_(phase::BattleCompletionFullPhaseDefinitionV1()) {}
 
-    bool Materialize(const ProgramJobMaterializationContext& context,
+    bool MaterializeJobs(const ProgramJobMaterializationContext& context,
         WorkflowStepScheduleResult* result_out,
         std::string* error_out) const override {
         if (!result_out || !execution_ || !state_ || !analysis_ || !phase_ ||
@@ -566,9 +566,8 @@ public:
              "-" + context.terminal.sha256 + std::string(phase::ManifestExtension));
         if (!WriteAtomically(path, manifest, &error)) throw std::runtime_error(error);
         std::int64_t manifest_artifact = 0;
-        if (!state_->StoreArtifact({.sha256 = sha,
+        if (!StoreWorkspaceArtifactFile(state_, path, {.sha256 = sha,
                 .size_bytes = static_cast<std::int64_t>(manifest.size()),
-                .filename = path.string(),
                 .file_ext = std::string(phase::ManifestExtension),
                 .artifact_kind = std::string(phase::ManifestArtifactKind),
                 .created_at_utc = types::UtcNow(),

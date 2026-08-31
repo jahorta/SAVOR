@@ -167,7 +167,7 @@ std::optional<std::int64_t> ResolveEntrySavestate(
             : std::nullopt;
     }
     for (const auto& binding :
-         context.graph->input_bindings) {
+         context.graph->inputs) {
         if (binding.input_key == "entry_savestate"
             && binding.data_kind == "state.movie_inactive_savestate_id"
             && binding.ref_kind == "state.savestate"
@@ -263,7 +263,7 @@ public:
         }
     }
 
-    bool Materialize(
+    bool MaterializeJobs(
         const ProgramJobMaterializationContext& context,
         WorkflowStepScheduleResult* result_out,
         std::string* error_out) const override {

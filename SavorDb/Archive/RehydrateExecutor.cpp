@@ -1074,7 +1074,7 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     bool ok_artifact = false;
                     bool ok_sha = false;
                     bool ok_size = false;
-                    bool ok_filename = false;
+                    bool ok_display_filename = false;
                     bool ok_file_ext = false;
                     bool ok_artifact_kind = false;
                     const auto old_artifact_id = JsonExtractInt(state_db_, line, "$.artifact_id", &ok_artifact);
@@ -1082,7 +1082,8 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto expected_size = JsonExtractInt(
                         state_db_, line, "$.size_bytes", &ok_size);
                     const auto display_filename = JsonExtractText(
-                        state_db_, line, "$.filename", &ok_filename);
+                        state_db_, line, "$.display_filename",
+                        &ok_display_filename);
                     const auto file_ext = JsonExtractText(state_db_, line, "$.file_ext", &ok_file_ext);
                     const auto artifact_kind = JsonExtractText(state_db_, line, "$.artifact_kind", &ok_artifact_kind);
                     if (!ok_artifact || !ok_sha || sha.empty() ||
@@ -1109,7 +1110,7 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                             break;
                         }
 
-                        auto imported = state::ImportArtifactObject(
+                        auto imported = state::PublishVerifiedArtifactObject(
                             object_store_root_, output_path, sha, expected_size,
                             ok_file_ext ? file_ext : extension, &state_error);
                         if (!imported) break;
@@ -1117,13 +1118,13 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                         Statement insert_artifact;
                         if (!Prepare(
                                 state_db_,
-                                "INSERT INTO state_artifact(sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc,object_relpath) "
+                                "INSERT INTO state_artifact(sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) "
                                 "VALUES(?1,json_extract(?2,'$.size_bytes'),json_extract(?2,'$.compression_kind'),?3,json_extract(?2,'$.file_ext'),json_extract(?2,'$.artifact_kind'),json_extract(?2,'$.created_at_utc'),?4);",
                                 &insert_artifact,
                                 &state_error)) break;
                         sqlite3_bind_text(insert_artifact.st, 1, sha.c_str(), -1, SQLITE_TRANSIENT);
                         sqlite3_bind_text(insert_artifact.st, 2, line.c_str(), -1, SQLITE_TRANSIENT);
-                        const auto filename = ok_filename && !display_filename.empty()
+                        const auto filename = ok_display_filename && !display_filename.empty()
                             ? std::filesystem::path(display_filename).filename().string()
                             : entry_name;
                         const auto relative = imported->relative_path.generic_string();

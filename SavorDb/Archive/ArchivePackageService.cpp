@@ -1398,12 +1398,8 @@ std::optional<std::filesystem::path> ResolveArchiveArtifactPath(
     const DbConfigPaths& config_paths,
     const SavestateArchiveRow& row,
     std::string* error_out) {
-    if (!row.object_relpath.empty()) {
-        return state::ResolveArtifactObjectPath(
-            config_paths.object_store_root, row.object_relpath, error_out);
-    }
-    return state::ResolveLegacyArtifactSource(
-        config_paths.object_store_root, row.filename, error_out);
+    return state::ResolveArtifactObjectPath(
+        config_paths.object_store_root, row.object_relpath, error_out);
 }
 
 std::vector<std::int64_t> CollectWorkflowSavestateIds(
@@ -1892,7 +1888,7 @@ std::vector<SavestateArchiveRow> LoadSavestateRows(
     }
 
     const std::string query =
-        "SELECT s.savestate_id,s.artifact_id,a.sha256,a.size_bytes,a.filename,a.object_relpath,a.file_ext,a.artifact_kind,s.dtm_artifact_id "
+        "SELECT s.savestate_id,s.artifact_id,a.sha256,a.size_bytes,a.display_filename,a.object_relpath,a.file_ext,a.artifact_kind,s.dtm_artifact_id "
         "FROM state_savestate s JOIN state_artifact a ON a.artifact_id=s.artifact_id "
         "WHERE s.savestate_id IN (" + JoinIds(savestate_ids) + ") "
         "AND (UPPER(a.artifact_kind)='SAV' OR LOWER(a.file_ext)='.sav') "
@@ -1943,7 +1939,7 @@ std::vector<SavestateArchiveRow> LoadStandaloneArtifactRows(
     std::vector<SavestateArchiveRow> rows;
     if (state_db == nullptr || artifact_ids.empty()) return rows;
     const std::string query =
-        "SELECT 0,a.artifact_id,a.sha256,a.size_bytes,a.filename,a.object_relpath,a.file_ext,a.artifact_kind "
+        "SELECT 0,a.artifact_id,a.sha256,a.size_bytes,a.display_filename,a.object_relpath,a.file_ext,a.artifact_kind "
         "FROM state_artifact a WHERE a.artifact_id IN (" + JoinIds(artifact_ids) + ") ORDER BY a.artifact_id ASC;";
     Statement st;
     if (sqlite3_prepare_v2(state_db, query.c_str(), -1, &st.st, nullptr) != SQLITE_OK) {
@@ -4055,7 +4051,7 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
             if (sqlite3_prepare_v2(
                     state_db_,
                     "SELECT COUNT(1) FROM state_artifact "
-                    "WHERE object_relpath=?1 OR (object_relpath='' AND filename=?2);",
+                    "WHERE object_relpath=?1;",
                     -1,
                     &retained_artifact.st,
                     nullptr) != SQLITE_OK) {
@@ -4066,10 +4062,6 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
             }
             sqlite3_bind_text(
                 retained_artifact.st, 1, relative_locator.c_str(), -1,
-                SQLITE_TRANSIENT);
-            const auto legacy_filename = file.string();
-            sqlite3_bind_text(
-                retained_artifact.st, 2, legacy_filename.c_str(), -1,
                 SQLITE_TRANSIENT);
             if (sqlite3_step(retained_artifact.st) != SQLITE_ROW) {
                 result.blockers.push_back(

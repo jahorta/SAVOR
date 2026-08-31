@@ -1,6 +1,7 @@
 #include "ArtifactObjectStore.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <system_error>
 
@@ -8,6 +9,8 @@
 
 namespace savor::db::state {
 namespace {
+
+std::atomic_uint64_t g_artifact_import_serial{0};
 
 std::string Lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -26,6 +29,7 @@ std::string NormalizeExtension(std::string_view file_ext) {
 bool ExactFile(
     const std::filesystem::path& path,
     std::int64_t expected_size_bytes,
+    std::string_view expected_sha256,
     std::string* error_out) {
     std::error_code ec;
     if (!std::filesystem::is_regular_file(path, ec) || ec) {
@@ -38,6 +42,19 @@ bool ExactFile(
         if (error_out) *error_out = "artifact object size does not match durable evidence: " + path.string();
         return false;
     }
+    try {
+        if (Lower(hash::sha256_of_file(path.string())) !=
+            Lower(std::string(expected_sha256))) {
+            if (error_out) {
+                *error_out = "artifact object SHA-256 does not match durable evidence: " +
+                    path.string();
+            }
+            return false;
+        }
+    } catch (const std::exception& ex) {
+        if (error_out) *error_out = ex.what();
+        return false;
+    }
     return true;
 }
 
@@ -46,21 +63,6 @@ bool IsCanonicalSha256(std::string_view value) {
     return std::all_of(value.begin(), value.end(), [](unsigned char c) {
         return std::isxdigit(c) != 0;
     });
-}
-
-std::optional<std::filesystem::path> ObjectStoreSuffix(
-    const std::filesystem::path& recorded_path) {
-    bool found = false;
-    std::filesystem::path suffix;
-    for (const auto& component : recorded_path) {
-        if (!found) {
-            if (Lower(component.string()) == "object_store") found = true;
-            continue;
-        }
-        suffix /= component;
-    }
-    if (!found || suffix.empty()) return std::nullopt;
-    return suffix;
 }
 
 } // namespace
@@ -115,36 +117,52 @@ std::optional<std::filesystem::path> ResolveArtifactObjectPath(
     return (std::filesystem::absolute(object_store_root) / relative_path).lexically_normal();
 }
 
-std::optional<std::filesystem::path> ResolveLegacyArtifactSource(
-    const std::filesystem::path& object_store_root,
-    const std::filesystem::path& recorded_path,
+std::optional<std::filesystem::path> ResolveWorkspaceArtifactSource(
+    const std::filesystem::path& artifact_workspace_root,
+    const std::filesystem::path& workspace_relative_path,
     std::string* error_out) {
-    if (recorded_path.empty()) {
-        if (error_out) *error_out = "legacy artifact locator is empty";
+    if (artifact_workspace_root.empty()) {
+        if (error_out) *error_out = "artifact workspace root is empty";
         return std::nullopt;
     }
+    if (workspace_relative_path.empty() || workspace_relative_path.is_absolute() ||
+        workspace_relative_path.has_root_name() ||
+        workspace_relative_path.has_root_directory()) {
+        if (error_out) {
+            *error_out = "workspace artifact source must be a non-empty relative path";
+        }
+        return std::nullopt;
+    }
+    for (const auto& component : workspace_relative_path) {
+        const auto value = component.string();
+        if (value.empty() || value == "." || value == "..") {
+            if (error_out) {
+                *error_out = "workspace artifact source contains an invalid path component";
+            }
+            return std::nullopt;
+        }
+    }
     std::error_code ec;
-    if (recorded_path.is_absolute() && std::filesystem::is_regular_file(recorded_path, ec) && !ec) {
-        return recorded_path;
+    const auto root = std::filesystem::weakly_canonical(
+        artifact_workspace_root, ec);
+    if (ec) {
+        if (error_out) *error_out = "artifact workspace root cannot be resolved: " + ec.message();
+        return std::nullopt;
     }
-    if (!recorded_path.is_absolute()) {
-        auto resolved = ResolveArtifactObjectPath(object_store_root, recorded_path, error_out);
-        if (resolved && std::filesystem::is_regular_file(*resolved, ec) && !ec) return resolved;
+    const auto candidate = std::filesystem::weakly_canonical(
+        root / workspace_relative_path, ec);
+    const auto relative = candidate.lexically_relative(root);
+    if (ec || relative.empty() ||
+        (!relative.empty() && relative.begin()->string() == "..")) {
+        if (error_out) *error_out = "workspace artifact source escapes its configured root";
+        return std::nullopt;
     }
-    if (auto suffix = ObjectStoreSuffix(recorded_path)) {
-        auto rebound = ResolveArtifactObjectPath(object_store_root, *suffix, error_out);
-        if (rebound && std::filesystem::is_regular_file(*rebound, ec) && !ec) return rebound;
-    }
-    if (error_out) {
-        *error_out = "artifact source file does not exist at its recorded or relocated object-store path: " +
-            recorded_path.string();
-    }
-    return std::nullopt;
+    return candidate;
 }
 
-std::optional<ManagedArtifactObject> ImportArtifactObject(
+std::optional<ManagedArtifactObject> PublishVerifiedArtifactObject(
     const std::filesystem::path& object_store_root,
-    const std::filesystem::path& source_path,
+    const std::filesystem::path& absolute_source_path,
     std::string_view expected_sha256,
     std::int64_t expected_size_bytes,
     std::string_view file_ext,
@@ -153,8 +171,12 @@ std::optional<ManagedArtifactObject> ImportArtifactObject(
         if (error_out) *error_out = "invalid artifact identity";
         return std::nullopt;
     }
-    auto source = ResolveLegacyArtifactSource(object_store_root, source_path, error_out);
-    if (!source || !ExactFile(*source, expected_size_bytes, error_out)) {
+    if (!absolute_source_path.is_absolute()) {
+        if (error_out) *error_out = "artifact publication source must be absolute";
+        return std::nullopt;
+    }
+    const auto source = absolute_source_path.lexically_normal();
+    if (!ExactFile(source, expected_size_bytes, expected_sha256, error_out)) {
         return std::nullopt;
     }
 
@@ -167,7 +189,7 @@ std::optional<ManagedArtifactObject> ImportArtifactObject(
 
     std::error_code ec;
     if (std::filesystem::exists(*destination, ec) && !ec) {
-        if (!ExactFile(*destination, expected_size_bytes, error_out)) {
+        if (!ExactFile(*destination, expected_size_bytes, expected_sha256, error_out)) {
             return std::nullopt;
         }
         return ManagedArtifactObject{relative->generic_string(), *destination};
@@ -179,21 +201,23 @@ std::optional<ManagedArtifactObject> ImportArtifactObject(
         return std::nullopt;
     }
     const auto temporary = destination->parent_path() /
-        (destination->filename().string() + ".importing");
+        (destination->filename().string() + ".importing."
+            + std::to_string(g_artifact_import_serial.fetch_add(
+                1, std::memory_order_relaxed)));
     std::filesystem::copy_file(
-        *source, temporary, std::filesystem::copy_options::overwrite_existing, ec);
+        source, temporary, std::filesystem::copy_options::overwrite_existing, ec);
     if (ec) {
         if (error_out) *error_out = "failed copying artifact into object store: " + ec.message();
         return std::nullopt;
     }
-    if (!ExactFile(temporary, expected_size_bytes, error_out)) {
+    if (!ExactFile(temporary, expected_size_bytes, expected_sha256, error_out)) {
         std::filesystem::remove(temporary, ec);
         return std::nullopt;
     }
     std::filesystem::rename(temporary, *destination, ec);
     if (ec) {
         if (std::filesystem::exists(*destination) &&
-            ExactFile(*destination, expected_size_bytes, error_out)) {
+            ExactFile(*destination, expected_size_bytes, expected_sha256, error_out)) {
             std::filesystem::remove(temporary, ec);
         } else {
             if (error_out) *error_out = "failed publishing artifact object: " + ec.message();

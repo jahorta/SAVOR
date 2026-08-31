@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GUI/Workspace/WorkspaceWidgets.h"
+#include "GUI/Refresh/ViewState.h"
 
 #include <functional>
 #include <cstdint>
@@ -11,7 +12,7 @@ class QGraphicsView;
 class QLabel;
 class QLineEdit;
 class QPushButton;
-namespace savorqt::gui { template <typename Request, typename Result> class AsyncRefreshPipeline; }
+namespace savorqt::gui { template <typename Request, typename Result> class DatabaseProjectionController; }
 namespace savorqt::db { struct TasRouteSnapshot; }
 
 class TasRoutesTab final : public savorqt::gui::WorkspacePageShell {
@@ -32,7 +33,7 @@ private:
     void openSelected();
 
     Actions actions_;
-    savorqt::gui::AsyncRefreshPipeline<int, savorqt::db::TasRouteSnapshot>* refresh_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<int, savorqt::db::TasRouteSnapshot>* refresh_ = nullptr;
     QGraphicsScene* scene_ = nullptr;
     QGraphicsView* view_ = nullptr;
     QComboBox* rootFilter_ = nullptr;
@@ -42,6 +43,7 @@ private:
     QLineEdit* labelEdit_ = nullptr;
     QPushButton* openVictories_ = nullptr;
     std::int64_t selectedNodeId_ = 0;
+    savorqt::gui::EntityDraft<std::int64_t, QString> labelDraft_;
     bool selectedIsBattle_ = false;
     bool active_ = false;
     savorqt::db::TasRouteSnapshot* snapshot_ = nullptr;

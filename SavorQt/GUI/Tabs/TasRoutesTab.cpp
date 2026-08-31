@@ -1,7 +1,7 @@
 #include "TasRoutesTab.h"
 
 #include "DB/SavorDbTasRouteService.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 
 #include <QtCore/QTimer>
 #include <QtGui/QBrush>
@@ -97,11 +97,11 @@ TasRoutesTab::TasRoutesTab(Actions actions, QWidget* parent)
     splitter->setStretchFactor(1, 1);
     canvasLayout()->addWidget(splitter, 1);
 
-    refresh_ = new savorqt::gui::AsyncRefreshPipeline<int, savorqt::db::TasRouteSnapshot>(this);
+    refresh_ = new savorqt::gui::DatabaseProjectionController<int, savorqt::db::TasRouteSnapshot>(this);
     refresh_->setAutoRefreshEnabled(true);
     refresh_->setRequestBuilder([](savorqt::gui::RefreshReason) { return 0; });
     refresh_->setLoadAndPrepare([](int) {
-        return savorqt::gui::AsyncRefreshResult<
+        return savorqt::gui::ProjectionLoadResult<
             savorqt::db::TasRouteSnapshot>::Ok(
                 savorqt::db::SavorDbTasRouteService::FetchRoutes());
     });
@@ -116,6 +116,9 @@ TasRoutesTab::TasRoutesTab(Actions actions, QWidget* parent)
     });
     connect(fit, &QPushButton::clicked, this, [this]() { view_->fitInView(scene_->itemsBoundingRect(), Qt::KeepAspectRatio); });
     connect(search_, &QLineEdit::textChanged, this, [this]() { if (snapshot_) applySnapshot(*snapshot_); });
+    connect(labelEdit_, &QLineEdit::textEdited, this, [this](const QString& text) {
+        labelDraft_.draft.edit(text);
+    });
     connect(rootFilter_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) { if (snapshot_) applySnapshot(*snapshot_); });
     connect(scene_, &QGraphicsScene::selectionChanged, this, [this]() {
         const auto selected = scene_->selectedItems();
@@ -127,9 +130,11 @@ TasRoutesTab::TasRoutesTab(Actions actions, QWidget* parent)
         if (selectedNodeId_ <= 0 || labelEdit_->text().trimmed().isEmpty()) return;
         std::string error;
         if (savorqt::db::SavorDbTasRouteService::RenameNode(
-                selectedNodeId_, labelEdit_->text().trimmed().toStdString(), &error))
+                selectedNodeId_, labelEdit_->text().trimmed().toStdString(), &error)) {
+            labelDraft_.draft.edit(labelEdit_->text().trimmed());
+            labelDraft_.draft.commit();
             requestRefresh();
-        else
+        } else
             detail_->setText(QString::fromStdString(error));
     });
 }
@@ -215,18 +220,41 @@ void TasRoutesTab::applySnapshot(const savorqt::db::TasRouteSnapshot& value) {
 }
 
 void TasRoutesTab::selectNode(std::int64_t id) {
+    const bool entityChanged = !labelDraft_.isBoundTo(id);
     selectedNodeId_ = id;
     selectedIsBattle_ = false;
     if (!snapshot_) return;
+    bool found = false;
     for (const auto& node : snapshot_->nodes) {
         if (node.route_node_id != id) continue;
+        found = true;
         selectedIsBattle_ = node.node_kind == savor::db::TasRouteNodeKind::Activity && node.activity_kind == "battle";
-        labelEdit_->setText(QString::fromStdString(node.label));
-        detail_->setText(QStringLiteral("%1\nStatus: %2\n%3")
+        const QString backingLabel = QString::fromStdString(node.label);
+        if (entityChanged) {
+            labelDraft_.bind(id, backingLabel,
+                savorqt::gui::DraftReplacementReason::UserRequestedEntityChange);
+            const QSignalBlocker blocker(labelEdit_);
+            labelEdit_->setText(backingLabel);
+        } else {
+            labelDraft_.draft.observeBacking(backingLabel);
+            if (!labelDraft_.draft.dirty()) {
+                const QSignalBlocker blocker(labelEdit_);
+                labelEdit_->setText(labelDraft_.draft.value());
+            }
+        }
+        QString details = QStringLiteral("%1\nStatus: %2\n%3")
             .arg(node.node_kind == savor::db::TasRouteNodeKind::Activity ? QStringLiteral("Activity") : QStringLiteral("Checkpoint"))
             .arg(QString::fromStdString(node.status))
-            .arg(QString::fromStdString(node.description)));
+            .arg(QString::fromStdString(node.description));
+        if (labelDraft_.draft.backingStale()) {
+            details += QStringLiteral("\n\nThe saved label changed while this edit was dirty. Your draft is preserved.");
+        }
+        detail_->setText(details);
         break;
+    }
+    if (!found && labelDraft_.isBoundTo(id)) {
+        labelDraft_.draft.markBackingMissing();
+        detail_->setText(QStringLiteral("This route node no longer exists. Your label draft is preserved."));
     }
     openVictories_->setEnabled(selectedIsBattle_);
 }

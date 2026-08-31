@@ -44,11 +44,11 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
     : QWidget(parent)
 {
     createWidgets();
-    graphRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<int, WorkflowGraphListResult>(this);
+    graphRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<int, WorkflowGraphListResult>(this);
     graphRefreshPipeline_->setAutoRefreshEnabled(false);
     graphRefreshPipeline_->setRequestBuilder([](savorqt::gui::RefreshReason) { return 0; });
     graphRefreshPipeline_->setLoadAndPrepare([](int) {
-        return savorqt::gui::AsyncRefreshResult<WorkflowGraphListResult>::Ok(
+        return savorqt::gui::ProjectionLoadResult<WorkflowGraphListResult>::Ok(
             savorqt::db::SavorDbAuthoringService::ListWorkflowGraphs());
     });
     graphRefreshPipeline_->setApply([this](const WorkflowGraphListResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
@@ -88,11 +88,11 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
     });
     graphRefreshPipeline_->setActive(true);
 
-    unitRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<int, StandaloneLaunchEntryListResult>(this);
+    unitRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<int, StandaloneLaunchEntryListResult>(this);
     unitRefreshPipeline_->setAutoRefreshEnabled(false);
     unitRefreshPipeline_->setRequestBuilder([](savorqt::gui::RefreshReason) { return 0; });
     unitRefreshPipeline_->setLoadAndPrepare([](int) {
-        return savorqt::gui::AsyncRefreshResult<StandaloneLaunchEntryListResult>::Ok(
+        return savorqt::gui::ProjectionLoadResult<StandaloneLaunchEntryListResult>::Ok(
             savorqt::db::SavorDbWorkflowService::ListStandaloneLaunchEntries());
     });
     unitRefreshPipeline_->setApply([this](const StandaloneLaunchEntryListResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
@@ -146,7 +146,7 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
         postStatusMessage(error, StatusToast::Severity::Error);
     });
     unitRefreshPipeline_->setActive(true);
-    referenceRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<std::vector<ExternalInputRow>, ReferenceOptionsResult>(this);
+    referenceRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<std::vector<ExternalInputRow>, ReferenceOptionsResult>(this);
     referenceRefreshPipeline_->setAutoRefreshEnabled(false);
     referenceRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) { return externalInputs_; });
     referenceRefreshPipeline_->setLoadAndPrepare([](std::vector<ExternalInputRow> inputs) {
@@ -158,7 +158,7 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
         if (preparedAnnotation) {
             const auto result = savorqt::db::SavorDbWorkflowService::ListPreparedTasRootSources(1000);
             if (!result.ok)
-                return savorqt::gui::AsyncRefreshResult<ReferenceOptionsResult>::Ok(
+                return savorqt::gui::ProjectionLoadResult<ReferenceOptionsResult>::Ok(
                     ReferenceOptionsResult::Err(result.error));
             preparedSources = result.value;
         }
@@ -185,10 +185,10 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
                     input.ref_kind.toStdString(), input.data_kind.toStdString())
                 : savorqt::db::WorkflowReferenceSelectorProvider::ListPresentationFamily(
                     input.presentation_family_key.toStdString());
-            if (!result.ok) return savorqt::gui::AsyncRefreshResult<ReferenceOptionsResult>::Ok(ReferenceOptionsResult::Err(result.error));
+            if (!result.ok) return savorqt::gui::ProjectionLoadResult<ReferenceOptionsResult>::Ok(ReferenceOptionsResult::Err(result.error));
             options.emplace(externalInputKey(input), result.value);
         }
-        return savorqt::gui::AsyncRefreshResult<ReferenceOptionsResult>::Ok(ReferenceOptionsResult::Ok(std::move(options)));
+        return savorqt::gui::ProjectionLoadResult<ReferenceOptionsResult>::Ok(ReferenceOptionsResult::Ok(std::move(options)));
     });
     referenceRefreshPipeline_->setApply([this](const ReferenceOptionsResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         if (!result.ok) { postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error); return; }

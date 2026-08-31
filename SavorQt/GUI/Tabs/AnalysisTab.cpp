@@ -4,7 +4,7 @@
 #include "DB/SavorDbExplorerRunService.h"
 #include "DB/SavorDbWorkflowService.h"
 #include "GUI/Panes/BattleRunsPane/BattleRunsWidget.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 #include "GUI/Refresh/RowUpdate.h"
 #include "SavorDbRuntime.h"
 
@@ -778,7 +778,7 @@ void AnalysisTab::build()
     workbenchLayout->addWidget(paneStack_, 1);
     canvasLayout()->addWidget(workbench, 1);
 
-    auto* refreshPipeline = new savorqt::gui::AsyncRefreshPipeline<AnalysisRefreshRequest, AnalysisRefreshData>(this);
+    auto* refreshPipeline = new savorqt::gui::DatabaseProjectionController<AnalysisRefreshRequest, AnalysisRefreshData>(this);
     auto overviewRows = std::make_shared<std::vector<OverviewRow>>();
     auto workflowRows = std::make_shared<std::vector<ProvenanceRow>>();
     auto tasMovieRows = std::make_shared<std::vector<TasMovieRow>>();
@@ -787,7 +787,7 @@ void AnalysisTab::build()
         return AnalysisRefreshRequest{};
     });
     refreshPipeline->setLoadAndPrepare([](AnalysisRefreshRequest) {
-        return savorqt::gui::AsyncRefreshResult<AnalysisRefreshData>::Ok(prepareAnalysisData(loadSnapshot()));
+        return savorqt::gui::ProjectionLoadResult<AnalysisRefreshData>::Ok(prepareAnalysisData(loadSnapshot()));
     });
     refreshPipeline->setApply([=](const AnalysisRefreshData& data, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         outcomesValueLabel_->setText(data.outcomesValue);

@@ -35,6 +35,11 @@ DBService::DBService(
         config_paths_.object_store_root =
             config_paths_.state_db_path.parent_path() / "object_store";
     }
+    if (config_paths_.artifact_workspace_root.empty() &&
+        !config_paths_.state_db_path.empty()) {
+        config_paths_.artifact_workspace_root =
+            config_paths_.state_db_path.parent_path() / "workflow-runtime";
+    }
 }
 
 DBService::~DBService() {
@@ -104,12 +109,8 @@ bool DBService::Start(std::string* error_out) {
     }
 
     sqlite_state_db_ = std::make_unique<savor::db::state::SqliteStateDb>(
-        state_sqlite_, config_paths_.object_store_root);
-    if (!sqlite_state_db_->ReconcileArtifactObjectLocators(error_out)) {
-        return fail_start(
-            "Failed reconciling State artifact object locators: " +
-            (error_out ? *error_out : std::string{}));
-    }
+        state_sqlite_, config_paths_.artifact_workspace_root,
+        config_paths_.object_store_root);
     state_db_ = std::make_unique<savor::db::state::QueuedStateDb>(sqlite_state_db_.get());
     if (!state_db_->Start(error_out)) {
         return fail_start("Failed starting State queue workers: " + (error_out ? *error_out : std::string{}));
@@ -162,6 +163,18 @@ bool DBService::Start(std::string* error_out) {
             analysis_db_.get());
     if (!workflow_expansion_service_->Start(error_out)) {
         return fail_start("Failed starting workflow expansion service: " +
+            (error_out ? *error_out : std::string{}));
+    }
+
+    tas_route_projection_service_ =
+        std::make_unique<savor::db::analysis::TasRouteProjectionService>(
+            savor::db::analysis::TasRouteProjectionConfig{
+                .execution_db_path = config_paths_.execution_db_path,
+                .analysis_db_path = config_paths_.analysis_db_path,
+            },
+            analysis_db_.get());
+    if (!tas_route_projection_service_->Start(error_out)) {
+        return fail_start("Failed starting TAS route projection service: " +
             (error_out ? *error_out : std::string{}));
     }
 
@@ -407,6 +420,7 @@ void DBService::CloseConnections() {
 }
 
 void DBService::ResetServices() {
+    tas_route_projection_service_.reset();
     workflow_expansion_service_.reset();
     ui_read_projection_service_.reset();
     archive_db_.reset();

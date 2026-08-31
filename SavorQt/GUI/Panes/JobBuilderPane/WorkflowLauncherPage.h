@@ -12,7 +12,7 @@
 #include "Authoring/IAuthoringDb.h"
 #include "Execution/Workflow/WorkflowComposition.h"
 #include "GUI/Common/StatusToast.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 #include "DB/SavorDbServiceResult.h"
 #include "DB/WorkflowReferenceSelectorProvider.h"
 #include "DB/SavorDbWorkflowService.h"
@@ -149,9 +149,9 @@ private:
     QPushButton* launchButton_ = nullptr;
 
     QPointer<WorkflowGraphEditorWindow> workflowGraphEditor_;
-    savorqt::gui::AsyncRefreshPipeline<int, WorkflowGraphListResult>* graphRefreshPipeline_ = nullptr;
-    savorqt::gui::AsyncRefreshPipeline<int, StandaloneLaunchEntryListResult>* unitRefreshPipeline_ = nullptr;
-    savorqt::gui::AsyncRefreshPipeline<std::vector<ExternalInputRow>, ReferenceOptionsResult>* referenceRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<int, WorkflowGraphListResult>* graphRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<int, StandaloneLaunchEntryListResult>* unitRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<std::vector<ExternalInputRow>, ReferenceOptionsResult>* referenceRefreshPipeline_ = nullptr;
     std::map<QString, LauncherDraft> launchDrafts_;
     QString renderedTargetKey_;
     QString renderedTargetShape_;

@@ -15,12 +15,18 @@ namespace savor::db::state {
 
 class SqliteStateDb final : public savor::db::IStateDb {
 public:
-    SqliteStateDb(sqlite3* db, std::filesystem::path object_store_root);
+    SqliteStateDb(
+        sqlite3* db,
+        std::filesystem::path artifact_workspace_root,
+        std::filesystem::path object_store_root);
 
-    bool ReconcileArtifactObjectLocators(std::string* error_out = nullptr);
-
-    bool StoreArtifact(
-        const StoreArtifactCommand& command,
+    [[nodiscard]] std::filesystem::path ArtifactWorkspaceRoot() const override;
+    bool StoreWorkspaceArtifact(
+        const StoreWorkspaceArtifactCommand& command,
+        std::int64_t* artifact_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool ImportExternalArtifact(
+        const ImportExternalArtifactCommand& command,
         std::int64_t* artifact_id_out = nullptr,
         std::string* error_out = nullptr) override;
 
@@ -109,6 +115,12 @@ public:
         const events::EventEnvelope& envelope) const override;
 
 private:
+    bool StoreImportedArtifact(
+        const std::filesystem::path& absolute_source_path,
+        const ArtifactStoreMetadata& artifact,
+        std::int64_t* artifact_id_out,
+        std::string* error_out);
+
     std::optional<ArtifactPayloadRecord> ResolveArtifactPayloadForEvent(
         std::string_view event_type,
         int event_version,
@@ -116,6 +128,7 @@ private:
         std::int64_t payload_ref_id) const;
 
     sqlite3* db_ = nullptr;
+    std::filesystem::path artifact_workspace_root_;
     std::filesystem::path object_store_root_;
 };
 

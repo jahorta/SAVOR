@@ -38,7 +38,7 @@ bool VerifyArtifactFile(
     const std::string_view expected_kind,
     const std::optional<std::string_view> expected_extension,
     std::string* error_out) {
-    const std::filesystem::path path(artifact.filename);
+    const std::filesystem::path path(artifact.object_path);
     std::error_code error;
     if (artifact.artifact_kind != expected_kind
         || (expected_extension && artifact.file_ext != *expected_extension)
@@ -67,7 +67,7 @@ bool VerifySavestateArtifact(
         : std::nullopt;
     if (!artifact || artifact->sha256 != state.artifact_sha256
         || artifact->size_bytes != state.artifact_size_bytes
-        || artifact->filename != state.artifact_filename
+        || artifact->object_path != state.artifact_filename
         || artifact->file_ext != state.artifact_file_ext
         || artifact->artifact_kind != state.artifact_kind) {
         return Fail("savestate artifact record drifted", error_out);
@@ -109,7 +109,7 @@ bool VerifyMoviePairedCheckpointSnapshot(
     if (!VerifySavestateArtifact(state_db, *source, error_out)) return false;
     const auto dtm = state_db->GetArtifact(request.source_dtm_artifact_id);
     if (!dtm || dtm->sha256 != request.source_dtm_sha256
-        || dtm->filename != *source->dtm_filename
+        || dtm->object_path != *source->dtm_filename
         || !VerifyArtifactFile(*dtm, "DTM", ".dtm", error_out)) {
         return Fail(error_out != nullptr && !error_out->empty()
                 ? *error_out

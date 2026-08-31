@@ -2217,10 +2217,10 @@ bool CheckBattleInvariantsAndReportTrajectory(
         *context->context_artifact_id);
     if (!artifact || artifact->artifact_kind != "BATTLE_CONTEXT" ||
         artifact->file_ext != ".bctx" ||
-        !std::filesystem::is_regular_file(artifact->filename)
+        !std::filesystem::is_regular_file(artifact->object_path)
         || static_cast<std::int64_t>(std::filesystem::file_size(
-               artifact->filename)) != artifact->size_bytes
-        || hash::sha256_of_file(artifact->filename) != artifact->sha256)
+               artifact->object_path)) != artifact->size_bytes
+        || hash::sha256_of_file(artifact->object_path) != artifact->sha256)
         return Fail("Battle Context .bctx artifact is unavailable", error_out);
 
     const auto battle_set = db_service->AnalysisDb()->GetBattleSet(
@@ -2579,8 +2579,8 @@ bool CheckBattleInvariantsAndReportTrajectory(
                     || result_context->artifact_kind != "BATTLE_CONTEXT"
                     || result_context->file_ext != ".bctx"
                     || !std::filesystem::is_regular_file(
-                        result_context->filename)
-                    || hash::sha256_of_file(result_context->filename)
+                        result_context->object_path)
+                    || hash::sha256_of_file(result_context->object_path)
                         != result_context->sha256) {
                     return Fail("Battle result context artifact integrity drifted",
                                 error_out);

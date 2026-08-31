@@ -75,7 +75,7 @@ std::optional<std::string> HashFile(const std::filesystem::path& path) {
 std::optional<std::int64_t> Binding(
     const ProgramJobMaterializationContext& context) {
     if (context.graph) {
-        for (const auto& binding : context.graph->input_bindings) {
+        for (const auto& binding : context.graph->inputs) {
             if (binding.input_key == kInputKey && binding.data_kind == kInputDataKind
                 && binding.ref_kind == kStateRefKind && binding.ref_id > 0) {
                 return binding.ref_id;
@@ -151,7 +151,7 @@ public:
           config_(std::move(config)),
           phase_(savor::runtime::tasmovie::TasMovieCheckpointSterilizationFullPhaseDefinitionV1()) {}
 
-    bool Materialize(
+    bool MaterializeJobs(
         const ProgramJobMaterializationContext& context,
         WorkflowStepScheduleResult* result_out,
         std::string* error_out) const override {
@@ -639,21 +639,23 @@ public:
                 "movie-inactive native save produced a DTM sidecar");
         }
 
+        auto artifact_command = MakeStoreWorkspaceArtifactCommand(
+            state_db_, path, {
+                .sha256 = *actual_sha,
+                .size_bytes = static_cast<std::int64_t>(size),
+                .compression_kind = 0,
+                .file_ext = ".sav",
+                .artifact_kind = "SAV",
+                .created_at_utc = types::UtcNow(),
+                .correlation_id = "tmv-sterilization-request-"
+                    + std::to_string(request->sterilization_request_id),
+                .causation_id = "execution-job-" + std::to_string(context.job_id),
+            }, &error);
+        if (!artifact_command) throw std::runtime_error(error);
         CreateOrGetSterilizedCheckpointReceipt state_receipt{};
         if (!state_db_->CreateOrGetSterilizedCheckpoint({
                 .from_savestate_id = request->source_savestate_id,
-                .artifact = {
-                    .sha256 = *actual_sha,
-                    .size_bytes = static_cast<std::int64_t>(size),
-                    .compression_kind = 0,
-                    .filename = path.string(),
-                    .file_ext = ".sav",
-                    .artifact_kind = "SAV",
-                    .created_at_utc = types::UtcNow(),
-                    .correlation_id = "tmv-sterilization-request-"
-                        + std::to_string(request->sterilization_request_id),
-                    .causation_id = "execution-job-" + std::to_string(context.job_id),
-                },
+                .artifact = std::move(*artifact_command),
                 .savestate_type = "TAS_MOVIE_STERILIZED_CHECKPOINT",
                 .note = "Movie-inactive checkpoint derived from canonical TAS Movie checkpoint",
                 .method_kind = std::string(savor::runtime::tasmovie::SterilizationDerivationMethod),

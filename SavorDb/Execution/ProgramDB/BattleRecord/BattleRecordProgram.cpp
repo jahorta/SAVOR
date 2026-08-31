@@ -248,7 +248,7 @@ std::optional<std::int64_t> CompletionId(
 {
     if (context.graph)
     {
-        for (const auto& binding : context.graph->input_bindings)
+        for (const auto& binding : context.graph->inputs)
         {
             if (binding.input_key == kInputKey &&
                 binding.data_kind == kInputDataKind &&
@@ -327,9 +327,9 @@ std::optional<phase::BattleReplayPlanV1> BuildReplayPlan(
             }
             std::error_code exists_error;
             const bool artifact_exists = std::filesystem::exists(
-                artifact->filename, exists_error);
+                artifact->object_path, exists_error);
             if ((!exists_error && artifact_exists &&
-                 !IsExactFile(artifact->filename,
+                 !IsExactFile(artifact->object_path,
                               artifact->sha256,
                               artifact->size_bytes)) ||
                 exists_error)
@@ -662,8 +662,8 @@ ResolveReplaySourceBinding(
         : std::nullopt;
     if (!dtm || dtm->artifact_kind != "DTM" || dtm->file_ext != ".dtm" ||
         dtm->sha256 != *state->dtm_sha256 ||
-        dtm->filename != *state->dtm_filename ||
-        !IsExactFile(dtm->filename, dtm->sha256, dtm->size_bytes) ||
+        dtm->object_path != *state->dtm_filename ||
+        !IsExactFile(dtm->object_path, dtm->sha256, dtm->size_bytes) ||
         !root || root->checkpoint_savestate_id != state->savestate_id ||
         root->dtm_artifact_id != dtm->artifact_id ||
         root->source_context_kind != "tmv_validation_request" ||
@@ -679,7 +679,7 @@ ResolveReplaySourceBinding(
         validation_attempt->produced_tas_movie_root_id !=
             root->tas_movie_root_id ||
         !itinerary || itinerary->artifact_kind != "TAS_MOVIE_ITINERARY" ||
-        !IsExactFile(itinerary->filename, itinerary->sha256,
+        !IsExactFile(itinerary->object_path, itinerary->sha256,
                      itinerary->size_bytes))
     {
         Fail("movie-paired BattleSet entry lacks exact validated TAS evidence",
@@ -791,7 +791,7 @@ public:
     {
     }
 
-    bool Materialize(const ProgramJobMaterializationContext& context,
+    bool MaterializeJobs(const ProgramJobMaterializationContext& context,
                      WorkflowStepScheduleResult* result_out,
                      std::string* error_out) const override
     {
@@ -1674,10 +1674,9 @@ public:
         const auto causation = "execution-job-" +
             std::to_string(context.job_id);
         std::int64_t dtm_artifact_id = 0;
-        if (!state_->StoreArtifact({
+        if (!StoreWorkspaceArtifactFile(state_, dtm_path, {
                 .sha256 = *dtm_sha,
                 .size_bytes = static_cast<std::int64_t>(dtm_size),
-                .filename = dtm_path.string(),
                 .file_ext = ".dtm",
                 .artifact_kind = "DTM",
                 .created_at_utc = types::UtcNow(),
@@ -1686,10 +1685,9 @@ public:
             }, &dtm_artifact_id, error_out))
             return std::nullopt;
         std::int64_t sav_artifact_id = 0;
-        if (!state_->StoreArtifact({
+        if (!StoreWorkspaceArtifactFile(state_, sav_path, {
                 .sha256 = *sav_sha,
                 .size_bytes = static_cast<std::int64_t>(sav_size),
-                .filename = sav_path.string(),
                 .file_ext = ".sav",
                 .artifact_kind = "SAV",
                 .created_at_utc = types::UtcNow(),
@@ -1698,11 +1696,10 @@ public:
             }, &sav_artifact_id, error_out))
             return std::nullopt;
         std::int64_t itinerary_artifact_id = 0;
-        if (!state_->StoreArtifact({
+        if (!StoreWorkspaceArtifactFile(state_, published_itinerary, {
                 .sha256 = itinerary_sha,
                 .size_bytes =
                     static_cast<std::int64_t>(new_itinerary.size()),
-                .filename = published_itinerary.string(),
                 .file_ext = ".tmi",
                 .artifact_kind = "TAS_MOVIE_ITINERARY",
                 .created_at_utc = types::UtcNow(),
@@ -1802,7 +1799,7 @@ public:
         : execution_(execution), state_(state), analysis_(analysis),
           config_(std::move(config)) {}
 
-    bool Materialize(const ProgramJobMaterializationContext& context,
+    bool MaterializeJobs(const ProgramJobMaterializationContext& context,
                      WorkflowStepScheduleResult* result_out,
                      std::string* error_out) const override
     {

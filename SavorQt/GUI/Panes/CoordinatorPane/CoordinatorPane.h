@@ -4,7 +4,7 @@
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
-#include "GUI/Refresh/RefreshCoordinator.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 
 class CoordinatorController;
 enum class CoordinatorLifecycleState;

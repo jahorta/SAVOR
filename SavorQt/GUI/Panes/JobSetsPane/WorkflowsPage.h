@@ -11,7 +11,7 @@
 #include "DB/SavorDbJobSetService.h"
 #include "DB/SavorDbWorkflowService.h"
 #include "GUI/Common/StatusToast.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 
 #include <cstdint>
 #include <optional>
@@ -118,7 +118,7 @@ private:
     std::vector<TreeDisplayRow> currentJobSetRows_;
     std::vector<savorqt::db::WorkflowJobSetRow> workflowJobSets_;
 
-    savorqt::gui::AsyncRefreshPipeline<savorqt::db::WorkflowListRequest, WorkflowPageResult>* workflowRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<savorqt::db::WorkflowListRequest, WorkflowPageResult>* workflowRefreshPipeline_ = nullptr;
     QFutureWatcher<WorkflowDetailResult> detailWatcher_;
     QFutureWatcher<WorkflowJobSetsResult> jobSetsWatcher_;
     QFutureWatcher<WorkflowCancelResult> workflowCancelWatcher_;

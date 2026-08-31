@@ -76,6 +76,11 @@ struct WorkflowUnitStepTemplate {
     int max_attempts = 1;
 };
 
+struct WorkflowPassThroughMapping {
+    std::string input_key;
+    std::string output_key;
+};
+
 struct WorkflowUnitDefinition {
     std::string unit_kind;
     std::string display_name;
@@ -93,6 +98,7 @@ struct WorkflowUnitDefinition {
     std::vector<WorkflowAuthoredRefRequirement> authored_refs;
     std::vector<WorkflowPortDefinition> required_inputs;
     std::vector<WorkflowPortDefinition> possible_outputs;
+    std::vector<WorkflowPassThroughMapping> pass_through_outputs;
     std::vector<WorkflowLaunchArgumentDefinition> launch_arguments;
     std::vector<WorkflowLaunchArgumentConstraint> launch_argument_constraints;
     std::vector<std::string> internal_step_kinds;

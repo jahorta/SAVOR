@@ -3,6 +3,11 @@
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QSignalBlocker>
+#include <QtCore/QVariant>
+#include <QtGui/QStandardItemModel>
+#include <QtWidgets/QComboBox>
+#include <QtWidgets/QListWidget>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTreeWidget>
 #include <QtWidgets/QTreeWidgetItem>
@@ -14,6 +19,96 @@
 #include <vector>
 
 namespace savorqt::gui {
+
+struct KeyedWidgetItem {
+    QVariant key;
+    QString text;
+    QString tooltip;
+    bool enabled = true;
+};
+
+enum class MissingSelectionPolicy {
+    Clear,
+    PreserveUnresolved,
+    SelectFirstOnInitialLoad,
+};
+
+inline void ReconcileComboItems(QComboBox* combo, const std::vector<KeyedWidgetItem>& items,
+                                const QVariant& selected_key, MissingSelectionPolicy policy,
+                                bool initial_hydration = false)
+{
+    if (combo == nullptr) {
+        return;
+    }
+    const QSignalBlocker blocker(combo);
+    combo->clear();
+    int selected_index = -1;
+    for (const auto& item : items) {
+        combo->addItem(item.text, item.key);
+        const int index = combo->count() - 1;
+        combo->setItemData(index, item.tooltip, Qt::ToolTipRole);
+        if (auto* model = qobject_cast<QStandardItemModel*>(combo->model())) {
+            if (auto* standard_item = model->item(index)) {
+                standard_item->setEnabled(item.enabled);
+            }
+        }
+        if (item.key == selected_key) {
+            selected_index = index;
+        }
+    }
+    if (selected_index < 0 && selected_key.isValid()
+        && policy == MissingSelectionPolicy::PreserveUnresolved) {
+        combo->addItem(QStringLiteral("Unavailable (%1)").arg(selected_key.toString()), selected_key);
+        selected_index = combo->count() - 1;
+        if (auto* model = qobject_cast<QStandardItemModel*>(combo->model())) {
+            if (auto* standard_item = model->item(selected_index)) {
+                standard_item->setEnabled(false);
+            }
+        }
+    }
+    if (selected_index < 0 && initial_hydration
+        && policy == MissingSelectionPolicy::SelectFirstOnInitialLoad && !items.empty()) {
+        selected_index = 0;
+    }
+    combo->setCurrentIndex(selected_index);
+}
+
+inline void ReconcileListItems(QListWidget* list, const std::vector<KeyedWidgetItem>& items,
+                               const QVariant& selected_key, MissingSelectionPolicy policy,
+                               bool initial_hydration = false)
+{
+    if (list == nullptr) {
+        return;
+    }
+    const int scroll_value = list->verticalScrollBar()->value();
+    const QSignalBlocker blocker(list);
+    list->clear();
+    QListWidgetItem* selected_item = nullptr;
+    for (const auto& item : items) {
+        auto* row = new QListWidgetItem(item.text, list);
+        row->setData(Qt::UserRole, item.key);
+        row->setToolTip(item.tooltip);
+        if (!item.enabled) {
+            row->setFlags(row->flags() & ~Qt::ItemIsEnabled);
+        }
+        if (item.key == selected_key) {
+            selected_item = row;
+        }
+    }
+    if (selected_item == nullptr && selected_key.isValid()
+        && policy == MissingSelectionPolicy::PreserveUnresolved) {
+        selected_item = new QListWidgetItem(
+            QStringLiteral("Unavailable (%1)").arg(selected_key.toString()), list);
+        selected_item->setData(Qt::UserRole, selected_key);
+        selected_item->setFlags(selected_item->flags() & ~Qt::ItemIsEnabled);
+    }
+    if (selected_item == nullptr && initial_hydration
+        && policy == MissingSelectionPolicy::SelectFirstOnInitialLoad && list->count() > 0) {
+        selected_item = list->item(0);
+    }
+    list->setCurrentItem(selected_item);
+    list->verticalScrollBar()->setValue(scroll_value);
+}
 
 template <typename Container, typename Equal>
 bool RowsEqual(const Container& lhs, const Container& rhs, Equal equal)

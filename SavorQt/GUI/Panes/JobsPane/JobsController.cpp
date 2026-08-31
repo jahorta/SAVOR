@@ -67,7 +67,7 @@ JobsController::JobsController(QObject* parent)
         emitStateChanged();
     });
 
-    pageRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<JobPageFetchRequest, JobPageResult>(this);
+    pageRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<JobPageFetchRequest, JobPageResult>(this);
     pageRefreshPipeline_->setRefreshIntervalMs(state_.refreshSeconds * 1000);
     pageRefreshPipeline_->setAutoRefreshEnabled(state_.autoRefresh);
     pageRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason reason) -> std::optional<JobPageFetchRequest> {
@@ -80,7 +80,7 @@ JobsController::JobsController(QObject* parent)
         return JobPageFetchRequest{ fetchScope_, before_, after_, fetchPageLimit_ };
     });
     pageRefreshPipeline_->setLoadAndPrepare([](JobPageFetchRequest request) {
-        return savorqt::gui::AsyncRefreshResult<JobPageResult>::Ok(
+        return savorqt::gui::ProjectionLoadResult<JobPageResult>::Ok(
             SavorDbJobService::FetchJobsPage(request.scope, request.before, request.after, request.limit));
     });
     pageRefreshPipeline_->setApply([this](const JobPageResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {

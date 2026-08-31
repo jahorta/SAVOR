@@ -341,11 +341,11 @@ void ArchiveWorkbenchPage::createWidgets()
     tabWidget_->addTab(rehydrateTab, QStringLiteral("Rehydrate Archive"));
     root->addWidget(tabWidget_, 1);
 
-    candidateRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<CandidateRefreshRequest, CandidateResult>(this);
-    previewRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<PreviewRefreshRequest, PreviewResult>(this);
-    rehydratePackageRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<RehydratePackageRefreshRequest, RehydratePackageResult>(this);
-    rehydratePreviewRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<RehydratePreviewRefreshRequest, RehydratePreviewResult>(this);
-    rehydrateRequestRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<RehydrateRequestRefreshRequest, RehydrateRequestResult>(this);
+    candidateRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<CandidateRefreshRequest, CandidateResult>(this);
+    previewRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<PreviewRefreshRequest, PreviewResult>(this);
+    rehydratePackageRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<RehydratePackageRefreshRequest, RehydratePackageResult>(this);
+    rehydratePreviewRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<RehydratePreviewRefreshRequest, RehydratePreviewResult>(this);
+    rehydrateRequestRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<RehydrateRequestRefreshRequest, RehydrateRequestResult>(this);
 }
 
 void ArchiveWorkbenchPage::createRehydrateWidgets(QWidget* tab)
@@ -589,12 +589,12 @@ void ArchiveWorkbenchPage::wireSignals()
     candidateRefreshPipeline_->setLoadAndPrepare([](CandidateRefreshRequest request) {
         const auto page = savorqt::db::SavorDbArchiveService::ListWorkflowCandidates(request.filter);
         if (!page.ok) {
-            return savorqt::gui::AsyncRefreshResult<CandidateResult>::Ok(CandidateResult::Err(page.error));
+            return savorqt::gui::ProjectionLoadResult<CandidateResult>::Ok(CandidateResult::Err(page.error));
         }
         CandidateRefreshData data{};
         data.filter = request.filter;
         data.page = page.value;
-        return savorqt::gui::AsyncRefreshResult<CandidateResult>::Ok(CandidateResult::Ok(std::move(data)));
+        return savorqt::gui::ProjectionLoadResult<CandidateResult>::Ok(CandidateResult::Ok(std::move(data)));
     });
     candidateRefreshPipeline_->setApply([this](const CandidateResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         candidateFetchInFlight_ = false;
@@ -618,18 +618,18 @@ void ArchiveWorkbenchPage::wireSignals()
     previewRefreshPipeline_->setLoadAndPrepare([](PreviewRefreshRequest request) {
         const auto selection = savorqt::db::SavorDbArchiveService::BuildSelection(request.selection_request);
         if (!selection.ok) {
-            return savorqt::gui::AsyncRefreshResult<PreviewResult>::Ok(PreviewResult::Err(selection.error));
+            return savorqt::gui::ProjectionLoadResult<PreviewResult>::Ok(PreviewResult::Err(selection.error));
         }
         PreviewRefreshData data{};
         data.selection = selection.value;
         if (data.selection.selected_count > 0) {
             const auto preview = savorqt::db::SavorDbArchiveService::PreviewWorkflowArchive(data.selection.selection);
             if (!preview.ok) {
-                return savorqt::gui::AsyncRefreshResult<PreviewResult>::Ok(PreviewResult::Err(preview.error));
+                return savorqt::gui::ProjectionLoadResult<PreviewResult>::Ok(PreviewResult::Err(preview.error));
             }
             data.preview = preview.value;
         }
-        return savorqt::gui::AsyncRefreshResult<PreviewResult>::Ok(PreviewResult::Ok(std::move(data)));
+        return savorqt::gui::ProjectionLoadResult<PreviewResult>::Ok(PreviewResult::Ok(std::move(data)));
     });
     previewRefreshPipeline_->setApply([this](const PreviewResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         previewFetchInFlight_ = false;
@@ -720,11 +720,11 @@ void ArchiveWorkbenchPage::wireSignals()
     rehydratePackageRefreshPipeline_->setLoadAndPrepare([](RehydratePackageRefreshRequest request) {
         const auto packages = savorqt::db::SavorDbArchiveService::ListArchivePackages(request.filter);
         if (!packages.ok) {
-            return savorqt::gui::AsyncRefreshResult<RehydratePackageResult>::Ok(RehydratePackageResult::Err(packages.error));
+            return savorqt::gui::ProjectionLoadResult<RehydratePackageResult>::Ok(RehydratePackageResult::Err(packages.error));
         }
         RehydratePackageRefreshData data{};
         data.packages = packages.value;
-        return savorqt::gui::AsyncRefreshResult<RehydratePackageResult>::Ok(RehydratePackageResult::Ok(std::move(data)));
+        return savorqt::gui::ProjectionLoadResult<RehydratePackageResult>::Ok(RehydratePackageResult::Ok(std::move(data)));
     });
     rehydratePackageRefreshPipeline_->setApply([this](const RehydratePackageResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         rehydratePackageFetchInFlight_ = false;
@@ -756,11 +756,11 @@ void ArchiveWorkbenchPage::wireSignals()
     rehydratePreviewRefreshPipeline_->setLoadAndPrepare([](RehydratePreviewRefreshRequest request) {
         const auto preview = savorqt::db::SavorDbArchiveService::PreviewRehydrate(request.archive_package_id, request.target_namespace);
         if (!preview.ok) {
-            return savorqt::gui::AsyncRefreshResult<RehydratePreviewResult>::Ok(RehydratePreviewResult::Err(preview.error));
+            return savorqt::gui::ProjectionLoadResult<RehydratePreviewResult>::Ok(RehydratePreviewResult::Err(preview.error));
         }
         RehydratePreviewRefreshData data{};
         data.preview = preview.value;
-        return savorqt::gui::AsyncRefreshResult<RehydratePreviewResult>::Ok(RehydratePreviewResult::Ok(std::move(data)));
+        return savorqt::gui::ProjectionLoadResult<RehydratePreviewResult>::Ok(RehydratePreviewResult::Ok(std::move(data)));
     });
     rehydratePreviewRefreshPipeline_->setApply([this](const RehydratePreviewResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         rehydratePreviewFetchInFlight_ = false;
@@ -788,11 +788,11 @@ void ArchiveWorkbenchPage::wireSignals()
     rehydrateRequestRefreshPipeline_->setLoadAndPrepare([](RehydrateRequestRefreshRequest request) {
         const auto requests = savorqt::db::SavorDbArchiveService::ListRehydrateRequests(request.archive_package_id);
         if (!requests.ok) {
-            return savorqt::gui::AsyncRefreshResult<RehydrateRequestResult>::Ok(RehydrateRequestResult::Err(requests.error));
+            return savorqt::gui::ProjectionLoadResult<RehydrateRequestResult>::Ok(RehydrateRequestResult::Err(requests.error));
         }
         RehydrateRequestRefreshData data{};
         data.requests = requests.value;
-        return savorqt::gui::AsyncRefreshResult<RehydrateRequestResult>::Ok(RehydrateRequestResult::Ok(std::move(data)));
+        return savorqt::gui::ProjectionLoadResult<RehydrateRequestResult>::Ok(RehydrateRequestResult::Ok(std::move(data)));
     });
     rehydrateRequestRefreshPipeline_->setApply([this](const RehydrateRequestResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         rehydrateRequestFetchInFlight_ = false;

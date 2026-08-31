@@ -452,7 +452,7 @@ void BattlePlanEditor::populateActionLibrary()
 
 void BattlePlanEditor::configurePredicateLibraryRefresh()
 {
-    predicateRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<PredicateRefreshRequest, PredicateRefreshData>(this);
+    predicateRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<PredicateRefreshRequest, PredicateRefreshData>(this);
     predicateRefreshPipeline_->setAutoRefreshEnabled(false);
     predicateRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) -> std::optional<PredicateRefreshRequest> {
         return PredicateRefreshRequest{
@@ -467,7 +467,7 @@ void BattlePlanEditor::configurePredicateLibraryRefresh()
             std::move(request.revision_state), std::move(request.search_text), std::nullopt, 250);
         data.published = savorqt::db::SavorDbAuthoringService::ListPredicateGroupRevisions(
             std::optional<std::string>("PUBLISHED"), {}, std::nullopt, 500);
-        return savorqt::gui::AsyncRefreshResult<PredicateRefreshData>::Ok(std::move(data));
+        return savorqt::gui::ProjectionLoadResult<PredicateRefreshData>::Ok(std::move(data));
     });
     predicateRefreshPipeline_->setApply([this](const PredicateRefreshData& data, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         if (!data.library.ok || !data.published.ok) {
@@ -522,13 +522,13 @@ void BattlePlanEditor::configurePredicateLibraryRefresh()
     });
     predicateRefreshPipeline_->setActive(true);
 
-    predicateDetailPipeline_ = new savorqt::gui::AsyncRefreshPipeline<std::int64_t, PredicateDetailData>(this);
+    predicateDetailPipeline_ = new savorqt::gui::DatabaseProjectionController<std::int64_t, PredicateDetailData>(this);
     predicateDetailPipeline_->setAutoRefreshEnabled(false);
     predicateDetailPipeline_->setRequestBuilder([](savorqt::gui::RefreshReason) -> std::optional<std::int64_t> {
         return std::nullopt;
     });
     predicateDetailPipeline_->setLoadAndPrepare([](std::int64_t revisionId) {
-        return savorqt::gui::AsyncRefreshResult<PredicateDetailData>::Ok(
+        return savorqt::gui::ProjectionLoadResult<PredicateDetailData>::Ok(
             savorqt::db::SavorDbAuthoringService::GetPredicateGroupRevision(revisionId));
     });
     predicateDetailPipeline_->setApply([this](const PredicateDetailData& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {

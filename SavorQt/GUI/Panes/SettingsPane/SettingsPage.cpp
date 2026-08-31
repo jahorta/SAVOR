@@ -320,8 +320,22 @@ void SettingsPage::createWidgets()
     coordinatorLayout->addWidget(coordinatorValidationLabel_);
 
     if (coordinatorController_) {
-        connect(isoPathEdit_, &QLineEdit::textChanged, coordinatorController_, &CoordinatorController::setIsoPath);
-        connect(dolphinBaseDirEdit_, &QLineEdit::textChanged, coordinatorController_, &CoordinatorController::setDolphinBaseDir);
+        connect(isoPathEdit_, &QLineEdit::textEdited, this, [this](const QString& value) {
+            isoPathDraft_.edit(value);
+        });
+        connect(dolphinBaseDirEdit_, &QLineEdit::textEdited, this, [this](const QString& value) {
+            dolphinBaseDirDraft_.edit(value);
+        });
+        connect(isoPathEdit_, &QLineEdit::editingFinished, this, [this]() {
+            if (!coordinatorController_->isStopped()) return;
+            coordinatorController_->setIsoPath(isoPathDraft_.value());
+            isoPathDraft_.commit();
+        });
+        connect(dolphinBaseDirEdit_, &QLineEdit::editingFinished, this, [this]() {
+            if (!coordinatorController_->isStopped()) return;
+            coordinatorController_->setDolphinBaseDir(dolphinBaseDirDraft_.value());
+            dolphinBaseDirDraft_.commit();
+        });
         connect(startPausedCheck_, &QCheckBox::toggled, coordinatorController_, &CoordinatorController::setStartPaused);
     }
     connect(isoBrowseButton_, &QPushButton::clicked, this, &SettingsPage::browseForIsoPath);
@@ -818,13 +832,15 @@ void SettingsPage::refreshCoordinatorUi()
         return;
     }
 
-    {
+    isoPathDraft_.observeBacking(coordinatorController_->isoPath());
+    dolphinBaseDirDraft_.observeBacking(coordinatorController_->dolphinBaseDir());
+    if (!isoPathDraft_.dirty()) {
         const QSignalBlocker blocker(isoPathEdit_);
-        isoPathEdit_->setText(coordinatorController_->isoPath());
+        isoPathEdit_->setText(isoPathDraft_.value());
     }
-    {
+    if (!dolphinBaseDirDraft_.dirty()) {
         const QSignalBlocker blocker(dolphinBaseDirEdit_);
-        dolphinBaseDirEdit_->setText(coordinatorController_->dolphinBaseDir());
+        dolphinBaseDirEdit_->setText(dolphinBaseDirDraft_.value());
     }
     {
         const QSignalBlocker blocker(startPausedCheck_);

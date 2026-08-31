@@ -42,7 +42,7 @@ ArtifactsController::ArtifactsController(QObject* parent)
     loadSettings();
     syncFetchStateFromView();
 
-    pageRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<ObjectPageFetchRequest, ObjectPageResult>(this);
+    pageRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<ObjectPageFetchRequest, ObjectPageResult>(this);
     pageRefreshPipeline_->setAutoRefreshEnabled(false);
     pageRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) -> std::optional<ObjectPageFetchRequest> {
         refreshRootsState();
@@ -65,7 +65,7 @@ ArtifactsController::ArtifactsController(QObject* parent)
         return ObjectPageFetchRequest{ query };
     });
     pageRefreshPipeline_->setLoadAndPrepare([](ObjectPageFetchRequest request) {
-        return savorqt::gui::AsyncRefreshResult<ObjectPageResult>::Ok(
+        return savorqt::gui::ProjectionLoadResult<ObjectPageResult>::Ok(
             SavorDbArtifactService::ListArtifacts(request.query));
     });
     pageRefreshPipeline_->setApply([this](const ObjectPageResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {

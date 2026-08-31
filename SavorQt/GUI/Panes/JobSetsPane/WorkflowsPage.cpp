@@ -835,7 +835,7 @@ void WorkflowsPage::createWidgets()
     splitter->setStretchFactor(1, 3);
     rootLayout->addWidget(splitter, 1);
 
-    workflowRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<savorqt::db::WorkflowListRequest, WorkflowPageResult>(this);
+    workflowRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<savorqt::db::WorkflowListRequest, WorkflowPageResult>(this);
 }
 
 void WorkflowsPage::wireSignals()
@@ -934,7 +934,7 @@ void WorkflowsPage::wireSignals()
         return request;
     });
     workflowRefreshPipeline_->setLoadAndPrepare([](savorqt::db::WorkflowListRequest request) {
-        return savorqt::gui::AsyncRefreshResult<WorkflowPageResult>::Ok(
+        return savorqt::gui::ProjectionLoadResult<WorkflowPageResult>::Ok(
             savorqt::db::SavorDbWorkflowService::ListWorkflowInstances(request));
     });
     workflowRefreshPipeline_->setApply([this](const WorkflowPageResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {

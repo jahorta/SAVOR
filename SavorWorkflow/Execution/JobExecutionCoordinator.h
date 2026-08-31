@@ -63,9 +63,8 @@ struct JobExecutionCoordinatorConfig {
     // Global preparation capacity per currently ready worker. Prepared
     // worksets are not owned by a worker until submission begins.
     std::size_t prepared_worksets_per_ready_worker = 2;
-    std::size_t terminal_persistence_threads = 4;
-    std::size_t worker_event_batch_size = 32;
-    std::chrono::milliseconds worker_event_collection_delay{2};
+    std::size_t persistence_io_threads = 4;
+    std::size_t max_pending_evidence_per_dispatch = 4096;
     std::size_t cancellation_batch_size = 32;
     std::chrono::milliseconds cancellation_mutation_delay{2};
     std::uint32_t maximum_items_per_workset =
@@ -92,6 +91,14 @@ enum class JobExecutionWorkerDispatchState : std::uint8_t {
     Draining,
 };
 
+enum class JobExecutionDispatchPersistenceState : std::uint8_t {
+    Drained = 0,
+    Ready,
+    InFlight,
+    RetryPending,
+    GloballyBlocked,
+};
+
 struct JobExecutionWorkerDispatchSnapshot {
     std::size_t worker_id = 0;
     std::uint64_t process_generation = 0;
@@ -100,6 +107,10 @@ struct JobExecutionWorkerDispatchSnapshot {
     std::optional<std::int64_t> submitting_dispatch_attempt_id;
     std::optional<std::int64_t> active_dispatch_attempt_id;
     std::size_t persistence_queue_depth = 0;
+    JobExecutionDispatchPersistenceState persistence_state =
+        JobExecutionDispatchPersistenceState::Drained;
+    std::uint32_t persistence_retry_attempt = 0;
+    std::string persistence_diagnostic;
     std::size_t mailbox_depth = 0;
     std::size_t pending_acknowledgements = 0;
     std::size_t pending_cancellations = 0;
@@ -131,19 +142,13 @@ struct JobExecutionCoordinatorTelemetry {
     std::uint64_t worker_terminal_ack_abandoned_generation_loss = 0;
     std::uint64_t worker_terminal_staging_failures = 0;
     std::uint64_t worker_terminal_retry_attempts = 0;
-    std::uint64_t worker_event_batches = 0;
-    std::uint64_t worker_event_batch_items = 0;
-    std::uint64_t worker_event_batch_rollbacks = 0;
-    std::uint64_t worker_event_batch_retries = 0;
-    std::uint64_t worker_event_full_flushes = 0;
-    std::uint64_t worker_event_deadline_flushes = 0;
-    std::uint64_t worker_event_barrier_flushes = 0;
-    std::uint64_t worker_event_batch_max_size = 0;
-    std::uint64_t worker_event_batch_total_size = 0;
-    double worker_event_batch_average_size = 0.0;
-    std::uint64_t worker_event_batch_max_collection_age_ms = 0;
-    std::size_t worker_event_batch_queue_depth = 0;
-    std::size_t worker_event_batch_queue_high_water = 0;
+    std::uint64_t dispatch_persistence_attempts = 0;
+    std::uint64_t dispatch_persistence_events = 0;
+    std::uint64_t dispatch_persistence_failures = 0;
+    std::uint64_t dispatch_persistence_retries = 0;
+    std::size_t persistence_streams_ready = 0;
+    std::size_t persistence_streams_in_flight = 0;
+    std::size_t persistence_streams_retrying = 0;
     std::uint64_t blob_readiness_failures = 0;
     std::uint64_t cancellations_delivered = 0;
     std::uint64_t cancellation_precommit_holds_registered = 0;
@@ -226,7 +231,7 @@ struct JobExecutionCoordinatorTelemetry {
     bool cancellation_admission_open = false;
     bool user_admission_paused = false;
     bool invariant_admission_paused = false;
-    bool storage_admission_paused = false;
+    bool global_storage_unavailable = false;
 
     std::string last_error;
 };

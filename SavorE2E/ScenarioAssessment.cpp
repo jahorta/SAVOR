@@ -167,7 +167,7 @@ void AssessCommonScenarioExecution(
     assessment->Require(
         telemetry.execution.persistence_queue_depth == 0
             && telemetry.execution.draining_worksets == 0
-            && !telemetry.execution.storage_admission_paused,
+            && !telemetry.execution.global_storage_unavailable,
         "job execution coordinator retained terminal or draining state");
     assessment->Require(
         !telemetry.execution.invariant_admission_paused,

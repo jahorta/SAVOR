@@ -6,7 +6,7 @@
 
 #include "DB/SavorDbArchiveService.h"
 #include "GUI/Common/StatusToast.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 
 #include <cstdint>
 #include <optional>
@@ -155,11 +155,11 @@ private:
     QString inlineMessage_;
     QString rehydrateInlineMessage_;
 
-    savorqt::gui::AsyncRefreshPipeline<CandidateRefreshRequest, CandidateResult>* candidateRefreshPipeline_ = nullptr;
-    savorqt::gui::AsyncRefreshPipeline<PreviewRefreshRequest, PreviewResult>* previewRefreshPipeline_ = nullptr;
-    savorqt::gui::AsyncRefreshPipeline<RehydratePackageRefreshRequest, RehydratePackageResult>* rehydratePackageRefreshPipeline_ = nullptr;
-    savorqt::gui::AsyncRefreshPipeline<RehydratePreviewRefreshRequest, RehydratePreviewResult>* rehydratePreviewRefreshPipeline_ = nullptr;
-    savorqt::gui::AsyncRefreshPipeline<RehydrateRequestRefreshRequest, RehydrateRequestResult>* rehydrateRequestRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<CandidateRefreshRequest, CandidateResult>* candidateRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<PreviewRefreshRequest, PreviewResult>* previewRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<RehydratePackageRefreshRequest, RehydratePackageResult>* rehydratePackageRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<RehydratePreviewRefreshRequest, RehydratePreviewResult>* rehydratePreviewRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<RehydrateRequestRefreshRequest, RehydrateRequestResult>* rehydrateRequestRefreshPipeline_ = nullptr;
     QFutureWatcher<ExecuteResult> executeWatcher_;
     QFutureWatcher<RehydrateExecuteResult> rehydrateExecuteWatcher_;
     QFutureWatcher<RehydrateCleanupResult> rehydrateCleanupWatcher_;

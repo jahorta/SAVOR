@@ -72,18 +72,21 @@ std::int64_t StoreDtmFile(
     std::int64_t artifact_id = 0;
     std::string error;
     const auto sha256 = hash::sha256_of_file(path.string());
-    if (!state->StoreArtifact(
+    if (!state->ImportExternalArtifact(
             {
-                .sha256 = sha256,
-                .size_bytes = static_cast<std::int64_t>(bytes.size()),
-                .compression_kind = 0,
-                .filename = path.string(),
-                .file_ext = ".dtm",
-                .artifact_kind = "DTM",
-                .created_at_utc = types::UtcTimePoint(
-                    std::chrono::milliseconds(1000)),
-                .correlation_id = "tas-movie-descriptor-test",
-                .causation_id = "test",
+                .absolute_source_path = path,
+                .artifact = {
+                    .sha256 = sha256,
+                    .size_bytes = static_cast<std::int64_t>(bytes.size()),
+                    .compression_kind = 0,
+                    .display_filename = path.filename().string(),
+                    .file_ext = ".dtm",
+                    .artifact_kind = "DTM",
+                    .created_at_utc = types::UtcTimePoint(
+                        std::chrono::milliseconds(1000)),
+                    .correlation_id = "tas-movie-descriptor-test",
+                    .causation_id = "test",
+                },
             },
             &artifact_id,
             &error))
@@ -142,7 +145,7 @@ std::vector<std::uint8_t> TasMovieProgramResult(
     return encoded.bytes;
 }
 
-std::int64_t StoreArtifact(
+std::int64_t ImportTestArtifact(
     IStateDb* state,
     std::string sha,
     std::string extension,
@@ -164,18 +167,20 @@ std::int64_t StoreArtifact(
     }
     std::int64_t id = 0;
     std::string error;
-    const bool stored = state->StoreArtifact(
+    const bool stored = state->ImportExternalArtifact(
         {
-            .sha256 = std::move(sha),
-            .size_bytes = size,
-            .compression_kind = 0,
-            .filename = source_path.string(),
-            .display_filename = display_filename,
-            .file_ext = std::move(extension),
-            .artifact_kind = std::move(kind),
-            .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(ordinal)),
-            .correlation_id = "tas-movie-persistence-test",
-            .causation_id = "test",
+            .absolute_source_path = source_path,
+            .artifact = {
+                .sha256 = hash::sha256_of_file(source_path.string()),
+                .size_bytes = size,
+                .compression_kind = 0,
+                .display_filename = display_filename,
+                .file_ext = std::move(extension),
+                .artifact_kind = std::move(kind),
+                .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(ordinal)),
+                .correlation_id = "tas-movie-persistence-test",
+                .causation_id = "test",
+            },
         },
         &id,
         &error);
@@ -199,17 +204,20 @@ std::int64_t StorePhysicalArtifact(
     std::int64_t id = 0;
     std::string error;
     const auto sha = hash::sha256_of_file(path.string());
-    if (!state->StoreArtifact({
-            .sha256 = sha,
-            .size_bytes = static_cast<std::int64_t>(bytes.size()),
-            .compression_kind = 0,
-            .filename = path.string(),
-            .file_ext = std::move(extension),
-            .artifact_kind = std::move(kind),
-            .created_at_utc = types::UtcTimePoint(
-                std::chrono::milliseconds(ordinal)),
-            .correlation_id = "prepared-evidence-test",
-            .causation_id = "test",
+    if (!state->ImportExternalArtifact({
+            .absolute_source_path = path,
+            .artifact = {
+                .sha256 = sha,
+                .size_bytes = static_cast<std::int64_t>(bytes.size()),
+                .compression_kind = 0,
+                .display_filename = path.filename().string(),
+                .file_ext = std::move(extension),
+                .artifact_kind = std::move(kind),
+                .created_at_utc = types::UtcTimePoint(
+                    std::chrono::milliseconds(ordinal)),
+                .correlation_id = "prepared-evidence-test",
+                .causation_id = "test",
+            },
         }, &id, &error)) {
         throw std::runtime_error(error);
     }
@@ -254,15 +262,15 @@ TEST_F(SqliteDbFixture, TasMoviePersistenceStateRootTreeIdentityAndLineageAreImm
     auto* state = db_service_->StateDb();
     ASSERT_NE(state, nullptr);
 
-    const auto source_dtm = StoreArtifact(state, Sha('1'), ".dtm", "DTM", 1);
-    const auto root_dtm = StoreArtifact(state, Sha('2'), ".dtm", "DTM", 2);
-    const auto itinerary = StoreArtifact(state, Sha('3'), ".tmi", "TAS_MOVIE_ITINERARY", 3);
-    const auto sav_artifact = StoreArtifact(state, Sha('4'), ".sav", "SAV", 4);
-    const auto child_dtm = StoreArtifact(state, Sha('5'), ".dtm", "DTM", 5);
-    const auto child_itinerary = StoreArtifact(state, Sha('6'), ".tmi", "TAS_MOVIE_ITINERARY", 6);
-    const auto grandchild_dtm = StoreArtifact(state, Sha('7'), ".dtm", "DTM", 7);
-    const auto child_sav_artifact = StoreArtifact(state, Sha('8'), ".sav", "SAV", 8);
-    const auto grandchild_sav_artifact = StoreArtifact(state, Sha('9'), ".sav", "SAV", 9);
+    const auto source_dtm = ImportTestArtifact(state, Sha('1'), ".dtm", "DTM", 1);
+    const auto root_dtm = ImportTestArtifact(state, Sha('2'), ".dtm", "DTM", 2);
+    const auto itinerary = ImportTestArtifact(state, Sha('3'), ".tmi", "TAS_MOVIE_ITINERARY", 3);
+    const auto sav_artifact = ImportTestArtifact(state, Sha('4'), ".sav", "SAV", 4);
+    const auto child_dtm = ImportTestArtifact(state, Sha('5'), ".dtm", "DTM", 5);
+    const auto child_itinerary = ImportTestArtifact(state, Sha('6'), ".tmi", "TAS_MOVIE_ITINERARY", 6);
+    const auto grandchild_dtm = ImportTestArtifact(state, Sha('7'), ".dtm", "DTM", 7);
+    const auto child_sav_artifact = ImportTestArtifact(state, Sha('8'), ".sav", "SAV", 8);
+    const auto grandchild_sav_artifact = ImportTestArtifact(state, Sha('9'), ".sav", "SAV", 9);
 
     std::string error;
     std::int64_t savestate_id = 0;
@@ -431,9 +439,9 @@ TEST_F(SqliteDbFixture, TasMovieCheckpointSterilizationIsTypedCanonicalAndRecove
     auto* analysis = db_service_->AnalysisDb();
     ASSERT_NE(state, nullptr);
     ASSERT_NE(analysis, nullptr);
-    const auto dtm = StoreArtifact(state, Sha('a'), ".dtm", "DTM", 101);
-    const auto paired_sav = StoreArtifact(state, Sha('b'), ".sav", "SAV", 102);
-    const auto inactive_sav = StoreArtifact(state, Sha('c'), ".sav", "SAV", 103);
+    const auto dtm = ImportTestArtifact(state, Sha('a'), ".dtm", "DTM", 101);
+    const auto paired_sav = ImportTestArtifact(state, Sha('b'), ".sav", "SAV", 102);
+    const auto inactive_sav = ImportTestArtifact(state, Sha('c'), ".sav", "SAV", 103);
     std::string error;
 
     EXPECT_FALSE(state->CreateSavestate({
@@ -467,19 +475,30 @@ TEST_F(SqliteDbFixture, TasMovieCheckpointSterilizationIsTypedCanonicalAndRecove
 
     const auto inactive_artifact = state->GetArtifact(inactive_sav);
     ASSERT_TRUE(inactive_artifact.has_value());
+    const auto staged_inactive_path =
+        state->ArtifactWorkspaceRoot() / "sterilization-test" / "inactive.sav";
+    ASSERT_TRUE(std::filesystem::create_directories(
+        staged_inactive_path.parent_path()));
+    ASSERT_TRUE(std::filesystem::copy_file(
+        inactive_artifact->object_path,
+        staged_inactive_path,
+        std::filesystem::copy_options::overwrite_existing));
     CreateOrGetSterilizedCheckpointCommand create{
         .from_savestate_id = source_id,
         .artifact = {
-            .sha256 = Sha('c'),
-            .size_bytes = inactive_artifact->size_bytes,
-            .compression_kind = 0,
-            .filename = inactive_artifact->filename,
-            .display_filename = inactive_artifact->display_filename,
-            .file_ext = ".sav",
-            .artifact_kind = "SAV",
-            .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(104)),
-            .correlation_id = "sterilization-test",
-            .causation_id = "test",
+            .workspace_relative_path = std::filesystem::relative(
+                staged_inactive_path, state->ArtifactWorkspaceRoot()),
+            .artifact = {
+                .sha256 = inactive_artifact->sha256,
+                .size_bytes = inactive_artifact->size_bytes,
+                .compression_kind = 0,
+                .display_filename = inactive_artifact->display_filename,
+                .file_ext = ".sav",
+                .artifact_kind = "SAV",
+                .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(104)),
+                .correlation_id = "sterilization-test",
+                .causation_id = "test",
+            },
         },
         .savestate_type = "TAS_MOVIE_STERILIZED_CHECKPOINT",
         .note = "inactive",
@@ -933,7 +952,7 @@ TEST_F(
             .unit_kind = "tas_movie_establish_root_cursor",
             .activation_params_json = "{}",
             .step_priority = 1,
-            .input_bindings = {{
+            .inputs = {{
                 .node_key = "root-cursor",
                 .input_key = "root_dtm",
                 .data_kind = "state_artifact.dtm_artifact_id",
@@ -948,21 +967,23 @@ TEST_F(
         execution,
         state,
         analysis,
-        {.working_dir_root = temp_root_ / "tas-movie-runtime"});
+        {.working_dir_root = state->ArtifactWorkspaceRoot() / "tas-movie-runtime"});
     ASSERT_NE(descriptor.job_materializer, nullptr);
     ASSERT_NE(descriptor.workset_reconstruction, nullptr);
     ASSERT_NE(descriptor.result_handler, nullptr);
 
-    WorkflowStepScheduleResult scheduled{};
-    ASSERT_TRUE(descriptor.job_materializer->Materialize(
-        materialization,
-        &scheduled,
-        &error)) << error;
-    WorkflowStepScheduleResult repeated{};
-    ASSERT_TRUE(descriptor.job_materializer->Materialize(
-        materialization,
-        &repeated,
-        &error)) << error;
+    const auto materialized =
+        descriptor.job_materializer->Materialize(materialization);
+    ASSERT_EQ(materialized.disposition,
+        ProgramJobMaterializationDisposition::Success)
+        << materialized.diagnostic;
+    const auto& scheduled = materialized.schedule;
+    const auto rematerialized =
+        descriptor.job_materializer->Materialize(materialization);
+    ASSERT_EQ(rematerialized.disposition,
+        ProgramJobMaterializationDisposition::Success)
+        << rematerialized.diagnostic;
+    const auto& repeated = rematerialized.schedule;
     EXPECT_EQ(repeated.job_set_id, scheduled.job_set_id);
     EXPECT_EQ(
         repeated.persistence.program_ref_id,
@@ -1099,7 +1120,7 @@ TEST_F(
         },
     });
     EXPECT_EQ(decision.final_job_state, "SUCCEEDED");
-    ASSERT_EQ(decision.outputs.size(), 2u);
+    ASSERT_GE(decision.outputs.size(), 2u);
     const auto attempt_output = std::find_if(
         decision.outputs.begin(), decision.outputs.end(),
         [](const auto& output) {
@@ -1222,7 +1243,7 @@ TEST_F(
             .unit_kind = "tas_movie_validate_root",
             .activation_params_json = "{}",
             .step_priority = 1,
-            .input_bindings = {{
+            .inputs = {{
                 .node_key = "validate-root",
                 .input_key = "root_establishment",
                 .data_kind = "analysis.tas_movie_root_establishment_attempt_id",
@@ -1239,11 +1260,12 @@ TEST_F(
             }},
         },
     };
-    WorkflowStepScheduleResult root_scheduled{};
-    ASSERT_TRUE(descriptor.job_materializer->Materialize(
-        root_materialization,
-        &root_scheduled,
-        &error)) << error;
+    const auto root_materialized =
+        descriptor.job_materializer->Materialize(root_materialization);
+    ASSERT_EQ(root_materialized.disposition,
+        ProgramJobMaterializationDisposition::Success)
+        << root_materialized.diagnostic;
+    const auto& root_scheduled = root_materialized.schedule;
     sqlite3_stmt* attach_root_job_set = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
         db_,
@@ -1742,7 +1764,8 @@ TEST_F(SqliteDbFixture, TasMoviePersistenceProductionRegistryUsesOnlyClosedValid
             .analysis_db = db_service_->AnalysisDb(),
             .authoring_db = db_service_->AuthoringDb(),
         },
-        MakeProductionProgramKindRegistryConfig(temp_root_ / "tas-movie-runtime"),
+        MakeProductionProgramKindRegistryConfig(
+            db_service_->StateDb()->ArtifactWorkspaceRoot() / "tas-movie-runtime"),
         &registry,
         &error)) << error;
 

@@ -13,8 +13,12 @@
 namespace savorqt {
 namespace {
 
-savor::db::DbConfigPaths BuildPaths(const std::filesystem::path& root) {
-    return savor::db::bootstrap::MakeDatabaseRootConfigPaths(root);
+savor::db::DbConfigPaths BuildPaths(
+    const std::filesystem::path& root,
+    const std::filesystem::path& artifact_workspace_root) {
+    auto paths = savor::db::bootstrap::MakeDatabaseRootConfigPaths(root);
+    paths.artifact_workspace_root = artifact_workspace_root;
+    return paths;
 }
 
 bool EnsureStorageRoot(const std::filesystem::path& root, std::string* error_out) {
@@ -64,7 +68,8 @@ bool SavorDbRuntime::start(const std::filesystem::path& root, std::string* error
         return false;
     }
 
-    auto service = std::make_unique<savor::db::core::DBService>(BuildPaths(root));
+    auto service = std::make_unique<savor::db::core::DBService>(
+        BuildPaths(root, resultStagingRoot()));
     if (!service->Start(error_out)) {
         return false;
     }

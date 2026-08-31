@@ -1,9 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "../Common/Events/EventEnvelope.h"
@@ -36,12 +38,10 @@ inline SavestatePlaybackState ParseSavestatePlaybackState(
     return SavestatePlaybackState::Unknown;
 }
 
-struct StoreArtifactCommand {
+struct ArtifactStoreMetadata {
     std::string sha256;
     std::int64_t size_bytes = 0;
     int compression_kind = 0;
-    // Physical source used only for ingestion; never persisted as a locator.
-    std::string filename;
     std::string display_filename;
     std::string file_ext;
     std::string artifact_kind;
@@ -80,7 +80,7 @@ struct ArtifactRecord {
     std::int64_t size_bytes = 0;
     int compression_kind = 0;
     // Resolved physical path for trusted backend consumers.
-    std::string filename;
+    std::string object_path;
     std::string object_relpath;
     std::string display_filename;
     std::string file_ext;
@@ -88,9 +88,19 @@ struct ArtifactRecord {
     types::UtcTimePoint created_at_utc{};
 };
 
+struct StoreWorkspaceArtifactCommand {
+    std::filesystem::path workspace_relative_path;
+    ArtifactStoreMetadata artifact;
+};
+
+struct ImportExternalArtifactCommand {
+    std::filesystem::path absolute_source_path;
+    ArtifactStoreMetadata artifact;
+};
+
 struct CreateOrGetSterilizedCheckpointCommand {
     std::int64_t from_savestate_id = 0;
-    StoreArtifactCommand artifact;
+    StoreWorkspaceArtifactCommand artifact;
     std::string savestate_type = "TAS_MOVIE_STERILIZED_CHECKPOINT";
     std::string note;
     std::string method_kind = "tasmovie.checkpoint_sterilize.v1";
@@ -194,8 +204,15 @@ struct SavestateDerivationRecord {
 struct IStateDb {
     virtual ~IStateDb() = default;
 
-    virtual bool StoreArtifact(
-        const StoreArtifactCommand& command,
+    [[nodiscard]] virtual std::filesystem::path ArtifactWorkspaceRoot() const = 0;
+
+    virtual bool StoreWorkspaceArtifact(
+        const StoreWorkspaceArtifactCommand& command,
+        std::int64_t* artifact_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool ImportExternalArtifact(
+        const ImportExternalArtifactCommand& command,
         std::int64_t* artifact_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
@@ -322,5 +339,52 @@ struct IStateDb {
     virtual std::optional<ArtifactPayloadRecord> ResolveArtifactPayload(
         const events::EventEnvelope& envelope) const = 0;
 };
+
+inline std::optional<StoreWorkspaceArtifactCommand>
+MakeStoreWorkspaceArtifactCommand(
+    IStateDb* state_db,
+    const std::filesystem::path& source_path,
+    ArtifactStoreMetadata artifact,
+    std::string* error_out = nullptr) {
+    if (state_db == nullptr || !source_path.is_absolute()) {
+        if (error_out) {
+            *error_out = "workspace artifact publisher requires an absolute source path";
+        }
+        return std::nullopt;
+    }
+    std::error_code ec;
+    const auto root = std::filesystem::weakly_canonical(
+        state_db->ArtifactWorkspaceRoot(), ec);
+    if (ec || root.empty()) {
+        if (error_out) *error_out = "artifact workspace root cannot be resolved";
+        return std::nullopt;
+    }
+    const auto source = std::filesystem::weakly_canonical(source_path, ec);
+    const auto relative = source.lexically_relative(root);
+    if (ec || relative.empty() ||
+        (!relative.empty() && relative.begin()->string() == "..")) {
+        if (error_out) {
+            *error_out = "artifact source is outside the configured workspace: " +
+                source_path.string();
+        }
+        return std::nullopt;
+    }
+    return StoreWorkspaceArtifactCommand{
+        .workspace_relative_path = relative,
+        .artifact = std::move(artifact),
+    };
+}
+
+inline bool StoreWorkspaceArtifactFile(
+    IStateDb* state_db,
+    const std::filesystem::path& source_path,
+    ArtifactStoreMetadata artifact,
+    std::int64_t* artifact_id_out = nullptr,
+    std::string* error_out = nullptr) {
+    auto command = MakeStoreWorkspaceArtifactCommand(
+        state_db, source_path, std::move(artifact), error_out);
+    return command && state_db->StoreWorkspaceArtifact(
+        *command, artifact_id_out, error_out);
+}
 
 } // namespace savor::db

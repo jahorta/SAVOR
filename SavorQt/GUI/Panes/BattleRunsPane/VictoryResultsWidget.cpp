@@ -1,7 +1,7 @@
 #include "VictoryResultsWidget.h"
 
 #include "DB/SavorDbTasRouteService.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QComboBox>
@@ -63,12 +63,16 @@ VictoryResultsWidget::VictoryResultsWidget(Actions actions, QWidget* parent)
     splitter->setStretchFactor(1, 2);
     root->addWidget(splitter, 1);
 
-    refresh_ = new savorqt::gui::AsyncRefreshPipeline<std::int64_t,
+    refresh_ = new savorqt::gui::DatabaseProjectionController<std::int64_t,
         std::vector<savorqt::db::VictoryResultSummary>>(this);
     refresh_->setAutoRefreshEnabled(true);
     refresh_->setRequestBuilder([this](savorqt::gui::RefreshReason) { return routeNodeId_; });
+    refresh_->setIntentBuilder([](const std::int64_t& routeNodeId, savorqt::gui::RefreshReason) {
+        return savorqt::gui::RefreshIntent{QStringLiteral("victories:%1").arg(routeNodeId),
+                                           static_cast<std::uint64_t>(routeNodeId)};
+    });
     refresh_->setLoadAndPrepare([](std::int64_t id) {
-        return savorqt::gui::AsyncRefreshResult<
+        return savorqt::gui::ProjectionLoadResult<
             std::vector<savorqt::db::VictoryResultSummary>>::Ok(
                 savorqt::db::SavorDbTasRouteService::FetchVictories(id));
     });
@@ -117,6 +121,9 @@ void VictoryResultsWidget::applyRows(const std::vector<savorqt::db::VictoryResul
 }
 
 void VictoryResultsWidget::rebuildTable() {
+    if (const int current = table_->currentRow(); current >= 0 && table_->item(current, 0)) {
+        selectedVictory_.select(table_->item(current, 0)->data(Qt::UserRole).toLongLong());
+    }
     table_->setRowCount(0);
     const auto battle = battleFilter_->currentData().toLongLong();
     const QString needle = search_->text().trimmed();
@@ -143,8 +150,24 @@ void VictoryResultsWidget::rebuildTable() {
         put(5, QString::fromStdString(value.completion_status));
         put(6, value.completion_ready ? QStringLiteral("%1 EXP / %2 Gold").arg(value.normal_experience).arg(value.gold) : QStringLiteral("Pending"));
     }
-    if (table_->rowCount() > 0) table_->selectRow(0);
-    else showSelected();
+    int selectedRow = -1;
+    if (selectedVictory_.key().has_value()) {
+        for (int row = 0; row < table_->rowCount(); ++row) {
+            if (table_->item(row, 0)->data(Qt::UserRole).toLongLong() == *selectedVictory_.key()) {
+                selectedRow = row;
+                break;
+            }
+        }
+    }
+    if (selectedRow < 0 && initialHydration_ && table_->rowCount() > 0) selectedRow = 0;
+    initialHydration_ = false;
+    if (selectedRow >= 0) {
+        table_->selectRow(selectedRow);
+        selectedVictory_.select(table_->item(selectedRow, 0)->data(Qt::UserRole).toLongLong());
+    } else {
+        selectedVictory_.clear();
+        showSelected();
+    }
 }
 
 void VictoryResultsWidget::showSelected() {

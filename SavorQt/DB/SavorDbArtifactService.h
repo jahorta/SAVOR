@@ -81,29 +81,30 @@ public:
         }
 
         const auto now = savor::db::types::UtcNow();
-        savor::db::StoreArtifactCommand command{};
-        command.sha256 = sha;
-        command.size_bytes = static_cast<std::int64_t>(size);
-        command.compression_kind = request.compression_kind;
-        command.filename = request.source_path.string();
-        command.display_filename = display_filename;
-        command.file_ext = NormalizeFileExt(request.source_path.extension().string());
-        command.artifact_kind = NormalizeArtifactKind(request.artifact_kind, command.file_ext);
-        command.created_at_utc = now;
-        command.correlation_id = NextEventId("State.ArtifactStored.Qt2");
-        command.causation_id = "SavorQt";
+        savor::db::ImportExternalArtifactCommand command{};
+        command.absolute_source_path = std::filesystem::absolute(request.source_path);
+        command.artifact.sha256 = sha;
+        command.artifact.size_bytes = static_cast<std::int64_t>(size);
+        command.artifact.compression_kind = request.compression_kind;
+        command.artifact.display_filename = display_filename;
+        command.artifact.file_ext = NormalizeFileExt(request.source_path.extension().string());
+        command.artifact.artifact_kind = NormalizeArtifactKind(
+            request.artifact_kind, command.artifact.file_ext);
+        command.artifact.created_at_utc = now;
+        command.artifact.correlation_id = NextEventId("State.ArtifactStored.Qt2");
+        command.artifact.causation_id = "SavorQt";
 
         std::int64_t artifact_id = 0;
         std::string error;
-        if (!state_db->StoreArtifact(command, &artifact_id, &error)) {
+        if (!state_db->ImportExternalArtifact(command, &artifact_id, &error)) {
             return Failed<savor::db::UiArtifactSummary>(error);
         }
 
         savor::db::UiArtifactSummary summary{};
         summary.artifact_id = artifact_id;
-        summary.sha256 = command.sha256;
+        summary.sha256 = command.artifact.sha256;
         summary.size_bytes = size;
-        summary.artifact_kind = command.artifact_kind;
+        summary.artifact_kind = command.artifact.artifact_kind;
         summary.filename = display_filename;
         summary.created_at_utc = now.time_since_epoch().count();
         return ServiceResult<savor::db::UiArtifactSummary>::Ok(std::move(summary));

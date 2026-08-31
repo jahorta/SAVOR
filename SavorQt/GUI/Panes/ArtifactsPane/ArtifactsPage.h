@@ -37,7 +37,7 @@ private:
     void openImportDialog(const ImportRequest& request);
     void createWidgets();
     void wireSignals();
-    void syncControlsFromController();
+    void syncControlsFromController(bool replaceDraft = true);
     void refreshModel();
     void updateInspector();
     void updateStatusWidgets();

@@ -252,7 +252,7 @@ void SeedProbePage::createWidgets()
 void SeedProbePage::wireSignals()
 {
     connect(controller_, &SeedProbeController::stateChanged, this, [this]() {
-        syncControlsFromController();
+        syncControlsFromController(false);
         refreshList();
         refreshDetails();
         updateStatusWidgets();
@@ -263,7 +263,10 @@ void SeedProbePage::wireSignals()
         controller_->setOnlyDone(doneOnlyCheck_->isChecked());
         controller_->applyFilters(pageSizeSpin_->value());
     });
-    connect(resetButton_, &QPushButton::clicked, controller_, &SeedProbeController::resetFilters);
+    connect(resetButton_, &QPushButton::clicked, this, [this]() {
+        controller_->resetFilters();
+        syncControlsFromController(true);
+    });
     connect(refreshButton_, &QPushButton::clicked, controller_, &SeedProbeController::requestRefresh);
     connect(prevButton_, &QPushButton::clicked, controller_, &SeedProbeController::requestPreviousPage);
     connect(nextButton_, &QPushButton::clicked, controller_, &SeedProbeController::requestNextPage);
@@ -279,12 +282,14 @@ void SeedProbePage::wireSignals()
     });
 }
 
-void SeedProbePage::syncControlsFromController()
+void SeedProbePage::syncControlsFromController(bool replaceDraft)
 {
     const auto& state = controller_->viewState();
-    { QSignalBlocker blocker(searchEdit_); searchEdit_->setText(state.search); }
-    { QSignalBlocker blocker(doneOnlyCheck_); doneOnlyCheck_->setChecked(state.onlyDone); }
-    { QSignalBlocker blocker(pageSizeSpin_); pageSizeSpin_->setValue(state.pageLimit); }
+    if (replaceDraft) {
+        { QSignalBlocker blocker(searchEdit_); searchEdit_->setText(state.search); }
+        { QSignalBlocker blocker(doneOnlyCheck_); doneOnlyCheck_->setChecked(state.onlyDone); }
+        { QSignalBlocker blocker(pageSizeSpin_); pageSizeSpin_->setValue(state.pageLimit); }
+    }
     { QSignalBlocker blocker(autoRefreshCheck_); autoRefreshCheck_->setChecked(state.autoRefresh); }
     { QSignalBlocker blocker(refreshSecondsSpin_); refreshSecondsSpin_->setValue(state.refreshSeconds); }
     prevButton_->setEnabled(state.page.prev.has_value() && !state.loadingList);

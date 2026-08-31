@@ -1,6 +1,6 @@
 #include "GUI/Panes/BattleRunsPane/BattleRunsWidget.h"
 
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 #include "GUI/Refresh/RowUpdate.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
@@ -428,7 +428,7 @@ void sortJobs(std::vector<BattleRunsWidget::JobRow>& jobs, int primary, int seco
     });
 }
 
-AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidget::RefreshRequest request)
+ProjectionLoadResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidget::RefreshRequest request)
 {
     db::BattleRunGroupQuery groupQuery{};
     groupQuery.before = request.before;
@@ -439,7 +439,7 @@ AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidge
 
     const auto groups = db::SavorDbExplorerRunService::ListBattleGroups(groupQuery);
     if (!groups.ok) {
-        return AsyncRefreshResult<BattleRunsWidget::RefreshData>::Err(QString::fromStdString(groups.error.message));
+        return ProjectionLoadResult<BattleRunsWidget::RefreshData>::Error(QString::fromStdString(groups.error.message));
     }
 
     BattleRunsWidget::RefreshData data{};
@@ -451,7 +451,7 @@ AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidge
     for (const auto& group : data.groupPage.groups) {
         const auto waves = db::SavorDbExplorerRunService::ListBattleWaves(group.battle_set_id);
         if (!waves.ok) {
-            return AsyncRefreshResult<BattleRunsWidget::RefreshData>::Err(QString::fromStdString(waves.error.message));
+            return ProjectionLoadResult<BattleRunsWidget::RefreshData>::Error(QString::fromStdString(waves.error.message));
         }
         wavesByGroup[group.battle_set_id] = waves.value;
     }
@@ -495,7 +495,7 @@ AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidge
 
         const auto jobs = db::SavorDbExplorerRunService::ListBattleTurnJobsForWaves(data.selectedWaveIds, request.finalVictoryOnly);
         if (!jobs.ok) {
-            return AsyncRefreshResult<BattleRunsWidget::RefreshData>::Err(QString::fromStdString(jobs.error.message));
+            return ProjectionLoadResult<BattleRunsWidget::RefreshData>::Error(QString::fromStdString(jobs.error.message));
         }
         data.jobs.reserve(jobs.value.size());
         for (const auto& job : jobs.value) {
@@ -539,7 +539,7 @@ AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidge
     } else if (data.jobs.empty()) {
         data.message = QStringLiteral("No jobs match the current wave selection and filters.");
     }
-    return AsyncRefreshResult<BattleRunsWidget::RefreshData>::Ok(std::move(data));
+    return ProjectionLoadResult<BattleRunsWidget::RefreshData>::Ok(std::move(data));
 }
 
 } // namespace
@@ -729,7 +729,7 @@ void BattleRunsWidget::build()
     inlineMessageLabel_->setWordWrap(true);
     rootLayout->addWidget(inlineMessageLabel_);
 
-    refreshPipeline_ = new AsyncRefreshPipeline<RefreshRequest, RefreshData>(this);
+    refreshPipeline_ = new DatabaseProjectionController<RefreshRequest, RefreshData>(this);
     refreshPipeline_->setRefreshIntervalMs(refreshSecondsSpin_->value() * 1000);
     refreshPipeline_->setAutoRefreshEnabled(autoRefreshCheck_->isChecked());
     refreshPipeline_->setRequestBuilder([this](RefreshReason reason) -> std::optional<RefreshRequest> {

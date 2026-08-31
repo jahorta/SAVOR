@@ -3,6 +3,7 @@
 
 #include "DB/SavorDbAuthoringService.h"
 #include "DB/SavorDbWorkflowService.h"
+#include "GUI/Refresh/RowUpdate.h"
 
 #include <QtCore/QDateTime>
 #include <QtGui/QCloseEvent>
@@ -115,6 +116,62 @@ WorkflowGraphEditorWindow::WorkflowGraphEditorWindow(QWidget* parent)
     resize(1120, 760);
 
     createWidgets();
+    graphProjection_ = new savorqt::gui::DatabaseProjectionController<bool,
+        std::vector<savor::db::WorkflowGraphSnapshot>>(this);
+    graphProjection_->setAutoRefreshEnabled(false);
+    graphProjection_->setRequestBuilder([this](savorqt::gui::RefreshReason) {
+        return showHiddenGraphsCheck_ != nullptr && showHiddenGraphsCheck_->isChecked();
+    });
+    graphProjection_->setIntentBuilder([](const bool& includeHidden, savorqt::gui::RefreshReason) {
+        return savorqt::gui::RefreshIntent{
+            includeHidden ? QStringLiteral("workflow-graphs:all")
+                          : QStringLiteral("workflow-graphs:visible"),
+            includeHidden ? 2u : 1u};
+    });
+    graphProjection_->setLoadAndPrepare([](bool includeHidden) {
+        const auto result = savorqt::db::SavorDbAuthoringService::ListWorkflowGraphs(200, includeHidden);
+        if (!result.ok) {
+            return savorqt::gui::ProjectionLoadResult<
+                std::vector<savor::db::WorkflowGraphSnapshot>>::Error(
+                    QString::fromStdString(result.error.message));
+        }
+        return savorqt::gui::ProjectionLoadResult<
+            std::vector<savor::db::WorkflowGraphSnapshot>>::Ok(result.value);
+    });
+    graphProjection_->setApply([this](const std::vector<savor::db::WorkflowGraphSnapshot>& graphs,
+        savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        if (const auto* selected = graphList_->currentItem()) {
+            graphSelection_.select(selected->data(Qt::UserRole).toLongLong());
+        }
+        workflowGraphs_ = graphs;
+        std::vector<savorqt::gui::KeyedWidgetItem> items;
+        items.reserve(graphs.size());
+        for (const auto& graph : graphs) {
+            items.push_back({QVariant::fromValue<qlonglong>(graph.workflow_graph_id),
+                             workflowGraphText(graph), {}, true});
+        }
+        const QVariant selectedKey = graphSelection_.key().has_value()
+            ? QVariant::fromValue<qlonglong>(*graphSelection_.key()) : QVariant();
+        savorqt::gui::ReconcileListItems(graphList_, items, selectedKey,
+            savorqt::gui::MissingSelectionPolicy::Clear, initialGraphHydration_);
+        initialGraphHydration_ = false;
+        if (const auto* selected = graphList_->currentItem()) {
+            graphSelection_.select(selected->data(Qt::UserRole).toLongLong());
+        } else {
+            graphSelection_.clear();
+        }
+        if (graphStatusLabel_ != nullptr) {
+            const bool includeHidden = showHiddenGraphsCheck_ && showHiddenGraphsCheck_->isChecked();
+            graphStatusLabel_->setText(QStringLiteral("%1 workflow graphs%2")
+                .arg(static_cast<int>(workflowGraphs_.size()))
+                .arg(includeHidden ? QStringLiteral(" including hidden") : QString()));
+        }
+    });
+    graphProjection_->setApplyError([this](const QString& error, savorqt::gui::RefreshReason,
+        const savorqt::gui::RefreshStatus&) {
+        postStatusMessage(error, StatusToast::Severity::Error);
+    });
+    graphProjection_->setActive(true);
     loadUnits();
     refreshWorkflowGraphs();
     rebuildBindings();
@@ -365,30 +422,8 @@ void WorkflowGraphEditorWindow::loadUnits()
 
 void WorkflowGraphEditorWindow::refreshWorkflowGraphs()
 {
-    if (graphList_ == nullptr) {
-        return;
-    }
-
-    const bool includeHidden = showHiddenGraphsCheck_ != nullptr && showHiddenGraphsCheck_->isChecked();
-    const auto result = savorqt::db::SavorDbAuthoringService::ListWorkflowGraphs(200, includeHidden);
-    if (!result.ok) {
-        postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
-        return;
-    }
-
-    workflowGraphs_ = result.value;
-    graphList_->clear();
-    for (const auto& graph : workflowGraphs_) {
-        auto* item = new QListWidgetItem(workflowGraphText(graph), graphList_);
-        item->setData(Qt::UserRole, static_cast<qint64>(graph.workflow_graph_id));
-    }
-    if (graphList_->count() > 0) {
-        graphList_->setCurrentRow(0);
-    }
-    if (graphStatusLabel_ != nullptr) {
-        graphStatusLabel_->setText(QStringLiteral("%1 workflow graphs%2")
-            .arg(static_cast<int>(workflowGraphs_.size()))
-            .arg(includeHidden ? QStringLiteral(" including hidden") : QString()));
+    if (graphProjection_ != nullptr) {
+        graphProjection_->requestRefresh(savorqt::gui::RefreshReason::Manual);
     }
 }
 

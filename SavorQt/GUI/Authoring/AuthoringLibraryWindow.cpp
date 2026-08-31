@@ -4,6 +4,7 @@
 #include "BattlePlanEditor.h"
 #include "PredicateAuthoringEditors.h"
 #include "DB/SavorDbAuthoringService.h"
+#include "GUI/Refresh/RowUpdate.h"
 
 #include <QtCore/QDateTime>
 #include <QtWidgets/QFrame>
@@ -471,7 +472,7 @@ void AuthoringLibraryWidget::createWidgets()
     connect(savedItemsList_, &QListWidget::currentRowChanged, this, &AuthoringLibraryWidget::handleSavedRowChanged);
     connect(savedItemsList_, &QListWidget::itemDoubleClicked, this, [this]() { showEditorForSelectedRow(); });
 
-    refreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<LibraryRefreshRequest, LibraryRefreshData>(this);
+    refreshPipeline_ = new savorqt::gui::DatabaseProjectionController<LibraryRefreshRequest, LibraryRefreshData>(this);
     refreshPipeline_->setAutoRefreshEnabled(false);
     refreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) -> std::optional<LibraryRefreshRequest> {
         auto* adapter = currentAdapter();
@@ -480,13 +481,18 @@ void AuthoringLibraryWidget::createWidgets()
         }
         return LibraryRefreshRequest{ currentAdapterIndex_, adapter };
     });
+    refreshPipeline_->setIntentBuilder([](const LibraryRefreshRequest& request, savorqt::gui::RefreshReason) {
+        return savorqt::gui::RefreshIntent{
+            QStringLiteral("authoring-library:%1").arg(request.adapterIndex),
+            static_cast<std::uint64_t>(request.adapterIndex + 1)};
+    });
     refreshPipeline_->setLoadAndPrepare([](LibraryRefreshRequest request) {
         LibraryRefreshData data;
         data.adapterIndex = request.adapterIndex;
         if (request.adapter != nullptr) {
             data.rows = request.adapter->refreshRows(&data.errorText);
         }
-        return savorqt::gui::AsyncRefreshResult<LibraryRefreshData>::Ok(std::move(data));
+        return savorqt::gui::ProjectionLoadResult<LibraryRefreshData>::Ok(std::move(data));
     });
     refreshPipeline_->setApply([this](const LibraryRefreshData& data, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         if (data.adapterIndex != currentAdapterIndex_) {
@@ -497,13 +503,16 @@ void AuthoringLibraryWidget::createWidgets()
             return;
         }
 
-        savedItemsList_->clear();
+        const QVariant selectedKey = savedSelection_.key().has_value()
+            ? QVariant::fromValue<qlonglong>(*savedSelection_.key()) : QVariant();
+        std::vector<savorqt::gui::KeyedWidgetItem> items;
+        items.reserve(data.rows.size());
         for (const auto& row : data.rows) {
-            auto* item = new QListWidgetItem(row.text, savedItemsList_);
-            item->setData(Qt::UserRole, row.id);
-            item->setToolTip(row.details);
-            if (!row.enabled) item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+            items.push_back({QVariant::fromValue<qlonglong>(row.id), row.text, row.details, row.enabled});
         }
+        savorqt::gui::ReconcileListItems(savedItemsList_, items, selectedKey,
+            savorqt::gui::MissingSelectionPolicy::Clear, initialSavedHydration_);
+        initialSavedHydration_ = false;
         libraryStatusLabel_->setText(QStringLiteral("Saved: %1").arg(static_cast<int>(data.rows.size())));
         updateActionState();
     });
@@ -671,6 +680,11 @@ void AuthoringLibraryWidget::deleteSelectedRow()
 
 void AuthoringLibraryWidget::handleSavedRowChanged()
 {
+    if (const auto* selected = savedItemsList_ ? savedItemsList_->currentItem() : nullptr) {
+        savedSelection_.select(selected->data(Qt::UserRole).toLongLong());
+    } else {
+        savedSelection_.clear();
+    }
     updateActionState();
     if (selectedSavedRow() < 0) {
         clearRightPane();

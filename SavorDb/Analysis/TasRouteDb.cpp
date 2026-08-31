@@ -92,37 +92,25 @@ bool SqliteAnalysisDb::EnsureBattleRouteActivity(
         return true;
     }
 
+    if (command.root_establishment_attempt_id <= 0)
+        return Rollback(db_,
+            "Battle route projection requires an explicit root-establishment authority",
+            error_out);
+
+    const std::optional<std::int64_t> source_root_establishment =
+        command.root_establishment_attempt_id;
     std::optional<std::int64_t> source_dtm;
     {
         Statement st;
         constexpr auto sql =
-            "SELECT r.source_dtm_artifact_id FROM tmv_checkpoint_sterilization_request r "
-            "LEFT JOIN tmv_checkpoint_sterilization_attempt a ON a.sterilization_request_id=r.sterilization_request_id "
-            "WHERE r.reused_savestate_id=?1 OR a.produced_savestate_id=?1 "
-            "ORDER BY r.sterilization_request_id DESC LIMIT 1;";
-        if (sqlite3_prepare_v2(db_, sql, -1, &st.value, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int64(st.value, 1, command.entry_savestate_id);
-            if (sqlite3_step(st.value) == SQLITE_ROW)
-                source_dtm = sqlite3_column_int64(st.value, 0);
-        }
-    }
-    if (!source_dtm)
-        return Rollback(db_, "Battle entry savestate has no sterilized source DTM", error_out);
-
-    std::optional<std::int64_t> source_root_establishment;
-    {
-        Statement st;
-        constexpr auto sql =
-            "SELECT root_establishment_attempt_id FROM tmv_root_establishment_attempt "
-            "WHERE source_dtm_artifact_id=?1 ORDER BY root_establishment_attempt_id DESC LIMIT 2;";
+            "SELECT source_dtm_artifact_id FROM tmv_root_establishment_attempt "
+            "WHERE root_establishment_attempt_id=?1;";
         if (sqlite3_prepare_v2(db_, sql, -1, &st.value, nullptr) != SQLITE_OK)
             return Rollback(db_, sqlite3_errmsg(db_), error_out);
-        sqlite3_bind_int64(st.value, 1, *source_dtm);
+        sqlite3_bind_int64(st.value, 1, *source_root_establishment);
         if (sqlite3_step(st.value) != SQLITE_ROW)
-            return Rollback(db_, "Sterilized source DTM has no root-establishment authority", error_out);
-        source_root_establishment = sqlite3_column_int64(st.value, 0);
-        if (sqlite3_step(st.value) == SQLITE_ROW)
-            return Rollback(db_, "Sterilized source DTM has ambiguous root-establishment authorities", error_out);
+            return Rollback(db_, "Root-establishment authority does not exist", error_out);
+        source_dtm = sqlite3_column_int64(st.value, 0);
     }
 
     struct RootAuthority {

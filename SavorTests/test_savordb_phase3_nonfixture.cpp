@@ -146,7 +146,7 @@ namespace savordb {
                       continuation_disposition) {
             }
 
-            bool Materialize(
+            bool MaterializeJobs(
                 const savor::db::execution::programdb::
                     ProgramJobMaterializationContext& context,
                 savor::db::execution::programdb::

@@ -136,7 +136,7 @@ private:
     BuildMaterializationContext(
         const WorkflowReadyStepRecord& step,
         std::string* error_out) const;
-    std::optional<programdb::WorkflowStepScheduleResult> ScheduleReadyStep(
+    programdb::ProgramJobMaterializationResult ScheduleReadyStep(
         const WorkflowReadyStepRecord& step,
         std::string* error_out) const;
     bool MaterializeWorkflowStep(const WorkflowReadyStepRecord& step);

@@ -11,6 +11,7 @@ struct DbConfigPaths {
     std::filesystem::path authoring_db_path;
     std::filesystem::path ui_read_db_path;
     std::filesystem::path archive_db_path;
+    std::filesystem::path artifact_workspace_root;
     std::filesystem::path object_store_root;
     std::filesystem::path archive_store_root;
 };

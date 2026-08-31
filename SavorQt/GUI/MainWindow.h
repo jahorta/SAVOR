@@ -15,7 +15,7 @@
 #include "GUI/Panes/SettingsPane/SettingsPage.h"
 #include "GUI/Panes/DtmEditorPane/DtmEditorPage.h"
 #include "GUI/Authoring/AuthoringLibraryWindow.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 #include "GUI/Workspace/WorkspaceWidgets.h"
 
 class CoordinatorController;
@@ -106,7 +106,7 @@ private:
     CoordinatorPane* coordinatorPane_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;
     QTimer statusBarRefreshTimer_;
-    savorqt::gui::AsyncRefreshPipeline<int, QPair<int, int>>* workspaceBadgeRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<int, QPair<int, int>>* workspaceBadgeRefreshPipeline_ = nullptr;
     QDateTime lastCoordinatorRefresh_;
     QPointer<AuthoringLibraryWindow> authoringLibraryWindow_;
     QPointer<WorkflowGraphEditorWindow> workflowGraphEditor_;

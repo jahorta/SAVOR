@@ -4,7 +4,7 @@
 #include "DB/SavorDbJobService.h"
 #include "DB/SavorDbWorkflowService.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 #include "GUI/Refresh/RowUpdate.h"
 #include "GUI/Widgets/SegmentedProgressDelegate.h"
 #include "Worker/WorkerTelemetry.h"
@@ -1394,7 +1394,7 @@ void RunningTab::build()
 
     canvasLayout()->addWidget(cockpit, 1);
 
-    auto* refreshPipeline = new savorqt::gui::AsyncRefreshPipeline<RunningRefreshRequest, RunningRefreshData>(this);
+    auto* refreshPipeline = new savorqt::gui::DatabaseProjectionController<RunningRefreshRequest, RunningRefreshData>(this);
     auto workflowRows = std::make_shared<std::vector<RunningWorkflowRow>>();
     auto workerRows = std::make_shared<std::vector<RunningWorkerRow>>();
     refreshPipeline->setRefreshIntervalMs(1000);
@@ -1421,7 +1421,7 @@ void RunningTab::build()
         return std::optional<RunningRefreshRequest>{ request };
     });
     refreshPipeline->setLoadAndPrepare([](RunningRefreshRequest request) {
-        return savorqt::gui::AsyncRefreshResult<RunningRefreshData>::Ok(prepareRunningRefreshData(request));
+        return savorqt::gui::ProjectionLoadResult<RunningRefreshData>::Ok(prepareRunningRefreshData(request));
     });
     refreshPipeline->setApply([=](const RunningRefreshData& data, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         coordinatorValueLabel_->setText(data.coordinatorText);

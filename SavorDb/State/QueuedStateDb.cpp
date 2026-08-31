@@ -70,13 +70,37 @@ savor::db::core::QueuedDbTelemetrySnapshot QueuedStateDb::GetTelemetrySnapshot()
     return BuildTelemetrySnapshot(write_lane_.get(), read_lane_.get());
 }
 
-bool QueuedStateDb::StoreArtifact(
-    const StoreArtifactCommand& command,
+std::filesystem::path QueuedStateDb::ArtifactWorkspaceRoot() const {
+    return inner_ != nullptr
+        ? inner_->ArtifactWorkspaceRoot()
+        : std::filesystem::path{};
+}
+
+bool QueuedStateDb::StoreWorkspaceArtifact(
+    const StoreWorkspaceArtifactCommand& command,
     std::int64_t* artifact_id_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
         [this, command, artifact_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->StoreArtifact(command, artifact_id_out, error_out) : false;
+            return inner_ != nullptr
+                ? inner_->StoreWorkspaceArtifact(
+                    command, artifact_id_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedStateDb::ImportExternalArtifact(
+    const ImportExternalArtifactCommand& command,
+    std::int64_t* artifact_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, artifact_id_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ImportExternalArtifact(
+                    command, artifact_id_out, error_out)
+                : false;
         },
         false,
         error_out);

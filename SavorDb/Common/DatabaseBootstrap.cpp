@@ -97,6 +97,7 @@ DbConfigPaths MakeDatabaseRootConfigPaths(const std::filesystem::path& root)
         .authoring_db_path = root / "authoring.db",
         .ui_read_db_path = root / "ui_read.db",
         .archive_db_path = root / "archive.db",
+        .artifact_workspace_root = root / "workflow-runtime",
         .object_store_root = root / "object_store",
         .archive_store_root = root / "archive_store",
     };

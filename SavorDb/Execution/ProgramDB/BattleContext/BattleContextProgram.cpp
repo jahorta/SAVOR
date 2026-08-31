@@ -109,7 +109,7 @@ std::optional<std::filesystem::path> ResolveSavestate(
 std::optional<std::int64_t> SourceBinding(
     const ProgramJobMaterializationContext& context) {
     if (!context.graph) return std::nullopt;
-    for (const auto& binding : context.graph->input_bindings) {
+    for (const auto& binding : context.graph->inputs) {
         if (binding.input_key == kInputKey
             && binding.data_kind == kInputDataKind
             && binding.ref_kind == kStateRefKind
@@ -210,7 +210,7 @@ public:
           config_(std::move(config)),
           phase_(savor::runtime::battlecontext::BattleContextFullPhaseDefinitionV1()) {}
 
-    bool Materialize(const ProgramJobMaterializationContext& context,
+    bool MaterializeJobs(const ProgramJobMaterializationContext& context,
                      WorkflowStepScheduleResult* result_out,
                      std::string* error_out) const override {
         if (!result_out || !execution_db_ || !state_db_ || !analysis_db_ || !phase_
@@ -574,11 +574,10 @@ public:
             throw std::runtime_error(error);
         const auto sha = hash::sha256(bytes.data(), bytes.size());
         std::int64_t artifact_id = 0;
-        if (!state_db_->StoreArtifact({
+        if (!StoreWorkspaceArtifactFile(state_db_, destination, {
                 .sha256 = sha,
                 .size_bytes = static_cast<std::int64_t>(bytes.size()),
                 .compression_kind = 0,
-                .filename = destination.string(),
                 .file_ext = soa::battle::ctx::codec::ext,
                 .artifact_kind = "BATTLE_CONTEXT",
                 .created_at_utc = types::UtcNow(),

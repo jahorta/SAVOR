@@ -165,6 +165,24 @@ bool WorkflowUnitRegistry::RegisterUnit(WorkflowUnitDefinition definition, std::
             return false;
         }
     }
+    for (const auto& mapping : definition.pass_through_outputs) {
+        const auto input = std::find_if(
+            definition.required_inputs.begin(), definition.required_inputs.end(),
+            [&](const auto& value) { return value.key == mapping.input_key; });
+        const auto output = std::find_if(
+            definition.possible_outputs.begin(), definition.possible_outputs.end(),
+            [&](const auto& value) { return value.key == mapping.output_key; });
+        if (input == definition.required_inputs.end() ||
+            output == definition.possible_outputs.end() ||
+            input->data_kind != output->data_kind ||
+            input->ref_kind != output->ref_kind) {
+            if (error_out) {
+                *error_out = "invalid pass-through mapping for unit " +
+                    definition.unit_kind;
+            }
+            return false;
+        }
+    }
     const bool has_presentation_key =
         !definition.standalone_presentation_family_key.empty();
     const bool has_presentation_name =

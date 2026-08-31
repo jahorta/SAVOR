@@ -29,8 +29,13 @@ public:
     [[nodiscard]] bool IsRunning() const;
     [[nodiscard]] savor::db::core::QueuedDbTelemetrySnapshot GetTelemetrySnapshot() const;
 
-    bool StoreArtifact(
-        const StoreArtifactCommand& command,
+    [[nodiscard]] std::filesystem::path ArtifactWorkspaceRoot() const override;
+    bool StoreWorkspaceArtifact(
+        const StoreWorkspaceArtifactCommand& command,
+        std::int64_t* artifact_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool ImportExternalArtifact(
+        const ImportExternalArtifactCommand& command,
         std::int64_t* artifact_id_out = nullptr,
         std::string* error_out = nullptr) override;
     bool CreateSavestate(

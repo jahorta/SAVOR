@@ -159,7 +159,7 @@ SeedProbeController::SeedProbeController(QObject* parent)
     loadSettings();
     syncFetchStateFromView();
 
-    pageRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<ListFetchRequest, ListBundleResult>(this);
+    pageRefreshPipeline_ = new savorqt::gui::DatabaseProjectionController<ListFetchRequest, ListBundleResult>(this);
     pageRefreshPipeline_->setAutoRefreshEnabled(false);
     pageRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) -> std::optional<ListFetchRequest> {
         pageInFlight_ = true;
@@ -179,7 +179,7 @@ SeedProbeController::SeedProbeController(QObject* parent)
         if (uiReadDb == nullptr) {
             ListBundleResult result;
             result.errorMessage = QString::fromUtf8(kDataSourceUnavailableMessage);
-            return savorqt::gui::AsyncRefreshResult<ListBundleResult>::Ok(result);
+            return savorqt::gui::ProjectionLoadResult<ListBundleResult>::Ok(result);
         }
 
         ListBundle bundle{};
@@ -196,7 +196,7 @@ SeedProbeController::SeedProbeController(QObject* parent)
         ListBundleResult result;
         result.ok = true;
         result.value = std::move(bundle);
-        return savorqt::gui::AsyncRefreshResult<ListBundleResult>::Ok(result);
+        return savorqt::gui::ProjectionLoadResult<ListBundleResult>::Ok(result);
     });
     pageRefreshPipeline_->setApply([this](const ListBundleResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         pageInFlight_ = false;

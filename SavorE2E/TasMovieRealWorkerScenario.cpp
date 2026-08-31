@@ -1558,7 +1558,7 @@ bool VerifyRootValidationAttempt(
         }
         return false;
     }
-    const auto dtm_file_hash = HashFile(dtm_artifact->filename, error_out);
+    const auto dtm_file_hash = HashFile(dtm_artifact->object_path, error_out);
     const auto checkpoint_hash = HashFile(
         checkpoint->artifact_filename, error_out);
     if (!dtm_file_hash || *dtm_file_hash != expected_dtm_sha256
@@ -1807,8 +1807,6 @@ bool RunTasMovieValidationFromEstablishedRootCursorRealWorkerScenario(
     auto registry_config =
         savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
             scenario_workspace_root / "workflow-runtime");
-    registry_config.tas_movie_validation.working_dir_root =
-        scenario_workspace_root / "tasmovie-validation";
     savor::db::execution::programdb::ProgramKindRegistry registry;
     if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
             savor::db::execution::programdb::
@@ -2085,7 +2083,7 @@ bool RunTasMovieValidationFromEstablishedRootCursorRealWorkerScenario(
         VerifyRootValidationAttempt(
             db_service, validation_workflow_id,
             source_dtm_artifact_id,
-            source_dtm_artifact->filename, runtime_rtc,
+            source_dtm_artifact->object_path, runtime_rtc,
             establishment, "tas_validate_1",
             &validation, &invariant_error);
     assessment.Require(
@@ -2217,8 +2215,6 @@ bool RunTasMovieSterileFromEstablishedRootCursorRealWorkerScenario(
     auto registry_config =
         savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
             scenario_workspace_root / "workflow-runtime");
-    registry_config.tas_movie_validation.working_dir_root =
-        scenario_workspace_root / "tasmovie-validation";
     savor::db::execution::programdb::ProgramKindRegistry registry;
     if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
             savor::db::execution::programdb::ProductionProgramKindRegistryDependencies{
@@ -2503,7 +2499,7 @@ bool RunTasMovieSterileFromEstablishedRootCursorRealWorkerScenario(
         invariant_error.clear();
         validation_contract_valid = VerifyRootValidationAttempt(
             db_service, workflow_instance_id, source_dtm_artifact_id,
-            source_dtm_artifact->filename, runtime_rtc,
+            source_dtm_artifact->object_path, runtime_rtc,
             establishment, "tas_validate_1", &validation, &invariant_error);
         assessment.Require(
             validation_contract_valid,
@@ -2641,8 +2637,6 @@ bool RunTasMovieScenario(
     auto registry_config =
         savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
             scenario_workspace_root / "workflow-runtime");
-    registry_config.tas_movie_validation.working_dir_root =
-        scenario_workspace_root / "tasmovie-validation";
     savor::db::execution::programdb::ProgramKindRegistry registry;
     if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
             savor::db::execution::programdb::
@@ -3188,8 +3182,6 @@ bool RunComposedTasMovieSeedProbeScenario(
         savor::db::execution::programdb::
             MakeProductionProgramKindRegistryConfig(
                 scenario_workspace_root / "workflow-runtime");
-    registry_config.tas_movie_validation.working_dir_root =
-        scenario_workspace_root / "tasmovie-validation";
     savor::db::execution::programdb::ProgramKindRegistry registry;
     if (!savor::db::execution::programdb::
             BuildProductionProgramKindRegistry(
@@ -3684,8 +3676,6 @@ bool RunComposedTasMovieSterileScenario(
         savor::db::execution::programdb::
             MakeProductionProgramKindRegistryConfig(
                 scenario_workspace_root / "workflow-runtime");
-    registry_config.tas_movie_validation.working_dir_root =
-        scenario_workspace_root / "tasmovie-validation";
     savor::db::execution::programdb::ProgramKindRegistry registry;
     if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
             savor::db::execution::programdb::

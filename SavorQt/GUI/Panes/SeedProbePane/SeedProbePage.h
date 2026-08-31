@@ -29,7 +29,7 @@ public:
 private:
     void createWidgets();
     void wireSignals();
-    void syncControlsFromController();
+    void syncControlsFromController(bool replaceDraft = true);
     void refreshList();
     void refreshDetails();
     void updateStatusWidgets();

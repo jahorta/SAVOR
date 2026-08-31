@@ -231,7 +231,7 @@ std::optional<std::int64_t> Binding(
         context.step.domain_ref_kind == ref_kind)
         return context.step.domain_ref_id;
     if (context.graph) {
-        for (const auto& binding : context.graph->input_bindings) {
+        for (const auto& binding : context.graph->inputs) {
             if (binding.input_key == input_key && binding.data_kind == data_kind
                 && binding.ref_kind == ref_kind && binding.ref_id > 0)
                 return binding.ref_id;
@@ -290,7 +290,7 @@ public:
         : execution_db_(execution_db), state_db_(state_db), analysis_db_(analysis_db),
           config_(std::move(config)), phase_(savor::runtime::tasmovie::TasMovieValidationFullPhaseDefinitionV1()) {}
 
-    bool Materialize(const ProgramJobMaterializationContext& context,
+    bool MaterializeJobs(const ProgramJobMaterializationContext& context,
         WorkflowStepScheduleResult* result_out, std::string* error_out) const override {
         if (!result_out || !execution_db_ || !state_db_ || !analysis_db_ || !phase_ || !context.graph) {
             if (error_out) *error_out = "TAS Movie validation materialization dependencies are incomplete";
@@ -695,8 +695,8 @@ public:
             const auto path = root_ / "published" / (sha + ".tmi");
             if (!WriteFile(path, bytes, &error)) throw std::runtime_error(error);
             std::int64_t artifact_id = 0;
-            if (!state_db_->StoreArtifact({.sha256 = sha, .size_bytes = static_cast<std::int64_t>(bytes.size()),
-                    .compression_kind = 0, .filename = path.string(), .file_ext = ".tmi",
+            if (!StoreWorkspaceArtifactFile(state_db_, path, {.sha256 = sha, .size_bytes = static_cast<std::int64_t>(bytes.size()),
+                    .compression_kind = 0, .file_ext = ".tmi",
                     .artifact_kind = "TAS_MOVIE_ITINERARY", .created_at_utc = types::UtcNow(),
                     .correlation_id = "tmv-request-" + std::to_string(request->validation_request_id),
                     .causation_id = "execution-job-" + std::to_string(context.job_id)}, &artifact_id, &error))
@@ -982,7 +982,7 @@ public:
             || !checkpoint || !checkpoint->is_complete
             || checkpoint->artifact_kind != "SAV")
             return fail("persisted root artifact or checkpoint identity drifted");
-        const auto dtm_hash = HashFile(dtm->filename);
+        const auto dtm_hash = HashFile(dtm->object_path);
         const auto checkpoint_hash = HashFile(checkpoint->artifact_filename);
         const auto sidecar_hash = HashFile(
             std::filesystem::path(checkpoint->artifact_filename + ".dtm"));
@@ -1032,13 +1032,13 @@ public:
         const auto dtm_size = std::filesystem::file_size(sidecar, size_error);
         if (size_error || dtm_size == 0) return std::nullopt;
         std::int64_t dtm_artifact_id = 0;
-        if (!state_db_->StoreArtifact({.sha256 = *dtm_hash, .size_bytes = static_cast<std::int64_t>(dtm_size),
-                .compression_kind = 0, .filename = sidecar.string(), .file_ext = ".dtm", .artifact_kind = "DTM",
+        if (!StoreWorkspaceArtifactFile(state_db_, sidecar, {.sha256 = *dtm_hash, .size_bytes = static_cast<std::int64_t>(dtm_size),
+                .compression_kind = 0, .file_ext = ".dtm", .artifact_kind = "DTM",
                 .created_at_utc = types::UtcNow(), .correlation_id = "tmv-request-" + std::to_string(request.validation_request_id),
                 .causation_id = "execution-job-" + std::to_string(source_job_id)}, &dtm_artifact_id, error_out)) return std::nullopt;
         std::int64_t sav_artifact_id = 0;
-        if (!state_db_->StoreArtifact({.sha256 = *sav_hash, .size_bytes = static_cast<std::int64_t>(sav_size),
-                .compression_kind = 0, .filename = sav_path.string(), .file_ext = sav_path.extension().string(), .artifact_kind = "SAV",
+        if (!StoreWorkspaceArtifactFile(state_db_, sav_path, {.sha256 = *sav_hash, .size_bytes = static_cast<std::int64_t>(sav_size),
+                .compression_kind = 0, .file_ext = sav_path.extension().string(), .artifact_kind = "SAV",
                 .created_at_utc = types::UtcNow(), .correlation_id = "tmv-request-" + std::to_string(request.validation_request_id),
                 .causation_id = "execution-job-" + std::to_string(source_job_id)}, &sav_artifact_id, error_out)) return std::nullopt;
         std::int64_t savestate_id = 0;

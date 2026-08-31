@@ -319,7 +319,7 @@ void ArtifactsPage::createWidgets()
 void ArtifactsPage::wireSignals()
 {
     connect(controller_, &ArtifactsController::stateChanged, this, [this]() {
-        syncControlsFromController();
+        syncControlsFromController(false);
         refreshModel();
         updateInspector();
         updateStatusWidgets();
@@ -328,7 +328,10 @@ void ArtifactsPage::wireSignals()
     connect(applyButton_, &QPushButton::clicked, this, [this]() {
         controller_->applyFilters(searchEdit_->text(), extensionEdit_->text(), pageSizeSpin_->value());
     });
-    connect(resetButton_, &QPushButton::clicked, controller_, &ArtifactsController::resetFilters);
+    connect(resetButton_, &QPushButton::clicked, this, [this]() {
+        controller_->resetFilters();
+        syncControlsFromController(true);
+    });
     connect(importButton_, &QPushButton::clicked, this, &ArtifactsPage::handleImportRequested);
     connect(refreshButton_, &QPushButton::clicked, controller_, &ArtifactsController::requestRefresh);
     connect(prevButton_, &QPushButton::clicked, controller_, &ArtifactsController::requestPreviousPage);
@@ -355,19 +358,15 @@ void ArtifactsPage::wireSignals()
     });
 }
 
-void ArtifactsPage::syncControlsFromController()
+void ArtifactsPage::syncControlsFromController(bool replaceDraft)
 {
     const auto& state = controller_->viewState();
-    {
-        QSignalBlocker blocker(searchEdit_);
+    if (replaceDraft) {
+        QSignalBlocker searchBlocker(searchEdit_);
         searchEdit_->setText(state.search);
-    }
-    {
-        QSignalBlocker blocker(extensionEdit_);
+        QSignalBlocker extensionBlocker(extensionEdit_);
         extensionEdit_->setText(state.extension);
-    }
-    {
-        QSignalBlocker blocker(pageSizeSpin_);
+        QSignalBlocker pageSizeBlocker(pageSizeSpin_);
         pageSizeSpin_->setValue(state.pageLimit);
     }
 

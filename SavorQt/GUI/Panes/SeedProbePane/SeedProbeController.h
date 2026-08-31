@@ -7,7 +7,7 @@
 #include <QtCore/QObject>
 #include <QtCore/QVector>
 
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 #include "UIRead/IUiReadDb.h"
 
 #include <optional>
@@ -152,7 +152,7 @@ private:
     bool detailInFlight_ = false;
     bool runningRefreshInFlight_ = false;
     qint64 detailRequestProbeId_ = 0;
-    savorqt::gui::AsyncRefreshPipeline<ListFetchRequest, ListBundleResult>* pageRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<ListFetchRequest, ListBundleResult>* pageRefreshPipeline_ = nullptr;
     QFutureWatcher<DetailBundleResult> detailWatcher_;
     QFutureWatcher<RunningProbeUpdateResult> runningRefreshWatcher_;
     QTimer* refreshTimer_ = nullptr;

@@ -2,6 +2,7 @@
 
 #include "Execution/Workflow/WorkflowExpansionService.h"
 #include "GUI/Common/StatusToast.h"
+#include "GUI/Refresh/ViewState.h"
 
 #include <QtWidgets/QWidget>
 
@@ -13,7 +14,7 @@ class QComboBox;
 class QLabel;
 class QPushButton;
 class QTableView;
-namespace savorqt::gui { template <typename Request, typename Result> class AsyncRefreshPipeline; }
+namespace savorqt::gui { template <typename Request, typename Result> class DatabaseProjectionController; }
 
 struct FirstBattleCoverageRefreshRequest {
     std::int64_t source_root_establishment_attempt_id = 0;
@@ -50,7 +51,7 @@ private:
     void openSelectedWorkflow();
 
     Actions actions_;
-    savorqt::gui::AsyncRefreshPipeline<FirstBattleCoverageRefreshRequest,
+    savorqt::gui::DatabaseProjectionController<FirstBattleCoverageRefreshRequest,
         FirstBattleCoverageRefreshData>* refresh_ = nullptr;
     QComboBox* source_ = nullptr;
     QTableView* table_ = nullptr;
@@ -61,6 +62,9 @@ private:
     QPushButton* retry_ = nullptr;
     QPushButton* openWorkflow_ = nullptr;
     std::int64_t focusExpansionId_ = 0;
+    std::int64_t selectedSourceId_ = 0;
+    std::uint64_t refreshIntentRevision_ = 0;
+    bool initialSourceHydration_ = true;
     bool active_ = false;
     bool operationInFlight_ = false;
     savor::db::execution::workflow::FirstBattleCoverageSnapshot coverage_;

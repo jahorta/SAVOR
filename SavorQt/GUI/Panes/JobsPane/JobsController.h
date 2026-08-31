@@ -9,7 +9,7 @@
 
 #include "DB/SavorDbServiceResult.h"
 #include "Execution/IExecutionDb.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 #include "UIRead/IUiReadDb.h"
 
 #include <optional>
@@ -118,7 +118,7 @@ private:
     qint64 inputIniRequestJobId_ = 0;
     qint64 actionJobId_ = 0;
     QFutureWatcher<ProgramKindsResult> kindsWatcher_;
-    savorqt::gui::AsyncRefreshPipeline<JobPageFetchRequest, JobPageResult>* pageRefreshPipeline_ = nullptr;
+    savorqt::gui::DatabaseProjectionController<JobPageFetchRequest, JobPageResult>* pageRefreshPipeline_ = nullptr;
     QFutureWatcher<JobDetailResult> detailWatcher_;
     QFutureWatcher<InputIniResult> inputIniWatcher_;
     QFutureWatcher<VoidResult> requeueWatcher_;

@@ -1454,6 +1454,9 @@ TEST(
     coordinator.OpenCancellationAdmission();
     ASSERT_TRUE(WaitUntil(
         [&]() { return execution_db.claim_calls.load() >= 1; }));
+    ASSERT_TRUE(WaitUntil([&]() {
+        return coordinator.SnapshotTelemetry().claim_backoff_stage >= 1;
+    }));
     auto telemetry = coordinator.SnapshotTelemetry();
     EXPECT_EQ(telemetry.claim_backoff_stage, 1u);
     EXPECT_EQ(telemetry.current_claim_backoff_ms, 1000u);

@@ -1,7 +1,7 @@
 #include "FirstBattleCoverageWidget.h"
 
 #include "DB/SavorDbWorkflowService.h"
-#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/DatabaseProjectionController.h"
 
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QAbstractTableModel>
@@ -204,21 +204,29 @@ FirstBattleCoverageWidget::FirstBattleCoverageWidget(Actions actions, QWidget* p
     split->setStretchFactor(0, 5); split->setStretchFactor(1, 2);
     root->addWidget(split, 1);
 
-    refresh_ = new savorqt::gui::AsyncRefreshPipeline<FirstBattleCoverageRefreshRequest,
+    refresh_ = new savorqt::gui::DatabaseProjectionController<FirstBattleCoverageRefreshRequest,
         FirstBattleCoverageRefreshData>(this);
     refresh_->setRefreshIntervalMs(1000);
     refresh_->setAutoRefreshEnabled(true);
     refresh_->setRequestBuilder([this](savorqt::gui::RefreshReason) {
         return FirstBattleCoverageRefreshRequest{
-            .source_root_establishment_attempt_id=source_->currentData().toLongLong(),
+            .source_root_establishment_attempt_id=selectedSourceId_,
             .workflow_expansion_id=focusExpansionId_};
+    });
+    refresh_->setIntentBuilder([this](const FirstBattleCoverageRefreshRequest& request,
+        savorqt::gui::RefreshReason) {
+        return savorqt::gui::RefreshIntent{
+            QStringLiteral("first-battle:%1:%2")
+                .arg(request.source_root_establishment_attempt_id)
+                .arg(request.workflow_expansion_id),
+            refreshIntentRevision_};
     });
     refresh_->setLoadAndPrepare([](FirstBattleCoverageRefreshRequest request) {
         FirstBattleCoverageRefreshData data{};
         const auto sources = savorqt::db::SavorDbWorkflowService::ListPreparedTasRootSources(1000);
         if (!sources.ok) {
             data.error = QString::fromStdString(sources.error.message);
-            return savorqt::gui::AsyncRefreshResult<FirstBattleCoverageRefreshData>::Ok(std::move(data));
+            return savorqt::gui::ProjectionLoadResult<FirstBattleCoverageRefreshData>::Ok(std::move(data));
         }
         data.sources = sources.value;
         if (request.source_root_establishment_attempt_id <= 0
@@ -229,7 +237,7 @@ FirstBattleCoverageWidget::FirstBattleCoverageWidget(Actions actions, QWidget* p
         if (request.source_root_establishment_attempt_id <= 0
             && request.workflow_expansion_id <= 0) {
             data.ok = true;
-            return savorqt::gui::AsyncRefreshResult<FirstBattleCoverageRefreshData>::Ok(std::move(data));
+            return savorqt::gui::ProjectionLoadResult<FirstBattleCoverageRefreshData>::Ok(std::move(data));
         }
         const auto coverage = savorqt::db::SavorDbWorkflowService::ReadFirstBattleCoverage({
             .source_root_establishment_attempt_id=
@@ -239,7 +247,7 @@ FirstBattleCoverageWidget::FirstBattleCoverageWidget(Actions actions, QWidget* p
                 : std::nullopt});
         if (!coverage.ok) data.error = QString::fromStdString(coverage.error.message);
         else { data.ok = true; data.coverage = coverage.value; }
-        return savorqt::gui::AsyncRefreshResult<FirstBattleCoverageRefreshData>::Ok(std::move(data));
+        return savorqt::gui::ProjectionLoadResult<FirstBattleCoverageRefreshData>::Ok(std::move(data));
     });
     refresh_->setApply([this](const FirstBattleCoverageRefreshData& data,
         savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) { applyRefresh(data); });
@@ -247,7 +255,10 @@ FirstBattleCoverageWidget::FirstBattleCoverageWidget(Actions actions, QWidget* p
 
     connect(refreshButton, &QPushButton::clicked, this, &FirstBattleCoverageWidget::requestRefresh);
     connect(source_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
-        focusExpansionId_ = 0; requestRefresh();
+        selectedSourceId_ = source_->currentData().toLongLong();
+        focusExpansionId_ = 0;
+        ++refreshIntentRevision_;
+        requestRefresh();
     });
     connect(table_->selectionModel(), &QItemSelectionModel::selectionChanged,
         this, [this]() { refreshSelectionDetails(); });
@@ -266,6 +277,7 @@ void FirstBattleCoverageWidget::setPageActive(bool active) {
 
 void FirstBattleCoverageWidget::showExpansion(std::int64_t workflow_expansion_id) {
     focusExpansionId_ = workflow_expansion_id;
+    ++refreshIntentRevision_;
     requestRefresh();
 }
 
@@ -275,8 +287,7 @@ void FirstBattleCoverageWidget::requestRefresh() {
 
 void FirstBattleCoverageWidget::applyRefresh(const FirstBattleCoverageRefreshData& data) {
     if (!data.ok) { summary_->setText(data.error); return; }
-    const auto selectedRoot = data.coverage.source_root_establishment_attempt_id.value_or(
-        source_->currentData().toLongLong());
+    const auto selectedRoot = data.coverage.source_root_establishment_attempt_id.value_or(selectedSourceId_);
     source_->blockSignals(true);
     source_->clear();
     int sourceIndex = -1;
@@ -286,8 +297,11 @@ void FirstBattleCoverageWidget::applyRefresh(const FirstBattleCoverageRefreshDat
         if (option.root_establishment_attempt_id == selectedRoot)
             sourceIndex = source_->count() - 1;
     }
-    if (sourceIndex >= 0) source_->setCurrentIndex(sourceIndex);
+    if (sourceIndex < 0 && initialSourceHydration_ && source_->count() > 0) sourceIndex = 0;
+    source_->setCurrentIndex(sourceIndex);
     source_->blockSignals(false);
+    selectedSourceId_ = sourceIndex >= 0 ? source_->itemData(sourceIndex).toLongLong() : 0;
+    initialSourceHydration_ = false;
     if (focusExpansionId_ > 0 && data.coverage.source_root_establishment_attempt_id) {
         focusExpansionId_ = 0;
     }
