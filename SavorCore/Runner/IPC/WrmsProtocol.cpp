@@ -536,6 +536,40 @@ PayloadCodecResult DecodePayload(
     });
 }
 
+MessageChannel ChannelOf(MessageKind kind) noexcept
+{
+    switch (kind) {
+    case MessageKind::OpenSession:
+    case MessageKind::CancelInvocation:
+    case MessageKind::Shutdown:
+    case MessageKind::ControlExecution:
+    case MessageKind::SubmitWorkset:
+    case MessageKind::CancelWorksetItem:
+    case MessageKind::CancelWorkset:
+    case MessageKind::AcknowledgeTerminal:
+    case MessageKind::LivenessProbe:
+        return MessageChannel::Command;
+    case MessageKind::ProcessHello:
+    case MessageKind::CommandResult:
+    case MessageKind::OpenSessionResult:
+    case MessageKind::ShutdownResult:
+    case MessageKind::ExecutionResult:
+        return MessageChannel::Response;
+    case MessageKind::SessionEvent:
+    case MessageKind::InvocationProgress:
+    case MessageKind::HostEvent:
+    case MessageKind::RuntimeDiagnostic:
+    case MessageKind::ExecutionState:
+    case MessageKind::WorksetState:
+    case MessageKind::WorksetItemStarted:
+    case MessageKind::WorksetItemTerminal:
+    case MessageKind::WorksetCredits:
+    case MessageKind::WorksetSummary:
+        return MessageChannel::Event;
+    }
+    return MessageChannel::Event;
+}
+
 PayloadCodecResult EncodePayload(
     const OpenSessionPayload& value,
     std::vector<std::uint8_t>& output)

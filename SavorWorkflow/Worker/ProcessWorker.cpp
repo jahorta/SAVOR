@@ -207,6 +207,8 @@ bool ProcessWorker::create_child(
 
     HANDLE child_stdout_read = nullptr;
     HANDLE child_stdout_write = nullptr;
+    HANDLE child_event_read = nullptr;
+    HANDLE child_event_write = nullptr;
     HANDLE child_stdin_read = nullptr;
     HANDLE child_stdin_write = nullptr;
     HANDLE child_stderr = nullptr;
@@ -216,6 +218,10 @@ bool ProcessWorker::create_child(
             CloseHandle(child_stdout_read);
         if (child_stdout_write)
             CloseHandle(child_stdout_write);
+        if (child_event_read)
+            CloseHandle(child_event_read);
+        if (child_event_write)
+            CloseHandle(child_event_write);
         if (child_stdin_read)
             CloseHandle(child_stdin_read);
         if (child_stdin_write)
@@ -240,6 +246,17 @@ bool ProcessWorker::create_child(
     }
     if (!SetHandleInformation(child_stdout_read, HANDLE_FLAG_INHERIT, 0))
         return fail(Win32ErrorMessage("SetHandleInformation(stdout)", GetLastError()));
+
+    if (!CreatePipe(
+            &child_event_read,
+            &child_event_write,
+            &inheritable,
+            0))
+    {
+        return fail(Win32ErrorMessage("CreatePipe(events)", GetLastError()));
+    }
+    if (!SetHandleInformation(child_event_read, HANDLE_FLAG_INHERIT, 0))
+        return fail(Win32ErrorMessage("SetHandleInformation(events)", GetLastError()));
 
     if (!CreatePipe(
             &child_stdin_read,
@@ -278,7 +295,10 @@ bool ProcessWorker::create_child(
             << " --worker"
             << " --id " << options.worker_id
             << " --process-generation " << options.process_generation
-            << " --utc-launch-ticks " << options.utc_launch_ticks;
+            << " --utc-launch-ticks " << options.utc_launch_ticks
+            << " --event-handle "
+            << static_cast<std::uint64_t>(
+                reinterpret_cast<std::uintptr_t>(child_event_write));
     if (!options.log_file_path.empty())
         command << " --log-file \"" << options.log_file_path << '"';
     if (options.breakpoint_diagnostics)
@@ -302,6 +322,8 @@ bool ProcessWorker::create_child(
 
     CloseHandle(child_stdout_write);
     child_stdout_write = nullptr;
+    CloseHandle(child_event_write);
+    child_event_write = nullptr;
     CloseHandle(child_stdin_read);
     child_stdin_read = nullptr;
     CloseHandle(child_stderr);
@@ -328,6 +350,7 @@ bool ProcessWorker::create_child(
     }
 
     child_stdout_read_ = child_stdout_read;
+    child_event_read_ = child_event_read;
     child_stdin_write_ = child_stdin_write;
     process_handle_ = process.hProcess;
     process_thread_handle_ = process.hThread;
@@ -384,6 +407,8 @@ bool ProcessWorker::launch_and_negotiate(
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         snapshot_ = {};
         snapshot_.worker_state = runtime::WorkerState::Starting;
+        snapshot_.command_response_channel_healthy = true;
+        snapshot_.event_channel_healthy = true;
         hello_ = {};
         runtime_contract_.reset();
     }
@@ -409,6 +434,7 @@ bool ProcessWorker::launch_and_negotiate(
     }
     writer_ = std::thread(&ProcessWorker::writer_thread, this);
     reader_ = std::thread(&ProcessWorker::reader_thread, this);
+    event_reader_ = std::thread(&ProcessWorker::event_reader_thread, this);
 
     const auto timeout = std::chrono::milliseconds{
         options.hello_timeout_ms ? options.hello_timeout_ms : kDefaultRequestTimeoutMs};
@@ -1292,6 +1318,8 @@ std::shared_ptr<ProcessWorker::OutboundWrite> ProcessWorker::enqueue_frame(
             return {};
         }
         writer_queue_.push_back(write);
+        std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
+        snapshot_.command_write_queue_depth = writer_queue_.size();
     }
     writer_cv_.notify_one();
     return write;
@@ -1366,6 +1394,8 @@ void ProcessWorker::writer_thread()
             write = std::move(writer_queue_.front());
             writer_queue_.pop_front();
             writer_active_ = true;
+            std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
+            snapshot_.command_write_queue_depth = writer_queue_.size();
         }
 
         if (test_hooks_)
@@ -1480,9 +1510,14 @@ bool ProcessWorker::request_response(
         completion_out->request_id = request_id;
     auto pending = std::make_shared<PendingResponse>();
     pending->request_kind = request_kind;
+    pending->expected_response_kind = expected_response_kind;
+    pending->enqueued_at = std::chrono::steady_clock::now();
+    pending->deadline = deadline;
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         pending_.emplace(raw_id, pending);
+        std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
+        snapshot_.pending_response_count = pending_.size();
     }
 
     bool write_timed_out = false;
@@ -1494,16 +1529,34 @@ bool ProcessWorker::request_response(
             allow_during_stop,
             &write_timed_out))
     {
+        const auto kind = std::to_string(
+            static_cast<std::uint32_t>(request_kind));
+        const std::string diagnostic = write_timed_out
+            ? "timed out waiting for WRMS request write kind=" + kind
+            : "failed writing WRMS request kind=" + kind;
+        if (write_timed_out)
+        {
+            std::lock_guard<std::mutex> lock(pending->mutex);
+            pending->state = PendingResponse::State::TimedOut;
+            record_transport_diagnostic(
+                ProcessWorkerTransportDiagnosticCode::CommandResponseTimeout,
+                diagnostic,
+                true);
+        }
+        else
         {
             std::lock_guard<std::mutex> lock(pending_mutex_);
             pending_.erase(raw_id);
+            std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
+            snapshot_.pending_response_count = pending_.size();
         }
-        const auto kind = std::to_string(
-            static_cast<std::uint32_t>(request_kind));
-        set_last_error(write_timed_out
-            ? "timed out waiting for WRMS request write kind=" + kind
-            : "failed writing WRMS request kind=" + kind);
+        set_last_error(diagnostic);
         return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(pending->mutex);
+        pending->request_frame_written = true;
+        pending->written_at = std::chrono::steady_clock::now();
     }
     if (completion_out)
         completion_out->request_frame_written = true;
@@ -1513,7 +1566,9 @@ bool ProcessWorker::request_response(
         std::unique_lock<std::mutex> lock(pending->mutex);
         if (deadline == std::chrono::steady_clock::time_point::max())
         {
-            pending->cv.wait(lock, [&]() { return pending->completed; });
+            pending->cv.wait(lock, [&]() {
+                return pending->state != PendingResponse::State::Pending;
+            });
             completed = true;
         }
         else
@@ -1521,21 +1576,40 @@ bool ProcessWorker::request_response(
             completed = pending->cv.wait_until(
                 lock,
                 deadline,
-                [&]() { return pending->completed; });
+                [&]() {
+                    return pending->state != PendingResponse::State::Pending;
+                });
+            if (!completed && pending->state == PendingResponse::State::Pending)
+                pending->state = PendingResponse::State::TimedOut;
         }
+    }
+
+    if (!completed)
+    {
+        const auto kind = std::to_string(
+            static_cast<std::uint32_t>(request_kind));
+        const std::string diagnostic =
+            "timed out waiting for WRMS command completion kind=" + kind
+            + " request_id=" + std::to_string(raw_id);
+        record_transport_diagnostic(
+            ProcessWorkerTransportDiagnosticCode::CommandResponseTimeout,
+            diagnostic,
+            true);
+        set_last_error(diagnostic);
+        return false;
     }
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         pending_.erase(raw_id);
+        std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
+        snapshot_.pending_response_count = pending_.size();
     }
-
-    if (!completed || !pending->transport_ok)
+    if (!pending->transport_ok)
     {
         const auto kind = std::to_string(
             static_cast<std::uint32_t>(request_kind));
-        set_last_error(completed
-            ? "worker transport closed before WRMS command completion kind=" + kind
-            : "timed out waiting for WRMS command completion kind=" + kind);
+        set_last_error(
+            "worker transport closed before WRMS command completion kind=" + kind);
         return false;
     }
     if (pending->response_kind != expected_response_kind)
@@ -1553,18 +1627,38 @@ bool ProcessWorker::request_response(
     return true;
 }
 
-void ProcessWorker::complete_pending(
+ProcessWorker::PendingCompletionDisposition ProcessWorker::complete_pending(
     std::uint64_t request_id,
     wrms::MessageKind kind,
     std::span<const std::uint8_t> payload)
 {
     std::shared_ptr<PendingResponse> pending;
+    bool missing = false;
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         const auto found = pending_.find(request_id);
         if (found == pending_.end())
-            return;
-        pending = found->second;
+            missing = true;
+        else
+            pending = found->second;
+    }
+    if (missing)
+    {
+        fail_protocol(
+            "UNSOLICITED_COMMAND_RESPONSE request_id="
+                + std::to_string(request_id),
+            ProcessWorkerTransportDiagnosticCode::
+                UnsolicitedCommandResponse);
+        return PendingCompletionDisposition::Invalid;
+    }
+    if (kind != pending->expected_response_kind)
+    {
+        fail_protocol(
+            "UNSOLICITED_COMMAND_RESPONSE unexpected response kind request_id="
+                + std::to_string(request_id),
+            ProcessWorkerTransportDiagnosticCode::
+                UnsolicitedCommandResponse);
+        return PendingCompletionDisposition::Invalid;
     }
     if (kind == wrms::MessageKind::CommandResult)
     {
@@ -1582,20 +1676,70 @@ void ProcessWorker::complete_pending(
             }
             pending->cv.notify_all();
             fail_protocol(
-                "WRMS command result does not match its exact request kind");
-            return;
+                "WRMS command result does not match its exact request kind",
+                ProcessWorkerTransportDiagnosticCode::
+                    UnsolicitedCommandResponse);
+            return PendingCompletionDisposition::Invalid;
         }
     }
+    bool late = false;
+    bool duplicate = false;
     {
         std::lock_guard<std::mutex> lock(pending->mutex);
-        if (pending->completed)
-            return;
-        pending->response_kind = kind;
-        pending->payload.assign(payload.begin(), payload.end());
-        pending->transport_ok = true;
-        pending->completed = true;
+        if (pending->state == PendingResponse::State::Completed ||
+            pending->state == PendingResponse::State::CompletedLate ||
+            pending->state == PendingResponse::State::AbandonedOnWorkerRetirement)
+        {
+            duplicate = true;
+        }
+        else
+        {
+            late = pending->state == PendingResponse::State::TimedOut;
+            pending->response_kind = kind;
+            pending->payload.assign(payload.begin(), payload.end());
+            pending->transport_ok = true;
+            pending->completed = true;
+            pending->response_at = std::chrono::steady_clock::now();
+            pending->state = late
+                ? PendingResponse::State::CompletedLate
+                : PendingResponse::State::Completed;
+        }
+    }
+    if (duplicate)
+    {
+        fail_protocol(
+            "UNSOLICITED_COMMAND_RESPONSE duplicate response request_id="
+                + std::to_string(request_id),
+            ProcessWorkerTransportDiagnosticCode::
+                UnsolicitedCommandResponse);
+        return PendingCompletionDisposition::Invalid;
     }
     pending->cv.notify_all();
+    if (!late)
+        return PendingCompletionDisposition::OnTime;
+
+    const auto lateness = pending->deadline ==
+        std::chrono::steady_clock::time_point::max()
+        ? 0
+        : std::max<std::int64_t>(
+            0,
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                pending->response_at - pending->deadline).count());
+    record_transport_diagnostic(
+        ProcessWorkerTransportDiagnosticCode::LateCommandResponse,
+        "LATE_COMMAND_RESPONSE request_id=" + std::to_string(request_id)
+            + " request_kind="
+            + std::to_string(static_cast<std::uint32_t>(pending->request_kind))
+            + " lateness_ms=" + std::to_string(lateness),
+        false);
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        pending_.erase(request_id);
+        std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
+        snapshot_.pending_response_count = pending_.size();
+        ++snapshot_.late_command_response_count;
+    }
+    return PendingCompletionDisposition::Late;
 }
 
 bool ProcessWorker::has_exact_pending_request(
@@ -1614,7 +1758,8 @@ bool ProcessWorker::has_exact_pending_request(
     }
     std::lock_guard<std::mutex> response_lock(
         found->second->mutex);
-    return !found->second->completed;
+    return found->second->state == PendingResponse::State::Pending ||
+        found->second->state == PendingResponse::State::TimedOut;
 }
 
 void ProcessWorker::fail_all_pending()
@@ -1625,6 +1770,9 @@ void ProcessWorker::fail_all_pending()
         pending.reserve(pending_.size());
         for (const auto& [_, response] : pending_)
             pending.push_back(response);
+        pending_.clear();
+        std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
+        snapshot_.pending_response_count = 0;
     }
     for (const auto& response : pending)
     {
@@ -1634,6 +1782,8 @@ void ProcessWorker::fail_all_pending()
                 continue;
             response->completed = true;
             response->transport_ok = false;
+            response->state =
+                PendingResponse::State::AbandonedOnWorkerRetirement;
         }
         response->cv.notify_all();
     }
@@ -1660,8 +1810,28 @@ bool ProcessWorker::accept_workset_outbound_sequence(
     return accepted;
 }
 
-void ProcessWorker::fail_protocol(std::string error)
+void ProcessWorker::record_transport_diagnostic(
+    ProcessWorkerTransportDiagnosticCode code,
+    std::string diagnostic,
+    bool preserve_as_first)
 {
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    snapshot_.last_transport_diagnostic_code = code;
+    snapshot_.last_transport_diagnostic = diagnostic;
+    if (preserve_as_first &&
+        snapshot_.first_transport_diagnostic_code ==
+            ProcessWorkerTransportDiagnosticCode::None)
+    {
+        snapshot_.first_transport_diagnostic_code = code;
+        snapshot_.first_transport_diagnostic = std::move(diagnostic);
+    }
+}
+
+void ProcessWorker::fail_protocol(
+    std::string error,
+    ProcessWorkerTransportDiagnosticCode code)
+{
+    record_transport_diagnostic(code, error, true);
     protocol_failed_.store(true, std::memory_order_release);
     accepting_writes_.store(false, std::memory_order_release);
     running_.store(false, std::memory_order_release);
@@ -1670,7 +1840,21 @@ void ProcessWorker::fail_protocol(std::string error)
         snapshot_.running = false;
         snapshot_.last_rejection_code =
             runtime::WorkerRejectionCode::InvalidArgument;
-        snapshot_.last_error = std::move(error);
+        snapshot_.last_error = snapshot_.first_transport_diagnostic.empty()
+            ? std::move(error)
+            : snapshot_.first_transport_diagnostic;
+        if (code == ProcessWorkerTransportDiagnosticCode::
+                CommandResponseChannelClosed ||
+            code == ProcessWorkerTransportDiagnosticCode::
+                UnsolicitedCommandResponse)
+        {
+            snapshot_.command_response_channel_healthy = false;
+        }
+        if (code == ProcessWorkerTransportDiagnosticCode::EventChannelClosed ||
+            code == ProcessWorkerTransportDiagnosticCode::EventProtocolViolation)
+        {
+            snapshot_.event_channel_healthy = false;
+        }
     }
     ready_received_.store(true, std::memory_order_release);
     ready_ok_.store(false, std::memory_order_release);
@@ -1857,8 +2041,27 @@ bool ProcessWorker::stop_callback_dispatch(
 
 void ProcessWorker::reader_thread()
 {
+    read_channel(
+        child_stdout_read_,
+        wrms::MessageChannel::Response,
+        "WorkerResponseReaderV1-");
+}
+
+void ProcessWorker::event_reader_thread()
+{
+    read_channel(
+        child_event_read_,
+        wrms::MessageChannel::Event,
+        "WorkerEventReaderV1-");
+}
+
+void ProcessWorker::read_channel(
+    HANDLE input,
+    wrms::MessageChannel channel,
+    const char* thread_name)
+{
     set_this_thread_name_utf8(
-        ("WorkerReaderV1-" + std::to_string(worker_id_)).c_str());
+        (std::string(thread_name) + std::to_string(worker_id_)).c_str());
 
     std::vector<std::uint8_t> buffered;
     buffered.reserve(64 * 1024);
@@ -1869,7 +2072,7 @@ void ProcessWorker::reader_thread()
     {
         DWORD read = 0;
         if (!ReadFile(
-                child_stdout_read_,
+                input,
                 chunk.data(),
                 static_cast<DWORD>(chunk.size()),
                 &read,
@@ -1896,10 +2099,16 @@ void ProcessWorker::reader_thread()
             }
 
             if (wrms::DirectionOf(decoded.frame.header.kind) !=
-                wrms::MessageDirection::WorkerToParent)
+                    wrms::MessageDirection::WorkerToParent ||
+                wrms::ChannelOf(decoded.frame.header.kind) != channel)
             {
                 fail_protocol(
-                    "worker emitted a parent-to-worker WRMS message");
+                    channel == wrms::MessageChannel::Response
+                        ? "UNSOLICITED_COMMAND_RESPONSE worker emitted a non-response on the response channel"
+                        : "EVENT_PROTOCOL_VIOLATION worker emitted a non-event on the event channel",
+                    channel == wrms::MessageChannel::Response
+                        ? ProcessWorkerTransportDiagnosticCode::UnsolicitedCommandResponse
+                        : ProcessWorkerTransportDiagnosticCode::EventProtocolViolation);
                 clean_eof = false;
                 break;
             }
@@ -1919,20 +2128,36 @@ void ProcessWorker::reader_thread()
         const auto truncated = wrms::DecodeFrame(buffered, true);
         if (truncated.status == wrms::FrameDecodeStatus::Error)
         {
-            set_last_error(
-                "worker closed stdout with a truncated WRMS frame");
+            fail_protocol(
+                channel == wrms::MessageChannel::Response
+                    ? "COMMAND_RESPONSE_CHANNEL_CLOSED with a truncated WRMS frame"
+                    : "EVENT_PROTOCOL_VIOLATION event channel closed with a truncated WRMS frame",
+                channel == wrms::MessageChannel::Response
+                    ? ProcessWorkerTransportDiagnosticCode::CommandResponseChannelClosed
+                    : ProcessWorkerTransportDiagnosticCode::EventProtocolViolation);
         }
     }
 
-    running_.store(false, std::memory_order_release);
-    accepting_writes_.store(false, std::memory_order_release);
+    if (!stop_started_.load(std::memory_order_acquire) &&
+        !protocol_failed_.load(std::memory_order_acquire))
+    {
+        const auto code = channel == wrms::MessageChannel::Response
+            ? ProcessWorkerTransportDiagnosticCode::CommandResponseChannelClosed
+            : ProcessWorkerTransportDiagnosticCode::EventChannelClosed;
+        fail_protocol(
+            channel == wrms::MessageChannel::Response
+                ? "COMMAND_RESPONSE_CHANNEL_CLOSED"
+                : "EVENT_CHANNEL_CLOSED",
+            code);
+    }
+
     {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
-        snapshot_.running = false;
+        if (channel == wrms::MessageChannel::Response)
+            snapshot_.command_response_channel_healthy = false;
+        else
+            snapshot_.event_channel_healthy = false;
     }
-    hello_cv_.notify_all();
-    fail_all_pending();
-    release_slot();
 }
 
 void ProcessWorker::handle_frame(const wrms::FrameView& frame)
@@ -2002,15 +2227,12 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             fail_protocol("invalid WRMS command result");
             return;
         }
-        if (!has_exact_pending_request(
-                frame.header.request_id,
-                result.command_kind))
-        {
-            fail_protocol(
-                "WRMS command result does not match an exact pending request "
-                "or its exact request kind");
+        const auto completion = complete_pending(
+            frame.header.request_id,
+            frame.header.kind,
+            frame.payload);
+        if (completion != PendingCompletionDisposition::OnTime)
             return;
-        }
         if (result.status != wrms::CommandStatus::Succeeded)
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
@@ -2019,25 +2241,24 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             if (!result.message.empty())
                 snapshot_.last_error = result.message;
         }
-        complete_pending(
-            frame.header.request_id,
-            frame.header.kind,
-            frame.payload);
         return;
     }
     case wrms::MessageKind::OpenSessionResult:
     {
         wrms::OpenSessionResultPayload result;
         if (frame.header.request_id == 0 ||
-            !has_exact_pending_request(
-                frame.header.request_id,
-                wrms::MessageKind::OpenSession) ||
             !wrms::DecodePayload(frame.payload, result))
         {
             fail_protocol(
                 "invalid or unsolicited WRMS OpenSessionResult");
             return;
         }
+        const auto completion = complete_pending(
+            frame.header.request_id,
+            frame.header.kind,
+            frame.payload);
+        if (completion != PendingCompletionDisposition::OnTime)
+            return;
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             if (result.success)
@@ -2070,25 +2291,24 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             if (!result.success)
                 snapshot_.last_error = result.message;
         }
-        complete_pending(
-            frame.header.request_id,
-            frame.header.kind,
-            frame.payload);
         return;
     }
     case wrms::MessageKind::ShutdownResult:
     {
         wrms::ShutdownResultPayload result;
         if (frame.header.request_id == 0 ||
-            !has_exact_pending_request(
-                frame.header.request_id,
-                wrms::MessageKind::Shutdown) ||
             !wrms::DecodePayload(frame.payload, result))
         {
             fail_protocol(
                 "invalid or unsolicited WRMS ShutdownResult");
             return;
         }
+        const auto completion = complete_pending(
+            frame.header.request_id,
+            frame.header.kind,
+            frame.payload);
+        if (completion != PendingCompletionDisposition::OnTime)
+            return;
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             snapshot_.shutdown_graceful =
@@ -2108,10 +2328,6 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             if (!result.message.empty())
                 snapshot_.last_error = result.message;
         }
-        complete_pending(
-            frame.header.request_id,
-            frame.header.kind,
-            frame.payload);
         return;
     }
     case wrms::MessageKind::SessionEvent:
@@ -2240,15 +2456,18 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
     {
         wrms::ExecutionResultPayload result;
         if (frame.header.request_id == 0 ||
-            !has_exact_pending_request(
-                frame.header.request_id,
-                wrms::MessageKind::ControlExecution) ||
             !wrms::DecodePayload(frame.payload, result))
         {
             fail_protocol(
                 "invalid or unsolicited WRMS ExecutionResult");
             return;
         }
+        const auto completion = complete_pending(
+            frame.header.request_id,
+            frame.header.kind,
+            frame.payload);
+        if (completion != PendingCompletionDisposition::OnTime)
+            return;
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             snapshot_.session_id = runtime::SessionId{result.session_id};
@@ -2270,10 +2489,6 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
                 snapshot_.last_error = result.message;
             }
         }
-        complete_pending(
-            frame.header.request_id,
-            frame.header.kind,
-            frame.payload);
         return;
     }
     case wrms::MessageKind::ExecutionState:
@@ -2668,9 +2883,16 @@ void ProcessWorker::begin_stop()
             shutdown_pending = std::make_shared<PendingResponse>();
             shutdown_pending->request_kind =
                 wrms::MessageKind::Shutdown;
+            shutdown_pending->expected_response_kind =
+                wrms::MessageKind::ShutdownResult;
+            shutdown_pending->enqueued_at =
+                std::chrono::steady_clock::now();
+            shutdown_pending->deadline = deadline;
             {
                 std::lock_guard<std::mutex> lock(pending_mutex_);
                 pending_.emplace(raw_id, shutdown_pending);
+                std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
+                snapshot_.pending_response_count = pending_.size();
             }
             shutdown_write = enqueue_frame(
                 wrms::MessageKind::Shutdown,
@@ -2879,6 +3101,14 @@ void ProcessWorker::finish_stop()
         if (!snapshot.cancel_pipe_succeeded)
             snapshot.cancel_pipe_error = GetLastError();
     }
+    if (child_event_read_)
+    {
+        snapshot.cancel_event_reader_attempted = true;
+        snapshot.cancel_event_reader_succeeded =
+            CancelIoEx(child_event_read_, nullptr) != 0;
+        if (!snapshot.cancel_event_reader_succeeded)
+            snapshot.cancel_event_reader_error = GetLastError();
+    }
     if (reader_.joinable())
     {
         snapshot.cancel_reader_attempted = true;
@@ -2888,6 +3118,16 @@ void ProcessWorker::finish_stop()
             snapshot.cancel_reader_error = GetLastError();
         reader_.join();
         snapshot.reader_joined = true;
+    }
+    if (event_reader_.joinable())
+    {
+        snapshot.cancel_event_reader_attempted = true;
+        snapshot.cancel_event_reader_succeeded =
+            CancelSynchronousIo(event_reader_.native_handle()) != 0;
+        if (!snapshot.cancel_event_reader_succeeded)
+            snapshot.cancel_event_reader_error = GetLastError();
+        event_reader_.join();
+        snapshot.event_reader_joined = true;
     }
     running_.store(false, std::memory_order_release);
     fail_all_pending();
@@ -2930,10 +3170,18 @@ void ProcessWorker::finish_stop()
     {
         close_process_handles(&snapshot);
     }
-    else if (child_stdout_read_)
+    else if (child_stdout_read_ || child_event_read_)
     {
-        CloseHandle(child_stdout_read_);
-        child_stdout_read_ = nullptr;
+        if (child_stdout_read_)
+        {
+            CloseHandle(child_stdout_read_);
+            child_stdout_read_ = nullptr;
+        }
+        if (child_event_read_)
+        {
+            CloseHandle(child_event_read_);
+            child_event_read_ = nullptr;
+        }
     }
     {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
@@ -2959,7 +3207,6 @@ void ProcessWorker::finish_stop()
 
 void ProcessWorker::stop()
 {
-    begin_stop();
     finish_stop();
 }
 
@@ -2999,6 +3246,11 @@ void ProcessWorker::close_process_handles(
     {
         CloseHandle(child_stdout_read_);
         child_stdout_read_ = nullptr;
+    }
+    if (child_event_read_)
+    {
+        CloseHandle(child_event_read_);
+        child_event_read_ = nullptr;
     }
     if (process_handle_)
     {

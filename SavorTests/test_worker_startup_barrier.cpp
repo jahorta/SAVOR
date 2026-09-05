@@ -450,6 +450,47 @@ TEST(BattleCli, AcceptsExplicitAnalogousSearchBreadth) {
     EXPECT_EQ(options.battle_fake_attack_max, 5);
 }
 
+TEST(TasMovieCutsceneCli, AcceptsExactAndBoundedRtcFanout) {
+    savor::e2e::CliOptions options;
+    std::string error;
+    EXPECT_TRUE(ParseSeedProbeArgs({
+        "SavorE2E", "--scenario", "tasmovie_cutscene",
+        "--tasmovie-rtc-min", "10", "--tasmovie-rtc-max", "41",
+        "--worker-count", "20", "--iso", ".",
+        "--dolphin-base-dir", ".", "--dtm-file", "."},
+        &options, &error)) << error;
+    EXPECT_EQ(options.tasmovie_rtc_min, 10);
+    EXPECT_EQ(options.tasmovie_rtc_max, 41);
+    EXPECT_EQ(options.worker_count, 20);
+
+    error.clear();
+    EXPECT_TRUE(ParseSeedProbeArgs({
+        "SavorE2E", "--scenario", "tasmovie_cutscene",
+        "--tasmovie-rtc", "7", "--worker-count", "8", "--iso", ".",
+        "--dolphin-base-dir", ".", "--dtm-file", "."},
+        &options, &error)) << error;
+}
+
+TEST(TasMovieCutsceneCli, RejectsInvalidRtcFanoutShapes) {
+    savor::e2e::CliOptions options;
+    std::string error;
+    EXPECT_FALSE(ParseSeedProbeArgs({
+        "SavorE2E", "--scenario", "tasmovie_cutscene",
+        "--tasmovie-rtc-min", "0", "--tasmovie-rtc-max", "32",
+        "--iso", ".", "--dolphin-base-dir", ".", "--dtm-file", "."},
+        &options, &error));
+    EXPECT_NE(error.find("at most 32"), std::string::npos);
+
+    error.clear();
+    EXPECT_FALSE(ParseSeedProbeArgs({
+        "SavorE2E", "--scenario", "tasmovie_cutscene",
+        "--tasmovie-rtc", "1", "--tasmovie-rtc-min", "1",
+        "--tasmovie-rtc-max", "2", "--iso", ".",
+        "--dolphin-base-dir", ".", "--dtm-file", "."},
+        &options, &error));
+    EXPECT_NE(error.find("either one"), std::string::npos);
+}
+
 TEST(BattleCli, RejectsInvalidSearchBreadth) {
     const auto reject = [](std::initializer_list<const char*> extra) {
         std::vector<std::string> storage{

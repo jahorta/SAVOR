@@ -51,7 +51,6 @@ constexpr auto kScenarioCatalog = std::to_array<E2eScenarioDescriptor>({
             E2eScenarioEntrySource::FreshTasMovieValidation,
         .must_run_alone = true,
         .requires_repeat_one = true,
-        .requires_one_worker = true,
     },
     {
         .name = "tasmovie_establish",
@@ -956,8 +955,7 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         return false;
     }
     if (!prepared_checkpoint_mode
-        && (is_tasmovie_validation || is_tasmovie_sterile || is_battle
-            || is_tasmovie_cutscene)
+        && (is_tasmovie_validation || is_tasmovie_sterile || is_battle)
         && (!options.tasmovie_rtc.has_value()
             || options.tasmovie_rtc_min.has_value()
             || options.tasmovie_rtc_max.has_value())) {
@@ -965,6 +963,31 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             *error_out = "the selected validation-backed scenario requires exactly one --tasmovie-rtc and does not accept RTC range arguments";
         }
         return false;
+    }
+    if (!prepared_checkpoint_mode && is_tasmovie_cutscene) {
+        const bool exact = options.tasmovie_rtc.has_value()
+            && !options.tasmovie_rtc_min.has_value()
+            && !options.tasmovie_rtc_max.has_value();
+        const bool range = !options.tasmovie_rtc.has_value()
+            && options.tasmovie_rtc_min.has_value()
+            && options.tasmovie_rtc_max.has_value();
+        if (!exact && !range) {
+            if (error_out) {
+                *error_out = "tasmovie_cutscene requires either one --tasmovie-rtc or both --tasmovie-rtc-min and --tasmovie-rtc-max";
+            }
+            return false;
+        }
+        if (range) {
+            const auto low = static_cast<std::uint64_t>(
+                *options.tasmovie_rtc_min);
+            const auto high = static_cast<std::uint64_t>(
+                *options.tasmovie_rtc_max);
+            if (high >= low && high - low + 1 > 32) {
+                if (error_out)
+                    *error_out = "tasmovie_cutscene RTC fan-out may contain at most 32 branches";
+                return false;
+            }
+        }
     }
     if (!prepared_checkpoint_mode
         && (is_tasmovie_seedprobe || is_tasmovie_sterile)

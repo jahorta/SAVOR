@@ -67,6 +67,8 @@ public:
         auto pending =
             std::make_shared<ProcessWorker::PendingResponse>();
         pending->request_kind = wrms::MessageKind::OpenSession;
+        pending->expected_response_kind =
+            wrms::MessageKind::OpenSessionResult;
         {
             std::lock_guard<std::mutex> lock(worker.pending_mutex_);
             worker.pending_.emplace(request_id, pending);
@@ -218,8 +220,36 @@ public:
         auto pending =
             std::make_shared<ProcessWorker::PendingResponse>();
         pending->request_kind = request_kind;
+        pending->expected_response_kind =
+            request_kind == wrms::MessageKind::OpenSession
+            ? wrms::MessageKind::OpenSessionResult
+            : request_kind == wrms::MessageKind::Shutdown
+                ? wrms::MessageKind::ShutdownResult
+                : request_kind == wrms::MessageKind::ControlExecution
+                    ? wrms::MessageKind::ExecutionResult
+                    : wrms::MessageKind::CommandResult;
         std::lock_guard<std::mutex> lock(worker.pending_mutex_);
         worker.pending_.emplace(request_id, std::move(pending));
+    }
+
+    static void AddTimedOutRequest(
+        ProcessWorker& worker,
+        std::uint64_t request_id,
+        wrms::MessageKind request_kind)
+    {
+        AddPendingRequest(worker, request_id, request_kind);
+        std::lock_guard<std::mutex> lock(worker.pending_mutex_);
+        auto& pending = worker.pending_.at(request_id);
+        std::lock_guard<std::mutex> response_lock(pending->mutex);
+        pending->state = ProcessWorker::PendingResponse::State::TimedOut;
+        pending->deadline =
+            std::chrono::steady_clock::now() - std::chrono::milliseconds(5);
+    }
+
+    static std::size_t PendingResponseCount(const ProcessWorker& worker)
+    {
+        std::lock_guard<std::mutex> lock(worker.pending_mutex_);
+        return worker.pending_.size();
     }
 
     static void DrainCallbacks(ProcessWorker& worker)
@@ -1314,7 +1344,34 @@ TEST(ProcessWorkerV1, DuplicateCorrelatedCommandResultFailsProtocol)
             worker,
             77,
             savor::wrms::MessageKind::SubmitWorkset));
-    ExpectErrorContains(worker, "exact pending request");
+    ExpectErrorContains(worker, "UNSOLICITED_COMMAND_RESPONSE");
+}
+
+TEST(ProcessWorkerV1, ExactLateCommandResponseIsConsumedWithoutProtocolFailure)
+{
+    savor::ProcessWorker worker;
+    constexpr std::uint64_t request_id = 78;
+    savor::ProcessWorkerTestPeer::AddTimedOutRequest(
+        worker,
+        request_id,
+        savor::wrms::MessageKind::LivenessProbe);
+
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::CommandResult,
+        savor::wrms::CommandResultPayload{
+            .command_kind = savor::wrms::MessageKind::LivenessProbe,
+            .status = savor::wrms::CommandStatus::Succeeded,
+        },
+        request_id));
+
+    EXPECT_FALSE(savor::ProcessWorkerTestPeer::ProtocolFailed(worker));
+    EXPECT_EQ(savor::ProcessWorkerTestPeer::PendingResponseCount(worker), 0u);
+    const auto snapshot = worker.latest_snapshot();
+    EXPECT_EQ(snapshot.late_command_response_count, 1u);
+    EXPECT_EQ(
+        snapshot.last_transport_diagnostic_code,
+        savor::ProcessWorkerTransportDiagnosticCode::LateCommandResponse);
 }
 
 TEST(ProcessWorkerV1, NegotiatedButExitedTransportIsNotReady)
@@ -1562,7 +1619,7 @@ TEST(
     EXPECT_EQ(after.session_open, before.session_open);
     EXPECT_EQ(after.session_id, before.session_id);
     EXPECT_EQ(after.workset_epoch, before.workset_epoch);
-    ExpectErrorContains(worker, "unsolicited");
+    ExpectErrorContains(worker, "UNSOLICITED_COMMAND_RESPONSE");
 }
 
 TEST(

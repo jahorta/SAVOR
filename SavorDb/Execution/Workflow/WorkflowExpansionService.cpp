@@ -1131,7 +1131,9 @@ bool WorkflowExpansionService::Advance(
         const auto rtc = target.rtc_value;
         if (!launch("First Battle Exploration: RTC Branch", "RTC_BATTLE", 0, rtc,
             {{"tas_movie_validate_root_1","root_establishment",
-              "analysis.tas_movie_root_establishment_attempt_id","tmv_root_establishment_attempt",*source_attempt,"expansion"}},
+              "analysis.tas_movie_root_establishment_attempt_id","tmv_root_establishment_attempt",*source_attempt,"expansion"},
+             {"battle_5","tas_root_annotation",
+              "analysis.tas_movie_input_epoch_annotation_attempt_id","tmv_input_epoch_annotation_attempt",*source_annotation,"expansion"}},
             {{"tas_movie_validate_root_1","rtc","integer",rtc,std::nullopt,"expansion"}})) return false;
     }
 
@@ -1270,7 +1272,9 @@ bool WorkflowExpansionService::Advance(
             const auto rtc = target.rtc_value;
             if (!launch("First Battle Exploration: RTC Branch", "RTC_BATTLE", delay, rtc,
                 {{"tas_movie_validate_root_1","root_establishment",
-                  "analysis.tas_movie_root_establishment_attempt_id","tmv_root_establishment_attempt",*child_annotation->root_establishment_attempt_id,"expansion"}},
+                  "analysis.tas_movie_root_establishment_attempt_id","tmv_root_establishment_attempt",*child_annotation->root_establishment_attempt_id,"expansion"},
+                 {"battle_5","tas_root_annotation",
+                  "analysis.tas_movie_input_epoch_annotation_attempt_id","tmv_input_epoch_annotation_attempt",*revised_annotation,"expansion"}},
                 {{"tas_movie_validate_root_1","rtc","integer",rtc,std::nullopt,"expansion"}})) return false;
         }
     }

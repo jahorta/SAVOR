@@ -37,7 +37,7 @@ std::vector<std::uint8_t> MakeFrame(
     return std::move(encoded.bytes);
 }
 
-TEST(WorkerProtocolV2, EncodesExactWrmsLittleEndianGoldenFrame)
+TEST(WorkerProtocolV6, EncodesExactWrmsLittleEndianGoldenFrame)
 {
     constexpr std::array<std::uint8_t, 2> payload{ 0xaa, 0xbb };
     constexpr std::uint64_t request_id = 0x1122334455667788ull;
@@ -50,7 +50,7 @@ TEST(WorkerProtocolV2, EncodesExactWrmsLittleEndianGoldenFrame)
     ASSERT_EQ(encoded.error, FrameError::None);
     const std::vector<std::uint8_t> expected{
         0x57, 0x52, 0x4d, 0x53, // WRMS
-        0x02, 0x00,             // protocol version 2
+        0x06, 0x00,             // protocol version 6
         0x17, 0x00,             // SubmitWorkset
         0x02, 0x00, 0x00, 0x00, // payload length
         0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // request ID
@@ -74,7 +74,7 @@ TEST(WorkerProtocolV2, EncodesExactWrmsLittleEndianGoldenFrame)
         std::vector<std::uint8_t>(payload.begin(), payload.end()));
 }
 
-TEST(WorkerProtocolV2, CoreStalledRetainsTheFormerViStallWireValue)
+TEST(WorkerProtocolV6, CoreStalledRetainsTheFormerViStallWireValue)
 {
     EXPECT_EQ(
         static_cast<std::uint8_t>(
@@ -82,7 +82,7 @@ TEST(WorkerProtocolV2, CoreStalledRetainsTheFormerViStallWireValue)
         5u);
 }
 
-TEST(WorkerProtocolV2, EncodesExactAdditiveExecutionGoldenFrames)
+TEST(WorkerProtocolV6, EncodesExactAdditiveExecutionGoldenFrames)
 {
     {
         std::vector<std::uint8_t> payload;
@@ -102,7 +102,7 @@ TEST(WorkerProtocolV2, EncodesExactAdditiveExecutionGoldenFrames)
         ASSERT_EQ(encoded.error, FrameError::None);
         const std::vector<std::uint8_t> expected{
             0x57, 0x52, 0x4d, 0x53, // WRMS
-            0x02, 0x00,             // protocol version 2
+            0x06, 0x00,             // protocol version 6
             0x16, 0x00,             // ControlExecution
             0x19, 0x00, 0x00, 0x00, // payload length
             0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21,
@@ -142,7 +142,7 @@ TEST(WorkerProtocolV2, EncodesExactAdditiveExecutionGoldenFrames)
         ASSERT_EQ(encoded.error, FrameError::None);
         const std::vector<std::uint8_t> expected{
             0x57, 0x52, 0x4d, 0x53, // WRMS
-            0x02, 0x00,             // protocol version 2
+            0x06, 0x00,             // protocol version 6
             0x09, 0x01,             // ExecutionResult
             0x3c, 0x00, 0x00, 0x00, // payload length
             0x48, 0x47, 0x46, 0x45, 0x44, 0x43, 0x42, 0x41,
@@ -187,7 +187,7 @@ TEST(WorkerProtocolV2, EncodesExactAdditiveExecutionGoldenFrames)
         ASSERT_EQ(encoded.error, FrameError::None);
         const std::vector<std::uint8_t> expected{
             0x57, 0x52, 0x4d, 0x53, // WRMS
-            0x02, 0x00,             // protocol version 2
+            0x06, 0x00,             // protocol version 6
             0x0a, 0x01,             // ExecutionState
             0x31, 0x00, 0x00, 0x00, // payload length
             0x58, 0x57, 0x56, 0x55, 0x54, 0x53, 0x52, 0x51,
@@ -440,7 +440,7 @@ TEST(WorkerProtocolV2, RoundTripsEveryTypedPayload)
 
 TEST(WorkerProtocolV2, KeepsExecutionControlAdditiveAndDirectional)
 {
-    EXPECT_EQ(ProtocolVersion, 4u);
+    EXPECT_EQ(ProtocolVersion, 6u);
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::ControlExecution));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::ExecutionResult));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::ExecutionState));
@@ -453,11 +453,20 @@ TEST(WorkerProtocolV2, KeepsExecutionControlAdditiveAndDirectional)
     EXPECT_EQ(
         DirectionOf(MessageKind::ExecutionState),
         MessageDirection::WorkerToParent);
+    EXPECT_EQ(
+        ChannelOf(MessageKind::ControlExecution),
+        MessageChannel::Command);
+    EXPECT_EQ(
+        ChannelOf(MessageKind::ExecutionResult),
+        MessageChannel::Response);
+    EXPECT_EQ(
+        ChannelOf(MessageKind::ExecutionState),
+        MessageChannel::Event);
 }
 
 TEST(WorkerProtocolV2, ExposesOnlyWorksetProgramTransport)
 {
-    EXPECT_EQ(ProtocolVersion, 4u);
+    EXPECT_EQ(ProtocolVersion, 6u);
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::SubmitWorkset));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::CancelWorksetItem));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::CancelWorkset));

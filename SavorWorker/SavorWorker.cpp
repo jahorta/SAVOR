@@ -447,8 +447,13 @@ savor::wrms::WorksetStateCode MapWorksetState(
 
 class OutboundPublisher {
 public:
-    explicit OutboundPublisher(HANDLE output)
-        : output_(output) {
+    OutboundPublisher(
+        HANDLE output,
+        bool event_traffic,
+        std::string thread_name)
+        : output_(output),
+          event_traffic_(event_traffic),
+          thread_name_(std::move(thread_name)) {
         (void)DuplicateHandle(
             GetCurrentProcess(),
             GetCurrentThread(),
@@ -581,7 +586,9 @@ private:
     static constexpr std::size_t kMaximumQueuedBytes =
         128ull * 1024ull * 1024ull;
 
-    static bool IsAuthoritative(MessageKind kind) noexcept {
+    bool IsAuthoritative(MessageKind kind) const noexcept {
+        if (!event_traffic_)
+            return true;
         switch (kind) {
         case MessageKind::InvocationProgress:
         case MessageKind::HostEvent:
@@ -609,7 +616,7 @@ private:
     }
 
     void Run() {
-        set_this_thread_name_utf8("WorkerOutboundV1");
+        set_this_thread_name_utf8(thread_name_.c_str());
         for (;;) {
             Record record;
             {
@@ -647,6 +654,8 @@ private:
     }
 
     HANDLE output_{ nullptr };
+    bool event_traffic_{ false };
+    std::string thread_name_;
     HANDLE reader_thread_{ nullptr };
     mutable std::mutex mutex_;
     std::condition_variable available_;
@@ -823,9 +832,11 @@ void PublishCommandCompletion(
 }
 
 void PublishWorkerEvent(
-    OutboundPublisher& publisher,
+    OutboundPublisher& response_publisher,
+    OutboundPublisher& event_publisher,
     RequestMetadata& metadata,
     const WorkerEvent& event) {
+    auto& publisher = event_publisher;
     std::visit(
         Overloaded{
             [&](const savor::runtime::WorkerStateChangedEvent& state) {
@@ -846,7 +857,7 @@ void PublishWorkerEvent(
             },
             [&](const savor::runtime::WorkerCommandCompletedEvent& completed) {
                 PublishCommandCompletion(
-                    publisher,
+                    response_publisher,
                     metadata,
                     completed.result);
             },
@@ -1457,6 +1468,7 @@ int main(int argc, char** argv) {
     std::uint64_t utc_launch_ticks = 0;
     std::filesystem::path log_path;
     bool breakpoint_diagnostics = false;
+    std::uint64_t event_handle_value = 0;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if (argument == "--id")
@@ -1467,6 +1479,8 @@ int main(int argc, char** argv) {
             utc_launch_ticks = ParseU64(NextArg(index, argc, argv));
         else if (argument == "--log-file")
             log_path = NextArg(index, argc, argv);
+        else if (argument == "--event-handle")
+            event_handle_value = ParseU64(NextArg(index, argc, argv));
         else if (argument == "--breakpoint-diagnostics")
             breakpoint_diagnostics = true;
     }
@@ -1520,22 +1534,34 @@ int main(int argc, char** argv) {
 
     HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
     HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+    HANDLE event_output = reinterpret_cast<HANDLE>(
+        static_cast<std::uintptr_t>(event_handle_value));
     if (!input || input == INVALID_HANDLE_VALUE ||
-        !output || output == INVALID_HANDLE_VALUE) {
+        !output || output == INVALID_HANDLE_VALUE ||
+        !event_output || event_output == INVALID_HANDLE_VALUE) {
         return static_cast<int>(WorkerExitCode::InvalidHandles);
     }
 
-    OutboundPublisher publisher(output);
+    OutboundPublisher response_publisher(
+        output,
+        false,
+        "WorkerResponsesV1");
+    OutboundPublisher event_publisher(
+        event_output,
+        true,
+        "WorkerEventsV1");
     RequestMetadata request_metadata;
     std::unique_ptr<savor::runtime::WorkerRuntime> runtime;
     runtime = savor::runtime::MakeProductionWorkerRuntime(
         savor::runtime::SessionId{},
         [&](const WorkerEvent& event) {
             PublishWorkerEvent(
-                publisher,
+                response_publisher,
+                event_publisher,
                 request_metadata,
                 event);
-            if (!publisher.healthy()) {
+            if (!response_publisher.healthy() ||
+                !event_publisher.healthy()) {
                 throw std::runtime_error(
                     "WRMS outbound publisher rejected the worker event");
             }
@@ -1556,10 +1582,11 @@ int main(int argc, char** argv) {
             runtime->runtime_contract(),
             encoded_runtime_contract);
     if (!encoded_contract) {
-        publisher.StopAndDrain();
+        event_publisher.StopAndDrain();
+        response_publisher.StopAndDrain();
         return static_cast<int>(WorkerExitCode::PublisherFailure);
     }
-    publisher.Publish(
+    response_publisher.Publish(
         MessageKind::ProcessHello,
         0,
         savor::wrms::ProcessHelloPayload{
@@ -1576,7 +1603,9 @@ int main(int argc, char** argv) {
     bool shutdown_requested = false;
     bool protocol_ok = true;
 
-    while (!shutdown_requested && publisher.healthy()) {
+    while (!shutdown_requested &&
+           response_publisher.healthy() &&
+           event_publisher.healthy()) {
         DWORD read = 0;
         if (!ReadFile(
                 input,
@@ -1615,7 +1644,7 @@ int main(int argc, char** argv) {
 
             const bool keep_reading = SubmitFrame(
                 *runtime,
-                publisher,
+                response_publisher,
                 request_metadata,
                 decoded.frame,
                 &shutdown_future);
@@ -1646,17 +1675,20 @@ int main(int argc, char** argv) {
     (void)shutdown_future.get();
     runtime->WaitStopped();
     savor::hoststubs::ClearHostEventSink();
-    publisher.StopAndDrain();
+    event_publisher.StopAndDrain();
+    response_publisher.StopAndDrain();
+    CloseHandle(event_output);
     runtime.reset();
 
     SCLOGI(
-        "[WORKER] shutdown complete worker=%llu protocol_ok=%u publisher_ok=%u",
+        "[WORKER] shutdown complete worker=%llu protocol_ok=%u response_publisher_ok=%u event_publisher_ok=%u",
         static_cast<unsigned long long>(worker_id),
         protocol_ok ? 1u : 0u,
-        publisher.healthy() ? 1u : 0u);
+        response_publisher.healthy() ? 1u : 0u,
+        event_publisher.healthy() ? 1u : 0u);
     logger_owner.Shutdown();
 
-    if (!publisher.healthy())
+    if (!response_publisher.healthy() || !event_publisher.healthy())
         return static_cast<int>(WorkerExitCode::PublisherFailure);
     return protocol_ok
         ? static_cast<int>(WorkerExitCode::Success)

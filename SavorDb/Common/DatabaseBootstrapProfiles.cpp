@@ -162,10 +162,11 @@ authoring::AuthoringRecipe StandardRecipe()
                  .kind = authoring::WorkflowAuthoredObjectKind::BattlePlan,
                  .ref = authoring::AuthoringRef<authoring::BattlePlanTag>{battle_plan}}},
         },
-        .external_inputs = {{
-            "tas_movie_validate_root_1",
-            ac::workflow::ports::tas_movie_validate_root::RootEstablishment,
-        }},
+        .external_inputs = {
+            {"tas_movie_validate_root_1",
+             ac::workflow::ports::tas_movie_validate_root::RootEstablishment},
+            {"battle_5", {"tas_root_annotation"}},
+        },
         .edges = {
             {"tas_movie_validate_root_1",
              ac::workflow::ports::tas_movie_validate_root::ValidatedCheckpoint,

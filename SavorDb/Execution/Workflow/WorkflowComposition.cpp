@@ -603,6 +603,8 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .required_inputs = {
                 Port("seed_probe_run", "analysis.seed_probe_run", "sp_probe_run", "Confirmed SeedProbe run"),
                 Port("battle_context", "analysis_battle.battle_context_id", "ab_battle_context", "Battle context"),
+                Port("tas_root_annotation", "analysis.tas_movie_input_epoch_annotation_attempt_id",
+                    "tmv_input_epoch_annotation_attempt", "TAS root annotation provenance", false),
             },
             .possible_outputs = {
                 Port(programdb::workflow_outputs::BattleSet, "Battle set"),
@@ -668,6 +670,8 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             },
             .possible_outputs = {
                 Port(programdb::workflow_outputs::BattleRecording, "Battle recording"),
+                Port(programdb::workflow_outputs::TasMovieValidationAttempt, "Validation attempt"),
+                Port(programdb::workflow_outputs::TasMovieValidatedCheckpoint, "Validated checkpoint savestate"),
             },
             .internal_step_kinds = { "battle.record" },
             .step_templates = SingleStep("battle.record"),

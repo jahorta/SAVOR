@@ -77,6 +77,10 @@ struct ProcessWorkerStopSnapshot {
     bool cancel_reader_succeeded{ false };
     std::uint32_t cancel_reader_error{ 0 };
     bool reader_joined{ false };
+    bool cancel_event_reader_attempted{ false };
+    bool cancel_event_reader_succeeded{ false };
+    std::uint32_t cancel_event_reader_error{ 0 };
+    bool event_reader_joined{ false };
     bool callback_dispatcher_joined{ false };
     bool callback_cleanup_timed_out{ false };
     std::uint32_t cooperative_wait_result{ WAIT_FAILED };
@@ -112,6 +116,16 @@ struct ProcessCommandCompletion {
     bool correlated_response_received{ false };
     wrms::MessageKind response_kind{ wrms::MessageKind::CommandResult };
     std::vector<std::uint8_t> payload;
+};
+
+enum class ProcessWorkerTransportDiagnosticCode : std::uint8_t {
+    None = 0,
+    CommandResponseTimeout,
+    LateCommandResponse,
+    CommandResponseChannelClosed,
+    EventChannelClosed,
+    EventProtocolViolation,
+    UnsolicitedCommandResponse,
 };
 
 enum class ProcessWorksetSubmitDisposition : std::uint8_t {
@@ -183,6 +197,17 @@ struct ProcessWorkerSnapshot {
     std::uint32_t active_and_staged_items{ 0 };
     std::uint32_t retained_terminals{ 0 };
     std::uint64_t last_outbound_sequence{ 0 };
+    bool command_response_channel_healthy{ false };
+    bool event_channel_healthy{ false };
+    std::size_t command_write_queue_depth{ 0 };
+    std::size_t pending_response_count{ 0 };
+    std::uint64_t late_command_response_count{ 0 };
+    ProcessWorkerTransportDiagnosticCode first_transport_diagnostic_code{
+        ProcessWorkerTransportDiagnosticCode::None};
+    std::string first_transport_diagnostic;
+    ProcessWorkerTransportDiagnosticCode last_transport_diagnostic_code{
+        ProcessWorkerTransportDiagnosticCode::None};
+    std::string last_transport_diagnostic;
 };
 
 class ProcessWorker {
@@ -342,13 +367,35 @@ private:
     friend class ProcessWorkerTestPeer;
 
     struct PendingResponse {
+        enum class State : std::uint8_t {
+            Pending,
+            Completed,
+            TimedOut,
+            CompletedLate,
+            AbandonedOnWorkerRetirement,
+        };
+
         std::mutex mutex;
         std::condition_variable cv;
         bool completed{ false };
         bool transport_ok{ false };
+        bool request_frame_written{ false };
+        State state{ State::Pending };
         wrms::MessageKind request_kind{ wrms::MessageKind::Shutdown };
+        wrms::MessageKind expected_response_kind{
+            wrms::MessageKind::CommandResult};
         wrms::MessageKind response_kind{ wrms::MessageKind::CommandResult };
         std::vector<std::uint8_t> payload;
+        std::chrono::steady_clock::time_point enqueued_at{};
+        std::chrono::steady_clock::time_point written_at{};
+        std::chrono::steady_clock::time_point deadline{};
+        std::chrono::steady_clock::time_point response_at{};
+    };
+
+    enum class PendingCompletionDisposition : std::uint8_t {
+        OnTime,
+        Late,
+        Invalid,
     };
 
     struct PendingCallback {
@@ -428,7 +475,7 @@ private:
     [[nodiscard]] static bool classify_shutdown_response(
         std::span<const std::uint8_t> payload,
         bool* graceful_out);
-    void complete_pending(
+    [[nodiscard]] PendingCompletionDisposition complete_pending(
         std::uint64_t request_id,
         wrms::MessageKind kind,
         std::span<const std::uint8_t> payload);
@@ -440,6 +487,11 @@ private:
     void request_writer_stop(ProcessWorkerStopSnapshot* snapshot);
     void join_writer(ProcessWorkerStopSnapshot* snapshot);
     void reader_thread();
+    void event_reader_thread();
+    void read_channel(
+        HANDLE input,
+        wrms::MessageChannel channel,
+        const char* thread_name);
     static void callback_thread(
         std::shared_ptr<CallbackDispatcherState> state,
         std::shared_ptr<CallbackFailureTarget> failure_target,
@@ -456,18 +508,27 @@ private:
     void handle_frame(const wrms::FrameView& frame);
     [[nodiscard]] bool accept_workset_outbound_sequence(
         std::uint64_t sequence);
-    void fail_protocol(std::string error);
+    void fail_protocol(
+        std::string error,
+        ProcessWorkerTransportDiagnosticCode code =
+            ProcessWorkerTransportDiagnosticCode::EventProtocolViolation);
+    void record_transport_diagnostic(
+        ProcessWorkerTransportDiagnosticCode code,
+        std::string diagnostic,
+        bool preserve_as_first);
     void set_last_error(std::string error);
     void close_process_handles(ProcessWorkerStopSnapshot* snapshot);
 
     HANDLE child_stdin_write_{ nullptr };
     HANDLE child_stdout_read_{ nullptr };
+    HANDLE child_event_read_{ nullptr };
     HANDLE process_handle_{ nullptr };
     HANDLE process_thread_handle_{ nullptr };
     HANDLE job_handle_{ nullptr };
     unsigned long process_id_{ 0 };
 
     std::thread reader_;
+    std::thread event_reader_;
     std::thread writer_;
     std::thread callback_dispatcher_;
     std::shared_ptr<CallbackDispatcherState> callback_dispatcher_state_;

@@ -1029,6 +1029,7 @@ bool SeedEstablishedBattleWorkflow(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IExecutionDb* execution_db,
     const std::int64_t root_establishment_attempt_id,
+    const std::optional<std::int64_t> annotation_attempt_id,
     const std::int64_t seed_probe_spec_id,
     const std::int64_t battle_plan_id,
     const std::int64_t rtc_value,
@@ -1044,7 +1045,8 @@ bool SeedEstablishedBattleWorkflow(
         battle_plan_id <= 0 || rtc_value < 0 ||
         static_cast<std::uint64_t>(rtc_value) >
             std::numeric_limits<std::uint32_t>::max() ||
-        workflow_instance_id_out == nullptr)
+        workflow_instance_id_out == nullptr
+        || (annotation_attempt_id && *annotation_attempt_id <= 0))
         return Fail("Established-root Battle workflow seed input is incomplete",
                     error_out);
 
@@ -1171,6 +1173,13 @@ bool SeedEstablishedBattleWorkflow(
                             .data_kind = "analysis_battle.battle_context_id",
                             .ref_kind = "ab_battle_context",
                             .display_name = "Battle context",
+                        },
+                        {
+                            .input_key = "tas_root_annotation",
+                            .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id",
+                            .ref_kind = "tmv_input_epoch_annotation_attempt",
+                            .display_name = "TAS root annotation provenance",
+                            .required = false,
                         },
                     },
                     .possible_outputs = {{
@@ -1326,6 +1335,16 @@ bool SeedEstablishedBattleWorkflow(
         .ref_id = root_establishment_attempt_id,
         .source_kind = "external",
     });
+    if (annotation_attempt_id) {
+        command.input_bindings.push_back({
+            .node_key = "battle_1",
+            .input_key = "tas_root_annotation",
+            .data_kind = "analysis.tas_movie_input_epoch_annotation_attempt_id",
+            .ref_kind = "tmv_input_epoch_annotation_attempt",
+            .ref_id = *annotation_attempt_id,
+            .source_kind = "external",
+        });
+    }
     command.arguments.push_back({
         .node_key = "tas_validate_1", .argument_key = "rtc",
         .value_type = "integer", .integer_value = rtc_value,
@@ -2702,6 +2721,72 @@ bool ResolveEstablishedBattleRootCursor(
 
 } // namespace
 
+bool PrepareBattleScenarioAuthoring(
+    const CliOptions& options,
+    const std::string_view run_identity,
+    const bool cutscene_mode,
+    savor::db::core::DBService* db_service,
+    BattleScenarioAuthoringIds* ids_out,
+    std::string* error_out)
+{
+    if (!db_service || !db_service->IsRunning() || !ids_out)
+        return Fail("Battle scenario authoring input is incomplete", error_out);
+    BattleScenarioAuthoringIds ids{};
+    if (!SeedAuthoringSpec(db_service->AuthoringDb(), options, run_identity,
+            &ids.seed_probe_spec_id, error_out))
+        return false;
+    if (!SeedBattleAuthoring(db_service->AuthoringDb(), run_identity,
+            cutscene_mode, &ids.battle_plan_id, error_out))
+        return false;
+    *ids_out = ids;
+    return true;
+}
+
+bool SeedFreshBattleWorkflowForScenario(
+    const CliOptions& options,
+    const std::int64_t dtm_artifact_id,
+    const std::int64_t rtc,
+    const bool cutscene_delay,
+    const std::string_view run_identity,
+    const BattleScenarioAuthoringIds& authoring,
+    savor::db::core::DBService* db_service,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out)
+{
+    if (!db_service || !db_service->IsRunning())
+        return Fail("fresh Battle workflow database is unavailable", error_out);
+    return SeedBattleWorkflow(db_service->AuthoringDb(),
+        db_service->ExecutionDb(), dtm_artifact_id,
+        authoring.seed_probe_spec_id, authoring.battle_plan_id, rtc,
+        options.seedprobe_samples_per_axis.value_or(1),
+        options.battle_fake_attack_min.value_or(0),
+        options.battle_fake_attack_max.value_or(0), cutscene_delay,
+        run_identity, workflow_instance_id_out, error_out);
+}
+
+bool SeedEstablishedBattleWorkflowForScenario(
+    const CliOptions& options,
+    const std::int64_t annotation_attempt_id,
+    const std::int64_t root_establishment_attempt_id,
+    const std::int64_t rtc,
+    const std::string_view run_identity,
+    const BattleScenarioAuthoringIds& authoring,
+    savor::db::core::DBService* db_service,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out)
+{
+    if (!db_service || !db_service->IsRunning())
+        return Fail("established Battle workflow database is unavailable", error_out);
+    return SeedEstablishedBattleWorkflow(db_service->AuthoringDb(),
+        db_service->ExecutionDb(), root_establishment_attempt_id,
+        annotation_attempt_id,
+        authoring.seed_probe_spec_id, authoring.battle_plan_id, rtc,
+        options.seedprobe_samples_per_axis.value_or(1),
+        options.battle_fake_attack_min.value_or(0),
+        options.battle_fake_attack_max.value_or(0), run_identity,
+        workflow_instance_id_out, error_out);
+}
+
 bool RunBattleWorkflowGraphRealWorkerScenario(
     const CliOptions& options,
     const ResolvedE2eScenarioEntry& entry,
@@ -2784,7 +2869,7 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
         == E2eScenarioEntrySource::TasMovieEstablishmentAttempt) {
         seeded = SeedEstablishedBattleWorkflow(
             db_service->AuthoringDb(), db_service->ExecutionDb(),
-            establishment_validation_attempt_id, seed_probe_spec_id,
+            establishment_validation_attempt_id, std::nullopt, seed_probe_spec_id,
             battle_plan_id, runtime_rtc,
             options.seedprobe_samples_per_axis.value_or(1),
             options.battle_fake_attack_min.value_or(0),

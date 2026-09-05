@@ -99,7 +99,7 @@ TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
     ASSERT_EQ(establish->required_inputs.size(), 1u);
     EXPECT_EQ(establish->required_inputs[0].data_kind, "state_artifact.dtm_artifact_id");
     EXPECT_EQ(establish->required_inputs[0].ref_kind, "state_artifact");
-    ASSERT_EQ(establish->possible_outputs.size(), 2u);
+    ASSERT_EQ(establish->possible_outputs.size(), 3u);
     EXPECT_TRUE(std::any_of(
         establish->possible_outputs.begin(),
         establish->possible_outputs.end(),
@@ -175,13 +175,17 @@ TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
                 entry.members.size() == 1u &&
                 entry.members.front().unit_kind == "seed_probe";
         }));
-    ASSERT_EQ(battle->required_inputs.size(), 2u);
+    ASSERT_EQ(battle->required_inputs.size(), 3u);
     ASSERT_EQ(battle->authored_refs.size(), 1u);
     EXPECT_EQ(battle->authored_refs[0].ref_kind, "authoring.battle_plan");
     EXPECT_EQ(battle->required_inputs[0].data_kind,
         "analysis.seed_probe_run");
     EXPECT_EQ(battle->required_inputs[1].data_kind,
         "analysis_battle.battle_context_id");
+    EXPECT_EQ(battle->required_inputs[2].key, "tas_root_annotation");
+    EXPECT_EQ(battle->required_inputs[2].ref_kind,
+        "tmv_input_epoch_annotation_attempt");
+    EXPECT_FALSE(battle->required_inputs[2].required);
     EXPECT_TRUE(std::any_of(
         battle->possible_outputs.begin(),
         battle->possible_outputs.end(),

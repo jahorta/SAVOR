@@ -10,7 +10,7 @@
 namespace savor::wrms {
 
 inline constexpr std::array<std::uint8_t, 4> Magic{ 'W', 'R', 'M', 'S' };
-inline constexpr std::uint16_t ProtocolVersion = 5;
+inline constexpr std::uint16_t ProtocolVersion = 6;
 inline constexpr std::size_t HeaderSize = 20;
 inline constexpr std::size_t MaximumPayloadSize = 64u * 1024u * 1024u;
 
@@ -52,6 +52,15 @@ enum class MessageDirection : std::uint8_t {
 };
 
 [[nodiscard]] MessageDirection DirectionOf(MessageKind kind) noexcept;
+
+enum class MessageChannel : std::uint8_t {
+    Command,
+    Response,
+    Event,
+};
+
+// WRMS v6 physically isolates correlated responses from asynchronous events.
+[[nodiscard]] MessageChannel ChannelOf(MessageKind kind) noexcept;
 
 struct FrameHeader {
     std::uint16_t version = ProtocolVersion;

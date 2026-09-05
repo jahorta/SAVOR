@@ -3050,12 +3050,17 @@ void WorkerCoordinator::ProbeWorkerLiveness() {
             continue;
         }
         slot->quarantine_requested = true;
+        const auto transport = worker->latest_snapshot();
+        const std::string root_cause =
+            transport.first_transport_diagnostic.empty()
+            ? worker->last_error()
+            : transport.first_transport_diagnostic;
         slot->quarantine_diagnostic =
             "worker control transport failed "
             + std::to_string(
                 slot->consecutive_liveness_failures)
             + " consecutive liveness probes: "
-            + worker->last_error();
+            + root_cause;
         ++liveness_quarantines_;
     }
 }
