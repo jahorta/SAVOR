@@ -84,7 +84,7 @@ void AssessCommonScenarioExecution(
         workflows,
     const savor::runner::parallel::savordb::CoordinatorRuntimeTelemetry& telemetry,
     std::span<const savor::runner::parallel::savordb::
-        ReadyWorkerDispatchSnapshot> ready_workers,
+        JobExecutionWorkerDispatchSnapshot> ready_workers,
     ScenarioAssessment* assessment) {
     if (assessment == nullptr) return;
     assessment->Require(execution_db != nullptr,

@@ -129,17 +129,12 @@ struct WorkerWorksetDispatchInfo {
     std::size_t encoded_size_bytes = 0;
 };
 
-struct ReadyWorkerDispatchSnapshot {
+struct WorkerReadyEvent {
     std::size_t worker_id = 0;
     std::uint64_t process_generation = 0;
     savor::runtime::WorkerMode mode = savor::runtime::WorkerMode::Headless;
     std::string runtime_contract_sha256;
-    // Immediate physical-admission credits only. The execution coordinator
-    // must not use this value as the capacity of its future-work buffer.
     std::uint32_t available_item_credits = 0;
-    bool accepting_workset = false;
-    std::optional<std::uint64_t> resident_workset_id;
-
     std::optional<std::string> warm_execution_key_sha256;
     std::optional<std::string> warm_program_package_sha256;
 };
@@ -156,11 +151,12 @@ using WorkerTerminalEnvelope =
 struct WorkerUnavailableEvent {
     WorkerCoordinatorEventContext source;
     std::vector<std::uint64_t> affected_workset_ids;
+    bool expected_retirement = false;
     std::string diagnostic;
 };
 
 struct WorkerCoordinatorCallbacks {
-    std::function<void()> availability_changed;
+    std::function<void(const WorkerReadyEvent&)> worker_ready;
     std::function<void(
         const WorkerCoordinatorEventContext&,
         const savor::wrms::WorksetStatePayload&)> workset_state;
@@ -191,6 +187,12 @@ enum class WorkerSubmitDisposition : std::uint8_t {
     DefiniteRejected,
 };
 
+enum class SubmissionWriteDisposition : std::uint8_t {
+    NotWritten = 0,
+    Written,
+    OutcomeUnknown,
+};
+
 struct WorkerExecutionTarget {
     std::size_t worker_id = 0;
     std::uint64_t process_generation = 0;
@@ -207,6 +209,8 @@ struct WorkerSubmitResult {
     std::string diagnostic;
     std::optional<savor::runtime::SubmitWorksetResultV1>
         submission_receipt;
+    SubmissionWriteDisposition write_disposition =
+        SubmissionWriteDisposition::NotWritten;
 
     [[nodiscard]] bool submitted() const noexcept {
         return disposition == WorkerSubmitDisposition::Accepted
@@ -302,8 +306,8 @@ public:
 
     void SetCallbacks(WorkerCoordinatorCallbacks callbacks);
 
-    [[nodiscard]] std::vector<ReadyWorkerDispatchSnapshot>
-        SnapshotReadyWorkers() const;
+    [[nodiscard]] std::vector<WorkerReadyEvent>
+        SnapshotOnlineWorkers() const;
     [[nodiscard]] std::vector<WorkerSnapshot> SnapshotWorkers() const;
     [[nodiscard]] FleetStartupSnapshot SnapshotFleetStartup() const;
     [[nodiscard]] WorkerCoordinatorTelemetry SnapshotTelemetry() const;
@@ -313,7 +317,7 @@ public:
         savor::runtime::WorkerWorksetId expected_workset_id,
         savor::wrms::WorksetResidenceSnapshotV1* snapshot_out = nullptr,
         std::string* diagnostic_out = nullptr);
-    void QuarantineWorkerGeneration(
+    [[nodiscard]] bool RequestWorkerRetirement(
         WorkerExecutionTarget target,
         std::string diagnostic);
 
@@ -375,14 +379,8 @@ private:
         savor::runtime::WorkerMode mode =
             savor::runtime::WorkerMode::Headless;
         std::string runtime_contract_sha256;
-        std::uint32_t available_item_credits = 0;
-        bool submission_in_progress = false;
-        bool quarantine_requested = false;
-        std::string quarantine_diagnostic;
-        std::optional<std::uint64_t> active_workset_id;
-        std::optional<std::uint64_t> submitting_workset_id;
-        std::optional<std::string> warm_execution_key_sha256;
-        std::optional<std::string> warm_program_package_sha256;
+        bool retirement_requested = false;
+        std::string retirement_diagnostic;
         std::uint64_t accepted_worksets = 0;
         std::uint64_t completed_worksets = 0;
         std::uint64_t visual_render_widget_handle = 0;
@@ -438,7 +436,7 @@ private:
     void DetectLostWorkers();
     void ProbeWorkerLiveness();
 
-    [[nodiscard]] ReadyWorkerDispatchSnapshot SnapshotReadyWorker(
+    [[nodiscard]] WorkerReadyEvent BuildWorkerReadyEvent(
         const WorkerSlot& slot) const;
     [[nodiscard]] WorkerCoordinatorEventContext EventContext(
         const WorkerSlot& slot) const;
@@ -475,7 +473,7 @@ private:
         CurrentEventContext(
             std::size_t worker_id,
             std::uint64_t process_generation) const;
-    void NotifyAvailabilityChanged() const;
+    void NotifyWorkerReady(const WorkerSlotPtr& slot) const;
     void NotifyWorkerUnavailable(WorkerUnavailableEvent event) const;
     void RefreshStartResult(std::string diagnostic = {});
     void RemoveCompletedRouteIfPossible(std::uint64_t workset_id);

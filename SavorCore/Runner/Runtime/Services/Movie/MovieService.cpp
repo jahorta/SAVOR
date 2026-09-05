@@ -742,14 +742,22 @@ MovieOperationReceipt MovieService::FinalizeRecording(
     }
     if (request.dtm_path.empty() ||
         request.dtm_path.parent_path().empty() ||
-        !std::filesystem::is_directory(request.dtm_path.parent_path()) ||
-        std::filesystem::exists(request.dtm_path) ||
+        !std::filesystem::is_directory(request.dtm_path.parent_path()))
+    {
+        receipt.result = MovieServiceResult::Failure(
+            MovieServiceErrorCode::InvalidArgument,
+            "Recording output must be a valid caller-declared path: " +
+                request.dtm_path.string());
+        return receipt;
+    }
+    if (std::filesystem::exists(request.dtm_path) ||
         std::filesystem::exists(
             std::filesystem::path(request.dtm_path.string() + ".sav")))
     {
         receipt.result = MovieServiceResult::Failure(
             MovieServiceErrorCode::InvalidArgument,
-            "Recording output must be a new caller-declared path");
+            "Recording output must be a new caller-declared path: " +
+                request.dtm_path.string());
         return receipt;
     }
     receipt.result = MovieServiceResult::Success();

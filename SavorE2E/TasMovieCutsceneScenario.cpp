@@ -331,7 +331,29 @@ bool RunTasMovieCutsceneRealWorkerScenario(
                 .event_line_callback = event_sink}, &error))
         return Fail("Cutscene coordinator startup failed: " + error, error_out);
 
+    const auto print_causal_incident = [&]() {
+        const auto telemetry = runtime.SnapshotTelemetry();
+        if (!telemetry.execution.latest_incident.has_value()) return;
+        const auto& incident = *telemetry.execution.latest_incident;
+        std::cout << "[coordinator-causal-incident] code="
+                  << static_cast<unsigned>(incident.code)
+                  << " dispatch=" << incident.dispatch_attempt_id
+                  << " workset=" << incident.workset_id
+                  << " job=" << incident.job_id
+                  << " worker=" << incident.worker_id
+                  << " generation=" << incident.worker_generation
+                  << " ownership="
+                  << static_cast<unsigned>(incident.ownership)
+                  << " lifecycle="
+                  << static_cast<unsigned>(incident.lifecycle)
+                  << " effect=" << incident.effect_id
+                  << " cleanup=" << incident.cleanup_action
+                  << " message=" << incident.message
+                  << " detail=" << incident.detail << '\n';
+    };
+
     const auto stop_with_failure = [&](std::string message) {
+        print_causal_incident();
         std::string stop_error;
         (void)runtime.Stop(&stop_error);
         if (!stop_error.empty()) message += "; shutdown: " + stop_error;
@@ -556,6 +578,7 @@ bool RunTasMovieCutsceneRealWorkerScenario(
             fail_branch(branch, "scenario-wide Cutscene fan-out timeout");
     }
     const auto warnings = runtime.SnapshotExecutionWarnings();
+    if (coordinator_failed) print_causal_incident();
     std::string stop_error;
     const bool stopped = runtime.Stop(&stop_error);
     if (!stopped && !coordinator_failed) {

@@ -565,7 +565,7 @@ bool RunWorkflowUnitRealWorkerScenario(
     }
 
     const auto final_telemetry = coordinators.SnapshotTelemetry();
-    const auto final_ready_workers = coordinators.SnapshotReadyWorkers();
+    const auto final_ready_workers = coordinators.SnapshotWorkerDispatches();
     const auto final_warnings = coordinators.SnapshotExecutionWarnings();
     std::string shutdown_error;
     const bool clean_shutdown = coordinators.Stop(&shutdown_error);

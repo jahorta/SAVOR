@@ -32,7 +32,7 @@ bool CheckSeedProbeInvariants(
         savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
     const savor::runner::parallel::savordb::CoordinatorRuntimeTelemetry& telemetry,
     const std::vector<
-        savor::runner::parallel::savordb::ReadyWorkerDispatchSnapshot>&
+        savor::runner::parallel::savordb::JobExecutionWorkerDispatchSnapshot>&
         ready_workers,
     const savor::runtime::ProgramModuleIdentity& expected_seed_probe_module,
     const SeedProbeWorkflowValidationOptions& options,

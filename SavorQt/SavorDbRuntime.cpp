@@ -2,6 +2,7 @@
 
 #include <QtCore/QCoreApplication>
 
+#include <array>
 #include <filesystem>
 #include <memory>
 #include <system_error>
@@ -9,6 +10,7 @@
 
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Common/DatabaseBootstrap.h"
+#include "Common/WorkspaceStagingCleanup.h"
 
 namespace savorqt {
 namespace {
@@ -196,63 +198,22 @@ bool SavorDbRuntime::resetResultStaging(
     if (!executionDb()->GetResultStagingCleanupCount(&pending, error_out))
         return false;
 
-    const auto staging_root = resultStagingRoot();
-    std::uint64_t files = 0;
-    std::uint64_t directories = 0;
-    std::uint64_t bytes = 0;
-    std::error_code ec;
-    if (std::filesystem::exists(staging_root, ec)) {
-        std::filesystem::recursive_directory_iterator it(
-            staging_root, std::filesystem::directory_options::none, ec);
-        const std::filesystem::recursive_directory_iterator end;
-        while (!ec && it != end) {
-            const auto status = it->symlink_status(ec);
-            if (ec) break;
-            if (std::filesystem::is_directory(status)) {
-                ++directories;
-            } else {
-                ++files;
-                if (std::filesystem::is_regular_file(status)) {
-                    const auto size = it->file_size(ec);
-                    if (ec) break;
-                    bytes += size;
-                }
-            }
-            it.increment(ec);
-        }
-        if (ec) {
-            if (error_out)
-                *error_out = "failed inventorying result staging: "
-                    + ec.message();
-            return false;
-        }
-        std::filesystem::remove_all(staging_root, ec);
-        if (ec) {
-            if (error_out)
-                *error_out = "result staging reset was partial: "
-                    + ec.message();
-            return false;
-        }
-    } else if (ec) {
-        if (error_out)
-            *error_out = "failed inspecting result staging: " + ec.message();
+    savor::db::WorkspaceStagingCleanupSummary cleanup{};
+    const auto application_root = std::filesystem::path(
+        QCoreApplication::applicationDirPath().toStdWString());
+    const std::array<std::filesystem::path, 1> directories{
+        "workflow-runtime"};
+    if (!savor::db::ResetWorkspaceStagingDirectories(
+            application_root, directories, &cleanup, error_out))
         return false;
-    }
-    std::filesystem::create_directories(staging_root, ec);
-    if (ec) {
-        if (error_out)
-            *error_out = "failed recreating result staging root: "
-                + ec.message();
-        return false;
-    }
     std::int64_t cleared = 0;
     if (!executionDb()->ClearResultStagingCleanupQueue(&cleared, error_out))
         return false;
     if (summary_out) {
         *summary_out = "Result staging reset: removed "
-            + std::to_string(files) + " files, "
-            + std::to_string(directories) + " directories, "
-            + std::to_string(bytes) + " bytes; resolved "
+            + std::to_string(cleanup.files) + " files, "
+            + std::to_string(cleanup.directories) + " directories, "
+            + std::to_string(cleanup.bytes) + " bytes; resolved "
             + std::to_string(cleared) + " of " + std::to_string(pending)
             + " pending cleanup rows.";
     }

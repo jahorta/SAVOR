@@ -37,7 +37,55 @@ using savor::runner::parallel::savordb::
     WorkerCoordinatorStartStatus;
 using savor::runner::parallel::savordb::WorkerExecutionTarget;
 using savor::runner::parallel::savordb::WorkerSubmitDisposition;
+using savor::runner::parallel::savordb::SubmissionWriteDisposition;
 using savor::runner::parallel::savordb::WorksetJobOrganizer;
+
+TEST(JobExecutionCoordinatorEffects, CompletionMustMatchIdentityAndKind) {
+    using savor::runner::parallel::savordb::CoordinatorEffectKind;
+    using savor::runner::parallel::savordb::detail::
+        ClassifyEffectCompletion;
+    using savor::runner::parallel::savordb::detail::
+        EffectCompletionClassification;
+
+    EXPECT_EQ(
+        ClassifyEffectCompletion(
+            7, CoordinatorEffectKind::Submission,
+            7, CoordinatorEffectKind::Submission),
+        EffectCompletionClassification::Match);
+    EXPECT_EQ(
+        ClassifyEffectCompletion(
+            std::nullopt, std::nullopt,
+            7, CoordinatorEffectKind::Submission),
+        EffectCompletionClassification::DuplicateOrMissing);
+    EXPECT_EQ(
+        ClassifyEffectCompletion(
+            7, CoordinatorEffectKind::Submission,
+            8, CoordinatorEffectKind::Submission),
+        EffectCompletionClassification::Mismatch);
+    EXPECT_EQ(
+        ClassifyEffectCompletion(
+            7, CoordinatorEffectKind::Submission,
+            7, CoordinatorEffectKind::DurableActivation),
+        EffectCompletionClassification::Mismatch);
+}
+
+TEST(JobExecutionCoordinatorEffects, SubmissionDispositionDefinesOwnership) {
+    using savor::runner::parallel::savordb::detail::
+        ClassifySubmissionOwnership;
+    using savor::runner::parallel::savordb::detail::
+        SubmissionOwnershipDirective;
+
+    EXPECT_EQ(
+        ClassifySubmissionOwnership(SubmissionWriteDisposition::NotWritten),
+        SubmissionOwnershipDirective::CoordinatorRetains);
+    EXPECT_EQ(
+        ClassifySubmissionOwnership(SubmissionWriteDisposition::Written),
+        SubmissionOwnershipDirective::ValidateWrittenEvidence);
+    EXPECT_EQ(
+        ClassifySubmissionOwnership(
+            SubmissionWriteDisposition::OutcomeUnknown),
+        SubmissionOwnershipDirective::ConfirmResidence);
+}
 
 bool WaitUntil(
     const std::function<bool()>& predicate,
@@ -1058,7 +1106,7 @@ TEST(
         };
     WorkerCoordinator coordinator(std::move(config));
     ASSERT_TRUE(coordinator.Start().started());
-    const auto ready = coordinator.SnapshotReadyWorkers();
+    const auto ready = coordinator.SnapshotOnlineWorkers();
     ASSERT_EQ(ready.size(), 1u);
 
     const auto stale_workset = TestTargetedWorkset();
@@ -1116,7 +1164,7 @@ TEST(
         };
     WorkerCoordinator coordinator(std::move(config));
     ASSERT_TRUE(coordinator.Start().started());
-    const auto ready = coordinator.SnapshotReadyWorkers();
+    const auto ready = coordinator.SnapshotOnlineWorkers();
     ASSERT_EQ(ready.size(), 1u);
     EXPECT_EQ(ready.front().mode, savor::runtime::WorkerMode::Visual);
     EXPECT_EQ(
@@ -1137,7 +1185,7 @@ TEST(
     EXPECT_EQ(
         started.status,
         WorkerCoordinatorStartStatus::StartupExhausted);
-    EXPECT_TRUE(coordinator.SnapshotReadyWorkers().empty());
+    EXPECT_TRUE(coordinator.SnapshotOnlineWorkers().empty());
     EXPECT_NE(
         started.diagnostic.find("Headless or Visual"),
         std::string::npos)
@@ -1273,8 +1321,10 @@ TEST(
     EXPECT_EQ(fleet.starting, 1u);
 
     release_promise.set_value();
-    coordinator.Stop();
+    EXPECT_TRUE(coordinator.BeginShutdown(&error)) << error;
     workers.Stop();
+    EXPECT_TRUE(coordinator.FinishShutdownAfterWorkersStopped(&error))
+        << error;
 }
 
 TEST(
@@ -1353,8 +1403,10 @@ TEST(
         [&]() { return execution_db.claim_calls.load() > 0; },
         std::chrono::milliseconds(100)));
 
-    coordinator.Stop();
+    EXPECT_TRUE(coordinator.BeginShutdown(&error)) << error;
     workers.Stop();
+    EXPECT_TRUE(coordinator.FinishShutdownAfterWorkersStopped(&error))
+        << error;
 }
 
 TEST(
@@ -1409,8 +1461,10 @@ TEST(
         coordinator.SnapshotTelemetry().claim_batches,
         0u);
 
-    coordinator.Stop();
+    EXPECT_TRUE(coordinator.BeginShutdown(&error)) << error;
     workers.Stop();
+    EXPECT_TRUE(coordinator.FinishShutdownAfterWorkersStopped(&error))
+        << error;
 }
 
 TEST(
@@ -1468,12 +1522,14 @@ TEST(
         ADD_FAILURE()
             << "claims=" << execution_db.claim_calls.load()
             << " ready_workers="
-            << workers.SnapshotReadyWorkers().size()
+            << workers.SnapshotOnlineWorkers().size()
             << " stage=" << stalled.claim_backoff_stage
             << " delay_ms=" << stalled.current_claim_backoff_ms
             << " wake_reason=" << stalled.last_scheduler_wake_reason;
-        coordinator.Stop();
+        EXPECT_TRUE(coordinator.BeginShutdown(&error)) << error;
         workers.Stop();
+        EXPECT_TRUE(coordinator.FinishShutdownAfterWorkersStopped(&error))
+            << error;
         return;
     }
     telemetry = coordinator.SnapshotTelemetry();
@@ -1486,13 +1542,15 @@ TEST(
     EXPECT_EQ(telemetry.claim_backoff_stage, 3u);
     EXPECT_EQ(telemetry.current_claim_backoff_ms, 30000u);
 
-    coordinator.Stop();
+    EXPECT_TRUE(coordinator.BeginShutdown(&error)) << error;
     workers.Stop();
+    EXPECT_TRUE(coordinator.FinishShutdownAfterWorkersStopped(&error))
+        << error;
 }
 
 TEST(
     JobExecutionCoordinator,
-    BlockedSingleReconstructorExposesBacklogWithoutClaimLeaseRenewal) {
+    DelayedReconstructionDoesNotSerializeTheGlobalPreparationQueue) {
     TemporaryCoordinatorDirectory temporary;
     WorkerCoordinatorConfig worker_config{
         .desired_workers = 2,
@@ -1541,28 +1599,30 @@ TEST(
 
     ASSERT_TRUE(WaitUntil([&]() {
         const auto telemetry = coordinator.SnapshotTelemetry();
-        return adapter->entered() == 1
-            && telemetry.reconstruction_active
-            && telemetry.reconstruction_queue_depth == 3;
+        return adapter->entered() == 2
+            && telemetry.reconstruction_active_tasks == 2
+            && telemetry.reconstruction_queue_depth == 2;
     }));
     const auto blocked = coordinator.SnapshotTelemetry();
     const auto worker_dispatches = coordinator.SnapshotWorkerDispatches();
     EXPECT_EQ(worker_dispatches.size(), 2u);
     EXPECT_EQ(blocked.worksets_claimed, 4u);
     EXPECT_EQ(blocked.global_prepared_worksets, 0u);
-    EXPECT_EQ(blocked.reconstruction_queue_high_water, 3u);
-    EXPECT_EQ(adapter->maximum_active(), 1);
+    EXPECT_GE(blocked.reconstruction_queue_high_water, 2u);
+    EXPECT_EQ(adapter->maximum_active(), 2);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     EXPECT_EQ(execution_db.renew_calls.load(), 0);
     EXPECT_EQ(execution_db.maximum_renewal_batch_size.load(), 0);
-    EXPECT_EQ(adapter->maximum_active(), 1);
+    EXPECT_EQ(adapter->maximum_active(), 2);
 
     reconstruction_release_promise.set_value();
     EXPECT_TRUE(WaitUntil([&]() {
         return coordinator.SnapshotTelemetry().invariant_admission_paused;
     }));
-    coordinator.Stop();
+    EXPECT_TRUE(coordinator.BeginShutdown(&error)) << error;
     workers.Stop();
+    EXPECT_TRUE(coordinator.FinishShutdownAfterWorkersStopped(&error))
+        << error;
 }
 
 TEST(

@@ -103,6 +103,9 @@
     <ClInclude Include="Common\DbConfigPaths.h">
       <Filter>Common</Filter>
     </ClInclude>
+    <ClInclude Include="Common\WorkspaceStagingCleanup.h">
+      <Filter>Common</Filter>
+    </ClInclude>
     <ClInclude Include="Common\QueuedDb.h">
       <Filter>Common</Filter>
     </ClInclude>
@@ -349,6 +352,9 @@
       <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="Common\DatabaseBootstrapProfiles.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\WorkspaceStagingCleanup.cpp">
       <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="Common\Performance\DbPerfReport.cpp">

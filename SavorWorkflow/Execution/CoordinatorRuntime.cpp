@@ -226,10 +226,9 @@ bool CoordinatorRuntime::Stop(std::string* error_out) {
     };
 
     if (job_execution_started_ && job_execution_coordinator_ != nullptr) {
-        job_execution_coordinator_->Quiesce();
         std::string error;
-        if (!job_execution_coordinator_->ReleaseBufferedClaims(&error)) {
-            append_error("release buffered claims failed: " + error);
+        if (!job_execution_coordinator_->BeginShutdown(&error)) {
+            append_error("begin execution shutdown failed: " + error);
         }
     }
     if (worker_started_ && worker_coordinator_ != nullptr) {
@@ -238,10 +237,10 @@ bool CoordinatorRuntime::Stop(std::string* error_out) {
     }
     if (job_execution_started_ && job_execution_coordinator_ != nullptr) {
         std::string error;
-        if (!job_execution_coordinator_->RecoverAfterWorkersStopped(&error)) {
-            append_error("post-worker dispatch recovery failed: " + error);
+        if (!job_execution_coordinator_->FinishShutdownAfterWorkersStopped(
+                &error)) {
+            append_error("finish execution shutdown failed: " + error);
         }
-        job_execution_coordinator_->Stop();
         job_execution_started_ = false;
     }
     if (result_processor_started_ && result_processor_ != nullptr) {
@@ -394,11 +393,11 @@ std::vector<WorkerSnapshot> CoordinatorRuntime::SnapshotWorkers() const {
                : std::vector<WorkerSnapshot>{};
 }
 
-std::vector<ReadyWorkerDispatchSnapshot>
-CoordinatorRuntime::SnapshotReadyWorkers() const {
-    return worker_coordinator_ != nullptr
-               ? worker_coordinator_->SnapshotReadyWorkers()
-               : std::vector<ReadyWorkerDispatchSnapshot>{};
+std::vector<JobExecutionWorkerDispatchSnapshot>
+CoordinatorRuntime::SnapshotWorkerDispatches() const {
+    return job_execution_coordinator_ != nullptr
+               ? job_execution_coordinator_->SnapshotWorkerDispatches()
+               : std::vector<JobExecutionWorkerDispatchSnapshot>{};
 }
 
 std::vector<JobExecutionCoordinatorWarning>

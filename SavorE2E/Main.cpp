@@ -90,6 +90,20 @@ int main(int argc, char** argv) {
         std::cout << "[e2e-db-reset] workspace=" << reset_root.string() << "\n";
     }
 
+    std::filesystem::path staging_root;
+    savor::db::WorkspaceStagingCleanupSummary staging_summary{};
+    std::string staging_error;
+    if (!ResetScenarioStaging(
+            options, &staging_root, &staging_summary, &staging_error)) {
+        std::cerr << "[FAIL] resetting E2E staging - "
+                  << staging_error << "\n";
+        return 1;
+    }
+    std::cout << "[e2e-staging-reset] workspace=" << staging_root.string()
+              << " files=" << staging_summary.files
+              << " directories=" << staging_summary.directories
+              << " bytes=" << staging_summary.bytes << "\n";
+
     std::cout
         << "[worker-startup-policy] wait_for_workers_ready="
         << (options.wait_for_workers_ready ? 1 : 0) << "\n";

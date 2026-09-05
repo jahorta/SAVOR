@@ -39,7 +39,7 @@ void AssessCommonScenarioExecution(
         workflows,
     const savor::runner::parallel::savordb::CoordinatorRuntimeTelemetry& telemetry,
     std::span<const savor::runner::parallel::savordb::
-        ReadyWorkerDispatchSnapshot> ready_workers,
+        JobExecutionWorkerDispatchSnapshot> ready_workers,
     ScenarioAssessment* assessment);
 
 void EmitScenarioAssessment(

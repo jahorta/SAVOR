@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "Common/Types/UtcTimestamp.h"
+#include "Common/WorkspaceStagingCleanup.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Execution/Workflow/WorkflowUnitActivationFactory.h"
 #include "Tas/DtmFile.h"
@@ -109,10 +110,7 @@ bool ResetScenarioWorkspace(
         }
     }
 
-    const std::array reset_directories{
-        "object_store", "archive_store", "workflow-runtime",
-        "tasmovie-validation", "verification",
-    };
+    const std::array reset_directories{"object_store", "archive_store"};
     for (const auto* directory_name : reset_directories) {
         const auto target = root / directory_name;
         std::filesystem::remove_all(target, ec);
@@ -144,6 +142,40 @@ bool ResetScenarioWorkspace(
     if (workspace_root_out) {
         *workspace_root_out = root;
     }
+    return true;
+}
+
+bool ResetScenarioStaging(
+    const CliOptions& options,
+    std::filesystem::path* workspace_root_out,
+    savor::db::WorkspaceStagingCleanupSummary* summary_out,
+    std::string* error_out)
+{
+    std::error_code error;
+    const auto requested_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default");
+    const auto root = std::filesystem::absolute(requested_root, error)
+                          .lexically_normal();
+    if (error)
+    {
+        if (error_out)
+            *error_out = "failed resolving E2E workspace root: " +
+                error.message();
+        return false;
+    }
+    const std::array<std::filesystem::path, 6> directories{
+        "workflow-runtime",
+        "worker-runtime",
+        "runtime-artifacts",
+        ".workers",
+        "tasmovie-validation",
+        "verification",
+    };
+    if (!savor::db::ResetWorkspaceStagingDirectories(
+            root, directories, summary_out, error_out))
+        return false;
+    if (workspace_root_out)
+        *workspace_root_out = root;
     return true;
 }
 

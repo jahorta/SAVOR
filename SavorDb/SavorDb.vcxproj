@@ -180,6 +180,7 @@
     <ClInclude Include="Authoring\RuntimeSymbolAuthoringService.h" />
     <ClInclude Include="Authoring\SqliteAuthoringDb.h" />
     <ClInclude Include="Common\DbConfigPaths.h" />
+    <ClInclude Include="Common\WorkspaceStagingCleanup.h" />
     <ClInclude Include="Common\DatabaseBootstrap.h" />
     <ClInclude Include="Common\DatabaseBootstrapProfiles.h" />
     <ClInclude Include="Common\DbService.h" />
@@ -266,6 +267,7 @@
     <ClCompile Include="Common\Events\OutboxRelay.cpp" />
     <ClCompile Include="Common\DatabaseBootstrap.cpp" />
     <ClCompile Include="Common\DatabaseBootstrapProfiles.cpp" />
+    <ClCompile Include="Common\WorkspaceStagingCleanup.cpp" />
     <ClCompile Include="Common\DbService.cpp" />
     <ClCompile Include="Common\Performance\DbPerfReport.cpp" />
     <ClCompile Include="Common\QueuedDb.cpp" />

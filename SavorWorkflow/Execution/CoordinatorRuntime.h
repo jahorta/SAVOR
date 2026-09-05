@@ -103,8 +103,8 @@ class CoordinatorRuntime final {
     [[nodiscard]] bool IsExecutionPaused() const noexcept;
     [[nodiscard]] CoordinatorRuntimeTelemetry SnapshotTelemetry() const;
     [[nodiscard]] std::vector<WorkerSnapshot> SnapshotWorkers() const;
-    [[nodiscard]] std::vector<ReadyWorkerDispatchSnapshot>
-    SnapshotReadyWorkers() const;
+    [[nodiscard]] std::vector<JobExecutionWorkerDispatchSnapshot>
+        SnapshotWorkerDispatches() const;
     [[nodiscard]] std::vector<JobExecutionCoordinatorWarning>
     SnapshotExecutionWarnings() const;
     [[nodiscard]] FleetStartupSnapshot SnapshotFleetStartup() const;

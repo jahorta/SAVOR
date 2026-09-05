@@ -44,7 +44,12 @@ inline std::vector<WorkflowOutputContract> ForStepKind(std::string_view step_kin
     if (step_kind == "tasmovie.checkpoint_sterilize") return {TasMovieSterilizedCheckpoint};
     if (step_kind == "tasmovie.annotate" || step_kind == "tasmovie.input_epoch_breakpoint_diagnostic") return {TasMovieAnnotationAttempt};
     if (step_kind == "tasmovie.revise") return {TasMovieRewriteAttempt, TasMovieRewrittenDtm, TasMovieRewrittenPairedSavestate, TasMovieAnnotationAttempt, TasMovieRootEstablishment};
-    if (step_kind == "tasmovie.cutscene") return {TasMovieCutsceneAttempt, TasMovieTree, TasMoviePairedSavestate};
+    if (step_kind == "tasmovie.cutscene") return {
+        TasMovieCutsceneAttempt,
+        TasMovieTree,
+        TasMoviePairedSavestate,
+        TasMovieValidationAttempt,
+        TasMovieValidatedCheckpoint};
     return {};
 }
 

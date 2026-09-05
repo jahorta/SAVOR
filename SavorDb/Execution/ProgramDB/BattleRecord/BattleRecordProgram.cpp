@@ -1202,21 +1202,19 @@ public:
             savor::runtime::ComputeWorkerWorksetExecutionKeyHash(
                 workset.execution_key);
 
-        const auto artifact_root = root_ / "artifacts";
+        const auto dispatch_hash = hash::sha256(
+            context.dispatch_token.data(), context.dispatch_token.size());
+        const auto artifact_root = root_ / "artifacts" / "dispatch" /
+            dispatch_hash / "battle-record";
         std::error_code directory_error;
         std::filesystem::create_directories(artifact_root, directory_error);
         if (directory_error)
             return fail("could not create Battle Recording output directory: " +
                         directory_error.message());
         phase::BattleRecordRequestV1 request{
-            .output_dtm_path = (artifact_root /
-                ("recording-" + std::to_string(row->battle_recording_id) +
-                 "-attempt-" + std::to_string(item.reserved_attempt_id) +
-                 ".dtm")).string(),
-            .output_preseed_savestate_path = (artifact_root /
-                ("recording-" + std::to_string(row->battle_recording_id) +
-                 "-attempt-" + std::to_string(item.reserved_attempt_id) +
-                 "-preseed.sav")).string(),
+            .output_dtm_path = (artifact_root / "result.dtm").string(),
+            .output_preseed_savestate_path =
+                (artifact_root / "preseed.sav").string(),
         };
         workset.items.push_back({
             .item_id = savor::runtime::WorkerWorksetItemId(

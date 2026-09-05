@@ -1965,7 +1965,7 @@ bool RunTasMovieValidationFromEstablishedRootCursorRealWorkerScenario(
                 << (graph ? FormatWorkflowStateLine(*graph)
                           : std::string("workflow=unavailable"))
                 << " ready_workers="
-                << coordinators.SnapshotReadyWorkers().size()
+                << coordinators.SnapshotWorkerDispatches().size()
                 << " worksets_submitted="
                 << telemetry.execution.worksets_submitted
                 << " terminals="
@@ -2049,7 +2049,7 @@ bool RunTasMovieValidationFromEstablishedRootCursorRealWorkerScenario(
     const auto final_graph = db_service->ExecutionDb()
         ->WorkflowQueryService()->GetWorkflowGraph(validation_workflow_id);
     const auto final_telemetry = coordinators.SnapshotTelemetry();
-    const auto final_ready_workers = coordinators.SnapshotReadyWorkers();
+    const auto final_ready_workers = coordinators.SnapshotWorkerDispatches();
     const auto final_warnings = coordinators.SnapshotExecutionWarnings();
     std::string stop_error;
     const bool stopped = coordinators.Stop(&stop_error);
@@ -2363,7 +2363,7 @@ bool RunTasMovieSterileFromEstablishedRootCursorRealWorkerScenario(
                 << (graph ? FormatWorkflowStateLine(*graph)
                           : std::string("workflow=unavailable"))
                 << " ready_workers="
-                << coordinators.SnapshotReadyWorkers().size()
+                << coordinators.SnapshotWorkerDispatches().size()
                 << " worksets_submitted="
                 << telemetry.execution.worksets_submitted
                 << " terminals="
@@ -2439,7 +2439,7 @@ bool RunTasMovieSterileFromEstablishedRootCursorRealWorkerScenario(
     const auto final_graph = db_service->ExecutionDb()
         ->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
     const auto final_telemetry = coordinators.SnapshotTelemetry();
-    const auto final_ready_workers = coordinators.SnapshotReadyWorkers();
+    const auto final_ready_workers = coordinators.SnapshotWorkerDispatches();
     const auto final_warnings = coordinators.SnapshotExecutionWarnings();
     std::string stop_error;
     const bool stopped = coordinators.Stop(&stop_error);
@@ -2790,7 +2790,7 @@ bool RunTasMovieScenario(
         return false;
     }
 
-    for (const auto& worker : coordinators.SnapshotReadyWorkers()) {
+    for (const auto& worker : coordinators.SnapshotWorkerDispatches()) {
         std::ostringstream ready;
         ready << "[tasmovie-ready-worker] worker_id=" << worker.worker_id
               << " accepting_workset="
@@ -3016,7 +3016,7 @@ bool RunTasMovieScenario(
         }
     }
     const auto final_telemetry = coordinators.SnapshotTelemetry();
-    const auto final_ready_workers = coordinators.SnapshotReadyWorkers();
+    const auto final_ready_workers = coordinators.SnapshotWorkerDispatches();
     const auto final_warnings = coordinators.SnapshotExecutionWarnings();
     std::string stop_error;
     const bool stopped = coordinators.Stop(&stop_error);
@@ -3344,7 +3344,7 @@ bool RunComposedTasMovieSeedProbeScenario(
                 << (graph ? FormatWorkflowStateLine(*graph)
                           : std::string("workflow=unavailable"))
                 << " ready_workers="
-                << coordinators.SnapshotReadyWorkers().size()
+                << coordinators.SnapshotWorkerDispatches().size()
                 << " worksets_submitted="
                 << telemetry.execution.worksets_submitted
                 << " terminals="
@@ -3420,7 +3420,7 @@ bool RunComposedTasMovieSeedProbeScenario(
     const auto final_graph = db_service->ExecutionDb()
         ->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
     const auto final_telemetry = coordinators.SnapshotTelemetry();
-    const auto final_ready_workers = coordinators.SnapshotReadyWorkers();
+    const auto final_ready_workers = coordinators.SnapshotWorkerDispatches();
     const auto final_warnings = coordinators.SnapshotExecutionWarnings();
     std::string stop_error;
     const bool stopped = coordinators.Stop(&stop_error);
@@ -3827,7 +3827,7 @@ bool RunComposedTasMovieSterileScenario(
                 << (graph ? FormatWorkflowStateLine(*graph)
                           : std::string("workflow=unavailable"))
                 << " ready_workers="
-                << coordinators.SnapshotReadyWorkers().size()
+                << coordinators.SnapshotWorkerDispatches().size()
                 << " worksets_submitted="
                 << telemetry.execution.worksets_submitted
                 << " terminals="
@@ -3903,7 +3903,7 @@ bool RunComposedTasMovieSterileScenario(
     const auto final_graph = db_service->ExecutionDb()
         ->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
     const auto final_telemetry = coordinators.SnapshotTelemetry();
-    const auto final_ready_workers = coordinators.SnapshotReadyWorkers();
+    const auto final_ready_workers = coordinators.SnapshotWorkerDispatches();
     const auto final_warnings = coordinators.SnapshotExecutionWarnings();
     std::string stop_error;
     const bool stopped = coordinators.Stop(&stop_error);

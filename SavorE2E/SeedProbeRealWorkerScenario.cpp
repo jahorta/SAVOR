@@ -53,7 +53,7 @@ using savor::runner::parallel::savordb::JobExecutionCoordinatorTelemetry;
 using savor::runner::parallel::savordb::JobExecutionCoordinatorWarning;
 using savor::runner::parallel::savordb::
     JobExecutionWorkerDispatchSnapshot;
-using savor::runner::parallel::savordb::ReadyWorkerDispatchSnapshot;
+using savor::runner::parallel::savordb::JobExecutionWorkerDispatchSnapshot;
 using savor::runner::parallel::savordb::WorkerCoordinatorTelemetry;
 using ::WorkerSnapshot;
 using ::WorkerStateKind;
@@ -355,7 +355,7 @@ std::string FormatCoordinatorTelemetryLine(
         << " recon_oldest_ms="
         << telemetry.execution.reconstruction_oldest_item_age_ms
         << " recon_active="
-        << (telemetry.execution.reconstruction_active ? 1 : 0)
+        << (telemetry.execution.reconstruction_active_tasks ? 1 : 0)
         << " recon_total_ms="
         << telemetry.execution.reconstruction_total_duration_ms
         << " recon_max_ms="
@@ -755,7 +755,7 @@ bool ValidateSplitCoordinatorExecution(
     const std::optional<
         savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
     const savor::runner::parallel::savordb::CoordinatorRuntimeTelemetry& telemetry,
-    const std::vector<ReadyWorkerDispatchSnapshot>& ready_workers,
+    const std::vector<JobExecutionWorkerDispatchSnapshot>& ready_workers,
     const savor::runtime::ProgramModuleIdentity&
         expected_seed_probe_module,
     const SeedProbeWorkflowValidationOptions& options,
@@ -1502,7 +1502,7 @@ bool CheckSeedProbeInvariants(
     const std::optional<
         savor::db::execution::workflow::WorkflowGraphSnapshot>& graph,
     const savor::runner::parallel::savordb::CoordinatorRuntimeTelemetry& telemetry,
-    const std::vector<ReadyWorkerDispatchSnapshot>& ready_workers,
+    const std::vector<JobExecutionWorkerDispatchSnapshot>& ready_workers,
     const savor::runtime::ProgramModuleIdentity& expected_seed_probe_module,
     const SeedProbeWorkflowValidationOptions& options,
     SeedProbeInfrastructureHealth* health_out,
@@ -1944,7 +1944,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         return false;
     }
 
-    for (const auto& worker : coordinators.SnapshotReadyWorkers()) {
+    for (const auto& worker : coordinators.SnapshotWorkerDispatches()) {
         std::ostringstream ready;
         ready
             << "[seedprobe-ready-worker]"
@@ -2142,7 +2142,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     const auto final_worker_snapshot =
         coordinators.SnapshotWorkers();
     const auto final_ready_workers =
-        coordinators.SnapshotReadyWorkers();
+        coordinators.SnapshotWorkerDispatches();
     const auto final_execution_warnings =
         coordinators.SnapshotExecutionWarnings();
     {

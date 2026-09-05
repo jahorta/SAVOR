@@ -937,7 +937,6 @@ WorkerCoordinatorStartResult WorkerCoordinator::Start() {
     const auto start_result = SnapshotStartResult();
     lifecycle_thread_ =
         std::thread([this]() { LifecycleLoop(); });
-    NotifyAvailabilityChanged();
     return start_result;
 }
 
@@ -1033,7 +1032,6 @@ void WorkerCoordinator::Stop() {
         std::lock_guard<std::mutex> result_lock(start_result_mutex_);
         start_result_ = {};
     }
-    NotifyAvailabilityChanged();
 
     const auto fleet_stop_elapsed =
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1053,7 +1051,6 @@ void WorkerCoordinator::Stop() {
 
 void WorkerCoordinator::SetPaused(bool paused) {
     paused_.store(paused, std::memory_order_release);
-    NotifyAvailabilityChanged();
 }
 
 bool WorkerCoordinator::IsPaused() const noexcept {
@@ -1073,7 +1070,6 @@ bool WorkerCoordinator::SetDesiredWorkerCount(
         std::memory_order_release);
     if (error_out != nullptr)
         error_out->clear();
-    NotifyAvailabilityChanged();
     return true;
 }
 
@@ -1093,31 +1089,29 @@ WorkerCoordinator::RuntimeContract() const noexcept {
 
 void WorkerCoordinator::SetCallbacks(
     WorkerCoordinatorCallbacks callbacks) {
-    std::lock_guard<std::mutex> callback_lock(callbacks_mutex_);
-    callbacks_ = std::move(callbacks);
+    {
+        std::lock_guard<std::mutex> callback_lock(callbacks_mutex_);
+        callbacks_ = std::move(callbacks);
+    }
+    for (const auto& slot : CopyWorkerSlots()) {
+        NotifyWorkerReady(slot);
+    }
 }
 
-std::vector<ReadyWorkerDispatchSnapshot>
-WorkerCoordinator::SnapshotReadyWorkers() const {
-    std::vector<ReadyWorkerDispatchSnapshot> snapshots;
-    const auto slots = CopyWorkerSlots();
-    snapshots.reserve(slots.size());
-    for (const auto& slot : slots) {
-        if (!slot) {
-            continue;
-        }
+std::vector<WorkerReadyEvent>
+WorkerCoordinator::SnapshotOnlineWorkers() const {
+    std::vector<WorkerReadyEvent> workers;
+    for (const auto& slot : CopyWorkerSlots()) {
+        if (!slot) continue;
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
-        if (!slot->ready || slot->runtime_contract_sha256.empty()) {
+        if (!slot->ready || slot->retirement_requested
+            || slot->runtime_contract_sha256.empty()
+            || !savor::runtime::IsNormalWorkerMode(slot->mode)) {
             continue;
         }
-        auto snapshot = SnapshotReadyWorker(*slot);
-        if (paused_.load(std::memory_order_acquire)
-            || stopping_.load(std::memory_order_acquire)) {
-            snapshot.accepting_workset = false;
-        }
-        snapshots.push_back(std::move(snapshot));
+        workers.push_back(BuildWorkerReadyEvent(*slot));
     }
-    return snapshots;
+    return workers;
 }
 
 std::vector<WorkerSnapshot> WorkerCoordinator::SnapshotWorkers() const {
@@ -1249,7 +1243,7 @@ bool WorkerCoordinator::ConfirmWorksetResidence(
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
         if (!slot->ready
             || slot->process_generation != target.process_generation
-            || slot->quarantine_requested
+            || slot->retirement_requested
             || !slot->worker) {
             if (diagnostic_out) {
                 *diagnostic_out =
@@ -1271,7 +1265,7 @@ bool WorkerCoordinator::ConfirmWorksetResidence(
         const auto diagnostic =
             "workset residence liveness probe failed: "
             + worker->last_error();
-        QuarantineWorkerGeneration(target, diagnostic);
+        (void)RequestWorkerRetirement(target, diagnostic);
         if (diagnostic_out) *diagnostic_out = diagnostic;
         return false;
     }
@@ -1291,7 +1285,7 @@ bool WorkerCoordinator::ConfirmWorksetResidence(
         } else {
             diagnostic << "none";
         }
-        QuarantineWorkerGeneration(target, diagnostic.str());
+        (void)RequestWorkerRetirement(target, diagnostic.str());
         if (snapshot_out) *snapshot_out = snapshot;
         if (diagnostic_out) *diagnostic_out = diagnostic.str();
         return false;
@@ -1301,27 +1295,27 @@ bool WorkerCoordinator::ConfirmWorksetResidence(
     return true;
 }
 
-void WorkerCoordinator::QuarantineWorkerGeneration(
+bool WorkerCoordinator::RequestWorkerRetirement(
     WorkerExecutionTarget target,
     std::string diagnostic) {
     const auto slot = GetWorkerSlot(target.worker_id);
-    if (!slot) return;
+    if (!slot) return false;
     bool changed = false;
     {
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
         if (slot->process_generation == target.process_generation
             && slot->ready
-            && !slot->quarantine_requested) {
+            && !slot->retirement_requested) {
             slot->ready = false;
-            slot->quarantine_requested = true;
-            slot->quarantine_diagnostic = std::move(diagnostic);
+            slot->retirement_requested = true;
+            slot->retirement_diagnostic = std::move(diagnostic);
             changed = true;
         }
     }
     if (changed) {
         ++liveness_quarantines_;
-        NotifyAvailabilityChanged();
     }
+    return changed;
 }
 
 namespace {
@@ -1445,15 +1439,10 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
             };
         }
         if (!slot->ready
-            || slot->quarantine_requested
-            || slot->submission_in_progress
-            || (slot->active_workset_id.has_value()
-                && !(idempotent_retry
-                    && *slot->active_workset_id == workset_id))
+            || slot->retirement_requested
             || !slot->worker
             || slot->runtime_contract_sha256.empty()
-            || !savor::runtime::IsNormalWorkerMode(slot->mode)
-            || slot->available_item_credits < dispatch.item_count) {
+            || !savor::runtime::IsNormalWorkerMode(slot->mode)) {
             ++submit_rejected_;
             ++submit_temporary_unavailable_;
             return {
@@ -1500,8 +1489,6 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
             };
         }
         worker = slot->worker;
-        slot->submission_in_progress = true;
-        slot->submitting_workset_id = workset_id;
     }
 
     if (!idempotent_retry) {
@@ -1524,9 +1511,6 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
             std::move(route));
         (void)route_it;
         if (!inserted) {
-            std::lock_guard<std::mutex> slot_lock(slot->mutex);
-            slot->submission_in_progress = false;
-            slot->submitting_workset_id.reset();
             ++submit_rejected_;
             ++submit_deterministic_rejection_;
             return {
@@ -1586,17 +1570,8 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
     {
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
         if (slot->process_generation == generation) {
-            slot->submission_in_progress = false;
-            slot->submitting_workset_id.reset();
             if (outcome.disposition
                 != savor::ProcessWorksetSubmitDisposition::DefiniteRejected) {
-                if (!terminal_state_already_observed) {
-                    slot->active_workset_id = workset_id;
-                }
-                slot->warm_execution_key_sha256 =
-                    workset.execution_key.canonical_sha256;
-                slot->warm_program_package_sha256 =
-                    dispatch.program_package_sha256;
                 ++slot->accepted_worksets;
                 worker_status_.UpdateState(
                     ToTelemetryWorkerId(slot->id),
@@ -1619,7 +1594,6 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
         } else {
             ++submit_deterministic_rejection_;
         }
-        NotifyAvailabilityChanged();
         return {
             .disposition = WorkerSubmitDisposition::DefiniteRejected,
             .worker_id = slot->id,
@@ -1629,8 +1603,6 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
             .diagnostic = outcome.diagnostic,
         };
     }
-
-    NotifyAvailabilityChanged();
     if (outcome.disposition
         == savor::ProcessWorksetSubmitDisposition::AmbiguousAfterWrite) {
         ++submit_ambiguous_;
@@ -1639,6 +1611,8 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
             .worker_id = slot->id,
             .process_generation = generation,
             .diagnostic = outcome.diagnostic,
+            .write_disposition =
+                SubmissionWriteDisposition::OutcomeUnknown,
         };
     }
     if (!submission_receipt_valid) {
@@ -1650,6 +1624,8 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
             .error_code = "MalformedWorksetSubmissionReceipt",
             .diagnostic =
                 "worker accepted SubmitWorkset without a valid typed receipt",
+            .write_disposition =
+                SubmissionWriteDisposition::OutcomeUnknown,
         };
     }
     ++submit_accepted_;
@@ -1659,6 +1635,7 @@ WorkerSubmitResult WorkerCoordinator::SubmitWorksetToWorker(
         .process_generation = generation,
         .diagnostic = outcome.diagnostic,
         .submission_receipt = std::move(submission_receipt),
+        .write_disposition = SubmissionWriteDisposition::Written,
     };
 }
 
@@ -2013,14 +1990,13 @@ bool WorkerCoordinator::SetWorkerVisualSurface(
         slot->visual_host_events_pipe_name =
             std::move(surface.host_events_pipe_name);
         if (active_surface_changed) {
-            slot->quarantine_requested = true;
-            slot->quarantine_diagnostic =
+            slot->retirement_requested = true;
+            slot->retirement_diagnostic =
                 "visual worker surface was replaced";
         }
     }
     if (error_out != nullptr)
         error_out->clear();
-    NotifyAvailabilityChanged();
     return true;
 }
 
@@ -2046,11 +2022,10 @@ void WorkerCoordinator::InvalidateWorkerVisualSurface(
         slot->visual_render_widget_handle = 0;
         slot->visual_surface_generation = 0;
         slot->visual_owner_process_id = 0;
-        slot->quarantine_requested = true;
-        slot->quarantine_diagnostic =
+        slot->retirement_requested = true;
+        slot->retirement_diagnostic =
             "visual worker surface was invalidated";
     }
-    NotifyAvailabilityChanged();
 }
 
 WorkerWorksetDispatchInfo WorkerCoordinator::DispatchInfoOf(
@@ -2186,9 +2161,8 @@ void WorkerCoordinator::HandleSessionEvent(
             || slot->process_generation != process_generation) {
             return;
         }
-        slot->quarantine_requested = true;
-        slot->available_item_credits = 0;
-        slot->quarantine_diagnostic = payload.message.empty()
+        slot->retirement_requested = true;
+        slot->retirement_diagnostic = payload.message.empty()
             ? "worker runtime reported a tainted session"
             : "worker runtime reported a tainted session: "
                 + payload.message;
@@ -2197,9 +2171,8 @@ void WorkerCoordinator::HandleSessionEvent(
             WorkerStateKind::Dead);
         worker_status_.RecordError(
             ToTelemetryWorkerId(slot->id),
-            slot->quarantine_diagnostic);
+            slot->retirement_diagnostic);
     }
-    NotifyAvailabilityChanged();
 }
 
 WorkerCoordinatorRuntimePreflightResult
@@ -2529,7 +2502,6 @@ bool WorkerCoordinator::StartSessionFilesystemPreparationAsync(
         }
         ++start_failures_;
         RefreshStartResult();
-        NotifyAvailabilityChanged();
         return false;
     }
     return true;
@@ -2644,7 +2616,6 @@ void WorkerCoordinator::CompleteSessionFilesystemPreparation(
             result.error.c_str());
     }
     RefreshStartResult(prepared ? std::string{} : result.error);
-    NotifyAvailabilityChanged();
 }
 
 bool WorkerCoordinator::StartWorkerSlot(const WorkerSlotPtr& slot) {
@@ -2693,7 +2664,6 @@ bool WorkerCoordinator::StartWorkerSlotAsync(
         }
         ++start_failures_;
         RefreshStartResult();
-        NotifyAvailabilityChanged();
         return false;
     }
     return true;
@@ -2762,16 +2732,6 @@ void WorkerCoordinator::CompleteWorkerSlotStart(
             slot->mode = config_.worker_mode;
             slot->runtime_contract_sha256 =
                 preflight.runtime_contract->canonical_sha256;
-            slot->available_item_credits =
-                preflight.runtime_contract->limits.maximum_item_credits;
-            if (slot->worker) {
-                const auto process_snapshot =
-                    slot->worker->latest_snapshot();
-                if (process_snapshot.available_item_credits != 0) {
-                    slot->available_item_credits =
-                        process_snapshot.available_item_credits;
-                }
-            }
             slot->last_start_error.clear();
             slot->next_start_after = {};
             slot->start_attempts = 0;
@@ -2781,8 +2741,8 @@ void WorkerCoordinator::CompleteWorkerSlotStart(
                 + std::chrono::milliseconds(
                     config_.liveness_probe_interval_ms);
             slot->consecutive_liveness_failures = 0;
-            slot->quarantine_requested = false;
-            slot->quarantine_diagnostic.clear();
+            slot->retirement_requested = false;
+            slot->retirement_diagnostic.clear();
             const int pid = slot->worker
                 ? static_cast<int>(slot->worker->GetPid())
                 : 0;
@@ -2801,7 +2761,6 @@ void WorkerCoordinator::CompleteWorkerSlotStart(
             slot->startup_phase = WorkerStartupPhase::Failed;
             slot->ready = false;
             slot->runtime_contract_sha256.clear();
-            slot->available_item_credits = 0;
             slot->last_start_error =
                 validation_error.empty()
                 ? preflight.error
@@ -2833,7 +2792,7 @@ void WorkerCoordinator::CompleteWorkerSlotStart(
     }
     RefreshStartResult(
         ready ? std::string{} : validation_error);
-    NotifyAvailabilityChanged();
+    if (ready) NotifyWorkerReady(slot);
     if (rejected_worker) {
         if (stopping_.load(std::memory_order_acquire)) {
             rejected_worker->begin_stop();
@@ -2860,10 +2819,8 @@ void WorkerCoordinator::StopWorkerSlot(const WorkerSlotPtr& slot) {
         slot->startup_phase = WorkerStartupPhase::None;
         slot->preparation_id.clear();
         slot->prepared_user_directory.clear();
-        slot->submission_in_progress = false;
-        slot->quarantine_requested = false;
-        slot->quarantine_diagnostic.clear();
-        slot->submitting_workset_id.reset();
+        slot->retirement_requested = false;
+        slot->retirement_diagnostic.clear();
         protocol_version = savor::wrms::ProtocolVersion;
         worker = slot->worker;
     }
@@ -2878,9 +2835,7 @@ void WorkerCoordinator::StopWorkerSlot(const WorkerSlotPtr& slot) {
             slot->submission_mutex);
         std::lock_guard<std::mutex> slot_lock(slot->mutex);
         if (slot->process_generation == generation) {
-            slot->active_workset_id.reset();
             slot->runtime_contract_sha256.clear();
-            slot->available_item_credits = 0;
             slot->worker.reset();
         }
     }
@@ -2889,18 +2844,16 @@ void WorkerCoordinator::StopWorkerSlot(const WorkerSlotPtr& slot) {
         worker_id,
         generation,
         &removed_worksets);
-    if (!removed_worksets.empty()) {
-        NotifyWorkerUnavailable(WorkerUnavailableEvent{
-            .source = {
-                .worker_id = worker_id,
-                .process_generation = generation,
-                .wrms_protocol_version = protocol_version,
-            },
-            .affected_workset_ids = std::move(removed_worksets),
-            .diagnostic =
-                "worker stopped before all routed worksets completed",
-        });
-    }
+    NotifyWorkerUnavailable(WorkerUnavailableEvent{
+        .source = {
+            .worker_id = worker_id,
+            .process_generation = generation,
+            .wrms_protocol_version = protocol_version,
+        },
+        .affected_workset_ids = std::move(removed_worksets),
+        .expected_retirement = true,
+        .diagnostic = "worker generation stopped",
+    });
     worker_status_.UpdateState(
         ToTelemetryWorkerId(worker_id),
         WorkerStateKind::Dead);
@@ -2923,13 +2876,9 @@ void WorkerCoordinator::ResetWorkerSlot(const WorkerSlotPtr& slot) {
         old_worker = slot->worker;
         slot->ready = false;
         slot->startup_phase = WorkerStartupPhase::WaitingForProcessExit;
-        slot->submission_in_progress = false;
-        slot->quarantine_requested = false;
-        slot->quarantine_diagnostic.clear();
-        slot->submitting_workset_id.reset();
-        slot->active_workset_id.reset();
+        slot->retirement_requested = false;
+        slot->retirement_diagnostic.clear();
         slot->runtime_contract_sha256.clear();
-        slot->available_item_credits = 0;
     }
 
     if (old_worker) {
@@ -2960,8 +2909,6 @@ void WorkerCoordinator::ResetWorkerSlot(const WorkerSlotPtr& slot) {
         slot->prepared_user_directory.clear();
         slot->next_liveness_probe = {};
         slot->consecutive_liveness_failures = 0;
-        slot->warm_execution_key_sha256.reset();
-        slot->warm_program_package_sha256.reset();
     }
     ConfigureWorkerCallbacks(slot);
 }
@@ -3000,7 +2947,7 @@ void WorkerCoordinator::ProbeWorkerLiveness() {
         {
             std::lock_guard<std::mutex> slot_lock(slot->mutex);
             if (!slot->ready
-                || slot->quarantine_requested
+                || slot->retirement_requested
                 || !slot->worker
                 || slot->next_liveness_probe > now) {
                 continue;
@@ -3017,7 +2964,7 @@ void WorkerCoordinator::ProbeWorkerLiveness() {
             if (!slot->ready
                 || slot->process_generation != generation
                 || slot->worker != worker
-                || slot->quarantine_requested) {
+                || slot->retirement_requested) {
                 continue;
             }
         }
@@ -3049,13 +2996,13 @@ void WorkerCoordinator::ProbeWorkerLiveness() {
             < config_.liveness_probe_failure_threshold) {
             continue;
         }
-        slot->quarantine_requested = true;
+        slot->retirement_requested = true;
         const auto transport = worker->latest_snapshot();
         const std::string root_cause =
             transport.first_transport_diagnostic.empty()
             ? worker->last_error()
             : transport.first_transport_diagnostic;
-        slot->quarantine_diagnostic =
+        slot->retirement_diagnostic =
             "worker control transport failed "
             + std::to_string(
                 slot->consecutive_liveness_failures)
@@ -3110,9 +3057,7 @@ void WorkerCoordinator::ReconcileWorkerPool() {
             if (slot) {
                 std::lock_guard<std::mutex> slot_lock(slot->mutex);
                 removable = !IsActiveStartupPhase(slot->startup_phase)
-                    && !slot->startup_thread.joinable()
-                    && !slot->submission_in_progress
-                    && !slot->active_workset_id.has_value();
+                    && !slot->startup_thread.joinable();
             }
             if (!removable) {
                 break;
@@ -3143,7 +3088,6 @@ void WorkerCoordinator::ReconcileWorkerPool() {
     }
     if (pool_shape_changed) {
         RefreshStartResult();
-        NotifyAvailabilityChanged();
     }
 
     const auto slots = CopyWorkerSlots();
@@ -3273,6 +3217,7 @@ void WorkerCoordinator::DetectLostWorkers() {
         std::uint16_t protocol_version = 0;
         std::shared_ptr<savor::ProcessWorker> worker;
         std::string loss_diagnostic;
+        bool expected_retirement = false;
         {
             std::lock_guard<std::mutex> slot_lock(slot->mutex);
             worker_id = slot->id;
@@ -3283,7 +3228,7 @@ void WorkerCoordinator::DetectLostWorkers() {
             // Production slots always take the live-process branch.
             const bool requires_live_transport =
                 !static_cast<bool>(config_.worker_runtime_preflight);
-            lost = slot->quarantine_requested
+            lost = slot->retirement_requested
                 || (slot->ready
                     && (!worker || (requires_live_transport
                         && !worker->is_running())));
@@ -3291,13 +3236,12 @@ void WorkerCoordinator::DetectLostWorkers() {
                 continue;
             }
             loss_diagnostic =
-                slot->quarantine_diagnostic.empty()
+                slot->retirement_diagnostic.empty()
                 ? "worker process became unavailable"
-                : slot->quarantine_diagnostic;
+                : slot->retirement_diagnostic;
+            expected_retirement = slot->retirement_requested;
             protocol_version = savor::wrms::ProtocolVersion;
             slot->ready = false;
-            slot->submission_in_progress = false;
-            slot->submitting_workset_id.reset();
             slot->next_start_after =
                 std::chrono::steady_clock::now()
                 + std::chrono::milliseconds(
@@ -3329,37 +3273,31 @@ void WorkerCoordinator::DetectLostWorkers() {
                 .wrms_protocol_version = protocol_version,
             },
             .affected_workset_ids = std::move(affected_worksets),
+            .expected_retirement = expected_retirement,
             .diagnostic = loss_diagnostic,
         });
         ResetWorkerSlot(slot);
         RefreshStartResult(loss_diagnostic);
-        NotifyAvailabilityChanged();
     }
 }
 
-ReadyWorkerDispatchSnapshot
-WorkerCoordinator::SnapshotReadyWorker(const WorkerSlot& slot) const {
-    const bool runtime_accepting = !slot.worker
-        || RuntimeAcceptsWorksets(slot.worker->latest_snapshot());
-    ReadyWorkerDispatchSnapshot snapshot{
+WorkerReadyEvent
+WorkerCoordinator::BuildWorkerReadyEvent(const WorkerSlot& slot) const {
+    std::uint32_t credits =
+        config_.expected_runtime_contract.limits.maximum_item_credits;
+    if (slot.worker) {
+        const auto process_snapshot = slot.worker->latest_snapshot();
+        if (process_snapshot.available_item_credits != 0) {
+            credits = process_snapshot.available_item_credits;
+        }
+    }
+    return {
         .worker_id = slot.id,
         .process_generation = slot.process_generation,
         .mode = slot.mode,
         .runtime_contract_sha256 = slot.runtime_contract_sha256,
-        .available_item_credits = slot.available_item_credits,
-        .accepting_workset =
-            runtime_accepting
-            && !slot.quarantine_requested
-            && !slot.submission_in_progress
-            && !slot.active_workset_id.has_value()
-            && slot.available_item_credits != 0,
-        .resident_workset_id = slot.active_workset_id,
-        .warm_execution_key_sha256 =
-            slot.warm_execution_key_sha256,
-        .warm_program_package_sha256 =
-            slot.warm_program_package_sha256,
+        .available_item_credits = credits,
     };
-    return snapshot;
 }
 
 WorkerCoordinatorEventContext WorkerCoordinator::EventContext(
@@ -3391,15 +3329,7 @@ void WorkerCoordinator::HandleWorksetState(
             return;
         }
         if (IsTerminalWorksetState(payload.state)) {
-            if ((slot->active_workset_id.has_value()
-                    && *slot->active_workset_id
-                        == payload.workset_id)
-                || (slot->submitting_workset_id.has_value()
-                    && *slot->submitting_workset_id
-                        == payload.workset_id)) {
-                slot->active_workset_id.reset();
-                ++slot->completed_worksets;
-            }
+            ++slot->completed_worksets;
             worker_status_.UpdateState(
                 ToTelemetryWorkerId(worker_id),
                 WorkerStateKind::Idle);
@@ -3415,7 +3345,6 @@ void WorkerCoordinator::HandleWorksetState(
             || payload.state == savor::wrms::WorksetStateCode::Running
             || payload.state == savor::wrms::WorksetStateCode::ResettingItem
             || payload.state == savor::wrms::WorksetStateCode::Draining) {
-            slot->active_workset_id = payload.workset_id;
             worker_status_.UpdateState(
                 ToTelemetryWorkerId(worker_id),
                 WorkerStateKind::Running);
@@ -3446,7 +3375,6 @@ void WorkerCoordinator::HandleWorksetState(
     }
     if (IsTerminalWorksetState(payload.state)) {
         RemoveCompletedRouteIfPossible(payload.workset_id);
-        NotifyAvailabilityChanged();
     }
 }
 
@@ -3594,12 +3522,7 @@ void WorkerCoordinator::HandleCredits(
         if (slot->process_generation != process_generation) {
             return;
         }
-        if (slot->quarantine_requested) {
-            slot->available_item_credits = 0;
-            return;
-        }
-        slot->available_item_credits =
-            payload.available_item_credits;
+        if (slot->retirement_requested) return;
     }
     worker_status_.RecordHeartbeat(ToTelemetryWorkerId(worker_id));
 
@@ -3613,7 +3536,6 @@ void WorkerCoordinator::HandleCredits(
     if (callback) {
         callback(*context, payload);
     }
-    NotifyAvailabilityChanged();
 }
 
 void WorkerCoordinator::HandleWorksetSummary(
@@ -3666,15 +3588,24 @@ WorkerCoordinator::CurrentEventContext(
     return EventContext(*slot);
 }
 
-void WorkerCoordinator::NotifyAvailabilityChanged() const {
-    std::function<void()> callback;
+void WorkerCoordinator::NotifyWorkerReady(
+    const WorkerSlotPtr& slot) const {
+    if (!slot) return;
+    std::optional<WorkerReadyEvent> event;
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mutex);
+        if (!slot->ready || slot->retirement_requested
+            || slot->runtime_contract_sha256.empty()) {
+            return;
+        }
+        event = BuildWorkerReadyEvent(*slot);
+    }
+    std::function<void(const WorkerReadyEvent&)> callback;
     {
         std::lock_guard<std::mutex> callback_lock(callbacks_mutex_);
-        callback = callbacks_.availability_changed;
+        callback = callbacks_.worker_ready;
     }
-    if (callback) {
-        callback();
-    }
+    if (callback) callback(*event);
 }
 
 void WorkerCoordinator::NotifyWorkerUnavailable(

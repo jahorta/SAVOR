@@ -210,6 +210,35 @@ detail::DescribeCancellationDeliveryFailure(
     };
 }
 
+detail::EffectCompletionClassification detail::ClassifyEffectCompletion(
+    std::optional<std::uint64_t> expected_effect_id,
+    std::optional<CoordinatorEffectKind> expected_effect_kind,
+    std::uint64_t completed_effect_id,
+    CoordinatorEffectKind completed_effect_kind) noexcept {
+    if (!expected_effect_id.has_value()
+        || !expected_effect_kind.has_value()) {
+        return EffectCompletionClassification::DuplicateOrMissing;
+    }
+    if (*expected_effect_id == completed_effect_id
+        && *expected_effect_kind == completed_effect_kind) {
+        return EffectCompletionClassification::Match;
+    }
+    return EffectCompletionClassification::Mismatch;
+}
+
+detail::SubmissionOwnershipDirective detail::ClassifySubmissionOwnership(
+    SubmissionWriteDisposition disposition) noexcept {
+    switch (disposition) {
+    case SubmissionWriteDisposition::NotWritten:
+        return SubmissionOwnershipDirective::CoordinatorRetains;
+    case SubmissionWriteDisposition::Written:
+        return SubmissionOwnershipDirective::ValidateWrittenEvidence;
+    case SubmissionWriteDisposition::OutcomeUnknown:
+        return SubmissionOwnershipDirective::ConfirmResidence;
+    }
+    return SubmissionOwnershipDirective::ConfirmResidence;
+}
+
 namespace {
 
 std::atomic<std::uint64_t> g_coordinator_sequence{1};
@@ -336,14 +365,17 @@ public:
     }
 
     ~Impl() {
-        Stop();
+        if (running_.load()) {
+            std::string ignored;
+            (void)BeginShutdown(&ignored);
+            worker_coordinator_->Stop();
+            (void)FinishShutdownAfterWorkersStopped(&ignored);
+        }
     }
 
     bool Start(std::string* error_out);
-    void Quiesce();
-    bool ReleaseBufferedClaims(std::string* error_out);
-    bool RecoverAfterWorkersStopped(std::string* error_out);
-    void Stop();
+    bool BeginShutdown(std::string* error_out);
+    bool FinishShutdownAfterWorkersStopped(std::string* error_out);
     void SetPaused(bool paused);
     bool IsPaused() const noexcept;
     bool IsRunning() const noexcept;
@@ -362,26 +394,25 @@ public:
         SnapshotWorkerDispatches() const;
     std::vector<JobExecutionCoordinatorWarning>
         SnapshotWarnings() const;
+    std::vector<JobExecutionCoordinatorIncident>
+        SnapshotIncidents() const;
 
 private:
-    enum class DispatchPhase : std::uint8_t {
-        Claimed = 0,
-        Reconstructing,
-        Prepared,
-        Submitting,
-        Activating,
-        Active,
-        Draining,
-        ReleasedDraining,
-        ReleaseRequested,
-        Released,
-        Retired,
+    struct PendingOwnershipEffect {
+        std::uint64_t id = 0;
+        CoordinatorEffectKind kind = CoordinatorEffectKind::Reconstruction;
+        WorkerExecutionTarget target;
+        Clock::time_point started_at{};
+        Clock::time_point retry_at{};
+        std::string required_evidence;
     };
 
-    struct DeferredDispatchRelease {
+    struct FaultContainment {
         std::string reason_code;
         std::string reason_text;
         bool keep_draining = false;
+        bool retire_worker = false;
+        bool awaiting_worker_exit = false;
     };
 
     struct PendingSubmissionCancellation {
@@ -407,19 +438,16 @@ private:
         savor::db::ClaimedPublishedWorkset claimed;
         savor::runtime::WorkerWorksetDefinition definition;
         WorkerExecutionTarget target;
-        DispatchPhase phase = DispatchPhase::Claimed;
-        bool submitted = false;
-        bool dispatch_marked = false;
-        bool activation_io_pending = false;
-        Clock::time_point activation_retry_at{};
+        DispatchOwnership ownership = DispatchOwnership::Coordinator;
+        DispatchLifecycle lifecycle = DispatchLifecycle::Claimed;
+        std::optional<PendingOwnershipEffect> pending_effect;
+        std::optional<FaultContainment> containment;
+        bool released_draining = false;
+        bool retired = false;
         bool terminal_workset_state_observed = false;
         bool draining_transition_persisted = false;
-        bool draining_io_pending = false;
-        Clock::time_point draining_retry_at{};
-        Clock::time_point release_retry_at{};
         bool summary_observed = false;
         bool workset_cancellation_applied = false;
-        std::optional<DeferredDispatchRelease> deferred_release;
         std::deque<PendingSubmissionCancellation>
             pending_submission_cancellations;
         std::unordered_map<std::uint64_t, std::size_t> item_index_by_id;
@@ -441,8 +469,17 @@ private:
     };
 
     struct ReconstructionItem {
+        std::uint64_t effect_id = 0;
         DispatchPtr dispatch;
         Clock::time_point enqueued_at{};
+    };
+
+    struct ActiveReconstruction {
+        std::uint64_t task_id = 0;
+        std::int64_t dispatch_attempt_id = 0;
+        std::int64_t job_id = 0;
+        int program_kind = 0;
+        Clock::time_point started_at{};
     };
 
     struct ItemStartedEvent {
@@ -520,6 +557,7 @@ private:
         ConfirmResidence,
     };
     struct WorkerControlCommand {
+        std::uint64_t effect_id = 0;
         WorkerControlKind kind = WorkerControlKind::Acknowledge;
         std::int64_t dispatch_attempt_id = 0;
         std::int64_t job_id = 0;
@@ -534,7 +572,7 @@ private:
     };
 
     struct MailboxSubmissionCommand {
-        std::uint64_t command_id = 0;
+        std::uint64_t effect_id = 0;
         WorkerExecutionTarget target;
         DispatchPtr dispatch;
         savor::runtime::WorkerWorksetDefinition definition;
@@ -564,6 +602,14 @@ private:
     };
     using WorkerMailboxPtr = std::shared_ptr<WorkerMailbox>;
 
+    struct ActorWorkerRecord {
+        WorkerReadyEvent physical;
+        JobExecutionWorkerDispatchState state =
+            JobExecutionWorkerDispatchState::Unavailable;
+        std::optional<std::int64_t> submitting_dispatch_attempt_id;
+        std::optional<std::int64_t> active_dispatch_attempt_id;
+    };
+
     enum class CoordinatorEventKind : std::uint8_t {
         AvailabilityChanged = 0,
         WorkerEvidence,
@@ -582,25 +628,30 @@ private:
     };
 
     struct ClaimIoCommand {
+        std::uint64_t effect_id = 0;
         std::string batch_nonce;
         std::size_t requested_workset_count = 0;
         bool reconciliation_due = false;
         bool ready_signal = false;
     };
     struct ActivateIoCommand {
+        std::uint64_t effect_id = 0;
         DispatchPtr dispatch;
         WorkerMailboxPtr mailbox;
     };
     struct DrainingIoCommand {
+        std::uint64_t effect_id = 0;
         DispatchPtr dispatch;
         savor::db::ClaimedPublishedWorkset claimed;
     };
     struct ReleaseIoCommand {
+        std::uint64_t effect_id = 0;
         DispatchPtr dispatch;
         savor::db::ClaimedPublishedWorkset claimed;
         WorkerExecutionTarget target;
-        DispatchPhase previous = DispatchPhase::Claimed;
-        bool submitted = false;
+        DispatchOwnership previous_ownership = DispatchOwnership::Coordinator;
+        DispatchLifecycle previous_lifecycle = DispatchLifecycle::Claimed;
+        bool worker_may_have_owned = false;
         bool keep_draining = false;
         std::string reason_code;
         std::string reason_text;
@@ -609,12 +660,16 @@ private:
         std::int64_t dispatch_attempt_id = 0;
         std::string claim_token;
     };
+    struct ShutdownRecoveryIoCommand {
+        std::uint64_t effect_id = 0;
+    };
     using CoordinationIoCommand = std::variant<
         ClaimIoCommand,
         ActivateIoCommand,
         DrainingIoCommand,
         ReleaseIoCommand,
-        RenewLeaseIoCommand>;
+        RenewLeaseIoCommand,
+        ShutdownRecoveryIoCommand>;
 
     struct LeaseHeartbeatEntry {
         std::int64_t dispatch_attempt_id = 0;
@@ -623,22 +678,10 @@ private:
         Clock::time_point renew_at{};
     };
 
-    enum class LifecycleRequestKind : std::uint8_t {
-        ReleaseUnsubmitted = 0,
-        RecoverAfterWorkersStopped,
-    };
-    struct LifecycleRequest {
-        LifecycleRequestKind kind =
-            LifecycleRequestKind::ReleaseUnsubmitted;
-        bool pending = false;
-        bool completed = false;
-        std::string error;
-    };
-
     void ConfigureWorkerCallbacks();
     void ActorLoop();
     void ScheduleActor();
-    void ReconstructionLoop();
+    void ReconstructionLoop(std::size_t executor_index);
     void PersistenceLoop();
     void CancellationMutationLoop();
     void LeaseHeartbeatLoop();
@@ -646,7 +689,7 @@ private:
     void WorkerMailboxLoop(const WorkerMailboxPtr& mailbox);
 
     WorkerMailboxPtr EnsureWorkerMailbox(
-        const ReadyWorkerDispatchSnapshot& worker);
+        const WorkerReadyEvent& worker);
     WorkerMailboxPtr FindWorkerMailbox(
         std::size_t worker_id,
         std::uint64_t generation) const;
@@ -658,9 +701,15 @@ private:
         const savor::db::ExecutionWorksetContract& contract);
     static void RefreshActualAffinity(
         WorkerMailbox& lane,
-        const ReadyWorkerDispatchSnapshot& worker);
+        const WorkerReadyEvent& worker);
+    void HandleWorkerReady(WorkerReadyEvent worker);
+    void HandleWorkerCredits(
+        const WorkerCoordinatorEventContext& source,
+        const savor::wrms::WorksetCreditsPayload& payload);
+    ActorWorkerRecord* FindActorWorker(
+        const WorkerExecutionTarget& target);
     void WakeScheduler(std::string reason, bool reset_backoff);
-    bool Reconstruct(const DispatchPtr& dispatch);
+    bool Reconstruct(ReconstructionItem item);
     bool ValidateReconstruction(
         const savor::db::ClaimedPublishedWorkset& claimed,
         const savor::db::execution::programdb::
@@ -716,7 +765,7 @@ private:
     bool AdmitPreparedDispatch(
         const DispatchPtr& dispatch,
         const WorkerMailboxPtr& mailbox,
-        const ReadyWorkerDispatchSnapshot& worker);
+        const WorkerReadyEvent& worker);
     void HandleSubmissionCompletion(
         const WorkerMailboxPtr& mailbox,
         MailboxSubmissionCommand command,
@@ -761,9 +810,10 @@ private:
         const savor::wrms::WorksetStatePayload& payload);
     bool MarkDispatchDraining(const DispatchPtr& dispatch);
     bool ProcessPendingDrainingTransitions();
-    bool ProcessPendingDispatchReleases();
+    bool ProcessContainment();
     void RefreshStorageReadiness();
-    void ProcessLifecycleRequest();
+    void ProcessShutdown();
+    void CheckForStalls();
 
     DispatchPtr FindDispatch(std::int64_t dispatch_attempt_id) const;
     void InsertDispatch(const DispatchPtr& dispatch);
@@ -774,14 +824,39 @@ private:
         const DispatchPtr& dispatch,
         std::string reason_code,
         std::string reason_text,
-        bool keep_draining = false,
-        bool* deferred_out = nullptr,
-        bool retain_release_after_submission = true);
-    void PauseForInvariant(
+        bool keep_draining = false);
+    void FaultDispatch(
+        const DispatchPtr& dispatch,
+        CoordinatorIncidentCode code,
+        std::string message,
+        std::string detail,
+        std::int64_t job_id = 0,
+        std::optional<SubmissionWriteDisposition> write_disposition = {});
+    void ApplyFaultDispatch(
+        const DispatchPtr& dispatch,
+        CoordinatorIncidentCode code,
+        std::string message,
+        std::string detail,
+        std::int64_t job_id,
+        std::optional<SubmissionWriteDisposition> write_disposition);
+    void FaultDispatch(
         const DispatchPtr& dispatch,
         std::string message,
         std::string detail,
         std::int64_t job_id = 0);
+    bool BeginDispatchEffect(
+        const DispatchPtr& dispatch,
+        CoordinatorEffectKind kind,
+        WorkerExecutionTarget target,
+        std::string required_evidence,
+        std::uint64_t* effect_id_out,
+        Clock::time_point retry_at = {});
+    bool ConsumeDispatchEffect(
+        const DispatchPtr& dispatch,
+        std::uint64_t effect_id,
+        CoordinatorEffectKind kind,
+        std::string_view completion);
+    void ContinueContainment(const DispatchPtr& dispatch);
     void MaybeRetire(const DispatchPtr& dispatch);
     void ClearWorkerIdentity(
         const WorkerExecutionTarget& target,
@@ -803,15 +878,20 @@ private:
         savor::db::WorksetDispatchLeaseReceipt receipt,
         std::string error);
 
-    bool WaitForLifecycleRequest(
-        LifecycleRequestKind kind,
-        std::string* error_out);
+    void StopExecutorsAndActor();
     void RecordWarning(
         std::string message,
         std::string detail = {},
         std::int64_t worker_id = 0,
         std::int64_t job_id = 0);
+    void RecordTypedWarning(
+        JobExecutionCoordinatorWarning::Code code,
+        std::string message,
+        std::string detail = {},
+        std::int64_t worker_id = 0,
+        std::int64_t job_id = 0);
     void RecordError(std::string error);
+    void RecordIncident(JobExecutionCoordinatorIncident incident);
     void RecordCancellationResolution(std::string code);
     std::string NextToken(std::string_view purpose);
     JobExecutionCoordinatorTelemetry BuildTelemetrySnapshot() const;
@@ -839,7 +919,7 @@ private:
 
     std::thread actor_thread_;
     std::thread::id actor_thread_id_{};
-    std::thread reconstruction_thread_;
+    std::vector<std::thread> reconstruction_threads_;
     std::thread lease_heartbeat_thread_;
     std::thread cancellation_mutation_thread_;
     std::thread coordination_io_thread_;
@@ -862,20 +942,24 @@ private:
         execution_work_availability_{};
     std::uint64_t actor_wakeup_generation_ = 0;
     std::string last_actor_wake_reason_;
-    bool claim_in_flight_ = false;
+    std::optional<PendingOwnershipEffect> claim_effect_;
 
     mutable std::mutex registry_mutex_;
     std::unordered_map<std::int64_t, DispatchPtr> dispatches_;
 
     mutable std::mutex mailboxes_mutex_;
     std::unordered_map<std::size_t, WorkerMailboxPtr> mailboxes_;
+    std::unordered_map<std::size_t, ActorWorkerRecord> actor_workers_;
 
     std::deque<DispatchPtr> prepared_dispatches_;
 
     mutable std::mutex reconstruction_mutex_;
     std::condition_variable reconstruction_cv_;
     std::deque<ReconstructionItem> reconstruction_queue_;
-    bool reconstruction_active_ = false;
+    std::size_t reconstruction_active_count_ = 0;
+    std::size_t reconstruction_concurrency_limit_ = 0;
+    std::unordered_map<std::uint64_t, ActiveReconstruction>
+        active_reconstructions_;
     std::size_t reconstruction_high_water_ = 0;
     std::uint64_t reconstruction_total_duration_ms_ = 0;
     std::uint64_t reconstruction_max_duration_ms_ = 0;
@@ -894,11 +978,17 @@ private:
     std::condition_variable coordination_io_cv_;
     std::deque<CoordinationIoCommand> coordination_io_commands_;
     bool coordination_io_stop_ = false;
+    std::optional<Clock::time_point> coordination_io_started_at_;
+    std::string coordination_io_operation_;
+    std::size_t coordination_io_high_water_ = 0;
+    Clock::time_point last_forward_progress_at_{};
+    std::string last_stall_signature_;
     mutable std::mutex snapshot_mutex_;
     JobExecutionCoordinatorTelemetry cached_telemetry_{};
     std::vector<JobExecutionWorkerDispatchSnapshot>
         cached_worker_dispatches_;
     std::vector<JobExecutionCoordinatorWarning> cached_warnings_;
+    std::vector<JobExecutionCoordinatorIncident> cached_incidents_;
     struct CancellationIndexEntry {
         savor::db::CommittedJobCancellation cancellation;
     };
@@ -924,9 +1014,16 @@ private:
     std::unordered_map<std::int64_t, LeaseHeartbeatEntry>
         lease_heartbeat_entries_;
 
-    mutable std::mutex lifecycle_mutex_;
-    std::condition_variable lifecycle_cv_;
-    LifecycleRequest lifecycle_request_;
+    mutable std::mutex shutdown_mutex_;
+    std::condition_variable shutdown_cv_;
+    CoordinatorShutdownStage shutdown_stage_ =
+        CoordinatorShutdownStage::Stopped;
+    Clock::time_point shutdown_stage_started_at_{};
+    bool workers_stopped_ = false;
+    bool shutdown_recovery_complete_ = false;
+    std::string shutdown_error_;
+    std::optional<PendingOwnershipEffect> shutdown_recovery_effect_;
+    std::atomic<std::uint64_t> shutdown_recovered_dispatches_{0};
 
     std::atomic<std::uint64_t> claim_batches_{0};
     std::atomic<std::uint64_t> successful_claim_batches_{0};
@@ -1008,6 +1105,9 @@ private:
     mutable std::mutex warning_mutex_;
     std::deque<JobExecutionCoordinatorWarning> warnings_;
     std::uint64_t warning_sequence_ = 0;
+    mutable std::mutex incident_mutex_;
+    std::deque<JobExecutionCoordinatorIncident> incidents_;
+    std::uint64_t incident_sequence_ = 0;
     mutable std::mutex error_mutex_;
     std::string last_error_;
     mutable std::mutex cancellation_resolution_mutex_;
@@ -1017,7 +1117,7 @@ private:
     std::map<std::string, std::uint64_t>
         dispatch_release_reason_counts_;
     std::map<std::string, std::uint64_t>
-        dispatch_release_phase_counts_;
+        dispatch_release_state_counts_;
 };
 
 bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
@@ -1086,8 +1186,12 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
             <= std::chrono::milliseconds::zero()
         || config_.blob_readiness_retry_max_interval
             < config_.blob_readiness_retry_interval
+        || config_.stall_diagnostic_threshold
+            <= std::chrono::milliseconds::zero()
         || config_.prepared_worksets_per_ready_worker == 0
         || config_.persistence_io_threads == 0
+        || config_.reconstruction_io_threads == 0
+        || config_.reconstruction_io_threads > kMaximumWorkerCount
         || config_.max_pending_evidence_per_dispatch == 0
         || config_.cancellation_batch_size == 0
         || config_.cancellation_mutation_delay
@@ -1118,10 +1222,13 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
         dispatches_.clear();
     }
     prepared_dispatches_.clear();
+    actor_workers_.clear();
     {
         std::lock_guard lock(reconstruction_mutex_);
         reconstruction_queue_.clear();
-        reconstruction_active_ = false;
+        reconstruction_active_count_ = 0;
+        reconstruction_concurrency_limit_ = 0;
+        active_reconstructions_.clear();
         reconstruction_high_water_ = 0;
         reconstruction_total_duration_ms_ = 0;
         reconstruction_max_duration_ms_ = 0;
@@ -1139,12 +1246,21 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
         std::lock_guard lock(coordination_io_mutex_);
         coordination_io_commands_.clear();
         coordination_io_stop_ = false;
+        coordination_io_started_at_.reset();
+        coordination_io_operation_.clear();
+        coordination_io_high_water_ = 0;
     }
     {
         std::lock_guard lock(snapshot_mutex_);
         cached_telemetry_ = {};
         cached_worker_dispatches_.clear();
         cached_warnings_.clear();
+        cached_incidents_.clear();
+    }
+    {
+        std::lock_guard lock(incident_mutex_);
+        incidents_.clear();
+        incident_sequence_ = 0;
     }
     {
         std::lock_guard lock(cancellation_index_mutex_);
@@ -1165,8 +1281,13 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
         lease_heartbeat_entries_.clear();
     }
     {
-        std::lock_guard lock(lifecycle_mutex_);
-        lifecycle_request_ = {};
+        std::lock_guard lock(shutdown_mutex_);
+        shutdown_stage_ = CoordinatorShutdownStage::Running;
+        shutdown_stage_started_at_ = Clock::now();
+        workers_stopped_ = false;
+        shutdown_recovery_complete_ = false;
+        shutdown_error_.clear();
+        shutdown_recovery_effect_.reset();
     }
     {
         std::lock_guard lock(cancellation_resolution_mutex_);
@@ -1175,7 +1296,7 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
     {
         std::lock_guard lock(dispatch_release_mutex_);
         dispatch_release_reason_counts_.clear();
-        dispatch_release_phase_counts_.clear();
+        dispatch_release_state_counts_.clear();
     }
     {
         std::lock_guard lock(actor_mutex_);
@@ -1186,7 +1307,9 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
             Clock::now() + std::chrono::seconds(30);
         actor_wakeup_generation_ = 0;
         last_actor_wake_reason_.clear();
-        claim_in_flight_ = false;
+        claim_effect_.reset();
+        last_forward_progress_at_ = Clock::now();
+        last_stall_signature_.clear();
     }
 
     savor::db::RecoverInterruptedWorksetDispatchesReceipt
@@ -1285,8 +1408,12 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
     }
     cancellation_mutation_thread_ =
         std::thread([this]() { CancellationMutationLoop(); });
-    reconstruction_thread_ =
-        std::thread([this]() { ReconstructionLoop(); });
+    reconstruction_threads_.reserve(config_.reconstruction_io_threads);
+    for (std::size_t index = 0;
+         index < config_.reconstruction_io_threads; ++index) {
+        reconstruction_threads_.emplace_back(
+            [this, index]() { ReconstructionLoop(index); });
+    }
     coordination_io_thread_ =
         std::thread([this]() { CoordinationIoLoop(); });
     actor_thread_ = std::thread([this]() { ActorLoop(); });
@@ -1296,77 +1423,94 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
     return true;
 }
 
-void JobExecutionCoordinator::Impl::Quiesce() {
-    quiescing_.store(true);
-    WakeScheduler("quiesce", false);
-    {
-        std::lock_guard lock(mailboxes_mutex_);
-        for (const auto& [worker_id, lane] : mailboxes_) {
-            (void)worker_id;
-            lane->cv.notify_all();
-        }
-    }
-}
-
-bool JobExecutionCoordinator::Impl::WaitForLifecycleRequest(
-    LifecycleRequestKind kind,
-    std::string* error_out) {
+bool JobExecutionCoordinator::Impl::BeginShutdown(std::string* error_out) {
     if (!running_.load()) {
-        if (error_out) {
-            *error_out = "job execution coordinator is not running";
+        if (error_out) error_out->clear();
+        return true;
+    }
+    quiescing_.store(true);
+    RunOnActorAndWait([this]() {
+        {
+            std::lock_guard lock(shutdown_mutex_);
+            if (shutdown_stage_ == CoordinatorShutdownStage::Running) {
+                shutdown_stage_ = CoordinatorShutdownStage::Quiescing;
+                shutdown_stage_started_at_ = Clock::now();
+            }
         }
-        return false;
-    }
-    {
-        std::lock_guard lock(lifecycle_mutex_);
-        lifecycle_request_.kind = kind;
-        lifecycle_request_.pending = true;
-        lifecycle_request_.completed = false;
-        lifecycle_request_.error.clear();
-    }
-    actor_cv_.notify_all();
-    std::unique_lock lock(lifecycle_mutex_);
-    lifecycle_cv_.wait(lock, [this]() {
-        return lifecycle_request_.completed || !running_.load();
+        std::vector<ReconstructionItem> cancelled;
+        {
+            std::lock_guard lock(reconstruction_mutex_);
+            while (!reconstruction_queue_.empty()) {
+                cancelled.push_back(
+                    std::move(reconstruction_queue_.front()));
+                reconstruction_queue_.pop_front();
+            }
+        }
+        for (const auto& item : cancelled) {
+            if (ConsumeDispatchEffect(
+                    item.dispatch,
+                    item.effect_id,
+                    CoordinatorEffectKind::Reconstruction,
+                    "shutdown cancellation")) {
+                std::lock_guard lock(item.dispatch->mutex);
+                item.dispatch->lifecycle = DispatchLifecycle::Faulted;
+            }
+        }
+        {
+            std::lock_guard lock(shutdown_mutex_);
+            shutdown_stage_ =
+                CoordinatorShutdownStage::AwaitingWorkersStopped;
+            shutdown_stage_started_at_ = Clock::now();
+        }
+        WakeScheduler("begin-shutdown", false);
+        PublishSnapshots();
     });
-    if (error_out) {
-        *error_out = lifecycle_request_.error;
-    }
-    return lifecycle_request_.completed
-        && lifecycle_request_.error.empty();
+    if (error_out) error_out->clear();
+    return true;
 }
 
-bool JobExecutionCoordinator::Impl::ReleaseBufferedClaims(
+bool JobExecutionCoordinator::Impl::FinishShutdownAfterWorkersStopped(
     std::string* error_out) {
-    Quiesce();
-    return WaitForLifecycleRequest(
-        LifecycleRequestKind::ReleaseUnsubmitted,
-        error_out);
-}
-
-bool JobExecutionCoordinator::Impl::RecoverAfterWorkersStopped(
-    std::string* error_out) {
-    Quiesce();
-    return WaitForLifecycleRequest(
-        LifecycleRequestKind::RecoverAfterWorkersStopped,
-        error_out);
-}
-
-void JobExecutionCoordinator::Impl::Stop() {
     if (!running_.load() && !actor_thread_.joinable()) {
-        return;
+        if (error_out) error_out->clear();
+        return true;
     }
-    Quiesce();
+    if (!quiescing_.load()) {
+        std::string begin_error;
+        if (!BeginShutdown(&begin_error)) {
+            if (error_out) *error_out = std::move(begin_error);
+            return false;
+        }
+    }
+    RunOnActorAndWait([this]() {
+        {
+            std::lock_guard lock(shutdown_mutex_);
+            workers_stopped_ = true;
+            shutdown_stage_ = CoordinatorShutdownStage::DrainingEvents;
+            shutdown_stage_started_at_ = Clock::now();
+        }
+        actor_workers_.clear();
+        ProcessShutdown();
+        PublishSnapshots();
+    });
+    bool succeeded = false;
+    {
+        std::unique_lock lock(shutdown_mutex_);
+        shutdown_cv_.wait(lock, [this]() {
+            return shutdown_recovery_complete_ || !running_.load();
+        });
+        if (error_out) *error_out = shutdown_error_;
+        succeeded = shutdown_error_.empty();
+    }
+    StopExecutorsAndActor();
+    return succeeded;
+}
+
+void JobExecutionCoordinator::Impl::StopExecutorsAndActor() {
     if (execution_work_subscription_ != 0) {
         execution_db_->UnsubscribeExecutionWorkAvailability(
             execution_work_subscription_);
         execution_work_subscription_ = 0;
-    }
-    if (running_.load() && actor_thread_.joinable()) {
-        std::string ignored;
-        (void)WaitForLifecycleRequest(
-            LifecycleRequestKind::ReleaseUnsubmitted,
-            &ignored);
     }
 
     stop_.store(true);
@@ -1375,7 +1519,7 @@ void JobExecutionCoordinator::Impl::Stop() {
     persistence_cv_.notify_all();
     actor_cv_.notify_all();
     lease_heartbeat_cv_.notify_all();
-    lifecycle_cv_.notify_all();
+    shutdown_cv_.notify_all();
 
     // The actor is the only owner that can create a worker mailbox. Join it
     // before draining mailboxes so no new transport owner can appear.
@@ -1390,9 +1534,10 @@ void JobExecutionCoordinator::Impl::Stop() {
     }
     StopWorkerMailboxes();
 
-    if (reconstruction_thread_.joinable()) {
-        reconstruction_thread_.join();
+    for (auto& thread : reconstruction_threads_) {
+        if (thread.joinable()) thread.join();
     }
+    reconstruction_threads_.clear();
     if (lease_heartbeat_thread_.joinable()) {
         lease_heartbeat_thread_.join();
     }
@@ -1416,7 +1561,12 @@ void JobExecutionCoordinator::Impl::Stop() {
     }
     blob_store_ready_.store(false);
     running_.store(false);
-    lifecycle_cv_.notify_all();
+    {
+        std::lock_guard lock(shutdown_mutex_);
+        shutdown_stage_ = CoordinatorShutdownStage::Stopped;
+        shutdown_stage_started_at_ = Clock::now();
+    }
+    shutdown_cv_.notify_all();
 }
 
 void JobExecutionCoordinator::Impl::SetPaused(bool paused) {
@@ -1463,6 +1613,24 @@ bool JobExecutionCoordinator::Impl::ClearInvariantPause() {
             changed = ClearInvariantPause();
         });
         return changed;
+    }
+    bool unresolved_fault = false;
+    {
+        std::lock_guard registry_lock(registry_mutex_);
+        for (const auto& [_, dispatch] : dispatches_) {
+            std::lock_guard record_lock(dispatch->mutex);
+            if (dispatch->lifecycle == DispatchLifecycle::Faulted
+                && (dispatch->ownership != DispatchOwnership::Closed
+                    || dispatch->containment.has_value()
+                    || dispatch->pending_effect.has_value())) {
+                unresolved_fault = true;
+                break;
+            }
+        }
+    }
+    if (unresolved_fault) {
+        PublishSnapshots();
+        return false;
     }
     const bool changed = invariant_paused_.exchange(false);
     if (changed) {
@@ -1606,11 +1774,17 @@ void JobExecutionCoordinator::Impl::RegisterCommittedCancellations(
         }
         std::optional<savor::runtime::WorkerWorksetItemId> item_id;
         WorkerExecutionTarget target;
-        DispatchPhase phase = DispatchPhase::Claimed;
+        DispatchOwnership ownership = DispatchOwnership::Coordinator;
+        DispatchLifecycle lifecycle = DispatchLifecycle::Claimed;
+        std::optional<CoordinatorEffectKind> effect_kind;
         bool terminal_staged = false;
         {
             std::lock_guard lock(dispatch->mutex);
-            phase = dispatch->phase;
+            ownership = dispatch->ownership;
+            lifecycle = dispatch->lifecycle;
+            if (dispatch->pending_effect) {
+                effect_kind = dispatch->pending_effect->kind;
+            }
             target = dispatch->target;
             terminal_staged =
                 dispatch->staged_jobs.contains(cancellation.job_id);
@@ -1624,8 +1798,10 @@ void JobExecutionCoordinator::Impl::RegisterCommittedCancellations(
                     break;
                 }
             }
-            if (phase == DispatchPhase::Submitting
-                && !dispatch->dispatch_marked) {
+            if ((ownership == DispatchOwnership::Coordinator
+                    && effect_kind
+                        == CoordinatorEffectKind::Submission)
+                || ownership == DispatchOwnership::WorkerMayOwn) {
                 const bool already_pending = std::ranges::any_of(
                     dispatch->pending_submission_cancellations,
                     [&](const auto& pending) {
@@ -1648,8 +1824,9 @@ void JobExecutionCoordinator::Impl::RegisterCommittedCancellations(
                 cancellation, "WORKER_TERMINAL", false,
                 dispatch->claimed.dispatch_attempt_id,
                 dispatch->claimed.claim_token);
-        } else if ((phase == DispatchPhase::Active
-                || phase == DispatchPhase::Draining)
+        } else if (ownership == DispatchOwnership::Worker
+            && (lifecycle == DispatchLifecycle::Active
+                || lifecycle == DispatchLifecycle::Draining)
             && item_id.has_value()) {
             ++post_fence_cancellation_commands_;
             EnqueueWorkerControl(
@@ -1867,8 +2044,8 @@ JobExecutionCoordinator::Impl::BuildTelemetrySnapshot() const {
         std::lock_guard lock(dispatch_release_mutex_);
         telemetry.dispatch_release_reason_counts =
             dispatch_release_reason_counts_;
-        telemetry.dispatch_release_phase_counts =
-            dispatch_release_phase_counts_;
+        telemetry.dispatch_release_state_counts =
+            dispatch_release_state_counts_;
     }
     telemetry.blob_store_ready = blob_store_ready_.load();
     telemetry.cancellation_admission_open =
@@ -1912,7 +2089,8 @@ JobExecutionCoordinator::Impl::BuildTelemetrySnapshot() const {
             reconstruction_queue_.size();
         telemetry.reconstruction_queue_high_water =
             reconstruction_high_water_;
-        telemetry.reconstruction_active = reconstruction_active_;
+        telemetry.reconstruction_active_tasks =
+            reconstruction_active_count_;
         telemetry.reconstruction_total_duration_ms =
             reconstruction_total_duration_ms_;
         telemetry.reconstruction_max_duration_ms =
@@ -1923,6 +2101,46 @@ JobExecutionCoordinator::Impl::BuildTelemetrySnapshot() const {
                     std::chrono::duration_cast<std::chrono::milliseconds>(
                         now - reconstruction_queue_.front().enqueued_at)
                         .count());
+        }
+        for (const auto& [_, active] : active_reconstructions_) {
+            telemetry.reconstruction_oldest_active_age_ms =
+                std::max(
+                    telemetry.reconstruction_oldest_active_age_ms,
+                    static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now - active.started_at).count()));
+        }
+    }
+    for (const auto& [_, worker] : actor_workers_) {
+        if (worker.state == JobExecutionWorkerDispatchState::Ready) {
+            ++telemetry.ready_workers;
+        } else if (worker.state
+                   == JobExecutionWorkerDispatchState::Unavailable) {
+            ++telemetry.unavailable_workers;
+        }
+        if (worker.submitting_dispatch_attempt_id) {
+            ++telemetry.submitting_worksets;
+        }
+        if (worker.active_dispatch_attempt_id) {
+            ++telemetry.active_worksets;
+        }
+    }
+    if (last_forward_progress_at_ != Clock::time_point{}) {
+        telemetry.no_forward_progress_age_ms =
+            static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - last_forward_progress_at_).count());
+    }
+    telemetry.no_forward_progress_reason = last_stall_signature_;
+    {
+        std::lock_guard lock(coordination_io_mutex_);
+        telemetry.coordination_io_queue_depth =
+            coordination_io_commands_.size();
+        if (coordination_io_started_at_) {
+            telemetry.coordination_io_active_age_ms =
+                static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - *coordination_io_started_at_).count());
         }
     }
     {
@@ -1964,12 +2182,6 @@ JobExecutionCoordinator::Impl::BuildTelemetrySnapshot() const {
             std::lock_guard lane_lock(lane->mutex);
             telemetry.mailbox_command_depth +=
                 lane->controls.size() + lane->submissions.size();
-            if (lane->submitting.has_value()) {
-                ++telemetry.submitting_worksets;
-            }
-            if (lane->active.has_value()) {
-                ++telemetry.active_worksets;
-            }
             for (const auto& command : lane->controls) {
                 if (command.enqueued_at != Clock::time_point{}) {
                     telemetry.worker_control_oldest_command_age_ms =
@@ -1995,14 +2207,40 @@ JobExecutionCoordinator::Impl::BuildTelemetrySnapshot() const {
         for (const auto& [dispatch_id, record] : dispatches_) {
             (void)dispatch_id;
             std::lock_guard record_lock(record->mutex);
-            if (record->phase == DispatchPhase::Prepared) {
+            if (record->ownership == DispatchOwnership::Coordinator
+                && record->lifecycle == DispatchLifecycle::Prepared
+                && !record->pending_effect.has_value()) {
                 ++telemetry.prepared_worksets;
                 ++telemetry.global_prepared_worksets;
             }
-            if (record->phase == DispatchPhase::Draining) {
+            if (record->lifecycle == DispatchLifecycle::Draining
+                && record->ownership != DispatchOwnership::Closed) {
                 ++telemetry.draining_worksets;
             }
+            if (record->pending_effect.has_value()) {
+                ++telemetry.outstanding_effects;
+            }
         }
+    }
+    if (claim_effect_.has_value()) ++telemetry.outstanding_effects;
+    {
+        std::lock_guard lock(incident_mutex_);
+        if (!incidents_.empty()) telemetry.latest_incident = incidents_.back();
+    }
+    {
+        std::lock_guard lock(shutdown_mutex_);
+        telemetry.shutdown_stage = shutdown_stage_;
+        telemetry.workers_awaiting_exit = workers_stopped_
+            ? 0 : actor_workers_.size();
+        telemetry.shutdown_recovered_dispatches =
+            shutdown_recovered_dispatches_.load();
+        if (shutdown_stage_started_at_ != Clock::time_point{}) {
+            telemetry.shutdown_stage_age_ms =
+                static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - shutdown_stage_started_at_).count());
+        }
+        if (shutdown_recovery_effect_) ++telemetry.outstanding_effects;
     }
     {
         std::lock_guard lock(error_mutex_);
@@ -2020,34 +2258,35 @@ JobExecutionCoordinator::Impl::SnapshotWorkerDispatches() const {
 std::vector<JobExecutionWorkerDispatchSnapshot>
 JobExecutionCoordinator::Impl::BuildWorkerDispatchSnapshots() const {
     std::vector<JobExecutionWorkerDispatchSnapshot> snapshots;
-    std::vector<WorkerMailboxPtr> lanes;
-    {
-        std::lock_guard lock(mailboxes_mutex_);
-        for (const auto& [worker_id, lane] : mailboxes_) {
-            (void)worker_id;
-            lanes.push_back(lane);
-        }
+    std::vector<std::size_t> worker_ids;
+    worker_ids.reserve(actor_workers_.size());
+    for (const auto& [worker_id, _] : actor_workers_) {
+        worker_ids.push_back(worker_id);
     }
-    std::sort(
-        lanes.begin(),
-        lanes.end(),
-        [](const WorkerMailboxPtr& lhs, const WorkerMailboxPtr& rhs) {
-            return lhs->worker_id < rhs->worker_id;
-        });
-    for (const auto& lane : lanes) {
+    std::ranges::sort(worker_ids);
+    for (const auto worker_id : worker_ids) {
+        const auto& worker = actor_workers_.at(worker_id);
         JobExecutionWorkerDispatchSnapshot snapshot{};
-        {
+        snapshot.worker_id = worker_id;
+        snapshot.process_generation =
+            worker.physical.process_generation;
+        snapshot.mode = worker.physical.mode;
+        snapshot.runtime_contract_sha256 =
+            worker.physical.runtime_contract_sha256;
+        snapshot.available_item_credits =
+            worker.physical.available_item_credits;
+        snapshot.accepting_workset =
+            worker.state == JobExecutionWorkerDispatchState::Ready
+            && worker.physical.available_item_credits != 0;
+        snapshot.submitting_dispatch_attempt_id =
+            worker.submitting_dispatch_attempt_id;
+        snapshot.active_dispatch_attempt_id =
+            worker.active_dispatch_attempt_id;
+        snapshot.state = worker.state;
+        const auto lane = FindWorkerMailbox(
+            worker_id, worker.physical.process_generation);
+        if (lane) {
             std::lock_guard lock(lane->mutex);
-            snapshot.worker_id = lane->worker_id;
-            snapshot.process_generation = lane->generation;
-            snapshot.submitting_dispatch_attempt_id =
-                lane->submitting;
-            snapshot.active_dispatch_attempt_id = lane->active;
-            snapshot.state = lane->active.has_value()
-                ? JobExecutionWorkerDispatchState::Active
-                : lane->submitting.has_value()
-                ? JobExecutionWorkerDispatchState::Submitting
-                : JobExecutionWorkerDispatchState::Ready;
             snapshot.mailbox_depth =
                 lane->controls.size() + lane->submissions.size();
             for (const auto& command : lane->controls) {
@@ -2059,18 +2298,7 @@ JobExecutionCoordinator::Impl::BuildWorkerDispatchSnapshots() const {
                 }
             }
             snapshot.actual_execution_affinity_key =
-                lane->actual_execution_key;
-        }
-        if (snapshot.active_dispatch_attempt_id.has_value()) {
-            const auto dispatch = FindDispatch(
-                *snapshot.active_dispatch_attempt_id);
-            if (dispatch) {
-                std::lock_guard lock(dispatch->mutex);
-                if (dispatch->phase == DispatchPhase::Draining) {
-                    snapshot.state =
-                        JobExecutionWorkerDispatchState::Draining;
-                }
-            }
+                worker.physical.warm_execution_key_sha256;
         }
         {
             std::lock_guard lock(persistence_mutex_);
@@ -2109,6 +2337,12 @@ JobExecutionCoordinator::Impl::SnapshotWarnings() const {
     return cached_warnings_;
 }
 
+std::vector<JobExecutionCoordinatorIncident>
+JobExecutionCoordinator::Impl::SnapshotIncidents() const {
+    std::lock_guard lock(snapshot_mutex_);
+    return cached_incidents_;
+}
+
 void JobExecutionCoordinator::Impl::PublishSnapshots() {
     auto telemetry = BuildTelemetrySnapshot();
     auto worker_dispatches = BuildWorkerDispatchSnapshots();
@@ -2117,20 +2351,26 @@ void JobExecutionCoordinator::Impl::PublishSnapshots() {
         std::lock_guard lock(warning_mutex_);
         warnings.assign(warnings_.begin(), warnings_.end());
     }
+    std::vector<JobExecutionCoordinatorIncident> incidents;
+    {
+        std::lock_guard lock(incident_mutex_);
+        incidents.assign(incidents_.begin(), incidents_.end());
+    }
     std::lock_guard lock(snapshot_mutex_);
     cached_telemetry_ = std::move(telemetry);
     cached_worker_dispatches_ = std::move(worker_dispatches);
     cached_warnings_ = std::move(warnings);
+    cached_incidents_ = std::move(incidents);
 }
 
 void JobExecutionCoordinator::Impl::ConfigureWorkerCallbacks() {
     worker_coordinator_->SetCallbacks(
         {
-            .availability_changed = [this]() {
+            .worker_ready = [this](const WorkerReadyEvent& worker) {
                 EnqueueActor(
                     CoordinatorEventKind::AvailabilityChanged,
-                    [this]() {
-                    WakeScheduler("worker-availability", false);
+                    [this, worker]() mutable {
+                    HandleWorkerReady(std::move(worker));
                     });
             },
             .workset_state =
@@ -2195,11 +2435,11 @@ void JobExecutionCoordinator::Impl::ConfigureWorkerCallbacks() {
             .credits =
                 [this](
                     const WorkerCoordinatorEventContext& source,
-                    const savor::wrms::WorksetCreditsPayload&) {
+                    const savor::wrms::WorksetCreditsPayload& payload) {
                     EnqueueActor(
                         CoordinatorEventKind::AvailabilityChanged,
-                        [this, source]() {
-                        WakeScheduler("worker-credits", false);
+                        [this, source, payload]() {
+                        HandleWorkerCredits(source, payload);
                         });
                 },
             .workset_summary =
@@ -2244,7 +2484,7 @@ JobExecutionCoordinator::Impl::FindWorkerMailbox(
 
 JobExecutionCoordinator::Impl::WorkerMailboxPtr
 JobExecutionCoordinator::Impl::EnsureWorkerMailbox(
-    const ReadyWorkerDispatchSnapshot& worker) {
+    const WorkerReadyEvent& worker) {
     WorkerMailboxPtr old_lane;
     WorkerMailboxPtr lane;
     {
@@ -2387,10 +2627,71 @@ int JobExecutionCoordinator::Impl::AffinityScore(
 
 void JobExecutionCoordinator::Impl::RefreshActualAffinity(
     WorkerMailbox& lane,
-    const ReadyWorkerDispatchSnapshot& worker) {
+    const WorkerReadyEvent& worker) {
     lane.actual_program_package_sha256 =
         worker.warm_program_package_sha256;
     lane.actual_execution_key = worker.warm_execution_key_sha256;
+}
+
+JobExecutionCoordinator::Impl::ActorWorkerRecord*
+JobExecutionCoordinator::Impl::FindActorWorker(
+    const WorkerExecutionTarget& target) {
+    const auto found = actor_workers_.find(target.worker_id);
+    if (found == actor_workers_.end()
+        || found->second.physical.process_generation
+            != target.process_generation) {
+        return nullptr;
+    }
+    return &found->second;
+}
+
+void JobExecutionCoordinator::Impl::HandleWorkerReady(
+    WorkerReadyEvent worker) {
+    if (!savor::runtime::IsNormalWorkerMode(worker.mode)) return;
+    const auto worker_id = worker.worker_id;
+    auto found = actor_workers_.find(worker_id);
+    if (found != actor_workers_.end()
+        && found->second.physical.process_generation
+            == worker.process_generation) {
+        found->second.physical = std::move(worker);
+    } else {
+        ActorWorkerRecord record{};
+        record.physical = std::move(worker);
+        record.state = JobExecutionWorkerDispatchState::Ready;
+        actor_workers_.insert_or_assign(
+            record.physical.worker_id, std::move(record));
+    }
+    const auto current = actor_workers_.find(worker_id);
+    if (current != actor_workers_.end()) {
+        (void)EnsureWorkerMailbox(current->second.physical);
+    }
+    {
+        std::lock_guard lock(reconstruction_mutex_);
+        reconstruction_concurrency_limit_ = actor_workers_.size();
+    }
+    reconstruction_cv_.notify_all();
+    last_forward_progress_at_ = Clock::now();
+    WakeScheduler("worker-ready", true);
+}
+
+void JobExecutionCoordinator::Impl::HandleWorkerCredits(
+    const WorkerCoordinatorEventContext& source,
+    const savor::wrms::WorksetCreditsPayload& payload) {
+    auto* worker = FindActorWorker({
+        .worker_id = source.worker_id,
+        .process_generation = source.process_generation,
+    });
+    if (!worker) return;
+    worker->physical.available_item_credits =
+        payload.available_item_credits;
+    if (!worker->submitting_dispatch_attempt_id
+        && !worker->active_dispatch_attempt_id
+        && worker->state != JobExecutionWorkerDispatchState::Draining) {
+        worker->state = payload.available_item_credits == 0
+            ? JobExecutionWorkerDispatchState::Unavailable
+            : JobExecutionWorkerDispatchState::Ready;
+    }
+    WakeScheduler("worker-credits", false);
 }
 
 void JobExecutionCoordinator::Impl::ScheduleActor() {
@@ -2402,10 +2703,13 @@ void JobExecutionCoordinator::Impl::ScheduleActor() {
         std::lock_guard lock(registry_mutex_);
         for (const auto& [_, dispatch] : dispatches_) {
             std::lock_guard record_lock(dispatch->mutex);
-            if (dispatch->phase == DispatchPhase::Activating
-                && dispatch->activation_retry_at != Clock::time_point{}
-                && dispatch->activation_retry_at <= actor_now) {
-                dispatch->activation_retry_at = {};
+            if (dispatch->ownership == DispatchOwnership::WorkerMayOwn
+                && dispatch->pending_effect.has_value()
+                && dispatch->pending_effect->kind
+                    == CoordinatorEffectKind::DurableActivation
+                && dispatch->pending_effect->started_at
+                    == Clock::time_point{}
+                && dispatch->pending_effect->retry_at <= actor_now) {
                 activation_retries.push_back(dispatch);
             }
         }
@@ -2417,27 +2721,19 @@ void JobExecutionCoordinator::Impl::ScheduleActor() {
         if (mailbox) ActivateSubmittedDispatch(dispatch, mailbox);
     }
 
-    auto workers = worker_coordinator_->SnapshotReadyWorkers();
-    workers.erase(
-        std::remove_if(
-            workers.begin(),
-            workers.end(),
-            [](const ReadyWorkerDispatchSnapshot& worker) {
-                return !worker.accepting_workset
-                    || !savor::runtime::IsNormalWorkerMode(worker.mode);
-            }),
-        workers.end());
+    std::vector<WorkerReadyEvent> workers;
+    workers.reserve(actor_workers_.size());
+    for (const auto& [_, record] : actor_workers_) {
+        if (record.state == JobExecutionWorkerDispatchState::Ready
+            && record.physical.available_item_credits != 0
+            && savor::runtime::IsNormalWorkerMode(record.physical.mode)) {
+            workers.push_back(record.physical);
+        }
+    }
     std::ranges::sort(workers, {},
-        [](const ReadyWorkerDispatchSnapshot& worker) {
+        [](const WorkerReadyEvent& worker) {
             return worker.worker_id;
         });
-
-    for (const auto& worker : workers) {
-        const auto mailbox = EnsureWorkerMailbox(worker);
-        if (!mailbox) continue;
-        std::lock_guard lock(mailbox->mutex);
-        RefreshActualAffinity(*mailbox, worker);
-    }
 
     // Prepared work is globally owned. Bind it to a physical worker only at
     // the exact submission fence.
@@ -2461,7 +2757,9 @@ void JobExecutionCoordinator::Impl::ScheduleActor() {
              it != prepared_dispatches_.end(); ++it) {
             const auto& dispatch = *it;
             std::lock_guard record_lock(dispatch->mutex);
-            if (dispatch->phase != DispatchPhase::Prepared
+            if (dispatch->ownership != DispatchOwnership::Coordinator
+                || dispatch->lifecycle != DispatchLifecycle::Prepared
+                || dispatch->pending_effect.has_value()
                 || dispatch->definition.items.size()
                     > worker.available_item_credits) {
                 continue;
@@ -2489,15 +2787,13 @@ void JobExecutionCoordinator::Impl::ScheduleActor() {
         std::lock_guard lock(registry_mutex_);
         for (const auto& [_, dispatch] : dispatches_) {
             std::lock_guard record_lock(dispatch->mutex);
-            switch (dispatch->phase) {
-            case DispatchPhase::Claimed:
-            case DispatchPhase::Reconstructing:
-            case DispatchPhase::Prepared:
-            case DispatchPhase::Submitting:
-            case DispatchPhase::Activating:
+            switch (dispatch->ownership) {
+            case DispatchOwnership::Coordinator:
+            case DispatchOwnership::WorkerMayOwn:
                 ++unsubmitted;
                 break;
-            default:
+            case DispatchOwnership::Worker:
+            case DispatchOwnership::Closed:
                 break;
             }
         }
@@ -2520,11 +2816,18 @@ void JobExecutionCoordinator::Impl::ScheduleActor() {
     }
     if (!ready_signal && !reconciliation_due && !backoff_elapsed) return;
 
-    if (claim_in_flight_) return;
+    if (claim_effect_.has_value()) return;
     const auto requested = preparation_capacity - unsubmitted;
     ++claim_batches_;
-    claim_in_flight_ = true;
+    const auto effect_id = token_sequence_.fetch_add(1);
+    claim_effect_ = PendingOwnershipEffect{
+        .id = effect_id,
+        .kind = CoordinatorEffectKind::Claim,
+        .started_at = Clock::now(),
+        .required_evidence = "claimed workset batch",
+    };
     EnqueueCoordinationIo(ClaimIoCommand{
+        .effect_id = effect_id,
         .batch_nonce = NextToken("workset-batch"),
         .requested_workset_count = requested,
         .reconciliation_due = reconciliation_due,
@@ -2536,7 +2839,21 @@ void JobExecutionCoordinator::Impl::HandleClaimIoCompletion(
     ClaimIoCommand command,
     std::vector<savor::db::ClaimedPublishedWorkset> claimed,
     std::string error) {
-    claim_in_flight_ = false;
+    if (!claim_effect_.has_value()
+        || claim_effect_->id != command.effect_id
+        || claim_effect_->kind != CoordinatorEffectKind::Claim) {
+        RecordIncident({
+            .code = claim_effect_.has_value()
+                ? CoordinatorIncidentCode::EffectCompletionMismatch
+                : CoordinatorIncidentCode::EffectCompletionDuplicate,
+            .effect_id = command.effect_id,
+            .effect_kind = CoordinatorEffectKind::Claim,
+            .cleanup_action = "discard-claim-completion",
+            .message = "claim effect completion did not match",
+        });
+        return;
+    }
+    claim_effect_.reset();
     const auto now = Clock::now();
     if (!error.empty()) RecordError(std::move(error));
     const auto requested = command.requested_workset_count;
@@ -2544,7 +2861,8 @@ void JobExecutionCoordinator::Impl::HandleClaimIoCompletion(
         for (auto& row : claimed) {
             auto dispatch = std::make_shared<DispatchRecord>();
             dispatch->claimed = std::move(row);
-            dispatch->phase = DispatchPhase::Claimed;
+            dispatch->ownership = DispatchOwnership::Coordinator;
+            dispatch->lifecycle = DispatchLifecycle::Claimed;
             InsertDispatch(dispatch);
             (void)ReleaseDispatch(
                 dispatch,
@@ -2569,6 +2887,7 @@ void JobExecutionCoordinator::Impl::HandleClaimIoCompletion(
     } else {
         ++successful_claim_batches_;
         worksets_claimed_.fetch_add(claimed.size());
+        last_forward_progress_at_ = Clock::now();
         if (command.reconciliation_due && !command.ready_signal) {
             reconciliation_claims_.fetch_add(claimed.size());
         }
@@ -2582,7 +2901,8 @@ void JobExecutionCoordinator::Impl::HandleClaimIoCompletion(
         for (auto& row : claimed) {
             auto dispatch = std::make_shared<DispatchRecord>();
             dispatch->claimed = std::move(row);
-            dispatch->phase = DispatchPhase::Claimed;
+            dispatch->ownership = DispatchOwnership::Coordinator;
+            dispatch->lifecycle = DispatchLifecycle::Claimed;
             InsertDispatch(dispatch);
             (void)ReleaseDispatch(
                 dispatch,
@@ -2596,11 +2916,31 @@ void JobExecutionCoordinator::Impl::HandleClaimIoCompletion(
         auto dispatch = std::make_shared<DispatchRecord>();
         dispatch->claimed = std::move(row);
         dispatch->target = {};
-        dispatch->phase = DispatchPhase::Reconstructing;
+        dispatch->ownership = DispatchOwnership::Coordinator;
+        dispatch->lifecycle = DispatchLifecycle::Claimed;
         InsertDispatch(dispatch);
+        std::uint64_t effect_id = 0;
+        if (!BeginDispatchEffect(
+                dispatch,
+                CoordinatorEffectKind::Reconstruction,
+                {},
+                "reconstructed workset definition",
+                &effect_id)) {
+            FaultDispatch(
+                dispatch,
+                CoordinatorIncidentCode::CoordinatorInvariant,
+                "Could not admit reconstruction effect",
+                "dispatch_attempt_id="
+                    + std::to_string(dispatch->claimed.dispatch_attempt_id));
+            continue;
+        }
         {
             std::lock_guard lock(reconstruction_mutex_);
-            reconstruction_queue_.push_back({dispatch, Clock::now()});
+            reconstruction_queue_.push_back({
+                .effect_id = effect_id,
+                .dispatch = dispatch,
+                .enqueued_at = Clock::now(),
+            });
             reconstruction_high_water_ = std::max(
                 reconstruction_high_water_,
                 reconstruction_queue_.size());
@@ -2609,43 +2949,68 @@ void JobExecutionCoordinator::Impl::HandleClaimIoCompletion(
     }
     WakeScheduler("claim-complete", false);
 }
-void JobExecutionCoordinator::Impl::ReconstructionLoop() {
-    while (!stop_.load()) {
+void JobExecutionCoordinator::Impl::ReconstructionLoop(
+    std::size_t executor_index) {
+    (void)executor_index;
+    for (;;) {
         ReconstructionItem item;
         {
             std::unique_lock lock(reconstruction_mutex_);
             reconstruction_cv_.wait(lock, [this]() {
-                return stop_.load() || !reconstruction_queue_.empty();
+                return stop_.load()
+                    || (!reconstruction_queue_.empty()
+                        && reconstruction_active_count_
+                            < reconstruction_concurrency_limit_);
             });
-            if (stop_.load() && reconstruction_queue_.empty()) return;
+            if (stop_.load()) return;
             item = std::move(reconstruction_queue_.front());
             reconstruction_queue_.pop_front();
-            reconstruction_active_ = true;
+            ++reconstruction_active_count_;
+            ActiveReconstruction active{
+                .task_id = item.effect_id,
+                .dispatch_attempt_id =
+                    item.dispatch->claimed.dispatch_attempt_id,
+                .program_kind =
+                    item.dispatch->claimed.program_kind,
+                .started_at = Clock::now(),
+            };
+            if (!item.dispatch->claimed.items.empty()) {
+                active.job_id = item.dispatch->claimed.items.front().job_id;
+            }
+            active_reconstructions_.insert_or_assign(
+                item.effect_id, std::move(active));
         }
         const auto started = Clock::now();
-        (void)Reconstruct(item.dispatch);
+        (void)Reconstruct(std::move(item));
         const auto duration = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 Clock::now() - started)
                 .count());
         {
             std::lock_guard lock(reconstruction_mutex_);
-            reconstruction_active_ = false;
+            active_reconstructions_.erase(item.effect_id);
+            if (reconstruction_active_count_ != 0) {
+                --reconstruction_active_count_;
+            }
             reconstruction_total_duration_ms_ += duration;
             reconstruction_max_duration_ms_ =
                 std::max(reconstruction_max_duration_ms_, duration);
         }
+        reconstruction_cv_.notify_all();
     }
 }
 
-bool JobExecutionCoordinator::Impl::Reconstruct(
-    const DispatchPtr& dispatch) {
+bool JobExecutionCoordinator::Impl::Reconstruct(ReconstructionItem item) {
+    const auto& dispatch = item.dispatch;
     if (!dispatch) return false;
     savor::db::ClaimedPublishedWorkset claimed;
     WorkerExecutionTarget target;
     {
         std::lock_guard lock(dispatch->mutex);
-        if (dispatch->phase != DispatchPhase::Reconstructing) {
+        if (!dispatch->pending_effect.has_value()
+            || dispatch->pending_effect->id != item.effect_id
+            || dispatch->pending_effect->kind
+                != CoordinatorEffectKind::Reconstruction) {
             return false;
         }
         claimed = dispatch->claimed;
@@ -2751,9 +3116,16 @@ bool JobExecutionCoordinator::Impl::Reconstruct(
             &error)) {
         EnqueueActor(
             CoordinatorEventKind::ReconstructionCompleted,
-            [this, dispatch, error = std::move(error)]() mutable {
-                PauseForInvariant(
+            [this, dispatch, effect_id = item.effect_id,
+             error = std::move(error)]() mutable {
+                if (!ConsumeDispatchEffect(
+                        dispatch,
+                        effect_id,
+                        CoordinatorEffectKind::Reconstruction,
+                        "reconstruction failed")) return;
+                FaultDispatch(
                     dispatch,
+                    CoordinatorIncidentCode::CoordinatorInvariant,
                     "Workset reconstruction invariant failed",
                     error.empty() ? "descriptor returned no valid workset"
                                   : std::move(error));
@@ -2764,12 +3136,15 @@ bool JobExecutionCoordinator::Impl::Reconstruct(
     auto definition = std::move(reconstruction->workset);
     EnqueueActor(
         CoordinatorEventKind::ReconstructionCompleted,
-        [this, dispatch, definition = std::move(definition)]() mutable {
+        [this, dispatch, effect_id = item.effect_id,
+         definition = std::move(definition)]() mutable {
+            if (!ConsumeDispatchEffect(
+                    dispatch,
+                    effect_id,
+                    CoordinatorEffectKind::Reconstruction,
+                    "reconstruction completed")) return;
             {
                 std::lock_guard record_lock(dispatch->mutex);
-                if (dispatch->phase != DispatchPhase::Reconstructing) {
-                    return;
-                }
                 dispatch->definition = std::move(definition);
                 dispatch->item_index_by_id.clear();
                 for (std::size_t index = 0;
@@ -2779,10 +3154,11 @@ bool JobExecutionCoordinator::Impl::Reconstruct(
                         dispatch->definition.items[index].item_id.value(),
                         index);
                 }
-                dispatch->phase = DispatchPhase::Prepared;
+                dispatch->lifecycle = DispatchLifecycle::Prepared;
             }
             prepared_dispatches_.push_back(dispatch);
             ++worksets_reconstructed_;
+            last_forward_progress_at_ = Clock::now();
             WakeScheduler("reconstruction-complete", false);
         });
     return true;
@@ -2933,7 +3309,7 @@ bool JobExecutionCoordinator::Impl::IsInvariantSubmissionRejection(
 bool JobExecutionCoordinator::Impl::AdmitPreparedDispatch(
     const DispatchPtr& dispatch,
     const WorkerMailboxPtr& mailbox,
-    const ReadyWorkerDispatchSnapshot& worker) {
+    const WorkerReadyEvent& worker) {
     if (!dispatch || !mailbox) return false;
 
     savor::runtime::WorkerWorksetDefinition definition;
@@ -2943,7 +3319,9 @@ bool JobExecutionCoordinator::Impl::AdmitPreparedDispatch(
         std::lock_guard cancellation_lock(cancellation_index_mutex_);
         std::lock_guard record_lock(dispatch->mutex);
         std::lock_guard mailbox_lock(mailbox->mutex);
-        if (dispatch->phase != DispatchPhase::Prepared
+        if (dispatch->ownership != DispatchOwnership::Coordinator
+            || dispatch->lifecycle != DispatchLifecycle::Prepared
+            || dispatch->pending_effect.has_value()
             || mailbox->stop
             || mailbox->generation != worker.process_generation
             || mailbox->submitting.has_value()
@@ -2973,7 +3351,6 @@ bool JobExecutionCoordinator::Impl::AdmitPreparedDispatch(
             .worker_id = worker.worker_id,
             .process_generation = worker.process_generation,
         };
-        dispatch->phase = DispatchPhase::Submitting;
         dispatch->cancellation_sidecar_sha256 =
             savor::runtime::ComputeInitialWorksetCancellationSidecarSha256(
                 sidecar);
@@ -2986,12 +3363,24 @@ bool JobExecutionCoordinator::Impl::AdmitPreparedDispatch(
         mailbox->submitting = dispatch->claimed.dispatch_attempt_id;
         mailbox->has_submitted_workset = true;
     }
+    if (auto* actor_worker = FindActorWorker({
+            .worker_id = worker.worker_id,
+            .process_generation = worker.process_generation})) {
+        actor_worker->state = JobExecutionWorkerDispatchState::Submitting;
+        actor_worker->submitting_dispatch_attempt_id =
+            dispatch->claimed.dispatch_attempt_id;
+    }
+    last_forward_progress_at_ = Clock::now();
 
     if (sidecar.item_ids.size() == definition.items.size()) {
         ++fully_suppressed_worksets_avoided_;
         {
             std::lock_guard mailbox_lock(mailbox->mutex);
             mailbox->submitting.reset();
+        }
+        if (auto* actor_worker = FindActorWorker(dispatch->target)) {
+            actor_worker->submitting_dispatch_attempt_id.reset();
+            actor_worker->state = JobExecutionWorkerDispatchState::Ready;
         }
         for (const auto& cancellation : cancellations) {
             const std::string resolution_code =
@@ -3022,8 +3411,19 @@ bool JobExecutionCoordinator::Impl::AdmitPreparedDispatch(
         return true;
     }
 
+    std::uint64_t effect_id = 0;
+    if (!BeginDispatchEffect(
+            dispatch,
+            CoordinatorEffectKind::Submission,
+            dispatch->target,
+            "submission write disposition and typed receipt",
+            &effect_id)) {
+        std::lock_guard mailbox_lock(mailbox->mutex);
+        mailbox->submitting.reset();
+        return false;
+    }
     MailboxSubmissionCommand command{
-        .command_id = token_sequence_.fetch_add(1),
+        .effect_id = effect_id,
         .target = dispatch->target,
         .dispatch = dispatch,
         .definition = std::move(definition),
@@ -3077,46 +3477,90 @@ void JobExecutionCoordinator::Impl::HandleSubmissionCompletion(
         break;
     }
 
-    if (submitted.disposition
-        == WorkerSubmitDisposition::AmbiguousAfterWrite) {
-        // An exact replay is the residence confirmation protocol: the worker
-        // must return AlreadyAdmitted with the original sidecar receipt.
-        {
-            std::lock_guard mailbox_lock(mailbox->mutex);
-            if (!mailbox->stop
-                && mailbox->generation
-                    == command.target.process_generation) {
-                command.enqueued_at = Clock::now();
-                mailbox->submissions.push_front(std::move(command));
-                mailbox->cv.notify_all();
-                return;
-            }
+    if (!ConsumeDispatchEffect(
+            dispatch,
+            command.effect_id,
+            CoordinatorEffectKind::Submission,
+            "worker submission completion")) {
+        return;
+    }
+    {
+        std::lock_guard mailbox_lock(mailbox->mutex);
+        if (mailbox->submitting
+            == std::optional<std::int64_t>(
+                dispatch->claimed.dispatch_attempt_id)) {
+            mailbox->submitting.reset();
         }
     }
+    if (auto* actor_worker = FindActorWorker(command.target)) {
+        actor_worker->submitting_dispatch_attempt_id.reset();
+    }
 
-    if (!submitted.submitted()) {
+    const auto ownership_directive =
+        detail::ClassifySubmissionOwnership(submitted.write_disposition);
+    if (ownership_directive
+        == detail::SubmissionOwnershipDirective::ConfirmResidence) {
+        {
+            std::lock_guard record_lock(dispatch->mutex);
+            dispatch->ownership = DispatchOwnership::WorkerMayOwn;
+            dispatch->lifecycle = DispatchLifecycle::Prepared;
+        }
+        std::uint64_t residence_effect = 0;
+        if (BeginDispatchEffect(
+                dispatch,
+                CoordinatorEffectKind::ResidenceConfirmation,
+                command.target,
+                "exact workset residence and cancellation sidecar",
+                &residence_effect)) {
+            EnqueueWorkerControl(
+                command.target,
+                {
+                    .effect_id = residence_effect,
+                    .kind = WorkerControlKind::ConfirmResidence,
+                    .dispatch_attempt_id =
+                        dispatch->claimed.dispatch_attempt_id,
+                    .lease_claim_token = dispatch->claimed.claim_token,
+                    .expected_sidecar_sha256 =
+                        dispatch->cancellation_sidecar_sha256,
+                    .enqueued_at = Clock::now(),
+                });
+        }
+        if (auto* actor_worker = FindActorWorker(command.target)) {
+            actor_worker->state = JobExecutionWorkerDispatchState::Submitting;
+        }
+        WakeScheduler("submission-outcome-unknown", false);
+        return;
+    }
+
+    if (ownership_directive
+        == detail::SubmissionOwnershipDirective::CoordinatorRetains) {
         const bool invariant_rejection =
             IsInvariantSubmissionRejection(submitted);
+        const bool worker_state_drift =
+            submitted.disposition
+                == WorkerSubmitDisposition::TargetTemporarilyUnavailable
+            || submitted.disposition
+                == WorkerSubmitDisposition::StaleGeneration;
         const bool authoritative_evidence_arrived =
             buffered_worker_evidence_.contains(
                 dispatch->claimed.dispatch_attempt_id);
-        std::optional<DeferredDispatchRelease> deferred_release;
         {
             std::lock_guard record_lock(dispatch->mutex);
-            deferred_release = std::move(dispatch->deferred_release);
-            dispatch->deferred_release.reset();
-            if (!invariant_rejection) {
-                dispatch->phase = DispatchPhase::Prepared;
-                dispatch->target = {};
-                dispatch->frozen_submission_sidecar.reset();
-                dispatch->frozen_submission_cancellations.clear();
-                dispatch->cancellation_sidecar_sha256.clear();
-                dispatch->initially_suppressed_jobs.clear();
-            }
+            dispatch->ownership = DispatchOwnership::Coordinator;
+            dispatch->lifecycle = invariant_rejection
+                ? DispatchLifecycle::Faulted
+                : DispatchLifecycle::Prepared;
+            dispatch->target = {};
+            dispatch->frozen_submission_sidecar.reset();
+            dispatch->frozen_submission_cancellations.clear();
+            dispatch->cancellation_sidecar_sha256.clear();
+            dispatch->initially_suppressed_jobs.clear();
         }
-        {
-            std::lock_guard mailbox_lock(mailbox->mutex);
-            mailbox->submitting.reset();
+        if (auto* actor_worker = FindActorWorker(command.target)) {
+            actor_worker->state =
+                actor_worker->physical.available_item_credits == 0
+                ? JobExecutionWorkerDispatchState::Unavailable
+                : JobExecutionWorkerDispatchState::Ready;
         }
         std::string diagnostic = submitted.diagnostic.empty()
             ? "worker rejected reconstructed workset"
@@ -3124,24 +3568,47 @@ void JobExecutionCoordinator::Impl::HandleSubmissionCompletion(
         if (!submitted.error_code.empty()) {
             diagnostic += " [error_code=" + submitted.error_code + "]";
         }
-        if (authoritative_evidence_arrived) {
-            PauseForInvariant(
+        if (worker_state_drift) {
+            RecordTypedWarning(
+                JobExecutionCoordinatorWarning::Code::WorkerStateDrift,
+                "COORDINATOR_WORKER_STATE_DRIFT",
+                diagnostic,
+                static_cast<std::int64_t>(command.target.worker_id));
+            {
+                std::lock_guard record_lock(dispatch->mutex);
+                dispatch->ownership = DispatchOwnership::WorkerMayOwn;
+                dispatch->target = command.target;
+            }
+            FaultDispatch(
                 dispatch,
+                CoordinatorIncidentCode::WorkerOwnershipAmbiguous,
+                "Actor worker state contradicted physical transport state",
+                diagnostic,
+                0,
+                submitted.write_disposition);
+        } else if (authoritative_evidence_arrived) {
+            {
+                std::lock_guard record_lock(dispatch->mutex);
+                dispatch->ownership = DispatchOwnership::WorkerMayOwn;
+                dispatch->target = command.target;
+            }
+            FaultDispatch(
+                dispatch,
+                CoordinatorIncidentCode::WorkerOwnershipAmbiguous,
                 "Worker evidence preceded a no-write submission completion",
-                diagnostic);
+                diagnostic,
+                0,
+                submitted.write_disposition);
             FlushBufferedEvidence(
                 dispatch->claimed.dispatch_attempt_id);
         } else if (invariant_rejection) {
-            PauseForInvariant(
+            FaultDispatch(
                 dispatch,
+                CoordinatorIncidentCode::SubmissionContractRejected,
                 "Worker rejected a locally validated workset contract",
-                diagnostic);
-        } else if (deferred_release.has_value()) {
-            (void)ReleaseDispatch(
-                dispatch,
-                std::move(deferred_release->reason_code),
-                std::move(deferred_release->reason_text),
-                deferred_release->keep_draining);
+                diagnostic,
+                0,
+                submitted.write_disposition);
         } else {
             prepared_dispatches_.push_front(dispatch);
         }
@@ -3149,6 +3616,11 @@ void JobExecutionCoordinator::Impl::HandleSubmissionCompletion(
         return;
     }
 
+    {
+        std::lock_guard record_lock(dispatch->mutex);
+        dispatch->ownership = DispatchOwnership::WorkerMayOwn;
+        dispatch->lifecycle = DispatchLifecycle::Prepared;
+    }
     const bool sidecar_receipt_valid =
         submitted.submission_receipt.has_value()
         && submitted.submission_receipt->workset_id
@@ -3161,11 +3633,14 @@ void JobExecutionCoordinator::Impl::HandleSubmissionCompletion(
             == dispatch->cancellation_sidecar_sha256;
     if (!sidecar_receipt_valid) {
         ++sidecar_submit_receipts_mismatched_;
-        PauseForInvariant(
+        FaultDispatch(
             dispatch,
+            CoordinatorIncidentCode::SubmissionEvidenceInvalid,
             "Worker accepted a workset without the frozen cancellation sidecar receipt",
             "dispatch_attempt_id="
-                + std::to_string(dispatch->claimed.dispatch_attempt_id));
+                + std::to_string(dispatch->claimed.dispatch_attempt_id),
+            0,
+            submitted.write_disposition);
         return;
     }
     if (submitted.submission_receipt->disposition
@@ -3180,12 +3655,6 @@ void JobExecutionCoordinator::Impl::HandleSubmissionCompletion(
             command.sidecar.item_ids.size());
     }
 
-    {
-        std::lock_guard record_lock(dispatch->mutex);
-        dispatch->submitted = true;
-        dispatch->phase = DispatchPhase::Activating;
-        dispatch->activation_retry_at = {};
-    }
     ActivateSubmittedDispatch(dispatch, mailbox);
 }
 
@@ -3193,15 +3662,35 @@ void JobExecutionCoordinator::Impl::ActivateSubmittedDispatch(
     const DispatchPtr& dispatch,
     const WorkerMailboxPtr& mailbox) {
     if (!dispatch || !mailbox) return;
+    std::uint64_t effect_id = 0;
     {
         std::lock_guard record_lock(dispatch->mutex);
-        if (dispatch->phase != DispatchPhase::Activating
-            || dispatch->activation_io_pending) {
-            return;
+        if (dispatch->ownership != DispatchOwnership::WorkerMayOwn
+            || dispatch->lifecycle == DispatchLifecycle::Faulted) return;
+        if (dispatch->pending_effect.has_value()) {
+            if (dispatch->pending_effect->kind
+                    != CoordinatorEffectKind::DurableActivation
+                || dispatch->pending_effect->started_at
+                    != Clock::time_point{}
+                || dispatch->pending_effect->retry_at > Clock::now()) {
+                return;
+            }
+            dispatch->pending_effect->started_at = Clock::now();
+            effect_id = dispatch->pending_effect->id;
         }
-        dispatch->activation_io_pending = true;
     }
-    EnqueueCoordinationIo(ActivateIoCommand{dispatch, mailbox});
+    if (effect_id == 0
+        && !BeginDispatchEffect(
+            dispatch,
+            CoordinatorEffectKind::DurableActivation,
+            dispatch->target,
+            "durable active dispatch receipt",
+            &effect_id)) return;
+    EnqueueCoordinationIo(ActivateIoCommand{
+        .effect_id = effect_id,
+        .dispatch = dispatch,
+        .mailbox = mailbox,
+    });
 }
 
 void JobExecutionCoordinator::Impl::HandleActivationIoCompletion(
@@ -3212,10 +3701,21 @@ void JobExecutionCoordinator::Impl::HandleActivationIoCompletion(
     const auto& dispatch = command.dispatch;
     const auto& mailbox = command.mailbox;
     if (!dispatch || !mailbox) return;
+    if (!ConsumeDispatchEffect(
+            dispatch,
+            command.effect_id,
+            CoordinatorEffectKind::DurableActivation,
+            "durable activation completion")) return;
+    bool faulted = false;
     {
         std::lock_guard record_lock(dispatch->mutex);
-        dispatch->activation_io_pending = false;
-        if (dispatch->phase != DispatchPhase::Activating) return;
+        faulted = dispatch->lifecycle == DispatchLifecycle::Faulted;
+    }
+    if (faulted) {
+        // The completion is still consumed, but fault containment owns the
+        // next transition and may require worker retirement.
+        ContinueContainment(dispatch);
+        return;
     }
     if (!called || !Applied(receipt.disposition)) {
         if (receipt.disposition
@@ -3223,16 +3723,20 @@ void JobExecutionCoordinator::Impl::HandleActivationIoCompletion(
             RecordError(error.empty()
                 ? "failed marking submitted workset active"
                 : std::move(error));
-            {
-                std::lock_guard record_lock(dispatch->mutex);
-                dispatch->activation_retry_at =
-                    Clock::now() + std::chrono::milliseconds(100);
-            }
+            std::uint64_t retry_effect = 0;
+            (void)BeginDispatchEffect(
+                dispatch,
+                CoordinatorEffectKind::DurableActivation,
+                dispatch->target,
+                "durable active dispatch receipt",
+                &retry_effect,
+                Clock::now() + std::chrono::milliseconds(100));
             WakeScheduler("activation-retry", false);
             return;
         }
-        PauseForInvariant(
+        FaultDispatch(
             dispatch,
+            CoordinatorIncidentCode::DurableAuthorityLost,
             "Submitted workset lost durable authority",
             error.empty()
                 ? "dispatch_attempt_id="
@@ -3241,19 +3745,15 @@ void JobExecutionCoordinator::Impl::HandleActivationIoCompletion(
         return;
     }
 
-    std::optional<DeferredDispatchRelease> deferred_release;
     std::deque<PendingSubmissionCancellation> pending_cancellations;
     bool draining = false;
     {
         std::lock_guard record_lock(dispatch->mutex);
-        dispatch->dispatch_marked = true;
+        dispatch->ownership = DispatchOwnership::Worker;
         draining = dispatch->terminal_workset_state_observed;
-        dispatch->phase = draining
-            ? DispatchPhase::Draining
-            : DispatchPhase::Active;
-        if (draining) dispatch->draining_retry_at = Clock::now();
-        deferred_release = std::move(dispatch->deferred_release);
-        dispatch->deferred_release.reset();
+        dispatch->lifecycle = draining
+            ? DispatchLifecycle::Draining
+            : DispatchLifecycle::Active;
         pending_cancellations.swap(
             dispatch->pending_submission_cancellations);
     }
@@ -3264,6 +3764,21 @@ void JobExecutionCoordinator::Impl::HandleActivationIoCompletion(
             mailbox->active = dispatch->claimed.dispatch_attempt_id;
         }
     }
+    if (auto* actor_worker = FindActorWorker(dispatch->target)) {
+        actor_worker->submitting_dispatch_attempt_id.reset();
+        actor_worker->active_dispatch_attempt_id = draining
+            ? std::nullopt
+            : std::optional<std::int64_t>(
+                dispatch->claimed.dispatch_attempt_id);
+        actor_worker->state = draining
+            ? JobExecutionWorkerDispatchState::Draining
+            : JobExecutionWorkerDispatchState::Active;
+        actor_worker->physical.warm_program_package_sha256 =
+            dispatch->claimed.contract.program_package_sha256;
+        actor_worker->physical.warm_execution_key_sha256 =
+            dispatch->claimed.contract.execution_affinity_key;
+    }
+    last_forward_progress_at_ = Clock::now();
     FlushBufferedEvidence(dispatch->claimed.dispatch_attempt_id);
     if (draining) {
         (void)MarkDispatchDraining(dispatch);
@@ -3313,8 +3828,9 @@ void JobExecutionCoordinator::Impl::HandleActivationIoCompletion(
             }
         }
         if (!pending.item_id.has_value()) {
-            PauseForInvariant(
+            FaultDispatch(
                 dispatch,
+                CoordinatorIncidentCode::CoordinatorInvariant,
                 "Cancellation route invariant failed after dispatch",
                 "missing reconstructed workset item",
                 pending.cancellation.job_id);
@@ -3334,13 +3850,7 @@ void JobExecutionCoordinator::Impl::HandleActivationIoCompletion(
                 .enqueued_at = pending.enqueued_at,
             });
     }
-    if (deferred_release.has_value()) {
-        (void)ReleaseDispatch(
-            dispatch,
-            std::move(deferred_release->reason_code),
-            std::move(deferred_release->reason_text),
-            deferred_release->keep_draining);
-    }
+    ContinueContainment(dispatch);
     persistence_cv_.notify_all();
     WakeScheduler("dispatch-active", false);
 }
@@ -3435,12 +3945,13 @@ void JobExecutionCoordinator::Impl::EnqueueWorkerControl(
         } else if (command.kind == WorkerControlKind::ConfirmResidence) {
             EnqueueActor(
                 CoordinatorEventKind::LeaseCompleted,
-                [this,
-                 dispatch_attempt_id = command.dispatch_attempt_id,
-                 claim_token = command.lease_claim_token]() mutable {
-                    UnregisterLeaseHeartbeat(
-                        dispatch_attempt_id,
-                        claim_token);
+                [this, command = std::move(command)]() mutable {
+                    HandleResidenceCompletion(
+                        {},
+                        std::move(command),
+                        false,
+                        {},
+                        "worker mailbox no longer exists");
                 });
         }
         return;
@@ -3518,6 +4029,43 @@ void JobExecutionCoordinator::Impl::HandleResidenceCompletion(
     bool called,
     savor::wrms::WorksetResidenceSnapshotV1 evidence,
     std::string error) {
+    const auto dispatch = FindDispatch(command.dispatch_attempt_id);
+    if (command.effect_id != 0) {
+        if (!dispatch
+            || !ConsumeDispatchEffect(
+                dispatch,
+                command.effect_id,
+                CoordinatorEffectKind::ResidenceConfirmation,
+                "residence confirmation completion")) return;
+        if (!called
+            || !evidence.has_resident_workset
+            || evidence.workset_id
+                != static_cast<std::uint64_t>(command.dispatch_attempt_id)
+            || evidence.cancellation_sidecar_sha256
+                != command.expected_sidecar_sha256) {
+            ++active_residence_failures_;
+            FaultDispatch(
+                dispatch,
+                CoordinatorIncidentCode::WorkerOwnershipAmbiguous,
+                "Potentially written workset could not be confirmed",
+                error.empty()
+                    ? "residence or cancellation sidecar evidence mismatched"
+                    : std::move(error),
+                0,
+                SubmissionWriteDisposition::OutcomeUnknown);
+            return;
+        }
+        ++active_residence_matches_;
+        if (!dispatch->sidecar_receipt_accounted) {
+            dispatch->sidecar_receipt_accounted = true;
+            waiting_jobs_suppressed_by_sidecar_.fetch_add(
+                dispatch->frozen_submission_sidecar
+                    ? dispatch->frozen_submission_sidecar->item_ids.size()
+                    : 0);
+        }
+        ActivateSubmittedDispatch(dispatch, mailbox);
+        return;
+    }
     if (!called) {
         ++active_residence_failures_;
         UnregisterLeaseHeartbeat(
@@ -3539,7 +4087,7 @@ void JobExecutionCoordinator::Impl::HandleResidenceCompletion(
             "dispatch_attempt_id="
                 + std::to_string(command.dispatch_attempt_id));
         if (mailbox) {
-            worker_coordinator_->QuarantineWorkerGeneration(
+            (void)worker_coordinator_->RequestWorkerRetirement(
                 {
                     .worker_id = mailbox->worker_id,
                     .process_generation = mailbox->generation,
@@ -3619,8 +4167,11 @@ void JobExecutionCoordinator::Impl::RoutePersistenceEvent(
         const auto dispatch = FindDispatch(*submitting);
         if (dispatch) {
             std::lock_guard lock(dispatch->mutex);
-            if (dispatch->phase == DispatchPhase::Submitting
-                || dispatch->phase == DispatchPhase::Activating) {
+            if ((dispatch->ownership == DispatchOwnership::Coordinator
+                    && dispatch->pending_effect
+                    && dispatch->pending_effect->kind
+                        == CoordinatorEffectKind::Submission)
+                || dispatch->ownership == DispatchOwnership::WorkerMayOwn) {
                 buffered_worker_evidence_[*submitting].push_back(
                     std::move(event));
                 return;
@@ -3960,20 +4511,20 @@ bool JobExecutionCoordinator::Impl::HandleItemStarted(
     savor::runtime::WorksetItemTemplate runtime_item;
     {
         std::lock_guard lock(dispatch->mutex);
-        if (dispatch->submitted && !dispatch->dispatch_marked) {
+        if (dispatch->ownership == DispatchOwnership::WorkerMayOwn) {
             return false;
         }
         const auto item_found =
             dispatch->item_index_by_id.find(event.payload.item_id);
-        if (!dispatch->submitted
+        if (dispatch->ownership != DispatchOwnership::Worker
             || item_found == dispatch->item_index_by_id.end()
             || dispatch->target.worker_id != event.source.worker_id
             || dispatch->target.process_generation
                 != event.source.process_generation) {
-            if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+            if ((dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining)) {
                 return true;
             }
-            PauseForInvariant(
+            FaultDispatch(
                 dispatch,
                 "Worker ItemStarted correlation mismatch",
                 "dispatch_attempt_id=" + std::to_string(dispatch_id));
@@ -3988,16 +4539,16 @@ bool JobExecutionCoordinator::Impl::HandleItemStarted(
                 != runtime_item.execution.execution_id.value()
             || event.payload.attempt_id
                 != runtime_item.execution.attempt_id.value()) {
-            if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+            if ((dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining)) {
                 return true;
             }
-            PauseForInvariant(
+            FaultDispatch(
                 dispatch,
                 "Worker ItemStarted identity mismatch",
                 "job_id=" + std::to_string(durable_item.job_id));
             return true;
         }
-        if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+        if ((dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining)) {
             return true;
         }
     }
@@ -4035,9 +4586,9 @@ bool JobExecutionCoordinator::Impl::HandleItemStarted(
         {
             std::lock_guard lock(dispatch->mutex);
             authority_released =
-                dispatch->phase == DispatchPhase::Released
-                || dispatch->phase == DispatchPhase::ReleasedDraining
-                || dispatch->phase == DispatchPhase::Retired;
+                (dispatch->ownership == DispatchOwnership::Closed && !dispatch->released_draining)
+                || (dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining)
+                || dispatch->retired;
         }
         if (authority_released) return true;
         if (receipt.disposition
@@ -4049,7 +4600,7 @@ bool JobExecutionCoordinator::Impl::HandleItemStarted(
                     : std::move(error));
             return false;
         } else {
-            PauseForInvariant(
+            FaultDispatch(
                 dispatch,
                 "Failed accepting worker ItemStarted",
                 error.empty()
@@ -4084,22 +4635,22 @@ bool JobExecutionCoordinator::Impl::HandleProgress(
     bool authority_released = false;
     {
         std::lock_guard lock(dispatch->mutex);
-        if (dispatch->submitted && !dispatch->dispatch_marked) {
+        if (dispatch->ownership == DispatchOwnership::WorkerMayOwn) {
             return false;
         }
         const auto item_found =
             dispatch->item_index_by_id.find(event.payload.item_id);
-        if (!dispatch->submitted
+        if (dispatch->ownership != DispatchOwnership::Worker
             || item_found == dispatch->item_index_by_id.end()
             || dispatch->target.worker_id != event.source.worker_id
             || dispatch->target.process_generation
                 != event.source.process_generation) {
-            if (dispatch->phase == DispatchPhase::ReleasedDraining
-                || dispatch->phase == DispatchPhase::Released
-                || dispatch->phase == DispatchPhase::Retired) {
+            if ((dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining)
+                || (dispatch->ownership == DispatchOwnership::Closed && !dispatch->released_draining)
+                || dispatch->retired) {
                 return true;
             }
-            PauseForInvariant(
+            FaultDispatch(
                 dispatch,
                 "Worker progress correlation mismatch",
                 "dispatch_attempt_id=" + std::to_string(dispatch_id));
@@ -4110,9 +4661,9 @@ bool JobExecutionCoordinator::Impl::HandleProgress(
         durable_item = dispatch->claimed.items[index];
         claimed = dispatch->claimed;
         authority_released =
-            dispatch->phase == DispatchPhase::ReleasedDraining
-            || dispatch->phase == DispatchPhase::Released
-            || dispatch->phase == DispatchPhase::Retired;
+            (dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining)
+            || (dispatch->ownership == DispatchOwnership::Closed && !dispatch->released_draining)
+            || dispatch->retired;
         if (authority_released) return true;
         if (event.payload.item_ordinal != runtime_item.ordinal
             || event.payload.invocation_id
@@ -4122,7 +4673,7 @@ bool JobExecutionCoordinator::Impl::HandleProgress(
             || event.payload.durable_job_id
                 != std::to_string(durable_item.job_id)
             || event.payload.ordinal == 0) {
-            PauseForInvariant(
+            FaultDispatch(
                 dispatch,
                 "Worker progress identity mismatch",
                 "job_id=" + std::to_string(durable_item.job_id));
@@ -4186,12 +4737,12 @@ bool JobExecutionCoordinator::Impl::HandleProgress(
         {
             std::lock_guard lock(dispatch->mutex);
             authority_released =
-                dispatch->phase == DispatchPhase::ReleasedDraining
-                || dispatch->phase == DispatchPhase::Released
-                || dispatch->phase == DispatchPhase::Retired;
+                (dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining)
+                || (dispatch->ownership == DispatchOwnership::Closed && !dispatch->released_draining)
+                || dispatch->retired;
         }
         if (!authority_released) {
-            PauseForInvariant(
+            FaultDispatch(
                 dispatch,
                 "Canonical job progress durable authority rejected",
                 error.empty()
@@ -4227,21 +4778,21 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
     bool already_staged = false;
     {
         std::lock_guard lock(dispatch->mutex);
-        if (dispatch->submitted && !dispatch->dispatch_marked) {
+        if (dispatch->ownership == DispatchOwnership::WorkerMayOwn) {
             return false;
         }
         const auto item_found =
             dispatch->item_index_by_id.find(payload.item_id);
-        if (!dispatch->submitted
+        if (dispatch->ownership != DispatchOwnership::Worker
             || item_found == dispatch->item_index_by_id.end()
             || dispatch->target.worker_id != envelope.worker_id
             || dispatch->target.process_generation
                 != envelope.process_generation) {
-            if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+            if ((dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining)) {
                 ++worker_terminals_discarded_after_authority_release_;
                 return true;
             }
-            PauseForInvariant(
+            FaultDispatch(
                 dispatch,
                 "Worker terminal route mismatch",
                 "dispatch_attempt_id=" + std::to_string(dispatch_id));
@@ -4258,11 +4809,11 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
                 != runtime_item.execution.attempt_id.value()
             || payload.terminal_id == 0
             || payload.terminal_order == 0) {
-            if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+            if ((dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining)) {
                 ++worker_terminals_discarded_after_authority_release_;
                 return true;
             }
-            PauseForInvariant(
+            FaultDispatch(
                 dispatch,
                 "Worker terminal identity mismatch",
                 "job_id=" + std::to_string(durable_item.job_id));
@@ -4294,11 +4845,11 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
             dispatch->terminal_by_job.find(durable_item.job_id);
         if (known != dispatch->terminal_by_job.end()
             && known->second != terminal) {
-            if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+            if ((dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining)) {
                 ++worker_terminals_discarded_after_authority_release_;
                 return true;
             }
-            PauseForInvariant(
+            FaultDispatch(
                 dispatch,
                 "Worker terminal changed identity",
                 "job_id=" + std::to_string(durable_item.job_id));
@@ -4308,7 +4859,7 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
             durable_item.job_id,
             terminal);
         authority_released =
-            dispatch->phase == DispatchPhase::ReleasedDraining;
+            (dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining);
         already_staged =
             dispatch->staged_jobs.contains(durable_item.job_id);
     }
@@ -4344,7 +4895,7 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
             envelope,
             &envelope_bytes,
             &error)) {
-        PauseForInvariant(
+        FaultDispatch(
             dispatch,
             "Worker terminal envelope encoding failed",
             std::move(error));
@@ -4461,10 +5012,7 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
             {
                 std::lock_guard lock(dispatch->mutex);
                 authority_released =
-                    dispatch->phase == DispatchPhase::Released
-                    || dispatch->phase
-                        == DispatchPhase::ReleasedDraining
-                    || dispatch->phase == DispatchPhase::Retired;
+                    dispatch->ownership == DispatchOwnership::Closed;
             }
             if (authority_released) {
                 ++worker_terminals_discarded_after_authority_release_;
@@ -4497,7 +5045,7 @@ bool JobExecutionCoordinator::Impl::HandleTerminal(
                 if (!error.empty()) {
                     detail << " db_error=" << error;
                 }
-                PauseForInvariant(
+                FaultDispatch(
                     dispatch,
                     "Worker terminal durable authority rejected",
                     detail.str(),
@@ -4571,7 +5119,7 @@ bool JobExecutionCoordinator::Impl::HandleWorksetSummary(
     if (!dispatch) return true;
     {
         std::lock_guard lock(dispatch->mutex);
-        if (dispatch->submitted && !dispatch->dispatch_marked) {
+        if (dispatch->ownership == DispatchOwnership::WorkerMayOwn) {
             return false;
         }
         if (dispatch->target.worker_id != event.source.worker_id
@@ -4586,10 +5134,10 @@ bool JobExecutionCoordinator::Impl::HandleWorksetSummary(
                     + event.payload.unstarted_count
                     + event.payload.initially_suppressed_count
                 != event.payload.item_count) {
-            if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+            if ((dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining)) {
                 return true;
             }
-            PauseForInvariant(
+            FaultDispatch(
                 dispatch,
                 "Worker workset summary mismatch",
                 "dispatch_attempt_id=" + std::to_string(dispatch_id));
@@ -4608,6 +5156,9 @@ void JobExecutionCoordinator::Impl::EnqueueCoordinationIo(
         std::lock_guard lock(coordination_io_mutex_);
         if (coordination_io_stop_) return;
         coordination_io_commands_.push_back(std::move(command));
+        coordination_io_high_water_ = std::max(
+            coordination_io_high_water_,
+            coordination_io_commands_.size());
     }
     coordination_io_cv_.notify_one();
 }
@@ -4627,6 +5178,28 @@ void JobExecutionCoordinator::Impl::CoordinationIoLoop() {
             }
             command = std::move(coordination_io_commands_.front());
             coordination_io_commands_.pop_front();
+            coordination_io_started_at_ = Clock::now();
+            coordination_io_operation_ = std::visit(
+                [](const auto& value) -> std::string {
+                    using T = std::decay_t<decltype(value)>;
+                    if constexpr (std::is_same_v<T, ClaimIoCommand>) {
+                        return "claim";
+                    } else if constexpr (
+                        std::is_same_v<T, ActivateIoCommand>) {
+                        return "activate";
+                    } else if constexpr (
+                        std::is_same_v<T, DrainingIoCommand>) {
+                        return "drain";
+                    } else if constexpr (
+                        std::is_same_v<T, ReleaseIoCommand>) {
+                        return "release";
+                    } else if constexpr (
+                        std::is_same_v<T, RenewLeaseIoCommand>) {
+                        return "renew-lease";
+                    } else {
+                        return "shutdown-recovery";
+                    }
+                }, command);
         }
 
         std::visit(
@@ -4731,7 +5304,8 @@ void JobExecutionCoordinator::Impl::CoordinationIoLoop() {
                                 receipt,
                                 std::move(error));
                         });
-                } else {
+                } else if constexpr (
+                    std::is_same_v<T, RenewLeaseIoCommand>) {
                     std::string error;
                     ++active_lease_renewal_batches_;
                     auto receipts = execution_db_->RenewActiveWorksetLeases(
@@ -4763,9 +5337,75 @@ void JobExecutionCoordinator::Impl::CoordinationIoLoop() {
                                 receipt,
                                 std::move(error));
                         });
+                } else {
+                    savor::db::RecoverInterruptedWorksetDispatchesReceipt
+                        receipt{};
+                    std::string error;
+                    const bool called =
+                        execution_db_->RecoverInterruptedWorksetDispatches(
+                            &receipt, &error);
+                    EnqueueActor(
+                        CoordinatorEventKind::CoordinationIoCompleted,
+                        [this, io_command, called, receipt,
+                         error = std::move(error)]() mutable {
+                            bool matched = false;
+                            {
+                                std::lock_guard lock(shutdown_mutex_);
+                                matched = shutdown_recovery_effect_.has_value()
+                                    && shutdown_recovery_effect_->id
+                                        == io_command.effect_id
+                                    && shutdown_recovery_effect_->kind
+                                        == CoordinatorEffectKind::
+                                            ShutdownRecovery;
+                                if (matched) {
+                                    shutdown_recovery_effect_.reset();
+                                }
+                            }
+                            if (!matched) {
+                                RecordIncident({
+                                    .code = CoordinatorIncidentCode::
+                                        EffectCompletionMismatch,
+                                    .effect_id = io_command.effect_id,
+                                    .effect_kind = CoordinatorEffectKind::
+                                        ShutdownRecovery,
+                                    .cleanup_action =
+                                        "ignore-stale-completion",
+                                    .message =
+                                        "shutdown recovery completion did not match",
+                                });
+                                return;
+                            }
+                            {
+                                std::lock_guard lock(shutdown_mutex_);
+                                if (!called) {
+                                    shutdown_error_ = error.empty()
+                                        ? "failed recovering interrupted workset dispatches"
+                                        : std::move(error);
+                                } else {
+                                    shutdown_recovered_dispatches_.fetch_add(
+                                        receipt.dispatches_closed);
+                                }
+                                shutdown_recovery_complete_ = true;
+                                shutdown_stage_ =
+                                    CoordinatorShutdownStage::Recovered;
+                                shutdown_stage_started_at_ = Clock::now();
+                            }
+                            {
+                                std::lock_guard lock(registry_mutex_);
+                                dispatches_.clear();
+                            }
+                            prepared_dispatches_.clear();
+                            shutdown_cv_.notify_all();
+                            PublishSnapshots();
+                        });
                 }
             },
             std::move(command));
+        {
+            std::lock_guard lock(coordination_io_mutex_);
+            coordination_io_started_at_.reset();
+            coordination_io_operation_.clear();
+        }
     }
 }
 
@@ -4813,6 +5453,106 @@ bool JobExecutionCoordinator::Impl::IsActorThread() const {
     return actor_thread_id_ == std::this_thread::get_id();
 }
 
+bool JobExecutionCoordinator::Impl::BeginDispatchEffect(
+    const DispatchPtr& dispatch,
+    CoordinatorEffectKind kind,
+    WorkerExecutionTarget target,
+    std::string required_evidence,
+    std::uint64_t* effect_id_out,
+    Clock::time_point retry_at) {
+    if (!dispatch) return false;
+    const auto effect_id = token_sequence_.fetch_add(1);
+    JobExecutionCoordinatorIncident incident;
+    bool rejected = false;
+    {
+        std::lock_guard lock(dispatch->mutex);
+        if (dispatch->pending_effect.has_value()) {
+            rejected = true;
+            incident = {
+                .code = CoordinatorIncidentCode::CoordinatorInvariant,
+                .dispatch_attempt_id =
+                    dispatch->claimed.dispatch_attempt_id,
+                .workset_id = dispatch->claimed.workset_id,
+                .worker_id = target.worker_id,
+                .worker_generation = target.process_generation,
+                .ownership = dispatch->ownership,
+                .lifecycle = dispatch->lifecycle,
+                .effect_id = dispatch->pending_effect->id,
+                .effect_kind = dispatch->pending_effect->kind,
+                .cleanup_action = "preserve-existing-effect",
+                .message = "duplicate dispatch effect admission",
+                .detail = required_evidence,
+            };
+        } else {
+            dispatch->pending_effect = PendingOwnershipEffect{
+                .id = effect_id,
+                .kind = kind,
+                .target = target,
+                .started_at = retry_at == Clock::time_point{}
+                    ? Clock::now() : Clock::time_point{},
+                .retry_at = retry_at,
+                .required_evidence = std::move(required_evidence),
+            };
+        }
+    }
+    if (rejected) {
+        RecordIncident(std::move(incident));
+        invariant_paused_.store(true);
+        return false;
+    }
+    if (effect_id_out) *effect_id_out = effect_id;
+    return true;
+}
+
+bool JobExecutionCoordinator::Impl::ConsumeDispatchEffect(
+    const DispatchPtr& dispatch,
+    std::uint64_t effect_id,
+    CoordinatorEffectKind kind,
+    std::string_view completion) {
+    if (!dispatch) return false;
+    JobExecutionCoordinatorIncident incident;
+    bool matched = false;
+    {
+        std::lock_guard lock(dispatch->mutex);
+        const auto classification = detail::ClassifyEffectCompletion(
+            dispatch->pending_effect.has_value()
+                ? std::optional<std::uint64_t>(
+                    dispatch->pending_effect->id)
+                : std::nullopt,
+            dispatch->pending_effect.has_value()
+                ? std::optional<CoordinatorEffectKind>(
+                    dispatch->pending_effect->kind)
+                : std::nullopt,
+            effect_id,
+            kind);
+        matched = classification
+            == detail::EffectCompletionClassification::Match;
+        if (matched) {
+            dispatch->pending_effect.reset();
+            return true;
+        }
+        incident = {
+            .code = classification
+                    == detail::EffectCompletionClassification::Mismatch
+                ? CoordinatorIncidentCode::EffectCompletionMismatch
+                : CoordinatorIncidentCode::EffectCompletionDuplicate,
+            .dispatch_attempt_id = dispatch->claimed.dispatch_attempt_id,
+            .workset_id = dispatch->claimed.workset_id,
+            .worker_id = dispatch->target.worker_id,
+            .worker_generation = dispatch->target.process_generation,
+            .ownership = dispatch->ownership,
+            .lifecycle = dispatch->lifecycle,
+            .effect_id = effect_id,
+            .effect_kind = kind,
+            .cleanup_action = "ignore-stale-completion",
+            .message = "dispatch effect completion did not match",
+            .detail = std::string(completion),
+        };
+    }
+    RecordIncident(std::move(incident));
+    return false;
+}
+
 void JobExecutionCoordinator::Impl::ActorLoop() {
     {
         std::lock_guard lock(actor_mutex_);
@@ -4832,11 +5572,12 @@ void JobExecutionCoordinator::Impl::ActorLoop() {
             advanced = true;
         }
 
-        ProcessLifecycleRequest();
+        ProcessShutdown();
         RefreshStorageReadiness();
         advanced = ProcessPendingDrainingTransitions() || advanced;
-        advanced = ProcessPendingDispatchReleases() || advanced;
+        advanced = ProcessContainment() || advanced;
         ScheduleActor();
+        CheckForStalls();
         const auto snapshot_now = Clock::now();
         if (advanced || snapshot_now >= next_snapshot_publish_at_) {
             PublishSnapshots();
@@ -4850,23 +5591,13 @@ void JobExecutionCoordinator::Impl::ActorLoop() {
                 std::lock_guard lock(registry_mutex_);
                 for (const auto& [_, dispatch] : dispatches_) {
                     std::lock_guard record_lock(dispatch->mutex);
-                    if (dispatch->phase == DispatchPhase::Activating
-                        && dispatch->activation_retry_at
+                    if (dispatch->pending_effect.has_value()
+                        && dispatch->pending_effect->started_at
+                            == Clock::time_point{}
+                        && dispatch->pending_effect->retry_at
                             != Clock::time_point{}) {
                         deadline = std::min(
-                            deadline, dispatch->activation_retry_at);
-                    }
-                    if (dispatch->phase == DispatchPhase::Draining
-                        && !dispatch->draining_transition_persisted
-                        && dispatch->draining_retry_at
-                            != Clock::time_point{}) {
-                        deadline = std::min(
-                            deadline, dispatch->draining_retry_at);
-                    }
-                    if (dispatch->release_retry_at
-                        != Clock::time_point{}) {
-                        deadline = std::min(
-                            deadline, dispatch->release_retry_at);
+                            deadline, dispatch->pending_effect->retry_at);
                     }
                 }
             }
@@ -4893,7 +5624,88 @@ void JobExecutionCoordinator::Impl::ActorLoop() {
         actor_thread_id_ = {};
     }
     running_.store(false);
-    lifecycle_cv_.notify_all();
+    shutdown_cv_.notify_all();
+}
+
+void JobExecutionCoordinator::Impl::CheckForStalls() {
+    const auto now = Clock::now();
+    const auto threshold = config_.stall_diagnostic_threshold;
+    std::string signature;
+    std::string detail;
+    bool durable_io_stalled = false;
+    {
+        std::lock_guard lock(coordination_io_mutex_);
+        if (coordination_io_started_at_
+            && now - *coordination_io_started_at_ >= threshold) {
+            signature = "COORDINATOR_DURABLE_IO_STALLED:" +
+                coordination_io_operation_;
+            detail = "operation=" + coordination_io_operation_ +
+                " age_ms=" + std::to_string(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - *coordination_io_started_at_).count()) +
+                " queue_depth=" +
+                std::to_string(coordination_io_commands_.size());
+            durable_io_stalled = true;
+        }
+    }
+    if (signature.empty()) {
+        std::lock_guard lock(reconstruction_mutex_);
+        for (const auto& [task_id, active] : active_reconstructions_) {
+            if (now - active.started_at < threshold) continue;
+            signature = "COORDINATOR_RECONSTRUCTION_STALLED:" +
+                std::to_string(task_id);
+            detail = "task_id=" + std::to_string(task_id) +
+                " dispatch_attempt_id=" +
+                std::to_string(active.dispatch_attempt_id) +
+                " job_id=" + std::to_string(active.job_id) +
+                " program_kind=" + std::to_string(active.program_kind) +
+                " age_ms=" + std::to_string(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - active.started_at).count()) +
+                " active_reconstructions=" +
+                std::to_string(reconstruction_active_count_) +
+                " queued_reconstructions=" +
+                std::to_string(reconstruction_queue_.size());
+            break;
+        }
+    }
+    if (signature.empty()
+        && execution_work_availability_.has_ready_worksets
+        && last_forward_progress_at_ != Clock::time_point{}
+        && now - last_forward_progress_at_ >= threshold) {
+        const auto ready = static_cast<std::size_t>(std::count_if(
+            actor_workers_.begin(), actor_workers_.end(),
+            [](const auto& entry) {
+                return entry.second.state
+                        == JobExecutionWorkerDispatchState::Ready
+                    && entry.second.physical.available_item_credits != 0;
+            }));
+        if (ready != 0) {
+            signature = "COORDINATOR_NO_FORWARD_PROGRESS";
+            detail = "ready_workers=" + std::to_string(ready) +
+                " claim_in_flight=" +
+                std::string(claim_effect_.has_value() ? "true" : "false") +
+                " prepared_worksets=" +
+                std::to_string(prepared_dispatches_.size()) +
+                " age_ms=" + std::to_string(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - last_forward_progress_at_).count());
+        }
+    }
+    if (signature.empty()) {
+        last_stall_signature_.clear();
+        return;
+    }
+    if (signature == last_stall_signature_) return;
+    last_stall_signature_ = signature;
+    if (durable_io_stalled) invariant_paused_.store(true);
+    const auto code = durable_io_stalled
+        ? JobExecutionCoordinatorWarning::Code::DurableIoStalled
+        : signature.starts_with("COORDINATOR_RECONSTRUCTION_STALLED")
+        ? JobExecutionCoordinatorWarning::Code::ReconstructionStalled
+        : JobExecutionCoordinatorWarning::Code::NoForwardProgress;
+    RecordTypedWarning(code, signature, detail);
+    RecordError(detail);
 }
 
 bool JobExecutionCoordinator::Impl::ResolveClaimedCancellation(
@@ -5062,7 +5874,7 @@ void JobExecutionCoordinator::Impl::ApplyCancellationMutationReceipts(
                         ExecutionDbDispositionName(receipt.disposition)));
                 ++worker_control_commands_failed_;
                 if (item.dispatch) {
-                    PauseForInvariant(
+                    FaultDispatch(
                         item.dispatch,
                         "Cancellation outcome lost durable authority",
                         "request_id=" + std::to_string(
@@ -5098,7 +5910,8 @@ void JobExecutionCoordinator::Impl::ApplyCancellationMutationReceipts(
                         item.dispatch->sidecar_persisted_jobs.size()
                         == item.dispatch->initially_suppressed_jobs.size();
                     if (fully_suppressed && all_persisted) {
-                        item.dispatch->phase = DispatchPhase::Retired;
+                        item.dispatch->ownership = DispatchOwnership::Closed;
+                        item.dispatch->retired = true;
                     }
                 }
                 if (fully_suppressed && all_persisted) {
@@ -5211,6 +6024,20 @@ void JobExecutionCoordinator::Impl::HandleWorksetState(
         payload.state == savor::wrms::WorksetStateCode::Completed
         || payload.state == savor::wrms::WorksetStateCode::Cancelled
         || payload.state == savor::wrms::WorksetStateCode::Failed;
+    auto* actor_worker = FindActorWorker({
+        .worker_id = source.worker_id,
+        .process_generation = source.process_generation,
+    });
+    if (actor_worker) {
+        if (terminal) {
+            actor_worker->state = JobExecutionWorkerDispatchState::Draining;
+            actor_worker->submitting_dispatch_attempt_id.reset();
+            actor_worker->active_dispatch_attempt_id.reset();
+        } else if (actor_worker->state
+                   != JobExecutionWorkerDispatchState::Submitting) {
+            actor_worker->state = JobExecutionWorkerDispatchState::Active;
+        }
+    }
     if (!terminal
         || payload.workset_id == 0
         || payload.workset_id
@@ -5230,24 +6057,21 @@ void JobExecutionCoordinator::Impl::HandleWorksetState(
         if (dispatch->target.worker_id != source.worker_id
             || dispatch->target.process_generation
                 != source.process_generation) {
-            if (dispatch->phase == DispatchPhase::Released
-                || dispatch->phase == DispatchPhase::ReleasedDraining
-                || dispatch->phase == DispatchPhase::Retired) {
+            if (dispatch->ownership == DispatchOwnership::Closed) {
                 return;
             }
             source_mismatch = true;
         } else {
             dispatch->terminal_workset_state_observed = true;
-            if (dispatch->dispatch_marked
-                && dispatch->phase == DispatchPhase::Active) {
-                dispatch->phase = DispatchPhase::Draining;
-                dispatch->draining_retry_at = Clock::now();
+            if (dispatch->ownership == DispatchOwnership::Worker
+                && dispatch->lifecycle == DispatchLifecycle::Active) {
+                dispatch->lifecycle = DispatchLifecycle::Draining;
                 persist_draining = true;
             }
         }
     }
     if (source_mismatch) {
-        PauseForInvariant(
+        FaultDispatch(
             dispatch,
             "Worker terminal workset state source mismatch",
             "dispatch_attempt_id=" + std::to_string(dispatch_id));
@@ -5270,27 +6094,41 @@ bool JobExecutionCoordinator::Impl::MarkDispatchDraining(
     const DispatchPtr& dispatch) {
     if (!dispatch) return true;
     savor::db::ClaimedPublishedWorkset claimed;
-    DispatchPhase phase = DispatchPhase::Released;
+    std::uint64_t effect_id = 0;
     {
         std::lock_guard lock(dispatch->mutex);
         claimed = dispatch->claimed;
-        phase = dispatch->phase;
         if (dispatch->draining_transition_persisted) return true;
-        if (dispatch->draining_io_pending) return false;
-        if (phase == DispatchPhase::Draining
-            && dispatch->draining_retry_at > Clock::now()) {
+        if (dispatch->ownership == DispatchOwnership::Closed
+            || dispatch->retired) return true;
+        if (dispatch->ownership != DispatchOwnership::Worker
+            || dispatch->lifecycle != DispatchLifecycle::Draining) {
             return false;
         }
-        if (phase == DispatchPhase::Draining) {
-            dispatch->draining_io_pending = true;
+        if (dispatch->pending_effect.has_value()) {
+            if (dispatch->pending_effect->kind
+                    != CoordinatorEffectKind::MarkDraining
+                || dispatch->pending_effect->started_at
+                    != Clock::time_point{}
+                || dispatch->pending_effect->retry_at > Clock::now()) {
+                return false;
+            }
+            dispatch->pending_effect->started_at = Clock::now();
+            effect_id = dispatch->pending_effect->id;
         }
     }
-    if (phase == DispatchPhase::Released
-        || phase == DispatchPhase::ReleasedDraining
-        || phase == DispatchPhase::Retired) {
-        return true;
-    }
-    EnqueueCoordinationIo(DrainingIoCommand{dispatch, std::move(claimed)});
+    if (effect_id == 0
+        && !BeginDispatchEffect(
+            dispatch,
+            CoordinatorEffectKind::MarkDraining,
+            dispatch->target,
+            "durable draining receipt",
+            &effect_id)) return false;
+    EnqueueCoordinationIo(DrainingIoCommand{
+        .effect_id = effect_id,
+        .dispatch = dispatch,
+        .claimed = std::move(claimed),
+    });
     return true;
 }
 
@@ -5301,18 +6139,20 @@ void JobExecutionCoordinator::Impl::HandleDrainingIoCompletion(
     std::string error) {
     const auto& dispatch = command.dispatch;
     if (!dispatch) return;
-    {
-        std::lock_guard lock(dispatch->mutex);
-        dispatch->draining_io_pending = false;
-    }
+    if (!ConsumeDispatchEffect(
+            dispatch,
+            command.effect_id,
+            CoordinatorEffectKind::MarkDraining,
+            "durable draining completion")) return;
     if (!called) {
-        {
-            std::lock_guard lock(dispatch->mutex);
-            if (dispatch->phase == DispatchPhase::Draining) {
-                dispatch->draining_retry_at = Clock::now()
-                    + config_.workset_lease_retry_interval;
-            }
-        }
+        std::uint64_t retry_effect = 0;
+        (void)BeginDispatchEffect(
+            dispatch,
+            CoordinatorEffectKind::MarkDraining,
+            dispatch->target,
+            "durable draining receipt",
+            &retry_effect,
+            Clock::now() + config_.workset_lease_retry_interval);
         RecordError(
             error.empty()
                 ? "failed marking workset draining"
@@ -5323,10 +6163,10 @@ void JobExecutionCoordinator::Impl::HandleDrainingIoCompletion(
         bool first_persisted_transition = false;
         {
             std::lock_guard lock(dispatch->mutex);
-            if (dispatch->phase == DispatchPhase::Draining
+            if (dispatch->ownership == DispatchOwnership::Worker
+                && dispatch->lifecycle == DispatchLifecycle::Draining
                 && !dispatch->draining_transition_persisted) {
                 dispatch->draining_transition_persisted = true;
-                dispatch->draining_retry_at = {};
                 first_persisted_transition = true;
             }
         }
@@ -5338,13 +6178,11 @@ void JobExecutionCoordinator::Impl::HandleDrainingIoCompletion(
     }
     {
         std::lock_guard lock(dispatch->mutex);
-        if (dispatch->phase == DispatchPhase::Released
-            || dispatch->phase == DispatchPhase::ReleasedDraining
-            || dispatch->phase == DispatchPhase::Retired) {
+        if (dispatch->ownership == DispatchOwnership::Closed) {
             return;
         }
     }
-    PauseForInvariant(
+    FaultDispatch(
         dispatch,
         "Durable draining transition rejected",
         "dispatch_attempt_id="
@@ -5361,9 +6199,15 @@ bool JobExecutionCoordinator::Impl::ProcessPendingDrainingTransitions() {
         for (const auto& [dispatch_id, dispatch] : dispatches_) {
             (void)dispatch_id;
             std::lock_guard dispatch_lock(dispatch->mutex);
-            if (dispatch->phase == DispatchPhase::Draining
+            if (dispatch->ownership == DispatchOwnership::Worker
+                && dispatch->lifecycle == DispatchLifecycle::Draining
                 && !dispatch->draining_transition_persisted
-                && dispatch->draining_retry_at <= now) {
+                && (!dispatch->pending_effect.has_value()
+                    || (dispatch->pending_effect->kind
+                            == CoordinatorEffectKind::MarkDraining
+                        && dispatch->pending_effect->started_at
+                            == Clock::time_point{}
+                        && dispatch->pending_effect->retry_at <= now))) {
                 pending.push_back(dispatch);
             }
         }
@@ -5377,8 +6221,18 @@ bool JobExecutionCoordinator::Impl::ProcessPendingDrainingTransitions() {
 
 void JobExecutionCoordinator::Impl::HandleWorkerUnavailable(
     WorkerUnavailableEvent event) {
-    ++worker_losses_;
+    if (!event.expected_retirement) ++worker_losses_;
+    const auto actor_found = actor_workers_.find(event.source.worker_id);
+    if (actor_found != actor_workers_.end()
+        && actor_found->second.physical.process_generation
+            == event.source.process_generation) {
+        actor_workers_.erase(actor_found);
+        std::lock_guard reconstruction_lock(reconstruction_mutex_);
+        reconstruction_concurrency_limit_ = actor_workers_.size();
+    }
+    reconstruction_cv_.notify_all();
     WorkerMailboxPtr retired_lane;
+    std::vector<MailboxSubmissionCommand> cancelled_submissions;
     {
         std::lock_guard lock(mailboxes_mutex_);
         const auto found = mailboxes_.find(event.source.worker_id);
@@ -5407,6 +6261,18 @@ void JobExecutionCoordinator::Impl::HandleWorkerUnavailable(
             }
         }
         retired_lane->controls.clear();
+        while (!retired_lane->submissions.empty()) {
+            cancelled_submissions.push_back(
+                std::move(retired_lane->submissions.front()));
+            retired_lane->submissions.pop_front();
+        }
+    }
+    for (const auto& command : cancelled_submissions) {
+        (void)ConsumeDispatchEffect(
+            command.dispatch,
+            command.effect_id,
+            CoordinatorEffectKind::Submission,
+            "worker retirement canceled queued submission");
     }
     std::vector<DispatchPtr> affected;
     {
@@ -5422,10 +6288,55 @@ void JobExecutionCoordinator::Impl::HandleWorkerUnavailable(
         }
     }
     for (const auto& dispatch : affected) {
-        (void)ReleaseDispatch(
-            dispatch,
-            "WORKER_LOST",
-            event.diagnostic);
+        std::optional<PendingOwnershipEffect> canceled_effect;
+        bool worker_may_have_owned = false;
+        {
+            std::lock_guard lock(dispatch->mutex);
+            worker_may_have_owned =
+                dispatch->ownership != DispatchOwnership::Coordinator;
+            if (dispatch->pending_effect
+                && dispatch->pending_effect->target.worker_id
+                    == event.source.worker_id
+                && dispatch->pending_effect->target.process_generation
+                    == event.source.process_generation
+                && (dispatch->pending_effect->kind
+                        == CoordinatorEffectKind::Submission
+                    || dispatch->pending_effect->kind
+                        == CoordinatorEffectKind::ResidenceConfirmation)) {
+                canceled_effect = dispatch->pending_effect;
+            }
+        }
+        if (canceled_effect) {
+            (void)ConsumeDispatchEffect(
+                dispatch,
+                canceled_effect->id,
+                canceled_effect->kind,
+                "worker unavailable cancellation");
+        }
+        {
+            std::lock_guard lock(dispatch->mutex);
+            dispatch->released_draining =
+                dispatch->released_draining || worker_may_have_owned;
+            dispatch->ownership = DispatchOwnership::Coordinator;
+            dispatch->lifecycle = DispatchLifecycle::Faulted;
+            if (!dispatch->containment) {
+                dispatch->containment = FaultContainment{
+                    .reason_code = "WORKER_LOST",
+                    .reason_text = event.diagnostic,
+                    .keep_draining = worker_may_have_owned,
+                };
+            } else {
+                dispatch->containment->awaiting_worker_exit = false;
+                dispatch->containment->retire_worker = false;
+            }
+        }
+        if (!quiescing_.load()) {
+            (void)ReleaseDispatch(
+                dispatch,
+                "WORKER_LOST",
+                event.diagnostic,
+                worker_may_have_owned);
+        }
     }
     if (!event.diagnostic.empty()) {
         RecordWarning(
@@ -5463,67 +6374,85 @@ void JobExecutionCoordinator::Impl::RefreshStorageReadiness() {
             : std::move(error));
 }
 
-void JobExecutionCoordinator::Impl::ProcessLifecycleRequest() {
-    LifecycleRequestKind kind{};
+void JobExecutionCoordinator::Impl::ProcessShutdown() {
+    bool workers_stopped = false;
     {
-        std::lock_guard lock(lifecycle_mutex_);
-        if (!lifecycle_request_.pending) return;
-        kind = lifecycle_request_.kind;
+        std::lock_guard lock(shutdown_mutex_);
+        workers_stopped = workers_stopped_;
+        if (!workers_stopped
+            || shutdown_recovery_complete_
+            || shutdown_recovery_effect_.has_value()) return;
     }
-    if (claim_in_flight_) return;
+    if (claim_effect_.has_value()) return;
+    {
+        std::lock_guard lock(reconstruction_mutex_);
+        if (!reconstruction_queue_.empty()
+            || reconstruction_active_count_ != 0) return;
+    }
+    {
+        std::lock_guard lock(coordination_io_mutex_);
+        if (!coordination_io_commands_.empty()
+            || coordination_io_started_at_.has_value()) return;
+    }
+    {
+        std::lock_guard lock(persistence_mutex_);
+        for (const auto& [_, stream] : persistence_streams_) {
+            if (stream.active || !stream.events.empty()) return;
+        }
+    }
+    if (pending_cancellation_mutations_.load() != 0) return;
 
-    std::vector<DispatchPtr> release;
-    bool submission_in_progress = false;
-    bool release_in_progress = false;
+    std::optional<JobExecutionCoordinatorIncident> stalled;
+    bool dispatch_effect_pending = false;
     {
         std::lock_guard lock(registry_mutex_);
-        for (const auto& [dispatch_id, dispatch] : dispatches_) {
-            (void)dispatch_id;
+        for (const auto& [_, dispatch] : dispatches_) {
             std::lock_guard record_lock(dispatch->mutex);
-            if (kind == LifecycleRequestKind::ReleaseUnsubmitted
-                && (dispatch->phase == DispatchPhase::Active
-                    || dispatch->phase == DispatchPhase::Draining)) {
-                continue;
+            if (!dispatch->pending_effect.has_value()) continue;
+            dispatch_effect_pending = true;
+            const auto age = Clock::now()
+                - (dispatch->pending_effect->started_at
+                    == Clock::time_point{}
+                    ? dispatch->pending_effect->retry_at
+                    : dispatch->pending_effect->started_at);
+            if (age >= config_.stall_diagnostic_threshold) {
+                stalled = JobExecutionCoordinatorIncident{
+                    .code = CoordinatorIncidentCode::ShutdownEffectStalled,
+                    .dispatch_attempt_id =
+                        dispatch->claimed.dispatch_attempt_id,
+                    .workset_id = dispatch->claimed.workset_id,
+                    .worker_id = dispatch->target.worker_id,
+                    .worker_generation =
+                        dispatch->target.process_generation,
+                    .ownership = dispatch->ownership,
+                    .lifecycle = dispatch->lifecycle,
+                    .effect_id = dispatch->pending_effect->id,
+                    .effect_kind = dispatch->pending_effect->kind,
+                    .cleanup_action = "await-effect-completion",
+                    .message = "shutdown is waiting for a dispatch effect",
+                    .detail = dispatch->pending_effect->required_evidence,
+                };
             }
-            if (dispatch->phase == DispatchPhase::Submitting) {
-                submission_in_progress = true;
-                continue;
-            }
-            if (dispatch->phase == DispatchPhase::ReleaseRequested) {
-                release_in_progress = true;
-                continue;
-            }
-            if (dispatch->phase != DispatchPhase::Released
-                && dispatch->phase != DispatchPhase::ReleasedDraining
-                && dispatch->phase != DispatchPhase::Retired) {
-                release.push_back(dispatch);
-            }
+            break;
         }
     }
-    if (submission_in_progress || release_in_progress) return;
+    if (stalled) RecordIncident(std::move(*stalled));
+    if (dispatch_effect_pending) return;
 
-    std::string first_error;
-    for (const auto& dispatch : release) {
-        if (!ReleaseDispatch(
-                dispatch,
-                kind == LifecycleRequestKind::
-                        RecoverAfterWorkersStopped
-                    ? "WORKER_COORDINATOR_STOPPED"
-                    : "COORDINATOR_QUIESCED",
-                "coordinator lifecycle release")
-            && first_error.empty()) {
-            first_error =
-                "one or more workset claims could not be released";
-        }
-    }
-    if (!release.empty()) return;
+    const auto effect_id = token_sequence_.fetch_add(1);
     {
-        std::lock_guard lock(lifecycle_mutex_);
-        lifecycle_request_.error = std::move(first_error);
-        lifecycle_request_.pending = false;
-        lifecycle_request_.completed = true;
+        std::lock_guard lock(shutdown_mutex_);
+        shutdown_stage_ = CoordinatorShutdownStage::Recovering;
+        shutdown_stage_started_at_ = Clock::now();
+        shutdown_recovery_effect_ = PendingOwnershipEffect{
+            .id = effect_id,
+            .kind = CoordinatorEffectKind::ShutdownRecovery,
+            .started_at = Clock::now(),
+            .required_evidence =
+                "durable interrupted-dispatch recovery receipt",
+        };
     }
-    lifecycle_cv_.notify_all();
+    EnqueueCoordinationIo(ShutdownRecoveryIoCommand{effect_id});
 }
 
 JobExecutionCoordinator::Impl::DispatchPtr
@@ -5559,58 +6488,66 @@ bool JobExecutionCoordinator::Impl::ReleaseDispatch(
     const DispatchPtr& dispatch,
     std::string reason_code,
     std::string reason_text,
-    bool keep_draining,
-    bool* deferred_out,
-    bool retain_release_after_submission) {
-    if (deferred_out != nullptr) {
-        *deferred_out = false;
-    }
+    bool keep_draining) {
     if (!dispatch) return true;
     savor::db::ClaimedPublishedWorkset claimed;
     WorkerExecutionTarget target;
-    DispatchPhase previous = DispatchPhase::Claimed;
-    bool submitted = false;
+    DispatchOwnership previous_ownership = DispatchOwnership::Coordinator;
+    DispatchLifecycle previous_lifecycle = DispatchLifecycle::Claimed;
+    bool worker_may_have_owned = false;
+    std::uint64_t effect_id = 0;
     {
         std::lock_guard lock(dispatch->mutex);
-        if (dispatch->phase == DispatchPhase::Released
-            || dispatch->phase == DispatchPhase::ReleasedDraining
-            || dispatch->phase == DispatchPhase::Retired) {
+        if (dispatch->ownership == DispatchOwnership::Closed
+            || dispatch->retired) return true;
+        if (!dispatch->containment.has_value()) {
+            dispatch->containment = FaultContainment{
+                .reason_code = reason_code,
+                .reason_text = reason_text,
+                .keep_draining = keep_draining,
+            };
+        }
+        if (dispatch->ownership == DispatchOwnership::WorkerMayOwn
+            || dispatch->ownership == DispatchOwnership::Worker) {
+            dispatch->containment->retire_worker = true;
+            dispatch->containment->awaiting_worker_exit = true;
             return true;
         }
-        if (dispatch->phase == DispatchPhase::ReleaseRequested) {
-            return true;
-        }
-        if (dispatch->release_retry_at > Clock::now()) {
-            return false;
-        }
-        if (dispatch->phase == DispatchPhase::Submitting
-            && !dispatch->dispatch_marked) {
-            if (retain_release_after_submission
-                && !dispatch->deferred_release.has_value()) {
-                dispatch->deferred_release = DeferredDispatchRelease{
-                    .reason_code = std::move(reason_code),
-                    .reason_text = std::move(reason_text),
-                    .keep_draining = keep_draining,
-                };
+        if (dispatch->pending_effect.has_value()) {
+            if (dispatch->pending_effect->kind
+                    != CoordinatorEffectKind::Release
+                || dispatch->pending_effect->started_at
+                    != Clock::time_point{}
+                || dispatch->pending_effect->retry_at > Clock::now()) {
+                return true;
             }
-            if (deferred_out != nullptr) {
-                *deferred_out = true;
-            }
-            return true;
+            dispatch->pending_effect->started_at = Clock::now();
+            effect_id = dispatch->pending_effect->id;
         }
-        previous = dispatch->phase;
-        dispatch->phase = DispatchPhase::ReleaseRequested;
         claimed = dispatch->claimed;
         target = dispatch->target;
-        submitted = dispatch->submitted;
+        previous_ownership = dispatch->ownership;
+        previous_lifecycle = dispatch->lifecycle;
+        worker_may_have_owned = dispatch->released_draining;
+        reason_code = dispatch->containment->reason_code;
+        reason_text = dispatch->containment->reason_text;
+        keep_draining = dispatch->containment->keep_draining;
     }
-
+    if (effect_id == 0
+        && !BeginDispatchEffect(
+            dispatch,
+            CoordinatorEffectKind::Release,
+            target,
+            "durable release receipt",
+            &effect_id)) return false;
     EnqueueCoordinationIo(ReleaseIoCommand{
+        .effect_id = effect_id,
         .dispatch = dispatch,
         .claimed = std::move(claimed),
         .target = target,
-        .previous = previous,
-        .submitted = submitted,
+        .previous_ownership = previous_ownership,
+        .previous_lifecycle = previous_lifecycle,
+        .worker_may_have_owned = worker_may_have_owned,
         .keep_draining = keep_draining,
         .reason_code = std::move(reason_code),
         .reason_text = std::move(reason_text),
@@ -5625,21 +6562,20 @@ void JobExecutionCoordinator::Impl::HandleReleaseIoCompletion(
     std::string error) {
     const auto& dispatch = command.dispatch;
     if (!dispatch) return;
+    if (!ConsumeDispatchEffect(
+            dispatch,
+            command.effect_id,
+            CoordinatorEffectKind::Release,
+            "durable release completion")) return;
     if (!called || !Applied(receipt.disposition)) {
-        {
-            std::lock_guard lock(dispatch->mutex);
-            if (dispatch->phase
-                == DispatchPhase::ReleaseRequested) {
-                dispatch->phase = command.previous;
-                dispatch->release_retry_at = Clock::now()
-                    + config_.workset_lease_retry_interval;
-                dispatch->deferred_release = DeferredDispatchRelease{
-                    .reason_code = command.reason_code,
-                    .reason_text = command.reason_text,
-                    .keep_draining = command.keep_draining,
-                };
-            }
-        }
+        std::uint64_t retry_effect = 0;
+        (void)BeginDispatchEffect(
+            dispatch,
+            CoordinatorEffectKind::Release,
+            command.target,
+            "durable release receipt",
+            &retry_effect,
+            Clock::now() + config_.workset_lease_retry_interval);
         RecordError(
             error.empty()
                 ? "failed releasing workset dispatch"
@@ -5653,23 +6589,13 @@ void JobExecutionCoordinator::Impl::HandleReleaseIoCompletion(
     {
         std::lock_guard lock(dispatch_release_mutex_);
         ++dispatch_release_reason_counts_[command.reason_code];
-        const char* phase = "UNKNOWN";
-        switch (command.previous) {
-        case DispatchPhase::Claimed: phase = "CLAIMED"; break;
-        case DispatchPhase::Reconstructing: phase = "RECONSTRUCTING"; break;
-        case DispatchPhase::Prepared: phase = "PREPARED"; break;
-        case DispatchPhase::Submitting: phase = "SUBMITTING"; break;
-        case DispatchPhase::Activating: phase = "ACTIVATING"; break;
-        case DispatchPhase::Active: phase = "ACTIVE"; break;
-        case DispatchPhase::Draining: phase = "DRAINING"; break;
-        case DispatchPhase::ReleasedDraining:
-            phase = "RELEASED_DRAINING";
-            break;
-        case DispatchPhase::ReleaseRequested: phase = "RELEASE_REQUESTED"; break;
-        case DispatchPhase::Released: phase = "RELEASED"; break;
-        case DispatchPhase::Retired: phase = "RETIRED"; break;
-        }
-        ++dispatch_release_phase_counts_[phase];
+        const auto ownership = static_cast<unsigned>(
+            command.previous_ownership);
+        const auto lifecycle = static_cast<unsigned>(
+            command.previous_lifecycle);
+        ++dispatch_release_state_counts_[
+            "ownership=" + std::to_string(ownership)
+            + "/lifecycle=" + std::to_string(lifecycle)];
     }
 
     const auto lane =
@@ -5690,6 +6616,22 @@ void JobExecutionCoordinator::Impl::HandleReleaseIoCompletion(
         }
         lane->cv.notify_all();
     }
+    if (auto* actor_worker = FindActorWorker(command.target)) {
+        if (actor_worker->submitting_dispatch_attempt_id
+            == std::optional<std::int64_t>(
+                command.claimed.dispatch_attempt_id)) {
+            actor_worker->submitting_dispatch_attempt_id.reset();
+        }
+        if (actor_worker->active_dispatch_attempt_id
+            == std::optional<std::int64_t>(
+                command.claimed.dispatch_attempt_id)) {
+            actor_worker->active_dispatch_attempt_id.reset();
+        }
+        actor_worker->state =
+            actor_worker->physical.available_item_credits == 0
+            ? JobExecutionWorkerDispatchState::Unavailable
+            : JobExecutionWorkerDispatchState::Ready;
+    }
     prepared_dispatches_.erase(
         std::remove(
             prepared_dispatches_.begin(),
@@ -5698,94 +6640,169 @@ void JobExecutionCoordinator::Impl::HandleReleaseIoCompletion(
         prepared_dispatches_.end());
     {
         std::lock_guard lock(dispatch->mutex);
-        dispatch->phase =
-            command.keep_draining && command.submitted
-            ? DispatchPhase::ReleasedDraining
-            : DispatchPhase::Released;
-        dispatch->release_retry_at = {};
-        dispatch->deferred_release.reset();
+        dispatch->ownership = DispatchOwnership::Closed;
+        dispatch->released_draining =
+            command.keep_draining && command.worker_may_have_owned;
+        dispatch->containment.reset();
     }
-    if (!(command.keep_draining && command.submitted)) {
+    if (!(command.keep_draining && command.worker_may_have_owned)) {
         RemoveDispatch(command.claimed.dispatch_attempt_id, dispatch);
     }
     WakeScheduler("dispatch-released", false);
 }
 
-bool JobExecutionCoordinator::Impl::ProcessPendingDispatchReleases() {
-    std::vector<std::pair<DispatchPtr, DeferredDispatchRelease>> pending;
-    const auto now = Clock::now();
+bool JobExecutionCoordinator::Impl::ProcessContainment() {
+    std::vector<DispatchPtr> pending;
     {
         std::lock_guard lock(registry_mutex_);
         for (const auto& [_, dispatch] : dispatches_) {
             std::lock_guard dispatch_lock(dispatch->mutex);
-            if (dispatch->deferred_release.has_value()
-                && dispatch->phase != DispatchPhase::Submitting
-                && dispatch->phase != DispatchPhase::Activating
-                && dispatch->phase != DispatchPhase::ReleaseRequested
-                && dispatch->release_retry_at <= now) {
-                pending.emplace_back(
-                    dispatch,
-                    std::move(*dispatch->deferred_release));
-                dispatch->deferred_release.reset();
-            }
+            if (!dispatch->containment.has_value()
+                || dispatch->ownership == DispatchOwnership::Closed
+                || dispatch->retired) continue;
+            pending.push_back(dispatch);
         }
     }
-    for (auto& [dispatch, release] : pending) {
-        (void)ReleaseDispatch(
-            dispatch,
-            std::move(release.reason_code),
-            std::move(release.reason_text),
-            release.keep_draining);
+    for (const auto& dispatch : pending) {
+        ContinueContainment(dispatch);
     }
     return !pending.empty();
 }
 
-void JobExecutionCoordinator::Impl::PauseForInvariant(
+void JobExecutionCoordinator::Impl::FaultDispatch(
+    const DispatchPtr& dispatch,
+    CoordinatorIncidentCode code,
+    std::string message,
+    std::string detail,
+    std::int64_t job_id,
+    std::optional<SubmissionWriteDisposition> write_disposition) {
+    EnqueueActor(
+        CoordinatorEventKind::WorkerEvidence,
+        [this, dispatch, code, message = std::move(message),
+         detail = std::move(detail), job_id, write_disposition]() mutable {
+            ApplyFaultDispatch(
+                dispatch,
+                code,
+                std::move(message),
+                std::move(detail),
+                job_id,
+                write_disposition);
+        });
+}
+
+void JobExecutionCoordinator::Impl::ApplyFaultDispatch(
+    const DispatchPtr& dispatch,
+    CoordinatorIncidentCode code,
+    std::string message,
+    std::string detail,
+    std::int64_t job_id,
+    std::optional<SubmissionWriteDisposition> write_disposition) {
+    ++reconstruction_invariant_failures_;
+    invariant_paused_.store(true);
+    JobExecutionCoordinatorIncident incident{
+        .code = code,
+        .job_id = job_id,
+        .write_disposition = write_disposition,
+        .cleanup_action = "release-coordinator-owned-claim",
+        .message = message,
+        .detail = detail,
+    };
+    if (dispatch) {
+        std::lock_guard lock(dispatch->mutex);
+        dispatch->lifecycle = DispatchLifecycle::Faulted;
+        const bool retire =
+            dispatch->ownership == DispatchOwnership::WorkerMayOwn
+            || dispatch->ownership == DispatchOwnership::Worker;
+        dispatch->containment = FaultContainment{
+            .reason_code = "COORDINATOR_INVARIANT_FAILURE",
+            .reason_text = detail,
+            .keep_draining = retire,
+            .retire_worker = retire,
+        };
+        incident.dispatch_attempt_id =
+            dispatch->claimed.dispatch_attempt_id;
+        incident.workset_id = dispatch->claimed.workset_id;
+        incident.worker_id = dispatch->target.worker_id;
+        incident.worker_generation =
+            dispatch->target.process_generation;
+        incident.ownership = dispatch->ownership;
+        incident.lifecycle = dispatch->lifecycle;
+        if (dispatch->pending_effect) {
+            incident.effect_id = dispatch->pending_effect->id;
+            incident.effect_kind = dispatch->pending_effect->kind;
+        }
+        if (retire) {
+            incident.cleanup_action = "retire-worker-generation";
+        }
+    }
+    RecordWarning(
+        message,
+        detail,
+        static_cast<std::int64_t>(incident.worker_id),
+        job_id);
+    RecordError(detail);
+    RecordIncident(std::move(incident));
+    if (dispatch) ContinueContainment(dispatch);
+    WakeScheduler("invariant-pause", false);
+}
+
+void JobExecutionCoordinator::Impl::FaultDispatch(
     const DispatchPtr& dispatch,
     std::string message,
     std::string detail,
     std::int64_t job_id) {
-    ++reconstruction_invariant_failures_;
-    invariant_paused_.store(true);
-    std::int64_t worker_id = 0;
-    if (dispatch) {
-        worker_id = static_cast<std::int64_t>(
-            dispatch->target.worker_id);
+    FaultDispatch(
+        dispatch,
+        CoordinatorIncidentCode::CoordinatorInvariant,
+        std::move(message),
+        std::move(detail),
+        job_id);
+}
+
+void JobExecutionCoordinator::Impl::ContinueContainment(
+    const DispatchPtr& dispatch) {
+    if (!dispatch) return;
+    WorkerExecutionTarget target;
+    bool retire = false;
+    std::string reason_code;
+    std::string reason_text;
+    bool keep_draining = false;
+    {
+        std::lock_guard lock(dispatch->mutex);
+        if (!dispatch->containment.has_value()
+            || dispatch->ownership == DispatchOwnership::Closed
+            || dispatch->retired) return;
+        if (dispatch->pending_effect.has_value()
+            && (dispatch->pending_effect->kind
+                    != CoordinatorEffectKind::Release
+                || dispatch->pending_effect->started_at
+                    != Clock::time_point{}
+                || dispatch->pending_effect->retry_at > Clock::now())) {
+            return;
+        }
+        target = dispatch->target;
+        reason_code = dispatch->containment->reason_code;
+        reason_text = dispatch->containment->reason_text;
+        keep_draining = dispatch->containment->keep_draining;
+        if (dispatch->containment->awaiting_worker_exit) return;
+        retire = dispatch->containment->retire_worker;
+        if (retire) {
+            dispatch->containment->awaiting_worker_exit = true;
+        }
     }
-    RecordWarning(message, detail, worker_id, job_id);
-    RecordError(detail);
-    if (dispatch) {
-        EnqueueActor(
-            CoordinatorEventKind::WorkerEvidence,
-            [this, dispatch, detail]() {
-                bool submitted = false;
-                WorkerExecutionTarget target;
-                std::int64_t dispatch_id = 0;
-                {
-                    std::lock_guard lock(dispatch->mutex);
-                    submitted = dispatch->submitted;
-                    target = dispatch->target;
-                    dispatch_id =
-                        dispatch->claimed.dispatch_attempt_id;
-                }
-                if (submitted) {
-                    EnqueueWorkerControl(
-                        target,
-                        {
-                            .kind =
-                                WorkerControlKind::CancelWorkset,
-                            .dispatch_attempt_id = dispatch_id,
-                            .reason = detail,
-                        });
-                }
-                (void)ReleaseDispatch(
-                    dispatch,
-                    "COORDINATOR_INVARIANT_FAILURE",
-                    detail,
-                    submitted);
-            });
+    if (retire) {
+        (void)worker_coordinator_->RequestWorkerRetirement(
+            target,
+            reason_text.empty()
+                ? "coordinator ownership containment"
+                : reason_text);
+        return;
     }
-    WakeScheduler("invariant-pause", false);
+    (void)ReleaseDispatch(
+        dispatch,
+        std::move(reason_code),
+        std::move(reason_text),
+        keep_draining);
 }
 
 void JobExecutionCoordinator::Impl::ClearWorkerIdentity(
@@ -5793,17 +6810,33 @@ void JobExecutionCoordinator::Impl::ClearWorkerIdentity(
     std::int64_t dispatch_attempt_id) {
     const auto lane =
         FindWorkerMailbox(target.worker_id, target.process_generation);
-    if (!lane) return;
-    std::lock_guard lock(lane->mutex);
-    if (lane->submitting
-        == std::optional<std::int64_t>(dispatch_attempt_id)) {
-        lane->submitting.reset();
+    if (lane) {
+        std::lock_guard lock(lane->mutex);
+        if (lane->submitting
+            == std::optional<std::int64_t>(dispatch_attempt_id)) {
+            lane->submitting.reset();
+        }
+        if (lane->active
+            == std::optional<std::int64_t>(dispatch_attempt_id)) {
+            lane->active.reset();
+        }
+        lane->cv.notify_all();
     }
-    if (lane->active
-        == std::optional<std::int64_t>(dispatch_attempt_id)) {
-        lane->active.reset();
+    if (auto* actor_worker = FindActorWorker(target)) {
+        if (actor_worker->submitting_dispatch_attempt_id
+            == std::optional<std::int64_t>(dispatch_attempt_id)) {
+            actor_worker->submitting_dispatch_attempt_id.reset();
+        }
+        if (actor_worker->active_dispatch_attempt_id
+            == std::optional<std::int64_t>(dispatch_attempt_id)) {
+            actor_worker->active_dispatch_attempt_id.reset();
+        }
+        actor_worker->state =
+            actor_worker->physical.available_item_credits == 0
+            ? JobExecutionWorkerDispatchState::Unavailable
+            : JobExecutionWorkerDispatchState::Ready;
     }
-    lane->cv.notify_all();
+    last_forward_progress_at_ = Clock::now();
 }
 
 void JobExecutionCoordinator::Impl::MaybeRetire(
@@ -5827,10 +6860,10 @@ void JobExecutionCoordinator::Impl::MaybeRetire(
             dispatch->sidecar_persisted_jobs.size() == suppressed;
         detail::DispatchRetirementAuthority authority =
             detail::DispatchRetirementAuthority::None;
-        if (dispatch->phase == DispatchPhase::ReleasedDraining) {
+        if ((dispatch->ownership == DispatchOwnership::Closed && dispatch->released_draining)) {
             authority = detail::DispatchRetirementAuthority::
                 ReleasedDraining;
-        } else if (dispatch->phase == DispatchPhase::Draining) {
+        } else if ((dispatch->ownership == DispatchOwnership::Worker && dispatch->lifecycle == DispatchLifecycle::Draining)) {
             authority = dispatch->draining_transition_persisted
                 ? detail::DispatchRetirementAuthority::
                     DrainingPersisted
@@ -5847,7 +6880,10 @@ void JobExecutionCoordinator::Impl::MaybeRetire(
                     dispatch->acknowledged_jobs.size(),
                 .sidecar_persisted = sidecar_persisted,
             });
-        if (complete) dispatch->phase = DispatchPhase::Retired;
+        if (complete) {
+            dispatch->ownership = DispatchOwnership::Closed;
+            dispatch->retired = true;
+        }
     }
     if (!complete) return;
     UnregisterLeaseHeartbeat(dispatch_id, claim_token);
@@ -5862,8 +6898,8 @@ void JobExecutionCoordinator::Impl::RegisterLeaseHeartbeat(
     savor::db::ClaimedPublishedWorkset claimed;
     {
         std::lock_guard lock(dispatch->mutex);
-        if (dispatch->phase != DispatchPhase::Active
-            || !dispatch->dispatch_marked
+        if (dispatch->ownership != DispatchOwnership::Worker
+            || dispatch->lifecycle != DispatchLifecycle::Active
             || dispatch->terminal_workset_state_observed) {
             return;
         }
@@ -5953,20 +6989,23 @@ void JobExecutionCoordinator::Impl::LeaseHeartbeatLoop() {
                     entry.claim_token);
                 continue;
             }
-            DispatchPhase phase = DispatchPhase::Released;
+            DispatchOwnership ownership = DispatchOwnership::Closed;
+            DispatchLifecycle lifecycle = DispatchLifecycle::Faulted;
             WorkerExecutionTarget target{};
             std::string durable_token;
             std::string expected_sidecar_sha256;
             {
                 std::lock_guard lock(dispatch->mutex);
-                phase = dispatch->phase;
+                ownership = dispatch->ownership;
+                lifecycle = dispatch->lifecycle;
                 target = dispatch->target;
                 durable_token = dispatch->claimed.claim_token;
                 expected_sidecar_sha256 =
                     dispatch->cancellation_sidecar_sha256;
             }
             if (durable_token != entry.claim_token
-                || phase != DispatchPhase::Active) {
+                || ownership != DispatchOwnership::Worker
+                || lifecycle != DispatchLifecycle::Active) {
                 UnregisterLeaseHeartbeat(
                     entry.dispatch_attempt_id,
                     entry.claim_token);
@@ -6014,7 +7053,8 @@ void JobExecutionCoordinator::Impl::HandleLeaseHeartbeatResult(
     {
         std::lock_guard lock(dispatch->mutex);
         if (dispatch->claimed.claim_token != claim_token
-            || dispatch->phase != DispatchPhase::Active) {
+            || dispatch->ownership != DispatchOwnership::Worker
+            || dispatch->lifecycle != DispatchLifecycle::Active) {
             return;
         }
         if (call_succeeded && Applied(receipt.disposition)) {
@@ -6052,7 +7092,8 @@ void JobExecutionCoordinator::Impl::HandleLeaseHeartbeatResult(
     WorkerExecutionTarget target;
     {
         std::lock_guard lock(dispatch->mutex);
-        submitted = dispatch->submitted;
+        submitted = dispatch->ownership == DispatchOwnership::Worker
+            || dispatch->ownership == DispatchOwnership::WorkerMayOwn;
         target = dispatch->target;
     }
     if (submitted) {
@@ -6082,10 +7123,22 @@ void JobExecutionCoordinator::Impl::RecordWarning(
     std::string detail,
     std::int64_t worker_id,
     std::int64_t job_id) {
+    RecordTypedWarning(
+        JobExecutionCoordinatorWarning::Code::General,
+        std::move(message), std::move(detail), worker_id, job_id);
+}
+
+void JobExecutionCoordinator::Impl::RecordTypedWarning(
+    JobExecutionCoordinatorWarning::Code code,
+    std::string message,
+    std::string detail,
+    std::int64_t worker_id,
+    std::int64_t job_id) {
     std::lock_guard lock(warning_mutex_);
     warnings_.push_back(
         {
             .sequence = ++warning_sequence_,
+            .code = code,
             .worker_id = worker_id,
             .job_id = job_id,
             .observed_mono_ns = NowMonoNs(),
@@ -6098,6 +7151,15 @@ void JobExecutionCoordinator::Impl::RecordWarning(
 void JobExecutionCoordinator::Impl::RecordError(std::string error) {
     std::lock_guard lock(error_mutex_);
     last_error_ = std::move(error);
+}
+
+void JobExecutionCoordinator::Impl::RecordIncident(
+    JobExecutionCoordinatorIncident incident) {
+    incident.observed_mono_ns = NowMonoNs();
+    std::lock_guard lock(incident_mutex_);
+    incident.sequence = ++incident_sequence_;
+    incidents_.push_back(std::move(incident));
+    while (incidents_.size() > 128) incidents_.pop_front();
 }
 
 void JobExecutionCoordinator::Impl::RecordCancellationResolution(
@@ -6132,16 +7194,14 @@ JobExecutionCoordinator::~JobExecutionCoordinator() = default;
 bool JobExecutionCoordinator::Start(std::string* error_out) {
     return impl_->Start(error_out);
 }
-void JobExecutionCoordinator::Quiesce() { impl_->Quiesce(); }
-bool JobExecutionCoordinator::ReleaseBufferedClaims(
+bool JobExecutionCoordinator::BeginShutdown(
     std::string* error_out) {
-    return impl_->ReleaseBufferedClaims(error_out);
+    return impl_->BeginShutdown(error_out);
 }
-bool JobExecutionCoordinator::RecoverAfterWorkersStopped(
+bool JobExecutionCoordinator::FinishShutdownAfterWorkersStopped(
     std::string* error_out) {
-    return impl_->RecoverAfterWorkersStopped(error_out);
+    return impl_->FinishShutdownAfterWorkersStopped(error_out);
 }
-void JobExecutionCoordinator::Stop() { impl_->Stop(); }
 void JobExecutionCoordinator::SetPaused(bool paused) {
     impl_->SetPaused(paused);
 }
@@ -6180,6 +7240,10 @@ JobExecutionCoordinator::SnapshotWorkerDispatches() const {
 std::vector<JobExecutionCoordinatorWarning>
 JobExecutionCoordinator::SnapshotWarnings() const {
     return impl_->SnapshotWarnings();
+}
+std::vector<JobExecutionCoordinatorIncident>
+JobExecutionCoordinator::SnapshotIncidents() const {
+    return impl_->SnapshotIncidents();
 }
 
 } // namespace savor::runner::parallel::savordb

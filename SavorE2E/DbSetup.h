@@ -8,6 +8,7 @@
 #include "Authoring/IAuthoringDb.h"
 #include "Analysis/IAnalysisDb.h"
 #include "Common/DbConfigPaths.h"
+#include "Common/WorkspaceStagingCleanup.h"
 #include "Execution/IExecutionDb.h"
 #include "State/IStateDb.h"
 
@@ -20,6 +21,12 @@ savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options);
 bool ResetScenarioWorkspace(
     const CliOptions& options,
     std::filesystem::path* workspace_root_out,
+    std::string* error_out);
+
+bool ResetScenarioStaging(
+    const CliOptions& options,
+    std::filesystem::path* workspace_root_out,
+    savor::db::WorkspaceStagingCleanupSummary* summary_out,
     std::string* error_out);
 
 bool CheckWorkflowQuiescence(

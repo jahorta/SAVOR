@@ -60,10 +60,12 @@ struct JobExecutionCoordinatorConfig {
     std::chrono::milliseconds terminal_retry_max_interval{30000};
     std::chrono::milliseconds blob_readiness_retry_interval{1000};
     std::chrono::milliseconds blob_readiness_retry_max_interval{30000};
+    std::chrono::milliseconds stall_diagnostic_threshold{30000};
     // Global preparation capacity per currently ready worker. Prepared
     // worksets are not owned by a worker until submission begins.
     std::size_t prepared_worksets_per_ready_worker = 2;
     std::size_t persistence_io_threads = 4;
+    std::size_t reconstruction_io_threads = 40;
     std::size_t max_pending_evidence_per_dispatch = 4096;
     std::size_t cancellation_batch_size = 32;
     std::chrono::milliseconds cancellation_mutation_delay{2};
@@ -75,10 +77,112 @@ struct JobExecutionCoordinatorConfig {
 };
 
 struct JobExecutionCoordinatorWarning {
+    enum class Code : std::uint8_t {
+        General = 0,
+        ReconstructionStalled,
+        DurableIoStalled,
+        NoForwardProgress,
+        WorkerStateDrift,
+    };
+
     std::uint64_t sequence = 0;
+    Code code = Code::General;
     std::int64_t worker_id = 0;
     std::int64_t job_id = 0;
     std::int64_t observed_mono_ns = 0;
+    std::string message;
+    std::string detail;
+};
+
+enum class DispatchOwnership : std::uint8_t {
+    Coordinator = 0,
+    WorkerMayOwn,
+    Worker,
+    Closed,
+};
+
+enum class DispatchLifecycle : std::uint8_t {
+    Claimed = 0,
+    Prepared,
+    Active,
+    Draining,
+    Faulted,
+};
+
+enum class CoordinatorEffectKind : std::uint8_t {
+    Claim = 0,
+    Reconstruction,
+    Submission,
+    ResidenceConfirmation,
+    DurableActivation,
+    MarkDraining,
+    Release,
+    ShutdownRecovery,
+};
+
+enum class CoordinatorIncidentCode : std::uint8_t {
+    EffectCompletionMismatch = 0,
+    EffectCompletionDuplicate,
+    EffectCompletionMissing,
+    SubmissionContractRejected,
+    SubmissionEvidenceInvalid,
+    WorkerOwnershipAmbiguous,
+    DurableAuthorityLost,
+    ShutdownEffectStalled,
+    CoordinatorInvariant,
+};
+
+namespace detail {
+
+enum class EffectCompletionClassification : std::uint8_t {
+    Match = 0,
+    DuplicateOrMissing,
+    Mismatch,
+};
+
+[[nodiscard]] EffectCompletionClassification ClassifyEffectCompletion(
+    std::optional<std::uint64_t> expected_effect_id,
+    std::optional<CoordinatorEffectKind> expected_effect_kind,
+    std::uint64_t completed_effect_id,
+    CoordinatorEffectKind completed_effect_kind) noexcept;
+
+enum class SubmissionOwnershipDirective : std::uint8_t {
+    CoordinatorRetains = 0,
+    ConfirmResidence,
+    ValidateWrittenEvidence,
+};
+
+[[nodiscard]] SubmissionOwnershipDirective ClassifySubmissionOwnership(
+    SubmissionWriteDisposition disposition) noexcept;
+
+} // namespace detail
+
+enum class CoordinatorShutdownStage : std::uint8_t {
+    Running = 0,
+    Quiescing,
+    AwaitingWorkersStopped,
+    DrainingEvents,
+    Recovering,
+    Recovered,
+    Stopped,
+};
+
+struct JobExecutionCoordinatorIncident {
+    std::uint64_t sequence = 0;
+    CoordinatorIncidentCode code =
+        CoordinatorIncidentCode::CoordinatorInvariant;
+    std::int64_t dispatch_attempt_id = 0;
+    std::int64_t workset_id = 0;
+    std::int64_t job_id = 0;
+    std::size_t worker_id = 0;
+    std::uint64_t worker_generation = 0;
+    DispatchOwnership ownership = DispatchOwnership::Coordinator;
+    DispatchLifecycle lifecycle = DispatchLifecycle::Claimed;
+    std::uint64_t effect_id = 0;
+    std::optional<CoordinatorEffectKind> effect_kind;
+    std::optional<SubmissionWriteDisposition> write_disposition;
+    std::int64_t observed_mono_ns = 0;
+    std::string cleanup_action;
     std::string message;
     std::string detail;
 };
@@ -102,6 +206,10 @@ enum class JobExecutionDispatchPersistenceState : std::uint8_t {
 struct JobExecutionWorkerDispatchSnapshot {
     std::size_t worker_id = 0;
     std::uint64_t process_generation = 0;
+    savor::runtime::WorkerMode mode = savor::runtime::WorkerMode::Headless;
+    std::string runtime_contract_sha256;
+    std::uint32_t available_item_credits = 0;
+    bool accepting_workset = false;
     JobExecutionWorkerDispatchState state =
         JobExecutionWorkerDispatchState::Unavailable;
     std::optional<std::int64_t> submitting_dispatch_attempt_id;
@@ -197,7 +305,8 @@ struct JobExecutionCoordinatorTelemetry {
     std::size_t reconstruction_queue_depth = 0;
     std::size_t reconstruction_queue_high_water = 0;
     std::uint64_t reconstruction_oldest_item_age_ms = 0;
-    bool reconstruction_active = false;
+    std::size_t reconstruction_active_tasks = 0;
+    std::uint64_t reconstruction_oldest_active_age_ms = 0;
     std::uint64_t reconstruction_total_duration_ms = 0;
     std::uint64_t reconstruction_max_duration_ms = 0;
     std::size_t global_prepared_worksets = 0;
@@ -209,6 +318,12 @@ struct JobExecutionCoordinatorTelemetry {
     std::uint64_t persistence_oldest_event_age_ms = 0;
     std::size_t active_worker_streams = 0;
     std::size_t mailbox_command_depth = 0;
+    std::size_t ready_workers = 0;
+    std::size_t unavailable_workers = 0;
+    std::uint64_t no_forward_progress_age_ms = 0;
+    std::string no_forward_progress_reason;
+    std::size_t coordination_io_queue_depth = 0;
+    std::uint64_t coordination_io_active_age_ms = 0;
     std::size_t worker_control_queue_high_water = 0;
     std::uint64_t worker_control_oldest_command_age_ms = 0;
     std::size_t pending_acknowledgements = 0;
@@ -226,12 +341,20 @@ struct JobExecutionCoordinatorTelemetry {
     std::map<std::string, std::uint64_t>
         dispatch_release_reason_counts;
     std::map<std::string, std::uint64_t>
-        dispatch_release_phase_counts;
+        dispatch_release_state_counts;
     bool blob_store_ready = false;
     bool cancellation_admission_open = false;
     bool user_admission_paused = false;
     bool invariant_admission_paused = false;
     bool global_storage_unavailable = false;
+
+    std::optional<JobExecutionCoordinatorIncident> latest_incident;
+    CoordinatorShutdownStage shutdown_stage =
+        CoordinatorShutdownStage::Stopped;
+    std::uint64_t shutdown_stage_age_ms = 0;
+    std::size_t outstanding_effects = 0;
+    std::size_t workers_awaiting_exit = 0;
+    std::uint64_t shutdown_recovered_dispatches = 0;
 
     std::string last_error;
 };
@@ -252,10 +375,9 @@ public:
         delete;
 
     bool Start(std::string* error_out = nullptr);
-    void Quiesce();
-    bool ReleaseBufferedClaims(std::string* error_out = nullptr);
-    bool RecoverAfterWorkersStopped(std::string* error_out = nullptr);
-    void Stop();
+    bool BeginShutdown(std::string* error_out = nullptr);
+    bool FinishShutdownAfterWorkersStopped(
+        std::string* error_out = nullptr);
 
     void SetPaused(bool paused);
     [[nodiscard]] bool IsPaused() const noexcept;
@@ -275,6 +397,8 @@ public:
         SnapshotWorkerDispatches() const;
     [[nodiscard]] std::vector<JobExecutionCoordinatorWarning>
         SnapshotWarnings() const;
+    [[nodiscard]] std::vector<JobExecutionCoordinatorIncident>
+        SnapshotIncidents() const;
 
 private:
     class Impl;
