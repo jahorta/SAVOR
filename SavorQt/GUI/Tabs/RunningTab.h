@@ -13,7 +13,7 @@ class QPushButton;
 class QSpinBox;
 class QCheckBox;
 class QTabWidget;
-class QTableWidget;
+class QTableView;
 class QVBoxLayout;
 class QPoint;
 
@@ -80,8 +80,8 @@ private:
     QLabel* workerSummaryLabel_ = nullptr;
     QLabel* attentionSummaryLabel_ = nullptr;
 
-    QTableWidget* workflowTable_ = nullptr;
-    QTableWidget* workerTable_ = nullptr;
+    QTableView* workflowTable_ = nullptr;
+    QTableView* workerTable_ = nullptr;
     QTabWidget* detailTabs_ = nullptr;
     QVBoxLayout* queueBucketsLayout_ = nullptr;
     QVBoxLayout* attentionLayout_ = nullptr;

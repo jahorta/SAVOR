@@ -455,9 +455,23 @@ std::vector<WorkflowStepSettlementSnapshot> SqliteWorkflowOrchestrationQueryServ
         "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id, s.priority, i.state AS workflow_state "
         "  FROM exec_workflow_step s "
         "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
-        "  WHERE i.state IN ('PENDING','RUNNING') "
-        "    AND s.state IN ('MATERIALIZED','RUNNING') "
-        "    AND s.job_set_id IS NOT NULL "
+        "  WHERE s.job_set_id IS NOT NULL "
+        "    AND ((i.state IN ('PENDING','RUNNING') "
+        "          AND s.state IN ('MATERIALIZED','RUNNING')) "
+        "         OR EXISTS ("
+        "           SELECT 1 FROM exec_workflow_transition_activation a "
+        "           WHERE a.workflow_instance_id=s.workflow_instance_id "
+        "             AND a.source_workflow_step_id=s.workflow_step_id "
+        "             AND a.activation_kind='SETTLEMENT' "
+        "             AND a.state='FROZEN'"
+        "         )) "
+        "    AND NOT EXISTS ("
+        "      SELECT 1 FROM exec_workflow_transition_activation a "
+        "      WHERE a.workflow_instance_id=s.workflow_instance_id "
+        "        AND a.source_workflow_step_id=s.workflow_step_id "
+        "        AND a.activation_kind='SETTLEMENT' "
+        "        AND a.state='APPLIED'"
+        "    ) "
         "), "
         "workflow_step_job_sets(workflow_instance_id, workflow_step_id, workflow_unit_activation_id, workflow_kind, workflow_graph_revision_id, step_key, graph_node_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, priority, workflow_state, job_set_id) AS ("
         "  SELECT workflow_instance_id, workflow_step_id, workflow_unit_activation_id, workflow_kind, workflow_graph_revision_id, step_key, graph_node_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, priority, workflow_state, job_set_id "
@@ -774,6 +788,50 @@ SqliteWorkflowOrchestrationQueryService::ListStepOutputs(std::int64_t workflow_i
     }
 
     return rows;
+}
+
+std::optional<WorkflowTransitionActivationRecord>
+SqliteWorkflowOrchestrationQueryService::GetWorkflowTransitionActivation(
+    std::int64_t workflow_instance_id,
+    std::string_view activation_key) const {
+    Statement st;
+    if (!Prepare(db_,
+        "SELECT workflow_transition_activation_id, workflow_instance_id, "
+        "source_workflow_step_id, activation_kind, activation_key, "
+        "trigger_fingerprint, decision_payload, decision_sha256, state, "
+        "disposition, last_operation_diagnostic "
+        "FROM exec_workflow_transition_activation "
+        "WHERE workflow_instance_id=?1 AND activation_key=?2;",
+        &st, nullptr)) return std::nullopt;
+    sqlite3_bind_int64(st.st, 1, workflow_instance_id);
+    sqlite3_bind_text(st.st, 2, activation_key.data(),
+        static_cast<int>(activation_key.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) return std::nullopt;
+    WorkflowTransitionActivationRecord row{};
+    row.workflow_transition_activation_id = sqlite3_column_int64(st.st, 0);
+    row.workflow_instance_id = sqlite3_column_int64(st.st, 1);
+    row.source_workflow_step_id = sqlite3_column_int64(st.st, 2);
+    const auto text = [&](int column) {
+        const auto* value = sqlite3_column_text(st.st, column);
+        return value != nullptr
+            ? std::string(reinterpret_cast<const char*>(value))
+            : std::string{};
+    };
+    row.activation_kind = text(3) == "MANUAL_BATTLE_CONTINUATION"
+        ? WorkflowTransitionActivationKind::ManualBattleContinuation
+        : WorkflowTransitionActivationKind::Settlement;
+    row.activation_key = text(4);
+    row.trigger_fingerprint = text(5);
+    row.decision_payload = text(6);
+    row.decision_sha256 = text(7);
+    row.state = text(8) == "APPLIED"
+        ? WorkflowTransitionActivationState::Applied
+        : WorkflowTransitionActivationState::Frozen;
+    if (sqlite3_column_type(st.st, 9) != SQLITE_NULL)
+        row.disposition = text(9);
+    if (sqlite3_column_type(st.st, 10) != SQLITE_NULL)
+        row.last_operation_diagnostic = text(10);
+    return row;
 }
 
 SqliteWorkflowOrchestrationCommandService::SqliteWorkflowOrchestrationCommandService(sqlite3* db)
@@ -3065,6 +3123,268 @@ bool SqliteWorkflowOrchestrationCommandService::AppendLifecycleEvent(
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
     }
+    return true;
+}
+
+bool SqliteWorkflowOrchestrationCommandService::FreezeTransitionActivation(
+    const WorkflowFreezeTransitionActivationCommand& command,
+    WorkflowFreezeTransitionActivationReceipt* receipt_out,
+    std::string* error_out) {
+    if (receipt_out) *receipt_out = {};
+    if (command.workflow_instance_id <= 0
+        || command.source_workflow_step_id <= 0
+        || command.activation_key.empty()
+        || command.trigger_fingerprint.empty()
+        || command.decision_payload.empty()
+        || command.decision_sha256.size() != 64
+        || command.requested_by.empty()) {
+        if (error_out) *error_out = "workflow transition activation is incomplete";
+        return false;
+    }
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) return false;
+    const auto rollback = [&]() { (void)Exec(db_, "ROLLBACK;", nullptr); };
+    Statement existing;
+    if (!Prepare(db_,
+        "SELECT workflow_transition_activation_id, source_workflow_step_id, "
+        "activation_kind, trigger_fingerprint, decision_payload, decision_sha256, "
+        "state, disposition, last_operation_diagnostic "
+        "FROM exec_workflow_transition_activation "
+        "WHERE workflow_instance_id=?1 AND activation_key=?2;",
+        &existing, error_out)) {
+        rollback();
+        return false;
+    }
+    sqlite3_bind_int64(existing.st, 1, command.workflow_instance_id);
+    sqlite3_bind_text(existing.st, 2, command.activation_key.c_str(), -1,
+        SQLITE_TRANSIENT);
+    const int existing_rc = sqlite3_step(existing.st);
+    if (existing_rc == SQLITE_ROW) {
+        const auto value = [&](int column) {
+            const auto* text = sqlite3_column_text(existing.st, column);
+            return text != nullptr
+                ? std::string(reinterpret_cast<const char*>(text))
+                : std::string{};
+        };
+        const auto expected_kind = command.activation_kind
+            == WorkflowTransitionActivationKind::ManualBattleContinuation
+            ? "MANUAL_BATTLE_CONTINUATION" : "SETTLEMENT";
+        if (sqlite3_column_int64(existing.st, 1)
+                != command.source_workflow_step_id
+            || value(2) != expected_kind
+            || value(3) != command.trigger_fingerprint
+            || value(4) != command.decision_payload
+            || value(5) != command.decision_sha256) {
+            rollback();
+            if (error_out) *error_out = "WORKFLOW_TRANSITION_DECISION_DRIFT";
+            return false;
+        }
+        if (receipt_out) {
+            auto& row = receipt_out->activation;
+            row.workflow_transition_activation_id =
+                sqlite3_column_int64(existing.st, 0);
+            row.workflow_instance_id = command.workflow_instance_id;
+            row.source_workflow_step_id = command.source_workflow_step_id;
+            row.activation_kind = command.activation_kind;
+            row.activation_key = command.activation_key;
+            row.trigger_fingerprint = command.trigger_fingerprint;
+            row.decision_payload = command.decision_payload;
+            row.decision_sha256 = command.decision_sha256;
+            row.state = value(6) == "APPLIED"
+                ? WorkflowTransitionActivationState::Applied
+                : WorkflowTransitionActivationState::Frozen;
+            if (sqlite3_column_type(existing.st, 7) != SQLITE_NULL)
+                row.disposition = value(7);
+            if (sqlite3_column_type(existing.st, 8) != SQLITE_NULL)
+                row.last_operation_diagnostic = value(8);
+        }
+        if (!Exec(db_, "COMMIT;", error_out)) {
+            rollback();
+            return false;
+        }
+        return true;
+    }
+    if (existing_rc != SQLITE_DONE) {
+        rollback();
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    Statement insert;
+    if (!Prepare(db_,
+        "INSERT INTO exec_workflow_transition_activation("
+        "workflow_instance_id, source_workflow_step_id, activation_kind, "
+        "activation_key, trigger_fingerprint, decision_payload, decision_sha256, "
+        "state, created_at_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,'FROZEN',"
+        "CAST(unixepoch('subsec')*1000 AS INTEGER));",
+        &insert, error_out)) {
+        rollback();
+        return false;
+    }
+    const auto kind = command.activation_kind
+        == WorkflowTransitionActivationKind::ManualBattleContinuation
+        ? "MANUAL_BATTLE_CONTINUATION" : "SETTLEMENT";
+    sqlite3_bind_int64(insert.st, 1, command.workflow_instance_id);
+    sqlite3_bind_int64(insert.st, 2, command.source_workflow_step_id);
+    sqlite3_bind_text(insert.st, 3, kind, -1, SQLITE_STATIC);
+    sqlite3_bind_text(insert.st, 4, command.activation_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 5, command.trigger_fingerprint.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 6, command.decision_payload.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 7, command.decision_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(insert.st) != SQLITE_DONE) {
+        rollback();
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    const auto activation_id = sqlite3_last_insert_rowid(db_);
+    Statement event;
+    if (!Prepare(db_,
+        "INSERT INTO exec_workflow_event(workflow_instance_id,workflow_step_id,"
+        "event_kind,event_ts_utc,message,detail_ref_kind,detail_ref_id) "
+        "VALUES(?1,?2,'Execution.WorkflowTransitionEvaluated.v1',"
+        "CAST(unixepoch('subsec')*1000 AS INTEGER),?3,"
+        "'exec_workflow_transition_activation',?4);",
+        &event, error_out)) {
+        rollback();
+        return false;
+    }
+    const std::string message = "activation=" + std::to_string(activation_id)
+        + ";decision_sha256=" + command.decision_sha256;
+    sqlite3_bind_int64(event.st, 1, command.workflow_instance_id);
+    sqlite3_bind_int64(event.st, 2, command.source_workflow_step_id);
+    sqlite3_bind_text(event.st, 3, message.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(event.st, 4, activation_id);
+    if (sqlite3_step(event.st) != SQLITE_DONE || !Exec(db_, "COMMIT;", error_out)) {
+        rollback();
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (receipt_out) {
+        receipt_out->created = true;
+        receipt_out->activation = {
+            .workflow_transition_activation_id = activation_id,
+            .workflow_instance_id = command.workflow_instance_id,
+            .source_workflow_step_id = command.source_workflow_step_id,
+            .activation_kind = command.activation_kind,
+            .activation_key = command.activation_key,
+            .trigger_fingerprint = command.trigger_fingerprint,
+            .decision_payload = command.decision_payload,
+            .decision_sha256 = command.decision_sha256,
+        };
+    }
+    if (error_out) error_out->clear();
+    return true;
+}
+
+bool SqliteWorkflowOrchestrationCommandService::ApplyTransitionActivation(
+    const WorkflowApplyTransitionActivationCommand& command,
+    std::string* error_out) {
+    if (command.workflow_transition_activation_id <= 0
+        || command.expected_decision_sha256.size() != 64
+        || command.disposition.empty() || command.requested_by.empty()) {
+        if (error_out) *error_out = "workflow transition application is incomplete";
+        return false;
+    }
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) return false;
+    const auto rollback = [&]() { (void)Exec(db_, "ROLLBACK;", nullptr); };
+    Statement read;
+    if (!Prepare(db_,
+        "SELECT workflow_instance_id,source_workflow_step_id,decision_sha256,state "
+        "FROM exec_workflow_transition_activation "
+        "WHERE workflow_transition_activation_id=?1;",
+        &read, error_out)) {
+        rollback();
+        return false;
+    }
+    sqlite3_bind_int64(read.st, 1, command.workflow_transition_activation_id);
+    if (sqlite3_step(read.st) != SQLITE_ROW) {
+        rollback();
+        if (error_out) *error_out = "workflow transition activation was not found";
+        return false;
+    }
+    const auto workflow_id = sqlite3_column_int64(read.st, 0);
+    const auto step_id = sqlite3_column_int64(read.st, 1);
+    const std::string sha = reinterpret_cast<const char*>(sqlite3_column_text(read.st, 2));
+    const std::string state = reinterpret_cast<const char*>(sqlite3_column_text(read.st, 3));
+    if (sha != command.expected_decision_sha256) {
+        rollback();
+        if (error_out) *error_out = "WORKFLOW_TRANSITION_DECISION_DRIFT";
+        return false;
+    }
+    if (state == "APPLIED") {
+        if (!Exec(db_, "COMMIT;", error_out)) {
+            rollback();
+            return false;
+        }
+        return true;
+    }
+    Statement update;
+    if (!Prepare(db_,
+        "UPDATE exec_workflow_transition_activation SET state='APPLIED',"
+        "disposition=?2,last_operation_diagnostic=NULL,"
+        "applied_at_utc=CAST(unixepoch('subsec')*1000 AS INTEGER) "
+        "WHERE workflow_transition_activation_id=?1 AND state='FROZEN';",
+        &update, error_out)) {
+        rollback();
+        return false;
+    }
+    sqlite3_bind_int64(update.st, 1, command.workflow_transition_activation_id);
+    sqlite3_bind_text(update.st, 2, command.disposition.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(update.st) != SQLITE_DONE || sqlite3_changes(db_) != 1) {
+        rollback();
+        if (error_out) *error_out = "workflow transition activation could not be applied";
+        return false;
+    }
+    Statement event;
+    const bool advanced = command.disposition == "ADVANCED"
+        || command.disposition == "COMPLETED";
+    if (!Prepare(db_,
+        "INSERT INTO exec_workflow_event(workflow_instance_id,workflow_step_id,"
+        "event_kind,event_ts_utc,message,detail_ref_kind,detail_ref_id) "
+        "VALUES(?1,?2,?3,CAST(unixepoch('subsec')*1000 AS INTEGER),?4,"
+        "'exec_workflow_transition_activation',?5);",
+        &event, error_out)) {
+        rollback();
+        return false;
+    }
+    const auto event_kind = advanced
+        ? "Execution.WorkflowTransitionAdvanced.v1"
+        : "Execution.WorkflowTransitionBlocked.v1";
+    const std::string message = "activation="
+        + std::to_string(command.workflow_transition_activation_id)
+        + ";disposition=" + command.disposition;
+    sqlite3_bind_int64(event.st, 1, workflow_id);
+    sqlite3_bind_int64(event.st, 2, step_id);
+    sqlite3_bind_text(event.st, 3, event_kind, -1, SQLITE_STATIC);
+    sqlite3_bind_text(event.st, 4, message.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(event.st, 5, command.workflow_transition_activation_id);
+    if (sqlite3_step(event.st) != SQLITE_DONE || !Exec(db_, "COMMIT;", error_out)) {
+        rollback();
+        if (error_out && error_out->empty()) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (error_out) error_out->clear();
+    return true;
+}
+
+bool SqliteWorkflowOrchestrationCommandService::RecordTransitionActivationFailure(
+    const WorkflowRecordTransitionActivationFailureCommand& command,
+    std::string* error_out) {
+    Statement update;
+    if (!Prepare(db_,
+        "UPDATE exec_workflow_transition_activation "
+        "SET last_operation_diagnostic=?3 "
+        "WHERE workflow_transition_activation_id=?1 AND decision_sha256=?2 "
+        "AND state='FROZEN';",
+        &update, error_out)) return false;
+    sqlite3_bind_int64(update.st, 1, command.workflow_transition_activation_id);
+    sqlite3_bind_text(update.st, 2, command.expected_decision_sha256.c_str(), -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_text(update.st, 3, command.diagnostic.c_str(), -1,
+        SQLITE_TRANSIENT);
+    if (sqlite3_step(update.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (error_out) error_out->clear();
     return true;
 }
 

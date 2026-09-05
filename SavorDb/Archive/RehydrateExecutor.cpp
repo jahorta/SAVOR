@@ -791,6 +791,7 @@ RehydratePackagePreviewResult SqliteRehydrateExecutor::PreviewPackage(const Rehy
         {"workflow_unit_activations", "$.workflow_unit_activation_id", "workflow_unit_activation", "exec_workflow_unit_activation", "workflow_unit_activation_id", execution_db_},
         {"workflow_unit_activation_edges", "$.workflow_unit_activation_edge_id", "workflow_unit_activation_edge", "exec_workflow_unit_activation_edge", "workflow_unit_activation_edge_id", execution_db_},
         {"workflow_steps", "$.workflow_step_id", "workflow_step", "exec_workflow_step", "workflow_step_id", execution_db_},
+        {"workflow_transition_activations", "$.workflow_transition_activation_id", "workflow_transition_activation", "exec_workflow_transition_activation", "workflow_transition_activation_id", execution_db_},
         {"workflow_edges", "$.workflow_edge_id", "workflow_edge", "exec_workflow_edge", "workflow_edge_id", execution_db_},
         {"workflow_events", "$.workflow_event_id", "workflow_event", "exec_workflow_event", "workflow_event_id", execution_db_},
         {"workflow_step_outputs", "$.workflow_step_output_id", "workflow_step_output", "exec_workflow_step_output", "workflow_step_output_id", execution_db_},
@@ -2009,6 +2010,45 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     if (input_ref_id.has_value()) sqlite3_bind_int64(st.st, 6, *input_ref_id); else sqlite3_bind_null(st.st, 6);
                     if (output_ref_id.has_value()) sqlite3_bind_int64(st.st, 7, *output_ref_id); else sqlite3_bind_null(st.st, 7);
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
+                } else if (kind == "workflow_transition_activations") {
+                    bool ok_id = false;
+                    bool ok_instance = false;
+                    bool ok_step = false;
+                    const auto old_id = JsonExtractInt(execution_db_, line,
+                        "$.workflow_transition_activation_id", &ok_id);
+                    const auto old_instance = JsonExtractInt(execution_db_, line,
+                        "$.workflow_instance_id", &ok_instance);
+                    const auto old_step = JsonExtractInt(execution_db_, line,
+                        "$.source_workflow_step_id", &ok_step);
+                    if (!ok_id || !ok_instance || !ok_step) continue;
+                    const auto new_id = map_id(
+                        "workflow_transition_activation", old_id);
+                    const auto new_instance = map_id(
+                        "workflow_instance", old_instance);
+                    const auto new_step = map_id("workflow_step", old_step);
+                    if (new_id == 0 || new_instance == 0 || new_step == 0) break;
+                    Statement st;
+                    if (!Prepare(execution_db_,
+                            "INSERT INTO exec_workflow_transition_activation("
+                            "workflow_transition_activation_id,workflow_instance_id,"
+                            "source_workflow_step_id,activation_kind,activation_key,"
+                            "trigger_fingerprint,decision_payload,decision_sha256,state,"
+                            "disposition,last_operation_diagnostic,created_at_utc,applied_at_utc) "
+                            "VALUES(?1,?2,?3,json_extract(?4,'$.activation_kind'),"
+                            "json_extract(?4,'$.activation_key'),"
+                            "json_extract(?4,'$.trigger_fingerprint'),"
+                            "json_extract(?4,'$.decision_payload'),"
+                            "json_extract(?4,'$.decision_sha256'),"
+                            "json_extract(?4,'$.state'),json_extract(?4,'$.disposition'),"
+                            "json_extract(?4,'$.last_operation_diagnostic'),"
+                            "json_extract(?4,'$.created_at_utc'),"
+                            "json_extract(?4,'$.applied_at_utc'));",
+                            &st, &db_error)) break;
+                    sqlite3_bind_int64(st.st, 1, new_id);
+                    sqlite3_bind_int64(st.st, 2, new_instance);
+                    sqlite3_bind_int64(st.st, 3, new_step);
+                    sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (!StepDone(execution_db_, st.st, &db_error)) break;
                 } else if (kind == "workflow_edges") {
                     bool ok_id = false;
                     bool ok_instance = false;
@@ -2137,16 +2177,30 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto new_instance = map_id("workflow_instance", old_instance);
                     const auto new_step = ok_step ? map_id("workflow_step", old_step) : 0;
                     if (new_id == 0 || new_instance == 0 || (ok_step && new_step == 0)) break;
+                    bool ok_detail_id = false;
+                    bool ok_detail_kind = false;
+                    const auto old_detail_id = JsonExtractInt(
+                        execution_db_, line, "$.detail_ref_id", &ok_detail_id);
+                    const auto detail_kind = JsonExtractText(
+                        execution_db_, line, "$.detail_ref_kind", &ok_detail_kind);
+                    auto new_detail_id = old_detail_id;
+                    if (ok_detail_id && ok_detail_kind
+                        && detail_kind == "exec_workflow_transition_activation") {
+                        new_detail_id = map_id(
+                            "workflow_transition_activation", old_detail_id);
+                        if (new_detail_id == 0) break;
+                    }
                     Statement st;
                     if (!Prepare(execution_db_,
                             "INSERT INTO exec_workflow_event(workflow_event_id,workflow_instance_id,workflow_step_id,event_kind,event_ts_utc,message,detail_ref_kind,detail_ref_id) "
-                            "VALUES(?1,?2,?3,json_extract(?4,'$.event_kind'),json_extract(?4,'$.event_ts_utc'),json_extract(?4,'$.message'),json_extract(?4,'$.detail_ref_kind'),json_extract(?4,'$.detail_ref_id'));",
+                            "VALUES(?1,?2,?3,json_extract(?4,'$.event_kind'),json_extract(?4,'$.event_ts_utc'),json_extract(?4,'$.message'),json_extract(?4,'$.detail_ref_kind'),?5);",
                             &st,
                             &db_error)) break;
                     sqlite3_bind_int64(st.st, 1, new_id);
                     sqlite3_bind_int64(st.st, 2, new_instance);
                     if (ok_step) sqlite3_bind_int64(st.st, 3, new_step); else sqlite3_bind_null(st.st, 3);
                     sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (ok_detail_id) sqlite3_bind_int64(st.st, 5, new_detail_id); else sqlite3_bind_null(st.st, 5);
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
                 } else if (kind == "triggers") {
                     bool ok_id = false;

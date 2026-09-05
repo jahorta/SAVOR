@@ -474,6 +474,14 @@ std::vector<ExportSpec> BuildExportSpecs(const CreateArchivePackageRequest& requ
     });
 
     specs.push_back(ExportSpec{
+        "workflow_transition_activations",
+        scoped_instances
+            + "SELECT * FROM exec_workflow_transition_activation "
+              "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM scoped_instances) "
+              "ORDER BY workflow_transition_activation_id ASC;"
+    });
+
+    specs.push_back(ExportSpec{
         "workflow_edges",
         scoped_instances
             + "SELECT * FROM exec_workflow_edge "
@@ -800,6 +808,9 @@ std::vector<ExportSpec> BuildWorkflowExecutionSpecs(
     std::vector<ExportSpec> specs;
     specs.push_back({"workflow_instances", "SELECT * FROM exec_workflow_instance WHERE workflow_instance_id IN (" + ids + ") ORDER BY workflow_instance_id ASC;"});
     specs.push_back({"workflow_steps", "SELECT * FROM exec_workflow_step WHERE workflow_instance_id IN (" + ids + ") ORDER BY workflow_step_id ASC;"});
+    if (IsTablePresent(execution_db, "exec_workflow_transition_activation", nullptr)) {
+        specs.push_back({"workflow_transition_activations", "SELECT * FROM exec_workflow_transition_activation WHERE workflow_instance_id IN (" + ids + ") ORDER BY workflow_transition_activation_id ASC;"});
+    }
     specs.push_back({"workflow_edges", "SELECT * FROM exec_workflow_edge WHERE workflow_instance_id IN (" + ids + ") ORDER BY workflow_edge_id ASC;"});
     if (IsTablePresent(execution_db, "exec_workflow_unit_activation", nullptr)) {
         specs.push_back({"workflow_unit_activations", "SELECT * FROM exec_workflow_unit_activation WHERE workflow_instance_id IN (" + ids + ") ORDER BY workflow_unit_activation_id ASC;"});
@@ -3903,6 +3914,9 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
     const auto job_id_list_for_delete = job_ids.empty() ? std::string("0") : JoinIds(job_ids);
     const auto job_set_id_list_for_delete = job_set_ids.empty() ? std::string("0") : JoinIds(job_set_ids);
     exec_del("DELETE FROM exec_workflow_event WHERE workflow_instance_id IN (" + workflow_id_list + ");");
+    if (IsTablePresent(execution_db_, "exec_workflow_transition_activation", nullptr)) {
+        exec_del("DELETE FROM exec_workflow_transition_activation WHERE workflow_instance_id IN (" + workflow_id_list + ");");
+    }
     exec_del("DELETE FROM exec_workflow_edge WHERE workflow_instance_id IN (" + workflow_id_list + ");");
     if (IsTablePresent(execution_db_, "exec_workflow_unit_activation_edge", nullptr)) {
         exec_del("DELETE FROM exec_workflow_unit_activation_edge WHERE workflow_instance_id IN (" + workflow_id_list + ");");

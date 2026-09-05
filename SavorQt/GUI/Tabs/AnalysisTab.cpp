@@ -797,7 +797,7 @@ void AnalysisTab::build()
         lastRefreshLabel_->setText(data.lastRefreshValue);
 
         overviewSummaryLabel_->setText(data.overviewSummary);
-        savorqt::gui::ApplyTableRowsByKey(
+        savorqt::gui::ReplaceTableProjectionByKey(
             overviewTable_,
             *overviewRows,
             data.overviewRows,
@@ -806,14 +806,14 @@ void AnalysisTab::build()
             populateOverviewRow);
 
         workflowsSummaryLabel_->setText(data.workflowsSummary);
-        savorqt::gui::ApplyTableRowsByKey(
+        savorqt::gui::ReplaceTableProjectionByKey(
             workflowsTable_,
             *workflowRows,
             data.workflowRows,
             [](const ProvenanceRow& row) { return row.workflowId; },
             provenanceRowsEqual,
             populateProvenanceRow);
-        savorqt::gui::ApplyTableRowsByKey(tasMoviesTable_,*tasMovieRows,data.tasMovieRows,[](const TasMovieRow& row){return row.key;},tasMovieRowsEqual,populateTasMovieRow);
+        savorqt::gui::ReplaceTableProjectionByKey(tasMoviesTable_,*tasMovieRows,data.tasMovieRows,[](const TasMovieRow& row){return row.key;},tasMovieRowsEqual,populateTasMovieRow);
 
         setCurrentPane(currentPaneIndex_);
     });

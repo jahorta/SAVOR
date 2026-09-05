@@ -2417,29 +2417,51 @@ bool RequestBattleWaveContinuation(
         .input_ref_kind = std::string(kWaveRefKind),
         .input_ref_id = parent->wave_id,
     };
-    Transition transition_handler(analysis_db, execution_db);
-    const auto transition = transition_handler.EvaluateTransition(transition_context);
+    auto* workflow_queries = execution_db->WorkflowQueryService();
+    if (!workflow_queries)
+        return Fail("workflow query service is unavailable", error_out);
+    std::string trigger = "savor.battle-manual-transition/1;parent="
+        + std::to_string(parent->wave_id) + ";selected=";
+    for (const auto turn_job_id : selected)
+        trigger += std::to_string(turn_job_id) + ",";
+    trigger += ";children=";
+    auto trigger_child_wave_ids = receipt.child_wave_ids;
+    std::ranges::sort(trigger_child_wave_ids);
+    for (const auto child_wave_id : trigger_child_wave_ids)
+        trigger += std::to_string(child_wave_id) + ",";
+    workflow::WorkflowTransitionApplicationService applicator(
+        workflow_queries, workflow_commands);
+    workflow::WorkflowTransitionActivationResolution activation{};
+    if (!applicator.ResolveActivation({
+            .workflow_instance_id = command.workflow_instance_id,
+            .source_workflow_step_id = command.parent_workflow_step_id,
+            .activation_kind = workflow::WorkflowTransitionActivationKind::
+                ManualBattleContinuation,
+            .activation_key = "battle-manual:"
+                + std::to_string(parent->wave_id),
+            .trigger_fingerprint = hash::sha256(
+                trigger.data(), trigger.size()),
+            .requested_by = command.requested_by,
+        }, [&]() {
+            Transition transition_handler(analysis_db, execution_db);
+            return transition_handler.EvaluateTransition(transition_context);
+        }, &activation, error_out)) return false;
+    if (activation.already_applied) {
+        if (receipt_out) *receipt_out = receipt;
+        if (error_out) error_out->clear();
+        return true;
+    }
+    const auto& transition = activation.decision;
     if (!transition.should_advance || transition.workflow_failure)
-        return Fail(transition.blocked_reason.value_or("manual Battle transition did not advance"), error_out);
-    workflow::WorkflowTransitionApplicationService applicator(workflow_commands);
+        return Fail(transition.blocked_reason.value_or(
+            "manual Battle transition did not advance"), error_out);
     int spawned = 0;
     if (!applicator.ApplyDynamicSteps(command.workflow_instance_id,
             command.parent_workflow_step_id, command.priority, transition,
             command.requested_by, &spawned, error_out)) return false;
-    (void)workflow_commands->AppendLifecycleEvent({
-        .workflow_instance_id = command.workflow_instance_id,
-        .workflow_step_id = command.parent_workflow_step_id,
-        .event_kind = "Execution.WorkflowTransitionEvaluated.v1",
-        .message = "transition_evaluated",
-        .requested_by = command.requested_by,
-    }, nullptr);
-    (void)workflow_commands->AppendLifecycleEvent({
-        .workflow_instance_id = command.workflow_instance_id,
-        .workflow_step_id = command.parent_workflow_step_id,
-        .event_kind = "Execution.WorkflowTransitionAdvanced.v1",
-        .message = "transition_advanced",
-        .requested_by = command.requested_by,
-    }, nullptr);
+    if (!applicator.MarkActivationApplied(
+            activation, "ADVANCED", command.requested_by, error_out))
+        return false;
     (void)workflow_commands->AppendLifecycleEvent({
         .workflow_instance_id = command.workflow_instance_id,
         .workflow_step_id = command.parent_workflow_step_id,

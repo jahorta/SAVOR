@@ -127,26 +127,51 @@ bool AssignIfChanged(Value& target, const Value& value)
     return true;
 }
 
-template <typename Row, typename KeyFn, typename Key>
-std::optional<int> FindRowIndexByKey(const std::vector<Row>& rows, KeyFn keyFn, const Key& key)
+struct KeyedProjectionFailure
 {
-    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
-        if (keyFn(rows[static_cast<std::size_t>(i)]) == key) {
-            return i;
+    enum class Code {
+        None,
+        DuplicateKey,
+    };
+
+    Code code = Code::None;
+    int firstRow = -1;
+    int conflictingRow = -1;
+};
+
+template <typename Row, typename KeyFn>
+std::optional<KeyedProjectionFailure> ValidateProjectionKeys(const std::vector<Row>& rows, KeyFn keyFn)
+{
+    for (int row = 0; row < static_cast<int>(rows.size()); ++row) {
+        const auto key = keyFn(rows[static_cast<std::size_t>(row)]);
+        for (int prior = 0; prior < row; ++prior) {
+            if (keyFn(rows[static_cast<std::size_t>(prior)]) == key) {
+                return KeyedProjectionFailure{
+                    KeyedProjectionFailure::Code::DuplicateKey,
+                    prior,
+                    row,
+                };
+            }
         }
     }
     return std::nullopt;
 }
 
 template <typename Row, typename KeyFn, typename EqualFn, typename PopulateFn>
-bool ApplyTableRowsByKey(
+bool ReplaceTableProjectionByKey(
     QTableWidget* table,
     std::vector<Row>& currentRows,
     const std::vector<Row>& newRows,
     KeyFn keyFn,
     EqualFn equalFn,
-    PopulateFn populateFn)
+    PopulateFn populateFn,
+    KeyedProjectionFailure* failureOut = nullptr)
 {
+    if (failureOut != nullptr) *failureOut = {};
+    if (const auto failure = ValidateProjectionKeys(newRows, keyFn); failure.has_value()) {
+        if (failureOut != nullptr) *failureOut = *failure;
+        return false;
+    }
     if (table == nullptr) {
         currentRows = newRows;
         return true;
@@ -167,52 +192,18 @@ bool ApplyTableRowsByKey(
     const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(table);
     const QSignalBlocker blocker(table);
 
-    for (int row = static_cast<int>(currentRows.size()) - 1; row >= 0; --row) {
-        const auto key = keyFn(currentRows[static_cast<std::size_t>(row)]);
-        if (!FindRowIndexByKey(newRows, keyFn, key).has_value()) {
-            table->removeRow(row);
-            currentRows.erase(currentRows.begin() + row);
-        }
-    }
-
-    for (int row = 0; row < static_cast<int>(newRows.size()); ++row) {
-        const Row& newRow = newRows[static_cast<std::size_t>(row)];
-        const auto newKey = keyFn(newRow);
-
-        if (row < static_cast<int>(currentRows.size()) && keyFn(currentRows[static_cast<std::size_t>(row)]) == newKey) {
-            if (!equalFn(currentRows[static_cast<std::size_t>(row)], newRow)) {
-                populateFn(table, row, newRow);
-                currentRows[static_cast<std::size_t>(row)] = newRow;
-            }
-            continue;
-        }
-
-        const auto existing = FindRowIndexByKey(currentRows, keyFn, newKey);
-        if (existing.has_value()) {
-            table->removeRow(*existing);
-            Row movedRow = currentRows[static_cast<std::size_t>(*existing)];
-            currentRows.erase(currentRows.begin() + *existing);
-            table->insertRow(row);
-            populateFn(table, row, newRow);
-            currentRows.insert(currentRows.begin() + row, newRow);
-            (void)movedRow;
-        } else {
-            table->insertRow(row);
-            populateFn(table, row, newRow);
-            currentRows.insert(currentRows.begin() + row, newRow);
-        }
-    }
-
-    while (static_cast<int>(currentRows.size()) > static_cast<int>(newRows.size())) {
-        const int row = static_cast<int>(currentRows.size()) - 1;
-        table->removeRow(row);
-        currentRows.pop_back();
-    }
+    table->clearContents();
+    table->setRowCount(static_cast<int>(newRows.size()));
+    for (int row = 0; row < static_cast<int>(newRows.size()); ++row)
+        populateFn(table, row, newRows[static_cast<std::size_t>(row)]);
+    currentRows = newRows;
 
     if (selectedKey.has_value()) {
-        const auto selected = FindRowIndexByKey(currentRows, keyFn, *selectedKey);
-        if (selected.has_value()) {
-            table->selectRow(*selected);
+        for (int row = 0; row < static_cast<int>(currentRows.size()); ++row) {
+            if (keyFn(currentRows[static_cast<std::size_t>(row)]) == *selectedKey) {
+                table->selectRow(row);
+                break;
+            }
         }
     }
     restoreItemViewScrollSnapshot(table, scrollSnapshot);
@@ -220,14 +211,20 @@ bool ApplyTableRowsByKey(
 }
 
 template <typename Row, typename KeyFn, typename EqualFn, typename PopulateFn>
-bool ApplyTreeRowsByKey(
+bool ReplaceTreeProjectionByKey(
     QTreeWidget* tree,
     std::vector<Row>& currentRows,
     const std::vector<Row>& newRows,
     KeyFn keyFn,
     EqualFn equalFn,
-    PopulateFn populateFn)
+    PopulateFn populateFn,
+    KeyedProjectionFailure* failureOut = nullptr)
 {
+    if (failureOut != nullptr) *failureOut = {};
+    if (const auto failure = ValidateProjectionKeys(newRows, keyFn); failure.has_value()) {
+        if (failureOut != nullptr) *failureOut = *failure;
+        return false;
+    }
     if (tree == nullptr) {
         currentRows = newRows;
         return true;
@@ -249,56 +246,38 @@ bool ApplyTreeRowsByKey(
         selectedKey = keyFn(currentRows[static_cast<std::size_t>(selectedRow)]);
     }
 
+    std::vector<Key> expandedKeys;
+    for (int row = 0; row < static_cast<int>(currentRows.size()) && row < tree->topLevelItemCount(); ++row) {
+        const auto* item = tree->topLevelItem(row);
+        if (item != nullptr && item->isExpanded()) {
+            expandedKeys.push_back(keyFn(currentRows[static_cast<std::size_t>(row)]));
+        }
+    }
+
     const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(tree);
     const QSignalBlocker blocker(tree);
 
-    for (int row = static_cast<int>(currentRows.size()) - 1; row >= 0; --row) {
-        const auto key = keyFn(currentRows[static_cast<std::size_t>(row)]);
-        if (!FindRowIndexByKey(newRows, keyFn, key).has_value()) {
-            delete tree->takeTopLevelItem(row);
-            currentRows.erase(currentRows.begin() + row);
-        }
-    }
-
+    tree->clear();
     for (int row = 0; row < static_cast<int>(newRows.size()); ++row) {
-        const Row& newRow = newRows[static_cast<std::size_t>(row)];
-        const auto newKey = keyFn(newRow);
-
-        if (row < static_cast<int>(currentRows.size()) && keyFn(currentRows[static_cast<std::size_t>(row)]) == newKey) {
-            if (!equalFn(currentRows[static_cast<std::size_t>(row)], newRow)) {
-                populateFn(tree, tree->topLevelItem(row), newRow);
-                currentRows[static_cast<std::size_t>(row)] = newRow;
-            }
-            continue;
-        }
-
-        const auto existing = FindRowIndexByKey(currentRows, keyFn, newKey);
-        if (existing.has_value()) {
-            QTreeWidgetItem* item = tree->takeTopLevelItem(*existing);
-            Row movedRow = currentRows[static_cast<std::size_t>(*existing)];
-            currentRows.erase(currentRows.begin() + *existing);
-            tree->insertTopLevelItem(row, item);
-            populateFn(tree, item, newRow);
-            currentRows.insert(currentRows.begin() + row, newRow);
-            (void)movedRow;
-        } else {
-            auto* item = new QTreeWidgetItem();
-            tree->insertTopLevelItem(row, item);
-            populateFn(tree, item, newRow);
-            currentRows.insert(currentRows.begin() + row, newRow);
-        }
+        auto* item = new QTreeWidgetItem();
+        tree->addTopLevelItem(item);
+        populateFn(tree, item, newRows[static_cast<std::size_t>(row)]);
     }
+    currentRows = newRows;
 
-    while (static_cast<int>(currentRows.size()) > static_cast<int>(newRows.size())) {
-        const int row = static_cast<int>(currentRows.size()) - 1;
-        delete tree->takeTopLevelItem(row);
-        currentRows.pop_back();
+    for (int row = 0; row < static_cast<int>(currentRows.size()); ++row) {
+        const auto key = keyFn(currentRows[static_cast<std::size_t>(row)]);
+        if (std::find(expandedKeys.begin(), expandedKeys.end(), key) != expandedKeys.end()) {
+            tree->topLevelItem(row)->setExpanded(true);
+        }
     }
 
     if (selectedKey.has_value()) {
-        const auto selected = FindRowIndexByKey(currentRows, keyFn, *selectedKey);
-        if (selected.has_value()) {
-            tree->setCurrentItem(tree->topLevelItem(*selected));
+        for (int row = 0; row < static_cast<int>(currentRows.size()); ++row) {
+            if (keyFn(currentRows[static_cast<std::size_t>(row)]) == *selectedKey) {
+                tree->setCurrentItem(tree->topLevelItem(row));
+                break;
+            }
         }
     }
     restoreItemViewScrollSnapshot(tree, scrollSnapshot);

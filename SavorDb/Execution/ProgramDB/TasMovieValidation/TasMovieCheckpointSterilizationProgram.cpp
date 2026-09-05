@@ -681,6 +681,27 @@ public:
                 attempt, &attempt_id, &error)) {
             throw std::runtime_error(error);
         }
+        const auto recording = analysis_db_->GetBattleRecordingForPairedCheckpoint(
+            request->source_savestate_id);
+        if (recording) {
+            if (recording->status != "COMPLETED"
+                || recording->outcome != std::optional<std::string>("RECORDED")
+                || !recording->tas_movie_tree_id
+                || !recording->validation_request_id
+                || recording->paired_checkpoint_savestate_id
+                    != request->source_savestate_id) {
+                throw std::runtime_error(
+                    "battle recording sterilization source drifted during persistence");
+            }
+            if (!analysis_db_->BindBattleRecordingSterilization({
+                    .battle_recording_id = recording->battle_recording_id,
+                    .tas_movie_tree_id = *recording->tas_movie_tree_id,
+                    .sterilization_request_id = request->sterilization_request_id},
+                    &error)) {
+                throw std::runtime_error(error.empty()
+                    ? "battle recording sterilization binding failed" : error);
+            }
+        }
         auto decision = FinalDecision("SUCCEEDED");
         decision.cleanup_worker_staging = true;
         decision.outputs.push_back(Output(state_receipt.savestate_id));
@@ -754,20 +775,6 @@ public:
             return decision;
         }
 
-        std::string error;
-        if (!analysis_db_->BindBattleRecordingSterilization({
-                .battle_recording_id = recording->battle_recording_id,
-                .tas_movie_tree_id = *recording->tas_movie_tree_id,
-                .sterilization_request_id =
-                    request->sterilization_request_id},
-                &error)) {
-            decision.should_advance = false;
-            decision.workflow_failure = true;
-            decision.blocked_reason = error.empty()
-                ? std::optional<std::string>(
-                    "battle_recording_sterilization_binding_failed")
-                : std::optional<std::string>(std::move(error));
-        }
         return decision;
     }
 

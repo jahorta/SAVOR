@@ -116,6 +116,23 @@ public:
             {});
     }
 
+    std::optional<workflow::WorkflowTransitionActivationRecord>
+    GetWorkflowTransitionActivation(
+        std::int64_t workflow_instance_id,
+        std::string_view activation_key) const override {
+        return owner_->ExecuteRead<
+            std::optional<workflow::WorkflowTransitionActivationRecord>>(
+            [this, workflow_instance_id, key = std::string(activation_key)]() {
+                auto* service = owner_->inner_ != nullptr
+                    ? owner_->inner_->WorkflowQueryService() : nullptr;
+                return service != nullptr
+                    ? service->GetWorkflowTransitionActivation(
+                        workflow_instance_id, key)
+                    : std::nullopt;
+            },
+            std::nullopt);
+    }
+
 private:
     const QueuedExecutionDb* owner_ = nullptr;
 };
@@ -232,6 +249,41 @@ public:
     bool AppendLifecycleEvent(const workflow::WorkflowAppendLifecycleEventCommand& command, std::string* error_out) override {
         return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
             return service->AppendLifecycleEvent(cmd, err);
+        });
+    }
+
+    bool FreezeTransitionActivation(
+        const workflow::WorkflowFreezeTransitionActivationCommand& command,
+        workflow::WorkflowFreezeTransitionActivationReceipt* receipt_out,
+        std::string* error_out) override {
+        return owner_->ExecuteWrite<bool>(
+            [this, command, receipt_out, error_out]() {
+                auto* service = owner_->inner_ != nullptr
+                    ? owner_->inner_->WorkflowCommandService() : nullptr;
+                if (service == nullptr) {
+                    SetError(error_out, kInnerUnavailableError);
+                    return false;
+                }
+                return service->FreezeTransitionActivation(
+                    command, receipt_out, error_out);
+            },
+            false,
+            error_out);
+    }
+
+    bool ApplyTransitionActivation(
+        const workflow::WorkflowApplyTransitionActivationCommand& command,
+        std::string* error_out) override {
+        return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
+            return service->ApplyTransitionActivation(cmd, err);
+        });
+    }
+
+    bool RecordTransitionActivationFailure(
+        const workflow::WorkflowRecordTransitionActivationFailureCommand& command,
+        std::string* error_out) override {
+        return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
+            return service->RecordTransitionActivationFailure(cmd, err);
         });
     }
 

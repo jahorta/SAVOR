@@ -28,6 +28,10 @@ public:
     std::vector<WorkflowStepRecord> ListBlockedSteps(std::int64_t workflow_instance_id) const override;
     std::vector<std::pair<std::int64_t, std::int64_t>> GetStepToJobSetMap(std::int64_t workflow_instance_id) const override;
     std::vector<WorkflowStepOutputRecord> ListStepOutputs(std::int64_t workflow_instance_id) const override;
+    std::optional<WorkflowTransitionActivationRecord>
+        GetWorkflowTransitionActivation(
+            std::int64_t workflow_instance_id,
+            std::string_view activation_key) const override;
 
 private:
     sqlite3* db_ = nullptr;
@@ -58,6 +62,16 @@ public:
     bool ScheduleUnitActivation(const WorkflowScheduleUnitActivationCommand& command, std::string* error_out) override;
     bool AppendDynamicSteps(const WorkflowAppendDynamicStepsCommand& command, std::string* error_out) override;
     bool AppendLifecycleEvent(const WorkflowAppendLifecycleEventCommand& command, std::string* error_out) override;
+    bool FreezeTransitionActivation(
+        const WorkflowFreezeTransitionActivationCommand& command,
+        WorkflowFreezeTransitionActivationReceipt* receipt_out,
+        std::string* error_out) override;
+    bool ApplyTransitionActivation(
+        const WorkflowApplyTransitionActivationCommand& command,
+        std::string* error_out) override;
+    bool RecordTransitionActivationFailure(
+        const WorkflowRecordTransitionActivationFailureCommand& command,
+        std::string* error_out) override;
 
 private:
     bool EmitLifecycleEvent(

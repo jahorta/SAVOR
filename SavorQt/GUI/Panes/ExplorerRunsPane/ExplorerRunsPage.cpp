@@ -308,7 +308,7 @@ void ExplorerRunsPage::refreshGroupsTable()
     }
 
     refreshingSelection_ = true;
-    savorqt::gui::ApplyTableRowsByKey(
+    savorqt::gui::ReplaceTableProjectionByKey(
         groupsTable_,
         currentGroupRows_,
         rows,
@@ -355,7 +355,7 @@ void ExplorerRunsPage::refreshWaveTree()
         });
     }
 
-    savorqt::gui::ApplyTreeRowsByKey(
+    savorqt::gui::ReplaceTreeProjectionByKey(
         waveTree_,
         currentWaveRows_,
         rows,
@@ -390,7 +390,7 @@ void ExplorerRunsPage::refreshJobsTable()
     }
 
     refreshingSelection_ = true;
-    savorqt::gui::ApplyTableRowsByKey(
+    savorqt::gui::ReplaceTableProjectionByKey(
         jobsTable_,
         currentJobRows_,
         rows,

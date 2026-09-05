@@ -39,4 +39,8 @@ public:
     std::vector<savor::db::execution::workflow::WorkflowStepOutputRecord> ListStepOutputs(std::int64_t) const override {
         return {};
     }
+    std::optional<savor::db::execution::workflow::WorkflowTransitionActivationRecord>
+    GetWorkflowTransitionActivation(std::int64_t, std::string_view) const override {
+        return std::nullopt;
+    }
 };

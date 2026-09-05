@@ -1,4 +1,5 @@
 #include "TasRouteProjectionService.h"
+#include "TasRouteAuthorityResolver.h"
 
 #include "IAnalysisDb.h"
 
@@ -65,59 +66,68 @@ std::optional<std::int64_t> Scalar(
     return sqlite3_column_int64(statement.value, 0);
 }
 
-std::optional<std::int64_t> ResolveRootAuthority(
+std::vector<std::int64_t> DistinctIds(
+    sqlite3* db,
+    const char* sql,
+    std::int64_t value) {
+    std::vector<std::int64_t> ids;
+    Statement statement;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement.value, nullptr) != SQLITE_OK)
+        return ids;
+    sqlite3_bind_int64(statement.value, 1, value);
+    while (sqlite3_step(statement.value) == SQLITE_ROW) {
+        if (sqlite3_column_type(statement.value, 0) == SQLITE_NULL) continue;
+        const auto id = sqlite3_column_int64(statement.value, 0);
+        if (std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+    }
+    return ids;
+}
+
+} // namespace
+
+TasRouteRootAuthorityResolution ResolveTasRouteRootAuthority(
     sqlite3* execution,
     sqlite3* analysis,
-    const PendingBattleRoute& battle) {
-    if (const auto recorded = Scalar(
+    std::int64_t workflow_instance_id,
+    std::int64_t entry_savestate_id) {
+    const auto recorded = DistinctIds(
             analysis,
-            "SELECT n.root_establishment_attempt_id "
+            "SELECT DISTINCT n.root_establishment_attempt_id "
             "FROM atr_victory_branch b JOIN atr_route_node n "
             "ON n.route_node_id=b.checkpoint_route_node_id "
             "WHERE b.checkpoint_savestate_id=?1 "
-            "AND n.root_establishment_attempt_id IS NOT NULL LIMIT 1;",
-            battle.entry_savestate_id)) {
-        return recorded;
+            "AND n.root_establishment_attempt_id IS NOT NULL;",
+            entry_savestate_id);
+    if (recorded.size() == 1) {
+        return {recorded.front(), {}};
+    }
+    if (recorded.size() > 1) {
+        return {std::nullopt, "recorded checkpoint resolves to conflicting TAS root authorities"};
     }
 
-    std::optional<std::int64_t> annotation_attempt;
-    {
-        Statement statement;
-        constexpr auto sql =
-            "SELECT e.source_ref_id FROM exec_workflow_expansion_member m "
-            "JOIN exec_workflow_expansion e "
-            "ON e.workflow_expansion_id=m.workflow_expansion_id "
-            "WHERE m.workflow_instance_id=?1 "
-            "AND e.source_ref_kind='tmv_input_epoch_annotation_attempt' LIMIT 1;";
-        if (sqlite3_prepare_v2(execution, sql, -1, &statement.value, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int64(statement.value, 1, battle.workflow_instance_id);
-            if (sqlite3_step(statement.value) == SQLITE_ROW)
-                annotation_attempt = sqlite3_column_int64(statement.value, 0);
-        }
+    const auto annotations = DistinctIds(
+        execution,
+        "SELECT DISTINCT ref_id FROM exec_workflow_instance_input_binding "
+        "WHERE workflow_instance_id=?1 "
+        "AND ref_kind='tmv_input_epoch_annotation_attempt';",
+        workflow_instance_id);
+    if (annotations.empty()) {
+        return {std::nullopt, "workflow has no immutable TAS annotation input binding"};
     }
-    if (!annotation_attempt) {
-        Statement statement;
-        constexpr auto sql =
-            "SELECT ref_id FROM exec_workflow_instance_input_binding "
-            "WHERE workflow_instance_id=?1 "
-            "AND ref_kind='tmv_input_epoch_annotation_attempt' "
-            "ORDER BY workflow_instance_input_binding_id LIMIT 1;";
-        if (sqlite3_prepare_v2(execution, sql, -1, &statement.value, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int64(statement.value, 1, battle.workflow_instance_id);
-            if (sqlite3_step(statement.value) == SQLITE_ROW)
-                annotation_attempt = sqlite3_column_int64(statement.value, 0);
-        }
+    if (annotations.size() > 1) {
+        return {std::nullopt, "workflow has conflicting immutable TAS annotation input bindings"};
     }
-    if (!annotation_attempt) return std::nullopt;
-    return Scalar(
+    const auto root = Scalar(
         analysis,
         "SELECT root_establishment_attempt_id "
         "FROM tmv_input_epoch_annotation_attempt "
         "WHERE annotation_attempt_id=?1 AND succeeded=1;",
-        *annotation_attempt);
+        annotations.front());
+    if (!root) {
+        return {std::nullopt, "workflow annotation input is not a successful rooted authority"};
+    }
+    return {root, {}};
 }
-
-} // namespace
 
 TasRouteProjectionService::TasRouteProjectionService(
     TasRouteProjectionConfig config,
@@ -183,12 +193,13 @@ bool TasRouteProjectionService::RunOnce(std::string* error_out) {
             ? reinterpret_cast<const char*>(fingerprint)
             : std::string{};
 
-        const auto root = ResolveRootAuthority(
-            execution.db, analysis.db, battle);
-        if (!root) {
+        const auto root = ResolveTasRouteRootAuthority(
+            execution.db, analysis.db,
+            battle.workflow_instance_id, battle.entry_savestate_id);
+        if (!root.root_establishment_attempt_id) {
             failures.push_back(
                 "battle_set=" + std::to_string(battle.battle_set_id) +
-                " has no explicit TAS root provenance");
+                " has no explicit TAS root provenance: " + root.diagnostic);
             continue;
         }
         std::string command_error;
@@ -196,7 +207,7 @@ bool TasRouteProjectionService::RunOnce(std::string* error_out) {
                 .battle_set_id = battle.battle_set_id,
                 .entry_savestate_id = battle.entry_savestate_id,
                 .battle_plan_id = battle.battle_plan_id,
-                .root_establishment_attempt_id = *root,
+                .root_establishment_attempt_id = *root.root_establishment_attempt_id,
                 .activity_key = "battle-plan:" + battle.battle_plan_fingerprint,
                 .default_label = "Battle plan " +
                     std::to_string(battle.battle_plan_id),

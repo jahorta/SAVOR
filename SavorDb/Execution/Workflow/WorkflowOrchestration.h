@@ -234,6 +234,32 @@ struct WorkflowFailInstanceCommand {
     std::string requested_by;
 };
 
+enum class WorkflowTransitionActivationKind {
+    Settlement = 0,
+    ManualBattleContinuation = 1,
+};
+
+enum class WorkflowTransitionActivationState {
+    Frozen = 0,
+    Applied = 1,
+};
+
+struct WorkflowTransitionActivationRecord {
+    std::int64_t workflow_transition_activation_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t source_workflow_step_id = 0;
+    WorkflowTransitionActivationKind activation_kind =
+        WorkflowTransitionActivationKind::Settlement;
+    std::string activation_key;
+    std::string trigger_fingerprint;
+    std::string decision_payload;
+    std::string decision_sha256;
+    WorkflowTransitionActivationState state =
+        WorkflowTransitionActivationState::Frozen;
+    std::optional<std::string> disposition;
+    std::optional<std::string> last_operation_diagnostic;
+};
+
 struct WorkflowInterruptInstanceCommand {
     std::int64_t workflow_instance_id = 0;
     std::optional<std::int64_t> workflow_step_id;
@@ -379,6 +405,36 @@ struct WorkflowCreateInstanceArgumentSpec {
     std::string source_kind;
 };
 
+struct WorkflowFreezeTransitionActivationCommand {
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t source_workflow_step_id = 0;
+    WorkflowTransitionActivationKind activation_kind =
+        WorkflowTransitionActivationKind::Settlement;
+    std::string activation_key;
+    std::string trigger_fingerprint;
+    std::string decision_payload;
+    std::string decision_sha256;
+    std::string requested_by;
+};
+
+struct WorkflowFreezeTransitionActivationReceipt {
+    WorkflowTransitionActivationRecord activation;
+    bool created = false;
+};
+
+struct WorkflowApplyTransitionActivationCommand {
+    std::int64_t workflow_transition_activation_id = 0;
+    std::string expected_decision_sha256;
+    std::string disposition;
+    std::string requested_by;
+};
+
+struct WorkflowRecordTransitionActivationFailureCommand {
+    std::int64_t workflow_transition_activation_id = 0;
+    std::string expected_decision_sha256;
+    std::string diagnostic;
+};
+
 struct WorkflowCreateUnitActivationEdgeSpec {
     std::string from_activation_key;
     std::string to_activation_key;
@@ -418,6 +474,10 @@ struct IWorkflowOrchestrationQueryService {
     virtual std::vector<WorkflowStepRecord> ListBlockedSteps(std::int64_t workflow_instance_id) const = 0;
     virtual std::vector<std::pair<std::int64_t, std::int64_t>> GetStepToJobSetMap(std::int64_t workflow_instance_id) const = 0;
     virtual std::vector<WorkflowStepOutputRecord> ListStepOutputs(std::int64_t workflow_instance_id) const = 0;
+    virtual std::optional<WorkflowTransitionActivationRecord>
+        GetWorkflowTransitionActivation(
+            std::int64_t workflow_instance_id,
+            std::string_view activation_key) const = 0;
 };
 
 struct IWorkflowOrchestrationCommandService {
@@ -444,6 +504,16 @@ struct IWorkflowOrchestrationCommandService {
     virtual bool ScheduleUnitActivation(const WorkflowScheduleUnitActivationCommand& command, std::string* error_out) = 0;
     virtual bool AppendDynamicSteps(const WorkflowAppendDynamicStepsCommand& command, std::string* error_out) = 0;
     virtual bool AppendLifecycleEvent(const WorkflowAppendLifecycleEventCommand& command, std::string* error_out) = 0;
+    virtual bool FreezeTransitionActivation(
+        const WorkflowFreezeTransitionActivationCommand& command,
+        WorkflowFreezeTransitionActivationReceipt* receipt_out,
+        std::string* error_out) = 0;
+    virtual bool ApplyTransitionActivation(
+        const WorkflowApplyTransitionActivationCommand& command,
+        std::string* error_out) = 0;
+    virtual bool RecordTransitionActivationFailure(
+        const WorkflowRecordTransitionActivationFailureCommand& command,
+        std::string* error_out) = 0;
 };
 
 } // namespace savor::db::execution::workflow

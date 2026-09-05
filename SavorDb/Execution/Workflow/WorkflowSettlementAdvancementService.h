@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -28,11 +29,45 @@ struct WorkflowSettlementAdvancementResult {
     std::optional<WorkflowGraphRoutingFailure> graph_routing_failure;
 };
 
+struct WorkflowTransitionActivationRequest {
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t source_workflow_step_id = 0;
+    WorkflowTransitionActivationKind activation_kind =
+        WorkflowTransitionActivationKind::Settlement;
+    std::string activation_key;
+    std::string trigger_fingerprint;
+    std::string requested_by;
+};
+
+struct WorkflowTransitionActivationResolution {
+    WorkflowTransitionActivationRecord activation;
+    programdb::WorkflowTransitionDecision decision;
+    bool already_applied = false;
+    bool newly_frozen = false;
+};
+
 class WorkflowTransitionApplicationService {
 public:
     WorkflowTransitionApplicationService(
+        IWorkflowOrchestrationQueryService* query_service,
         IWorkflowOrchestrationCommandService* command_service,
         int successor_step_priority_boost = 10);
+
+    bool ResolveActivation(
+        const WorkflowTransitionActivationRequest& request,
+        const std::function<programdb::WorkflowTransitionDecision()>& evaluate,
+        WorkflowTransitionActivationResolution* resolution_out,
+        std::string* error_out) const;
+
+    bool MarkActivationApplied(
+        const WorkflowTransitionActivationResolution& resolution,
+        std::string disposition,
+        std::string_view requested_by,
+        std::string* error_out) const;
+
+    void RecordActivationFailure(
+        const WorkflowTransitionActivationResolution& resolution,
+        std::string_view diagnostic) const;
 
     bool ApplyDynamicSteps(
         std::int64_t workflow_instance_id,
@@ -44,6 +79,7 @@ public:
         std::string* error_out) const;
 
 private:
+    IWorkflowOrchestrationQueryService* query_service_ = nullptr;
     IWorkflowOrchestrationCommandService* command_service_ = nullptr;
     int successor_step_priority_boost_ = 10;
 };

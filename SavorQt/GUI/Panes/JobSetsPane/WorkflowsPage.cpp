@@ -565,7 +565,7 @@ void applyTreeRows(
     const auto state = preserveState
         ? std::optional<TreeViewState>{ captureTreeState(tree) }
         : std::nullopt;
-    savorqt::gui::ApplyTreeRowsByKey(
+    savorqt::gui::ReplaceTreeProjectionByKey(
         tree,
         currentRows,
         rows,
@@ -1177,7 +1177,7 @@ void WorkflowsPage::updateWorkflowTable()
 
     {
         const QSignalBlocker blocker(workflowTable_);
-        savorqt::gui::ApplyTableRowsByKey(
+        savorqt::gui::ReplaceTableProjectionByKey(
             workflowTable_,
             currentWorkflowRows_,
             rows,
@@ -1380,14 +1380,14 @@ void WorkflowsPage::clearWorkflowDetail(const QString& message)
         { makeEmptyDisplayRow(QStringLiteral("clear-current"), message) },
         { makeEmptyDisplayRow(QStringLiteral("clear-future"), QStringLiteral("-")) });
     const std::vector<TreeDisplayRow> alertRows{ makeEmptyDisplayRow(QStringLiteral("clear-alerts"), QStringLiteral("-")) };
-    savorqt::gui::ApplyTreeRowsByKey(
+    savorqt::gui::ReplaceTreeProjectionByKey(
         statusStepsTree_,
         currentStatusStepRows_,
         statusRows,
         [](const TreeDisplayRow& row) { return row.key; },
         treeDisplayRowsEqual,
         populateTreeDisplayRow);
-    savorqt::gui::ApplyTreeRowsByKey(
+    savorqt::gui::ReplaceTreeProjectionByKey(
         alertsTree_,
         currentAlertRows_,
         alertRows,
@@ -1407,7 +1407,7 @@ void WorkflowsPage::clearWorkflowJobSets(const QString& message)
     renderedJobSetsWorkflowInstanceId_ = 0;
     workflowJobSets_.clear();
     const std::vector<TreeDisplayRow> rows{ makeEmptyDisplayRow(QStringLiteral("clear-job-sets"), message) };
-    savorqt::gui::ApplyTreeRowsByKey(
+    savorqt::gui::ReplaceTreeProjectionByKey(
         jobSetsTree_,
         currentJobSetRows_,
         rows,

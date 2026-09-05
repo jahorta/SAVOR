@@ -4068,10 +4068,13 @@ VALUES(
 TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
     using namespace savor::db::execution::workflow;
 
+    int evaluation_count = 0;
     class SpawnStepTransitionHandler final : public savor::db::execution::programdb::IWorkflowTransitionHandler {
     public:
+        explicit SpawnStepTransitionHandler(int* count) : count_(count) {}
         savor::db::execution::programdb::WorkflowTransitionDecision EvaluateTransition(
             const savor::db::execution::programdb::WorkflowTransitionContext&) const override {
+            ++*count_;
             savor::db::execution::programdb::WorkflowTransitionDecision decision{};
             decision.should_advance = true;
             decision.spawn_steps.push_back({
@@ -4089,6 +4092,8 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
             });
             return decision;
         }
+    private:
+        int* count_{};
     };
 
     savor::db::execution::programdb::ProgramKindRegistry registry;
@@ -4097,14 +4102,16 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
     descriptor.program_name = "mock.spawn";
     descriptor.default_progress_library_ids = std::vector<std::string>{};
     descriptor.default_derived_state_block_ids = std::vector<std::string>{};
-    descriptor.workflow_transition = std::make_shared<SpawnStepTransitionHandler>();
+    descriptor.workflow_transition = std::make_shared<SpawnStepTransitionHandler>(
+        &evaluation_count);
     ASSERT_TRUE(registry.RegisterForStepKind("mock.spawn", descriptor));
     StepSettlementGateService gate;
-    RecordingWorkflowCommandService command_service;
+    RecordingWorkflowQueryService query_service;
+    RecordingWorkflowCommandService command_service(&query_service);
     WorkflowSettlementAdvancementService advancement(
         &registry,
         &gate,
-        nullptr,
+        &query_service,
         &command_service);
 
     WorkflowStepSettlementSnapshot snapshot{};
@@ -4114,6 +4121,7 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
     snapshot.expected_total = 1;
     snapshot.discovered_total = 1;
     snapshot.settled_total = 1;
+    snapshot.succeeded_total = 1;
     snapshot.failed_total = 0;
     snapshot.priority = 20;
     snapshot.workflow_kind = "mock";
@@ -4133,6 +4141,74 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
     ASSERT_EQ(command_service.dynamic_step_calls[1].steps.size(), 1u);
     EXPECT_EQ(command_service.dynamic_step_calls[1].steps[0].step_key, "spawned-sibling-next");
     EXPECT_EQ(command_service.dynamic_step_calls[1].parent_workflow_step_id, 89);
+    EXPECT_EQ(evaluation_count, 1);
+    EXPECT_EQ(command_service.freeze_transition_calls.size(), 1u);
+    EXPECT_EQ(command_service.apply_transition_calls.size(), 1u);
+
+    WorkflowSettlementAdvancementResult replay{};
+    ASSERT_TRUE(advancement.AdvanceSnapshot(snapshot, &replay, &err)) << err;
+    EXPECT_EQ(evaluation_count, 1);
+    EXPECT_EQ(command_service.dynamic_step_calls.size(), 2u);
+    EXPECT_EQ(command_service.freeze_transition_calls.size(), 1u);
+    EXPECT_EQ(command_service.apply_transition_calls.size(), 1u);
+}
+
+TEST_F(SqliteDbFixture, Stage3cFrozenTransitionDecisionIsReusedWithoutReevaluation) {
+    using namespace savor::db::execution::workflow;
+
+    RecordingWorkflowQueryService query_service;
+    RecordingWorkflowCommandService command_service(&query_service);
+    WorkflowTransitionApplicationService application(
+        &query_service, &command_service);
+    const WorkflowTransitionActivationRequest request{
+        .workflow_instance_id = 77,
+        .source_workflow_step_id = 88,
+        .activation_kind = WorkflowTransitionActivationKind::Settlement,
+        .activation_key = "settlement:88:99",
+        .trigger_fingerprint = std::string(64, 'a'),
+        .requested_by = "test",
+    };
+    int evaluations = 0;
+    WorkflowTransitionActivationResolution first{};
+    std::string err;
+    ASSERT_TRUE(application.ResolveActivation(request, [&]() {
+        ++evaluations;
+        savor::db::execution::programdb::WorkflowTransitionDecision decision{};
+        decision.should_advance = true;
+        decision.spawn_steps.push_back({
+            .step_key = "frozen-child",
+            .step_kind = "mock.child",
+        });
+        return decision;
+    }, &first, &err)) << err;
+    EXPECT_EQ(evaluations, 1);
+    EXPECT_TRUE(first.newly_frozen);
+    EXPECT_FALSE(first.already_applied);
+
+    WorkflowTransitionActivationResolution retry{};
+    ASSERT_TRUE(application.ResolveActivation(request, [&]() {
+        ++evaluations;
+        savor::db::execution::programdb::WorkflowTransitionDecision changed{};
+        changed.should_advance = true;
+        changed.spawn_steps.push_back({
+            .step_key = "mutable-later-child",
+            .step_kind = "mock.child",
+        });
+        return changed;
+    }, &retry, &err)) << err;
+    EXPECT_EQ(evaluations, 1);
+    ASSERT_EQ(retry.decision.spawn_steps.size(), 1u);
+    EXPECT_EQ(retry.decision.spawn_steps[0].step_key, "frozen-child");
+
+    auto drifted = request;
+    drifted.trigger_fingerprint = std::string(64, 'b');
+    WorkflowTransitionActivationResolution rejected{};
+    EXPECT_FALSE(application.ResolveActivation(drifted, [&]() {
+        ++evaluations;
+        return savor::db::execution::programdb::WorkflowTransitionDecision{};
+    }, &rejected, &err));
+    EXPECT_EQ(err, "WORKFLOW_TRANSITION_DECISION_DRIFT");
+    EXPECT_EQ(evaluations, 1);
 }
 
 TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceUsesRecordedStepOutputFromSnapshot) {

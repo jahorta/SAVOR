@@ -749,6 +749,26 @@ bool WorkflowCoordinatorService::AdvanceSettlementSnapshot(
                 ? failure_stage
                 : "AdvanceTerminalStep",
             error.empty() ? "unknown error" : error);
+        if (error == "WORKFLOW_TRANSITION_DECISION_DRIFT") {
+            auto* commands = execution_db_ != nullptr
+                ? execution_db_->WorkflowCommandService() : nullptr;
+            if (commands == nullptr) return false;
+            std::string fail_error;
+            if (!commands->FailWorkflowInstance({
+                    .workflow_instance_id = snapshot.workflow_instance_id,
+                    .workflow_step_id = std::nullopt,
+                    .failure_code = "WORKFLOW_TRANSITION_DECISION_DRIFT",
+                    .failure_message = "transition activation evidence changed for source step "
+                        + snapshot.step_key,
+                    .requested_by = "workflow_coordinator_transition_drift",
+                }, &fail_error)) {
+                EmitWorkflowFailureEvent(step, "FailWorkflowTransitionDrift",
+                    fail_error.empty() ? "unknown error" : fail_error);
+                return false;
+            }
+            ++workflow_failed_count_;
+            return true;
+        }
         if (advancement.graph_routing_failure.has_value()
             && advancement.graph_routing_failure->failure_class
                 == WorkflowGraphRoutingFailureClass::GraphConstruction) {

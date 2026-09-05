@@ -5,9 +5,29 @@
 #include <vector>
 
 #include "Execution/Workflow/SqliteExecutionDb.h"
+#include "NullWorkflowQueryService.h"
+
+class RecordingWorkflowQueryService final : public NullWorkflowQueryService {
+public:
+    std::optional<savor::db::execution::workflow::WorkflowTransitionActivationRecord>
+    GetWorkflowTransitionActivation(
+        std::int64_t workflow_instance_id,
+        std::string_view activation_key) const override {
+        if (activation
+            && activation->workflow_instance_id == workflow_instance_id
+            && activation->activation_key == activation_key) return activation;
+        return std::nullopt;
+    }
+
+    std::optional<savor::db::execution::workflow::WorkflowTransitionActivationRecord>
+        activation;
+};
 
 class RecordingWorkflowCommandService final : public savor::db::execution::workflow::IWorkflowOrchestrationCommandService {
 public:
+    explicit RecordingWorkflowCommandService(
+        RecordingWorkflowQueryService* query_service = nullptr)
+        : query_service_(query_service) {}
     bool CreateWorkflowInstance(
         const savor::db::execution::workflow::WorkflowCreateInstanceCommand& command,
         std::int64_t* workflow_instance_id_out,
@@ -91,6 +111,46 @@ public:
         lifecycle_events.push_back(command);
         return true;
     }
+    bool FreezeTransitionActivation(
+        const savor::db::execution::workflow::WorkflowFreezeTransitionActivationCommand& command,
+        savor::db::execution::workflow::WorkflowFreezeTransitionActivationReceipt* receipt,
+        std::string*) override {
+        freeze_transition_calls.push_back(command);
+        if (receipt) {
+            receipt->created = true;
+            receipt->activation.workflow_transition_activation_id =
+                ++next_transition_activation_id_;
+            receipt->activation.workflow_instance_id = command.workflow_instance_id;
+            receipt->activation.source_workflow_step_id = command.source_workflow_step_id;
+            receipt->activation.activation_kind = command.activation_kind;
+            receipt->activation.activation_key = command.activation_key;
+            receipt->activation.trigger_fingerprint = command.trigger_fingerprint;
+            receipt->activation.decision_payload = command.decision_payload;
+            receipt->activation.decision_sha256 = command.decision_sha256;
+            if (query_service_) query_service_->activation = receipt->activation;
+        }
+        return true;
+    }
+    bool ApplyTransitionActivation(
+        const savor::db::execution::workflow::WorkflowApplyTransitionActivationCommand& command,
+        std::string*) override {
+        apply_transition_calls.push_back(command);
+        if (query_service_ && query_service_->activation
+            && query_service_->activation->workflow_transition_activation_id
+                == command.workflow_transition_activation_id) {
+            query_service_->activation->state =
+                savor::db::execution::workflow::
+                    WorkflowTransitionActivationState::Applied;
+            query_service_->activation->disposition = command.disposition;
+        }
+        return true;
+    }
+    bool RecordTransitionActivationFailure(
+        const savor::db::execution::workflow::WorkflowRecordTransitionActivationFailureCommand& command,
+        std::string*) override {
+        transition_failure_calls.push_back(command);
+        return true;
+    }
 
     std::vector<savor::db::execution::workflow::WorkflowMarkStepMaterializedCommand> materialized_calls;
     std::vector<savor::db::execution::workflow::WorkflowCompleteStepCommand> completion_calls;
@@ -103,7 +163,12 @@ public:
     std::vector<savor::db::execution::workflow::WorkflowAppendLifecycleEventCommand> lifecycle_events;
     std::vector<savor::db::execution::workflow::WorkflowCreateInstanceCommand> create_workflow_instance_calls;
     std::vector<savor::db::execution::workflow::WorkflowCompleteInstanceCommand> complete_workflow_instance_calls;
+    std::vector<savor::db::execution::workflow::WorkflowFreezeTransitionActivationCommand> freeze_transition_calls;
+    std::vector<savor::db::execution::workflow::WorkflowApplyTransitionActivationCommand> apply_transition_calls;
+    std::vector<savor::db::execution::workflow::WorkflowRecordTransitionActivationFailureCommand> transition_failure_calls;
 
 private:
     std::int64_t next_workflow_instance_id_ = 100;
+    std::int64_t next_transition_activation_id_ = 1000;
+    RecordingWorkflowQueryService* query_service_ = nullptr;
 };

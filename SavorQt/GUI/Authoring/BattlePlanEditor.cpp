@@ -643,7 +643,7 @@ void BattlePlanEditor::rebuildPlanTree()
         rows.push_back(std::move(row));
     }
 
-    savorqt::gui::ApplyTreeRowsByKey(
+    savorqt::gui::ReplaceTreeProjectionByKey(
         planTree_,
         currentPlanTreeRows_,
         rows,

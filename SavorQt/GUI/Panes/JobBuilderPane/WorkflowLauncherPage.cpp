@@ -1260,7 +1260,7 @@ void WorkflowLauncherPage::updateStandaloneArgumentControls()
 void WorkflowLauncherPage::applyExternalInputs(std::vector<ExternalInputRow> rows)
 {
     externalInputs_ = rows;
-    savorqt::gui::ApplyTableRowsByKey(
+    savorqt::gui::ReplaceTableProjectionByKey(
         externalInputsTable_,
         currentExternalInputRows_,
         externalInputs_,

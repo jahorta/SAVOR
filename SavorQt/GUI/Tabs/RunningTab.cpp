@@ -1,10 +1,12 @@
 #include "GUI/Tabs/RunningTab.h"
+#include "../../../SavorDb/Execution/Workflow/WorkflowIdentity.h"
 
 #include "DB/ProgramKindNameResolver.h"
 #include "DB/SavorDbJobService.h"
 #include "DB/SavorDbWorkflowService.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 #include "GUI/Refresh/DatabaseProjectionController.h"
+#include "GUI/Refresh/KeyedProjectionModels.h"
 #include "GUI/Refresh/RowUpdate.h"
 #include "GUI/Widgets/SegmentedProgressDelegate.h"
 #include "Worker/WorkerTelemetry.h"
@@ -25,11 +27,12 @@
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
-#include <QtWidgets/QTableWidgetItem>
+#include <QtWidgets/QTableView>
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
@@ -68,9 +71,9 @@ struct RunningRefreshRequest {
 };
 
 struct RunningWorkflowRow {
-    qint64 rowKey = 0;
-    qint64 workflowInstanceId = 0;
-    qint64 expansionId = 0;
+    savor::db::execution::workflow::WorkflowPresentationKey presentationKey;
+    savor::db::execution::workflow::WorkflowInstanceId workflowInstanceId;
+    savor::db::execution::workflow::WorkflowExpansionId expansionId;
     bool family = false;
     QString workflow;
     QString kind;
@@ -192,13 +195,6 @@ QString compactText(QString text, int maxLength = 84)
     return text.left(maxLength - 1) + QChar(0x2026);
 }
 
-QTableWidgetItem* createTableItem(const QString& text)
-{
-    auto* item = new QTableWidgetItem(text);
-    item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-    return item;
-}
-
 QFrame* createStatusPill(const QString& label, QWidget* parent, QLabel** valueLabel)
 {
     auto* pill = new QFrame(parent);
@@ -273,7 +269,7 @@ QScrollArea* createPanelScrollArea(QWidget* parent, QVBoxLayout** contentLayout)
     return scrollArea;
 }
 
-void configureTable(QTableWidget* table)
+void configureTable(QTableView* table)
 {
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -543,7 +539,7 @@ bool coordinatorDolphinBaseReady(const CoordinatorController* controller)
 
 bool runningWorkflowRowsEqual(const RunningWorkflowRow& lhs, const RunningWorkflowRow& rhs)
 {
-    return lhs.rowKey == rhs.rowKey
+    return lhs.presentationKey == rhs.presentationKey
         && lhs.workflowInstanceId == rhs.workflowInstanceId
         && lhs.expansionId == rhs.expansionId
         && lhs.family == rhs.family
@@ -568,44 +564,52 @@ bool runningWorkerRowsEqual(const RunningWorkerRow& lhs, const RunningWorkerRow&
         && lhs.status == rhs.status;
 }
 
-void populateRunningWorkflowRow(QTableWidget* table, int row, const RunningWorkflowRow& workflow)
+QVariant runningWorkflowData(const RunningWorkflowRow& workflow, int column, int role)
 {
-    table->setItem(row, 0, createTableItem(workflow.workflow));
-    table->item(row, 0)->setData(kWorkflowIdRole, workflow.workflowInstanceId);
-    table->item(row, 0)->setData(kWorkflowExpansionIdRole, workflow.expansionId);
-    table->setItem(row, 1, createTableItem(workflow.kind));
-    auto* stateItem = createTableItem(workflow.state);
-    auto* retryableItem = createTableItem(QString::number(workflow.retryable));
-    retryableItem->setData(kRetryableJobsRole, workflow.retryable);
-    if (workflow.state == QStringLiteral("FAILED") || workflow.state == QStringLiteral("INTERRUPTED")) {
-        QFont attentionFont = stateItem->font();
-        attentionFont.setBold(true);
-        stateItem->setFont(attentionFont);
-        retryableItem->setFont(attentionFont);
-        const QString tooltip = QStringLiteral("This workflow needs attention and has %1 retryable job(s).")
-            .arg(workflow.retryable);
-        stateItem->setToolTip(tooltip);
-        retryableItem->setToolTip(tooltip);
+    if (role == Qt::DisplayRole) {
+        switch (column) {
+        case 0: return workflow.workflow;
+        case 1: return workflow.kind;
+        case 2: return workflow.state;
+        case 3: return QString::number(workflow.retryable);
+        case 4: return workflow.progress;
+        case 5: return workflow.current;
+        default: return {};
+        }
     }
-    table->setItem(row, 2, stateItem);
-    table->setItem(row, 3, retryableItem);
-    auto* progressItem = createTableItem(workflow.progress);
-    progressItem->setData(savorqt::gui::SegmentedProgressRoles::Text, workflow.progress);
-    progressItem->setData(savorqt::gui::SegmentedProgressRoles::Done, workflow.done);
-    progressItem->setData(savorqt::gui::SegmentedProgressRoles::Remaining, workflow.remaining);
-    progressItem->setData(savorqt::gui::SegmentedProgressRoles::Failed, workflow.failed);
-    progressItem->setData(savorqt::gui::SegmentedProgressRoles::Canceled, workflow.canceled);
-    table->setItem(row, 4, progressItem);
-    table->setItem(row, 5, createTableItem(workflow.current));
+    if (column == 0 && role == kWorkflowIdRole) return workflow.workflowInstanceId.value();
+    if (column == 0 && role == kWorkflowExpansionIdRole) return workflow.expansionId.value();
+    if (column == 3 && role == kRetryableJobsRole) return workflow.retryable;
+    if (column == 4 && role == savorqt::gui::SegmentedProgressRoles::Text) return workflow.progress;
+    if (column == 4 && role == savorqt::gui::SegmentedProgressRoles::Done) return workflow.done;
+    if (column == 4 && role == savorqt::gui::SegmentedProgressRoles::Remaining) return workflow.remaining;
+    if (column == 4 && role == savorqt::gui::SegmentedProgressRoles::Failed) return workflow.failed;
+    if (column == 4 && role == savorqt::gui::SegmentedProgressRoles::Canceled) return workflow.canceled;
+    const bool attention = workflow.state == QStringLiteral("FAILED")
+        || workflow.state == QStringLiteral("INTERRUPTED");
+    if (attention && (column == 2 || column == 3) && role == Qt::FontRole) {
+        QFont font;
+        font.setBold(true);
+        return font;
+    }
+    if (attention && (column == 2 || column == 3) && role == Qt::ToolTipRole) {
+        return QStringLiteral("This workflow needs attention and has %1 retryable job(s).")
+            .arg(workflow.retryable);
+    }
+    return {};
 }
 
-void populateRunningWorkerRow(QTableWidget* table, int row, const RunningWorkerRow& worker)
+QVariant runningWorkerData(const RunningWorkerRow& worker, int column, int role)
 {
-    table->setItem(row, 0, createTableItem(QStringLiteral("#%1").arg(worker.workerId)));
-    table->setItem(row, 1, createTableItem(worker.state));
-    table->setItem(row, 2, createTableItem(worker.job));
-    table->setItem(row, 3, createTableItem(worker.kind));
-    table->setItem(row, 4, createTableItem(worker.status));
+    if (role != Qt::DisplayRole) return {};
+    switch (column) {
+    case 0: return QStringLiteral("#%1").arg(worker.workerId);
+    case 1: return worker.state;
+    case 2: return worker.job;
+    case 3: return worker.kind;
+    case 4: return worker.status;
+    default: return {};
+    }
 }
 
 QueueRowData prepareQueueRow(const savor::db::UiJobSummary& job)
@@ -722,9 +726,10 @@ RunningWorkflowRow prepareWorkflowRow(
     }
 
     return RunningWorkflowRow{
-        workflow.workflow_instance_id,
-        workflow.workflow_instance_id,
-        0,
+        savor::db::execution::workflow::StandaloneWorkflowPresentationKey{
+            savor::db::execution::workflow::WorkflowInstanceId{workflow.workflow_instance_id}},
+        savor::db::execution::workflow::WorkflowInstanceId{workflow.workflow_instance_id},
+        savor::db::execution::workflow::WorkflowExpansionId{},
         false,
         QStringLiteral("#%1").arg(workflow.workflow_instance_id),
         qs(workflow.workflow_kind),
@@ -875,7 +880,10 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
         const QString kind = expansion.kind == savor::db::execution::workflow::WorkflowExpansionKind::TasMovieFirstBattleExploration
             ? QStringLiteral("First Battle Exploration") : QStringLiteral("Delay Exploration");
         data.workflowRows.push_back({
-            -expansion.workflow_expansion_id, 0, expansion.workflow_expansion_id, true,
+            savor::db::execution::workflow::ExpansionHeaderPresentationKey{
+                savor::db::execution::workflow::WorkflowExpansionId{expansion.workflow_expansion_id}},
+            savor::db::execution::workflow::WorkflowInstanceId{},
+            savor::db::execution::workflow::WorkflowExpansionId{expansion.workflow_expansion_id}, true,
             QStringLiteral("▾ Family #%1").arg(expansion.workflow_expansion_id), kind,
             qs(expansion.state), retryable,
             QStringLiteral("%1/%2 child workflows complete").arg(completed).arg(expansion.members.size()),
@@ -888,14 +896,18 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
                 .arg(member.rtc_value ? QStringLiteral(" · RTC %1").arg(*member.rtc_value) : QString());
             if (const auto* detail = findWorkflowDetail(member.workflow_instance_id); detail != nullptr) {
                 RunningWorkflowRow row = prepareWorkflowRow(detail->instance, detail);
-                row.expansionId = expansion.workflow_expansion_id;
+                row.presentationKey = savor::db::execution::workflow::ExpansionMemberPresentationKey{
+                    savor::db::execution::workflow::WorkflowExpansionMemberId{member.workflow_expansion_member_id}};
+                row.expansionId = savor::db::execution::workflow::WorkflowExpansionId{expansion.workflow_expansion_id};
                 row.workflow = QStringLiteral("    ↳ #%1").arg(member.workflow_instance_id);
                 row.kind = memberKind;
                 data.workflowRows.push_back(std::move(row));
             } else {
                 data.workflowRows.push_back({
-                    member.workflow_instance_id, member.workflow_instance_id,
-                    expansion.workflow_expansion_id, false,
+                    savor::db::execution::workflow::ExpansionMemberPresentationKey{
+                        savor::db::execution::workflow::WorkflowExpansionMemberId{member.workflow_expansion_member_id}},
+                    savor::db::execution::workflow::WorkflowInstanceId{member.workflow_instance_id},
+                    savor::db::execution::workflow::WorkflowExpansionId{expansion.workflow_expansion_id}, false,
                     QStringLiteral("    ↳ #%1").arg(member.workflow_instance_id),
                     memberKind, qs(member.state), 0,
                     QStringLiteral("Workflow details unavailable"), QStringLiteral("--"),
@@ -1049,11 +1061,11 @@ bool RunningTab::eventFilter(QObject* watched, QEvent* event)
 
 void RunningTab::openSelectedWorkflow()
 {
-    if (workflowTable_ == nullptr || workflowTable_->currentRow() < 0 || !actions_.openWorkflow) {
+    if (workflowTable_ == nullptr || !workflowTable_->currentIndex().isValid() || !actions_.openWorkflow) {
         return;
     }
-    const auto* item = workflowTable_->item(workflowTable_->currentRow(), 0);
-    const qint64 workflowId = item != nullptr ? item->data(kWorkflowIdRole).toLongLong() : 0;
+    const QModelIndex firstColumn = workflowTable_->model()->index(workflowTable_->currentIndex().row(), 0);
+    const qint64 workflowId = firstColumn.data(kWorkflowIdRole).toLongLong();
     if (workflowId > 0) {
         actions_.openWorkflow(workflowId);
     }
@@ -1069,12 +1081,12 @@ void RunningTab::showWorkflowContextMenu(const QPoint& position)
         return;
     }
     workflowTable_->selectRow(index.row());
-    const auto* idItem = workflowTable_->item(index.row(), 0);
-    const auto* kindItem = workflowTable_->item(index.row(), 1);
-    const auto* retryableItem = workflowTable_->item(index.row(), 3);
-    const qint64 workflowId = idItem != nullptr ? idItem->data(kWorkflowIdRole).toLongLong() : 0;
-    const qint64 expansionId = idItem != nullptr ? idItem->data(kWorkflowExpansionIdRole).toLongLong() : 0;
-    const qint64 retryable = retryableItem != nullptr ? retryableItem->data(kRetryableJobsRole).toLongLong() : 0;
+    const QModelIndex idIndex = workflowTable_->model()->index(index.row(), 0);
+    const QModelIndex kindIndex = workflowTable_->model()->index(index.row(), 1);
+    const QModelIndex retryableIndex = workflowTable_->model()->index(index.row(), 3);
+    const qint64 workflowId = idIndex.data(kWorkflowIdRole).toLongLong();
+    const qint64 expansionId = idIndex.data(kWorkflowExpansionIdRole).toLongLong();
+    const qint64 retryable = retryableIndex.data(kRetryableJobsRole).toLongLong();
     if (workflowId <= 0 && expansionId <= 0) {
         return;
     }
@@ -1084,8 +1096,8 @@ void RunningTab::showWorkflowContextMenu(const QPoint& position)
         auto* openAction = menu.addAction(QStringLiteral("Open workflow"));
         QObject::connect(openAction, &QAction::triggered, workflowTable_, [this]() { openSelectedWorkflow(); });
     }
-    if (expansionId > 0 && kindItem != nullptr &&
-        kindItem->text().contains(QStringLiteral("first battle"), Qt::CaseInsensitive) &&
+    if (expansionId > 0 &&
+        kindIndex.data(Qt::DisplayRole).toString().contains(QStringLiteral("first battle"), Qt::CaseInsensitive) &&
         actions_.openFirstBattleCoverage) {
         auto* coverageAction = menu.addAction(QStringLiteral("Open First Battle Coverage"));
         QObject::connect(coverageAction, &QAction::triggered, workflowTable_,
@@ -1260,18 +1272,26 @@ void RunningTab::build()
     workflowStateStrip->addStretch();
     workflowLayout->addLayout(workflowStateStrip);
 
-    workflowTable_ = new QTableWidget(workflowPanel);
+    workflowTable_ = new QTableView(workflowPanel);
     configureTable(workflowTable_);
     workflowTable_->verticalHeader()->setDefaultSectionSize(34);
-    workflowTable_->setColumnCount(6);
-    workflowTable_->setHorizontalHeaderLabels(QStringList{
+    auto* workflowModel = new savorqt::gui::KeyedTableProjectionModel<
+        RunningWorkflowRow,
+        savor::db::execution::workflow::WorkflowPresentationKey>(
+        QStringLiteral("Running.Workflows"),
+        QStringList{
         QStringLiteral("Workflow"),
         QStringLiteral("Kind"),
         QStringLiteral("State"),
         QStringLiteral("Retryable"),
         QStringLiteral("Progress"),
         QStringLiteral("Current / Problems"),
-    });
+        },
+        [](const RunningWorkflowRow& row) { return row.presentationKey; },
+        runningWorkflowRowsEqual,
+        runningWorkflowData,
+        workflowTable_);
+    workflowTable_->setModel(workflowModel);
     workflowTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     workflowTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     workflowTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
@@ -1281,10 +1301,10 @@ void RunningTab::build()
     workflowTable_->setItemDelegateForColumn(4, new savorqt::gui::SegmentedProgressDelegate(workflowTable_));
     workflowTable_->setContextMenuPolicy(Qt::CustomContextMenu);
     workflowTable_->installEventFilter(this);
-    QObject::connect(workflowTable_, &QTableWidget::cellDoubleClicked, workflowTable_, [this](int row, int) {
-        const auto* item = workflowTable_->item(row, 0);
-        const qint64 workflowId = item ? item->data(kWorkflowIdRole).toLongLong() : 0;
-        const qint64 expansionId = item ? item->data(kWorkflowExpansionIdRole).toLongLong() : 0;
+    QObject::connect(workflowTable_, &QTableView::doubleClicked, workflowTable_, [this](const QModelIndex& index) {
+        const QModelIndex firstColumn = workflowTable_->model()->index(index.row(), 0);
+        const qint64 workflowId = firstColumn.data(kWorkflowIdRole).toLongLong();
+        const qint64 expansionId = firstColumn.data(kWorkflowExpansionIdRole).toLongLong();
         if (workflowId <= 0 && expansionId > 0) {
             if (collapsedExpansionIds_.contains(expansionId)) collapsedExpansionIds_.erase(expansionId);
             else collapsedExpansionIds_.insert(expansionId);
@@ -1345,22 +1365,28 @@ void RunningTab::build()
     workerHeader->addWidget(openWorkersButton);
     workerLayout->addLayout(workerHeader);
 
-    workerTable_ = new QTableWidget(workerPanel);
+    workerTable_ = new QTableView(workerPanel);
     configureTable(workerTable_);
-    workerTable_->setColumnCount(5);
-    workerTable_->setHorizontalHeaderLabels(QStringList{
+    auto* workerModel = new savorqt::gui::KeyedTableProjectionModel<RunningWorkerRow, qint64>(
+        QStringLiteral("Running.Workers"),
+        QStringList{
         QStringLiteral("Worker"),
         QStringLiteral("State"),
         QStringLiteral("Job"),
         QStringLiteral("Kind"),
         QStringLiteral("Heartbeat / progress / error"),
-    });
+        },
+        [](const RunningWorkerRow& row) { return row.workerId; },
+        runningWorkerRowsEqual,
+        runningWorkerData,
+        workerTable_);
+    workerTable_->setModel(workerModel);
     workerTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     workerTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     workerTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     workerTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     workerTable_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
-    QObject::connect(workerTable_, &QTableWidget::cellDoubleClicked, workerTable_, [this](int, int) {
+    QObject::connect(workerTable_, &QTableView::doubleClicked, workerTable_, [this](const QModelIndex&) {
         if (actions_.openWorkers) {
             actions_.openWorkers();
         }
@@ -1395,8 +1421,6 @@ void RunningTab::build()
     canvasLayout()->addWidget(cockpit, 1);
 
     auto* refreshPipeline = new savorqt::gui::DatabaseProjectionController<RunningRefreshRequest, RunningRefreshData>(this);
-    auto workflowRows = std::make_shared<std::vector<RunningWorkflowRow>>();
-    auto workerRows = std::make_shared<std::vector<RunningWorkerRow>>();
     refreshPipeline->setRefreshIntervalMs(1000);
     refreshPipeline->setRequestBuilder([this](savorqt::gui::RefreshReason) {
         RunningRefreshRequest request;
@@ -1472,17 +1496,25 @@ void RunningTab::build()
         workflowQueuedValueLabel_->setText(data.workflowQueuedText);
         workflowWaitingValueLabel_->setText(data.workflowWaitingText);
         workflowFinalValueLabel_->setText(data.workflowFinalizedText);
-        savorqt::gui::ApplyTableRowsByKey(
-            workflowTable_,
-            *workflowRows,
-            data.workflowRows,
-            [](const RunningWorkflowRow& row) { return row.rowKey; },
-            runningWorkflowRowsEqual,
-            populateRunningWorkflowRow);
-        for (int row = 0; row < workflowTable_->rowCount(); ++row) {
-            const auto* item = workflowTable_->item(row, 0);
-            const qint64 expansionId = item ? item->data(kWorkflowExpansionIdRole).toLongLong() : 0;
-            const qint64 workflowId = item ? item->data(kWorkflowIdRole).toLongLong() : 0;
+        const auto selectedWorkflowKey = workflowModel->keyForIndex(workflowTable_->currentIndex());
+        const int workflowHorizontalScroll = workflowTable_->horizontalScrollBar()->value();
+        const int workflowVerticalScroll = workflowTable_->verticalScrollBar()->value();
+        savorqt::gui::ProjectionModelFailure workflowProjectionFailure;
+        if (!workflowModel->replaceRows(data.workflowRows, &workflowProjectionFailure)) {
+            workflowSummaryLabel_->setText(QStringLiteral(
+                "Workflow projection rejected: duplicate identity at rows %1 and %2.")
+                .arg(workflowProjectionFailure.firstOrdinal)
+                .arg(workflowProjectionFailure.conflictingOrdinal));
+        } else if (selectedWorkflowKey.has_value()) {
+            const QModelIndex selectedIndex = workflowModel->indexForKey(*selectedWorkflowKey);
+            if (selectedIndex.isValid()) workflowTable_->selectRow(selectedIndex.row());
+        }
+        workflowTable_->horizontalScrollBar()->setValue(workflowHorizontalScroll);
+        workflowTable_->verticalScrollBar()->setValue(workflowVerticalScroll);
+        for (int row = 0; row < workflowModel->rowCount(); ++row) {
+            const QModelIndex item = workflowModel->index(row, 0);
+            const qint64 expansionId = item.data(kWorkflowExpansionIdRole).toLongLong();
+            const qint64 workflowId = item.data(kWorkflowIdRole).toLongLong();
             workflowTable_->setRowHidden(row, workflowId > 0 && expansionId > 0 &&
                 collapsedExpansionIds_.contains(expansionId));
         }
@@ -1503,13 +1535,17 @@ void RunningTab::build()
         queueBucketsLayout_->addStretch();
 
         workerSummaryLabel_->setText(data.workerSummary);
-        savorqt::gui::ApplyTableRowsByKey(
-            workerTable_,
-            *workerRows,
-            data.workerRows,
-            [](const RunningWorkerRow& row) { return row.workerId; },
-            runningWorkerRowsEqual,
-            populateRunningWorkerRow);
+        const auto selectedWorkerKey = workerModel->keyForIndex(workerTable_->currentIndex());
+        const int workerHorizontalScroll = workerTable_->horizontalScrollBar()->value();
+        const int workerVerticalScroll = workerTable_->verticalScrollBar()->value();
+        savorqt::gui::ProjectionModelFailure workerProjectionFailure;
+        (void)workerModel->replaceRows(data.workerRows, &workerProjectionFailure);
+        if (selectedWorkerKey.has_value()) {
+            const QModelIndex selectedIndex = workerModel->indexForKey(*selectedWorkerKey);
+            if (selectedIndex.isValid()) workerTable_->selectRow(selectedIndex.row());
+        }
+        workerTable_->horizontalScrollBar()->setValue(workerHorizontalScroll);
+        workerTable_->verticalScrollBar()->setValue(workerVerticalScroll);
 
         auto actionForRoute = [this](AttentionRoute route) -> std::function<void()> {
             switch (route) {

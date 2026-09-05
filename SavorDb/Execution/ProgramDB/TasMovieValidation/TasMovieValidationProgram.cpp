@@ -760,6 +760,32 @@ public:
 
         std::int64_t attempt_id = 0;
         if (!analysis_db_->RecordTasMovieValidationAttempt(attempt, &attempt_id, &error)) throw std::runtime_error(error);
+        if (attempt.outcome == TasMovieValidationOutcome::Valid
+            && request->source_kind == TasMovieValidationSourceKind::Tree) {
+            const auto tree = state_db_->GetTasMovieTree(request->source_ref_id);
+            if (tree && tree->source_context_kind
+                    == "analysis_battle.battle_recording") {
+                const auto recording = analysis_db_->GetBattleRecording(
+                    tree->source_context_id);
+                if (!recording || recording->status != "COMPLETED"
+                    || recording->outcome
+                        != std::optional<std::string>("RECORDED")
+                    || recording->tas_movie_tree_id != tree->tas_movie_tree_id
+                    || recording->paired_checkpoint_savestate_id
+                        != tree->checkpoint_savestate_id) {
+                    throw std::runtime_error(
+                        "battle recording tree identity drifted during validation persistence");
+                }
+                if (!analysis_db_->BindBattleRecordingValidation({
+                        .battle_recording_id = recording->battle_recording_id,
+                        .tas_movie_tree_id = tree->tas_movie_tree_id,
+                        .validation_request_id = request->validation_request_id},
+                        &error)) {
+                    throw std::runtime_error(error.empty()
+                        ? "battle recording validation binding failed" : error);
+                }
+            }
+        }
         std::optional<std::int64_t> root_establishment_id;
         if (attempt.outcome == TasMovieValidationOutcome::RootCursorEstablished) {
             std::int64_t id = 0;
@@ -1105,20 +1131,6 @@ public:
             decision.should_advance = false;
             decision.workflow_failure = true;
             decision.blocked_reason = "battle_recording_tree_identity_drifted";
-            return decision;
-        }
-        std::string error;
-        if (!analysis_db_->BindBattleRecordingValidation({
-                .battle_recording_id = recording->battle_recording_id,
-                .tas_movie_tree_id = tree->tas_movie_tree_id,
-                .validation_request_id = request->validation_request_id},
-                &error)) {
-            decision.should_advance = false;
-            decision.workflow_failure = true;
-            decision.blocked_reason = error.empty()
-                ? std::optional<std::string>(
-                    "battle_recording_validation_binding_failed")
-                : std::optional<std::string>(std::move(error));
             return decision;
         }
         return decision;

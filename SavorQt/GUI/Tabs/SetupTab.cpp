@@ -435,7 +435,7 @@ void SetupTab::build()
     });
     workflowRefreshPipeline->setApply([=](const WorkflowGraphRefreshData& data, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         *workflowGraphs = data.graphs;
-        savorqt::gui::ApplyTableRowsByKey(
+        savorqt::gui::ReplaceTableProjectionByKey(
             workflowTable,
             *workflowRows,
             data.rows,

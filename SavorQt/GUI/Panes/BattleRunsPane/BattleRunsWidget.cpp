@@ -885,7 +885,7 @@ void BattleRunsWidget::applyError(const QString& error)
 void BattleRunsWidget::refreshGroups(const std::vector<GroupRow>& rows)
 {
     refreshingSelection_ = true;
-    ApplyTableRowsByKey(
+    ReplaceTableProjectionByKey(
         groupsTable_,
         currentGroups_,
         rows,
@@ -911,7 +911,7 @@ void BattleRunsWidget::refreshWaves(const std::vector<WaveRow>& rows)
         row.selected = selected.count(row.waveId) != 0;
     }
     const auto turnRows = makeWaveTurnRows(std::move(waveRows));
-    ApplyTreeRowsByKey(
+    ReplaceTreeProjectionByKey(
         waveTree_,
         currentWaveTurns_,
         turnRows,
@@ -923,7 +923,7 @@ void BattleRunsWidget::refreshWaves(const std::vector<WaveRow>& rows)
 
 void BattleRunsWidget::refreshJobs(const std::vector<JobRow>& rows)
 {
-    ApplyTableRowsByKey(
+    ReplaceTableProjectionByKey(
         jobsTable_,
         currentJobs_,
         rows,

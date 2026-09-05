@@ -220,6 +220,8 @@
     <ClCompile Include="..\SavorE2E\WorkerStartupBarrier.cpp" />
     <ClCompile Include="test_e2e_scenario_assessment.cpp" />
     <ClCompile Include="test_workflow_expansion_targets.cpp" />
+    <ClCompile Include="test_workflow_identity.cpp" />
+    <ClCompile Include="test_tas_route_authority_resolver.cpp" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googlemock\src\gmock-all.cc" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
