@@ -19,7 +19,7 @@ _old files if needed/
 # Graphify output and build/generated output.
 graphify-out/
 Analyses/
-e2e-runs/
+e2e_runs/
 perf-runs/
 bin/
 obj/

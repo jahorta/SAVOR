@@ -45,7 +45,6 @@ struct Options {
     std::filesystem::path dtm_file;
     std::filesystem::path iso_path;
     std::filesystem::path dolphin_base_dir;
-    std::filesystem::path migration_root;
     std::filesystem::path workspace_root;
     std::filesystem::path worker_dir_root;
     std::string durable_lines;
@@ -125,8 +124,6 @@ bool ParseOptions(int argc, char** argv, Options* options) {
                 options->iso_path = need_value("--iso");
             } else if (arg == "--dolphin-base-dir") {
                 options->dolphin_base_dir = need_value("--dolphin-base-dir");
-            } else if (arg == "--migration-root") {
-                options->migration_root = need_value("--migration-root");
             } else if (arg == "--workspace-root") {
                 options->workspace_root = need_value("--workspace-root");
             } else if (arg == "--worker-dir-root") {
@@ -761,7 +758,6 @@ int RunE2EReplay(const Options& options, const char* argv0) {
     AppendPathArg(cmd, "--dolphin-base-dir", options.dolphin_base_dir);
     AppendPathArg(cmd, "--savestate-file", options.savestate_file);
     AppendPathArg(cmd, "--dtm-file", options.dtm_file);
-    AppendPathArg(cmd, "--migration-root", options.migration_root);
     AppendPathArg(cmd, "--workspace-root", options.workspace_root);
     AppendPathArg(cmd, "--worker-dir-root", options.worker_dir_root);
     AppendStringArg(cmd, "--durable-lines", options.durable_lines);

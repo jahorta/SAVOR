@@ -109,7 +109,7 @@ Before runtime extraction, the current DB-facing program catalog was centralized
 
 The prelude adds no schema migration, stored-representation change, database interface, queue/claim
 change, coordinator filter, or new project. Focused partial registries remain valid only for
-development tests and specialized tools such as SavorPredict.
+development tests and specialized tools such as SIMMER predictor.
 
 ### Just-in-time characterization and contract definition
 
@@ -369,7 +369,7 @@ Complete this slice before any native phase module:
 
 - remove `run_ms`, `run_timeout_ms`, `vi_stall_ms`, timing overrides, macro/memory/tail timeouts, TAS
   timing headroom, and every derived active wall-clock budget from runtime contracts, phase payloads,
-  adapters, fingerprints, workset keys, SavorPredict, SavorE2E configuration, and UI;
+  adapters, fingerprints, workset keys, SIMMER predictor, SavorE2E configuration, and UI;
 - remove active elapsed limits from `ProgramBudgets`, action requests, `ExecutionRequestPolicy`,
   interruption descriptors, semantic/interaction composition, workset item templates, and aggregate
   workset limits. Keep verifier structural limits, finite semantic retry/poll counts, resident-resource
@@ -398,7 +398,7 @@ Complete this slice before any native phase module:
   before session mutation, and give newly generated native fingerprints a timing-free revision/namespace.
 
 Validate this hard cutover with full Debug and Release solution builds; injected-clock health/race tests;
-runtime, composition, workset, authoring, ProgramDB, SavorPredict, protocol, and codec guards; and the
+runtime, composition, workset, authoring, ProgramDB, SIMMER predictor, protocol, and codec guards; and the
 headless Release JIT/router guard. Do not run SavorE2E while production invocation remains unavailable.
 
 ### Pre-6A dependency prelude: production process and pipelined WorkerWorkset foundation

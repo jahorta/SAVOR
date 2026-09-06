@@ -3,8 +3,6 @@
 #include "Runner/Runtime/DolphinWrapperBackend.h"
 #include "Runner/Runtime/EmulationSession.h"
 #include "Boot/Boot.h"
-#include "CaptureProfileJson.h"
-#include "LiveCaptureProfile.h"
 #include "../SavorProbe/NativeStopHooks.h"
 #include "../SavorProbe/ProbeProfile.h"
 #include "serial_guard.h"
@@ -188,9 +186,26 @@ private:
             "Could not resolve the loaded module hash for the canonical "
             "capture profile: " + module_error);
     }
-    return savor::predict::pin_capture_profile_module_hash(
-        savor::predict::build_first_battle_capture_profile_ini(),
-        module_hash);
+    return std::string(R"json({
+  "schema": "savor.capture.profile/1",
+  "name": "dolphin-stop-point-integration",
+  "revision": 1,
+  "expected_module_sha256": ")json") + module_hash + R"json(",
+  "limits": {
+    "queue_bytes": 1048576,
+    "max_events": 128,
+    "progress_events": 32
+  },
+  "probes": [
+    {
+      "id": "integration.game_mode_controller.capture",
+      "group": "integration",
+      "kind": "pc",
+      "address": "0x80001000",
+      "subscriptions": ["capture"]
+    }
+  ]
+})json";
 }
 
 [[nodiscard]] std::optional<ExecutionTerminalResult> DriveUntilTerminal(
@@ -528,11 +543,8 @@ TEST(
     ASSERT_EQ(observe_consumer.deliveries.size(), 2u);
     EXPECT_TRUE(
         observe_consumer.deliveries[1].event.active_foreground_wait);
-    EXPECT_LT(
-        observe_consumer.deliveries[1].event.identity.sequence,
-        second_terminal->stop->identity.sequence);
     ExpectSameIdentity(
-        observe_consumer.deliveries[2].event.identity,
+        observe_consumer.deliveries[1].event.identity,
         second_terminal->stop->identity);
 
     const CaptureServiceReceipt capture_detached =

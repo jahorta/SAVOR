@@ -396,7 +396,7 @@ Before `ProgramRuntime` exists, focused fake-port and fake-backend guards cover:
 - request-correlated process shutdown, graceful close, forced-termination reporting, and idempotent stop;
   and
 - capability mismatch starting no DB-facing thread or DB work, plus explicit unavailable results for
-  worker-backed E2E, SavorPredict, SavorQt, and direct macro entry points.
+  worker-backed E2E, SIMMER predictor, SavorQt, and direct macro entry points.
 
 Interactive pause, resume, and frame-step tests belong to the `ExecutionEngine` slice. Slice 1 verifies
 that those requests are rejected as unsupported rather than reaching Dolphin or the disconnected VM.
@@ -483,7 +483,7 @@ Before the first native phase module, focused injected-clock and barrier-based t
 - bounded host operations retain their independent timeout and cleanup behavior.
 
 Repository-surface tests additionally prove that obsolete timing fields do not appear in runtime/module/
-workset codecs, phase payload schemas, adapter fingerprints, SavorPredict manifests, E2E runtime inputs,
+workset codecs, phase payload schemas, adapter fingerprints, SIMMER predictor manifests, E2E runtime inputs,
 or UI. Runtime/workset v1 golden encodings are revised in place and old legacy payload revisions reject
 before session mutation.
 

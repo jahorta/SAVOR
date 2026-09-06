@@ -104,7 +104,7 @@ The shared production `CoordinatorRuntime` is the sole application path:
 - `WorkflowCoordinatorService` owns workflow progression.
 
 The legacy `DBWorkflowWorkerCoordinator`, its factory, capability preflight,
-runtime manifest/preparation messages, and SavorPredict's `run-battle-job` and
+runtime manifest/preparation messages, and SIMMER predictor's `run-battle-job` and
 `run-battle-jobs` commands are retired.
 
 ## Battle validation provenance

@@ -464,7 +464,7 @@ The hard cutover removes the elapsed-policy family previously distributed across
   `ProgramCodecV1`, semantic/interaction composition, `WorksetTypes`, and `WorksetWireCodec`;
 - current phase payloads, PhaseScript timeout context/builders, timed legacy wrapper/macro facades, and
   ProgramDB runtime-init/job/fingerprint projections;
-- SavorQt authoring drafts/editors, SavorPredict run/batch options and manifests, and SavorE2E phase
+- SavorQt authoring drafts/editors, SIMMER predictor run/batch options and manifests, and SavorE2E phase
   setup; and
 - `IAuthoringDb` commands/snapshots plus `SqliteAuthoringDb` selects and identity comparisons.
 

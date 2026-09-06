@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include "CaptureArtifact.h"
 #include "CaptureFormat.h"
 
 #include <algorithm>
@@ -17,7 +16,6 @@
 namespace {
 
 using namespace savor::capture_format;
-using namespace savor::predict;
 
 class TempCaptureDirectory {
 public:
@@ -178,16 +176,6 @@ TEST(SavorCaptureFormat, RotatesIntoIndependentlyReadableSegments)
     ASSERT_TRUE(Reader::read_all(capture, events, nullptr, &error)) << error;
     EXPECT_EQ(events.size(), 3u);
 
-    const auto copied = temp.path / "stable" / "rotated.scap";
-    std::vector<std::filesystem::path> copied_segments;
-    ASSERT_TRUE(copy_capture_segments(capture, copied, &copied_segments, &error)) << error;
-    EXPECT_EQ(copied_segments.size(), report.segments.size());
-    PreparedCaptureArtifact prepared;
-    ASSERT_TRUE(prepare_capture_artifact(
-        copied, temp.path / "stable" / "rotated.jsonl", &prepared, &error)) << error;
-    EXPECT_TRUE(prepared.complete);
-    EXPECT_EQ(prepared.segment_count, report.segments.size());
-    EXPECT_EQ(prepared.segments, copied_segments);
 }
 
 TEST(SavorCaptureFormat, PreservesCaptureOrderForDelayedStructuredRecords)
@@ -269,41 +257,6 @@ TEST(SavorCaptureFormat, PreservesCaptureOrderForDelayedStructuredRecords)
     EXPECT_EQ(raw.find(R"("nodes")"), std::string::npos);
 }
 
-TEST(SavorCaptureArtifact, ReportsGapsMetricsAndIncompleteStatus)
-{
-    TempCaptureDirectory temp;
-    const auto capture = temp.path / "incomplete.scap";
-    Writer writer;
-    std::string error;
-    ASSERT_TRUE(writer.open(capture, metadata(), {}, &error)) << error;
-    Event gap = event(1, "probe.capture.gap", 0);
-    gap.kind = EventKind::Gap;
-    ASSERT_TRUE(writer.append(gap, &error)) << error;
-    Event metrics = event(2, "probe.session.metrics", 0);
-    metrics.kind = EventKind::Metrics;
-    metrics.fields = {
-        Field{ .name = "complete", .value = 0 },
-        Field{ .name = "capture_drops", .value = 3 },
-        Field{ .name = "progress_drops", .value = 2 },
-        Field{ .name = "profile_revision", .value = 1 },
-    };
-    ASSERT_TRUE(writer.append(metrics, &error)) << error;
-    writer.mark_incomplete("unit-test loss");
-    ASSERT_TRUE(writer.close(&error)) << error;
-
-    PreparedCaptureArtifact result;
-    ASSERT_TRUE(prepare_capture_artifact(
-        capture, temp.path / "incomplete.jsonl", &result, &error)) << error;
-    EXPECT_FALSE(result.verified);
-    EXPECT_FALSE(result.complete);
-    EXPECT_EQ(result.gap_count, 1u);
-    EXPECT_EQ(result.metrics_event_count, 1u);
-    EXPECT_EQ(result.capture_drops, 3u);
-    EXPECT_EQ(result.progress_drops, 2u);
-    EXPECT_EQ(result.drops, 5u);
-    EXPECT_FALSE(result.incomplete_reason.empty());
-}
-
 TEST(SavorCaptureFormat, RecoversCompleteChunksAfterFooterLoss)
 {
     TempCaptureDirectory temp;
@@ -343,45 +296,6 @@ TEST(SavorCaptureFormat, RecoversCompleteChunksAfterFooterLoss)
     ASSERT_TRUE(Reader::read_all(recovered, recovered_events, nullptr, &error)) << error;
     ASSERT_EQ(recovered_events.size(), 1u);
     EXPECT_EQ(recovered_events.front().fields.front().value, 9u);
-}
-
-TEST(SavorCaptureArtifact, VerifiesExportsAndReducesSeedOverrideMarkers)
-{
-    TempCaptureDirectory temp;
-    const auto capture = temp.path / "markers.scap";
-    const auto exported = temp.path / "exports" / "markers.jsonl";
-
-    Writer writer;
-    std::string error;
-    ASSERT_TRUE(writer.open(capture, metadata(), {}, &error)) << error;
-    std::uint64_t sequence = 1;
-    for (const auto& [id, value] : std::vector<std::pair<std::string, std::uint64_t>>{
-             { "rng.seed_override.original", 0x11111111u },
-             { "rng.seed_override.requested", 0x22222222u },
-             { "rng.seed_override.applied", 0x22222222u },
-         }) {
-        Event marker;
-        marker.capture_sequence = sequence;
-        marker.record_sequence = sequence++;
-        marker.kind = EventKind::Marker;
-        marker.probe_id = id;
-        marker.value = value;
-        ASSERT_TRUE(writer.append(marker, &error)) << error;
-    }
-    ASSERT_TRUE(writer.close(&error)) << error;
-
-    PreparedCaptureArtifact result;
-    ASSERT_TRUE(prepare_capture_artifact(capture, exported, &result, &error)) << error;
-    EXPECT_TRUE(result.verified);
-    EXPECT_TRUE(result.complete);
-    EXPECT_EQ(result.segment_count, 1u);
-    EXPECT_EQ(result.chunk_count, 1u);
-    EXPECT_EQ(result.event_count, 3u);
-    EXPECT_EQ(result.seed_override.original_seed, 0x11111111u);
-    EXPECT_EQ(result.seed_override.requested_seed, 0x22222222u);
-    EXPECT_EQ(result.seed_override.applied_seed, 0x22222222u);
-    EXPECT_EQ(result.seed_override.readback_matches, true);
-    EXPECT_TRUE(std::filesystem::exists(exported));
 }
 
 } // namespace

@@ -1,1 +1,0 @@
-bin\x64\Debug\SavorE2E.exe --scenario tasmovie_seedprobe_battle --dtm-file "D:\SoATAS\beginning_in_first_battle.dtm" --iso "D:\SoATAS\SkiesofArcadiaLegends(USA).gcm" --dolphin-base-dir "D:\SoATAS\dolphin-2506a-x64" --workspace-root "C:\Users\jahor\source\repos\jahorta\SAVOR\SavorE2E\.savor-e2e\.full_scenario" --worker-count 15

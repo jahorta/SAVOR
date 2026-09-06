@@ -48,7 +48,7 @@ state.
 
 The current path also carries phase-specific elapsed execution policy through authoring
 `run_ms`/`vi_stall_ms` columns, payload fields, context keys, fingerprints, runtime-init requests,
-SavorPredict overrides, E2E setup, and worker operation budgets. Those values conflate valid slow guest
+SIMMER predictor overrides, E2E setup, and worker operation budgets. Those values conflate valid slow guest
 execution with an unhealthy emulator and cannot account correctly for synchronous router, sampler, or
 capture work that temporarily blocks guest advancement. The pre-6A hard cutover removes this timing
 family rather than translating it into the new architecture.

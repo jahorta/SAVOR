@@ -1,8 +1,5 @@
 #include <gtest/gtest.h>
 
-#include "BattlePredictionBatchRun.h"
-#include "BattlePredictorResourceBundle.h"
-#include "DbCopy.h"
 #include "DbRootCopy.h"
 
 #include "Common/DbService.h"
@@ -46,27 +43,6 @@ std::string BuildBattleInputIni(
     ini.set("BattleSingleTurn.Job", "concrete_turn_plan_hex", "");
     ini.set("BattleSingleTurn.Job", "target_variant_key", "seeded");
     return ini.to_string_sorted();
-}
-
-savor::predict::BattlePredictorResourceBundlePtr ReadyResourceInputs() {
-    auto bundle =
-        std::make_shared<savor::predict::BattlePredictorResourceBundle>();
-    bundle->status =
-        savor::predict::BattlePredictorResourceInputStatus::Ready;
-    bundle->provider_kind =
-        savor::predict::BattlePredictorResourceProviderKind::DirectSpice;
-    bundle->adapter_version = "test-adapter-v1";
-    bundle->spice_revision = "test-spice-revision";
-    bundle->bundle_digest = "test-resource-digest";
-    bundle->sources.push_back({
-        .logical_role = "test.primary_std",
-        .normalized_relative_path = "bchara/test.std",
-        .size_bytes = 4,
-        .sha256 = "test-source-sha256",
-        .parser_identity = "test-parser",
-        .parser_status = "ready",
-    });
-    return bundle;
 }
 
 std::optional<std::int64_t> QueryI64(const std::filesystem::path& db_path, const char* sql, std::int64_t arg = 0) {
@@ -539,156 +515,6 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, FullCopyCopiesDbFilesAndStores)
     EXPECT_TRUE(std::filesystem::exists(target_root / "analysis.db"));
     EXPECT_TRUE(std::filesystem::exists(target_root / "execution.db"));
     EXPECT_TRUE(std::filesystem::exists(target_root / "object_store" / "nested" / "blob.bin"));
-}
-
-TEST_F(SavorDbUtilsMinimalCopyFixture, PrepareDbSealsSnapshotAndWritesManifest)
-{
-    const auto source_root = root_ / "source";
-    const auto target_root = root_ / "target";
-    const auto seeded = SeedSourceDb(source_root);
-
-    std::ostringstream out;
-    std::ostringstream err;
-    ASSERT_EQ(savor::predict::run_prepare_db(
-        {
-            .source = source_root,
-            .dest = target_root,
-            .overwrite = false,
-        },
-        out,
-        err), 0) << err.str();
-
-    const auto target_paths = savor::dbutils::MakeDbConfigPaths(target_root);
-    const std::array database_paths{
-        target_paths.analysis_db_path,
-        target_paths.execution_db_path,
-        target_paths.state_db_path,
-        target_paths.ui_read_db_path,
-        target_paths.authoring_db_path,
-        target_paths.archive_db_path,
-    };
-    for (const auto& database_path : database_paths) {
-        EXPECT_EQ(
-            QueryText(database_path, "PRAGMA journal_mode;").value_or(""),
-            "delete");
-        EXPECT_EQ(
-            QueryText(database_path, "PRAGMA quick_check;").value_or(""),
-            "ok");
-        EXPECT_FALSE(std::filesystem::exists(
-            database_path.string() + "-wal"));
-        EXPECT_FALSE(std::filesystem::exists(
-            database_path.string() + "-shm"));
-    }
-
-    const auto manifest_path = target_root / "db_manifest.json";
-    ASSERT_TRUE(std::filesystem::exists(manifest_path));
-    std::ifstream manifest_file(manifest_path, std::ios::binary);
-    ASSERT_TRUE(manifest_file);
-    const std::string manifest{
-        std::istreambuf_iterator<char>(manifest_file),
-        std::istreambuf_iterator<char>()};
-    EXPECT_NE(
-        manifest.find("\"format\": \"savor-predict-db-manifest-v1\""),
-        std::string::npos);
-    EXPECT_NE(
-        manifest.find("\"kind\": \"prediction_snapshot\""),
-        std::string::npos);
-    EXPECT_NE(
-        manifest.find("\"sha256\":\""),
-        std::string::npos);
-    EXPECT_NE(
-        manifest.find("\"database_fingerprint\": \""),
-        std::string::npos);
-    EXPECT_NE(
-        manifest.find("\"journal_mode\":\"delete\""),
-        std::string::npos);
-    EXPECT_NE(
-        manifest.find("\"quick_check\":\"ok\""),
-        std::string::npos);
-    EXPECT_NE(
-        manifest.find("\"migration_contexts\":[{"),
-        std::string::npos);
-    EXPECT_NE(
-        manifest.find(source_root.lexically_normal().generic_string()),
-        std::string::npos);
-
-    const auto prediction_run_root = root_ / "prediction-run";
-    std::ostringstream prediction_out;
-    std::ostringstream prediction_err;
-    const auto prediction_run =
-        savor::predict::run_battle_prediction_batch(
-            {
-                .source_exec_job_ids = {seeded.exec_job_id},
-                .db_root = target_root,
-                .profile_name = "first-battle-soldiers",
-                .resource_inputs = ReadyResourceInputs(),
-                .run_root = prediction_run_root,
-                .run_name = "prepared-snapshot-verification",
-                .preflight_only = true,
-            },
-            prediction_out,
-            prediction_err);
-    EXPECT_TRUE(
-        prediction_run.database_identity.snapshot_manifest_present);
-    EXPECT_TRUE(
-        prediction_run.database_identity.snapshot_manifest_verified)
-        << prediction_err.str();
-    EXPECT_FALSE(
-        prediction_run.database_identity.used_database_fingerprint.empty());
-    EXPECT_FALSE(
-        prediction_run.database_identity.snapshot_database_fingerprint.empty());
-}
-
-TEST_F(SavorDbUtilsMinimalCopyFixture, PrepareDbFailureLeavesNoSnapshotManifest)
-{
-    const auto source_root = root_ / "source";
-    const auto target_root = root_ / "target";
-    SeedSourceDb(source_root);
-    ExecuteSqlOrThrow(
-        source_root / "analysis.db",
-        "DROP TABLE migration_schema_version;");
-
-    std::ostringstream out;
-    std::ostringstream err;
-    EXPECT_NE(savor::predict::run_prepare_db(
-        {
-            .source = source_root,
-            .dest = target_root,
-            .overwrite = false,
-        },
-        out,
-        err), 0);
-    EXPECT_TRUE(std::filesystem::exists(target_root / "analysis.db"));
-    EXPECT_FALSE(std::filesystem::exists(target_root / "db_manifest.json"));
-    EXPECT_NE(
-        err.str().find("migration provenance"),
-        std::string::npos);
-}
-
-TEST_F(SavorDbUtilsMinimalCopyFixture, PrepareDbRejectsIncompleteDatabaseSet)
-{
-    const auto source_root = root_ / "source";
-    const auto target_root = root_ / "target";
-    ASSERT_TRUE(std::filesystem::create_directories(source_root));
-    ExecuteSqlOrThrow(
-        source_root / "analysis.db",
-        "CREATE TABLE intentionally_incomplete(id INTEGER PRIMARY KEY);");
-
-    std::ostringstream out;
-    std::ostringstream err;
-    EXPECT_NE(savor::predict::run_prepare_db(
-        {
-            .source = source_root,
-            .dest = target_root,
-            .overwrite = false,
-        },
-        out,
-        err), 0);
-    EXPECT_FALSE(std::filesystem::exists(target_root / "db_manifest.json"));
-    EXPECT_NE(
-        err.str().find(
-            "Prepared DB root is incomplete; required database is missing"),
-        std::string::npos);
 }
 
 TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesSelectedClosureAndLocalizesSavestateArtifact)
