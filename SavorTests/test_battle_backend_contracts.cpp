@@ -399,6 +399,15 @@ TEST(BattleSingleTurnModule, PreparesAndCachesActivePredicateVariant)
     ASSERT_TRUE(first_turn) << diagnostic;
     EXPECT_NE(first_turn->identity().canonical_sha256,
               first->identity().canonical_sha256);
+
+    auto alternate_package = ActiveLiteralPackage(
+        program::composition::PredicateReaction::RecordAndContinue);
+    const auto alternate =
+        battlesingleturn::PrepareBattleSingleTurnFullPhaseV1(
+            false, alternate_package, &diagnostic);
+    ASSERT_TRUE(alternate) << diagnostic;
+    EXPECT_NE(first->module_envelope().identity.canonical_id,
+              alternate->module_envelope().identity.canonical_id);
 }
 
 TEST(BattleSingleTurnModule, DeclaresSharedPredicateEvaluationSchemaOnce)

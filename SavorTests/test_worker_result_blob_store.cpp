@@ -12,25 +12,15 @@
 
 #include "Execution/WorkerResultBlobStore.h"
 #include "Utils/Hash.h"
+#include "Utils/FilesystemPath.h"
 
 namespace {
 
 std::filesystem::path ExtendedAbsolutePath(
     const std::filesystem::path& path) {
-    auto absolute = std::filesystem::absolute(path).lexically_normal();
-#ifdef _WIN32
-    const auto native = absolute.native();
-    if (native.rfind(LR"(\\?\)", 0) == 0) {
-        return absolute;
-    }
-    if (native.rfind(LR"(\\)", 0) == 0) {
-        return std::filesystem::path(
-            std::wstring(LR"(\\?\UNC\)") + native.substr(2));
-    }
-    return std::filesystem::path(std::wstring(LR"(\\?\)") + native);
-#else
-    return absolute;
-#endif
+    std::filesystem::path resolved;
+    EXPECT_TRUE(savor::filesystem::ResolveNativeIoPath(path, &resolved));
+    return resolved;
 }
 
 class TemporaryBlobStoreDirectory final {

@@ -14,6 +14,7 @@
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/TypeSchemaRegistry.h"
 #include "Runner/Runtime/ProgramRuntime/Store/ProgramDefinitionStore.h"
+#include "Runner/Runtime/ProgramRuntime/IR/ProgramModuleSpecialization.h"
 #include "Runner/Runtime/ProgramRuntime/Verify/ProgramVerifier.h"
 #include "Runner/Breakpoints/BpRegistry.h"
 #include "Utils/Hash.h"
@@ -1190,9 +1191,18 @@ void LowerTurnExecution(
 ProgramModule ConstructModule(
     bool first_turn,
     const predicates::PredicateExecutionPackageV1& predicate_package){
+  constexpr std::uint32_t kModuleGeneratorContractVersion = 3;
+  const std::array specialization_fields{
+      ProgramModuleSpecializationFieldV1{
+          "turn_mode", first_turn ? "first" : "later"},
+      ProgramModuleSpecializationFieldV1{
+          "predicate_execution_package", predicate_package.content_sha256},
+  };
   ProgramModule module{
-      .identity = {.canonical_id = std::string(ModuleCanonicalId) +
-                                   (first_turn ? ".first" : ".later"),
+      .identity = {.canonical_id = MakeSpecializedProgramModuleIdV1(
+                                       ModuleCanonicalId,
+                                       kModuleGeneratorContractVersion,
+                                       specialization_fields),
                    .revision = 3}};
   const auto lowered_members = LowerActivePredicates(predicate_package, module);
   const auto interaction = LowerInteraction(CommandInteraction(), module);

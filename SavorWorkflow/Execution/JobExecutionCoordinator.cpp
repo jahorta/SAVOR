@@ -3568,25 +3568,7 @@ void JobExecutionCoordinator::Impl::HandleSubmissionCompletion(
         if (!submitted.error_code.empty()) {
             diagnostic += " [error_code=" + submitted.error_code + "]";
         }
-        if (worker_state_drift) {
-            RecordTypedWarning(
-                JobExecutionCoordinatorWarning::Code::WorkerStateDrift,
-                "COORDINATOR_WORKER_STATE_DRIFT",
-                diagnostic,
-                static_cast<std::int64_t>(command.target.worker_id));
-            {
-                std::lock_guard record_lock(dispatch->mutex);
-                dispatch->ownership = DispatchOwnership::WorkerMayOwn;
-                dispatch->target = command.target;
-            }
-            FaultDispatch(
-                dispatch,
-                CoordinatorIncidentCode::WorkerOwnershipAmbiguous,
-                "Actor worker state contradicted physical transport state",
-                diagnostic,
-                0,
-                submitted.write_disposition);
-        } else if (authoritative_evidence_arrived) {
+        if (authoritative_evidence_arrived) {
             {
                 std::lock_guard record_lock(dispatch->mutex);
                 dispatch->ownership = DispatchOwnership::WorkerMayOwn;
@@ -3610,6 +3592,21 @@ void JobExecutionCoordinator::Impl::HandleSubmissionCompletion(
                 0,
                 submitted.write_disposition);
         } else {
+            if (worker_state_drift) {
+                RecordTypedWarning(
+                    JobExecutionCoordinatorWarning::Code::WorkerStateDrift,
+                    "COORDINATOR_WORKER_STATE_DRIFT",
+                    diagnostic,
+                    static_cast<std::int64_t>(command.target.worker_id));
+                if (submitted.disposition
+                    == WorkerSubmitDisposition::StaleGeneration) {
+                    if (auto* actor_worker =
+                            FindActorWorker(command.target)) {
+                        actor_worker->state =
+                            JobExecutionWorkerDispatchState::Unavailable;
+                    }
+                }
+            }
             prepared_dispatches_.push_front(dispatch);
         }
         WakeScheduler("submission-not-written", false);

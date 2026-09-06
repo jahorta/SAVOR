@@ -11,6 +11,7 @@
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Composition/BattleResultsHandler.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Actions/CanonicalActionPayload.h"
 #include "../SavorCore/Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
+#include "../SavorCore/Runner/Runtime/ProgramRuntime/Store/ProgramDefinitionStore.h"
 #include "../SavorCore/Runner/Runtime/Services/Savestate/SavestateTypes.h"
 
 #include <algorithm>
@@ -496,6 +497,41 @@ TEST(BattleReplayPlan, RejectsGapsTerminalMismatchLineageMismatchAndHashDrift)
     plan.turns.clear();
     plan.canonical_sha256.clear();
     EXPECT_FALSE(recording::ValidateBattleReplayPlanV1(plan, &diagnostic));
+}
+
+TEST(BattleRecordModule, SpecializesOnlyOnGeneratedIrShape)
+{
+    auto first_plan = ReplayPlan();
+    auto same_shape = first_plan;
+    same_shape.battle_completion_id += 100;
+    auto different_shape = first_plan;
+    different_shape.turns.front().expected_ending_rng ^= 1u;
+
+    std::string diagnostic;
+    const auto first = recording::PrepareBattleRecordFullPhaseV1(
+        first_plan, &diagnostic);
+    ASSERT_TRUE(first) << diagnostic;
+    const auto equivalent = recording::PrepareBattleRecordFullPhaseV1(
+        same_shape, &diagnostic);
+    ASSERT_TRUE(equivalent) << diagnostic;
+    const auto different = recording::PrepareBattleRecordFullPhaseV1(
+        different_shape, &diagnostic);
+    ASSERT_TRUE(different) << diagnostic;
+
+    EXPECT_EQ(first->module_envelope().identity.canonical_id,
+              equivalent->module_envelope().identity.canonical_id);
+    EXPECT_NE(first->module_envelope().identity.canonical_id,
+              different->module_envelope().identity.canonical_id);
+
+    ProgramDefinitionStore store;
+    for (const auto* definition : {first.get(), different.get()})
+    {
+        const auto decoded = DecodeProgramModuleV1(
+            definition->module_envelope().payload);
+        ASSERT_TRUE(decoded) << decoded.status.message;
+        const auto registered = store.RegisterCompiled(*decoded.value);
+        EXPECT_TRUE(registered.success) << registered.error.message;
+    }
 }
 
 TEST(BattleCompletionModules, ShareOneTypedCompletionSequence)

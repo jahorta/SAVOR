@@ -18,16 +18,20 @@ namespace hash {
         return s;
     }
 
-    static inline std::string sha256_of_file(const std::string& path) {
+    static inline std::string sha256_of_file(const std::filesystem::path& path) {
         std::ifstream f(path, std::ios::binary | std::ios::ate);
-        if (!f) throw std::runtime_error("open failed: " + path);
+        if (!f) throw std::runtime_error("open failed");
         const std::streamsize size = f.tellg();
-        if (size < 0) throw std::runtime_error("tellg failed: " + path);
+        if (size < 0) throw std::runtime_error("tellg failed");
         std::string buf;
         buf.resize(static_cast<size_t>(size));
         f.seekg(0, std::ios::beg);
-        if (!f.read(buf.data(), size)) throw std::runtime_error("read failed: " + path);
+        if (!f.read(buf.data(), size)) throw std::runtime_error("read failed");
         return hash::sha256(buf.data(), buf.size());
+    }
+
+    static inline std::string sha256_of_file(const std::string& path) {
+        return sha256_of_file(std::filesystem::path(path));
     }
 
 }

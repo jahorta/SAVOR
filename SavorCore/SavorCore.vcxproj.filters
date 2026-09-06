@@ -627,6 +627,12 @@
     <ClInclude Include="Utils\Hash.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="Utils\FilesystemPath.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\IR\ProgramModuleSpecialization.h">
+      <Filter>Runner\Runtime\ProgramRuntime</Filter>
+    </ClInclude>
     <ClInclude Include="Utils\IniKV.h">
       <Filter>Utils</Filter>
     </ClInclude>

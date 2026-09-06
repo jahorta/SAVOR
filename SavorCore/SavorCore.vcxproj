@@ -319,6 +319,7 @@
     <ClInclude Include="Runner\Runtime\DerivedState\DerivedStateRegistry.h" />
     <ClInclude Include="Runner\Runtime\DerivedState\BattleCoreDerivedState.h" />
     <ClInclude Include="Runner\Runtime\DerivedState\DerivedStateService.h" />
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\IR\ProgramModuleSpecialization.h" />
     <ClInclude Include="Runner\Runtime\Worksets\WorksetStager.h" />
     <ClInclude Include="Runner\Runtime\Worksets\WorksetWireCodec.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleRunnerKeys.reg.h" />
@@ -342,6 +343,7 @@
     <ClInclude Include="Utils\DeltaColorizer.h" />
     <ClInclude Include="Utils\EnsureSys.h" />
     <ClInclude Include="Utils\Hash.h" />
+    <ClInclude Include="Utils\FilesystemPath.h" />
     <ClInclude Include="Utils\Base64.h" />
     <ClInclude Include="Utils\Hex.h" />
     <ClInclude Include="Utils\IniDoc.h" />

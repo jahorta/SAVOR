@@ -1,5 +1,6 @@
 #include "SavestateArtifactFinalizer.h"
 
+#include "Utils/FilesystemPath.h"
 #include "Utils/Hash.h"
 
 #include <algorithm>
@@ -24,6 +25,36 @@ namespace savor::runtime {
 namespace {
 
 std::atomic<std::uint64_t> g_staging_nonce{1};
+
+[[nodiscard]] std::string PathText(const std::filesystem::path& path)
+{
+    const auto text = path.generic_u8string();
+    return std::string(text.begin(), text.end());
+}
+
+[[nodiscard]] std::string PathDiagnostic(
+    const std::filesystem::path& logical_path,
+    const std::filesystem::path& native_path)
+{
+    return "logical_path=\"" + PathText(logical_path) +
+        "\", logical_length=" +
+        std::to_string(logical_path.native().size()) +
+        ", native_length=" + std::to_string(native_path.native().size());
+}
+
+#ifdef _WIN32
+[[nodiscard]] std::string Win32Failure(
+    std::string_view operation,
+    const std::filesystem::path& logical_path,
+    const std::filesystem::path& native_path,
+    DWORD error)
+{
+    return std::string(operation) + " [" +
+        PathDiagnostic(logical_path, native_path) +
+        ", win32_error=" + std::to_string(error) + " (" +
+        std::system_category().message(error) + ")]";
+}
+#endif
 
 [[nodiscard]] bool CompleteSha256(const std::string& digest) noexcept
 {
@@ -156,12 +187,26 @@ struct StagingWrite
 #ifdef _WIN32
     HANDLE handle = INVALID_HANDLE_VALUE;
     std::filesystem::path staging;
+    std::filesystem::path logical_staging;
     DWORD open_error = ERROR_SUCCESS;
     for (std::uint32_t attempt = 0; attempt < 64; ++attempt)
     {
         const std::uint64_t nonce =
             g_staging_nonce.fetch_add(1, std::memory_order_relaxed);
-        staging = StagingPath(file.final_path, id, ordinal, nonce);
+        logical_staging =
+            StagingPath(file.final_path, id, ordinal, nonce);
+        std::string path_error;
+        if (!savor::filesystem::ResolveNativeIoPath(
+                logical_staging, &staging, &path_error))
+        {
+            return {
+                SavestateArtifactFinalizerResult::Failure(
+                    SavestateArtifactFinalizerErrorCode::FilesystemFailure,
+                    "Unable to resolve immutable artifact staging path [" +
+                        PathDiagnostic(logical_staging, logical_staging) +
+                        ", reason=" + path_error + "]"),
+                {}};
+        }
         handle = ::CreateFileW(
             staging.c_str(),
             GENERIC_WRITE,
@@ -179,8 +224,9 @@ struct StagingWrite
             return {
                 SavestateArtifactFinalizerResult::Failure(
                     SavestateArtifactFinalizerErrorCode::FilesystemFailure,
-                    "Unable to create immutable artifact staging file: " +
-                        std::system_category().message(open_error)),
+                    Win32Failure(
+                        "Unable to create immutable artifact staging file",
+                        logical_staging, staging, open_error)),
                 {}};
         }
     }
@@ -190,7 +236,7 @@ struct StagingWrite
             SavestateArtifactFinalizerResult::Failure(
                 SavestateArtifactFinalizerErrorCode::FilesystemFailure,
                 "Unable to allocate a unique immutable artifact staging "
-                "file"),
+                "file [" + PathDiagnostic(logical_staging, staging) + "]"),
             {}};
     }
 
@@ -234,8 +280,9 @@ struct StagingWrite
         return {
             SavestateArtifactFinalizerResult::Failure(
                 SavestateArtifactFinalizerErrorCode::FilesystemFailure,
-                "Unable to durably write immutable artifact staging file: " +
-                    std::system_category().message(open_error)),
+                Win32Failure(
+                    "Unable to durably write immutable artifact staging file",
+                    logical_staging, staging, open_error)),
             {}};
     }
 #else
@@ -278,7 +325,7 @@ struct StagingWrite
 
     try
     {
-        if (hash::sha256_of_file(staging.string()) != digest)
+        if (hash::sha256_of_file(staging) != digest)
         {
             std::error_code ignored;
             std::filesystem::remove(staging, ignored);
@@ -338,8 +385,22 @@ struct StagingWrite
             {}};
     }
 
+    std::filesystem::path destination;
+    std::string path_error;
+    if (!savor::filesystem::ResolveNativeIoPath(
+            file.final_path, &destination, &path_error))
+    {
+        return {
+            SavestateArtifactFinalizerResult::Failure(
+                SavestateArtifactFinalizerErrorCode::FilesystemFailure,
+                "Unable to resolve immutable artifact destination [" +
+                    PathDiagnostic(file.final_path, file.final_path) +
+                    ", reason=" + path_error + "]"),
+            {}};
+    }
+
     std::error_code error;
-    if (std::filesystem::exists(file.final_path, error))
+    if (std::filesystem::exists(destination, error))
     {
         if (error)
         {
@@ -352,7 +413,7 @@ struct StagingWrite
         }
         try
         {
-            if (hash::sha256_of_file(file.final_path.string()) != digest)
+            if (hash::sha256_of_file(destination) != digest)
             {
                 return {
                     SavestateArtifactFinalizerResult::Failure(
@@ -387,7 +448,7 @@ struct StagingWrite
     const std::filesystem::path parent = file.final_path.parent_path();
     if (!parent.empty())
     {
-        std::filesystem::create_directories(parent, error);
+        std::filesystem::create_directories(destination.parent_path(), error);
         if (error)
         {
             return {
@@ -408,11 +469,11 @@ struct StagingWrite
 #ifdef _WIN32
     const bool moved = ::MoveFileExW(
         staging.c_str(),
-        file.final_path.c_str(),
+        destination.c_str(),
         MOVEFILE_WRITE_THROUGH) != FALSE;
     const DWORD move_error = moved ? ERROR_SUCCESS : ::GetLastError();
 #else
-    std::filesystem::rename(staging, file.final_path, error);
+    std::filesystem::rename(staging, destination, error);
     const bool moved = !error;
 #endif
     if (!moved)
@@ -420,12 +481,12 @@ struct StagingWrite
         // Another finalizer/process may have published the same immutable
         // content after the initial check. Exact reuse is safe.
         std::error_code exists_error;
-        if (std::filesystem::exists(file.final_path, exists_error) &&
+        if (std::filesystem::exists(destination, exists_error) &&
             !exists_error)
         {
             try
             {
-                if (hash::sha256_of_file(file.final_path.string()) ==
+                if (hash::sha256_of_file(destination) ==
                     digest)
                 {
                     std::filesystem::remove(staging, exists_error);
@@ -444,7 +505,11 @@ struct StagingWrite
         const std::string message =
             "Unable to publish immutable artifact: " +
 #ifdef _WIN32
-            std::system_category().message(move_error);
+            Win32Failure(
+                "atomic move failed",
+                file.final_path,
+                destination,
+                move_error);
 #else
             error.message();
 #endif

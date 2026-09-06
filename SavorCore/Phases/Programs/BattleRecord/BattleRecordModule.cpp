@@ -11,6 +11,7 @@
 #include "Runner/Runtime/ProgramRuntime/Composition/InputDeliveryComposition.h"
 #include "Runner/Runtime/ProgramRuntime/Composition/SemanticObservationComposition.h"
 #include "Runner/Runtime/ProgramRuntime/ProgramRuntime.h"
+#include "Runner/Runtime/ProgramRuntime/IR/ProgramModuleSpecialization.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/TypeSchemaRegistry.h"
 #include "Runner/Runtime/ProgramRuntime/Store/ProgramDefinitionStore.h"
@@ -41,6 +42,8 @@ constexpr std::uint32_t kRng = battlesingleturn::RngSeedAddress;
 
 enum class PhaseFlavor : std::uint8_t { Record, Replay };
 
+constexpr std::uint32_t kModuleGeneratorContractVersion = 1;
+
 std::string_view ModuleId(PhaseFlavor flavor)
 {
     return flavor == PhaseFlavor::Record ? ModuleCanonicalId
@@ -51,6 +54,27 @@ std::string_view EntrypointId(PhaseFlavor flavor)
 {
     return flavor == PhaseFlavor::Record ? Entrypoint
         : battlereplay::Entrypoint;
+}
+
+std::string SpecializedModuleId(
+    const BattleReplayPlanV1& plan,
+    PhaseFlavor flavor)
+{
+    std::vector<ProgramModuleSpecializationFieldV1> fields;
+    fields.reserve(2 + plan.turns.size() * 3);
+    fields.push_back({"flavor", flavor == PhaseFlavor::Record
+        ? "record" : "replay"});
+    fields.push_back({"turn_count", std::to_string(plan.turns.size())});
+    for (const auto& turn : plan.turns)
+    {
+        fields.push_back({"turn_index", std::to_string(turn.turn_index)});
+        fields.push_back({"expected_outcome", std::to_string(
+            static_cast<std::uint32_t>(turn.expected_outcome))});
+        fields.push_back({"expected_ending_rng",
+            std::to_string(turn.expected_ending_rng)});
+    }
+    return MakeSpecializedProgramModuleIdV1(
+        ModuleId(flavor), kModuleGeneratorContractVersion, fields);
 }
 
 void Diagnostic(std::string* output, std::string value)
@@ -440,7 +464,7 @@ BasicBlock& Block(ProgramFunction& function, ProgramBlockId id)
 ProgramModule ConstructModule(const BattleReplayPlanV1& plan, PhaseFlavor flavor)
 {
     ProgramModule module{.identity = {
-        .canonical_id = std::string(ModuleId(flavor)), .revision = 1}};
+        .canonical_id = SpecializedModuleId(plan, flavor), .revision = 1}};
     const auto command = LowerInteraction(
         battlesingleturn::BattleCommandInteractionV3(), module);
     const auto completion = LowerBattleCompletionSequenceV1(module);

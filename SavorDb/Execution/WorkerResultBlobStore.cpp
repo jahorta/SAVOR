@@ -21,6 +21,7 @@
 #endif
 
 #include "../../SavorCore/Utils/Hash.h"
+#include "../../SavorCore/Utils/FilesystemPath.h"
 
 namespace savor::db::execution {
 namespace {
@@ -113,42 +114,14 @@ bool MakeIoPath(
         return Fail("worker result I/O path output is required", error_out);
     }
 
-    std::error_code error;
-    auto absolute_path = std::filesystem::absolute(ordinary_path, error);
-    if (error) {
+    std::string diagnostic;
+    if (!savor::filesystem::ResolveNativeIoPath(
+            ordinary_path, io_path_out, &diagnostic)) {
         return Fail(
-            FilesystemFailure(
-                "resolving absolute worker result path",
-                ordinary_path,
-                error),
+            "resolving native worker result path failed [" +
+                PathContext(ordinary_path) + ", reason=" + diagnostic + "]",
             error_out);
     }
-    absolute_path = absolute_path.lexically_normal();
-
-#ifdef _WIN32
-    const auto native = absolute_path.native();
-    if (native.rfind(LR"(\\?\)", 0) == 0) {
-        *io_path_out = absolute_path;
-        return true;
-    }
-    if (native.rfind(LR"(\\)", 0) == 0) {
-        *io_path_out = std::filesystem::path(
-            std::wstring(LR"(\\?\UNC\)") + native.substr(2));
-        return true;
-    }
-    if (native.size() < 3 || native[1] != L':'
-        || (native[2] != L'\\' && native[2] != L'/')) {
-        return Fail(
-            "worker result path did not resolve to a drive-qualified "
-            "absolute Windows path ["
-                + PathContext(absolute_path) + "]",
-            error_out);
-    }
-    *io_path_out =
-        std::filesystem::path(std::wstring(LR"(\\?\)") + native);
-#else
-    *io_path_out = std::move(absolute_path);
-#endif
     return true;
 }
 

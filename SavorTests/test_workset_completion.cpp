@@ -7,6 +7,7 @@
 #include "Runner/Runtime/Worksets/WorkerCompletionLedger.h"
 #include "Runner/Runtime/Worksets/WorksetWireCodec.h"
 #include "Utils/Hash.h"
+#include "Utils/FilesystemPath.h"
 #include "common/ScriptedDolphinBackend.h"
 
 #include <algorithm>
@@ -982,6 +983,45 @@ TEST(SavestateArtifactFinalizer, RejectsCapacityAndNeverOverwritesConflict)
     EXPECT_EQ(
         hash::sha256_of_file((temp.path() / "conflict.sav").string()),
         hash::sha256("old", 3));
+}
+
+TEST(SavestateArtifactFinalizer, SupportsExtendedLengthImmutablePaths)
+{
+    TemporaryDirectory temp;
+    auto long_root = temp.path();
+    while ((long_root / "recorded-preseed.sav").native().size() < 300)
+        long_root /= "long-finalizer-component-0123456789";
+
+    WorkerWorksetLimits limits;
+    limits.finalizer_threads = 1;
+    limits.maximum_pending_finalizers = 2;
+    limits.maximum_pending_finalizer_bytes = 1024;
+    SavestateArtifactFinalizer finalizer(limits);
+
+    WorkerCompletionLedger ledger;
+    ASSERT_TRUE(ledger.BindActorThread().ok);
+    const auto terminal = ledger.ReserveTerminal(Correlation(1), 64);
+    ASSERT_TRUE(terminal.result.ok);
+
+    const auto state = Bytes("long-state");
+    const auto movie = Bytes("long-movie");
+    SavestateArtifactFinalizationRequest request;
+    request.terminal = terminal.correlation;
+    request.state_artifact_id = SavestateArtifactId(1);
+    request.logical_artifact_id = "state:long";
+    request.state = {long_root / "recorded-preseed.sav", state, {}};
+    request.sidecars.push_back({long_root / "result.dtm", movie, {}});
+    ASSERT_TRUE(finalizer.Submit(std::move(request)).result.ok);
+    finalizer.Shutdown();
+
+    const auto completions = finalizer.DrainResults();
+    ASSERT_EQ(completions.size(), 1u);
+    ASSERT_TRUE(completions.front().result.ok)
+        << completions.front().result.message;
+    std::filesystem::path native_state;
+    ASSERT_TRUE(savor::filesystem::ResolveNativeIoPath(
+        long_root / "recorded-preseed.sav", &native_state));
+    EXPECT_TRUE(std::filesystem::exists(native_state));
 }
 
 } // namespace

@@ -200,6 +200,12 @@ enum class CutsceneBranchStage : std::uint8_t {
     Failed,
 };
 
+enum class CutsceneFanoutTermination : std::uint8_t {
+    Completed,
+    DeadlineExpired,
+    CoordinatorIncident,
+};
+
 struct CutsceneBranch {
     std::int64_t rtc = 0;
     CutsceneBranchStage stage = CutsceneBranchStage::Battle;
@@ -450,6 +456,8 @@ bool RunTasMovieCutsceneRealWorkerScenario(
     const auto branch_deadline = std::chrono::steady_clock::now()
         + kFanoutTimeout;
     bool coordinator_failed = false;
+    CutsceneFanoutTermination fanout_termination =
+        CutsceneFanoutTermination::DeadlineExpired;
     std::string coordinator_failure;
     while (std::chrono::steady_clock::now() < branch_deadline) {
         bool all_terminal = true;
@@ -560,13 +568,18 @@ bool RunTasMovieCutsceneRealWorkerScenario(
 
             branch.stage = CutsceneBranchStage::Completed;
         }
-        if (all_terminal) break;
+        if (all_terminal) {
+            fanout_termination = CutsceneFanoutTermination::Completed;
+            break;
+        }
         const auto telemetry = runtime.SnapshotTelemetry();
         if (telemetry.execution.invariant_admission_paused) {
             coordinator_failed = true;
             coordinator_failure = telemetry.execution.last_error.empty()
                 ? "Cutscene coordinator entered an invariant pause"
                 : telemetry.execution.last_error;
+            fanout_termination =
+                CutsceneFanoutTermination::CoordinatorIncident;
             break;
         }
         std::this_thread::sleep_for(poll);
@@ -575,7 +588,11 @@ bool RunTasMovieCutsceneRealWorkerScenario(
     for (auto& branch : branches) {
         if (branch.stage != CutsceneBranchStage::Completed
             && branch.stage != CutsceneBranchStage::Failed)
-            fail_branch(branch, "scenario-wide Cutscene fan-out timeout");
+            fail_branch(branch,
+                fanout_termination ==
+                    CutsceneFanoutTermination::CoordinatorIncident
+                    ? "Cutscene coordinator incident: " + coordinator_failure
+                    : "scenario-wide Cutscene fan-out deadline expired");
     }
     const auto warnings = runtime.SnapshotExecutionWarnings();
     if (coordinator_failed) print_causal_incident();

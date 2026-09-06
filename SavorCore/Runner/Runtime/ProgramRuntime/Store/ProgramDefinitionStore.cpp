@@ -80,7 +80,12 @@ RegistryResult ProgramDefinitionStore::RegisterCompiledBatch(
             return Failure(
                 RegistryErrorCode::IdentityConflict,
                 "Module id/revision already has different content: " +
-                    module.identity.canonical_id);
+                    module.identity.canonical_id + " revision=" +
+                    std::to_string(module.identity.revision) +
+                    " existing_hash=" +
+                    found->second->identity.module_hash.ToHex() +
+                    " incoming_hash=" +
+                    module.identity.module_hash.ToHex());
         }
         candidate.emplace(
             key,
