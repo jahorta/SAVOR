@@ -8,7 +8,6 @@ enum class MigrationContext {
     Execution,
     State,
     // Logical schema groups inside a single Analysis DB file.
-    AnalysisSpine,
     AnalysisSeedProbe,
     AnalysisTasMovie,
     AnalysisBattle,

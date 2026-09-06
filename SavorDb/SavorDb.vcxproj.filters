@@ -337,9 +337,6 @@
     <ClInclude Include="Common\Events\OutboxEventIds.h">
       <Filter>Events</Filter>
     </ClInclude>
-    <ClInclude Include="SavorDb.h">
-      <Filter>Entrypoint</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Common\Events\OutboxRelay.cpp">
@@ -539,9 +536,6 @@
     <ClCompile Include="Common\Migrations\MigrationContext.cpp">
       <Filter>Common</Filter>
     </ClCompile>
-    <ClCompile Include="SavorDb.cpp">
-      <Filter>Entrypoint</Filter>
-    </ClCompile>
     <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
       <Filter>Common</Filter>
     </ClCompile>
@@ -603,9 +597,6 @@
       <Filter>Migrations\Analysis</Filter>
     </None>
     <None Include="migration\AnalysisTasMovie\202608251000_analysis_tas_movie_input_epochs.sql">
-      <Filter>Migrations\Analysis</Filter>
-    </None>
-    <None Include="migration\AnalysisSpine\202604051000_analysisspine_stage2_schema.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
     <None Include="migration\Archive\202604051000_archive_stage2_schema.sql">

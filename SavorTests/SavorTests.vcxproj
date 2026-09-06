@@ -81,7 +81,7 @@
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
-      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)third-party\SPICE;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)SavorE2E;$(SolutionDir)SavorProbe;$(SolutionDir)SavorCaptureFormat;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)SavorE2E;$(SolutionDir)SavorProbe;$(SolutionDir)SavorCaptureFormat;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -116,7 +116,7 @@
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)third-party\SPICE;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)SavorE2E;$(SolutionDir)SavorProbe;$(SolutionDir)SavorCaptureFormat;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)SavorE2E;$(SolutionDir)SavorProbe;$(SolutionDir)SavorCaptureFormat;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -143,12 +143,10 @@
     <ClCompile Include="..\third-party\googletest-1.17.0\googlemock\src\gmock-all.cc" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
-    <ClCompile Include="test.cpp" />
     <ClCompile Include="test_boot_dolphinwrapper.cpp" />
     <ClCompile Include="test_db_perf_metrics.cpp" />
     <ClCompile Include="test_framestep.cpp" />
     <ClCompile Include="test_GC_input_frame_builder.cpp" />
-    <ClCompile Include="test_import_from_qt.cpp" />
     <ClCompile Include="test_savorqt_view_state.cpp" />
     <ClCompile Include="test_capture_format.cpp" />
     <ClCompile Include="test_probe_profile.cpp" />
@@ -157,7 +155,6 @@
     <ClCompile Include="test_probe_watchpoint_registry.cpp" />
     <ClCompile Include="test_native_stop_hooks.cpp" />
     <ClCompile Include="test_savordb_utils_minimal_copy.cpp" />
-    <ClCompile Include="test_simconfig.cpp" />
     <ClCompile Include="test_savordb.cpp" />
     <ClCompile Include="test_database_bootstrap.cpp" />
     <ClCompile Include="test_authoring_recipe.cpp" />
@@ -165,10 +162,6 @@
     <ClCompile Include="test_savordb_phase3_nonfixture.cpp" />
     <ClCompile Include="test_result_staging_cleanup.cpp" />
     <ClCompile Include="test_runtime_symbols.cpp" />
-    
-    
-    
-    
     <ClCompile Include="test_tsqueue.cpp" />
     <ClCompile Include="test_TASPad.cpp" />
     <ClCompile Include="test_worker_protocol_v1.cpp" />
@@ -231,9 +224,6 @@
     <ProjectReference Include="..\SavorProbe\SavorProbe.vcxproj">
       <Project>{6EA1CA9D-0D84-4A69-BD65-29CDE443BF4A}</Project>
     </ProjectReference>
-    <ProjectReference Include="..\third-party\SPICE\SpiceStd\SpiceStd.vcxproj">
-      <Project>{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}</Project>
-    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common\AlwaysAdvanceTransitionHandler.h" />
@@ -246,8 +236,6 @@
     <ClInclude Include="common\RecordingWorkflowCommandService.h" />
     <ClInclude Include="common\savordb_helpers.h" />
     <ClInclude Include="common\SqliteDbFixture.h" />
-    <ClInclude Include="scoped_wrapper.h" />
-    <ClInclude Include="seh_guard.h" />
     <ClInclude Include="serial_guard.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

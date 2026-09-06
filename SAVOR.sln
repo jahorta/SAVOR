@@ -45,12 +45,6 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SavorProbe", "SavorProbe\Sa
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SavorCaptureTool", "SavorCaptureTool\SavorCaptureTool.vcxproj", "{480D40EA-4FA5-47FA-8500-3B4CF6DBA1EA}"
 EndProject
-Project("{66A26720-8FB5-11D2-AA7E-00C04F688DDE}") = "third-party SPICE", "third-party SPICE", "{AF763917-42A4-4135-A6F9-2C3FBBBFF4AB}"
-EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Compression", "third-party\SPICE\Compression\Compression.vcxproj", "{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}"
-EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceStd", "third-party\SPICE\SpiceStd\SpiceStd.vcxproj", "{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -211,26 +205,8 @@ Global
 		{480D40EA-4FA5-47FA-8500-3B4CF6DBA1EA}.Release|x64.ActiveCfg = Release|x64
 		{480D40EA-4FA5-47FA-8500-3B4CF6DBA1EA}.Release|x64.Build.0 = Release|x64
 		{480D40EA-4FA5-47FA-8500-3B4CF6DBA1EA}.Release|x86.ActiveCfg = Release|x64
-		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Debug|Any CPU.ActiveCfg = Debug|x64
-		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Debug|x64.ActiveCfg = Debug|x64
-		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Debug|x64.Build.0 = Debug|x64
-		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Debug|x86.ActiveCfg = Debug|x64
-		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Release|Any CPU.ActiveCfg = Release|x64
-		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Release|x64.ActiveCfg = Release|x64
-		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Release|x64.Build.0 = Release|x64
-		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Release|x86.ActiveCfg = Release|x64
-		{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}.Debug|Any CPU.ActiveCfg = Debug|x64
-		{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}.Debug|x64.ActiveCfg = Debug|x64
-		{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}.Debug|x64.Build.0 = Debug|x64
-		{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}.Debug|x86.ActiveCfg = Debug|x64
-		{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}.Release|Any CPU.ActiveCfg = Release|x64
-		{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}.Release|x64.ActiveCfg = Release|x64
-		{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}.Release|x64.Build.0 = Release|x64
-		{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}.Release|x86.ActiveCfg = Release|x64
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
-		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4} = {AF763917-42A4-4135-A6F9-2C3FBBBFF4AB}
-		{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3} = {AF763917-42A4-4135-A6F9-2C3FBBBFF4AB}
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

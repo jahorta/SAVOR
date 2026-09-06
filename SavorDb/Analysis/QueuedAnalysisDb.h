@@ -400,13 +400,6 @@ public:
         std::int64_t payload_ref_id) const override;
     std::optional<BattlePayloadRecord> ResolveBattlePayload(
         const events::EventEnvelope& envelope) const override;
-    std::optional<SpinePayloadRecord> ResolveSpinePayload(
-        int event_version,
-        std::string_view payload_ref_kind,
-        std::int64_t payload_ref_id) const override;
-    std::optional<SpinePayloadRecord> ResolveSpinePayload(
-        const events::EventEnvelope& envelope) const override;
-
 private:
     template <typename Result, typename Fn>
     Result ExecuteRead(

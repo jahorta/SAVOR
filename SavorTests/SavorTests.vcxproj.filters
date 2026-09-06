@@ -14,28 +14,25 @@
     <ClCompile Include="..\third-party\googletest-1.17.0\googlemock\src\gmock-all.cc" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
-    <ClCompile Include="test.cpp" />
     <ClCompile Include="test_boot_dolphinwrapper.cpp" />
+    <ClCompile Include="test_db_perf_metrics.cpp" />
     <ClCompile Include="test_framestep.cpp" />
     <ClCompile Include="test_GC_input_frame_builder.cpp" />
-    <ClCompile Include="test_import_from_qt.cpp" />
+    <ClCompile Include="test_savorqt_view_state.cpp" />
     <ClCompile Include="test_capture_format.cpp" />
     <ClCompile Include="test_probe_profile.cpp" />
     <ClCompile Include="test_probe_router_adapter.cpp" />
     <ClCompile Include="test_capture_service.cpp" />
+    <ClCompile Include="test_probe_watchpoint_registry.cpp" />
     <ClCompile Include="test_native_stop_hooks.cpp" />
     <ClCompile Include="test_savordb_utils_minimal_copy.cpp" />
-    <ClCompile Include="test_simconfig.cpp" />
     <ClCompile Include="test_savordb.cpp" />
     <ClCompile Include="test_database_bootstrap.cpp" />
     <ClCompile Include="test_authoring_recipe.cpp" />
     <ClCompile Include="test_savordb_fixture_sqlite.cpp" />
     <ClCompile Include="test_savordb_phase3_nonfixture.cpp" />
+    <ClCompile Include="test_result_staging_cleanup.cpp" />
     <ClCompile Include="test_runtime_symbols.cpp" />
-    
-    
-    
-    
     <ClCompile Include="test_tsqueue.cpp" />
     <ClCompile Include="test_TASPad.cpp" />
     <ClCompile Include="test_worker_protocol_v1.cpp" />
@@ -60,12 +57,15 @@
     <ClCompile Include="test_seedprobe_module.cpp" />
     <ClCompile Include="test_tas_movie_validation_module.cpp" />
     <ClCompile Include="test_tas_movie_validation_persistence.cpp" />
+    <ClCompile Include="test_tas_movie_input_epoch.cpp" />
     <ClCompile Include="test_job_execution_coordinator.cpp" />
     <ClCompile Include="test_worker_startup_barrier.cpp" />
     <ClCompile Include="test_worker_result_blob_store.cpp" />
     <ClCompile Include="test_session_program_action_host.cpp" />
     <ClCompile Include="test_async_logger.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />
+    <ClCompile Include="test_workset_completion.cpp" />
+    <ClCompile Include="test_workset_stager.cpp" />
     <ClCompile Include="test_session_services.cpp" />
     <ClCompile Include="test_visual_message_service.cpp" />
     <ClCompile Include="test_movie_service.cpp" />
@@ -78,10 +78,12 @@
     <ClCompile Include="..\SavorE2E\ScenarioAssessment.cpp" />
     <ClCompile Include="test_e2e_scenario_assessment.cpp" />
     <ClCompile Include="test_workflow_expansion_targets.cpp" />
+    <ClCompile Include="test_workflow_identity.cpp" />
+    <ClCompile Include="test_tas_route_authority_resolver.cpp" />
+    <ClCompile Include="..\SavorE2E\Cli.cpp" />
+    <ClCompile Include="..\SavorE2E\WorkerStartupBarrier.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="scoped_wrapper.h" />
-    <ClInclude Include="seh_guard.h" />
     <ClInclude Include="serial_guard.h" />
     <ClInclude Include="common\SqliteDbFixture.h">
       <Filter>common</Filter>

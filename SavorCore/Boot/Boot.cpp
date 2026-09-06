@@ -226,57 +226,7 @@ namespace simboot {
             return false;
         }
 
-        // 5) Persist config for next time (paths only; never touches DolphinQt install)
-        if (opts.save_config_on_success) {
-            savor::SimConfig cfg{ opts.user_dir, opts.dolphin_qt_base };
-            std::string save_err;
-            (void)savor::SimConfigIO::Save(cfg, opts.config_path, &save_err);  // best-effort
-        }
-
         return true;
-    }
-
-    bool BootDolphinWrapperFromSavedConfig(savor::DolphinWrapper& dw, std::string* error_out,
-            const std::filesystem::path& config_path)
-    {
-        std::string err;
-        auto cfg = savor::SimConfigIO::Load(config_path, &err);
-        if (!cfg) {
-            if (error_out) *error_out = "Load config failed (" + config_path.string() + "): " + err;
-            return false;
-        }
-
-        BootOptions opts;
-        opts.user_dir = cfg->user_dir;
-        opts.dolphin_qt_base = cfg->dolphin_base_dir;
-        if (opts.user_dir.filename() != "User") {
-            if (error_out) *error_out =
-                "Saved user_dir must name the canonical User directory";
-            return false;
-        }
-        auto generation = static_cast<std::uint64_t>(
-            std::chrono::system_clock::now().time_since_epoch().count());
-        if (generation == 0) generation = 1;
-        opts.process_generation = generation;
-        opts.session_filesystem_preparation_id =
-            "saved-config-" + std::to_string(generation);
-        const auto prepared = SessionFilesystemPreparer::Prepare({
-            .worker_id = 0,
-            .process_generation = generation,
-            .preparation_id = opts.session_filesystem_preparation_id,
-            .dolphin_qt_base = opts.dolphin_qt_base,
-            .worker_root = opts.user_dir.parent_path(),
-        });
-        if (!prepared.ok) {
-            if (error_out) *error_out =
-                "Saved session filesystem preparation failed: "
-                + prepared.error;
-            return false;
-        }
-        opts.save_config_on_success = false;   // already have one
-        opts.config_path = config_path;
-
-        return BootDolphinWrapper(dw, opts, error_out);
     }
 
 } // namespace savor

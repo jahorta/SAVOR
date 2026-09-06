@@ -407,19 +407,10 @@ public:
     std::optional<BattlePayloadRecord> ResolveBattlePayload(
         const events::EventEnvelope& envelope) const override;
 
-    std::optional<SpinePayloadRecord> ResolveSpinePayload(
-        int event_version,
-        std::string_view payload_ref_kind,
-        std::int64_t payload_ref_id) const override;
-
-    std::optional<SpinePayloadRecord> ResolveSpinePayload(
-        const events::EventEnvelope& envelope) const override;
-
 private:
     sqlite3* db_ = nullptr;
     SqliteSeedProbePayloadRowResolver seed_probe_row_resolver_;
     SqliteBattlePayloadRowResolver battle_row_resolver_;
-    SqliteAnalysisSpinePayloadRowResolver spine_row_resolver_;
 };
 
 } // namespace savor::db::analysis

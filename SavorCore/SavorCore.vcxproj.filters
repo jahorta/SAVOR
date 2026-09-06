@@ -168,9 +168,6 @@
     <ClInclude Include="framework.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Core\Config\SimConfig.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="Boot\Boot.h">
       <Filter>Core</Filter>
     </ClInclude>
@@ -661,9 +658,6 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Core\Config\SimConfig.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="Boot\Boot.cpp">
       <Filter>Core</Filter>
     </ClCompile>

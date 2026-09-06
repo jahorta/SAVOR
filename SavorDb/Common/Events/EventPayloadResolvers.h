@@ -85,24 +85,4 @@ struct IAnalysisBattlePayloadRowResolver {
         std::int64_t payload_ref_id) const = 0;
 };
 
-struct IAnalysisSpinePayloadRowResolver {
-    virtual ~IAnalysisSpinePayloadRowResolver() = default;
-
-    virtual std::optional<AnalysisSpineRunCreatedPayloadView> ResolveSpineRunCreated(
-        std::string_view payload_ref_kind,
-        std::int64_t payload_ref_id) const = 0;
-
-    virtual std::optional<AnalysisSpineStateRefRegisteredPayloadView> ResolveSpineStateRefRegistered(
-        std::string_view payload_ref_kind,
-        std::int64_t payload_ref_id) const = 0;
-
-    virtual std::optional<AnalysisSpineLineageEdgeAddedPayloadView> ResolveSpineLineageEdgeAdded(
-        std::string_view payload_ref_kind,
-        std::int64_t payload_ref_id) const = 0;
-
-    virtual std::optional<AnalysisSpineArtifactLinkedPayloadView> ResolveSpineArtifactLinked(
-        std::string_view payload_ref_kind,
-        std::int64_t payload_ref_id) const = 0;
-};
-
 } // namespace savor::db::events

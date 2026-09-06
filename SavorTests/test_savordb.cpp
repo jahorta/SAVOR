@@ -26,7 +26,6 @@
 #include "Common/Events/EventPayloadValidation.h"
 #include "Common/Events/EventTypeFormat.h"
 #include "Common/Events/OutboxRelay.h"
-#include "SavorDb.h"
 #include "Analysis/SqliteAnalysisDb.h"
 #include "Archive/SqliteArchiveDb.h"
 #include "Archive/ArchivePackageService.h"
@@ -58,22 +57,6 @@ namespace savordb {
 namespace {
 
 } // namespace
-
-TEST(DbMigrateMigrationsIntegration, DISABLED_FilesystemSourceHasMigrationPerContext) {
-    namespace fs = std::filesystem;
-    using namespace savor::db::migrations;
-
-    const auto root = fs::weakly_canonical(fs::path("../../SavorDb/migration"));
-    const MigrationSourceOptions filesystem_options{
-        .source_kind = MigrationSourceKind::Filesystem,
-        .filesystem_root = root,
-    };
-
-    for (const auto context : ListAllMigrationContexts()) {
-        const auto entries = LoadContextMigrations(context, filesystem_options);
-        ASSERT_FALSE(entries.empty()) << "Expected at least one migration in context " << ToString(context);
-    }
-}
 
 TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
     using namespace savor::db::execution::workflow;
@@ -712,25 +695,6 @@ TEST(Stage3cEventContracts, SeedProbeValidationRequiresConcretePayloadRefKinds) 
     EXPECT_TRUE(ValidateAnalysisSeedProbePayloadV1(envelope, &error)) << error;
 }
 
-TEST(Stage3cEventContracts, AnalysisSpineValidationRequiresConcretePayloadRefKinds) {
-    using namespace savor::db::events;
-
-    EventEnvelope envelope{};
-    envelope.event_type = "AnalysisSpine.StateRefRegistered.v1";
-    envelope.event_version = 1;
-    envelope.context_name = "AnalysisSpine";
-    envelope.aggregate_kind = "run";
-    envelope.payload_ref_kind = "spine_ref";
-    envelope.payload_ref_id = 22;
-
-    std::string error;
-    EXPECT_FALSE(ValidateAnalysisSpinePayloadV1(envelope, &error));
-    EXPECT_EQ(error, "payload_ref_kind must be state_ref for AnalysisSpine.StateRefRegistered.v1");
-
-    envelope.payload_ref_kind = "state_ref";
-    EXPECT_TRUE(ValidateAnalysisSpinePayloadV1(envelope, &error)) << error;
-}
-
 TEST(Stage3cEventContracts, BattleValidationRequiresConcretePayloadRefKinds) {
     using namespace savor::db::events;
 
@@ -766,23 +730,6 @@ TEST(Stage3cEventContracts, BattleValidationRequiresConcretePayloadRefKinds) {
 
         envelope.payload_ref_kind = test_case.required_payload_kind;
         EXPECT_TRUE(ValidateAnalysisBattlePayloadV1(envelope, &error)) << test_case.event_type << ": " << error;
-    }
-}
-
-TEST(Stage3cEventContracts, AnalysisSpineFamilyDispatchRoutesToSpineContractV1) {
-    using namespace savor::db::events;
-
-    constexpr std::array<std::string_view, 4> kSpineEventTypes{ {
-        "AnalysisSpine.RunCreated.v1",
-        "AnalysisSpine.StateRefRegistered.v1",
-        "AnalysisSpine.LineageEdgeAdded.v1",
-        "AnalysisSpine.ArtifactLinked.v1",
-    } };
-
-    for (const auto event_type : kSpineEventTypes) {
-        const auto contract = ResolvePayloadResolverContract(event_type, 1);
-        ASSERT_TRUE(contract.has_value()) << event_type;
-        EXPECT_EQ(*contract, PayloadResolverContract::AnalysisSpineV1) << event_type;
     }
 }
 
@@ -822,7 +769,7 @@ TEST(Stage3cEventContracts, AuthoringCatalogEntriesRemainDispatched) {
         EXPECT_EQ(*contract, PayloadResolverContract::AuthoringV1) << event_type;
     }
 
-    EXPECT_EQ(authoring_entries, 6u);
+    EXPECT_EQ(authoring_entries, 5u);
 }
 
 } // namespace savordb

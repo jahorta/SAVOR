@@ -748,7 +748,6 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
     boot_options.visual = options.visual;
     boot_options.render_widget_handle =
         reinterpret_cast<void*>(options.render_window_handle);
-    boot_options.save_config_on_success = false;
 
     std::string error;
     if (!simboot::BootDolphinWrapper(*wrapper, boot_options, &error))

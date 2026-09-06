@@ -108,36 +108,6 @@ struct AnalysisBattlePayloadView {
     std::int64_t battle_replay_id = 0;
 };
 
-// AnalysisSpine event-specific typed payload views.
-struct AnalysisSpineRunCreatedPayloadView {
-    std::int64_t run_id = 0;
-};
-
-struct AnalysisSpineStateRefRegisteredPayloadView {
-    std::int64_t run_id = 0;
-    std::int64_t state_ref_id = 0;
-};
-
-struct AnalysisSpineLineageEdgeAddedPayloadView {
-    std::int64_t parent_run_id = 0;
-    std::int64_t child_run_id = 0;
-    std::int64_t lineage_edge_id = 0;
-};
-
-struct AnalysisSpineArtifactLinkedPayloadView {
-    std::int64_t run_id = 0;
-    std::int64_t artifact_ref_id = 0;
-    std::int64_t artifact_id = 0;
-};
-
-// Backward-compatible coarse family view.
-struct AnalysisSpinePayloadView {
-    std::int64_t run_id = 0;
-    std::int64_t state_ref_id = 0;
-    std::int64_t lineage_edge_id = 0;
-    std::int64_t artifact_ref_id = 0;
-};
-
 // Typed v1 payload view for State artifact events.
 struct StateArtifactPayloadView {
     std::int64_t artifact_id = 0;

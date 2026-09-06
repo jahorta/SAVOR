@@ -13,7 +13,6 @@
 #include <vector>
 
 #include "Input/GCInputFrame.h"
-#include "Config/SimConfig.h"
 #include "Core/InputCommon/GCPadStatus.h"
 #include "Input/GCPadOverride.h"
 #include "Core/Common/Buffer.h"
@@ -125,10 +124,6 @@ namespace savor {
 
         void ConfigurePortsStandardPadP1();
         bool QueryPadStatus(int port, GCPadStatus* out) const;
-
-        savor::SimConfig ExportConfig() const {
-            return savor::SimConfig{ m_user_dir, m_qt_base_dir };
-        }
 
         // public:
         bool readU8(uint32_t addr, uint8_t& out) const;

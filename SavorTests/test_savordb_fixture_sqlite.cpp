@@ -27,7 +27,6 @@
 #include "Common/Events/EventPayloadValidation.h"
 #include "Common/Events/EventTypeFormat.h"
 #include "Common/Events/OutboxRelay.h"
-#include "SavorDb.h"
 #include "Analysis/SqliteAnalysisDb.h"
 #include "Authoring/SqliteAuthoringDb.h"
 #include "Archive/SqliteArchiveDb.h"
@@ -3384,30 +3383,6 @@ TEST_F(SqliteDbFixture, Stage5WorkflowAppendDynamicStepsCreatesReadyIdempotentCh
     ASSERT_TRUE(after_retry.has_value());
     EXPECT_EQ(after_retry->steps.size(), with_dynamic->steps.size());
     EXPECT_EQ(after_retry->edges.size(), with_dynamic->edges.size());
-}
-
-TEST_F(SqliteDbFixture, Stage3cReadinessGuardRequiresStage3bWorkflowSchemaVersion) {
-    using namespace savor::db::migrations;
-
-    const MigrationSourceOptions embedded_options{
-        .source_kind = MigrationSourceKind::Embedded,
-    };
-
-    sqlite3* readiness_db = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &readiness_db));
-
-    std::string reason;
-    EXPECT_FALSE(savor::db::Stage3cWorkflowSliceReady(readiness_db, &reason));
-    EXPECT_NE(reason.find("Execution schema version"), std::string::npos);
-
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(readiness_db, MigrationContext::Execution, embedded_options, &err)) << err;
-    ASSERT_TRUE(ApplyContextMigrations(readiness_db, MigrationContext::UIRead, embedded_options, &err)) << err;
-
-    EXPECT_TRUE(savor::db::Stage3cWorkflowSliceReady(readiness_db, &reason)) << reason;
-    EXPECT_EQ(reason, "OK");
-
-    sqlite3_close(readiness_db);
 }
 
 TEST_F(SqliteDbFixture, Stage3cExecutionDbServicesResolveAndRoundTripQueryCommand) {

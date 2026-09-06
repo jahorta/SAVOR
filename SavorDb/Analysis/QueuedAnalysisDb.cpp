@@ -1429,29 +1429,6 @@ std::optional<BattlePayloadRecord> QueuedAnalysisDb::ResolveBattlePayload(
         std::nullopt);
 }
 
-std::optional<SpinePayloadRecord> QueuedAnalysisDb::ResolveSpinePayload(
-    int event_version,
-    std::string_view payload_ref_kind,
-    std::int64_t payload_ref_id) const {
-    const auto payload_ref_kind_copy = std::string(payload_ref_kind);
-    return ExecuteRead<std::optional<SpinePayloadRecord>>(
-        [this, event_version, payload_ref_kind_copy, payload_ref_id]() {
-            return inner_ != nullptr
-                ? inner_->ResolveSpinePayload(event_version, payload_ref_kind_copy, payload_ref_id)
-                : std::nullopt;
-        },
-        std::nullopt);
-}
-
-std::optional<SpinePayloadRecord> QueuedAnalysisDb::ResolveSpinePayload(
-    const events::EventEnvelope& envelope) const {
-    return ExecuteRead<std::optional<SpinePayloadRecord>>(
-        [this, envelope]() {
-            return inner_ != nullptr ? inner_->ResolveSpinePayload(envelope) : std::nullopt;
-        },
-        std::nullopt);
-}
-
 template <typename Result, typename Fn>
 Result QueuedAnalysisDb::ExecuteRead(
     Fn&& fn,

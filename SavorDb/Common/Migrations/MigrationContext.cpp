@@ -6,7 +6,6 @@ const char* ToString(MigrationContext context) {
     switch (context) {
     case MigrationContext::Execution: return "Execution";
     case MigrationContext::State: return "State";
-    case MigrationContext::AnalysisSpine: return "AnalysisSpine";
     case MigrationContext::AnalysisSeedProbe: return "AnalysisSeedProbe";
     case MigrationContext::AnalysisTasMovie: return "AnalysisTasMovie";
     case MigrationContext::AnalysisBattle: return "AnalysisBattle";

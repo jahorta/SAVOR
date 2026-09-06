@@ -119,7 +119,6 @@ std::vector<MigrationContext> ListAllMigrationContexts() {
     return {
         MigrationContext::Execution,
         MigrationContext::State,
-        MigrationContext::AnalysisSpine,
         MigrationContext::AnalysisSeedProbe,
         MigrationContext::AnalysisTasMovie,
         MigrationContext::AnalysisBattle,

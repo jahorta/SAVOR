@@ -20,7 +20,6 @@ bool IsCompleteMigrationRoot(const std::filesystem::path& root, std::string* err
     const std::vector<std::string> required_contexts{
         "Execution",
         "State",
-        "AnalysisSpine",
         "AnalysisSeedProbe",
         "AnalysisBattle",
         "Authoring",

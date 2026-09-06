@@ -245,7 +245,6 @@
     <ClInclude Include="Execution\Workflow\WorkflowStepSettlementGate.h" />
     
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h" />
-    <ClInclude Include="SavorDb.h" />
     <ClInclude Include="State\ArtifactObjectStore.h" />
     <ClInclude Include="State\IStateDb.h" />
     <ClInclude Include="State\QueuedStateDb.h" />
@@ -323,7 +322,6 @@
     
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp" />
     <ClCompile Include="Execution\WorkerResultBlobStore.cpp" />
-    <ClCompile Include="SavorDb.cpp" />
     <ClCompile Include="State\ArtifactObjectStore.cpp" />
     <ClCompile Include="State\QueuedStateDb.cpp" />
     <ClCompile Include="State\SqliteStateDb.cpp" />
@@ -359,7 +357,6 @@
     <None Include="migration\AnalysisTasMovie\202608041100_analysis_tas_movie_validation.sql" />
     <None Include="migration\AnalysisTasMovie\202608161100_analysis_tas_movie_outbox.sql" />
     <None Include="migration\AnalysisTasMovie\202608251000_analysis_tas_movie_input_epochs.sql" />
-    <None Include="migration\AnalysisSpine\202604051000_analysisspine_stage2_schema.sql" />
     <None Include="migration\Archive\202604051000_archive_stage2_schema.sql" />
     <None Include="migration\Archive\202604051100_archive_stage3_outbox.sql" />
     <None Include="migration\Archive\202604051200_archive_stage4_workflow_archive_kinds.sql" />

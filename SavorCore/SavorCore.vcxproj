@@ -168,7 +168,6 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Boot\Boot.h" />
-    <ClInclude Include="Core\Config\SimConfig.h" />
     <ClInclude Include="Core\DolphinWrapper.h" />
     <ClInclude Include="Core\PowerPcMemoryAccessDecoder.h" />
     <ClInclude Include="Core\Input\GCInputFrame.h" />
@@ -359,7 +358,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Boot\Boot.cpp" />
-    <ClCompile Include="Core\Config\SimConfig.cpp" />
     <ClCompile Include="Core\DolphinWrapper.cpp" />
     <ClCompile Include="Core\HostStubs.cpp" />
     <ClCompile Include="Core\PowerPcMemoryAccessDecoder.cpp" />

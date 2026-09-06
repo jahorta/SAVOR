@@ -11,7 +11,6 @@ namespace savor::db::events {
 enum class PayloadResolverContract {
     Unknown = 0,
     ExecutionWorkflowJobV1,
-    AnalysisSpineV1,
     AnalysisSeedProbeV1,
     AnalysisBattleV1,
     AuthoringV1,
@@ -80,10 +79,6 @@ inline constexpr EventDispatchBinding kPayloadDispatchBindingsV1[] = {
     { { "Execution.WorkflowInstanceInterrupted.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.WorkflowInstanceCanceled.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.WorkflowInstanceResumed.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
-    { { "AnalysisSpine.RunCreated.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },
-    { { "AnalysisSpine.StateRefRegistered.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },
-    { { "AnalysisSpine.LineageEdgeAdded.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },
-    { { "AnalysisSpine.ArtifactLinked.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },
     { { "AnalysisSeedProbe.SetCreated.v1", 1 }, PayloadResolverContract::AnalysisSeedProbeV1 },
     { { "AnalysisSeedProbe.RunRequested.v1", 1 }, PayloadResolverContract::AnalysisSeedProbeV1 },
     { { "AnalysisSeedProbe.ObservationRecorded.v1", 1 }, PayloadResolverContract::AnalysisSeedProbeV1 },

@@ -363,7 +363,6 @@ std::string ColumnBlob(sqlite3_stmt* st, int index) {
 
 enum class OutboxMode {
     None,
-    AnalysisSpine,
     SplitSeedProbeBattle,
 };
 
@@ -388,10 +387,6 @@ bool TableExists(sqlite3* db, std::string_view table_name) {
 }
 
 OutboxMode ResolveOutboxMode(sqlite3* db) {
-    if (TableExists(db, "asp_outbox_message")) {
-        return OutboxMode::AnalysisSpine;
-    }
-
     const bool has_sp = TableExists(db, "sp_outbox_message");
     const bool has_ab = TableExists(db, "ab_outbox_message");
     if (has_sp || has_ab) {
@@ -946,63 +941,12 @@ std::optional<events::AnalysisBattlePayloadView> ResolveBattleByKind(
     return std::nullopt;
 }
 
-std::optional<events::AnalysisSpinePayloadView> ResolveSpineByKind(
-    const SqliteAnalysisSpinePayloadRowResolver& resolver,
-    int event_version,
-    std::string_view payload_ref_kind,
-    std::int64_t payload_ref_id) {
-    if (event_version != 1 || payload_ref_id <= 0) {
-        return std::nullopt;
-    }
-
-    events::AnalysisSpinePayloadView record{};
-
-    if (payload_ref_kind == "run") {
-        const auto view = resolver.ResolveSpineRunCreated(payload_ref_kind, payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-        record.run_id = view->run_id;
-        return record;
-    }
-    if (payload_ref_kind == "state_ref") {
-        const auto view = resolver.ResolveSpineStateRefRegistered(payload_ref_kind, payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-        record.run_id = view->run_id;
-        record.state_ref_id = view->state_ref_id;
-        return record;
-    }
-    if (payload_ref_kind == "lineage_edge") {
-        const auto view = resolver.ResolveSpineLineageEdgeAdded(payload_ref_kind, payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-        record.run_id = view->child_run_id;
-        record.lineage_edge_id = view->lineage_edge_id;
-        return record;
-    }
-    if (payload_ref_kind == "artifact_ref") {
-        const auto view = resolver.ResolveSpineArtifactLinked(payload_ref_kind, payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-        record.run_id = view->run_id;
-        record.artifact_ref_id = view->artifact_ref_id;
-        return record;
-    }
-
-    return std::nullopt;
-}
-
 } // namespace
 
 SqliteAnalysisDb::SqliteAnalysisDb(sqlite3* db)
     : db_(db)
     , seed_probe_row_resolver_(db_)
-    , battle_row_resolver_(db_)
-    , spine_row_resolver_(db_) {
+    , battle_row_resolver_(db_) {
 }
 
 std::optional<TasMovieValidationRequestRecord> SqliteAnalysisDb::GetTasMovieValidationRequest(
@@ -7223,36 +7167,13 @@ std::vector<events::EventEnvelope> SqliteAnalysisDb::ReadUnpublishedOutboxBatch(
         return batch;
     }
 
-    Statement st;
-    if (mode == OutboxMode::AnalysisSpine) {
-        constexpr auto* kSql =
-            "SELECT event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,"
-            "correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id "
-            "FROM asp_outbox_message "
-            "WHERE outbox_id > ?1 "
-            "AND published_at_utc IS NULL "
-            "ORDER BY outbox_id ASC LIMIT ?2;";
-
-        if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
-            return batch;
-        }
-
-        sqlite3_bind_int64(st.st, 1, after_outbox_id);
-        sqlite3_bind_int(st.st, 2, max_batch_size);
-
-        while (sqlite3_step(st.st) == SQLITE_ROW) {
-            batch.push_back(ReadEnvelope(st.st));
-        }
-
-        return batch;
-    }
-
     const bool has_sp = TableExists(db_, "sp_outbox_message");
     const bool has_ab = TableExists(db_, "ab_outbox_message");
     if (!has_sp && !has_ab) {
         return batch;
     }
 
+    Statement st;
     std::string sql =
         "SELECT event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,"
         "correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id "
@@ -7303,20 +7224,6 @@ bool SqliteAnalysisDb::MarkOutboxPublished(
     }
 
     Statement st;
-    if (mode == OutboxMode::AnalysisSpine) {
-        constexpr auto* kSql =
-            "UPDATE asp_outbox_message "
-            "SET published_at_utc=?2 "
-            "WHERE outbox_id=?1;";
-        if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
-            return false;
-        }
-
-        sqlite3_bind_int64(st.st, 1, outbox_id);
-        sqlite3_bind_int64(st.st, 2, published_at_utc.time_since_epoch().count());
-        return sqlite3_step(st.st) == SQLITE_DONE;
-    }
-
     const bool is_ab = (outbox_id % 2) == 1;
     const auto table_outbox_id = outbox_id / 2;
     if (table_outbox_id <= 0) {
@@ -7353,20 +7260,6 @@ bool SqliteAnalysisDb::MarkOutboxPublishFailure(
     }
 
     Statement st;
-    if (mode == OutboxMode::AnalysisSpine) {
-        constexpr auto* kSql =
-            "UPDATE asp_outbox_message "
-            "SET attempt_count=attempt_count+1, last_error=?2 "
-            "WHERE outbox_id=?1;";
-        if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
-            return false;
-        }
-
-        sqlite3_bind_int64(st.st, 1, outbox_id);
-        sqlite3_bind_text(st.st, 2, last_error.data(), static_cast<int>(last_error.size()), SQLITE_TRANSIENT);
-        return sqlite3_step(st.st) == SQLITE_DONE;
-    }
-
     const bool is_ab = (outbox_id % 2) == 1;
     const auto table_outbox_id = outbox_id / 2;
     if (table_outbox_id <= 0) {
@@ -7397,14 +7290,7 @@ retention::OutboxRetentionPreview SqliteAnalysisDb::PreviewOutboxRetention(
     std::int64_t max_outbox_id = 0;
     Statement st;
     const auto mode = ResolveOutboxMode(db_);
-    if (mode == OutboxMode::AnalysisSpine) {
-        if (sqlite3_prepare_v2(db_, "SELECT COALESCE(MAX(outbox_id), 0) FROM asp_outbox_message;", -1, &st.st, nullptr)
-                == SQLITE_OK
-            && sqlite3_step(st.st) == SQLITE_ROW) {
-            max_outbox_id = sqlite3_column_int64(st.st, 0);
-        }
-    }
-    else if (mode == OutboxMode::SplitSeedProbeBattle) {
+    if (mode == OutboxMode::SplitSeedProbeBattle) {
         if (sqlite3_prepare_v2(
                 db_,
                 "SELECT MAX(v) FROM ("
@@ -7472,10 +7358,7 @@ bool SqliteAnalysisDb::PurgeOutboxThroughRetentionFloor(
         return true;
     };
 
-    if (mode == OutboxMode::AnalysisSpine) {
-        if (!delete_from("asp_outbox_message", max_rows)) return false;
-    }
-    else if (mode == OutboxMode::SplitSeedProbeBattle) {
+    if (mode == OutboxMode::SplitSeedProbeBattle) {
         const int sp_limit = std::max(1, max_rows / 2);
         const int ab_limit = std::max(1, max_rows - sp_limit);
         if (TableExists(db_, "sp_outbox_message") && !delete_from("sp_outbox_message", sp_limit)) return false;
@@ -7708,71 +7591,6 @@ std::optional<BattlePayloadRecord> SqliteAnalysisDb::ResolveBattlePayload(
         BattlePayloadRecord record{};
         record.battle_completion_id = view->battle_completion_id;
         record.battle_replay_id = view->battle_replay_id;
-        return record;
-    }
-
-    return std::nullopt;
-}
-
-std::optional<SpinePayloadRecord> SqliteAnalysisDb::ResolveSpinePayload(
-    int event_version,
-    std::string_view payload_ref_kind,
-    std::int64_t payload_ref_id) const {
-    return ResolveSpineByKind(spine_row_resolver_, event_version, payload_ref_kind, payload_ref_id);
-}
-
-std::optional<SpinePayloadRecord> SqliteAnalysisDb::ResolveSpinePayload(
-    const events::EventEnvelope& envelope) const {
-    if (!events::ValidateAnalysisSpinePayloadV1(envelope)) {
-        return std::nullopt;
-    }
-
-    const auto contract = events::ResolvePayloadResolverContract(envelope.event_type, envelope.event_version);
-    if (!contract.has_value() || contract.value() != events::PayloadResolverContract::AnalysisSpineV1) {
-        return std::nullopt;
-    }
-
-    if (envelope.event_type == "AnalysisSpine.RunCreated.v1") {
-        const auto view = spine_row_resolver_.ResolveSpineRunCreated(envelope.payload_ref_kind, envelope.payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-
-        SpinePayloadRecord record{};
-        record.run_id = view->run_id;
-        return record;
-    }
-    if (envelope.event_type == "AnalysisSpine.StateRefRegistered.v1") {
-        const auto view = spine_row_resolver_.ResolveSpineStateRefRegistered(envelope.payload_ref_kind, envelope.payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-
-        SpinePayloadRecord record{};
-        record.run_id = view->run_id;
-        record.state_ref_id = view->state_ref_id;
-        return record;
-    }
-    if (envelope.event_type == "AnalysisSpine.LineageEdgeAdded.v1") {
-        const auto view = spine_row_resolver_.ResolveSpineLineageEdgeAdded(envelope.payload_ref_kind, envelope.payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-
-        SpinePayloadRecord record{};
-        record.run_id = view->child_run_id;
-        record.lineage_edge_id = view->lineage_edge_id;
-        return record;
-    }
-    if (envelope.event_type == "AnalysisSpine.ArtifactLinked.v1") {
-        const auto view = spine_row_resolver_.ResolveSpineArtifactLinked(envelope.payload_ref_kind, envelope.payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-
-        SpinePayloadRecord record{};
-        record.run_id = view->run_id;
-        record.artifact_ref_id = view->artifact_ref_id;
         return record;
     }
 

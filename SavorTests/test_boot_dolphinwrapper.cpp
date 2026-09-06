@@ -2,12 +2,10 @@
 #include <filesystem>
 #include <fstream>
 
-#include "Boot/Boot.h"            // BootDolphinWrapper, BootOptions, BootDolphinWrapperFromSavedConfig
-#include "Core/Config/SimConfig.h"   // SimConfigIO::Load
+#include "Boot/Boot.h"
 #include "Core/HW/SI/SI_Device.h"    // SerialInterface::SIDevices
 #include "Core/Config/MainSettings.h"
 #include "Common/Config/Config.h"
-#include "seh_guard.h"
 #include "serial_guard.h"
 
 namespace fs = std::filesystem;
@@ -28,7 +26,7 @@ static fs::path mktmpdir(const char* name) {
     return d;
 }
 
-TEST(Boot, BootDolphinWrapper_UsesFreshUserAndSavesConfig)
+TEST(Boot, BootDolphinWrapper_UsesFreshUser)
 {
     tests::SerialGuard guard;
     
@@ -39,10 +37,9 @@ TEST(Boot, BootDolphinWrapper_UsesFreshUserAndSavesConfig)
     mkfile(qt / "Sys" / "GC" / "dsp_coef.bin", "dummy");
     mkfile(qt / "User" / "Config" / "import-me.ini", "contaminated");
 
-    // 1) Our isolated user dir + config path
+    // 1) Our isolated user dir
     const fs::path user_root = mktmpdir("user_isolated");
     const fs::path user = user_root / "User";
-    const fs::path cfg_path = mktmpdir("cfg") / "simulator.ini";
 
     const auto prepared = simboot::SessionFilesystemPreparer::Prepare({
         .worker_id = 0,
@@ -59,8 +56,6 @@ TEST(Boot, BootDolphinWrapper_UsesFreshUserAndSavesConfig)
     opts.dolphin_qt_base = qt;
     opts.session_filesystem_preparation_id = "boot-test-1";
     opts.process_generation = 1;
-    opts.save_config_on_success = true;
-    opts.config_path = cfg_path;
 
     std::string err;
     savor::DolphinWrapper dw;
@@ -78,38 +73,4 @@ TEST(Boot, BootDolphinWrapper_UsesFreshUserAndSavesConfig)
     const int sid0 = Config::Get(Config::GetInfoForSIDevice(0));
     EXPECT_EQ(sid0, static_cast<int>(SIDevices::SIDEVICE_GC_CONTROLLER));
 
-    // 5) Config file should have been written and loadable
-    EXPECT_TRUE(fs::exists(cfg_path));
-    auto loaded = savor::SimConfigIO::Load(cfg_path, &err);
-    ASSERT_TRUE(loaded.has_value()) << "Load config failed: " << err;
-    EXPECT_EQ(fs::weakly_canonical(loaded->user_dir), fs::weakly_canonical(user));
-    EXPECT_EQ(fs::weakly_canonical(loaded->dolphin_base_dir), fs::weakly_canonical(qt));
-}
-
-TEST(Boot, BootDolphinWrapperFromSavedConfig_Reloads)
-{
-    tests::SerialGuard guard;
-    
-    // 0) Prepare a saved config first
-    const fs::path qt = mktmpdir("qt_portable_base2");
-    mkfile(qt / "portable.txt", "");
-    mkfile(qt / "Sys" / "GC" / "dsp_coef.bin", "dummy");
-    mkfile(qt / "User" / "Config" / "import-me.ini", "contaminated\n");
-
-    const fs::path user = mktmpdir("user_isolated2") / "User";
-    const fs::path cfg_path = mktmpdir("cfg2") / "simulator.ini";
-
-    // Save a config
-    savor::SimConfig to_save{ user, qt };
-    std::string err;
-    ASSERT_TRUE(savor::SimConfigIO::Save(to_save, cfg_path, &err)) << err;
-
-    savor::DolphinWrapper dw;
-
-    // 1) Boot from that saved config
-    ASSERT_TRUE(simboot::BootDolphinWrapperFromSavedConfig(dw, &err, cfg_path)) << "Boot-from-config failed: " << err;
-
-    // 2) The saved-config path also starts from a fresh Dolphin profile.
-    EXPECT_TRUE(fs::is_directory(dw.GetUserDirectory() / "Config"));
-    EXPECT_FALSE(fs::exists(dw.GetUserDirectory() / "Config" / "import-me.ini"));
 }
