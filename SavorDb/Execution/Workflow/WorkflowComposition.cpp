@@ -81,8 +81,8 @@ WorkflowLaunchArgumentDefinition BooleanArgument(
         .display_name = std::move(display_name),
         .value_type = WorkflowLaunchArgumentValueType::Boolean,
         .required = false,
-        .default_value = default_value ? std::optional<std::string>("true")
-                                       : std::optional<std::string>("false"),
+        .default_value = default_value ? std::optional<std::string>("1")
+                                       : std::optional<std::string>("0"),
     };
 }
 

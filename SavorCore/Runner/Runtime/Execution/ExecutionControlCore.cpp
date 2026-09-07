@@ -2982,7 +2982,9 @@ void ExecutionControlCore::Pump()
                 const ExecutionObservation observed = impl_->Query();
                 impl_->EmitTerminal(
                     std::move(failed),
-                    ExecutionTerminalStatus::CleanupFailure,
+                    expected.kind == BackendControlTaskKind::FrameStep
+                        ? ExecutionTerminalStatus::BackendFailure
+                        : ExecutionTerminalStatus::CleanupFailure,
                     BackendError(
                         "Dolphin control task failed: " + expected.source,
                         failure),

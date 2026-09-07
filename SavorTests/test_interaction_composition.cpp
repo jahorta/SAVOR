@@ -251,7 +251,7 @@ TEST(InteractionComposition, LowersTemporalContractToOrdinaryIr)
                 (*bytes)[0] == 'C' &&
                 (*bytes)[1] == 'U' &&
                 (*bytes)[2] == 'C' &&
-                (*bytes)[3] == '1' &&
+                (*bytes)[3] == '2' &&
                 (*bytes)[4] == 1u &&
                 (*bytes)[5] == 1u;
         });

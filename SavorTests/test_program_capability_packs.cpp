@@ -51,7 +51,7 @@ TEST(CapabilityPackSources, CatalogIsStableSourceBackedAndJitGuardIsAbsent)
         catalog, "soa.battle.results");
     const auto& navigation = Manifest(catalog, "soa.navigation");
 
-    EXPECT_EQ(field.semantic_points.size(), 5u);
+    EXPECT_EQ(field.semantic_points.size(), 8u);
     for (const auto& [identity, pc] : std::array{
              std::pair{
                  std::string_view("soa.field.point.transition.FastPreseed"),
@@ -70,7 +70,7 @@ TEST(CapabilityPackSources, CatalogIsStableSourceBackedAndJitGuardIsAbsent)
     }
     EXPECT_EQ(battle.semantic_points.size(), 10u);
     EXPECT_TRUE(navigation.semantic_points.empty());
-    EXPECT_EQ(field.address_symbols.size(), 7u);
+    EXPECT_EQ(field.address_symbols.size(), 8u);
     EXPECT_EQ(battle.address_symbols.size(), 9u);
     EXPECT_EQ(navigation.address_symbols.size(), 5u);
 

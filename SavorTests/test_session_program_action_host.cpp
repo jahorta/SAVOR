@@ -551,6 +551,12 @@ ProgramValueGraph ContinueRequestGraph(
             CanonicalRuntimeSchema::
                 OptionalMovieInputCount),
         OptionalValue{expected_count_value});
+    const ProgramValueId required_occurrences = builder.Add(
+        TypeRef::Builtin(BuiltinType::U64),
+        std::uint64_t{1});
+    const ProgramValueId verify_bound_input = builder.Add(
+        TypeRef::Builtin(BuiltinType::Bool),
+        false);
     const ProgramValueId config = builder.Add(
         CanonicalRuntimeType(
             CanonicalRuntimeSchema::
@@ -558,7 +564,8 @@ ProgramValueGraph ContinueRequestGraph(
         writer.Finish());
     return builder.Finish(
         CanonicalAction::ExecutionContinueUntil,
-        {points, binding, playback, expected_count, config});
+        {points, binding, playback, expected_count, required_occurrences,
+         verify_bound_input, config});
 }
 
 void PutU32(
@@ -1163,7 +1170,7 @@ TEST(
     const auto* record =
         std::get_if<RecordValue>(&result->payload);
     ASSERT_NE(record, nullptr);
-    ASSERT_EQ(record->fields.size(), 6u);
+    ASSERT_EQ(record->fields.size(), 7u);
     const auto optional_stop_iterator = std::ranges::find(
         completions.front().resolution.output.values,
         record->fields[1],
@@ -1902,7 +1909,7 @@ TEST(
     ASSERT_NE(result, nullptr);
     const auto* record = std::get_if<RecordValue>(&result->payload);
     ASSERT_NE(record, nullptr);
-    ASSERT_EQ(record->fields.size(), 6u);
+    ASSERT_EQ(record->fields.size(), 7u);
     const auto reason_iterator = std::ranges::find(
         completions.front().resolution.output.values,
         record->fields[0],

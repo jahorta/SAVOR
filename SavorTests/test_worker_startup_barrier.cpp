@@ -405,7 +405,7 @@ TEST(TasMovieSeedProbeCli, AcceptsRtcEndpointsWorkersAndSeedProbeOptions) {
             std::string error;
             ASSERT_TRUE(ParseSeedProbeArgs(
                 {
-                    "SavorE2E", "--scenario", "tasmovie_sterile",
+                    "SavorE2E", "--scenario", "tasmovie_seedprobe",
                     "--tasmovie-rtc", rtc,
                     "--worker-count", workers,
                     "--seedprobe-samples-per-axis", "5",
@@ -415,7 +415,7 @@ TEST(TasMovieSeedProbeCli, AcceptsRtcEndpointsWorkersAndSeedProbeOptions) {
                 },
                 &options,
                 &error)) << error;
-            EXPECT_EQ(options.scenarios.front(), "tasmovie_sterile");
+            EXPECT_EQ(options.scenarios.front(), "tasmovie_seedprobe");
             EXPECT_EQ(options.worker_count, std::stoi(workers));
             EXPECT_EQ(options.seedprobe_samples_per_axis, 5);
             EXPECT_EQ(options.seedprobe_combo_attempts_per_target, 32);

@@ -1515,7 +1515,9 @@ TEST(
     EXPECT_EQ(telemetry.claim_backoff_stage, 1u);
     EXPECT_EQ(telemetry.current_claim_backoff_ms, 1000u);
     const bool observed_second = WaitUntil(
-        [&]() { return execution_db.claim_calls.load() >= 2; },
+        [&]() {
+            return coordinator.SnapshotTelemetry().claim_backoff_stage >= 2;
+        },
         std::chrono::seconds(2));
     if (!observed_second) {
         const auto stalled = coordinator.SnapshotTelemetry();
@@ -1536,7 +1538,9 @@ TEST(
     EXPECT_EQ(telemetry.claim_backoff_stage, 2u);
     EXPECT_EQ(telemetry.current_claim_backoff_ms, 5000u);
     ASSERT_TRUE(WaitUntil(
-        [&]() { return execution_db.claim_calls.load() >= 3; },
+        [&]() {
+            return coordinator.SnapshotTelemetry().claim_backoff_stage >= 3;
+        },
         std::chrono::seconds(7)));
     telemetry = coordinator.SnapshotTelemetry();
     EXPECT_EQ(telemetry.claim_backoff_stage, 3u);

@@ -330,6 +330,11 @@ ProgramValueGraph ResultGraph(
         TypeRef::Builtin(BuiltinType::U64),
         std::uint64_t{37},
     };
+    ProgramValue completed_count{
+        ProgramValueId(17),
+        TypeRef::Builtin(BuiltinType::U64),
+        std::uint64_t{1},
+    };
     ProgramValue stop{
         ProgramValueId(15),
         CanonicalActionOutputType(
@@ -340,6 +345,7 @@ ProgramValueGraph ResultGraph(
             stopped_pc.id,
             movie_input_count.id,
             vi_count.id,
+            completed_count.id,
             workset_epoch.id,
         }},
     };
@@ -367,6 +373,7 @@ ProgramValueGraph ResultGraph(
             std::move(reason),
             std::move(movie_input_count),
             std::move(vi_count),
+            std::move(completed_count),
             std::move(stop),
             std::move(delivery),
             std::move(endpoint_value),
@@ -518,8 +525,16 @@ bool EnsureTestSavestate(
     sqlite3* db,
     const std::filesystem::path& temp_root)
 {
+    const auto object_store_root = temp_root / "object_store";
+    std::error_code directory_error;
+    if (!std::filesystem::create_directories(
+            object_store_root,
+            directory_error)
+        && directory_error) {
+        return false;
+    }
     const auto state_path =
-        temp_root / "seedprobe-descriptor-test.sav";
+        object_store_root / "seedprobe-descriptor-test.sav";
     {
         std::ofstream output(
             state_path,
@@ -532,11 +547,10 @@ bool EnsureTestSavestate(
         hash::sha256_of_file(state_path.string());
     const std::string sql =
         "INSERT INTO state_artifact("
-        "artifact_id,sha256,size_bytes,compression_kind,filename,"
-        "file_ext,artifact_kind,created_at_utc) VALUES("
-        "1,'" + sha256 + "',1,0,'"
-        + state_path.generic_string()
-        + "','.sav','SAV',1000);"
+        "artifact_id,sha256,size_bytes,compression_kind,display_filename,"
+        "file_ext,artifact_kind,created_at_utc,object_relpath) VALUES("
+        "1,'" + sha256 + "',1,0,'seedprobe-descriptor-test.sav',"
+        "'.sav','SAV',1000,'seedprobe-descriptor-test.sav');"
         "INSERT INTO state_savestate("
         "savestate_id,artifact_id,savestate_type,note,is_complete,"
         "created_at_utc) VALUES("

@@ -414,6 +414,18 @@ std::vector<ExportSpec> BuildExportSpecs(const CreateArchivePackageRequest& requ
     });
 
     specs.push_back(ExportSpec{
+        "job_progress",
+        scoped_job_sets
+            + "SELECT p.job_id,p.attempt_id,p.ordinal,p.dispatch_attempt_id,p.workset_item_ordinal,p.workset_id,p.item_id,p.invocation_id,"
+              "p.library_id,p.library_revision,p.progress_point_id,p.has_routed_provenance,p.routed_sequence,p.sample_snapshot_id,"
+              "p.trigger_epoch,p.schema_id,p.schema_revision,p.schema_sha256,hex(p.typed_payload) AS typed_payload_hex,"
+              "p.display_text,p.recorded_at_utc FROM exec_job_progress p "
+              "JOIN exec_job j ON j.job_id=p.job_id "
+              "WHERE j.job_set_id IN (SELECT job_set_id FROM scoped_job_sets) "
+              "ORDER BY p.job_id ASC,p.attempt_id ASC,p.ordinal ASC;"
+    });
+
+    specs.push_back(ExportSpec{
         "job_events",
         scoped_job_sets
             + "SELECT e.* FROM exec_job_event e "

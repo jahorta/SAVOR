@@ -573,8 +573,8 @@ VALUES(210,202,'battle','battle_chain','Battle Chain',
 INSERT INTO au_workflow_graph(workflow_graph_id,name,active_revision_id,created_at_utc)
 VALUES(301,'unknown-contract',NULL,1);
 INSERT INTO au_workflow_graph_revision(
-    workflow_graph_revision_id,workflow_graph_id,graph_version,graph_hash,status,created_at_utc)
-VALUES(302,301,1,'unknown-contract-hash','active',1);
+    workflow_graph_revision_id,workflow_graph_id,graph_version,graph_hash,created_at_utc)
+VALUES(302,301,1,'unknown-contract-hash',1);
 INSERT INTO au_workflow_graph_revision_node(
     workflow_graph_revision_node_id,workflow_graph_revision_id,node_key,unit_kind,ordinal)
 VALUES(303,302,'unknown','seed_probe_chain',0);
@@ -3229,7 +3229,7 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
 
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_instance_state_created"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_step_instance_state_priority_ready"));
-    EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_step_job_set"));
+    EXPECT_TRUE(IndexExists(db_, "uq_exec_workflow_step_job_set"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_edge_instance_to"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_outbox_payload_ref"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_outbox_replay_cursor"));
@@ -3247,12 +3247,12 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_instance_display_state_created"));
 
     const auto step_table_sql = TableCreateSql(db_, "exec_workflow_step");
-    EXPECT_NE(step_table_sql.find("CHECK(state IN ('WAITING','READY','MATERIALIZED','RUNNING','COMPLETED','FAILED','SKIPPED'))"), std::string::npos);
+    EXPECT_NE(step_table_sql.find("CHECK(state IN ('WAITING','READY','MATERIALIZED','RUNNING','COMPLETED','FAILED','INTERRUPTED','SKIPPED','CANCELED'))"), std::string::npos);
     EXPECT_NE(step_table_sql.find("CONSTRAINT uq_exec_workflow_step_instance_step_key UNIQUE (workflow_instance_id, step_key)"), std::string::npos);
     EXPECT_NE(step_table_sql.find("CONSTRAINT uq_exec_workflow_step_job_set_id UNIQUE (job_set_id)"), std::string::npos);
 
     const auto instance_table_sql = TableCreateSql(db_, "exec_workflow_instance");
-    EXPECT_NE(instance_table_sql.find("CHECK(state IN ('PENDING','RUNNING','COMPLETED','FAILED','CANCELED'))"), std::string::npos);
+    EXPECT_NE(instance_table_sql.find("CHECK(state IN ('PENDING','RUNNING','CANCELLING','COMPLETED','FAILED','INTERRUPTED','CANCELED'))"), std::string::npos);
     EXPECT_NE(instance_table_sql.find("CHECK(root_scope_kind IN ('job_set','run','manual'))"), std::string::npos);
 }
 
@@ -3807,7 +3807,7 @@ VALUES(7401, 7201, 999999, 7302, unixepoch());
     EXPECT_GT(report.dangling_edge_count, 0);
     EXPECT_GT(report.missing_job_set_link_count, 0);
     EXPECT_GT(report.non_settled_step_in_completed_instance_count, 0);
-    EXPECT_GT(report.non_settled_step_in_terminal_instance_count, 0);
+    EXPECT_EQ(report.non_settled_step_in_terminal_instance_count, 0);
     EXPECT_FALSE(report.IsClean());
 }
 
@@ -7693,27 +7693,27 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
             .nodes = {
                 {
                     .node_key = "tas_1",
-                    .unit_kind = "tas_movie",
+                    .unit_kind = "tas_movie_cutscene",
                     .display_name = "TAS Movie",
                     .possible_outputs = {
-                        { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                        { .output_key = "tas_movie_tree", .data_kind = "state.tas_movie_tree_id", .ref_kind = "state_tas_movie_tree", .display_name = "Recorded TAS branch" },
                     },
                 },
                 {
                     .node_key = "probe_1",
-                    .unit_kind = "seed_probe",
+                    .unit_kind = "tas_movie_cutscene",
                     .display_name = "Seed Probe",
                     .inputs = {
-                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                        { .input_key = "tas_movie_tree", .data_kind = "state.tas_movie_tree_id", .ref_kind = "state_tas_movie_tree", .display_name = "Validated TAS branch" },
                     },
                 },
             },
             .edges = {
                 {
                     .from_node_key = "tas_1",
-                    .output_key = "savestate",
+                    .output_key = "tas_movie_tree",
                     .to_node_key = "probe_1",
-                    .input_key = "entry_savestate",
+                    .input_key = "tas_movie_tree",
                     .guard_kind = std::string(
                         kWorkflowOutputPresentGuard),
                 },
@@ -7731,13 +7731,13 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
     create.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     create.created_by = "sqlite-fixture";
     create.created_at_utc = now.time_since_epoch().count();
-    create.unit_activations.push_back(TestUnitActivation("tas_1", "tas_movie", "TAS Movie", {}, 10, 1));
-    create.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe", "Seed Probe", { "tas_1" }, 5, 1));
+    create.unit_activations.push_back(TestUnitActivation("tas_1", "tas_movie_cutscene", "TAS Movie", {}, 10, 1));
+    create.unit_activations.push_back(TestUnitActivation("probe_1", "tas_movie_cutscene", "Seed Probe", { "tas_1" }, 5, 1));
     create.input_bindings.push_back({
         .node_key = "probe_1",
-        .input_key = "entry_savestate",
-        .data_kind = "state.savestate_id",
-        .ref_kind = "state.savestate",
+        .input_key = "tas_movie_tree",
+        .data_kind = "state.tas_movie_tree_id",
+        .ref_kind = "state_tas_movie_tree",
         .ref_id = 9901,
         .source_kind = "external_override",
     });
@@ -7783,7 +7783,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
             .workflow_graph_revision_id = saved.workflow_graph_revision_id,
             .step_key = "tas_1",
             .graph_node_key = "tas_1",
-            .step_kind = "tas_movie",
+            .step_kind = "tasmovie.cutscene",
             .expected_total = 1,
             .discovered_total = 1,
             .settled_total = 1,
@@ -7809,7 +7809,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
         graph_after->input_bindings.end(),
         [](const auto& binding) {
             return binding.node_key == "probe_1"
-                && binding.input_key == "entry_savestate"
+                && binding.input_key == "tas_movie_tree"
                 && binding.ref_id == 9901
                 && binding.source_kind == "external_override";
         });
@@ -7837,31 +7837,34 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentWaitsForAlternateProvider
             .nodes = {
                 {
                     .node_key = "left_1",
-                    .unit_kind = "source",
+                    .unit_kind = "tas_movie_cutscene",
                     .display_name = "Left",
                     .possible_outputs = {{
-                        .output_key = "value",
-                        .data_kind = "test.ref",
+                        .output_key = "tas_movie_tree",
+                        .data_kind = "state.tas_movie_tree_id",
+                        .ref_kind = "state_tas_movie_tree",
                         .display_name = "Value",
                     }},
                 },
                 {
                     .node_key = "right_1",
-                    .unit_kind = "source",
+                    .unit_kind = "tas_movie_cutscene",
                     .display_name = "Right",
                     .possible_outputs = {{
-                        .output_key = "value",
-                        .data_kind = "test.ref",
+                        .output_key = "tas_movie_tree",
+                        .data_kind = "state.tas_movie_tree_id",
+                        .ref_kind = "state_tas_movie_tree",
                         .display_name = "Value",
                     }},
                 },
                 {
                     .node_key = "target_1",
-                    .unit_kind = "target",
+                    .unit_kind = "tas_movie_cutscene",
                     .display_name = "Target",
                     .inputs = {{
-                        .input_key = "input",
-                        .data_kind = "test.ref",
+                        .input_key = "tas_movie_tree",
+                        .data_kind = "state.tas_movie_tree_id",
+                        .ref_kind = "state_tas_movie_tree",
                         .display_name = "Input",
                     }},
                 },
@@ -7869,17 +7872,17 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentWaitsForAlternateProvider
             .edges = {
                 {
                     .from_node_key = "left_1",
-                    .output_key = "value",
+                    .output_key = "tas_movie_tree",
                     .to_node_key = "target_1",
-                    .input_key = "input",
+                    .input_key = "tas_movie_tree",
                     .guard_kind = std::string(
                         kWorkflowOutputPresentGuard),
                 },
                 {
                     .from_node_key = "right_1",
-                    .output_key = "value",
+                    .output_key = "tas_movie_tree",
                     .to_node_key = "target_1",
-                    .input_key = "input",
+                    .input_key = "tas_movie_tree",
                     .guard_kind = std::string(
                         kWorkflowOutputPresentGuard),
                 },
@@ -7898,11 +7901,11 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentWaitsForAlternateProvider
     create.created_by = "sqlite-fixture";
     create.created_at_utc = now.time_since_epoch().count();
     create.unit_activations.push_back(
-        TestUnitActivation("left_1", "source", "Left", {}, 10, 1));
+        TestUnitActivation("left_1", "tas_movie_cutscene", "Left", {}, 10, 1));
     create.unit_activations.push_back(
-        TestUnitActivation("right_1", "source", "Right", {}, 10, 1));
+        TestUnitActivation("right_1", "tas_movie_cutscene", "Right", {}, 10, 1));
     create.unit_activations.push_back(TestUnitActivation(
-        "target_1", "target", "Target",
+        "target_1", "tas_movie_cutscene", "Target",
         {"left_1", "right_1"}, 1, 1));
     ASSERT_TRUE(execution_db->WorkflowCommandService()
         ->CreateWorkflowInstance(
@@ -7970,9 +7973,9 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentWaitsForAlternateProvider
             EXPECT_TRUE(execution_db->RecordJobOutput(
                 {
                     .job_id = job_id,
-                    .output_key = "value",
-                    .data_kind = "test.ref",
-                    .ref_kind = "test.ref",
+                    .output_key = "tas_movie_tree",
+                    .data_kind = "state.tas_movie_tree_id",
+                    .ref_kind = "state_tas_movie_tree",
                     .ref_id = *output_ref,
                     .requested_by = "test",
                 },
@@ -7993,7 +7996,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentWaitsForAlternateProvider
             .workflow_graph_revision_id = saved.workflow_graph_revision_id,
             .step_key = std::string(node_key),
             .graph_node_key = std::string(node_key),
-            .step_kind = "source",
+            .step_kind = "tasmovie.cutscene",
             .priority = 10,
             .expected_total = 1,
             .discovered_total = 1,
@@ -8043,36 +8046,40 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentSkipsImpossibleDescendant
             .nodes = {
                 {
                     .node_key = "root_1",
-                    .unit_kind = "root",
+                    .unit_kind = "tas_movie_cutscene",
                     .display_name = "Root",
                     .possible_outputs = {{
-                        .output_key = "next",
-                        .data_kind = "test.ref",
+                        .output_key = "tas_movie_tree",
+                        .data_kind = "state.tas_movie_tree_id",
+                        .ref_kind = "state_tas_movie_tree",
                         .display_name = "Next",
                     }},
                 },
                 {
                     .node_key = "middle_1",
-                    .unit_kind = "middle",
+                    .unit_kind = "tas_movie_cutscene",
                     .display_name = "Middle",
                     .inputs = {{
-                        .input_key = "input",
-                        .data_kind = "test.ref",
+                        .input_key = "tas_movie_tree",
+                        .data_kind = "state.tas_movie_tree_id",
+                        .ref_kind = "state_tas_movie_tree",
                         .display_name = "Input",
                     }},
                     .possible_outputs = {{
-                        .output_key = "next",
-                        .data_kind = "test.ref",
+                        .output_key = "tas_movie_tree",
+                        .data_kind = "state.tas_movie_tree_id",
+                        .ref_kind = "state_tas_movie_tree",
                         .display_name = "Next",
                     }},
                 },
                 {
                     .node_key = "leaf_1",
-                    .unit_kind = "leaf",
+                    .unit_kind = "tas_movie_cutscene",
                     .display_name = "Leaf",
                     .inputs = {{
-                        .input_key = "input",
-                        .data_kind = "test.ref",
+                        .input_key = "tas_movie_tree",
+                        .data_kind = "state.tas_movie_tree_id",
+                        .ref_kind = "state_tas_movie_tree",
                         .display_name = "Input",
                     }},
                 },
@@ -8080,17 +8087,17 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentSkipsImpossibleDescendant
             .edges = {
                 {
                     .from_node_key = "root_1",
-                    .output_key = "next",
+                    .output_key = "tas_movie_tree",
                     .to_node_key = "middle_1",
-                    .input_key = "input",
+                    .input_key = "tas_movie_tree",
                     .guard_kind = std::string(
                         kWorkflowOutputPresentGuard),
                 },
                 {
                     .from_node_key = "middle_1",
-                    .output_key = "next",
+                    .output_key = "tas_movie_tree",
                     .to_node_key = "leaf_1",
-                    .input_key = "input",
+                    .input_key = "tas_movie_tree",
                     .guard_kind = std::string(
                         kWorkflowOutputPresentGuard),
                 },
@@ -8109,13 +8116,13 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentSkipsImpossibleDescendant
     create.created_by = "sqlite-fixture";
     create.created_at_utc = now.time_since_epoch().count();
     create.unit_activations.push_back(
-        TestUnitActivation("root_1", "root", "Root", {}, 10, 1));
+        TestUnitActivation("root_1", "tas_movie_cutscene", "Root", {}, 10, 1));
     create.unit_activations.push_back(
         TestUnitActivation(
-            "middle_1", "middle", "Middle", {"root_1"}, 5, 1));
+            "middle_1", "tas_movie_cutscene", "Middle", {"root_1"}, 5, 1));
     create.unit_activations.push_back(
         TestUnitActivation(
-            "leaf_1", "leaf", "Leaf", {"middle_1"}, 1, 1));
+            "leaf_1", "tas_movie_cutscene", "Leaf", {"middle_1"}, 1, 1));
     ASSERT_TRUE(execution_db->WorkflowCommandService()
         ->CreateWorkflowInstance(
             create, &workflow_instance_id, &err)) << err;
@@ -8165,7 +8172,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentSkipsImpossibleDescendant
         .workflow_graph_revision_id = saved.workflow_graph_revision_id,
         .step_key = "root_1",
         .graph_node_key = "root_1",
-        .step_kind = "root",
+        .step_kind = "tasmovie.cutscene",
         .priority = 10,
         .expected_total = 1,
         .discovered_total = 1,
@@ -8204,9 +8211,9 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingOutputPresentSkipsImpossibleDescendant
             WorkflowUnitActivationState::Skipped);
     };
     expect_skipped(
-        "middle_1", "guard_not_satisfied:root_1.next");
+        "middle_1", "guard_not_satisfied:root_1.tas_movie_tree");
     expect_skipped(
-        "leaf_1", "guard_not_satisfied:middle_1.next");
+        "leaf_1", "guard_not_satisfied:middle_1.tas_movie_tree");
 
     result = {};
     ASSERT_TRUE(router.RouteTerminalStep(terminal, &result, &err)) << err;
@@ -8385,10 +8392,41 @@ TEST_F(SqliteDbFixture, Stage4ArchiveOperatorCommandsPackageCountsAndChecksumVal
     ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc) VALUES(100,1,'root',1000);
-INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
-VALUES(200,100,1,1,'workflow',100,'fp-200',0,'COMPLETED',0,1,1000,2000);
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_at_utc,materialization_state,
+    population_sealed_at_utc,workset_publication_completed_at_utc)
+VALUES(100,1,'root',1000,'WORKSET_PUBLICATION_COMPLETE',1000,1000);
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id,workflow_kind,state,root_scope_kind,created_at_utc,
+    completed_at_utc)
+VALUES(400,'ARCHIVE_TEST','COMPLETED','manual',1000,2000);
+INSERT INTO exec_workflow_step(
+    workflow_step_id,workflow_instance_id,step_key,step_kind,state,job_set_id,
+    priority,attempts,max_attempts,created_at_utc,completed_at_utc)
+VALUES(500,400,'archive','archive.test','COMPLETED',100,0,1,1,1000,2000);
+INSERT INTO exec_workset(
+    workset_id,job_set_id,workflow_step_id,workset_key,program_kind,
+    program_version,contract_key,module_canonical_id,module_version,
+    module_sha256,entrypoint,verified_dependency_sha256,
+    runtime_profile_sha256,program_package_sha256,
+    estimated_payload_bytes,priority,item_count,published_at_utc)
+VALUES(600,100,500,'archive-test',1,1,'archive-test-contract',
+       'archive.test',1,printf('%064d',0),'execute',printf('%064d',0),
+       printf('%064d',0),printf('%064d',0),1,0,1,1000);
+INSERT INTO exec_workset_dispatch_attempt(
+    dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
+    claimed_at_utc,dispatched_at_utc,closed_at_utc,close_reason_code)
+VALUES(700,600,1,'CLOSED','archive-test-token',1100,1200,2000,'ALL_TERMINAL');
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc,workset_id,workset_item_ordinal,dispatch_attempt_id,reserved_attempt_id)
+VALUES(200,100,1,1,'workflow',100,'fp-200',0,'SUCCEEDED',1,1,1000,2000,600,0,700,1);
 INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, message) VALUES(300,200,'done',2000,'ok');
+INSERT INTO exec_job_progress(
+    job_id,attempt_id,ordinal,dispatch_attempt_id,workset_item_ordinal,
+    workset_id,item_id,invocation_id,library_id,library_revision,
+    progress_point_id,has_routed_provenance,schema_id,schema_revision,
+    schema_sha256,typed_payload,display_text,recorded_at_utc)
+VALUES(200,1,1,700,0,600,200,200,'archive.test',1,'done',0,
+       'archive.test.progress',1,printf('%064d',0),X'00','done',1500);
 )SQL"));
 
     const auto temp_root = std::filesystem::temp_directory_path() / ("savor-archive-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -8452,10 +8490,41 @@ TEST_F(SqliteDbFixture, Stage4ArchiveOperatorCommandsRehydrateNoCollisionAndRoun
     ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc) VALUES(100,1,'root',1000);
-INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
-VALUES(200,100,1,1,'workflow',100,'fp-200',0,'COMPLETED',0,1,1000,2000);
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_at_utc,materialization_state,
+    population_sealed_at_utc,workset_publication_completed_at_utc)
+VALUES(100,1,'root',1000,'WORKSET_PUBLICATION_COMPLETE',1000,1000);
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id,workflow_kind,state,root_scope_kind,created_at_utc,
+    completed_at_utc)
+VALUES(400,'ARCHIVE_TEST','COMPLETED','manual',1000,2000);
+INSERT INTO exec_workflow_step(
+    workflow_step_id,workflow_instance_id,step_key,step_kind,state,job_set_id,
+    priority,attempts,max_attempts,created_at_utc,completed_at_utc)
+VALUES(500,400,'archive','archive.test','COMPLETED',100,0,1,1,1000,2000);
+INSERT INTO exec_workset(
+    workset_id,job_set_id,workflow_step_id,workset_key,program_kind,
+    program_version,contract_key,module_canonical_id,module_version,
+    module_sha256,entrypoint,verified_dependency_sha256,
+    runtime_profile_sha256,program_package_sha256,
+    estimated_payload_bytes,priority,item_count,published_at_utc)
+VALUES(600,100,500,'archive-test',1,1,'archive-test-contract',
+       'archive.test',1,printf('%064d',0),'execute',printf('%064d',0),
+       printf('%064d',0),printf('%064d',0),1,0,1,1000);
+INSERT INTO exec_workset_dispatch_attempt(
+    dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
+    claimed_at_utc,dispatched_at_utc,closed_at_utc,close_reason_code)
+VALUES(700,600,1,'CLOSED','archive-test-token',1100,1200,2000,'ALL_TERMINAL');
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc,workset_id,workset_item_ordinal,dispatch_attempt_id,reserved_attempt_id)
+VALUES(200,100,1,1,'workflow',100,'fp-200',0,'SUCCEEDED',1,1,1000,2000,600,0,700,1);
 INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, message) VALUES(300,200,'done',2000,'ok');
+INSERT INTO exec_job_progress(
+    job_id,attempt_id,ordinal,dispatch_attempt_id,workset_item_ordinal,
+    workset_id,item_id,invocation_id,library_id,library_revision,
+    progress_point_id,has_routed_provenance,schema_id,schema_revision,
+    schema_sha256,typed_payload,display_text,recorded_at_utc)
+VALUES(200,1,1,700,0,600,200,200,'archive.test',1,'done',0,
+       'archive.test.progress',1,printf('%064d',0),X'00','done',1500);
 )SQL"));
 
     const auto temp_root = std::filesystem::temp_directory_path() / ("savor-rehydrate-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -8642,8 +8711,9 @@ TEST_F(SqliteDbFixture, Stage4WorkflowArchivePackagesSelectedWorkflowsAndDedupes
         out << "shared-entry-savestate";
     }
 
-    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(10,'sharedsha',21,'NONE','")
-        + sav_path.generic_string() + "','.sav','SAV',1000);"
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) VALUES(10,'sharedsha',21,'NONE','")
+        + sav_path.filename().generic_string() + "','.sav','SAV',1000,'"
+        + sav_path.filename().generic_string() + "');"
         + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(101,10,'ENTRY','shared',1,1000);";
     ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
     ASSERT_TRUE(ExecSql(db_, R"SQL(
@@ -8666,7 +8736,7 @@ VALUES(1,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0),
         &execution_db,
         &ui_read_db,
         &archive_db,
-        DbConfigPaths{ .archive_store_root = temp_root },
+        DbConfigPaths{ .object_store_root = temp_root, .archive_store_root = temp_root },
         db_,
         nullptr,
         db_);
@@ -8719,8 +8789,9 @@ TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateReusesExistingSavestateArt
         out << "dedupe-entry-savestate";
     }
 
-    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(10,'dedupesha',22,'NONE','")
-        + sav_path.generic_string() + "','.sav','SAV',1000);"
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) VALUES(10,'dedupesha',22,'NONE','")
+        + sav_path.filename().generic_string() + "','.sav','SAV',1000,'"
+        + sav_path.filename().generic_string() + "');"
         + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(101,10,'ENTRY','shared',1,1000);";
     ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
     ASSERT_TRUE(ExecSql(db_, R"SQL(
@@ -8740,7 +8811,7 @@ VALUES(1,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0);
         &execution_db,
         &ui_read_db,
         &archive_db,
-        DbConfigPaths{ .archive_store_root = temp_root },
+        DbConfigPaths{ .object_store_root = temp_root, .archive_store_root = temp_root },
         db_,
         nullptr,
         db_);
@@ -8768,7 +8839,8 @@ VALUES(1,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0);
         &err))
         << err;
 
-    archive::SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_);
+    archive::SqliteRehydrateExecutor rehydrate_executor(
+        db_, db_, &archive_db, temp_root, db_, nullptr, temp_root);
     std::vector<archive::ArchiveOperationProgress> rehydrate_progress;
     const auto result = rehydrate_executor.Execute({
         .rehydrate_request_id = request_id,
@@ -8823,12 +8895,15 @@ TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRestoresExecutionExtrasAnd
         out << "full-entry-itinerary";
     }
 
-    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(60,'fullsha',20,'NONE','")
-        + sav_path.generic_string() + "','.sav','SAV',1000);"
-        + "INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(61,'fulldtmsha',14,'NONE','"
-        + dtm_path.generic_string() + "','.dtm','DTM',1000);"
-        + "INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(62,'fulltmisha',20,'NONE','"
-        + itinerary_path.generic_string() + "','.tmi','TAS_MOVIE_ITINERARY',1000);"
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) VALUES(60,'fullsha',20,'NONE','")
+        + sav_path.filename().generic_string() + "','.sav','SAV',1000,'"
+        + sav_path.filename().generic_string() + "');"
+        + "INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) VALUES(61,'fulldtmsha',14,'NONE','"
+        + dtm_path.filename().generic_string() + "','.dtm','DTM',1000,'"
+        + dtm_path.filename().generic_string() + "');"
+        + "INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) VALUES(62,'fulltmisha',20,'NONE','"
+        + itinerary_path.filename().generic_string() + "','.tmi','TAS_MOVIE_ITINERARY',1000,'"
+        + itinerary_path.filename().generic_string() + "');"
         + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(601,60,'ENTRY','full',1,1000);";
     ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
     savor::runtime::battlerecord::BattleReplaySourceBindingV1 archived_binding{
@@ -8873,7 +8948,7 @@ VALUES(7001,'BATTLE_RUN','COMPLETED','job_set',7100,'test',1000,2000);
 INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,workflow_unit_activation_id,step_key,graph_node_key,step_kind,state,priority,attempts,max_attempts,job_set_id,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
 VALUES(7201,7001,NULL,'battle','battle','battle.single_turn','COMPLETED',0,1,1,7100,'state.savestate_id',601,'state.savestate_id',601,1000,2000);
 INSERT INTO exec_workset(
-    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_id,job_set_id,workflow_step_id,
     workset_key,program_kind,program_version,
     contract_key,module_canonical_id,module_version,module_sha256,
     entrypoint,verified_dependency_sha256,runtime_profile_sha256,
@@ -8882,7 +8957,7 @@ INSERT INTO exec_workset(
     capture_binding_payload,capture_binding_sha256,
     progress_plan_payload,progress_plan_sha256)
 VALUES(
-    7110,7100,7201,7100,
+    7110,7100,7201,
     'fixture.archive.battle-turn.workset',7,1,
     'fixture-contract','soa.battle.single_turn',1,
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -8988,7 +9063,7 @@ VALUES(
         &execution_db,
         &ui_read_db,
         &archive_db,
-        DbConfigPaths{ .archive_store_root = temp_root },
+        DbConfigPaths{ .object_store_root = temp_root, .archive_store_root = temp_root },
         db_,
         db_,
         db_);
@@ -9008,7 +9083,8 @@ VALUES(
         + std::to_string(package.archive_package_id)
         + " AND item_kind='analysis_predicate_execution_packages';").c_str()), 1);
 
-    SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_, db_);
+    SqliteRehydrateExecutor rehydrate_executor(
+        db_, db_, &archive_db, temp_root, db_, db_, temp_root);
     ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
     const auto preview = commands.RehydratePreview({
         .archive_package_id = package.archive_package_id,
@@ -9141,8 +9217,9 @@ TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRestoresSeedProbeAnalysisA
         out << "seed-entry-savestate";
     }
 
-    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(70,'seedsha',20,'NONE','")
-        + sav_path.generic_string() + "','.sav','SAV',1000);"
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) VALUES(70,'seedsha',20,'NONE','")
+        + sav_path.filename().generic_string() + "','.sav','SAV',1000,'"
+        + sav_path.filename().generic_string() + "');"
         + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(701,70,'ENTRY','seed',1,1000);";
     ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
     ASSERT_TRUE(ExecSql(db_, R"SQL(
@@ -9192,14 +9269,14 @@ VALUES(9102,'SEED_PROBE','COMPLETED','job_set',9100,'test',1000,2000);
 INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,graph_node_key,step_kind,state,priority,attempts,max_attempts,job_set_id,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
 VALUES(9103,9102,'probe','probe','seed_probe_chain','COMPLETED',0,1,1,9100,'sp_probe_run',9010,'sp_probe_run',9010,1000,2000);
 INSERT INTO exec_workset(
-    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_id,job_set_id,workflow_step_id,
     workset_key,program_kind,program_version,
     contract_key,module_canonical_id,module_version,module_sha256,
     entrypoint,verified_dependency_sha256,runtime_profile_sha256,
     program_package_sha256,execution_affinity_key,
     estimated_payload_bytes,priority,item_count,published_at_utc)
 VALUES(
-    9110,9100,9103,9100,'fixture.archive.seedprobe.workset',1,2,
+    9110,9100,9103,'fixture.archive.seedprobe.workset',1,2,
     'fixture-compatibility','soa.seed_probe',2,
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     'probe',
@@ -9292,7 +9369,7 @@ VALUES(9102,'SEED_PROBE','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
         &execution_db,
         &ui_read_db,
         &archive_db,
-        DbConfigPaths{ .archive_store_root = temp_root },
+        DbConfigPaths{ .object_store_root = temp_root, .archive_store_root = temp_root },
         db_,
         db_,
         db_);
@@ -9322,7 +9399,8 @@ VALUES(9102,'SEED_PROBE','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
         &err))
         << err;
 
-    SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_, db_);
+    SqliteRehydrateExecutor rehydrate_executor(
+        db_, db_, &archive_db, temp_root, db_, db_, temp_root);
     const auto result = rehydrate_executor.Execute({
         .rehydrate_request_id = request_id,
         .now_utc = now,
@@ -9357,7 +9435,7 @@ VALUES(9102,'SEED_PROBE','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
     EXPECT_EQ(ReadInt64(db_, ("SELECT input_ref_id FROM exec_workflow_step WHERE workflow_step_id=" + std::to_string(new_step_id) + ";").c_str()), new_probe_run_id);
     EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_step_id FROM exec_workset WHERE workset_id=" + std::to_string(new_workset_id) + ";").c_str()), new_step_id);
     EXPECT_EQ(
-        ReadInt64(db_, ("SELECT root_job_set_id FROM exec_workset WHERE workset_id=" + std::to_string(new_workset_id) + ";").c_str()),
+        ReadInt64(db_, ("SELECT job_set_id FROM exec_workset WHERE workset_id=" + std::to_string(new_workset_id) + ";").c_str()),
         ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='job_set' AND old_id='9100' ORDER BY rehydrate_map_id DESC LIMIT 1;"));
     EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM sp_probe_result WHERE probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()), 2);
     EXPECT_EQ(ReadInt64(db_, ("SELECT entry_savestate_id FROM sp_probe_run WHERE probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()), 701);
@@ -9371,10 +9449,10 @@ VALUES(9102,'SEED_PROBE','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
     EXPECT_EQ(ReadInt64(db_, ("SELECT confirmation_of_probe_result_id FROM sp_probe_result WHERE probe_result_id=" + std::to_string(new_confirmation_result_id) + ";").c_str()), new_probe_result_id);
     EXPECT_EQ(ReadInt64(db_, ("SELECT source_job_id FROM sp_probe_result WHERE probe_result_id=" + std::to_string(new_confirmation_result_id) + ";").c_str()), new_confirm_job_id);
     EXPECT_EQ(ReadInt64(db_, ("SELECT dispatch_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_observed_job_id) + ";").c_str()), new_dispatch_attempt_id);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT workset_item_ordinal FROM exec_job WHERE job_id=" + std::to_string(new_observed_job_id) + ";").c_str()), 0);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT workset_item_ordinal FROM exec_job WHERE job_id=" + std::to_string(new_observed_job_id) + ";").c_str()), 1);
     EXPECT_EQ(ReadInt64(db_, ("SELECT reserved_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_observed_job_id) + ";").c_str()), 1);
     EXPECT_EQ(ReadInt64(db_, ("SELECT dispatch_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), new_dispatch_attempt_id);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT workset_item_ordinal FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT workset_item_ordinal FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), 2);
     EXPECT_EQ(ReadInt64(db_, ("SELECT reserved_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), 1);
     EXPECT_EQ(
         ReadInt64(
@@ -9449,7 +9527,7 @@ VALUES(9102,'SEED_PROBE','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
             ("SELECT cancellation_group_key FROM exec_job WHERE job_id="
                 + std::to_string(new_canceled_job_id) + ";")
                 .c_str()),
-        "seedprobe.run." + std::to_string(new_probe_run_id)
+        "seedprobe." + std::to_string(new_probe_run_id)
             + ".search.delta.2");
     EXPECT_NE(
         ReadText(
@@ -9486,8 +9564,9 @@ TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRejectsCorruptSavestateZip
     }
     const auto sha = hash::sha256_of_file(sav_path.string());
 
-    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(80,'")
-        + sha + "',23,'NONE','" + sav_path.generic_string() + "','.sav','SAV',1000);"
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) VALUES(80,'")
+        + sha + "',23,'NONE','" + sav_path.filename().generic_string()
+        + "','.sav','SAV',1000,'" + sav_path.filename().generic_string() + "');"
         + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(801,80,'ENTRY','corrupt',1,1000);";
     ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
     ASSERT_TRUE(ExecSql(db_, R"SQL(
@@ -9507,7 +9586,7 @@ VALUES(9801,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0);
         &execution_db,
         &ui_read_db,
         &archive_db,
-        DbConfigPaths{ .archive_store_root = temp_root },
+        DbConfigPaths{ .object_store_root = temp_root, .archive_store_root = temp_root },
         db_,
         nullptr,
         db_);
@@ -9557,7 +9636,8 @@ VALUES(9801,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0);
         &err))
         << err;
 
-    SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_);
+    SqliteRehydrateExecutor rehydrate_executor(
+        db_, db_, &archive_db, temp_root, db_, nullptr, temp_root);
     const auto result = rehydrate_executor.Execute({
         .rehydrate_request_id = request_id,
         .now_utc = now,
@@ -9593,8 +9673,9 @@ TEST_F(SqliteDbFixture, Stage4WorkflowArchiveExecuteReportsProgressPhases) {
         out << "progress-entry-savestate";
     }
 
-    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(50,'progresssha',23,'NONE','")
-        + sav_path.generic_string() + "','.sav','SAV',1000);"
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) VALUES(50,'progresssha',23,'NONE','")
+        + sav_path.filename().generic_string() + "','.sav','SAV',1000,'"
+        + sav_path.filename().generic_string() + "');"
         + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(501,50,'ENTRY','progress',1,1000);";
     ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
     ASSERT_TRUE(ExecSql(db_, R"SQL(
@@ -9614,11 +9695,12 @@ VALUES(5010,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0);
         &execution_db,
         &ui_read_db,
         &archive_db,
-        DbConfigPaths{ .archive_store_root = temp_root },
+        DbConfigPaths{ .object_store_root = temp_root, .archive_store_root = temp_root },
         db_,
         nullptr,
         db_);
-    archive::SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_);
+    archive::SqliteRehydrateExecutor rehydrate_executor(
+        db_, db_, &archive_db, temp_root, db_, nullptr, temp_root);
     ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
 
     const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
@@ -9951,8 +10033,9 @@ TEST_F(SqliteDbFixture, Stage4WorkflowArchiveExecutePurgesExclusiveWorkflowAndSa
         out << "exclusive-output-savestate";
     }
 
-    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(30,'exclusivesha',25,'NONE','")
-        + sav_path.generic_string() + "','.sav','SAV',1000);"
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) VALUES(30,'exclusivesha',25,'NONE','")
+        + sav_path.filename().generic_string() + "','.sav','SAV',1000,'"
+        + sav_path.filename().generic_string() + "');"
         + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(301,30,'OUTPUT','exclusive',1,1000);";
     ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
     ASSERT_TRUE(ExecSql(db_, R"SQL(
@@ -9972,11 +10055,12 @@ VALUES(3010,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0);
         &execution_db,
         &ui_read_db,
         &archive_db,
-        DbConfigPaths{ .archive_store_root = temp_root },
+        DbConfigPaths{ .object_store_root = temp_root, .archive_store_root = temp_root },
         db_,
         nullptr,
         db_);
-    archive::SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_);
+    archive::SqliteRehydrateExecutor rehydrate_executor(
+        db_, db_, &archive_db, temp_root, db_, nullptr, temp_root);
     ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
 
     const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
@@ -10021,8 +10105,9 @@ TEST_F(SqliteDbFixture, Stage4WorkflowArchiveExecuteKeepsSharedSavestateWhenRema
         out << "shared-entry-savestate";
     }
 
-    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(40,'sharedpurgesha',21,'NONE','")
-        + sav_path.generic_string() + "','.sav','SAV',1000);"
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,display_filename,file_ext,artifact_kind,created_at_utc,object_relpath) VALUES(40,'sharedpurgesha',21,'NONE','")
+        + sav_path.filename().generic_string() + "','.sav','SAV',1000,'"
+        + sav_path.filename().generic_string() + "');"
         + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(401,40,'ENTRY','shared',1,1000);";
     ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
     ASSERT_TRUE(ExecSql(db_, R"SQL(
@@ -10045,11 +10130,12 @@ VALUES(4010,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0),
         &execution_db,
         &ui_read_db,
         &archive_db,
-        DbConfigPaths{ .archive_store_root = temp_root },
+        DbConfigPaths{ .object_store_root = temp_root, .archive_store_root = temp_root },
         db_,
         nullptr,
         db_);
-    archive::SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_);
+    archive::SqliteRehydrateExecutor rehydrate_executor(
+        db_, db_, &archive_db, temp_root, db_, nullptr, temp_root);
     ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
 
     const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
@@ -11552,7 +11638,7 @@ TEST_F(SqliteDbFixture, UiReadProjectionTerminalJobEventRefreshesWorkflowLaneCou
         "VALUES(25003,25001,'terminal-step','job_set','RUNNING',5,1,1,25002,1000,1100);"));
     ASSERT_TRUE(ExecSql(exec_handle,
         "INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
-        "VALUES(25004,25002,NULL,42,1,'test',1,'terminal-job-completed',5,'COMPLETED',1,1,'worker-1',NULL,1000,1100,1200,NULL,NULL);"));
+        "VALUES(25004,25002,NULL,42,1,'test',1,'terminal-job-completed',5,'SUCCEEDED',1,1,'worker-1',NULL,1000,1100,1200,NULL,NULL);"));
     ASSERT_TRUE(ExecSql(exec_handle,
         "INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
         "VALUES(25005,25002,NULL,42,1,'test',2,'terminal-job-running',5,'RUNNING',1,1,'worker-1',NULL,1000,1100,NULL,NULL,NULL);"));
@@ -11582,7 +11668,7 @@ TEST_F(SqliteDbFixture, UiReadProjectionTerminalJobEventRefreshesWorkflowLaneCou
     sqlite3* verify_handle = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &verify_handle));
     ASSERT_NE(verify_handle, nullptr);
-    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=25004;"), "COMPLETED");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=25004;"), "SUCCEEDED");
     EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_workflow_instance WHERE workflow_instance_id=25001;"), "RUNNING");
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT job_count FROM ui_workflow_step WHERE workflow_step_id=25003;"), 2);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT job_settled_count FROM ui_workflow_step WHERE workflow_step_id=25003;"), 1);
@@ -12079,14 +12165,14 @@ VALUES(
     35010,0,0,1,1000);
 
 INSERT INTO exec_workset(
-    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_id,job_set_id,workflow_step_id,
     workset_key,program_kind,program_version,
     contract_key,module_canonical_id,module_version,module_sha256,
     entrypoint,verified_dependency_sha256,runtime_profile_sha256,
     program_package_sha256,estimated_payload_bytes,priority,item_count,
     published_at_utc)
 VALUES(
-    35020,35010,35012,35010,'start-authority-workset',42,1,
+    35020,35010,35012,'start-authority-workset',42,1,
     'start-authority-compatibility','test.module',1,printf('%064d',0),
     'test-entrypoint',printf('%064d',0),printf('%064d',0),
     printf('%064d',0),1,0,2,1000);
@@ -12198,14 +12284,14 @@ VALUES(
     35510,0,0,1,1000);
 
 INSERT INTO exec_workset(
-    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_id,job_set_id,workflow_step_id,
     workset_key,program_kind,program_version,
     contract_key,module_canonical_id,module_version,module_sha256,
     entrypoint,verified_dependency_sha256,runtime_profile_sha256,
     program_package_sha256,estimated_payload_bytes,priority,item_count,
     published_at_utc)
 VALUES(
-    35520,35510,35512,35510,'canonical-progress-workset',42,1,
+    35520,35510,35512,'canonical-progress-workset',42,1,
     'canonical-progress-contract','test.module',1,printf('%064d',0),
     'test-entrypoint',printf('%064d',0),printf('%064d',0),
     printf('%064d',0),1,0,1,1000);
@@ -12776,12 +12862,12 @@ TEST_F(
         "job_set_id,priority,attempts,max_attempts,created_at_utc) VALUES("
         "37002,37001,'Drain','draining.test','COMPLETED',37000,0,1,1,1);"
         "INSERT INTO exec_workset("
-        "workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,"
+        "workset_id,job_set_id,workflow_step_id,workset_key,"
         "program_kind,program_version,contract_key,module_canonical_id,"
         "module_version,module_sha256,entrypoint,verified_dependency_sha256,"
         "runtime_profile_sha256,program_package_sha256,"
         "estimated_payload_bytes,priority,item_count,published_at_utc) VALUES("
-        "37003,37000,37002,37000,'delayed-draining-workset',42,1,"
+        "37003,37000,37002,'delayed-draining-workset',42,1,"
         "'delayed-draining-compatibility','delayed.draining.module',1,"
         "'1111111111111111111111111111111111111111111111111111111111111111',"
         "'execute',"
@@ -13004,14 +13090,14 @@ VALUES(36302,36301,'probe','probe','test','MATERIALIZED',
         const auto dispatch_id = 36320 + workset_index;
         const auto workset_sql =
             "INSERT INTO exec_workset("
-            "workset_id,job_set_id,workflow_step_id,root_job_set_id,"
+            "workset_id,job_set_id,workflow_step_id,"
             "workset_key,program_kind,program_version,contract_key,"
             "module_canonical_id,module_version,module_sha256,entrypoint,"
             "verified_dependency_sha256,runtime_profile_sha256,"
             "program_package_sha256,estimated_payload_bytes,priority,"
             "item_count,published_at_utc) VALUES("
             + std::to_string(workset_id)
-            + ",36300,36302,36300,'cancel-workset-"
+            + ",36300,36302,'cancel-workset-"
             + std::to_string(workset_index)
             + "',42,1,'generic','test.module',1,printf('%064d',0),"
               "'test-entrypoint',printf('%064d',0),printf('%064d',0),"
@@ -13141,14 +13227,14 @@ VALUES(
     0,1,1,35110,1000);
 
 INSERT INTO exec_workset(
-    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_id,job_set_id,workflow_step_id,
     workset_key,program_kind,program_version,
     contract_key,module_canonical_id,module_version,module_sha256,
     entrypoint,verified_dependency_sha256,runtime_profile_sha256,
     program_package_sha256,estimated_payload_bytes,priority,item_count,
     published_at_utc)
 VALUES(
-    35120,35110,35112,35110,'expired-recovery-workset',42,1,
+    35120,35110,35112,'expired-recovery-workset',42,1,
     'expired-recovery-compatibility','test.module',1,printf('%064d',0),
     'test-entrypoint',printf('%064d',0),printf('%064d',0),
     printf('%064d',0),1,0,1,1000);
@@ -13272,29 +13358,29 @@ VALUES
     (35312,35311,'probe','probe','test','MATERIALIZED',
      0,1,1,35310,1000);
 INSERT INTO exec_workset(
-    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_id,job_set_id,workflow_step_id,
     workset_key,program_kind,program_version,contract_key,
     module_canonical_id,module_version,module_sha256,entrypoint,
     verified_dependency_sha256,runtime_profile_sha256,
     program_package_sha256,execution_affinity_key,
     estimated_payload_bytes,priority,item_count,published_at_utc)
 VALUES
-    (35220,35210,35212,35210,'cold',42,1,'compat',
+    (35220,35210,35212,'cold',42,1,'compat',
      'test.module',1,printf('%064d',0),'test-entrypoint',
      printf('%064d',0),printf('%064d',0),printf('%064d',0),'cold',1,10,1,1000),
-    (35221,35210,35212,35210,'warm',42,1,'compat',
+    (35221,35210,35212,'warm',42,1,'compat',
      'test.module',1,printf('%064d',0),'test-entrypoint',
      printf('%064d',0),printf('%064d',0),printf('%064d',0),'warm',1,10,1,1001),
-    (35222,35210,35212,35210,'incompatible',42,1,'compat',
+    (35222,35210,35212,'incompatible',42,1,'compat',
      'other.module',1,printf('%064d',0),'test-entrypoint',
      printf('%064d',0),printf('%064d',0),printf('%064d',0),'warm',1,10,1,900),
-    (35223,35210,35212,35210,'lower',42,1,'compat',
+    (35223,35210,35212,'lower',42,1,'compat',
      'test.module',1,printf('%064d',0),'test-entrypoint',
      printf('%064d',0),printf('%064d',0),printf('%064d',0),'warm',1,5,1,800),
-    (35320,35310,35312,35310,'rollback-a',42,1,'compat',
+    (35320,35310,35312,'rollback-a',42,1,'compat',
      'test.module',1,printf('%064d',0),'test-entrypoint',
      printf('%064d',0),printf('%064d',0),printf('%064d',0),'warm',1,20,1,1000),
-    (35321,35310,35312,35310,'rollback-b',42,1,'compat',
+    (35321,35310,35312,'rollback-b',42,1,'compat',
      'test.module',1,printf('%064d',0),'test-entrypoint',
      printf('%064d',0),printf('%064d',0),printf('%064d',0),'warm',1,20,1,1001);
 INSERT INTO exec_job(
@@ -13401,17 +13487,17 @@ INSERT INTO exec_workflow_step(
     created_at_utc)
 VALUES(39012,39011,'probe','probe','test','FAILED',0,1,1,39010,1);
 INSERT INTO exec_workset(
-    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_id,job_set_id,workflow_step_id,
     workset_key,program_kind,program_version,contract_key,
     module_canonical_id,module_version,module_sha256,entrypoint,
     verified_dependency_sha256,runtime_profile_sha256,
     program_package_sha256,estimated_payload_bytes,priority,item_count,
     published_at_utc)
 VALUES
-    (39020,39010,39012,39010,'source-a',42,1,'retry-contract',
+    (39020,39010,39012,'source-a',42,1,'retry-contract',
      'test.module',1,printf('%064d',0),'test-entrypoint',
      printf('%064d',0),printf('%064d',0),printf('%064d',0),2,3,1,1),
-    (39021,39010,39012,39010,'source-b',42,1,'retry-contract',
+    (39021,39010,39012,'source-b',42,1,'retry-contract',
      'test.module',1,printf('%064d',0),'test-entrypoint',
      printf('%064d',0),printf('%064d',0),printf('%064d',0),2,5,1,1);
 INSERT INTO exec_job(

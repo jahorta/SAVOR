@@ -1502,18 +1502,39 @@ TEST_F(
         root_request->effective_dtm_sha256);
     ASSERT_TRUE(valid_status.has_value());
     EXPECT_EQ(valid_status->status, TasMovieValidationStatus::Valid);
+    const auto finalize_workflow_sql =
+        "UPDATE exec_job SET state='SUCCEEDED',ended_at_utc=2500 "
+        "WHERE job_id=" + std::to_string(job->job_id) + ";"
+        "UPDATE exec_workflow_step SET state='COMPLETED',completed_at_utc=2500 "
+        "WHERE workflow_step_id=" + std::to_string(workflow_step_id) + ";"
+        "UPDATE exec_workflow_instance SET state='COMPLETED',completed_at_utc=2500 "
+        "WHERE workflow_instance_id=" + std::to_string(workflow_instance_id) + ";"
+        "UPDATE exec_job SET state='SUCCEEDED',ended_at_utc=2500 "
+        "WHERE job_id=" + std::to_string(root_job->job_id) + ";"
+        "UPDATE exec_workflow_step SET state='COMPLETED',completed_at_utc=2500 "
+        "WHERE workflow_step_id=" + std::to_string(root_step_id) + ";"
+        "UPDATE exec_workflow_instance SET state='COMPLETED',completed_at_utc=2500 "
+        "WHERE workflow_instance_id=" + std::to_string(root_workflow_id) + ";";
+    ASSERT_EQ(
+        sqlite3_exec(
+            db_, finalize_workflow_sql.c_str(), nullptr, nullptr, nullptr),
+        SQLITE_OK)
+        << sqlite3_errmsg(db_);
     const auto archive_root = temp_root_ / "tas-movie-archive";
     archive::SqliteArchivePackageService package_service(
         db_,
         execution,
         db_service_->UiReadDb(),
         db_service_->ArchiveDb(),
-        DbConfigPaths{.archive_store_root = archive_root},
+        DbConfigPaths{
+            .object_store_root = temp_root_ / "object_store",
+            .archive_store_root = archive_root},
         db_,
         db_,
         db_);
     const auto package = package_service.CreateWorkflowPackage({
-        .selection = {.workflow_instance_ids = {root_workflow_id}},
+        .selection = {
+            .workflow_instance_ids = {workflow_instance_id, root_workflow_id}},
         .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(3000)),
         .archive_name = "TAS Movie root validation",
         .correlation_id = "tas-movie-archive-test",

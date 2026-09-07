@@ -1530,10 +1530,11 @@ INSERT INTO exec_outbox_message(
       "sha256": "phase3-placeholder-sha256",
       "size_bytes": 1,
       "compression_kind": 0,
-      "filename": "placeholder_phase3.sav",
+      "display_filename": "placeholder_phase3.sav",
       "file_ext": ".sav",
       "artifact_kind": "SAV",
-      "created_at_utc": 1712304000000
+      "created_at_utc": 1712304000000,
+      "object_relpath": "placeholder_phase3.sav"
     }
   ]
 })JSON";
@@ -1549,7 +1550,7 @@ INSERT INTO exec_outbox_message(
         ASSERT_TRUE(preparer.SeedRowsFromJsonlDirectory(jsonl_dir, &err)) << err;
 
         sqlite3_stmt* st = nullptr;
-        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, "SELECT filename FROM state_artifact WHERE artifact_id=101;", -1, &st, nullptr));
+        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, "SELECT display_filename FROM state_artifact WHERE artifact_id=101;", -1, &st, nullptr));
         ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
         ASSERT_NE(sqlite3_column_text(st, 0), nullptr);
         const std::string filename = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
@@ -1657,7 +1658,7 @@ INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key,
 VALUES(4103, 4101, 'Grid', 'seedprobe.grid', 'RUNNING', 4102, 1, 2, unixepoch()*1000, unixepoch()*1000);
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
 VALUES
-(4104, 4102, 1, 1, 'seedprobe', 1, 'phase4-r1', 1, 'COMPLETED', 1, 2, unixepoch()*1000, unixepoch()*1000),
+(4104, 4102, 1, 1, 'seedprobe', 1, 'phase4-r1', 1, 'SUCCEEDED', 1, 2, unixepoch()*1000, unixepoch()*1000),
 (4105, 4102, 1, 1, 'seedprobe', 1, 'phase4-r2', 1, 'FAILED', 1, 2, unixepoch()*1000, unixepoch()*1000);
 )SQL", &err))
             << err;
