@@ -248,9 +248,9 @@ bool VerifyComposedTasMovieSeedProbeGraph(
         || graph->instance.root_scope_kind != "manual"
         || graph->instance.root_scope_id.has_value()
         || graph->unit_activations.size() != 4
-        || graph->steps.size() != 4
+        || graph->steps.size() != (require_initial_state ? 4u : 6u)
         || graph->unit_activation_edges.size() != 3
-        || graph->edges.size() != 3
+        || graph->edges.size() != (require_initial_state ? 3u : 5u)
         || graph->arguments.size() != 2) {
         if (error_out) {
             *error_out = "tasmovie_seedprobe runtime graph is not the exact four-unit composition";
@@ -280,7 +280,17 @@ bool VerifyComposedTasMovieSeedProbeGraph(
     const auto establish_step = find_step("tas_establish_1");
     const auto validate_step = find_step("tas_validate_1");
     const auto sterilize_step = find_step("tas_sterilize_1");
-    const auto probe_step = find_step("probe_1");
+    const auto find_probe_step = [&](std::string_view step_kind) {
+        return std::find_if(
+            graph->steps.begin(), graph->steps.end(),
+            [&](const auto& step) {
+                return step.graph_node_key == "probe_1"
+                    && step.step_kind == step_kind;
+            });
+    };
+    const auto survey_step = find_probe_step("seedprobe.survey");
+    const auto search_step = find_probe_step("seedprobe.search");
+    const auto confirm_step = find_probe_step("seedprobe.confirm");
     if (establish_activation == graph->unit_activations.end()
         || validate_activation == graph->unit_activations.end()
         || sterilize_activation == graph->unit_activations.end()
@@ -288,7 +298,7 @@ bool VerifyComposedTasMovieSeedProbeGraph(
         || establish_step == graph->steps.end()
         || validate_step == graph->steps.end()
         || sterilize_step == graph->steps.end()
-        || probe_step == graph->steps.end()
+        || survey_step == graph->steps.end()
         || establish_activation->unit_kind
             != "tas_movie_establish_root_cursor"
         || validate_activation->unit_kind != "tas_movie_validate_root"
@@ -301,13 +311,20 @@ bool VerifyComposedTasMovieSeedProbeGraph(
             != "tasmovie.establish_root_cursor"
         || validate_step->step_kind != "tasmovie.validate_root"
         || sterilize_step->step_kind != "tasmovie.checkpoint_sterilize"
-        || probe_step->step_kind != "seedprobe.survey"
         || establish_step->max_attempts != 1
         || validate_step->max_attempts != 1
         || sterilize_step->max_attempts != 1
-        || probe_step->max_attempts != 1) {
+        || survey_step->max_attempts != 1
+        || (require_initial_state
+            && (search_step != graph->steps.end()
+                || confirm_step != graph->steps.end()))
+        || (!require_initial_state
+            && (search_step == graph->steps.end()
+                || confirm_step == graph->steps.end()
+                || search_step->max_attempts != 1
+                || confirm_step->max_attempts != 1))) {
         if (error_out) {
-            *error_out = "tasmovie_seedprobe unit or singleton-step identities drifted";
+            *error_out = "tasmovie_seedprobe unit or runtime-step identities drifted";
         }
         return false;
     }
@@ -337,7 +354,7 @@ bool VerifyComposedTasMovieSeedProbeGraph(
             sterilize_step->workflow_step_id)
         || !has_step_edge(
             sterilize_step->workflow_step_id,
-            probe_step->workflow_step_id)
+            survey_step->workflow_step_id)
         || !has_activation_edge(
             establish_activation->workflow_unit_activation_id,
             validate_activation->workflow_unit_activation_id)
@@ -346,7 +363,14 @@ bool VerifyComposedTasMovieSeedProbeGraph(
             sterilize_activation->workflow_unit_activation_id)
         || !has_activation_edge(
             sterilize_activation->workflow_unit_activation_id,
-            probe_activation->workflow_unit_activation_id)) {
+            probe_activation->workflow_unit_activation_id)
+        || (!require_initial_state
+            && (!has_step_edge(
+                    survey_step->workflow_step_id,
+                    search_step->workflow_step_id)
+                || !has_step_edge(
+                    search_step->workflow_step_id,
+                    confirm_step->workflow_step_id)))) {
         if (error_out) {
             *error_out = "tasmovie_seedprobe dependency edges drifted";
         }
@@ -356,7 +380,7 @@ bool VerifyComposedTasMovieSeedProbeGraph(
         && (establish_step->state != WorkflowStepState::Ready
             || validate_step->state != WorkflowStepState::Waiting
             || sterilize_step->state != WorkflowStepState::Waiting
-            || probe_step->state != WorkflowStepState::Waiting)) {
+            || survey_step->state != WorkflowStepState::Waiting)) {
         if (error_out) {
             *error_out = "tasmovie_seedprobe did not begin with only establishment READY";
         }
