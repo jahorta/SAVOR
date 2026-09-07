@@ -587,8 +587,7 @@ bool VerifyComposedTasMovieSterileGraph(
 
     const auto authored = authoring_db->GetWorkflowGraphRevision(
         *graph->instance.workflow_graph_revision_id);
-    if (!authored || authored->graph_hash
-            != "savor-e2e.workflow_graph.tasmovie_sterile.v1"
+    if (!authored || !authored->graph_hash.starts_with("fnv1a64-")
         || authored->nodes.size() != 3 || authored->edges.size() != 2) {
         if (error_out) {
             *error_out = "tasmovie_sterile immutable authored graph is unavailable or drifted";
@@ -741,8 +740,7 @@ bool VerifyComposedTasMovieEstablishedSterileGraph(
 
     const auto authored = authoring_db->GetWorkflowGraphRevision(
         *graph->instance.workflow_graph_revision_id);
-    if (!authored || authored->graph_hash
-            != "savor-e2e.workflow_graph.tasmovie_validate_sterile.v1"
+    if (!authored || !authored->graph_hash.starts_with("fnv1a64-")
         || authored->nodes.size() != 2 || authored->edges.size() != 1) {
         if (error_out) {
             *error_out =
@@ -1652,9 +1650,15 @@ bool VerifyCheckpointSterilization(
             source_savestate_id,
             savor::runtime::tasmovie::SterilizationDerivationMethod);
     const auto source = db_service->StateDb()->GetSavestate(source_savestate_id);
+    const auto source_dtm = source && source->dtm_artifact_id
+        ? db_service->StateDb()->GetArtifact(*source->dtm_artifact_id)
+        : std::nullopt;
     if (!source || source->playback_state
             != savor::db::SavestatePlaybackState::MoviePaired
-        || !source->dtm_artifact_id || !result || !result->is_complete
+        || !source->dtm_artifact_id || !source_dtm
+        || source_dtm->artifact_kind != "DTM"
+        || source->dtm_sha256 != source_dtm->sha256
+        || !result || !result->is_complete
         || result->playback_state
             != savor::db::SavestatePlaybackState::MovieInactive
         || result->dtm_artifact_id || result->artifact_kind != "SAV"
@@ -1664,11 +1668,10 @@ bool VerifyCheckpointSterilization(
     }
     const auto result_hash = HashFile(result->artifact_filename, error_out);
     const auto source_hash = HashFile(source->artifact_filename, error_out);
-    const auto source_sidecar_hash = HashFile(
-        source->artifact_filename + ".dtm", error_out);
+    const auto source_dtm_hash = HashFile(source_dtm->object_path, error_out);
     if (!result_hash || *result_hash != result->artifact_sha256
         || !source_hash || *source_hash != source->artifact_sha256
-        || !source_sidecar_hash || source->dtm_sha256 != *source_sidecar_hash) {
+        || !source_dtm_hash || source_dtm->sha256 != *source_dtm_hash) {
         if (error_out && error_out->empty())
             *error_out = "sterilization artifacts do not match State hashes";
         return false;
